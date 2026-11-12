@@ -50,6 +50,7 @@ import { db, runOutsideDbContext } from '../../db';
 import { portalUserIdentities, portalUsers } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { getPortalEntraConfig, type PortalEntraConfig } from '../../config/portalEntra';
+import { getPortalGoogleConfig } from '../../config/portalGoogle';
 import { rateLimitIpKey } from '../../services/clientIp';
 import {
   PortalAccessPolicyOrgNotFoundError,
@@ -264,10 +265,21 @@ oidcRoutes.get(PORTAL_ENTRA_PROOF_ROUTE, (c) =>
 // Discovery
 // ============================================
 
+/** `{ google }` only where the deployment can run Google (W7 D10, ships dark); `{}` elsewhere. */
+function googleKey(deploymentHasGoogle: boolean, value: boolean): { google?: boolean } {
+  return deploymentHasGoogle ? { google: value } : {};
+}
+
 /**
- * Shared host: a constant (`password` always offered, Microsoft when the
- * deployment can run it, Request access never), so it reveals nothing about
- * any org (inv. 8). A verified custom domain: that org's effective policy.
+ * Shared host: a constant (`password` always offered, Microsoft and Google
+ * when the deployment can run them, Request access never), so it reveals
+ * nothing about any org (inv. 8). A verified custom domain: that org's
+ * effective policy.
+ *
+ * `google` (W7 D10) ships dark: the key is present only on a deployment that
+ * can run Google (`getPortalSignInCapabilities().google`), so a deployment
+ * without the portal Google client answers W4's shape byte-identically. The
+ * portal reads a missing `google` as false.
  */
 oidcRoutes.get('/auth/methods', async (c) => {
   c.header('Cache-Control', 'no-store');
@@ -278,7 +290,7 @@ oidcRoutes.get('/auth/methods', async (c) => {
   // custom portal domain whose org has the mode on (below). /request-access
   // still answers by direct URL with the uniform 200, so no oracle either way,
   // and there is deliberately no deployment-wide "does any org use it" read.
-  const shared = { password: true, microsoft: caps.entra, requestAccess: false };
+  const shared = { password: true, microsoft: caps.entra, ...googleKey(caps.google, true), requestAccess: false };
   const orgId = await hostOrgIdFor(c);
   if (!orgId) return c.json(shared);
   try {
@@ -291,6 +303,7 @@ oidcRoutes.get('/auth/methods', async (c) => {
     return c.json({
       password: isSignInMethodAllowed(policy, 'password'),
       microsoft: getPortalEntraConfig() !== null && isSignInMethodAllowed(policy, 'entra'),
+      ...googleKey(caps.google, getPortalGoogleConfig() !== null && isSignInMethodAllowed(policy, 'google')),
       requestAccess,
     });
   } catch (error) {
@@ -427,21 +440,29 @@ oidcRoutes.post('/auth/invite/methods', zValidator('json', inviteMethodsSchema),
   if (!peeked) return c.json({ error: INVALID_INVITE }, 400);
 
   // Exactly what each accept path would decide: the password accept-invite's
-  // validation, and the Microsoft one plus the org's effective Microsoft gate.
+  // validation, and the SSO one plus the org's effective Microsoft and Google
+  // gates (one policy read for both).
   const passwordCheck = await validatePortalCapability('invite', peeked);
   const ssoCheck = await validatePortalCapability('invite', peeked, { requirePasswordMethod: false });
+  const entraConfigured = getPortalEntraConfig() !== null;
+  const googleConfigured = getPortalGoogleConfig() !== null;
   let microsoft = false;
-  if (ssoCheck.ok && getPortalEntraConfig() !== null) {
+  let google = false;
+  if (ssoCheck.ok && (entraConfigured || googleConfigured)) {
     try {
-      microsoft = isSignInMethodAllowed(await resolvePortalAccessPolicy(ssoCheck.user.orgId), 'entra');
+      const policy = await resolvePortalAccessPolicy(ssoCheck.user.orgId);
+      microsoft = entraConfigured && isSignInMethodAllowed(policy, 'entra');
+      google = googleConfigured && isSignInMethodAllowed(policy, 'google');
     } catch (error) {
       if (!(error instanceof PortalAccessPolicyOrgNotFoundError)) throw error;
     }
   }
   const password = passwordCheck.ok;
 
-  // Uniform: an unusable invite looks the same however it is unusable.
-  if (!password && !microsoft) return c.json({ error: INVALID_INVITE }, 400);
+  // Uniform: an unusable invite looks the same however it is unusable. It is
+  // unusable only when no method can accept it (W7 D10).
+  if (!password && !microsoft && !google) return c.json({ error: INVALID_INVITE }, 400);
   c.header('Cache-Control', 'no-store');
-  return c.json({ password, microsoft });
+  // `google` ships dark exactly as in /auth/methods.
+  return c.json({ password, microsoft, ...googleKey(getPortalSignInCapabilities().google, google) });
 });

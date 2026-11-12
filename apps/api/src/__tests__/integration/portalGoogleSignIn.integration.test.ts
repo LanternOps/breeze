@@ -46,16 +46,20 @@ vi.mock('../../services/portalDomainVerification', async (importOriginal) => {
 
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+import { generateKeyPair, SignJWT } from 'jose';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTestDb } from './setup';
 import { createOrganization, createPartner } from './db-utils';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
+  auditLogs,
   clientAiTenantMappings,
   contacts,
   customerEmailDomains,
   portalAccessPolicies,
   portalAccessRequests,
+  portalBranding,
   portalUserIdentities,
   portalUsers,
 } from '../../db/schema';
@@ -69,6 +73,10 @@ import {
 } from '../../services/portalOidc/accountResolution';
 import { PORTAL_GOOGLE_ISSUER } from '../../services/portalOidc/validators';
 import type { PortalGoogleVerifiedIdentity } from '../../services/portalOidc/types';
+import { portalRoutes } from '../../routes/portal';
+import { issuePortalCapabilityToken, peekPortalCapabilityToken } from '../../routes/portal/capabilityTokens';
+import { portalOidcStates, portalRateLimitBuckets, portalSessions } from '../../routes/portal/helpers';
+import { __testOnly as googleRoutesTestOnly } from '../../routes/portal/oidcGoogle';
 
 const admin = () => getTestDb();
 type Mode = 'invited_only' | 'approval' | 'instant';
@@ -583,5 +591,256 @@ describe('portal Google account resolution (real DB, verified hd)', () => {
         expect(o.portalUserId).toBe(accounts[0]!.id);
       }
     });
+  });
+});
+
+describe('portal Google sign-in routes (real DB + router, plan Task 7)', () => {
+  const CLIENT_ID = '123456789012-abcdefghijklmnop.apps.googleusercontent.com';
+  const PORTAL = 'https://portal.example.test/portal';
+  const SAVED_ENV = {
+    id: process.env.PORTAL_GOOGLE_CLIENT_ID,
+    secret: process.env.PORTAL_GOOGLE_CLIENT_SECRET,
+    portal: process.env.PUBLIC_PORTAL_URL,
+  };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  let keys: Awaited<ReturnType<typeof generateKeyPair>>;
+  const tokenFetch = vi.fn();
+  const app = new Hono().route('/portal', portalRoutes);
+
+  beforeAll(async () => {
+    keys = await generateKeyPair('RS256', { modulusLength: 2048 });
+    process.env.PORTAL_GOOGLE_CLIENT_ID = CLIENT_ID;
+    process.env.PORTAL_GOOGLE_CLIENT_SECRET = 'portal-google-test-secret';
+    process.env.PUBLIC_PORTAL_URL = PORTAL;
+  });
+
+  afterAll(() => {
+    restore('PORTAL_GOOGLE_CLIENT_ID', SAVED_ENV.id);
+    restore('PORTAL_GOOGLE_CLIENT_SECRET', SAVED_ENV.secret);
+    restore('PUBLIC_PORTAL_URL', SAVED_ENV.portal);
+  });
+
+  beforeEach(() => {
+    portalOidcStates.clear();
+    portalSessions.clear();
+    portalRateLimitBuckets.clear();
+    tokenFetch.mockReset();
+    googleRoutesTestOnly.setGoogleDeps({ fetch: tokenFetch as unknown as typeof fetch, verificationKey: keys.publicKey });
+  });
+
+  afterEach(() => googleRoutesTestOnly.setGoogleDeps(null));
+
+  const cookiePair = (res: Response, name: string) => {
+    const header = res.headers.getSetCookie().find((c) => c.startsWith(`${name}=`));
+    if (!header) throw new Error(`no ${name} cookie`);
+    return header.split(';')[0]!;
+  };
+
+  async function startFlow(body: unknown, headers: Record<string, string> = {}) {
+    const res = await app.request('/portal/auth/oidc/google/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    const url = new URL(((await res.json()) as { redirectUrl: string }).redirectUrl);
+    return { state: url.searchParams.get('state')!, nonce: url.searchParams.get('nonce')!, binding: cookiePair(res, 'breeze_portal_oidc') };
+  }
+
+  /** Google's answer: an id_token for (sub, hd, email) bound to the flow's nonce. */
+  async function googleSignsIn(nonce: string, sub: string, hd: string, email: string) {
+    const idToken = await new SignJWT({
+      iss: 'https://accounts.google.com', aud: CLIENT_ID, azp: CLIENT_ID, sub, nonce, email, email_verified: true, hd, name: 'Pat Person',
+    }).setProtectedHeader({ alg: 'RS256' }).setIssuedAt().setExpirationTime('1h').sign(keys.privateKey);
+    tokenFetch.mockImplementation(async () => new Response(JSON.stringify({ id_token: idToken }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+  }
+
+  /** Google's redirect as it really arrives (scope, authuser, hd, prompt beside code and state). */
+  async function callback(flow: { state: string; binding: string }) {
+    const query = `state=${encodeURIComponent(flow.state)}&code=4%2F0A${randomUUID()}&scope=email+profile+openid&authuser=0&hd=ignored.example.com&prompt=consent`;
+    return app.request(`/portal/auth/oidc/google/callback?${query}`, { headers: { Cookie: flow.binding } });
+  }
+
+  async function oidcAuditRows(orgId: string) {
+    return (await admin().select().from(auditLogs).where(eq(auditLogs.orgId, orgId)))
+      .filter((row) => row.action.startsWith('portal.auth.'));
+  }
+
+  it('end-to-end: start → callback (stubbed token endpoint + local JWKS key) → /portal/profile works', async () => {
+    const { org, hd } = await seedGoogleOrg();
+    const sub = newSub();
+    const account = await seedAccount(org.id, { email: `pat@${hd}`, authMethod: 'google', passwordHash: null, google: { sub } });
+
+    const flow = await startFlow({ purpose: 'login' });
+    await googleSignsIn(flow.nonce, sub, hd, account.email);
+    const res = await callback(flow);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=signed_in&p=google`);
+    expect(res.headers.getSetCookie().find((c) => c.startsWith('breeze_portal_oidc='))).toContain('Max-Age=0');
+
+    // The real session middleware accepts the Google session (google on, its hd verified for the org).
+    const profile = await app.request('/portal/profile', { headers: { Cookie: cookiePair(res, 'breeze_portal_session') } });
+    expect(profile.status).toBe(200);
+    expect(((await profile.json()) as { user: { id: string } }).user.id).toBe(account.id);
+    expect([...portalSessions.values()]).toEqual([expect.objectContaining({
+      portalUserId: account.id, orgId: org.id, method: 'google', googleHostedDomain: hd,
+    })]);
+
+    // The same callback again: the state is spent.
+    const replay = await callback(flow);
+    expect(replay.headers.get('location')).toBe(`${PORTAL}/login?sso=unavailable&p=google`);
+
+    expect(await oidcAuditRows(org.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.oidc.login', result: 'success', actorId: account.id, resourceId: account.id,
+      details: { provider: 'google', outcome: 'session', via: 'identity' },
+    })]);
+  });
+
+  it('end-to-end account_exists leaves the password account unchanged', async () => {
+    // RF1: an address match never links an existing account.
+    const { org, hd } = await seedGoogleOrg({ mode: 'instant' });
+    const account = await seedAccount(org.id, { email: `pat@${hd}`, passwordHash: 'kept-hash' });
+    const before = await readAccount(account.id);
+    const sub = newSub();
+
+    const flow = await startFlow({ purpose: 'login' });
+    await googleSignsIn(flow.nonce, sub, hd, `pat@${hd}`);
+    const res = await callback(flow);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=account_exists&p=google`);
+    expect(res.headers.getSetCookie().some((c) => c.startsWith('breeze_portal_session='))).toBe(false);
+
+    expect(await readAccount(account.id)).toEqual(before);
+    expect(await identitiesOf(account.id)).toEqual([]);
+    expect(await identitiesWithSubject(sub)).toEqual([]);
+    expect(await accountsIn(org.id)).toHaveLength(1);
+    expect(await oidcAuditRows(org.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.oidc.login', result: 'success', details: { provider: 'google', outcome: 'account_exists' },
+    })]);
+  });
+
+  it('custom-domain host for org A + hd verified for org B → unavailable (host_mismatch)', async () => {
+    // inv. 1: the host binding recorded at start beats the token's hd.
+    const { org: orgA } = await seedGoogleOrg({ mode: 'instant' });
+    const domainA = `portal-a-${randomUUID().slice(0, 8)}.test`;
+    await admin().insert(portalBranding).values({ orgId: orgA.id, customDomain: domainA, domainVerified: true });
+    const { org: orgB, hd: hdB } = await seedGoogleOrg({ mode: 'instant' });
+    const sub = newSub();
+    const inB = await seedAccount(orgB.id, { email: `pat@${hdB}`, authMethod: 'google', passwordHash: null, google: { sub } });
+
+    const flow = await startFlow({ purpose: 'login' }, { Host: `${domainA.toUpperCase()}:443` });
+    await googleSignsIn(flow.nonce, sub, hdB, inB.email);
+    const res = await callback(flow);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=unavailable&p=google`);
+    expect(portalSessions.size).toBe(0);
+    expect(await oidcAuditRows(orgB.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.oidc.login', result: 'failure', details: { provider: 'google', outcome: 'denied', reason: 'host_mismatch' },
+    })]);
+    expect(await oidcAuditRows(orgA.id)).toEqual([]);
+
+    // The same identity on the shared host signs in to B.
+    const shared = await startFlow({ purpose: 'login' });
+    await googleSignsIn(shared.nonce, sub, hdB, inB.email);
+    expect((await callback(shared)).headers.get('location')).toBe(`${PORTAL}/login?sso=signed_in&p=google`);
+  });
+
+  it('an invite accepted through Google uses the real capability consumer: one activation, the token spent', async () => {
+    const { org, hd } = await seedGoogleOrg({ ssoOnly: true });
+    const invited = await seedAccount(org.id, { email: `invitee@${hd}`, status: 'invited', passwordHash: null, authEpoch: 7 });
+    const inviteToken = await issuePortalCapabilityToken({
+      purpose: 'invite', portalUserId: invited.id, orgId: org.id, email: invited.email, authEpoch: 7,
+    });
+
+    // sso_only with only Google: the invite can only be accepted through Google.
+    const methods = await app.request('/portal/auth/invite/methods', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: inviteToken }),
+    });
+    expect(await methods.json()).toEqual({ password: false, microsoft: false, google: true });
+
+    const flow = await startFlow({ purpose: 'invite', inviteToken });
+    expect(await peekPortalCapabilityToken('invite', inviteToken!)).not.toBeNull(); // peeked, not consumed
+    const sub = newSub();
+    await googleSignsIn(flow.nonce, sub, hd, `someone-else@${hd}`);
+    const res = await callback(flow);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=signed_in&p=google`);
+
+    expect(await readAccount(invited.id)).toMatchObject({ status: 'active', browserAccess: 'granted', authMethod: 'password', authEpoch: 8 });
+    expect(await identitiesOf(invited.id)).toEqual([expect.objectContaining({ provider: 'google', subject: sub, linkedVia: 'invite' })]);
+    expect(await peekPortalCapabilityToken('invite', inviteToken!)).toBeNull();
+    expect(await oidcAuditRows(org.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.identity.link', result: 'success', resourceId: invited.id, details: { provider: 'google', linkedVia: 'invite' },
+    })]);
+  });
+
+  it('invite for an account that already has a google identity → invite_invalid, invite not consumed', async () => {
+    // Ruling 19 / W4 D11 / plan RF4: the route's consumer peeks the invited
+    // account before consuming. The identity lands after the start (which
+    // refuses such an invite up front), so only the callback's check stands.
+    const { org, hd } = await seedGoogleOrg();
+    const invited = await seedAccount(org.id, { email: `invitee@${hd}`, status: 'invited', passwordHash: null, authEpoch: 7 });
+    const inviteToken = await issuePortalCapabilityToken({
+      purpose: 'invite', portalUserId: invited.id, orgId: org.id, email: invited.email, authEpoch: 7,
+    });
+    const flow = await startFlow({ purpose: 'invite', inviteToken });
+
+    const held = newSub();
+    await admin().insert(portalUserIdentities).values({
+      orgId: org.id, portalUserId: invited.id, provider: 'google', issuer: PORTAL_GOOGLE_ISSUER, subject: held, entraTenantId: null, linkedVia: 'jit',
+    });
+    const sub = newSub();
+    await googleSignsIn(flow.nonce, sub, hd, `someone-else@${hd}`);
+    const res = await callback(flow);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=unavailable&p=google`);
+
+    expect(await peekPortalCapabilityToken('invite', inviteToken!)).not.toBeNull(); // NOT consumed
+    expect(await readAccount(invited.id)).toMatchObject({ status: 'invited', authEpoch: 7 });
+    expect(await identitiesOf(invited.id)).toEqual([expect.objectContaining({ subject: held })]);
+    expect(await identitiesWithSubject(sub)).toEqual([]);
+    expect(await oidcAuditRows(org.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.oidc.login', result: 'failure', details: { provider: 'google', outcome: 'denied', reason: 'invite_invalid' },
+    })]);
+
+    // And a fresh start with the (unspent) token is refused up front.
+    const again = await app.request('/portal/auth/oidc/google/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ purpose: 'invite', inviteToken }),
+    });
+    expect(again.status).toBe(400);
+    expect(await again.json()).toEqual({ error: 'Invalid or expired invite' });
+  });
+
+  it('a signed-in password user links Google through link/start and link-status (real session middleware, org RLS)', async () => {
+    const { org, hd } = await seedGoogleOrg();
+    const account = await seedAccount(org.id, { email: `pat@${hd}`, passwordHash: 'kept-hash' });
+    const sessionToken = `portal-${randomUUID()}`;
+    portalSessions.set(sessionToken, {
+      token: sessionToken, portalUserId: account.id, orgId: org.id, authEpoch: 5, method: 'password',
+      createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+    const auth = { Authorization: `Bearer ${sessionToken}` };
+    const linkStatus = async () => (await app.request('/portal/auth/oidc/google/link-status', { headers: auth })).json();
+
+    expect((await app.request('/portal/auth/oidc/google/link-status')).status).toBe(401);
+    // The policy read runs W5's verified-domain read outside the request's org transaction.
+    expect(await linkStatus()).toEqual({ available: true, linked: false });
+
+    const startRes = await app.request('/portal/auth/oidc/google/link/start', {
+      method: 'POST', headers: { ...auth, Host: 'shared-portal.example.test' },
+    });
+    expect(startRes.status).toBe(200);
+    const url = new URL(((await startRes.json()) as { redirectUrl: string }).redirectUrl);
+    const flow = { state: url.searchParams.get('state')!, binding: cookiePair(startRes, 'breeze_portal_oidc') };
+    const sub = newSub();
+    await googleSignsIn(url.searchParams.get('nonce')!, sub, hd, account.email);
+    const res = await callback(flow);
+    expect(res.headers.get('location')).toBe(`${PORTAL}/profile?sso=linked&p=google`);
+
+    expect(await readAccount(account.id)).toMatchObject({ passwordHash: 'kept-hash', authEpoch: 5 });
+    expect(await identitiesOf(account.id)).toEqual([expect.objectContaining({ provider: 'google', subject: sub, linkedVia: 'self_link' })]);
+    expect(await linkStatus()).toEqual({ available: true, linked: true });
+    expect(await oidcAuditRows(org.id)).toEqual([expect.objectContaining({
+      action: 'portal.auth.identity.link', result: 'success', actorId: account.id, details: { provider: 'google', linkedVia: 'self_link' },
+    })]);
   });
 });

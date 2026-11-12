@@ -11,7 +11,11 @@
  *  - minting the flow state and answering `{ redirectUrl }` at start;
  *  - the callback envelope: always 302, always clears the binding cookie,
  *    never a 500 (an unexpected throw is logged by message and refused);
- *  - the single-use, browser-bound state read;
+ *  - the single-use, browser-bound state read, with the provider check: a
+ *    state minted for the other provider is refused before any token request
+ *    (W7 D10);
+ *  - Microsoft's strict query parser and Google's (which ignores Google's
+ *    extra redirect parameters and never reads their `hd`);
  *  - `refuse` (one generic failure per purpose; the reason goes to the audit
  *    row and the log only, W4 D15), the audit writer, and `finishSignIn`
  *    (outcome → session mint, audit and the fixed result redirect);
@@ -249,6 +253,38 @@ export function parseCallbackQuery(params: URLSearchParams): CallbackQuery | nul
   return { kind: 'code', state, code };
 }
 
+/** The authorization response `iss` (RFC 9207) Google may send; any other value is refused. */
+const GOOGLE_RESPONSE_ISSUER = 'https://accounts.google.com';
+/** Parameters Google's redirect carries that must appear at most once. */
+const GOOGLE_SINGLE_KEYS = ['code', 'state', 'error', 'iss'] as const;
+
+/**
+ * Google's authorization response (D10). Google's redirect carries `code` and
+ * `state` and also `scope`, `authuser`, `hd` and `prompt` (and may carry
+ * `iss`), so W4's strict allowlist would refuse every real one. This parser:
+ *  - refuses any duplicated `code`, `state`, `error` or `iss`;
+ *  - refuses an `iss` other than Google's;
+ *  - treats a response with `error` as a provider error (its single,
+ *    well-formed `state` is still consumed so it cannot be replayed);
+ *  - otherwise requires exactly one well-formed `code` and `state`;
+ *  - IGNORES every other parameter. Its `hd` in particular is never read: the
+ *    org is chosen from the verified id_token's `hd` only (D2).
+ */
+export function parseGoogleCallbackQuery(params: URLSearchParams): CallbackQuery | null {
+  for (const key of GOOGLE_SINGLE_KEYS) {
+    if (params.getAll(key).length > 1) return null;
+  }
+  if (params.has('iss') && params.get('iss') !== GOOGLE_RESPONSE_ISSUER) return null;
+  if (params.has('error')) {
+    const state = single(params, 'state');
+    return { kind: 'provider_error', state: validOpaque(state, 512) ? state : null };
+  }
+  const state = single(params, 'state');
+  const code = single(params, 'code');
+  if (!validOpaque(state, 512) || !validOpaque(code, 8192)) return null;
+  return { kind: 'code', state, code };
+}
+
 /** What a callback carries across its steps: `purpose` is set as soon as the state is read. */
 export interface CallbackContext {
   purpose?: PortalOidcPurpose;
@@ -259,6 +295,10 @@ export interface CallbackContext {
  * state the provider echoed (if it is ours and this browser's) and lands on
  * that purpose's page. `ctx.purpose` is set as soon as a state is read, so an
  * unexpected throw later still lands on the right page.
+ *
+ * Provider check (D10): a state minted for the OTHER provider is consumed
+ * (burned) and refused as `state_invalid` before any token request, and its
+ * purpose is not trusted for the landing page (the login page answers).
  */
 export async function readCallbackState(
   c: Context,
@@ -269,13 +309,14 @@ export async function readCallbackState(
   const bindingCookie = getCookieValue(c.req.header('cookie'), PORTAL_OIDC_BINDING_COOKIE) ?? undefined;
 
   if (query.kind === 'provider_error') {
-    const state = query.state ? await consumePortalOidcState(query.state, bindingCookie) : null;
+    const consumed = query.state ? await consumePortalOidcState(query.state, bindingCookie) : null;
+    const state = consumed?.provider === provider ? consumed : null;
     ctx.purpose = state?.purpose;
     return { ok: false, location: await refuse(c, 'provider_error', { purpose: state?.purpose, provider }) };
   }
 
   const state = await consumePortalOidcState(query.state, bindingCookie);
-  if (!state) return { ok: false, location: await refuse(c, 'state_invalid', { provider }) };
+  if (!state || state.provider !== provider) return { ok: false, location: await refuse(c, 'state_invalid', { provider }) };
   ctx.purpose = state.purpose;
   return { ok: true, state, code: query.code };
 }
@@ -346,9 +387,14 @@ export async function finishSignIn(
 
   switch (outcome.kind) {
     case 'session': {
-      // This callback resolves only Microsoft identities; a Google session is
-      // never minted here (W7 Task 7 adds the Google callback). Fail closed.
-      if (outcome.method === 'google') return refuse(c, 'internal_error', { purpose, orgId: outcome.orgId, provider });
+      // A session is minted only for the callback's own provider. The
+      // resolver's outcome is a union whose ONLY discriminant is
+      // `method === 'google'` (an Entra outcome carries no `method` key, W4's
+      // shape), so a mismatch here is a wiring bug: fail closed.
+      const isGoogleSession = outcome.method === 'google';
+      if (isGoogleSession !== (provider === 'google')) {
+        return refuse(c, 'internal_error', { purpose, orgId: outcome.orgId, provider });
+      }
       // An invite activation has already committed (account active, identity
       // linked): record it whether or not the session store takes the session.
       if (outcome.via === 'invite') {
@@ -360,14 +406,16 @@ export async function finishSignIn(
           details: { provider, linkedVia: 'invite' },
         });
       }
+      // The mint's own invariant throws (a missing or invalid pin) are NOT
+      // caught here: they surface to the callback envelope, which logs them
+      // as errors (W4 precedent). Only an unavailable session store is a
+      // refusal of its own.
+      const base = { portalUserId: outcome.portalUserId, orgId: outcome.orgId, authEpoch: outcome.authEpoch };
       try {
-        await mintPortalBrowserSession(c, {
-          portalUserId: outcome.portalUserId,
-          orgId: outcome.orgId,
-          authEpoch: outcome.authEpoch,
-          method: 'entra',
-          entraTenantId: outcome.entraTenantId,
-        });
+        await mintPortalBrowserSession(c, outcome.method === 'google'
+          // W7 D7: a Google session is pinned to the verified hd it signed in with.
+          ? { ...base, method: 'google', googleHostedDomain: outcome.googleHostedDomain }
+          : { ...base, method: 'entra', entraTenantId: outcome.entraTenantId });
       } catch (error) {
         if (error instanceof PortalSessionStoreUnavailableError) {
           return refuse(c, 'session_unavailable', { purpose, orgId: outcome.orgId, provider });

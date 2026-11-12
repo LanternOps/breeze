@@ -395,6 +395,9 @@ describe('mintPortalBrowserSession: google (in-memory backend)', () => {
   it('mint refuses googleHostedDomain on a non-google session and requires it on a google one', async () => {
     for (const input of [
       { ...base, method: 'google' },
+      // A runtime null or non-string (an untyped caller) never mints an unpinned google session.
+      { ...base, method: 'google', googleHostedDomain: null },
+      { ...base, method: 'google', googleHostedDomain: 42 },
       { ...base, method: 'google', googleHostedDomain: '' },
       { ...base, method: 'google', googleHostedDomain: 'not a domain' },
       { ...base, method: 'google', googleHostedDomain: '*.example.com' },

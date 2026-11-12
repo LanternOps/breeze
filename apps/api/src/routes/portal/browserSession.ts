@@ -210,6 +210,11 @@ export async function mintPortalBrowserSession(
   if ((method === 'google') !== (input.googleHostedDomain !== undefined)) {
     throw new Error('mintPortalBrowserSession: googleHostedDomain is required for, and only for, a google session');
   }
+  // A runtime null or non-string (an untyped caller) would pass the XOR above
+  // and skip the domain check below, minting a google session with no pin.
+  if (method === 'google' && typeof input.googleHostedDomain !== 'string') {
+    throw new Error('mintPortalBrowserSession: googleHostedDomain must be a valid domain');
+  }
   const googleHostedDomain = input.googleHostedDomain?.toLowerCase();
   if (googleHostedDomain !== undefined && !isStoredHostedDomain(googleHostedDomain)) {
     throw new Error('mintPortalBrowserSession: googleHostedDomain must be a valid domain');
