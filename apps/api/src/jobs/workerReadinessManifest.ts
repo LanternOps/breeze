@@ -379,6 +379,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('flowRunner'),
   consumers('flowRunReconciler'),
   consumers('flowRunRetention'),
+  // #4342 W2. Plain Redis-required consumer, no feature flag.
+  consumers('scriptExecutionRetention'),
   // Task A9 — the schedule trigger tick (FLOWS_ENABLED gates the tick body).
   consumers('flowScheduleTick'),
   // Partner sending domains W03. initializeSendingDomainsWorker returns before

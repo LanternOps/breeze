@@ -27,7 +27,7 @@ import ReparseSkipNotice from './ReparseSkipNotice';
 import BackupFailureCategoryBadge from './BackupFailureCategoryBadge';
 import { stripInternalTagPrefix, truncateErrorSummary } from './backupErrorText';
 import { estimateRemainingMs, formatEta, nextSpeedSample, stallState } from './backupJobProgress';
-import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory, type BackupJobDataAccounting } from '@breeze/shared';
+import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory, type BackupFailureCause, type BackupJobDataAccounting } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -62,6 +62,7 @@ type BackupJobRaw = {
   errorCount?: number | null;
   errorLog?: string | null;
   failureCategory?: BackupFailureCategory | null;
+  failureCause?: BackupFailureCause | null;
   // Absent on an older API during a rolling deploy.
   dataAccounting?: BackupJobDataAccounting | null;
   // GET /jobs/:id only.
@@ -88,6 +89,7 @@ type BackupJob = {
   // to 60 characters for the table, so the whole reason has to live here.
   errorDetail: string | null;
   failureCategory: BackupFailureCategory | null;
+  failureCause: BackupFailureCause | null;
   dataAccounting: BackupJobDataAccounting | null;
   // Live-progress fields (running rows). null when the agent never reported
   // progress (legacy agent) — the UI falls back to an indeterminate bar.
@@ -219,6 +221,7 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     errorCount: raw.errorCount ?? 0,
     errorDetail: cleanedErrorLog,
     failureCategory: raw.failureCategory ?? null,
+    failureCause: raw.failureCause ?? null,
     dataAccounting: raw.dataAccounting ?? null,
     errorSummary: cleanedErrorLog
       ? truncateErrorSummary(cleanedErrorLog)
@@ -655,7 +658,7 @@ export default function BackupJobList() {
                       <td className="px-4 py-3">
                         {job.failureCategory || job.errorSummary !== '-' ? (
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <BackupFailureCategoryBadge category={job.failureCategory} />
+                            <BackupFailureCategoryBadge category={job.failureCategory} cause={job.failureCause} />
                             {job.errorSummary !== '-' && (
                               <span
                                 data-testid="backup-job-error-summary"
@@ -761,7 +764,7 @@ export default function BackupJobList() {
                               </p>
                               {job.failureCategory && (
                                 <div className="mt-2">
-                                  <BackupFailureCategoryBadge category={job.failureCategory} showHint />
+                                  <BackupFailureCategoryBadge category={job.failureCategory} cause={job.failureCause} showHint />
                                 </div>
                               )}
                               <pre className="mt-2 whitespace-pre-wrap text-xs text-foreground">
@@ -773,7 +776,7 @@ export default function BackupJobList() {
                               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
                               {job.failureCategory && (
                                 <div className="mt-1">
-                                  <BackupFailureCategoryBadge category={job.failureCategory} showHint />
+                                  <BackupFailureCategoryBadge category={job.failureCategory} cause={job.failureCause} showHint />
                                 </div>
                               )}
                               <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">

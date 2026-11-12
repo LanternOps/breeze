@@ -20,11 +20,13 @@ import {
   latestBackupRunWindowOrder,
 } from '../../services/backupJobOrdering';
 import {
-  classifyBackupFailure,
+  classifyBackupFailureDetail,
   deriveBackupJobDataAccounting,
   splitReparseSkipNotice,
   stripInlineIndexDropNote,
   type ActiveBackupJob,
+  type BackupFailureCategory,
+  type BackupFailureCause,
 } from '@breeze/shared';
 import { getNextRun, loadJobResumedAt, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
@@ -37,6 +39,12 @@ import { getStorageByProvider } from '../../services/backupStorageByProvider';
 import { storedSnapshotBytesByProviderSince, sumStoredSnapshotBytes } from '../../services/backupStoredBytes';
 
 export const dashboardRoutes = new Hono();
+
+// failureCategory and its optional finer failureCause travel together (#11768).
+function failureFields(job: { status: string; errorLog: string | null | undefined }) {
+  const { category, cause } = classifyBackupFailureDetail(job);
+  return { failureCategory: category, failureCause: cause };
+}
 
 async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
   if (!perms?.allowedSiteIds) return null;
@@ -56,12 +64,98 @@ type AttentionItem = {
   severity: 'warning' | 'critical';
 };
 
+// #11768: one item for a destination that is failing for several devices. The
+// web localizes it from these structured fields; title/description are only the
+// fallback the item shape requires.
+type DestinationAttentionItem = AttentionItem & {
+  kind: 'destination_failing';
+  configId: string;
+  destinationName: string;
+  failureCategory: BackupFailureCategory;
+  failureCause: BackupFailureCause | null;
+  failingDevices: number;
+  totalDevices: number;
+};
+
+// A destination counts as failing when at least this many devices on it have a
+// latest job that failed in the storage category within the window.
+const DESTINATION_FAILING_MIN_DEVICES = 2;
+const DESTINATION_FAILING_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+// Only a failure the text ties to the destination itself counts toward the
+// destination item. A storage failure with no cause (a Breeze API refusal, an
+// unrecognised store status) or an ended upload session is not evidence that
+// the customer's destination is broken, and the item's hint would say it is.
+const DESTINATION_FAULT_CAUSES: ReadonlySet<BackupFailureCause> = new Set<BackupFailureCause>([
+  'storage_access_denied',
+  'storage_not_found',
+  'storage_clock_skew',
+  'storage_operation_failed',
+]);
+
+type LatestJobForDestination = {
+  deviceId: string;
+  status: string;
+  errorLog: string | null;
+  completedAt: Date | null;
+  createdAt: Date;
+  configId?: string | null;
+  configName?: string | null;
+};
+
+function resolveDestinationAttentionItems(
+  latestJobs: LatestJobForDestination[],
+  now: number
+): Array<DestinationAttentionItem & { lastFailureAt: string }> {
+  const byDestination = new Map<string, { name: string; total: number; failing: Array<{ cause: BackupFailureCause | null; at: Date }> }>();
+  for (const job of latestJobs) {
+    if (!job.configId) continue;
+    const group = byDestination.get(job.configId) ?? { name: job.configName ?? job.configId.slice(0, 8), total: 0, failing: [] };
+    group.total += 1;
+    const at = job.completedAt ?? job.createdAt;
+    if (job.status === 'failed' && now - at.getTime() <= DESTINATION_FAILING_WINDOW_MS) {
+      const detail = classifyBackupFailureDetail({ status: job.status, errorLog: job.errorLog });
+      if (detail.category === 'storage' && detail.cause && DESTINATION_FAULT_CAUSES.has(detail.cause)) {
+        group.failing.push({ cause: detail.cause, at });
+      }
+    }
+    byDestination.set(job.configId, group);
+  }
+
+  const items: Array<DestinationAttentionItem & { lastFailureAt: string }> = [];
+  for (const [configId, group] of byDestination) {
+    if (group.failing.length < DESTINATION_FAILING_MIN_DEVICES) continue;
+    // The cause only when a strict majority of the failing devices agree;
+    // otherwise null, so the item never states a cause most devices did not show.
+    const tally = new Map<BackupFailureCause, number>();
+    for (const { cause } of group.failing) if (cause) tally.set(cause, (tally.get(cause) ?? 0) + 1);
+    const [topCause, topCount] = [...tally.entries()].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+    const cause = topCount * 2 > group.failing.length ? topCause : null;
+    const lastFailureAt = new Date(Math.max(...group.failing.map((f) => f.at.getTime()))).toISOString();
+    items.push({
+      id: `backup-destination-${configId}`,
+      kind: 'destination_failing',
+      title: `${group.name}: ${group.failing.length} of ${group.total} devices failing`,
+      description: `Last unsuccessful ${lastFailureAt}`,
+      severity: 'critical',
+      configId,
+      destinationName: group.name,
+      failureCategory: 'storage',
+      failureCause: cause,
+      failingDevices: group.failing.length,
+      totalDevices: group.total,
+      lastFailureAt,
+    });
+  }
+  return items;
+}
+
 // Result of an attention-items computation. `error: true` means we could NOT
 // compute the list (transient DB failure), which is meaningfully different from
 // an empty list (genuinely no failing devices). Surfacing this lets the UI show
 // a degraded/error state instead of implying an all-clear — F11's whole purpose
 // is surfacing failures, so a swallowed error must never render as "healthy".
-type AttentionItemsResult = { items: AttentionItem[]; error: boolean };
+type AttentionItemsResult = { items: Array<AttentionItem | DestinationAttentionItem>; error: boolean };
 
 // Terminal job statuses that mean "this device did NOT get a good backup".
 // `partial` belongs here alongside `failed` (#3000): a run that stored a
@@ -92,6 +186,7 @@ async function resolveAttentionItems(
         errorLog: backupJobs.errorLog,
         completedAt: backupJobs.completedAt,
         createdAt: backupJobs.createdAt,
+        configId: backupJobs.configId,
         // rn=1 must be the device's most recent RUN, not the most recently
         // inserted row — see backupJobOrdering. Ordering this window by
         // created_at alone let a queued job (or the loser of a same-transaction
@@ -113,11 +208,14 @@ async function resolveAttentionItems(
         completedAt: rankedJobs.completedAt,
         createdAt: rankedJobs.createdAt,
         rn: rankedJobs.rn,
+        configId: rankedJobs.configId,
+        configName: backupConfigs.name,
         deviceName: devices.displayName,
         deviceHostname: devices.hostname,
       })
       .from(rankedJobs)
       .leftJoin(devices, eq(rankedJobs.deviceId, devices.id))
+      .leftJoin(backupConfigs, eq(rankedJobs.configId, backupConfigs.id))
       .where(lte(rankedJobs.rn, ATTENTION_LOOKBACK_JOBS))
       .orderBy(rankedJobs.deviceId, rankedJobs.rn));
 
@@ -201,8 +299,16 @@ async function resolveAttentionItems(
     }
 
     items.sort((a, b) => new Date(b.lastFailureAt).getTime() - new Date(a.lastFailureAt).getTime());
+    // #11768: a destination failing for several devices outranks the per-device
+    // items it explains; those stay, after it.
+    const destinationItems = resolveDestinationAttentionItems(
+      [...byDevice.values()].flatMap((jobs) => jobs.filter((job) => job.rn === 1)),
+      Date.now(),
+    ).sort((a, b) => b.failingDevices - a.failingDevices);
     return {
-      items: items.slice(0, ATTENTION_MAX_ITEMS).map(({ lastFailureAt: _lastFailureAt, ...item }) => item),
+      items: [...destinationItems, ...items]
+        .slice(0, ATTENTION_MAX_ITEMS)
+        .map(({ lastFailureAt: _lastFailureAt, ...item }) => item),
       error: false,
     };
   } catch (err) {
@@ -507,7 +613,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     totalSize: r.job.totalSize ?? null,
     errorCount: r.job.errorCount ?? null,
     errorLog: r.job.errorLog ?? null,
-    failureCategory: classifyBackupFailure({ status: r.job.status, errorLog: r.job.errorLog }),
+    ...failureFields(r.job),
     dataAccounting: deriveBackupJobDataAccounting(r.job),
   }));
 
@@ -667,6 +773,7 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
     jobs.find((j) => (RESTORABLE_BACKUP_JOB_STATUSES as readonly string[]).includes(j.status)) ?? null;
   const lastFailure =
     jobs.find((j) => j.status === 'failed') ?? null;
+  const lastFailureDetail = lastFailure ? classifyBackupFailureDetail(lastFailure) : null;
 
   const activeJobs = await loadActiveBackupJobs(jobs);
 
@@ -696,16 +803,15 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
             // tab showed a clean, green backup for a run that read every file
             // off the live volume. Already secret-redacted at write time.
             errorLog: lastJob.errorLog ?? null,
-            failureCategory: classifyBackupFailure({ status: lastJob.status, errorLog: lastJob.errorLog }),
+            ...failureFields(lastJob),
             dataAccounting: deriveBackupJobDataAccounting(lastJob),
           }
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
       lastFailureError: lastFailure?.errorLog ?? null,
-      lastFailureCategory: lastFailure
-        ? classifyBackupFailure({ status: lastFailure.status, errorLog: lastFailure.errorLog })
-        : null,
+      lastFailureCategory: lastFailureDetail?.category ?? null,
+      lastFailureCause: lastFailureDetail?.cause ?? null,
       nextScheduledAt: (() => {
         // Prefer normalized settings; fall back to inline_settings on the feature link
         const schedule = (resolved?.settings?.schedule ?? resolved?.inlineSettings) as Record<string, unknown> | null;
