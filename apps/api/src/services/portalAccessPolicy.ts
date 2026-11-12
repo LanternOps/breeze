@@ -9,8 +9,15 @@ import {
   type PortalSignInCapabilities,
 } from '@breeze/shared';
 import { getPortalEntraConfig } from '../config/portalEntra';
+import { getPortalGoogleConfig } from '../config/portalGoogle';
 import { isPortalSelfRegistrationAvailable } from '../config/portalSelfRegistration';
-import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  hasDbAccessContext,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+} from '../db';
 import { clientAiTenantMappings, organizations, portalAccessPolicies } from '../db/schema';
 
 /**
@@ -18,15 +25,18 @@ import { clientAiTenantMappings, organizations, portalAccessPolicies } from '../
  *
  * Partner default → org override, field by field, then masked by what the
  * deployment can run, then (W4 #11381, plan D2) Microsoft masked for an org
- * without a PROVEN Entra tenant, then the `sso_only` fallback. This module is
+ * without a PROVEN Entra tenant and (W7 #11384, plan D6) Google masked for an
+ * org without a currently verified email domain, then the `sso_only` fallback. This module is
  * the ONLY resolver: portal auth calls {@link resolvePortalAccessPolicy} on
  * every session request, login, forgot-password and capability-token consume,
  * and the settings views/writes (portalAccessPolicyWrites.ts) build on the
  * same pick.
  *
  * No cache (plan D1): one indexed read over at most two rows per org, so a
- * policy write — or a tenant proof gained or lost — takes effect on the next
- * request on every API instance.
+ * policy write — or a tenant proof or verified domain gained or lost — takes
+ * effect on the next request on every API instance. The verified-domain read
+ * (W5) happens only for an org whose picked Google is on where the deployment
+ * can run it.
  */
 
 /** Built-in defaults (spec §4): today's behaviour — password allowed, every new method off. */
@@ -50,14 +60,15 @@ let capabilityOverride: PortalSignInCapabilities | null = null;
  *   the `PORTAL_SELF_REGISTRATION_ENABLED` kill switch AND a configured email
  *   service (config/portalSelfRegistration.ts). Whether an org uses it is its
  *   own policy (`self_registration_mode`, default `off`).
- * - `google` (W7) flips its own key.
+ * - `google`: the portal Google OAuth client is configured (config/portalGoogle.ts,
+ *   W7), with the same null-never-throws contract as `entra`.
  * The NODE_ENV=test override ({@link __testOnly}) takes precedence.
  */
 export function getPortalSignInCapabilities(): PortalSignInCapabilities {
   if (capabilityOverride) return { ...capabilityOverride };
   return {
     entra: getPortalEntraConfig() !== null,
-    google: false,
+    google: getPortalGoogleConfig() !== null,
     selfRegistration: isPortalSelfRegistrationAvailable(),
   };
 }
@@ -75,14 +86,17 @@ export const __testOnly = {
 export type PortalAccessPolicyEffective = PortalAccessPolicyView['effective'];
 
 /**
- * Facts about the org that the policy rows cannot carry (W4 #11381, plan D2).
- * Partner views and partner would-be-effective computations pass
- * `{ entraTenantProven: true }`: the partner default means "on wherever a
- * tenant is proven".
+ * Facts about the org that the policy rows cannot carry (W4 #11381 plan D2,
+ * W7 #11384 plan D6). Partner views and partner would-be-effective
+ * computations pass `{ entraTenantProven: true, googleDomainVerified: true }`:
+ * the partner default means "on wherever a tenant is proven / a domain is
+ * verified". Every caller decides both (the field is required on purpose).
  */
 export interface PortalPolicyOrgFacts {
   /** The org's Entra tenant mapping carries a proof (spec §5.4). Microsoft is masked off without it. */
   entraTenantProven: boolean;
+  /** The org has at least one CURRENTLY verified email domain (W5). Google is masked off without one. */
+  googleDomainVerified: boolean;
 }
 
 export interface ResolvedPortalAccessPolicy {
@@ -98,6 +112,12 @@ export interface ResolvedPortalAccessPolicy {
   fingerprint: string;
   /** The org's PROVEN Entra tenant, or null (W4 D2; Entra sessions are pinned to it, D9). */
   entraTenant: { tenantId: string; provenAt: string } | null;
+  /**
+   * The org's currently verified email domains, lowercase and sorted (W7 D6;
+   * Google sessions are pinned to one of them, D7). Null when not read: the
+   * picked `googleEnabled` is off, or the deployment cannot run Google.
+   */
+  googleDomains: string[] | null;
 }
 
 interface Picked<T> { value: T; source: PortalPolicySource }
@@ -125,7 +145,8 @@ function fingerprintOf(effective: PortalAccessPolicyEffective, entraTenantId: st
  * Pure field-by-field inheritance (exported for unit tests and the settings views).
  * 1. pick: org beats partner beats default, with `!= null`;
  * 2. mask what the deployment cannot run (the source stays the picked source);
- * 3. mask Microsoft for an org whose Entra tenant is not proven (W4 D2; source kept);
+ * 3. mask Microsoft for an org whose Entra tenant is not proven (W4 D2) and Google
+ *    for an org with no verified domain (W7 D6); the source is kept;
  * 4. `sso_only` holds only while an SSO method is effectively on, else `allowed`
  *    with `passwordModeFallback` (spec §4).
  *
@@ -147,7 +168,7 @@ export function pickEffectivePortalAccessPolicy(
   const ssoSessionMaxHours = pickValue(org?.ssoSessionMaxHours, partner?.ssoSessionMaxHours, d.ssoSessionMaxHours);
 
   const entraEnabled = { value: entra.value && caps.entra && facts.entraTenantProven, source: entra.source };
-  const googleEnabled = { value: google.value && caps.google, source: google.source };
+  const googleEnabled = { value: google.value && caps.google && facts.googleDomainVerified, source: google.source };
   const selfRegistrationMode = {
     value: caps.selfRegistration ? selfRegistration.value : 'off' as const,
     source: selfRegistration.source,
@@ -164,6 +185,38 @@ export function pickEffectivePortalAccessPolicy(
     entraEnabled, googleEnabled, passwordMode, selfRegistrationMode, ssoNewPersonMode, ssoSessionMaxHours,
   };
   return { effective, passwordModeFallback, fingerprint: fingerprintOf(effective, null) };
+}
+
+/**
+ * The picked (unmasked) `googleEnabled` for these rows: org beats partner beats
+ * the default. True means the verified-domain fact matters (W7 D6).
+ */
+export function pickedGoogleEnabled(
+  org: Pick<PortalAccessPolicyRowValues, 'googleEnabled'> | null,
+  partner: Pick<PortalAccessPolicyRowValues, 'googleEnabled'> | null,
+): boolean {
+  return pickValue(org?.googleEnabled, partner?.googleEnabled, PORTAL_ACCESS_POLICY_DEFAULTS.googleEnabled).value;
+}
+
+/**
+ * The org's currently verified email domains (W5's read API), lowercase and
+ * sorted. W5 reads in system scope and throws inside a request transaction
+ * (plan D6 context rule): with no context held, or a held SYSTEM context, it
+ * is called directly; under a held request context, through
+ * `runOutsideDbContext`. A W5 failure propagates (fail closed): it is never
+ * turned into an empty list, which would mask Google off and re-allow passwords.
+ *
+ * The module is loaded on first use: portalDomainVerification reaches
+ * portalPasswordFallback (via the Entra evidence checker), which imports this
+ * module, and the hot portal path should not pull W5 in at load.
+ */
+export async function listOrgVerifiedDomains(orgId: string): Promise<string[]> {
+  const { listVerifiedDomainsForOrg } = await import('./portalDomainVerification');
+  const read = () => listVerifiedDomainsForOrg(orgId);
+  const facts = hasDbAccessContext() && getCurrentDbAccessContext()?.scope !== 'system'
+    ? await runOutsideDbContext(read)
+    : await read();
+  return [...new Set(facts.map((f) => f.domain.toLowerCase()))].sort();
 }
 
 type PolicyRowLike = { [K in keyof PortalAccessPolicyRowValues]?: PortalAccessPolicyRowValues[K] | null | undefined };
@@ -231,7 +284,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * DB context held (public portal routes, the session middleware's post-hydration
  * checks) it opens its own system context; otherwise it reads under the held
  * context, which RLS lets see both rows (D7) and the org's own mapping (shape 1).
- * It never leaves a held context.
+ * It never leaves a held context for its own reads; the W7 verified-domain read
+ * follows {@link listOrgVerifiedDomains}'s context rule and runs only when the
+ * picked Google is on and the deployment can run it.
  */
 export async function resolvePortalAccessPolicy(orgId: string): Promise<ResolvedPortalAccessPolicy> {
   // A malformed id would raise 22P02 and poison a held transaction; it names no org.
@@ -252,18 +307,24 @@ export async function resolvePortalAccessPolicy(orgId: string): Promise<Resolved
       .limit(1);
     if (!org) throw new PortalAccessPolicyOrgNotFoundError(orgId);
     const rows = await readPortalAccessPolicyRows({ orgId, partnerId: org.partnerId });
-    return { org, rows };
+    // W7 D6: only an org whose picked Google is on (where it can run) pays W5's evidence read.
+    const googleDomains = caps.google && pickedGoogleEnabled(rows.org, rows.partner)
+      ? await listOrgVerifiedDomains(orgId)
+      : null;
+    return { org, rows, googleDomains };
   };
-  const { org, rows } = hasDbAccessContext()
+  const caps = getPortalSignInCapabilities();
+  const { org, rows, googleDomains } = hasDbAccessContext()
     ? await read()
     : await withSystemDbAccessContext(read, 'portalAccessPolicy.resolve');
 
   const entraTenant = org.entraTenantId && org.entraTenantProvenAt
     ? { tenantId: org.entraTenantId, provenAt: org.entraTenantProvenAt.toISOString() }
     : null;
-  const picked = pickEffectivePortalAccessPolicy(
-    rows.org, rows.partner, getPortalSignInCapabilities(), { entraTenantProven: entraTenant !== null },
-  );
+  const picked = pickEffectivePortalAccessPolicy(rows.org, rows.partner, caps, {
+    entraTenantProven: entraTenant !== null,
+    googleDomainVerified: googleDomains !== null && googleDomains.length > 0,
+  });
   return {
     orgId,
     partnerId: org.partnerId,
@@ -271,6 +332,7 @@ export async function resolvePortalAccessPolicy(orgId: string): Promise<Resolved
     passwordModeFallback: picked.passwordModeFallback,
     fingerprint: fingerprintOf(picked.effective, entraTenant?.tenantId ?? null),
     entraTenant,
+    googleDomains,
   };
 }
 

@@ -32,11 +32,31 @@ vi.mock('../db', async () => {
   };
 });
 
+// W7 (#11384): W5's verified-domain read, as portalSsoOnly sees it (through portalAccessPolicy).
+const g = vi.hoisted(() => ({
+  verified: new Set<string>(),
+  calls: [] as string[],
+  error: null as Error | null,
+}));
+vi.mock('./portalAccessPolicy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./portalAccessPolicy')>();
+  return {
+    ...actual,
+    listOrgVerifiedDomains: vi.fn(async (orgId: string) => {
+      g.calls.push(orgId);
+      if (g.error) throw g.error;
+      return g.verified.has(orgId) ? ['contoso.example.com'] : [];
+    }),
+  };
+});
+
 import { __testOnly } from './portalAccessPolicy';
 import {
   clearPasswordsForSsoOnly,
+  computeSsoOnlyFlips,
   isSsoOnlyStranded,
   lockSsoOnlyImpact,
+  readSsoOnlyGoogleFacts,
   selectSsoOnlyFlips,
   ssoOnlyImpactDigest,
   type SsoOnlyFlipCandidate,
@@ -54,8 +74,14 @@ const ORG_B = '0b0b0b0b-0000-4000-8000-00000000000b';
 const ORG_C = '0c0c0c0c-0000-4000-8000-00000000000c';
 const PARTNER = '9f9f9f9f-0000-4000-8000-00000000009f';
 
-const candidate = (orgId: string, orgRow: Partial<PortalAccessPolicyRowValues> | null, proven = true): SsoOnlyFlipCandidate => ({
+const candidate = (
+  orgId: string,
+  orgRow: Partial<PortalAccessPolicyRowValues> | null,
+  proven = true,
+  googleDomainVerified = false,
+): SsoOnlyFlipCandidate => ({
   orgId, orgName: `Org ${orgId.slice(0, 2)}`, orgRow: orgRow ? { ...blank, ...orgRow } : null, entraTenantProven: proven,
+  googleDomainVerified,
 });
 
 describe('selectSsoOnlyFlips (pure pick before/after, plan D12)', () => {
@@ -207,7 +233,7 @@ describe('lockSsoOnlyImpact (the write path: the impact comes from the locked ro
       throw new Error(`unexpected statement: ${sql}`);
     };
   }
-  const save = () => lockSsoOnlyImpact({ kind: 'org', orgId: ORG_A, partnerId: PARTNER }, { passwordMode: 'sso_only' });
+  const save = () => lockSsoOnlyImpact({ kind: 'org', orgId: ORG_A, partnerId: PARTNER }, { passwordMode: 'sso_only' }, new Set());
 
   it('locks the candidate rows FOR UPDATE in id order, THEN reads hash and identity in a new statement', async () => {
     respondWith(['pu-1', 'pu-2', 'pu-3', 'pu-4'], [
@@ -257,8 +283,92 @@ describe('lockSsoOnlyImpact (the write path: the impact comes from the locked ro
 
   it('no flip → nothing read, no row locked', async () => {
     respondWith(['pu-1'], [['pu-1', ORG_A, true, false]]);
-    expect(await lockSsoOnlyImpact({ kind: 'org', orgId: ORG_A, partnerId: PARTNER }, { ssoSessionMaxHours: 8 }))
+    expect(await lockSsoOnlyImpact({ kind: 'org', orgId: ORG_A, partnerId: PARTNER }, { ssoSessionMaxHours: 8 }, new Set()))
       .toEqual({ flips: [], clearableUserIds: [] });
     expect(h.queries).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W7 (#11384) plan D6: Google is an SSO method only for an org with a verified domain
+// ---------------------------------------------------------------------------
+
+describe('W7: Google domain facts in the sso_only flips', () => {
+  const GOOGLE = { entra: false, google: true, selfRegistration: false };
+  const partnerOwner = { kind: 'partner' as const, partnerId: PARTNER };
+
+  /** Three orgs of the partner, each with a stored sso_only override (in fallback), no Microsoft. */
+  function respondPartnerScope() {
+    h.respond = (sql) => {
+      if (sql.includes('from "organizations"')) return [[ORG_A, 'Acme'], [ORG_B, 'Beta'], [ORG_C, 'Gamma']];
+      if (sql.includes('from "portal_access_policies"')) {
+        return [ORG_A, ORG_B, ORG_C].map((id) => [id, null, null, null, 'sso_only', null, null, null]);
+      }
+      if (sql.includes('from "client_ai_tenant_mappings"')) return [];
+      if (sql.includes('from "portal_users"')) return [];
+      throw new Error(`unexpected statement: ${sql}`);
+    };
+  }
+
+  beforeEach(() => {
+    h.queries.length = 0;
+    g.verified = new Set();
+    g.calls = [];
+    g.error = null;
+    __testOnly.setCapabilities(GOOGLE);
+  });
+  afterEach(() => {
+    h.respond = () => [];
+    __testOnly.setCapabilities(null);
+  });
+
+  it('selectSsoOnlyFlips: Google counts only for a candidate with a verified domain', () => {
+    const orgs = [
+      candidate(ORG_A, { passwordMode: 'sso_only' }, false, true),
+      candidate(ORG_B, { passwordMode: 'sso_only' }, false, false),
+    ];
+    expect(selectSsoOnlyFlips(partnerOwner, { googleEnabled: true }, null, orgs, GOOGLE).map((f) => f.orgId)).toEqual([ORG_A]);
+  });
+
+  it('computeSsoOnlyFlips: a partner Google-on patch flips only orgs with a verified domain', async () => {
+    respondPartnerScope();
+    g.verified = new Set([ORG_A, ORG_C]);
+    const flips = await computeSsoOnlyFlips(partnerOwner, { googleEnabled: true });
+    expect(flips.map((f) => f.orgId)).toEqual([ORG_A, ORG_C]);
+    // One W5 read per org whose picked Google turns on, in scope order.
+    expect(g.calls).toEqual([ORG_A, ORG_B, ORG_C]);
+  });
+
+  it('readSsoOnlyGoogleFacts: the verified orgs among those whose picked Google is on before or after the patch', async () => {
+    respondPartnerScope();
+    g.verified = new Set([ORG_B]);
+    expect(await readSsoOnlyGoogleFacts(partnerOwner, { googleEnabled: true })).toEqual(new Set([ORG_B]));
+    // Google stays off before and after: nothing to read.
+    g.calls = [];
+    expect(await readSsoOnlyGoogleFacts(partnerOwner, { passwordMode: 'sso_only' })).toEqual(new Set());
+    expect(g.calls).toEqual([]);
+  });
+
+  it('readSsoOnlyGoogleFacts: no query at all when the deployment cannot run Google or the patch moves no password mode', async () => {
+    respondPartnerScope();
+    __testOnly.setCapabilities({ entra: true, google: false, selfRegistration: false });
+    expect(await readSsoOnlyGoogleFacts(partnerOwner, { googleEnabled: true })).toEqual(new Set());
+    __testOnly.setCapabilities(GOOGLE);
+    expect(await readSsoOnlyGoogleFacts(partnerOwner, { ssoSessionMaxHours: 8 })).toEqual(new Set());
+    expect(h.queries).toHaveLength(0);
+    expect(g.calls).toEqual([]);
+  });
+
+  it('lockSsoOnlyImpact judges with the facts it is handed and never reads W5 (it runs inside the write transaction)', async () => {
+    respondPartnerScope();
+    const r = await lockSsoOnlyImpact(partnerOwner, { googleEnabled: true }, new Set([ORG_B]));
+    expect(r.flips.map((f) => f.orgId)).toEqual([ORG_B]);
+    expect(g.calls).toEqual([]);
+  });
+
+  it('a W5 read failure in the preview propagates (never read as "no domain")', async () => {
+    respondPartnerScope();
+    g.error = new Error('evidence read failed');
+    await expect(computeSsoOnlyFlips(partnerOwner, { googleEnabled: true })).rejects.toThrow('evidence read failed');
   });
 });

@@ -12,7 +12,12 @@ const store = vi.hoisted(() => ({
   txStack: [] as number[],
   txSeq: 0,
   /** The savepoint each step ran in (undefined = outside any). */
-  txOf: { flips: [] as Array<number | undefined>, insert: [] as Array<number | undefined>, clear: [] as Array<number | undefined> },
+  txOf: {
+    flips: [] as Array<number | undefined>,
+    insert: [] as Array<number | undefined>,
+    clear: [] as Array<number | undefined>,
+    googleFacts: [] as Array<number | undefined>,
+  },
 }));
 
 const sso = vi.hoisted(() => ({
@@ -21,6 +26,8 @@ const sso = vi.hoisted(() => ({
   /** The write path's impact, from the rows it locked. */
   lockImpact: vi.fn(),
   clearPasswords: vi.fn(),
+  /** W7 D6: the partner save's per-org Google facts, read before the write savepoint. */
+  googleFacts: vi.fn(),
 }));
 vi.mock('./portalSsoOnly', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./portalSsoOnly')>();
@@ -29,6 +36,7 @@ vi.mock('./portalSsoOnly', async (importOriginal) => {
     computeSsoOnlyFlips: (...args: unknown[]) => sso.computeFlips(...args),
     lockSsoOnlyImpact: (...args: unknown[]) => { store.txOf.flips.push(store.txStack.at(-1)); return sso.lockImpact(...args); },
     clearPasswordsForSsoOnly: (...args: unknown[]) => { store.txOf.clear.push(store.txStack.at(-1)); return sso.clearPasswords(...args); },
+    readSsoOnlyGoogleFacts: (...args: unknown[]) => { store.txOf.googleFacts.push(store.txStack.at(-1)); return sso.googleFacts(...args); },
   };
 });
 
@@ -135,7 +143,7 @@ beforeEach(() => {
   store.inserts = [];
   store.provenTenant = null;
   store.txStack = [];
-  store.txOf = { flips: [], insert: [], clear: [] };
+  store.txOf = { flips: [], insert: [], clear: [], googleFacts: [] };
   w5.domains = [];
   w5.outside.current = false;
   w5.calls = [];
@@ -143,6 +151,7 @@ beforeEach(() => {
   sso.computeFlips.mockReset().mockResolvedValue([]);
   sso.lockImpact.mockReset().mockResolvedValue({ flips: [], clearableUserIds: [] });
   sso.clearPasswords.mockReset().mockResolvedValue({ clearedUserIds: [] });
+  sso.googleFacts.mockReset().mockResolvedValue(new Set());
   // Explicit, never the deployment's (W4 derives entra from the portal Entra app env).
   __testOnly.setCapabilities(NO_CAPS);
 });
@@ -455,7 +464,7 @@ describe('sso_only save flow (D12)', () => {
     const err = await confirmRequired(updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' }));
     expect(err.code).toBe('PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED');
     expect(err.impact).toEqual({ flips: [FLIP], impactDigest: ssoOnlyImpactDigest([FLIP]) });
-    expect(sso.lockImpact).toHaveBeenCalledWith({ kind: 'org', orgId: ORG.id, partnerId: ORG.partnerId }, { passwordMode: 'sso_only' });
+    expect(sso.lockImpact).toHaveBeenCalledWith({ kind: 'org', orgId: ORG.id, partnerId: ORG.partnerId }, { passwordMode: 'sso_only' }, new Set());
     // Recomputed INSIDE the write transaction (from rows it locked), never trusted from the preview.
     expect(store.txOf.flips).toEqual([expect.any(Number)]);
     expect(store.inserts).toHaveLength(0);
@@ -530,7 +539,7 @@ describe('sso_only save flow (D12)', () => {
     sso.lockImpact.mockResolvedValue(locked([FLIP, FLIP_OTHER], ['pu-9']));
     const err = await confirmRequired(updatePartnerPortalAccessPolicy(fullPartner, ORG.partnerId, { entraEnabled: true }));
     expect(err.impact.flips).toEqual([FLIP, FLIP_OTHER]);
-    expect(sso.lockImpact).toHaveBeenCalledWith({ kind: 'partner', partnerId: ORG.partnerId }, { entraEnabled: true });
+    expect(sso.lockImpact).toHaveBeenCalledWith({ kind: 'partner', partnerId: ORG.partnerId }, { entraEnabled: true }, new Set());
     expect(store.inserts).toHaveLength(0);
 
     sso.clearPasswords.mockResolvedValue({ clearedUserIds: ['pu-9'] });
@@ -548,5 +557,100 @@ describe('sso_only save flow (D12)', () => {
     await expect(updatePartnerPortalAccessPolicy(selectedPartner, ORG.partnerId, { entraEnabled: false }))
       .rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
     expect(sso.lockImpact).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W7 (#11384) plan D6: Google is masked off for an org with no verified domain
+// ---------------------------------------------------------------------------
+
+describe('W7: Google and the verified-domain fact', () => {
+  const GOOGLE_CAPS = { entra: false, google: true, selfRegistration: false };
+  const DOMAINS = [{ domain: 'Zeta.example.com', orgId: ORG.id }, { domain: 'contoso.example.com', orgId: ORG.id }];
+
+  beforeEach(() => __testOnly.setCapabilities(GOOGLE_CAPS));
+
+  it('org googleEnabled true with no verified domain → 400 GOOGLE_DOMAIN_NOT_VERIFIED (field googleEnabled)', async () => {
+    const err = await validationError(updateOrgPortalAccessPolicy(ORG, { googleEnabled: true }));
+    expect(err.code).toBe('PORTAL_ACCESS_POLICY_GOOGLE_DOMAIN_NOT_VERIFIED');
+    expect(err.field).toBe('googleEnabled');
+    expect(err.message).toBe("Verify one of the organization's email domains before turning on Google sign-in.");
+    expect(store.inserts).toHaveLength(0);
+
+    // Turning it off or clearing it never needs a domain; with one verified, on is accepted.
+    expect((await updateOrgPortalAccessPolicy(ORG, { googleEnabled: false })).changedFields).toEqual(['googleEnabled']);
+    w5.domains = DOMAINS;
+    const on = await updateOrgPortalAccessPolicy(ORG, { googleEnabled: true });
+    expect(on.view.effective.googleEnabled).toEqual({ value: true, source: 'org' });
+    // The refusal and the view share the one W5 read, made outside any savepoint.
+    expect(w5.calls.at(-1)).toEqual({ orgId: ORG.id, outside: true, tx: undefined });
+  });
+
+  it('partner googleEnabled true is accepted with caps.google regardless of any org domain', async () => {
+    const r = await updatePartnerPortalAccessPolicy(fullPartner, ORG.partnerId, { googleEnabled: true });
+    expect(r.changedFields).toEqual(['googleEnabled']);
+    expect(r.view.effective.googleEnabled).toEqual({ value: true, source: 'partner' });
+    expect(w5.calls).toEqual([]);
+  });
+
+  it('org sso_only is refused (SSO_ONLY_NEEDS_SSO) when Google is inherited on but the org has no verified domain', async () => {
+    store.partner = { ...blank, googleEnabled: true };
+    const err = await validationError(updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' }));
+    expect(err.code).toBe('PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO');
+    w5.domains = DOMAINS;
+    const ok = await updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' });
+    expect(ok.view.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
+  });
+
+  it('org view: verifiedDomains lists the domains lowercase and sorted, and masks an inherited Google without one; partner view: null', async () => {
+    store.partner = { ...blank, googleEnabled: true };
+    const none = await getOrgPortalAccessPolicyView(ORG);
+    expect(none.verifiedDomains).toEqual([]);
+    expect(none.verifiedDomainCount).toBe(0);
+    expect(none.effective.googleEnabled).toEqual({ value: false, source: 'partner' });
+
+    w5.domains = DOMAINS;
+    w5.calls = [];
+    const some = await getOrgPortalAccessPolicyView(ORG);
+    expect(some.verifiedDomains).toEqual(['contoso.example.com', 'zeta.example.com']);
+    expect(some.verifiedDomainCount).toBe(2);
+    expect(some.effective.googleEnabled).toEqual({ value: true, source: 'partner' });
+    // One read serves the count, the list and the mask.
+    expect(w5.calls).toEqual([{ orgId: ORG.id, outside: true, tx: undefined }]);
+
+    const partner = await getPartnerPortalAccessPolicyView(fullPartner, ORG.partnerId);
+    expect(partner.verifiedDomains).toBeNull();
+    // The partner default means "on wherever a domain is verified".
+    expect(partner.effective.googleEnabled).toEqual({ value: true, source: 'partner' });
+  });
+
+  it('the org save hands lockSsoOnlyImpact its own Google fact from the one domain read', async () => {
+    store.org = { ...blank, googleEnabled: true };
+    w5.domains = DOMAINS;
+    sso.lockImpact.mockResolvedValue({ flips: [], clearableUserIds: [] });
+    await updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' });
+    expect(sso.lockImpact).toHaveBeenCalledWith(
+      { kind: 'org', orgId: ORG.id, partnerId: ORG.partnerId }, { passwordMode: 'sso_only' }, new Set([ORG.id]),
+    );
+    expect(sso.googleFacts).not.toHaveBeenCalled();
+  });
+
+  it('the partner save reads the per-org Google facts BEFORE the write savepoint and hands them to lockSsoOnlyImpact', async () => {
+    const OTHER_ORG = '2b3c4d5e-6f7a-4b2c-9d3e-4f5a6b7c8d9e';
+    sso.googleFacts.mockResolvedValue(new Set([OTHER_ORG]));
+    await updatePartnerPortalAccessPolicy(fullPartner, ORG.partnerId, { googleEnabled: true });
+    expect(sso.googleFacts).toHaveBeenCalledWith({ kind: 'partner', partnerId: ORG.partnerId }, { googleEnabled: true });
+    expect(store.txOf.googleFacts).toEqual([undefined]);
+    expect(sso.lockImpact).toHaveBeenCalledWith({ kind: 'partner', partnerId: ORG.partnerId }, { googleEnabled: true }, new Set([OTHER_ORG]));
+    expect(store.txOf.flips).toEqual([expect.any(Number)]);
+  });
+
+  it('a W5 read failure fails the org view and the org save (never read as "no domain")', async () => {
+    const { listVerifiedDomainsForOrg } = await import('./portalDomainVerification');
+    vi.mocked(listVerifiedDomainsForOrg).mockRejectedValueOnce(new Error('evidence read failed'));
+    await expect(getOrgPortalAccessPolicyView(ORG)).rejects.toThrow('evidence read failed');
+    vi.mocked(listVerifiedDomainsForOrg).mockRejectedValueOnce(new Error('evidence read failed'));
+    await expect(updateOrgPortalAccessPolicy(ORG, { googleEnabled: false })).rejects.toThrow('evidence read failed');
+    expect(store.inserts).toHaveLength(0);
   });
 });

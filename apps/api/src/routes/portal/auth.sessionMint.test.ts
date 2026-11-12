@@ -181,7 +181,7 @@ beforeEach(() => {
   };
   resolvePolicy.mockImplementation(async (orgId: string) => ({
     orgId, partnerId: 'partner-1', entraTenant: null,
-    ...pickEffectivePortalAccessPolicy(null, null, { entra: false, google: false, selfRegistration: false }, { entraTenantProven: false }),
+    ...pickEffectivePortalAccessPolicy(null, null, { entra: false, google: false, selfRegistration: false }, { entraTenantProven: false, googleDomainVerified: false }),
   }));
 });
 

@@ -17,7 +17,7 @@ const NOW = Date.parse('2026-11-09T12:00:00.000Z');
 /** Effective policies built by the real pick, so the gate is tested against real field shapes. */
 type GatePolicy = Pick<ResolvedPortalAccessPolicy, 'effective' | 'entraTenant'>;
 const CAPS_ALL = { entra: true, google: true, selfRegistration: false };
-const PROVEN = { entraTenantProven: true };
+const PROVEN = { entraTenantProven: true, googleDomainVerified: true };
 const empty = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
 type Row = Parameters<typeof pickEffectivePortalAccessPolicy>[0];
 /** A gate policy: the real pick, plus the org's proven tenant (null = none proven). */
