@@ -30,9 +30,11 @@ import { pipeline } from 'node:stream/promises';
  * object with O_NOFOLLOW, so no symbolic link below the root is followed.
  * On Linux the next component is opened through the parent's handle
  * (/proc/self/fd/<fd>/<name>), so replacing a directory after it was opened
- * does not change what later opens see. Elsewhere the walk is path based and
- * the whole chain is checked against the open handles (device and inode)
- * before the object is used. Reads and streams use the one handle that was
+ * does not change what later opens see. That is the supported deployment
+ * (the shipped containers). Elsewhere (macOS, for development only) the walk
+ * is path based and the whole chain is checked against the open handles
+ * (device and inode) before the object is used; a component swapped and
+ * swapped back between those steps is not detected there. Reads and streams use the one handle that was
  * checked. Writes go to a new exclusive file in the checked directory and are
  * renamed into place.
  */
@@ -45,9 +47,15 @@ const MAX_KEY_DEPTH = 64;
 const O_NOFOLLOW = constants.O_NOFOLLOW as number | undefined;
 const O_DIRECTORY = constants.O_DIRECTORY as number | undefined;
 const O_NONBLOCK = (constants.O_NONBLOCK as number | undefined) ?? 0;
+const O_NOCTTY = (constants.O_NOCTTY as number | undefined) ?? 0;
 
 function denied(): Error {
   return new Error(DENIED);
+}
+
+/** True for the refusal every function here uses when a destination has no usable API-side directory. */
+export function isApiLocalBackupUnavailable(error: unknown): boolean {
+  return error instanceof Error && error.message === DENIED;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -58,6 +66,21 @@ function errorCode(error: unknown): string | undefined {
 function isLinkRefusal(error: unknown): boolean {
   const code = errorCode(error);
   return code === 'ELOOP' || code === 'EMLINK' || code === 'EFTYPE';
+}
+
+/**
+ * An object open that failed on a link or a special file (a socket fails
+ * with ENXIO on Linux and EOPNOTSUPP on macOS) is refused; anything else
+ * (a missing object, a permission error) keeps its own error.
+ */
+async function objectOpenRefusal(path: string, error: unknown): Promise<Error | undefined> {
+  if (isLinkRefusal(error) || errorCode(error) === 'ENXIO') return denied();
+  try {
+    if (!(await lstat(path)).isFile()) return denied();
+  } catch {
+    // fall through to the original error
+  }
+  return undefined;
 }
 
 type OpenDir = { handle: FileHandle; path: string; dev: number; ino: number };
@@ -229,10 +252,9 @@ export async function openApiLocalBackupObject(key: string, orgId?: string, conf
     const dir = await openDirectories(chain, components, false);
     let handle: FileHandle;
     try {
-      handle = await open(childPathOf(dir, name), constants.O_RDONLY | O_NOFOLLOW! | O_NONBLOCK);
+      handle = await open(childPathOf(dir, name), constants.O_RDONLY | O_NOFOLLOW! | O_NONBLOCK | O_NOCTTY);
     } catch (error) {
-      if (isLinkRefusal(error)) throw denied();
-      throw error;
+      throw (await objectOpenRefusal(childPathOf(dir, name), error)) ?? error;
     }
     try {
       const info = await handle.stat();

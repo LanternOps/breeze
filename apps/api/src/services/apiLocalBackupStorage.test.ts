@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import {
   apiLocalBackupWalkModeForTests,
@@ -105,6 +106,17 @@ describe('operator managed API local backup storage', () => {
     execFileSync('mkfifo', [join(destination, 'snapshots', 'pipe')]);
     await expect(openApiLocalBackupObject('snapshots/pipe', 'org-a', 'destination')).rejects.toThrow('unavailable');
     await expect(openApiLocalBackupObject('snapshots', 'org-a', 'destination')).rejects.toThrow('unavailable');
+  });
+
+  it('refuses an object that is a socket', async () => {
+    const socketPath = join(destination, 's');
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    try {
+      await expect(openApiLocalBackupObject('s', 'org-a', 'destination')).rejects.toThrow('unavailable');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it('publishes an object through a new file, creating directories level by level', async () => {
