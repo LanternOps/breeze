@@ -6,7 +6,11 @@ const { dbSelectMock, dbUpdateMock, writeRouteAuditMock, orgConditionMock, authS
   dbUpdateMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   orgConditionMock: vi.fn(() => ({ __scope: 'caller-orgs' })),
-  authState: { permissions: [{ resource: '*', action: '*' }] as Array<{ resource: string; action: string }> },
+  authState: {
+    permissions: [{ resource: '*', action: '*' }] as Array<{ resource: string; action: string }>,
+    /** Set to make the caller an organization-scope user with this restriction. */
+    orgCeiling: null as null | { allowedSiteIds?: string[]; allowedDeviceIds?: string[] },
+  },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -21,6 +25,9 @@ vi.mock('../../middleware/auth', () => ({
       orgCondition: orgConditionMock,
       permissions: authState.permissions,
       user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
+      ...(authState.orgCeiling
+        ? { scope: 'organization', partnerId: null, orgId: '0c0c0c0c-1111-4222-8333-444455556666', ...authState.orgCeiling }
+        : {}),
     });
     return next();
   }),
@@ -352,5 +359,38 @@ describe('countRedactions', () => {
       iban: 2,
       apiKey: 1,
     });
+  });
+});
+
+describe('flag / unflag and site-restricted users', () => {
+  beforeEach(() => { authState.orgCeiling = null; });
+
+  it.each([
+    [{ allowedSiteIds: ['11111111-1111-4111-8111-111111111111'] }],
+    [{ allowedSiteIds: [] }],
+    [{ allowedDeviceIds: ['22222222-2222-4222-8222-222222222222'] }],
+  ])('refuses flag and unflag from a restricted organization user %j', async (ceiling) => {
+    authState.orgCeiling = ceiling;
+    dbSelectMock.mockImplementation(() => chain([SESSION_ROW]));
+    for (const method of ['POST', 'DELETE']) {
+      const res = await buildApp().request(`/client-ai/admin/sessions/${SESSION_ID}/flag`, {
+        method, headers: AUTHED, body: method === 'POST' ? JSON.stringify({ reason: 'r' }) : undefined,
+      });
+      expect(res.status, method).toBe(403);
+    }
+    expect(dbUpdateMock).not.toHaveBeenCalled();
+    authState.orgCeiling = null;
+  });
+
+  it('allows flag and unflag from an unrestricted organization user', async () => {
+    authState.orgCeiling = {};
+    dbSelectMock.mockImplementation(() => chain([SESSION_ROW]));
+    for (const method of ['POST', 'DELETE']) {
+      const res = await buildApp().request(`/client-ai/admin/sessions/${SESSION_ID}/flag`, {
+        method, headers: AUTHED, body: method === 'POST' ? JSON.stringify({ reason: 'r' }) : undefined,
+      });
+      expect(res.status, method).toBe(200);
+    }
+    authState.orgCeiling = null;
   });
 });

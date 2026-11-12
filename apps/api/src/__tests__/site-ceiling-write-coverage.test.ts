@@ -89,6 +89,8 @@ const GOVERNANCE_TABLE_NAMES = [
   // whole organization (sign-in, user access, providers, write mode).
   'clientAiTenantMappings',
   'clientAiOrgPolicies',
+  // AI for Office prompt templates are organization- or partner-scoped.
+  'clientAiPromptTemplates',
 ] as const;
 
 /**
