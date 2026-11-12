@@ -60,6 +60,17 @@ Runs are triggered by an **alert**, an **anomaly**, a **schedule**, a **ticket**
 
 Admission checks happen before Breeze creates a run. If an agent policy filters out a trigger, no `skipped` run appears in the runs list. See [Why nothing happened](#why-nothing-happened) for the skip signals that are recorded instead.
 
+### Files produced by runs and chats, for site-restricted users
+
+AI artifacts (files an AI run or chat produced, such as exports and analysis output) are listed, previewed, downloaded, and attached to tickets or reports under the same site rules as their source. For a user restricted to specific sites:
+
+- An artifact from a run on a device is available while that device is in one of the user's sites. If the device moves to another site or is deleted, its artifacts stop being available to the user.
+- An artifact from a device-less analysis run is available when the site the analysis was requested for is one of the user's sites. Other device-less runs' artifacts are not available.
+- An artifact captured in an AI chat with no run is available to the person who started that chat, as long as the chat's device, if it has one, is in one of their sites.
+- An artifact with neither a run nor a chat is not available.
+
+Users with no site restriction keep access to every artifact in the organization. An artifact already attached to a ticket is part of that ticket and is visible to anyone who can see the ticket.
+
 ## Approving what an agent proposes
 
 When an agent wants to take an action, it does not perform it by default. It records the proposal and the run moves to `awaiting_approval`. You are notified in the app, and the proposal appears in the **Approvals** inbox, where you approve or reject it.

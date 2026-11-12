@@ -177,6 +177,9 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
   // `runService` because it is the only thing about this input that
   // `createAndEnqueueAgentRun` has no reason to know: the frozen handles are
   // W05's, and a bad one must not consume an admission slot.
+  // This check is by organization only. A caller that takes handles from a
+  // person must first resolve each one with `findArtifactForAuth`, which also
+  // applies that person's site restriction.
   for (const handle of input.stagedHandles) {
     const record = await resolveArtifact(handle, { orgId: input.orgId });
     if (!record) return { created: false, refusal: 'artifact_forbidden' };

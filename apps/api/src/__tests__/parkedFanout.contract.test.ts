@@ -164,6 +164,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/workloads/imageCompliance.ts': 'report: container image term of patch compliance (W06); the org-scope form excludes parked and Quick Support devices like the report it feeds',
   // --- examined device readers (jobs, services, ee) ---
   'services/aiAgentRunSiteScope.ts': 'site-allowlist filter for AI run listings shown to a person',
+  'services/artifacts/artifactService.ts': 'site-allowlist filter for AI artifact reads shown to a person',
   'services/aiOriginSummary.ts': 'label for one command/execution a person is already viewing',
   'services/aiToolsAiAgentGovernance.ts': 'joins devices only to show hostnames on an AI run listing',
   'services/aiToolsCompliance.ts': 'compliance report joins; device-targeted actions go through the central device gate',
