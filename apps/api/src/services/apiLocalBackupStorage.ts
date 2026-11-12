@@ -72,11 +72,6 @@ export function apiLocalBackupUnavailableReason(error: unknown): ApiLocalBackupU
   return error instanceof ApiLocalBackupUnavailableError ? error.reason : undefined;
 }
 
-/** True for the refusal every function here uses when a destination has no usable API-side directory. */
-export function isApiLocalBackupUnavailable(error: unknown): boolean {
-  return error instanceof Error && error.message === DENIED;
-}
-
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
 }

@@ -64,7 +64,7 @@ import {
   type BackupObjectListing,
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
-import { isApiLocalBackupUnavailable } from '../services/apiLocalBackupStorage';
+import { apiLocalBackupUnavailableReason } from '../services/apiLocalBackupStorage';
 import { normalizeStorageIdentity } from '../services/backupStorageIdentity';
 import {
   fencedIdsForeignTo,
@@ -2926,10 +2926,18 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
       } catch (error) {
         skippedIdentities += rootUnits.length;
         unitsAccounted += rootUnits.length;
-        if (isApiLocalBackupUnavailable(error)) {
-          // Not provisioned for API-side access (no BACKUP_LOCAL_ROOT, or no
-          // directory for this destination): nothing is read or deleted.
-          console.warn(`[BackupGC] Identity ${rootStorage.label}: skipped — no API-side local storage directory for this destination`);
+        // Not provisioned for API-side access (no BACKUP_LOCAL_ROOT, or no
+        // directory for this destination): skipped, nothing read or deleted.
+        // A directory that exists but cannot be used (a link, not a
+        // directory, not accessible) is a fault and is reported below.
+        const unavailable = apiLocalBackupUnavailableReason(error);
+        if (unavailable === 'not_configured' || unavailable === 'missing') {
+          console.warn(
+            `[BackupGC] Identity ${rootStorage.label}: skipped — ` +
+            (unavailable === 'not_configured'
+              ? 'API-side local storage is not configured (BACKUP_LOCAL_ROOT)'
+              : 'no API-side local storage directory for this destination'),
+          );
           continue;
         }
         blockedIdentities += rootUnits.length;
@@ -3049,22 +3057,39 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
           // stay. Own rows recorded under another identity string are roots
           // only when their manifest is in this directory (otherwise left
           // alone); own rows under this identity must be here, as before.
+          //
+          // Another destination's live snapshot outranks this destination's
+          // own retirement of the same id: the prefix is kept and the
+          // retirement stays open (it is not confirmed swept this run).
           let unitRetainedSnapshotIds = state.retainedSnapshotIds;
+          let unitRetiredSnapshotIds = state.retiredSnapshotIds;
           const otherDestinationIds = new Set<string>();
           if (isPerConfigurationStorage(identity.provider)) {
             const unitConfigId = identity.configIds[0]!;
-            const ownIds = new Set([
+            const ownLiveIds = new Set([
               ...state.retainedSnapshotIds,
-              ...state.retiredSnapshotIds.keys(),
               ...state.nullIdentityRows.map((r) => r.snapshotId),
             ]);
             const claims = await withSystemDbAccessContext(() => loadListedSnapshotClaims([...groups.keys()]));
             const listedRecordedRoots = new Set<string>();
+            const heldRetirements = new Set<string>();
             for (const claim of claims) {
               const own = claim.orgId === identity.orgId && claim.configId === unitConfigId;
-              if (own || ownIds.has(claim.snapshotId)) continue;
+              if (own || ownLiveIds.has(claim.snapshotId)) continue;
+              const ownRetired = state.retiredSnapshotIds.has(claim.snapshotId);
+              // Another destination's retirement or reservation of an id this
+              // destination retired: both want it gone, so this one proceeds.
+              if (ownRetired && claim.kind !== 'snapshot') continue;
               otherDestinationIds.add(claim.snapshotId);
+              if (ownRetired) heldRetirements.add(claim.snapshotId);
               if (claim.kind === 'snapshot' && groups.get(claim.snapshotId)?.manifestItem) listedRecordedRoots.add(claim.snapshotId);
+            }
+            if (heldRetirements.size > 0) {
+              unitRetiredSnapshotIds = new Map([...state.retiredSnapshotIds].filter(([snapshotId]) => !heldRetirements.has(snapshotId)));
+              console.warn(
+                `[BackupGC] identity ${unit.label}: ${heldRetirements.size} retired snapshot(s) kept — another destination ` +
+                `still records them as live (${[...heldRetirements].slice(0, 10).join(', ')})`,
+              );
             }
             const elsewhere = new Set(state.retainedElsewhereIds);
             for (const snapshotId of elsewhere) {
@@ -3096,7 +3121,7 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
           ]);
 
           const identityResult = await sweepStorageIdentity(
-            unit, groups, unitRetainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
+            unit, groups, unitRetainedSnapshotIds, state.nullIdentityRows, unitRetiredSnapshotIds,
             foreignOwnedSnapshotIds,
             nowMs, deletesRemaining, graceMs, orphanWindowMs, manifestlessWindowMs,
             identityDeferred,
