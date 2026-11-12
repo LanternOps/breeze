@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
+import { normalizeSiteAllowlist } from './siteAllowlist';
 import {
   deviceCommands,
   devicePatches,
@@ -47,7 +48,17 @@ export type PatchInstallAttempt = {
   at: Date;
 };
 
-type Scope = { orgId?: string; deviceId?: string; deviceIds?: readonly string[] };
+type Scope = {
+  orgId?: string;
+  deviceId?: string;
+  deviceIds?: readonly string[];
+  /**
+   * The caller's site restriction (`undefined` = unrestricted, `[]` = no
+   * sites). Organization RLS does not cover sites, so both sources apply it
+   * on the device's current site.
+   */
+  allowedSiteIds?: readonly string[];
+};
 
 /**
  * How far back a per-device `install_patches` command is still read as an
@@ -87,7 +98,8 @@ const DEVICE_INSTALL_ATTEMPT_STATUSES = ['pending', 'sent', 'completed', 'failed
  * Runs in the caller's request DB context: `patch_job_results` is device-join
  * RLS and `device_commands` is read only through an inner join on `devices`
  * and `device_patches` (both RLS), so partner/org visibility is enforced by
- * the database; `orgId` / `deviceId` only narrow further.
+ * the database. Sites are not covered by RLS: `allowedSiteIds` is applied in
+ * both source queries. `orgId` / `deviceId` only narrow further.
  */
 export async function loadPatchInstallFailures(
   patchIds: readonly string[],
@@ -176,6 +188,7 @@ async function loadLatestAttempts(
   opts: { allJobAttempts: boolean },
 ): Promise<PatchInstallAttempt[]> {
   if (patchIds.length === 0) return [];
+  if (normalizeSiteAllowlist(scope.allowedSiteIds)?.length === 0) return [];
 
   const deviceAttempts = await loadDeviceCommandAttempts(patchIds, scope);
   const jobAttempts = await loadJobAttempts(
@@ -216,6 +229,8 @@ async function loadJobAttempts(
   if (scope.deviceId) conditions.push(eq(patchJobResults.deviceId, scope.deviceId));
   if (scope.deviceIds) conditions.push(inArray(patchJobResults.deviceId, [...scope.deviceIds]));
   if (scope.orgId) conditions.push(eq(devices.orgId, scope.orgId));
+  const allowedSites = normalizeSiteAllowlist(scope.allowedSiteIds);
+  if (allowedSites !== undefined) conditions.push(inArray(devices.siteId, [...allowedSites]));
 
   const latest = db
     .selectDistinctOn([patchJobResults.deviceId, patchJobResults.patchId], {
@@ -297,6 +312,8 @@ async function loadDeviceCommandAttempts(
   if (scope.deviceId) conditions.push(eq(deviceCommands.deviceId, scope.deviceId));
   if (scope.deviceIds) conditions.push(inArray(deviceCommands.deviceId, [...scope.deviceIds]));
   if (scope.orgId) conditions.push(eq(devices.orgId, scope.orgId));
+  const allowedSites = normalizeSiteAllowlist(scope.allowedSiteIds);
+  if (allowedSites !== undefined) conditions.push(inArray(devices.siteId, [...allowedSites]));
 
   const rows = await db
     .selectDistinctOn([deviceCommands.deviceId, devicePatches.patchId], {
