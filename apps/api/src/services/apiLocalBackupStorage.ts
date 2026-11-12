@@ -49,8 +49,27 @@ const O_DIRECTORY = constants.O_DIRECTORY as number | undefined;
 const O_NONBLOCK = (constants.O_NONBLOCK as number | undefined) ?? 0;
 const O_NOCTTY = (constants.O_NOCTTY as number | undefined) ?? 0;
 
-function denied(): Error {
-  return new Error(DENIED);
+/**
+ * Why a destination has no usable API-side directory: BACKUP_LOCAL_ROOT is
+ * not set, the destination's directory does not exist, or it cannot be used
+ * (a link, not a directory, not accessible, an unusable root, ...).
+ */
+export type ApiLocalBackupUnavailableReason = 'not_configured' | 'missing' | 'refused';
+
+class ApiLocalBackupUnavailableError extends Error {
+  constructor(readonly reason: ApiLocalBackupUnavailableReason) {
+    super(DENIED);
+    this.name = 'ApiLocalBackupUnavailableError';
+  }
+}
+
+function denied(reason: ApiLocalBackupUnavailableReason = 'refused'): Error {
+  return new ApiLocalBackupUnavailableError(reason);
+}
+
+/** The reason behind a refusal from this module, if `error` is one. */
+export function apiLocalBackupUnavailableReason(error: unknown): ApiLocalBackupUnavailableReason | undefined {
+  return error instanceof ApiLocalBackupUnavailableError ? error.reason : undefined;
 }
 
 /** True for the refusal every function here uses when a destination has no usable API-side directory. */
@@ -189,7 +208,8 @@ async function verifyChain(chain: OpenDir[], object?: { path: string; dev: numbe
 
 function operatorRoot(): string {
   const configured = process.env.BACKUP_LOCAL_ROOT;
-  if (!configured || !isAbsolute(configured) || configured.length > MAX_PATH_LENGTH || configured.includes('\0')) {
+  if (!configured || !configured.trim()) throw denied('not_configured');
+  if (!isAbsolute(configured) || configured.length > MAX_PATH_LENGTH || configured.includes('\0')) {
     throw denied();
   }
   const base = resolve(configured);
@@ -204,20 +224,28 @@ async function openDestination(orgId: string | undefined, configId: string | und
   const base = operatorRoot();
 
   const chain: OpenDir[] = [];
+  let missing = false;
   try {
-    const canonicalBase = await realpath(base);
+    const canonicalBase = await realpath(base).catch((error) => {
+      missing = errorCode(error) === 'ENOENT';
+      throw error;
+    });
     const handle = await open(canonicalBase, constants.O_RDONLY | O_DIRECTORY);
     const info = await handle.stat();
     chain.push({ handle, path: canonicalBase, dev: info.dev, ino: info.ino });
     if (!info.isDirectory()) throw denied();
     await detectHandleRelativePaths(chain[0]!);
-    chain.push(await openChildDir(chain[0]!, orgId, false));
-    chain.push(await openChildDir(chain[1]!, configId, false));
+    for (const name of [orgId, configId]) {
+      chain.push(await openChildDir(chain[chain.length - 1]!, name, false).catch((error) => {
+        missing = errorCode(error) === 'ENOENT';
+        throw error;
+      }));
+    }
     await verifyChain(chain);
     return chain;
   } catch {
     await closeAll(chain);
-    throw denied();
+    throw denied(missing ? 'missing' : 'refused');
   }
 }
 
