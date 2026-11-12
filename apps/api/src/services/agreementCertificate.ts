@@ -344,11 +344,56 @@ function toMergeError(err: unknown, what: string): PdfMergeError {
   return new PdfMergeError(`${what}: ${err instanceof Error ? err.message : String(err)}`);
 }
 
+/**
+ * Largest PNG, in pixels, the certified copy decodes: a Letter page scanned
+ * at 600 dpi is about 34 million. pdf-lib decodes a PNG to full RGBA in memory
+ * (several bytes per pixel, more than once), so the size is read from the
+ * header first. A JPEG is embedded without decoding its pixels and needs no
+ * check.
+ */
+export const MAX_CERTIFIED_PNG_PIXELS = 36_000_000;
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * Refuses a PNG the certificate will not decode, from its chunk headers alone:
+ * a declared size over MAX_CERTIFIED_PNG_PIXELS, or animation chunks (pdf-lib
+ * renders every frame before it rejects an animated PNG). The walk visits the
+ * chunks the way pdf-lib's decoder does (every chunk up to IEND, in any
+ * order), so a later header or frame chunk is seen too. Anything else that is
+ * malformed is left to pdf-lib, which reports it as unreadable.
+ */
+function assertPngWithinDecodeLimits(data: Buffer): void {
+  if (data.length < 8 || !data.subarray(0, 8).equals(PNG_SIGNATURE)) return;
+  // Each step reads only a chunk's length and type, and skips its data.
+  for (let offset = 8; offset + 8 <= data.length;) {
+    const length = data.readUInt32BE(offset);
+    const type = data.toString('latin1', offset + 4, offset + 8);
+    if (type === 'IHDR' && offset + 16 <= data.length) {
+      const width = data.readUInt32BE(offset + 8);
+      const height = data.readUInt32BE(offset + 12);
+      if (width * height > MAX_CERTIFIED_PNG_PIXELS) {
+        throw new PdfMergeError(
+          `The signed agreement image is ${width}×${height} pixels, over the ${MAX_CERTIFIED_PNG_PIXELS}-pixel limit for a certified copy`,
+          422,
+          'CONTRACT_IMAGE_TOO_LARGE',
+        );
+      }
+    } else if (type === 'acTL' || type === 'fcTL' || type === 'fdAT') {
+      throw new PdfMergeError('The signed agreement image is an animated PNG, which a certified copy cannot embed', 422, 'CONTRACT_IMAGE_TOO_LARGE');
+    } else if (type === 'IEND') {
+      return;
+    }
+    offset += 12 + length;
+  }
+}
+
 /** The original as PDF bytes plus its last page's size. PNG/JPEG → one image
  *  per page, scaled to fit the partner page size. */
 async function normalizeOriginal(input: CertifiedAgreementInput): Promise<{ pdf: Buffer; last: { width: number; height: number } | null }> {
   const { pdfData, mime } = input.document;
   if (mime === 'image/png' || mime === 'image/jpeg') {
+    if (mime === 'image/png') assertPngWithinDecodeLimits(pdfData);
     try {
       const out = await PDFDocument.create({ updateMetadata: false });
       const image = mime === 'image/png' ? await out.embedPng(pdfData) : await out.embedJpg(pdfData);

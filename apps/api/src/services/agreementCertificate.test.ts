@@ -43,6 +43,7 @@ import {
   buildCertificateContent,
   certificateText,
   loadCertifiedAgreementInput,
+  MAX_CERTIFIED_PNG_PIXELS,
   renderCertifiedAgreementPdf,
   type CertifiedAgreementInput,
 } from './agreementCertificate';
@@ -244,6 +245,84 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
     } finally {
       mergeFault.error = null;
     }
+  });
+
+  describe('PNG originals are size-checked before decoding', () => {
+    const crcTable = Array.from({ length: 256 }, (_, n) => {
+      let c = n;
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      return c >>> 0;
+    });
+    const crc32 = (bytes: Buffer) => {
+      let c = 0xffffffff;
+      for (const b of bytes) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const chunk = (type: string, data: Buffer) => {
+      const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(data.length);
+      const crc = Buffer.alloc(4);
+      crc.writeUInt32BE(crc32(body));
+      return Buffer.concat([length, body, crc]);
+    };
+    function ihdr(width: number, height: number): Buffer {
+      const data = Buffer.alloc(13);
+      data.writeUInt32BE(width, 0);
+      data.writeUInt32BE(height, 4);
+      data[8] = 8; // bit depth
+      data[9] = 6; // RGBA
+      return chunk('IHDR', data);
+    }
+    function png(width: number, height: number, extra: Buffer[] = [], afterData: Buffer[] = []): Buffer {
+      return Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        ihdr(width, height),
+        ...extra,
+        chunk('IDAT', Buffer.from([0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01])),
+        ...afterData,
+        chunk('IEND', Buffer.alloc(0)),
+      ]);
+    }
+
+    async function refusedWithoutDecoding(data: Buffer) {
+      const decode = vi.spyOn(PDFDocument.prototype, 'embedPng').mockRejectedValue(new Error('decoder reached'));
+      try {
+        const err = await renderCertifiedAgreementPdf(makeInput(data, 'image/png')).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(PdfMergeError);
+        expect(err).toMatchObject({ code: 'CONTRACT_IMAGE_TOO_LARGE' });
+        expect(decode).not.toHaveBeenCalled();
+      } finally {
+        decode.mockRestore();
+      }
+    }
+
+    it('refuses a PNG whose declared size is over the pixel limit, without decoding it', async () => {
+      await refusedWithoutDecoding(png(30_000, 30_000));
+      await refusedWithoutDecoding(png(1, MAX_CERTIFIED_PNG_PIXELS + 1));
+      // The decoder takes the size from the last header it reads.
+      await refusedWithoutDecoding(png(10, 10, [], [ihdr(30_000, 30_000)]));
+    });
+
+    it('refuses an animated PNG without decoding its frames', async () => {
+      const actl = Buffer.alloc(8);
+      actl.writeUInt32BE(100_000, 0); // frame count
+      await refusedWithoutDecoding(png(10, 10, [chunk('acTL', actl)]));
+      // Frame chunks count wherever they sit; the decoder does not check order.
+      await refusedWithoutDecoding(png(10, 10, [], [chunk('fcTL', Buffer.alloc(26))]));
+    });
+
+    it('still embeds a PNG at a scanned-page size', async () => {
+      const page = png(2550, 3300);
+      const decode = vi.spyOn(PDFDocument.prototype, 'embedPng').mockRejectedValue(new Error('decoder reached'));
+      try {
+        // Reaching the decoder is the point; the fake pixel data then fails it.
+        await expect(renderCertifiedAgreementPdf(makeInput(page, 'image/png'))).rejects.toBeInstanceOf(PdfMergeError);
+        expect(decode).toHaveBeenCalledTimes(1);
+      } finally {
+        decode.mockRestore();
+      }
+    });
   });
 
   it('respects MAX_MERGED_PAGES (original + certificate)', async () => {
