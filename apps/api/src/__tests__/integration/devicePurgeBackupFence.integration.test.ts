@@ -22,7 +22,7 @@ import { mkdtemp, mkdir, writeFile, utimes, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { sweepUnreferencedBackupObjects } from '../../jobs/backupRetention';
@@ -34,15 +34,43 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000;
 
-async function writeAged(root: string, relPath: string, ageMs: number, contents = 'x'): Promise<void> {
-  const full = join(root, relPath);
-  await mkdir(join(full, '..'), { recursive: true });
-  await writeFile(full, contents);
-  const t = new Date(Date.now() - ageMs);
-  await utimes(full, t, t);
+// The API reads a local destination only from
+// <BACKUP_LOCAL_ROOT>/<org id>/<config id>. These scenarios are about several
+// organizations on ONE physical store, which an operator gets by mounting the
+// same storage at each of their directories. The fixture models that: every
+// org seeded on a stored path joins that path's group, a write goes to every
+// directory in the group, and listAll() returns what every directory in the
+// group still holds (a delete through any of them removes the shared object).
+let operatorRoot = '';
+const sharedDirsByStoredPath = new Map<string, string[]>();
+
+beforeAll(async () => {
+  operatorRoot = await mkdtemp(join(tmpdir(), 'breeze-purge-operator-'));
+});
+beforeEach(() => {
+  vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
+});
+
+function dirsFor(root: string): string[] {
+  return sharedDirsByStoredPath.get(root) ?? [root];
 }
 
-async function listAll(root: string, prefix = ''): Promise<string[]> {
+async function writeAged(root: string, relPath: string, ageMs: number, contents = 'x'): Promise<void> {
+  for (const dir of dirsFor(root)) {
+    const full = join(dir, relPath);
+    await mkdir(join(full, '..'), { recursive: true });
+    await writeFile(full, contents);
+    const t = new Date(Date.now() - ageMs);
+    await utimes(full, t, t);
+  }
+}
+
+async function listAll(root: string): Promise<string[]> {
+  const listings = await Promise.all(dirsFor(root).map((dir) => listDir(dir)));
+  return listings.reduce((kept, listing) => kept.filter((key) => listing.includes(key)));
+}
+
+async function listDir(root: string, prefix = ''): Promise<string[]> {
   let entries;
   try {
     entries = await readdir(join(root, prefix), { withFileTypes: true });
@@ -52,7 +80,7 @@ async function listAll(root: string, prefix = ''): Promise<string[]> {
   const out: string[] = [];
   for (const e of entries) {
     const rel = prefix ? `${prefix}/${e.name}` : e.name;
-    if (e.isDirectory()) out.push(...(await listAll(root, rel)));
+    if (e.isDirectory()) out.push(...(await listDir(root, rel)));
     else out.push(rel);
   }
   return out.sort();
@@ -99,6 +127,9 @@ async function seedOrg(partnerId: string, rootPath: string): Promise<SeededOrg> 
     VALUES (${orgId}, ${`Purge Fence Config ${u}`}, 'file', 'local', ${JSON.stringify({ path: rootPath })}::jsonb)
     RETURNING id
   `);
+  const dir = join(operatorRoot, orgId, config!.id);
+  await mkdir(dir, { recursive: true });
+  sharedDirsByStoredPath.set(rootPath, [...(sharedDirsByStoredPath.get(rootPath) ?? []), dir]);
   return { orgId, siteId: site!.id, configId: config!.id, identity: `local::${rootPath}` };
 }
 
