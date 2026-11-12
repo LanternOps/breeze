@@ -13,6 +13,19 @@
 
 const PRIVATE_KEY_REPLACEMENT = '[PRIVATE_KEY_REDACTED]';
 
+/**
+ * Regex source that admits only the FIRST `\beyJ` of a run of base64url
+ * characters (`[A-Za-z0-9_-]`), for building JWT patterns that run in linear
+ * time. In a JWT pattern every `\beyJ` of one run reaches the same first `.`,
+ * so the first one either matches (and is the leftmost match) or none of them
+ * do; trying only it gives the same matches as the plain pattern. The cheap
+ * `\b(?=eyJ)` comes first so other positions cost nothing. Prefix it to a
+ * pattern that starts with `eyJ`; JWT_FIRST_IN_RUN_ANY is the variant for a
+ * pattern that starts with `eyJ` without a word boundary.
+ */
+export const JWT_FIRST_IN_RUN = String.raw`\b(?=eyJ)(?<=(?<![A-Za-z0-9_-])(?:(?!\beyJ)[A-Za-z0-9_-])*)`;
+export const JWT_FIRST_IN_RUN_ANY = String.raw`(?=eyJ)(?<=(?<![A-Za-z0-9_-])(?:(?!eyJ)[A-Za-z0-9_-])*)`;
+
 // Pass 1: complete PEM block, BEGIN→END gap bounded to 16 KiB (ReDoS-safe).
 const COMPLETE_PRIVATE_KEY_BLOCK =
   /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]{0,16384}?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g;
@@ -47,15 +60,11 @@ export const SECRET_OUTPUT_REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacem
   },
   // Bearer tokens.
   { pattern: /bearer\s+[a-zA-Z0-9_\-.]+/gi, replacement: 'Bearer [TOKEN_REDACTED]' },
-  // JWTs (header.payload.signature): `eyJ…\.eyJ…\.…`. Every `eyJ` inside one
-  // run of token characters reaches the same first `.`, so all of them match or
-  // none does, and a match starts at the run's first `eyJ`. The lookbehind tries
-  // only that one (after the cheap `(?=eyJ)`, so other positions cost nothing),
-  // which keeps the scan linear in the length of the text. Same spans as
-  // `/eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g` (and as the agent's
-  // RE2 rule); secretRedaction.test.ts compares the two.
+  // JWTs (header.payload.signature), in linear time (see JWT_FIRST_IN_RUN).
+  // Same spans as `/eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g` and
+  // the agent's RE2 rule; secretRedaction.test.ts compares the two.
   {
-    pattern: /(?=eyJ)(?<=(?<![a-zA-Z0-9_-])(?:(?!eyJ)[a-zA-Z0-9_-])*)eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g,
+    pattern: new RegExp(String.raw`${JWT_FIRST_IN_RUN_ANY}eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*`, 'g'),
     replacement: '[JWT_REDACTED]',
   },
 ];
@@ -79,5 +88,6 @@ export const BARE_SECRET_PATTERNS: readonly RegExp[] = [
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
-  /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g,
+  // JWT, in linear time (see JWT_FIRST_IN_RUN).
+  new RegExp(String.raw`${JWT_FIRST_IN_RUN}eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b`, 'g'),
 ];

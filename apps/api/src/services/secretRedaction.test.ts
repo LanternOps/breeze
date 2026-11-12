@@ -6,6 +6,8 @@ import {
   redactSecretsDeep,
   SECRET_OUTPUT_REDACTIONS,
 } from './secretRedaction';
+import { BARE_SECRET_PATTERNS } from './redactionPatterns';
+import { LONG_TOKEN_RUNS, matchSpans, mulberry32, tokenShapedText } from '../testUtils/generatedText';
 
 // A representative base64 body line that must never survive redaction.
 const KEY_BODY = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDb1234567890abcd';
@@ -146,18 +148,18 @@ describe('redactSecretsFromOutput', () => {
     // The JWT rule before it was made linear, kept as the reference.
     const reference = /eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g;
     const rule = SECRET_OUTPUT_REDACTIONS.find((r) => r.replacement === '[JWT_REDACTED]')!.pattern;
-    const spans = (re: RegExp, text: string) => [...text.matchAll(new RegExp(re.source, re.flags))].map((m) => [m.index, m[0]]);
-    const alphabet = ['eyJ', 'eyJ', 'e', 'y', 'J', '.', '.', 'a', '-', '_', ' ', 'x.', '\n'];
-    let seed = 0x4a5b6c;
-    const next = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed;
-    };
+    const next = mulberry32(0x4a5b6c);
+    const seen = new Set<string>();
+    let withToken = 0;
     for (let i = 0; i < 20_000; i += 1) {
-      let text = '';
-      for (let j = next() % 16; j > 0; j -= 1) text += alphabet[next() % alphabet.length];
-      expect([text, spans(rule, text)]).toEqual([text, spans(reference, text)]);
+      const text = tokenShapedText(next);
+      seen.add(text);
+      const want = matchSpans(reference, text);
+      if (want.length > 0) withToken += 1;
+      expect([text, matchSpans(rule, text)]).toEqual([text, want]);
     }
+    expect(seen.size).toBeGreaterThan(15_000);
+    expect(withToken).toBeGreaterThan(7_000);
   });
 });
 
@@ -269,5 +271,34 @@ describe('redactSecretsDeep (#2434)', () => {
 
     const serialized = JSON.stringify(redactSecretsDeep(cyclic));
     expect(serialized).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+});
+
+describe('BARE_SECRET_PATTERNS JWT shape', () => {
+  // The JWT shape before it was made linear, kept as the reference.
+  const reference = /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g;
+  const shape = BARE_SECRET_PATTERNS.find((p) => p.source.includes('eyJ'))!;
+
+  it('matches the same tokens as the previous pattern', () => {
+    const next = mulberry32(0x5eed01);
+    const seen = new Set<string>();
+    let withToken = 0;
+    for (let i = 0; i < 20_000; i += 1) {
+      const text = tokenShapedText(next);
+      seen.add(text);
+      const want = matchSpans(reference, text);
+      if (want.length > 0) withToken += 1;
+      expect([text, matchSpans(shape, text)]).toEqual([text, want]);
+    }
+    expect(seen.size).toBeGreaterThan(15_000);
+    expect(withToken).toBeGreaterThan(3_000);
+  });
+
+  it('scans long token runs in linear time', () => {
+    for (const text of LONG_TOKEN_RUNS) {
+      const started = performance.now();
+      matchSpans(shape, text);
+      expect(performance.now() - started).toBeLessThan(150);
+    }
   });
 });
