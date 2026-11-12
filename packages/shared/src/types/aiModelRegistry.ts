@@ -77,6 +77,29 @@ export interface AiOfferingDto {
   updatedAt: string | null;
   /** Gateway-connection offerings only; null for platform / anthropic_byok / catalog. */
   verification: AiOfferingVerificationDto | null;
+  /**
+   * #11396: what is known about the model's context window, and what `auto`
+   * uses. Gateway-connection offerings only (the only ones a window can
+   * narrow); null for platform / anthropic_byok / catalog.
+   */
+  contextWindow: AiOfferingContextWindowDto | null;
+}
+
+/**
+ * #11396: the evidence behind an offering's effective context window. The
+ * override is kept apart from what was discovered or observed, so clearing it
+ * restores the evidence underneath. A stale or re-versioned observation is
+ * still shown (`fresh: false`) but no longer constrains.
+ */
+export interface AiOfferingContextWindowDto {
+  /** The window `auto` and the gateway use; null = unknown (`auto` stays full). */
+  effective: number | null;
+  source: 'override' | 'discovered' | 'observed' | 'unknown';
+  override: number | null;
+  /** Stated by the endpoint's model listing on the last discovery sync that listed the model. */
+  discovered: number | null;
+  /** Stated by the endpoint in a context-length rejection. */
+  observed: { value: number; at: string; fresh: boolean } | null;
 }
 
 export type OfferingVerificationState = 'unverified' | 'verified' | 'failed' | 'stale';

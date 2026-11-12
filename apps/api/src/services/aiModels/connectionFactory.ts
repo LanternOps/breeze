@@ -29,6 +29,8 @@ import {
   type GatewayGrantPurpose,
 } from './gateway';
 import { GATEWAY_TOTAL_TIMEOUT_MS, GRANT_SESSION_TTL_MS } from './gateway/limits';
+import type { KnownWindow } from './gateway/openai/contextWindow';
+import type { GrantWindowObserver } from './gateway/types';
 import { acquireModelGateway } from './gatewayConnectionState';
 import { GATEWAY_PLACEHOLDER_KEY } from './gateway/openai/adapter';
 import {
@@ -280,12 +282,29 @@ export async function openGatewayGrant(
     resolved.wireModel,
     ...(resolved.refusalFallback ? [resolved.refusalFallback.wireModel] : []),
   ])];
+  // #11396: per wire model, the window the offering's facts know (seeds the
+  // gateway's max_tokens plan) and the offering a stated window is persisted
+  // to. Primary and refusal fallback each carry their own, never the other's.
+  const knownWindows = new Map<string, KnownWindow>();
+  const observers = new Map<string, GrantWindowObserver>();
+  const fb = resolved.refusalFallback;
+  for (const m of [
+    { wireModel: resolved.wireModel, offeringId: resolved.offering.id, window: resolved.contextWindow ?? null },
+    ...(fb ? [{ wireModel: fb.wireModel, offeringId: fb.offeringId, window: fb.contextWindow ?? null }] : []),
+  ]) {
+    if (m.window && !knownWindows.has(m.wireModel)) knownWindows.set(m.wireModel, { ...m.window });
+    if (m.offeringId && resolved.partnerId && !observers.has(m.wireModel)) {
+      observers.set(m.wireModel, { offeringId: m.offeringId, partnerId: resolved.partnerId });
+    }
+  }
   const gateway = await acquireModelGateway();
   const base = {
     config: conn.config,
     credential: conn.credential,
     wireModels,
     aiSessionId: input.aiSessionId,
+    knownWindows,
+    observers,
     ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
     // #11395: only a constrained tool profile sets it; absent keeps the grant (and its translation) as before.
     ...(input.compactSchemas ? { compactSchemas: true } : {}),

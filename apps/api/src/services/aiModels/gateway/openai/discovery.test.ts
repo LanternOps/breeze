@@ -142,3 +142,34 @@ describe('openai_compatible discovery', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+describe('discovered context length (#11396 T7)', () => {
+  const one = (item: Record<string, unknown>) => sanitizeDiscoveredModels({ data: [{ id: 'm', ...item }] })[0]!;
+
+  it.each([
+    ['context_length (OpenRouter-style)', { context_length: 131_072 }, 131_072],
+    ['max_model_len (vLLM)', { max_model_len: 32_768 }, 32_768],
+    ['max_context_length + loaded_context_length (LM Studio): the loaded one when smaller', { max_context_length: 262_144, loaded_context_length: 8_192 }, 8_192],
+    ['max_context_length alone', { max_context_length: 262_144 }, 262_144],
+    ['loaded_context_length alone', { loaded_context_length: 8_192 }, 8_192],
+    ['context_length wins over the others', { context_length: 65_536, max_model_len: 32_768 }, 65_536],
+  ])('%s', (_label, item, expected) => {
+    expect(one(item).contextLength).toBe(expected);
+  });
+
+  it.each([
+    ['a string "8k"', { context_length: '8k' }],
+    ['a numeric string', { context_length: '8192' }],
+    ['below the plausible floor (70)', { context_length: 70 }],
+    ['above the plausible ceiling', { context_length: 200_000_000 }],
+    ['a fraction', { context_length: 8192.5 }],
+    ['negative', { max_model_len: -1 }],
+    ['absent', {}],
+  ])('%s → no context length', (_label, item) => {
+    expect(one(item).contextLength).toBeUndefined();
+  });
+
+  it('an implausible context_length falls through to a plausible max_model_len', () => {
+    expect(one({ context_length: 70, max_model_len: 32_768 }).contextLength).toBe(32_768);
+  });
+});

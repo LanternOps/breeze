@@ -104,7 +104,7 @@ import type { SpecialistResultsTurn } from '../services/wisp/specialistResultsTu
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
-import { resolvedLiveQueryKey } from '../services/aiModels/sessionToolExposure';
+import { resolvedLiveQueryKey, toolExposureRefusal } from '../services/aiModels/sessionToolExposure';
 import { continuationMessage, planModelTransition, planTransitionWithFailover, readPreviousTurn, readSessionOfferingId } from '../services/aiModels/modelTransition';
 import { lastTurnModelOf, turnDisplayFrom } from '../services/aiModels/turnModel';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
@@ -1150,6 +1150,11 @@ aiRoutes.post(
             : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true, ledgerUserId: auth.user.id, modelSwitch: transition.kind === 'switch_resume' },
         );
       } catch (err) {
+        // #11396: a model whose known window is too small for any tool
+        // profile (or whose profile drops a required tool) is refused at
+        // session start with a 409 naming why, never a 500.
+        const refusal = toolExposureRefusal(err);
+        if (refusal) return { kind: 'refused', response: c.json(refusal, 409) };
         return { kind: 'failed', error: err };
       }
 

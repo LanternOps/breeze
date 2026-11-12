@@ -127,7 +127,7 @@ import {
 } from '../services/scriptBuilderService';
 import { runPreFlightChecks, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { releaseUnusedAiBudgetReservation, reserveAiBudget } from '../services/aiBudgetReservations';
-import { ToolProfileUnderpoweredError } from '../services/aiModels/sessionToolExposure';
+import { ContextWindowTooSmallError, ToolProfileUnderpoweredError } from '../services/aiModels/sessionToolExposure';
 import { createScriptBuilderMcpServer } from '../services/scriptBuilderTools';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
@@ -503,6 +503,32 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
       });
       expect(releaseUnusedAiBudgetReservation).toHaveBeenCalled();
       expect(streamingSessionManager.tryTransitionToProcessing).not.toHaveBeenCalled();
+    });
+
+    it('a window too small for any tool profile is a 409 context_window_too_small naming the window (#11396)', async () => {
+      const model = makeResolvedModel('openai_compatible', { surface: 'script_builder' });
+      vi.mocked(runPreFlightChecks).mockResolvedValue({
+        ok: true,
+        session: {
+          id: SESSION_ID, type: 'script_builder', orgId: ORG_ID, sdkSessionId: null,
+          model: 'qwen', maxTurns: 50, turnCount: 0, systemPrompt: 'System prompt',
+        },
+        sanitizedContent: 'Hello', systemPrompt: 'System prompt', maxBudgetUsd: 1, model,
+      } as any);
+      vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValue(new ContextWindowTooSmallError('script_builder', 4_096));
+
+      const res = await app.request(`/ai/script-builder/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'Hello' }),
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'This model\'s 4,096-token window is too small for Breeze script builder tools.',
+        code: 'context_window_too_small',
+      });
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalled();
     });
 
     it('an ineligible stored model is a recoverable 409 with its code and takes no reservation', async () => {

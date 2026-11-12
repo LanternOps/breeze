@@ -11,6 +11,9 @@ describe('classifySendRefusal', () => {
     [409, 'continuation_required', 'continuation'],
     [409, 'model_unavailable', 'choose_model'],
     [409, 'tools_unsupported', 'choose_model'],
+    // #11396: another model fixes a tool-exposure refusal.
+    [409, 'context_window_too_small', 'choose_model'],
+    [409, 'tool_profile_underpowered', 'choose_model'],
     [409, 'topology_model_changed', 'choose_model'],
     [409, 'turn_limit_reached', 'turn_limit'],
     [409, 'something_else', 'error'],

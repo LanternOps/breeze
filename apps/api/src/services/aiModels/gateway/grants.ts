@@ -23,6 +23,17 @@ export interface GrantStore {
   __debugKeys(): IterableIterator<string>;
 }
 
+/** A private copy holding only entries for models the grant binds (#11396). */
+function boundOnly<V extends object>(entries: ReadonlyMap<string, V> | undefined, wireModels: readonly string[]): ReadonlyMap<string, V> {
+  const out = new Map<string, V>();
+  if (!entries) return out;
+  for (const model of wireModels) {
+    const value = entries.get(model);
+    if (value) out.set(model, { ...value });
+  }
+  return out;
+}
+
 function clampTtl(ttlMs: number | undefined): number {
   const ttl = ttlMs ?? GRANT_DEFAULT_TTL_MS;
   if (!Number.isFinite(ttl)) return GRANT_SESSION_TTL_MS;
@@ -64,6 +75,8 @@ export function createGrantStore(now: () => number = Date.now): GrantStore {
         expiresAt: now() + clampTtl(input.ttlMs),
         inFlight: new Set(),
         compactSchemas: input.compactSchemas === true,
+        knownWindows: boundOnly(input.knownWindows, input.wireModels),
+        observers: boundOnly(input.observers, input.wireModels),
       };
       byDigest.set(digest(token), record);
       return { token, record };
@@ -117,5 +130,7 @@ export function discoveryGrantRecord(config: GatewayConnectionConfig, credential
     expiresAt: Date.now() + DISCOVERY_RECORD_TTL_MS,
     inFlight: new Set(),
     compactSchemas: false,
+    knownWindows: new Map(),
+    observers: new Map(),
   };
 }

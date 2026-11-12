@@ -22,6 +22,7 @@ import { FIDELITY_HARNESS_VERSION } from '../llm/providerFidelityHarness';
 import { checkEligibility, type EligibilityContext } from './eligibility';
 import { endpointFingerprint, verifiedCapabilitiesTree } from './gatewayCapabilities';
 import { gatewayCandidate } from './gatewayCandidate';
+import { effectiveToolProfile, toolProfileKey } from './toolExposure';
 
 const CONN = {
   id: 'c1', partnerId: 'p1', kind: 'openai_compatible', name: 'vLLM', baseUrl: 'https://llm.example.com/v1',
@@ -89,6 +90,71 @@ describe('gatewayCandidate', () => {
     const allowlist = { domains: ['devices'], tools: ['search_logs'] };
     const c = await gatewayCandidate({ offering: offering({ toolProfile: 'custom', toolAllowlist: allowlist }), conn: conn() });
     expect(c.toolProfileFacts).toEqual({ toolProfile: 'custom', toolAllowlist: allowlist, effectiveWindow: null, transport: 'gateway' });
+  });
+
+  describe('the effective context window (#11396 T7)', () => {
+    it('a discovered window fills limits.maxInputTokens, the facts and the grant seed', async () => {
+      const c = await gatewayCandidate({ offering: offering({ contextWindowDiscovered: 131_072 }), conn: conn() });
+      expect(c.limits).toEqual({ maxInputTokens: 131_072, maxOutputTokens: null });
+      expect(c.toolProfileFacts?.effectiveWindow).toBe(131_072);
+      expect(c.contextWindow).toEqual({ window: 131_072, source: 'discovered' });
+    });
+
+    it('a fresh observation under the CURRENT config_version beats a larger discovered value', async () => {
+      const c = await gatewayCandidate({
+        offering: offering({
+          contextWindowDiscovered: 262_144,
+          contextWindowObserved: 8_192, contextWindowObservedAt: new Date(), contextWindowObservedConfigVersion: CONN.configVersion,
+        }),
+        conn: conn(),
+      });
+      expect(c.limits.maxInputTokens).toBe(8_192);
+      expect(c.contextWindow).toEqual({ window: 8_192, source: 'observed' });
+    });
+
+    it('an observation from an older config_version does not constrain', async () => {
+      const c = await gatewayCandidate({
+        offering: offering({
+          contextWindowObserved: 8_192, contextWindowObservedAt: new Date(), contextWindowObservedConfigVersion: CONN.configVersion - 1,
+        }),
+        conn: conn(),
+      });
+      expect(c.limits.maxInputTokens).toBeNull();
+      expect(c.toolProfileFacts?.effectiveWindow).toBeNull();
+      expect(c.contextWindow).toBeNull();
+    });
+
+    it('an override wins and is labelled so', async () => {
+      const c = await gatewayCandidate({ offering: offering({ contextWindowOverride: 16_384, contextWindowDiscovered: 131_072 }), conn: conn() });
+      expect(c.contextWindow).toEqual({ window: 16_384, source: 'override' });
+      expect(c.limits.maxInputTokens).toBe(16_384);
+    });
+
+    it('ON MERGE: a gateway offering with every window column null keeps the identity exposure on every surface', async () => {
+      const c = await gatewayCandidate({ offering: offering(), conn: conn() });
+      for (const surface of ['chat', 'helper', 'script_builder', 'ai_agents', 'office_chat'] as const) {
+        expect(effectiveToolProfile(c.toolProfileFacts!, surface), surface).toEqual({ profile: 'full', tooSmall: false });
+        expect(toolProfileKey(c.toolProfileFacts!, surface), surface).toBeNull();
+      }
+    });
+
+    it('AFTER a discovery sync states 131,072: auto narrows chat to standard; the other surfaces stay full', async () => {
+      const c = await gatewayCandidate({ offering: offering({ contextWindowDiscovered: 131_072 }), conn: conn() });
+      const profiles = Object.fromEntries((['chat', 'helper', 'script_builder', 'ai_agents', 'office_chat'] as const)
+        .map((s) => [s, effectiveToolProfile(c.toolProfileFacts!, s).profile]));
+      expect(profiles).toEqual({ chat: 'standard', helper: 'full', script_builder: 'full', ai_agents: 'full', office_chat: 'full' });
+    });
+
+    it('an explicit full profile is never narrowed by a known window', async () => {
+      const c = await gatewayCandidate({ offering: offering({ toolProfile: 'full', contextWindowDiscovered: 8_192 }), conn: conn() });
+      expect(effectiveToolProfile(c.toolProfileFacts!, 'chat')).toEqual({ profile: 'full', tooSmall: false });
+    });
+
+    it('nothing known: null everywhere (today\'s behaviour)', async () => {
+      const c = await gatewayCandidate({ offering: offering(), conn: conn() });
+      expect(c.limits.maxInputTokens).toBeNull();
+      expect(c.contextWindow).toBeNull();
+    });
   });
 
   it('keyless connection (active, NULL key) is usable with a null secret; no decrypt attempted', async () => {

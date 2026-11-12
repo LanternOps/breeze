@@ -23,6 +23,7 @@ import {
   type AiConnectionDto,
   type AiModelsSnapshotDto,
   type AiOfferingDto,
+  type AiOfferingContextWindowDto,
   type AiOfferingVerificationDto,
   type AiOrgModelDefaultsDto,
   type AiSurface,
@@ -41,6 +42,7 @@ import {
   platformModelView,
   type LoadedCandidate,
 } from './candidateLoader';
+import { resolveEffectiveContextWindow } from './contextWindowFacts';
 import { enableBlockerFor, type EnableEligibilityContext } from './eligibility';
 import { getPlatformInferenceGeo, listPlatformModels, type PlatformModel } from './platformModels';
 import { listConnections, type PartnerAiConnection } from './connections';
@@ -81,6 +83,25 @@ function verificationDto(o: Offering, conn: PartnerAiConnection | undefined): Ai
     endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null }),
   );
   return { state, at: record?.at ?? null, harnessVersion: record?.harnessVersion ?? null, summary: record?.summary ?? null };
+}
+
+/**
+ * #11396: the context window evidence for a gateway offering, judged against
+ * the connection's CURRENT config_version. null for every non-gateway offering.
+ */
+function contextWindowDto(o: Offering, conn: PartnerAiConnection | undefined): AiOfferingContextWindowDto | null {
+  if (!conn || !isGatewayConnectionKind(conn.kind)) return null;
+  const w = resolveEffectiveContextWindow(o, conn.configVersion);
+  const observed = o.contextWindowObserved != null && o.contextWindowObservedAt != null
+    ? { value: o.contextWindowObserved, at: o.contextWindowObservedAt.toISOString(), fresh: w.observedFresh }
+    : null;
+  return {
+    effective: w.value,
+    source: w.source,
+    override: o.contextWindowOverride ?? null,
+    discovered: o.contextWindowDiscovered ?? null,
+    observed,
+  };
 }
 
 function offeringDto(
@@ -127,6 +148,7 @@ function offeringDto(
     defaultFor,
     updatedAt: o.updatedAt.toISOString(),
     verification: verificationDto(o, conn),
+    contextWindow: contextWindowDto(o, conn),
   };
 }
 
@@ -167,6 +189,7 @@ function synthesizedPlatformOffering(
     defaultFor: [],
     updatedAt: null,
     verification: null,
+    contextWindow: null,
   };
 }
 

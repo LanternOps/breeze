@@ -345,6 +345,33 @@ describe('buildPartnerModelsSnapshot', () => {
       expect(JSON.stringify(s.offerings)).not.toContain('breeze_verification');
       expect(JSON.stringify(s.offerings)).not.toContain(fp(URL_));
     });
+
+    it('#11396 offering DTO carries the context window facts for gateway offerings; non-gateway offerings carry null', async () => {
+      const at = new Date(Date.now() - 12 * 60_000);
+      const stale = new Date(Date.now() - 2 * 3_600_000);
+      h.connections = [conn({ id: C, kind: 'anthropic_byok' }), conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, configVersion: 5 })];
+      setOfferings([
+        { ...gw(O1, record({})), contextWindowDiscovered: 262_144, contextWindowObserved: 8_192, contextWindowObservedAt: at, contextWindowObservedConfigVersion: 5 },
+        { ...gw(O2, record({})), contextWindowDiscovered: 131_072, contextWindowObserved: 8_192, contextWindowObservedAt: stale, contextWindowObservedConfigVersion: 5 },
+        { ...gw(O3, record({})), contextWindowOverride: 16_384, contextWindowDiscovered: 131_072 },
+        gw(O4, null),
+        { ...offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }), contextWindowOverride: 16_384 },
+      ]);
+      const s = await buildPartnerModelsSnapshot(P);
+      const w = (id: string) => s.offerings.find((o) => o.id === id)!.contextWindow;
+      expect(w(O1)).toEqual({
+        effective: 8_192, source: 'observed', override: null, discovered: 262_144,
+        observed: { value: 8_192, at: at.toISOString(), fresh: true },
+      });
+      // A stale observation is still shown (a hint), but no longer constrains.
+      expect(w(O2)).toEqual({
+        effective: 131_072, source: 'discovered', override: null, discovered: 131_072,
+        observed: { value: 8_192, at: stale.toISOString(), fresh: false },
+      });
+      expect(w(O3)).toMatchObject({ effective: 16_384, source: 'override', override: 16_384, discovered: 131_072, observed: null });
+      expect(w(O4)).toEqual({ effective: null, source: 'unknown', override: null, discovered: null, observed: null });
+      expect(w(B)).toBeNull();
+    });
   });
 
   it('includes the catalog only when the catalog flag is on', async () => {

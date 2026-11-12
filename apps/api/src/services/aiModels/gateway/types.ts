@@ -1,4 +1,5 @@
 import type { GatewayConnectionKind } from '@breeze/shared';
+import type { KnownWindow } from './openai/contextWindow';
 
 export type GatewayDialect = 'anthropic' | 'bedrock' | 'vertex' | 'foundry';
 
@@ -21,6 +22,8 @@ export interface GatewayCredential {
 export interface DiscoveredConnectionModel {
   modelId: string;
   displayName: string | null;
+  /** #11396: the context window the listing states (plausibility-bounded); absent = not stated. */
+  contextLength?: number;
 }
 
 export type GatewayGrantPurpose = 'dispatch' | 'verification' | 'discovery';
@@ -39,7 +42,22 @@ interface GatewayGrantInputBase {
    * the `full` exposure is translated byte-for-byte as before.
    */
   compactSchemas?: boolean;
+  /**
+   * #11396: per bound wire model, the window known before any rejection (the
+   * offering's effective window). Seeds `planRequest`, so a fresh process caps
+   * `max_tokens` up front. Absent = nothing known: the gateway learns the window only from rejections.
+   */
+  knownWindows?: ReadonlyMap<string, KnownWindow>;
+  /**
+   * #11396: per bound wire model, the offering a context-length rejection is
+   * persisted to (primary and refusal fallback each under their own id).
+   * Absent (verification, discovery) = nothing is persisted.
+   */
+  observers?: ReadonlyMap<string, GrantWindowObserver>;
 }
+
+/** Where a wire model's observed context window is persisted. */
+export interface GrantWindowObserver { offeringId: string; partnerId: string }
 
 /**
  * A dispatch grant always carries an org: the per-request egress audit row is
@@ -65,6 +83,10 @@ export interface GatewayGrantRecord {
   inFlight: Set<AbortController>;
   /** Strip size/format keywords from the advertised upstream tool parameters (#11395). */
   compactSchemas: boolean;
+  /** #11396: the known window per bound wire model (copied; only bound models). */
+  knownWindows: ReadonlyMap<string, KnownWindow>;
+  /** #11396: the observation target per bound wire model (copied; only bound models). */
+  observers: ReadonlyMap<string, GrantWindowObserver>;
 }
 
 export interface GatewayIncomingRequest {

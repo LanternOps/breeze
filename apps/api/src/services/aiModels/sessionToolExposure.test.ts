@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ToolProfileUnderpoweredError, allowedToolsUnder, bareToolName, chatPromptExposure, finalizeSessionToolExposure, type SessionToolExposureInput } from './sessionToolExposure';
+import { ContextWindowTooSmallError, ToolProfileUnderpoweredError, allowedToolsUnder, bareToolName, chatPromptExposure, finalizeSessionToolExposure, toolExposureRefusal, type SessionToolExposureInput } from './sessionToolExposure';
 import { FULL_IDENTITY_FINGERPRINT, type ToolProfileFacts } from './toolExposure';
 import { CHAT_MINIMAL_TOOLS } from './toolProfiles';
 import { resolvedLiveQueryKey } from './sessionToolExposure';
@@ -102,6 +102,39 @@ describe('finalizeSessionToolExposure (#11394)', () => {
       expect(err).toMatchObject({ code: 'tool_profile_underpowered', status: 409, surface: 'script_builder', missing: ['execute_script_on_device'] });
       expect((err as Error).message).toContain('script builder');
     }
+  });
+});
+
+describe('too_small: a window that cannot hold even minimal refuses at session start (#11396)', () => {
+  it('chat with a 4,096-token window throws ContextWindowTooSmallError naming the window and the surface', () => {
+    const run = () => finalizeSessionToolExposure(input({ facts: facts({ toolProfile: 'auto', effectiveWindow: 4_096, transport: 'gateway' }) }));
+    expect(run).toThrow(ContextWindowTooSmallError);
+    try { run(); } catch (err) {
+      expect(err).toMatchObject({ code: 'context_window_too_small', status: 409, surface: 'chat', contextWindow: 4_096 });
+      expect((err as Error).message).toBe('This model\'s 4,096-token window is too small for Breeze chat tools.');
+    }
+  });
+
+  it('control: the same chat at 8,192 resolves minimal and does not throw', () => {
+    const r = finalizeSessionToolExposure(input({ facts: facts({ toolProfile: 'auto', effectiveWindow: 8_192, transport: 'gateway' }) }));
+    expect(r.exposure).toMatchObject({ profile: 'minimal', tooSmall: false });
+  });
+
+  it('the helper names its own surface', () => {
+    const run = () => finalizeSessionToolExposure(input({
+      surface: 'helper', allowedTools: ['mcp__breeze__get_device_details'], extraTools: [],
+      facts: facts({ toolProfile: 'auto', effectiveWindow: 4_096, transport: 'gateway' }),
+    }));
+    expect(run).toThrow(/too small for Breeze helper tools/);
+  });
+
+  it('toolExposureRefusal maps both refusals to a 409 body and ignores anything else', () => {
+    expect(toolExposureRefusal(new ContextWindowTooSmallError('chat', 4_096)))
+      .toEqual({ error: 'This model\'s 4,096-token window is too small for Breeze chat tools.', code: 'context_window_too_small' });
+    expect(toolExposureRefusal(new ToolProfileUnderpoweredError('script_builder', ['x'])))
+      .toMatchObject({ code: 'tool_profile_underpowered' });
+    expect(toolExposureRefusal(new Error('boom'))).toBeNull();
+    expect(toolExposureRefusal({ code: 'context_window_too_small' })).toBeNull();
   });
 });
 

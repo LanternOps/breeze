@@ -38,6 +38,7 @@ import { getEffectiveAiBudget } from '../../services/effectiveSettings';
 import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, helperDbAccessContext, type HelperDevice } from '../../middleware/helperAuth';
+import { toolExposureRefusal } from '../../services/aiModels/sessionToolExposure';
 import type { ActiveSession } from '../../services/streamingSessionManager';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { LlmNotConfiguredError } from '../../services/llm/llmAvailability';
@@ -489,6 +490,9 @@ helperRoutes.post(
         if (err instanceof LlmUnavailableError) {
           return { kind: 'refused', response: c.json({ error: 'ai_unavailable' }, 503) };
         }
+        // #11396: the model's tool profile cannot serve the helper (too small a window, or a dropped floor tool).
+        const refusal = toolExposureRefusal(err);
+        if (refusal) return { kind: 'refused', response: c.json(refusal, 409) };
         return { kind: 'failed', error: err };
       }
 

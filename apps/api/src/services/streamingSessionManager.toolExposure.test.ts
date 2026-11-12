@@ -234,6 +234,28 @@ describe('tool exposure wiring (#11393 W01)', () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
+  it('#11396: auto with a window too small even for minimal refuses at session start with the window number, no SDK query or child', async () => {
+    vi.mocked(prepareSdkChild).mockClear();
+    const tooSmall = facts({ toolProfile: 'auto', effectiveWindow: 4_096, transport: 'gateway' });
+    await expect(create('s-too-small', modelWith(tooSmall))).rejects.toMatchObject({
+      code: 'context_window_too_small',
+      message: 'This model\'s 4,096-token window is too small for Breeze chat tools.',
+    });
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(prepareSdkChild).not.toHaveBeenCalled();
+  });
+
+  it('#11396: a warm idle session whose window shrinks into too_small rotates, refuses 409-style, and keeps no live session', async () => {
+    const warm = await create('s-shrink', modelWith(facts({ toolProfile: 'auto', effectiveWindow: 8_192, transport: 'gateway' })));
+    warm.state = 'idle';
+    expect(warm.liveKey).toMatch(/\|tx:[0-9a-f]{16}$/);
+    queryMock.mockClear();
+    await expect(create('s-shrink', modelWith(facts({ toolProfile: 'auto', effectiveWindow: 4_096, transport: 'gateway' }))))
+      .rejects.toMatchObject({ code: 'context_window_too_small', status: 409 });
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(manager.get('s-shrink')).toBeUndefined();
+  });
+
   it('#11395: the exposure decides compactSchemas on the SDK child (minimal + gateway: true; identity: absent)', async () => {
     await create('s-cs-full', modelWith());
     expect(vi.mocked(prepareSdkChild).mock.calls.at(-1)![1]).not.toHaveProperty('compactSchemas');
