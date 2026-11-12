@@ -111,12 +111,14 @@ fi
 log "auth: claude.ai subscription"
 
 # --- docker engine -----------------------------------------------------------
-if ! docker info >/dev/null 2>&1; then
+ensure_docker() {
+  docker info >/dev/null 2>&1 && return 0
   log "docker engine down; starting OrbStack"
   (command -v orb >/dev/null && orb start) || open -ga OrbStack
-  for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 5; done
-  docker info >/dev/null 2>&1 || { notify "QA sweep skipped: Docker engine would not start"; log "FATAL docker"; exit 1; }
-fi
+  for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && return 0; sleep 5; done
+  return 1
+}
+ensure_docker || { notify "QA sweep skipped: Docker engine would not start"; log "FATAL docker"; exit 1; }
 
 # --- dedicated worktree at origin/main --------------------------------------
 git -C "$QA_SOURCE_REPO" fetch --quiet origin main || { notify "QA sweep: git fetch failed"; exit 1; }
@@ -228,8 +230,29 @@ fi
 log "pnpm install"; pnpm install --frozen-lockfile --prefer-offline >/dev/null || { notify "QA sweep: pnpm install failed (see $LOG)"; exit 1; }
 log "wt-stack up $REBUILD"
 STACK_UP=1
-if ! pnpm wt-stack up $REBUILD 2>&1 | tee "$RUN_DIR/stack-up.log"; then :; fi
-if [ ! -f .breeze-stack.json ] || ! curl -sf -o /dev/null "$(jq -r .baseUrl .breeze-stack.json 2>/dev/null)/health"; then
+# The engine itself dying mid-build (OrbStack crash, host sleep) is a QA-Mac
+# problem, not a main problem: restart it and retry once, and never file a
+# "main fails to boot" issue for it.
+DOCKER_DIED_RE='failed to connect to the docker API|Cannot connect to the Docker daemon|rpc error: code = Unavailable|docker\.sock: connect'
+stack_healthy() { [ -f .breeze-stack.json ] && curl -sf -o /dev/null "$(jq -r .baseUrl .breeze-stack.json 2>/dev/null)/health"; }
+engine_failed() { ! docker info >/dev/null 2>&1 || grep -Eq "$DOCKER_DIED_RE" "$RUN_DIR/stack-up.log"; }
+for attempt in 1 2; do
+  if ! pnpm wt-stack up $REBUILD 2>&1 | tee "$RUN_DIR/stack-up.log"; then :; fi
+  stack_healthy && break
+  engine_failed || break
+  cp "$RUN_DIR/stack-up.log" "$RUN_DIR/stack-up.attempt$attempt.log"
+  if [ "$attempt" = 1 ]; then
+    log "docker engine failed during stack up; restarting it and retrying once"
+    (command -v orb >/dev/null && orb stop) >/dev/null 2>&1 || true
+    ensure_docker || break
+  fi
+done
+if ! stack_healthy && engine_failed; then
+  notify "QA sweep skipped: Docker engine died during stack boot (QA Mac issue, not main). Retrying next run"
+  log "FATAL docker engine failed during stack up; no issue filed"
+  echo "DOCKER_ENGINE_FAILED" > "$RUN_DIR/result"; exit 1
+fi
+if ! stack_healthy; then
   # Boot failure on main is the most important finding a sweep can make.
   PROJECT="$(sed -nE 's/^\[wt-stack\] project=([^ ]+).*/\1/p' "$RUN_DIR/stack-up.log" | head -1)"
   BODY="$RUN_DIR/boot-failure.md"
@@ -494,13 +517,32 @@ publish_outbox() {
 }
 publish_outbox
 
+# Hosted PRs carry to the next run unless they got a conclusive verdict here.
+# BLOCKED (e.g. no LLM key on the stack) or a missing/rejected verdict is not
+# conclusive. Each PR gets QA_HOSTED_MAX_TRIES runs before it is dropped.
+PENDING_HOSTED=""
+for pr in $HOSTED_PRS; do
+  verdict=""
+  if [ "$HOSTED_OK" = 1 ] && [ -s "$RUN_DIR/.pr-keep" ]; then
+    verdict="$(jq -r --arg pr "$pr" 'select((.pr|tostring)==$pr) | .result' $(cat "$RUN_DIR/.pr-keep") 2>/dev/null | tail -1)"
+  fi
+  case "$verdict" in PASS|PARTIAL|FAIL|NO_UI) ;; *) PENDING_HOSTED="$PENDING_HOSTED $pr" ;; esac
+done
+[ -n "${PENDING_HOSTED// /}" ] && log "hosted PRs carried to next run:$PENDING_HOSTED"
+
 # --- advance cursor only on a completed sweep -------------------------------
 if [ "$RC" = 0 ] && [ -f "$RUN_DIR/report.md" ]; then
   tmp="$(mktemp)"
   jq -n --slurpfile old <(cat "$STATE" 2>/dev/null || echo '{}') \
      --arg sha "$NEW_SHA" --arg run "$RUN_ID" --argjson slice "$(( (SLICE + 1) % 4 ))" \
-     --argjson pend "$(if [ "$HOSTED_OK" = 1 ]; then echo '[]'; else printf '%s\n' $HOSTED_PRS | jq -R . | jq -s .; fi)" \
-     '($old[0] // {}) + {lastSweptSha:$sha, lastRun:$run, nextSlice:$slice, pendingHostedPrs:$pend}' > "$tmp" && mv "$tmp" "$STATE"
+     --argjson pend "$(printf '%s\n' $PENDING_HOSTED | jq -R 'select(length>0)' | jq -s .)" \
+     --argjson maxtries "${QA_HOSTED_MAX_TRIES:-7}" \
+     '($old[0] // {}) as $o
+      | ($o.pendingHostedTries // {}) as $t
+      | ([$pend[] | {key: ., value: (($t[.] // 0) + 1)}] | from_entries) as $nt
+      | ($nt | to_entries | map(select(.value < $maxtries)) | from_entries) as $kt
+      | $o + {lastSweptSha:$sha, lastRun:$run, nextSlice:$slice,
+              pendingHostedPrs: [$pend[] | select($kt[.] != null)], pendingHostedTries: $kt}' > "$tmp" && mv "$tmp" "$STATE"
   ln -sfn "$RUN_DIR" "$QA_HOME/latest"
   SUMMARY="$(grep -m1 -E '^RESULT:' "$RUN_DIR/report.md" | cut -c1-180)"
   notify "${SUMMARY:-Sweep complete} — main@${NEW_SHA:0:9}"
