@@ -35,17 +35,11 @@
  * body (W4 D14).
  */
 import { Hono, type Context } from 'hono';
-import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { portalUserIdentities, portalUsers } from '../../db/schema';
+import { db, withSystemDbAccessContext } from '../../db';
+import { portalUserIdentities } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { getPortalGoogleConfig, type PortalGoogleConfig } from '../../config/portalGoogle';
-import {
-  PortalAccessPolicyOrgNotFoundError,
-  isSignInMethodAllowed,
-  resolvePortalAccessPolicy,
-} from '../../services/portalAccessPolicy';
 import { resolvePortalOidcSignIn } from '../../services/portalOidc/accountResolution';
 import {
   PortalGoogleTokenError,
@@ -55,26 +49,22 @@ import {
 } from '../../services/portalOidc/googleClient';
 import type { PortalGoogleVerifiedIdentity, PortalOidcPurpose } from '../../services/portalOidc/types';
 import { PORTAL_GOOGLE_ISSUER } from '../../services/portalOidc/validators';
-import { hostOrgIdFor } from './requestHost';
-import {
-  hashPortalCapabilityToken,
-  peekPortalCapabilityToken,
-  peekPortalCapabilityTokenByHash,
-  validatePortalCapability,
-} from './capabilityTokens';
-import { checkRateLimit, sweepPortalState, validatePortalCookieCsrfRequest } from './helpers';
+import { peekPortalCapabilityTokenByHash } from './capabilityTokens';
+import { checkRateLimit, sweepPortalState } from './helpers';
 import {
   CALLBACK_RATE_LIMIT,
-  INVALID_INVITE,
-  START_RATE_LIMIT,
   answerCallback,
   consumeInviteForSso,
   finishSignIn,
   ipRateKey,
+  linkStatus,
   parseGoogleCallbackQuery,
   readCallbackState,
   refuse,
+  ssoStartSchema,
   startFlow,
+  startLinkFlow,
+  startSignIn,
   type CallbackContext,
 } from './oidcShared';
 
@@ -82,7 +72,6 @@ export const oidcGoogleRoutes = new Hono();
 
 const PROVIDER = 'google';
 const NOT_FOUND = { error: 'Not found' };
-const TOO_MANY = { error: 'Too many attempts. Please try again later.' };
 
 // ============================================
 // Test seam (no network in tests)
@@ -221,107 +210,34 @@ oidcGoogleRoutes.get('/auth/oidc/google/callback', (c) => {
 // Start (public)
 // ============================================
 
-const startSchema = z.discriminatedUnion('purpose', [
-  z.object({ purpose: z.literal('login') }).strict(),
-  z.object({ purpose: z.literal('invite'), inviteToken: z.string().min(1).max(512) }).strict(),
-]);
-
 oidcGoogleRoutes.post('/auth/oidc/google/start', async (c, next) => {
   // Ships dark: 404 before the body is even parsed.
   if (!getPortalGoogleConfig()) return c.json(NOT_FOUND, 404);
   return next();
-}, zValidator('json', startSchema), async (c) => {
+}, zValidator('json', ssoStartSchema), async (c) => {
   sweepPortalState();
   const cfg = getPortalGoogleConfig();
   if (!cfg) return c.json(NOT_FOUND, 404);
-
-  const rate = await checkRateLimit(ipRateKey('start', c), START_RATE_LIMIT);
-  if (!rate.allowed) {
-    c.header('Retry-After', String(rate.retryAfterSeconds));
-    return c.json(TOO_MANY, 429);
-  }
-
-  const body = c.req.valid('json');
-  let purpose: PortalOidcPurpose;
-  if (body.purpose === 'invite') {
-    // Peeked, never consumed: the callback consumes it by its hash after
-    // Google. Valid here = valid for a Google acceptance, including D13's
-    // "the invited account has no Google identity yet" (re-checked at the
-    // callback before the invite is consumed).
-    const peeked = await peekPortalCapabilityToken('invite', body.inviteToken);
-    const check = peeked ? await validatePortalCapability('invite', peeked, { requirePasswordMethod: false }) : null;
-    if (!check?.ok) return c.json({ error: INVALID_INVITE }, 400);
-    if (await accountHasGoogleIdentity(check.user.id, check.user.orgId)) return c.json({ error: INVALID_INVITE }, 400);
-    purpose = { kind: 'invite', inviteTokenHash: hashPortalCapabilityToken(body.inviteToken) };
-  } else {
-    purpose = { kind: 'login' };
-  }
-
-  return startGoogleFlow(c, cfg, purpose, await hostOrgIdFor(c));
+  // Rate limit, invite peek + SSO validation, host org: ./oidcShared. A Google
+  // acceptance also needs an invited account with no Google identity yet (D13;
+  // re-checked by the callback's consumer before the invite is consumed).
+  return startSignIn(c, c.req.valid('json'), (purpose, hostOrgId) => startGoogleFlow(c, cfg, purpose, hostOrgId), {
+    inviteAllowed: async (user) => !(await accountHasGoogleIdentity(user.id, user.orgId)),
+  });
 });
 
 // ============================================
-// Link (behind portalAuthMiddleware, mounted in index.ts)
+// Link (behind portalAuthMiddleware, mounted in index.ts; shared with Microsoft, ./oidcShared)
 // ============================================
 
 oidcGoogleRoutes.post('/auth/oidc/google/link/start', async (c) => {
   const cfg = getPortalGoogleConfig();
   if (!cfg) return c.json(NOT_FOUND, 404);
-
-  const csrfError = validatePortalCookieCsrfRequest(c);
-  if (csrfError) return c.json({ error: csrfError }, 403);
-
-  const rate = await checkRateLimit(ipRateKey('start', c), START_RATE_LIMIT);
-  if (!rate.allowed) {
-    c.header('Retry-After', String(rate.retryAfterSeconds));
-    return c.json(TOO_MANY, 429);
-  }
-
-  const auth = c.get('portalAuth');
-  // The session's account generation (the middleware just checked it equals
-  // the session's): the link is refused at callback if it moved since.
-  const [account] = await db
-    .select({ authEpoch: portalUsers.authEpoch })
-    .from(portalUsers)
-    .where(and(eq(portalUsers.id, auth.user.id), eq(portalUsers.orgId, auth.user.orgId)))
-    .limit(1);
-  if (!account) return c.json({ error: 'Invalid or expired session' }, 401);
-
-  // Inside the request's org transaction: the host lookup must see every
-  // org's portal_branding row, so it runs in its own system context.
-  const hostOrgId = await runOutsideDbContext(() => hostOrgIdFor(c));
-  return startGoogleFlow(
-    c,
-    cfg,
-    { kind: 'link', portalUserId: auth.user.id, orgId: auth.user.orgId, authEpoch: account.authEpoch },
-    hostOrgId,
-  );
+  return startLinkFlow(c, (purpose, hostOrgId) => startGoogleFlow(c, cfg, purpose, hostOrgId));
 });
 
-oidcGoogleRoutes.get('/auth/oidc/google/link-status', async (c) => {
+// Ships dark: 404 (not `available: false`) while the Google client is not configured.
+oidcGoogleRoutes.get('/auth/oidc/google/link-status', (c) => {
   if (!getPortalGoogleConfig()) return c.json(NOT_FOUND, 404);
-  c.header('Cache-Control', 'no-store');
-  const auth = c.get('portalAuth');
-
-  let googleAllowed: boolean;
-  try {
-    // Under the request's org context (RLS shows the org its own rows); the
-    // resolver runs W5's verified-domain read outside it (D6 context rule).
-    googleAllowed = isSignInMethodAllowed(await resolvePortalAccessPolicy(auth.user.orgId), 'google');
-  } catch (error) {
-    // Thrown in JS after the read: poisons nothing in the held transaction.
-    if (!(error instanceof PortalAccessPolicyOrgNotFoundError)) throw error;
-    googleAllowed = false;
-  }
-  const [identity] = await db
-    .select({ id: portalUserIdentities.id })
-    .from(portalUserIdentities)
-    .where(and(
-      eq(portalUserIdentities.portalUserId, auth.user.id),
-      eq(portalUserIdentities.orgId, auth.user.orgId),
-      eq(portalUserIdentities.provider, PROVIDER),
-    ))
-    .limit(1);
-
-  return c.json({ available: googleAllowed, linked: identity !== undefined });
+  return linkStatus(c, PROVIDER, true);
 });

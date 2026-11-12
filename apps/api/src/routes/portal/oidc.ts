@@ -45,9 +45,6 @@
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../../db';
-import { portalUserIdentities, portalUsers } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { getPortalEntraConfig, type PortalEntraConfig } from '../../config/portalEntra';
 import { getPortalGoogleConfig } from '../../config/portalGoogle';
@@ -81,26 +78,24 @@ import {
   peekPortalCapabilityToken,
   validatePortalCapability,
 } from './capabilityTokens';
-import {
-  checkRateLimit,
-  getClientIp,
-  sweepPortalState,
-  validatePortalCookieCsrfRequest,
-} from './helpers';
+import { checkRateLimit, getClientIp, sweepPortalState } from './helpers';
 import {
   CALLBACK_RATE_LIMIT,
   INVALID_INVITE,
   SERVICE_UNAVAILABLE,
-  START_RATE_LIMIT,
   answerCallback,
   bindingCookieSecure,
   consumeInviteForSso,
   finishSignIn,
   ipRateKey,
+  linkStatus,
   parseCallbackQuery,
   readCallbackState,
   refuse,
+  ssoStartSchema,
   startFlow,
+  startLinkFlow,
+  startSignIn,
   type CallbackContext,
 } from './oidcShared';
 import { PORTAL_USE_REDIS, RESET_PASSWORD_RATE_LIMIT } from './schemas';
@@ -317,101 +312,26 @@ oidcRoutes.get('/auth/methods', async (c) => {
 // Start (public)
 // ============================================
 
-const startSchema = z.discriminatedUnion('purpose', [
-  z.object({ purpose: z.literal('login') }).strict(),
-  z.object({ purpose: z.literal('invite'), inviteToken: z.string().min(1).max(512) }).strict(),
-]);
-
-oidcRoutes.post('/auth/oidc/entra/start', zValidator('json', startSchema), async (c) => {
+oidcRoutes.post('/auth/oidc/entra/start', zValidator('json', ssoStartSchema), async (c) => {
   sweepPortalState();
   const cfg = getPortalEntraConfig();
   if (!cfg) return c.json({ error: 'Not found' }, 404);
-
-  const rate = await checkRateLimit(ipRateKey('start', c), START_RATE_LIMIT);
-  if (!rate.allowed) {
-    c.header('Retry-After', String(rate.retryAfterSeconds));
-    return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
-  }
-
-  const body = c.req.valid('json');
-  let purpose: PortalOidcPurpose;
-  if (body.purpose === 'invite') {
-    // Peeked, never consumed: the callback consumes it by its hash after
-    // Microsoft. Valid here = valid for a Microsoft acceptance.
-    const peeked = await peekPortalCapabilityToken('invite', body.inviteToken);
-    const check = peeked ? await validatePortalCapability('invite', peeked, { requirePasswordMethod: false }) : null;
-    if (!check?.ok) return c.json({ error: INVALID_INVITE }, 400);
-    purpose = { kind: 'invite', inviteTokenHash: hashPortalCapabilityToken(body.inviteToken) };
-  } else {
-    purpose = { kind: 'login' };
-  }
-
-  return startEntraFlow(c, cfg, purpose, await hostOrgIdFor(c));
+  // Rate limit, invite peek + SSO validation, host org: ./oidcShared.
+  return startSignIn(c, c.req.valid('json'), (purpose, hostOrgId) => startEntraFlow(c, cfg, purpose, hostOrgId));
 });
 
 // ============================================
-// Link (behind portalAuthMiddleware, mounted in index.ts)
+// Link (behind portalAuthMiddleware, mounted in index.ts; shared with Google, ./oidcShared)
 // ============================================
 
 oidcRoutes.post('/auth/oidc/entra/link/start', async (c) => {
   const cfg = getPortalEntraConfig();
   if (!cfg) return c.json({ error: 'Not found' }, 404);
-
-  const csrfError = validatePortalCookieCsrfRequest(c);
-  if (csrfError) return c.json({ error: csrfError }, 403);
-
-  const rate = await checkRateLimit(ipRateKey('start', c), START_RATE_LIMIT);
-  if (!rate.allowed) {
-    c.header('Retry-After', String(rate.retryAfterSeconds));
-    return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
-  }
-
-  const auth = c.get('portalAuth');
-  // The session's account generation (the middleware just checked it equals
-  // the session's): the link is refused at callback if it moved since.
-  const [account] = await db
-    .select({ authEpoch: portalUsers.authEpoch })
-    .from(portalUsers)
-    .where(and(eq(portalUsers.id, auth.user.id), eq(portalUsers.orgId, auth.user.orgId)))
-    .limit(1);
-  if (!account) return c.json({ error: 'Invalid or expired session' }, 401);
-
-  // Inside the request's org transaction: the host lookup must see every
-  // org's portal_branding row, so it runs in its own system context.
-  const hostOrgId = await runOutsideDbContext(() => hostOrgIdFor(c));
-  return startEntraFlow(
-    c,
-    cfg,
-    { kind: 'link', portalUserId: auth.user.id, orgId: auth.user.orgId, authEpoch: account.authEpoch },
-    hostOrgId,
-  );
+  return startLinkFlow(c, (purpose, hostOrgId) => startEntraFlow(c, cfg, purpose, hostOrgId));
 });
 
-oidcRoutes.get('/auth/oidc/entra/link-status', async (c) => {
-  c.header('Cache-Control', 'no-store');
-  const auth = c.get('portalAuth');
-
-  let microsoftAllowed: boolean;
-  try {
-    // Reads under the request's org context (RLS shows the org its own rows).
-    microsoftAllowed = isSignInMethodAllowed(await resolvePortalAccessPolicy(auth.user.orgId), 'entra');
-  } catch (error) {
-    // Thrown in JS after the read: poisons nothing in the held transaction.
-    if (!(error instanceof PortalAccessPolicyOrgNotFoundError)) throw error;
-    microsoftAllowed = false;
-  }
-  const [identity] = await db
-    .select({ id: portalUserIdentities.id })
-    .from(portalUserIdentities)
-    .where(and(
-      eq(portalUserIdentities.portalUserId, auth.user.id),
-      eq(portalUserIdentities.orgId, auth.user.orgId),
-      eq(portalUserIdentities.provider, PROVIDER),
-    ))
-    .limit(1);
-
-  return c.json({ available: getPortalEntraConfig() !== null && microsoftAllowed, linked: identity !== undefined });
-});
+// Microsoft answers `available: false` (not 404) while its app is not configured (W4).
+oidcRoutes.get('/auth/oidc/entra/link-status', (c) => linkStatus(c, PROVIDER, getPortalEntraConfig() !== null));
 
 // ============================================
 // Invite methods (public; the accept-invite buckets)

@@ -8,7 +8,11 @@
  *  - the browser-binding cookie's `Secure` rule and the per-IP rate-limit keys
  *    (ONE `start` and ONE `callback` bucket shared by both providers, so
  *    switching providers buys no extra attempts);
- *  - minting the flow state and answering `{ redirectUrl }` at start;
+ *  - minting the flow state and answering `{ redirectUrl }` at start, and the
+ *    start routes' shared bodies: `startSignIn` (start bucket, invite peek +
+ *    SSO validation, host org), `startLinkFlow` (CSRF, start bucket, the
+ *    session's epoch, host org outside the org context) and `linkStatus`;
+ *    each router keeps only its config check and authorize URL;
  *  - the callback envelope: always 302, always clears the binding cookie,
  *    never a 500 (an unexpected throw is logged by message and refused);
  *  - the single-use, browser-bound state read, with the provider check: a
@@ -29,10 +33,19 @@
  * body (W4 D14).
  */
 import type { Context } from 'hono';
+import { z } from 'zod';
+import { and, eq } from 'drizzle-orm';
+import { db, runOutsideDbContext } from '../../db';
+import { portalUserIdentities, portalUsers } from '../../db/schema';
 import { envStr } from '../../utils/envStr';
 import { rateLimitIpKey } from '../../services/clientIp';
 import { writeAuditEventAsync } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
+import {
+  PortalAccessPolicyOrgNotFoundError,
+  isSignInMethodAllowed,
+  resolvePortalAccessPolicy,
+} from '../../services/portalAccessPolicy';
 import type { PortalOidcDenyReason, PortalOidcSignInOutcome } from '../../services/portalOidc/accountResolution';
 import {
   PORTAL_OIDC_BINDING_COOKIE,
@@ -46,8 +59,22 @@ import type { PortalOidcProvider, PortalOidcPurpose, PortalOidcState } from '../
 import { isRequestConnectionSecure } from '../auth/helpers';
 import { auditTenantProofRefusal, entraSetupResult } from './oidcTenantProof';
 import { PortalSessionStoreUnavailableError, mintPortalBrowserSession } from './browserSession';
-import { consumePortalCapabilityTokenByHash, validatePortalCapability } from './capabilityTokens';
-import { buildPortalUrl, getClientIp, getCookieValue, sweepPortalState } from './helpers';
+import {
+  consumePortalCapabilityTokenByHash,
+  hashPortalCapabilityToken,
+  peekPortalCapabilityToken,
+  validatePortalCapability,
+  type CapabilityUserRow,
+} from './capabilityTokens';
+import {
+  buildPortalUrl,
+  checkRateLimit,
+  getClientIp,
+  getCookieValue,
+  sweepPortalState,
+  validatePortalCookieCsrfRequest,
+} from './helpers';
+import { hostOrgIdFor } from './requestHost';
 
 // ============================================
 // Constants
@@ -142,6 +169,122 @@ export async function startFlow(
 }
 
 // ============================================
+// Start and link (the routers keep their own config check and authorize URL)
+// ============================================
+
+/** What a provider router does once the shared code has chosen the purpose and host org. */
+export type StartProviderFlow = (purpose: PortalOidcPurpose, hostOrgId: string | null) => Promise<Response>;
+
+/** Body of `POST /auth/oidc/{provider}/start`. */
+export const ssoStartSchema = z.discriminatedUnion('purpose', [
+  z.object({ purpose: z.literal('login') }).strict(),
+  z.object({ purpose: z.literal('invite'), inviteToken: z.string().min(1).max(512) }).strict(),
+]);
+export type SsoStartBody = z.infer<typeof ssoStartSchema>;
+
+/** The shared per-IP start bucket (login, invite and link starts of every provider): a 429 response when spent, else null. */
+export async function startRateLimited(c: Context): Promise<Response | null> {
+  const rate = await checkRateLimit(ipRateKey('start', c), START_RATE_LIMIT);
+  if (rate.allowed) return null;
+  c.header('Retry-After', String(rate.retryAfterSeconds));
+  return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
+}
+
+/**
+ * A public sign-in start (login, or an invitation-bound sign-in). The invite
+ * is peeked, never consumed: the callback consumes it by its hash after the
+ * provider. Valid here = valid for an SSO acceptance (no password
+ * requirement), plus the provider's own `inviteAllowed` check on the invited
+ * account; anything else is the accept-invite 400 body.
+ */
+export async function startSignIn(
+  c: Context,
+  body: SsoStartBody,
+  startProviderFlow: StartProviderFlow,
+  opts: { inviteAllowed?: (user: CapabilityUserRow) => Promise<boolean> } = {},
+): Promise<Response> {
+  const limited = await startRateLimited(c);
+  if (limited) return limited;
+
+  let purpose: PortalOidcPurpose;
+  if (body.purpose === 'invite') {
+    const peeked = await peekPortalCapabilityToken('invite', body.inviteToken);
+    const check = peeked ? await validatePortalCapability('invite', peeked, { requirePasswordMethod: false }) : null;
+    if (!check?.ok) return c.json({ error: INVALID_INVITE }, 400);
+    if (opts.inviteAllowed && !(await opts.inviteAllowed(check.user))) return c.json({ error: INVALID_INVITE }, 400);
+    purpose = { kind: 'invite', inviteTokenHash: hashPortalCapabilityToken(body.inviteToken) };
+  } else {
+    purpose = { kind: 'login' };
+  }
+
+  return startProviderFlow(purpose, await hostOrgIdFor(c));
+}
+
+/**
+ * `POST /auth/oidc/{provider}/link/start`, behind `portalAuthMiddleware`
+ * (index.ts): CSRF, the shared start bucket, then a `link` purpose pinned to
+ * the session's user, org and CURRENT account generation (the middleware just
+ * checked it equals the session's): the link is refused at callback if it
+ * moved since.
+ */
+export async function startLinkFlow(c: Context, startProviderFlow: StartProviderFlow): Promise<Response> {
+  const csrfError = validatePortalCookieCsrfRequest(c);
+  if (csrfError) return c.json({ error: csrfError }, 403);
+
+  const limited = await startRateLimited(c);
+  if (limited) return limited;
+
+  const auth = c.get('portalAuth');
+  const [account] = await db
+    .select({ authEpoch: portalUsers.authEpoch })
+    .from(portalUsers)
+    .where(and(eq(portalUsers.id, auth.user.id), eq(portalUsers.orgId, auth.user.orgId)))
+    .limit(1);
+  if (!account) return c.json({ error: 'Invalid or expired session' }, 401);
+
+  // Inside the request's org transaction: the host lookup must see every
+  // org's portal_branding row, so it runs in its own system context.
+  const hostOrgId = await runOutsideDbContext(() => hostOrgIdFor(c));
+  return startProviderFlow(
+    { kind: 'link', portalUserId: auth.user.id, orgId: auth.user.orgId, authEpoch: account.authEpoch },
+    hostOrgId,
+  );
+}
+
+/**
+ * `GET /auth/oidc/{provider}/link-status`, behind `portalAuthMiddleware`:
+ * `{ available, linked }` for the signed-in account. `available` = the
+ * provider's client is configured AND the org's effective policy allows it;
+ * `linked` = the account has an identity of that provider.
+ */
+export async function linkStatus(c: Context, provider: PortalOidcProvider, configured: boolean): Promise<Response> {
+  c.header('Cache-Control', 'no-store');
+  const auth = c.get('portalAuth');
+
+  let allowed: boolean;
+  try {
+    // Reads under the request's org context (RLS shows the org its own rows);
+    // the resolver runs W5's verified-domain read outside it (W7 D6).
+    allowed = isSignInMethodAllowed(await resolvePortalAccessPolicy(auth.user.orgId), provider);
+  } catch (error) {
+    // Thrown in JS after the read: poisons nothing in the held transaction.
+    if (!(error instanceof PortalAccessPolicyOrgNotFoundError)) throw error;
+    allowed = false;
+  }
+  const [identity] = await db
+    .select({ id: portalUserIdentities.id })
+    .from(portalUserIdentities)
+    .where(and(
+      eq(portalUserIdentities.portalUserId, auth.user.id),
+      eq(portalUserIdentities.orgId, auth.user.orgId),
+      eq(portalUserIdentities.provider, provider),
+    ))
+    .limit(1);
+
+  return c.json({ available: configured && allowed, linked: identity !== undefined });
+}
+
+// ============================================
 // Audit (the callback is a GET: the POST-only portal auth audit wrapper skips it)
 // ============================================
 
@@ -221,12 +364,12 @@ export type CallbackQuery =
 
 const CALLBACK_CODE_KEYS: ReadonlySet<string> = new Set(['code', 'state', 'session_state']);
 
-export function single(params: URLSearchParams, name: string): string | null {
+function single(params: URLSearchParams, name: string): string | null {
   const values = params.getAll(name);
   return values.length === 1 ? values[0]! : null;
 }
 
-export function validOpaque(value: string | null, maxLength: number): value is string {
+function validOpaque(value: string | null, maxLength: number): value is string {
   return value !== null && value.length > 0 && value.length <= maxLength && !/[\u0000-\u001f\u007f]/.test(value);
 }
 
@@ -341,7 +484,10 @@ export async function answerCallback(
   try {
     location = await run(ctx);
   } catch (error) {
+    // Also how an invariant breach (e.g. a session mint refusing a missing pin)
+    // reaches us: logged, captured, audited as internal_error, still a 302.
     console.error(`[portal] ${providerLabel(provider)} sign-in callback failed:`, error instanceof Error ? error.message : error);
+    captureException(error instanceof Error ? error : new Error(String(error)), c, { area: 'portal-oidc-callback', provider });
     location = await refuse(c, 'internal_error', { purpose: ctx.purpose, provider });
   }
   return c.redirect(location, 302);

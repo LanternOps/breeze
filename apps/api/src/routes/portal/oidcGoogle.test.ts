@@ -642,6 +642,12 @@ describe('GET /auth/oidc/google/callback', () => {
       expect(portalSessions.size).toBe(0);
       expect(JSON.stringify(error.mock.calls)).toContain('googleHostedDomain must be a valid domain');
       expect(h.audit.mock.calls.at(-1)![1]).toMatchObject({ details: { provider: 'google', reason: 'internal_error' } });
+      // ...and captured, so an invariant breach is visible (fix round 1), with no token or code content.
+      expect(h.capture).toHaveBeenCalledTimes(1);
+      const [captured, , tags] = h.capture.mock.calls[0]!;
+      expect((captured as Error).message).toContain('googleHostedDomain must be a valid domain');
+      expect(tags).toEqual({ area: 'portal-oidc-callback', provider: 'google' });
+      expect(JSON.stringify(h.capture.mock.calls)).not.toMatch(/auth-code-value|code=|state=/);
     } finally {
       error.mockRestore();
     }
