@@ -134,10 +134,20 @@ describe('offeringDetailsPatchSchema', () => {
     expect(offeringDetailsPatchSchema.safeParse({ ...base, requiredPermission: null }).success).toBe(true);
     expect(offeringDetailsPatchSchema.safeParse({ ...base, requiredPermission: 'billing:manage' }).success).toBe(false);
   });
-  it('does not accept the tool fields yet: they ship dark until the write path validates merged state (#11393 W05)', () => {
+  it('accepts the tool fields (#11398 W05: the write path validates merged state server-side)', () => {
     const base = { expectedUpdatedAt: '2026-10-01T00:00:00.000Z' };
-    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolProfile: 'standard' }).success).toBe(false);
-    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: 32768 }).success).toBe(false);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolProfile: 'standard', toolAllowlist: null }).success).toBe(true);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: 32768 }).success).toBe(true);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: null }).success).toBe(true);
+    expect(offeringDetailsPatchSchema.safeParse({
+      ...base, toolProfile: 'custom', toolAllowlist: { domains: ['devices'], tools: ['search_logs'] },
+    }).success).toBe(true);
+  });
+  it('applies the same bounds to the tool fields as offeringToolSettingsPatchSchema', () => {
+    const base = { expectedUpdatedAt: '2026-10-01T00:00:00.000Z' };
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: 1023 }).success).toBe(false);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolProfile: 'tiny' }).success).toBe(false);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolAllowlist: { domains: [], tools: [] } }).success).toBe(false);
   });
 });
 

@@ -59,6 +59,13 @@ import { SURFACE_READINESS_KEY, SURFACE_TURN_VERSION, readinessProfileKey } from
 import { FIDELITY_HARNESS_VERSION } from '../llm/providerFidelityHarness';
 
 const P = '22222222-2222-4222-8222-222222222222';
+/** A fake tool catalog (#11398): the registry and the script builder each declare a handful of names. */
+const CATALOG = {
+  surfaceNames: (s: string) => new Set(s === 'script_builder'
+    ? ['apply_script_code', 'apply_script_metadata', 'query_devices', 'get_device_details', 'list_scripts', 'get_script_details', 'list_script_templates', 'execute_script_on_device']
+    : s === 'office_chat' ? ['read_range'] : ['query_devices', 'search_logs', 'set_device_context', 'execute_command', 'run_script']),
+  domainOf: () => undefined,
+};
 const ORG = '33333333-3333-4333-8333-333333333333';
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -138,7 +145,7 @@ beforeEach(() => {
 describe('buildPartnerModelsSnapshot', () => {
   it('puts the implicit platform connection first, then partner connections', async () => {
     h.connections = [conn({ id: C, kind: 'anthropic_byok', name: 'Anthropic' })];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.connections.map((c) => [c.id, c.kind])).toEqual([[null, 'platform'], [C, 'anthropic_byok']]);
     expect(s.connections[1]).not.toHaveProperty('apiKeyEncrypted');
     expect(s.connections[1]).not.toHaveProperty('keyFingerprint');
@@ -147,7 +154,7 @@ describe('buildPartnerModelsSnapshot', () => {
 
   it('decides "platform configured" exactly as the candidate loader does (Anthropic key, agent_sdk) (BD-3)', async () => {
     h.platformConfigured = false;
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.connections.map((c) => c.kind)).not.toContain('platform');
     expect(h.platformConfiguredCalls).toEqual([[process.env.ANTHROPIC_API_KEY, 'agent_sdk']]);
   });
@@ -155,7 +162,7 @@ describe('buildPartnerModelsSnapshot', () => {
   it('reports the platform connection geo from the platform setting and only the geos the platform key serves (BD-4)', async () => {
     h.platformGeo = 'us';
     h.platformModels = [pm({ id: 'pm-1', optionSupport: { effort: [], thinkingDisplay: [], speed: ['standard'], inferenceGeo: ['eu', 'us'] } })];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.connections[0]).toMatchObject({
       kind: 'platform', inferenceGeo: null, effectiveInferenceGeo: 'us', inferenceGeoSource: 'platform', supportedInferenceGeos: ['us'],
     });
@@ -165,47 +172,47 @@ describe('buildPartnerModelsSnapshot', () => {
   it('a partner connection inherits the platform geo when it has none of its own', async () => {
     h.platformGeo = 'us';
     h.connections = [conn({ id: C, kind: 'anthropic_byok' }), conn({ id: B, kind: 'anthropic_byok', inferenceGeo: 'eu' })];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.connections.slice(1).map((c) => [c.effectiveInferenceGeo, c.inferenceGeoSource])).toEqual([['us', 'platform'], ['eu', 'connection']]);
   });
 
   it('synthesizes a not-yet-added row for each offered platform model with no offering', async () => {
     h.platformModels = [pm({ id: 'pm-1', platformOffered: true }), pm({ id: 'pm-2', platformOffered: false })];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.offerings.filter((o) => o.id === null).map((o) => o.platformModelId)).toEqual(['pm-1']);
   });
 
   it('does not synthesize a row for a platform model the partner already added', async () => {
     h.platformModels = [pm({ id: 'pm-1' })];
     setOfferings([offering({ id: A, platformModelId: 'pm-1' })]);
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.offerings.map((o) => o.id)).toEqual([A]);
   });
 
   it('reports enableBlocker via the enable gate (plan gate on a synthesized row)', async () => {
     h.facts = { plan: 'starter', residencyRequired: false };
     h.platformModels = [pm({ id: 'pm-1', platformOffered: true, minPlan: 'enterprise' })];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.offerings[0]!.enableBlocker).toBe('plan_required');
   });
 
   it('a synthesized row reports residency_unavailable when the platform geo cannot be served, like a loaded one (BD-1)', async () => {
     h.platformGeo = 'eu';
     h.platformModels = [pm({ id: 'pm-1' })];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.offerings[0]!.enableBlocker).toBe('residency_unavailable');
   });
 
   it('a synthesized row with an unknown capabilities tree reports tools the way the loader does (BD-4)', async () => {
     h.platformModels = [pm({ id: 'pm-1', capabilities: null })];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.offerings[0]!.supportsTools).toBe(true);
   });
 
   it('lists the surfaces an offering is default for (partner and org rows)', async () => {
     setOfferings([offering({ id: A })]);
     h.allRows = [{ surface: 'chat', orgId: null, defaultOfferingId: A }, { surface: 'helper', orgId: 'o1', defaultOfferingId: A }];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.offerings[0]!.defaultFor).toEqual([
       { surface: 'chat', level: 'partner', orgId: null },
       { surface: 'helper', level: 'org', orgId: 'o1' },
@@ -215,14 +222,14 @@ describe('buildPartnerModelsSnapshot', () => {
   it('does not count platform-only surfaces (patch_test) in defaultFor: no UI row can manage them (#9455)', async () => {
     setOfferings([offering({ id: A })]);
     h.allRows = [{ surface: 'chat', orgId: null, defaultOfferingId: A }, { surface: 'patch_test', orgId: null, defaultOfferingId: A }];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.offerings[0]!.defaultFor).toEqual([{ surface: 'chat', level: 'partner', orgId: null }]);
   });
 
   it('returns one defaults row per configurable (surface, role), never patch_test', async () => {
     h.partnerRows = [assignment({ surface: 'chat', orgId: null, defaultOfferingId: A, allowUserChoice: true })];
     h.allRows = [{ surface: 'chat', role: 'default', orgId: 'o1', defaultOfferingId: null }, { surface: 'chat', role: 'default', orgId: 'o2', defaultOfferingId: null }];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.defaults).toHaveLength(12); // 9 surfaces + ai_agents' three escalation roles
     expect(s.defaults.map((d) => d.surface)).not.toContain('patch_test');
     const chat = s.defaults.find((d) => d.surface === 'chat')!;
@@ -234,7 +241,7 @@ describe('buildPartnerModelsSnapshot', () => {
   it('marks prices editable only for discovered/manual offerings', async () => {
     h.connections = [conn({ id: C, kind: 'anthropic_byok' })];
     setOfferings([offering({ id: A, source: 'platform' }), offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null })]);
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.offerings.map((o) => [o.id, o.pricesEditable])).toEqual([[A, false], [B, true]]);
   });
 
@@ -243,7 +250,7 @@ describe('buildPartnerModelsSnapshot', () => {
 
     it('drops a disconnected connection even if the live-only reader ever returned one (type-narrowed)', async () => {
       h.connections = [conn({ id: GONE, kind: 'anthropic_byok', status: 'disconnected', keyLast4: null }), conn({ id: C, kind: 'anthropic_byok' })];
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       expect(s.connections.map((c) => c.id)).toEqual([null, C]);
       expect(s.connections.map((c) => c.status)).not.toContain('disconnected');
     });
@@ -256,7 +263,7 @@ describe('buildPartnerModelsSnapshot', () => {
         offering({ id: GONE, source: 'discovered', connectionId: GONE, platformModelId: null, enabled: false }),
       ]);
       h.allRows = [{ surface: 'chat', orgId: 'o1', defaultOfferingId: GONE }];
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       expect(s.offerings.map((o) => o.id)).toEqual([A, B]);
       expect(s.offerings.flatMap((o) => o.defaultFor)).toEqual([]);
     });
@@ -289,7 +296,7 @@ describe('buildPartnerModelsSnapshot', () => {
         conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env' }, keyLast4: null }),
       ];
       setOfferings([gw(O1, null)]);
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       const g = s.connections.find((c) => c.id === G)!;
       expect(g).toMatchObject({
         kind: 'openai_compatible', baseUrl: URL_, managedBy: 'env', funding: 'partner_key',
@@ -303,7 +310,7 @@ describe('buildPartnerModelsSnapshot', () => {
 
     it('an Anthropic-dialect connection is never env-managed, even with a stray managedBy in provider_config', async () => {
       h.connections = [conn({ id: C, kind: 'catalog', providerConfig: { managedBy: 'env', envReleasedAt: '2026-10-01T00:00:00.000Z' } })];
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       expect(s.connections.find((c) => c.id === C)).toMatchObject({ managedBy: null, envReleased: false });
     });
 
@@ -312,7 +319,7 @@ describe('buildPartnerModelsSnapshot', () => {
         conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env', envReleasedAt: '2026-10-01T00:00:00.000Z' } }),
         conn({ id: C, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env' } }),
       ];
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       expect(s.connections.find((c) => c.id === G)).toMatchObject({ managedBy: 'env', envReleased: true });
       expect(s.connections.find((c) => c.id === C)).toMatchObject({ managedBy: 'env', envReleased: false });
       expect(s.connections[0]).toMatchObject({ kind: 'platform', envReleased: false });
@@ -320,7 +327,7 @@ describe('buildPartnerModelsSnapshot', () => {
 
     it('a user-created gateway connection is not managedBy env', async () => {
       h.connections = [conn({ id: G, kind: 'openai_compatible', baseUrl: URL_ })];
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       expect(s.connections.find((c) => c.id === G)!.managedBy).toBeNull();
     });
 
@@ -335,7 +342,7 @@ describe('buildPartnerModelsSnapshot', () => {
         offering({ id: A }),
         offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }),
       ]);
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       const v = (id: string | null) => s.offerings.find((o) => o.id === id)!.verification;
       expect(v(O1)).toEqual({ state: 'verified', at: '2026-10-01T00:00:00.000Z', harnessVersion: FIDELITY_HARNESS_VERSION, summary: null, surfaces: ABSENT_SURFACES });
       expect(v(O2)).toMatchObject({ state: 'stale', at: '2026-10-01T00:00:00.000Z' });
@@ -369,7 +376,7 @@ describe('buildPartnerModelsSnapshot', () => {
         }),
         toolProfile: 'minimal',
       }]);
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       const surfaces = s.offerings.find((o) => o.id === O1)!.verification!.surfaces;
       expect(surfaces.chat).toEqual({ state: 'passed', at: '2026-11-12T01:00:00.000Z', profile: 'minimal', promptTokens: 3100, cachedTokens: 200, summary: null });
       expect(surfaces.helper).toMatchObject({ state: 'failed', summary: 'answered without calling a tool' });
@@ -378,7 +385,7 @@ describe('buildPartnerModelsSnapshot', () => {
       expect(surfaces.office_chat).toEqual(ABSENT);
       // Switching the profile makes every entry stale (none describes the exposure the surfaces now use).
       setOfferings([{ ...gw(O1, { ...record({}), [SURFACE_READINESS_KEY]: { chat: entry('chat') } }), toolProfile: 'standard' }]);
-      const after = await buildPartnerModelsSnapshot(P);
+      const after = await buildPartnerModelsSnapshot(P, CATALOG);
       expect(after.offerings.find((o) => o.id === O1)!.verification!.surfaces.chat.state).toBe('stale');
       expect(JSON.stringify(after.offerings)).not.toContain(SURFACE_READINESS_KEY);
       expect(JSON.stringify(after.offerings)).not.toContain('profileKey');
@@ -395,7 +402,7 @@ describe('buildPartnerModelsSnapshot', () => {
         gw(O4, null),
         { ...offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }), contextWindowOverride: 16_384 },
       ]);
-      const s = await buildPartnerModelsSnapshot(P);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
       const w = (id: string) => s.offerings.find((o) => o.id === id)!.contextWindow;
       expect(w(O1)).toEqual({
         effective: 8_192, source: 'observed', override: null, discovered: 262_144,
@@ -410,13 +417,55 @@ describe('buildPartnerModelsSnapshot', () => {
       expect(w(O4)).toEqual({ effective: null, source: 'unknown', override: null, discovered: null, observed: null });
       expect(w(B)).toBeNull();
     });
+
+    it('#11398 clearing the override restores the discovered window in the DTO', async () => {
+      h.connections = [conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, configVersion: 5 })];
+      setOfferings([{ ...gw(O3, record({})), contextWindowOverride: 16_384, contextWindowDiscovered: 131_072 }]);
+      const before = await buildPartnerModelsSnapshot(P, CATALOG);
+      expect(before.offerings.find((o) => o.id === O3)!.contextWindow).toMatchObject({ effective: 16_384, source: 'override' });
+      setOfferings([{ ...gw(O3, record({})), contextWindowOverride: null, contextWindowDiscovered: 131_072 }]);
+      const after = await buildPartnerModelsSnapshot(P, CATALOG);
+      expect(after.offerings.find((o) => o.id === O3)!.contextWindow).toMatchObject({ effective: 131_072, source: 'discovered', override: null });
+    });
+
+    it('#11398 offering DTO carries the tool profile and what each surface resolves to, and why', async () => {
+      h.connections = [conn({ id: C, kind: 'anthropic_byok' }), conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, configVersion: 5 })];
+      h.platformModels = [pm({ id: 'pm-1' })];
+      setOfferings([
+        { ...gw(O1, record({})), toolProfile: 'auto', contextWindowDiscovered: 8_192 },
+        { ...gw(O2, record({})), toolProfile: 'custom', toolAllowlist: { domains: [], tools: ['search_logs', 'retired_tool'] } },
+        gw(O4, null),
+        { ...offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }), toolProfile: 'standard' },
+      ]);
+      const s = await buildPartnerModelsSnapshot(P, CATALOG);
+      const tp = (id: string | null) => s.offerings.find((o) => o.id === id)!.toolProfile;
+      const surface = (id: string, name: string) => tp(id).surfaces.find((x) => x.surface === name);
+      // auto + an 8,192 discovered window: chat minimal; the script builder minimal lacks execute_script_on_device.
+      expect(tp(O1)).toMatchObject({ profile: 'auto', allowlist: null, windowOverrideSupported: true, droppedCustomNames: [] });
+      expect(surface(O1, 'chat')).toEqual({ surface: 'chat', resolved: 'minimal', reason: 'auto_window', autoProfile: 'minimal', missingRequired: [] });
+      expect(surface(O1, 'script_builder')).toMatchObject({ resolved: 'minimal', missingRequired: ['execute_script_on_device'] });
+      expect(surface(O1, 'ai_agents')).toMatchObject({ resolved: 'minimal', missingRequired: ['execute_command', 'run_script'] });
+      expect(surface(O1, 'office_chat')).toMatchObject({ resolved: 'full', reason: 'auto_unmeasured' });
+      // custom: explicit everywhere; a name no surface declares any more is reported.
+      expect(tp(O2)).toMatchObject({ profile: 'custom', droppedCustomNames: ['retired_tool'] });
+      expect(surface(O2, 'helper')).toMatchObject({ resolved: 'custom', reason: 'explicit' });
+      // unknown window: auto stays full.
+      expect(surface(O4, 'chat')).toMatchObject({ resolved: 'full', reason: 'auto_unknown_window' });
+      // An Anthropic-key model: the profile applies, an override cannot.
+      expect(tp(B)).toMatchObject({ profile: 'standard', windowOverrideSupported: false });
+      expect(surface(B, 'chat')).toMatchObject({ resolved: 'standard', reason: 'explicit' });
+      // A platform model the partner has not added yet is auto / full everywhere.
+      const synth = s.offerings.find((o) => o.id === null)!.toolProfile;
+      expect(synth.profile).toBe('auto');
+      expect(synth.surfaces.every((x) => x.resolved === 'full')).toBe(true);
+    });
   });
 
   it('includes the catalog only when the catalog flag is on', async () => {
     h.providers = [{ entryId: 'e1', slug: 's', name: 'Prov', dataNote: null, verifiedModels: ['m1', 'constructor'], modelMap: { m1: 'x' } }];
-    expect((await buildPartnerModelsSnapshot(P)).catalog).toEqual([]);
+    expect((await buildPartnerModelsSnapshot(P, CATALOG)).catalog).toEqual([]);
     h.catalogEnabled = true;
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(s.catalogEnabled).toBe(true);
     expect(s.catalog).toEqual([{ entryId: 'e1', slug: 's', name: 'Prov', dataNote: null, models: ['m1'] }]);
   });
@@ -424,7 +473,7 @@ describe('buildPartnerModelsSnapshot', () => {
 
 describe('W09 role rows and fallback lists in the views', () => {
   it('lists one defaults entry per (surface, role), ai_agents with its three stages', async () => {
-    const snap = await buildPartnerModelsSnapshot(P);
+    const snap = await buildPartnerModelsSnapshot(P, CATALOG);
     expect(snap.defaults.filter((d) => d.surface === 'ai_agents').map((d) => d.role)).toEqual(['default', 'triage', 'analysis', 'remediation']);
     expect(snap.defaults.find((d) => d.surface === 'chat')).toMatchObject({ role: 'default' });
   });
@@ -435,7 +484,7 @@ describe('W09 role rows and fallback lists in the views', () => {
       assignment({ surface: 'ai_agents', role: 'triage', orgId: null, defaultOfferingId: B, allowUserChoice: true, fallbackOfferingIds: [A], fallbackMayCrossFunding: false }),
     ];
     h.allRows = [{ surface: 'ai_agents', role: 'triage', orgId: 'o1', defaultOfferingId: null }, { surface: 'ai_agents', role: 'default', orgId: 'o2', defaultOfferingId: null }];
-    const s = await buildPartnerModelsSnapshot(P);
+    const s = await buildPartnerModelsSnapshot(P, CATALOG);
     const triage = s.defaults.find((d) => d.surface === 'ai_agents' && d.role === 'triage')!;
     expect(triage.partner).toMatchObject({ role: 'triage', defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false });
     expect(triage.orgOverrideCount).toBe(1);

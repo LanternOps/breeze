@@ -127,18 +127,6 @@ const allowedOptionsSchema = z.object({
   speed: z.array(offeringOptionsSchema.shape.speed.unwrap()).min(1).optional(),
 }).strict();
 
-export const offeringDetailsPatchSchema = z.object({
-  expectedUpdatedAt: z.string().datetime(),
-  displayName: z.string().trim().min(1).max(120).nullable().optional(),
-  /** All four or null (DB price_chk). Only discovered/manual offerings carry prices (spec §8). */
-  prices: modelRatesSchema.nullable().optional(),
-  defaultOptions: offeringOptionsSchema.nullable().optional(),
-  allowedOptions: allowedOptionsSchema.nullable().optional(),
-  requiredPermission: z.enum(AI_MODEL_REQUIRED_PERMISSION_CHOICES).nullable().optional(),
-  refusalFallbackOfferingId: uuid.nullable().optional(),
-}).strict();
-export type OfferingDetailsPatch = z.infer<typeof offeringDetailsPatchSchema>;
-
 /**
  * Tool profiles for small-context models (#11393, spec
  * 2026-11-06-small-model-tool-profiles). `auto` picks from a known context
@@ -158,24 +146,42 @@ export type AiToolAllowlist = z.infer<typeof aiToolAllowlistSchema>;
 export const CONTEXT_WINDOW_OVERRIDE_MIN = 1024;
 export const CONTEXT_WINDOW_OVERRIDE_MAX = 100_000_000;
 
-/**
- * The offering's tool fields as a patch fragment. Not part of
- * `offeringDetailsPatchSchema` yet: the profile ships dark until the write
- * path validates `custom ⇔ allowlist` against the merged stored state
- * (#11393 W05). Only the shape is checked here; both fields may be absent.
- */
 /** A `custom` allow-list must name something: an empty one would leave a surface with no tools and no refusal. */
 const nonEmptyToolAllowlistSchema = aiToolAllowlistSchema.refine(
   (a) => a.domains.length + a.tools.length > 0,
   { message: 'Choose at least one tool area or tool.' },
 );
 
+/**
+ * The offering's tool fields as a patch fragment (spread into
+ * `offeringDetailsPatchSchema`). Only the shape is checked here; both fields
+ * may be absent.
+ */
 export const offeringToolSettingsPatchSchema = z.object({
   toolProfile: z.enum(AI_TOOL_PROFILES).optional(),
   toolAllowlist: nonEmptyToolAllowlistSchema.nullable().optional(),
   contextWindowOverride: z.number().int().min(CONTEXT_WINDOW_OVERRIDE_MIN).max(CONTEXT_WINDOW_OVERRIDE_MAX).nullable().optional(),
 }).strict();
 export type OfferingToolSettingsPatch = z.infer<typeof offeringToolSettingsPatchSchema>;
+
+export const offeringDetailsPatchSchema = z.object({
+  expectedUpdatedAt: z.string().datetime(),
+  displayName: z.string().trim().min(1).max(120).nullable().optional(),
+  /** All four or null (DB price_chk). Only discovered/manual offerings carry prices (spec §8). */
+  prices: modelRatesSchema.nullable().optional(),
+  defaultOptions: offeringOptionsSchema.nullable().optional(),
+  allowedOptions: allowedOptionsSchema.nullable().optional(),
+  requiredPermission: z.enum(AI_MODEL_REQUIRED_PERMISSION_CHOICES).nullable().optional(),
+  refusalFallbackOfferingId: uuid.nullable().optional(),
+  /**
+   * #11398 W05: the tool profile, its `custom` allow-list and the context
+   * window override. Only the shape is checked here; the API validates the
+   * MERGED stored + patch state (custom ⇔ allow-list, known tool names, the
+   * override on gateway models only, and every surface floor).
+   */
+  ...offeringToolSettingsPatchSchema.shape,
+}).strict();
+export type OfferingDetailsPatch = z.infer<typeof offeringDetailsPatchSchema>;
 
 const configurableSurface = z.enum(CONFIGURABLE_AI_SURFACES as unknown as [AiSurface, ...AiSurface[]]);
 /** W09 (#7607): `default` on every surface; ai_agents also has the escalation stages (checked per surface below). */

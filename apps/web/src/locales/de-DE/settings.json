@@ -600,7 +600,74 @@
       "removeTitle": "Dieses Modell entfernen?",
       "removeMessage": "„{{model}}“ wird aus dieser Verbindung gelöscht. Bisherige Nutzungs- und Kostendaten bleiben erhalten. Sie können es später erneut hinzufügen.",
       "removed": "Modell entfernt",
-      "removeFailed": "Das Modell konnte nicht entfernt werden. Versuchen Sie es erneut."
+      "removeFailed": "Das Modell konnte nicht entfernt werden. Versuchen Sie es erneut.",
+      "tools": {
+        "title": "Tools und Kontext",
+        "partnerOnly": "Wird vom Partner am Modell festgelegt. Organisationen wählen Modelle aus; sie können dies nicht überschreiben.",
+        "profileLabel": "Tool-Profil",
+        "profile": {
+          "auto": "Auto (passend zum Kontextfenster)",
+          "full": "Vollständig (alle Tools)",
+          "standard": "Standard",
+          "minimal": "Minimal (nur Lesen)",
+          "custom": "Benutzerdefiniert"
+        },
+        "profileHint": {
+          "auto": "Breeze wählt das größte Profil, das in das bekannte Kontextfenster des Modells passt. Solange das Fenster unbekannt ist, bleiben alle Tools verfügbar.",
+          "full": "Alle Tools, die jede Funktion heute anbietet.",
+          "standard": "Alltägliche Helpdesk-Tools und ein kürzerer Prompt (etwa 40 Tools im Chat, weniger im Helper, im Skript-Generator und in Office).",
+          "minimal": "Etwa ein Dutzend Nur-Lese-Tools und ein kurzer Prompt, für kleine lokale Modelle.",
+          "custom": "Nur die Tool-Bereiche und Tools, die Sie angeben, für jede Funktion, die dieses Modell verwendet."
+        },
+        "appliesWhen": "Wenn eine Änderung beeinflusst, was eine Funktion verwendet, starten offene Unterhaltungen mit diesem Modell ihre KI-Sitzung bei der nächsten Nachricht neu und fordern den Benutzer auf, sie erneut zu senden.",
+        "domainsLabel": "Tool-Bereiche",
+        "domainCore": "Kernkontext-Tools",
+        "toolsLabel": "Einzelne Tools",
+        "toolsHint": "Tool-Namen, getrennt durch Kommas oder Zeilenumbrüche. Breeze prüft beim Speichern jeden Namen.",
+        "droppedTools": "Diese Tools existieren nicht mehr und werden ignoriert: {{tools}}.",
+        "underpowered": "Diese Änderung würde Tools entfernen, die eine Funktion mit diesem Modell benötigt:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Kapazität unbekannt: Nichts wird eingeschränkt. „Auto“ behält alle Tools, bis der Endpunkt ein Kontextfenster auflistet oder meldet oder Sie unten eines festlegen.",
+        "windowNotLearned": "Breeze ermittelt Kontextfenster nur auf Ihren eigenen OpenAI-kompatiblen Endpunkten, daher behält Auto bei diesem Modell alle Tools.",
+        "windowKnown": "Kontextfenster: {{tokens}} Tokens ({{source}}).",
+        "windowSource": {
+          "override": "hier festgelegt",
+          "discovered": "vom Endpunkt aufgelistet"
+        },
+        "windowObserved": "Kontextfenster: {{tokens}} Tokens (vom Endpunkt gemeldet {{age}}).",
+        "observedStale": "Der Endpunkt hat zuletzt {{age}} {{tokens}} Tokens gemeldet. Diese Meldung ist über eine Stunde alt oder stammt aus einer früheren Endpunkt-Einrichtung und schränkt daher nichts mehr ein.",
+        "overrideLabel": "Überschreibung des Kontextfensters (Tokens)",
+        "overrideHint": "Nur für Modelle auf Ihrem eigenen OpenAI-kompatiblen Endpunkt. Leer lassen, um zu verwenden, was der Endpunkt auflistet oder meldet. Neue Unterhaltungen verwenden einen geänderten Wert; offene behalten ihr aktuelles Limit, außer das von ihnen verwendete Profil ändert sich.",
+        "surfacesTitle": "Was jede Funktion derzeit verwendet",
+        "reason": {
+          "explicit": "hier ausgewählt",
+          "auto_window": "automatisch, nach Kontextfenster",
+          "auto_unknown_window": "automatisch, Fenster unbekannt",
+          "auto_unmeasured": "automatisch; diese Funktion wird noch nicht eingeschränkt"
+        },
+        "missingRequired": "Lehnt dieses Modell ab: Es hätte nicht {{tools}}.",
+        "tooSmall": "Fenster zu klein",
+        "tooSmallHint": "Kein Profil passt in dieses Fenster, daher lehnt diese Funktion das Modell ab.",
+        "fitSuggestion": "Bei {{tokens}} Tokens würde Auto hier {{profile}} wählen; dieses Profil passt möglicherweise nicht.",
+        "readiness": {
+          "tokens": "{{tokens}} Prompt-Tokens",
+          "passed": "Tool-Round-Trip bestanden.",
+          "failed": "Tool-Round-Trip fehlgeschlagen, daher lehnt diese Funktion das Modell ab. {{summary}}",
+          "inconclusive": "Nicht eindeutig: Der Endpunkt ist ausgefallen, nicht das Modell. Nichts wird abgelehnt. {{summary}}",
+          "stale": "Veraltet: Der Endpunkt oder das Tool-Profil hat sich seitdem geändert. Prüfen Sie erneut, um es noch einmal zu testen.",
+          "absent": "Noch kein Tool-Round-Trip. Die Prüfung führt einen für jede Funktion aus, der dieses Modell zugewiesen ist.",
+          "absentVerified": "Geprüft (einfach). Prüfen Sie erneut, um einen echten Tool-Round-Trip für {{surface}} zu testen.",
+          "officeNotChecked": "Nicht geprüft: Die Prüfung führt keinen Office-Round-Trip aus."
+        },
+        "verifyCost": "Die Prüfung sendet echte Anfragen an Ihren Endpunkt, die Ihr Anbieter abrechnet: eine einfache Prüfung, dann ein Tool-Round-Trip für jede Funktion, der dieses Modell zugewiesen ist. Ein Round-Trip kann bis zu 4 Modellrunden umfassen, die jeweils den gesamten Prompt erneut senden: Im Chat mit dem Profil „Vollständig“ umfasst eine Anfrage etwa 128.000 Tokens, eine Chat-Prüfung kann also fast 500.000 erreichen.",
+        "invalidCustom": "Wählen Sie für ein benutzerdefiniertes Profil mindestens einen Tool-Bereich oder ein Tool aus.",
+        "invalidWindow": "Geben Sie eine ganze Zahl von Tokens von {{min}} bis {{max}} ein oder lassen Sie das Feld leer.",
+        "ageMinutes": "vor {{n}} Min.",
+        "ageHours": "vor {{n}} Std.",
+        "ageDays": "vor {{n}} T.",
+        "missingRequiredTroubleshooting": "Geräte-Fehlerbehebungsläufe lehnen dieses Modell ab: Ihnen würden {{tools}} fehlen. Andere Agentenläufe sind nicht betroffen.",
+        "underpoweredTooSmall": "{{surface}}: Kein Tool-Profil passt in dieses Kontextfenster"
+      }
     },
     "defaults": {
       "title": "Standards pro Funktion",

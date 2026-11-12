@@ -5266,6 +5266,18 @@
       "docs": [
         "deploy/environment.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiModels/toolSettingsWrite.ts",
+      "docs": [
+        "features/bring-your-own-llm-key.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/aiModels/OfferingToolsSection.tsx",
+      "docs": [
+        "features/bring-your-own-llm-key.mdx"
+      ]
     }
   ]
 }
