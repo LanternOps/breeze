@@ -9,11 +9,12 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { and, eq, ne } from 'drizzle-orm';
 import { db } from '../db';
-import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
+import { backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { resolveSnapshotPhysicalKey, snapshotKeyRootOf } from './backupKeyLayout';
 import { loadOriginKeyRoots } from './backupOriginKeyRoots';
 import { boundIndexCondition, indexMatchesAttestation } from './backupRestoreIntegrity';
+import { snapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 import {
   asRecord,
@@ -93,17 +94,17 @@ export async function authorizeExternalReference(
   // Membership is read in one statement with the index state it was approved
   // on: rows of an index being rebuilt, or rebuilt from other bytes since the
   // check above, never count.
+  const entries = snapshotIndexEntries(args.snapshotDbId);
   const [membership] = await dbHandle
-    .select({ id: backupSnapshotFiles.id })
-    .from(backupSnapshotFiles)
-    .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
+    .select({ backupPath: entries.backupPath })
+    .from(entries)
+    .innerJoin(backupSnapshots, eq(backupSnapshots.id, entries.snapshotDbId))
     .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
     .where(and(
-      eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId),
-      eq(backupSnapshotFiles.backupPath, args.key),
+      eq(entries.backupPath, args.key),
       // A content-less row (directory or symlink entry, #11235) names no
       // object: its empty backup_path is never a key.
-      ne(backupSnapshotFiles.backupPath, ''),
+      ne(entries.backupPath, ''),
       boundIndexCondition(boundDigest),
     ))
     .limit(1);

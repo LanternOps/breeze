@@ -31,17 +31,21 @@ vi.mock('./backupOriginKeyRoots', () => ({
 // calls, in call order. `getAuthenticatedRecoveryDownloadTarget` always issues
 // the lineage select first; for an external-reference download,
 // `authorizeExternalReference` (W09 Task 6) then issues, in order: the token
-// snapshot's file_index_status, the backup_snapshot_files membership row, and
-// the backup_snapshot_origins row.
+// snapshot's file_index_status, the file-index membership row (read through
+// snapshotIndexEntries, #11736), and the backup_snapshot_origins row.
 const lineageRows = vi.hoisted(() => [] as Array<Array<Record<string, unknown>>>);
 const innerJoins = vi.hoisted(() => [] as unknown[][]);
 const wheres = vi.hoisted(() => [] as unknown[]);
+const froms = vi.hoisted(() => [] as unknown[]);
 
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => {
       const chain: Record<string, any> = {};
-      chain.from = vi.fn(() => chain);
+      chain.from = vi.fn((source: unknown) => {
+        froms.push(source);
+        return chain;
+      });
       chain.where = vi.fn((cond: unknown) => {
         wheres.push(cond);
         return chain;
@@ -437,7 +441,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it("R6: an external key that IS a member of the snapshot index, with a verified origin, is authorized — physical key uses the ORIGIN prefix, not the token snapshot's", async () => {
       mockCurrentSnapshotLocal(LOCAL_IDENTITY);
       lineageRows.push([{ fileIndexStatus: 'complete' }]); // token snapshot file index
-      lineageRows.push([{ id: 'file-row-1' }]); // membership
+      lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]); // membership
       lineageRows.push([
         {
           originOrgId: 'org-1',
@@ -464,7 +468,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       // ship broken.
       mockCurrentSnapshotLocal(LOCAL_IDENTITY);
       lineageRows.push([{ fileIndexStatus: 'complete' }]); // token snapshot file index
-      lineageRows.push([{ id: 'file-row-1' }]); // membership
+      lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]); // membership
       lineageRows.push([
         {
           originOrgId: 'org-1',
@@ -503,7 +507,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       }
       function pushAuthorizedOrigin(originStoragePrefix: string | null) {
         lineageRows.push([{ fileIndexStatus: 'complete' }]);
-        lineageRows.push([{ id: 'file-row-1' }]);
+        lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]);
         lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: '', originStoragePrefix }]);
       }
       const presignedKey = () => {
@@ -538,7 +542,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       ])('local: reads the external key once under %s', async (_label, originStoragePrefix, expected) => {
         mockCurrentSnapshotLocal(LOCAL_IDENTITY);
         lineageRows.push([{ fileIndexStatus: 'complete' }]);
-        lineageRows.push([{ id: 'file-row-1' }]);
+        lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]);
         lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix }]);
 
         const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
@@ -631,7 +635,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('an external key is refused when the index was not built from the manifest bytes the attestation names', async () => {
       mockCurrentSnapshotLocal();
       lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'verified', manifestSha256: 'b'.repeat(64) } }]);
-      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]);
       lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: null }]);
 
       const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
@@ -642,7 +646,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('an external key is refused when the attestation did not match', async () => {
       mockCurrentSnapshotLocal();
       lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'mismatch', manifestSha256: 'a'.repeat(64) } }]);
-      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]);
       lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: null }]);
 
       const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
@@ -654,7 +658,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       mockCurrentSnapshotLocal(LOCAL_IDENTITY);
       innerJoins.length = 0;
       lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'pending', manifestSha256: 'a'.repeat(64) } }]);
-      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]);
       lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: null }]);
 
       const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
@@ -666,23 +670,32 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     it('reads membership only against the index state it approved, in the same statement', async () => {
       mockCurrentSnapshotLocal(LOCAL_IDENTITY);
       wheres.length = 0;
+      froms.length = 0;
       const digest = 'c'.repeat(64);
       lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: digest, attestation: { status: 'verified', manifestSha256: digest } }]);
-      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]);
       lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: null }]);
 
       await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
 
-      // wheres: lineage, token snapshot, membership, origin.
+      // wheres and froms: lineage, token snapshot, membership, origin.
       const { PgDialect } = await import('drizzle-orm/pg-core');
-      const query = new PgDialect().sqlToQuery(wheres[2] as any);
+      const { sql } = await import('drizzle-orm');
+      const dialect = new PgDialect();
+      // Membership reads the snapshot's entries through the read layer
+      // (#11736), scoped to this snapshot in the derived table itself.
+      const source = dialect.sqlToQuery(sql`select 1 from ${froms[2] as any}`);
+      expect(source.sql.toLowerCase().replace(/\s+/g, ' ')).toContain('"backup_snapshot_files"."snapshot_db_id" = $');
+      expect(source.sql).toContain('"snapshot_index_entries"');
+      expect(source.params).toEqual(['snapshot-db-current']);
+      const query = dialect.sqlToQuery(wheres[2] as any);
       const text = query.sql.toLowerCase().replace(/\s+/g, ' ');
-      expect(text).toContain('"backup_snapshot_files"."backup_path" = $');
+      expect(text).toContain('"snapshot_index_entries"."backup_path" = $');
       expect(text).toContain('"backup_snapshots"."file_index_status" = $');
       expect(text).toContain('"backup_snapshots"."file_index_manifest_sha256" is not distinct from $');
       expect(text).toContain("<> 'attestation_failed'");
       expect(text).toContain('"backup_snapshot_attestations"."manifest_sha256" = "backup_snapshots"."file_index_manifest_sha256"');
-      expect(query.params).toEqual(expect.arrayContaining(['snapshot-db-current', 'snapshots/older/files/a.gz', 'complete', digest]));
+      expect(query.params).toEqual(expect.arrayContaining(['snapshots/older/files/a.gz', 'complete', digest]));
     });
 
     it("an external key is refused when the snapshot's file_index_status is not complete (e.g. agent)", async () => {
@@ -816,7 +829,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       // Origin verified against the PINNED identity — this is the case the
       // origin check alone cannot catch, since it never looks at the live config.
       lineageRows.push([{ fileIndexStatus: 'complete' }]);
-      lineageRows.push([{ id: 'file-row-1' }]);
+      lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]);
       lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'local::/srv/old-backups', originStoragePrefix: null }]);
 
       const result = await getAuthenticatedRecoveryDownloadTarget(
@@ -983,7 +996,7 @@ describe('snapshot key root (#7081)', () => {
 
   function authorizeExternal() {
     lineageRows.push([{ fileIndexStatus: 'complete' }]); // token snapshot file index
-    lineageRows.push([{ id: 'file-row-1' }]); // membership
+    lineageRows.push([{ backupPath: 'snapshots/older/files/a.gz' }]); // membership
     lineageRows.push([{
       originOrgId: 'org-1',
       originDeviceId: 'device-1',
