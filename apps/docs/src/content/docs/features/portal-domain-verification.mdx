@@ -10,9 +10,11 @@ Each customer organization can have a list of email domains, managed under **Set
 | State | Meaning | Used for |
 |---|---|---|
 | **Declared** | The domain was added to the organization. Shown as "declared — mail routing only". | Routing inbound email to the organization's tickets. |
-| **Verified** | Breeze has proof the customer owns the domain. | Everything a declared domain does, plus features that need proof of ownership: [portal self-registration](/features/portal-self-registration/) and Sign in with Google (in later releases). |
+| **Verified** | Breeze has proof the customer owns the domain. | Everything a declared domain does, plus features that need proof of ownership: [portal self-registration](/features/portal-self-registration/) and [Sign in with Google](/features/portal-google-sign-in/). |
 
 Verification matters because anyone can type a domain name. Only a verified domain tells Breeze that a person with an address at that domain really belongs to the customer.
+
+Sign in with Google is gated by verified domains: a Google sign-in is accepted only when the domain Google reports for the account equals a domain verified for exactly that organization. When a domain stops being verified, Google sessions that signed in with it end, and Google sign-in turns off for an organization with no verified domain left. See [Google sign-in for the Customer Portal](/features/portal-google-sign-in/).
 
 <Aside>
   Sign in with Microsoft does not use domains. It relies on the customer's proven Microsoft Entra tenant instead; see [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/).
