@@ -36,6 +36,7 @@ import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './
 import { MemoryValidationError, type MemoryBlock } from './memoryBroker';
 import { MemoryServiceError } from './memoryService';
 import { registerWispMemoryTools } from './memoryTools';
+import { DISPATCH_EVIDENCE } from './dispatchEvidence';
 import { TOOL_TIERS, wispMemoryToolDefinitions } from '../aiAgentSdkTools';
 import { isToolEnvGatedOff, WISP_MEMORY_TOOL_NAMES } from '../aiToolEnvGates';
 import { AGENT_HUMAN_ONLY_TOOLS, HUMAN_ONLY_TOOLS } from '../aiToolExposure';
@@ -188,6 +189,86 @@ describe('wisp memory tools', () => {
     // Anything else is not swallowed.
     rememberForGrant.mockRejectedValueOnce(new Error('db down'));
     await expect(run('remember', { ...base, ownerKind: 'partner' })).rejects.toThrow('db down');
+  });
+
+  it('remember keeps the result prefix and names the removed fields only when the broker redacted content', async () => {
+    const base = { ownerKind: 'partner', blockType: 'fact', subjectKey: 'backup:account', content: { v: 1 } };
+    const prefix = `Remembered as unconfirmed (ID: ${BLOCK}).`;
+    const advice = 'Ask the user to keep credentials in the vault, not in memory.';
+    const evidence = DISPATCH_EVIDENCE.remember!.text!;
+
+    rememberForGrant.mockResolvedValueOnce({
+      ...block(), contentRedacted: true, redactedFields: ['storage.storageAccessKeyId', 'credentialsLocation'],
+    });
+    const redacted = await run('remember', base);
+    expect(redacted.startsWith(prefix)).toBe(true);
+    expect(redacted).toContain(
+      `Removed before saving because they looked like credentials: storage.storageAccessKeyId, credentialsLocation. ${advice}`,
+    );
+    expect(evidence.test(redacted)).toBe(true);
+
+    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: false, redactedFields: [] });
+    const clean = await run('remember', base);
+    expect(clean).toBe(`${prefix} The owner can confirm or retract it on the Wisp memory page.`);
+    expect(clean).not.toContain('credential');
+    expect(evidence.test(clean)).toBe(true);
+  });
+
+  // The subject key is free text from the model; it is stored, matched on and
+  // rendered back into prompts. It is scrubbed in the tool, before the broker
+  // takes the per-key lock, so the lock, the supersede match and the row all
+  // use one key. Code-built keys (concern:..., device:...) never pass through
+  // this tool and are never rewritten.
+  it('remember scrubs a credential out of the subject key before the broker sees it, and says so', async () => {
+    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: false, redactedFields: [] });
+    const out = await run('remember', {
+      ownerKind: 'partner', blockType: 'fact', subjectKey: 'backup-key-AKIAIOSFODNN7EXAMPLE', content: { v: 1 },
+    });
+    expect(rememberArg(0).subjectKey).toBe('backup-key-[REDACTED]');
+    expect(out.startsWith(`Remembered as unconfirmed (ID: ${BLOCK}).`)).toBe(true);
+    expect(out).toContain('Removed before saving because they looked like credentials: subjectKey.');
+    expect(DISPATCH_EVIDENCE.remember!.text!.test(out)).toBe(true);
+  });
+
+  it('remember names the subject key ahead of the content fields the broker removed', async () => {
+    rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: true, redactedFields: ['summary'] });
+    const out = await run('remember', {
+      ownerKind: 'partner', blockType: 'fact', subjectKey: 'note password: Example-Not-Real-42', content: { summary: 'x' },
+    });
+    expect(String(rememberArg(0).subjectKey)).not.toContain('Example-Not-Real-42');
+    expect(out).toContain('Removed before saving because they looked like credentials: subjectKey, summary.');
+  });
+
+  it('remember passes an ordinary subject key through unchanged and reports nothing', async () => {
+    const keys = [
+      'backup-service-account',
+      'work:2026-11-10:backup',
+      'device:00000000-0000-4000-8000-000000000001:notes',
+      'wifi/guest network',
+      'contact: Dana (office manager)',
+    ];
+    for (const [i, subjectKey] of keys.entries()) {
+      rememberForGrant.mockResolvedValueOnce({ ...block(), contentRedacted: false, redactedFields: [] });
+      const out = await run('remember', { ownerKind: 'partner', blockType: 'fact', subjectKey, content: { v: 1 } });
+      expect(rememberArg(i).subjectKey).toBe(subjectKey);
+      expect(out).not.toContain('credential');
+    }
+  });
+
+  it('remember lists at most five removed fields, each cut to 60 safe characters', async () => {
+    const base = { ownerKind: 'partner', blockType: 'fact', subjectKey: 'backup:account', content: { v: 1 } };
+    const long = `a.${'b'.repeat(80)}`;
+    rememberForGrant.mockResolvedValueOnce({
+      ...block(),
+      contentRedacted: true,
+      redactedFields: ['notes[0]', 'odd key<script>.pass word', long, 'd', 'e', 'f', 'g'],
+    });
+    const out = await run('remember', base);
+    const listed = /looked like credentials: (.*)\. Ask the user/.exec(out)![1]!;
+    expect(listed).toBe(`notes[0], oddkeyscript.password, ${long.slice(0, 60)}, d, e and 2 more`);
+    for (const name of listed.replace(/ and \d+ more$/, '').split(', ')) {
+      expect(name).toMatch(/^[A-Za-z0-9_.[\]-]{1,60}$/);
+    }
   });
 
   it('remember surfaces GrantInactiveError as {"error":"grant_inactive"}', async () => {
