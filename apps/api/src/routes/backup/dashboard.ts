@@ -36,6 +36,12 @@ import {
   getProviderCoverageForDevices,
 } from '../../services/backupHealthReadModel';
 import { getStorageByProvider } from '../../services/backupStorageByProvider';
+import {
+  DESTINATION_LOOKBACK_MS,
+  currentDestinationIdentity,
+  evaluateBackupDestination,
+  type DestinationJobOutcome,
+} from '../../services/backupDestinationHealth';
 import { storedSnapshotBytesByProviderSince, sumStoredSnapshotBytes } from '../../services/backupStoredBytes';
 
 export const dashboardRoutes = new Hono();
@@ -77,77 +83,108 @@ type DestinationAttentionItem = AttentionItem & {
   totalDevices: number;
 };
 
-// A destination counts as failing when at least this many devices on it have a
-// latest job that failed in the storage category within the window.
-const DESTINATION_FAILING_MIN_DEVICES = 2;
-const DESTINATION_FAILING_WINDOW_MS = 48 * 60 * 60 * 1000;
-
-// Only a failure the text ties to the destination itself counts toward the
-// destination item. A storage failure with no cause (a Breeze API refusal, an
-// unrecognised store status) or an ended upload session is not evidence that
-// the customer's destination is broken, and the item's hint would say it is.
-const DESTINATION_FAULT_CAUSES: ReadonlySet<BackupFailureCause> = new Set<BackupFailureCause>([
-  'storage_access_denied',
-  'storage_not_found',
-  'storage_clock_skew',
-  'storage_operation_failed',
-]);
-
-type LatestJobForDestination = {
-  deviceId: string;
-  status: string;
-  errorLog: string | null;
-  completedAt: Date | null;
-  createdAt: Date;
-  configId?: string | null;
-  configName?: string | null;
+/** One active destination's evidence, as the request's scope can see it. */
+export type DestinationEvidence = {
+  configId: string;
+  name: string;
+  currentStorageIdentity: string;
+  jobs: DestinationJobOutcome[];
 };
 
-function resolveDestinationAttentionItems(
-  latestJobs: LatestJobForDestination[],
-  now: number
+/**
+ * #11772: the item is the shared evaluator's verdict
+ * (services/backupDestinationHealth.ts), the same one the connection-health
+ * `backup_destination` source notifies on, so the dashboard and the notice
+ * cannot disagree. Counts cover only the devices the caller can see.
+ */
+export function resolveDestinationAttentionItems(
+  destinations: readonly DestinationEvidence[],
+  now: Date
 ): Array<DestinationAttentionItem & { lastFailureAt: string }> {
-  const byDestination = new Map<string, { name: string; total: number; failing: Array<{ cause: BackupFailureCause | null; at: Date }> }>();
-  for (const job of latestJobs) {
-    if (!job.configId) continue;
-    const group = byDestination.get(job.configId) ?? { name: job.configName ?? job.configId.slice(0, 8), total: 0, failing: [] };
-    group.total += 1;
-    const at = job.completedAt ?? job.createdAt;
-    if (job.status === 'failed' && now - at.getTime() <= DESTINATION_FAILING_WINDOW_MS) {
-      const detail = classifyBackupFailureDetail({ status: job.status, errorLog: job.errorLog });
-      if (detail.category === 'storage' && detail.cause && DESTINATION_FAULT_CAUSES.has(detail.cause)) {
-        group.failing.push({ cause: detail.cause, at });
-      }
-    }
-    byDestination.set(job.configId, group);
-  }
-
   const items: Array<DestinationAttentionItem & { lastFailureAt: string }> = [];
-  for (const [configId, group] of byDestination) {
-    if (group.failing.length < DESTINATION_FAILING_MIN_DEVICES) continue;
-    // The cause only when a strict majority of the failing devices agree;
-    // otherwise null, so the item never states a cause most devices did not show.
-    const tally = new Map<BackupFailureCause, number>();
-    for (const { cause } of group.failing) if (cause) tally.set(cause, (tally.get(cause) ?? 0) + 1);
-    const [topCause, topCount] = [...tally.entries()].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
-    const cause = topCount * 2 > group.failing.length ? topCause : null;
-    const lastFailureAt = new Date(Math.max(...group.failing.map((f) => f.at.getTime()))).toISOString();
+  for (const d of destinations) {
+    const e = evaluateBackupDestination({ currentStorageIdentity: d.currentStorageIdentity, jobs: d.jobs, now });
+    if (e.state !== 'broken' || !e.lastFailureAt) continue;
+    const lastFailureAt = e.lastFailureAt.toISOString();
     items.push({
-      id: `backup-destination-${configId}`,
+      id: `backup-destination-${d.configId}`,
       kind: 'destination_failing',
-      title: `${group.name}: ${group.failing.length} of ${group.total} devices failing`,
+      title: `${d.name}: ${e.failingDevices} of ${e.totalDevices} devices failing`,
       description: `Last unsuccessful ${lastFailureAt}`,
       severity: 'critical',
-      configId,
-      destinationName: group.name,
+      configId: d.configId,
+      destinationName: d.name,
       failureCategory: 'storage',
-      failureCause: cause,
-      failingDevices: group.failing.length,
-      totalDevices: group.total,
+      failureCause: e.cause,
+      failingDevices: e.failingDevices,
+      totalDevices: e.totalDevices,
       lastFailureAt,
     });
   }
   return items;
+}
+
+const DESTINATION_TERMINAL_STATUSES = ['completed', 'failed', 'partial', 'completed_with_errors', 'cancelled'] as const;
+
+/**
+ * Terminal outcomes in the evaluator's lookback for the org's active
+ * destinations, under the request's org and site scope. Only the identity
+ * fields of provider_config are read (DESTINATION_IDENTITY_FIELDS), never a
+ * sealed credential. Runs inside the caller's savepoint.
+ */
+async function loadDestinationEvidence(
+  orgId: string,
+  jobDeviceScope: ReturnType<typeof inArray> | undefined,
+  allowedDeviceIds: string[] | null,
+  now: Date
+): Promise<DestinationEvidence[]> {
+  const rows = await db
+    .select({
+      configId: backupJobs.configId,
+      configName: backupConfigs.name,
+      provider: backupConfigs.provider,
+      identityFields: sql<Record<string, unknown> | null>`jsonb_build_object('endpoint', ${backupConfigs.providerConfig} -> 'endpoint', 'bucket', ${backupConfigs.providerConfig} -> 'bucket', 'bucketName', ${backupConfigs.providerConfig} -> 'bucketName', 'path', ${backupConfigs.providerConfig} -> 'path', 'basePath', ${backupConfigs.providerConfig} -> 'basePath')`,
+      deviceId: backupJobs.deviceId,
+      status: backupJobs.status,
+      errorLog: backupJobs.errorLog,
+      createdAt: backupJobs.createdAt,
+      completedAt: backupJobs.completedAt,
+      storageIdentity: backupJobs.storageIdentity,
+    })
+    .from(backupJobs)
+    .innerJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
+    .where(and(
+      eq(backupJobs.orgId, orgId),
+      eq(backupConfigs.orgId, orgId),
+      eq(backupConfigs.isActive, true),
+      gte(backupJobs.completedAt, new Date(now.getTime() - DESTINATION_LOOKBACK_MS)),
+      inArray(backupJobs.status, [...DESTINATION_TERMINAL_STATUSES]),
+      jobDeviceScope,
+    ));
+
+  const byConfig = new Map<string, DestinationEvidence>();
+  for (const row of rows) {
+    if (allowedDeviceIds && !allowedDeviceIds.includes(row.deviceId)) continue;
+    let d = byConfig.get(row.configId);
+    if (!d) {
+      d = {
+        configId: row.configId,
+        name: row.configName ?? row.configId.slice(0, 8),
+        currentStorageIdentity: currentDestinationIdentity(String(row.provider), row.identityFields ?? {}),
+        jobs: [],
+      };
+      byConfig.set(row.configId, d);
+    }
+    d.jobs.push({
+      deviceId: row.deviceId,
+      status: row.status,
+      errorLog: row.errorLog,
+      createdAt: row.createdAt,
+      completedAt: row.completedAt,
+      storageIdentity: row.storageIdentity,
+    });
+  }
+  return [...byConfig.values()];
 }
 
 // Result of an attention-items computation. `error: true` means we could NOT
@@ -301,10 +338,10 @@ async function resolveAttentionItems(
     items.sort((a, b) => new Date(b.lastFailureAt).getTime() - new Date(a.lastFailureAt).getTime());
     // #11768: a destination failing for several devices outranks the per-device
     // items it explains; those stay, after it.
-    const destinationItems = resolveDestinationAttentionItems(
-      [...byDevice.values()].flatMap((jobs) => jobs.filter((job) => job.rn === 1)),
-      Date.now(),
-    ).sort((a, b) => b.failingDevices - a.failingDevices);
+    const now = new Date();
+    const evidence = await withDbTransaction(() => loadDestinationEvidence(orgId, jobDeviceScope, allowedDeviceIds, now));
+    const destinationItems = resolveDestinationAttentionItems(evidence, now)
+      .sort((a, b) => b.failingDevices - a.failingDevices);
     return {
       items: [...destinationItems, ...items]
         .slice(0, ATTENTION_MAX_ITEMS)

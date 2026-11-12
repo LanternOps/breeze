@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { dashboardRoutes } from './dashboard';
+import { backupDestinationObservation } from '../../services/connectionHealth/sources/backupDestination';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
@@ -13,7 +14,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'groupBy', 'limit', 'as']) {
+  for (const method of ['from', 'where', 'leftJoin', 'innerJoin', 'orderBy', 'groupBy', 'limit', 'as']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   chain.then = (onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -39,6 +40,9 @@ vi.mock('../../db/schema', () => ({
     id: 'backup_configs.id',
     orgId: 'backup_configs.org_id',
     name: 'backup_configs.name',
+    provider: 'backup_configs.provider',
+    providerConfig: 'backup_configs.provider_config',
+    isActive: 'backup_configs.is_active',
   },
   backupJobs: {
     id: 'backup_jobs.id',
@@ -53,6 +57,7 @@ vi.mock('../../db/schema', () => ({
     totalSize: 'backup_jobs.total_size',
     errorCount: 'backup_jobs.error_count',
     errorLog: 'backup_jobs.error_log',
+    storageIdentity: 'backup_jobs.storage_identity',
   },
   backupStorageSessions: {
     jobId: 'backup_storage_sessions.job_id',
@@ -97,11 +102,14 @@ vi.mock('drizzle-orm', () => ({
   desc: (value: unknown) => ({ op: 'desc', value }),
   isNotNull: (column: unknown) => ({ op: 'isNotNull', column }),
   max: (column: unknown) => ({ op: 'max', column }),
-  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+  sql: Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => ({
     op: 'sql',
     strings,
     values,
     as: (alias: string) => ({ op: 'sql', strings, values, alias }),
+  }), {
+    // The backup_destination source (imported for the agreement test) builds literals at load.
+    raw: (text: string) => ({ op: 'raw', text }),
   }),
 }));
 
@@ -374,28 +382,41 @@ describe('backup dashboard routes', () => {
     expect(data.latestJobs[0]).toMatchObject({ failureCategory: 'storage', failureCause: 'storage_access_denied' });
   });
 
-  // #11768: one destination failing for every device is one statement, not N.
+  // #11768 / #11772: one destination failing for every device is one statement,
+  // not N, and it is the shared evaluator's verdict (backupDestinationHealth.ts).
   describe('destination-level attention item', () => {
     const CONFIG_ID = '99999999-9999-4999-8999-999999999999';
     const OTHER_CONFIG_ID = '88888888-8888-4888-8888-888888888888';
     const STORE_403 = 'system state publish failed: upload system state artifact registry/SYSTEM: storage session: storage answered status 403';
-    const recently = () => new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const IDENTITY_FIELDS = { endpoint: 'https://s3.example.test', bucket: 'primary' };
+    const IDENTITY = 's3::s3.example.test::primary';
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 60 * 60 * 1000);
+    const recently = () => hoursAgo(2);
 
-    const row = (over: Record<string, unknown>) => ({
-      deviceId: DEVICE_ID,
-      status: 'failed',
-      errorLog: STORE_403,
-      completedAt: recently(),
-      createdAt: recently(),
-      rn: 1,
-      deviceName: 'Device',
-      deviceHostname: 'host',
-      configId: CONFIG_ID,
-      configName: 'Primary S3',
-      ...over,
-    });
+    // One row serves both reads: the ranked per-device query (rn, device names)
+    // and the destination evidence query (config identity, storage identity).
+    let seq = 0;
+    const row = (over: Record<string, unknown>) => {
+      seq += 1;
+      return {
+        deviceId: DEVICE_ID,
+        status: 'failed',
+        errorLog: STORE_403,
+        completedAt: recently(),
+        createdAt: new Date(recently().getTime() - seq),
+        rn: 1,
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        configId: CONFIG_ID,
+        configName: 'Primary S3',
+        provider: 's3',
+        identityFields: IDENTITY_FIELDS,
+        storageIdentity: IDENTITY,
+        ...over,
+      };
+    };
 
-    async function dashboardWith(rankedRows: unknown[]) {
+    async function dashboardWith(rankedRows: unknown[], evidenceRows: unknown[] = rankedRows) {
       resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
       selectMock
         .mockReturnValueOnce(chainMock([{ count: 0 }]))
@@ -404,7 +425,8 @@ describe('backup dashboard routes', () => {
         .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
         .mockReturnValueOnce(chainMock([]))
         .mockReturnValueOnce(chainMock([]))
-        .mockReturnValueOnce(chainMock(rankedRows));
+        .mockReturnValueOnce(chainMock(rankedRows))
+        .mockReturnValueOnce(chainMock(evidenceRows));
       return (await (await app.request('/backup/dashboard')).json()).data;
     }
 
@@ -427,12 +449,16 @@ describe('backup dashboard routes', () => {
         failingDevices: 3,
         totalDevices: 3,
       });
+      expect(Object.keys(destination[0]).sort()).toEqual([
+        'configId', 'description', 'destinationName', 'failingDevices', 'failureCategory', 'failureCause',
+        'id', 'kind', 'severity', 'title', 'totalDevices',
+      ]);
       expect(data.attentionItems[0].kind).toBe('destination_failing');
       // The per-device items stay.
       expect(data.attentionItems.filter((i: any) => String(i.id).startsWith('backup-failing-'))).toHaveLength(3);
     });
 
-    it('counts N of M over every device whose latest job used the destination', async () => {
+    it('counts N of M over every device with an outcome on the destination', async () => {
       const data = await dashboardWith([
         row({ deviceId: 'd1' }),
         row({ deviceId: 'd2' }),
@@ -442,13 +468,13 @@ describe('backup dashboard routes', () => {
       expect(item).toMatchObject({ failingDevices: 2, totalDevices: 3 });
     });
 
-    it('does not emit for one failing device', async () => {
+    it('does not emit for one failing device among healthy ones', async () => {
       const data = await dashboardWith([row({ deviceId: 'd1' }), row({ deviceId: 'd2', status: 'completed', errorLog: null })]);
       expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
     });
 
-    it('ignores failures older than 48 hours and non-storage failures', async () => {
-      const old = new Date(Date.now() - 49 * 60 * 60 * 1000);
+    it('ignores failures older than the 72 h lookback and non-storage failures', async () => {
+      const old = hoursAgo(73);
       const data = await dashboardWith([
         row({ deviceId: 'd1', completedAt: old, createdAt: old }),
         row({ deviceId: 'd2', completedAt: old, createdAt: old }),
@@ -458,19 +484,53 @@ describe('backup dashboard routes', () => {
       expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
     });
 
-    it('groups by each device latest job and keeps destinations apart', async () => {
+    it('includes a failure just inside the lookback', async () => {
+      const inside = hoursAgo(71);
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', completedAt: inside, createdAt: inside }),
+        row({ deviceId: 'd2', completedAt: inside, createdAt: new Date(inside.getTime() - 1) }),
+      ]);
+      expect(data.attentionItems.find((i: any) => i.kind === 'destination_failing')).toMatchObject({ failingDevices: 2 });
+    });
+
+    it('keeps destinations apart', async () => {
+      // Two failing devices, but one per destination, each beside a healthy one.
       const data = await dashboardWith([
         row({ deviceId: 'd1' }),
+        row({ deviceId: 'd3', status: 'completed', errorLog: null }),
         row({ deviceId: 'd2', configId: OTHER_CONFIG_ID, configName: 'Other' }),
-        // d1 older job on another destination does not count for that destination.
-        row({ deviceId: 'd1', rn: 2, configId: OTHER_CONFIG_ID, configName: 'Other' }),
+        row({ deviceId: 'd4', configId: OTHER_CONFIG_ID, configName: 'Other', status: 'completed', errorLog: null }),
       ]);
       expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('ignores failures written before the destination was re-pointed', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', storageIdentity: 's3::s3.example.test::old-bucket' }),
+        row({ deviceId: 'd2', storageIdentity: 's3::s3.example.test::old-bucket' }),
+      ]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('a device that went offline after a refusal still counts as failing', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', completedAt: hoursAgo(5), createdAt: hoursAgo(5) }),
+        row({ deviceId: 'd1', errorLog: '[stale-backup-reaper] Device went offline during backup' }),
+        row({ deviceId: 'd2' }),
+      ]);
+      expect(data.attentionItems.find((i: any) => i.kind === 'destination_failing')).toMatchObject({ failingDevices: 2, totalDevices: 2 });
     });
 
     it('counts only devices the site-restricted user can access', async () => {
       permissionsState = { allowedSiteIds: [SITE_A] };
       resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      const rows = [
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2', status: 'completed', errorLog: null }),
+        row({ deviceId: 'x1' }),
+        row({ deviceId: 'x2' }),
+        row({ deviceId: 'x3' }),
+      ];
       selectMock
         .mockReturnValueOnce(chainMock([
           { id: 'd1', siteId: SITE_A },
@@ -485,13 +545,8 @@ describe('backup dashboard routes', () => {
         .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
         .mockReturnValueOnce(chainMock([]))
         .mockReturnValueOnce(chainMock([]))
-        .mockReturnValueOnce(chainMock([
-          row({ deviceId: 'd1' }),
-          row({ deviceId: 'd2', status: 'completed', errorLog: null }),
-          row({ deviceId: 'x1' }),
-          row({ deviceId: 'x2' }),
-          row({ deviceId: 'x3' }),
-        ]));
+        .mockReturnValueOnce(chainMock(rows))
+        .mockReturnValueOnce(chainMock(rows));
       const { data } = await (await app.request('/backup/dashboard')).json();
       // One allowed failing device: the three failures on the other site must not tip it over.
       expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
@@ -507,15 +562,6 @@ describe('backup dashboard routes', () => {
       expect(data.attentionItems).toHaveLength(20);
       expect(data.attentionItems[0]).toMatchObject({ configId: CONFIG_ID, failingDevices: 25 });
       expect(data.attentionItems[1]).toMatchObject({ configId: OTHER_CONFIG_ID, failingDevices: 2 });
-    });
-
-    it('includes a failure just inside 48 h and falls back to createdAt without completedAt', async () => {
-      const inside = new Date(Date.now() - 47 * 60 * 60 * 1000);
-      const data = await dashboardWith([
-        row({ deviceId: 'd1', completedAt: inside, createdAt: inside }),
-        row({ deviceId: 'd2', completedAt: null, createdAt: inside }),
-      ]);
-      expect(data.attentionItems.find((i: any) => i.kind === 'destination_failing')).toMatchObject({ failingDevices: 2 });
     });
 
     it('does not blame the destination for Breeze API refusals or ended sessions', async () => {
@@ -545,6 +591,56 @@ describe('backup dashboard routes', () => {
       const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
       expect(item.failureCause).toBe('storage_operation_failed');
     });
+
+    it('a failed evidence read degrades the attention list instead of failing the dashboard', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      const failing = chainMock([]);
+      failing.where = vi.fn(() => Promise.reject(new Error('evidence read failed')));
+      selectMock
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([row({ deviceId: 'd1' })]))
+        .mockReturnValueOnce(failing);
+      const res = await app.request('/backup/dashboard');
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.attentionItems).toEqual([]);
+      expect(data.attentionError).toBe(true);
+    });
+
+    // #11772 acceptance: the dashboard item and the connection-health incident
+    // agree for the same fixture.
+    it('agrees with the backup_destination health source on the same fixture', async () => {
+      const fixtures: Array<[string, Array<Record<string, unknown>>]> = [
+        ['refused', [row({ deviceId: 'd1' }), row({ deviceId: 'd2' }), row({ deviceId: 'd3', status: 'completed', errorLog: null })]],
+        ['one of three', [row({ deviceId: 'd1' }), row({ deviceId: 'd2', status: 'completed', errorLog: null }), row({ deviceId: 'd3', status: 'completed', errorLog: null })]],
+        ['single device refused', [row({ deviceId: 'd1' })]],
+        ['5xx', [row({ deviceId: 'd1', errorLog: 'storage session: storage answered status 503' }), row({ deviceId: 'd2', errorLog: 'storage session: storage answered status 503' })]],
+        ['old identity', [row({ deviceId: 'd1', storageIdentity: 'x' }), row({ deviceId: 'd2', storageIdentity: 'x' })]],
+      ];
+      for (const [name, rows] of fixtures) {
+        const data = await dashboardWith(rows);
+        const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
+        const obs = backupDestinationObservation({
+          id: CONFIG_ID, orgId: ORG_ID, partnerId: ORG_ID, name: 'Primary S3', isActive: true, createdAt: hoursAgo(24 * 30),
+          currentStorageIdentity: IDENTITY,
+          jobs: rows.map((r) => ({
+            deviceId: r.deviceId as string, status: r.status as string, errorLog: r.errorLog as string | null,
+            createdAt: r.createdAt as Date, completedAt: r.completedAt as Date, storageIdentity: r.storageIdentity as string,
+          })),
+        }, new Date());
+        expect(Boolean(item), name).toBe(obs.state === 'broken');
+        if (item) {
+          expect(obs.detail, name).toMatch(new RegExp(`^${item.failingDevices} of ${item.totalDevices} devices? failing`));
+          const conditionByCause: Record<string, string> = { storage_access_denied: 'destination_access_denied', storage_not_found: 'destination_not_found' };
+          expect(obs.condition, name).toBe(conditionByCause[item.failureCause] ?? 'destination_failing');
+        }
+      }
+    });
   });
 
   it('keeps unrestricted dashboard behavior unchanged', async () => {
@@ -569,9 +665,10 @@ describe('backup dashboard routes', () => {
     expect(body.data.totals.policies).toBe(2);
     expect(body.data.latestJobs).toHaveLength(2);
     // 5 base aggregation queries + 2 for the attention-items ranked-jobs lookup
-    // (subquery build + the awaited select over it). Storage Used comes from
-    // the stored-bytes service (#9631), mocked here.
-    expect(selectMock).toHaveBeenCalledTimes(7);
+    // (subquery build + the awaited select over it) + 1 for the destination
+    // evidence (#11772). Storage Used comes from the stored-bytes service
+    // (#9631), mocked here.
+    expect(selectMock).toHaveBeenCalledTimes(8);
     expect(body.data.attentionItems).toEqual([]);
   });
 
