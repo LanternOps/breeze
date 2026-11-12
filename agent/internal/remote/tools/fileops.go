@@ -477,7 +477,14 @@ func resolvedConfigDir(configDir string) (string, bool) {
 // reachable through this toolset (nothing here creates links) and requires a
 // hard link already present on the target filesystem; it is called out so the
 // next reader does not mistake the symlink handling for complete link coverage.
+//
+// The path must also be an absolute local path (localPathFormError): network
+// shares, device namespaces and relative spellings are refused first, for
+// every operation that comes through here.
 func EnforcePathContainment(verb, cleanPath string) error {
+	if err := localPathFormError(cleanPath); err != nil {
+		return err
+	}
 	if isSensitiveReadPath(cleanPath) {
 		return errorCodef(wire.ErrCodeSensitivePathDenied, "%s denied on sensitive path: %s", verb, cleanPath)
 	}
@@ -1876,6 +1883,12 @@ func MakeDirectory(payload map[string]any) CommandResult {
 	// Check against denied system paths
 	if isDeniedSystemPath(cleanPath) {
 		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
+	}
+
+	// Same rules as every other write: an absolute local path outside the
+	// protected locations (agent configuration, credential stores).
+	if err := enforceWriteContainment(cleanPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
 	// Create directory and any necessary parents
