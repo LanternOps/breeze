@@ -200,7 +200,12 @@ func (legacyWorker) Close() {}
 func (l legacyWorker) ScanFile(f *os.File, size int64, path string) ([]yarascan.Match, error) {
 	// The caller opened f without following a link, checked it and measured
 	// it; the signatures read at most size bytes of the content through f.
-	found, err := scanFileForThreats(path, size, io.NewSectionReader(f, 0, size), l.options)
+	// f is nil for a file over the size limit, which is matched by name only.
+	var content io.ReaderAt
+	if f != nil {
+		content = io.NewSectionReader(f, 0, size)
+	}
+	found, err := scanFileForThreats(path, size, content, l.options)
 	out := make([]yarascan.Match, 0, len(found))
 	for _, th := range found {
 		out = append(out, yarascan.Match{RuleName: th.Name, Severity: th.Severity, ThreatType: th.Type})
@@ -248,7 +253,7 @@ func scanFileForThreats(path string, size int64, content io.ReaderAt, options th
 		return matches, nil
 	}
 
-	if size <= 0 || (options.MaxFileSize > 0 && size > options.MaxFileSize) {
+	if content == nil || size <= 0 || (options.MaxFileSize > 0 && size > options.MaxFileSize) {
 		return matches, nil
 	}
 

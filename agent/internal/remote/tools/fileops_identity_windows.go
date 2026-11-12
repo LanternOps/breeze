@@ -66,6 +66,19 @@ func identityOfHandle(h windows.Handle) (fileIdentity, uint32, error) {
 	}, links, nil
 }
 
+// linkCountOfOpenFile returns how many names a regular file has (1 for
+// anything else), with one query on the handle.
+func linkCountOfOpenFile(f *os.File, _ os.FileInfo) (uint32, error) {
+	var std fileStandardInfo
+	if err := windows.GetFileInformationByHandleEx(windows.Handle(f.Fd()), windows.FileStandardInfo, (*byte)(unsafe.Pointer(&std)), uint32(unsafe.Sizeof(std))); err != nil {
+		return 0, err
+	}
+	if std.Directory != 0 {
+		return 1, nil
+	}
+	return std.NumberOfLinks, nil
+}
+
 // identityOfOpenFile returns the identity and link count of an open file
 // (the link count is 1 for anything but a regular file).
 func identityOfOpenFile(f *os.File) (fileIdentity, uint32, error) {

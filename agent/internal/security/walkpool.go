@@ -103,6 +103,18 @@ func (c *errCollector) file(path string, err error) {
 	}
 }
 
+// skipped records a file the system would not let the scan read: it counts
+// as failed and is logged, but never ends the scan, whatever the policy.
+func (c *errCollector) skipped(path string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failed++
+	if c.logged < maxLoggedFileErrors {
+		c.logged++
+		log.Warn("IOC scan could not open a file", "path", path, "error", err.Error())
+	}
+}
+
 // always records an error that is fatal regardless of policy.
 func (c *errCollector) always(err error) {
 	c.mu.Lock()
@@ -173,26 +185,38 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 					mu.Unlock()
 					continue // drain without scanning so the producer unblocks
 				}
-				// Open once, check the handle, and scan, quote evidence from
-				// and hash that same handle.
-				f, err := scope.OpenFile(job.path, job.info)
-				if errors.Is(err, tools.ErrScanSkipped) {
-					continue
-				}
-				var matches []yarascan.Match
-				if err == nil {
-					// The size limit applies to the file as it is now: it may
-					// have grown since the walk measured it. The scan reads at
-					// most the size measured here.
-					var size int64
-					size, err = scanSize(f, options, cfg)
+				// Files over the size limit are judged by the size the walk
+				// measured, before anything is opened: the rule-set engine
+				// never sees them (the walk does not queue them), and the
+				// built-in signatures match only their names.
+				oversize := options.MaxFileSize > 0 && job.size > options.MaxFileSize
+				var (
+					f    *os.File
+					info fs.FileInfo
+					err  error
+					size = job.size
+				)
+				if !oversize {
+					// Open once, check the handle, and scan, quote evidence
+					// from and hash that same handle.
+					f, info, err = scanOpen(scope, job.path, job.info)
 					if errors.Is(err, tools.ErrScanSkipped) {
-						_ = f.Close()
 						continue
 					}
 					if err == nil {
-						matches, err = w.ScanFile(f, size, job.path)
+						// The limit applies to the file as it is now: it may
+						// have grown since the walk measured it. The scan
+						// reads at most the size measured here.
+						size = info.Size()
+						if cfg.SkipOversized && options.MaxFileSize > 0 && size > options.MaxFileSize {
+							_ = f.Close()
+							continue
+						}
 					}
+				}
+				var matches []yarascan.Match
+				if err == nil {
+					matches, err = w.ScanFile(f, size, job.path)
 				}
 				closeJob := func() {
 					if f != nil {
@@ -219,9 +243,15 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 				}
 				if err != nil {
 					closeJob()
-					// W01 (fatal mode) skips permission-denied files silently;
-					// the non-fatal mode counts every unreadable file.
-					if !cfg.FileErrorsFatal || !os.IsPermission(err) {
+					switch {
+					case cfg.FileErrorsFatal && os.IsPermission(err):
+						// W01 skips permission-denied files silently.
+					case isPerFileError(err):
+						// The system refused this one file (an antivirus
+						// block, a sharing or lock violation): a failed
+						// file, never the end of the scan, in either mode.
+						ec.skipped(job.path, err)
+					default:
 						ec.file(job.path, err)
 					}
 					continue
@@ -231,7 +261,10 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 					continue
 				}
 				sum, hashErr := "", error(nil)
-				if job.size <= maxHashBytes {
+				switch {
+				case f == nil:
+					hashErr = errNotOpened // matched by name only; not auto-quarantined
+				case job.size <= maxHashBytes:
 					sum, hashErr = readerSHA256(f)
 					if hashErr != nil {
 						log.Warn("could not hash a matched file; it will not be auto-quarantined", "path", job.path, "error", hashErr.Error())
@@ -326,20 +359,15 @@ func fileSHA256(p string) (string, error) {
 	return readerSHA256(f)
 }
 
-// scanSize measures the open file f for the scan. Where the walk skips
-// files over the size limit (the YARA engine), a file that has grown past
-// the limit since the walk is skipped as well.
-func scanSize(f *os.File, options threatScanOptions, cfg walkConfig) (int64, error) {
-	st, err := f.Stat()
-	if err != nil {
-		return 0, err
-	}
-	size := st.Size()
-	if cfg.SkipOversized && options.MaxFileSize > 0 && size > options.MaxFileSize {
-		return 0, tools.ErrScanSkipped
-	}
-	return size, nil
+// scanOpen opens a queued file through the scan's checks (a variable so a
+// test can count opens or make one fail).
+var scanOpen = func(s *tools.ScanScope, path string, walked fs.FileInfo) (*os.File, fs.FileInfo, error) {
+	return s.OpenFile(path, walked)
 }
+
+// errNotOpened marks a match on a file that was not opened (over the size
+// limit, matched by name only), so it is not hashed or auto-quarantined.
+var errNotOpened = errors.New("the file was not opened")
 
 // readerSHA256 hashes r from its start (at most maxHashBytes), whatever its
 // current offset, so the handle a worker scanned can be hashed as is.
@@ -393,7 +421,9 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 			}
 			continue
 		}
-		root = scanRoot.Path()
+		// WalkPath enters a volume mounted at a folder (Windows); for any
+		// other root it is the root itself.
+		root = scanRoot.WalkPath()
 		info, err := os.Lstat(root)
 		if err != nil {
 			if !os.IsNotExist(err) {

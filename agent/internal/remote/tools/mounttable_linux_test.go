@@ -33,7 +33,7 @@ func TestScanRecognisesBindMountAsVolumeTop(t *testing.T) {
 	if !s.Skip(r, p, lstatT(t, p)) {
 		t.Fatal("a protected file at the top of a bind mount was not recognised")
 	}
-	f, err := s.OpenFile(p, lstatT(t, p))
+	f, _, err := s.OpenFile(p, lstatT(t, p))
 	if f != nil {
 		_ = f.Close()
 	}

@@ -1,6 +1,7 @@
 package yarascan
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -91,6 +92,7 @@ func (m *yaraMatcher) NewWorker() (Worker, error) {
 type yaraWorker struct {
 	s     *yx.Scanner
 	entry *CacheEntry
+	buf   []byte // the file's content, read once per scan and reused
 }
 
 func (w *yaraWorker) ensureScanner() (err error) {
@@ -129,11 +131,23 @@ func (w *yaraWorker) ScanFile(f *os.File, size int64, path string) (out []Match,
 	if err := w.ensureScanner(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrWorkerUnavailable, err)
 	}
+	if f == nil {
+		return nil, nil // nothing to read: the caller did not open this file
+	}
 	if size < 0 {
 		size = 0
 	}
-	// Bound every read (scan and evidence) to size, even if the file grows.
-	content := io.NewSectionReader(f, 0, size)
+	// Read the file once, in one read of at most size bytes (even if it
+	// grows), and scan and quote evidence from that copy: no second read of
+	// the file, and few read calls even for a large file.
+	if int64(cap(w.buf)) < size {
+		w.buf = make([]byte, size)
+	}
+	n, rerr := io.ReadFull(io.NewSectionReader(f, 0, size), w.buf[:size])
+	if rerr != nil && !errors.Is(rerr, io.ErrUnexpectedEOF) && !errors.Is(rerr, io.EOF) {
+		return nil, rerr
+	}
+	data := w.buf[:n]
 	defer func() {
 		if r := recover(); r != nil {
 			// The guest may be in an unknown state: discard this scanner.
@@ -143,6 +157,7 @@ func (w *yaraWorker) ScanFile(f *os.File, size int64, path string) (out []Match,
 		}
 		if size > recycleAfterBytes {
 			w.dropScanner()
+			w.buf = nil
 		}
 	}()
 	base := filepath.Base(path)
@@ -155,7 +170,7 @@ func (w *yaraWorker) ScanFile(f *os.File, size int64, path string) (out []Match,
 			return nil, fmt.Errorf("set YARA global %s: %w", name, gerr)
 		}
 	}
-	res, err := w.s.ScanReaderAt(content, size)
+	res, err := w.s.Scan(data)
 	if err != nil {
 		return nil, err
 	}
@@ -163,8 +178,8 @@ func (w *yaraWorker) ScanFile(f *os.File, size int64, path string) (out []Match,
 	if len(rules) == 0 {
 		return nil, nil
 	}
-	// Evidence is read back from the same handle, within the same bound.
-	return buildMatches(w.entry, rules, content), nil
+	// Evidence is quoted from the same content that was scanned.
+	return buildMatches(w.entry, rules, bytes.NewReader(data)), nil
 }
 
 // buildMatches turns the engine's matching rules into Matches (rule index

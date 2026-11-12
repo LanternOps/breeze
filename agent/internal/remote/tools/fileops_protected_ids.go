@@ -118,10 +118,47 @@ type protectedIdentitySet struct {
 
 // collectProtectedIdentities records the identity of every existing fixed
 // protected file first, then of the regular files below the protected
-// folders (bounded, links not followed).
+// folders (bounded, links not followed), walking only keys/ of the agent's
+// data folder.
 func collectProtectedIdentities() protectedIdentitySet {
-	set := protectedIdentitySet{ids: map[fileIdentity]struct{}{}, complete: true}
 	files, dirs := protectedIdentitySources()
+	dataDir, keysDir := protectedDataDirs()
+	var skips []string
+	if dataDir != "" {
+		skips = append(skips, dataDir)
+		dirs = append(dirs, keysDir)
+	}
+	return collectIdentities(files, dirs, skips)
+}
+
+// volumeProtectedSources lists, for the top folder of a mounted volume, the
+// protected files and folders at that volume's root (its own system
+// credential stores and agent folders), with the data folders to skip
+// except for their keys/.
+func volumeProtectedSources(top string) (files, dirs, skips []string) {
+	join := func(rel string) string { return filepath.Join(top, filepath.FromSlash(rel)) }
+	if runtime.GOOS == "windows" {
+		for _, rel := range []string{"Windows/System32/config/SAM", "Windows/System32/config/SECURITY", "Windows/System32/config/SYSTEM", "Windows/NTDS/ntds.dit"} {
+			files = append(files, join(rel))
+		}
+		dirs = []string{join("ProgramData/Breeze"), join("ProgramData/Breeze/data/keys")}
+		skips = []string{join("ProgramData/Breeze/data")}
+		return files, dirs, skips
+	}
+	for _, rel := range []string{"etc/shadow", "etc/gshadow", "etc/sudoers", "etc/master.passwd", "private/etc/master.passwd"} {
+		files = append(files, join(rel))
+	}
+	dirs = []string{join("etc/sudoers.d"), join("etc/ssl/private"), join("etc/breeze"), join("Library/Keychains"),
+		join("Library/Application Support/Breeze"), join("Library/Application Support/Breeze/data/keys"), join("var/lib/breeze/keys")}
+	skips = []string{join("Library/Application Support/Breeze/data")}
+	return files, dirs, skips
+}
+
+// collectIdentities records the identities of the existing regular files
+// among files, then below dirs (bounded, links not followed, folders in
+// skips left out).
+func collectIdentities(files, dirs, skips []string) protectedIdentitySet {
+	set := protectedIdentitySet{ids: map[fileIdentity]struct{}{}, complete: true}
 	for _, f := range files {
 		id, ok, err := identityOfPath(f)
 		if err != nil && (runsPrivileged() || !errors.Is(err, fs.ErrPermission)) {
@@ -131,14 +168,9 @@ func collectProtectedIdentities() protectedIdentitySet {
 			set.ids[id] = struct{}{}
 		}
 	}
-	dataDir, keysDir := protectedDataDirs()
-	if keysDir != "" {
-		dirs = append(dirs, keysDir)
-	}
 	entries := 0
 	for _, dir := range dirs {
 		base := strings.Count(filepath.Clean(dir), string(filepath.Separator))
-		walkingKeys := dir == keysDir
 		_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if !errors.Is(err, fs.ErrNotExist) && (runsPrivileged() || !errors.Is(err, fs.ErrPermission)) {
@@ -152,8 +184,10 @@ func collectProtectedIdentities() protectedIdentitySet {
 				return filepath.SkipAll
 			}
 			if d.IsDir() {
-				if !walkingKeys && dataDir != "" && filepath.Clean(p) == dataDir {
-					return filepath.SkipDir // walked separately: only keys/
+				for _, skip := range skips {
+					if p != dir && filepath.Clean(p) == skip {
+						return filepath.SkipDir // walked separately: only keys/
+					}
 				}
 				if strings.Count(p, string(filepath.Separator))-base >= maxProtectedIdentityDepth {
 					set.complete = false
@@ -200,28 +234,83 @@ func protectedIdentitiesCached() protectedIdentitySet {
 	return protectedIdentitiesCache.set
 }
 
-// openFileIdentity reads an open file's identity and link count (a variable
-// so a test can make it fail).
-var openFileIdentity = identityOfOpenFile
+// volumeIdentitiesCache keeps, briefly, the protected-file identities at the
+// root of each mounted volume the file operations have met.
+var volumeIdentitiesCache struct {
+	sync.Mutex
+	sets map[string]protectedIdentitySet
+	at   map[string]time.Time
+}
+
+// volumeIdentitiesOfHandle returns the protected-file identities at the root
+// of the volume the open file f (final path final) is on: on Windows the
+// volume named by its GUID, elsewhere the mount point holding it. The system
+// root and an unknown volume give an empty, complete set (the system's own
+// files are in protectedIdentitiesCached).
+func volumeIdentitiesOfHandle(f *os.File, final string) protectedIdentitySet {
+	top := ""
+	if vol, ok := handleVolumePath(f); ok {
+		top = volumeGUIDRoot(vol)
+	} else if table, ok := loadMountTable(); ok && final != "" {
+		top = longestMountPoint(table, final)
+	}
+	if top == "" || filepath.Dir(top) == top {
+		return protectedIdentitySet{complete: true}
+	}
+	volumeIdentitiesCache.Lock()
+	defer volumeIdentitiesCache.Unlock()
+	if volumeIdentitiesCache.sets == nil {
+		volumeIdentitiesCache.sets, volumeIdentitiesCache.at = map[string]protectedIdentitySet{}, map[string]time.Time{}
+	}
+	if set, ok := volumeIdentitiesCache.sets[top]; ok && time.Since(volumeIdentitiesCache.at[top]) <= protectedIdentitiesTTL {
+		return set
+	}
+	files, dirs, skips := volumeProtectedSources(top)
+	set := collectIdentities(files, dirs, skips)
+	volumeIdentitiesCache.sets[top], volumeIdentitiesCache.at[top] = set, time.Now()
+	return set
+}
+
+// openFileLinks and openFileIdentity read an open file's link count and
+// identity (variables so a test can make them fail).
+var (
+	openFileLinks    = linkCountOfOpenFile
+	openFileIdentity = identityOfOpenFile
+)
 
 // isOtherNameOfProtectedFile reports whether the open file f must be treated
 // as another name of a protected file: a regular file with more than one link
-// whose identity is a protected one, or cannot be cleared because the
-// protected set is incomplete. A file whose identity cannot be read is
-// treated as protected. The protected set is only computed when the link
-// count calls for it.
-func isOtherNameOfProtectedFile(f *os.File, protected func() protectedIdentitySet) bool {
-	id, links, err := openFileIdentity(f)
+// whose identity is in one of the protected sets, or cannot be cleared
+// because a set is incomplete. A link count or identity that cannot be read
+// is treated as protected. info, when not nil, is f's stat information,
+// which saves a query. Only a file with more than one link costs an identity
+// read and the protected sets.
+func isOtherNameOfProtectedFile(f *os.File, info fs.FileInfo, sets ...func() protectedIdentitySet) bool {
+	links, err := openFileLinks(f, info)
 	if err != nil {
 		return true
 	}
 	if links <= 1 {
 		return false
 	}
-	set := protected()
-	if !set.complete {
-		return true
+	var (
+		id     fileIdentity
+		idRead bool
+	)
+	for _, protected := range sets {
+		set := protected()
+		if !set.complete {
+			return true
+		}
+		if !idRead {
+			if id, _, err = openFileIdentity(f); err != nil {
+				return true
+			}
+			idRead = true
+		}
+		if _, hit := set.ids[id]; hit {
+			return true
+		}
 	}
-	_, hit := set.ids[id]
-	return hit
+	return false
 }

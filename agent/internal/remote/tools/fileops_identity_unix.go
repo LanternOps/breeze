@@ -32,6 +32,20 @@ func identityFromInfo(info os.FileInfo) (fileIdentity, uint32, error) {
 	return fileIdentity{volume: uint64(st.Dev), idLow: uint64(st.Ino)}, links, nil
 }
 
+// linkCountOfOpenFile returns how many names a regular file has (1 for
+// anything else), from info when the caller already has the open file's stat
+// information.
+func linkCountOfOpenFile(f *os.File, info os.FileInfo) (uint32, error) {
+	if info == nil {
+		var err error
+		if info, err = f.Stat(); err != nil {
+			return 0, err
+		}
+	}
+	_, links, err := identityFromInfo(info)
+	return links, err
+}
+
 // identityOfOpenFile returns the identity and link count of an open file
 // (the link count is 1 for anything but a regular file).
 func identityOfOpenFile(f *os.File) (fileIdentity, uint32, error) {

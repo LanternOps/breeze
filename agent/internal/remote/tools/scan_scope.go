@@ -49,17 +49,53 @@ type ScanScope struct {
 
 	topsMu sync.Mutex
 	tops   map[string]string // fallback: folder -> top of its volume
+
+	volIDsMu sync.Mutex
+	volIDs   map[string]protectedIdentitySet // volume top -> its protected files
 }
 
 // NewScanScope captures the agent configuration folder's spellings; the
 // protected file identities are collected on first need.
 func NewScanScope() *ScanScope {
-	return &ScanScope{configForms: agentConfigDirForms(), tops: map[string]string{}}
+	return &ScanScope{configForms: agentConfigDirForms(), tops: map[string]string{}, volIDs: map[string]protectedIdentitySet{}}
 }
 
 func (s *ScanScope) protectedIDs() protectedIdentitySet {
 	s.idsOnce.Do(func() { s.ids = collectProtectedIdentities() })
 	return s.ids
+}
+
+// volumeIDs returns the identities of the protected files at the root of
+// the mounted volume whose top folder is top, collected once per scan.
+func (s *ScanScope) volumeIDs(top string) protectedIdentitySet {
+	s.volIDsMu.Lock()
+	defer s.volIDsMu.Unlock()
+	if set, ok := s.volIDs[top]; ok {
+		return set
+	}
+	files, dirs, skips := volumeProtectedSources(top)
+	set := collectIdentities(files, dirs, skips)
+	s.volIDs[top] = set
+	return set
+}
+
+// handleFinalPath and handleVolumePath report where an open handle is: its
+// final path in the usual (drive-letter) spelling, and on Windows its path
+// from the root of its volume, named by the volume's GUID, which does not
+// depend on drive letters or the folders the volume is mounted at.
+// Variables so a test can stand in for either spelling.
+var (
+	handleFinalPath  = containmentFinalPathOfFile
+	handleVolumePath = volumePathOfFile
+)
+
+// volumeGUIDRoot returns the root of the volume named in a volume-GUID path
+// (\\?\Volume{GUID}\), or "".
+func volumeGUIDRoot(p string) string {
+	if i := strings.Index(p, "}"); i >= 0 && i+1 < len(p) && (p[i+1] == '\\' || p[i+1] == '/') {
+		return p[:i+2]
+	}
+	return ""
 }
 
 // scanDeviceOf returns the device a path lives on (a variable so a test can
@@ -121,11 +157,16 @@ func (s *ScanScope) volumeTop(p string, info fs.FileInfo) string {
 // ScanRoot is a root that passed ScanScope.CheckRoot.
 type ScanRoot struct {
 	path      string
+	walk      string
 	canonical string
 }
 
-// Path is the root as the walk should spell it.
+// Path is the root as checked and reported.
 func (r *ScanRoot) Path() string { return r.path }
+
+// WalkPath is the path to walk: Path, or for a volume mounted at a folder
+// (Windows), Path with a trailing separator so the walk enters the volume.
+func (r *ScanRoot) WalkPath() string { return r.walk }
 
 // CheckRoot checks a scan root: an absolute path in a form the agent
 // accepts (localPathFormError), naming a folder or a regular file, and not a
@@ -142,7 +183,17 @@ func (s *ScanScope) CheckRoot(root string) (*ScanRoot, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&fs.ModeSymlink != 0 {
+	walk := clean
+	if !inspectableInfo(info) && isVolumeMountPoint(clean) {
+		// A volume mounted at a folder (Windows) is scanned as that
+		// volume's root; a junction or link to an ordinary folder is not.
+		st, serr := os.Stat(clean)
+		if serr != nil {
+			return nil, serr
+		}
+		info = st
+		walk = clean + string(filepath.Separator)
+	} else if info.Mode()&fs.ModeSymlink != 0 {
 		// The walk itself skips a root that is a link; judge what it names.
 		if st, serr := os.Stat(clean); serr == nil {
 			info = st
@@ -162,6 +213,17 @@ func (s *ScanScope) CheckRoot(root string) (*ScanRoot, error) {
 		}
 		_ = f.Close()
 	}
+	if walk != clean {
+		// A volume mounted at a folder: entries are judged from that
+		// volume's root, named by its GUID, so the protected locations
+		// anchor there whatever drive letter the volume has, if any.
+		if f, oerr := os.Open(walk); oerr == nil {
+			if vol, ok := handleVolumePath(f); ok {
+				canonical = vol
+			}
+			_ = f.Close()
+		}
+	}
 	top := ""
 	if cinfo, cerr := os.Lstat(canonical); cerr == nil {
 		top = s.volumeTop(canonical, cinfo)
@@ -169,7 +231,7 @@ func (s *ScanScope) CheckRoot(root string) (*ScanRoot, error) {
 	if s.locationProtected(clean, isDir, "") || s.locationProtected(canonical, isDir, top) {
 		return nil, errorCodef(wire.ErrCodeSensitivePathDenied, "scan denied on protected location: %s", root)
 	}
-	return &ScanRoot{path: clean, canonical: canonical}, nil
+	return &ScanRoot{path: clean, walk: walk, canonical: canonical}, nil
 }
 
 // Skip reports whether the walk of r should leave path (an entry below the
@@ -180,33 +242,36 @@ func (s *ScanScope) CheckRoot(root string) (*ScanRoot, error) {
 // the top of the mounted volume it is on.
 func (s *ScanScope) Skip(r *ScanRoot, path string, info fs.FileInfo) bool {
 	isDir := info.IsDir()
-	if s.locationProtected(path, isDir, "") {
-		return true
-	}
 	rel, err := filepath.Rel(r.path, path)
 	if err != nil {
-		return false
+		return s.locationProtected(path, isDir, "")
 	}
 	canonical := filepath.Join(r.canonical, rel)
+	// When the root's canonical spelling is the walked one, the two forms
+	// are the same path: judge it once.
+	if r.canonical != r.path && s.locationProtected(path, isDir, "") {
+		return true
+	}
 	return s.locationProtected(canonical, isDir, s.volumeTop(canonical, info))
 }
 
 // OpenFile opens a file the walk queued, for reading, and returns the handle
-// the scan must read from. The open does not follow a link at the leaf and
-// never opens anything but a regular file (openScanFile); the opened file
-// must be the one the walk saw (walked, when not nil; its file ID was loaded
-// during the walk); its canonical location (from the handle) must not be
-// protected, also at the top of the mounted volume it is on; and if it has
-// other names, it must not be a protected file. Anything refused for those
-// reasons returns ErrScanSkipped; other errors are the open's own.
-func (s *ScanScope) OpenFile(path string, walked fs.FileInfo) (*os.File, error) {
+// the scan must read from with its stat information. The open does not
+// follow a link at the leaf and never opens anything but a regular file
+// (openScanFile); the opened file must be the one the walk saw (walked, when
+// not nil; its file ID was loaded during the walk); its canonical location
+// (from the handle) must not be protected, also at the top of the mounted
+// volume it is on; and if it has other names, it must not be a protected
+// file. Anything refused for those reasons returns ErrScanSkipped; other
+// errors are the open's own.
+func (s *ScanScope) OpenFile(path string, walked fs.FileInfo) (*os.File, fs.FileInfo, error) {
 	f, err := openScanFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	fail := func(e error) (*os.File, error) {
+	fail := func(e error) (*os.File, fs.FileInfo, error) {
 		_ = f.Close()
-		return nil, e
+		return nil, nil, e
 	}
 	if requireDiskHandle(f) != nil {
 		return fail(ErrScanSkipped)
@@ -218,19 +283,36 @@ func (s *ScanScope) OpenFile(path string, walked fs.FileInfo) (*os.File, error) 
 	if !info.Mode().IsRegular() || (walked != nil && !os.SameFile(walked, info)) {
 		return fail(ErrScanSkipped)
 	}
-	final, err := containmentFinalPathOfFile(f)
+	sets := []func() protectedIdentitySet{s.protectedIDs}
+	final, err := handleFinalPath(f)
 	switch {
 	case err == nil:
-		if s.locationProtected(final, false, s.volumeTop(final, info)) {
+		top := s.volumeTop(final, info)
+		if s.locationProtected(final, false, top) {
 			return fail(ErrScanSkipped)
 		}
+		if top != "" && filepath.Dir(top) != top {
+			sets = append(sets, func() protectedIdentitySet { return s.volumeIDs(top) })
+		}
 	case handleCheckMandatory:
-		return fail(fmt.Errorf("cannot determine where %s resolves: %w", path, err))
+		if _, ok := handleVolumePath(f); !ok {
+			return fail(fmt.Errorf("cannot determine where %s resolves: %w", path, err))
+		}
 	}
-	if isOtherNameOfProtectedFile(f, s.protectedIDs) {
+	// On Windows the file is also judged from the root of its own volume,
+	// whatever drive letter or mount folder the DOS spelling went through.
+	if vol, ok := handleVolumePath(f); ok {
+		if s.locationProtected(vol, false, "") {
+			return fail(ErrScanSkipped)
+		}
+		if root := volumeGUIDRoot(vol); root != "" {
+			sets = append(sets, func() protectedIdentitySet { return s.volumeIDs(root) })
+		}
+	}
+	if isOtherNameOfProtectedFile(f, info, sets...) {
 		return fail(ErrScanSkipped)
 	}
-	return f, nil
+	return f, info, nil
 }
 
 // locationProtected applies the content-scan rules described above to one
@@ -298,6 +380,24 @@ func pathFromVolumeTop(p, top string) string {
 	return "/" + strings.ToLower(filepath.ToSlash(rel))
 }
 
+// stripVolumeGUID removes a leading volume{GUID} component from a
+// lowercased, forward-slashed path, returning the rooted rest.
+func stripVolumeGUID(p string) (string, bool) {
+	q := strings.TrimPrefix(p, "/")
+	if !strings.HasPrefix(q, "volume{") {
+		return p, false
+	}
+	end := strings.IndexByte(q, '}')
+	if end < 0 || (len(q) > end+1 && q[end+1] != '/') {
+		return p, false
+	}
+	rest := q[end+1:]
+	if rest == "" {
+		rest = "/"
+	}
+	return rest, true
+}
+
 // volumeRelative rewrites a lowercased, forward-slashed path to its path
 // from the root of its volume: without a namespace prefix or drive letter,
 // without macOS's /System/Volumes/Data, and with /private/etc and
@@ -306,6 +406,12 @@ func volumeRelative(form string) string {
 	p := stripWindowsNamespacePrefix(form)
 	if hasDrivePrefix(p) {
 		p = p[2:]
+	}
+	// A volume without a drive letter is named by its GUID
+	// (\Volume{...}\ from the handle's final path): the rest is the path
+	// from that volume's root.
+	if rest, ok := stripVolumeGUID(p); ok {
+		p = rest
 	}
 	p = stripDataVolume(p)
 	for _, alias := range []string{"/private/etc", "/private/var"} {

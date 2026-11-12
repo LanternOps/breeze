@@ -39,7 +39,7 @@ func TestScanOpenFileChecksWhereTheHandleLanded(t *testing.T) {
 	if err := os.Symlink(filepath.Dir(secrets), link); err != nil {
 		t.Fatal(err)
 	}
-	f, err := NewScanScope().OpenFile(filepath.Join(link, "secrets.yaml"), nil)
+	f, _, err := NewScanScope().OpenFile(filepath.Join(link, "secrets.yaml"), nil)
 	if f != nil {
 		_ = f.Close()
 	}
@@ -55,14 +55,14 @@ func TestScanOpenFileRefusesADifferentFileThanTheWalkSaw(t *testing.T) {
 	b := filepath.Join(dir, "b.bin")
 	writeScanFixture(t, a, "a")
 	writeScanFixture(t, b, "b")
-	f, err := NewScanScope().OpenFile(a, lstatT(t, b))
+	f, _, err := NewScanScope().OpenFile(a, lstatT(t, b))
 	if f != nil {
 		_ = f.Close()
 	}
 	if !errors.Is(err, ErrScanSkipped) {
 		t.Fatalf("err = %v, want the file skipped", err)
 	}
-	f, err = NewScanScope().OpenFile(a, lstatT(t, a))
+	f, _, err = NewScanScope().OpenFile(a, lstatT(t, a))
 	if err != nil {
 		t.Fatalf("the walked file itself was refused: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestScanOpenFileDoesNotFollowALinkAtTheLeaf(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	f, err := NewScanScope().OpenFile(link, nil)
+	f, _, err := NewScanScope().OpenFile(link, nil)
 	if f != nil {
 		_ = f.Close()
 	}
@@ -193,7 +193,7 @@ func TestScanProtectsLocationsAtTheTopOfMountedVolumes(t *testing.T) {
 		if !s.Skip(r, p, lstatT(t, p)) {
 			t.Errorf("%s: not recognised at the top of its volume", p)
 		}
-		f, err := s.OpenFile(p, lstatT(t, p))
+		f, _, err := s.OpenFile(p, lstatT(t, p))
 		if f != nil {
 			_ = f.Close()
 		}
@@ -239,7 +239,7 @@ func TestIncompleteIdentitySetRefusesMultiLinkedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if !isOtherNameOfProtectedFile(f, func() protectedIdentitySet { return ids }) {
+	if !isOtherNameOfProtectedFile(f, nil, func() protectedIdentitySet { return ids }) {
 		t.Fatal("a multi-linked file was cleared against an incomplete identity set")
 	}
 	single := filepath.Join(dir, "c.txt")
@@ -249,12 +249,13 @@ func TestIncompleteIdentitySetRefusesMultiLinkedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer g.Close()
-	if isOtherNameOfProtectedFile(g, func() protectedIdentitySet { return ids }) {
+	if isOtherNameOfProtectedFile(g, nil, func() protectedIdentitySet { return ids }) {
 		t.Fatal("a single-link file was refused")
 	}
 }
 
-// A file whose identity cannot be read is treated as protected.
+// A file whose link count or identity cannot be read is treated as
+// protected.
 func TestUnreadableIdentityIsTreatedAsProtected(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "a.txt")
@@ -264,11 +265,42 @@ func TestUnreadableIdentityIsTreatedAsProtected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	orig := openFileIdentity
+	complete := func() protectedIdentitySet { return protectedIdentitySet{complete: true} }
+
+	origLinks := openFileLinks
+	openFileLinks = func(*os.File, fs.FileInfo) (uint32, error) { return 0, errors.New("unavailable") }
+	if !isOtherNameOfProtectedFile(f, nil, complete) {
+		t.Error("a file with an unreadable link count was cleared")
+	}
+	openFileLinks = func(*os.File, fs.FileInfo) (uint32, error) { return 2, nil }
+	origID := openFileIdentity
 	openFileIdentity = func(*os.File) (fileIdentity, uint32, error) { return fileIdentity{}, 0, errors.New("unavailable") }
+	t.Cleanup(func() { openFileLinks, openFileIdentity = origLinks, origID })
+	if !isOtherNameOfProtectedFile(f, nil, complete) {
+		t.Error("a multi-linked file with an unreadable identity was cleared")
+	}
+}
+
+// A single-link file is cleared without reading its identity or the
+// protected set.
+func TestSingleLinkFileSkipsIdentityLookup(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a.txt")
+	writeScanFixture(t, p, "x")
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	orig := openFileIdentity
+	called := false
+	openFileIdentity = func(f *os.File) (fileIdentity, uint32, error) { called = true; return orig(f) }
 	t.Cleanup(func() { openFileIdentity = orig })
-	if !isOtherNameOfProtectedFile(f, func() protectedIdentitySet { return protectedIdentitySet{complete: true} }) {
-		t.Fatal("a file with an unreadable identity was cleared")
+	setRead := false
+	if isOtherNameOfProtectedFile(f, nil, func() protectedIdentitySet { setRead = true; return protectedIdentitySet{complete: true} }) {
+		t.Fatal("a single-link file was refused")
+	}
+	if called || setRead {
+		t.Fatalf("identity read=%v, protected set read=%v; want neither for a single-link file", called, setRead)
 	}
 }
 

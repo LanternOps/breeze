@@ -68,7 +68,9 @@ type ScanOutcome struct {
 	EngineError string
 	// FilesFailed counts files the YARA walk could not read (locked,
 	// vanished, engine timeout). Always 0 for the legacy engine, whose
-	// per-file errors keep W01 semantics (they fail the scan).
+	// per-file errors keep W01 semantics (they fail the scan), except a file
+	// the system will not let it open (access denied, an antivirus block, a
+	// sharing or lock violation), which is skipped and logged.
 	FilesFailed int
 }
 
