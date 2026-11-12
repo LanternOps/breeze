@@ -94,7 +94,20 @@ export function advertisedRequest(
   profile: MeasuredProfile,
   opts: { tenantTools?: readonly TenantToolDescriptor[] } = {},
 ): AdvertisedRequest {
-  const facts = gatewayFacts(profile);
+  return advertisedRequestForFacts(surface, gatewayFacts(profile), opts);
+}
+
+/**
+ * The same for an offering's own facts (#11393 W04: the `surface_turn` verify
+ * stage). `strict` keeps the surface's up-front refusals (a window too small
+ * for any profile, a profile below the surface's floor) as throws instead of
+ * measuring past them.
+ */
+export function advertisedRequestForFacts(
+  surface: CaptureSurface,
+  facts: ToolProfileFacts,
+  opts: { tenantTools?: readonly TenantToolDescriptor[]; strict?: boolean } = {},
+): AdvertisedRequest {
   const kind = profiledSurfaceOf(surface);
 
   if (kind === 'ai_agents') {
@@ -122,7 +135,7 @@ export function advertisedRequest(
       // `minimal` drops the builder's floor (execute_script_on_device), so the
       // builder refuses it; its prefix is still measured, from the same
       // resolver without the floor, to decide minimal vs too_small for `auto`.
-      if (!(err instanceof ToolProfileUnderpoweredError)) throw err;
+      if (opts.strict || !(err instanceof ToolProfileUnderpoweredError)) throw err;
       exposure = resolveToolExposure({
         surface: 'script_builder', facts, surfaceBaseSet: surface.allowedTools.map((n) => n.replace(/^mcp__script_builder__/, '')), extraTools: [],
       });
