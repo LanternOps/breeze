@@ -60,8 +60,7 @@ export function GoogleSignInButton({
       data-testid={testId}
       onClick={onClick}
       disabled={busy}
-      className={cn(GOOGLE_BUTTON)}
-      style={{ fontFamily: "Roboto, 'Segoe UI', Arial, sans-serif" }}
+      className={cn(GOOGLE_BUTTON, "font-[Roboto,'Segoe_UI',Arial,sans-serif]")}
     >
       {busy ? <Loader2 className="h-[18px] w-[18px] animate-spin" /> : <GoogleLogo />}
       {label}
