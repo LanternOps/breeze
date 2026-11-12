@@ -120,7 +120,7 @@
     "stream-json": "3.7.0",
     "stripe": "22.6.2",
     "tldts": "^7.4.19",
-    "twilio": "^6.0.2",
+    "twilio": "^6.3.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

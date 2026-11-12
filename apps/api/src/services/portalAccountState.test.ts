@@ -164,6 +164,10 @@ describe('initialPortalAccountState', () => {
     expect(initialPortalAccountState('self_request_approved')).toEqual({ status: 'invited', browserAccess: 'granted' });
   });
 
+  it('self_registration_instant yields invited + granted, like an approved self request (W6, inv. 10)', () => {
+    expect(initialPortalAccountState('self_registration_instant')).toEqual({ status: 'invited', browserAccess: 'granted' });
+  });
+
   it('an instant-mode SSO account starts active with browser access, like an approved SSO request (W4)', () => {
     expect(initialPortalAccountState('sso_instant')).toEqual({ status: 'active', browserAccess: 'granted' });
   });

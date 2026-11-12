@@ -63,6 +63,7 @@ export function createGrantStore(now: () => number = Date.now): GrantStore {
         purpose: input.purpose,
         expiresAt: now() + clampTtl(input.ttlMs),
         inFlight: new Set(),
+        compactSchemas: input.compactSchemas === true,
       };
       byDigest.set(digest(token), record);
       return { token, record };
@@ -115,5 +116,6 @@ export function discoveryGrantRecord(config: GatewayConnectionConfig, credential
     purpose: 'discovery',
     expiresAt: Date.now() + DISCOVERY_RECORD_TTL_MS,
     inFlight: new Set(),
+    compactSchemas: false,
   };
 }

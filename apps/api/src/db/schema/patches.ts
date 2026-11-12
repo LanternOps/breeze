@@ -326,7 +326,10 @@ export const patchJobResults = pgTable('patch_job_results', {
   // #4223: latest attempt per (device, patch) for the patch list / device
   // patches install-failure overlay (services/patchInstallFailures.ts).
   devicePatchCreatedIdx: index('idx_patch_job_results_device_patch_created')
-    .on(table.deviceId, table.patchId, table.createdAt)
+    .on(table.deviceId, table.patchId, table.createdAt),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): the age scan
+  // over every status (jobs/historyRetention/patchAndPosture.ts).
+  createdIdx: index('patch_job_results_created_idx').on(table.createdAt)
 }));
 
 export const patchRollbacks = pgTable('patch_rollbacks', {

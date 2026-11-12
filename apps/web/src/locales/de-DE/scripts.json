@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(leer)",
       "noOutput": "Keine Ausgabe",
+      "purged": "Ausgabe nach Ablauf der Aufbewahrungsfrist entfernt ({{date}})",
       "title": "Ausgabe",
       "stdout": "Standardausgabe (stdout)",
       "stderr": "Standardfehler (stderr)"

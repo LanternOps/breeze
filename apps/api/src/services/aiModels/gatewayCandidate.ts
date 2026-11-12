@@ -32,6 +32,7 @@ import type { ConnectionKind } from './eligibility';
 import type { GatewayConnectionConfig, GatewayCredential } from './gateway/types';
 import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
 import type { Offering } from './offerings';
+import { toolProfileFactsFrom } from './toolProfileFacts';
 import type { RateSnapshot } from './pricing';
 import { safeErrorMessage } from './safeDbError';
 
@@ -212,5 +213,6 @@ export async function gatewayCandidate(input: { offering: Offering; conn: Partne
     promptProfile: 'generic',
     limits: { maxInputTokens: null, maxOutputTokens: null },
     configVersion: conn.configVersion,
+    toolProfileFacts: toolProfileFactsFrom(offering, 'gateway'),
   };
 }

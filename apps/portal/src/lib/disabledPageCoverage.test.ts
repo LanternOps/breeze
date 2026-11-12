@@ -185,6 +185,10 @@ const UNAUTHENTICATED_PAGES = new Set([
   'forgot-password.astro',
   'reset-password.astro',
   'accept-invite.astro',
+  // Self-registration (W6): the public form, and the emailed confirm page whose
+  // URL-fragment token is the capability (an explicit POST spends it).
+  'request-access/index.astro',
+  'request-access/verify.astro',
   // Tenant-setup result page: the server callback lands a signed-out IT admin here.
   'entra-setup.astro',
   'account-disabled.astro',

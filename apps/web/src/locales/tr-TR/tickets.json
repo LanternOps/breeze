@@ -143,7 +143,15 @@
       "sentWithoutAttachmentReply_one": "Yanıt gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
       "sentWithoutAttachmentNote_one": "Not gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
       "sentWithoutAttachmentReply_other": "Yanıt gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın.",
-      "sentWithoutAttachmentNote_other": "Not gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın."
+      "sentWithoutAttachmentNote_other": "Not gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın.",
+      "rejectedTicketDeleted": "{{name}} eklenmedi: bu talep silindi.",
+      "rejectedTicketMerged": "{{name}} eklenmedi: bu talep başka bir talepla birleştirildi.",
+      "rejectedNotFound": "{{name}} eklenmedi: talep bulunamadı.",
+      "rejectedMalformed": "{{name}} eklenmedi: yükleme hatalı biçimlendirilmişti. Yeniden eklemeyi deneyin.",
+      "openMergedTicket": "Birleştirilen talebi aç",
+      "notKept_one": "1 ek bu taslakla birlikte saklanmadı ({{names}}). Yeniden ekleyin veya onsuz göndermek için uyarıyı kapatın.",
+      "notKept_other": "{{count}} ek bu taslakla birlikte saklanmadı ({{names}}). Yeniden ekleyin veya onlarsız göndermek için uyarıyı kapatın.",
+      "notKeptDismiss": "Kapat"
     },
     "modeLabel": "Yorum görünürlüğü",
     "recipient": {

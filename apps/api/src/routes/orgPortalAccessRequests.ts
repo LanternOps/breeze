@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, sql } from 'drizzle-orm';
 import { decidePortalAccessRequestsSchema } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
-import { db, withDbTransaction } from '../db';
+import { db, runOutsideDbContext, withDbTransaction } from '../db';
 import { organizations, partners } from '../db/schema';
 import { requireMfa, requirePartner, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
@@ -15,9 +15,12 @@ import {
   approvePortalAccessRequest,
   denyPortalAccessRequest,
   listPortalAccessRequests,
+  readPortalAccessRequestForDecision,
   summarizePendingPortalAccessRequests,
   type ApprovePortalAccessRequestResult,
 } from '../services/portalAccessRequests';
+import { isDomainVerifiedForOrg, listVerifiedDomainsForOrg } from '../services/portalDomainVerification';
+import { emailDomainOf } from '../services/portalSelfRegistration/emailDomain';
 import type { PortalAccessRequestSource } from '../db/schema';
 import { PortalAccountTransitionError } from '../services/portalAccountState';
 import { resolveAccessibleOrg } from './orgPortalSettings';
@@ -43,6 +46,15 @@ import { buildPortalUrl } from './portal/helpers';
  * per-id failure to a result code and finishes the batch, and the audit row
  * and the email of each decision are written whatever happened to the others.
  *
+ * Self-registration domain check (W6 D11): before each approval (single and
+ * per id in `/decide`) the route reads the request's source and address, and
+ * for a `self` request asks W5's read API whether the address's domain is still
+ * verified for this org. That API throws inside a request transaction, so it
+ * runs through `runOutsideDbContext` (its own system-scope connection), and the
+ * answer goes into the approval as `selfDomainVerified`. The approval refuses
+ * with DOMAIN_NOT_VERIFIED otherwise. The list likewise reads the org's
+ * verified domains once per page for `domainVerified`.
+ *
  * Emails (OD3) go out after the service returns: a self request's approval
  * sends the normal invite, an SSO / add-in approval sends "you can now sign
  * in", a denial sends the neutral declined email. Each send runs in its own
@@ -65,6 +77,8 @@ const APPROVE_ACTION = 'organization.portal_user.access_request.approve';
 const DENY_ACTION = 'organization.portal_user.access_request.deny';
 /** The `/decide` result for an id whose decision failed with anything but a refusal. */
 const DECIDE_INTERNAL_ERROR = 'INTERNAL_ERROR';
+/** The `/decide` result for a `self` request whose domain is no longer verified (W6 D11). */
+const DECIDE_DOMAIN_NOT_VERIFIED = 'domain_not_verified';
 
 type DecisionRefusal = { status: 400 | 403 | 404 | 409; body: { error: string; code: string } };
 
@@ -77,6 +91,30 @@ function decisionRefusal(err: unknown): DecisionRefusal | null {
     return { status: err.httpStatus, body: { error: err.message, code: err.code } };
   }
   return null;
+}
+
+/**
+ * W6 D11: the approval's `selfDomainVerified` for one request. `{}` for any
+ * source but `self` (and for a request the pre-read does not find: the approval
+ * then reports NOT_FOUND itself). For `self`, W5's read API answers outside the
+ * request transaction; an address with no domain is not verified.
+ *
+ * Callers run it inside the same try as the approval: the pre-read is its own
+ * savepoint and the W5 read is on its own connection, so a failure in either
+ * leaves the request transaction usable.
+ */
+async function selfDomainCheck(orgId: string, requestId: string): Promise<{ selfDomainVerified?: boolean }> {
+  const request = await readPortalAccessRequestForDecision(orgId, requestId);
+  if (!request || request.source !== 'self') return {};
+  const domain = emailDomainOf(request.email);
+  if (!domain) return { selfDomainVerified: false };
+  return { selfDomainVerified: await runOutsideDbContext(() => isDomainVerifiedForOrg(domain, orgId)) };
+}
+
+/** The org's currently verified domains, lower-cased, read once outside the request transaction (W6 D11). */
+async function verifiedDomainSet(orgId: string): Promise<Set<string>> {
+  const facts = await runOutsideDbContext(() => listVerifiedDomainsForOrg(orgId));
+  return new Set(facts.map((f) => f.domain.toLowerCase()));
 }
 
 type Decided =
@@ -200,7 +238,11 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
       const { status, limit } = c.req.valid('query');
-      const { items, hasMore } = await listPortalAccessRequests(org.id, limit === undefined ? { status } : { status, limit });
+      const verifiedDomains = await verifiedDomainSet(org.id);
+      const { items, hasMore } = await listPortalAccessRequests(
+        org.id,
+        limit === undefined ? { status, verifiedDomains } : { status, limit, verifiedDomains },
+      );
       return c.json({ data: items, hasMore });
     },
   );
@@ -246,7 +288,8 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
         const input = { orgId: org.id, requestId, deciderUserId: auth.user.id };
         try {
           if (decision === 'approve') {
-            decided.push({ kind: 'approve', requestId, result: await approvePortalAccessRequest(input) });
+            const domainCheck = await selfDomainCheck(org.id, requestId);
+            decided.push({ kind: 'approve', requestId, result: await approvePortalAccessRequest({ ...input, ...domainCheck }) });
             results.set(requestId, 'approved');
           } else {
             decided.push({ kind: 'deny', requestId, result: await denyPortalAccessRequest(input) });
@@ -261,7 +304,9 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
             unexpectedFailure = true;
             console.error(`[orgPortalAccessRequests] decide ${decision} failed requestId=${requestId} orgId=${org.id}: ${safeErrorMessage(err)}`);
           }
-          results.set(requestId, refusal ? refusal.body.code : DECIDE_INTERNAL_ERROR);
+          results.set(requestId, !refusal
+            ? DECIDE_INTERNAL_ERROR
+            : refusal.body.code === 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED' ? DECIDE_DOMAIN_NOT_VERIFIED : refusal.body.code);
         }
       }
 
@@ -300,11 +345,12 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
 
       let result: ApprovePortalAccessRequestResult;
       try {
-        result = await approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: auth.user.id });
+        const domainCheck = await selfDomainCheck(org.id, requestId);
+        result = await approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: auth.user.id, ...domainCheck });
       } catch (err) {
         const refusal = decisionRefusal(err);
         // Anything else is a 500 with nothing committed: the service's
-        // savepoint rolled the whole decision back, and nothing ran before it.
+        // savepoint rolled the whole decision back, and only reads ran before it.
         if (!refusal) throw err;
         return c.json(refusal.body, refusal.status);
       }

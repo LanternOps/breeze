@@ -29,6 +29,42 @@ A run that the agent stopped on purpose shows **Cancelled**, even when its statu
 | **Cancelled** | A user, or Breeze, stopped the backup before it finished. | Nothing, unless you did not expect the stop. |
 | **Other error** | Breeze does not recognise the message yet. | Read the full message shown next to the badge. |
 
+### Specific causes
+
+When the message says more than the category, Breeze also names a specific cause and shows its advice in place of the category's general advice. The badge keeps the category. A failure with no recognised cause keeps the category advice.
+
+| Cause | What Breeze can tell from the message | What to do |
+|---|---|---|
+| **Destination refused access** | The storage destination answered the request with an authorization failure (HTTP 401 or 403, or an error code such as `AccessDenied`, `InvalidAccessKeyId` or `SignatureDoesNotMatch`). | Check that the access key is valid and can write, the bucket policy and the storage account's standing, then run **Test connection**. |
+| **Destination reports missing data** | The destination answered that the bucket or objects do not exist (HTTP 404, `NoSuchBucket`, `NoSuchKey`). | Check that the bucket still exists and that no lifecycle rule deletes backup data. |
+| **Destination rejected the request time** | The destination answered `RequestTimeTooSkewed`. | Check the date and time on the device. |
+| **Storage operation failed** | Breeze tried a storage operation several times and the destination kept answering with a server error (HTTP 5xx). | Usually temporary or a provider incompatibility. Contact support if it repeats. |
+| **Upload session ended** | The upload session expired or could not be renewed before the run finished. | Nothing. The next run continues from where this one stopped. |
+| **Backup process stopped** | The backup process on the device exited mid-run. | Commonly the device slept, restarted or shut down. Keep it awake and on during the backup window. |
+| **Run interrupted on the device** | The run was cancelled on the device. | Commonly a restart or shutdown. |
+| **Run never started** | Breeze queued the run but the device never started it. | Usually another backup was still running or the agent was restarting. |
+| **No signal from the device** | Breeze stopped hearing from the device during the run. | Check that the device stayed online. |
+
+Refusals from Breeze itself, such as an upload session that Breeze would not issue, are not the destination's fault and never get the destination advice.
+
+### One destination failing for several devices
+
+When the devices that back up to one destination fail for a reason Breeze can tie to the destination (it refused access, reports missing data, rejected the request time, or kept failing storage operations), Breeze treats it as one problem with the destination, not one per device:
+
+- The backup overview's attention list leads with a single critical item for the destination. It names the destination, how many of its devices are failing (for example "3 of 4"), the cause when most of the failing devices agree on it, and links to the backup profiles where you can run **Test connection**. The per-device items stay below it.
+- The users who can manage backups for that organization get one in-app notice, and the destination appears in the **Connection health** panel on **Integrations** and in the daily connection health digest (see [Connection health checks](/features/notifications/#connection-health-checks)).
+
+Both decide "failing" with the same rule:
+
+- Only backups that finished in the last 72 hours, and only those written to the destination's current bucket, count. Failures from before the destination was pointed at a new bucket are ignored.
+- The file and system image jobs of one run count once per device.
+- Two failing devices make the destination failing. When only one device has a recent success or destination failure, one refusal or missing bucket is enough, or two failed runs in a row.
+- A device that is offline, was cancelled, or failed for another reason does not count either way.
+
+The two differ in timing. The attention item shows exactly while the rule says "failing": it appears at once and disappears as soon as fewer than two devices are failing. The notice waits for a second check before opening a **Destination failing** incident (a refusal or missing bucket opens at once), and once open it stays open until two checks in a row find no device still failing and successful backups from two devices (or the only device with recent results) since the last destination failure, or the destination is disabled or deleted.
+
+**What to do:** open the destination in the backup profiles and run **Test connection**. For a refusal, check that the access key is valid and can write, the bucket policy, and the storage account's standing (a suspended or unpaid account refuses every request). For missing data, check that the bucket still exists and that no lifecycle rule deletes backup data. When the next backups succeed, the item and the incident clear on their own.
+
 ---
 
 ## No backup configuration available

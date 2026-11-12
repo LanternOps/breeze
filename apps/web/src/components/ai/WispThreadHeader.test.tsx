@@ -410,7 +410,8 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
       await refreshTo(fresh);
       expect(screen.getByTestId('wisp-refresh-hint')).toHaveTextContent('This conversation keeps the previous grant terms');
       fireEvent.click(screen.getByTestId('wisp-refresh-new-conversation'));
-      await waitFor(() => expect(h.enterWispMode).toHaveBeenCalledWith(fresh));
+      // #11672: a requested new conversation never resumes the thread's last session.
+      await waitFor(() => expect(h.enterWispMode).toHaveBeenCalledWith({ ...fresh, lastSessionId: null }));
       expect(h.closeSession).toHaveBeenCalledTimes(1);
       expect(h.closeSession.mock.invocationCallOrder[0]).toBeLessThan(h.enterWispMode.mock.invocationCallOrder[0]);
       await waitFor(() => expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull());

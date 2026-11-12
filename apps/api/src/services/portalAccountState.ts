@@ -101,13 +101,19 @@ export function isPasswordEligible(f: Pick<PortalAccountFacts, 'authMethod'>): b
  *
  * W4 (#11381): `sso_instant` — a first Microsoft sign-in under the instant
  * new-person mode. An alias of `sso_request_approved` (identity-only, W3 D2).
+ *
+ * W6: `self_registration_instant` — a proven-mailbox self-registration under
+ * the instant mode (spec §5.1 "an instant-mode policy"). An alias of
+ * `self_request_approved`: `invited` + `granted`; the person still has to
+ * accept the invite (set a password or bind Microsoft) to sign in.
  */
 export function initialPortalAccountState(
-  writer: 'msp_invite' | 'addin_jit' | 'sso_request_approved' | 'self_request_approved' | 'sso_instant',
+  writer: 'msp_invite' | 'addin_jit' | 'sso_request_approved' | 'self_request_approved' | 'sso_instant' | 'self_registration_instant',
 ): { status: PortalAccountStatus; browserAccess: PortalBrowserAccess } {
   switch (writer) {
     case 'msp_invite':
     case 'self_request_approved':
+    case 'self_registration_instant':
       return { status: 'invited', browserAccess: 'granted' };
     case 'addin_jit':
       return { status: 'active', browserAccess: 'none' };

@@ -53,7 +53,7 @@ type fileUploadTask struct {
 }
 
 // fileUploadOutcome is what a worker hands back for one file. At most one of
-// writerStillActive, sourceGone, stopped and err is set; none set means the
+// writerStillActive, sourceGone, endRun, stopped and err is set; none set means the
 // upload succeeded and stored/volatile describe it. The coordinator acts on
 // it in walk order, exactly where the serial loop acted on the same result.
 type fileUploadOutcome struct {
@@ -64,6 +64,9 @@ type fileUploadOutcome struct {
 	writerStillActive error
 	// sourceGone ends the run: the snapshot the file was read from is gone.
 	sourceGone error
+	// endRun ends the run: the destination refused every request or the
+	// storage session died, so no later file can be stored (see endsRun).
+	endRun error
 	// stopped: the job (or the coordinator, while aborting) cancelled it.
 	stopped bool
 	// err skips the file; reconcileFailed says it was the re-upload of a
@@ -103,6 +106,19 @@ type uploadSlot struct {
 type uploadDone struct {
 	index   int
 	outcome fileUploadOutcome
+}
+
+// endsRun reports whether an upload or read-back error ends the whole run
+// rather than skipping one file: the brokered writer's store refused request
+// after request for different objects (providers.ErrDestinationRefused), or
+// its storage session ended (providers.ErrStorageSessionUnavailable). Either
+// way no later request of the run can succeed, and skipping file by file kept
+// such runs going for hours or days while holding the device's backup queue
+// (#11765). Callers check ctx first: a stop closes the session too, and a stop
+// is not a failure.
+func endsRun(err error) bool {
+	return errors.Is(err, providers.ErrDestinationRefused) ||
+		errors.Is(err, providers.ErrStorageSessionUnavailable)
 }
 
 // fileUploader uploads one file on a worker goroutine: measure, upload, at
@@ -167,6 +183,12 @@ func (u *fileUploader) upload(ctx context.Context, task fileUploadTask) fileUplo
 		out.writerStillActive = uploadErr
 		return out
 	}
+	if uploadErr != nil && ctx.Err() == nil && endsRun(uploadErr) {
+		// Not this file's fault either, and no retry can help: the
+		// destination refused the run or its session died (#11765).
+		out.endRun = uploadErr
+		return out
+	}
 	if uploadErr != nil && !errors.Is(uploadErr, errBackupStopped) {
 		// Before spending anything else on this failure, make sure the
 		// source we are reading from still exists. If the shadow copy died,
@@ -224,6 +246,7 @@ func (u *fileUploader) upload(ctx context.Context, task fileUploadTask) fileUplo
 				"deadlineMs", deadline.Milliseconds(),
 				"retryDelayMs", retryDelay.Milliseconds(),
 				"reason", reason,
+				"storeCode", providers.StoreErrorCode(uploadErr),
 				"error", uploadErr.Error(),
 			)
 			timer := time.NewTimer(retryDelay)
@@ -234,6 +257,10 @@ func (u *fileUploader) upload(ctx context.Context, task fileUploadTask) fileUplo
 				uploaded, uploadErr = attemptFileUploadFenced(ctx, u.provider, u.stagingDir, uploadFile, backupPath)
 				if errors.Is(uploadErr, errWriterStillActive) {
 					out.writerStillActive = uploadErr
+					return out
+				}
+				if uploadErr != nil && ctx.Err() == nil && endsRun(uploadErr) {
+					out.endRun = uploadErr
 					return out
 				}
 			}
@@ -280,6 +307,10 @@ func (u *fileUploader) upload(ctx context.Context, task fileUploadTask) fileUplo
 			// first upload's refusal, the snapshot cannot be written at
 			// all, so the run ends rather than skipping file after file.
 			out.writerStillActive = reconcileErr
+			return out
+		}
+		if reconcileErr != nil && ctx.Err() == nil && endsRun(reconcileErr) {
+			out.endRun = reconcileErr
 			return out
 		}
 		if reconcileErr != nil {

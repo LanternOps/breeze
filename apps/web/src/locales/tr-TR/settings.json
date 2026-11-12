@@ -8407,6 +8407,7 @@
       "updated": "Güncellendi",
       "actions": "İşlemler"
     },
+    "expired": "Süresi doldu",
     "statusValue": {
       "unconfirmed": "Onaylanmadı",
       "confirmed": "Onaylandı",
@@ -8487,7 +8488,9 @@
       "label": "Kendi kendine kayıt",
       "off": "Kapalı",
       "approval": "Onay gerekli",
-      "instant": "Anında"
+      "instant": "Anında",
+      "noVerifiedDomain": "Doğrulanmış alan adı yok: Siz bir alan adı doğrulayana kadar kimse kaydolamaz.",
+      "verifyDomain": "Alan adı doğrulayın"
     },
     "ssoNewPerson": {
       "label": "İlk Microsoft / Google ile oturum açma",
@@ -8637,6 +8640,8 @@
     "selectAll": "Tüm talepleri seç",
     "selectOne": "{{email}} kişisinin talebini seç",
     "accountExists": "Zaten bir hesabı var — Kapatmak için reddedin",
+    "domainUnverified": "Alan adı artık doğrulanmış değil",
+    "domainUnverifiedReason": "Onaylanamaz: Bu kişinin erişimi olması gerekiyorsa onu doğrudan davet edin.",
     "actions": {
       "approve": "Onayla",
       "deny": "Reddet",
@@ -8649,7 +8654,8 @@
       "notFound": "Talep bulunamadı",
       "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
       "failed": "Bu talebe karar verilemedi",
-      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil"
+      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil",
+      "domainNotVerified": "E-posta alan adı artık doğrulanmış değil"
     },
     "denyDialog": {
       "title": "Erişim talebini reddet",
@@ -8667,7 +8673,8 @@
     "errors": {
       "load": "Erişim talepleri yüklenemedi.",
       "action": "Erişim talebi güncellenemedi.",
-      "bulk": "Seçilen taleplere karar verilemedi."
+      "bulk": "Seçilen taleplere karar verilemedi.",
+      "domainNotVerified": "Bu kişinin e-posta alan adı artık bu kuruluş için doğrulanmış değil. Erişimi olması gerekiyorsa onu doğrudan davet edin."
     },
     "summary": {
       "title": "Bekleyen erişim talepleri",

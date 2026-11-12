@@ -54,6 +54,17 @@ describe('buildSystemPrompt tool index (W19, unmocked)', () => {
     expect(prompt).toContain('Use only the topology read tools');
   });
 
+  // #11393 W01 Step 0: the `full` chat prompt, byte for byte, committed on
+  // unchanged code before tool profiles touch the prompt path. A `full` (or
+  // `auto` + unknown window) exposure must keep both snapshots unchanged.
+  it('full chat prompt baseline: no page (#11394)', async () => {
+    await expect(await buildSystemPrompt(auth)).toMatchFileSnapshot('./__snapshots__/aiAgent.fullPrompt.noPage.txt');
+  });
+
+  it('full chat prompt baseline: device page (#11394)', async () => {
+    await expect(await buildSystemPrompt(auth, device)).toMatchFileSnapshot('./__snapshots__/aiAgent.fullPrompt.devicePage.txt');
+  });
+
   it('an unknown page type renders no block instead of throwing', () => {
     expect(renderPageContextToolBlocks({ type: 'not_a_page' } as never, names)).toBe('');
     expect(renderPageContextToolBlocks({ type: 'constructor' } as never, names)).toBe('');

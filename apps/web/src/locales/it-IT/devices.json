@@ -2711,7 +2711,7 @@
       "advancedFilterFailed": "Impossibile caricare il filtro avanzato: nessun dispositivo visualizzato. Modifica o cancella il filtro per riprovare.",
       "agentOnlyAction": "Questa azione si applica solo ai dispositivi con agente. I dispositivi di rete non hanno un agente e sono stati ignorati.",
       "agentOnlyActionManual": "Questa azione si applica solo ai dispositivi con agente. Le risorse manuali non hanno un agente.",
-      "alreadyPendingTail": "Già in sospeso",
+      "alreadyPendingTail": ", {{count}} già in sospeso",
       "bulkActionFailed": "Azione in blocco {{action}} non riuscita",
       "bulkMaintenanceSuccess": "{{count}} dispositivi {{verb}} modalità di manutenzione",
       "bulkMaintenanceSuccess_one": "{{count}} dispositivo {{verb}} modalità di manutenzione",
@@ -2756,7 +2756,7 @@
       "selectTwoForMultiboot": "Seleziona almeno due dispositivi da collegare come profili multi-boot.",
       "unknownAction": "Azione sconosciuta: {{action}}",
       "unknownBulkAction": "Azione in blocco sconosciuta: {{action}}",
-      "wakeSentWatching": "Richiesta di riattivazione inviata, monitoraggio in corso",
+      "wakeSentWatching": "Wake-on-LAN inviato a {{hostname}} tramite {{relay}} ({{broadcast}}). In attesa che torni online…",
       "wakeTimeout": "{{hostname}} non è andato online entro 4 minuti. Controlla ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} in coda per dispositivi offline",
       "runsWhenOnline": "Viene eseguito quando il dispositivo è online — scade il {{date}}",
@@ -2810,7 +2810,8 @@
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (non più trovato; potrebbe essere stato eliminato)",
       "bulkMoveSiteNotMovedError": "{{devices}} (si è verificato un errore imprevisto; riprova)",
       "deviceMovedToSite": "{{hostname}} spostato in un nuovo sito",
-      "bulkWakeResult": "Inviato a {{sent}}, saltati {{skipped}}"
+      "bulkWakeResult": "Inviato a {{sent}}, saltati {{skipped}}",
+      "scriptQueuedOneOffline": "Script \"{{script}}\" in coda per {{hostname}} — verrà eseguito quando il dispositivo si riconnette"
     },
     "tryAgain": "Prova di nuovo",
     "unknownDevice": "Sconosciuto",

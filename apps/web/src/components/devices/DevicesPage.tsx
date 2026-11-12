@@ -1187,7 +1187,14 @@ export default function DevicesPage() {
           message: `${admitted.length} of ${result.targets.length} script targets queued; ${refused.length} not admitted (${reasons})`,
         });
       } else if (devices.length === 1) {
-        showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedOne', { script: script.name, hostname: devices[0].hostname }) });
+        // #11553: an offline device only picks the script up on reconnect; say so.
+        const queuedParams = { script: script.name, hostname: devices[0].hostname };
+        showToast({
+          type: 'success',
+          message: admitted[0]?.delivery === 'queued_offline'
+            ? t('devicesPage.toasts.scriptQueuedOneOffline', queuedParams)
+            : t('devicesPage.toasts.scriptQueuedOne', queuedParams),
+        });
       } else {
         showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedMany', { script: script.name, count: admitted.length }) });
       }

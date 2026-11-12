@@ -8407,6 +8407,7 @@
       "updated": "Atualizado",
       "actions": "Ações"
     },
+    "expired": "Expirada",
     "statusValue": {
       "unconfirmed": "Não confirmado",
       "confirmed": "Confirmado",
@@ -8487,7 +8488,9 @@
       "label": "Autocadastro",
       "off": "Desativado",
       "approval": "Requer aprovação",
-      "instant": "Imediato"
+      "instant": "Imediato",
+      "noVerifiedDomain": "Nenhum domínio verificado: ninguém pode se cadastrar até que você verifique um.",
+      "verifyDomain": "Verificar um domínio"
     },
     "ssoNewPerson": {
       "label": "Primeiro login com Microsoft / Google",
@@ -8637,6 +8640,8 @@
     "selectAll": "Selecionar todas as solicitações",
     "selectOne": "Selecionar a solicitação de {{email}}",
     "accountExists": "Já tem uma conta — Negue para descartar",
+    "domainUnverified": "Domínio não está mais verificado",
+    "domainUnverifiedReason": "Não é possível aprovar: convide esta pessoa diretamente se ela precisar de acesso.",
     "actions": {
       "approve": "Aprovar",
       "deny": "Negar",
@@ -8649,7 +8654,8 @@
       "notFound": "Solicitação não encontrada",
       "identityLinked": "Login já vinculado a outra conta",
       "failed": "Não foi possível decidir esta solicitação",
-      "entraTenantNotProven": "O locatário da Microsoft desta organização não está mais comprovado"
+      "entraTenantNotProven": "O locatário da Microsoft desta organização não está mais comprovado",
+      "domainNotVerified": "Domínio de e-mail não está mais verificado"
     },
     "denyDialog": {
       "title": "Negar solicitação de acesso",
@@ -8667,7 +8673,8 @@
     "errors": {
       "load": "Não foi possível carregar as solicitações de acesso.",
       "action": "Não foi possível atualizar a solicitação de acesso.",
-      "bulk": "Não foi possível decidir as solicitações selecionadas."
+      "bulk": "Não foi possível decidir as solicitações selecionadas.",
+      "domainNotVerified": "O domínio de e-mail desta pessoa não está mais verificado para esta organização. Convide-a diretamente se ela precisar de acesso."
     },
     "summary": {
       "title": "Solicitações de acesso pendentes",

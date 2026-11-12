@@ -2,6 +2,7 @@ import { AI_DISPATCHABLE_CONNECTION_KINDS } from '@breeze/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { makeResolvedModel } from './__fixtures__/resolvedModel';
 import type { ResolvedModel } from './resolveModel';
+import { FULL_IDENTITY_FINGERPRINT } from './toolExposure';
 import {
   MAX_CARRIED_RATES,
   liveQueryKey,
@@ -53,6 +54,19 @@ describe('liveQueryKey (spec §9.2: reuse only if nothing that shaped the subpro
 
   it('does NOT change when only the price changes (settlement reads the new binding)', () => {
     expect(liveQueryKey(turnBindingFrom(resolved({ rateSnapshot: { source: 'offering', standard: FB } })))).toBe(base);
+  });
+
+  it('the identity tool exposure (null or FULL_IDENTITY_FINGERPRINT) leaves the key byte-identical (#11394)', () => {
+    const b = turnBindingFrom(resolved());
+    expect(liveQueryKey(b, null)).toBe(base);
+    expect(liveQueryKey(b, FULL_IDENTITY_FINGERPRINT)).toBe(base);
+    expect(base).toBe('conn-1|3|-|claude-sonnet-5-5|' + b.wireFingerprint);
+  });
+
+  it('a constrained tool exposure fingerprint is appended, and a different one moves the key (#11394)', () => {
+    const b = turnBindingFrom(resolved());
+    expect(liveQueryKey(b, 'a1b2c3d4e5f60718')).toBe(`${base}|tx:a1b2c3d4e5f60718`);
+    expect(liveQueryKey(b, 'a1b2c3d4e5f60718')).not.toBe(liveQueryKey(b, '0000000000000000'));
   });
 
   it('never carries the API key into the binding or the key', () => {

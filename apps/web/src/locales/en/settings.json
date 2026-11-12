@@ -8407,6 +8407,7 @@
       "updated": "Updated",
       "actions": "Actions"
     },
+    "expired": "Expired",
     "statusValue": {
       "unconfirmed": "Unconfirmed",
       "confirmed": "Confirmed",
@@ -8487,7 +8488,9 @@
       "label": "Self-registration",
       "off": "Off",
       "approval": "Needs approval",
-      "instant": "Instant"
+      "instant": "Instant",
+      "noVerifiedDomain": "No verified domain: nobody can register until you verify one.",
+      "verifyDomain": "Verify a domain"
     },
     "ssoNewPerson": {
       "label": "First Microsoft / Google sign-in",
@@ -8637,6 +8640,8 @@
     "selectAll": "Select all requests",
     "selectOne": "Select the request from {{email}}",
     "accountExists": "Already has an account — Deny to dismiss",
+    "domainUnverified": "Domain no longer verified",
+    "domainUnverifiedReason": "Approve is unavailable: invite this person directly if they should have access.",
     "actions": {
       "approve": "Approve",
       "deny": "Deny",
@@ -8649,7 +8654,8 @@
       "notFound": "Request not found",
       "identityLinked": "Sign-in already linked to another account",
       "failed": "Couldn't decide this request",
-      "entraTenantNotProven": "This organization's Microsoft tenant is no longer proven"
+      "entraTenantNotProven": "This organization's Microsoft tenant is no longer proven",
+      "domainNotVerified": "Email domain no longer verified"
     },
     "denyDialog": {
       "title": "Deny access request",
@@ -8667,7 +8673,8 @@
     "errors": {
       "load": "Couldn't load access requests.",
       "action": "Couldn't update the access request.",
-      "bulk": "Couldn't decide the selected requests."
+      "bulk": "Couldn't decide the selected requests.",
+      "domainNotVerified": "This person's email domain is no longer verified for this organization. Invite them directly if they should have access."
     },
     "summary": {
       "title": "Pending access requests",

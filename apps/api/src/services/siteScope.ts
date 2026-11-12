@@ -14,9 +14,6 @@ import {
   organizationUsers,
   partners,
   partnerUsers,
-  permissions,
-  rolePermissions,
-  roles,
   users,
 } from '../db/schema';
 import type { reportRuns, reports } from '../db/schema';
@@ -30,6 +27,7 @@ import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import type { UserPermissions } from './permissions';
 import { permissionGrantMatches } from './permissionMatching';
+import { getRoleGrantRows } from './roleInheritance';
 import { captureException } from './sentry';
 import { isUsableOrgStatus } from './tenantStatus';
 
@@ -1214,37 +1212,10 @@ async function roleGrantsReportAction(
       },
 ): Promise<boolean> {
   const action = reportPermissionAction(requestedAction);
-  const rows = await db
-    .select({
-      resource: permissions.resource,
-      action: permissions.action,
-      roleScope: roles.scope,
-      roleIsSystem: roles.isSystem,
-      roleOrgId: roles.orgId,
-      rolePartnerId: roles.partnerId,
-    })
-    .from(rolePermissions)
-    .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
-    .innerJoin(
-      permissions,
-      eq(rolePermissions.permissionId, permissions.id),
-    )
-    .where(
-      and(
-        eq(rolePermissions.roleId, roleId),
-        // '*' rows must survive the SQL filter so wildcard super-roles
-        // (Partner Admin's `*|*`) are honored — see permissionGrantMatches.
-        inArray(permissions.resource, ['reports', '*']),
-        inArray(permissions.action, [action, '*']),
-        eq(roles.scope, expectedRole.scope),
-        or(
-          eq(roles.isSystem, true),
-          expectedRole.scope === 'organization'
-            ? eq(roles.orgId, expectedRole.orgId)
-            : eq(roles.partnerId, expectedRole.partnerId),
-        ),
-      ),
-    );
+  // Runtime grants of the role INCLUDING inherited ones (services/roleInheritance.ts,
+  // #11702). Row ownership fields are the BASE role's; the ownership and
+  // wildcard checks below stay here.
+  const rows = await getRoleGrantRows([roleId]);
 
   return rows.some(
     (row) =>
@@ -1653,30 +1624,8 @@ async function roleGrantsAllPermissions(
     | { scope: 'organization'; orgId: string }
     | { scope: 'partner'; partnerId: string },
 ): Promise<boolean> {
-  const rows = await db
-    .select({
-      resource: permissions.resource,
-      action: permissions.action,
-      roleScope: roles.scope,
-      roleIsSystem: roles.isSystem,
-      roleOrgId: roles.orgId,
-      rolePartnerId: roles.partnerId,
-    })
-    .from(rolePermissions)
-    .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(
-      and(
-        eq(rolePermissions.roleId, roleId),
-        eq(roles.scope, expectedRole.scope),
-        or(
-          eq(roles.isSystem, true),
-          expectedRole.scope === 'organization'
-            ? eq(roles.orgId, expectedRole.orgId)
-            : eq(roles.partnerId, expectedRole.partnerId),
-        ),
-      ),
-    );
+  // Runtime grants including inherited ones (services/roleInheritance.ts, #11702).
+  const rows = await getRoleGrantRows([roleId]);
 
   const eligible = rows.filter(
     (row) =>
@@ -1976,31 +1925,12 @@ async function resolveRequestReportAuthorityMapInSystemContext(
       .map((membership) => membership.roleId)
       .filter(Boolean),
   );
+  // Runtime grants including inherited ones (services/roleInheritance.ts,
+  // #11702); filtered to reports:{action} in TS (wildcards honoured by
+  // batchRoleGrantsReportAction via permissionGrantMatches).
   const organizationPermissionRows = organizationRoleIds.length === 0
     ? []
-    : await db
-        .select({
-          roleId: rolePermissions.roleId,
-          resource: permissions.resource,
-          action: permissions.action,
-          roleScope: roles.scope,
-          roleIsSystem: roles.isSystem,
-          roleOrgId: roles.orgId,
-          rolePartnerId: roles.partnerId,
-        })
-        .from(rolePermissions)
-        .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
-        .innerJoin(
-          permissions,
-          eq(rolePermissions.permissionId, permissions.id),
-        )
-        .where(
-          and(
-            inArray(rolePermissions.roleId, organizationRoleIds),
-            inArray(permissions.resource, ['reports', '*']),
-            inArray(permissions.action, [action, '*']),
-          ),
-        );
+    : await getRoleGrantRows(organizationRoleIds);
 
   const fallbackPartnerIds = normalizeSiteIds(
     existingOrgIds
@@ -2047,31 +1977,12 @@ async function resolveRequestReportAuthorityMapInSystemContext(
       .map((membership) => membership.roleId)
       .filter(Boolean),
   );
+  // Runtime grants including inherited ones (services/roleInheritance.ts,
+  // #11702); filtered to reports:{action} in TS (wildcards honoured by
+  // batchRoleGrantsReportAction via permissionGrantMatches).
   const partnerPermissionRows = partnerRoleIds.length === 0
     ? []
-    : await db
-        .select({
-          roleId: rolePermissions.roleId,
-          resource: permissions.resource,
-          action: permissions.action,
-          roleScope: roles.scope,
-          roleIsSystem: roles.isSystem,
-          roleOrgId: roles.orgId,
-          rolePartnerId: roles.partnerId,
-        })
-        .from(rolePermissions)
-        .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
-        .innerJoin(
-          permissions,
-          eq(rolePermissions.permissionId, permissions.id),
-        )
-        .where(
-          and(
-            inArray(rolePermissions.roleId, partnerRoleIds),
-            inArray(permissions.resource, ['reports', '*']),
-            inArray(permissions.action, [action, '*']),
-          ),
-        );
+    : await getRoleGrantRows(partnerRoleIds);
 
   const capturedAt = new Date();
   for (const orgId of accessibleOrgIds) {

@@ -116,6 +116,10 @@ const PORTAL_AUTH_AUDIT_ACTIONS = new Map<string, string>([
   ['/auth/reset-password', 'portal.auth.password_reset.complete'],
   ['/auth/accept-invite', 'portal.auth.invite.accept'],
   ['/auth/logout', 'portal.auth.logout'],
+  // W6 (#11383, plan D12): one anonymous row per self-registration submit,
+  // whatever the outcome — the same for every address by construction. The
+  // verify route writes its own org-scoped rows.
+  ['/auth/self-register', 'portal.auth.self_register.request'],
 ]);
 
 function setPortalAuthAuditIdentity(

@@ -47,12 +47,14 @@ import type { ResolvedModel } from './aiModels/resolveModel';
 import { carriesQueryValues, safeErrorMessage } from './aiModels/safeDbError';
 import { priceUsage, quoteInvocationCents, settleInvocation, sumCostCents } from './aiModels/settleInvocation';
 import { liveQueryKey, turnBindingFrom, type TurnBinding } from './aiModels/turnBinding';
+import { DEFAULT_TOOL_PROFILE_FACTS, toolProfileKey, type ToolExposure } from './aiModels/toolExposure';
+import { allowedToolsUnder, finalizeSessionToolExposure } from './aiModels/sessionToolExposure';
 import { REFUSAL_DOCS_URL, listRefusalAlternatives, refusalMessageText, type RefusalAlternative } from './aiModels/refusals';
 import { describeTurnModel, persistLastTurnModel, turnDisplayFrom, type TurnDisplay } from './aiModels/turnModel';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
 import { storeSdkSessionPointer } from './aiSdkSessionPointer';
-import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
+import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES, chatToolDomain, listChatSurfaceToolNames } from './aiAgentSdkTools';
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
@@ -612,6 +614,12 @@ export interface ActiveSession {
   /** Optional MCP allowlist for restricted sessions such as helper chat. */
   allowedTools?: string[];
   /**
+   * #11393: the tool exposure this live query was created with (fixed for its
+   * life; a profile change moves `liveKey` and recreates the query). Absent on
+   * sessions built outside getOrCreate.
+   */
+  toolExposure?: ToolExposure;
+  /**
    * Topology M4 Task 3 (#6000): the host-owned investigation runtime for the
    * CURRENT turn of a topology session (bound by the route through
    * `tryTransitionToProcessing` — only when it wins the slot — and cleared
@@ -980,6 +988,14 @@ export class StreamingSessionManager {
        * (spike D3) — silently: the user asked for it.
        */
       modelSwitch?: boolean;
+      /**
+       * #11395: the caller's `mcpServerFactory` registers the Breeze registry
+       * (`createBreezeMcpServer`, e.g. the helper's per-level factory), so the
+       * tool exposure narrows it like the default server. Unset for a factory
+       * that registers its own tools (client-declared helper tools, Office,
+       * the script builder).
+       */
+      registersBreezeServer?: boolean;
     },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
@@ -988,7 +1004,11 @@ export class StreamingSessionManager {
     };
 
     const binding = turnBindingFrom(resolved);
-    const key = liveQueryKey(binding);
+    // #11393: the tool profile's key segment comes from facts alone, so a
+    // reused session compares it every turn without resolving extras; null
+    // (the identity exposure) keeps the key byte-identical.
+    const toolFacts = resolved.toolProfileFacts ?? DEFAULT_TOOL_PROFILE_FACTS;
+    const key = liveQueryKey(binding, toolProfileKey(toolFacts, resolved.surface));
     const existing = this.sessions.get(breezeSessionId);
     if (existing && existing.state !== 'closed') {
       // Spec §9.2: a live SDK query is reused only while connection id,
@@ -1040,7 +1060,8 @@ export class StreamingSessionManager {
           dbSession.writeDefaultOrgId,
         );
         reusable.auditSnapshot = snapshot;
-        reusable.allowedTools = allowedTools;
+        // A constrained live query keeps its exposure's narrowing on reuse.
+        reusable.allowedTools = reusable.toolExposure ? allowedToolsUnder(reusable.toolExposure, allowedTools) : allowedTools;
         // Topology fields are NOT touched here (PR #7147 F1): this session may
         // be processing another request's turn, which this caller is about to
         // lose with a 409. Rebinding here streamed the running turn into the
@@ -1176,6 +1197,27 @@ export class StreamingSessionManager {
     }
     const flowToolsByName = new Map(flowDescriptors.map((d) => [d.name, d]));
 
+    // #11393: ONE exposure for this live query — registration (`onlyTools`),
+    // kept extras and `allowedTools` all read it. The identity exposure
+    // (`full`, or `auto` with an unknown window) changes none of them. A
+    // profile that drops a surface-required tool throws here, before any
+    // provider call. Tenant tools count as `integrations`, flow tools as
+    // `scripts` (plan Decision 4).
+    const sessionTools = finalizeSessionToolExposure({
+      surface: resolved.surface,
+      facts: toolFacts,
+      allowedTools,
+      // Lambdas, not references: read only under a constrained profile.
+      registryNames: () => listChatSurfaceToolNames(),
+      breezeServer: !mcpServerFactory || options?.registersBreezeServer === true,
+      domainOf: (name) => chatToolDomain(name),
+      extraTools: [
+        ...tenantDescriptors.map((d) => ({ name: d.qualifiedName, domain: 'integrations' as const })),
+        ...flowDescriptors.map((d) => ({ name: d.name, domain: 'scripts' as const })),
+      ],
+      approvalMode,
+    });
+
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
@@ -1229,7 +1271,8 @@ export class StreamingSessionManager {
       pendingApprovalWaits: 0,
       approvalMode,
       approvalWaitBudgetMs,
-      allowedTools,
+      allowedTools: sessionTools.allowedTools,
+      toolExposure: sessionTools.exposure,
       // Seeds a brand-new session only; a reused session is never rebound
       // here (see the reuse branch and tryTransitionToProcessing).
       topologyInvestigation: options?.topologyInvestigation,
@@ -1278,11 +1321,16 @@ export class StreamingSessionManager {
           // `session.orgId` only when `toolAuth` carries none (non-device
           // sessions, whose org doesn't drift the same way).
           [
-            ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
+            ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId, () => session.toolExposure?.resultCharBudget),
             // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
             ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
-          ],
-          wispAdmitTool ? { admitTool: wispAdmitTool } : undefined,
+          ].filter((extra) => sessionTools.exposure.names === null || sessionTools.keepsExtra(extra.name)),
+          wispAdmitTool || sessionTools.onlyTools
+            ? {
+                ...(wispAdmitTool ? { admitTool: wispAdmitTool } : {}),
+                ...(sessionTools.onlyTools ? { onlyTools: sessionTools.onlyTools } : {}),
+              }
+            : undefined,
         ),
       };
     });
@@ -1323,6 +1371,8 @@ export class StreamingSessionManager {
     // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
     const child = await timePreStreamPhase('prepareSdkChild', () => prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
+      // #11395: a constrained profile on a gateway connection compacts the advertised schemas.
+      ...(sessionTools.exposure.compactSchemas ? { compactSchemas: true } : {}),
     }));
     const revokeEgressGrant = child.revoke;
     session.revokeEgressGrant = revokeEgressGrant;
@@ -1391,6 +1441,7 @@ export class StreamingSessionManager {
         const childEnv = child.env;
         const toolSearchPolicy = resolveToolSearchPolicy({
           surfaceSearch: options?.toolSearch === true,
+          profileSearch: sessionTools.exposure.toolSearchAllowed,
           childEnv,
           remainingTurns: maxTurns,
         });
@@ -1406,7 +1457,7 @@ export class StreamingSessionManager {
             maxTurns: sdkMaxTurns(maxTurns, toolSearchPolicy.enabled),
             maxBudgetUsd,
             tools: toolSearchPolicy.tools,
-            allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
+            allowedTools: sessionTools.allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
             mcpServers: { [mcpServerName]: mcpServer },
             includePartialMessages: true,
             abortController,
@@ -2347,6 +2398,10 @@ export class StreamingSessionManager {
         // W11: the live query's prompt, not the claimed binding's profile (a
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
+        // #11395: the tool exposure this live query was created with.
+        toolExposure: session.toolExposure
+          ? { profile: session.toolExposure.profile, fingerprint: session.toolExposure.fingerprint }
+          : null,
         toolExecutionCount,
         // #10400: work round-trips only — a ToolSearch-only round-trip loads
         // tool definitions and is not charged to the session's turn budget.

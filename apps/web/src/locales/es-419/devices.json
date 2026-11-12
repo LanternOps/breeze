@@ -2706,7 +2706,7 @@
       "advancedFilterFailed": "No se pudo cargar el filtro avanzado; no se muestra ningún dispositivo. Edite o borre el filtro para volver a intentarlo.",
       "agentOnlyAction": "Esta acción se aplica únicamente a los dispositivos del agente. Los dispositivos de red no tienen agente y se omitieron.",
       "agentOnlyActionManual": "Esta acción se aplica únicamente a los dispositivos del agente. Los activos manuales no tienen agente.",
-      "alreadyPendingTail": "Cola ya pendiente",
+      "alreadyPendingTail": ", {{count}} ya pendientes",
       "bulkActionFailed": "Falló la acción masiva {{action}}",
       "bulkMaintenanceSuccess": "dispositivos {{count}} {{verb}} modo de mantenimiento",
       "bulkMaintenanceSuccess_one": "dispositivo {{count}} {{verb}} modo de mantenimiento",
@@ -2751,7 +2751,7 @@
       "selectTwoForMultiboot": "Seleccione al menos dos dispositivos para vincularlos como perfiles de arranque múltiple.",
       "unknownAction": "Acción desconocida: {{action}}",
       "unknownBulkAction": "Acción masiva desconocida: {{action}}",
-      "wakeSentWatching": "Comando de encendido enviado; supervisando",
+      "wakeSentWatching": "Wake-on-LAN enviado a {{hostname}} mediante {{relay}} ({{broadcast}}). Esperando a que se conecte…",
       "wakeTimeout": "{{hostname}} no se conectó en 4 minutos. Revise el ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} en cola para dispositivos sin conexión",
       "runsWhenOnline": "Se ejecutará cuando el dispositivo esté en línea — vence el {{date}}",
@@ -2805,7 +2805,8 @@
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (ya no se encuentra; es posible que se haya eliminado)",
       "bulkMoveSiteNotMovedError": "{{devices}} (se produjo un error inesperado; vuelve a intentarlo)",
       "deviceMovedToSite": "{{hostname}} se movió a un nuevo sitio",
-      "bulkWakeResult": "Enviado a {{sent}}, omitidos {{skipped}}"
+      "bulkWakeResult": "Enviado a {{sent}}, omitidos {{skipped}}",
+      "scriptQueuedOneOffline": "Script \"{{script}}\" en cola para {{hostname}}: se ejecutará cuando el dispositivo se reconecte"
     },
     "tryAgain": "Intentar otra vez",
     "unknownDevice": "Desconocido",

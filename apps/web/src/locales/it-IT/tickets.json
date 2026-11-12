@@ -143,7 +143,15 @@
       "sentWithoutAttachmentReply_one": "Risposta pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
       "sentWithoutAttachmentNote_one": "Nota pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
       "sentWithoutAttachmentReply_other": "Risposta pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili.",
-      "sentWithoutAttachmentNote_other": "Nota pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili."
+      "sentWithoutAttachmentNote_other": "Nota pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili.",
+      "rejectedTicketDeleted": "{{name}} non è stato allegato: questo ticket è stato eliminato.",
+      "rejectedTicketMerged": "{{name}} non è stato allegato: questo ticket è stato unito a un altro ticket.",
+      "rejectedNotFound": "{{name}} non è stato allegato: il ticket non è stato trovato.",
+      "rejectedMalformed": "{{name}} non è stato allegato: il caricamento era malformato. Prova ad allegarlo di nuovo.",
+      "openMergedTicket": "Apri il ticket unito",
+      "notKept_one": "1 allegato non è stato conservato con questa bozza ({{names}}). Allegalo di nuovo o chiudi l’avviso per inviare senza.",
+      "notKept_other": "{{count}} allegati non sono stati conservati con questa bozza ({{names}}). Allegali di nuovo o chiudi l’avviso per inviare senza.",
+      "notKeptDismiss": "Chiudi"
     },
     "modeLabel": "Visibilità del commento",
     "recipient": {

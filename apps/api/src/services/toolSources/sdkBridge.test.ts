@@ -41,6 +41,27 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe('buildTenantSdkTools result budget', () => {
+  const big = JSON.stringify({ rows: Array.from({ length: 120 }, (_, i) => ({ i, pad: 'p'.repeat(30) })) });
+  const run = async (budget?: () => number) => {
+    vi.mocked(executeTenantToolDetailed).mockResolvedValue({ isError: false, text: big } as never);
+    const [t] = budget
+      ? buildTenantSdkTools([makeDescriptor()], () => makeAuth(), () => 'org-1', budget)
+      : buildTenantSdkTools([makeDescriptor()], () => makeAuth(), () => 'org-1');
+    const r = await (t as unknown as { handler: (a: unknown, e: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler({ id: 'a' }, {});
+    return r.content[0]!.text;
+  };
+
+  it('compacts to the session budget when one is supplied', async () => {
+    expect((await run(() => 2000)).length).toBeLessThanOrEqual(2000);
+  });
+
+  it('defaults to the 8000 budget when none is supplied', async () => {
+    const { compactToolResultForChat } = await import('../aiToolOutput');
+    expect(await run()).toBe(compactToolResultForChat('hudu__get_asset', big));
+  });
+});
+
 describe('zodShapeFromJsonSchema', () => {
   it('compiles an object schema whose shape enforces required fields', () => {
     const shape = zodShapeFromJsonSchema({

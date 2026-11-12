@@ -12,6 +12,7 @@
 
 import type { AiApprovalScope } from '@breeze/shared/types/ai';
 import type { AiAgentMode, AiAgentProtectedResources, RiskTier } from '@breeze/shared';
+import { changesOrgBillingContact } from '@breeze/shared';
 import { getToolTier } from './aiTools';
 import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
@@ -4182,6 +4183,31 @@ type ToolPermissionRequirement = { resource: string; action: string };
 /** What a LIVE_READ_INPUT_FLAGS request requires in place of the tool's stored-read mapping. */
 const LIVE_DEVICE_READ_PERMISSION: ToolPermissionRequirement = { resource: 'devices', action: 'execute' };
 
+/**
+ * Extra permissions that depend on the INPUT: the action's REST route adds a second `requirePermission` only when
+ * the body carries certain fields. Like `TOOL_ACTION_EXTRA_PERMISSIONS`, these are resolved here and not in the
+ * handler, so the requester's check, approver eligibility and the re-check at release all see them.
+ *
+ * The route-binding contract reads only static `requirePermission` calls and cannot see a conditional gate, so each
+ * case here is pinned by its own tests (aiGuardrails.test.ts, orgBillingContactPermission.integration.test.ts).
+ */
+function inputConditionalExtraPermissions(
+  toolName: string,
+  action: string | undefined,
+  input: Record<string, unknown>,
+): ToolPermissionRequirement[] {
+  // PATCH /orgs/:orgId/billing-settings (routes/invoices/settings.ts): a billing-contact field needs billing:manage.
+  // `orgPatch` is read the way the handler reads it (aiToolsBillingSettings.ts, patchObject).
+  if (toolName === 'manage_billing_settings' && action === 'update_org') {
+    const patch = input.orgPatch;
+    if (typeof patch === 'object' && patch !== null && !Array.isArray(patch)
+      && changesOrgBillingContact(patch as Record<string, unknown>)) {
+      return [{ resource: 'billing', action: 'manage' }];
+    }
+  }
+  return [];
+}
+
 type ToolPermissionResolution =
   | { ok: true; requirements: ToolPermissionRequirement[] }
   | { ok: false; denial: string };
@@ -4230,10 +4256,11 @@ export function resolveToolPermissionRequirements(
   }
 
   const actionExtras = action ? (TOOL_ACTION_EXTRA_PERMISSIONS[toolName]?.[action] ?? []) : [];
+  const inputExtras = inputConditionalExtraPermissions(toolName, action, input);
 
   return {
     ok: true,
-    requirements: [required, ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? []), ...actionExtras],
+    requirements: [required, ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? []), ...actionExtras, ...inputExtras],
   };
 }
 

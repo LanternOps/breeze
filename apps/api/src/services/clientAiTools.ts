@@ -763,11 +763,21 @@ export function makeClientToolHandler(
  * mcpServerFactory parameter (the scriptAi.ts:211-215 precedent).
  */
 export function createClientWorkbookMcpServer(host: ClientHost, getSession: () => ActiveSession) {
+  // #11395: a constrained tool exposure advertises only its names
+  // (`allowedTools` alone gates permission, not what the model is sent); the
+  // identity exposure (names null) or none registers every host tool.
+  let exposed: ReadonlySet<string> | null = null;
+  try {
+    const names = getSession()?.toolExposure?.names;
+    exposed = names ? new Set(names) : null;
+  } catch {
+    exposed = null;
+  }
   return createSdkMcpServer({
     name: clientMcpServerName(host),
     version: '1.0.0',
-    tools: Object.entries(CLIENT_TOOL_REGISTRIES[host]).map(([name, def]) =>
-      tool(name, def.description, def.inputSchema, makeClientToolHandler(host, name, getSession)),
-    ),
+    tools: Object.entries(CLIENT_TOOL_REGISTRIES[host])
+      .filter(([name]) => exposed === null || exposed.has(name))
+      .map(([name, def]) => tool(name, def.description, def.inputSchema, makeClientToolHandler(host, name, getSession))),
   });
 }

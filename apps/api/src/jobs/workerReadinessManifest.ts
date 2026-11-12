@@ -313,6 +313,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),
+  // #4342 W5. Plain Redis-required consumer, no feature flag.
+  consumers('historyRetention'),
   // Wisp W05b (#9917): daily concern retention — same shape (one Worker, no
   // flag gate before construction, attached under its registry-key name).
   consumers('wispConcernRetention'),
@@ -329,6 +331,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('monitorEpisodeRetention'),
   // #8164 W02 — one Worker, unconditional, attached under its registry name.
   consumers('edrDetectionRetentionWorker'),
+  // #4342 W3. Plain Redis-required consumer, no feature flag.
+  consumers('alertRetention'),
   // #4248 W03 — one Worker, unconditional, attached under its registry name.
   consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),
@@ -377,6 +381,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('flowRunner'),
   consumers('flowRunReconciler'),
   consumers('flowRunRetention'),
+  // #4342 W2. Plain Redis-required consumer, no feature flag.
+  consumers('scriptExecutionRetention'),
   // Task A9 — the schedule trigger tick (FLOWS_ENABLED gates the tick body).
   consumers('flowScheduleTick'),
   // Partner sending domains W03. initializeSendingDomainsWorker returns before
@@ -387,6 +393,15 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // AI Suggested Fixes W1 — attachWorkerObservability name == registry name.
   consumers('fixOutcomeWorker'),
   consumers('sendingDomainsWorker', ['sendingDomainsWorker'], 'sending_domains_configured'),
+  // Portal registration W6 (#11383): one Worker, constructed unconditionally
+  // (the kill switch gates the public route, not the consumer), attached under
+  // its registry name.
+  consumers('portalSelfRegistrationWorker'),
+  // #4342 W1. Plain Redis-required consumers, no feature flag.
+  consumers('deviceCommandRetention'),
+  consumers('filesystemSnapshotRetention'),
+  consumers('networkMonitorResultRetention'),
+  consumers('deviceSessionRetention'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {

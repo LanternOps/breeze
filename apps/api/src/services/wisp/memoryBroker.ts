@@ -25,7 +25,7 @@ import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { sanitizeUntrustedToolText, wrapUntrustedData } from '../aiInputSanitizer';
 import { captureException } from '../sentry';
 import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
-import { isEnforceableDeny } from './standingInstructions';
+import { isEnforceableDeny, isMemoryBlockLapsed, isStandingInstructionLapsed } from './standingInstructions';
 
 export type MemoryOwner = { kind: 'user'; userId: string } | { kind: 'org'; orgId: string } | { kind: 'partner' };
 /** work_summary: spec §6.1 (3) / §8.1 — what a working session did, org-owned (w00 A23). */
@@ -52,6 +52,11 @@ export type RecallQuery = {
   subjectKeyPrefix?: string;
   blockTypes?: MemoryBlockType[];
   orgId?: string | null;
+  /**
+   * Only blocks written in this chat thread (#11614: the turn-end capture's
+   * "already saved" list). Server-side only: the `recall` tool never sets it.
+   */
+  sourceSessionId?: string;
   limit?: number;
 };
 export type RememberInput = Omit<
@@ -177,6 +182,7 @@ export async function recallForGrant(ceiling: GrantCeiling, q: RecallQuery): Pro
   ];
   if (q.blockTypes !== undefined) conditions.push(inArray(aiMemoryBlocks.blockType, q.blockTypes));
   if (q.subjectKeyPrefix) conditions.push(like(aiMemoryBlocks.subjectKey, `${escapeLikePrefix(q.subjectKeyPrefix)}%`));
+  if (q.sourceSessionId !== undefined) conditions.push(eq(aiMemoryBlocks.sourceSessionId, q.sourceSessionId));
 
   const rows = await inBrokerContext(() => db
     .select()
@@ -483,7 +489,7 @@ export async function findStandingInstructionMatches(input: {
     }
     const c = parsed.data;
     if (c.verb === null || c.deviceId === null || !wanted.has(c.deviceId)) continue;
-    if (c.until !== null && !(Date.parse(c.until) > now.getTime())) continue;
+    if (isStandingInstructionLapsed(c, now)) continue;
     const strength = exact.has(c.verb) ? 'exact' : possible.has(c.verb) ? 'possible' : null;
     if (strength === null) continue;
     matches.push({
@@ -523,9 +529,12 @@ export function standingInstructionRefusalMessage(m: StandingInstructionMatch): 
  * followed by one `wisp_memory` untrusted-data fence, confirmed blocks first.
  * Subject keys and content are model-authored, so both are sanitised per line
  * (forged fences become `[filtered]`) and the whole body goes through
- * `wrapUntrustedData`. Context, never authority (§8.3).
+ * `wrapUntrustedData`. Lapsed standing instructions are left out. Context, never authority (§8.3).
  */
-export function renderMemoryForPrompt(blocks: MemoryBlock[]): string {
+export function renderMemoryForPrompt(allBlocks: MemoryBlock[], now: Date = new Date()): string {
+  // A lapsed standing instruction stays in the table (the memory page shows it
+  // as expired) but is never prompt context (#11630); same predicate as the gate.
+  const blocks = allBlocks.filter((b) => !isMemoryBlockLapsed(b, now));
   if (blocks.length === 0) return '';
   const ordered = [
     ...blocks.filter((b) => b.status === 'confirmed'),
