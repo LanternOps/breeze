@@ -41,6 +41,39 @@ export class ToolProfileUnderpoweredError extends Error {
   }
 }
 
+export const CONTEXT_WINDOW_TOO_SMALL = 'context_window_too_small' as const;
+
+/** The spec §3.3 session-start message: the window is named, no provider call is made. */
+export function contextWindowTooSmallMessage(surfaceLabel: string, contextWindow: number): string {
+  return `This model's ${contextWindow.toLocaleString('en-US')}-token window is too small for Breeze ${surfaceLabel} tools.`;
+}
+
+/**
+ * #11396: `auto` found no profile, not even `minimal`, that fits the model's
+ * known window. Thrown at session start, before any provider call; the
+ * routes answer it as a 409 like `ToolProfileUnderpoweredError`.
+ */
+export class ContextWindowTooSmallError extends Error {
+  readonly code = CONTEXT_WINDOW_TOO_SMALL;
+  readonly status = 409;
+  constructor(readonly surface: AiSurface, readonly contextWindow: number) {
+    super(contextWindowTooSmallMessage(SURFACE_LABELS[surface] ?? surface, contextWindow));
+    this.name = 'ContextWindowTooSmallError';
+  }
+}
+
+/**
+ * The 409 body a route answers for a tool-exposure refusal (an underpowered
+ * profile or a window too small for any profile), or null for any other
+ * error. One mapping for every `getOrCreate` caller.
+ */
+export function toolExposureRefusal(err: unknown): { error: string; code: string } | null {
+  if (err instanceof ContextWindowTooSmallError || err instanceof ToolProfileUnderpoweredError) {
+    return { error: err.message, code: err.code };
+  }
+  return null;
+}
+
 export interface SessionToolExposureInput {
   surface: AiSurface;
   facts: ToolProfileFacts;
@@ -92,6 +125,11 @@ export function finalizeSessionToolExposure(input: SessionToolExposureInput): Se
       : extraTools,
     ...(approvalMode ? { approvalMode } : {}),
   }, { domainOf: input.domainOf });
+  // #11396: no profile fits the known window. Refuse now, naming the window,
+  // rather than fail on the first request (spec §3.3).
+  if (exposure.tooSmall && facts.effectiveWindow !== null) {
+    throw new ContextWindowTooSmallError(surface, facts.effectiveWindow);
+  }
   if (exposure.names === null) {
     return { exposure, allowedTools: allowedTools ? [...allowedTools] : undefined, onlyTools: undefined, keepsExtra: () => true };
   }

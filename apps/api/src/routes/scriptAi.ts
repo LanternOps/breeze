@@ -45,7 +45,7 @@ import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
 import { LlmUnavailableError, llmUnavailableBody } from '../services/llm/llmUnavailableError';
-import { ToolProfileUnderpoweredError } from '../services/aiModels/sessionToolExposure';
+import { toolExposureRefusal } from '../services/aiModels/sessionToolExposure';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import { readOrgPartnerId } from '../services/aiModels/candidateLoader';
 import { chooseSessionModel, type SessionModelChoice } from '../services/aiModels/sessionModel';
@@ -333,10 +333,10 @@ scriptAiRoutes.post(
         if (err instanceof LlmUnavailableError) {
           return { kind: 'refused', response: c.json(llmUnavailableBody(err), 503) };
         }
-        // #11393: the model's tool profile drops a tool the builder needs.
-        if (err instanceof ToolProfileUnderpoweredError) {
-          return { kind: 'refused', response: c.json({ error: err.message, code: err.code }, 409) };
-        }
+        // #11393: the model's tool profile drops a tool the builder needs, or
+        // (#11396) its known window is too small for any profile.
+        const refusal = toolExposureRefusal(err);
+        if (refusal) return { kind: 'refused', response: c.json(refusal, 409) };
         return { kind: 'failed', error: err };
       }
 
