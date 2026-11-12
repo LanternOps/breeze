@@ -449,6 +449,27 @@ export async function assignUserToPartner(
 }
 
 /**
+ * A partner service principal is bounded by its owner's live authority on
+ * every request: the owner must stay an active partner member with all-org
+ * access whose role backs the principal's scopes. Fixtures that seed a
+ * principal for a bare user call this to make that user a partner-wide admin
+ * (every permission, all-org access). A user who already belongs to the
+ * partner is left exactly as the test set them up.
+ */
+export async function ensurePartnerServicePrincipalOwner(userId: string, partnerId: string) {
+  const database = db();
+  const [existing] = await database
+    .select({ id: partnerUsers.id })
+    .from(partnerUsers)
+    .where(and(eq(partnerUsers.userId, userId), eq(partnerUsers.partnerId, partnerId)))
+    .limit(1);
+  if (existing) return;
+  const role = await createRole({ scope: 'partner', partnerId, name: `Principal owner ${randomUUID().slice(0, 8)}` });
+  await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+  await assignUserToPartner(userId, partnerId, role.id, 'all');
+}
+
+/**
  * A user's current session epochs (what their access token would carry as
  * `aep` / `mep`) and credential epoch. Fixtures that issue partner service
  * principal keys pass the session pair as `actorSessionEpochs`, and fixtures

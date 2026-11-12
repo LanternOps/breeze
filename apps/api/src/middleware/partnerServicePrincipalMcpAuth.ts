@@ -2,25 +2,17 @@ import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { partnerServicePrincipalKeys, users } from '../db/schema';
+import { partnerServicePrincipalKeys } from '../db/schema';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
-import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { getUserPermissions, runWithUncachedPermissionsFor, type UserPermissions } from '../services/permissions';
-import {
-  PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR,
-  partnerServicePrincipalMcpScopes,
-  partnerServicePrincipalMcpScopesMissingRead,
-} from '../services/partnerServicePrincipalScopes';
-import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { runWithUncachedPermissionsFor } from '../services/permissions';
 import { enforcePreLookupProbeRateLimit } from './apiKeyAuth';
-import { resolvePartnerAccess } from './bearerTokenAuth';
 import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from './mcpTenantToolSelfManagedContext';
 import {
+  authenticatePartnerServicePrincipalKey,
   hashPartnerApiKey,
   isPartnerServicePrincipalKeyFormat,
-  loadPartnerServicePrincipalCredential,
 } from '../services/partnerServicePrincipalCredential';
 
 /**
@@ -38,7 +30,9 @@ import {
  *   - accessiblePartnerIds: [partnerId] (partner-axis access, as a partner
  *     admin session gets); currentPartnerId: partnerId.
  *
- * Owner = `partner_service_principals.created_by`. Per-tool RBAC over MCP
+ * Owner = `partner_service_principals.created_by`. The owner check itself
+ * lives in services/partnerServicePrincipalCredential.ts, shared with the
+ * Partner API. Per-tool RBAC over MCP
  * resolves `getUserPermissions(auth.user.id)` (aiGuardrails), exactly as it
  * already does for org service-principal keys, so the principal's per-tool
  * authority is bounded by its owner's LIVE partner role. Only the owner issues
@@ -65,74 +59,8 @@ import {
  */
 
 const INVALID_CREDENTIALS_MESSAGE = 'Invalid partner API credentials';
-const OWNER_NOT_AUTHORIZED_MESSAGE = 'Partner service principal owner is no longer authorized';
 
 export const PARTNER_SERVICE_PRINCIPAL_MCP_KEY_PREFIX = 'brz_sp_';
-
-async function loadOwnerStatus(ownerUserId: string): Promise<string | null> {
-  return withSystemDbAccessContext(async () => {
-    const [row] = await db
-      .select({ status: users.status })
-      .from(users)
-      .where(eq(users.id, ownerUserId))
-      .limit(1);
-    return row?.status ?? null;
-  });
-}
-
-function ownerNotAuthorized(): HTTPException {
-  return new HTTPException(401, { message: OWNER_NOT_AUTHORIZED_MESSAGE });
-}
-
-/**
- * Live owner authorization. Every failure, including a thrown lookup, denies.
- */
-async function authorizeOwner(input: {
-  ownerUserId: string;
-  partnerId: string;
-  mcpScopes: string[];
-}): Promise<{ orgIds: string[] }> {
-  let status: string | null;
-  let access: Awaited<ReturnType<typeof resolvePartnerAccess>>;
-  let permissions: UserPermissions | null;
-  try {
-    status = await loadOwnerStatus(input.ownerUserId);
-    access = await resolvePartnerAccess(input.partnerId, input.ownerUserId);
-    // bypassCache: the owner gate must see a demotion on the very next request
-    // even if a cross-process cache invalidation was lost; a cached entry can
-    // otherwise outlive a downgrade by up to the 5-minute TTL.
-    permissions = await getUserPermissions(input.ownerUserId, { partnerId: input.partnerId }, { bypassCache: true });
-  } catch {
-    throw ownerNotAuthorized();
-  }
-
-  if (status !== 'active' || !access.isMember || !permissions) {
-    throw ownerNotAuthorized();
-  }
-  // The partner role must be the one that resolved: a principal is partner
-  // scoped by construction and must never borrow an org-only role.
-  if (permissions.scope !== 'partner' || permissions.partnerId !== input.partnerId) {
-    throw ownerNotAuthorized();
-  }
-  // A partner principal is partner-WIDE by construction (minting one already
-  // requires all-org access, routes/partnerServicePrincipals.ts). Its reach is
-  // never silently narrowed to a subset: if the owner no longer holds
-  // all-org access, the principal is denied outright, so it can neither
-  // exceed the owner nor degrade into a partial view of the partner.
-  if (permissions.orgAccess !== 'all') {
-    throw ownerNotAuthorized();
-  }
-
-  // Re-clamp: the principal's MCP scopes must still be fully backed by the
-  // owner's CURRENT permissions (same policy table an org API key uses), so a
-  // reduction in the owner's role cannot be out-run by the principal.
-  const delegation = validateApiKeyScopeDelegation(input.mcpScopes, permissions);
-  if (!delegation.ok) {
-    throw ownerNotAuthorized();
-  }
-
-  return { orgIds: access.orgIds };
-}
 
 function settle(work: () => Promise<unknown>, message: string): void {
   work().catch(() => {
@@ -153,46 +81,14 @@ export async function partnerServicePrincipalMcpAuthMiddleware(c: Context, next:
     throw new HTTPException(401, { message: INVALID_CREDENTIALS_MESSAGE });
   }
 
-  // Throws a generic 401 for every credential failure (see the loader).
-  const { credential, ownerUserId, keyIssuedBy } = await loadPartnerServicePrincipalCredential(
+  // Throws for every credential failure, a key the owner did not issue, a
+  // principal without MCP access, an inactive tenant, and an owner who is no
+  // longer authorized (services/partnerServicePrincipalCredential.ts).
+  const { credential, ownerUserId, ownerOrgIds: orgIds, mcpScopes } = await authenticatePartnerServicePrincipalKey(
     hashPartnerApiKey(rawKey),
     getTrustedClientIpOrUndefined(c),
+    'mcp',
   );
-
-  // Over MCP the key acts with its owner's role, so it must be one the owner
-  // issued. Keys another admin issued before issuance became owner-only keep
-  // working on the Partner API (where the principal acts as itself) but are
-  // refused here; the owner rotates them to restore MCP access.
-  if (keyIssuedBy !== ownerUserId) {
-    throw new HTTPException(401, { message: INVALID_CREDENTIALS_MESSAGE });
-  }
-
-  const mcpScopes = partnerServicePrincipalMcpScopes(credential.scopes);
-  if (mcpScopes.length === 0) {
-    throw new HTTPException(403, { message: 'Partner service principal is not granted MCP access' });
-  }
-  if (partnerServicePrincipalMcpScopesMissingRead(mcpScopes)) {
-    throw new HTTPException(403, { message: PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR });
-  }
-
-  try {
-    // Same strict tenant gate a partner-scope OAuth bearer passes.
-    await assertActiveTenantContext(
-      { scope: 'partner', partnerId: credential.partnerId, orgId: null },
-      { strictForOauth: true },
-    );
-  } catch (err) {
-    if (err instanceof TenantInactiveError) {
-      throw new HTTPException(401, { message: 'tenant inactive' });
-    }
-    throw err;
-  }
-
-  const { orgIds } = await authorizeOwner({
-    ownerUserId,
-    partnerId: credential.partnerId,
-    mcpScopes,
-  });
 
   // Hourly per-key ceiling, in a bucket separate from the Partner API's so
   // MCP traffic cannot starve export jobs (or the reverse).

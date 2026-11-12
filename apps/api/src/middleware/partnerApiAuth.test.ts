@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   getRedis: vi.fn(),
   getTrustedClientIpOrUndefined: vi.fn(),
   writeAuditEvent: vi.fn(),
+  authorizeOwner: vi.fn(),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   insideSystemContext: false,
   insidePartnerContext: false,
@@ -125,6 +126,12 @@ vi.mock('../services/clientIp', async () => {
   };
 });
 
+// The owner check has its own suite (and real-database coverage); here it is
+// a seam whose calls and refusals the middleware must honour.
+vi.mock('../services/partnerServicePrincipalOwnerAuthority', () => ({
+  authorizePartnerServicePrincipalOwner: mocks.authorizeOwner,
+}));
+
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEventAsync: mocks.writeAuditEvent,
@@ -146,6 +153,7 @@ const PRINCIPAL_ID = '22222222-2222-4222-8222-222222222222';
 const PARTNER_ID = '33333333-3333-4333-8333-333333333333';
 const ORG_1 = '44444444-4444-4444-8444-444444444444';
 const ORG_2 = '55555555-5555-4555-8555-555555555555';
+const OWNER_ID = '66666666-6666-4666-8666-666666666666';
 
 type TestContext = Context & { _headers: Record<string, string> };
 
@@ -191,6 +199,8 @@ function credential(overrides: Record<string, unknown> = {}) {
     keyOwnerMfaEpoch: 3,
     ownerCredentialEpoch: 2,
     ownerMfaEpoch: 3,
+    principalCreatedBy: OWNER_ID,
+    keyCreatedBy: OWNER_ID,
     ...overrides,
   };
 }
@@ -271,6 +281,8 @@ describe('partnerApiAuthMiddleware', () => {
     mocks.getTrustedClientIpOrUndefined.mockReset();
     mocks.runOutsideDbContext.mockReset();
     mocks.writeAuditEvent.mockReset();
+    mocks.authorizeOwner.mockReset();
+    mocks.authorizeOwner.mockResolvedValue({ orgIds: [] });
     mocks.insideSystemContext = false;
     mocks.insidePartnerContext = false;
     mocks.systemContextCalls = 0;
@@ -714,6 +726,46 @@ describe('partnerApiAuthMiddleware', () => {
         details: expect.objectContaining({ status: 409 }),
       }),
     );
+  });
+
+  it('re-checks the owner against the Partner API scopes on every request, before rate limiting', async () => {
+    mockBootstrap(credential({ scopes: ['organizations:read', 'tickets:write', 'ai:read'] }));
+    mocks.authorizeOwner.mockImplementationOnce(async () => {
+      expect(mocks.insideSystemContext).toBe(false);
+      expect(mocks.rateLimiter).toHaveBeenCalledTimes(1);
+      return { orgIds: [] };
+    });
+    const next = vi.fn();
+
+    await partnerApiAuthMiddleware(createContext(), next);
+
+    expect(mocks.authorizeOwner).toHaveBeenCalledOnce();
+    expect(mocks.authorizeOwner).toHaveBeenCalledWith({
+      ownerUserId: OWNER_ID,
+      partnerId: PARTNER_ID,
+      surface: 'partner_api',
+      scopes: ['organizations:read', 'tickets:write'],
+    });
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it.each(['GET', 'POST'])('refuses a %s request when the owner is no longer authorized, before rate limiting or routing', async (method) => {
+    mockBootstrap(credential({ scopes: ['organizations:read', 'organizations:write'] }));
+    mocks.authorizeOwner.mockRejectedValueOnce(
+      new HTTPException(401, { message: 'Partner service principal owner is no longer authorized' }),
+    );
+    const context = createContext(RAW_KEY, method);
+    const next = vi.fn();
+
+    await expect(partnerApiAuthMiddleware(context, next)).rejects.toMatchObject({
+      status: 401,
+      message: 'Partner service principal owner is no longer authorized',
+    });
+    // Only the pre-lookup probe limiter ran; no principal or write bucket was spent.
+    expect(mocks.rateLimiter).toHaveBeenCalledTimes(1);
+    expect(withResolvedDbAccessContext).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+    expect(context.get('partnerApiPrincipal')).toBeUndefined();
   });
 
   it('applies a principal-specific rate limit after the system bootstrap closes', async () => {

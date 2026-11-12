@@ -10,7 +10,7 @@ import {
 } from '../../middleware/partnerApiAuth';
 import { partnerOrganizationRoutes } from '../../routes/partnerApi/organizations';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
-import { createOrganization, createPartner, createUser, userEpochs } from './db-utils';
+import { createOrganization, createPartner, createUser, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -154,6 +154,7 @@ async function issueKey(partnerId: string, userId: string): Promise<string> {
     updatedBy: userId,
   }).returning();
   if (!principal) throw new Error('service principal insert failed');
+  await ensurePartnerServicePrincipalOwner(userId, partnerId);
   const issued = await issuePartnerServicePrincipalKey(db as unknown as Database, {
     partnerServicePrincipalId: principal.id,
     partnerId,
