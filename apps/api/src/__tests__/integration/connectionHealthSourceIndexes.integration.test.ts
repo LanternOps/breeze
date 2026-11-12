@@ -133,7 +133,7 @@ describe('connection health source index contract (spec §1.3)', () => {
   });
 
   it('backup_destination: the config lookup reads configs by primary key (#11772)', async () => {
-    const plan = await explain(destinationConfigsQuery([randomUUID(), randomUUID()]));
+    const plan = await explain(destinationConfigsQuery([randomUUID(), randomUUID()]).getSQL());
     expect(plan, plan).not.toContain('Seq Scan on backup_configs');
   });
 });

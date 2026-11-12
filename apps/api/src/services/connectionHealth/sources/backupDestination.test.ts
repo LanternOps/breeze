@@ -8,10 +8,10 @@ vi.mock('../../../db', () => ({ db: {} }));
 
 import { DESTINATION_LOOKBACK_MS, type DestinationJobOutcome } from '../../backupDestinationHealth';
 import { HEALTH_DETAIL_MAX, sanitizeHealthDetail } from '../sanitize';
+import { backupConfigs } from '../../../db/schema';
 import {
   backupDestinationObservation,
   backupDestinationSource,
-  destinationConfigsQuery,
   destinationJobsQuery,
   type BackupDestinationRow,
 } from './backupDestination';
@@ -133,21 +133,51 @@ describe('backup destination source (#11772)', () => {
           { config_id: OFFLINE_ONLY, status: 'failed', error_log: '[stale-backup-reaper] Device went offline during backup' },
         ];
       }
-      if (text.includes('FROM backup_configs c')) {
-        return [{ id: ID, org_id: O, partner_id: P, name: 'Main S3', is_active: true, created_at: OLD, provider: 's3',
-          identity_fields: { endpoint: 'https://s3.example.test', bucket: 'acme-backups' } }];
-      }
       return [
         { config_id: ID, device_id: 'a', status: 'failed', error_log: DENIED, created_at: hoursAgo(2.1), completed_at: hoursAgo(2), storage_identity: IDENTITY },
         { config_id: ID, device_id: 'b', status: 'failed', error_log: DENIED, created_at: hoursAgo(1.1), completed_at: hoursAgo(1), storage_identity: IDENTITY },
       ];
     };
+    // provider_config is read only through Drizzle's select of the sealed
+    // column, whose decoder opens it; never through raw SQL.
+    const selections: Array<Record<string, unknown>> = [];
+    const lookups: Array<{ sql: string; params: unknown[] }> = [];
+    (db as unknown as { select: (s: Record<string, unknown>) => unknown }).select = (selection) => {
+      selections.push(selection);
+      const chain = {
+        from: () => chain,
+        innerJoin: () => chain,
+        where: async (cond: SQL) => {
+          lookups.push(dialect.sqlToQuery(cond));
+          return [{
+            id: ID, orgId: O, partnerId: P, name: 'Main S3', isActive: true, createdAt: OLD, provider: 's3',
+            providerConfig: { endpoint: 'https://s3.example.test', bucket: 'acme-backups', accessKey: 'AKIAPLAINACCESS', secretKey: 'plain-secret-key' },
+          }];
+        },
+      };
+      return chain;
+    };
     const obs = await backupDestinationSource.observe(NOW, []);
     expect(obs.map((o) => [o.sourceId, o.state])).toEqual([[ID, 'broken']]);
-    const configLookup = executed.find((t) => t.includes('FROM backup_configs c') && !t.includes('FROM backup_jobs j'));
-    expect(configLookup).toBeDefined();
-    // Only the destination-fault config is loaded: one id in the lookup.
-    expect(configLookup!.match(/::uuid/g)).toHaveLength(1);
+    expect(executed.some((t) => /provider_config/.test(t))).toBe(false);
+    expect(selections).toHaveLength(1);
+    expect(selections[0]!.providerConfig).toBe(backupConfigs.providerConfig);
+    // Only the destination-fault config is opened: one id in the lookup.
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0]!.params).toEqual([ID]);
+    // Only the derived identity leaves: no part of the opened config reaches the observation.
+    const out = JSON.stringify(obs);
+    expect(out).not.toContain('plain-secret-key');
+    expect(out).not.toContain('AKIAPLAINACCESS');
+  });
+
+  it('observe skips the config read when nothing is broken or tracked', async () => {
+    const { db } = await import('../../../db');
+    (db as unknown as { execute: () => Promise<unknown[]> }).execute = async () => [];
+    let selects = 0;
+    (db as unknown as { select: () => unknown }).select = () => { selects += 1; throw new Error('no config read expected'); };
+    expect(await backupDestinationSource.observe(NOW, [])).toEqual([]);
+    expect(selects).toBe(0);
   });
 
   it('the evidence query reads terminal outcomes, successes included, for the given configs inside the lookback', () => {
@@ -158,10 +188,4 @@ describe('backup destination source (#11772)', () => {
     expect(q.params).toContain(ID);
   });
 
-  it('the config query attributes the partner through the org and never reads credentials', () => {
-    const q = new PgDialect().sqlToQuery(destinationConfigsQuery([ID]));
-    expect(q.sql).toContain('JOIN organizations o ON o.id = c.org_id');
-    expect(q.sql).toContain('o.partner_id');
-    expect(q.sql).not.toMatch(/c\.provider_config(?!\s*->)/);
-  });
 });

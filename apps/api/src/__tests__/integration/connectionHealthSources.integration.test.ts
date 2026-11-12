@@ -36,6 +36,7 @@ import { m365SyncSource } from '../../services/connectionHealth/sources/m365Sync
 import { ticketMailboxSource } from '../../services/connectionHealth/sources/ticketMailbox';
 import { backupDestinationSource } from '../../services/connectionHealth/sources/backupDestination';
 import { normalizeStorageIdentity } from '../../services/backupStorageIdentity';
+import { sealBackupProviderConfig } from '../../services/backupProviderConfigSealing';
 import { sql } from 'drizzle-orm';
 import { runReconcile } from '../../services/connectionHealth/reconcile';
 import { CONNECTION_SOURCE_KINDS, type HealthSource } from '../../services/connectionHealth/types';
@@ -255,6 +256,8 @@ describe('broken query covers every broken verdict branch', () => {
 describe('backup destination source', () => {
   const DESTINATION = { endpoint: 'https://storage.example.test', bucket: 'dest-a', accessKey: 'synthetic', secretKey: 'synthetic' };
   const IDENTITY = normalizeStorageIdentity('s3', DESTINATION);
+  // Stored the way the sealed column writes it, so the source's read must open it through the column.
+  const SEALED_DESTINATION = sealBackupProviderConfig(DESTINATION);
   const DENIED = 'storage session: storage answered status 403 (AccessDenied)';
   const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000);
 
@@ -274,7 +277,7 @@ describe('backup destination source', () => {
       const id = randomUUID();
       await getTestDb().execute(sql`
         INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config, is_active, created_at)
-        VALUES (${id}, ${o}, 'Primary S3', 'file', 's3', ${JSON.stringify(DESTINATION)}::jsonb, ${opts.active ?? true}, ${OLD.toISOString()}::timestamp)`);
+        VALUES (${id}, ${o}, 'Primary S3', 'file', 's3', ${JSON.stringify(SEALED_DESTINATION)}::jsonb, ${opts.active ?? true}, ${OLD.toISOString()}::timestamp)`);
       return id;
     };
     const job = async (configId: string, deviceId: string, status: string, h: number, errorLog: string | null = null, identity: string = IDENTITY) => {

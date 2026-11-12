@@ -1,7 +1,7 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../../db';
+import { backupConfigs, organizations } from '../../../db/schema';
 import {
-  DESTINATION_IDENTITY_FIELDS,
   DESTINATION_LOOKBACK_MS,
   classifyDestinationOutcome,
   currentDestinationIdentity,
@@ -20,7 +20,7 @@ import { toHealthObservation, validUuids } from './observeRows';
 // is the shared evaluator's (services/backupDestinationHealth.ts), the same one
 // the backup dashboard's destination item uses.
 //
-// Two reads, both index-backed (migration 2027-01-24-100000):
+// Two job reads, both index-backed (migration 2027-01-24-100000):
 //   broken:   backup_jobs_unsuccessful_completed_at_idx (completed_at, config_id)
 //             WHERE status IN ('failed', 'partial', 'completed_with_errors').
 //             The unsuccessful jobs of active configs in the lookback; the
@@ -30,8 +30,10 @@ import { toHealthObservation, validUuids } from './observeRows';
 //   evidence: backup_jobs_config_completed_at_idx (config_id, completed_at),
 //             every terminal outcome (successes included: recovery is
 //             affirmative) of the candidate and tracked configs.
-// A config that is deleted is absent (the reconciler retires it); one that is
-// disabled reports retired.
+// The configs themselves are read by primary key through Drizzle, so the sealed
+// provider_config column opens on read like every other reader's; only the
+// identity derived from it leaves loadDestinations. A config that is deleted is
+// absent (the reconciler retires it); one that is disabled reports retired.
 
 const FIX_HREF = '/backup#profiles';
 /** Configs per evidence read, so one large outage never loads every job at once. */
@@ -39,9 +41,6 @@ const LOAD_CHUNK = 100;
 
 const UNSUCCESSFUL = sql.raw(`('failed', 'partial', 'completed_with_errors')`);
 const TERMINAL = sql.raw(`('completed', 'failed', 'partial', 'completed_with_errors', 'cancelled')`);
-const IDENTITY_FIELDS = sql.raw(
-  `jsonb_build_object(${DESTINATION_IDENTITY_FIELDS.map((f) => `'${f}', c.provider_config -> '${f}'`).join(', ')})`,
-);
 
 export type BackupDestinationRow = {
   id: string;
@@ -109,14 +108,26 @@ function brokenDestinationsQuery(now: Date): SQL {
 
 const idList = (ids: string[]) => sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `);
 
-/** The configs by id, with the partner via the org. Only the identity fields of provider_config are read, never a credential. */
-export function destinationConfigsQuery(ids: string[]): SQL {
-  return sql`
-    SELECT c.id, c.org_id, o.partner_id, c.name, c.is_active, c.created_at, c.provider::text AS provider,
-      ${IDENTITY_FIELDS} AS identity_fields
-    FROM backup_configs c
-    JOIN organizations o ON o.id = c.org_id
-    WHERE c.id IN (${idList(ids)})`;
+/**
+ * The configs by id, with the partner via the org. providerConfig is selected
+ * as the sealed column, so its decoder opens it (the credentials are not raw
+ * SQL's to read); callers keep only currentDestinationIdentity() of it.
+ */
+export function destinationConfigsQuery(ids: string[]) {
+  return db
+    .select({
+      id: backupConfigs.id,
+      orgId: backupConfigs.orgId,
+      partnerId: organizations.partnerId,
+      name: backupConfigs.name,
+      isActive: backupConfigs.isActive,
+      createdAt: backupConfigs.createdAt,
+      provider: backupConfigs.provider,
+      providerConfig: backupConfigs.providerConfig,
+    })
+    .from(backupConfigs)
+    .innerJoin(organizations, eq(organizations.id, backupConfigs.orgId))
+    .where(inArray(backupConfigs.id, ids));
 }
 
 /** Every terminal outcome of the given configs inside the lookback. */
@@ -129,10 +140,6 @@ export function destinationJobsQuery(ids: string[], now: Date): SQL {
       AND j.status IN ${TERMINAL}`;
 }
 
-type ConfigDbRow = {
-  id: string; org_id: string; partner_id: string; name: string; is_active: boolean;
-  created_at: Date | string; provider: string; identity_fields: Record<string, unknown> | null;
-};
 type JobDbRow = {
   config_id: string; device_id: string; status: string; error_log: string | null;
   created_at: Date | string; completed_at: Date | string | null; storage_identity: string | null;
@@ -142,7 +149,7 @@ async function loadDestinations(ids: string[], now: Date): Promise<BackupDestina
   const out: BackupDestinationRow[] = [];
   for (let i = 0; i < ids.length; i += LOAD_CHUNK) {
     const chunk = ids.slice(i, i + LOAD_CHUNK);
-    const configs = (await db.execute(destinationConfigsQuery(chunk))) as unknown as ConfigDbRow[];
+    const configs = await destinationConfigsQuery(chunk);
     if (configs.length === 0) continue;
     const jobs = (await db.execute(destinationJobsQuery(configs.map((c) => c.id), now))) as unknown as JobDbRow[];
     const byConfig = new Map<string, DestinationJobOutcome[]>();
@@ -161,12 +168,12 @@ async function loadDestinations(ids: string[], now: Date): Promise<BackupDestina
     for (const c of configs) {
       out.push({
         id: c.id,
-        orgId: c.org_id,
-        partnerId: c.partner_id,
+        orgId: c.orgId,
+        partnerId: c.partnerId,
         name: c.name,
-        isActive: c.is_active,
-        createdAt: new Date(c.created_at),
-        currentStorageIdentity: currentDestinationIdentity(c.provider, c.identity_fields ?? {}),
+        isActive: c.isActive,
+        createdAt: new Date(c.createdAt),
+        currentStorageIdentity: currentDestinationIdentity(String(c.provider), c.providerConfig),
         jobs: byConfig.get(c.id) ?? [],
       });
     }

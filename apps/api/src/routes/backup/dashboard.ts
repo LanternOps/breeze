@@ -38,6 +38,7 @@ import {
 import { getStorageByProvider } from '../../services/backupStorageByProvider';
 import {
   DESTINATION_LOOKBACK_MS,
+  classifyDestinationOutcome,
   currentDestinationIdentity,
   evaluateBackupDestination,
   type DestinationJobOutcome,
@@ -128,9 +129,14 @@ const DESTINATION_TERMINAL_STATUSES = ['completed', 'failed', 'partial', 'comple
 
 /**
  * Terminal outcomes in the evaluator's lookback for the org's active
- * destinations, under the request's org and site scope. Only the identity
- * fields of provider_config are read (DESTINATION_IDENTITY_FIELDS), never a
- * sealed credential. Runs inside the caller's savepoint.
+ * destinations, under the request's org and site scope, for the destinations
+ * that can be broken (any destination fault in that evidence). Runs inside the
+ * caller's savepoint.
+ *
+ * Each such config's current identity comes from a Drizzle select of the
+ * sealed providerConfig column, which opens it the way every reader does (raw
+ * SQL on provider_config would bypass that). Only configs with a fault are
+ * opened, and only the derived identity is kept.
  */
 async function loadDestinationEvidence(
   orgId: string,
@@ -142,8 +148,6 @@ async function loadDestinationEvidence(
     .select({
       configId: backupJobs.configId,
       configName: backupConfigs.name,
-      provider: backupConfigs.provider,
-      identityFields: sql<Record<string, unknown> | null>`jsonb_build_object('endpoint', ${backupConfigs.providerConfig} -> 'endpoint', 'bucket', ${backupConfigs.providerConfig} -> 'bucket', 'bucketName', ${backupConfigs.providerConfig} -> 'bucketName', 'path', ${backupConfigs.providerConfig} -> 'path', 'basePath', ${backupConfigs.providerConfig} -> 'basePath')`,
       deviceId: backupJobs.deviceId,
       status: backupJobs.status,
       errorLog: backupJobs.errorLog,
@@ -162,17 +166,12 @@ async function loadDestinationEvidence(
       jobDeviceScope,
     ));
 
-  const byConfig = new Map<string, DestinationEvidence>();
+  const byConfig = new Map<string, { name: string; jobs: DestinationJobOutcome[] }>();
   for (const row of rows) {
     if (allowedDeviceIds && !allowedDeviceIds.includes(row.deviceId)) continue;
     let d = byConfig.get(row.configId);
     if (!d) {
-      d = {
-        configId: row.configId,
-        name: row.configName ?? row.configId.slice(0, 8),
-        currentStorageIdentity: currentDestinationIdentity(String(row.provider), row.identityFields ?? {}),
-        jobs: [],
-      };
+      d = { name: row.configName ?? row.configId.slice(0, 8), jobs: [] };
       byConfig.set(row.configId, d);
     }
     d.jobs.push({
@@ -184,7 +183,27 @@ async function loadDestinationEvidence(
       storageIdentity: row.storageIdentity,
     });
   }
-  return [...byConfig.values()];
+
+  // Without a destination fault in its evidence a config cannot be broken.
+  const faulted = [...byConfig.keys()].filter((id) =>
+    byConfig.get(id)!.jobs.some((j) => classifyDestinationOutcome(j).outcome === 'bad'));
+  if (faulted.length === 0) return [];
+
+  const configs = await db
+    .select({ id: backupConfigs.id, provider: backupConfigs.provider, providerConfig: backupConfigs.providerConfig })
+    .from(backupConfigs)
+    .where(and(eq(backupConfigs.orgId, orgId), inArray(backupConfigs.id, faulted)));
+
+  return configs.flatMap((c) => {
+    const d = byConfig.get(c.id);
+    if (!d) return [];
+    return [{
+      configId: c.id,
+      name: d.name,
+      currentStorageIdentity: currentDestinationIdentity(String(c.provider), c.providerConfig),
+      jobs: d.jobs,
+    }];
+  });
 }
 
 // Result of an attention-items computation. `error: true` means we could NOT

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { dashboardRoutes } from './dashboard';
+import type { SQL } from 'drizzle-orm';
 import { backupDestinationObservation } from '../../services/connectionHealth/sources/backupDestination';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -388,13 +389,22 @@ describe('backup dashboard routes', () => {
     const CONFIG_ID = '99999999-9999-4999-8999-999999999999';
     const OTHER_CONFIG_ID = '88888888-8888-4888-8888-888888888888';
     const STORE_403 = 'system state publish failed: upload system state artifact registry/SYSTEM: storage session: storage answered status 403';
-    const IDENTITY_FIELDS = { endpoint: 'https://s3.example.test', bucket: 'primary' };
     const IDENTITY = 's3::s3.example.test::primary';
+    // What the sealed column's decoder hands back: credentials opened beside
+    // the destination. Only the derived identity may leave the route.
+    const openedConfig = (bucket: string) => ({
+      endpoint: 'https://s3.example.test', bucket, accessKey: 'AKIAPLAINACCESS', secretKey: 'plain-secret-key',
+    });
+    const CONFIG_ROWS = [
+      { id: CONFIG_ID, provider: 's3', providerConfig: openedConfig('primary') },
+      { id: OTHER_CONFIG_ID, provider: 's3', providerConfig: openedConfig('primary') },
+    ];
     const hoursAgo = (h: number) => new Date(Date.now() - h * 60 * 60 * 1000);
     const recently = () => hoursAgo(2);
 
     // One row serves both reads: the ranked per-device query (rn, device names)
-    // and the destination evidence query (config identity, storage identity).
+    // and the destination evidence query (storage identity). The config's
+    // current identity comes from a third read of the opened provider_config.
     let seq = 0;
     const row = (over: Record<string, unknown>) => {
       seq += 1;
@@ -409,14 +419,12 @@ describe('backup dashboard routes', () => {
         deviceHostname: 'host',
         configId: CONFIG_ID,
         configName: 'Primary S3',
-        provider: 's3',
-        identityFields: IDENTITY_FIELDS,
         storageIdentity: IDENTITY,
         ...over,
       };
     };
 
-    async function dashboardWith(rankedRows: unknown[], evidenceRows: unknown[] = rankedRows) {
+    async function dashboardWith(rankedRows: unknown[], evidenceRows: unknown[] = rankedRows, configRows: unknown[] = CONFIG_ROWS) {
       resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
       selectMock
         .mockReturnValueOnce(chainMock([{ count: 0 }]))
@@ -426,9 +434,77 @@ describe('backup dashboard routes', () => {
         .mockReturnValueOnce(chainMock([]))
         .mockReturnValueOnce(chainMock([]))
         .mockReturnValueOnce(chainMock(rankedRows))
-        .mockReturnValueOnce(chainMock(evidenceRows));
+        .mockReturnValueOnce(chainMock(evidenceRows))
+        .mockReturnValueOnce(chainMock(configRows));
       return (await (await app.request('/backup/dashboard')).json()).data;
     }
+
+    it('derives the current identity from provider_config opened through its sealed column', async () => {
+      const failing = [row({ deviceId: 'd1' }), row({ deviceId: 'd2' })];
+      expect((await dashboardWith(failing)).attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(true);
+      // The same jobs, but the config now points at another bucket: they are not its evidence.
+      const moved = [{ id: CONFIG_ID, provider: 's3', providerConfig: openedConfig('moved') }];
+      expect((await dashboardWith(failing, failing, moved)).attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('opens provider_config only for the org\'s configs with a destination fault, and never returns it', async () => {
+      await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2' }),
+        row({ deviceId: 'd3', configId: OTHER_CONFIG_ID, configName: 'Other', status: 'completed', errorLog: null }),
+      ]);
+      expect(selectMock).toHaveBeenCalledTimes(9);
+      const selection = (selectMock.mock.calls[8] as unknown as [Record<string, unknown>])[0];
+      expect(selection).toEqual({ id: 'backup_configs.id', provider: 'backup_configs.provider', providerConfig: 'backup_configs.provider_config' });
+      const where = (selectMock.mock.results[8]!.value as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[0]![0] as SQL;
+      // The mocked schema's columns are strings, so collect the condition's bound values by walking it.
+      const params: unknown[] = [];
+      const seen = new Set<unknown>();
+      const walk = (node: unknown) => {
+        if (node === null || typeof node !== 'object' || seen.has(node)) {
+          if (typeof node === 'string') params.push(node);
+          return;
+        }
+        seen.add(node);
+        for (const value of Array.isArray(node) ? node : Object.values(node)) walk(value);
+      };
+      walk(where);
+      expect(params).toContain(ORG_ID);
+      expect(params).toContain(CONFIG_ID);
+      expect(params).not.toContain(OTHER_CONFIG_ID);
+
+      const data = await dashboardWith([row({ deviceId: 'd1' }), row({ deviceId: 'd2' })]);
+      const out = JSON.stringify(data);
+      expect(out).not.toContain('plain-secret-key');
+      expect(out).not.toContain('AKIAPLAINACCESS');
+    });
+
+    it('skips the provider_config read when no destination has a fault', async () => {
+      await dashboardWith([row({ deviceId: 'd1', status: 'completed', errorLog: null }), row({ deviceId: 'd2', errorLog: 'backup helper exited unexpectedly' })]);
+      expect(selectMock).toHaveBeenCalledTimes(8);
+    });
+
+    it('a failed provider_config read keeps the per-device items and flags the degraded state', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      const failing = chainMock([]);
+      failing.where = vi.fn(() => Promise.reject(new Error('config read failed')));
+      const rows = [row({ deviceId: 'd1' }), row({ deviceId: 'd2' })];
+      selectMock
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock(rows))
+        .mockReturnValueOnce(chainMock(rows))
+        .mockReturnValueOnce(failing);
+      const res = await app.request('/backup/dashboard');
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.attentionItems.map((i: any) => i.id).sort()).toEqual(['backup-failing-d1', 'backup-failing-d2']);
+      expect(data.attentionError).toBe(true);
+    });
 
     it('emits one critical item for three devices failing a store 403, before the per-device items', async () => {
       const data = await dashboardWith([
@@ -546,7 +622,8 @@ describe('backup dashboard routes', () => {
         .mockReturnValueOnce(chainMock([]))
         .mockReturnValueOnce(chainMock([]))
         .mockReturnValueOnce(chainMock(rows))
-        .mockReturnValueOnce(chainMock(rows));
+        .mockReturnValueOnce(chainMock(rows))
+        .mockReturnValueOnce(chainMock(CONFIG_ROWS));
       const { data } = await (await app.request('/backup/dashboard')).json();
       // One allowed failing device: the three failures on the other site must not tip it over.
       expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);

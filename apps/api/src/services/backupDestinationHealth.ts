@@ -1,5 +1,5 @@
 import { classifyBackupFailureDetail, type BackupFailureCause } from '@breeze/shared';
-import { normalizeStorageIdentity } from './backupStorageIdentity';
+import { asRecord, normalizeStorageIdentity } from './backupStorageIdentity';
 
 // #11772: is a backup destination (one backup_configs row) failing? Pure: the
 // connection-health source (connectionHealth/sources/backupDestination.ts) and
@@ -86,8 +86,15 @@ export type BackupDestinationEvaluation = {
   };
 };
 
-/** The config's current identity, computed the way dispatch stamps backup_jobs.storage_identity. */
-export function currentDestinationIdentity(provider: string, fields: Record<string, unknown>): string {
+/**
+ * The config's current identity, computed the way dispatch stamps
+ * backup_jobs.storage_identity. `providerConfig` is the config as the sealed
+ * column opened it (a Drizzle select of backupConfigs.providerConfig, never raw
+ * SQL on provider_config); only the identity fields are kept, and only the
+ * derived string leaves.
+ */
+export function currentDestinationIdentity(provider: string, providerConfig: unknown): string {
+  const fields = asRecord(providerConfig);
   const picked: Record<string, unknown> = {};
   for (const key of DESTINATION_IDENTITY_FIELDS) if (key in fields) picked[key] = fields[key];
   return normalizeStorageIdentity(provider, picked);
