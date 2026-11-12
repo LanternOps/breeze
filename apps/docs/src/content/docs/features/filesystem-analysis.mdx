@@ -155,7 +155,7 @@ Content-Type: application/json
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | string | OS volume | Volume or directory to scan, as an absolute local path; the agent refuses network shares, device namespaces and relative paths. Normalised server-side. Max 2048 characters. |
+| `path` | string | OS volume | Volume or directory to scan, as an absolute path; the agent refuses UNC paths, device-namespace paths and relative paths. Normalised server-side. Max 2048 characters. |
 | `strategy` | enum | `auto` | `auto`, `baseline`, or `incremental`. |
 | `maxDepth` | number | -- | Maximum directory depth (1-64). |
 | `topFiles` | number | -- | Largest files to keep (1-500). |

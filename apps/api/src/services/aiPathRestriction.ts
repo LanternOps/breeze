@@ -29,7 +29,7 @@
  */
 import { isAgentConfigPath } from '../routes/systemTools/sensitiveTargets';
 import { candidateForms, isShortNameComponent, normalizePath, UNRESOLVED_FORM } from './devicePathForms';
-import { DEVICE_PATH_BLOCKED_MESSAGE, devicePathFloorRefusal } from './devicePathFloor';
+import { DEVICE_PATH_BLOCKED_MESSAGE, devicePathFloorRefusal } from '@breeze/shared';
 import type { AiDeviceFileReadLevel } from '../db/schema/aiDataPolicies';
 
 export { normalizePath };

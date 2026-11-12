@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { devicePathFloorRefusal } from '../../services/devicePathFloor';
+import { devicePathFloorRefusal } from '@breeze/shared';
 
 export const deviceIdParamSchema = z.object({
   deviceId: z.string().guid()

@@ -199,7 +199,7 @@ Users limited to certain sites or devices do not see skip counts; the Sweeps tab
 
 ### Preview and confirmation
 
-**Sweep now** opens a five-step dialog: scope, scan type (Quick, Full, or Custom with up to 20 absolute local paths of at most 1,024 characters each), duration, preview and confirm. The preview shows how many devices in how many organizations will be scanned, the rule-set versions, and the skipped devices with the reason for each. Nothing is written until you confirm. Confirming sends a digest of what you previewed; if the devices or rule sets changed in the meantime, the dialog shows the new preview and asks again instead of running something you did not approve. If the same sweep is already running, the dialog links to it.
+**Sweep now** opens a five-step dialog: scope, scan type (Quick, Full, or Custom with up to 20 absolute paths of at most 1,024 characters each), duration, preview and confirm. The preview shows how many devices in how many organizations will be scanned, the rule-set versions, and the skipped devices with the reason for each. Nothing is written until you confirm. Confirming sends a digest of what you previewed; if the devices or rule sets changed in the meantime, the dialog shows the new preview and asks again instead of running something you did not approve. If the same sweep is already running, the dialog links to it.
 
 ### Multi-factor authentication above 50 devices
 
@@ -335,7 +335,7 @@ POST /security/scan/{deviceId}
 | **`full`** | Comprehensive scan of all major system locations (entire drives on Windows, `/Applications`, `/Library`, `/Users` on macOS, `/` tree on Linux) |
 | **`custom`** | Scans only the paths specified in the `paths` array |
 
-Custom scan paths, here and in IOC sweeps, must be absolute local paths such as `/var/log` or `C:\Logs`; the agent refuses network shares, device namespaces and relative paths. They must also pass the same protected-path checks as the file browser. Credential stores and the agent's configuration directory are skipped when scanning parent directories, including quick and full scans, and are never quarantined automatically.
+Custom scan paths, here and in IOC sweeps, must be absolute paths such as `/var/log` or `C:\Logs`; UNC paths, device-namespace paths and relative paths are refused, by the API and by the agent. Every scan, including quick and full scans, leaves alone the agent's configuration folder and the system credential stores (for example `/etc/shadow`, `/etc/sudoers.d`, `/Library/Keychains` and each user's `Library/Keychains` on macOS, the registry credential hives on Windows), and files whose names mark them as credential stores (`.env`, browser password and cookie databases, SSH private keys, cloud CLI credentials, keychain files). A custom path inside one of those locations is refused. Folders elsewhere that merely share such a name are scanned. A file with more than one hard link is not read if it is one of the protected files. Protected files are never quarantined automatically; a match on one is reported as not quarantined.
 
 The scan is queued as a `SECURITY_SCAN` command to the agent. The response returns a scan record with status `queued` and a `202 Accepted` status code.
 
