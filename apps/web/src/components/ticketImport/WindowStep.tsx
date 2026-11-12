@@ -3,9 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { ActionError, runAction } from '../../lib/runAction';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
-import { showToast } from '../shared/Toast';
 import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
 import { formatDateTime } from '../../lib/dateTimeFormat';
+import type { MigrationWindowOpenStepUpResource } from '@breeze/shared';
 import { PARTNER_WIDE, mappedOrgIds, type ImportSourceDetail, type MigrationWindow } from './ticketImportApi';
 import { Notice, Panel, buttonPrimary, buttonSecondary, formatCount, importFriendly, inputClass, labelClass } from './importUi';
 
@@ -53,8 +53,12 @@ function defaultEnd(now = new Date()): string {
   return toLocalInput(end);
 }
 
-/** The exact resource the grant binds and the body repeats (routes/auth/schemas.ts migrationWindowOpenStepUpResource). */
-export function windowResource(input: { partnerId: string; principalId: string; orgIds: string[]; endsAt: string; writesPerHour: number }) {
+/**
+ * The exact resource the grant binds and the body repeats: the shape is
+ * @breeze/shared migrationWindowOpenStepUpResourceSchema, which the API's
+ * mint route validates.
+ */
+export function windowResource(input: { partnerId: string; principalId: string; orgIds: string[]; endsAt: string; writesPerHour: number }): MigrationWindowOpenStepUpResource {
   return {
     partnerId: input.partnerId,
     principalId: input.principalId,
@@ -158,7 +162,8 @@ export default function WindowStep({ source, openWindow, otherOpenWindow, partne
         }),
         errorFallback: t('window.openFailed'),
         friendly: importFriendly(t),
-        suppressErrorToast: (status, c) => status === 403 && c === 'STEP_UP_REQUIRED',
+        // Every refusal is shown inline, next to the form (and the step-up prompt): no toast as well.
+        suppressErrorToast: () => true,
         successMessage: t('window.opened'),
       });
       setPhase('form');
@@ -167,7 +172,7 @@ export default function WindowStep({ source, openWindow, otherOpenWindow, partne
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: t('window.openFailed') });
+        setError(t('window.openFailed'));
         return;
       }
       if (err.status === 403 && err.code === 'STEP_UP_REQUIRED') {

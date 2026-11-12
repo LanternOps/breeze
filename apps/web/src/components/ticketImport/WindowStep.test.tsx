@@ -18,7 +18,8 @@ vi.mock('../../lib/mfaStepUp', () => ({
 }));
 vi.mock('../shared/Toast', () => ({ showToast: toastMock }));
 
-import WindowStep, { DEFAULT_WRITES_PER_HOUR } from './WindowStep';
+import { migrationWindowOpenStepUpResourceSchema } from '@breeze/shared';
+import WindowStep, { DEFAULT_WRITES_PER_HOUR, windowResource } from './WindowStep';
 import { ORG_A, ORG_B, PARTNER_ID, PRINCIPAL_ID, json, migrationWindow, sourceDetail } from './testFixtures';
 
 const source = sourceDetail({
@@ -128,6 +129,8 @@ describe('WindowStep (#8313 W6)', () => {
     await waitFor(() => expect(onOpened).toHaveBeenCalled());
     expect(mintMock).toHaveBeenCalledTimes(1);
     expect(windowPosts().map((b) => b.stepUpGrant ?? null)).toEqual([null, 'grant-1', 'grant-1']);
+    // The refusal was shown inline only: no toast on top of it.
+    expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
   it('drops the held grant when the window changes, because the grant is bound to it', async () => {
@@ -188,5 +191,11 @@ describe('WindowStep (#8313 W6)', () => {
     renderStep({ openWindow: migrationWindow() });
     expect(screen.getByTestId('ticket-import-window-open')).toBeInTheDocument();
     expect(screen.queryByTestId('ticket-import-window-open-submit')).toBeNull();
+  });
+
+  it('builds exactly the step-up resource the server validates, nothing more', () => {
+    const resource = windowResource({ partnerId: PARTNER_ID, principalId: PRINCIPAL_ID, orgIds: [ORG_B, ORG_A], endsAt: '2026-11-15T08:00:00.000Z', writesPerHour: 6000 });
+    expect(migrationWindowOpenStepUpResourceSchema.strict().parse(resource)).toEqual(resource);
+    expect(resource.orgIds).toEqual([ORG_A, ORG_B].sort());
   });
 });
