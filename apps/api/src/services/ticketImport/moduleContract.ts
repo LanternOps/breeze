@@ -224,6 +224,17 @@ export interface TicketImportModule<Options = unknown, Cursor = unknown> {
    * a run cancelled between two slices.
    */
   dispose?(sourceId: string): void;
+  /**
+   * Optional: display names for source people the report names by key
+   * (`owner_unmatched`, spec §5.10: "the wizard shows the name by reading the
+   * source's user list live"). Read live, nothing stored by the framework; a
+   * key the source does not know (or that is not of the module's grammar) is
+   * null. Callers bound `keys` (the route takes at most 200).
+   */
+  resolvePeople?(src: SourceHandle<Options>, keys: readonly string[]): Promise<Map<string, SourcePerson | null>>;
 }
+
+/** A source person as the report shows them; never stored. */
+export type SourcePerson = { name: string | null; email: string | null };
 
 export type AnyTicketImportModule = TicketImportModule<any, any>;

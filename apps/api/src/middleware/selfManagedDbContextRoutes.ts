@@ -440,6 +440,10 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // transaction per contact, each under its own locks, so a batch of 500
   // holds no lock (source, org, contacts) across the whole batch.
   { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/created-contacts\/remove\/?$/ },
+  // Naming the report's source people (#8313 W6, spec §5.10) calls the
+  // module against the tenant-controlled base URL through safeFetch, which
+  // refuses to run inside a held DB context.
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/source-users\/resolve\/?$/ },
   // PSA company import (#3246), both halves.
   //
   // PREVIEW walks the PSA's own pagination — up to PSA_COMPANY_LIST_CAP/100
