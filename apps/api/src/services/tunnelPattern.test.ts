@@ -89,6 +89,11 @@ describe('address families match the agent', () => {
     expect(tunnelDestinationMatches('::/0:*', '::a00:1', 443)).toBe(true);
   });
 
+  it('does not match an address that carries a zone index', () => {
+    expect(tunnelNetworkContains('fd00::/8', 'fd00::5%eth0')).toBe(false);
+    expect(tunnelDestinationMatches('fd00::/8:*', 'fd00::5%eth0', 443)).toBe(false);
+  });
+
   it('treats an IPv4-mapped rule of /96 or longer as an IPv4 rule', () => {
     expect(tunnelNetworkContains('::ffff:0.0.0.0/96', '10.0.0.1')).toBe(true);
     // /104 in the mapped range is IPv4 /8, /120 is IPv4 /24.
