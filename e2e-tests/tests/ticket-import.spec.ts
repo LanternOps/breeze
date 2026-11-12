@@ -8,7 +8,10 @@ import { TicketsPage } from '../pages/TicketsPage';
  * §8 row W6): connect, preflight, mappings, dry run, window, bulk run, delta
  * run, close — every step of the cutover runbook through the UI.
  *
- * The source side is a fake: the API can only reach a help desk over the SSRF
+ * The source side is a fake (stricter than a stub: it refuses unknown body
+ * keys as the real schemas do, answers STEP_UP_REQUIRED on the first window
+ * open, walks each run through queued, running and completed, and writes
+ * issue rows only at the end): the API can only reach a help desk over the SSRF
  * guard (loopback and private addresses are refused), so a fake Zammad on the
  * test host is unreachable from the API container. Instead the import and
  * window routes are answered in the browser (page.route) by a small stateful
@@ -23,6 +26,33 @@ const PRINCIPAL_ID = '0a7d9c1e-2b3f-4a5d-8e6f-7a8b9c0d1e2f';
 const WINDOW_ID = '33333333-3333-4333-8333-333333333333';
 
 type Json = Record<string, unknown>;
+
+/**
+ * The keys each route accepts, copied from the API's zod schemas so the fake
+ * refuses a body the real route would (400): routes/ticketImports/sources.ts
+ * createSchema and mappingsSchema (strict), runs.ts startSchema (strict),
+ * sourceUsers.ts resolveSchema (strict), routes/migrationWindows.ts
+ * openSchema (strict), and routes/partnerServicePrincipals.ts createSchema
+ * (not strict on the server, which strips extras; held to its keys here).
+ */
+const ALLOWED_KEYS: Record<string, readonly string[]> = {
+  principal: ['partnerId', 'name', 'description', 'scopes', 'expiresAt', 'sourceCidrs'],
+  source: ['module', 'label', 'baseUrl', 'credentials', 'principalId', 'options'],
+  mappings: ['orgs', 'categories', 'options'],
+  mappingsOrg: ['sourceOrgKey', 'sourceOrgName', 'orgId'],
+  mappingsCategory: ['sourceGroupKey', 'sourceGroupName', 'categoryId'],
+  run: ['kind', 'windowId'],
+  window: ['partnerId', 'principalId', 'orgIds', 'endsAt', 'writesPerHour', 'sourceLabel', 'stepUpGrant'],
+  resolve: ['keys'],
+};
+
+/** The unknown keys of a body, against ALLOWED_KEYS[schema]. */
+function unknownKeys(schema: string, body: unknown): string[] {
+  if (!body || typeof body !== 'object') return ['<not an object>'];
+  return Object.keys(body).filter((k) => !ALLOWED_KEYS[schema]!.includes(k));
+}
+
+const STEP_UP_GRANT = 'e2e-step-up-grant';
 
 function counters(over: Json = {}): Json {
   return {
@@ -46,14 +76,28 @@ class FakeImportApi {
   options: Json = {};
   runs: Json[] = [];
   windows: Json[] = [];
-  /** Each run reads as queued once, then completed. */
+  /** Each run reads as queued, then running (with progress), then completed. */
   private reads = new Map<string, number>();
   received: Record<string, unknown[]> = {};
 
   constructor(private page: Page) {}
 
+  /** Bodies the fake refused, by schema; the test asserts there are none. */
+  rejected: Array<{ schema: string; keys: string[] }> = [];
+  /** The window open answers STEP_UP_REQUIRED until it is sent this grant. */
+  windowAttempts = 0;
+
   private record(key: string, body: unknown) {
     (this.received[key] ??= []).push(body);
+  }
+
+  /** A 400 for a body the real route's schema would refuse. */
+  private async refuseUnknown(route: Route, schema: string, body: unknown, nested?: Array<[string, unknown[]]>): Promise<boolean> {
+    const keys = [...unknownKeys(schema, body), ...(nested ?? []).flatMap(([s, rows]) => rows.flatMap((r) => unknownKeys(s, r)))];
+    if (keys.length === 0) return false;
+    this.rejected.push({ schema, keys });
+    await route.fulfill({ status: 400, json: { error: `fake: unknown keys ${keys.join(', ')}` } });
+    return true;
   }
 
   private view(): Json {
@@ -68,6 +112,7 @@ class FakeImportApi {
 
   private async principals(route: Route) {
     if (route.request().method() === 'POST') {
+      if (await this.refuseUnknown(route, 'principal', route.request().postDataJSON())) return;
       this.record('principal', route.request().postDataJSON());
       return route.fulfill({ status: 201, json: { data: { id: PRINCIPAL_ID } } });
     }
@@ -83,6 +128,7 @@ class FakeImportApi {
     if (path === '/ticket-imports/sources' && method === 'GET') return route.fulfill({ json: { data: this.source ? [this.view()] : [] } });
     if (path === '/ticket-imports/sources' && method === 'POST') {
       const body = request.postDataJSON() as Json;
+      if (await this.refuseUnknown(route, 'source', body)) return;
       this.record('source', body);
       this.source = {
         id: SOURCE_ID, partnerId: 'partner', module: body.module, label: body.label, baseUrl: body.baseUrl,
@@ -118,6 +164,7 @@ class FakeImportApi {
     }
     if (path === `/ticket-imports/sources/${SOURCE_ID}/mappings` && method === 'PUT') {
       const body = request.postDataJSON() as Json;
+      if (await this.refuseUnknown(route, 'mappings', body, [['mappingsOrg', (body.orgs as unknown[]) ?? []], ['mappingsCategory', (body.categories as unknown[]) ?? []]])) return;
       this.record('mappings', body);
       this.mappings = { orgs: body.orgs, categories: body.categories };
       this.options = body.options as Json;
@@ -125,6 +172,7 @@ class FakeImportApi {
     }
     if (path === `/ticket-imports/sources/${SOURCE_ID}/runs` && method === 'POST') {
       const body = request.postDataJSON() as Json;
+      if (await this.refuseUnknown(route, 'run', body)) return;
       this.record('run', body);
       const fallback = (this.mappings.orgs as Array<{ orgId: string }>)[0]?.orgId ?? 'org';
       const run = {
@@ -140,9 +188,21 @@ class FakeImportApi {
     }
     if (path === `/ticket-imports/sources/${SOURCE_ID}/runs`) return route.fulfill({ json: { data: this.runs } });
     if (path === `/ticket-imports/sources/${SOURCE_ID}/created-contacts`) return route.fulfill({ json: { data: [], next: null } });
+    if (path === `/ticket-imports/sources/${SOURCE_ID}/source-users/resolve` && method === 'POST') {
+      const body = request.postDataJSON() as { keys: string[] };
+      if (await this.refuseUnknown(route, 'resolve', body)) return;
+      this.record('resolve', body);
+      return route.fulfill({ json: { data: Object.fromEntries(body.keys.map((k) => [k, k === '4' ? { name: 'Bob Former', email: 'bob.former@example.com' } : null])) } });
+    }
     const issues = path.match(/^\/ticket-imports\/runs\/([^/]+)\/issues$/);
     if (issues) {
-      return route.fulfill({ json: { data: [{ id: 'issue-1', sourceTicketKey: '99', sourceTicketNumber: '41099', kind: 'skipped_no_org', code: 'no_org', count: 1, createdAt: new Date().toISOString() }], next: null } });
+      // Issue rows land as the run writes them: none until it has completed.
+      const run = this.runs.find((r) => r.id === issues[1]);
+      if (run?.state !== 'completed') return route.fulfill({ json: { data: [], next: null } });
+      return route.fulfill({ json: { data: [
+        { id: 'issue-1', sourceTicketKey: '99', sourceTicketNumber: '41099', kind: 'skipped_no_org', code: 'no_org', count: 1, createdAt: new Date().toISOString() },
+        { id: 'issue-2', sourceTicketKey: '98', sourceTicketNumber: '41098', kind: 'owner_unmatched', code: '4', count: 1, createdAt: new Date().toISOString() },
+      ], next: null } });
     }
     const one = path.match(/^\/ticket-imports\/runs\/([^/]+)$/);
     if (one) {
@@ -150,7 +210,14 @@ class FakeImportApi {
       if (!run) return route.fulfill({ status: 404, json: { error: 'not found' } });
       const reads = (this.reads.get(run.id as string) ?? 0) + 1;
       this.reads.set(run.id as string, reads);
-      if (reads > 1) Object.assign(run, { state: 'completed', phase: 'done', finishedAt: new Date().toISOString() });
+      if (reads === 2) {
+        Object.assign(run, { state: 'running', phase: 'scan', heartbeatAt: new Date().toISOString() });
+        Object.assign(run.counters as Json, { tickets: { ...((run.counters as Json).tickets as Json), seen: 5 } });
+      }
+      if (reads > 2) {
+        Object.assign(run, { state: 'completed', phase: 'done', finishedAt: new Date().toISOString() });
+        Object.assign(run.counters as Json, { tickets: { ...((run.counters as Json).tickets as Json), seen: 12 } });
+      }
       return route.fulfill({ json: { data: run } });
     }
     return route.fulfill({ status: 404, json: { error: `fake: unrouted ${method} ${path}` } });
@@ -163,6 +230,13 @@ class FakeImportApi {
     if (path === '/migration-windows' && method === 'GET') return route.fulfill({ json: { data: this.windows } });
     if (path === '/migration-windows' && method === 'POST') {
       const body = request.postDataJSON() as Json;
+      if (await this.refuseUnknown(route, 'window', body)) return;
+      this.windowAttempts += 1;
+      // As the real route with two-factor on: no grant, or a grant not minted for it, is STEP_UP_REQUIRED.
+      if (body.stepUpGrant !== STEP_UP_GRANT) {
+        this.record('windowRefused', body);
+        return route.fulfill({ status: 403, json: { error: 'Step-up required', code: 'STEP_UP_REQUIRED' } });
+      }
       this.record('window', body);
       const orgIds = body.orgIds as string[];
       const win = {
@@ -182,6 +256,27 @@ class FakeImportApi {
     return route.fulfill({ status: 404, json: { error: `fake: unrouted ${method} ${path}` } });
   }
 
+  /**
+   * The second factor, for the window's step-up: factor discovery sees an
+   * authenticator app (the real /users/me answer with mfaMethod 'totp'), and
+   * the mint answers the grant the window route accepts, recording the
+   * resource it was minted for.
+   */
+  async installStepUp() {
+    await this.page.route(/\/api\/v1\/users\/me(\?.*)?$/, async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      const real = await route.fetch();
+      const body = (await real.json()) as Json;
+      return route.fulfill({ response: real, json: { ...body, mfaEnabled: true, mfaMethod: 'totp' } });
+    });
+    await this.page.route(/\/api\/v1\/auth\/passkeys(\?.*)?$/, (route) => route.fulfill({ json: [] }));
+    await this.page.route(/\/api\/v1\/auth\/mfa\/step-up(\?.*)?$/, async (route) => {
+      const body = route.request().postDataJSON() as Json;
+      this.record('mint', body);
+      return route.fulfill({ json: { stepUpGrantId: STEP_UP_GRANT } });
+    });
+  }
+
   /** The signed-in admin's id, so the wizard treats them as the principal's owner. */
   private async ownerId(): Promise<string> {
     return this.page.evaluate(() => {
@@ -197,7 +292,7 @@ class FakeImportApi {
 
 test.describe('ticket import wizard', () => {
   test('connect, preflight, map, dry run, window, bulk, delta and close (#8313)', async ({ authedPage: page }) => {
-    test.setTimeout(180_000);
+    test.setTimeout(240_000);
     const fake = new FakeImportApi(page);
     await fake.install();
 
@@ -240,36 +335,54 @@ test.describe('ticket import wizard', () => {
       options: { createRequesterContacts: true, createRequesterContactsUpdatedSince: '2025-01-01' },
     });
 
-    // 4. Dry run: polled until it completes; its report predicts the contacts.
+    // 4. Dry run: polled every 5 s through queued and running (with progress)
+    // until it completes; its report predicts the contacts, and the issue rows
+    // that land at the end appear, the unmatched owner by name.
     await wizard.runStart().click();
     await expect(wizard.runState()).toBeVisible();
+    await expect(page.getByTestId('ticket-import-run-status')).toHaveAttribute('data-state', 'running', { timeout: 15_000 });
+    await expect(page.getByTestId('ticket-import-run-progress')).toContainText('5');
+    await expect(page.getByTestId('ticket-import-issues-empty')).toBeVisible();
     await expect(page.getByTestId('ticket-import-run-status')).toHaveAttribute('data-state', 'completed', { timeout: 15_000 });
     await expect(wizard.reportContactsForOrg(fallbackOrgId)).toBeVisible();
     await expect(wizard.issue('issue-1')).toBeVisible();
+    await expect(page.getByTestId('ticket-import-issue-code-issue-2')).toHaveText('Bob Former (bob.former@example.com)');
     await wizard.runContinue().click();
 
-    // 5. Window over the mapped orgs. (The fake asks for no step-up; the
-    // step-up path is covered by WindowStep.test.tsx.)
+    // 5. Window over the mapped orgs: the first submit is refused with
+    // STEP_UP_REQUIRED, the code is entered, the grant minted for exactly that
+    // window, and the retry carries it.
     await expect(page).toHaveURL(/step=window$/);
+    await fake.installStepUp();
+    await wizard.windowOpenSubmit().click();
+    await page.getByTestId('ticket-import-window-stepup-code').fill('123456');
     await wizard.windowOpenSubmit().click();
     await expect(wizard.windowOpen()).toBeVisible();
-    expect(fake.received.window?.[0]).toMatchObject({ principalId: PRINCIPAL_ID, orgIds: [fallbackOrgId], sourceLabel: 'Zammad' });
+    expect(fake.windowAttempts).toBe(2);
+    const opened = fake.received.window?.[0] as Json;
+    expect(opened).toMatchObject({ principalId: PRINCIPAL_ID, orgIds: [fallbackOrgId], sourceLabel: 'Zammad', stepUpGrant: STEP_UP_GRANT });
+    expect(fake.received.mint?.[0]).toMatchObject({
+      method: 'totp', code: '123456', operation: 'migration_window_open',
+      resource: { principalId: PRINCIPAL_ID, orgIds: [fallbackOrgId], endsAt: opened.endsAt, writesPerHour: opened.writesPerHour },
+    });
     await wizard.windowContinue().click();
 
     // 6. Bulk run through the window.
     await expect(page).toHaveURL(/step=bulk$/);
     await wizard.runStart().click();
-    await expect(page.getByTestId('ticket-import-run-status')).toHaveAttribute('data-state', 'completed', { timeout: 15_000 });
+    await expect(page.getByTestId('ticket-import-run-status')).toHaveAttribute('data-state', 'completed', { timeout: 20_000 });
     expect(fake.received.run?.[1]).toEqual({ kind: 'import', windowId: WINDOW_ID });
     await wizard.runContinue().click();
 
-    // 7. Delta run, after the freeze.
+    // 7. Delta run, after the freeze. The step starts empty: the bulk run is not its run.
     await expect(page).toHaveURL(/step=delta$/);
+    await expect(page.getByTestId('ticket-import-run-status')).toHaveCount(0);
+    await expect(wizard.runContinue()).toHaveCount(0);
     await expect(wizard.runStart()).toBeDisabled();
     await wizard.runFrozen().check();
     await wizard.runStart().click();
     await expect.poll(() => fake.received.run?.length).toBe(3);
-    await expect(page.getByTestId('ticket-import-run-status')).toHaveAttribute('data-state', 'completed', { timeout: 15_000 });
+    await expect(page.getByTestId('ticket-import-run-status')).toHaveAttribute('data-state', 'completed', { timeout: 20_000 });
     await wizard.runContinue().click();
 
     // 8. Close the window and read its summary.
@@ -278,6 +391,8 @@ test.describe('ticket import wizard', () => {
     await wizard.windowCloseConfirm().click();
     await expect(wizard.closeSummary()).toBeVisible();
     await expect(wizard.windowRow(WINDOW_ID)).toBeVisible();
+    // Every body the wizard sent matched the real routes' schemas.
+    expect(fake.rejected).toEqual([]);
   });
 
   test('the ticket list filters imported tickets through the hash (#8313)', async ({ authedPage: page }) => {
