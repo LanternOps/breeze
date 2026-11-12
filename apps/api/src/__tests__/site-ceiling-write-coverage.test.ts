@@ -81,6 +81,10 @@ const GOVERNANCE_TABLE_NAMES = [
   // that attaches them (and may auto-quarantine there); no site axis.
   'yaraRuleSets',
   'yaraRules',
+  // A generic deployment has no site column: its target (all devices, a
+  // filter, groups or a device list) resolves against the whole organization
+  // at initialization, so creating or driving one is an org-wide change.
+  'deployments',
 ] as const;
 
 /**
@@ -88,6 +92,16 @@ const GOVERNANCE_TABLE_NAMES = [
  * site-ceiling gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
+  // Generic deployment state transitions take a deployment id and no caller.
+  // Their only caller is routes/deployments.ts, whose initialize/pause/resume/
+  // cancel routes run requireUnrestrictedDeploymentAccess
+  // (canMutateOrgWideGovernance) before reading the deployment.
+  'services/deploymentEngine.ts':
+    'initialize/pause/resume/cancel are called only from routes/deployments.ts routes that run canMutateOrgWideGovernance first — verify every caller still gates when editing this file',
+  // Marks a deployment completed/failed once its last member device settles;
+  // runs in the reaper worker in system context with no caller identity.
+  'jobs/staleCommandReaper.ts':
+    'sets a deployment completed/failed after its last member device settles, from the reaper worker in system context — no caller-scoped auth object reaches this path',
   // #6263 W03a. Called only from the mutating routes in
   // routes/security/yara.ts, each of which runs writeDenial
   // (canMutateOrgWideGovernance) before reaching it.

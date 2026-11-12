@@ -393,7 +393,7 @@ describe('SR5-03 manage_deployments — site scoping', () => {
     });
     (db as any).update = vi.fn();
     const r = await handlerFor('manage_deployments')({ action: 'pause', deploymentId: 'dep1' }, makeAuth(['site-A']));
-    expect(r).toContain('access denied');
+    expect(r).toMatch(/cannot modify organization-wide settings/);
     expect((db as any).update).not.toHaveBeenCalled();
   });
 
@@ -1038,14 +1038,14 @@ describe('manage_deployments — zero-member deployments and page-completeness (
   it('start denies a zero-member deployment for a site-restricted caller', async () => {
     mockSingle([]);
     const r = await handlerFor('manage_deployments')({ action: 'start', deploymentId: 'dep-1' }, makeAuth(['site-1'])) as string;
-    expect(JSON.parse(r).error).toContain('access denied');
+    expect(JSON.parse(r).error).toMatch(/cannot modify organization-wide settings/);
     expect(mockDb.update).not.toHaveBeenCalled();
   });
 
   it('cancel denies a zero-member deployment for a site-restricted caller', async () => {
     mockSingle([]);
     const r = await handlerFor('manage_deployments')({ action: 'cancel', deploymentId: 'dep-1' }, makeAuth(['site-1'])) as string;
-    expect(JSON.parse(r).error).toContain('access denied');
+    expect(JSON.parse(r).error).toMatch(/cannot modify organization-wide settings/);
     expect(mockDb.update).not.toHaveBeenCalled();
   });
 
@@ -1115,5 +1115,49 @@ describe('manage_deployments — zero-member deployments and page-completeness (
     expect(requestedLimit).toBe(5);
     expect(parsed.scopeNote).toBeUndefined();
     expect(parsed.showing).toBe(1);
+  });
+});
+
+describe('manage_deployments — organization-wide changes need unrestricted access', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const createInput = {
+    action: 'create', name: 'Rollout', type: 'agent_update', payload: { version: '1.2.3' },
+    targetType: 'all', targetConfig: { type: 'all' }, rolloutConfig: {},
+  };
+
+  it.each([[['site-1']], [[]]])('create refuses a site-restricted caller %j without inserting', async (sites) => {
+    const r = await handlerFor('manage_deployments')(createInput, makeAuth(sites)) as string;
+    expect(JSON.parse(r).error).toMatch(/Site-restricted users cannot modify organization-wide settings/);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('create refuses an exact-device caller without inserting', async () => {
+    const auth = { ...makeAuth(undefined), allowedDeviceIds: ['dev-1'] } as AuthContext;
+    const r = await handlerFor('manage_deployments')(createInput, auth) as string;
+    expect(JSON.parse(r).error).toMatch(/Site-restricted users cannot modify organization-wide settings/);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('create still inserts a draft for an unrestricted caller', async () => {
+    const values = vi.fn(() => ({ returning: () => Promise.resolve([{ id: 'dep-new', name: 'Rollout' }]) }));
+    mockDb.insert.mockReturnValue({ values });
+    const r = await handlerFor('manage_deployments')(createInput, makeAuth(undefined)) as string;
+    expect(JSON.parse(r)).toMatchObject({ success: true, deploymentId: 'dep-new' });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', status: 'draft', createdBy: 'u1' }));
+  });
+
+  it.each(['start', 'pause', 'resume', 'cancel'])('%s refuses a site-restricted caller even when every member is in site', async (action) => {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) {
+        return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'dep-1', name: 'D', status: action === 'resume' ? 'paused' : action === 'pause' ? 'running' : 'draft' }]) }) }) };
+      }
+      return { from: () => ({ leftJoin: () => ({ where: () => Promise.resolve([{ deploymentId: 'dep-1', deviceId: 'd-in', siteId: 'site-1' }]) }) }) };
+    });
+    mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
+    const r = await handlerFor('manage_deployments')({ action, deploymentId: 'dep-1' }, makeAuth(['site-1'])) as string;
+    expect(JSON.parse(r).error).toMatch(/Site-restricted users cannot modify organization-wide settings/);
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 });
