@@ -1996,6 +1996,34 @@ describe('auth routes', () => {
   // the code with the CONSUMING verifier so the accepted time step is
   // recorded and cannot be replayed at login within its validity window.
   describe('POST /auth/mfa/verify — setup confirmation consumes the TOTP step (SR2-24)', () => {
+    it.each([403, 503])('returns the request admission response (%s) without confirming setup', async (status) => {
+      const mockRedis = { get: vi.fn(), del: vi.fn(), setex: vi.fn() };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      // The real middleware resolves the caller before a later admission
+      // check (network allowlist, budget) returns its own response.
+      vi.mocked(authMiddleware).mockImplementationOnce(async (c: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          token: { sid: 'family-123', sub: 'user-123', type: 'access', aep: 1, mep: 1 },
+          orgId: null,
+        });
+        return c.json({ error: 'Admission refused' }, status);
+      });
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456' }),
+      });
+
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ error: 'Admission refused' });
+      expect(mockRedis.get).not.toHaveBeenCalled();
+      expect(mockRedis.del).not.toHaveBeenCalled();
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+      expect(completeInitialMfaEnrollment).not.toHaveBeenCalled();
+    });
+
     it('rejects policy drift before consuming a code or enrollment authority', async () => {
       const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
         required: true,

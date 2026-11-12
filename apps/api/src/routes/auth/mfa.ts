@@ -672,9 +672,13 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   // I3: the `await authMiddleware(c, async () => {})` idiom tears the RLS
   // context down when its empty `next` returns, so nothing below may use the
   // bare pool; confirmTotpEnrollment reads under system context and writes only
-  // through the session-replacement primitives.
-  await authMiddleware(c, async () => {});
+  // through the session-replacement primitives. The middleware can also end
+  // the request itself (network allowlist, request budget); that response is
+  // returned as is.
+  const admission = await authMiddleware(c, async () => {});
+  if (admission instanceof Response) return admission;
   const auth = c.get('auth');
+  if (!auth?.user) return c.json({ error: 'Not authenticated' }, 401);
   const body = c.req.valid('json');
   // `passwordAlreadyProven`: this branch never had a password gate of its own —
   // /mfa/setup holds it. The SSO road (#4018) still validates and burns its

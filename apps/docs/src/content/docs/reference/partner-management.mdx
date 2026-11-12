@@ -188,7 +188,7 @@ A partner can restrict dashboard and API access to a list of approved source IPs
 When the allowlist is non-empty, it is enforced at three points:
 
 - **At login** — after credentials are verified but before any token is minted, a request from a non-allowed IP is rejected (`401`, `IP_NOT_ALLOWED`).
-- **On every authenticated request** — a guard runs after authentication resolves the partner context and denies non-allowed IPs (`403`, `IP_NOT_ALLOWED`).
+- **On every authenticated request** — a guard runs after authentication resolves the partner context and denies non-allowed IPs (`403`, `IP_NOT_ALLOWED`). This includes confirming a new authenticator app through `POST /auth/mfa/verify`.
 - **On partner-scoped MCP / OAuth API keys** — partner-scoped programmatic access is held to the same allowlist.
 
 **Agents are exempt.** Agent enrollment, heartbeats, and command traffic authenticate through a separate path that never passes through the user IP-allowlist guard, so restricting admin access does not strand the device fleet.
