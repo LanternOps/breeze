@@ -41,7 +41,7 @@ import { organizations, partners } from '../db/schema/orgs';
 import { computeAgreementSha256 } from './agreementContentHash';
 import { registerThemeFonts, resolvePageSize, type DocumentPageSize } from './documentThemes';
 import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs } from './pdfMerge';
-import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngDecodable, withPngDecodeSlot } from './pngDecodeLimits';
+import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngDecodable, hasPngSignature, withPngDecodeSlot } from './pngDecodeLimits';
 import { certificateVersionFromColumn, type CertificateVersion } from './agreementCertificateVersion';
 
 // ---------------------------------------------------------------------------
@@ -370,11 +370,13 @@ function assertPngWithinDecodeLimits(data: Buffer): void {
 async function normalizeOriginal(input: CertifiedAgreementInput): Promise<{ pdf: Buffer; last: { width: number; height: number } | null }> {
   const { pdfData, mime } = input.document;
   if (mime === 'image/png' || mime === 'image/jpeg') {
-    if (mime === 'image/png') assertPngWithinDecodeLimits(pdfData);
+    // The checks follow the bytes, not the stored type: PNG bytes are checked
+    // whatever they are labelled.
+    if (mime === 'image/png' || hasPngSignature(pdfData)) assertPngWithinDecodeLimits(pdfData);
     try {
       // A large PNG is decoded and saved holding the process-wide large-decode
       // slot (pngDecodeLimits.ts), so only one is in memory at a time.
-      return await withPngDecodeSlot(mime === 'image/png' ? pdfData : null, async () => {
+      return await withPngDecodeSlot(pdfData, async () => {
         const out = await PDFDocument.create({ updateMetadata: false });
         const image = mime === 'image/png' ? await out.embedPng(pdfData) : await out.embedJpg(pdfData);
         const [pw, ph] = input.pageSize === 'letter' ? PageSizes.Letter : PageSizes.A4;

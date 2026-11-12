@@ -32,7 +32,7 @@ import {
   siteScopeFingerprint,
   type UserReportExecutionAuthority,
 } from '../siteScope';
-import { pngBytesFromDataUrl, withPngDecodeSlot } from '../pngDecodeLimits';
+import { imageBytesFromDataUrl, withPngDecodeSlot } from '../pngDecodeLimits';
 
 const PORTAL_DEFINITIONS = [
   {
@@ -833,7 +833,7 @@ export async function renderRunPdf(
 
   // The logo is decoded while the PDF is built and written; a large one holds
   // the process-wide large-decode slot (pngDecodeLimits.ts).
-  return withPngDecodeSlot(pngBytesFromDataUrl(branding?.logoDataUrl), () => {
+  return withPngDecodeSlot(imageBytesFromDataUrl(branding?.logoDataUrl), () => {
     const document = buildReportPdf(result.rows ?? [], {
       reportType: row.type,
       generatedAt,

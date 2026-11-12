@@ -131,10 +131,17 @@ export function checkPngDecodable(data: Buffer, limits: Partial<PngDecodeLimits>
   return { ok: true, header: { width, height, bitDepth, colorType, interlaced: interlace === 1, decodedBytes, peakBytes } };
 }
 
-/** The bytes of a `data:image/png;base64,` URL, or null for anything else. */
-export function pngBytesFromDataUrl(url: string | null | undefined): Buffer | null {
-  const m = url ? /^data:image\/png;base64,([A-Za-z0-9+/=\s]+)$/i.exec(url.trim()) : null;
+/** The bytes of a base64 `data:image/…` URL, or null for anything else. The
+ *  label is not trusted: callers pass the bytes on, and the checks here sniff
+ *  the PNG signature. */
+export function imageBytesFromDataUrl(url: string | null | undefined): Buffer | null {
+  const m = url ? /^data:image\/[a-z0-9.+-]+;base64,([A-Za-z0-9+/=\s]+)$/i.exec(url.trim()) : null;
   return m ? Buffer.from(m[1]!, 'base64') : null;
+}
+
+/** Whether `data` starts with the PNG signature, whatever it is labelled. */
+export function hasPngSignature(data: Buffer): boolean {
+  return data.length >= 8 && data.subarray(0, 8).equals(PNG_SIGNATURE);
 }
 
 // ── single flight for large decodes ─────────────────────────────────────────

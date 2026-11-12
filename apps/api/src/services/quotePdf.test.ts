@@ -15,6 +15,7 @@ vi.mock('./sentry', async (importActual) => {
 
 import { captureException } from './sentry';
 import { renderQuotePdf, contractUploadedMarker, imageIntrinsicSize, imageIsDrawable } from './quotePdf';
+import { withPngDecodeSlot } from './pngDecodeLimits';
 import { documentColumnsFor } from './documentPdfTable';
 import { renderRichTextIntoPdf, WEB_TYPOGRAPHY } from './richTextPdf';
 
@@ -500,6 +501,58 @@ describe('renderQuotePdf', () => {
     // Both renders drew their image, and one finished before the other drew.
     expect(events.filter((e) => e === 'draw')).toHaveLength(2);
     expect(events.slice(events.indexOf('draw') + 1, events.lastIndexOf('draw'))).toContain('done');
+  });
+
+  it('a large PNG logo labelled image/jpeg is checked and waits for the large-decode slot', async () => {
+    const side = 2100;
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(side, 0);
+    ihdr.writeUInt32BE(side, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    const row = Buffer.alloc(1 + side * 4, 0x80);
+    row[0] = 0;
+    const png = (w: number, h: number, data: Buffer) => {
+      const header = Buffer.from(ihdr);
+      header.writeUInt32BE(w, 0);
+      header.writeUInt32BE(h, 4);
+      return Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        pngChunk('IHDR', header),
+        pngChunk('IDAT', zlib.deflateSync(data)),
+        pngChunk('IEND', Buffer.alloc(0)),
+      ]);
+    };
+    const asJpegUrl = (bytes: Buffer) => `data:image/jpeg;base64,${bytes.toString('base64')}`;
+    const quote = {
+      id: 'q-logo', quoteNumber: 'Q-LOGO', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+    } as never;
+
+    // Over the limits: refused like any undecodable logo (the name is drawn).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await renderQuotePdf(quote, [], [], async () => null, { logoUrl: asJpegUrl(png(30_000, 30_000, Buffer.alloc(16))) });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('partner logo'), expect.anything());
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Large: waits while another large decode holds the slot.
+    const events: string[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const other = withPngDecodeSlot(png(4000, 4000, Buffer.alloc(16)), async () => {
+      events.push('other decode running');
+      await gate;
+      events.push('other decode done');
+    });
+    await vi.waitFor(() => expect(events).toContain('other decode running'));
+    const large = png(side, side, Buffer.concat(Array.from({ length: side }, () => row)));
+    const render = renderQuotePdf(quote, [], [], async () => null, { logoUrl: asJpegUrl(large) }).then(() => { events.push('render done'); });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    await Promise.all([other, render]);
+    expect(events).toEqual(['other decode running', 'other decode done', 'render done']);
   });
 
   it('cover image: centre-crops (align/valign center) like the on-screen preview', async () => {

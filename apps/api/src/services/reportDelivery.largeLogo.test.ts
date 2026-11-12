@@ -78,6 +78,17 @@ describe('report PDF with a large logo', () => {
     expect(state.events).toEqual(['other decode running', 'other decode done', 'report built']);
   });
 
+  it('waits the same way when the large PNG logo is labelled image/jpeg', async () => {
+    state.events.length = 0;
+    const other = holdLargeDecode();
+    await vi.waitFor(() => expect(state.events).toContain('other decode running'));
+    const report = emailReportRun(run(pngDataUrl(4000, 4000).replace('data:image/png;', 'data:image/jpeg;')) as never);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    other.release();
+    await Promise.all([other.held, report]);
+    expect(state.events).toEqual(['other decode running', 'other decode done', 'report built']);
+  });
+
   it('does not wait when the logo is small', async () => {
     state.events.length = 0;
     const other = holdLargeDecode();

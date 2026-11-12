@@ -24,7 +24,7 @@ import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 import type { ReportResult } from './reportGenerationService';
 
 import type { ReportDeliveryStatus } from '../db/schema/reports';
-import { pngBytesFromDataUrl, withPngDecodeSlot } from './pngDecodeLimits';
+import { imageBytesFromDataUrl, withPngDecodeSlot } from './pngDecodeLimits';
 
 export type { ReportDeliveryStatus } from '../db/schema/reports';
 
@@ -152,7 +152,7 @@ export async function emailReportRun(opts: {
       }).format(new Date());
       // The logo is decoded while the PDF is built and written; a large one
       // holds the process-wide large-decode slot (pngDecodeLimits.ts).
-      const content = await withPngDecodeSlot(pngBytesFromDataUrl(opts.branding?.logoDataUrl), () => {
+      const content = await withPngDecodeSlot(imageBytesFromDataUrl(opts.branding?.logoDataUrl), () => {
         const doc = buildReportPdf(opts.rows, {
           reportType: opts.reportType,
           generatedAt,

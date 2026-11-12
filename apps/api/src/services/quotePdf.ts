@@ -28,7 +28,7 @@ import { renderRichTextIntoPdf, measureRichTextLead, parseRichText, WEB_TYPOGRAP
 import { registerThemeFonts, pdfPageSize, type DocumentThemeId, type DocumentPageSize, type PdfThemeFonts } from './documentThemes';
 import { parseTable, measureTable, renderTableIntoPdf, tableLeadHeight, type EnsureRoomRich } from './tablePdf';
 import { renderCalloutIntoPdf, measureCalloutLead } from './calloutPdf';
-import { checkPngDecodable, createPngDecodeSlotHolder, pngBytesFromDataUrl } from './pngDecodeLimits';
+import { checkPngDecodable, createPngDecodeSlotHolder, imageBytesFromDataUrl } from './pngDecodeLimits';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -737,7 +737,7 @@ export async function renderQuotePdf(
       return img;
     };
   try {
-    await slot.admit(pngBytesFromDataUrl(branding.logoUrl));
+    await slot.admit(imageBytesFromDataUrl(branding.logoUrl));
     return await renderQuotePdfDocument(
       quote, blocks, lines, admitted(loadImage), branding, admitted(loadCatalogImage), contractRenderData,
     );

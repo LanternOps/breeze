@@ -396,6 +396,35 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
       }
     });
 
+    it('checks and serializes PNG bytes stored under an image/jpeg type the same way', async () => {
+      const jpegDecode = vi.spyOn(PDFDocument.prototype, 'embedJpg');
+      try {
+        await refusedWithoutDecoding(png(30_000, 30_000));
+        const err = await renderCertifiedAgreementPdf(makeInput(png(30_000, 30_000), 'image/jpeg')).catch((e: unknown) => e);
+        expect(err).toMatchObject({ name: 'PdfMergeError', code: 'CONTRACT_IMAGE_TOO_LARGE' });
+        expect(jpegDecode).not.toHaveBeenCalled();
+      } finally {
+        jpegDecode.mockRestore();
+      }
+      let running = 0;
+      let most = 0;
+      const decode = vi.spyOn(PDFDocument.prototype, 'embedJpg').mockImplementation(async () => {
+        running += 1;
+        most = Math.max(most, running);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        running -= 1;
+        throw new Error('decoder reached');
+      });
+      try {
+        const large = png(4000, 4000);
+        await Promise.all([1, 2, 3].map(() => renderCertifiedAgreementPdf(makeInput(large, 'image/jpeg')).catch(() => null)));
+        expect(decode).toHaveBeenCalledTimes(3);
+        expect(most).toBe(1);
+      } finally {
+        decode.mockRestore();
+      }
+    });
+
     it('still embeds a PNG at a scanned-page size, up to the pixel limit', async () => {
       await reachesDecoder(png(2550, 3300));
       // A Letter page at 600 dpi (about 34 million pixels) and a 49-million-pixel image.
