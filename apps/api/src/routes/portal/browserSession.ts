@@ -11,12 +11,16 @@
  * `createdAt`, capped per request by the CURRENT `ssoSessionMaxHours`, on top
  * of the sliding 24 h every session has. An `entra` session also pins the
  * org's proven Entra tenant at mint and dies when that is no longer the org's
- * proven tenant. Password sessions keep the sliding 24 h only.
+ * proven tenant. A `google` session pins the verified Workspace domain (`hd`)
+ * it signed in with (W7 D7) and dies once that domain is no longer verified
+ * for the org (removed, displaced, lapsed). Password sessions keep the sliding
+ * 24 h only.
  *
  * `isBrowserSessionAllowed` is re-checked on every session request, so a
  * policy change (org or inherited partner default) ends a session on its very
  * next request (plan D1: no policy cache).
  */
+import { createOrgCustomerDomainSchema } from '@breeze/shared';
 import type { Context } from 'hono';
 import { nanoid } from 'nanoid';
 import {
@@ -43,6 +47,15 @@ const PORTAL_SESSION_METHODS: ReadonlySet<string> = new Set<PortalSessionMethod>
 
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HOUR_MS = 3_600_000;
+/** The customer-domain rule of @breeze/shared, the one the Google client applies to `hd`. */
+const hostedDomainSchema = createOrgCustomerDomainSchema.shape.domain;
+
+/** True only for a string that is already exactly a valid lowercase domain (no trimming, no wildcard). */
+function isStoredHostedDomain(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  const parsed = hostedDomainSchema.safeParse(value);
+  return parsed.success && parsed.data === value;
+}
 
 export interface StoredPortalSession {
   portalUserId: string;
@@ -53,6 +66,8 @@ export interface StoredPortalSession {
   createdAtMs: number | null;
   /** The org's proven Entra tenant at mint (lowercase GUID). Set for, and only for, an `entra` session. */
   entraTenantId: string | null;
+  /** The verified Workspace domain (`hd`, lowercase) the sign-in resolved the org from. Set for, and only for, a `google` session. */
+  googleHostedDomain: string | null;
 }
 
 /** `createdAt` as stored: an ISO string in Redis, a Date in the in-memory twin. Anything else is unreadable. */
@@ -66,9 +81,14 @@ function readCreatedAtMs(value: unknown): number | null {
  * sessions). Unknown method or bad shape → null.
  *
  * - `password`: `createdAt` and `entraTenantId` are optional (pre-W4 payloads
- *   parse unchanged); a stray `entraTenantId` is ignored.
- * - `entra`: `createdAt` must parse and `entraTenantId` must be a GUID, else null.
- * - `google`: `createdAt` must parse, else null (the SSO absolute lifetime needs it).
+ *   parse unchanged); a stray `entraTenantId` or `googleHostedDomain` is ignored.
+ * - `entra`: `createdAt` must parse and `entraTenantId` must be a GUID, else
+ *   null; a stray `googleHostedDomain` is ignored.
+ * - `google`: `createdAt` must parse (the SSO absolute lifetime needs it) and
+ *   `googleHostedDomain` must be exactly a valid lowercase domain (W7 D7), else null.
+ *
+ * The Redis JSON and the in-memory twin both come through here, so a google
+ * session without a valid pin is refused the same way from either store.
  */
 export function parseStoredPortalSession(raw: unknown): StoredPortalSession | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -87,7 +107,9 @@ export function parseStoredPortalSession(raw: unknown): StoredPortalSession | nu
   }
 
   const createdAtMs = readCreatedAtMs(p.createdAt);
-  const session = { portalUserId: p.portalUserId, orgId: p.orgId, authEpoch, method, createdAtMs, entraTenantId: null };
+  const session: StoredPortalSession = {
+    portalUserId: p.portalUserId, orgId: p.orgId, authEpoch, method, createdAtMs, entraTenantId: null, googleHostedDomain: null,
+  };
   if (method === 'password') return session;
 
   if (createdAtMs === null) return null;
@@ -95,7 +117,9 @@ export function parseStoredPortalSession(raw: unknown): StoredPortalSession | nu
     if (typeof p.entraTenantId !== 'string' || !GUID_RE.test(p.entraTenantId)) return null;
     return { ...session, entraTenantId: p.entraTenantId.toLowerCase() };
   }
-  return session;
+  // Tested by name, never inferred: a method added later without its own branch fails closed.
+  if (method !== 'google' || !isStoredHostedDomain(p.googleHostedDomain)) return null;
+  return { ...session, googleHostedDomain: p.googleHostedDomain };
 }
 
 /**
@@ -107,13 +131,18 @@ export function parseStoredPortalSession(raw: unknown): StoredPortalSession | nu
  * - an SSO session is refused once `nowMs - createdAtMs >= ssoSessionMaxHours`
  *   (refused AT the cap), read from the policy passed in, i.e. the current one;
  * - an entra session also needs its pinned tenant to equal the policy's
- *   proven tenant.
+ *   proven tenant;
+ * - a google session also needs its pinned `hd` in the org's currently
+ *   verified domains (`policy.googleDomains`, exact match; null = not read =
+ *   refused). The session middleware resolves the policy per request, so a
+ *   domain removed, displaced or lapsed in W5 ends its sessions on the next
+ *   request while sessions for another verified domain of the org live on.
  * An unknown method fails closed (`isSignInMethodAllowed`).
  */
 export function isBrowserSessionAllowed(
-  session: Pick<StoredPortalSession, 'method' | 'createdAtMs' | 'entraTenantId'>,
+  session: Pick<StoredPortalSession, 'method' | 'createdAtMs' | 'entraTenantId' | 'googleHostedDomain'>,
   user: { authMethod: string; browserAccess: string },
-  policy: Pick<ResolvedPortalAccessPolicy, 'effective' | 'entraTenant'>,
+  policy: Pick<ResolvedPortalAccessPolicy, 'effective' | 'entraTenant' | 'googleDomains'>,
   nowMs: number,
 ): boolean {
   if (user.browserAccess !== 'granted') return false;
@@ -128,6 +157,10 @@ export function isBrowserSessionAllowed(
   if (session.method === 'entra') {
     const proven = policy.entraTenant?.tenantId;
     if (!proven || !session.entraTenantId || proven.toLowerCase() !== session.entraTenantId) return false;
+  }
+  if (session.method === 'google') {
+    const hd = session.googleHostedDomain;
+    if (!hd || !policy.googleDomains?.includes(hd)) return false;
   }
   return true;
 }
@@ -147,12 +180,14 @@ export interface MintPortalBrowserSessionInput {
   method: PortalSessionMethod;
   /** Required for, and only for, `method: 'entra'`: the org's proven tenant the sign-in was verified against. */
   entraTenantId?: string;
+  /** Required for, and only for, `method: 'google'`: the verified `hd` the sign-in resolved the org from (stored lowercase). */
+  googleHostedDomain?: string;
 }
 
 /**
  * The one browser-session mint (login, accept-invite and, from W4, the OIDC
  * callback). Writes `portal:session:{token}` =
- * `{portalUserId, orgId, authEpoch, method, createdAt, entraTenantId?}` (setex
+ * `{portalUserId, orgId, authEpoch, method, createdAt, entraTenantId? | googleHostedDomain?}` (setex
  * 24 h), `sadd portal:user-sessions:{id}` (expire 48 h), or the in-memory twin
  * when Redis is off, then sets the session + CSRF cookies.
  *
@@ -172,6 +207,13 @@ export async function mintPortalBrowserSession(
     throw new Error('mintPortalBrowserSession: entraTenantId must be a GUID');
   }
   const entraTenantId = input.entraTenantId?.toLowerCase();
+  if ((method === 'google') !== (input.googleHostedDomain !== undefined)) {
+    throw new Error('mintPortalBrowserSession: googleHostedDomain is required for, and only for, a google session');
+  }
+  const googleHostedDomain = input.googleHostedDomain?.toLowerCase();
+  if (googleHostedDomain !== undefined && !isStoredHostedDomain(googleHostedDomain)) {
+    throw new Error('mintPortalBrowserSession: googleHostedDomain must be a valid domain');
+  }
 
   const now = new Date();
   const token = nanoid(48);
@@ -180,10 +222,12 @@ export async function mintPortalBrowserSession(
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();
     if (!redis) throw new PortalSessionStoreUnavailableError();
-    // Key order is the stored byte layout: the pre-W4 payload, plus the tenant for entra.
+    // Key order is the stored byte layout: the pre-W4 payload, plus the tenant
+    // for entra or the hd for google (W7 D7), each after createdAt.
     const stored = {
       portalUserId, orgId, authEpoch, method, createdAt: now.toISOString(),
       ...(entraTenantId ? { entraTenantId } : {}),
+      ...(googleHostedDomain ? { googleHostedDomain } : {}),
     };
     const results = await redis
       .multi()
@@ -207,6 +251,7 @@ export async function mintPortalBrowserSession(
     portalSessions.set(token, {
       token, portalUserId, orgId, authEpoch, method,
       ...(entraTenantId ? { entraTenantId } : {}),
+      ...(googleHostedDomain ? { googleHostedDomain } : {}),
       createdAt: now, expiresAt,
     });
     capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (s) => s.createdAt.getTime());

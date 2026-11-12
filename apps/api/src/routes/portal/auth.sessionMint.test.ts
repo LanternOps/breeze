@@ -236,6 +236,35 @@ describe('session mint under the Redis backend', () => {
     expect(portalSessions.size).toBe(0);
   });
 
+  // W7 (#11384) plan D7: the hd is written AFTER createdAt, so the password and
+  // entra payloads keep their exact pre-W7 bytes (pinned by the two tests above
+  // and re-pinned here as exact strings).
+  it('mint writes googleHostedDomain after createdAt (password/entra byte layout unchanged)', async () => {
+    const mintPayload = async (body: Record<string, unknown>) => {
+      state.ops.length = 0;
+      const res = await post('/test-mint', body);
+      expect(res.status).toBe(200);
+      const { token } = await res.json() as { token: string };
+      const payload = expectSessionWrites(token);
+      expectSessionCookies(res, token);
+      return { payload, createdAt: (JSON.parse(payload) as { createdAt: string }).createdAt };
+    };
+
+    const g = await mintPayload({ portalUserId: USER_ID, orgId: ORG_ID, authEpoch: 7, method: 'google', googleHostedDomain: 'Contoso.Example.com' });
+    expect(g.payload).toBe(
+      `{"portalUserId":"${USER_ID}","orgId":"${ORG_ID}","authEpoch":7,"method":"google","createdAt":"${g.createdAt}","googleHostedDomain":"contoso.example.com"}`,
+    );
+
+    const p = await mintPayload({ portalUserId: USER_ID, orgId: ORG_ID, authEpoch: 7, method: 'password' });
+    expect(p.payload).toBe(`{"portalUserId":"${USER_ID}","orgId":"${ORG_ID}","authEpoch":7,"method":"password","createdAt":"${p.createdAt}"}`);
+
+    const e = await mintPayload({ portalUserId: USER_ID, orgId: ORG_ID, authEpoch: 7, method: 'entra', entraTenantId: TENANT });
+    expect(e.payload).toBe(
+      `{"portalUserId":"${USER_ID}","orgId":"${ORG_ID}","authEpoch":7,"method":"entra","createdAt":"${e.createdAt}","entraTenantId":"${TENANT}"}`,
+    );
+    expect(portalSessions.size).toBe(0);
+  });
+
   it('login answers 503 and sets no cookie when the session store is unavailable', async () => {
     redis.current = null;
     const res = await post('/auth/login', { email: 'cust@acme.example', password: 'Right1!pass', orgId: ORG_ID });
