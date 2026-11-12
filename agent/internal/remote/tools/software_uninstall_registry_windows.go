@@ -104,10 +104,24 @@ func uninstallEntryPresentOS(entry windowsUninstallEntry) (bool, error) {
 // CreateProcess: lpApplicationName is the absolute executable path and the
 // command line is passed verbatim, so no shell is involved and no search path
 // is consulted.
+//
+// A QuietUninstallString executable is first opened and checked where it
+// really lives (openResolvedUninstaller). That handle stays open, sharing
+// read access only, until the process has started, so the checked file
+// cannot be replaced, renamed or written in between, and the resolved path is
+// the one launched.
 func startRegistryUninstallerOS(plan registryUninstallPlan) (uninstallerProcess, error) {
 	sysDir, err := windows.GetSystemDirectory()
 	if err != nil {
 		return nil, fmt.Errorf("resolve system directory: %w", err)
+	}
+	if plan.Kind == registryUninstallKindQuiet {
+		held, resolved, err := openResolvedUninstaller(plan.Exe)
+		if err != nil {
+			return nil, err
+		}
+		defer held.Close()
+		plan.Exe = resolved
 	}
 	exePath, cmdLine := registryUninstallCmdLine(plan, filepath.Join(sysDir, "msiexec.exe"))
 
@@ -117,11 +131,6 @@ func startRegistryUninstallerOS(plan registryUninstallPlan) (uninstallerProcess,
 	}
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("uninstaller " + exePath + " is not a regular file")
-	}
-	if plan.Kind == registryUninstallKindQuiet {
-		if err := checkResolvedUninstallerPath(exePath); err != nil {
-			return nil, err
-		}
 	}
 
 	cmd := procspawn.Prepare(&exec.Cmd{
@@ -137,24 +146,34 @@ func startRegistryUninstallerOS(plan registryUninstallPlan) (uninstallerProcess,
 	return cmdProcess{cmd}, nil
 }
 
-// checkResolvedUninstallerPath applies the uninstaller location checks to the
-// path Windows resolves exePath to. A short (8.3) name, a junction or a link
-// can name the same file differently from the registered string; the checks
-// then decide on the file's real location.
-func checkResolvedUninstallerPath(exePath string) error {
-	f, err := os.Open(exePath)
+// openResolvedUninstaller opens exePath for reading, sharing read access
+// only, and applies the uninstaller location checks to the path Windows
+// resolves the open file to. A short (8.3) name, a junction or a link can
+// name the same file differently from the registered string; the checks then
+// decide on the file's real location. On success the caller owns the open
+// file and receives the resolved path.
+func openResolvedUninstaller(exePath string) (*os.File, string, error) {
+	name, err := windows.UTF16PtrFromString(exePath)
 	if err != nil {
-		return fmt.Errorf("uninstaller %q: %w", exePath, err)
+		return nil, "", fmt.Errorf("uninstaller %q: %w", exePath, err)
 	}
-	defer f.Close()
+	h, err := windows.CreateFile(name, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil,
+		windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, "", fmt.Errorf("uninstaller %q: %w", exePath, err)
+	}
+	f := os.NewFile(uintptr(h), exePath)
 	resolved, err := finalPathOfFile(f)
 	if err != nil {
-		return fmt.Errorf("resolve uninstaller %q: %w", exePath, err)
+		f.Close()
+		return nil, "", fmt.Errorf("resolve uninstaller %q: %w", exePath, err)
 	}
-	if err := validateUninstallerPath(collapsePathSeparators(resolved)); err != nil {
-		return fmt.Errorf("uninstaller %q resolves to %q: %w", exePath, resolved, err)
+	resolved = collapsePathSeparators(resolved)
+	if err := validateUninstallerPath(resolved); err != nil {
+		f.Close()
+		return nil, "", fmt.Errorf("uninstaller %q resolves to %q: %w", exePath, resolved, err)
 	}
-	return nil
+	return f, resolved, nil
 }
 
 type cmdProcess struct{ cmd *exec.Cmd }
