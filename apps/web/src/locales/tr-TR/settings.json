@@ -711,12 +711,14 @@
       "groupBy": {
         "model": "Model",
         "surface": "Özellik",
-        "prompt_profile": "Model ailesi"
+        "prompt_profile": "Model ailesi",
+        "tool_profile": "Araç profili"
       },
       "columns": {
         "conversations": "Konuşmalar",
         "costPerConversation": "Maliyet / konuşma",
         "refusalRate": "Ret oranı",
+        "refusedToolBatches": "Kullanılamayan araç çağrıları",
         "failoverRate": "Yedeğe geçiş oranı",
         "flagRate": "İşaretleme oranı",
         "leftRate": "Başka modele geçti",
@@ -727,6 +729,7 @@
         "conversations": "Bu dönemdeki son model çağrısı bu satırda olan sohbet oturumları ve ajan çalıştırmaları.",
         "costPerConversation": "Bu satırı kullanan her konuşma için bu satırdaki ortalama harcama.",
         "refusalRate": "Modelin reddettiği model çağrıları, çağrı başına.",
+        "refusedToolBatches": "Modelin, Breeze'in kullanamadığı bir biçimde araç çalıştırmak istediği turlardaki model çağrıları (sunulmayan bir araç veya uyuşmayan girdiler), çağrı başına. Hiçbir şey çalıştırılmadı.",
         "failoverRate": "Bu model başarısız olduğu veya kullanılamadığı için yedek modele geçen çağrılar.",
         "flagRate": "Bir kişinin işaretlediği oturumlar. Araç hatasından sonraki otomatik işaretlemeler ayrı sayılır.",
         "leftRate": "Başka bir modele geçen veya başka bir modelle yeni bir oturumda devam eden konuşmalar.",
@@ -738,6 +741,12 @@
         "claude-standard": "Claude Standard",
         "claude-small": "Claude Small",
         "generic": "Diğer modeller"
+      },
+      "toolProfiles": {
+        "full": "Tam",
+        "standard": "Standart",
+        "minimal": "Asgari",
+        "custom": "Özel"
       },
       "unrecorded": "Kaydedilmedi",
       "unattributed": "Bir modele atfedilmedi",
@@ -751,6 +760,8 @@
       "leftBreakdown": "{{switched}} geçti, {{continued}} devam etti",
       "resolvedCount_one": "{{count}} çözüldü",
       "resolvedCount_other": "{{count}} çözüldü",
+      "refusedToolBatchCount_one": "{{count}} reddedildi",
+      "refusedToolBatchCount_other": "{{count}} reddedildi",
       "loading": "Kalite yükleniyor…",
       "empty": "Bu dönemde model çağrısı yok.",
       "error": "Kalite görünümü yüklenemedi.",

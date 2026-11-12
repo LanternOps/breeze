@@ -67,6 +67,23 @@ describe('openai_compatible adapter (real Anthropic client through the gateway)'
     }
   });
 
+  it('a refused batch is noted refused_tool_batch under the grant AI session, buffered and streamed (W04 #11397)', async () => {
+    __resetGatewayFailureNotesForTests();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    reply = () => toolCall('t_0_other');
+    await clientFor(['qwen'], 'sess-refused-buffered').messages.create({ model: 'qwen', max_tokens: 256, tools, messages: [{ role: 'user', content: 'x' }] });
+    expect(takeGatewayFailure('sess-refused-buffered')).toMatchObject({ code: 'refused_tool_batch', message: expect.stringContaining('t_0_other') });
+    const enc = new TextEncoder();
+    reply = () => new Response(new ReadableStream({ start(c) {
+      c.enqueue(enc.encode('data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"t_0_other","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n'));
+      c.enqueue(enc.encode('data: [DONE]\n\n'));
+      c.close();
+    } }), { headers: { 'content-type': 'text/event-stream' } });
+    await clientFor(['qwen'], 'sess-refused-streamed').messages.stream({ model: 'qwen', max_tokens: 64, tools, messages: [{ role: 'user', content: 'x' }] }).finalMessage();
+    expect(takeGatewayFailure('sess-refused-streamed')).toMatchObject({ code: 'refused_tool_batch', message: expect.stringContaining('t_0_other') });
+    warn.mockRestore();
+  });
+
   it('streamed text: final message carries the upstream usage', async () => {
     const enc = new TextEncoder();
     reply = () => new Response(new ReadableStream({ start(c) {

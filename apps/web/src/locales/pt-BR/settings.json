@@ -711,12 +711,14 @@
       "groupBy": {
         "model": "Modelo",
         "surface": "Recurso",
-        "prompt_profile": "Família de modelos"
+        "prompt_profile": "Família de modelos",
+        "tool_profile": "Perfil de ferramentas"
       },
       "columns": {
         "conversations": "Conversas",
         "costPerConversation": "Custo / conversa",
         "refusalRate": "Taxa de recusa",
+        "refusedToolBatches": "Chamadas de ferramenta inutilizáveis",
         "failoverRate": "Taxa de failover",
         "flagRate": "Taxa de sinalização",
         "leftRate": "Saiu para outro modelo",
@@ -727,6 +729,7 @@
         "conversations": "Sessões de chat e execuções de agente cuja última chamada de modelo neste período foi nesta linha.",
         "costPerConversation": "Gasto médio nesta linha por conversa que a utilizou.",
         "refusalRate": "Chamadas de modelo recusadas pelo modelo, por chamada.",
+        "refusedToolBatches": "Chamadas ao modelo em um turno em que o modelo pediu para executar uma ferramenta de uma forma que o Breeze não pôde usar (uma ferramenta que não foi oferecida ou entradas que não correspondiam), por chamada. Nada foi executado.",
         "failoverRate": "Chamadas que passaram para um modelo de reserva porque este falhou ou estava indisponível.",
         "flagRate": "Sessões sinalizadas por uma pessoa. Sinalizações automáticas após um erro de ferramenta são contadas separadamente.",
         "leftRate": "Conversas que trocaram para outro modelo ou continuaram em uma nova sessão em outro modelo.",
@@ -738,6 +741,12 @@
         "claude-standard": "Claude padrão",
         "claude-small": "Claude pequeno",
         "generic": "Outros modelos"
+      },
+      "toolProfiles": {
+        "full": "Completo",
+        "standard": "Padrão",
+        "minimal": "Mínimo",
+        "custom": "Personalizado"
       },
       "unrecorded": "Não registrado",
       "unattributed": "Não atribuído a um modelo",
@@ -751,6 +760,8 @@
       "leftBreakdown": "{{switched}} trocaram, {{continued}} continuaram",
       "resolvedCount_one": "{{count}} resolvida",
       "resolvedCount_other": "{{count}} resolvidas",
+      "refusedToolBatchCount_one": "{{count}} recusada",
+      "refusedToolBatchCount_other": "{{count}} recusadas",
       "loading": "Carregando qualidade…",
       "empty": "Nenhuma chamada de modelo neste período.",
       "error": "Não foi possível carregar a visão de qualidade.",

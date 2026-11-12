@@ -174,7 +174,9 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     try { payload = await res.json(); } catch {
       throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned malformed JSON.');
     }
-    return json(200, translateChatResponse(payload, { model, tools: translated.tools, estimatedInputTokens: call.promptTokensEstimate }));
+    return json(200, translateChatResponse(payload, {
+      model, tools: translated.tools, estimatedInputTokens: call.promptTokensEstimate, aiSessionId: grant.aiSessionId,
+    }));
   }
   if (!res.body) throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned an empty stream.');
   if (!isEventStream(res.headers.get('content-type'))) {
@@ -190,7 +192,7 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
     body: translateChatStream(res.body as unknown as AsyncIterable<Uint8Array>, {
       model, tools: translated.tools, messageId: genMessageId(), estimatedInputTokens: call.promptTokensEstimate,
-      grantId: grant.id, connectionId: grant.config.connectionId, secrets: [grant.credential.secret],
+      grantId: grant.id, connectionId: grant.config.connectionId, aiSessionId: grant.aiSessionId, secrets: [grant.credential.secret],
       onFailure: (message) => noteGatewayFailure(grant.aiSessionId, message),
     }),
   };

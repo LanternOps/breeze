@@ -282,6 +282,9 @@ describe('W11 quality contract', () => {
     expect(aiQualityQuerySchema.safeParse({ groupBy: 'user' }).success).toBe(false);
     expect(aiQualityQuerySchema.safeParse({ groupBy: 'prompt_variant' }).success).toBe(false);
   });
+  it('aiQualityQuerySchema accepts groupBy tool_profile (W04 #11397)', () => {
+    expect(aiQualityQuerySchema.safeParse({ groupBy: 'tool_profile' }).success).toBe(true);
+  });
   it('aiQualityQuerySchema keeps the usage range rules (both-or-neither, ordered, ≤ 92 days)', () => {
     expect(aiQualityQuerySchema.safeParse({ groupBy: 'surface', to: '2026-10-01' }).success).toBe(false);
     expect(aiQualityQuerySchema.safeParse({ groupBy: 'surface', from: '2026-07-01', to: '2026-10-01' }).success).toBe(true);

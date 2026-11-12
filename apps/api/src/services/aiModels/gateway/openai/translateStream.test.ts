@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { translateChatStream } from './translateStream';
 import { UNSAFE_TOOL_CALL_NOTE } from './translateResponse';
+import { __resetGatewayFailureNotesForTests, takeGatewayFailure } from '../failureNotes';
 const tools = {
   toOai: new Map([['get_weather', 'get_weather'], ['set_alert', 'set_alert']]),
   fromOai: new Map([['get_weather', 'get_weather'], ['set_alert', 'set_alert']]),
@@ -96,6 +97,27 @@ describe('translateChatStream tool-call validation', () => {
   it('a recognised finish_reason followed by EOF is a complete stream', async () => {
     const ev = await run(tc(0, 'get_weather', '{"city":"Oslo"}', 'a'), finishWith('tool_calls'));
     expect(hasToolUse(ev)).toBe(true);
+  });
+});
+
+describe('translateChatStream refused-batch measurement (W04 #11397)', () => {
+  const runAs = (aiSessionId: string, ...c: unknown[]) => events(translateChatStream(sse(...c), { model: 'qwen', tools, messageId: 'msg_gw_1', estimatedInputTokens: 9, aiSessionId }));
+  afterEach(() => { __resetGatewayFailureNotesForTests(); vi.restoreAllMocks(); });
+  it('a refused batch notes refused_tool_batch with the names under the grant\'s session, never the arguments', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ev = await runAs('sess-refused', tc(0, 'set_alert', '{"deviceId":7,"secret":"hunter2"}', 'a'), tc(1, 'nope_tool', '{}', 'b'), finishWith('tool_calls'), '[DONE]');
+    expect(hasNote(ev)).toBe(true);
+    const note = takeGatewayFailure('sess-refused');
+    expect(note?.code).toBe('refused_tool_batch');
+    expect(note?.message).toContain('2 tool call(s)');
+    expect(note?.message).toContain('set_alert');
+    expect(note?.message).toContain('nope_tool (not offered)');
+    expect(note?.message).not.toContain('hunter2');
+  });
+  it('a valid batch notes nothing', async () => {
+    const ev = await runAs('sess-valid', tc(0, 'set_alert', '{"deviceId":"d1"}', 'a'), finishWith('tool_calls'), '[DONE]');
+    expect(hasToolUse(ev)).toBe(true);
+    expect(takeGatewayFailure('sess-valid')).toBeNull();
   });
 });
 

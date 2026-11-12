@@ -711,12 +711,14 @@
       "groupBy": {
         "model": "Modell",
         "surface": "Funktion",
-        "prompt_profile": "Modellfamilie"
+        "prompt_profile": "Modellfamilie",
+        "tool_profile": "Tool-Profil"
       },
       "columns": {
         "conversations": "Unterhaltungen",
         "costPerConversation": "Kosten / Unterhaltung",
         "refusalRate": "Ablehnungsrate",
+        "refusedToolBatches": "Unbrauchbare Tool-Aufrufe",
         "failoverRate": "Failover-Rate",
         "flagRate": "Markierungsrate",
         "leftRate": "Zu anderem Modell gewechselt",
@@ -727,6 +729,7 @@
         "conversations": "Chat-Sitzungen und Agent-Läufe, deren letzter Modellaufruf in diesem Zeitraum auf diese Zeile entfiel.",
         "costPerConversation": "Durchschnittliche Kosten in dieser Zeile je Unterhaltung, die sie genutzt hat.",
         "refusalRate": "Modellaufrufe, die das Modell abgelehnt hat, pro Aufruf.",
+        "refusedToolBatches": "Modellaufrufe in einem Turn, in dem das Modell ein Tool in einer Form ausführen wollte, die Breeze nicht verwenden konnte (ein nicht angebotenes Tool oder unpassende Eingaben), pro Aufruf. Es wurde nichts ausgeführt.",
         "failoverRate": "Aufrufe, die auf ein Ersatzmodell wechselten, weil dieses Modell ausfiel oder nicht verfügbar war.",
         "flagRate": "Von einer Person markierte Sitzungen. Automatische Markierungen nach einem Tool-Fehler werden separat gezählt.",
         "leftRate": "Unterhaltungen, die zu einem anderen Modell gewechselt haben oder in einer neuen Sitzung mit einem anderen Modell fortgesetzt wurden.",
@@ -738,6 +741,12 @@
         "claude-standard": "Claude Standard",
         "claude-small": "Claude Klein",
         "generic": "Andere Modelle"
+      },
+      "toolProfiles": {
+        "full": "Vollständig",
+        "standard": "Standardumfang",
+        "minimal": "Minimalumfang",
+        "custom": "Benutzerdefiniert"
       },
       "unrecorded": "Nicht erfasst",
       "unattributed": "Keinem Modell zugeordnet",
@@ -751,6 +760,8 @@
       "leftBreakdown": "{{switched}} gewechselt, {{continued}} fortgesetzt",
       "resolvedCount_one": "{{count}} gelöst",
       "resolvedCount_other": "{{count}} gelöst",
+      "refusedToolBatchCount_one": "{{count}} abgelehnt",
+      "refusedToolBatchCount_other": "{{count}} abgelehnt",
       "loading": "Qualität wird geladen…",
       "empty": "Keine Modellaufrufe in diesem Zeitraum.",
       "error": "Die Qualitätsansicht konnte nicht geladen werden.",

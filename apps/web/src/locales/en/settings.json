@@ -711,12 +711,14 @@
       "groupBy": {
         "model": "Model",
         "surface": "Feature",
-        "prompt_profile": "Model family"
+        "prompt_profile": "Model family",
+        "tool_profile": "Tool profile"
       },
       "columns": {
         "conversations": "Conversations",
         "costPerConversation": "Cost / conversation",
         "refusalRate": "Refusal rate",
+        "refusedToolBatches": "Unusable tool calls",
         "failoverRate": "Failover rate",
         "flagRate": "Flag rate",
         "leftRate": "Left for another model",
@@ -727,6 +729,7 @@
         "conversations": "Chat sessions and agent runs whose last model call in this period was on this row.",
         "costPerConversation": "Average spend on this row for each conversation that used it.",
         "refusalRate": "Model calls the model declined, per call.",
+        "refusedToolBatches": "Model calls in a turn where the model asked to run a tool in a form Breeze could not use (a tool it was not offered, or inputs that did not match), per call. Nothing was run.",
         "failoverRate": "Calls that moved to a backup model because this one failed or was unavailable.",
         "flagRate": "Sessions a person flagged. Automatic flags after a tool error are counted separately.",
         "leftRate": "Conversations that switched to another model, or continued in a new session on another model.",
@@ -738,6 +741,12 @@
         "claude-standard": "Standard Claude",
         "claude-small": "Small Claude",
         "generic": "Other models"
+      },
+      "toolProfiles": {
+        "full": "Full",
+        "standard": "Standard",
+        "minimal": "Minimal",
+        "custom": "Custom"
       },
       "unrecorded": "Not recorded",
       "unattributed": "Not attributed to a model",
@@ -751,6 +760,8 @@
       "leftBreakdown": "{{switched}} switched, {{continued}} continued",
       "resolvedCount_one": "{{count}} resolved",
       "resolvedCount_other": "{{count}} resolved",
+      "refusedToolBatchCount_one": "{{count}} refused",
+      "refusedToolBatchCount_other": "{{count}} refused",
       "loading": "Loading quality…",
       "empty": "No model calls in this period.",
       "error": "Couldn't load the quality view.",
