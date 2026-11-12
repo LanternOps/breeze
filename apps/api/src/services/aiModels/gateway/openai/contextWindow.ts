@@ -65,6 +65,7 @@ interface MemoEntry { contextWindow: number; estimateRatio: number; at: number; 
 
 const memo = new Map<string, MemoEntry>();
 const unknownLogged = new Set<string>();
+const knownCapLogged = new Set<string>();
 
 const keyOf = (k: ContextWindowKey): string => JSON.stringify([k.connectionId, k.configVersion, k.model]);
 
@@ -134,29 +135,62 @@ function logUnknownOnce(key: ContextWindowKey, k: string, requestedMaxTokens: nu
     + `model ${JSON.stringify(key.model)}; forwarding max_tokens ${requestedMaxTokens} unchanged.`);
 }
 
-/** The max_tokens to send first, from what is remembered for this connection and model. */
-export function planRequest(key: ContextWindowKey, requestedMaxTokens: number, estimatedPromptTokens: number): RequestPlan {
+/**
+ * A window known before any rejection (#11396): the offering's effective
+ * window (operator override, discovered from `/models`, or a persisted fresh
+ * observation), carried on the grant per wire model.
+ */
+export interface KnownWindow { window: number; source: 'override' | 'discovered' | 'observed' }
+
+function logKnownCapOnce(k: string, window: number): boolean {
+  const logKey = `${k}:${window}`;
+  if (knownCapLogged.has(logKey)) return false;
+  if (knownCapLogged.size >= CONTEXT_WINDOW_MEMO_MAX_ENTRIES) knownCapLogged.clear();
+  knownCapLogged.add(logKey);
+  return true;
+}
+
+/**
+ * The max_tokens to send first, from what is remembered for this connection
+ * and model and, when given, the window known for it (#11396). Precedence:
+ * an operator override always wins over the memo; otherwise the smaller of
+ * the memo and the known window. The memo's calibration of the byte estimate
+ * applies whichever window is used. A known window refuses a clearly
+ * over-window prompt before any provider call, as a fresh memo does.
+ */
+export function planRequest(
+  key: ContextWindowKey,
+  requestedMaxTokens: number,
+  estimatedPromptTokens: number,
+  known?: KnownWindow | null,
+): RequestPlan {
   const k = keyOf(key);
   let entry = memo.get(k);
   if (entry && Date.now() - entry.at > CONTEXT_WINDOW_MEMO_TTL_MS) {
     memo.delete(k);
     entry = undefined;
   }
-  if (!entry) {
+  const useKnown = known != null && (known.source === 'override' || !entry || known.window < entry.contextWindow);
+  if (!entry && !useKnown) {
     logUnknownOnce(key, k, requestedMaxTokens);
     return { kind: 'send', maxTokens: requestedMaxTokens };
   }
-  const promptTokens = Math.round(estimatedPromptTokens * entry.estimateRatio);
-  const confirmedRecently = Date.now() - entry.at <= CONTEXT_WINDOW_REFUSAL_FRESH_MS;
-  if (confirmedRecently && promptTokens >= entry.contextWindow * CLEARLY_OVER_WINDOW_FACTOR) {
-    return { kind: 'too_large', contextWindow: entry.contextWindow, promptTokens };
+  const contextWindow = useKnown ? known!.window : entry!.contextWindow;
+  const promptTokens = Math.round(estimatedPromptTokens * (entry?.estimateRatio ?? 1));
+  const mayRefuse = useKnown || Date.now() - entry!.at <= CONTEXT_WINDOW_REFUSAL_FRESH_MS;
+  if (mayRefuse && promptTokens >= contextWindow * CLEARLY_OVER_WINDOW_FACTOR) {
+    return { kind: 'too_large', contextWindow, promptTokens };
   }
-  const room = Math.max(roomFor(entry.contextWindow, promptTokens), CONTEXT_MIN_OUTPUT_TOKENS);
+  const room = Math.max(roomFor(contextWindow, promptTokens), CONTEXT_MIN_OUTPUT_TOKENS);
   const maxTokens = Math.min(requestedMaxTokens, room);
-  if (maxTokens < requestedMaxTokens && !entry.capLogged) {
-    entry.capLogged = true;
-    console.warn(`[modelGateway] capping max_tokens ${requestedMaxTokens} to ${maxTokens} for connection ${key.connectionId}, `
-      + `model ${JSON.stringify(key.model)} (context_window ${entry.contextWindow}, prompt_tokens_est ${promptTokens}).`);
+  if (maxTokens < requestedMaxTokens) {
+    const shouldLog = useKnown ? logKnownCapOnce(k, contextWindow) : !entry!.capLogged;
+    if (!useKnown) entry!.capLogged = true;
+    if (shouldLog) {
+      console.warn(`[modelGateway] capping max_tokens ${requestedMaxTokens} to ${maxTokens} for connection ${key.connectionId}, `
+        + `model ${JSON.stringify(key.model)} (context_window ${contextWindow}${useKnown ? ` ${known!.source}` : ''}, `
+        + `prompt_tokens_est ${promptTokens}).`);
+    }
   }
   return { kind: 'send', maxTokens };
 }
@@ -171,4 +205,5 @@ export function contextWindowExceededMessage(contextWindow: number, promptTokens
 export function __resetContextWindowsForTests(): void {
   memo.clear();
   unknownLogged.clear();
+  knownCapLogged.clear();
 }

@@ -11,7 +11,9 @@ import {
   planAfterRejection,
   planRequest,
   rememberContextLimit,
+  type ReportedContextLimit,
 } from './contextWindow';
+import { recordObservedContextWindow } from '../../contextWindowObservation';
 import { genMessageId, translateChatResponse } from './translateResponse';
 import { translateChatStream } from './translateStream';
 import { translateMessagesRequest } from './translateRequest';
@@ -104,6 +106,23 @@ function contextWindowRefusal(grant: GatewayGrantRecord, call: UpstreamCallConte
   return { status: 400, headers: { 'content-type': 'application/json' }, body: Buffer.from(gatewayErrorBody('invalid_request_error', message)) };
 }
 
+/**
+ * #11396: persist a stated window under the offering of the wire model that
+ * was SENT (a refusal fallback's rejection never lands on the primary). Only
+ * dispatch grants carry observers. Best-effort: never throws into the turn.
+ */
+function observeContextWindow(grant: GatewayGrantRecord, model: string, contextWindow: number): void {
+  const observer = grant.observers.get(model);
+  if (!observer) return;
+  try {
+    recordObservedContextWindow({
+      offeringId: observer.offeringId, partnerId: observer.partnerId, configVersion: grant.config.configVersion, contextWindow,
+    });
+  } catch (error) {
+    console.warn(`[modelGateway] could not record an observed context window (grant ${grant.id}): ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+}
+
 async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSignal): Promise<GatewayResponse> {
   const parsed = parseJson(body) as { model?: unknown };
   const model = assertBoundModel(grant, parsed.model);
@@ -115,7 +134,13 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
   const promptTokensEstimate = estimateInputTokens(grant.compactSchemas ? translated.body : parsed);
   const call: UpstreamCallContext = { model, stream: translated.stream, startedAt: Date.now(), promptTokensEstimate };
   const windowKey = { connectionId: grant.config.connectionId, configVersion: grant.config.configVersion, model };
-  const plan = planRequest(windowKey, translated.maxTokens, call.promptTokensEstimate);
+  // #11396: the offering's known window (override / discovered / persisted
+  // observation) seeds the plan, so a fresh process caps up front.
+  const plan = planRequest(windowKey, translated.maxTokens, call.promptTokensEstimate, grant.knownWindows.get(model) ?? null);
+  const learned = (reported: ReportedContextLimit): void => {
+    rememberContextLimit(windowKey, reported, call.promptTokensEstimate);
+    observeContextWindow(grant, model, reported.contextWindow);
+  };
   if (plan.kind === 'too_large') return contextWindowRefusal(grant, call, plan.contextWindow, plan.promptTokens);
   const send = (maxTokens: number): Promise<Response> => forwardUpstream(grant, {
     url: joinByoUrl(grant.config.baseUrl, 'chat/completions'),
@@ -129,7 +154,7 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     const detail = await readUpstreamErrorText(res, grant, GATEWAY_ERROR_TEXT_MAX);
     const reported = parseContextLimitRejection(res.status, detail, plan.maxTokens);
     if (!reported) return upstreamError(res, grant, call, detail);
-    rememberContextLimit(windowKey, reported, call.promptTokensEstimate);
+    learned(reported);
     const next = planAfterRejection(reported, plan.maxTokens, call.promptTokensEstimate);
     if (next.kind === 'too_large') return contextWindowRefusal(grant, call, next.contextWindow, next.promptTokens);
     if (next.kind === 'surface') return upstreamError(res, grant, call, detail);
@@ -140,7 +165,7 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
       const retryDetail = await readUpstreamErrorText(res, grant, GATEWAY_ERROR_TEXT_MAX);
       const again = parseContextLimitRejection(res.status, retryDetail, next.maxTokens);
       if (!again) return upstreamError(res, grant, call, retryDetail);
-      rememberContextLimit(windowKey, again, call.promptTokensEstimate);
+      learned(again);
       return contextWindowRefusal(grant, call, again.contextWindow, again.promptTokens ?? call.promptTokensEstimate);
     }
   }

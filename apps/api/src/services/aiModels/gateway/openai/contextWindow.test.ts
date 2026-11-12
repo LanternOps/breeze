@@ -211,3 +211,70 @@ describe('contextWindowExceededMessage (#10577)', () => {
     expect(message).toMatch(/larger context window/i);
   });
 });
+
+describe('planRequest with a known window (#11396 T7)', () => {
+  const DISCOVERED = { window: WINDOW, source: 'discovered' as const };
+
+  it('a fresh process caps from the known window (no memo), and does not log "unknown"', () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(planRequest(KEY, 32_000, 108_301, DISCOVERED)).toEqual({ kind: 'send', maxTokens: WINDOW - 108_301 - MARGIN });
+    expect(log.mock.calls.filter(([l]) => String(l).includes('no context window known'))).toHaveLength(0);
+  });
+
+  it('control: the same request with no known window is sent unchanged', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(planRequest(KEY, 32_000, 108_301, null)).toEqual({ kind: 'send', maxTokens: 32_000 });
+  });
+
+  it('a prompt clearly over the known window is refused before send', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(planRequest(KEY, 32_000, WINDOW * 2, DISCOVERED)).toEqual({ kind: 'too_large', contextWindow: WINDOW, promptTokens: WINDOW * 2 });
+  });
+
+  it('a memo of 8192 beats a known discovered 131072 (min of the two)', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rememberContextLimit(KEY, { contextWindow: 8192, promptTokens: 3_000 }, 3_000);
+    expect(planRequest(KEY, 32_000, 3_000, DISCOVERED)).toEqual({ kind: 'send', maxTokens: 8192 - 3_000 - contextSafetyMargin(8192) });
+  });
+
+  it('a known window smaller than the memo wins (min of the two)', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rememberContextLimit(KEY, { contextWindow: WINDOW, promptTokens: 3_000 }, 3_000);
+    expect(planRequest(KEY, 32_000, 3_000, { window: 16_384, source: 'observed' }))
+      .toEqual({ kind: 'send', maxTokens: 16_384 - 3_000 - contextSafetyMargin(16_384) });
+  });
+
+  it('a changed override on a warm process beats a LARGER memo', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rememberContextLimit(KEY, { contextWindow: WINDOW, promptTokens: 3_000 }, 3_000);
+    expect(planRequest(KEY, 32_000, 3_000, { window: 16_384, source: 'override' }))
+      .toEqual({ kind: 'send', maxTokens: 16_384 - 3_000 - contextSafetyMargin(16_384) });
+  });
+
+  it('an override also beats a SMALLER memo: the operator decides', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    rememberContextLimit(KEY, { contextWindow: 8192, promptTokens: 3_000 }, 3_000);
+    expect(planRequest(KEY, 32_000, 3_000, { window: 65_536, source: 'override' }))
+      .toEqual({ kind: 'send', maxTokens: 32_000 });
+  });
+
+  it('the memo\'s calibrated estimate still applies under a known window', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The endpoint counted twice the byte estimate.
+    rememberContextLimit(KEY, { contextWindow: WINDOW, promptTokens: 20_000 }, 10_000);
+    expect(planRequest(KEY, 32_000, 10_000, { window: 32_768, source: 'override' }))
+      .toEqual({ kind: 'send', maxTokens: 32_768 - 20_000 - contextSafetyMargin(32_768) });
+  });
+
+  it('never raises what the caller asked for', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(planRequest(KEY, 256, 1_000, DISCOVERED)).toEqual({ kind: 'send', maxTokens: 256 });
+  });
+
+  it('logs a known-window cap once per key and window', () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    planRequest(KEY, 32_000, 108_301, DISCOVERED);
+    planRequest(KEY, 32_000, 108_301, DISCOVERED);
+    expect(log.mock.calls.filter(([l]) => String(l).includes('capping max_tokens'))).toHaveLength(1);
+  });
+});
