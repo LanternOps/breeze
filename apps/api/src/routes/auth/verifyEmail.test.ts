@@ -62,6 +62,7 @@ vi.mock('../../db/schema', () => ({
 }));
 
 vi.mock('../../services', () => ({
+  verifyPassword: vi.fn(async () => true),
   rateLimiter: vi.fn(async () => ({ allowed: true })),
   getRedis: vi.fn(() => ({})),
   createTokenPair: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti', expiresInSeconds: 900 })),
@@ -258,7 +259,7 @@ vi.mock('./helpers', async () => {
 
 import { verifyEmailRoutes } from './verifyEmail';
 import { db } from '../../db';
-import { rateLimiter, getRedis } from '../../services';
+import { rateLimiter, getRedis, verifyPassword } from '../../services';
 import {
   consumeVerificationToken,
   generateVerificationToken,
@@ -346,13 +347,14 @@ async function postJson(path: string, body: unknown, headers: Record<string, str
   return verifyEmailRoutes.request(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body && typeof body === 'object' ? { password: 'signup-password', ...body } : body),
   });
 }
 
 describe('POST /verify-email', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(verifyPassword).mockReset().mockResolvedValue(true);
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
     vi.mocked(getRedis).mockReturnValue({} as any);
     transitionState.finishError = null;
@@ -365,6 +367,27 @@ describe('POST /verify-email', () => {
     transitionState.activationObservedFamilyCount = null;
     transitionState.events = [];
     vi.mocked(partnerTrustMode).mockReturnValue('off');
+  });
+
+  it.each([undefined, 'wrong-password'])('creates no account until the signup password is confirmed (%s)', async (password) => {
+    const actualPassword = await import('../../services/password');
+    const passwordHash = await actualPassword.hashPassword('signup-password');
+    vi.mocked(verifyPassword).mockImplementation(actualPassword.verifyPassword);
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, passwordHash, rawToken: 'credential-test' });
+    // Everything account creation would read, so only the password decides.
+    primeFinalizeSelects([]);
+
+    const res = await postJson('/verify-email', { token: 'credential-test', password });
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+
+    expect(createPartner).not.toHaveBeenCalled();
+    expect(consumePendingRegistration).not.toHaveBeenCalled();
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Enter the password you chose when signing up.',
+      status: 'password_required',
+    });
   });
 
   it('creates no account authority, family, cookie, or success audit when logout wins after binding admission', async () => {
@@ -724,7 +747,10 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
   });
 
   it('a pending-registration token creates the partner with the STEP-1 attribution, not the click IP', async () => {
-    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+    const actualPassword = await import('../../services/password');
+    const passwordHash = await actualPassword.hashPassword('signup-password');
+    vi.mocked(verifyPassword).mockImplementationOnce(actualPassword.verifyPassword);
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, passwordHash, rawToken: 'raw' });
     primeFinalizeSelects([]);
 
     const res = await postJson('/verify-email', { token: 'raw' });

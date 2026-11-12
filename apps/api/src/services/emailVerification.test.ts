@@ -1,3 +1,4 @@
+import { hashPassword } from './password';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => {
@@ -183,6 +184,31 @@ function mockConsumeSelects(
     .mockReturnValueOnce(chainSelect(liveUser ? [liveUser] : []) as any)
     .mockReturnValueOnce(chainSelect(partner ? [partner] : []) as any);
 }
+
+describe('signup link password confirmation', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it.each([undefined, 'incorrect'])('does not claim a signup link without the account password (%s)', async (password) => {
+    const passwordHash = await hashPassword('SignupPassword123');
+    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1, passwordHash });
+    // A claim would succeed if attempted; only the password check stops it.
+    vi.mocked(db.update).mockReturnValue(chainUpdateReturning([{ id: 'claimed' }]) as any);
+
+    const result = await consumeVerificationToken('token', password);
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, error: 'password_required' });
+  });
+
+  it('claims a signup link when the account password matches', async () => {
+    const passwordHash = await hashPassword('SignupPassword123');
+    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1, passwordHash });
+    vi.mocked(db.update).mockReturnValue(chainUpdateReturning([{ id: 'claimed' }]) as any);
+    const result = await consumeVerificationToken('token', 'SignupPassword123');
+    expect(result.ok).toBe(true);
+    expect(db.update).toHaveBeenCalled();
+  });
+});
 
 describe('generateVerificationToken', () => {
   beforeEach(() => vi.resetAllMocks());

@@ -12,6 +12,7 @@ import type { PartnerStatus, PartnerTrustState } from '../../db/schema/orgs';
 import {
   rateLimiter,
   getRedis,
+  verifyPassword,
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import {
@@ -134,13 +135,14 @@ function registrationIssuanceError(c: Context, error: unknown): Response | null 
 
 const verifyEmailSchema = z.object({
   token: z.string().min(1, 'token required'),
+  password: z.string().max(1024).optional(),
 });
 
 verifyEmailRoutes.post(
   '/verify-email',
   zValidator('json', verifyEmailSchema),
   async (c) => {
-    const { token } = c.req.valid('json');
+    const { token, password } = c.req.valid('json');
     const rateLimitClient = getClientRateLimitKey(c);
 
     const redis = getRedis();
@@ -166,10 +168,24 @@ verifyEmailRoutes.post(
     const tokenHash = sha256Hex(token);
     const pending = await peekPendingRegistration(tokenHash);
     if (pending) {
+      // The account is created with the password chosen at signup, so the
+      // person confirming must know it as well as hold the mailbox. The
+      // pending record stays untouched on a mismatch; the page asks for the
+      // password and submits the same token again.
+      if (!password || !(await verifyPassword(pending.passwordHash, password))) {
+        return c.json({ error: 'Enter the password you chose when signing up.', status: 'password_required' }, 400);
+      }
       return finalizePendingRegistration(c, Object.freeze({ ...pending }), tokenHash);
     }
 
-    const result = await consumeVerificationToken(token);
+    const result = await consumeVerificationToken(token, password);
+
+    // Returned as its own status (not the uniform failure body below): it is
+    // reached only with a live signup token, and the page needs it to show
+    // the password field.
+    if (!result.ok && result.error === 'password_required') {
+      return c.json({ error: 'Enter the password you chose when signing up.', status: 'password_required' }, 400);
+    }
 
     if (!result.ok) {
       // The real reason is AUDIT-ONLY. Returning it verbatim

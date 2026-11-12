@@ -152,7 +152,7 @@ When enabled (`ENABLE_REGISTRATION=true`), self-service MSP signup is a **two-st
 | Endpoint | Purpose |
 |---|---|
 | `POST /auth/register-partner` | Step 1: validates the request and queues a verification email. Creates no user, partner, or token, and performs no email-existence lookup -- the response body is identical whether or not the address already has an account. |
-| `POST /auth/verify-email` | Step 2: the emailed link's token. Creates the partner, admin role, user, and association inside one database transaction, then issues tokens. |
+| `POST /auth/verify-email` | Step 2: the emailed link's token plus the password chosen in step 1. Creates the partner, admin role, user, and association inside one database transaction, then issues tokens. |
 | `POST /auth/register` | Legacy path, kept only so old clients don't see a broken response shape. It is a **no-op**: it runs the same rate-limit and password checks but never creates an account. |
 
 Registration is rate-limited to 5 attempts per IP per hour for `/auth/register` and 3 for `/auth/register-partner` (`/auth/verify-email` has its own separate limit). Password strength requirements are enforced on step 1. See [Partner Management: Self-Registration](/reference/partner-management/#self-registration) for the full request/response shapes.

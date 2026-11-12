@@ -86,6 +86,8 @@ Partner self-registration allows MSPs and IT companies to create their own Breez
 
 5. **User opens the verification link** in the email, which lands on a page holding the token. As of v0.116.0, the token is **not** submitted automatically on page load — the page shows a **Confirm your email** button, and only clicking it calls `POST /auth/verify-email`. (Before v0.116.0, the page auto-submitted on load, which meant a mail-security scanner that renders JavaScript to prescan links — Microsoft 365 Safe Links, Proofpoint/Mimecast detonation — could complete the registration itself, before the real recipient ever saw the email.)
 
+   The account is created with the password chosen in step 2, so the confirmation also asks for that password. After the first click the page shows a **Signup password** field; the account is created only when the password matches. A wrong or missing password changes nothing, and the same link can be used again with the right password until it expires.
+
 6. **Slug generation and account creation** -- Inside a single database transaction, the API derives a URL-safe slug from the company name (lowercased, non-alphanumeric characters replaced with hyphens, trimmed to 50 characters, with a numeric suffix appended on collision), then creates four records:
    - A **partner** with type `msp` and plan `free`
    - A **Partner Admin role** with `scope: partner` and `isSystem: true`
@@ -428,9 +430,12 @@ Registration is two calls: `POST /auth/register-partner` requests the signup and
 
 ```json
 {
-  "token": "<token from the verification email link>"
+  "token": "<token from the verification email link>",
+  "password": "<the password chosen at registration>"
 }
 ```
+
+`password` is required to complete a registration. Without it, or when it does not match, the response is `400` with `{ "error": "Enter the password you chose when signing up.", "status": "password_required" }` and nothing is created or consumed. An email-change confirmation link does not need it.
 
 **Success response (200):**
 
@@ -461,7 +466,7 @@ Registration is two calls: `POST /auth/register-partner` requests the signup and
 
 | Status | Condition |
 |--------|-----------|
-| `400` | `/auth/register-partner`: validation error (weak password, missing required fields, terms not accepted). `/auth/verify-email`: invalid or expired token -- one identical body for every failure reason, to avoid leaking which reason applied. |
+| `400` | `/auth/register-partner`: validation error (weak password, missing required fields, terms not accepted). `/auth/verify-email`: invalid or expired token -- one identical body for every failure reason, to avoid leaking which reason applied -- or `status: "password_required"` for a valid signup link submitted without the matching password. |
 | `429` | Rate limit exceeded (3 attempts per IP per hour on `register-partner`; a separate limit on `verify-email`) |
 | `503` | Redis unavailable (rate limiter cannot function) |
 

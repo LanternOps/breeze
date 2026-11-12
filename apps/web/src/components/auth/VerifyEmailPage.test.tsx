@@ -52,6 +52,27 @@ describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
     });
   });
 
+  it('says so when the signup password does not match', async () => {
+    authMocks.apiVerifyEmail
+      .mockResolvedValueOnce({ success: false, status: 'password_required' })
+      .mockResolvedValueOnce({ success: false, status: 'password_required' });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.change(await screen.findByLabelText(/Signup password/), { target: { value: 'not-it' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm my email' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That password does not match the one chosen at signup.');
+  });
+
+  it('asks for the signup password before completing a pending account', async () => {
+    authMocks.apiVerifyEmail.mockResolvedValueOnce({ success: false, status: 'password_required' });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    fireEvent.change(await screen.findByLabelText(/Signup password/), { target: { value: 'signup-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm my email' }));
+    await waitFor(() => expect(authMocks.apiVerifyEmail).toHaveBeenLastCalledWith('verify-token', 'signup-password'));
+  });
+
   it('does not double-consume the token on a double click', async () => {
     render(<VerifyEmailPage />);
     const button = await screen.findByRole('button', { name: 'Confirm my email' });

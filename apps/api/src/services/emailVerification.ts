@@ -5,6 +5,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { emailVerificationTokens, partners, users } from '../db/schema';
 import { shouldActivatePendingPartner, activatePartnerRow } from './partnerActivation';
 import { advanceUserEpochs, revokeAllRefreshFamilies } from './authLifecycle';
+import { verifyPassword } from './password';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -99,7 +100,11 @@ export type ConsumeFailureReason =
   // account between request and click. The swap hit users_email_unique (23505)
   // and the WHOLE transaction rolled back — this row is untouched (pending NOT
   // cleared, email NOT moved, no session revocation).
-  | 'email_taken';
+  | 'email_taken'
+  // Signup only. The account has a password and the request did not supply
+  // it (or supplied a different one). Nothing was claimed; the caller asks
+  // for the password and submits the same token again.
+  | 'password_required';
 
 export type ConsumeResult =
   | {
@@ -131,7 +136,7 @@ export type ConsumeResult =
  * Atomicity is bound to this function via an explicit `db.transaction`
  * so the single-claim guarantee holds regardless of caller scope.
  */
-export async function consumeVerificationToken(rawToken: string): Promise<ConsumeResult> {
+export async function consumeVerificationToken(rawToken: string, password?: string): Promise<ConsumeResult> {
   const tokenHash = hashToken(rawToken);
 
   return withSystemDbAccessContext(async () => {
@@ -295,7 +300,7 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
       // row makes the concurrent email-change transaction (which UPDATEs that
       // same row) block until we commit, so the two serialize.
       const [liveUser] = await tx
-        .select({ email: users.email, emailEpoch: users.emailEpoch })
+        .select({ email: users.email, emailEpoch: users.emailEpoch, passwordHash: users.passwordHash })
         .from(users)
         .where(eq(users.id, row.userId))
         .limit(1)
@@ -310,6 +315,15 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
         (row.emailEpoch !== null && row.emailEpoch !== liveUser.emailEpoch)
       ) {
         return { ok: false, error: 'address_changed' as const };
+      }
+
+      // Confirming a signup also needs the password chosen at signup, so a
+      // mailbox click alone cannot activate an account whose password was
+      // set by someone else. Accounts without a password (SSO-only) have
+      // nothing to confirm. Nothing is claimed or written when this fails;
+      // the same link works once the password is supplied.
+      if (liveUser.passwordHash && (!password || !(await verifyPassword(liveUser.passwordHash, password)))) {
+        return { ok: false, error: 'password_required' as const };
       }
 
       const now = new Date();
