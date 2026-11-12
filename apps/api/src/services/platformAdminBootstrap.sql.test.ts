@@ -74,4 +74,11 @@ describe('buildUnpromotedAdminMatch — rendered SQL shape (#2655 regression)', 
     expect(sql.toLowerCase()).toContain('is_platform_admin');
     expect(sql.toLowerCase()).toContain(' and ');
   });
+
+  it('matches only active accounts whose address has been verified', () => {
+    const { sql, params } = render(['a@x.com']);
+    expect(sql.toLowerCase()).toContain('"status"');
+    expect(params).toContain('active');
+    expect(sql.toLowerCase()).toMatch(/"email_verified_at" is not null/);
+  });
 });

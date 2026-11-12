@@ -1585,6 +1585,11 @@ userRoutes.post(
             mfaRecoveryCodes: null,
             phoneNumber: null,
             phoneVerified: false,
+            // The invitee is a new holder of this row: nothing the previous
+            // holder proved or was granted carries over. Platform-admin is
+            // granted only by the startup bootstrap, to an eligible account.
+            isPlatformAdmin: false,
+            emailVerifiedAt: null,
             updatedAt: new Date()
           })
           .where(eq(users.id, user.id))

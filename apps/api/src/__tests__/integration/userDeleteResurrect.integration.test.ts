@@ -276,6 +276,56 @@ describe('user re-invite → resurrect tombstone (#1367)', () => {
       .limit(1);
     expect(link).toBeDefined();
   });
+
+  it('a re-invited removed account does not keep platform-admin or its verified address', async () => {
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const caller = await createUser({
+      partnerId: partner.id,
+      email: `caller-${Date.now()}@example.com`,
+      status: 'active',
+    });
+    await assignUserToPartner(caller.id, partner.id, role.id, 'all');
+    const email = `returning-${Date.now()}@example.com`;
+
+    // A removed account whose previous holder was a platform admin with a
+    // verified address.
+    const target = await createUser({ partnerId: partner.id, email, status: 'active' });
+    await withSystemDbAccessContext(async () =>
+      db
+        .update(users)
+        .set({
+          status: 'disabled',
+          disabledReason: 'removed',
+          passwordHash: null,
+          isPlatformAdmin: true,
+          emailVerifiedAt: new Date(),
+        })
+        .where(eq(users.id, target.id)),
+    );
+
+    activeAuthContext = {
+      scope: 'partner',
+      partnerId: partner.id,
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [partner.id],
+      userId: caller.id,
+    };
+
+    const app = await buildApp();
+    const res = await app.request('/users/invite', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, name: 'New Holder', roleId: role.id, orgAccess: 'none' }),
+    });
+    expect(res.status).toBe(201);
+
+    const row = await readUser(target.id);
+    expect(row.status).toBe('invited');
+    expect(row.isPlatformAdmin).toBe(false);
+    expect(row.emailVerifiedAt).toBeNull();
+  });
 });
 
 async function seedPasskey(userId: string) {
