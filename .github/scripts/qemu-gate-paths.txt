@@ -51,3 +51,4 @@ agent/internal/recoveryconsole/
 agent/internal/secmem/
 agent/internal/securefs/
 agent/internal/wire/
+agent/pkg/httpguard/
