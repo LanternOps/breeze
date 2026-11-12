@@ -366,6 +366,7 @@ A proxy session stays alive as long as it's actively used: each request slides t
 - **Source IP restrictions** limit which users or networks can open proxy sessions.
 - Idle timeout and an absolute 12-hour session cap apply to prevent long-lived, unattended sessions.
 - A built-in SSRF-safe blocklist prevents proxying to internal metadata endpoints and loopback addresses.
+- When partner trust enforcement restricts a partner's remote control, its open tunnels end at their next authorization check: the next proxied request for Network Proxy, and the next 30-second check for a VNC tunnel.
 - Each proxy session is associated with a specific user and fully audit logged.
 
 **Allowlist rule format:**

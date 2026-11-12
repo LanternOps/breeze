@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
   getRedis: vi.fn((): unknown => ({ redis: true })),
   partnerTrustMode: vi.fn((): 'off' | 'enforce' => 'off'),
   evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
-  evaluateCapabilityContinuationForState: vi.fn((): any => ({ allow: true })),
+  evaluateCapabilityContinuationForState: vi.fn((..._args: any[]): any => ({ allow: true })),
   unresolvedPartnerDecision: vi.fn(async () => ({ allow: false as const, code: 'TRUST_RESTRICTED' as const, capability: 'remote_control' as const, reason: 'unresolved' })),
   tightenStatementTimeout: vi.fn(async () => 0),
   checkVncConsentGate: vi.fn(async (): Promise<any> => ({ ok: true })),
@@ -186,6 +186,7 @@ function installAuthorizationRows(input: {
   organizationDeletedAt?: Date | null;
   partnerStatus?: string;
   partnerDeletedAt?: Date | null;
+  partnerTrustState?: 'trusted' | 'probation' | 'restricted';
 }): void {
   const sessionType = input.kind === 'terminal'
     ? 'terminal'
@@ -219,11 +220,17 @@ function installAuthorizationRows(input: {
           agentId: 'agent-1',
           status: input.deviceStatus ?? 'online',
         },
-        partner: {
-          id: PARTNER_ID,
-          trustState: 'trusted',
-          probationEnrollments: 0,
-        },
+        // Only the desktop/terminal query joins the partner row; the tunnel
+        // query selects the session and device alone.
+        ...(input.kind === 'tunnel'
+          ? {}
+          : {
+              partner: {
+                id: PARTNER_ID,
+                trustState: input.partnerTrustState ?? 'trusted',
+                probationEnrollments: 0,
+              },
+            }),
       }]
     : [];
   const orgRows = input.orgMembership === false
@@ -243,6 +250,8 @@ function installAuthorizationRows(input: {
     : [{
         id: input.organizationPartnerId ?? PARTNER_ID,
         status: input.partnerStatus ?? 'active',
+        trustState: input.partnerTrustState ?? 'trusted',
+        probationEnrollments: 0,
         deletedAt: null,
       }];
 
@@ -885,5 +894,85 @@ describe('read-only viewer failure diagnostics preserve live authority', () => {
     installAuthorizationRows({ kind: 'desktop', siteIds: [], session: { status: 'failed' } });
     expect(await authorizeLiveRemoteSessionAccess(consumed('desktop'), 'failure-diagnostics')).toEqual({ ok: false, status: 403, reason: 'site_denied' });
     expect(mocks.checkRemoteAccess).not.toHaveBeenCalled();
+  });
+});
+
+describe('tunnel sessions re-prove partner trust on every authorization', () => {
+  // Emulates the real decision so the test proves which trust row is read:
+  // anything but a trusted owning partner is refused.
+  function decideFromRow() {
+    mocks.evaluateCapabilityContinuationForState.mockImplementation(
+      (_cap: unknown, _ctx: unknown, row: { trustState?: string } | null) => (
+        row?.trustState === 'trusted'
+          ? { allow: true }
+          : { allow: false, code: 'TRUST_RESTRICTED', capability: 'remote_control', reason: 'restricted' }
+      ),
+    );
+  }
+
+  const TUNNEL_PERMISSIONS = [PERMISSIONS.REMOTE_ACCESS, PERMISSIONS.DEVICES_EXECUTE];
+  const entryPoints = [
+    // Per-request HTTP proxy, ticket and code mints, and viewer polls.
+    ['continuation', () => authorizeRemoteSessionContinuation(consumed('tunnel'), TUNNEL_PERMISSIONS)],
+    // Tunnel WebSocket admission.
+    ['WebSocket ticket admission', () => authorizeConsumedRemoteWsTicket(consumed('tunnel'))],
+    // Live WebSocket revalidation.
+    ['live revalidation', () => revalidateRemoteWsAuthority(consumed('tunnel'))],
+  ] as const;
+
+  it.each(entryPoints)('refuses a tunnel %s once the owning partner is restricted', async (_name, call) => {
+    mocks.partnerTrustMode.mockReturnValue('enforce');
+    decideFromRow();
+    installAuthorizationRows({ kind: 'tunnel', partnerTrustState: 'restricted' });
+
+    expect(await call()).toEqual({ ok: false, status: 403, reason: 'partner_trust_denied' });
+    expect(mocks.evaluateCapabilityContinuationForState).toHaveBeenCalledWith(
+      'remote_control',
+      expect.objectContaining({ partnerId: PARTNER_ID, deviceId: DEVICE_ID, orgId: ORG_ID, userId: USER_ID }),
+      expect.objectContaining({ id: PARTNER_ID, trustState: 'restricted' }),
+    );
+    expect(mocks.evaluateCapability).not.toHaveBeenCalled();
+    expect(mocks.rateLimiter).not.toHaveBeenCalled();
+  });
+
+  it.each(entryPoints)('keeps a tunnel %s for a trusted owning partner', async (_name, call) => {
+    mocks.partnerTrustMode.mockReturnValue('enforce');
+    decideFromRow();
+    installAuthorizationRows({ kind: 'tunnel' });
+
+    expect((await call()).ok).toBe(true);
+    expect(mocks.evaluateCapabilityContinuationForState).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a probation partner the same way as admission does', async () => {
+    mocks.partnerTrustMode.mockReturnValue('enforce');
+    decideFromRow();
+    installAuthorizationRows({ kind: 'tunnel', partnerTrustState: 'probation' });
+
+    expect(await authorizeRemoteSessionContinuation(consumed('tunnel'), TUNNEL_PERMISSIONS)).toEqual({
+      ok: false, status: 403, reason: 'partner_trust_denied',
+    });
+  });
+
+  it('does not evaluate trust when partner trust is off', async () => {
+    mocks.partnerTrustMode.mockReturnValue('off');
+    decideFromRow();
+    installAuthorizationRows({ kind: 'tunnel', partnerTrustState: 'restricted' });
+
+    expect((await authorizeRemoteSessionContinuation(consumed('tunnel'), TUNNEL_PERMISSIONS)).ok).toBe(true);
+    expect(mocks.evaluateCapabilityContinuationForState).not.toHaveBeenCalled();
+  });
+
+  it('leaves desktop and terminal continuation on their existing trust contract', async () => {
+    mocks.partnerTrustMode.mockReturnValue('enforce');
+    decideFromRow();
+    for (const kind of ['desktop', 'terminal'] as const) {
+      installAuthorizationRows({ kind, partnerTrustState: 'restricted' });
+      expect((await authorizeRemoteSessionContinuation(consumed(kind))).ok).toBe(true);
+      installAuthorizationRows({ kind, partnerTrustState: 'restricted' });
+      expect(await revalidateRemoteWsAuthority(consumed(kind))).toEqual({
+        ok: false, status: 403, reason: 'partner_trust_denied',
+      });
+    }
   });
 });
