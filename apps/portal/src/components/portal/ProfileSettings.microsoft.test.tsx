@@ -57,7 +57,10 @@ describe('ProfileSettings — Microsoft account', () => {
 
     linkStatus = { status: 401, body: {} };
     render(<ProfileSettings />);
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
+    // Count the Microsoft status calls only: the page also asks for the Google one (W7).
+    await waitFor(() =>
+      expect(vi.mocked(globalThis.fetch).mock.calls.filter(([u]) => String(u).endsWith('/oidc/entra/link-status'))).toHaveLength(2)
+    );
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByTestId('portal-profile-microsoft')).toBeNull();
   });

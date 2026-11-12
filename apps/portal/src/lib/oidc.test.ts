@@ -9,7 +9,12 @@ import {
   OIDC_NEXT_KEY,
   getInviteMethods,
   getLinkStatus,
+  getGoogleLinkStatus,
   getSignInMethods,
+  GOOGLE_FAILURE_MESSAGE,
+  MICROSOFT_FAILURE_MESSAGE,
+  startGoogleLink,
+  startGoogleSignIn,
   startMicrosoftLink,
   startMicrosoftSignIn,
   takeStoredNext
@@ -35,14 +40,14 @@ afterEach(() => {
 describe('getSignInMethods', () => {
   it('GETs the public methods endpoint', async () => {
     reply(200, { password: true, microsoft: true, requestAccess: true });
-    expect(await getSignInMethods()).toEqual({ password: true, microsoft: true, requestAccess: true });
+    expect(await getSignInMethods()).toEqual({ password: true, microsoft: true, google: false, requestAccess: true });
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/portal/auth/methods');
   });
 
   it('requestAccess is true only for a literal true (W6)', async () => {
     for (const requestAccess of [false, undefined, 'true', 1, null]) {
       reply(200, { password: true, microsoft: false, requestAccess });
-      expect(await getSignInMethods()).toEqual({ password: true, microsoft: false, requestAccess: false });
+      expect(await getSignInMethods()).toEqual({ password: true, microsoft: false, google: false, requestAccess: false });
     }
   });
 
@@ -130,7 +135,7 @@ describe('startMicrosoftLink', () => {
 describe('getInviteMethods', () => {
   it('posts the token and returns methods', async () => {
     reply(200, { password: false, microsoft: true });
-    expect(await getInviteMethods('t')).toEqual({ status: 'ok', methods: { password: false, microsoft: true } });
+    expect(await getInviteMethods('t')).toEqual({ status: 'ok', methods: { password: false, microsoft: true, google: false } });
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/v1/portal/auth/invite/methods');
     expect(JSON.parse(init.body)).toEqual({ token: 't' });
@@ -153,6 +158,87 @@ describe('getLinkStatus', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/portal/auth/oidc/entra/link-status');
     reply(401, {});
     expect(await getLinkStatus()).toBeNull();
+  });
+});
+
+describe('Google (W7)', () => {
+  it('google is true only for a literal true; a deployment without Google omits the key (absent = false)', async () => {
+    reply(200, { password: true, microsoft: false, google: true, requestAccess: false });
+    expect(await getSignInMethods()).toEqual({ password: true, microsoft: false, google: true, requestAccess: false });
+    for (const google of [undefined, false, 'true', 1, null]) {
+      reply(200, { password: true, microsoft: false, ...(google === undefined ? {} : { google }) });
+      expect((await getSignInMethods())?.google).toBe(false);
+    }
+  });
+
+  it('invite methods carry google', async () => {
+    reply(200, { password: false, microsoft: false, google: true });
+    expect(await getInviteMethods('t')).toEqual({ status: 'ok', methods: { password: false, microsoft: false, google: true } });
+    reply(200, { password: true, microsoft: true });
+    expect(await getInviteMethods('t')).toEqual({ status: 'ok', methods: { password: true, microsoft: true, google: false } });
+  });
+
+  it('startGoogleSignIn posts the login purpose to the Google start, stores next and navigates', async () => {
+    sessionStorage.setItem(OIDC_NEXT_KEY, '/stale');
+    reply(200, { redirectUrl: 'https://accounts.google.com/o/oauth2/v2/auth?hd=*' });
+    expect(await startGoogleSignIn({ purpose: 'login', next: '/invoices/2' })).toEqual({ ok: true });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/portal/auth/oidc/google/start');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ purpose: 'login' });
+    expect(sessionStorage.getItem(OIDC_NEXT_KEY)).toBe('/invoices/2');
+    expect(replaceLocation).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?hd=*');
+  });
+
+  it('startGoogleSignIn sends the invite token for the invite purpose', async () => {
+    reply(200, { redirectUrl: 'https://accounts.google.com/i' });
+    await startGoogleSignIn({ purpose: 'invite', inviteToken: 'tok' });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ purpose: 'invite', inviteToken: 'tok' });
+  });
+
+  it.each([404, 429, 503])('a failed Google start returns the Google message for HTTP %i and does not navigate', async (status) => {
+    reply(status, {});
+    expect(await startGoogleSignIn({ purpose: 'login' })).toEqual({ ok: false, error: GOOGLE_FAILURE_MESSAGE });
+    expect(replaceLocation).not.toHaveBeenCalled();
+  });
+
+  it('an invite start answered 400 is reported as an invalid invite (the account may already hold a Google identity)', async () => {
+    reply(400, { error: 'Invalid or expired invite' });
+    expect(await startGoogleSignIn({ purpose: 'invite', inviteToken: 'tok' })).toEqual({
+      ok: false, error: GOOGLE_FAILURE_MESSAGE, inviteInvalid: true,
+    });
+    reply(400, {});
+    expect(await startGoogleSignIn({ purpose: 'login' })).toEqual({ ok: false, error: GOOGLE_FAILURE_MESSAGE });
+  });
+
+  it('Microsoft failures keep the Microsoft message', async () => {
+    reply(503, {});
+    expect(await startMicrosoftSignIn({ purpose: 'login' })).toEqual({ ok: false, error: MICROSOFT_FAILURE_MESSAGE });
+  });
+
+  it('startGoogleLink posts with the CSRF header to the Google link start', async () => {
+    document.cookie = 'breeze_portal_csrf_token=csrf456';
+    reply(200, { redirectUrl: 'https://accounts.google.com/l' });
+    expect(await startGoogleLink()).toEqual({ ok: true });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/portal/auth/oidc/google/link/start');
+    expect(new Headers(init.headers).get('x-breeze-csrf')).toBe('csrf456');
+    reply(403, {});
+    expect(await startGoogleLink()).toEqual({ ok: false, error: GOOGLE_FAILURE_MESSAGE });
+  });
+
+  it('getGoogleLinkStatus reads the Google link status; 404 (Google not configured) and failures are null', async () => {
+    reply(200, { available: true, linked: true });
+    expect(await getGoogleLinkStatus()).toEqual({ available: true, linked: true });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/portal/auth/oidc/google/link-status');
+    reply(404, { error: 'Not found' });
+    expect(await getGoogleLinkStatus()).toBeNull();
+    reply(401, {});
+    expect(await getGoogleLinkStatus()).toBeNull();
+    reply(200, { available: 'yes', linked: false });
+    expect(await getGoogleLinkStatus()).toBeNull();
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    expect(await getGoogleLinkStatus()).toBeNull();
   });
 });
 
