@@ -52,26 +52,52 @@ state_set() {  # state_set <jq-filter> [--arg k v ...]
 }
 SECRET_RE='sk_live_|sk_test_|rk_live_|sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|xox[baprs]-'
 ENVVALS="$QA_HOME/.envvals"   # literal .env values; outside RUN_DIR so the agent can't read it
-# The stack's env files (.env is a copy of the developer's, with real secrets)
-# are parked here while the agent runs: the agent's cwd is the worktree, and a
-# Read deny rule does not cover every tool that can read a file. Compose only
-# needs them at (re)start, so the running stack is unaffected.
+# Env files with real values (the root .env is a copy of the developer's) are
+# parked here while the agent runs: the agent's cwd is the worktree, and a Read
+# deny rule does not cover every tool that can read a file. Compose only needs
+# them at (re)start, so the running stack is unaffected. Every non-example
+# .env* anywhere in the worktree is parked under its relative path.
 STACK_ENV_DIR="$QA_HOME/.stack-env"
+# list_env_files <dir>: NUL-separated non-example .env* files/symlinks under <dir>.
+list_env_files() {
+  find "$1" \( -name node_modules -o -name .git \) -prune -o \
+    -name '.env*' ! -name '*.example' \( -type f -o -type l \) -print0
+}
 hide_stack_env() {
-  local f
+  local f rel
   ( umask 077; mkdir -p "$STACK_ENV_DIR" ) && chmod 0700 "$STACK_ENV_DIR" || return 1
-  for f in "$QA_WORKTREE"/.env "$QA_WORKTREE"/.env.*; do
-    case "$f" in *.example) continue ;; esac
-    if [ -f "$f" ]; then mv -f "$f" "$STACK_ENV_DIR/" || return 1; fi
-  done
+  while IFS= read -r -d '' f; do
+    rel="${f#"$QA_WORKTREE"/}"
+    ( umask 077; mkdir -p "$STACK_ENV_DIR/$(dirname "$rel")" ) || return 1
+    mv -f "$f" "$STACK_ENV_DIR/$rel" || return 1
+  done < <(list_env_files "$QA_WORKTREE")
   return 0
 }
 restore_stack_env() {
-  local f
-  for f in "$STACK_ENV_DIR"/.env "$STACK_ENV_DIR"/.env.*; do
-    if [ -f "$f" ]; then mv -f "$f" "$QA_WORKTREE/"; fi
-  done
+  local f rel
+  [ -d "$STACK_ENV_DIR" ] || return 0
+  while IFS= read -r -d '' f; do
+    rel="${f#"$STACK_ENV_DIR"/}"
+    mkdir -p "$QA_WORKTREE/$(dirname "$rel")" && mv -f "$f" "$QA_WORKTREE/$rel"
+  done < <(find "$STACK_ENV_DIR" \( -type f -o -type l \) -print0)
+  find "$STACK_ENV_DIR" -mindepth 1 -type d -empty -delete 2>/dev/null
   return 0
+}
+# build_envvals: literal values (>= 8 chars) of every entry in every non-example
+# .env* in the worktree -> redaction list for public sinks. .env.stack is left
+# out: wt-stack writes dev defaults and the stack's own URL there, which reports
+# legitimately quote.
+build_envvals() {
+  local f files=()
+  while IFS= read -r -d '' f; do
+    case "${f##*/}" in .env.stack|.env.stack.tmp) continue ;; esac
+    files+=("$f")
+  done < <(list_env_files "$QA_WORKTREE")
+  ( umask 077
+    if [ "${#files[@]}" -gt 0 ]; then
+      grep -hE '^(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' -- "${files[@]}" 2>/dev/null
+    fi | cut -d= -f2- | sed -E 's/^["'\'']//; s/["'\'']$//' \
+      | awk 'length($0) >= 8' | sort -u > "$ENVVALS" )
 }
 # body_ok <file>: gate for anything headed to a PUBLIC GitHub sink.
 body_ok() {
@@ -209,9 +235,7 @@ for ov in "$SCRIPT_DIR/qa-env.overrides" "$QA_HOME/env.overrides"; do
   done < <(grep -E '^[A-Z][A-Z0-9_]*=' "$ov")
 done
 
-# Literal values of every .env entry (>= 8 chars) -> redaction list for public sinks.
-( umask 077; grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | cut -d= -f2- | sed -E 's/^["'\'']//; s/["'\'']$//' \
-    | awk 'length($0) >= 8' | sort -u > "$ENVVALS" )
+build_envvals   # literal env values -> redaction list for public sinks
 
 # Node from .nvmrc (auto-install via nvm if this Mac doesn't have it yet)
 NODE_WANT="$(tr -d 'v \n' < .nvmrc 2>/dev/null)"
