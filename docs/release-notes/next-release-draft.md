@@ -38,4 +38,4 @@ Lab checks owed before the next tag:
 
 ## Migrations
 
-- `2027-01-24-130000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.
+- `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.

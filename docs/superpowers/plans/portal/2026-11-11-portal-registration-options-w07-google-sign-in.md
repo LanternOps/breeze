@@ -213,7 +213,7 @@ No disagreement is left open.
 - **Portal result codes**, the only redirects the Google callback produces: `/login?sso=signed_in|request_sent|account_exists|unavailable&p=google`, `/profile?sso=linked|unavailable&p=google`.
 - **Error codes** (UPPER_SNAKE): `PORTAL_ACCESS_POLICY_GOOGLE_DOMAIN_NOT_VERIFIED` (shared `PORTAL_ACCESS_POLICY_ERROR_CODES`, 400), `PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED` (409, copy: "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.").
 - **Secrets:** env only. `.env.example` gets blank `PORTAL_GOOGLE_CLIENT_ID`, `PORTAL_GOOGLE_CLIENT_SECRET`, `PORTAL_GOOGLE_CALLBACK_BASE_URL` with one generic comment line. Pass them through in `docker-compose.yml` and `deploy/docker-compose.prod.yml` next to the `PORTAL_ENTRA_*` lines. No secret, code, token or token-endpoint body is logged or audited.
-- **Migration:** `apps/api/migrations/2027-01-24-130000-portal-access-requests-google-hosted-domain.sql`. The slot was assigned in the `13xxxx` block of `2027-01-24`; the file must sort after the newest file on `origin/main` (today `2027-01-24-110000-wisp-check-ins-cancelled-by.sql`). Idempotent, no inner `BEGIN;`/`COMMIT;`, first statement `SELECT set_config('breeze.scope', 'system', true);`, then `pnpm db:check-drift`. Never rename a shipped migration.
+- **Migration:** `apps/api/migrations/2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`. The slot was assigned in the `13xxxx` block of `2027-01-24`, then moved to `170000` at PR time because main gained `2027-01-24-150000-drop-patch-compliance-snapshots.sql`; the file must sort after the newest file on `origin/main`. Idempotent, no inner `BEGIN;`/`COMMIT;`, first statement `SELECT set_config('breeze.scope', 'system', true);`, then `pnpm db:check-drift`. Never rename a shipped migration.
 - **Context rules:** the callback holds no DB context; W5 read API calls run with none held or through `runOutsideDbContext`; a route that catches a refusal around a query keeps the query inside the service's `withDbTransaction`, catch outside; never `Promise.all` siblings that open transactions.
 - **Tests:** addresses use `example.com`, `*.example.com` or `.test` only (`scripts/security/check-customer-pii.sh`); no test reaches Google (inject `fetch` and the `jose` key, mock the W5 read API in unit tests and seed verified rows by SQL in integration tests).
 - **Web:** mutations through `runAction`; new locale keys in all 8 locales (`en de-DE es-419 fr-CA fr-FR it-IT pt-BR tr-TR`); dynamic keys via a static `Record` + `/* i18n-dynamic */`; tests select by `data-testid`. The portal app has no i18n.
@@ -248,7 +248,7 @@ Invariants re-run as named tests:
 
 | File | Responsibility | PR |
 |---|---|---|
-| Create `apps/api/migrations/2027-01-24-130000-portal-access-requests-google-hosted-domain.sql`; modify `apps/api/src/db/schema/portalAccess*.ts` (the file that defines `portalAccessRequests`), `services/tenantExportPolicyRegistry.ts` | `google_hosted_domain` column + CHECK, export classification | a |
+| Create `apps/api/migrations/2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`; modify `apps/api/src/db/schema/portalAccess*.ts` (the file that defines `portalAccessRequests`), `services/tenantExportPolicyRegistry.ts` | `google_hosted_domain` column + CHECK, export classification | a |
 | Create `config/portalGoogle.ts` (+ test); modify `config/validate.ts`, `.env.example`, `docker-compose.yml`, `deploy/docker-compose.prod.yml` | Google OAuth client config | a |
 | Modify `services/portalAccessPolicy.ts`, `services/portalAccessPolicyWrites.ts`, `services/portalSsoOnly.ts` (`computeSsoOnlyFlips` facts), `packages/shared/src/validators/portalAccessPolicy.ts` (+ tests) | Capability flip, verified-domain mask, `googleDomains`, write refusal | a |
 | Create `services/portalOidc/googleClient.ts` (+ test); modify `services/portalOidc/types.ts`, `services/portalOidc/stateStore.ts` (+ test) | Google authorize/exchange/verify; `'google'` provider in state | a |
@@ -273,7 +273,7 @@ Test commands:
 ### Task 1: Migration, Drizzle column, export classification
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-24-130000-portal-access-requests-google-hosted-domain.sql`.
+- Create: `apps/api/migrations/2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`.
 - Modify: the Drizzle `portalAccessRequests` table (add `googleHostedDomain: text('google_hosted_domain')`).
 - Modify: `services/tenantExportPolicyRegistry.ts:787`, adding `google_hosted_domain` to `included`.
 - Test: `__tests__/integration/portalGoogleRequestMigration.integration.test.ts` (template: `portalAccessPolicyMigration.integration.test.ts`, replay inside a rolled-back superuser transaction). Extend the existing export-registry unit test for `portal_access_requests` if one pins its columns; otherwise create `services/tenantExportPolicyRegistry.portalGoogleRequest.test.ts` (the W2/W4 pattern that moves the failure into Test API).
@@ -281,7 +281,7 @@ Test commands:
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-describe('2027-01-24-130000-portal-access-requests-google-hosted-domain.sql', () => {
+describe('2027-01-24-170000-portal-access-requests-google-hosted-domain.sql', () => {
   it('starts with the system-scope line');
   it('refuses a google request without google_hosted_domain (23514 portal_access_requests_google_hd_chk)');
   it('refuses google_hosted_domain on an entra, self or addin_user request (23514)');

@@ -1,6 +1,6 @@
 /**
  * Portal registration W7 (#11384): the Workspace domain (`hd`) of a Google
- * access request (2027-01-24-130000-portal-access-requests-google-hosted-domain.sql;
+ * access request (2027-01-24-170000-portal-access-requests-google-hosted-domain.sql;
  * plan D8).
  *
  * Every case runs inside ONE superuser postgres.js transaction that is always
@@ -19,7 +19,7 @@ import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { createOrganization, createPartner } from './db-utils';
 
-const MIGRATION = '2027-01-24-130000-portal-access-requests-google-hosted-domain.sql';
+const MIGRATION = '2027-01-24-170000-portal-access-requests-google-hosted-domain.sql';
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 const CONSTRAINT = 'portal_access_requests_google_hd_chk';
 const GOOGLE_ISSUER = 'https://accounts.google.com';
@@ -72,7 +72,7 @@ async function constraintState(tx: Tx): Promise<{ convalidated: boolean; def: st
   return row;
 }
 
-describe('2027-01-24-130000-portal-access-requests-google-hosted-domain.sql', () => {
+describe('2027-01-24-170000-portal-access-requests-google-hosted-domain.sql', () => {
   it('starts with the system-scope line', async () => {
     const text = await loadMigration();
     const firstStatement = text
