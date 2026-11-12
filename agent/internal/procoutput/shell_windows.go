@@ -5,6 +5,8 @@ package procoutput
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
 const powershellUTF8Bootstrap = "[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
@@ -14,10 +16,9 @@ const powershellUTF8Bootstrap = "[Console]::InputEncoding = [Console]::OutputEnc
 func WindowsScriptCommand(shellCmd string, shellArgs []string, scriptPath string) (string, []string) {
 	switch strings.ToLower(filepath.Base(shellCmd)) {
 	case "powershell.exe", "pwsh.exe":
-		quoted := escapePowerShellSingleQuotedPath(scriptPath)
 		return shellCmd, []string{
 			"-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-			powershellUTF8Bootstrap + "& '" + quoted + "'",
+			powershellUTF8Bootstrap + "& " + psscript.Quote(scriptPath),
 		}
 	case "cmd.exe":
 		// GetShellCommand returns ["/C"]; run chcp before the script/batch file.
@@ -26,8 +27,4 @@ func WindowsScriptCommand(shellCmd string, shellArgs []string, scriptPath string
 	default:
 		return shellCmd, append(append([]string{}, shellArgs...), scriptPath)
 	}
-}
-
-func escapePowerShellSingleQuotedPath(path string) string {
-	return strings.ReplaceAll(path, "'", "''")
 }
