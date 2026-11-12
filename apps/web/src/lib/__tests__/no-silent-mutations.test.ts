@@ -636,6 +636,17 @@ const TARGET_GLOBS = [
   'src/components/settings/orgDomains/OrgDomainsTab.tsx',
   'src/components/settings/orgDomains/AddDomainForm.tsx',
   'src/components/settings/orgDomains/DomainVerificationPanel.tsx',
+  // Ticket import W6 (#8313): the wizard's every mutation (sources, preflight, mappings, runs,
+  // windows, created contacts) goes through runAction; the API module only reads.
+  'src/components/ticketImport/ticketImportApi.ts',
+  'src/components/ticketImport/ConnectStep.tsx',
+  'src/components/ticketImport/PreflightStep.tsx',
+  'src/components/ticketImport/MappingsStep.tsx',
+  'src/components/ticketImport/RunStep.tsx',
+  'src/components/ticketImport/WindowStep.tsx',
+  'src/components/ticketImport/MigrationWindows.tsx',
+  'src/components/ticketImport/CreatedContactsPanel.tsx',
+  'src/components/ticketImport/TicketImportPage.tsx',
 ];
 
 // Ratchet floor, not a total: adding an entry above never touches this line.

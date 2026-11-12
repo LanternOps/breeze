@@ -195,6 +195,8 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Help desk (connect.module, source.module) is the loanword pt-BR uses; Token, Normal and Total are identical.
+    'ticketImport.json': 5,
     'tickets.json': 16,
     // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
     // per-locale note where it is not obvious.
@@ -383,6 +385,8 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Token, Normal and Total are identical; windows.tickets "Tickets" is this catalog's term.
+    'ticketImport.json': 4,
     'tickets.json': 16,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
@@ -597,6 +601,8 @@ const namespaceDuplicateBaselines = {
     // +2 (#7900 W3): ticketType.incident and createTicketPage.type — "Incident"/"Type" are identical in French.
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Sources and inactive are identical French words.
+    'ticketImport.json': 2,
     'tickets.json': 26,
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
@@ -808,6 +814,8 @@ const namespaceDuplicateBaselines = {
     // +2 (#7900 W3): ticketType.incident and createTicketPage.type — "Incident"/"Type" are identical in French.
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Sources and inactive are identical French words.
+    'ticketImport.json': 2,
     'tickets.json': 25,
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
@@ -1016,6 +1024,8 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +1 (#7900 W3): ticketType.problem — "Problem" is the identical German word.
+    // #8313 W6 ticket import wizard: Detail and Name are identical German words.
+    'ticketImport.json': 2,
     'tickets.json': 16,
     'toolSources.json': 1,
     // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
@@ -1183,6 +1193,8 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Help desk (connect.module, source.module) and Email are the loanwords it-IT uses.
+    'ticketImport.json': 3,
     'tickets.json': 9,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
@@ -1317,6 +1329,8 @@ const namespaceDuplicateBaselines = {
     'settings.json': 89, // +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
+    // #8313 W6 ticket import wizard: fully translated.
+    'ticketImport.json': 0,
     'tickets.json': 12,
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical tr-TR cognate.
