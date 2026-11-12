@@ -1,6 +1,7 @@
 import { and, eq, inArray, notInArray, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../db';
 import { drPlanDefinitionDigest, readDrPlanDefinition, type VerifiedDrPlan } from './drPlanDefinition';
+import { DR_EXECUTION_ACTIVE_STATUSES } from './drPlanWrites';
 import {
   BARE_METAL_RECOVERY_TERMINAL,
   backupConfigs,
@@ -512,12 +513,14 @@ export type DrPlanDefinitionErrorCode =
   | 'plan_not_found'
   | 'plan_archived'
   | 'dr_plan_changed'
+  | 'dr_plan_execution_in_progress'
   | 'backup_write_required';
 
 const DR_PLAN_DEFINITION_ERROR_STATUS: Record<DrPlanDefinitionErrorCode, 400 | 403 | 404 | 409> = {
   plan_not_found: 404,
   plan_archived: 400,
   dr_plan_changed: 409,
+  dr_plan_execution_in_progress: 409,
   backup_write_required: 403,
 };
 
@@ -787,6 +790,9 @@ async function resolveAllExecutionRefs(
  * Plan writers (drPlanWrites.ts) take the same lock and refuse while an
  * execution is pending or running, so once this transaction commits the
  * pending execution row exists and the definition cannot change under it.
+ * The same lock makes one execution per plan at a time: a second start (two
+ * approved intents, or two HTTP requests) waits for the first to commit, then
+ * sees its pending execution and refuses, so no restore is sent twice.
  * An approved execution (`verified`) must still match the definition its
  * approval digest covered; anything else refuses with `dr_plan_changed`.
  */
@@ -801,6 +807,15 @@ async function captureExecutionDefinition(
   }
   const live = await readDrPlanDefinition(planId, tx, { orgId, lock: true });
   if (!live) throw new DrPlanDefinitionError('plan_not_found');
+  const [active] = await tx
+    .select({ id: drExecutions.id })
+    .from(drExecutions)
+    .where(and(
+      eq(drExecutions.planId, planId),
+      inArray(drExecutions.status, [...DR_EXECUTION_ACTIVE_STATUSES]),
+    ))
+    .limit(1);
+  if (active) throw new DrPlanDefinitionError('dr_plan_execution_in_progress');
   if (verified && drPlanDefinitionDigest(live) !== verified.digest) {
     throw new DrPlanDefinitionError('dr_plan_changed');
   }

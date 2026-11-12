@@ -1,4 +1,4 @@
-import { drPlanGroups } from '../db/schema';
+import { drExecutions, drPlanGroups } from '../db/schema';
 import { drPlanDefinitionDigest } from './drPlanDefinition';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -347,9 +347,11 @@ describe('drExecutionService', () => {
       status: 'pending',
     }]);
     const planQuery = createQueryChain([planHeader()]);
+    const groupsQuery = createQueryChain([groupRow()]);
     vi.mocked(db.select)
       .mockImplementationOnce(() => planQuery as any)
-      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => groupsQuery as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
       .mockImplementationOnce(() => snapshotRef() as any);
     vi.mocked(db.insert).mockImplementationOnce(() => insertChain as any);
 
@@ -366,6 +368,8 @@ describe('drExecutionService', () => {
     expect(execution?.id).toBe(EXECUTION_ID);
     // The plan row is read FOR UPDATE: plan writers take the same lock.
     expect(planQuery.for).toHaveBeenCalledWith('update');
+    // Groups sharing a sequence still have one order: sequence, then id.
+    expect(groupsQuery.orderBy.mock.calls[0]).toHaveLength(2);
     expect(validateDefinition).toHaveBeenCalledWith([groupRow()]);
     expect(insertChain.values.mock.calls[0]![0].results.definition).toEqual({
       version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [groupRow()],
@@ -385,7 +389,8 @@ describe('drExecutionService', () => {
     const validator = vi.fn(() => { throw new DrPlanDefinitionError('backup_write_required'); });
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([planHeader()]) as any)
-      .mockImplementationOnce(() => createQueryChain([captured]) as any);
+      .mockImplementationOnce(() => createQueryChain([captured]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any); // no pending or running execution
     await expect(createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', auth: {} as any,
       validateDefinition: validator })).rejects.toThrow('backup_write_required');
     expect(validator).toHaveBeenCalledWith([captured]);
@@ -400,6 +405,7 @@ describe('drExecutionService', () => {
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([planHeader()]) as any)
       .mockImplementationOnce(() => createQueryChain([structuredClone(approvedGroup)]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
       .mockImplementation(() => snapshotRef() as any);
     vi.mocked(db.insert).mockReturnValue(insert as any);
     await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', auth: {} as any,
@@ -420,6 +426,7 @@ describe('drExecutionService', () => {
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([...plan]) as any)
       .mockImplementationOnce(() => createQueryChain([...groups]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
       .mockImplementation(() => snapshotRef() as any);
     const error = await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', auth: {} as any,
       verifiedDefinition: { digest: drPlanDefinitionDigest(approved), definition: approved } }).then(() => null, (e: unknown) => e);
@@ -443,6 +450,7 @@ describe('drExecutionService', () => {
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([...plan]) as any)
       .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
       .mockImplementation(() => snapshotRef() as any);
     const error = await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', auth: {} as any })
       .then(() => null, (e: unknown) => e);
@@ -450,10 +458,26 @@ describe('drExecutionService', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
+  it('refuses to start a plan that already has a pending or running execution, under the lock', async () => {
+    const activeQuery = createQueryChain([{ id: EXECUTION_ID }]);
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([planHeader()]) as any)
+      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => activeQuery as any)
+      .mockImplementation(() => snapshotRef() as any);
+    const error = await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', auth: {} as any })
+      .then(() => null, (e: unknown) => e);
+    expect(classifyDrExecutionAuthorizationError(error)).toEqual({ status: 409, code: 'dr_plan_execution_in_progress' });
+    expect(activeQuery.from).toHaveBeenCalledWith(drExecutions);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(enqueueDrExecutionReconcile).not.toHaveBeenCalled();
+  });
+
   it('refuses a plan holding a group of another plan or org', async () => {
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([planHeader()]) as any)
       .mockImplementationOnce(() => createQueryChain([{ ...groupRow(), orgId: '99999999-9999-9999-9999-999999999999' }]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
       .mockImplementation(() => snapshotRef() as any);
     await expect(createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', auth: {} as any }))
       .rejects.toThrow();
