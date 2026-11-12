@@ -326,9 +326,9 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
     });
 
     it('refuses an image whose decoded rows would exceed the byte limit at its bit depth', async () => {
-      // 5,000 × 5,000 is under the pixel limit, but 16-bit RGBA is 8 bytes a pixel.
-      await refusedWithoutDecoding(png(5000, 5000, [], [], { depth: 16, colorType: 6 }));
-      await reachesDecoder(png(5000, 5000, [], [], { depth: 8, colorType: 6 }));
+      // 6,000 × 6,000 is under the pixel limit, but 16-bit RGBA is 8 bytes a pixel.
+      await refusedWithoutDecoding(png(6000, 6000, [], [], { depth: 16, colorType: 6 }));
+      await reachesDecoder(png(6000, 6000, [], [], { depth: 8, colorType: 6 }));
     });
 
     it('refuses a header the decoder would not read the same way', async () => {
@@ -361,7 +361,8 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
 
     it('refuses a PNG whose declared size is over the pixel limit, without decoding it', async () => {
       await refusedWithoutDecoding(png(30_000, 30_000));
-      await refusedWithoutDecoding(png(1, MAX_CERTIFIED_PNG_PIXELS + 1));
+      // One row over the pixel limit, within the side and row-byte limits.
+      await refusedWithoutDecoding(png(8001, 8000));
       // The decoder takes the size from the last header it reads, so a later
       // header is refused whatever size it declares.
       await refusedWithoutDecoding(png(10, 10, [], [ihdr(30_000, 30_000)]), 'CONTRACT_PDF_UNREADABLE');
@@ -375,8 +376,12 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
       await refusedWithoutDecoding(png(10, 10, [], [chunk('fcTL', Buffer.alloc(26))]));
     });
 
-    it('still embeds a PNG at a scanned-page size', async () => {
+    it('still embeds a PNG at a scanned-page size, up to the pixel limit', async () => {
       await reachesDecoder(png(2550, 3300));
+      // A Letter page at 600 dpi (about 34 million pixels) and a 49-million-pixel image.
+      await reachesDecoder(png(5100, 6600));
+      await reachesDecoder(png(7000, 7000));
+      expect(MAX_CERTIFIED_PNG_PIXELS).toBe(64_000_000);
     });
   });
 
