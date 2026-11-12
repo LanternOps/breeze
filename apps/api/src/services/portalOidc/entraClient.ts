@@ -40,7 +40,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyOptions }
 import { PORTAL_ENTRA_CALLBACK_PATH, type PortalEntraConfig } from '../../config/portalEntra';
 import { buildMicrosoftIdentityAuthorizationUrl } from '../m365ControlPlane/microsoftAuthorization';
 import { entraIssuer } from '../portalUserIdentities';
-import type { PortalOidcVerifiedIdentity } from './types';
+import type { PortalEntraVerifiedIdentity } from './types';
 
 export const PORTAL_ENTRA_SIGN_IN_SCOPE = 'openid profile email';
 /** OD2: the proof run's live Graph admin-role check needs a directory read. */
@@ -202,7 +202,7 @@ export async function verifyPortalEntraIdToken(
   idToken: string,
   expected: { clientId: string; nonce: string; expectedTenantId: string | null; allowGuest?: boolean; now?: Date },
   deps: { verificationKey?: CryptoKey } = {},
-): Promise<PortalOidcVerifiedIdentity & { entraTenantId: string }> {
+): Promise<PortalEntraVerifiedIdentity & { entraTenantId: string }> {
   // A guest is admitted only into a pinned tenant: refuse the misuse before reading the token.
   const allowGuest = expected.allowGuest === true;
   if (allowGuest && (expected.expectedTenantId === null || normalizeGuid(expected.expectedTenantId) === null)) {

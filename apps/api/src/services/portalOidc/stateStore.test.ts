@@ -317,3 +317,95 @@ describe('portal OIDC binding cookie', () => {
     );
   });
 });
+
+/**
+ * W7: the `google` provider. A Google state's authority is the normalized
+ * Google issuer, and it carries only login, invite or link (no tenant proof).
+ */
+describe('portal OIDC state store: the google provider (W7)', () => {
+  const GOOGLE_AUTHORITY = 'https://accounts.google.com';
+  const mintGoogle = (purpose: PortalOidcPurpose = { kind: 'login' }, hostOrgId: string | null = null) =>
+    createPortalOidcState({ provider: 'google', purpose, hostOrgId, authority: GOOGLE_AUTHORITY });
+  const proofPurpose: PortalOidcPurpose = { kind: 'tenant_proof', runTokenHash: sha256Hex('r'), orgId: ORG, expectedTenantId: TENANT };
+
+  async function consumeTampered(
+    minted: { state: string; bindingCookie: string },
+    rewrite: (stored: Record<string, any>) => Record<string, unknown>,
+  ) {
+    const key = sha256Hex(minted.state);
+    const entry = portalOidcStates.get(key)!;
+    portalOidcStates.set(key, { ...entry, payload: JSON.stringify(rewrite(JSON.parse(entry.payload))) });
+    const out = await consumePortalOidcState(minted.state, minted.bindingCookie);
+    expect(portalOidcStates.has(key)).toBe(false);
+    return out;
+  }
+
+  it('creates and consumes a google login state with authority https://accounts.google.com', async () => {
+    const minted = await mintGoogle({ kind: 'login' }, ORG);
+    const consumed = await consumePortalOidcState(minted.state, minted.bindingCookie);
+    expect(consumed).toMatchObject({
+      v: 1,
+      provider: 'google',
+      purpose: { kind: 'login' },
+      nonce: minted.nonce,
+      bindingHash: sha256Hex(minted.bindingCookie),
+      hostOrgId: ORG,
+      authority: GOOGLE_AUTHORITY,
+    });
+    expect(createHash('sha256').update(consumed!.codeVerifier).digest('base64url')).toBe(minted.codeChallenge);
+    // Single use, like every state.
+    expect(await consumePortalOidcState(minted.state, minted.bindingCookie)).toBeNull();
+  });
+
+  it('round-trips a google invite and link state', async () => {
+    const purposes: PortalOidcPurpose[] = [
+      { kind: 'invite', inviteTokenHash: sha256Hex('i') },
+      { kind: 'link', portalUserId: USER, orgId: ORG, authEpoch: 3 },
+    ];
+    for (const purpose of purposes) {
+      const minted = await mintGoogle(purpose);
+      expect(await consumePortalOidcState(minted.state, minted.bindingCookie))
+        .toMatchObject({ provider: 'google', purpose, authority: GOOGLE_AUTHORITY });
+    }
+  });
+
+  it('refuses a google state carrying a tenant_proof purpose (create throws; a stored one is refused)', async () => {
+    for (const authority of [GOOGLE_AUTHORITY, TENANT]) {
+      await expect(createPortalOidcState({ provider: 'google', purpose: proofPurpose, hostOrgId: null, authority }))
+        .rejects.toThrow(/createPortalOidcState/);
+    }
+    expect(portalOidcStates.size).toBe(0);
+
+    // A stored google record rewritten to a proof purpose, with either authority.
+    for (const authority of [GOOGLE_AUTHORITY, TENANT]) {
+      expect(await consumeTampered(await mintGoogle(), (s) => ({ ...s, purpose: proofPurpose, authority }))).toBeNull();
+    }
+  });
+
+  it('refuses a google state with an entra authority, and an entra state with the google authority', async () => {
+    for (const authority of ['organizations', TENANT, 'accounts.google.com', 'https://accounts.google.com/', '']) {
+      await expect(createPortalOidcState({ provider: 'google', purpose: { kind: 'login' }, hostOrgId: null, authority }))
+        .rejects.toThrow(/createPortalOidcState/);
+      expect(await consumeTampered(await mintGoogle(), (s) => ({ ...s, authority }))).toBeNull();
+    }
+    await expect(createPortalOidcState({ provider: 'entra', purpose: { kind: 'login' }, hostOrgId: null, authority: GOOGLE_AUTHORITY }))
+      .rejects.toThrow(/createPortalOidcState/);
+    expect(await consumeTampered(await mint(), (s) => ({ ...s, authority: GOOGLE_AUTHORITY }))).toBeNull();
+    // Swapping only the provider is refused both ways: the authority no longer matches it.
+    expect(await consumeTampered(await mint(), (s) => ({ ...s, provider: 'google' }))).toBeNull();
+    expect(await consumeTampered(await mintGoogle(), (s) => ({ ...s, provider: 'entra' }))).toBeNull();
+    expect(portalOidcStates.size).toBe(0);
+  });
+
+  it('refuses any other provider', async () => {
+    for (const provider of ['microsoft', 'Google', 'apple', null]) {
+      expect(await consumeTampered(await mintGoogle(), (s) => ({ ...s, provider }))).toBeNull();
+    }
+    await expect(createPortalOidcState({ provider: 'apple' as never, purpose: { kind: 'login' }, hostOrgId: null, authority: GOOGLE_AUTHORITY }))
+      .rejects.toThrow(/createPortalOidcState/);
+  });
+
+  it('an unchanged google record still parses (the tamper helper is not what refuses)', async () => {
+    expect(await consumeTampered(await mintGoogle(), (s) => s)).toMatchObject({ provider: 'google', authority: GOOGLE_AUTHORITY });
+  });
+});
