@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 const (
@@ -765,6 +767,10 @@ func computeSensitiveConfidence(patternID, dataType string, matchCount int, path
 	return clampFloat64(confidence, 0.5, 0.995)
 }
 
+// sensitiveLinkCount reads an open file's hard-link count (a variable so a
+// test can make it fail).
+var sensitiveLinkCount = linkCountOfFile
+
 // scanSensitiveFile reads one file. linkSkipped reports a file skipped because
 // it also has other names (hard links), which the summary counts with the
 // symbolic links the walk skips.
@@ -803,9 +809,22 @@ func scanSensitiveFile(path string, patterns []sensitivePattern, scope sensitive
 	if !os.SameFile(info, opened) {
 		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: "file changed while it was being scanned; skipped"}}, false
 	}
+	// The handle is checked where it really landed (its canonical path, and
+	// its identity if it has other names), not only by the walked spelling.
+	if err := checkOpenedForContainment("scan", path, file); err != nil {
+		if errorCodeOf(err) == wire.ErrCodeSensitivePathDenied {
+			return 0, 1, 0, nil, nil, false
+		}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}, false
+	}
 	// A hard link is a second name for the same file, possibly in a folder the
-	// profile owner cannot read; like a symbolic link it is not followed.
-	if otherHardLinksError("scan", path, file) != nil {
+	// profile owner cannot read; like a symbolic link it is not followed. A
+	// link count that cannot be read is an error, not a skipped link.
+	links, err := sensitiveLinkCount(file, opened)
+	if err != nil {
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: "cannot read the file's link count: " + err.Error()}}, false
+	}
+	if links > 1 {
 		return 0, 1, 0, nil, nil, true
 	}
 
@@ -1004,6 +1023,9 @@ func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []st
 	// itself could not be listed (permission denied, macOS TCC), so the caller
 	// does not count a root it never read as scanned.
 	walkErr := func(root string, rootUnreadable *bool) error {
+		// Entries are judged under their walked spelling and under the
+		// root's resolved, stored spelling plus the same relative path.
+		protected := treeEntrySensitivity(root)
 		return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if path == root {
@@ -1047,7 +1069,7 @@ func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []st
 			// happens to contain a credential store would turn the scan into an
 			// oracle over it. The per-entry cost rides along with the two path
 			// predicates already evaluated here.
-			if isSensitiveReadPath(path) {
+			if protected(path) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}

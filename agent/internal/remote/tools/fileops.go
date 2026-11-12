@@ -555,6 +555,12 @@ func checkOpenedForContainment(verb, displayPath string, f *os.File) error {
 	if isSensitiveReadPath(final) {
 		return withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, displayPath))
 	}
+	// A hard link is another name for the same file, which no path names:
+	// a file with more than one link is compared with the protected files by
+	// identity.
+	if isOtherNameOfProtectedFile(f, protectedIdentitiesCached) {
+		return withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (another name of a protected file): %s", verb, displayPath))
+	}
 	return nil
 }
 

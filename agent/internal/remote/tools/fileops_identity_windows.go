@@ -1,0 +1,84 @@
+//go:build windows
+
+package tools
+
+import (
+	"encoding/binary"
+	"os"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+// fileIdentity names a file independently of its path: device and inode on
+// Unix, volume serial and file ID on Windows. Every hard link to a file
+// shares it.
+type fileIdentity struct {
+	volume uint64
+	idHigh uint64
+	idLow  uint64
+}
+
+// fileIDInfo is FILE_ID_INFO; fileStandardInfo is FILE_STANDARD_INFO.
+type fileIDInfo struct {
+	VolumeSerialNumber uint64
+	FileID             [16]byte
+}
+
+type fileStandardInfo struct {
+	AllocationSize int64
+	EndOfFile      int64
+	NumberOfLinks  uint32
+	DeletePending  byte
+	Directory      byte
+}
+
+// identityOfHandle reads the identity and link count of h. The two
+// information classes used here are read from the handle without needing
+// data access, so a handle opened for writing works too.
+func identityOfHandle(h windows.Handle) (fileIdentity, uint32, error) {
+	var std fileStandardInfo
+	if err := windows.GetFileInformationByHandleEx(h, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&std)), uint32(unsafe.Sizeof(std))); err != nil {
+		return fileIdentity{}, 0, err
+	}
+	links := std.NumberOfLinks
+	if std.Directory != 0 {
+		links = 1 // only a regular file's link count says anything about other names
+	}
+	var id fileIDInfo
+	if err := windows.GetFileInformationByHandleEx(h, windows.FileIdInfo, (*byte)(unsafe.Pointer(&id)), uint32(unsafe.Sizeof(id))); err == nil {
+		return fileIdentity{
+			volume: id.VolumeSerialNumber,
+			idHigh: binary.LittleEndian.Uint64(id.FileID[8:]),
+			idLow:  binary.LittleEndian.Uint64(id.FileID[:8]),
+		}, links, nil
+	}
+	// Volumes without 128-bit file IDs: fall back to the 64-bit index.
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
+		return fileIdentity{}, 0, err
+	}
+	return fileIdentity{
+		volume: uint64(info.VolumeSerialNumber),
+		idLow:  uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow),
+	}, links, nil
+}
+
+// identityOfOpenFile returns the identity and link count of an open file
+// (the link count is 1 for anything but a regular file).
+func identityOfOpenFile(f *os.File) (fileIdentity, uint32, error) {
+	return identityOfHandle(windows.Handle(f.Fd()))
+}
+
+// identityOfPath returns the identity of the file p names, following links.
+// It opens for attribute access only, which a file held open exclusively
+// (such as a loaded registry hive) still allows.
+func identityOfPath(p string) (fileIdentity, bool) {
+	h, err := openFollowing(p, windows.FILE_READ_ATTRIBUTES)
+	if err != nil {
+		return fileIdentity{}, false
+	}
+	defer windows.CloseHandle(h)
+	id, _, err := identityOfHandle(h)
+	return id, err == nil
+}
