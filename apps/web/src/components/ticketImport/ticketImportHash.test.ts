@@ -27,4 +27,9 @@ describe('ticket import hash (#8313 W6)', () => {
       expect(parseImportHash(formatImportHash({ sourceId: ID, step }))).toEqual({ sourceId: ID, step });
     }
   });
+
+  it('ignores a part with a malformed % escape and keeps the rest', () => {
+    expect(parseImportHash(`source=${ID}&step=%E0%A4%A`)).toEqual({ sourceId: ID, step: null });
+    expect(parseImportHash(`source=%&step=bulk`)).toEqual({ sourceId: null, step: 'bulk' });
+  });
 });

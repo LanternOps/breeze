@@ -7,7 +7,9 @@
     "back": "Biletlere dön",
     "allSources": "Tüm kaynaklar",
     "currentSource": "Kaynak: {{label}}",
-    "sourceMissing": "Bu kaynak artık yok. Silinmiş olabilir."
+    "sourceMissing": "Bu kaynak artık yok. Silinmiş olabilir.",
+    "sourceLoadFailed": "Bu kaynak yüklenemedi.",
+    "retry": "Yeniden dene"
   },
   "common": {
     "continue": "Devam",
@@ -56,7 +58,9 @@
     "submit": "Bağlan ve test et",
     "connecting": "Bağlanıyor…",
     "connected": "{{label}} bağlandı.",
-    "failed": "Kaynak bağlanamadı."
+    "failed": "Kaynak bağlanamadı.",
+    "reportTitle": "Bağlantı testi şunları bildirdi:",
+    "reportDismiss": "Kapat"
   },
   "source": {
     "title": "Kaynak: {{label}}",
@@ -185,7 +189,10 @@
     "saveAndContinue": "Kaydet ve devam et",
     "saving": "Kaydediliyor…",
     "saved": "Eşlemeler kaydedildi.",
-    "saveFailed": "Eşlemeler kaydedilemedi."
+    "saveFailed": "Eşlemeler kaydedilemedi.",
+    "goneOrg": "artık kaynakta değil",
+    "goneOrgsHelp": "Kaynağın artık listelemediği kuruluşların kayıtlı eşlemeleri. Kaldırmadıkça korunurlar.",
+    "removeMap": "Bu eşlemeyi kaldır"
   },
   "run": {
     "title": {
@@ -249,8 +256,20 @@
       "cancelled": "İptal edildi.",
       "cancelled_by_admin": "Bir yönetici tarafından iptal edildi.",
       "worker_lost": "Durduruldu: aktarım işlemi kayboldu. Devam etmek için çalıştırmayı yeniden başlatın.",
-      "enqueue_failed": "Çalıştırma sıraya alınamadı."
-    }
+      "enqueue_failed": "Çalıştırma sıraya alınamadı.",
+      "object_storage_required": "Durduruldu: nesne depolama yapılandırılmamış.",
+      "source_missing": "Başarısız: kaynak artık yok.",
+      "module_unavailable": "Başarısız: bu sunucu bu yardım masasını desteklemiyor.",
+      "invalid_options": "Başarısız: kaynak seçenekleri geçerli değil. Eşlemeleri yeniden kaydedin.",
+      "credentials_unreadable": "Başarısız: saklanan anahtar okunamadı. Kaynağı yeni bir anahtarla yeniden bağlayın.",
+      "window_principal_mismatch": "Durduruldu: taşıma penceresi başka bir kaynağın hesabına ait.",
+      "source_unauthorized": "Durduruldu: yardım masası anahtarı reddetti. Kaynağı yeni bir anahtarla yeniden bağlayın.",
+      "source_page_too_large": "Durduruldu: bilet listesinin bir sayfası okunamayacak kadar büyüktü.",
+      "source_shape_invalid": "Durduruldu: yardım masası beklenmeyen bir biçimde yanıt verdi.",
+      "worker_error": "Başarısız: aktarım işleminde bir hata oluştu. Devam etmek için çalıştırmayı yeniden başlatın.",
+      "sourceHttp": "Durduruldu: yardım masası HTTP {{status}} ile yanıt verdi."
+    },
+    "alreadyFinished": "Bu çalıştırma zaten bitmişti."
   },
   "report": {
     "meta": "Başlangıç {{started}} · bitiş {{finished}} · {{phase}}",
@@ -340,7 +359,10 @@
       "attachment_unavailable": "Dosya kullanılamıyor",
       "org_outside_window": "Kuruluş pencerede değil",
       "incomplete": "Eksik",
-      "internal_error": "İç hata"
+      "internal_error": "İç hata",
+      "MIGRATION_IMPORT_INVALID": "Geçersiz olduğu için reddedildi",
+      "MIGRATION_SOURCE_ID_IN_USE": "Kaynak kimliği zaten kullanılıyor",
+      "ASSIGNEE_NOT_ELIGIBLE": "Sorumlu bu kuruluşta izinli değil"
     }
   },
   "window": {
@@ -436,13 +458,15 @@
     },
     "remove": "Oluşturulan kişileri kaldır",
     "removeTitle": "Oluşturulan kişiler kaldırılsın mı?",
-    "removeMessage": "Tıklama başına en fazla 500 kişiyi siler (aktarıldığı gibi listelenen {{count}}{{more}}). Biletleri talep sahibinin adını ve e-postasını korur.",
     "removedToast_one": "{{count}} kişi kaldırıldı.",
     "removedToast_other": "{{count}} kişi kaldırıldı.",
     "removeFailed": "Kişiler kaldırılamadı.",
     "result": "Kaldırılan: {{removed}}. Korunan: {{skipped}}. Sonraki tıklamaya kalan: {{remaining}}.",
     "stoppedByRun": "Durduruldu: bu kaynağın bir çalıştırması başladı.",
-    "runActive": "Bir çalıştırma sürerken kişiler kaldırılamaz."
+    "runActive": "Bir çalıştırma sürerken kişiler kaldırılamaz.",
+    "removeMessage_one": "Bu aktarımın oluşturduğu ve aktarıldığı gibi kalan {{count}} kişi kaldırılsın mı? Biletleri talep sahibinin adını ve e-postasını korur.",
+    "removeMessage_other": "Bu aktarımın oluşturduğu ve aktarıldığı gibi kalan {{count}} kişi kaldırılsın mı? Biletleri talep sahibinin adını ve e-postasını korur.",
+    "removeMessageMore": "Henüz listelenmeyen başkaları da var; her tıklama en fazla 500 kişiyi kaldırır."
   },
   "errors": {
     "TICKET_IMPORT_RUN_ACTIVE": "Bu kaynağın bir çalıştırması sürüyor. Bitmesini bekleyin veya iptal edin.",
@@ -480,6 +504,10 @@
     "MIGRATION_WINDOW_INVALID_WRITES_PER_HOUR": "Saatlik yazma sayısı izin verilen aralığın dışında.",
     "MIGRATION_WINDOW_NOT_FOUND": "Taşıma penceresi bulunamadı.",
     "MIGRATION_WINDOW_NOT_OPEN": "Taşıma penceresi açık değil.",
-    "SESSION_STALE": "Oturumunuz değişti. Yeniden oturum açın."
+    "SESSION_STALE": "Oturumunuz değişti. Yeniden oturum açın.",
+    "TICKET_IMPORT_RUN_NOT_QUEUED": "Bu çalıştırma artık sırada değil.",
+    "SERVICE_PRINCIPAL_NOT_FOUND": "İçe aktarma hesabı bulunamadı.",
+    "SERVICE_PRINCIPAL_OWNER_REQUIRED": "Taşıma penceresini yalnızca içe aktarma hesabının sahibi açabilir.",
+    "MIGRATION_WINDOW_RATE_LIMITED": "Taşıma penceresinin saatlik yazma hakkı şimdilik doldu; aktarım bekler ve devam eder."
   }
 }

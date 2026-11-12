@@ -71,4 +71,19 @@ describe('CreatedContactsPanel (#8313 W6)', () => {
     expect(await screen.findByTestId('ticket-import-contacts-empty')).toBeInTheDocument();
     expect(screen.queryByTestId('ticket-import-contacts-remove')).toBeNull();
   });
+
+  it('reads the set again when a run ends', async () => {
+    let calls = 0;
+    fetchMock.mockImplementation(async () => {
+      calls += 1;
+      return json(200, { data: calls === 1 ? [] : [contact('c-new')], next: null });
+    });
+    const { rerender } = render(<CreatedContactsPanel source={sourceDetail()} nameOfOrg={() => 'Acme'} runActive />);
+    expect(await screen.findByTestId('ticket-import-contacts-empty')).toBeInTheDocument();
+    rerender(<CreatedContactsPanel source={sourceDetail()} nameOfOrg={() => 'Acme'} runActive />);
+    expect(calls).toBe(1);
+    rerender(<CreatedContactsPanel source={sourceDetail()} nameOfOrg={() => 'Acme'} runActive={false} />);
+    expect(await screen.findByTestId('ticket-import-contact-c-new')).toBeInTheDocument();
+    expect(calls).toBe(2);
+  });
 });

@@ -265,3 +265,39 @@ export function mappedOrgIds(mappings: ImportMappings | null | undefined): strin
   if (!mappings) return [];
   return [...new Set(mappings.orgs.map((m) => m.orgId))].sort();
 }
+
+/**
+ * Every stop reason the API writes on a run, for the labels test. From
+ * apps/api/src/services/ticketImport/importRunner.ts (`{ kind: 'stop', reason }`
+ * and `finish`), runOutcomes.ts, runLedger.ts (`worker_lost`),
+ * jobs/ticketImportWorker.ts (`worker_error`), runStore.ts
+ * (`cancelled_by_admin`) and routes/ticketImports/runs.ts (`enqueue_failed`).
+ * `source_<status>` (an HTTP error) is labelled by pattern.
+ */
+export const RUN_STOP_REASONS = [
+  'window_closed', 'object_storage_required', 'source_missing', 'credentials_revoked', 'module_unavailable',
+  'invalid_options', 'credentials_unreadable', 'window_principal_mismatch', 'source_unauthorized',
+  'source_page_too_large', 'source_shape_invalid', 'source_unavailable', 'worker_lost', 'worker_error',
+  'enqueue_failed', 'cancelled', 'cancelled_by_admin',
+] as const;
+
+/**
+ * Every refusal code the wizard's routes answer, for the labels test. From
+ * apps/api/src/services/ticketImport/importErrors.ts (TicketImportErrorCode)
+ * and services/migrationWindows.ts (MigrationWindowErrorCode, the route-facing
+ * ones; STEP_UP_REQUIRED opens the prompt instead of a message, and the
+ * writer's codes reach the report as issue codes).
+ */
+export const IMPORT_ERROR_CODES = [
+  'TICKET_IMPORT_MODULE_UNKNOWN', 'TICKET_IMPORT_INVALID_URL', 'TICKET_IMPORT_INVALID_OPTIONS', 'TICKET_IMPORT_INVALID_CREDENTIALS',
+  'TICKET_IMPORT_CREDENTIALS_REQUIRED', 'TICKET_IMPORT_SOURCE_UNREACHABLE', 'TICKET_IMPORT_SOURCE_NOT_FOUND', 'TICKET_IMPORT_SOURCE_CHANGED',
+  'TICKET_IMPORT_SOURCE_REVOKED', 'TICKET_IMPORT_OWNER_REQUIRED', 'TICKET_IMPORT_PRINCIPAL_NOT_FOUND', 'TICKET_IMPORT_PRINCIPAL_INACTIVE',
+  'TICKET_IMPORT_PRINCIPAL_SCOPE_MISSING', 'TICKET_IMPORT_PRINCIPAL_HAS_KEY', 'TICKET_IMPORT_PRINCIPAL_IN_USE', 'TICKET_IMPORT_RUN_ACTIVE',
+  'TICKET_IMPORT_MAPPING_LOCKED', 'TICKET_IMPORT_MAPPING_INVALID', 'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED', 'TICKET_IMPORT_WINDOW_NOT_FOUND',
+  'TICKET_IMPORT_WINDOW_NOT_OPEN', 'TICKET_IMPORT_WINDOW_PRINCIPAL_MISMATCH', 'TICKET_IMPORT_ORGS_OUTSIDE_WINDOW', 'TICKET_IMPORT_RUN_NOT_FOUND',
+  'TICKET_IMPORT_RUN_NOT_QUEUED', 'TICKET_IMPORT_QUEUE_UNAVAILABLE',
+  'MIGRATION_WINDOW_NOT_FOUND', 'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED', 'SERVICE_PRINCIPAL_NOT_FOUND', 'SERVICE_PRINCIPAL_OWNER_REQUIRED',
+  'MIGRATION_WINDOW_PRINCIPAL_INACTIVE', 'MIGRATION_WINDOW_PRINCIPAL_SCOPE_MISSING', 'MIGRATION_WINDOW_PRINCIPAL_HAS_KEY',
+  'MIGRATION_WINDOW_ORG_NOT_ALLOWED', 'MIGRATION_WINDOW_ALREADY_OPEN', 'MIGRATION_WINDOW_INVALID_SPAN',
+  'MIGRATION_WINDOW_INVALID_WRITES_PER_HOUR', 'SESSION_STALE', 'MIGRATION_WINDOW_NOT_OPEN', 'MIGRATION_WINDOW_RATE_LIMITED',
+] as const;

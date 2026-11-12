@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '../../lib/i18n';
 import { formatDateTime } from '../../lib/dateTimeFormat';
-import { readImport, RUN_ISSUE_KINDS, type ImportRun, type RunIssue, type RunIssueKind } from './ticketImportApi';
+import { runAction } from '../../lib/runAction';
+import { fetchWithAuth } from '../../stores/auth';
+import { PARTNER_WIDE, readImport, RUN_ISSUE_KINDS, type ImportRun, type RunIssue, type RunIssueKind } from './ticketImportApi';
 import { Notice, buttonSecondary, formatBytes, formatCount, inputClass, type TFunction } from './importUi';
 
 /**
@@ -24,7 +26,11 @@ export function stateLabel(t: TFunction, run: ImportRun): string {
 
 export function stopReasonLabel(t: TFunction, reason: string): string {
   const key = `ticketImport:run.stopReason.${reason}`;
-  return i18n.exists(key) ? t(/* i18n-dynamic */ key) : reason;
+  if (i18n.exists(key)) return t(/* i18n-dynamic */ key);
+  // importRunner's `source_<status>`: the source answered an HTTP error the run cannot pass.
+  const http = /^source_(\d{3})$/.exec(reason);
+  if (http) return t('run.stopReason.sourceHttp', { status: http[1] });
+  return reason;
 }
 
 export function issueCodeLabel(t: TFunction, code: string): string {
@@ -136,14 +142,15 @@ export default function RunReport({ run, nameOfOrg, focusKinds = [] }: Props) {
         <Notice tone="warning" testId="ticket-import-report-issues-dropped">{t('report.issuesDropped', { count: c.issuesDropped })}</Notice>
       )}
 
-      <IssueList runId={run.id} focusKinds={focusKinds} />
+      {/* Reloaded when the run ends or writes more issues: rows land while it runs. */}
+      <IssueList runId={run.id} sourceId={run.sourceId} focusKinds={focusKinds} refreshKey={`${run.state}:${c.issuesWritten}`} />
     </div>
   );
 }
 
 const PAGE = 100;
 
-function IssueList({ runId, focusKinds }: { runId: string; focusKinds: readonly RunIssueKind[] }) {
+function IssueList({ runId, sourceId, focusKinds, refreshKey }: { runId: string; sourceId: string; focusKinds: readonly RunIssueKind[]; refreshKey: string }) {
   const { t } = useTranslation('ticketImport');
   const [kind, setKind] = useState<RunIssueKind | ''>('');
   const [issues, setIssues] = useState<RunIssue[]>([]);
@@ -168,7 +175,9 @@ function IssueList({ runId, focusKinds }: { runId: string; focusKinds: readonly 
     }
   }, [runId, kind]);
 
-  useEffect(() => { void load(null, true); }, [load]);
+  useEffect(() => { void load(null, true); }, [load, refreshKey]);
+
+  const people = useSourcePeople(sourceId, issues);
 
   const kinds = [...focusKinds, ...RUN_ISSUE_KINDS.filter((k) => !focusKinds.includes(k))];
 
@@ -202,7 +211,11 @@ function IssueList({ runId, focusKinds }: { runId: string; focusKinds: readonly 
                 <tr key={issue.id} className="border-t" data-testid={`ticket-import-issue-${issue.id}`}>
                   <td className="px-2 py-1 tabular-nums">{issue.sourceTicketNumber ?? issue.sourceTicketKey ?? '—'}</td>
                   <td className="px-2 py-1">{i18n.exists(`ticketImport:issues.kind.${issue.kind}`) ? t(/* i18n-dynamic */ `issues.kind.${issue.kind}`) : issue.kind}</td>
-                  <td className="px-2 py-1">{issue.code ? issueCodeLabel(t, issue.code) : '—'}</td>
+                  <td className="px-2 py-1" data-testid={`ticket-import-issue-code-${issue.id}`}>
+                    {issue.kind === 'owner_unmatched' && issue.code
+                      ? personLabel(people.get(issue.code), issue.code)
+                      : issue.code ? issueCodeLabel(t, issue.code) : '—'}
+                  </td>
                   <td className="px-2 py-1 text-right tabular-nums">{formatCount(issue.count)}</td>
                 </tr>
               ))}
@@ -216,4 +229,58 @@ function IssueList({ runId, focusKinds }: { runId: string; focusKinds: readonly 
       )}
     </div>
   );
+}
+
+/** "Name (email)", "Name", "email", or the source key when the source could not name the person. */
+export function personLabel(person: SourcePerson | null | undefined, key: string): string {
+  if (!person || (!person.name && !person.email)) return key;
+  if (person.name && person.email) return `${person.name} (${person.email})`;
+  return person.name ?? person.email ?? key;
+}
+
+type SourcePerson = { name: string | null; email: string | null };
+
+/** At most this many keys per lookup (the route's cap). */
+const PEOPLE_BATCH = 200;
+
+/**
+ * Names for the owner_unmatched keys on screen (spec §5.10: read from the
+ * source live, through POST /sources/:id/source-users/resolve). Each key is
+ * asked once per mount (an answer that lands after a re-render still counts);
+ * a failed lookup leaves the keys shown as they are.
+ */
+function useSourcePeople(sourceId: string, issues: readonly RunIssue[]): Map<string, SourcePerson | null> {
+  const [people, setPeople] = useState<Map<string, SourcePerson | null>>(new Map());
+  const asked = useRef(new Set<string>());
+  useEffect(() => {
+    const keys = [...new Set(issues.filter((i) => i.kind === 'owner_unmatched' && i.code).map((i) => i.code!))]
+      .filter((k) => !asked.current.has(k));
+    if (keys.length === 0) return;
+    for (const key of keys) asked.current.add(key);
+    void (async () => {
+      for (let i = 0; i < keys.length; i += PEOPLE_BATCH) {
+        const batch = keys.slice(i, i + PEOPLE_BATCH);
+        try {
+          const body = await runAction<{ data: Record<string, SourcePerson | null> }>({
+            request: () => fetchWithAuth(`/ticket-imports/sources/${sourceId}/source-users/resolve`, {
+              ...PARTNER_WIDE,
+              method: 'POST',
+              body: JSON.stringify({ keys: batch }),
+            }),
+            errorFallback: 'source people lookup failed',
+            // A lookup that fails keeps the keys: nothing to tell the user.
+            suppressErrorToast: () => true,
+          });
+          setPeople((prev) => {
+            const nextMap = new Map(prev);
+            for (const key of batch) nextMap.set(key, body.data[key] ?? null);
+            return nextMap;
+          });
+        } catch {
+          return;
+        }
+      }
+    })();
+  }, [sourceId, issues]);
+  return people;
 }

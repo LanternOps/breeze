@@ -25,6 +25,8 @@ type Props = {
   source: ImportSourceDetail;
   runs: ImportRun[];
   openWindow: MigrationWindow | null;
+  /** The source's newest window, open or closed: whose runs the bulk and delta steps show. */
+  latestWindow?: MigrationWindow | null;
   nameOfOrg: (orgId: string) => string;
   onRunsChanged: () => void;
   onContinue: () => void;
@@ -35,10 +37,27 @@ type Props = {
 const DELTA_FOCUS: readonly RunIssueKind[] = ['comments_changed', 'requester_changed', 'status_kept', 'deleted_in_source', 'hidden_in_source'];
 const DRY_FOCUS: readonly RunIssueKind[] = ['skipped_no_org', 'owner_unmatched', 'failed', 'row_unreadable'];
 
-/** The run a step shows: the newest of its kind (an import step: in the open window, when there is one). */
-export function runForStep(kind: RunStepKind, runs: readonly ImportRun[], openWindow: MigrationWindow | null): ImportRun | null {
+/**
+ * The run a step shows (`runs` newest first, as the API lists them):
+ * - dry run: the newest dry run;
+ * - bulk: the window's first import run;
+ * - delta: the window's newest import run started after the bulk run ended
+ *   (none while the bulk run has not ended). The bulk step never shows it.
+ * A retry of failed tickets started after the bulk run therefore reads as the
+ * next pass, which is what it is (§5.9: every import run is the same pass);
+ * the bulk step keeps showing a retry it started itself while it stays open.
+ */
+export function runForStep(kind: RunStepKind, runs: readonly ImportRun[], window: MigrationWindow | null): ImportRun | null {
   if (kind === 'dry_run') return runs.find((r) => r.kind === 'dry_run') ?? null;
-  return runs.find((r) => r.kind === 'import' && (!openWindow || r.windowId === openWindow.id)) ?? null;
+  if (!window) return null;
+  const imports = runs
+    .filter((r) => r.kind === 'import' && r.windowId === window.id)
+    .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  const bulk = imports[0] ?? null;
+  if (kind === 'bulk') return bulk;
+  if (!bulk || isRunActive(bulk.state) || !bulk.finishedAt) return null;
+  const after = imports.filter((r) => r.id !== bulk.id && r.startedAt >= bulk.finishedAt!);
+  return after[after.length - 1] ?? null;
 }
 
 function handleError(err: unknown, fallback: string) {
@@ -46,10 +65,10 @@ function handleError(err: unknown, fallback: string) {
   if (!(err instanceof ActionError)) showToast({ type: 'error', message: fallback });
 }
 
-export default function RunStep({ kind, source, runs, openWindow, nameOfOrg, onRunsChanged, onContinue, onOpenWindowStep }: Props) {
+export default function RunStep({ kind, source, runs, openWindow, latestWindow = null, nameOfOrg, onRunsChanged, onContinue, onOpenWindowStep }: Props) {
   const { t } = useTranslation('ticketImport');
   const prefix = kind === 'dry_run' ? 'dryRun' : kind;
-  const listed = runForStep(kind, runs, openWindow);
+  const listed = runForStep(kind, runs, openWindow ?? latestWindow);
   const [startedId, setStartedId] = useState<string | null>(null);
   const runId = startedId ?? listed?.id ?? null;
   const { run: polled, missing, readFailed } = useRunPolling(runId, () => onRunsChanged());
@@ -98,11 +117,11 @@ export default function RunStep({ kind, source, runs, openWindow, nameOfOrg, onR
     if (!run) return;
     setCancelling(true);
     try {
-      await runAction({
+      await runAction<{ alreadyFinished?: boolean }>({
         request: () => fetchWithAuth(`/ticket-imports/runs/${run.id}/cancel`, { ...PARTNER_WIDE, method: 'POST' }),
         errorFallback: t('run.cancelFailed'),
         friendly: importFriendly(t),
-        successMessage: t('run.cancelRequested'),
+        successMessage: (d: { alreadyFinished?: boolean }) => (d.alreadyFinished ? t('run.alreadyFinished') : t('run.cancelRequested')),
       });
       onRunsChanged();
     } catch (err) {
@@ -167,7 +186,7 @@ export default function RunStep({ kind, source, runs, openWindow, nameOfOrg, onR
               )}
             </div>
             <RunReport run={run} nameOfOrg={nameOfOrg} focusKinds={kind === 'delta' ? DELTA_FOCUS : kind === 'dry_run' ? DRY_FOCUS : []} />
-            {!active && (
+            {!active && (kind !== 'delta' || run.state === 'completed') && (
               <button type="button" className={buttonPrimary} onClick={onContinue} data-testid="ticket-import-run-continue">
                 {t('common.continue')}
               </button>

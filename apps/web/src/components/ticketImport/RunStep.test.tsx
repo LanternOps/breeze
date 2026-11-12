@@ -97,6 +97,73 @@ describe('RunStep — dry run (#8313 W6)', () => {
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes('kind=row_unreadable'))).toBe(true));
   });
 
+  it('reloads the issues when the run ends', async () => {
+    vi.useFakeTimers();
+    let state: ImportRun['state'] = 'running';
+    let issues: unknown[] = [];
+    route({ run: () => importRun({ id: RUN_ID, state, phase: state === 'running' ? 'scan' : 'done' }), issues: [] });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === `/ticket-imports/runs/${RUN_ID}`) return json(200, { data: importRun({ id: RUN_ID, state, phase: state === 'running' ? 'scan' : 'done' }) });
+      if (url.startsWith(`/ticket-imports/runs/${RUN_ID}/issues`)) return json(200, { data: issues, next: null });
+      return json(404, { error: 'unrouted' });
+    });
+    renderStep({ runs: [importRun({ id: RUN_ID, state: 'running', phase: 'scan' })] });
+    await act(flush);
+    expect(screen.getByTestId('ticket-import-issues-empty')).toBeInTheDocument();
+    state = 'completed';
+    issues = [{ id: 'late', sourceTicketKey: '5', sourceTicketNumber: '40005', kind: 'skipped_no_org', code: 'no_org', count: 1, createdAt: '2026-11-12T09:05:00Z' }];
+    await act(async () => { vi.advanceTimersByTime(RUN_POLL_MS); await flush(); });
+    expect(screen.getByTestId('ticket-import-issue-late')).toHaveTextContent('40005');
+  });
+
+  it('names an unmatched owner from the source, and falls back to the key when it cannot', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string; body?: string }) => {
+      if (url === `/ticket-imports/runs/${RUN_ID}`) return json(200, { data: importRun({ id: RUN_ID }) });
+      if (url.startsWith(`/ticket-imports/runs/${RUN_ID}/issues`)) {
+        return json(200, { data: [
+          { id: 'o-1', sourceTicketKey: '1', sourceTicketNumber: '41001', kind: 'owner_unmatched', code: '4', count: 1, createdAt: '2026-11-12T09:01:00Z' },
+          { id: 'o-2', sourceTicketKey: '2', sourceTicketNumber: '41002', kind: 'owner_unmatched', code: '77', count: 1, createdAt: '2026-11-12T09:01:00Z' },
+        ], next: null });
+      }
+      if (url === `/ticket-imports/sources/${SOURCE_ID}/source-users/resolve` && init?.method === 'POST') {
+        expect(JSON.parse(init.body!)).toEqual({ keys: ['4', '77'] });
+        return json(200, { data: { 4: { name: 'Bob Former', email: 'bob@example.test' }, 77: null } });
+      }
+      return json(404, { error: 'unrouted' });
+    });
+    renderStep({ runs: [importRun({ id: RUN_ID })] });
+    await waitFor(() => expect(screen.getByTestId('ticket-import-issue-code-o-1')).toHaveTextContent('Bob Former (bob@example.test)'));
+    expect(screen.getByTestId('ticket-import-issue-code-o-2')).toHaveTextContent('77');
+  });
+
+  it('a failed name lookup keeps the keys, without an error toast', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (url === `/ticket-imports/runs/${RUN_ID}`) return json(200, { data: importRun({ id: RUN_ID }) });
+      if (url.startsWith(`/ticket-imports/runs/${RUN_ID}/issues`)) {
+        return json(200, { data: [{ id: 'o-1', sourceTicketKey: '1', sourceTicketNumber: '41001', kind: 'owner_unmatched', code: '4', count: 1, createdAt: '2026-11-12T09:01:00Z' }], next: null });
+      }
+      if (init?.method === 'POST') return json(502, { error: 'down', code: 'TICKET_IMPORT_SOURCE_UNREACHABLE' });
+      return json(404, { error: 'unrouted' });
+    });
+    renderStep({ runs: [importRun({ id: RUN_ID })] });
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => (init as { method?: string })?.method === 'POST')).toBe(true));
+    expect(screen.getByTestId('ticket-import-issue-code-o-1')).toHaveTextContent('4');
+    expect(toastMock).not.toHaveBeenCalled();
+  });
+
+  it('says so when cancelling a run that had already finished', async () => {
+    route({ run: () => importRun({ id: RUN_ID, state: 'running', phase: 'scan' }) });
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'POST' && url.endsWith('/cancel')) return json(200, { data: importRun({ id: RUN_ID }), alreadyFinished: true });
+      if (url === `/ticket-imports/runs/${RUN_ID}`) return json(200, { data: importRun({ id: RUN_ID, state: 'running', phase: 'scan' }) });
+      return json(200, { data: [], next: null });
+    });
+    renderStep({ runs: [importRun({ id: RUN_ID, state: 'running', phase: 'scan' })] });
+    fireEvent.click(await screen.findByTestId('ticket-import-run-cancel'));
+    fireEvent.click(await screen.findByTestId('ticket-import-run-cancel-confirm'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'This run had already finished.' })));
+  });
+
   it('a refused start shows the reason', async () => {
     route({ run: () => importRun({ id: RUN_ID }), start: () => json(409, { error: 'active', code: 'TICKET_IMPORT_RUN_ACTIVE' }) });
     renderStep();
@@ -144,14 +211,53 @@ describe('RunStep — bulk and delta (#8313 W6)', () => {
     expect(screen.getByTestId('ticket-import-run-start')).not.toBeDisabled();
   });
 
-  it('shows the newest run of the step: an import in the open window, a dry run for the dry run', () => {
-    const dry = importRun({ id: 'dry' });
-    const oldImport = importRun({ id: 'old', kind: 'import', windowId: 'w-old' });
-    const current = importRun({ id: 'cur', kind: 'import', windowId: WINDOW_ID });
-    const runs = [current, dry, oldImport];
-    expect(runForStep('dry_run', runs, null)?.id).toBe('dry');
-    expect(runForStep('bulk', runs, migrationWindow())?.id).toBe('cur');
-    expect(runForStep('delta', [oldImport, dry], migrationWindow())).toBeNull();
-    expect(runForStep('bulk', [oldImport], null)?.id).toBe('old');
+  it('picks each step\'s own run: the newest dry run, the window\'s first import, then the newest import after it ended', () => {
+    const win = migrationWindow();
+    const dry = importRun({ id: 'dry', startedAt: '2026-11-12T07:00:00.000Z' });
+    const bulk = importRun({ id: 'bulk', kind: 'import', windowId: WINDOW_ID, startedAt: '2026-11-12T08:00:00.000Z', finishedAt: '2026-11-12T09:00:00.000Z' });
+    const delta1 = importRun({ id: 'delta1', kind: 'import', windowId: WINDOW_ID, startedAt: '2026-11-13T08:00:00.000Z', finishedAt: '2026-11-13T08:10:00.000Z' });
+    const delta2 = importRun({ id: 'delta2', kind: 'import', windowId: WINDOW_ID, startedAt: '2026-11-13T09:00:00.000Z', finishedAt: null, state: 'running' });
+    const otherWindow = importRun({ id: 'other', kind: 'import', windowId: 'w-old', startedAt: '2026-11-14T00:00:00.000Z' });
+    const runs = [otherWindow, delta2, delta1, bulk, dry]; // newest first, as the API lists them
+    expect(runForStep('dry_run', runs, win)?.id).toBe('dry');
+    expect(runForStep('bulk', runs, win)?.id).toBe('bulk');
+    expect(runForStep('delta', runs, win)?.id).toBe('delta2');
+    expect(runForStep('bulk', runs, null)).toBeNull();
+    expect(runForStep('delta', runs, null)).toBeNull();
+  });
+
+  it('with only the bulk run, the delta step is empty, and stays empty while the bulk run is active', () => {
+    const win = migrationWindow();
+    const bulkDone = importRun({ id: 'bulk', kind: 'import', windowId: WINDOW_ID });
+    expect(runForStep('delta', [bulkDone], win)).toBeNull();
+    const bulkRunning = importRun({ id: 'bulk', kind: 'import', windowId: WINDOW_ID, state: 'running', finishedAt: null });
+    const early = importRun({ id: 'early', kind: 'import', windowId: WINDOW_ID, startedAt: '2026-11-12T09:30:00.000Z' });
+    expect(runForStep('delta', [early, bulkRunning], win)).toBeNull();
+  });
+
+  it('the delta step offers its own start, and continues only once a delta run completed', async () => {
+    const bulk = importRun({ id: RUN_ID, kind: 'import', windowId: WINDOW_ID });
+    route({ run: () => bulk });
+    const { unmount } = renderStep({ kind: 'delta', openWindow: migrationWindow(), runs: [bulk] });
+    expect(screen.getByTestId('ticket-import-run-start')).toHaveTextContent('Start delta run');
+    expect(screen.queryByTestId('ticket-import-run-status')).toBeNull();
+    expect(screen.queryByTestId('ticket-import-run-continue')).toBeNull();
+    unmount();
+    // The bulk step shows the bulk run, never a delta.
+    const delta = importRun({ id: 'delta-run', kind: 'import', windowId: WINDOW_ID, startedAt: '2026-11-13T08:00:00.000Z', state: 'failed', stopReason: 'source_502' });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === `/ticket-imports/runs/${RUN_ID}`) return json(200, { data: bulk });
+      if (url === '/ticket-imports/runs/delta-run') return json(200, { data: delta });
+      if (url.includes('/issues')) return json(200, { data: [], next: null });
+      return json(200, { data: [], next: null });
+    });
+    const bulkView = renderStep({ kind: 'bulk', openWindow: migrationWindow(), runs: [delta, bulk] });
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => u === `/ticket-imports/runs/${RUN_ID}`)).toBe(true));
+    expect(fetchMock.mock.calls.some(([u]) => u === '/ticket-imports/runs/delta-run')).toBe(false);
+    bulkView.unmount();
+    // A failed delta run: its reason in words, and no Continue.
+    renderStep({ kind: 'delta', openWindow: migrationWindow(), runs: [delta, bulk] });
+    expect(await screen.findByTestId('ticket-import-run-stop-reason')).toHaveTextContent('HTTP 502');
+    expect(screen.queryByTestId('ticket-import-run-continue')).toBeNull();
   });
 });

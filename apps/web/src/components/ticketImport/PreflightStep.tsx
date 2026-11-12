@@ -38,6 +38,13 @@ export async function runPreflight(sourceId: string, t: ReturnType<typeof useTra
   }
 }
 
+/** A connect or preflight warning in words; an unknown code shows as itself (with its detail). */
+export function connectWarningText(t: ReturnType<typeof useTranslation>['t'], code: string, detail?: string): string {
+  const key = `ticketImport:preflight.warnings.${code}`;
+  if (i18n.exists(key)) return t(/* i18n-dynamic */ key, { detail: detail ?? '' });
+  return detail ? `${code}: ${detail}` : code;
+}
+
 export default function PreflightStep({ source, preflight, onPreflight, onContinue }: Props) {
   const { t } = useTranslation('ticketImport');
   const [running, setRunning] = useState(false);
@@ -50,11 +57,7 @@ export default function PreflightStep({ source, preflight, onPreflight, onContin
     if (result) onPreflight(result);
   };
 
-  const warningText = (code: string, detail?: string) => {
-    const key = `ticketImport:preflight.warnings.${code}`;
-    const text = i18n.exists(key) ? t(/* i18n-dynamic */ key, { detail: detail ?? '' }) : code;
-    return detail && !i18n.exists(key) ? `${text}: ${detail}` : text;
-  };
+  const warningText = (code: string, detail?: string) => connectWarningText(t, code, detail);
 
   return (
     <Panel

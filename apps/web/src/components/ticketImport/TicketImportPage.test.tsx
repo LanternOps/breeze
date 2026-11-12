@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const { fetchMock, toastMock, authState, claimsState } = vi.hoisted(() => ({
   fetchMock: vi.fn(),
@@ -134,5 +134,61 @@ describe('TicketImportPage — hash state (#8313 W6)', () => {
     expect(screen.getByTestId(`ticket-import-window-summary-${WINDOW_ID}`)).toHaveTextContent('Acme');
     expect(screen.queryByTestId(`ticket-import-window-close-${WINDOW_ID}`)).toBeNull();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/migration-windows', expect.objectContaining({ skipOrgIdInjection: true })));
+  });
+
+  it('a slow answer for a source left behind never replaces the current one', async () => {
+    const OTHER = '99999999-9999-4999-8999-999999999999';
+    let releaseFirst!: (r: Response) => void;
+    route();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (url === `/ticket-imports/sources/${SOURCE_ID}`) return new Promise<Response>((resolve) => { releaseFirst = resolve; });
+      if (url === `/ticket-imports/sources/${OTHER}`) return json(200, { data: sourceDetail({ id: OTHER, label: 'Freshdesk' }) });
+      if (url === `/ticket-imports/sources/${OTHER}/runs`) return json(200, { data: [] });
+      return base(url, init);
+    });
+    setHash(`#source=${SOURCE_ID}&step=preflight`);
+    render(<TicketImportPage />);
+    await waitFor(() => expect(releaseFirst).toBeDefined());
+    await act(async () => {
+      window.location.hash = `#source=${OTHER}&step=preflight`;
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByTestId('ticket-import-current-source')).toHaveTextContent('Freshdesk');
+    await act(async () => { releaseFirst(json(200, { data: sourceDetail({ label: 'Stale' }) })); });
+    expect(screen.getByTestId('ticket-import-current-source')).toHaveTextContent('Freshdesk');
+  });
+
+  it('a failed source read offers a retry instead of loading forever', async () => {
+    let fail = true;
+    route({ detail: () => (fail ? json(500, { error: 'boom' }) : json(200, { data: listed })) });
+    setHash(`#source=${SOURCE_ID}&step=preflight`);
+    render(<TicketImportPage />);
+    expect(await screen.findByTestId('ticket-import-source-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-import-source-loading')).toBeNull();
+    fail = false;
+    fireEvent.click(screen.getByTestId('ticket-import-source-retry'));
+    expect(await screen.findByTestId('ticket-import-preflight')).toBeInTheDocument();
+  });
+
+  it('shows what the connection test reported after connecting a source', async () => {
+    route();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (url === '/partner-service-principals' && init?.method === 'POST') return json(201, { data: { id: '0a7d9c1e-2b3f-4a5d-8e6f-7a8b9c0d1e2f' } });
+      if (url === '/ticket-imports/sources' && init?.method === 'POST') {
+        return json(201, { data: { id: SOURCE_ID }, connect: { identity: { key: '2', name: null, email: null }, permissions: [], clockSkewMs: 0, warnings: [{ code: 'token_not_read_only' }] } });
+      }
+      return base(url, init);
+    });
+    setHash('#step=connect');
+    render(<TicketImportPage />);
+    fireEvent.change(await screen.findByTestId('ticket-import-connect-label'), { target: { value: 'Zammad' } });
+    fireEvent.change(screen.getByTestId('ticket-import-connect-base-url'), { target: { value: 'https://helpdesk.example.com' } });
+    fireEvent.change(screen.getByTestId('ticket-import-connect-token'), { target: { value: 'tok' } });
+    fireEvent.click(screen.getByTestId('ticket-import-connect-submit'));
+    expect(await screen.findByTestId('ticket-import-connect-report-token_not_read_only')).toHaveTextContent('Revoke it after the cutover');
+    fireEvent.click(screen.getByTestId('ticket-import-connect-report-dismiss'));
+    expect(screen.queryByTestId('ticket-import-connect-report')).toBeNull();
   });
 });

@@ -43,6 +43,8 @@ export function defaultPriority(name: string): TargetPriority {
 
 type Form = {
   orgs: Record<string, string>; // source org key -> org id, '' = skip
+  /** Saved maps of source orgs the catalog no longer lists, by key, with their saved name: kept unless removed. */
+  goneOrgs: Record<string, string>;
   fallbackOrgId: string;
   categories: Record<string, string>; // source group key -> category id, '' = none
   priorities: Record<string, TargetPriority>;
@@ -64,6 +66,15 @@ function initialForm(source: ImportSourceDetail, preflight: Preflight, orgs: Arr
     // With nothing saved yet, an org whose name matches exactly is suggested.
     orgMap[entry.key] = saved ? saved.orgId : savedOrgs.length === 0 ? (byName.get(entry.name.trim().toLowerCase()) ?? '') : '';
   }
+  // A saved map of an org the source no longer lists (deleted, or hidden from
+  // the token) is kept: its tickets may still be in the ledger.
+  const goneOrgs: Record<string, string> = {};
+  const listed = new Set(preflight.catalog.orgs.map((o) => o.key));
+  for (const saved of savedOrgs) {
+    if (saved.sourceOrgKey === null || listed.has(saved.sourceOrgKey)) continue;
+    orgMap[saved.sourceOrgKey] = saved.orgId;
+    goneOrgs[saved.sourceOrgKey] = saved.sourceOrgName ?? saved.sourceOrgKey;
+  }
   const categories: Record<string, string> = {};
   for (const group of preflight.catalog.groups) {
     categories[group.key] = source.mappings.categories.find((m) => m.sourceGroupKey === group.key)?.categoryId ?? '';
@@ -76,6 +87,7 @@ function initialForm(source: ImportSourceDetail, preflight: Preflight, orgs: Arr
   for (const s of preflight.catalog.states) states[s.key] = savedStates[s.key]?.status ?? '';
   return {
     orgs: orgMap,
+    goneOrgs,
     fallbackOrgId: savedOrgs.find((m) => m.sourceOrgKey === null)?.orgId ?? '',
     categories,
     priorities,
@@ -95,7 +107,7 @@ export function mappingsBody(source: ImportSourceDetail, preflight: Preflight, f
   const stateName = new Map(preflight.catalog.states.map((s) => [s.key, s.name]));
   const orgs: Array<{ sourceOrgKey: string | null; sourceOrgName: string | null; orgId: string }> = Object.entries(form.orgs)
     .filter(([, orgId]) => orgId !== '')
-    .map(([key, orgId]) => ({ sourceOrgKey: key, sourceOrgName: (orgName.get(key) ?? '').slice(0, 255) || null, orgId }));
+    .map(([key, orgId]) => ({ sourceOrgKey: key, sourceOrgName: (orgName.get(key) ?? form.goneOrgs[key] ?? '').slice(0, 255) || null, orgId }));
   if (form.fallbackOrgId) orgs.push({ sourceOrgKey: null, sourceOrgName: null, orgId: form.fallbackOrgId });
   const categories = Object.entries(form.categories)
     .filter(([, categoryId]) => categoryId !== '')
@@ -155,7 +167,7 @@ export default function MappingsStep({ source, preflight, onPreflight, onSaved, 
     if (result) onPreflight(result);
   };
 
-  const mappedCount = useMemo(() => (form ? Object.values(form.orgs).filter(Boolean).length : 0), [form]);
+  const mappedCount = useMemo(() => (form ? Object.entries(form.orgs).filter(([key, orgId]) => orgId && !(key in form.goneOrgs)).length : 0), [form]);
   const editable = isOwner && !locked;
 
   if (!preflight || !form) {
@@ -226,6 +238,21 @@ export default function MappingsStep({ source, preflight, onPreflight, onSaved, 
               </label>
             ))}
           </div>
+          {Object.keys(form.goneOrgs).length > 0 && (
+            <div className="mt-3 space-y-1" data-testid="ticket-import-mappings-gone-orgs">
+              <p className="text-xs text-muted-foreground">{t('mappings.goneOrgsHelp')}</p>
+              {Object.entries(form.goneOrgs).map(([key, name]) => (
+                <label key={key} className="grid items-center gap-2 text-sm sm:grid-cols-2">
+                  <span className="truncate" title={name}>{name} ({t('mappings.goneOrg')})</span>
+                  <select className={inputClass} value={form.orgs[key] ?? ''} onChange={(e) => setIn('orgs', key, e.target.value)}
+                    data-testid={`ticket-import-mappings-org-${key}`}>
+                    <option value="">{t('mappings.removeMap')}</option>
+                    {orgOptions}
+                  </select>
+                </label>
+              ))}
+            </div>
+          )}
           <label className={`${labelClass} mt-3`}>
             {t('mappings.fallback')}
             <select className={`${inputClass} mt-1`} value={form.fallbackOrgId} onChange={(e) => set('fallbackOrgId', e.target.value)}

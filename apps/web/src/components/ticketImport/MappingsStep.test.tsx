@@ -160,4 +160,25 @@ describe('MappingsStep (#8313 W6)', () => {
     })));
     expect(onSaved).not.toHaveBeenCalled();
   });
+
+  it('keeps a saved map of an org the source no longer lists, unless removed', async () => {
+    route();
+    const gone = { sourceOrgKey: '99', sourceOrgName: 'Old Customer', orgId: ORG_A };
+    const { unmount } = render(<MappingsStep source={sourceDetail({ mappings: { orgs: [gone], categories: [] } })}
+      preflight={preflight()} onPreflight={vi.fn()} onSaved={vi.fn()} onContinue={vi.fn()} />);
+    expect(screen.getByTestId('ticket-import-mappings-gone-orgs')).toHaveTextContent('Old Customer (no longer in the source)');
+    expect(screen.getByTestId('ticket-import-mappings-org-99')).toHaveValue(ORG_A);
+    fireEvent.click(screen.getByTestId('ticket-import-mappings-save'));
+    await waitFor(() => expect(putBody()).not.toBeNull());
+    expect(putBody().orgs).toContainEqual(gone);
+    unmount();
+
+    fetchMock.mockClear();
+    render(<MappingsStep source={sourceDetail({ mappings: { orgs: [gone], categories: [] } })}
+      preflight={preflight()} onPreflight={vi.fn()} onSaved={vi.fn()} onContinue={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('ticket-import-mappings-org-99'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('ticket-import-mappings-save'));
+    await waitFor(() => expect(putBody()).not.toBeNull());
+    expect(putBody().orgs.some((o: { sourceOrgKey: string | null }) => o.sourceOrgKey === '99')).toBe(false);
+  });
 });

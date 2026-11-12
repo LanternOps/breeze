@@ -7,7 +7,9 @@
     "back": "Torna ai ticket",
     "allSources": "Tutte le sorgenti",
     "currentSource": "Sorgente: {{label}}",
-    "sourceMissing": "Questa sorgente non esiste più. Potrebbe essere stata eliminata."
+    "sourceMissing": "Questa sorgente non esiste più. Potrebbe essere stata eliminata.",
+    "sourceLoadFailed": "Impossibile caricare questa sorgente.",
+    "retry": "Riprova"
   },
   "common": {
     "continue": "Continua",
@@ -56,7 +58,9 @@
     "submit": "Connetti e verifica",
     "connecting": "Connessione…",
     "connected": "{{label}} connessa.",
-    "failed": "Impossibile connettere la sorgente."
+    "failed": "Impossibile connettere la sorgente.",
+    "reportTitle": "Il test di connessione ha segnalato:",
+    "reportDismiss": "Chiudi"
   },
   "source": {
     "title": "Sorgente: {{label}}",
@@ -185,7 +189,10 @@
     "saveAndContinue": "Salva e continua",
     "saving": "Salvataggio…",
     "saved": "Mappature salvate.",
-    "saveFailed": "Impossibile salvare le mappature."
+    "saveFailed": "Impossibile salvare le mappature.",
+    "goneOrg": "non più nella sorgente",
+    "goneOrgsHelp": "Mappature salvate di organizzazioni che la sorgente non elenca più. Restano, a meno che tu non le rimuova.",
+    "removeMap": "Rimuovi questa mappatura"
   },
   "run": {
     "title": {
@@ -249,8 +256,20 @@
       "cancelled": "Annullata.",
       "cancelled_by_admin": "Annullata da un amministratore.",
       "worker_lost": "Interrotta: il processo di importazione è andato perso. Riavvia l'esecuzione per riprendere.",
-      "enqueue_failed": "Impossibile mettere in coda l'esecuzione."
-    }
+      "enqueue_failed": "Impossibile mettere in coda l'esecuzione.",
+      "object_storage_required": "Interrotta: l'archiviazione oggetti non è configurata.",
+      "source_missing": "Non riuscita: la sorgente non esiste più.",
+      "module_unavailable": "Non riuscita: questo server non supporta questo help desk.",
+      "invalid_options": "Non riuscita: le opzioni della sorgente non sono valide. Salva di nuovo le mappature.",
+      "credentials_unreadable": "Non riuscita: impossibile leggere il token salvato. Riconnetti la sorgente con un nuovo token.",
+      "window_principal_mismatch": "Interrotta: la finestra di migrazione appartiene al principal di un'altra sorgente.",
+      "source_unauthorized": "Interrotta: l'help desk ha rifiutato il token. Riconnetti la sorgente con un nuovo token.",
+      "source_page_too_large": "Interrotta: una pagina dell'elenco dei ticket era troppo grande da leggere.",
+      "source_shape_invalid": "Interrotta: l'help desk ha risposto in un formato inatteso.",
+      "worker_error": "Non riuscita: il processo di importazione ha avuto un errore. Riavvia l'esecuzione per riprendere.",
+      "sourceHttp": "Interrotta: l'help desk ha risposto con HTTP {{status}}."
+    },
+    "alreadyFinished": "Questa esecuzione era già terminata."
   },
   "report": {
     "meta": "Inizio {{started}} · fine {{finished}} · {{phase}}",
@@ -340,7 +359,10 @@
       "attachment_unavailable": "File non disponibile",
       "org_outside_window": "Organizzazione fuori dalla finestra",
       "incomplete": "Incompleto",
-      "internal_error": "Errore interno"
+      "internal_error": "Errore interno",
+      "MIGRATION_IMPORT_INVALID": "Rifiutato perché non valido",
+      "MIGRATION_SOURCE_ID_IN_USE": "Id di origine già usato",
+      "ASSIGNEE_NOT_ELIGIBLE": "Assegnatario non consentito in questa organizzazione"
     }
   },
   "window": {
@@ -436,13 +458,15 @@
     },
     "remove": "Rimuovi i contatti creati",
     "removeTitle": "Rimuovere i contatti creati?",
-    "removeMessage": "Elimina fino a 500 contatti per clic ({{count}}{{more}} elencati come importati). I loro ticket mantengono nome ed email del richiedente.",
     "removedToast_one": "{{count}} contatto rimosso.",
     "removedToast_other": "{{count}} contatti rimossi.",
     "removeFailed": "Impossibile rimuovere i contatti.",
     "result": "Rimossi: {{removed}}. Mantenuti: {{skipped}}. Ne restano {{remaining}} per il prossimo clic.",
     "stoppedByRun": "Interrotto: è partita un'esecuzione di questa sorgente.",
-    "runActive": "Non è possibile rimuovere contatti mentre un'esecuzione è in corso."
+    "runActive": "Non è possibile rimuovere contatti mentre un'esecuzione è in corso.",
+    "removeMessage_one": "Rimuovere il {{count}} contatto creato da questa importazione e rimasto come importato? I suoi ticket mantengono nome ed email del richiedente.",
+    "removeMessage_other": "Rimuovere i {{count}} contatti creati da questa importazione e rimasti come importati? I loro ticket mantengono nome ed email del richiedente.",
+    "removeMessageMore": "Altri non sono ancora elencati; ogni clic ne rimuove fino a 500."
   },
   "errors": {
     "TICKET_IMPORT_RUN_ACTIVE": "È in corso un'esecuzione di questa sorgente. Attendi o annullala.",
@@ -480,6 +504,10 @@
     "MIGRATION_WINDOW_INVALID_WRITES_PER_HOUR": "Le scritture all'ora sono fuori dall'intervallo consentito.",
     "MIGRATION_WINDOW_NOT_FOUND": "Finestra di migrazione non trovata.",
     "MIGRATION_WINDOW_NOT_OPEN": "La finestra di migrazione non è aperta.",
-    "SESSION_STALE": "La sessione è cambiata. Accedi di nuovo."
+    "SESSION_STALE": "La sessione è cambiata. Accedi di nuovo.",
+    "TICKET_IMPORT_RUN_NOT_QUEUED": "Questa esecuzione non è più in coda.",
+    "SERVICE_PRINCIPAL_NOT_FOUND": "Principal di importazione non trovato.",
+    "SERVICE_PRINCIPAL_OWNER_REQUIRED": "Solo il proprietario del principal di importazione può aprirne la finestra di migrazione.",
+    "MIGRATION_WINDOW_RATE_LIMITED": "Le scritture all'ora della finestra di migrazione sono esaurite per ora; l'importazione attende e riprende."
   }
 }

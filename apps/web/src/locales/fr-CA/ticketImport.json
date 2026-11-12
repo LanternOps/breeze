@@ -7,7 +7,9 @@
     "back": "Retour aux billets",
     "allSources": "Toutes les sources",
     "currentSource": "Source : {{label}}",
-    "sourceMissing": "Cette source n'existe plus. Elle a peut-être été supprimée."
+    "sourceMissing": "Cette source n'existe plus. Elle a peut-être été supprimée.",
+    "sourceLoadFailed": "Impossible de charger cette source.",
+    "retry": "Réessayer"
   },
   "common": {
     "continue": "Continuer",
@@ -56,7 +58,9 @@
     "submit": "Connecter et tester",
     "connecting": "Connexion…",
     "connected": "{{label}} connectée.",
-    "failed": "Impossible de connecter la source."
+    "failed": "Impossible de connecter la source.",
+    "reportTitle": "Le test de connexion a signalé :",
+    "reportDismiss": "Masquer"
   },
   "source": {
     "title": "Source : {{label}}",
@@ -185,7 +189,10 @@
     "saveAndContinue": "Enregistrer et continuer",
     "saving": "Enregistrement…",
     "saved": "Correspondances enregistrées.",
-    "saveFailed": "Impossible d'enregistrer les correspondances."
+    "saveFailed": "Impossible d'enregistrer les correspondances.",
+    "goneOrg": "n'est plus dans la source",
+    "goneOrgsHelp": "Correspondances enregistrées d'organisations que la source ne liste plus. Elles sont conservées sauf si vous les retirez.",
+    "removeMap": "Retirer cette correspondance"
   },
   "run": {
     "title": {
@@ -249,8 +256,20 @@
       "cancelled": "Annulée.",
       "cancelled_by_admin": "Annulée par un administrateur.",
       "worker_lost": "Arrêtée : le processus d'import a été perdu. Relancez l'exécution pour reprendre.",
-      "enqueue_failed": "L'exécution n'a pas pu être mise en file d'attente."
-    }
+      "enqueue_failed": "L'exécution n'a pas pu être mise en file d'attente.",
+      "object_storage_required": "Arrêtée : le stockage objet n'est pas configuré.",
+      "source_missing": "En échec : la source n'existe plus.",
+      "module_unavailable": "En échec : ce serveur ne prend pas en charge cet outil d'assistance.",
+      "invalid_options": "En échec : les options de la source ne sont pas valides. Enregistrez à nouveau les correspondances.",
+      "credentials_unreadable": "En échec : le jeton stocké est illisible. Reconnectez la source avec un nouveau jeton.",
+      "window_principal_mismatch": "Arrêtée : la fenêtre de migration appartient au principal d'une autre source.",
+      "source_unauthorized": "Arrêtée : l'outil d'assistance a refusé le jeton. Reconnectez la source avec un nouveau jeton.",
+      "source_page_too_large": "Arrêtée : une page de la liste des billets était trop volumineuse.",
+      "source_shape_invalid": "Arrêtée : l'outil d'assistance a répondu dans un format inattendu.",
+      "worker_error": "En échec : le processus d'import a rencontré une erreur. Relancez l'exécution pour reprendre.",
+      "sourceHttp": "Arrêtée : l'outil d'assistance a répondu HTTP {{status}}."
+    },
+    "alreadyFinished": "Cette exécution était déjà terminée."
   },
   "report": {
     "meta": "Début {{started}} · fin {{finished}} · {{phase}}",
@@ -340,7 +359,10 @@
       "attachment_unavailable": "Fichier indisponible",
       "org_outside_window": "Organisation hors de la fenêtre",
       "incomplete": "Incomplet",
-      "internal_error": "Erreur interne"
+      "internal_error": "Erreur interne",
+      "MIGRATION_IMPORT_INVALID": "Refusé car invalide",
+      "MIGRATION_SOURCE_ID_IN_USE": "Identifiant source déjà utilisé",
+      "ASSIGNEE_NOT_ELIGIBLE": "Responsable non autorisé dans cette organisation"
     }
   },
   "window": {
@@ -436,13 +458,15 @@
     },
     "remove": "Retirer les contacts créés",
     "removeTitle": "Retirer les contacts créés ?",
-    "removeMessage": "Supprime jusqu'à 500 contacts par clic ({{count}}{{more}} listés comme importés). Leurs billets gardent le nom et l'courriel du demandeur.",
     "removedToast_one": "{{count}} contact retiré.",
     "removedToast_other": "{{count}} contacts retirés.",
     "removeFailed": "Impossible de retirer les contacts.",
     "result": "Retirés : {{removed}}. Conservés : {{skipped}}. Restants pour le prochain clic : {{remaining}}.",
     "stoppedByRun": "Arrêté : une exécution de cette source a démarré.",
-    "runActive": "Impossible de retirer des contacts pendant une exécution."
+    "runActive": "Impossible de retirer des contacts pendant une exécution.",
+    "removeMessage_one": "Retirer le {{count}} contact créé par cet import et resté tel qu'importé ? Ses billets gardent le nom et l'courriel du demandeur.",
+    "removeMessage_other": "Retirer les {{count}} contacts créés par cet import et restés tels qu'importés ? Leurs billets gardent le nom et l'courriel du demandeur.",
+    "removeMessageMore": "D'autres ne sont pas encore listés ; chaque clic en retire jusqu'à 500."
   },
   "errors": {
     "TICKET_IMPORT_RUN_ACTIVE": "Une exécution de cette source est en cours. Attendez-la ou annulez-la.",
@@ -480,6 +504,10 @@
     "MIGRATION_WINDOW_INVALID_WRITES_PER_HOUR": "Le nombre d'écritures par heure est hors limites.",
     "MIGRATION_WINDOW_NOT_FOUND": "Fenêtre de migration introuvable.",
     "MIGRATION_WINDOW_NOT_OPEN": "La fenêtre de migration n'est pas ouverte.",
-    "SESSION_STALE": "Votre session a changé. Reconnectez-vous."
+    "SESSION_STALE": "Votre session a changé. Reconnectez-vous.",
+    "TICKET_IMPORT_RUN_NOT_QUEUED": "Cette exécution n'est plus en file d'attente.",
+    "SERVICE_PRINCIPAL_NOT_FOUND": "Principal d'import introuvable.",
+    "SERVICE_PRINCIPAL_OWNER_REQUIRED": "Seul le propriétaire du principal d'import peut ouvrir sa fenêtre de migration.",
+    "MIGRATION_WINDOW_RATE_LIMITED": "Les écritures par heure de la fenêtre de migration sont épuisées pour l'instant ; l'import attend puis reprend."
   }
 }

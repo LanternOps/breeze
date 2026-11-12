@@ -7,7 +7,9 @@
     "back": "Zurück zu den Tickets",
     "allSources": "Alle Quellen",
     "currentSource": "Quelle: {{label}}",
-    "sourceMissing": "Diese Quelle existiert nicht mehr. Sie wurde möglicherweise gelöscht."
+    "sourceMissing": "Diese Quelle existiert nicht mehr. Sie wurde möglicherweise gelöscht.",
+    "sourceLoadFailed": "Diese Quelle konnte nicht geladen werden.",
+    "retry": "Erneut versuchen"
   },
   "common": {
     "continue": "Weiter",
@@ -56,7 +58,9 @@
     "submit": "Verbinden und testen",
     "connecting": "Wird verbunden…",
     "connected": "{{label}} verbunden.",
-    "failed": "Die Quelle konnte nicht verbunden werden."
+    "failed": "Die Quelle konnte nicht verbunden werden.",
+    "reportTitle": "Der Verbindungstest meldet:",
+    "reportDismiss": "Ausblenden"
   },
   "source": {
     "title": "Quelle: {{label}}",
@@ -185,7 +189,10 @@
     "saveAndContinue": "Speichern und weiter",
     "saving": "Wird gespeichert…",
     "saved": "Zuordnungen gespeichert.",
-    "saveFailed": "Die Zuordnungen konnten nicht gespeichert werden."
+    "saveFailed": "Die Zuordnungen konnten nicht gespeichert werden.",
+    "goneOrg": "nicht mehr in der Quelle",
+    "goneOrgsHelp": "Gespeicherte Zuordnungen von Organisationen, die die Quelle nicht mehr auflistet. Sie bleiben erhalten, außer Sie entfernen sie.",
+    "removeMap": "Diese Zuordnung entfernen"
   },
   "run": {
     "title": {
@@ -249,8 +256,20 @@
       "cancelled": "Abgebrochen.",
       "cancelled_by_admin": "Von einem Administrator abgebrochen.",
       "worker_lost": "Gestoppt: Der Importprozess ging verloren. Starten Sie den Lauf erneut, um fortzusetzen.",
-      "enqueue_failed": "Der Lauf konnte nicht in die Warteschlange gestellt werden."
-    }
+      "enqueue_failed": "Der Lauf konnte nicht in die Warteschlange gestellt werden.",
+      "object_storage_required": "Gestoppt: Der Objektspeicher ist nicht konfiguriert.",
+      "source_missing": "Fehlgeschlagen: Die Quelle existiert nicht mehr.",
+      "module_unavailable": "Fehlgeschlagen: Dieser Server unterstützt diesen Helpdesk nicht.",
+      "invalid_options": "Fehlgeschlagen: Die Optionen der Quelle sind ungültig. Speichern Sie die Zuordnungen erneut.",
+      "credentials_unreadable": "Fehlgeschlagen: Das gespeicherte Token ist nicht lesbar. Verbinden Sie die Quelle mit einem neuen Token.",
+      "window_principal_mismatch": "Gestoppt: Das Migrationsfenster gehört zum Principal einer anderen Quelle.",
+      "source_unauthorized": "Gestoppt: Der Helpdesk hat das Token abgelehnt. Verbinden Sie die Quelle mit einem neuen Token.",
+      "source_page_too_large": "Gestoppt: Eine Seite der Ticketliste war zu groß zum Lesen.",
+      "source_shape_invalid": "Gestoppt: Der Helpdesk hat in einem unerwarteten Format geantwortet.",
+      "worker_error": "Fehlgeschlagen: Im Importprozess ist ein Fehler aufgetreten. Starten Sie den Lauf erneut, um fortzusetzen.",
+      "sourceHttp": "Gestoppt: Der Helpdesk hat mit HTTP {{status}} geantwortet."
+    },
+    "alreadyFinished": "Dieser Lauf war bereits beendet."
   },
   "report": {
     "meta": "Start {{started}} · Ende {{finished}} · {{phase}}",
@@ -340,7 +359,10 @@
       "attachment_unavailable": "Datei nicht verfügbar",
       "org_outside_window": "Organisation nicht im Fenster",
       "incomplete": "Unvollständig",
-      "internal_error": "Interner Fehler"
+      "internal_error": "Interner Fehler",
+      "MIGRATION_IMPORT_INVALID": "Als ungültig abgelehnt",
+      "MIGRATION_SOURCE_ID_IN_USE": "Quell-ID bereits verwendet",
+      "ASSIGNEE_NOT_ELIGIBLE": "Bearbeiter in dieser Organisation nicht zulässig"
     }
   },
   "window": {
@@ -436,13 +458,15 @@
     },
     "remove": "Angelegte Kontakte entfernen",
     "removeTitle": "Angelegte Kontakte entfernen?",
-    "removeMessage": "Löscht bis zu 500 Kontakte pro Klick ({{count}}{{more}} als importiert gelistet). Ihre Tickets behalten Name und E-Mail des Anfragenden.",
     "removedToast_one": "{{count}} Kontakt entfernt.",
     "removedToast_other": "{{count}} Kontakte entfernt.",
     "removeFailed": "Die Kontakte konnten nicht entfernt werden.",
     "result": "Entfernt: {{removed}}. Behalten: {{skipped}}. Für den nächsten Klick verbleibend: {{remaining}}.",
     "stoppedByRun": "Gestoppt: Ein Lauf dieser Quelle wurde gestartet.",
-    "runActive": "Während eines Laufs können keine Kontakte entfernt werden."
+    "runActive": "Während eines Laufs können keine Kontakte entfernt werden.",
+    "removeMessage_one": "Den {{count}} von diesem Import angelegten, unveränderten Kontakt entfernen? Seine Tickets behalten Name und E-Mail des Anfragenden.",
+    "removeMessage_other": "Die {{count}} von diesem Import angelegten, unveränderten Kontakte entfernen? Ihre Tickets behalten Name und E-Mail des Anfragenden.",
+    "removeMessageMore": "Weitere sind noch nicht aufgelistet; jeder Klick entfernt bis zu 500."
   },
   "errors": {
     "TICKET_IMPORT_RUN_ACTIVE": "Ein Lauf dieser Quelle ist im Gange. Warten Sie oder brechen Sie ihn ab.",
@@ -480,6 +504,10 @@
     "MIGRATION_WINDOW_INVALID_WRITES_PER_HOUR": "Die Schreibvorgänge pro Stunde liegen außerhalb des zulässigen Bereichs.",
     "MIGRATION_WINDOW_NOT_FOUND": "Das Migrationsfenster wurde nicht gefunden.",
     "MIGRATION_WINDOW_NOT_OPEN": "Das Migrationsfenster ist nicht offen.",
-    "SESSION_STALE": "Ihre Sitzung hat sich geändert. Melden Sie sich erneut an."
+    "SESSION_STALE": "Ihre Sitzung hat sich geändert. Melden Sie sich erneut an.",
+    "TICKET_IMPORT_RUN_NOT_QUEUED": "Dieser Lauf ist nicht mehr in der Warteschlange.",
+    "SERVICE_PRINCIPAL_NOT_FOUND": "Der Import-Principal wurde nicht gefunden.",
+    "SERVICE_PRINCIPAL_OWNER_REQUIRED": "Nur der Eigentümer des Import-Principals kann sein Migrationsfenster öffnen.",
+    "MIGRATION_WINDOW_RATE_LIMITED": "Die Schreibvorgänge pro Stunde des Migrationsfensters sind vorerst aufgebraucht; der Import wartet und setzt dann fort."
   }
 }

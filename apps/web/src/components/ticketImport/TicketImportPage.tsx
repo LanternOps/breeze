@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
@@ -25,9 +25,10 @@ import {
   type ImportSourceDetail,
   type MigrationWindow,
   type Preflight,
+  type ConnectReport,
 } from './ticketImportApi';
 import ConnectStep from './ConnectStep';
-import PreflightStep from './PreflightStep';
+import PreflightStep, { connectWarningText } from './PreflightStep';
 import MappingsStep from './MappingsStep';
 import RunStep from './RunStep';
 import WindowStep from './WindowStep';
@@ -70,10 +71,13 @@ export default function TicketImportPage() {
   const [sourcesFailed, setSourcesFailed] = useState(false);
   const [detail, setDetail] = useState<ImportSourceDetail | null>(null);
   const [detailMissing, setDetailMissing] = useState(false);
+  const [detailFailed, setDetailFailed] = useState(false);
   const [runs, setRuns] = useState<ImportRun[]>([]);
   const [windows, setWindows] = useState<MigrationWindow[]>([]);
   const [windowsFailed, setWindowsFailed] = useState(false);
   const [preflights, setPreflights] = useState<Record<string, Preflight>>({});
+  // The live test's report from connecting a source here (token_not_read_only, ...), shown until dismissed.
+  const [connectReport, setConnectReport] = useState<{ sourceId: string; report: ConnectReport } | null>(null);
 
   const go = useCallback((next: ImportHash) => {
     setHash(next);
@@ -105,21 +109,33 @@ export default function TicketImportPage() {
   }, []);
 
   const sourceId = hash.sourceId;
+  // Each read is numbered: only the newest answer for the current source lands,
+  // so a slow answer for a source left behind (or an older refresh) never
+  // overwrites a newer one.
+  const detailSeq = useRef(0);
+  const runsSeq = useRef(0);
   const loadDetail = useCallback(async () => {
+    const seq = ++detailSeq.current;
     if (!sourceId) { setDetail(null); return; }
     try {
       const { data } = await readImport<ImportSourceDetail>(`/ticket-imports/sources/${sourceId}`);
+      if (seq !== detailSeq.current) return;
       setDetail(data);
       setDetailMissing(false);
+      setDetailFailed(false);
     } catch (error) {
+      if (seq !== detailSeq.current) return;
       if (error instanceof ImportReadError && error.status === 404) setDetailMissing(true);
+      else setDetailFailed(true);
     }
   }, [sourceId]);
 
   const loadRuns = useCallback(async () => {
+    const seq = ++runsSeq.current;
     if (!sourceId) { setRuns([]); return; }
     try {
       const { data } = await readImport<ImportRun[]>(`/ticket-imports/sources/${sourceId}/runs`);
+      if (seq !== runsSeq.current) return;
       setRuns(data);
     } catch {
       // The steps keep the runs they have; the next refresh tries again.
@@ -136,6 +152,7 @@ export default function TicketImportPage() {
   useEffect(() => {
     setDetail(null);
     setDetailMissing(false);
+    setDetailFailed(false);
     setRuns([]);
     if (!allowed || !sourceId) return;
     void loadDetail();
@@ -245,10 +262,23 @@ export default function TicketImportPage() {
         modules={modules}
         sources={sources ?? []}
         source={null}
-        onCreated={(id) => { void loadSources(); go({ sourceId: id, step: 'preflight' }); }}
+        onCreated={(id, report) => {
+          if (report) setConnectReport({ sourceId: id, report });
+          void loadSources();
+          go({ sourceId: id, step: 'preflight' });
+        }}
         onChanged={refreshSource}
         onDeleted={() => go(DEFAULT_IMPORT_HASH)}
       />
+    );
+  } else if (!detail && detailFailed) {
+    body = (
+      <Notice tone="error" testId="ticket-import-source-failed">
+        {t('page.sourceLoadFailed')}{' '}
+        <button type="button" className="font-medium underline underline-offset-2"
+          onClick={() => { setDetailFailed(false); void loadDetail(); void loadRuns(); }}
+          data-testid="ticket-import-source-retry">{t('page.retry')}</button>
+      </Notice>
     );
   } else if (!detail) {
     body = <p className="text-sm text-muted-foreground" data-testid="ticket-import-source-loading">{t('page.loading')}</p>;
@@ -267,7 +297,7 @@ export default function TicketImportPage() {
       case 'dry-run':
       case 'bulk':
       case 'delta':
-        body = <RunStep key={step} kind={step === 'dry-run' ? 'dry_run' : step} source={detail} runs={runs} openWindow={openWindow}
+        body = <RunStep key={step} kind={step === 'dry-run' ? 'dry_run' : step} source={detail} runs={runs} openWindow={openWindow} latestWindow={latestWindow}
           nameOfOrg={nameOfOrg} onRunsChanged={refreshAll} onOpenWindowStep={() => toStep('window')}
           onContinue={() => toStep(step === 'dry-run' ? 'window' : step === 'bulk' ? 'delta' : 'close')} />;
         break;
@@ -303,7 +333,21 @@ export default function TicketImportPage() {
             onStepClick={sourceId ? (i) => toStep(IMPORT_STEPS[i]!) : undefined}
           />
         </div>
-        <div className="min-w-0 space-y-4" data-testid={`ticket-import-step-${step ?? 'connect'}`}>{body}</div>
+        <div className="min-w-0 space-y-4" data-testid={`ticket-import-step-${step ?? 'connect'}`}>
+          {connectReport && connectReport.sourceId === sourceId && connectReport.report.warnings.length > 0 && (
+            <Notice tone="warning" testId="ticket-import-connect-report">
+              <span className="font-medium">{t('connect.reportTitle')}</span>
+              <ul className="mt-1 list-disc pl-5">
+                {connectReport.report.warnings.map((w, i) => (
+                  <li key={`${w.code}-${i}`} data-testid={`ticket-import-connect-report-${w.code}`}>{connectWarningText(t, w.code, w.detail)}</li>
+                ))}
+              </ul>
+              <button type="button" className="mt-1 text-xs underline" onClick={() => setConnectReport(null)}
+                data-testid="ticket-import-connect-report-dismiss">{t('connect.reportDismiss')}</button>
+            </Notice>
+          )}
+          {body}
+        </div>
       </div>
       {windowList}
     </div>

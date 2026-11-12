@@ -95,6 +95,26 @@ describe('ConnectStep — a new source (#8313 W6)', () => {
     expect(posts('/ticket-imports/sources').map((c) => (c.body as { principalId: string }).principalId)).toEqual([PRINCIPAL_ID, PRINCIPAL_ID]);
   });
 
+  it('a new label after a refused create makes a new principal under the new name', async () => {
+    let attempt = 0;
+    route({
+      'GET /partner-service-principals': () => json(200, { data: [] }),
+      'POST /partner-service-principals': () => json(201, { data: { id: attempt === 0 ? PRINCIPAL_ID : 'p-second' } }),
+      'POST /ticket-imports/sources': () => (++attempt === 1
+        ? json(400, { error: 'refused', code: 'TICKET_IMPORT_INVALID_CREDENTIALS' })
+        : json(201, { data: { id: SOURCE_ID } })),
+    });
+    const onCreated = vi.fn();
+    render(<ConnectStep modules={modules} sources={[]} source={null} onCreated={onCreated} onChanged={vi.fn()} onDeleted={vi.fn()} />);
+    fill();
+    fireEvent.click(screen.getByTestId('ticket-import-connect-submit'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId('ticket-import-connect-label'), { target: { value: 'Zammad EU' } });
+    fireEvent.click(screen.getByTestId('ticket-import-connect-submit'));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(posts('/partner-service-principals').map((c) => (c.body as { name: string }).name)).toEqual(['Import: Zammad', 'Import: Zammad EU']);
+  });
+
   it('reuses a keyless principal the caller owns, without creating one', async () => {
     const reusable = { id: PRINCIPAL_ID, name: 'Import: old', status: 'active', scopes: ['tickets:write'], expiresAt: null, owner: { id: 'user-me', name: 'Me' }, keys: [] };
     const foreign = { ...reusable, id: 'p-foreign', name: 'Someone else', owner: { id: 'other', name: 'Other' } };

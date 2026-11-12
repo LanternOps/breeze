@@ -7,7 +7,9 @@
     "back": "Volver a los tickets",
     "allSources": "Todos los orígenes",
     "currentSource": "Origen: {{label}}",
-    "sourceMissing": "Este origen ya no existe. Es posible que se haya eliminado."
+    "sourceMissing": "Este origen ya no existe. Es posible que se haya eliminado.",
+    "sourceLoadFailed": "No se pudo cargar este origen.",
+    "retry": "Reintentar"
   },
   "common": {
     "continue": "Continuar",
@@ -56,7 +58,9 @@
     "submit": "Conectar y probar",
     "connecting": "Conectando…",
     "connected": "{{label}} conectado.",
-    "failed": "No se pudo conectar el origen."
+    "failed": "No se pudo conectar el origen.",
+    "reportTitle": "La prueba de conexión informó:",
+    "reportDismiss": "Descartar"
   },
   "source": {
     "title": "Origen: {{label}}",
@@ -185,7 +189,10 @@
     "saveAndContinue": "Guardar y continuar",
     "saving": "Guardando…",
     "saved": "Asignaciones guardadas.",
-    "saveFailed": "No se pudieron guardar las asignaciones."
+    "saveFailed": "No se pudieron guardar las asignaciones.",
+    "goneOrg": "ya no está en el origen",
+    "goneOrgsHelp": "Asignaciones guardadas de organizaciones que el origen ya no lista. Se conservan salvo que las quite.",
+    "removeMap": "Quitar esta asignación"
   },
   "run": {
     "title": {
@@ -249,8 +256,20 @@
       "cancelled": "Cancelada.",
       "cancelled_by_admin": "Cancelada por un administrador.",
       "worker_lost": "Detenida: se perdió el proceso de importación. Iníciela de nuevo para continuar.",
-      "enqueue_failed": "No se pudo poner la ejecución en cola."
-    }
+      "enqueue_failed": "No se pudo poner la ejecución en cola.",
+      "object_storage_required": "Detenida: el almacenamiento de objetos no está configurado.",
+      "source_missing": "Fallida: el origen ya no existe.",
+      "module_unavailable": "Fallida: este servidor no admite esta mesa de ayuda.",
+      "invalid_options": "Fallida: las opciones del origen no son válidas. Vuelva a guardar las asignaciones.",
+      "credentials_unreadable": "Fallida: no se pudo leer el token guardado. Reconecte el origen con un token nuevo.",
+      "window_principal_mismatch": "Detenida: la ventana de migración pertenece al principal de otro origen.",
+      "source_unauthorized": "Detenida: la mesa de ayuda rechazó el token. Reconecte el origen con un token nuevo.",
+      "source_page_too_large": "Detenida: una página de la lista de tickets era demasiado grande para leerla.",
+      "source_shape_invalid": "Detenida: la mesa de ayuda respondió con un formato inesperado.",
+      "worker_error": "Fallida: el proceso de importación tuvo un error. Iníciela de nuevo para continuar.",
+      "sourceHttp": "Detenida: la mesa de ayuda respondió con HTTP {{status}}."
+    },
+    "alreadyFinished": "Esta ejecución ya había terminado."
   },
   "report": {
     "meta": "Inicio {{started}} · fin {{finished}} · {{phase}}",
@@ -340,7 +359,10 @@
       "attachment_unavailable": "Archivo no disponible",
       "org_outside_window": "Organización fuera de la ventana",
       "incomplete": "Incompleto",
-      "internal_error": "Error interno"
+      "internal_error": "Error interno",
+      "MIGRATION_IMPORT_INVALID": "Rechazado por no ser válido",
+      "MIGRATION_SOURCE_ID_IN_USE": "Id de origen ya usado",
+      "ASSIGNEE_NOT_ELIGIBLE": "Responsable no permitido en esta organización"
     }
   },
   "window": {
@@ -436,13 +458,15 @@
     },
     "remove": "Quitar contactos creados",
     "removeTitle": "¿Quitar los contactos creados?",
-    "removeMessage": "Elimina hasta 500 contactos por clic ({{count}}{{more}} listados como importados). Sus tickets conservan el nombre y el correo del solicitante.",
     "removedToast_one": "Se quitó {{count}} contacto.",
     "removedToast_other": "Se quitaron {{count}} contactos.",
     "removeFailed": "No se pudieron quitar los contactos.",
     "result": "Quitados: {{removed}}. Conservados: {{skipped}}. Quedan {{remaining}} para el próximo clic.",
     "stoppedByRun": "Detenido: empezó una ejecución de este origen.",
-    "runActive": "No se pueden quitar contactos mientras hay una ejecución en curso."
+    "runActive": "No se pueden quitar contactos mientras hay una ejecución en curso.",
+    "removeMessage_one": "¿Quitar el {{count}} contacto creado por esta importación que sigue como se importó? Sus tickets conservan el nombre y el correo del solicitante.",
+    "removeMessage_other": "¿Quitar los {{count}} contactos creados por esta importación que siguen como se importaron? Sus tickets conservan el nombre y el correo del solicitante.",
+    "removeMessageMore": "Hay más que todavía no se listan; cada clic quita hasta 500."
   },
   "errors": {
     "TICKET_IMPORT_RUN_ACTIVE": "Hay una ejecución de este origen en curso. Espere a que termine o cancélela.",
@@ -480,6 +504,10 @@
     "MIGRATION_WINDOW_INVALID_WRITES_PER_HOUR": "Las escrituras por hora están fuera del rango permitido.",
     "MIGRATION_WINDOW_NOT_FOUND": "No se encontró la ventana de migración.",
     "MIGRATION_WINDOW_NOT_OPEN": "La ventana de migración no está abierta.",
-    "SESSION_STALE": "Su sesión cambió. Inicie sesión de nuevo."
+    "SESSION_STALE": "Su sesión cambió. Inicie sesión de nuevo.",
+    "TICKET_IMPORT_RUN_NOT_QUEUED": "Esta ejecución ya no está en cola.",
+    "SERVICE_PRINCIPAL_NOT_FOUND": "No se encontró el principal de importación.",
+    "SERVICE_PRINCIPAL_OWNER_REQUIRED": "Solo el propietario del principal de importación puede abrir su ventana de migración.",
+    "MIGRATION_WINDOW_RATE_LIMITED": "Las escrituras por hora de la ventana de migración se agotaron por ahora; la importación espera y continúa."
   }
 }

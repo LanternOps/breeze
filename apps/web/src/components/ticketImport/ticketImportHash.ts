@@ -22,7 +22,12 @@ export function parseImportHash(hash: string): ImportHash {
     const eq = part.indexOf('=');
     if (eq <= 0) continue;
     const key = part.slice(0, eq);
-    const value = decodeURIComponent(part.slice(eq + 1));
+    let value: string;
+    try {
+      value = decodeURIComponent(part.slice(eq + 1));
+    } catch {
+      continue; // a malformed % escape: the part is ignored, not the whole hash
+    }
     if (key === 'source' && UUID.test(value)) sourceId = value.toLowerCase();
     else if (key === 'step' && isImportStep(value)) step = value;
   }

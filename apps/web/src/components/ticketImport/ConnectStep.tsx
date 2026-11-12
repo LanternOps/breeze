@@ -168,7 +168,12 @@ function NewSource({ modules, sources, onCreated }: Pick<Props, 'modules' | 'sou
             className={`${inputClass} mt-1`}
             value={label}
             maxLength={LABEL_MAX}
-            onChange={(e) => setLabel(e.target.value)}
+            onChange={(e) => {
+              setLabel(e.target.value);
+              // A principal made for the old label is not reused under a new name;
+              // it stays keyless and unbound, so "reuse" offers it.
+              if (createdPrincipal) { setCreatedPrincipal(null); void loadPrincipals(); }
+            }}
             placeholder={t('connect.labelPlaceholder')}
             data-testid="ticket-import-connect-label"
           />

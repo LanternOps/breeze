@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '../../lib/runAction';
@@ -50,6 +50,13 @@ export default function CreatedContactsPanel({ source, nameOfOrg, runActive }: P
   }, [source.id]);
 
   useEffect(() => { void load(null); }, [load]);
+
+  // A run that just ended may have created contacts: read the set again.
+  const wasActive = useRef(runActive);
+  useEffect(() => {
+    if (wasActive.current && !runActive) void load(null);
+    wasActive.current = runActive;
+  }, [runActive, load]);
 
   const remove = async () => {
     setRemoving(true);
@@ -140,7 +147,9 @@ export default function CreatedContactsPanel({ source, nameOfOrg, runActive }: P
         onClose={() => setConfirm(false)}
         onConfirm={() => void remove()}
         title={t('contacts.removeTitle')}
-        message={t('contacts.removeMessage', { count: removable, more: next ? '+' : '' })}
+        message={next
+          ? `${t('contacts.removeMessage', { count: removable })} ${t('contacts.removeMessageMore')}`
+          : t('contacts.removeMessage', { count: removable })}
         confirmLabel={t('contacts.remove')}
         isLoading={removing}
         confirmTestId="ticket-import-contacts-remove-confirm"
