@@ -22,12 +22,19 @@ func (f downloadOriginTransport) RoundTrip(r *http.Request) (*http.Response, err
 // records the Authorization header of every request and answers 200.
 func newDownloadOriginUpdater(t *testing.T) (*Updater, func() []string) {
 	t.Helper()
+	return newDownloadOriginUpdaterFor(t, "https://api.example")
+}
+
+// newDownloadOriginUpdaterFor is newDownloadOriginUpdater with the given
+// primary server URL.
+func newDownloadOriginUpdaterFor(t *testing.T, serverURL string) (*Updater, func() []string) {
+	t.Helper()
 	var (
 		mu   sync.Mutex
 		seen []string
 	)
 	u := New(&Config{
-		ServerURL:       staticServerURL("https://api.example"),
+		ServerURL:       staticServerURL(serverURL),
 		BackupServerURL: "https://backup.example",
 		AuthToken:       secmem.NewSecureString("test-token"),
 		TempDir:         t.TempDir(),
@@ -49,21 +56,30 @@ func newDownloadOriginUpdater(t *testing.T) (*Updater, func() []string) {
 // primary or backup control-plane origin (scheme, host and port).
 func TestArtifactDownloadSendsCredentialOnlyToControlPlaneOrigin(t *testing.T) {
 	for _, tc := range []struct {
+		server        string
 		url           string
 		authenticated bool
 	}{
-		{"https://api.example/asset", true},
-		{"https://API.EXAMPLE:443/asset", true},
-		{"HTTPS://api.example/asset", true},
-		{"https://backup.example/asset", true},
-		{"https://cdn.example/asset", false},
-		{"https://sub.api.example/asset", false},
-		{"https://api.example:8443/asset", false},
-		{"http://api.example/asset", false},
-		{"https://user:pass@api.example/asset", false},
+		{"", "https://api.example/asset", true},
+		{"", "https://API.EXAMPLE:443/asset", true},
+		{"", "HTTPS://api.example/asset", true},
+		{"", "https://backup.example/asset", true},
+		{"", "https://cdn.example/asset", false},
+		{"", "https://sub.api.example/asset", false},
+		{"", "https://api.example:8443/asset", false},
+		{"", "http://api.example/asset", false},
+		{"", "https://user:pass@api.example/asset", false},
+		// The origin ignores the server URL's path.
+		{"https://api.example/prefix/", "https://api.example/asset", true},
+		// An http server URL does not match an https asset on the same host.
+		{"http://api.example", "https://api.example/asset", false},
 	} {
-		t.Run(tc.url, func(t *testing.T) {
-			u, seen := newDownloadOriginUpdater(t)
+		t.Run(tc.server+" "+tc.url, func(t *testing.T) {
+			server := tc.server
+			if server == "" {
+				server = "https://api.example"
+			}
+			u, seen := newDownloadOriginUpdaterFor(t, server)
 			filename, err := u.downloadFromURL(tc.url)
 			if err != nil {
 				t.Fatal(err)

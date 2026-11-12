@@ -2,6 +2,7 @@ package logging
 
 import (
 	"net/http"
+	"net/http/cookiejar"
 	"testing"
 	"time"
 
@@ -14,16 +15,20 @@ func TestDefaultShipperClientKeepsRedirectsOnServerHost(t *testing.T) {
 }
 
 // A caller-supplied client with no redirect policy of its own gets the
-// shared one; its timeout and transport are kept.
+// shared one; its timeout, transport and cookie jar are kept.
 func TestInjectedShipperClientKeepsRedirectsOnServerHost(t *testing.T) {
 	transport := &http.Transport{}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := NewShipper(ShipperConfig{
 		ServerURL:  func() string { return httpguardtest.Origin },
-		HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: transport},
+		HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: transport, Jar: jar},
 	})
 	httpguardtest.RequireSameHostRedirectsOnly(t, s.httpClient)
-	if s.httpClient.Timeout != 5*time.Second || s.httpClient.Transport != transport {
-		t.Fatalf("injected client settings not kept: timeout=%v transport=%T", s.httpClient.Timeout, s.httpClient.Transport)
+	if s.httpClient.Timeout != 5*time.Second || s.httpClient.Transport != transport || s.httpClient.Jar != jar {
+		t.Fatalf("injected client settings not kept: timeout=%v transport=%T jar=%v", s.httpClient.Timeout, s.httpClient.Transport, s.httpClient.Jar)
 	}
 }
 
