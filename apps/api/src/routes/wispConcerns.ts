@@ -74,6 +74,7 @@ import {
   type GrantCeiling,
 } from '../services/wisp/grantAuthority';
 import { MemoryServiceError, recordHumanBlock } from '../services/wisp/memoryService';
+import { forgetStandingStateFacts } from '../services/wisp/standingStateTurn';
 
 // ---------------------------------------------------------------------------
 // Shared with routes/wispWatches.ts: grant access, ceiling, error shapes
@@ -232,6 +233,8 @@ async function mutateConcern(
     if (err instanceof ConcernNotFoundError) return c.json(WISP_NOT_FOUND, 404);
     throw err;
   }
+  // #11611: the grant's next chat turn reads this action, not facts cached before it.
+  forgetStandingStateFacts(access.grant.id);
 
   writeRouteAudit(c, {
     orgId: concern.orgId,

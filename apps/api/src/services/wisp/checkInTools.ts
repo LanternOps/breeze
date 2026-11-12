@@ -311,7 +311,7 @@ const listCheckInsHandler = grantTool(listCheckInsInputSchema, async (input, cei
 
 const cancelCheckInHandler = grantTool(cancelCheckInSchema, async (input, ceiling) => {
   // Keyed on the grant: another grant's id reads the same as an unknown one.
-  const row = await cancelCheckIn(ceiling.grantId, input.checkInId);
+  const row = await cancelCheckIn(ceiling.grantId, input.checkInId, 'wisp');
   if (!row) return CHECK_IN_NOT_FOUND;
   return `Check-in ${row.id} cancelled.`;
 });

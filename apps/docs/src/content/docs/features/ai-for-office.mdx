@@ -30,7 +30,7 @@ Once your partner is entitled, you configure AI for Office per customer organiza
 | Data-loss protection | Redaction rules that strip sensitive data (such as PII) before it leaves the document |
 | Budgets | Optional daily and monthly spend caps |
 | Rate limits | Per-user and per-organization message limits |
-| Retention | How long chat history is kept |
+| Retention | How long chat history is kept after a conversation's last activity. Blank keeps it. A nightly job removes the content of older conversations and keeps a stub (who, when, cost, and each tool call with its input and output replaced by a marker); flagged conversations are held. The job is report-only until `AI_TRANSCRIPT_RETENTION_ENFORCE=true`; see [AI conversation retention](/features/ai/#conversation-retention-preview) |
 | Branding | A display name and logo shown to end-users |
 
 ### Mapping the Customer's Microsoft Tenant

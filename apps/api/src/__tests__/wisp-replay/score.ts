@@ -38,6 +38,8 @@ export type ReplayTurnTrace = {
   user: string;
   /** A `<wisp_standing_state>` block rode on this turn. */
   standingStateSent: boolean;
+  /** #11671: the specialist runs whose results rode on this turn (absent in hand-built traces). */
+  specialistResultsGiven?: string[];
   toolCalls: ReplayToolCall[];
   /** The model's reply text (never the server-written corrections). */
   assistantText: string;

@@ -52,6 +52,13 @@ const UNAVAILABLE = 'Service temporarily unavailable';
 export const SELF_REGISTER_REQUEST_AGAIN = 'Something went wrong. Request access again in a few minutes.';
 /** D10 residual: the account exists but its invite token was not minted. */
 export const SELF_REGISTER_ACCOUNT_PENDING_SETUP = "Your account was created, but we couldn't finish setting it up. Ask your IT provider to resend your invitation.";
+/**
+ * Marks a 503 sent AFTER the link was consumed, so the verify page drops its
+ * Confirm button: a retry can only 400 and would replace the instruction
+ * above. The pre-consume 503 (no Redis client) has no code and stays
+ * retryable. It describes the link's state, never whether an account exists.
+ */
+export const SELF_REGISTER_LINK_SPENT = 'SELF_REGISTER_LINK_SPENT';
 
 const sha256Hex = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -138,7 +145,7 @@ selfRegistrationRoutes.post('/auth/self-register/verify', zValidator('json', sel
     console.error('[portal-self-registration] verify failed after consume', { orgId: payload.orgId, ...safeErrorFields(err) });
     reportSelfRegistrationFailure('verify failed after consume', err);
     await writeAuditEventAsync(c, { ...audit, resourceType: 'portal_auth', result: 'failure', details: { outcome: 'error' } });
-    return c.json({ error: SELF_REGISTER_REQUEST_AGAIN }, 503);
+    return c.json({ error: SELF_REGISTER_REQUEST_AGAIN, code: SELF_REGISTER_LINK_SPENT }, 503);
   }
 
   switch (result.outcome) {
@@ -181,7 +188,7 @@ selfRegistrationRoutes.post('/auth/self-register/verify', zValidator('json', sel
       if (!result.inviteToken) {
         // D10 residual (logged and reported in complete.ts): the account
         // exists, invited and visible to the MSP, who can resend the invite.
-        return c.json({ error: SELF_REGISTER_ACCOUNT_PENDING_SETUP }, 503);
+        return c.json({ error: SELF_REGISTER_ACCOUNT_PENDING_SETUP, code: SELF_REGISTER_LINK_SPENT }, 503);
       }
       return c.json({ outcome: 'account_created', next: `/accept-invite?token=${encodeURIComponent(result.inviteToken)}` });
   }

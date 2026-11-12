@@ -383,8 +383,9 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   // every request with no cache (plan D1), so an org override or an inherited
   // partner default that switches password sign-in off ends a live password
   // session on its very next request, on every API instance. The same check
-  // ends an SSO session at the current `ssoSessionMaxHours` from its mint, and
-  // an entra session whose tenant is no longer the org's proven one (W4, D9).
+  // ends an SSO session at the current `ssoSessionMaxHours` from its mint, an
+  // entra session whose tenant is no longer the org's proven one (W4, D9), and
+  // a google session whose `hd` is no longer verified for the org (W7, D7).
   // Logout is exempt so a refused session can still sign out.
   //
   // No DB context is held here: the request transaction is opened only at the

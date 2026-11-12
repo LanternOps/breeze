@@ -123,7 +123,15 @@
     "retentionKeepDays": "Conservar durante (días)",
     "retentionKeepForever": "Conservar siempre",
     "retentionBreezeDefault": "Predeterminado de Breeze: {{days}} días",
-    "partnerRetentionHelp": "Elija cuánto tiempo se conservan las salidas de las herramientas de IA, o conservarlas siempre. Las salidas más antiguas se reemplazan por un marcador en la ejecución nocturna."
+    "partnerRetentionHelp": "Elija cuánto tiempo se conservan las salidas de las herramientas de IA, o conservarlas siempre. Las salidas más antiguas se reemplazan por un marcador en la ejecución nocturna.",
+    "transcriptLabel": "Conservar conversaciones de IA de técnicos durante (días)",
+    "transcriptHelp": "Cuando la aplicación de la retención esté activada, las conversaciones más antiguas perderán sus mensajes, títulos y detalles de herramientas en la ejecución nocturna; el registro de la sesión conserva su costo, modelo y cantidad de turnos. Las conversaciones marcadas se conservan. En blanco hereda.",
+    "transcriptAuditNote": "Las entradas del registro de auditoría sobre una sesión de técnico, incluidas las entradas de herramientas, siguen el período de retención de auditoría, no este.",
+    "transcriptClientNote": "Las conversaciones de IA de cliente (AI for Office) tienen su propio período.",
+    "transcriptClientLink": "Configuración de retención de IA de cliente",
+    "transcriptAboveCeiling": "Su partner conserva las conversaciones de IA de técnicos durante un máximo de {{days}} días.",
+    "partnerTranscriptHelp": "Elija cuánto tiempo se conservan las conversaciones de IA de técnicos, o consérvelas para siempre. Las organizaciones solo pueden acortarlo. Cuando la aplicación de la retención esté activada, las conversaciones más antiguas perderán sus mensajes, títulos y detalles de herramientas en la ejecución nocturna.",
+    "invalidDays": "Ingrese un número entero de días."
   },
   "partnerServicePrincipals": {
     "title": "Principales de servicio",
@@ -592,7 +600,74 @@
       "removeTitle": "¿Quitar este modelo?",
       "removeMessage": "«{{model}}» se eliminará de esta conexión. Se conserva el historial de uso y costos. Puedes volver a agregarlo más tarde.",
       "removed": "Modelo quitado",
-      "removeFailed": "No se pudo quitar el modelo. Inténtalo de nuevo."
+      "removeFailed": "No se pudo quitar el modelo. Inténtalo de nuevo.",
+      "tools": {
+        "title": "Herramientas y contexto",
+        "partnerOnly": "Lo define el partner en el modelo. Las organizaciones eligen modelos; no pueden anular esto.",
+        "profileLabel": "Perfil de herramientas",
+        "profile": {
+          "auto": "Auto (se ajusta a la ventana de contexto)",
+          "full": "Completo (todas las herramientas)",
+          "standard": "Estándar",
+          "minimal": "Mínimo (solo lectura)",
+          "custom": "Personalizado"
+        },
+        "profileHint": {
+          "auto": "Breeze elige el perfil más grande que cabe en la ventana de contexto conocida del modelo. Mientras la ventana sea desconocida, todas las herramientas siguen disponibles.",
+          "full": "Todas las herramientas que ofrece hoy cada función.",
+          "standard": "Herramientas de soporte de uso diario y un prompt más corto (unas 40 herramientas en el chat, menos en el helper, el generador de scripts y Office).",
+          "minimal": "Una docena de herramientas de solo lectura y un prompt corto, para modelos locales pequeños.",
+          "custom": "Solo las áreas de herramientas y las herramientas que indiques, en cada función que use este modelo."
+        },
+        "appliesWhen": "Cuando un cambio altera lo que usa una función, las conversaciones abiertas con este modelo reinician su sesión de IA en el siguiente mensaje y piden al usuario que lo envíe de nuevo.",
+        "domainsLabel": "Áreas de herramientas",
+        "domainCore": "Herramientas de contexto básico",
+        "toolsLabel": "Herramientas individuales",
+        "toolsHint": "Nombres de herramientas, separados por comas o saltos de línea. Breeze comprueba cada nombre al guardar.",
+        "droppedTools": "Estas herramientas ya no existen y se ignoran: {{tools}}.",
+        "underpowered": "Este cambio quitaría herramientas que necesita una función que usa este modelo:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Capacidad desconocida: no se restringe nada. Auto conserva todas las herramientas hasta que el endpoint indique o informe una ventana de contexto, o hasta que definas una abajo.",
+        "windowNotLearned": "Breeze solo detecta ventanas de contexto en tus propios endpoints compatibles con OpenAI, por lo que Auto mantiene todas las herramientas en este modelo.",
+        "windowKnown": "Ventana de contexto: {{tokens}} tokens ({{source}}).",
+        "windowSource": {
+          "override": "definida aquí",
+          "discovered": "listada por el endpoint"
+        },
+        "windowObserved": "Ventana de contexto: {{tokens}} tokens (informada por el endpoint {{age}}).",
+        "observedStale": "El endpoint informó por última vez {{tokens}} tokens {{age}}. Ese informe tiene más de una hora o es de una configuración anterior del endpoint, así que ya no limita nada.",
+        "overrideLabel": "Anulación de la ventana de contexto (tokens)",
+        "overrideHint": "Solo para modelos en tu propio endpoint compatible con OpenAI. Déjalo en blanco para usar lo que el endpoint liste o informe. Las conversaciones nuevas usan el valor modificado; las abiertas conservan su límite actual, salvo que cambie el perfil que usan.",
+        "surfacesTitle": "Lo que usa ahora cada función",
+        "reason": {
+          "explicit": "elegido aquí",
+          "auto_window": "auto, según la ventana de contexto",
+          "auto_unknown_window": "auto, ventana desconocida",
+          "auto_unmeasured": "auto; esta función aún no está limitada"
+        },
+        "missingRequired": "Rechaza este modelo: le faltarían {{tools}}.",
+        "tooSmall": "Ventana demasiado pequeña",
+        "tooSmallHint": "Ningún perfil cabe en esta ventana, por lo que esta función rechaza el modelo.",
+        "fitSuggestion": "Con {{tokens}} tokens, Auto elegiría {{profile}} aquí; es posible que este perfil no quepa.",
+        "readiness": {
+          "tokens": "{{tokens}} tokens de prompt",
+          "passed": "El ciclo completo de herramientas se superó.",
+          "failed": "El ciclo completo de herramientas falló, por lo que esta función rechaza el modelo. {{summary}}",
+          "inconclusive": "No concluyente: falló el endpoint, no el modelo. No se rechaza nada. {{summary}}",
+          "stale": "Desactualizado: el endpoint o el perfil de herramientas cambió desde entonces. Verifica de nuevo para volver a comprobarlo.",
+          "absent": "Aún no hay un ciclo completo de herramientas. Verificar ejecuta uno por cada función a la que se asigna este modelo.",
+          "absentVerified": "Verificado (básico). Verifica de nuevo para comprobar un ciclo completo de herramientas real en {{surface}}.",
+          "officeNotChecked": "Sin comprobar: Verificar no ejecuta un ciclo completo de Office."
+        },
+        "verifyCost": "Verificar envía solicitudes reales a tu endpoint, que cobra tu proveedor: una comprobación básica y luego un ciclo de herramienta por cada función a la que está asignado este modelo. Un ciclo puede tomar hasta 4 turnos del modelo, y cada uno reenvía el prompt completo: en el chat con el perfil Completo una solicitud ronda los 128.000 tokens, así que una comprobación del chat puede acercarse a 500.000.",
+        "invalidCustom": "Elige al menos un área de herramientas o una herramienta para un perfil personalizado.",
+        "invalidWindow": "Ingresa un número entero de tokens entre {{min}} y {{max}}, o déjalo en blanco.",
+        "ageMinutes": "hace {{n}} min",
+        "ageHours": "hace {{n}} h",
+        "ageDays": "hace {{n}} d",
+        "missingRequiredTroubleshooting": "Las ejecuciones de solución de problemas de dispositivos rechazan este modelo: les faltaría {{tools}}. Las demás ejecuciones de agentes no se ven afectadas.",
+        "underpoweredTooSmall": "{{surface}}: ningún perfil de herramientas cabe en esta ventana de contexto"
+      }
     },
     "defaults": {
       "title": "Valores predeterminados por función",
@@ -703,12 +778,14 @@
       "groupBy": {
         "model": "Modelo",
         "surface": "Función",
-        "prompt_profile": "Familia de modelos"
+        "prompt_profile": "Familia de modelos",
+        "tool_profile": "Perfil de herramientas"
       },
       "columns": {
         "conversations": "Conversaciones",
         "costPerConversation": "Costo / conversación",
         "refusalRate": "Tasa de rechazo",
+        "refusedToolBatches": "Llamadas a herramientas no utilizables",
         "failoverRate": "Tasa de failover",
         "flagRate": "Tasa de marcado",
         "leftRate": "Pasó a otro modelo",
@@ -719,6 +796,7 @@
         "conversations": "Sesiones de chat y ejecuciones de agente cuya última llamada de modelo en este período fue en esta fila.",
         "costPerConversation": "Gasto promedio en esta fila por cada conversación que la usó.",
         "refusalRate": "Llamadas de modelo que el modelo rechazó, por llamada.",
+        "refusedToolBatches": "Llamadas al modelo en un turno en el que el modelo pidió ejecutar una herramienta de una forma que Breeze no pudo usar (una herramienta que no se le ofreció o entradas que no coincidían), por llamada. No se ejecutó nada.",
         "failoverRate": "Llamadas que pasaron a un modelo de respaldo porque este falló o no estaba disponible.",
         "flagRate": "Sesiones que una persona marcó. Las marcas automáticas tras un error de herramienta se cuentan por separado.",
         "leftRate": "Conversaciones que cambiaron a otro modelo o continuaron en una sesión nueva con otro modelo.",
@@ -730,6 +808,12 @@
         "claude-standard": "Claude estándar",
         "claude-small": "Claude pequeño",
         "generic": "Otros modelos"
+      },
+      "toolProfiles": {
+        "full": "Completo",
+        "standard": "Estándar",
+        "minimal": "Mínimo",
+        "custom": "Personalizado"
       },
       "unrecorded": "Sin registrar",
       "unattributed": "No atribuido a un modelo",
@@ -743,6 +827,8 @@
       "leftBreakdown": "{{switched}} cambiaron, {{continued}} continuaron",
       "resolvedCount_one": "{{count}} resuelta",
       "resolvedCount_other": "{{count}} resueltas",
+      "refusedToolBatchCount_one": "{{count}} rechazada",
+      "refusedToolBatchCount_other": "{{count}} rechazadas",
       "loading": "Cargando calidad…",
       "empty": "No hay llamadas de modelo en este período.",
       "error": "No se pudo cargar la vista de calidad.",
@@ -1880,7 +1966,8 @@
     },
     "issues": {
       "range": "Ingrese un número entero de días entre 1 y 3650."
-    }
+    },
+    "aiStubsHelp": "Las conversaciones de IA vaciadas por la retención de transcripciones conservan un registro de sesión reducido (costo, modelo, cantidad de turnos) hasta que su última actividad sea anterior a este período. Una organización sin una política de retención de auditoría guardada conserva esos registros."
   },
   "orgBrandingEditor": {
     "title": "Marca",
@@ -7084,7 +7171,7 @@
   },
   "orgDomains": {
     "title": "Dominios",
-    "description": "Dominios de correo electrónico que pertenecen a este cliente. Un dominio declarado enruta el correo entrante a esta organización. Un dominio verificado es la prueba de que el cliente es su propietario, y en ella se basan el autorregistro del portal y el inicio de sesión con Google.",
+    "description": "Dominios de correo electrónico que pertenecen a este cliente. Un dominio declarado enruta el correo entrante a esta organización. Un dominio verificado es la prueba de que el cliente es su propietario, y en ella se basan funciones como el autorregistro del portal.",
     "forbidden": "Administrar los dominios de clientes requiere un rol de administrador con acceso a todas las organizaciones.",
     "partnerOnly": "Los dominios de clientes los administra su proveedor de servicios.",
     "checkingAccess": "Comprobando el acceso…",
@@ -7186,7 +7273,7 @@
       "resultUnavailable": "La comprobación no pudo terminar. {{reason}}",
       "removeVerification": "Quitar verificación",
       "removeTitle": "¿Quitar la verificación de {{domain}}?",
-      "removeMessage": "El dominio permanece en esta organización para el enrutamiento de correo. El autorregistro y el inicio de sesión con Google dejan de confiar en él hasta que se verifique de nuevo."
+      "removeMessage": "El dominio permanece en esta organización para el enrutamiento de correo. Las funciones que dependen de dominios verificados, como el autorregistro, dejan de confiar en él hasta que se verifique de nuevo."
     },
     "actions": {
       "verify": "Verificar",
@@ -8471,15 +8558,28 @@
       "label": "Inicio de sesión con Microsoft"
     },
     "google": {
-      "label": "Inicio de sesión con Google"
+      "label": "Inicio de sesión con Google",
+      "domainNotVerified": "Verifique uno de los dominios de esta organización en Organización › Dominios antes de activar el inicio de sesión con Google.",
+      "domains": {
+        "verified": "Dominios verificados: {{domains}}",
+        "none": "Ningún dominio verificado —",
+        "verify": "verifique uno en Organización › Dominios",
+        "partner": "Activado dondequiera que haya un dominio verificado"
+      }
     },
     "password": {
       "label": "Inicio de sesión con contraseña",
       "allowed": "Permitido",
       "ssoOnly": "Desactivado — solo Microsoft/Google",
-      "ssoOnlyNeedsSso": "Disponible cuando se active el inicio de sesión con Microsoft o Google."
+      "ssoOnlyMicrosoft": "Desactivado — solo Microsoft",
+      "ssoOnlyGoogle": "Desactivado — solo Google",
+      "ssoOnlyNeedsSso": "Disponible cuando se active el inicio de sesión con Microsoft o Google.",
+      "ssoOnlyNeedsSsoMicrosoft": "Disponible cuando se active el inicio de sesión con Microsoft.",
+      "ssoOnlyNeedsSsoGoogle": "Disponible cuando se active el inicio de sesión con Google."
     },
     "fallback": "El inicio de sesión con contraseña está activado porque no hay ningún inicio de sesión con Microsoft o Google habilitado.",
+    "fallbackMicrosoft": "El inicio de sesión con contraseña está activado porque el inicio de sesión con Microsoft no está habilitado.",
+    "fallbackGoogle": "El inicio de sesión con contraseña está activado porque el inicio de sesión con Google no está habilitado.",
     "invites": {
       "label": "Invitaciones del MSP",
       "value": "Siempre activadas"
@@ -8488,10 +8588,14 @@
       "label": "Autorregistro",
       "off": "Desactivado",
       "approval": "Requiere aprobación",
-      "instant": "Inmediato"
+      "instant": "Inmediato",
+      "noVerifiedDomain": "No hay ningún dominio verificado: nadie puede registrarse hasta que verifique uno.",
+      "verifyDomain": "Verificar un dominio"
     },
     "ssoNewPerson": {
       "label": "Primer inicio de sesión con Microsoft / Google",
+      "labelMicrosoft": "Primer inicio de sesión con Microsoft",
+      "labelGoogle": "Primer inicio de sesión con Google",
       "invitedOnly": "Solo personas invitadas",
       "approval": "Requiere aprobación",
       "instant": "Inmediato"
@@ -8502,6 +8606,8 @@
       "save": "No se pudo guardar la configuración de inicio de sesión.",
       "methodUnavailable": "Este método de inicio de sesión aún no está disponible en esta implementación de Breeze.",
       "ssoOnlyNeedsSso": "Active el inicio de sesión con Microsoft o Google antes de desactivar el inicio de sesión con contraseña.",
+      "ssoOnlyNeedsSsoMicrosoft": "Active el inicio de sesión con Microsoft antes de desactivar el inicio de sesión con contraseña.",
+      "ssoOnlyNeedsSsoGoogle": "Active el inicio de sesión con Google antes de desactivar el inicio de sesión con contraseña.",
       "tenantNotProven": "Compruebe el inquilino de Microsoft de esta organización antes de activar el inicio de sesión con Microsoft.",
       "sessionHours": "Ingrese un número entero de horas del 1 al 168."
     },
@@ -8510,7 +8616,11 @@
     },
     "sessionHours": {
       "label": "Duración de la sesión de Microsoft / Google (horas)",
-      "help": "Los inicios de sesión con Microsoft y Google terminan después de esta cantidad de horas, sin importar qué tan activa esté la persona. De 1 a 168."
+      "labelMicrosoft": "Duración de la sesión de Microsoft (horas)",
+      "labelGoogle": "Duración de la sesión de Google (horas)",
+      "help": "Los inicios de sesión con Microsoft y Google terminan después de esta cantidad de horas, sin importar qué tan activa esté la persona. De 1 a 168.",
+      "helpMicrosoft": "Los inicios de sesión con Microsoft terminan después de esta cantidad de horas, sin importar qué tan activa esté la persona. De 1 a 168.",
+      "helpGoogle": "Los inicios de sesión con Google terminan después de esta cantidad de horas, sin importar qué tan activa esté la persona. De 1 a 168."
     },
     "entraTenant": {
       "title": "Inquilino de Microsoft",
@@ -8584,6 +8694,8 @@
       "intro": "Al guardar, se desactiva el inicio de sesión con contraseña para las organizaciones siguientes.",
       "partnerIntro": "Al guardar este valor predeterminado del socio, se desactiva el inicio de sesión con contraseña para estas organizaciones. La página de cada organización muestra las cuentas que aún no pueden iniciar sesión.",
       "explain": "Las personas que ya están conectadas a Microsoft pierden su contraseña y se les cierra la sesión. Las personas sin conexión con Microsoft no podrán iniciar sesión hasta que acepten una invitación de inicio de sesión con Microsoft.",
+      "explainGoogle": "Las personas que ya están conectadas a Google pierden su contraseña y se les cierra la sesión. Las personas sin conexión con Google no podrán iniciar sesión hasta que acepten una invitación de inicio de sesión con Google.",
+      "explainBoth": "Las personas que ya están conectadas a Microsoft o Google pierden su contraseña y se les cierra la sesión. Las personas sin conexión con Microsoft o Google no podrán iniciar sesión hasta que acepten una invitación de inicio de sesión.",
       "columns": {
         "org": "Organización",
         "passwordsToClear": "Contraseñas eliminadas",
@@ -8594,24 +8706,38 @@
       "strandedMore": "y {{count}} más",
       "strandedLoadError": "No se pudieron cargar los nombres de estas cuentas.",
       "sendInvites": "Enviar invitaciones de inicio de sesión con Microsoft a estas cuentas después de guardar",
+      "sendInvitesGoogle": "Enviar invitaciones de inicio de sesión con Google a estas cuentas después de guardar",
+      "sendInvitesBoth": "Enviar invitaciones de inicio de sesión a estas cuentas después de guardar",
       "confirm": "Desactivar el inicio de sesión con contraseña",
       "changed": "El impacto cambió desde que abrió esta ventana. Revise las nuevas cifras."
     },
     "stranded": {
       "title": "Aún no pueden iniciar sesión ({{count}})",
       "description": "Estas cuentas no tienen conexión con Microsoft, por lo que no pueden iniciar sesión mientras el inicio de sesión con contraseña esté desactivado. Envíe a cada una una invitación de inicio de sesión con Microsoft.",
+      "descriptionGoogle": "Estas cuentas no tienen conexión con Google, por lo que no pueden iniciar sesión mientras el inicio de sesión con contraseña esté desactivado. Envíe a cada una una invitación de inicio de sesión con Google.",
+      "descriptionBoth": "Estas cuentas no tienen conexión con Microsoft o Google, por lo que no pueden iniciar sesión mientras el inicio de sesión con contraseña esté desactivado. Envíe a cada una una invitación de inicio de sesión.",
       "loadError": "No se pudieron cargar las cuentas que no pueden iniciar sesión.",
       "invite": "Enviar invitación de inicio de sesión con Microsoft",
+      "inviteGoogle": "Enviar invitación de inicio de sesión con Google",
+      "inviteBoth": "Enviar invitación de inicio de sesión",
       "inviteAll": "Invitar a todos",
       "more": "Mostrando {{shown}} de {{count}}.",
       "toasts": {
         "invited": "Invitaciones de inicio de sesión con Microsoft enviadas: {{count}}.",
+        "invitedGoogle": "Invitaciones de inicio de sesión con Google enviadas: {{count}}.",
+        "invitedBoth": "Invitaciones de inicio de sesión enviadas: {{count}}.",
         "partial": "Invitaciones de inicio de sesión con Microsoft enviadas: {{invited}} de {{total}}. Las demás ya estaban conectadas o no se pudieron invitar.",
+        "partialGoogle": "Invitaciones de inicio de sesión con Google enviadas: {{invited}} de {{total}}. Las demás ya estaban conectadas o no se pudieron invitar.",
+        "partialBoth": "Invitaciones de inicio de sesión enviadas: {{invited}} de {{total}}. Las demás ya estaban conectadas o no se pudieron invitar.",
         "emailFailed": "{{count}} cuenta(s) pasaron a invitadas, pero no se pudo enviar el correo de invitación. Usa Reenviar en la lista de usuarios del portal."
       },
       "errors": {
         "invite": "No se pudieron enviar las invitaciones de inicio de sesión con Microsoft.",
-        "unavailable": "El inicio de sesión con Microsoft no está disponible para esta organización, por lo que no hay nada con qué invitar."
+        "inviteGoogle": "No se pudieron enviar las invitaciones de inicio de sesión con Google.",
+        "inviteBoth": "No se pudieron enviar las invitaciones de inicio de sesión.",
+        "unavailable": "El inicio de sesión con Microsoft no está disponible para esta organización, por lo que no hay nada con qué invitar.",
+        "unavailableGoogle": "El inicio de sesión con Google no está disponible para esta organización, por lo que no hay nada con qué invitar.",
+        "unavailableBoth": "Ni el inicio de sesión con Microsoft ni el de Google están activados para esta organización, por lo que no hay nada con qué invitar."
       }
     },
     "domains": {
@@ -8633,11 +8759,14 @@
       "self": "Autorregistro",
       "entra": "Inicio de sesión con Microsoft",
       "google": "Inicio de sesión con Google",
+      "googleWithDomain": "Google · dominio {{domain}}",
       "addin_user": "Complemento AI for Office"
     },
     "selectAll": "Seleccionar todas las solicitudes",
     "selectOne": "Seleccionar la solicitud de {{email}}",
     "accountExists": "Ya tiene una cuenta — Deniegue para descartar",
+    "domainUnverified": "Dominio ya no verificado",
+    "domainUnverifiedReason": "No se puede aprobar: invite a esta persona directamente si debe tener acceso.",
     "actions": {
       "approve": "Aprobar",
       "deny": "Denegar",
@@ -8650,7 +8779,9 @@
       "notFound": "Solicitud no encontrada",
       "identityLinked": "Inicio de sesión ya vinculado a otra cuenta",
       "failed": "No se pudo resolver esta solicitud",
-      "entraTenantNotProven": "El inquilino de Microsoft de esta organización ya no está comprobado"
+      "entraTenantNotProven": "El inquilino de Microsoft de esta organización ya no está comprobado",
+      "domainNotVerified": "Dominio de correo ya no verificado",
+      "googleDomainNotVerified": "Dominio de Google Workspace ya no verificado"
     },
     "denyDialog": {
       "title": "Denegar solicitud de acceso",
@@ -8668,7 +8799,9 @@
     "errors": {
       "load": "No se pudieron cargar las solicitudes de acceso.",
       "action": "No se pudo actualizar la solicitud de acceso.",
-      "bulk": "No se pudieron resolver las solicitudes seleccionadas."
+      "bulk": "No se pudieron resolver las solicitudes seleccionadas.",
+      "domainNotVerified": "El dominio de correo de esta persona ya no está verificado para esta organización. Invítela directamente si debe tener acceso.",
+      "googleDomainNotVerified": "El dominio de Google Workspace de esta solicitud ya no está verificado para esta organización. Verifíquelo de nuevo o invite a la persona directamente."
     },
     "summary": {
       "title": "Solicitudes de acceso pendientes",

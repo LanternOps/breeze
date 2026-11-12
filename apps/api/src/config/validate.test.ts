@@ -373,6 +373,31 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('Portal Google client (portal registration W7)', () => {
+    const portalGoogle = {
+      PORTAL_GOOGLE_CLIENT_ID: '123456789012-abcdefghijklmnop.apps.googleusercontent.com',
+      PORTAL_GOOGLE_CLIENT_SECRET: 'portal-google-secret',
+    };
+
+    it('refuses boot when the client is configured with a malformed callback base or client id', () => {
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CALLBACK_BASE_URL: 'https://portal.example.test/sub/path' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_GOOGLE_CALLBACK_BASE_URL/);
+      });
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CLIENT_ID: 'not-a-google-client' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_GOOGLE_CLIENT_ID/);
+      });
+    });
+
+    it('boots with a valid base, and ignores the base entirely when the client is not configured', () => {
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CALLBACK_BASE_URL: 'https://portal.example.test' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, PORTAL_GOOGLE_CLIENT_ID: '', PORTAL_GOOGLE_CALLBACK_BASE_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   describe('PORTAL_SELF_REGISTRATION_ENABLED (portal registration W6)', () => {
     it('boots when unset, empty, true, 1, false or 0', () => {
       // Unset is the base validEnv case every other test boots with.

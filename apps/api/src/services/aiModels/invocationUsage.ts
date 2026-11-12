@@ -56,7 +56,7 @@ export interface BilledUsage {
 }
 
 export interface TurnOutcome {
-  stopReason: string;              // 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'error' | provider value
+  stopReason: string;              // 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'error' | 'context_window_exceeded' | 'refused_tool_batch' | provider value
   refused: boolean;                // the FINAL answer is a refusal (after any fallback)
   refusalCategory: string | null;
   fallbackUsed: boolean;           // the main loop ended on a model other than binding.wireModel
@@ -88,10 +88,23 @@ export interface SdkTurnObservation {
   sawOutput: boolean;
   /** #10577: the model gateway refused a request of this turn because its prompt does not fit the model's context window. */
   contextWindowExceeded: boolean;
+  /**
+   * W04 (#11397): the model gateway refused a tool-call batch of this turn it
+   * could not verify (the model saw a fixed note instead). The log-safe
+   * description (names only, never arguments) is logged by the session
+   * manager; settlement reads only whether it is set. null = none refused.
+   * Set only on StreamingSessionManager turns (agent runs do not read the
+   * gateway's notes yet), and lost if a later uncoded gateway failure note
+   * of the same turn replaces it.
+   */
+  refusedToolBatch: string | null;
 }
 
 export function newSdkTurnObservation(): SdkTurnObservation {
-  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false, contextWindowExceeded: false };
+  return {
+    refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false,
+    contextWindowExceeded: false, refusedToolBatch: null,
+  };
 }
 
 const OUTPUT_BLOCKS = new Set(['text', 'thinking', 'redacted_thinking', 'tool_use', 'server_tool_use']);
@@ -355,8 +368,15 @@ function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkRe
   // row in the ledger).
   const nothingServed = errored && !obs.sawOutput && obs.refusalFallback === null;
   const servedModel = nothingServed ? binding.wireModel : observedServed;
-  const failedStop = obs.contextWindowExceeded ? 'context_window_exceeded' : 'error';
-  const stopReason = refused ? 'refusal' : errored ? failedStop : sdkStop ?? 'end_turn';
+  // A context-window refusal names a failed turn first (it is terminal and the
+  // more specific reason); a refused tool batch names the turn whether or not
+  // it then completed, so the quality view can count it (W04 #11397). A turn
+  // that refused a batch and then errored for another reason is therefore
+  // labelled refused_tool_batch, not error.
+  const stopReason = refused ? 'refusal'
+    : errored && obs.contextWindowExceeded ? 'context_window_exceeded'
+      : obs.refusedToolBatch !== null ? 'refused_tool_batch'
+        : errored ? 'error' : sdkStop ?? 'end_turn';
   const category = obs.refusalNoFallback?.category ?? obs.refusalFallback?.category ?? null;
   const fallbackUsed = obs.refusalFallback !== null || servedModel !== binding.wireModel;
   const cost = result?.total_cost_usd;

@@ -100,6 +100,19 @@ describe('AcceptInviteForm — Microsoft', () => {
     expect(await screen.findByLabelText(/new password/i)).toBeTruthy();
   });
 
+  it('a Microsoft invite start answered 400 shows the invalid-invite state', async () => {
+    render(<AcceptInviteForm token="tok" />);
+    const button = await screen.findByTestId('portal-accept-invite-microsoft');
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'Invalid or expired invite' })
+    });
+    fireEvent.click(button);
+    expect(await screen.findByText('This invite has expired')).toBeTruthy();
+    expect(replaceLocation).not.toHaveBeenCalled();
+  });
+
   it('shows an error when starting Microsoft fails', async () => {
     render(<AcceptInviteForm token="tok" />);
     const button = await screen.findByTestId('portal-accept-invite-microsoft');

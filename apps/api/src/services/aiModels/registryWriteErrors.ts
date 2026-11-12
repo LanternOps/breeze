@@ -23,7 +23,10 @@ export type RegistryWriteCode =
   | 'key_required_for_new_endpoint' | 'too_many_models'
   // #8510: only a hand-added model can be removed; discovered/platform/catalog
   // rows are re-created by the next sync, so they are disabled instead.
-  | 'not_removable';
+  | 'not_removable'
+  // #11398: a tool profile / window override write would leave a feature
+  // using this model without a tool it requires.
+  | 'tool_profile_underpowered';
 
 export const REGISTRY_BUSY_MESSAGE = 'Another AI configuration change is in progress. Try again in a moment.';
 

@@ -27,7 +27,7 @@ function request(id: string) {
   return {
     id, email: `${id}@acme.test`, name: null, source: 'entra', status: 'pending',
     requestedAt: '2026-11-01T00:00:00.000Z', lastRequestedAt: '2026-11-01T00:00:00.000Z',
-    expiresAt: '2026-11-15T00:00:00.000Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false,
+    expiresAt: '2026-11-15T00:00:00.000Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false, domainVerified: null,
   };
 }
 
@@ -162,7 +162,8 @@ describe('OrgSignInRegistrationCard', () => {
     fireEvent.click(await screen.findByTestId('portal-access-policy-password-sso_only'));
     fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
     expect(await screen.findByTestId('portal-access-policy-passwordMode-error')).toHaveTextContent(
-      'Turn on Microsoft or Google sign-in before turning off password sign-in.',
+      // Google is not available on this deployment, so the copy names Microsoft only (W7 ships dark).
+      'Turn on Microsoft sign-in before turning off password sign-in.',
     );
     expect(showToastMock).not.toHaveBeenCalled();
     expect(onSave).not.toHaveBeenCalled();
@@ -504,5 +505,100 @@ describe('OrgSignInRegistrationCard — W4', () => {
     await screen.findByTestId('portal-access-policy-form');
     expect(screen.queryByTestId('portal-access-stranded')).toBeNull();
     expect(fetchWithAuthMock.mock.calls.some(([u]) => u === STRANDED)).toBe(false);
+  });
+});
+
+// ── W7 (#11384): Google row domain status, GOOGLE_DOMAIN_NOT_VERIFIED, provider-conditional sso_only copy ──
+
+describe('OrgSignInRegistrationCard — W7', () => {
+  beforeEach(() => {
+    fetchWithAuthMock.mockReset();
+    navigateToMock.mockReset();
+    showToastMock.mockReset();
+  });
+
+  const googleView = (over: Parameters<typeof makePolicyView>[0] = {}) =>
+    makePolicyView({ capabilities: { google: true }, inherited: { googleEnabled: true }, verifiedDomains: ['acme.example.com'], ...over });
+  const ssoOnlyEffective = (view: ReturnType<typeof makePolicyView>) => {
+    view.effective.passwordMode = { value: 'sso_only', source: 'org' };
+    return view;
+  };
+  const tenantNone = () => json({ data: { tenantId: null, state: 'none', provenAt: null, provenVia: null, connectionTenantId: null, consentUrl: null } });
+
+  it("the Google row lists the org's verified domains", async () => {
+    mockFlow({ view: googleView({ verifiedDomains: ['a.example.com', 'b.example.com'] }) });
+    renderCard();
+    const row = await screen.findByTestId('portal-access-policy-google-row');
+    expect(within(row).getByTestId('google-domains-status')).toHaveTextContent('Verified domains: a.example.com, b.example.com');
+  });
+
+  it('the Google row says no verified domain and links to #domains', async () => {
+    mockFlow({ view: googleView({ verifiedDomains: [] }) });
+    renderCard();
+    const none = await screen.findByTestId('google-domains-none');
+    expect(within(none).getByRole('link')).toHaveAttribute('href', '#domains');
+  });
+
+  it('GOOGLE_DOMAIN_NOT_VERIFIED shows the field error on the Google row', async () => {
+    mockFlow({
+      view: googleView({ inherited: { googleEnabled: false }, verifiedDomains: [] }),
+      patch: () => json({ error: 'x', code: 'PORTAL_ACCESS_POLICY_GOOGLE_DOMAIN_NOT_VERIFIED', field: 'googleEnabled' }, 400),
+    });
+    renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-google-on'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    expect(await screen.findByTestId('portal-access-policy-googleEnabled-error')).toHaveTextContent(
+      "Verify one of this organization's domains under Organization › Domains before turning on Google sign-in.",
+    );
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('ships dark: with Google not available, nothing on the card, stranded list or sso_only dialog says Google', async () => {
+    const view = ssoOnlyEffective(ssoCapableView({ values: { passwordMode: 'sso_only' }, verifiedDomains: ['acme.example.com'] }));
+    mockFlow({ view, patch: () => confirmRequired('d1'), stranded: () => strandedBody(['u1', 'u2']), tenant: tenantNone });
+    renderCard();
+    const list = await screen.findByTestId('portal-access-stranded');
+    expect(within(list).getByTestId('portal-access-stranded-invite-u1')).toHaveTextContent('Send Microsoft sign-in invite');
+    // Open the sso_only dialog too (a draft change while sso_only is saved).
+    fireEvent.change(screen.getByTestId('portal-access-policy-session-hours'), { target: { value: '24' } });
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    const dialog = await screen.findByTestId('sso-only-confirm-dialog');
+    await within(dialog).findByTestId('sso-only-confirm-stranded');
+    expect(dialog).toHaveTextContent('Send Microsoft sign-in invites');
+    expect(document.body.textContent ?? '').not.toMatch(/google/i);
+  });
+
+  it('the sso_only dialog and stranded list say Microsoft or Google when Google is effective', async () => {
+    const view = ssoOnlyEffective(makePolicyView({
+      capabilities: { entra: true, google: true },
+      inherited: { entraEnabled: true, googleEnabled: true },
+      values: { passwordMode: 'sso_only' },
+      entraTenantProven: true,
+      verifiedDomains: ['acme.example.com'],
+    }));
+    mockFlow({ view, patch: () => confirmRequired('d1'), stranded: () => strandedBody(['u1']), tenant: tenantNone });
+    renderCard();
+    const list = await screen.findByTestId('portal-access-stranded');
+    expect(list).toHaveTextContent('no Microsoft or Google connection');
+    expect(within(list).getByTestId('portal-access-stranded-invite-u1')).toHaveTextContent(/^Send sign-in invite$/);
+    fireEvent.change(screen.getByTestId('portal-access-policy-session-hours'), { target: { value: '24' } });
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    const dialog = await screen.findByTestId('sso-only-confirm-dialog');
+    expect(dialog).toHaveTextContent('People already connected to Microsoft or Google');
+  });
+
+  it('a Google-only org gets the Google invite copy and can still send sso-invite', async () => {
+    const view = ssoOnlyEffective(googleView({ values: { passwordMode: 'sso_only' } }));
+    mockFlow({
+      view,
+      stranded: () => strandedBody(['u1']),
+      ssoInvite: () => json({ data: [{ portalUserId: 'u1', result: 'invited', emailSent: true }] }),
+    });
+    renderCard();
+    const list = await screen.findByTestId('portal-access-stranded');
+    expect(list).not.toHaveTextContent(/microsoft/i);
+    fireEvent.click(within(list).getByTestId('portal-access-stranded-invite-u1'));
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.filter(([u]) => u === SSO_INVITE)).toHaveLength(1));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Sent 1 Google sign-in invite(s).' }));
   });
 });

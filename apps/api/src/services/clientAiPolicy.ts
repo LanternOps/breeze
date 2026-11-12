@@ -111,3 +111,18 @@ export async function requireClientAiEnabled(orgId: string): Promise<ClientAiOrg
   const policy = await getOrgPolicy(orgId);
   return policy.enabled ? policy : null;
 }
+
+/**
+ * Client-AI transcript window for one org (#4342 W4): `client_ai_org_policies
+ * .retention_days`, read under the CALLER's RLS. NULL, or no row, means keep
+ * forever. There is deliberately no partner fallback: the client policy is
+ * org-only (Rule 9 table in the W4 plan).
+ */
+export async function resolveClientTranscriptRetention(orgId: string): Promise<number | null> {
+  const [row] = await db
+    .select({ retentionDays: clientAiOrgPolicies.retentionDays })
+    .from(clientAiOrgPolicies)
+    .where(eq(clientAiOrgPolicies.orgId, orgId))
+    .limit(1);
+  return row?.retentionDays ?? null;
+}

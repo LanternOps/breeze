@@ -8,6 +8,7 @@ import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m3
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
 import { getPortalEntraConfig } from './portalEntra';
+import { getPortalGoogleConfig } from './portalGoogle';
 import { warnOnTrustedProxyCidrMismatch } from './proxyTrustBootCheck';
 import {
   OFFICIAL_RELEASE_REPOSITORY,
@@ -1076,6 +1077,14 @@ const envObjectSchema = z
     PORTAL_ENTRA_CLIENT_ID: z.string().optional(),
     PORTAL_ENTRA_CLIENT_SECRET: z.string().optional(),
     PORTAL_ENTRA_CALLBACK_BASE_URL: z.string().optional(),
+
+    // Customer portal "Sign in with Google" (portal registration W7). The
+    // portal's own Google OAuth client; off unless BOTH the id and the secret
+    // are set. Parsed at call time by config/portalGoogle.ts; validated at boot
+    // below, like the Entra app.
+    PORTAL_GOOGLE_CLIENT_ID: z.string().optional(),
+    PORTAL_GOOGLE_CLIENT_SECRET: z.string().optional(),
+    PORTAL_GOOGLE_CALLBACK_BASE_URL: z.string().optional(),
 
     // Customer-portal self-registration kill switch (portal registration W6,
     // plan D2). Unset/empty, true or 1 → on; false or 0 → off. Read at call
@@ -3273,6 +3282,8 @@ export function validateConfig(): AppConfig {
   // first throw on a customer's request. Throws only when the app is
   // configured (both id and secret set).
   getPortalEntraConfig(env);
+  // Portal Google client (W7): the same boot check for its client id and base.
+  getPortalGoogleConfig(env);
 
   // (The APP_ENCRYPTION_KEY_ID ↔ M365_GRAPH_ACTIONS_TOOLS_ENABLED pairing rule
   // used to live here as a post-parse throw reading `env` directly. It now runs

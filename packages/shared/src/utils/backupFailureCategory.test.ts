@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   BACKUP_FAILURE_CATEGORIES,
   classifyBackupFailure,
+  classifyBackupFailureDetail,
   type BackupFailureCategory,
+  type BackupFailureCause,
 } from './backupFailureCategory';
 
 // Corpus sources (#11027). Every errorLog writer and reaper message was read in:
@@ -245,3 +247,94 @@ describe('classifyBackupFailure (#11027)', () => {
     expect(classifyBackupFailure({ status: 'failed', errorLog: undefined })).toBe('unknown');
   });
 });
+
+// #11768: the finer cause under a category. Strings below are verbatim
+// error_log values seen in production (paths shortened) plus the two forms the
+// agent-side change (#11765) will write: an optional " (<S3Code>)" suffix and a
+// run-level "backup destination refused every request: ..." line.
+const REPARSE_NOTE =
+  '42 reparse point(s) were not backed up (junctions and mount points are skipped, not followed; 42 other): C:\\Users\\x\\AppData\\Local\\Microsoft\\WindowsApps';
+
+type CauseRow = [
+  errorLog: string,
+  category: BackupFailureCategory,
+  cause: BackupFailureCause | null,
+];
+
+const CAUSE_CORPUS: CauseRow[] = [
+  ['system state publish failed: upload system state artifact registry/SYSTEM: storage session: storage answered status 403', 'storage', 'storage_access_denied'],
+  ['file upload failed: storage session: storage answered status 404', 'storage', 'storage_not_found'],
+  ['storage session: storage answered status 401', 'storage', 'storage_access_denied'],
+  ['system state publish failed: upload system state artifact registry/SOFTWARE: storage session: multipart:create failed with status 502 after 4 attempts', 'storage', 'storage_operation_failed'],
+  [`failed to upload snapshot manifest: storage session: multipart:create failed with status 502 after 4 attempts; ${REPARSE_NOTE}`, 'storage', 'storage_operation_failed'],
+  ['storage session: storage answered status 503', 'storage', 'storage_operation_failed'],
+  ['could not ask to continue interrupted snapshot: storage session: renew rejected with status 410', 'storage', 'storage_session_expired'],
+  ['session is no longer usable: the control plane kept rate limiting', 'storage', 'storage_session_expired'],
+  ['backup helper exited unexpectedly', 'agent', 'helper_stopped'],
+  ['context canceled', 'unknown', 'run_cancelled_on_device'],
+  ['[stale-backup-reaper] Backup dispatch never completed', 'timeout', 'never_started'],
+  ['[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes', 'timeout', 'no_agent_signal'],
+  // No cause: category-only rows stay as they were.
+  ['[stale-backup-reaper] Device went offline during backup', 'device_offline', null],
+  ['Agent not connected', 'device_offline', null],
+  ['something nobody has seen before', 'unknown', null],
+  // #11765 forms: the S3 code outranks the status, an unknown code falls back to it.
+  ['storage session: storage answered status 403 (AccessDenied)', 'storage', 'storage_access_denied'],
+  ['storage session: storage answered status 403 (InvalidAccessKeyId)', 'storage', 'storage_access_denied'],
+  ['storage session: storage answered status 403 (SignatureDoesNotMatch)', 'storage', 'storage_access_denied'],
+  ['storage session: storage answered status 403 (AccountProblem)', 'storage', 'storage_access_denied'],
+  ['storage session: storage answered status 403 (AllAccessDisabled)', 'storage', 'storage_access_denied'],
+  ['storage session: storage answered status 404 (NoSuchBucket)', 'storage', 'storage_not_found'],
+  ['storage session: storage answered status 404 (NoSuchKey)', 'storage', 'storage_not_found'],
+  ['storage session: storage answered status 404 (NoSuchUpload)', 'storage', 'storage_not_found'],
+  ['storage session: storage answered status 403 (RequestTimeTooSkewed)', 'storage', 'storage_clock_skew'],
+  ['storage session: storage answered status 403 (SomethingNew)', 'storage', 'storage_access_denied'],
+  ['storage session: storage answered status 500 (InternalError)', 'storage', 'storage_operation_failed'],
+  ['storage session: storage answered status 404 (AccessDenied)', 'storage', 'storage_access_denied'],
+  ['backup destination refused every request: storage answered status 403 (AccessDenied)', 'storage', 'storage_access_denied'],
+  ['backup destination refused every request: storage answered status 404 (NoSuchBucket)', 'storage', 'storage_not_found'],
+  ['backup destination refused every request: storage answered status 403', 'storage', 'storage_access_denied'],
+  // Breeze API refusals are not the customer's bucket: no destination cause.
+  ['storage session: mint refused with status 403', 'storage', null],
+  ['storage session: renew refused with status 404', 'storage', null],
+  ['storage session: renew rejected with status 403', 'storage', null],
+  // A status the store gave that says nothing specific.
+  ['storage session: storage answered status 409', 'storage', null],
+];
+
+describe('classifyBackupFailureDetail (#11768)', () => {
+  it.each(CAUSE_CORPUS)('%s', (errorLog, category, cause) => {
+    expect(classifyBackupFailureDetail({ status: 'failed', errorLog })).toEqual({ category, cause });
+  });
+
+  it('keeps classifyBackupFailure identical to the detail category', () => {
+    for (const [errorLog, category] of CAUSE_CORPUS) {
+      expect(classifyBackupFailure({ status: 'failed', errorLog })).toBe(category);
+    }
+  });
+
+  it('has no cause when nothing failed or the run was cancelled', () => {
+    expect(classifyBackupFailureDetail({ status: 'completed', errorLog: 'backup helper exited unexpectedly' }))
+      .toEqual({ category: null, cause: null });
+    expect(classifyBackupFailureDetail({ status: 'cancelled', errorLog: 'context canceled' }))
+      .toEqual({ category: 'cancelled', cause: null });
+  });
+
+  it('reads the cause from the terminal line, not an earlier note', () => {
+    expect(classifyBackupFailureDetail({
+      status: 'failed',
+      errorLog: 'storage session: storage answered status 403\n[stale-backup-reaper] Device went offline during backup',
+    })).toEqual({ category: 'device_offline', cause: null });
+  });
+
+  it('does not take a cause from text inside the reparse fragment', () => {
+    expect(classifyBackupFailureDetail({ status: 'failed', errorLog: REPARSE_NOTE }))
+      .toEqual({ category: 'unknown', cause: null });
+  });
+
+  it('gives a partial run no cause', () => {
+    expect(classifyBackupFailureDetail({ status: 'completed_with_errors', errorLog: '3 files could not be read' }))
+      .toEqual({ category: 'source_access', cause: null });
+  });
+});
+

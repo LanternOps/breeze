@@ -350,6 +350,33 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
     expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ binding: turnBindingFrom(f2) }));
   });
 
+  it('#11395: a failover hop gets the prompt rebuilt for ITS tool profile; no hop never rebuilds', async () => {
+    const { resolveSessionTurn } = await import('../services/aiModels/sessionModel');
+    const { streamingSessionManager } = await import('../services/streamingSessionManager');
+    const f1 = makeResolvedModel('anthropic_byok', { offering: { id: 'off-f1', displayName: 'F1' }, wireModel: 'wire-f1',
+      failover: { fromOfferingId: 'off-sonnet', hop: 1, cause: 'cooldown' } });
+    const f2 = makeResolvedModel('anthropic_byok', { offering: { id: 'off-f2', displayName: 'F2' }, wireModel: 'wire-f2',
+      failover: { fromOfferingId: 'off-sonnet', hop: 2, cause: 'cooldown' } });
+    const rebuild = vi.fn(async () => 'prompt-for-f2');
+    vi.mocked(runPreFlightChecks).mockResolvedValue({
+      ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: 'off-sonnet' } as any,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model: f1, systemPromptFor: rebuild,
+    });
+    vi.mocked(resolveSessionTurn).mockResolvedValueOnce(f2);
+    tr.planModelTransition
+      .mockResolvedValueOnce({ kind: 'continuation_required', reason: 'transcript_too_large' })
+      .mockResolvedValueOnce({ kind: 'switch_resume', carriedRates: [], fit: { kind: 'fits', countedTokens: 10, limitTokens: 100 } });
+    await (await postWithModel(app)).text();
+    expect(rebuild).toHaveBeenCalledWith(f2);
+    expect(vi.mocked(streamingSessionManager.getOrCreate).mock.calls.at(-1)![4]).toBe('prompt-for-f2');
+
+    rebuild.mockClear();
+    tr.planModelTransition.mockResolvedValueOnce({ kind: 'switch_resume', carriedRates: [], fit: { kind: 'fits', countedTokens: 10, limitTokens: 100 } });
+    await (await postWithModel(app)).text();
+    expect(rebuild).not.toHaveBeenCalled();
+    expect(vi.mocked(streamingSessionManager.getOrCreate).mock.calls.at(-1)![4]).toBe('sys');
+  });
+
   it('W09: the user\'s own model is never re-resolved when it needs a continuation (W05 behaviour)', async () => {
     const { resolveSessionTurn } = await import('../services/aiModels/sessionModel');
     tr.planModelTransition.mockResolvedValueOnce({ kind: 'continuation_required', reason: 'transcript_too_large' });

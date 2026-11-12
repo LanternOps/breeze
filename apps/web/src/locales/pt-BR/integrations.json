@@ -374,6 +374,9 @@
       "delivery_failed": "Falha nas entregas",
       "sync_stale": "Sincronização parada",
       "verification_failed": "Falha na verificação",
+      "destination_access_denied": "O destino recusou o acesso",
+      "destination_not_found": "Destino não encontrado",
+      "destination_failing": "O destino está falhando",
       "unknown": "Requer atenção"
     }
   },

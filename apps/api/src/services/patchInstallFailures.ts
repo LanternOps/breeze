@@ -54,7 +54,14 @@ type Scope = { orgId?: string; deviceId?: string; deviceIds?: readonly string[] 
  * install attempt (#7680). Bounds the `device_commands` read on the fleet
  * patch list; job attempts in `patch_job_results` are not bounded.
  */
-const DEVICE_INSTALL_LOOKBACK_MS = 90 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEVICE_INSTALL_LOOKBACK_MS = 90 * DAY_MS;
+
+/**
+ * The same lookback in days. `device_commands` retention (#4342 W1) never runs
+ * a window shorter than this, so every row this overlay reads still exists.
+ */
+export const DEVICE_INSTALL_LOOKBACK_DAYS = DEVICE_INSTALL_LOOKBACK_MS / DAY_MS;
 
 /** `device_commands.status` values that are an attempt. `cancelled` is not — the user withdrew it. */
 const DEVICE_INSTALL_ATTEMPT_STATUSES = ['pending', 'sent', 'completed', 'failed', 'timeout'] as const;

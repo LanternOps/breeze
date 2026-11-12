@@ -15,6 +15,7 @@ import { formatDateTime } from "@/lib/dateTimeFormat";
 import { formatCurrency } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import TranscriptPurgedNotice from "../ai/TranscriptPurgedNotice";
 
 /**
  * AI for Office — client-session audit viewer (spec §9.3). excel_client
@@ -43,6 +44,8 @@ interface SessionListRow {
   flaggedAt: string | null;
   flagReason: string | null;
   status: string;
+  /** Set when transcript retention emptied the session (#4342 W4). */
+  transcriptPurgedAt?: string | null;
 }
 
 interface TranscriptMessage {
@@ -89,6 +92,8 @@ interface SessionDetailSession {
   flagReason: string | null;
   createdAt: string;
   lastActivityAt: string | null;
+  /** Set when transcript retention emptied the session (#4342 W4). */
+  transcriptPurgedAt?: string | null;
 }
 
 interface SessionDetail {
@@ -461,7 +466,10 @@ export default function SessionsTab() {
                     <td className="px-4 py-2.5">{s.orgName ?? "—"}</td>
                     <td className="px-4 py-2.5">{s.userEmail ?? "—"}</td>
                     <td className="max-w-[220px] truncate px-4 py-2.5">
-                      {s.title || t("sessionsTab.untitled")}
+                      {s.title ||
+                        (s.transcriptPurgedAt
+                          ? t("transcriptRetention.removedLabel")
+                          : t("sessionsTab.untitled"))}
                     </td>
                     <td className="px-4 py-2.5 text-right">{s.turnCount}</td>
                     <td className="px-4 py-2.5 text-right">
@@ -557,7 +565,10 @@ export default function SessionsTab() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-semibold">
-                    {detail.session.title || t("sessionsTab.untitledSession")}
+                    {detail.session.title ||
+                      (detail.session.transcriptPurgedAt
+                        ? t("transcriptRetention.removedLabel")
+                        : t("sessionsTab.untitledSession"))}
                   </h2>
                   <p className="text-sm text-muted-foreground">
                     {detail.session.orgName ?? "—"} ·{" "}
@@ -644,11 +655,17 @@ export default function SessionsTab() {
                       </div>
                     );
                   })}
-                  {detail.messages.length === 0 && (
-                    <p className="text-sm text-muted-foreground">
-                      {t("sessionsTab.noMessages")}
-                    </p>
-                  )}
+                  {detail.messages.length === 0 &&
+                    (detail.session.transcriptPurgedAt ? (
+                      <TranscriptPurgedNotice
+                        purgedAt={detail.session.transcriptPurgedAt}
+                        testId="ai-office-session-transcript-purged"
+                      />
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        {t("sessionsTab.noMessages")}
+                      </p>
+                    ))}
                 </div>
 
                 {/* Tool approval trail */}
