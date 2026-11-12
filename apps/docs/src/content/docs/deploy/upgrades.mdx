@@ -184,7 +184,7 @@ Both Compose files gain one optional mapping, `BACKUP_LOCAL_ROOT` (`${BACKUP_LOC
 
 | Change | Required action |
 |---|---|
-| The API and worker no longer read a local backup destination from its **Local Path** setting. They read it only from `<BACKUP_LOCAL_ROOT>/<organization ID>/<storage configuration ID>/`. | Nothing, unless you use server-side features on local destinations (connectivity test, file-level browse, server-side verification, storage sweep, recovery downloads, recovery media). If you do, follow [Upgrading an install that uses API-side local storage](/backup/storage/#upgrading-an-install-that-uses-api-side-local-storage) before relying on them. Until then they are unavailable and the storage sweep deletes nothing from those destinations. |
+| The API and worker no longer read a local backup destination from its **Local Path** setting. They read it only from `<BACKUP_LOCAL_ROOT>/<organization ID>/<storage configuration ID>/`. | Nothing, unless you use server-side features on local destinations (connectivity test, file-level browse, server-side verification, storage sweep, recovery downloads, recovery media). If you do, follow [Upgrading an install that uses API-side local storage](/backup/storage/#upgrading-an-install-that-uses-api-side-local-storage) before relying on them. Until then they are unavailable and the storage sweep deletes nothing from those destinations. Without `BACKUP_LOCAL_ROOT`, the connectivity test now reports local destinations as **Not tested here** instead of testing the Local Path on the server. |
 
 ### Unreleased — history retention settings mapped
 

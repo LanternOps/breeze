@@ -165,12 +165,17 @@ Some features read a local destination from the API server: the connectivity tes
 - Symbolic links are refused at every level below `BACKUP_LOCAL_ROOT`, including the per-destination directory itself, and so is anything that is not a regular file or directory. Use a bind mount to expose existing storage there, and mount it with `nodev,nosuid`.
 - Mount the same storage at the same path in every `api` and `worker` container.
 - Two configurations of one organization may share storage: mount it at each configuration's directory. The storage sweep handles each directory on its own. It only reclaims a snapshot that belongs to that configuration or that no Breeze record names; a snapshot another configuration recorded, retired or reserved is left for that configuration's own sweep.
-- Keep each organization's storage separate. Never mount one organization's storage in another organization's directory.
+- Keep each organization's storage separate at the storage level (its own share, volume or dataset). Never mount one organization's storage in another organization's directory. Breeze reads whatever file is in a destination's directory as that organization's data, including a hard link to a file stored elsewhere on the same filesystem.
 - Linux API servers (the shipped containers) are supported. macOS works for development only. On Windows the API refuses server-side local access.
 
-Without `BACKUP_LOCAL_ROOT`, or without the directory for a destination, these features stop for that destination with the message *API local backup storage is unavailable for this destination*. The connectivity test reports a failure. Server-side integrity verification stays pending instead of failing. The storage sweep skips the destination, keeps its objects and deletes nothing. Agents keep writing backups to the device's local path.
+Without `BACKUP_LOCAL_ROOT` (the default, and always the case on the hosted service), these features are off for local destinations. The connectivity test reports the destination as **Not tested here** rather than as a failure, because only the agent uses its Local Path. Server-side integrity verification stays pending. The storage sweep skips the destination, keeps its objects and deletes nothing. Agents keep writing backups to the device's local path.
 
-The connectivity test only checks that the destination's directory exists and the API can read and write it. It creates no files or directories. It does not test whether the device can reach its local path.
+With `BACKUP_LOCAL_ROOT` set, the connectivity test checks that the destination's directory exists and that the API can read and write it. It creates no files or directories, and it does not test whether the device can reach its Local Path. It fails with one of two messages:
+
+- **The API-side directory for this destination does not exist**: create `<BACKUP_LOCAL_ROOT>/<organization ID>/<configuration ID>/` on every `api` and `worker` server.
+- **The API-side directory for this destination cannot be used**: it is a symbolic link (or sits below one), is not a directory, or the API cannot read and write it.
+
+The other server-side features stop for that destination with the message *API local backup storage is unavailable for this destination* until the directory is fixed.
 
 ### Upgrading an install that uses API-side local storage
 
