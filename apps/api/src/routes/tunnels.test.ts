@@ -4030,6 +4030,32 @@ describe('Tunnel destination and source rules (IPv4 and IPv6)', () => {
     vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
   });
 
+  it('refuses an IPv4 client when the only source rule is IPv6', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ direction: 'source', enabled: true, siteId: null, pattern: '::/0' }]) as any);
+    vi.mocked(getTrustedClientIp).mockReturnValue('198.51.100.7');
+
+    const res = await postProxyTunnel('10.0.0.5', 8080);
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/Source IP/);
+    vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
+  });
+
+  it('refuses an IPv4 target when the only destination rule is IPv6', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ direction: 'destination', enabled: true, siteId: null, pattern: '::/0:*' }]) as any);
+
+    const res = await postProxyTunnel('10.0.0.5', 8080);
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/allowlist/);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it.each(['2001:db8::/129:443', 'host.example:443', '2001:db8::/32:', '2001:db8::5/32:443', '10.0.0.1:+80'])(
     'POST /allowlist refuses the destination pattern %s',
     async (pattern) => {

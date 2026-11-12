@@ -78,3 +78,28 @@ describe('tunnel target deny list', () => {
     expect(tunnelTargetBlockReason('::1', 5900, true)).not.toBeNull();
   });
 });
+
+describe('address families match the agent', () => {
+  it('never matches an IPv4 address against an IPv6 rule', () => {
+    expect(tunnelNetworkContains('::/0', '198.51.100.1')).toBe(false);
+    expect(tunnelNetworkContains('::/64', '10.0.0.1')).toBe(false);
+    expect(tunnelNetworkContains('::/0', '::ffff:10.0.0.1')).toBe(false);
+    expect(tunnelDestinationMatches('::/0:*', '10.0.0.5', 443)).toBe(false);
+    expect(tunnelDestinationMatches('::/0:*', '2001:db8::1', 443)).toBe(true);
+    expect(tunnelDestinationMatches('::/0:*', '::a00:1', 443)).toBe(true);
+  });
+
+  it('treats an IPv4-mapped rule of /96 or longer as an IPv4 rule', () => {
+    expect(tunnelNetworkContains('::ffff:0.0.0.0/96', '10.0.0.1')).toBe(true);
+    // /104 in the mapped range is IPv4 /8, /120 is IPv4 /24.
+    expect(tunnelNetworkContains('::ffff:10.0.0.0/104', '10.200.0.5')).toBe(true);
+    expect(tunnelNetworkContains('::ffff:10.0.0.0/120', '10.0.0.5')).toBe(true);
+    expect(tunnelNetworkContains('::ffff:10.0.0.0/120', '10.0.1.5')).toBe(false);
+    expect(tunnelNetworkContains('::ffff:10.0.0.0/104', '2001:db8::1')).toBe(false);
+  });
+
+  it('treats an IPv4-mapped address as IPv4', () => {
+    expect(tunnelNetworkContains('10.0.0.0/8', '::ffff:10.0.0.5')).toBe(true);
+    expect(tunnelNetworkContains('2001:db8::/32', '::ffff:10.0.0.5')).toBe(false);
+  });
+});

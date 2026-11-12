@@ -1,4 +1,4 @@
-import { BlockList, isIP } from 'node:net';
+import { isIP } from 'node:net';
 
 /**
  * Tunnel allowlist grammar, shared by every API reader and writer of
@@ -14,6 +14,10 @@ import { BlockList, isIP } from 'node:net';
  * An IPv6 CIDR must be written as its network address (`2001:db8::/32`, not
  * `2001:db8::5/32`), so a host address with a short prefix is never widened to
  * the whole prefix. IPv4 keeps its historical behaviour of masking host bits.
+ *
+ * Address families follow Go's net.IPNet: an IPv4-mapped address
+ * (`::ffff:a.b.c.d`) is an IPv4 address, an IPv4-mapped rule of /96 or longer
+ * is an IPv4 rule, and an address only matches a rule of its own family.
  */
 
 type Family = 4 | 6;
@@ -42,25 +46,51 @@ function ipv6ToBigInt(address: string): bigint {
   return words.reduce((acc, word) => (acc << 16n) | BigInt(word), 0n);
 }
 
-function parseNetwork(prefix: string): { base: string; length: number; family: Family } | null {
+type Address = { family: Family; value: bigint };
+type Network = Address & { length: number };
+
+const IPV4_MAPPED_PREFIX = 0xffffn;
+
+function ipv4ToBigInt(address: string): bigint {
+  return address.split('.').reduce((acc, octet) => (acc << 8n) | BigInt(Number(octet)), 0n);
+}
+
+function bitsOf(family: Family): number {
+  return family === 4 ? 32 : 128;
+}
+
+/** Parses an IP literal; an IPv4-mapped IPv6 address is returned as IPv4. */
+function parseAddress(text: string): Address | null {
+  if (text.includes('%')) return null;
+  const family = isIP(text);
+  if (family === 4) return { family: 4, value: ipv4ToBigInt(text) };
+  if (family !== 6) return null;
+  const value = ipv6ToBigInt(text);
+  if (value >> 32n === IPV4_MAPPED_PREFIX) return { family: 4, value: value & 0xffffffffn };
+  return { family: 6, value };
+}
+
+function parseNetwork(prefix: string): Network | null {
   if (prefix !== prefix.trim() || prefix.includes('%')) return null;
   const parts = prefix.split('/');
   if (parts.length > 2) return null;
   const [base = '', lengthText] = parts;
   const family = isIP(base);
   if (family !== 4 && family !== 6) return null;
-  const maxLength = family === 4 ? 32 : 128;
+  const maxLength = bitsOf(family);
   let length = maxLength;
   if (lengthText !== undefined) {
     if (!/^\d{1,3}$/.test(lengthText)) return null;
     length = Number(lengthText);
     if (length > maxLength) return null;
   }
-  if (family === 6 && length < 128) {
-    const hostMask = (1n << BigInt(128 - length)) - 1n;
-    if ((ipv6ToBigInt(base) & hostMask) !== 0n) return null;
+  if (family === 4) return { family: 4, value: ipv4ToBigInt(base), length };
+  const value = ipv6ToBigInt(base);
+  if (length < 128 && (value & ((1n << BigInt(128 - length)) - 1n)) !== 0n) return null;
+  if (length >= 96 && value >> 32n === IPV4_MAPPED_PREFIX) {
+    return { family: 4, value: value & 0xffffffffn, length: length - 96 };
   }
-  return { base, length, family };
+  return { family: 6, value, length };
 }
 
 export function validTunnelNetwork(prefix: string): boolean {
@@ -70,11 +100,10 @@ export function validTunnelNetwork(prefix: string): boolean {
 /** Whether `host` (an IP literal) is inside `prefix`. Non-IP hosts never match. */
 export function tunnelNetworkContains(prefix: string, host: string): boolean {
   const network = parseNetwork(prefix);
-  const hostFamily = isIP(host);
-  if (!network || (hostFamily !== 4 && hostFamily !== 6) || host.includes('%')) return false;
-  const list = new BlockList();
-  list.addSubnet(network.base, network.length, network.family === 4 ? 'ipv4' : 'ipv6');
-  return list.check(host, hostFamily === 4 ? 'ipv4' : 'ipv6');
+  const address = parseAddress(host);
+  if (!network || !address || network.family !== address.family) return false;
+  const shift = BigInt(bitsOf(network.family) - network.length);
+  return (address.value >> shift) === (network.value >> shift);
 }
 
 export function parseTunnelDestinationPattern(
