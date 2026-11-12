@@ -169,7 +169,6 @@ vi.mock('../db/schema/patches', async (importOriginal) => {
     devicePatches: {},
     patchJobs: { orgId: 'orgId' },
     patchRollbacks: {},
-    patchComplianceSnapshots: { orgId: 'orgId' },
   };
 });
 

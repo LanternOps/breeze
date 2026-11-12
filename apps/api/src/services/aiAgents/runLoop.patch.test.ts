@@ -302,7 +302,7 @@ function patchRaw(overrides: Partial<RawPatchEvidence['sections']> = {}): RawPat
     rollup: {
       devicesTotal: 3, devicesNonCompliant: 1, devicesCompliant: 2, outstandingPatches: 1,
       outstandingBySeverity: { critical: 1, important: 0, moderate: 0, low: 0, unrated: 0 },
-      oldestOutstandingDays: 30, snapshot: null,
+      oldestOutstandingDays: 30,
     },
     sections: {
       ringPosture: { rows: [], total: 0 },
