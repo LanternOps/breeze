@@ -7141,7 +7141,7 @@
   },
   "orgDomains": {
     "title": "Domains",
-    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which portal self-registration and Sign in with Google rely on.",
+    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which features such as portal self-registration rely on.",
     "forbidden": "Managing customer domains requires an admin role with access to every organization.",
     "partnerOnly": "Customer domains are managed by your service provider.",
     "checkingAccess": "Checking access…",
@@ -7243,7 +7243,7 @@
       "resultUnavailable": "The check could not finish. {{reason}}",
       "removeVerification": "Remove verification",
       "removeTitle": "Remove verification for {{domain}}?",
-      "removeMessage": "The domain stays on this organization for mail routing. Self-registration and Sign in with Google stop trusting it until it is verified again."
+      "removeMessage": "The domain stays on this organization for mail routing. Features that rely on verified domains, such as self-registration, stop trusting it until it is verified again."
     },
     "actions": {
       "verify": "Verify",
@@ -8480,15 +8480,28 @@
       "label": "Microsoft sign-in"
     },
     "google": {
-      "label": "Google sign-in"
+      "label": "Google sign-in",
+      "domainNotVerified": "Verify one of this organization's domains under Organization › Domains before turning on Google sign-in.",
+      "domains": {
+        "verified": "Verified domains: {{domains}}",
+        "none": "No verified domain —",
+        "verify": "verify one under Organization › Domains",
+        "partner": "On wherever a domain is verified"
+      }
     },
     "password": {
       "label": "Password sign-in",
       "allowed": "Allowed",
       "ssoOnly": "Off — Microsoft/Google only",
-      "ssoOnlyNeedsSso": "Available once Microsoft or Google sign-in is turned on."
+      "ssoOnlyMicrosoft": "Off — Microsoft only",
+      "ssoOnlyGoogle": "Off — Google only",
+      "ssoOnlyNeedsSso": "Available once Microsoft or Google sign-in is turned on.",
+      "ssoOnlyNeedsSsoMicrosoft": "Available once Microsoft sign-in is turned on.",
+      "ssoOnlyNeedsSsoGoogle": "Available once Google sign-in is turned on."
     },
     "fallback": "Password sign-in is on because no Microsoft or Google sign-in is enabled.",
+    "fallbackMicrosoft": "Password sign-in is on because Microsoft sign-in is not enabled.",
+    "fallbackGoogle": "Password sign-in is on because Google sign-in is not enabled.",
     "invites": {
       "label": "Invites from the MSP",
       "value": "Always on"
@@ -8503,6 +8516,8 @@
     },
     "ssoNewPerson": {
       "label": "First Microsoft / Google sign-in",
+      "labelMicrosoft": "First Microsoft sign-in",
+      "labelGoogle": "First Google sign-in",
       "invitedOnly": "Invited people only",
       "approval": "Needs approval",
       "instant": "Instant"
@@ -8513,6 +8528,8 @@
       "save": "Couldn't save sign-in settings.",
       "methodUnavailable": "This sign-in method isn't available on this Breeze deployment yet.",
       "ssoOnlyNeedsSso": "Turn on Microsoft or Google sign-in before turning off password sign-in.",
+      "ssoOnlyNeedsSsoMicrosoft": "Turn on Microsoft sign-in before turning off password sign-in.",
+      "ssoOnlyNeedsSsoGoogle": "Turn on Google sign-in before turning off password sign-in.",
       "tenantNotProven": "Prove this organization's Microsoft tenant before turning on Microsoft sign-in.",
       "sessionHours": "Enter a whole number of hours from 1 to 168."
     },
@@ -8521,7 +8538,11 @@
     },
     "sessionHours": {
       "label": "Microsoft / Google session length (hours)",
-      "help": "Microsoft and Google sign-ins end after this many hours, however active the person is. From 1 to 168."
+      "labelMicrosoft": "Microsoft session length (hours)",
+      "labelGoogle": "Google session length (hours)",
+      "help": "Microsoft and Google sign-ins end after this many hours, however active the person is. From 1 to 168.",
+      "helpMicrosoft": "Microsoft sign-ins end after this many hours, however active the person is. From 1 to 168.",
+      "helpGoogle": "Google sign-ins end after this many hours, however active the person is. From 1 to 168."
     },
     "entraTenant": {
       "title": "Microsoft tenant",
@@ -8595,6 +8616,8 @@
       "intro": "Saving turns off password sign-in for the organizations below.",
       "partnerIntro": "Saving this partner default turns off password sign-in for these organizations. Each organization's page lists the accounts that can't sign in yet.",
       "explain": "People already connected to Microsoft lose their password and are signed out. People without a Microsoft connection can't sign in until they accept a Microsoft sign-in invite.",
+      "explainGoogle": "People already connected to Google lose their password and are signed out. People without a Google connection can't sign in until they accept a Google sign-in invite.",
+      "explainBoth": "People already connected to Microsoft or Google lose their password and are signed out. People without a Microsoft or Google connection can't sign in until they accept a sign-in invite.",
       "columns": {
         "org": "Organization",
         "passwordsToClear": "Passwords removed",
@@ -8605,24 +8628,38 @@
       "strandedMore": "and {{count}} more",
       "strandedLoadError": "Couldn't load the names of these accounts.",
       "sendInvites": "Send Microsoft sign-in invites to these accounts after saving",
+      "sendInvitesGoogle": "Send Google sign-in invites to these accounts after saving",
+      "sendInvitesBoth": "Send sign-in invites to these accounts after saving",
       "confirm": "Turn off password sign-in",
       "changed": "The impact changed since you opened this. Review the new numbers."
     },
     "stranded": {
       "title": "Can't sign in yet ({{count}})",
       "description": "These accounts have no Microsoft connection, so they can't sign in while password sign-in is off. Send each one a Microsoft sign-in invite.",
+      "descriptionGoogle": "These accounts have no Google connection, so they can't sign in while password sign-in is off. Send each one a Google sign-in invite.",
+      "descriptionBoth": "These accounts have no Microsoft or Google connection, so they can't sign in while password sign-in is off. Send each one a sign-in invite.",
       "loadError": "Couldn't load the accounts that can't sign in.",
       "invite": "Send Microsoft sign-in invite",
+      "inviteGoogle": "Send Google sign-in invite",
+      "inviteBoth": "Send sign-in invite",
       "inviteAll": "Invite all",
       "more": "Showing {{shown}} of {{count}}.",
       "toasts": {
         "invited": "Sent {{count}} Microsoft sign-in invite(s).",
+        "invitedGoogle": "Sent {{count}} Google sign-in invite(s).",
+        "invitedBoth": "Sent {{count}} sign-in invite(s).",
         "partial": "Sent {{invited}} of {{total}} Microsoft sign-in invites. The rest were already connected or couldn't be invited.",
+        "partialGoogle": "Sent {{invited}} of {{total}} Google sign-in invites. The rest were already connected or couldn't be invited.",
+        "partialBoth": "Sent {{invited}} of {{total}} sign-in invites. The rest were already connected or couldn't be invited.",
         "emailFailed": "{{count}} account(s) moved to invited, but their invite email couldn't be sent. Use Resend on the portal users list."
       },
       "errors": {
         "invite": "Couldn't send Microsoft sign-in invites.",
-        "unavailable": "Microsoft sign-in isn't available for this organization, so there is nothing to invite with."
+        "inviteGoogle": "Couldn't send Google sign-in invites.",
+        "inviteBoth": "Couldn't send sign-in invites.",
+        "unavailable": "Microsoft sign-in isn't available for this organization, so there is nothing to invite with.",
+        "unavailableGoogle": "Google sign-in isn't available for this organization, so there is nothing to invite with.",
+        "unavailableBoth": "Neither Microsoft nor Google sign-in is on for this organization, so there is nothing to invite with."
       }
     },
     "domains": {
@@ -8644,6 +8681,7 @@
       "self": "Self-registration",
       "entra": "Microsoft sign-in",
       "google": "Google sign-in",
+      "googleWithDomain": "Google · {{domain}}",
       "addin_user": "AI for Office add-in"
     },
     "selectAll": "Select all requests",
@@ -8664,7 +8702,8 @@
       "identityLinked": "Sign-in already linked to another account",
       "failed": "Couldn't decide this request",
       "entraTenantNotProven": "This organization's Microsoft tenant is no longer proven",
-      "domainNotVerified": "Email domain no longer verified"
+      "domainNotVerified": "Email domain no longer verified",
+      "googleDomainNotVerified": "Google Workspace domain no longer verified"
     },
     "denyDialog": {
       "title": "Deny access request",
@@ -8683,7 +8722,8 @@
       "load": "Couldn't load access requests.",
       "action": "Couldn't update the access request.",
       "bulk": "Couldn't decide the selected requests.",
-      "domainNotVerified": "This person's email domain is no longer verified for this organization. Invite them directly if they should have access."
+      "domainNotVerified": "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
+      "googleDomainNotVerified": "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly."
     },
     "summary": {
       "title": "Pending access requests",

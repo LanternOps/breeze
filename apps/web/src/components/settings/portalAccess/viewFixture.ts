@@ -50,6 +50,16 @@ export function makePolicyView(opts: {
       return [k, own !== null ? { value: own, source: kind } : { value: v, source: inheritedSource }];
     }),
   ) as PortalAccessPolicyView['effective'];
+  // The count and the list describe the same set: give one and the other follows
+  // (W6 tests pass a count, W7 tests a list). A partner view carries null for both.
+  const verifiedDomains = opts.verifiedDomains !== undefined
+    ? opts.verifiedDomains
+    : kind === 'partner'
+      ? null
+      : Array.from({ length: opts.verifiedDomainCount ?? 0 }, (_, i) => `domain${i + 1}.example.com`);
+  const verifiedDomainCount = opts.verifiedDomainCount !== undefined
+    ? opts.verifiedDomainCount
+    : verifiedDomains === null ? null : verifiedDomains.length;
   return {
     owner: { kind, id: kind === 'org' ? 'org-1' : 'partner-1' },
     values,
@@ -59,9 +69,9 @@ export function makePolicyView(opts: {
     capabilities: { entra: false, google: false, selfRegistration: false, ...opts.capabilities },
     entraTenantProven: opts.entraTenantProven !== undefined ? opts.entraTenantProven : (kind === 'partner' ? null : false),
     // W6 (#11383): the org view's verified-domain count (the no-domain warning); null for a partner view.
-    verifiedDomainCount: opts.verifiedDomainCount !== undefined ? opts.verifiedDomainCount : (kind === 'partner' ? null : 0),
+    verifiedDomainCount,
     // W7 (#11384): the org view's verified domains (the Google row); null for a partner view.
-    verifiedDomains: opts.verifiedDomains !== undefined ? opts.verifiedDomains : (kind === 'partner' ? null : []),
+    verifiedDomains,
     canEdit: opts.canEdit ?? true,
   };
 }

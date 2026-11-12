@@ -6,8 +6,15 @@ import { z } from 'zod';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { portalLogin, usePortalAuth } from '@/lib/auth';
 import { portalApi } from '@/lib/api';
-import { getSignInMethods, startMicrosoftSignIn, takeStoredNext, type SignInMethods } from '@/lib/oidc';
+import {
+  getSignInMethods,
+  startGoogleSignIn,
+  startMicrosoftSignIn,
+  takeStoredNext,
+  type SignInMethods
+} from '@/lib/oidc';
 import { MicrosoftSignInButton } from './MicrosoftSignInButton';
+import { GoogleSignInButton } from './GoogleSignInButton';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { safeNextPath } from '@/lib/nextPath';
@@ -20,29 +27,59 @@ const loginSchema = z.object({
 
 type LoginFormData = z.infer<typeof loginSchema>;
 
-const SSO_COPY: Record<string, string> = {
-  request_sent: "Your request was sent. You'll get an email when you can sign in.",
-  account_exists:
-    'You already have an account. Sign in with your password and connect Microsoft, or ask your IT provider to re-invite you.'
-};
-const SSO_GENERIC_COPY = "Microsoft sign-in isn't set up for this account here.";
+type SsoProvider = 'microsoft' | 'google';
 
-function readSsoParam(): string | null {
-  if (typeof window === 'undefined') return null;
-  return new URLSearchParams(window.location.search).get('sso');
+/**
+ * The callback's result codes (`?sso=`). A Google flow adds `&p=google`; a
+ * missing `p` is Microsoft (its callback never sends one). Unknown codes get
+ * the provider's generic failure. A refusal's reason is never shown, except
+ * `request_pending` (W7 D9), which only describes the signed-in person's own
+ * address.
+ */
+const SSO_COPY: Record<SsoProvider, Record<string, string>> = {
+  microsoft: {
+    request_sent: "Your request was sent. You'll get an email when you can sign in.",
+    account_exists:
+      'You already have an account. Sign in with your password and connect Microsoft, or ask your IT provider to re-invite you.',
+    request_pending:
+      'An access request for your email address is already waiting for your IT provider. Ask them to review it, then sign in again.'
+  },
+  google: {
+    request_sent: "Your request was sent. You'll get an email when you can sign in.",
+    account_exists:
+      'You already have an account. Sign in with your password and connect Google, or ask your IT provider to re-invite you.',
+    request_pending:
+      'An access request for your email address is already waiting for your IT provider. Ask them to review it, then sign in again.'
+  }
+};
+const SSO_GENERIC_COPY: Record<SsoProvider, string> = {
+  microsoft: "Microsoft sign-in isn't set up for this account here.",
+  google: "Google sign-in isn't set up for this account here."
+};
+
+function readSsoParams(): { code: string | null; provider: SsoProvider } {
+  if (typeof window === 'undefined') return { code: null, provider: 'microsoft' };
+  const params = new URLSearchParams(window.location.search);
+  return { code: params.get('sso'), provider: params.get('p') === 'google' ? 'google' : 'microsoft' };
 }
 
 export function LoginForm() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // null = unknown / still loading: render the password form (today's behaviour)
-  // and no Microsoft button. A failed methods fetch stays that way, silently.
+  // and no SSO buttons. A failed methods fetch stays that way, silently.
   const [methods, setMethods] = useState<SignInMethods | null>(null);
   const [msBusy, setMsBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   // Read after mount, never during render: the server has no query string, so
   // reading it in the initial state makes the hydrated tree differ from the SSR HTML.
   const [ssoCode, setSsoCode] = useState<string | null>(null);
-  useEffect(() => { setSsoCode(readSsoParam()); }, []);
+  const [ssoProvider, setSsoProvider] = useState<SsoProvider>('microsoft');
+  useEffect(() => {
+    const { code, provider } = readSsoParams();
+    setSsoCode(code);
+    setSsoProvider(provider);
+  }, []);
   const { login } = usePortalAuth();
 
   useEffect(() => {
@@ -79,7 +116,7 @@ export function LoginForm() {
       } catch (err) {
         // The cookie session is what authorizes requests; the store is a display cache.
         // A missing session shows up on the next page as the usual sign-in redirect.
-        console.warn('[LoginForm] profile load after Microsoft sign-in failed', err);
+        console.warn('[LoginForm] profile load after single sign-on failed', err);
       }
       if (!cancelled) await navigateTo(next ?? '/', { replace: true });
     })();
@@ -90,10 +127,16 @@ export function LoginForm() {
 
   const showPassword = methods?.password !== false;
   const showMicrosoft = methods?.microsoft === true;
+  // Absent unless the deployment has a Google client (`google` is omitted otherwise).
+  const showGoogle = methods?.google === true;
   // W6: only a verified custom portal domain whose org has self-registration
   // on answers true; the shared host and a failed fetch show no link.
   const showRequestAccess = methods?.requestAccess === true;
-  const ssoBanner = ssoCode && ssoCode !== 'signed_in' ? (SSO_COPY[ssoCode] ?? SSO_GENERIC_COPY) : null;
+  const ssoBanner =
+    ssoCode && ssoCode !== 'signed_in'
+      ? ((Object.hasOwn(SSO_COPY[ssoProvider], ssoCode) ? SSO_COPY[ssoProvider][ssoCode] : undefined) ??
+        SSO_GENERIC_COPY[ssoProvider])
+      : null;
 
   const onMicrosoft = async () => {
     setMsBusy(true);
@@ -103,6 +146,17 @@ export function LoginForm() {
     if (!result.ok) {
       setError(result.error);
       setMsBusy(false);
+    }
+  };
+
+  const onGoogle = async () => {
+    setGoogleBusy(true);
+    setError(null);
+    const next = safeNextPath(new URLSearchParams(window.location.search).get('next'));
+    const result = await startGoogleSignIn({ purpose: 'login', ...(next ? { next } : {}) });
+    if (!result.ok) {
+      setError(result.error);
+      setGoogleBusy(false);
     }
   };
 
@@ -245,12 +299,13 @@ export function LoginForm() {
         </div>
       )}
 
-      {showMicrosoft && (
+      {(showMicrosoft || showGoogle) && (
         <div className="space-y-4">
           {showPassword && (
             <p className="text-center text-xs uppercase tracking-[0.08em] text-muted-foreground">or</p>
           )}
-          <MicrosoftSignInButton onClick={onMicrosoft} busy={msBusy} />
+          {showMicrosoft && <MicrosoftSignInButton onClick={onMicrosoft} busy={msBusy} />}
+          {showGoogle && <GoogleSignInButton onClick={onGoogle} busy={googleBusy} />}
         </div>
       )}
 

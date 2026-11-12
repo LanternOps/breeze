@@ -5,7 +5,14 @@ import { InheritChoice, type InheritChoiceOption } from '../../shared/InheritCho
 import InheritedField from '../../shared/InheritedField';
 import HashLink from '../../shared/HashLink';
 import type { PortalAccessPolicyField, PortalAccessPolicyValues, PortalAccessPolicyView } from '@breeze/shared';
-import { draftHasSsoMethod, ownValue, withDraftField, type PortalAccessPolicyDraft } from './types';
+import {
+  capabilityProviderSet,
+  draftHasSsoMethod,
+  ownValue,
+  withDraftField,
+  type PortalAccessPolicyDraft,
+  type SsoProviderSet,
+} from './types';
 
 export interface PortalAccessPolicyFormProps {
   view: PortalAccessPolicyView;
@@ -20,6 +27,8 @@ export interface PortalAccessPolicyFormProps {
   fieldErrors?: Partial<Record<PortalAccessPolicyField, string>>;
   /** Rendered under the Microsoft row when it shows (W4: the org's tenant proof panel). */
   entraSlot?: ReactNode;
+  /** Rendered under the Google row when it shows (W7: the org's verified domains). */
+  googleSlot?: ReactNode;
   /**
    * Whether a field holds typed text that is not a valid value (today: the
    * session length). The owner blocks its Save while true: the draft then
@@ -29,6 +38,39 @@ export interface PortalAccessPolicyFormProps {
 }
 
 const ID = 'portal-access-policy';
+
+// W7 (#11384): one static key per provider set, so keyUsage.test.ts sees every
+// key and no copy says "Google" on a deployment that cannot run it.
+const SSO_ONLY_LABEL_KEYS: Record<SsoProviderSet, string> = {
+  microsoft: 'portalAccessPolicy.password.ssoOnlyMicrosoft',
+  google: 'portalAccessPolicy.password.ssoOnlyGoogle',
+  both: 'portalAccessPolicy.password.ssoOnly',
+};
+const SSO_ONLY_NEEDS_SSO_HINT_KEYS: Record<SsoProviderSet, string> = {
+  microsoft: 'portalAccessPolicy.password.ssoOnlyNeedsSsoMicrosoft',
+  google: 'portalAccessPolicy.password.ssoOnlyNeedsSsoGoogle',
+  both: 'portalAccessPolicy.password.ssoOnlyNeedsSso',
+};
+const FALLBACK_KEYS: Record<SsoProviderSet, string> = {
+  microsoft: 'portalAccessPolicy.fallbackMicrosoft',
+  google: 'portalAccessPolicy.fallbackGoogle',
+  both: 'portalAccessPolicy.fallback',
+};
+const SSO_NEW_PERSON_LABEL_KEYS: Record<SsoProviderSet, string> = {
+  microsoft: 'portalAccessPolicy.ssoNewPerson.labelMicrosoft',
+  google: 'portalAccessPolicy.ssoNewPerson.labelGoogle',
+  both: 'portalAccessPolicy.ssoNewPerson.label',
+};
+const SESSION_HOURS_LABEL_KEYS: Record<SsoProviderSet, string> = {
+  microsoft: 'portalAccessPolicy.sessionHours.labelMicrosoft',
+  google: 'portalAccessPolicy.sessionHours.labelGoogle',
+  both: 'portalAccessPolicy.sessionHours.label',
+};
+const SESSION_HOURS_HELP_KEYS: Record<SsoProviderSet, string> = {
+  microsoft: 'portalAccessPolicy.sessionHours.helpMicrosoft',
+  google: 'portalAccessPolicy.sessionHours.helpGoogle',
+  both: 'portalAccessPolicy.sessionHours.help',
+};
 
 /** `ssoSessionMaxHours` bounds (the shared patch schema: an integer, 1–168). */
 export const SSO_SESSION_HOURS_MIN = 1;
@@ -70,6 +112,7 @@ export function PortalAccessPolicyForm({
   onShowRequests,
   fieldErrors = {},
   entraSlot,
+  googleSlot,
   onInvalidChange,
 }: PortalAccessPolicyFormProps) {
   const { t } = useTranslation('settings');
@@ -121,14 +164,16 @@ export function PortalAccessPolicyForm({
   ];
 
   const ssoOn = draftHasSsoMethod(view, draft);
+  // SSO copy names only the providers this deployment can run (Google needs `capabilities.google`).
+  const providers = capabilityProviderSet(capabilities);
   const passwordOptions: InheritChoiceOption<PortalAccessPolicyValues['passwordMode']>[] = [
     { value: 'allowed', label: t('portalAccessPolicy.password.allowed'), testId: `${ID}-password-allowed` },
     {
       value: 'sso_only',
-      label: t('portalAccessPolicy.password.ssoOnly'),
+      label: t(/* i18n-dynamic */ SSO_ONLY_LABEL_KEYS[providers]),
       testId: `${ID}-password-sso_only`,
       disabled: !ssoOn,
-      hint: ssoOn ? undefined : t('portalAccessPolicy.password.ssoOnlyNeedsSso'),
+      hint: ssoOn ? undefined : t(/* i18n-dynamic */ SSO_ONLY_NEEDS_SSO_HINT_KEYS[providers]),
     },
   ];
   const selfRegistrationOptions: InheritChoiceOption<PortalAccessPolicyValues['selfRegistrationMode']>[] = [
@@ -165,7 +210,12 @@ export function PortalAccessPolicyForm({
             {entraSlot}
           </div>
         )}
-        {visible.has('googleEnabled') && row('googleEnabled', 'google', t('portalAccessPolicy.google.label'), onOff('google'))}
+        {visible.has('googleEnabled') && (
+          <div data-testid={`${ID}-google-row`}>
+            {row('googleEnabled', 'google', t('portalAccessPolicy.google.label'), onOff('google'))}
+            {googleSlot}
+          </div>
+        )}
         {row('passwordMode', 'password', t('portalAccessPolicy.password.label'), passwordOptions)}
         {view.passwordModeFallback && (
           <p
@@ -173,7 +223,7 @@ export function PortalAccessPolicyForm({
             data-testid={`${ID}-fallback`}
             className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
           >
-            {t('portalAccessPolicy.fallback')}
+            {t(/* i18n-dynamic */ FALLBACK_KEYS[providers])}
           </p>
         )}
         {visible.has('ssoSessionMaxHours') && (() => {
@@ -185,7 +235,7 @@ export function PortalAccessPolicyForm({
             <div>
               <InheritedField
                 id={`${ID}-session-hours`}
-                label={t('portalAccessPolicy.sessionHours.label')}
+                label={t(/* i18n-dynamic */ SESSION_HOURS_LABEL_KEYS[providers])}
                 type="number"
                 min={SSO_SESSION_HOURS_MIN}
                 max={SSO_SESSION_HOURS_MAX}
@@ -207,7 +257,7 @@ export function PortalAccessPolicyForm({
                   onChange(withDraftField(view, draft, 'ssoSessionMaxHours', valid ? hours : view.values.ssoSessionMaxHours));
                 }}
               />
-              <p id={`${ID}-session-hours-help`} className="mt-1 text-xs text-muted-foreground">{t('portalAccessPolicy.sessionHours.help')}</p>
+              <p id={`${ID}-session-hours-help`} className="mt-1 text-xs text-muted-foreground">{t(/* i18n-dynamic */ SESSION_HOURS_HELP_KEYS[providers])}</p>
               {error && (
                 <p data-testid={`${ID}-ssoSessionMaxHours-error`} className="mt-1 text-xs text-destructive">{error}</p>
               )}
@@ -252,7 +302,7 @@ export function PortalAccessPolicyForm({
           </div>
         )}
         {visible.has('ssoNewPersonMode')
-          && row('ssoNewPersonMode', 'sso-new-person', t('portalAccessPolicy.ssoNewPerson.label'), ssoNewPersonOptions)}
+          && row('ssoNewPersonMode', 'sso-new-person', t(/* i18n-dynamic */ SSO_NEW_PERSON_LABEL_KEYS[providers]), ssoNewPersonOptions)}
       </section>
     </div>
   );

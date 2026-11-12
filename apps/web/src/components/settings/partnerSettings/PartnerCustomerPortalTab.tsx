@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '@/stores/auth';
 import { PortalAccessPolicyForm } from '../portalAccess/PortalAccessPolicyForm';
+import { GoogleDomainsStatus } from '../portalAccess/GoogleDomainsStatus';
 import type { PortalAccessRequestSummary } from '../portalAccess/types';
 import { usePortalAccessPolicyDraft } from './units/portalAccessPolicyUnit';
 
@@ -113,6 +114,7 @@ export default function PartnerCustomerPortalTab() {
             draft={value.draft}
             onChange={(next) => setDraft((prev) => ({ ...prev, draft: next }))}
             onInvalidChange={(hoursInvalid) => setDraft((prev) => (prev.hoursInvalid === hoursInvalid ? prev : { ...prev, hoursInvalid }))}
+            googleSlot={<GoogleDomainsStatus view={value.view} draft={value.draft} />}
           />
         )}
       </section>

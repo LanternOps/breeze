@@ -7093,7 +7093,7 @@
   },
   "orgDomains": {
     "title": "Domänen",
-    "description": "E-Mail-Domänen, die zu diesem Kunden gehören. Eine deklarierte Domäne leitet eingehende E-Mails an diese Organisation weiter. Eine verifizierte Domäne ist der Nachweis, dass der Kunde sie besitzt; darauf stützen sich die Selbstregistrierung im Portal und die Google-Anmeldung.",
+    "description": "E-Mail-Domänen, die zu diesem Kunden gehören. Eine deklarierte Domäne leitet eingehende E-Mails an diese Organisation weiter. Eine verifizierte Domäne ist der Nachweis, dass der Kunde sie besitzt; darauf stützen sich Funktionen wie die Selbstregistrierung im Portal.",
     "forbidden": "Zum Verwalten von Kundendomänen ist eine Administratorrolle mit Zugriff auf alle Organisationen erforderlich.",
     "partnerOnly": "Kundendomänen werden von Ihrem Dienstleister verwaltet.",
     "checkingAccess": "Zugriff wird geprüft…",
@@ -7195,7 +7195,7 @@
       "resultUnavailable": "Die Prüfung konnte nicht abgeschlossen werden. {{reason}}",
       "removeVerification": "Verifizierung entfernen",
       "removeTitle": "Verifizierung für {{domain}} entfernen?",
-      "removeMessage": "Die Domäne bleibt für die E-Mail-Weiterleitung bei dieser Organisation. Selbstregistrierung und Google-Anmeldung vertrauen ihr erst wieder, wenn sie erneut verifiziert wurde."
+      "removeMessage": "Die Domäne bleibt für die E-Mail-Weiterleitung bei dieser Organisation. Funktionen, die verifizierte Domänen voraussetzen, etwa die Selbstregistrierung, vertrauen ihr erst wieder, wenn sie erneut verifiziert wurde."
     },
     "actions": {
       "verify": "Verifizieren",
@@ -8480,15 +8480,28 @@
       "label": "Microsoft-Anmeldung"
     },
     "google": {
-      "label": "Google-Anmeldung"
+      "label": "Google-Anmeldung",
+      "domainNotVerified": "Verifizieren Sie unter Organisation › Domänen eine Domäne dieser Organisation, bevor Sie die Google-Anmeldung aktivieren.",
+      "domains": {
+        "verified": "Verifizierte Domänen: {{domains}}",
+        "none": "Keine verifizierte Domäne —",
+        "verify": "verifizieren Sie eine unter Organisation › Domänen",
+        "partner": "Aktiv überall dort, wo eine Domäne verifiziert ist"
+      }
     },
     "password": {
       "label": "Anmeldung mit Passwort",
       "allowed": "Erlaubt",
       "ssoOnly": "Aus — nur Microsoft/Google",
-      "ssoOnlyNeedsSso": "Verfügbar, sobald die Microsoft- oder Google-Anmeldung aktiviert ist."
+      "ssoOnlyMicrosoft": "Aus — nur Microsoft",
+      "ssoOnlyGoogle": "Aus — nur Google",
+      "ssoOnlyNeedsSso": "Verfügbar, sobald die Microsoft- oder Google-Anmeldung aktiviert ist.",
+      "ssoOnlyNeedsSsoMicrosoft": "Verfügbar, sobald die Microsoft-Anmeldung aktiviert ist.",
+      "ssoOnlyNeedsSsoGoogle": "Verfügbar, sobald die Google-Anmeldung aktiviert ist."
     },
     "fallback": "Die Anmeldung mit Passwort ist aktiv, weil weder Microsoft- noch Google-Anmeldung aktiviert ist.",
+    "fallbackMicrosoft": "Die Anmeldung mit Passwort ist aktiv, weil die Microsoft-Anmeldung nicht aktiviert ist.",
+    "fallbackGoogle": "Die Anmeldung mit Passwort ist aktiv, weil die Google-Anmeldung nicht aktiviert ist.",
     "invites": {
       "label": "Einladungen vom MSP",
       "value": "Immer aktiv"
@@ -8503,6 +8516,8 @@
     },
     "ssoNewPerson": {
       "label": "Erste Microsoft-/Google-Anmeldung",
+      "labelMicrosoft": "Erste Microsoft-Anmeldung",
+      "labelGoogle": "Erste Google-Anmeldung",
       "invitedOnly": "Nur eingeladene Personen",
       "approval": "Genehmigung erforderlich",
       "instant": "Sofort"
@@ -8513,6 +8528,8 @@
       "save": "Anmeldeeinstellungen konnten nicht gespeichert werden.",
       "methodUnavailable": "Diese Anmeldemethode ist in dieser Breeze-Bereitstellung noch nicht verfügbar.",
       "ssoOnlyNeedsSso": "Aktivieren Sie die Microsoft- oder Google-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren.",
+      "ssoOnlyNeedsSsoMicrosoft": "Aktivieren Sie die Microsoft-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren.",
+      "ssoOnlyNeedsSsoGoogle": "Aktivieren Sie die Google-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren.",
       "tenantNotProven": "Weisen Sie den Microsoft-Mandanten dieser Organisation nach, bevor Sie die Microsoft-Anmeldung aktivieren.",
       "sessionHours": "Geben Sie eine ganze Zahl von Stunden zwischen 1 und 168 ein."
     },
@@ -8521,7 +8538,11 @@
     },
     "sessionHours": {
       "label": "Sitzungsdauer für Microsoft/Google (Stunden)",
-      "help": "Microsoft- und Google-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168."
+      "labelMicrosoft": "Sitzungsdauer für Microsoft (Stunden)",
+      "labelGoogle": "Sitzungsdauer für Google (Stunden)",
+      "help": "Microsoft- und Google-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168.",
+      "helpMicrosoft": "Microsoft-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168.",
+      "helpGoogle": "Google-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168."
     },
     "entraTenant": {
       "title": "Microsoft-Mandant",
@@ -8595,6 +8616,8 @@
       "intro": "Durch das Speichern wird die Anmeldung mit Passwort für die folgenden Organisationen deaktiviert.",
       "partnerIntro": "Durch das Speichern dieses Partner-Standards wird die Anmeldung mit Passwort für diese Organisationen deaktiviert. Auf der Seite jeder Organisation sind die Konten aufgeführt, die sich noch nicht anmelden können.",
       "explain": "Personen, die bereits mit Microsoft verbunden sind, verlieren ihr Passwort und werden abgemeldet. Personen ohne Microsoft-Verbindung können sich erst anmelden, wenn sie eine Einladung zur Microsoft-Anmeldung angenommen haben.",
+      "explainGoogle": "Personen, die bereits mit Google verbunden sind, verlieren ihr Passwort und werden abgemeldet. Personen ohne Google-Verbindung können sich erst anmelden, wenn sie eine Einladung zur Google-Anmeldung angenommen haben.",
+      "explainBoth": "Personen, die bereits mit Microsoft oder Google verbunden sind, verlieren ihr Passwort und werden abgemeldet. Personen ohne Microsoft- oder Google-Verbindung können sich erst anmelden, wenn sie eine Einladung zur Anmeldung angenommen haben.",
       "columns": {
         "org": "Organisation",
         "passwordsToClear": "Entfernte Passwörter",
@@ -8605,24 +8628,38 @@
       "strandedMore": "und {{count}} weitere",
       "strandedLoadError": "Die Namen dieser Konten konnten nicht geladen werden.",
       "sendInvites": "Nach dem Speichern Einladungen zur Microsoft-Anmeldung an diese Konten senden",
+      "sendInvitesGoogle": "Nach dem Speichern Einladungen zur Google-Anmeldung an diese Konten senden",
+      "sendInvitesBoth": "Nach dem Speichern Anmeldeeinladungen an diese Konten senden",
       "confirm": "Anmeldung mit Passwort deaktivieren",
       "changed": "Die Auswirkungen haben sich seit dem Öffnen geändert. Prüfen Sie die neuen Zahlen."
     },
     "stranded": {
       "title": "Können sich noch nicht anmelden ({{count}})",
       "description": "Diese Konten haben keine Microsoft-Verbindung und können sich daher nicht anmelden, solange die Anmeldung mit Passwort deaktiviert ist. Senden Sie jedem eine Einladung zur Microsoft-Anmeldung.",
+      "descriptionGoogle": "Diese Konten haben keine Google-Verbindung und können sich daher nicht anmelden, solange die Anmeldung mit Passwort deaktiviert ist. Senden Sie jedem eine Einladung zur Google-Anmeldung.",
+      "descriptionBoth": "Diese Konten haben keine Microsoft- oder Google-Verbindung und können sich daher nicht anmelden, solange die Anmeldung mit Passwort deaktiviert ist. Senden Sie jedem eine Anmeldeeinladung.",
       "loadError": "Die Konten, die sich nicht anmelden können, konnten nicht geladen werden.",
       "invite": "Einladung zur Microsoft-Anmeldung senden",
+      "inviteGoogle": "Einladung zur Google-Anmeldung senden",
+      "inviteBoth": "Anmeldeeinladung senden",
       "inviteAll": "Alle einladen",
       "more": "{{shown}} von {{count}} werden angezeigt.",
       "toasts": {
         "invited": "Einladungen zur Microsoft-Anmeldung gesendet: {{count}}.",
+        "invitedGoogle": "Einladungen zur Google-Anmeldung gesendet: {{count}}.",
+        "invitedBoth": "Anmeldeeinladungen gesendet: {{count}}.",
         "partial": "Einladungen zur Microsoft-Anmeldung gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden.",
+        "partialGoogle": "Einladungen zur Google-Anmeldung gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden.",
+        "partialBoth": "Anmeldeeinladungen gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden.",
         "emailFailed": "{{count}} Konto/Konten wurden auf eingeladen gesetzt, aber die Einladungs-E-Mail konnte nicht gesendet werden. Verwenden Sie „Erneut senden“ in der Liste der Portalbenutzer."
       },
       "errors": {
         "invite": "Einladungen zur Microsoft-Anmeldung konnten nicht gesendet werden.",
-        "unavailable": "Die Microsoft-Anmeldung ist für diese Organisation nicht verfügbar, daher gibt es nichts, womit eingeladen werden könnte."
+        "inviteGoogle": "Einladungen zur Google-Anmeldung konnten nicht gesendet werden.",
+        "inviteBoth": "Anmeldeeinladungen konnten nicht gesendet werden.",
+        "unavailable": "Die Microsoft-Anmeldung ist für diese Organisation nicht verfügbar, daher gibt es nichts, womit eingeladen werden könnte.",
+        "unavailableGoogle": "Die Google-Anmeldung ist für diese Organisation nicht verfügbar, daher gibt es nichts, womit eingeladen werden könnte.",
+        "unavailableBoth": "Für diese Organisation ist weder die Microsoft- noch die Google-Anmeldung aktiv, daher gibt es nichts, womit eingeladen werden könnte."
       }
     },
     "domains": {
@@ -8644,6 +8681,7 @@
       "self": "Selbstregistrierung",
       "entra": "Microsoft-Anmeldung",
       "google": "Google-Anmeldung",
+      "googleWithDomain": "Google · Domäne {{domain}}",
       "addin_user": "AI-for-Office-Add-in"
     },
     "selectAll": "Alle Anfragen auswählen",
@@ -8664,7 +8702,8 @@
       "identityLinked": "Anmeldung bereits mit einem anderen Konto verknüpft",
       "failed": "Diese Anfrage konnte nicht entschieden werden",
       "entraTenantNotProven": "Der Microsoft-Mandant dieser Organisation ist nicht mehr nachgewiesen",
-      "domainNotVerified": "E-Mail-Domäne nicht mehr verifiziert"
+      "domainNotVerified": "E-Mail-Domäne nicht mehr verifiziert",
+      "googleDomainNotVerified": "Google Workspace-Domäne nicht mehr verifiziert"
     },
     "denyDialog": {
       "title": "Zugriffsanfrage ablehnen",
@@ -8683,7 +8722,8 @@
       "load": "Zugriffsanfragen konnten nicht geladen werden.",
       "action": "Die Zugriffsanfrage konnte nicht aktualisiert werden.",
       "bulk": "Die ausgewählten Anfragen konnten nicht entschieden werden.",
-      "domainNotVerified": "Die E-Mail-Domäne dieser Person ist für diese Organisation nicht mehr verifiziert. Laden Sie sie direkt ein, wenn sie Zugriff erhalten soll."
+      "domainNotVerified": "Die E-Mail-Domäne dieser Person ist für diese Organisation nicht mehr verifiziert. Laden Sie sie direkt ein, wenn sie Zugriff erhalten soll.",
+      "googleDomainNotVerified": "Die Google Workspace-Domäne dieser Anfrage ist für diese Organisation nicht mehr verifiziert. Verifizieren Sie sie erneut oder laden Sie die Person direkt ein."
     },
     "summary": {
       "title": "Ausstehende Zugriffsanfragen",

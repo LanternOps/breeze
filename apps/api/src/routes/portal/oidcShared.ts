@@ -98,7 +98,13 @@ function providerLabel(provider: PortalOidcProvider): string {
 // Result redirects: the ONLY places a callback ever sends the browser
 // ============================================
 
-export type LoginResult = 'signed_in' | 'request_sent' | 'account_exists' | 'unavailable';
+/**
+ * `request_pending` (W7 D9): the address the person just proved already has a
+ * pending request queued for a different sign-in. Like `account_exists`, it
+ * says something only about the signed-in person's own address, so it gets
+ * its own copy instead of the generic failure.
+ */
+export type LoginResult = 'signed_in' | 'request_sent' | 'account_exists' | 'request_pending' | 'unavailable';
 export type ProfileResult = 'linked' | 'unavailable';
 
 /** Microsoft: no provider parameter (W4, byte-identical; the portal reads a missing `p` as Microsoft). */
@@ -516,7 +522,13 @@ export async function finishSignIn(
   purpose: Exclude<PortalOidcPurpose, { kind: 'tenant_proof' }>,
   outcome: PortalOidcSignInOutcome,
 ): Promise<string> {
-  if (outcome.kind === 'denied') return refuse(c, outcome.reason, { purpose, orgId: outcome.orgId, provider });
+  if (outcome.kind === 'denied') {
+    const location = await refuse(c, outcome.reason, { purpose, orgId: outcome.orgId, provider });
+    // D9: still a refusal (audited as one above); only the page the person lands on differs.
+    return outcome.reason === 'request_conflict' && purpose.kind === 'login'
+      ? loginResult('request_pending', provider)
+      : location;
+  }
 
   // A link flow only ever ends linked (or denied, above).
   if (purpose.kind === 'link') {

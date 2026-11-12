@@ -83,4 +83,28 @@ describe('SsoOnlyConfirmDialog', () => {
     expect(screen.queryByTestId('sso-only-confirm-send-invites')).toBeNull();
     expect(screen.queryByTestId('sso-only-confirm-stranded')).toBeNull();
   });
+
+  describe('W7 (#11384): provider-conditional copy', () => {
+    it('ships dark: Microsoft only (the default) never says Google', () => {
+      renderDialog({ stranded: stranded(2) });
+      const text = document.body.textContent ?? '';
+      expect(text).not.toMatch(/google/i);
+      expect(text).toContain('Send Microsoft sign-in invites to these accounts after saving');
+    });
+
+    it('says Microsoft or Google when both are effective', () => {
+      renderDialog({ stranded: stranded(2), providers: 'both' });
+      const dialog = screen.getByTestId('sso-only-confirm-dialog');
+      expect(dialog).toHaveTextContent('People already connected to Microsoft or Google lose their password');
+      expect(dialog).toHaveTextContent('Send sign-in invites to these accounts after saving');
+    });
+
+    it('says Google when only Google is effective', () => {
+      renderDialog({ stranded: stranded(2), providers: 'google' });
+      const dialog = screen.getByTestId('sso-only-confirm-dialog');
+      expect(dialog).toHaveTextContent('People already connected to Google lose their password');
+      expect(dialog).toHaveTextContent('Send Google sign-in invites to these accounts after saving');
+      expect(dialog.textContent ?? '').not.toMatch(/microsoft/i);
+    });
+  });
 });
