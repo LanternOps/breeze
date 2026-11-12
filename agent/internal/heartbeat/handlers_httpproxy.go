@@ -86,7 +86,7 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 	// by the API. Empty rules = deny (API must always send rules for
 	// http_request). The fetch dials the checked address.
 	rules := parseTunnelAllowlistRules(cmd.Payload["allowlistRules"])
-	dialHost, err := tunnel.ResolveDestination(targetHost, targetPort, false, rules)
+	dialHost, err := resolveTunnelDestination(targetHost, targetPort, false, rules)
 	if err != nil {
 		return tools.CommandResult{
 			Status:     "failed",
@@ -117,7 +117,7 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 // against a loopback httptest server in any environment (including CI
 // containers with only a loopback interface), without weakening the block guard.
 func fetchAndEncodeHttp(ctx context.Context, req tunnel.FetchRequest, start time.Time) tools.CommandResult {
-	resp, err := tunnel.Fetch(ctx, req, httpProxyTimeout, httpProxyMaxBody)
+	resp, err := fetchTunnelHTTP(ctx, req, httpProxyTimeout, httpProxyMaxBody)
 	if err != nil {
 		errStr := err.Error()
 		// Defensive guard: normalise the error to the stable API token.

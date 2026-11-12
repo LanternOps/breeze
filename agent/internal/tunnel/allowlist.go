@@ -68,6 +68,19 @@ func ParseAllowlistRule(pattern string) (AllowlistRule, error) {
 		return AllowlistRule{}, fmt.Errorf("invalid port range %q", portPart)
 	}
 
+	// Prefix lengths have at most 3 digits and ports at most 5, matching the
+	// API's grammar.
+	if slash := strings.Index(cidr, "/"); slash >= 0 && !isDigits(cidr[slash+1:], 3) {
+		return AllowlistRule{}, fmt.Errorf("invalid prefix length in %q", cidr)
+	}
+	if portPart != "*" {
+		for _, p := range strings.SplitN(portPart, "-", 2) {
+			if !isDigits(p, 5) {
+				return AllowlistRule{}, fmt.Errorf("invalid port range %q", portPart)
+			}
+		}
+	}
+
 	// If CIDR is a single IP without mask, add /32 or /128.
 	if !strings.Contains(cidr, "/") {
 		if strings.Contains(cidr, ":") {
@@ -118,6 +131,19 @@ func ParseAllowlistRule(pattern string) (AllowlistRule, error) {
 	}
 
 	return rule, nil
+}
+
+// isDigits reports whether s is 1 to max ASCII digits.
+func isDigits(s string, max int) bool {
+	if len(s) == 0 || len(s) > max {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Matches returns true if the given host:port matches this rule.
@@ -177,38 +203,6 @@ func permittedAddress(ip net.IP, port int, rules []AllowlistRule) bool {
 		}
 	}
 	return false
-}
-
-// IsBlocked returns true if the target, or any address it resolves to, is on
-// the hardcoded deny list. VNC (127.0.0.1:5900) is the only exception to the
-// localhost block.
-func IsBlocked(host string, port int, isVNC bool) (bool, string) {
-	ips, err := resolveAddresses(host)
-	if err != nil {
-		return true, "unresolvable hostname"
-	}
-	localVNC := isLocalVNCEndpoint(host, port, isVNC)
-	for _, ip := range ips {
-		if blocked, reason := blockedAddress(ip, localVNC); blocked {
-			return true, reason
-		}
-	}
-	return false, ""
-}
-
-// IsAllowed checks the target against the allowlist rules. Every address the
-// target resolves to must be permitted by at least one rule.
-func IsAllowed(host string, port int, rules []AllowlistRule) bool {
-	ips, err := resolveAddresses(host)
-	if err != nil {
-		return false
-	}
-	for _, ip := range ips {
-		if !permittedAddress(ip, port, rules) {
-			return false
-		}
-	}
-	return true
 }
 
 // ResolveDestination validates a tunnel destination and returns the numeric

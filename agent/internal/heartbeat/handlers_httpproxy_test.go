@@ -17,7 +17,7 @@ import (
 )
 
 // TestFetchAndEncodeHttp exercises the post-guard fetch→encode path against a
-// loopback httptest server. This helper does NOT run IsBlocked, so binding to
+// loopback httptest server. This helper does NOT run the deny list, so binding to
 // 127.0.0.1 is fine here — the guards are tested separately in
 // TestHandleHttpRequest. This runs deterministically in ANY environment,
 // including CI containers that only have a loopback interface.

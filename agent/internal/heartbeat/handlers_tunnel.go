@@ -16,6 +16,14 @@ const (
 	maxTunnelRelayBase64Bytes = ((maxTunnelRelayFrameBytes + 2) / 3) * 4
 )
 
+// Seams so tests can check that the handlers connect to the address the
+// destination check returned.
+var (
+	resolveTunnelDestination = tunnel.ResolveDestination
+	openTunnelSession        = (*tunnel.Manager).OpenTunnel
+	fetchTunnelHTTP          = tunnel.Fetch
+)
+
 func init() {
 	handlerRegistry[tools.CmdTunnelOpen] = handleTunnelOpen
 	handlerRegistry[tools.CmdTunnelData] = handleTunnelData
@@ -51,7 +59,7 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 	// only exception is the local VNC endpoint (127.0.0.1:5900); a "vnc" type
 	// does not relax the checks for any other destination. Empty rules = deny.
 	rules := parseTunnelAllowlistRules(cmd.Payload["allowlistRules"])
-	dialHost, err := tunnel.ResolveDestination(targetHost, targetPort, isVNC, rules)
+	dialHost, err := resolveTunnelDestination(targetHost, targetPort, isVNC, rules)
 	if err != nil {
 		return tools.CommandResult{
 			Status:     "failed",
@@ -125,7 +133,7 @@ func handleTunnelOpen(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	if err := h.tunnelMgr.OpenTunnel(tunnelID, dialHost, targetPort, tunnelType, onData, onClose); err != nil {
+	if err := openTunnelSession(h.tunnelMgr, tunnelID, dialHost, targetPort, tunnelType, onData, onClose); err != nil {
 		return tools.CommandResult{
 			Status:     "failed",
 			Error:      err.Error(),

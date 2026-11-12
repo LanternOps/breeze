@@ -33,9 +33,10 @@ type FetchRequest struct {
 	// SkipTLSVerify disables TLS certificate verification for this request.
 	// Set per-session for known self-signed embedded LAN devices. Default false.
 	SkipTLSVerify bool
-	// DialIP, when set, is the numeric address the connection is made to. The
-	// caller sets it to the address it validated for Host; Host still supplies
-	// the URL, the Host header and the TLS server name.
+	// DialIP is the numeric address the connection is made to: the address
+	// the caller validated for Host. Host still supplies the URL, the Host
+	// header and the TLS server name. It may be empty only when Host is itself
+	// a numeric address; Fetch never resolves a host name.
 	DialIP string
 }
 
@@ -119,16 +120,17 @@ func Fetch(ctx context.Context, req FetchRequest, timeout time.Duration, maxBody
 		}
 	}
 
-	var dialContext func(context.Context, string, string) (net.Conn, error)
-	if req.DialIP != "" {
-		if net.ParseIP(req.DialIP) == nil {
-			return nil, fmt.Errorf("invalid dial address")
-		}
-		dialAddr := net.JoinHostPort(req.DialIP, strconv.Itoa(req.Port))
-		dialer := &net.Dialer{Timeout: timeout}
-		dialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, dialAddr)
-		}
+	dialIP := req.DialIP
+	if dialIP == "" {
+		dialIP = req.Host
+	}
+	if net.ParseIP(dialIP) == nil {
+		return nil, fmt.Errorf("invalid dial address: a checked numeric address is required")
+	}
+	dialAddr := net.JoinHostPort(dialIP, strconv.Itoa(req.Port))
+	dialer := &net.Dialer{Timeout: timeout}
+	dialContext := func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, dialAddr)
 	}
 
 	client := &http.Client{

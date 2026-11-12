@@ -45,3 +45,25 @@ func TestFetchRejectsNonNumericDialAddress(t *testing.T) {
 		t.Fatal("non-numeric dial address accepted")
 	}
 }
+
+func TestFetchRequiresACheckedAddressForAHostName(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit = true
+	}))
+	defer server.Close()
+	_, portText, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := strconv.Atoi(portText)
+
+	if _, err := Fetch(context.Background(), FetchRequest{
+		Scheme: "http", Host: "localhost", Port: port, Method: "GET", Path: "/",
+	}, 5*time.Second, 1024); err == nil {
+		t.Fatal("Fetch resolved a host name itself instead of requiring a checked address")
+	}
+	if hit {
+		t.Fatal("request reached the server")
+	}
+}

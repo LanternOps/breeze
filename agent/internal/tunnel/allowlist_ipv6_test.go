@@ -35,6 +35,9 @@ func TestParseAllowlistRuleRejectsMalformedPatterns(t *testing.T) {
 		"2001:db8::/129:80",
 		"2001:db8::1/32:443", // IPv6 prefix with host bits set
 		"::ffff:10.0.0.5/104:443",
+		"10.0.0.5/0008:80",
+		"10.0.0.5:000080",
+		"10.0.0.5:80-000090",
 		"192.0.2.1:+80",
 		"192.0.2.1: 80",
 		"host.example:443",
