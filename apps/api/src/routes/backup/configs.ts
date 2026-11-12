@@ -73,8 +73,8 @@ function buildCapabilityState(
   };
 }
 
-async function probeLocalConfig(details: Record<string, unknown>, orgId: string, configId: string): Promise<void> {
-  await probeApiLocalBackupDestination(typeof details.path === 'string' ? details.path : '', orgId, configId);
+async function probeLocalConfig(orgId: string, configId: string): Promise<void> {
+  await probeApiLocalBackupDestination(orgId, configId);
 }
 
 async function probeS3Config(rawDetails: Record<string, unknown>): Promise<void> {
@@ -671,7 +671,7 @@ configsRoutes.post(
 
   try {
     if (row.provider === 'local') {
-      await probeLocalConfig(details, orgId, row.id);
+      await probeLocalConfig(orgId, row.id);
       capability = await checkBackupProviderCapabilities({
         provider: row.provider,
         providerConfig: details,

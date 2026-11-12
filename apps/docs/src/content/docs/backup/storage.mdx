@@ -162,9 +162,11 @@ Some features read a local destination from the API server: the connectivity tes
 
 - `BACKUP_LOCAL_ROOT` must be an absolute path and not `/`. The organization and configuration directories must already exist; Breeze does not create them.
 - Breeze takes both IDs from its own records, not from the destination settings. Each destination can only reach its own directory.
-- Symbolic links are refused at every level below `BACKUP_LOCAL_ROOT`, including the per-destination directory itself. Use a bind mount to expose existing storage there.
+- Symbolic links are refused at every level below `BACKUP_LOCAL_ROOT`, including the per-destination directory itself, and so is anything that is not a regular file or directory. Use a bind mount to expose existing storage there.
 - Mount the same storage at the same path in every `api` and `worker` container.
-- Two configurations that point at the same storage each need that storage mounted at their own directory.
+- Two configurations of one organization that point at the same storage each need that storage mounted at their own directory. The storage sweep handles each directory on its own.
+- Never mount one organization's storage in another organization's directory.
+- Supported on Linux API servers (the shipped containers) and macOS. On Windows the API refuses server-side local access.
 
 Without `BACKUP_LOCAL_ROOT`, or without the directory for a destination, these features stop for that destination with the message *API local backup storage is unavailable for this destination*. The connectivity test reports a failure. Server-side integrity verification stays pending instead of failing. The storage sweep skips the destination, keeps its objects and deletes nothing. Agents keep writing backups to the device's local path.
 

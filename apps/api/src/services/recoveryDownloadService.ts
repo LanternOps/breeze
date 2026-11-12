@@ -1,10 +1,8 @@
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
-import { resolveApiLocalBackupPath } from './apiLocalBackupStorage';
+import { openApiLocalBackupObject } from './apiLocalBackupStorage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { and, eq, ne } from 'drizzle-orm';
@@ -446,13 +444,12 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       return { unavailable: true, reason: 'Snapshot storage is misconfigured.' } as const;
     }
 
-    const filePath = await resolveApiLocalBackupPath(
-      rootPath,
+    // Opened once; the response streams from this handle.
+    const object = await openApiLocalBackupObject(
       origin ? keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId) : normalizedRemotePath,
       tokenRow.orgId,
       resolved.config?.orgId === tokenRow.orgId ? resolved.localConfigId : undefined
     );
-    const fileInfo = await stat(filePath);
     const fileName = normalizedRemotePath.split('/').pop() || 'recovery-object';
     const contentType = normalizedRemotePath.endsWith('.json') ? 'application/json' : 'application/octet-stream';
 
@@ -470,12 +467,12 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     // streams instead (see the route handler in routes/backup/bmr.ts, which
     // only sets the header when contentLength is non-null).
     if (normalizedRemotePath.endsWith('.gz')) {
-      const rawStream = createReadStream(filePath);
+      const rawStream = object.handle.createReadStream({ autoClose: true });
       const gunzip = createGunzip();
       // `pipeline` (not a bare `.pipe()`) so a failure on EITHER side closes
       // the other: a corrupt/truncated gzip payload destroys `gunzip` but
       // `.pipe()` alone never destroys its *source* in response, which would
-      // otherwise leak the open file descriptor from `createReadStream`
+      // otherwise leak the open file descriptor behind the read stream
       // until GC finalization — the exact case the "corrupt gzip" test
       // below exercises. The callback below only needs to swallow the
       // already-consumer-visible error (surfaced via `gunzip`'s own 'error'
@@ -496,9 +493,9 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       unavailable: false,
       type: 'stream' as const,
       fileName,
-      contentLength: fileInfo.size,
+      contentLength: object.size,
       contentType,
-      stream: createReadStream(filePath),
+      stream: object.handle.createReadStream({ autoClose: true }),
     };
   }
 

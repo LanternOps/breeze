@@ -2,9 +2,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:fs/promises', () => ({
   stat: vi.fn(async () => ({ size: 2 })),
-  lstat: vi.fn(async () => ({ isDirectory: () => true, isSymbolicLink: () => false })),
-  realpath: vi.fn(async (path: string) => path),
 }));
+
+// API-side local storage (covered by apiLocalBackupStorage.test.ts) is
+// replaced by a stand-in that keeps its rules — an operator root and both
+// owner ids are required, and the object lives at <root>/<org>/<config>/<key>
+// — and reads through the fs mocks so the assertions below can see the path.
+vi.mock('./apiLocalBackupStorage', async () => {
+  const { stat } = await import('node:fs/promises');
+  const { createReadStream } = await import('node:fs');
+  return {
+    openApiLocalBackupObject: vi.fn(async (key: string, orgId?: string, configId?: string) => {
+      const root = process.env.BACKUP_LOCAL_ROOT;
+      if (!root || !orgId || !configId) {
+        throw new Error('API local backup storage is unavailable for this destination. Configure an operator-managed BACKUP_LOCAL_ROOT.');
+      }
+      const path = `${root}/${orgId}/${configId}/${key}`;
+      const info = await stat(path);
+      return {
+        size: info.size,
+        lastModified: new Date(0),
+        handle: { createReadStream: () => createReadStream(path), close: async () => {} },
+      };
+    }),
+  };
+});
 
 vi.mock('node:fs', async () => {
   // The `.gz` branch pipes the raw read stream into a real zlib gunzip via

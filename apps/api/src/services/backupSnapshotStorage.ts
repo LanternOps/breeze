@@ -1,6 +1,4 @@
-import { createReadStream } from 'node:fs';
-import { opendir, readFile, rm, stat } from 'node:fs/promises';
-import { join as joinLocalPath, posix as pathPosix } from 'node:path';
+import { posix as pathPosix } from 'node:path';
 import { pipeline, Transform, type Readable } from 'node:stream';
 import {
   DeleteObjectsCommand,
@@ -14,7 +12,12 @@ import { deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { buildS3Client, type S3ClientOverrides } from './recoveryMediaService';
 import { asRecord, getStringValue } from './recoveryBootstrap';
 import { physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
-import { resolveApiLocalBackupPath } from './apiLocalBackupStorage';
+import {
+  listApiLocalBackupObjects,
+  openApiLocalBackupObject,
+  removeApiLocalBackupObject,
+  removeApiLocalBackupTree,
+} from './apiLocalBackupStorage';
 
 type SnapshotStorageInput = {
   provider: string | null | undefined;
@@ -301,43 +304,9 @@ async function* iterateLocalObjectsWithLastModified(
   }
 
   const normalizedPrefix = pathPosix.normalize(prefix).replace(/^\/+/, '');
-  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedPrefix, orgId, configId);
-
-  // #6843: entries are pulled one at a time from fs.opendir's async-iterable
-  // Dir handle, not from fs.readdir({ withFileTypes: true }) — readdir
-  // materializes the ENTIRE directory's entries into one array before
-  // returning, so a single snapshot prefix with millions of files would hold
-  // all of them in memory at once even though this walk only ever needs
-  // LOCAL_LISTING_PAGE_SIZE at a time. Depth-first, in directory-iteration
-  // order (the same key order the pre-#6834 array walk produced): consecutive
-  // files are batched into one page, flushed before descending into a
-  // subdirectory.
-  async function* walk(dirPath: string, keyPrefix: string): AsyncGenerator<BackupObjectListing[]> {
-    let dir;
-    try {
-      dir = await opendir(dirPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return;
-      throw error;
-    }
-
-    let files: BackupObjectListing[] = [];
-    for await (const entry of dir) {
-      const childKey = keyPrefix ? `${keyPrefix}/${entry.name}` : entry.name;
-      const childPath = joinLocalPath(dirPath, entry.name);
-      if (entry.isDirectory()) {
-        if (files.length > 0) { yield files; files = []; }
-        yield* walk(childPath, childKey);
-      } else if (entry.isFile()) {
-        const info = await stat(childPath);
-        files.push({ key: childKey, lastModified: info.mtime });
-        if (files.length >= LOCAL_LISTING_PAGE_SIZE) { yield files; files = []; }
-      }
-    }
-    if (files.length > 0) yield files;
-  }
-
-  yield* walk(targetPath, normalizedPrefix);
+  // #6843: entries are read one at a time from fs.opendir and paged, never
+  // materialized per directory (see listApiLocalBackupObjects).
+  yield* listApiLocalBackupObjects(normalizedPrefix === '.' ? '' : normalizedPrefix, orgId, configId, LOCAL_LISTING_PAGE_SIZE);
 }
 
 /**
@@ -418,14 +387,15 @@ async function fetchLocalObjectText(providerConfig: Record<string, unknown>, key
     throw new Error('Local backup storage is misconfigured');
   }
   const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
-  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedKey, orgId, configId);
-  if (maxBytes !== undefined) {
-    const stats = await stat(targetPath);
-    if (stats.size > maxBytes) {
-      throw new BackupObjectTooLargeError(key, stats.size, maxBytes);
+  const object = await openApiLocalBackupObject(normalizedKey, orgId, configId);
+  try {
+    if (maxBytes !== undefined && object.size > maxBytes) {
+      throw new BackupObjectTooLargeError(key, object.size, maxBytes);
     }
+    return await object.handle.readFile('utf8');
+  } finally {
+    await object.handle.close();
   }
-  return readFile(targetPath, 'utf8');
 }
 
 /** Thrown by fetchBackupObjectBytes when an object's declared/actual size exceeds `maxBytes`. */
@@ -464,15 +434,16 @@ async function fetchLocalObjectBytes(providerConfig: Record<string, unknown>, ke
     throw new Error('Local backup storage is misconfigured');
   }
   const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
-  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedKey, orgId, configId);
-  if (maxBytes !== undefined) {
-    const stats = await stat(targetPath);
-    if (stats.size > maxBytes) {
-      throw new BackupObjectTooLargeError(key, stats.size, maxBytes);
+  const object = await openApiLocalBackupObject(normalizedKey, orgId, configId);
+  try {
+    if (maxBytes !== undefined && object.size > maxBytes) {
+      throw new BackupObjectTooLargeError(key, object.size, maxBytes);
     }
+    const buffer = await object.handle.readFile(); // no encoding argument — raw bytes
+    return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  } finally {
+    await object.handle.close();
   }
-  const buffer = await readFile(targetPath); // no encoding argument — raw bytes
-  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 }
 
 /**
@@ -560,12 +531,13 @@ async function openLocalObjectStream(providerConfig: Record<string, unknown>, ke
     throw new Error('Local backup storage is misconfigured');
   }
   const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
-  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedKey, orgId, configId);
-  const stats = await stat(targetPath);
-  if (stats.size > maxBytes) {
-    throw new BackupObjectTooLargeError(key, stats.size, maxBytes);
+  const object = await openApiLocalBackupObject(normalizedKey, orgId, configId);
+  if (object.size > maxBytes) {
+    await object.handle.close();
+    throw new BackupObjectTooLargeError(key, object.size, maxBytes);
   }
-  return boundedObjectStream(createReadStream(targetPath), key, maxBytes);
+  // Streams from the handle that was checked; the stream closes it.
+  return boundedObjectStream(object.handle.createReadStream({ autoClose: true }), key, maxBytes);
 }
 
 /**
@@ -710,8 +682,7 @@ async function deleteLocalObjectKeys(
   for (const key of keys) {
     try {
       const normalizedKey = pathPosix.normalize(key).replace(/^\/+/, '');
-      const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedKey, orgId, configId);
-      await rm(targetPath, { force: true });
+      await removeApiLocalBackupObject(normalizedKey, orgId, configId);
       deletedKeys.push(key);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -816,16 +787,7 @@ async function deleteLocalPrefix(
   }
 
   const normalizedRelative = pathPosix.normalize(storagePrefix).replace(/^\/+/, '');
-  const targetPath = await resolveApiLocalBackupPath(rootPath, normalizedRelative, orgId, configId);
-  try {
-    const fileInfo = await stat(targetPath);
-    await rm(targetPath, { recursive: fileInfo.isDirectory(), force: true });
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code !== 'ENOENT') {
-      throw error;
-    }
-  }
+  await removeApiLocalBackupTree(normalizedRelative, orgId, configId);
 }
 
 async function applyS3PrefixRetention(

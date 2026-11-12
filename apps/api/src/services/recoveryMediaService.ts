@@ -2,15 +2,18 @@ import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile, copyFile } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile, copyFile } from 'node:fs/promises';
 import {
   GetObjectCommand,
   PutObjectCommand,
   type S3ClientConfig,
 } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
-import { resolveApiLocalBackupPath } from './apiLocalBackupStorage';
+import {
+  copyApiLocalBackupObjectTo,
+  streamApiLocalBackupObject,
+  writeApiLocalBackupObject,
+} from './apiLocalBackupStorage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
@@ -488,9 +491,7 @@ export async function uploadRecoveryArtifactFile(
   contentType = 'application/octet-stream'
 ): Promise<void> {
   if (storage.provider === 'local') {
-    const destinationPath = await resolveApiLocalBackupPath(storage.rootPath, storage.storageKey, storage.orgId, storage.configId);
-    await mkdir(dirname(destinationPath), { recursive: true });
-    await copyFile(filePath, destinationPath);
+    await writeApiLocalBackupObject(storage.storageKey, storage.orgId, storage.configId, filePath);
     return;
   }
 
@@ -509,9 +510,7 @@ export async function uploadRecoveryArtifactFile(
 
 export async function downloadRecoveryArtifactFile(storage: RecoveryMediaStorageConfig, destinationPath: string) {
   if (storage.provider === 'local') {
-    const sourcePath = await resolveApiLocalBackupPath(storage.rootPath, storage.storageKey, storage.orgId, storage.configId);
-    await mkdir(dirname(destinationPath), { recursive: true });
-    await copyFile(sourcePath, destinationPath);
+    await copyApiLocalBackupObjectTo(storage.storageKey, storage.orgId, storage.configId, destinationPath);
     return;
   }
 
@@ -1068,15 +1067,14 @@ export async function getRecoveryMediaDownloadTarget(orgId: string, artifactId: 
     };
   }
 
-  const filePath = await resolveApiLocalBackupPath(storage.rootPath, storage.storageKey, storage.orgId, storage.configId);
-  const fileInfo = await stat(filePath);
+  const object = await streamApiLocalBackupObject(storage.storageKey, storage.orgId, storage.configId);
   return {
     artifact,
     unavailable: false,
     type: 'stream' as const,
-    stream: createReadStream(filePath),
+    stream: object.stream,
     fileName: storage.downloadFilename,
-    contentLength: fileInfo.size,
+    contentLength: object.size,
   };
 }
 
@@ -1109,15 +1107,14 @@ export async function getRecoveryMediaSignatureDownloadTarget(orgId: string, art
     return { artifact, unavailable: false, type: 'redirect' as const, url };
   }
 
-  const filePath = await resolveApiLocalBackupPath(storage.rootPath, storage.storageKey, storage.orgId, storage.configId);
-  const fileInfo = await stat(filePath);
+  const object = await streamApiLocalBackupObject(storage.storageKey, storage.orgId, storage.configId);
   return {
     artifact,
     unavailable: false,
     type: 'stream' as const,
-    stream: createReadStream(filePath),
+    stream: object.stream,
     fileName: storage.downloadFilename,
-    contentLength: fileInfo.size,
+    contentLength: object.size,
   };
 }
 
