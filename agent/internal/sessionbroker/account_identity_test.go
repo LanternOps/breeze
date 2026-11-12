@@ -110,38 +110,45 @@ func TestSessionForUserPrefersUserRoleAndSkipsAgentInternalRoles(t *testing.T) {
 func TestSessionForUserFallsBackToVerifiedAccountNames(t *testing.T) {
 	now := time.Now()
 	corpAlice := accountSession("corp-alice", "S-1-5-21-10-20-30-1104", `CORP\alice`, ipc.HelperRoleUser, now)
-	// The directory is unreachable: names are matched against the account
-	// names resolved from each session's verified identity.
+	// The directory is unreachable: a domain-qualified name is matched
+	// against the account names resolved from each session's verified
+	// identity, case-insensitively on Windows.
 	b := accountBroker("windows", fakeAccounts(nil, nil), corpAlice)
-	for _, name := range []string{`CORP\alice`, `corp\ALICE`, "alice", "Alice"} {
+	for _, name := range []string{`CORP\alice`, `corp\ALICE`} {
 		if got := b.SessionForUser(name); got != corpAlice {
 			t.Fatalf("SessionForUser(%q) = %v, want CORP\\alice's session", name, got)
 		}
 	}
-	for _, name := range []string{`OTHER\alice`, "alic", `CORP\alice2`} {
+	// A bare name or a UPN does not say which account it means (a bare name
+	// resolves to a local account before a domain one), so it selects
+	// nothing until the directory answers.
+	for _, name := range []string{"alice", "Alice", "alice@corp.example", `OTHER\alice`, "alic", `CORP\alice2`} {
 		if got := b.SessionForUser(name); got != nil {
 			t.Fatalf("SessionForUser(%q) = %v, want nil", name, got)
 		}
 	}
 
-	// A bare name that two different accounts share is never guessed.
 	localAlice := accountSession("pc-alice", "S-1-5-21-40-50-60-1001", `PC\alice`, ipc.HelperRoleUser, now)
 	b = accountBroker("windows", fakeAccounts(nil, nil), corpAlice, localAlice)
 	if got := b.SessionForUser("alice"); got != nil {
-		t.Fatalf("SessionForUser(alice) = %v, want nil when two accounts share the bare name", got)
+		t.Fatalf("SessionForUser(alice) = %v, want nil", got)
 	}
 	if got := b.SessionForUser(`pc\alice`); got != localAlice {
 		t.Fatalf(`SessionForUser(pc\alice) = %v, want PC\alice's session`, got)
 	}
 
-	// Unix account names are case-sensitive and never domain-qualified.
-	unixAlice := accountSession("unix-alice", "1001", "alice", ipc.HelperRoleUser, now)
-	b = accountBroker("linux", fakeAccounts(nil, nil), unixAlice)
-	if got := b.SessionForUser("alice"); got != unixAlice {
-		t.Fatalf("SessionForUser(alice) = %v, want alice's session", got)
+	// Unix: the same rule, with exact (case-sensitive) comparison; a
+	// directory name is qualified as user@domain or DOMAIN\user.
+	fqAlice := accountSession("fq-alice", "250801103", "alice@corp.example", ipc.HelperRoleUser, now)
+	bareBob := accountSession("bare-bob", "250801104", "bob", ipc.HelperRoleUser, now)
+	b = accountBroker("linux", fakeAccounts(nil, nil), fqAlice, bareBob)
+	if got := b.SessionForUser("alice@corp.example"); got != fqAlice {
+		t.Fatalf("SessionForUser(alice@corp.example) = %v, want alice's session", got)
 	}
-	if got := b.SessionForUser("Alice"); got != nil {
-		t.Fatalf("SessionForUser(Alice) = %v, want nil on Unix", got)
+	for _, name := range []string{"Alice@corp.example", "alice", "bob", `CORP\bob`} {
+		if got := b.SessionForUser(name); got != nil {
+			t.Fatalf("SessionForUser(%q) = %v, want nil on Unix", name, got)
+		}
 	}
 
 	// A session whose account name could not be resolved is reachable only
@@ -150,6 +157,41 @@ func TestSessionForUserFallsBackToVerifiedAccountNames(t *testing.T) {
 	b = accountBroker("linux", fakeAccounts(nil, nil), unnamed)
 	if got := b.SessionForUser(""); got != nil {
 		t.Fatalf("SessionForUser(\"\") = %v, want nil", got)
+	}
+}
+
+// With the domain controller unreachable, Windows answers
+// ERROR_TRUSTED_RELATIONSHIP_FAILURE for every domain name, including
+// accounts that do not exist, so "no such account" cannot be told apart.
+// Only DOMAIN\user names are matched against connected sessions then.
+func TestSessionForUserWithTrustFailureMatchesOnlyQualifiedNames(t *testing.T) {
+	now := time.Now()
+	trustFailure := classifyWindowsLookupError(syscall.Errno(1789))
+	if !directoryCouldNotAnswer(trustFailure) {
+		t.Fatalf("1789 classified as %v, want directory unavailable", trustFailure)
+	}
+	bob := accountSession("dom-bob", "S-1-5-21-1-2-3-1104", `BRZLAB\bob`, ipc.HelperRoleUser, now)
+	localAlice := accountSession("local-alice", "S-1-5-21-4-5-6-1000", `MEM01\alice`, ipc.HelperRoleUser, now)
+	system := accountSession("system", "S-1-5-18", `NT AUTHORITY\SYSTEM`, ipc.HelperRoleSystem, now)
+	b := accountBroker("windows", directoryAnswering(trustFailure, nil), bob, localAlice, system)
+
+	for name, want := range map[string]*Session{
+		`BRZLAB\bob`:  bob,
+		`brzlab\BOB`:  bob,
+		`MEM01\alice`: localAlice,
+	} {
+		if got := b.SessionForUser(name); got != want {
+			t.Fatalf("SessionForUser(%q) = %v, want %q", name, got, want.SessionID)
+		}
+	}
+	for _, name := range []string{
+		"bob", "Bob", "bob@brzlab.test",
+		"nosuchuser9", `BRZLAB\nosuchuser9`, "nosuchuser9@brzlab.test",
+		"alice", `OTHER\bob`, `NT AUTHORITY\SYSTEM`,
+	} {
+		if got := b.SessionForUser(name); got != nil {
+			t.Fatalf("SessionForUser(%q) selected %q while the directory is unreachable", name, got.SessionID)
+		}
 	}
 }
 
@@ -259,14 +301,22 @@ func TestSessionForUserTrustsADirectoryThatAnswersNoSuchAccount(t *testing.T) {
 		nameForIdentity: func(string) (string, error) { return "", errAccountNotFound },
 	}, alice)
 	b.lookupTimeout = 20 * time.Millisecond
-	if got := b.SessionForUser("alice"); got != alice {
+	if got := b.SessionForUser(`corp\ALICE`); got != alice {
 		t.Fatalf("with a stalled lookup, SessionForUser = %v, want alice's session", got)
+	}
+	if got := b.SessionForUser("alice"); got != nil {
+		t.Fatalf("with a stalled lookup, SessionForUser(alice) = %v, want nil for a bare name", got)
 	}
 }
 
 func TestWindowsLookupErrorsAreClassified(t *testing.T) {
 	if err := classifyWindowsLookupError(winErrorNoneMapped); !errors.Is(err, errAccountNotFound) || directoryCouldNotAnswer(err) {
 		t.Fatalf("ERROR_NONE_MAPPED: %v", err)
+	}
+	// 1789 (ERROR_TRUSTED_RELATIONSHIP_FAILURE) is what a domain member
+	// returns for every domain name while its domain controller is blocked.
+	if err := classifyWindowsLookupError(syscall.Errno(1789)); !directoryCouldNotAnswer(err) {
+		t.Fatalf("ERROR_TRUSTED_RELATIONSHIP_FAILURE: %v, want directory unavailable", err)
 	}
 	for _, errno := range []syscall.Errno{winErrorNoLogonServers, winRPCServerUnavailable, winErrorTrustedRelationFailure, winErrorDCNotFound} {
 		if err := classifyWindowsLookupError(errno); !directoryCouldNotAnswer(err) {

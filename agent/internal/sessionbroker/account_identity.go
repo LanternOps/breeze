@@ -132,12 +132,27 @@ func validAccountName(name string) bool {
 }
 
 // accountIdentityForName resolves a requested account name to the identity
-// key of the account. When the account database cannot answer (it is
-// unreachable or does not answer in time), the name is matched against the
-// account names resolved from connected sessions' verified identities; a
-// name that matches more than one account resolves to nothing. When the
-// database answers that there is no such account, the name resolves to
+// key of the account. When the database answers that there is no such
+// account, or fails in a way not known to be transient, the name resolves to
 // nothing.
+//
+// When the database cannot answer (it is unreachable or does not answer in
+// time), a domain-qualified name is matched against the account names
+// resolved from connected sessions' verified identities, and a name that
+// matches more than one account resolves to nothing. Bare names and
+// Windows UPNs are not matched then: a bare name resolves to a local account
+// before a domain one, and a domain member without its domain controller
+// returns the same error for every domain name, existing or not, so neither
+// can be checked. When this happens:
+//   - Windows: the domain controller is unreachable or the trust failed
+//     (for example ERROR_TRUSTED_RELATIONSHIP_FAILURE), or the lookup timed
+//     out. Matching is case-insensitive on DOMAIN\account.
+//   - Linux: /etc/passwd has no entry and getent could not run, exited 1 or
+//     timed out. sssd answers from its cache while its backend is down and
+//     getent then exits 2 for unknown names, so this is rare. Matching is
+//     exact, on user@domain or DOMAIN\user names (sssd fully qualified
+//     names, winbind).
+//   - macOS: id(1) timed out.
 func (b *Broker) accountIdentityForName(username string) string {
 	name := strings.TrimSpace(username)
 	if !validAccountName(name) {
@@ -167,23 +182,22 @@ func (b *Broker) accountIdentityForName(username string) string {
 	return match
 }
 
-// accountNameMatches compares a requested name with a resolved account name.
-// Windows names are case-insensitive, and a bare name matches the account
-// part of DOMAIN\account.
+// accountNameMatches compares a domain-qualified requested name with an
+// account name resolved from a verified identity, for use while the account
+// database cannot answer (see accountIdentityForName). Windows resolved names
+// are always DOMAIN\account, compared case-insensitively; Unix names are
+// compared exactly and must name a domain (user@domain or DOMAIN\user).
 func accountNameMatches(goos, requested, resolved string) bool {
-	if goos != "windows" {
-		return requested == resolved
+	if goos == "windows" {
+		if !strings.Contains(requested, `\`) || strings.Contains(requested, "@") {
+			return false
+		}
+		return strings.EqualFold(requested, resolved)
 	}
-	if strings.EqualFold(requested, resolved) {
-		return true
-	}
-	if strings.ContainsAny(requested, `\@`) {
+	if !strings.ContainsAny(requested, `@\`) {
 		return false
 	}
-	if i := strings.LastIndex(resolved, `\`); i >= 0 {
-		return strings.EqualFold(requested, resolved[i+1:])
-	}
-	return false
+	return requested == resolved
 }
 
 // takesPerUserWork reports whether a session of this role can be selected
