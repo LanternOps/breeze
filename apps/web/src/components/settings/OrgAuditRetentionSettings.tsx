@@ -147,7 +147,9 @@ export default function OrgAuditRetentionSettings({ orgId, onDirty, onSave }: Or
           )}
         </div>
 
-        {/* #4342 W4: emptied AI session records are deleted at this window (decision B: none saved = kept). */}
+        {/* #4342 W4: emptied AI session records are deleted once their last activity is older than
+            this window. An org with no saved policy keeps them (decision B, pending operator
+            confirmation: see apps/api/src/jobs/aiTranscriptRetention.ts; if it flips, update aiStubsHelp). */}
         <p className="mt-3 max-w-prose text-xs text-muted-foreground" data-testid="org-audit-retention-ai-stubs-help">
           {t('orgAuditRetentionSettings.aiStubsHelp')}
         </p>

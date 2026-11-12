@@ -5,7 +5,8 @@ import { formatDate } from '@/lib/dateTimeFormat';
 /**
  * #4342 W4: shown where a transcript would be when transcript retention has
  * emptied the session (`transcriptPurgedAt` set). The session record (cost,
- * model, flags) stays; the messages, title and tool details are gone.
+ * model, turn count) stays; the messages, title and tool details are gone.
+ * A flagged session is never emptied.
  */
 export default function TranscriptPurgedNotice({ purgedAt, testId }: { purgedAt: string; testId: string }) {
   const { t } = useTranslation('ai');

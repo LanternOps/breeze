@@ -1089,20 +1089,20 @@
   "transcriptRetention": {
     "removedOn": "Transcrição removida pela retenção em {{date}}",
     "removedLabel": "Removida pela retenção",
-    "removedHelp": "As mensagens, o título e os detalhes das ferramentas foram removidos pelo período de retenção de transcrições. Custo, modelo e sinalizações são mantidos.",
+    "removedHelp": "As mensagens, o título e os detalhes das ferramentas foram removidos pelo período de retenção de transcrições. Custo, modelo e número de turnos são mantidos.",
     "preview": {
       "counting": "Contando as conversas mais antigas que este período…",
       "unavailable": "Não foi possível contar as conversas mais antigas que este período.",
-      "noneEnforced": "Nenhuma conversa é mais antiga que este período.",
-      "nonePending": "Nenhuma conversa é mais antiga que este período. A aplicação da retenção está desativada, então nada é excluído ainda.",
-      "orgPending_one": "{{display}} conversa é mais antiga que este período. Nada é excluído ainda: a aplicação da retenção está desativada, e ela será removida quando a aplicação for ativada.",
-      "orgPending_other": "{{display}} conversas são mais antigas que este período. Nada é excluído ainda: a aplicação da retenção está desativada, e elas serão removidas quando a aplicação for ativada.",
-      "orgEnforced_one": "{{display}} conversa é mais antiga que este período e será removida na próxima execução noturna.",
-      "orgEnforced_other": "{{display}} conversas são mais antigas que este período e serão removidas na próxima execução noturna.",
-      "partnerPending_one": "Até {{display}} conversa em suas organizações é mais antiga que este período. Nada é excluído ainda: a aplicação da retenção está desativada, e ela será removida quando a aplicação for ativada.",
-      "partnerPending_other": "Até {{display}} conversas em suas organizações são mais antigas que este período. Nada é excluído ainda: a aplicação da retenção está desativada, e elas serão removidas quando a aplicação for ativada.",
-      "partnerEnforced_one": "Até {{display}} conversa em suas organizações é mais antiga que este período e será removida na próxima execução noturna.",
-      "partnerEnforced_other": "Até {{display}} conversas em suas organizações são mais antigas que este período e serão removidas na próxima execução noturna."
+      "noneEnforced": "Nenhuma conversa deve ser removida com este período.",
+      "nonePending": "Nenhuma conversa deve ser removida com este período. A aplicação da retenção está desativada, então nada é removido ainda.",
+      "orgPending_one": "{{display}} conversa deve ser removida com este período. Nada é removido ainda: a aplicação da retenção está desativada, e as mensagens dela serão removidas quando a aplicação for ativada.",
+      "orgPending_other": "{{display}} conversas devem ser removidas com este período. Nada é removido ainda: a aplicação da retenção está desativada, e as mensagens delas serão removidas quando a aplicação for ativada.",
+      "orgEnforced_one": "{{display}} conversa deve ser removida com este período; as mensagens dela serão removidas na próxima execução noturna.",
+      "orgEnforced_other": "{{display}} conversas devem ser removidas com este período; as mensagens delas serão removidas na próxima execução noturna.",
+      "partnerPending_one": "{{display}} conversa em suas organizações deve ser removida com este período. Nada é removido ainda: a aplicação da retenção está desativada, e as mensagens dela serão removidas quando a aplicação for ativada.",
+      "partnerPending_other": "{{display}} conversas em suas organizações devem ser removidas com este período. Nada é removido ainda: a aplicação da retenção está desativada, e as mensagens delas serão removidas quando a aplicação for ativada.",
+      "partnerEnforced_one": "{{display}} conversa em suas organizações deve ser removida com este período; as mensagens dela serão removidas na próxima execução noturna.",
+      "partnerEnforced_other": "{{display}} conversas em suas organizações devem ser removidas com este período; as mensagens delas serão removidas na próxima execução noturna."
     }
   }
 }

@@ -1089,20 +1089,20 @@
   "transcriptRetention": {
     "removedOn": "Transkript {{date}} tarihinde saklama süresi nedeniyle kaldırıldı",
     "removedLabel": "Saklama süresi nedeniyle kaldırıldı",
-    "removedHelp": "Mesajlar, başlık ve araç ayrıntıları transkript saklama süresine göre kaldırıldı. Maliyet, model ve işaretler korunur.",
+    "removedHelp": "Mesajlar, başlık ve araç ayrıntıları transkript saklama süresine göre kaldırıldı. Maliyet, model ve tur sayısı korunur.",
     "preview": {
       "counting": "Bu süreden eski görüşmeler sayılıyor…",
       "unavailable": "Bu süreden eski görüşmeler sayılamadı.",
-      "noneEnforced": "Bu süreden eski görüşme yok.",
-      "nonePending": "Bu süreden eski görüşme yok. Saklama uygulaması kapalı, bu nedenle henüz hiçbir şey silinmiyor.",
-      "orgPending_one": "{{display}} görüşme bu süreden eski. Henüz hiçbir şey silinmiyor: saklama uygulaması kapalı; uygulama açıldığında kaldırılacak.",
-      "orgPending_other": "{{display}} görüşme bu süreden eski. Henüz hiçbir şey silinmiyor: saklama uygulaması kapalı; uygulama açıldığında kaldırılacaklar.",
-      "orgEnforced_one": "{{display}} görüşme bu süreden eski ve bir sonraki gece çalışmasında kaldırılacak.",
-      "orgEnforced_other": "{{display}} görüşme bu süreden eski ve bir sonraki gece çalışmasında kaldırılacak.",
-      "partnerPending_one": "Kuruluşlarınızda en fazla {{display}} görüşme bu süreden eski. Henüz hiçbir şey silinmiyor: saklama uygulaması kapalı; uygulama açıldığında kaldırılacak.",
-      "partnerPending_other": "Kuruluşlarınızda en fazla {{display}} görüşme bu süreden eski. Henüz hiçbir şey silinmiyor: saklama uygulaması kapalı; uygulama açıldığında kaldırılacaklar.",
-      "partnerEnforced_one": "Kuruluşlarınızda en fazla {{display}} görüşme bu süreden eski ve bir sonraki gece çalışmasında kaldırılacak.",
-      "partnerEnforced_other": "Kuruluşlarınızda en fazla {{display}} görüşme bu süreden eski ve bir sonraki gece çalışmasında kaldırılacak."
+      "noneEnforced": "Bu süreye göre kaldırılması gereken görüşme yok.",
+      "nonePending": "Bu süreye göre kaldırılması gereken görüşme yok. Saklama uygulaması kapalı, bu nedenle henüz hiçbir şey kaldırılmıyor.",
+      "orgPending_one": "{{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "orgPending_other": "{{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "orgEnforced_one": "{{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "orgEnforced_other": "{{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "partnerPending_one": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "partnerPending_other": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı. Henüz hiçbir şey kaldırılmıyor: saklama uygulaması kapalı; uygulama açıldığında mesajları kaldırılacak.",
+      "partnerEnforced_one": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
+      "partnerEnforced_other": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak."
     }
   }
 }

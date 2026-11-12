@@ -125,12 +125,13 @@
     "retentionBreezeDefault": "Breeze varsayılanı: {{days}} gün",
     "partnerRetentionHelp": "Yapay zeka araç çıktılarının ne kadar saklanacağını seçin veya süresiz saklayın. Daha eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir.",
     "transcriptLabel": "Teknisyen yapay zeka görüşmelerini şu kadar sakla (gün)",
-    "transcriptHelp": "Daha eski görüşmeler gece çalışmasında mesajlarını, başlıklarını ve araç ayrıntılarını kaybeder; oturum kaydı maliyetini, modelini ve işaretlerini korur. İşaretli görüşmeler saklanır. Boş bırakılırsa devralınır.",
+    "transcriptHelp": "Saklama uygulaması açıldığında, daha eski görüşmeler gece çalışmasında mesajlarını, başlıklarını ve araç ayrıntılarını kaybeder; oturum kaydı maliyetini, modelini ve tur sayısını korur. İşaretli görüşmeler saklanır. Boş bırakılırsa devralınır.",
     "transcriptAuditNote": "Bir teknisyen oturumuyla ilgili denetim günlüğü kayıtları, araç girdileri dahil, bu süreyi değil denetim saklama süresini izler.",
     "transcriptClientNote": "İstemci yapay zeka (AI for Office) görüşmelerinin kendi süresi vardır.",
     "transcriptClientLink": "İstemci yapay zeka saklama ayarları",
     "transcriptAboveCeiling": "İş ortağınız teknisyen yapay zeka görüşmelerini en fazla {{days}} gün saklıyor.",
-    "partnerTranscriptHelp": "Teknisyen yapay zeka görüşmelerinin ne kadar süre saklanacağını seçin veya süresiz saklayın. Kuruluşlar bu süreyi yalnızca kısaltabilir. Daha eski görüşmeler gece çalışmasında mesajlarını, başlıklarını ve araç ayrıntılarını kaybeder."
+    "partnerTranscriptHelp": "Teknisyen yapay zeka görüşmelerinin ne kadar süre saklanacağını seçin veya süresiz saklayın. Kuruluşlar bu süreyi yalnızca kısaltabilir. Saklama uygulaması açıldığında, daha eski görüşmeler gece çalışmasında mesajlarını, başlıklarını ve araç ayrıntılarını kaybeder.",
+    "invalidDays": "Tam sayı olarak gün girin."
   },
   "partnerServicePrincipals": {
     "title": "Hizmet sorumluları",
@@ -1888,7 +1889,7 @@
     "issues": {
       "range": "1 ile 3650 arasında tam sayı gün girin."
     },
-    "aiStubsHelp": "Transkript saklama nedeniyle boşaltılan yapay zeka görüşmeleri, bu süre dolana kadar azaltılmış bir oturum kaydı (maliyet, model, işaretler) tutar. Kayıtlı denetim saklama politikası olmayan bir kuruluş bu kayıtları saklar."
+    "aiStubsHelp": "Transkript saklama nedeniyle boşaltılan yapay zeka görüşmeleri, son etkinlikleri bu süreden eski olana kadar azaltılmış bir oturum kaydı (maliyet, model, tur sayısı) tutar. Kayıtlı denetim saklama politikası olmayan bir kuruluş bu kayıtları saklar."
   },
   "orgBrandingEditor": {
     "title": "Markalama",

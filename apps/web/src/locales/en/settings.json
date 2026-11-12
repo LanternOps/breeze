@@ -125,12 +125,13 @@
     "retentionBreezeDefault": "Breeze default: {{days}} days",
     "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run.",
     "transcriptLabel": "Keep technician AI conversations for (days)",
-    "transcriptHelp": "Older conversations lose their messages, titles and tool details in the nightly run; the session record keeps its cost, model and flags. Flagged conversations are kept. Blank inherits.",
+    "transcriptHelp": "Once retention enforcement is on, older conversations lose their messages, titles and tool details in the nightly run; the session record keeps its cost, model and turn count. Flagged conversations are kept. Blank inherits.",
     "transcriptAuditNote": "Audit log entries about a technician session, including tool inputs, follow the audit retention window, not this one.",
     "transcriptClientNote": "Client AI (AI for Office) conversations have their own window.",
     "transcriptClientLink": "Client AI retention settings",
     "transcriptAboveCeiling": "Your partner keeps technician AI conversations for at most {{days}} days.",
-    "partnerTranscriptHelp": "Choose how long technician AI conversations are kept, or keep them forever. Organizations can only shorten this. Older conversations lose their messages, titles and tool details in the nightly run."
+    "partnerTranscriptHelp": "Choose how long technician AI conversations are kept, or keep them forever. Organizations can only shorten this. Once retention enforcement is on, older conversations lose their messages, titles and tool details in the nightly run.",
+    "invalidDays": "Enter a whole number of days."
   },
   "partnerServicePrincipals": {
     "title": "Service principals",
@@ -1888,7 +1889,7 @@
     "issues": {
       "range": "Enter a whole number of days between 1 and 3650."
     },
-    "aiStubsHelp": "AI conversations removed by transcript retention keep a stripped session record (cost, model, flags) until this window passes. An organization with no saved audit retention policy keeps those records."
+    "aiStubsHelp": "AI conversations emptied by transcript retention keep a stripped session record (cost, model, turn count) until their last activity is older than this window. An organization with no saved audit retention policy keeps those records."
   },
   "orgBrandingEditor": {
     "title": "Branding",

@@ -5,12 +5,13 @@ import { formatNumber } from '@/lib/i18n/format';
 
 /**
  * Transcript retention preview (#4342 W4, spec §3.4): how many AI
- * conversations are older than the window being edited, and whether the
- * nightly job deletes them yet. All three previews (org card, partner card,
- * client-AI policy editor) answer `{ eligible, capped, enforced }`; `capped`
- * means the count stopped at its bound, shown as "N+". While `enforced` is
- * false the job only reports, and the copy says plainly that nothing is
- * deleted yet.
+ * conversations the window being edited would empty (counted with the job's
+ * own predicate: flagged, recently active and already-emptied sessions are
+ * not counted), and whether the nightly job empties them yet. All three
+ * previews (org card, partner card, client-AI policy editor) answer
+ * `{ eligible, capped, enforced }`; `capped` means the count stopped at its
+ * bound, shown as "N+". While `enforced` is false the job only reports, and
+ * the copy says plainly that nothing is removed yet.
  */
 export const TRANSCRIPT_PREVIEW_DEBOUNCE_MS = 400;
 
@@ -26,6 +27,8 @@ export function parseTranscriptPreview(body: unknown): TranscriptPreview | null 
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; preview: TranscriptPreview }
+  /** 403: the caller may edit the policy but not read AI sessions; the count is not theirs to see. */
+  | { kind: 'forbidden' }
   | { kind: 'error' };
 
 /** A plain window (1..3650 whole days) or null: nothing to preview (blank, keep forever, invalid). */
@@ -44,7 +47,7 @@ export default function TranscriptRetentionPreview({
 }: {
   /** The preview endpoint with `days` already in it; null renders nothing. */
   url: string | null;
-  /** `partner` sums across the partner's orgs and is labelled "up to". */
+  /** `partner` sums across the partner's orgs (those without a tighter window of their own). */
   scope: 'org' | 'partner';
   testId: string;
 }) {
@@ -58,8 +61,15 @@ export default function TranscriptRetentionPreview({
     const timer = setTimeout(async () => {
       try {
         const res = await fetchWithAuth(url, { signal: controller.signal });
-        const preview = res.ok ? parseTranscriptPreview(await res.json()) : null;
         if (controller.signal.aborted) return;
+        if (!res.ok) {
+          console.warn('[TranscriptRetentionPreview] Preview request failed:', res.status, url);
+          setState(res.status === 403 ? { kind: 'forbidden' } : { kind: 'error' });
+          return;
+        }
+        const preview = parseTranscriptPreview(await res.json());
+        if (controller.signal.aborted) return;
+        if (!preview) console.warn('[TranscriptRetentionPreview] Malformed preview body:', res.status, url);
         setState(preview ? { kind: 'ready', preview } : { kind: 'error' });
       } catch (err) {
         if (controller.signal.aborted) return;
@@ -73,7 +83,7 @@ export default function TranscriptRetentionPreview({
     };
   }, [url]);
 
-  if (!url) return null;
+  if (!url || state.kind === 'forbidden') return null;
 
   let text: string;
   let enforced: boolean | undefined;

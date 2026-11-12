@@ -152,6 +152,30 @@ describe('PartnerAiDataPolicyCard', () => {
       expect(((await screen.findByTestId('partner-ai-data-policy-transcript-retention')) as HTMLInputElement).value).toBe('365');
     });
 
+    it('an API that omits the field loads the 365-day default, never Keep forever, and never sends it', async () => {
+      fetchWithAuth.mockImplementation(async (url: string) => (String(url).startsWith(PREVIEW)
+        ? { ok: true, json: async () => ({ eligible: 0, capped: false, enforced: false }) }
+        : { ok: true, json: async () => ({
+          policy: { deviceFileReadLevel: null, toolOutputRetentionDays: 14 }, canManage: true,
+          defaults: { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30 },
+        }) }));
+      render(<PartnerAiDataPolicyCard />);
+      const input = (await screen.findByTestId('partner-ai-data-policy-transcript-retention')) as HTMLInputElement;
+      expect(input.value).toBe('365');
+      expect((screen.getByTestId('partner-ai-data-policy-transcript-days-mode') as HTMLInputElement).checked).toBe(true);
+      fireEvent.click(screen.getByTestId('partner-ai-data-policy-level-off'));
+      await headerSave();
+      expect(putBodies()).toEqual([JSON.stringify({ deviceFileReadLevel: 'off' })]);
+    });
+
+    it('switching back from Keep forever refills the default window', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: null });
+      render(<PartnerAiDataPolicyCard />);
+      fireEvent.click(await screen.findByTestId('partner-ai-data-policy-transcript-days-mode'));
+      expect((screen.getByTestId('partner-ai-data-policy-transcript-retention') as HTMLInputElement).value).toBe('365');
+      expect(unit().validity().aiFeatures).toEqual({ isValid: true, invalidCount: 0, firstInvalidFieldId: null });
+    });
+
     it('selects Keep forever when the row stores NULL', async () => {
       respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: null });
       render(<PartnerAiDataPolicyCard />);

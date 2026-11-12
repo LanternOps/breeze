@@ -275,6 +275,14 @@ describe('switchSession (History pick)', () => {
     await flush();
     expect(useAiStore.getState().transcriptPurgedAt).toBeNull();
   });
+
+  it('closing a purged session clears the marker, so a failed new chat never shows the banner (#4342 W4)', async () => {
+    useAiStore.setState({ sessionId: 's1', hydratedSessionId: 's1', transcriptPurgedAt: '2027-02-01T03:15:00.000Z' });
+    fetchMock.mockImplementation(async () => json({ success: true }));
+    await useAiStore.getState().closeSession();
+    expect(useAiStore.getState().sessionId).toBeNull();
+    expect(useAiStore.getState().transcriptPurgedAt).toBeNull();
+  });
 });
 
 describe('a send refused because another turn is running (Gate B #7)', () => {

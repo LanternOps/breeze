@@ -168,7 +168,7 @@ describe('OrgAuditRetentionSettings', () => {
     mockApi({ orgId: ORG_ID, configured: false, retentionDays: 365, lastCleanupAt: null });
     render(<OrgAuditRetentionSettings orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
     const help = await screen.findByTestId('org-audit-retention-ai-stubs-help');
-    expect(help).toHaveTextContent(/AI conversations removed by transcript retention/);
+    expect(help).toHaveTextContent(/AI conversations emptied by transcript retention/);
     expect(help).toHaveTextContent(/no saved audit retention policy keeps/i);
   });
 });

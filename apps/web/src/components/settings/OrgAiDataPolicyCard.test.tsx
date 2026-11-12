@@ -154,6 +154,38 @@ describe('OrgAiDataPolicyCard', () => {
       await waitFor(() => expect(previewUrls()).toEqual([`${PREVIEW}?orgId=org-1&days=365`, `${PREVIEW}?orgId=org-1&days=90`]));
     });
 
+    it('previews the window in force when untouched and the partner ceiling when cleared', async () => {
+      currentPolicy = { deviceFileReadLevel: null, toolOutputRetentionDays: null, transcriptRetentionDays: 90 };
+      currentEffective = { ...resolved, transcriptRetentionDays: 90, source: { ...resolved.source, transcriptRetentionDays: 'org' } };
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      await waitFor(() => expect(previewUrls()).toEqual([`${PREVIEW}?orgId=org-1&days=90`]));
+      fireEvent.change(screen.getByTestId('org-ai-data-policy-transcript-retention'), { target: { value: '' } });
+      await waitFor(() => expect(previewUrls()).toEqual([`${PREVIEW}?orgId=org-1&days=90`, `${PREVIEW}?orgId=org-1&days=365`]));
+    });
+
+    it('shows no preview for a typed window above the partner ceiling', async () => {
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      await waitFor(() => expect(previewUrls()).toHaveLength(1));
+      fireEvent.change(screen.getByTestId('org-ai-data-policy-transcript-retention'), { target: { value: '400' } });
+      expect(screen.queryByTestId('org-ai-data-policy-transcript-preview')).toBeNull();
+      await new Promise((r) => setTimeout(r, 600));
+      expect(previewUrls()).toHaveLength(1);
+    });
+
+    it('refuses an unparseable number on blur instead of clearing the override', async () => {
+      currentPolicy = { deviceFileReadLevel: null, toolOutputRetentionDays: null, transcriptRetentionDays: 90 };
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      const input = (await screen.findByTestId('org-ai-data-policy-transcript-retention')) as HTMLInputElement;
+      // A browser reports partial input such as "1e" as value "" with validity.badInput.
+      Object.defineProperty(input, 'validity', { configurable: true, value: { badInput: true } });
+      fireEvent.change(input, { target: { value: '' } });
+      fireEvent.blur(input);
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error', message: 'aiDataPolicy.invalidDays',
+      })));
+      expect(runAction).not.toHaveBeenCalled();
+    });
+
     it('does not preview an out-of-range window', async () => {
       render(<OrgAiDataPolicyCard orgId="org-1" />);
       await waitFor(() => expect(previewUrls()).toHaveLength(1));

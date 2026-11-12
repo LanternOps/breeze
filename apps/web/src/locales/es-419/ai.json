@@ -1089,20 +1089,20 @@
   "transcriptRetention": {
     "removedOn": "Transcripción eliminada por retención el {{date}}",
     "removedLabel": "Eliminada por retención",
-    "removedHelp": "Los mensajes, el título y los detalles de herramientas se eliminaron según el período de retención de transcripciones. Se conservan el costo, el modelo y las marcas.",
+    "removedHelp": "Los mensajes, el título y los detalles de herramientas se eliminaron según el período de retención de transcripciones. Se conservan el costo, el modelo y la cantidad de turnos.",
     "preview": {
       "counting": "Contando las conversaciones anteriores a este período…",
       "unavailable": "No se pudieron contar las conversaciones anteriores a este período.",
-      "noneEnforced": "Ninguna conversación es anterior a este período.",
-      "nonePending": "Ninguna conversación es anterior a este período. La aplicación de la retención está desactivada, así que todavía no se elimina nada.",
-      "orgPending_one": "{{display}} conversación es anterior a este período. Todavía no se elimina nada: la aplicación de la retención está desactivada y se eliminará cuando se active.",
-      "orgPending_other": "{{display}} conversaciones son anteriores a este período. Todavía no se elimina nada: la aplicación de la retención está desactivada y se eliminarán cuando se active.",
-      "orgEnforced_one": "{{display}} conversación es anterior a este período y se eliminará en la próxima ejecución nocturna.",
-      "orgEnforced_other": "{{display}} conversaciones son anteriores a este período y se eliminarán en la próxima ejecución nocturna.",
-      "partnerPending_one": "Hasta {{display}} conversación en sus organizaciones es anterior a este período. Todavía no se elimina nada: la aplicación de la retención está desactivada y se eliminará cuando se active.",
-      "partnerPending_other": "Hasta {{display}} conversaciones en sus organizaciones son anteriores a este período. Todavía no se elimina nada: la aplicación de la retención está desactivada y se eliminarán cuando se active.",
-      "partnerEnforced_one": "Hasta {{display}} conversación en sus organizaciones es anterior a este período y se eliminará en la próxima ejecución nocturna.",
-      "partnerEnforced_other": "Hasta {{display}} conversaciones en sus organizaciones son anteriores a este período y se eliminarán en la próxima ejecución nocturna."
+      "noneEnforced": "Ninguna conversación debe eliminarse con este período.",
+      "nonePending": "Ninguna conversación debe eliminarse con este período. La aplicación de la retención está desactivada, así que todavía no se elimina nada.",
+      "orgPending_one": "{{display}} conversación debe eliminarse con este período. Todavía no se elimina nada: la aplicación de la retención está desactivada y sus mensajes se eliminarán cuando se active.",
+      "orgPending_other": "{{display}} conversaciones deben eliminarse con este período. Todavía no se elimina nada: la aplicación de la retención está desactivada y sus mensajes se eliminarán cuando se active.",
+      "orgEnforced_one": "{{display}} conversación debe eliminarse con este período; sus mensajes se eliminarán en la próxima ejecución nocturna.",
+      "orgEnforced_other": "{{display}} conversaciones deben eliminarse con este período; sus mensajes se eliminarán en la próxima ejecución nocturna.",
+      "partnerPending_one": "{{display}} conversación en sus organizaciones debe eliminarse con este período. Todavía no se elimina nada: la aplicación de la retención está desactivada y sus mensajes se eliminarán cuando se active.",
+      "partnerPending_other": "{{display}} conversaciones en sus organizaciones deben eliminarse con este período. Todavía no se elimina nada: la aplicación de la retención está desactivada y sus mensajes se eliminarán cuando se active.",
+      "partnerEnforced_one": "{{display}} conversación en sus organizaciones debe eliminarse con este período; sus mensajes se eliminarán en la próxima ejecución nocturna.",
+      "partnerEnforced_other": "{{display}} conversaciones en sus organizaciones deben eliminarse con este período; sus mensajes se eliminarán en la próxima ejecución nocturna."
     }
   }
 }

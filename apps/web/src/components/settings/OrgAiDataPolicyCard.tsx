@@ -47,8 +47,8 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
   const [effective, setEffective] = useState<Effective | null>(null);
   const [ceiling, setCeiling] = useState<Effective | null>(null);
   const [saving, setSaving] = useState(false);
-  // Bumped after a failed save so the uncontrolled retention input remounts
-  // with the stored value instead of keeping the rejected number.
+  // Bumped after a failed save or a client-side refusal so both uncontrolled
+  // day inputs remount with the stored value instead of keeping the rejected one.
   const [reloadKey, setReloadKey] = useState(0);
   // The transcript box as typed, so the preview follows the edit before it is saved.
   const [transcriptText, setTranscriptText] = useState<string | null>(null);
@@ -96,6 +96,7 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiDataPolicy.failedToSave') });
       setReloadKey((k) => k + 1);
+      setTranscriptText(null);
       await load();
     } finally {
       setSaving(false);
@@ -107,28 +108,38 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
     s === 'org' ? t('aiDataPolicy.sourceOrg') : s === 'partner' ? t('aiDataPolicy.sourcePartner') : t('aiDataPolicy.sourceDefault');
   const current = policy?.deviceFileReadLevel ?? '';
 
-  /** Blur handler shared by both day fields: PUT the changed value, refusing one above the ceiling client-side. */
-  const commitDays = (field: RetentionField, raw: string) => {
-    const v = raw.trim();
+  /**
+   * Blur handler shared by both day fields: PUT the changed value. Refused
+   * client-side: an unparseable entry (a number input reports partial input
+   * such as "1e" as an empty value, which would otherwise clear the override)
+   * and a value above the ceiling.
+   */
+  const commitDays = (field: RetentionField, input: HTMLInputElement) => {
+    const refuse = (message: string) => {
+      showToast({ type: 'error', message });
+      setReloadKey((k) => k + 1);
+      if (field === 'transcriptRetentionDays') setTranscriptText(null);
+    };
+    if (input.validity?.badInput) {
+      refuse(t('aiDataPolicy.invalidDays'));
+      return;
+    }
+    const v = input.value.trim();
     const next = v === '' ? null : Number(v);
     if (next === (policy?.[field] ?? null)) return;
     // `max` does not block typing: refuse client-side instead of PUTting a doomed value.
     const max = ceiling[field];
     if (next !== null && max !== null && next > max) {
-      showToast({
-        type: 'error',
-        message: field === 'transcriptRetentionDays'
-          ? t('aiDataPolicy.transcriptAboveCeiling', { days: max })
-          : t('aiDataPolicy.retentionAboveCeiling', { days: max }),
-      });
-      setReloadKey((k) => k + 1);
-      if (field === 'transcriptRetentionDays') setTranscriptText(null);
+      refuse(field === 'transcriptRetentionDays'
+        ? t('aiDataPolicy.transcriptAboveCeiling', { days: max })
+        : t('aiDataPolicy.retentionAboveCeiling', { days: max }));
       return;
     }
     void save({ [field]: next });
   };
 
-  // Untouched: the window in force. Typed blank: the inherited (partner) window.
+  // Untouched: the window in force. Typed blank: the ceiling it inherits (the
+  // partner value, or the Breeze default when the partner has no row).
   // Typed days: that window, unless it is above the ceiling (the save refuses it).
   // Keep forever previews nothing.
   const transcriptPreviewDays = (() => {
@@ -186,7 +197,7 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
             value: effective.toolOutputRetentionDays ?? t('aiDataPolicy.keepForever'),
             source: sourceLabel(effective.source.toolOutputRetentionDays),
           })}
-          onBlur={(e) => commitDays('toolOutputRetentionDays', e.currentTarget.value)}
+          onBlur={(e) => commitDays('toolOutputRetentionDays', e.currentTarget)}
           className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm" />
         <span className="mt-1 block text-xs text-muted-foreground">{t('aiDataPolicy.retentionHelp')}</span>
       </label>
@@ -199,12 +210,12 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
             key={`${policy?.transcriptRetentionDays ?? 'inherit'}-${reloadKey}`}
             defaultValue={policy?.transcriptRetentionDays ?? ''}
             placeholder={t('aiDataPolicy.retentionInherit', {
-              // Blank clears the org override, so it resolves to the partner ceiling.
+              // Blank clears the org override, so it resolves to the ceiling (partner value or Breeze default).
               value: ceiling.transcriptRetentionDays ?? t('aiDataPolicy.keepForever'),
               source: sourceLabel(ceiling.source.transcriptRetentionDays),
             })}
             onChange={(e) => setTranscriptText(e.currentTarget.value)}
-            onBlur={(e) => commitDays('transcriptRetentionDays', e.currentTarget.value)}
+            onBlur={(e) => commitDays('transcriptRetentionDays', e.currentTarget)}
             className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm" />
         </label>
         <TranscriptRetentionPreview

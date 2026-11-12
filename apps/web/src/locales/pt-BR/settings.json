@@ -125,12 +125,13 @@
     "retentionBreezeDefault": "Padrão do Breeze: {{days}} dias",
     "partnerRetentionHelp": "Escolha por quanto tempo manter as saídas das ferramentas de IA, ou mantenha-as para sempre. Saídas mais antigas são substituídas por um marcador na execução noturna.",
     "transcriptLabel": "Manter conversas da IA dos técnicos por (dias)",
-    "transcriptHelp": "Conversas mais antigas perdem mensagens, títulos e detalhes das ferramentas na execução noturna; o registro da sessão mantém custo, modelo e sinalizações. Conversas sinalizadas são mantidas. Em branco herda.",
+    "transcriptHelp": "Quando a aplicação da retenção estiver ativada, conversas mais antigas perdem mensagens, títulos e detalhes das ferramentas na execução noturna; o registro da sessão mantém custo, modelo e número de turnos. Conversas sinalizadas são mantidas. Em branco herda.",
     "transcriptAuditNote": "Entradas do log de auditoria sobre uma sessão de técnico, incluindo entradas de ferramentas, seguem o período de retenção da auditoria, não este.",
     "transcriptClientNote": "As conversas da IA do cliente (AI for Office) têm seu próprio período.",
     "transcriptClientLink": "Configurações de retenção da IA do cliente",
     "transcriptAboveCeiling": "Seu parceiro mantém as conversas da IA dos técnicos por no máximo {{days}} dias.",
-    "partnerTranscriptHelp": "Escolha por quanto tempo as conversas da IA dos técnicos são mantidas, ou mantenha-as para sempre. As organizações só podem encurtar esse período. Conversas mais antigas perdem mensagens, títulos e detalhes das ferramentas na execução noturna."
+    "partnerTranscriptHelp": "Escolha por quanto tempo as conversas da IA dos técnicos são mantidas, ou mantenha-as para sempre. As organizações só podem encurtar esse período. Quando a aplicação da retenção estiver ativada, conversas mais antigas perdem mensagens, títulos e detalhes das ferramentas na execução noturna.",
+    "invalidDays": "Insira um número inteiro de dias."
   },
   "partnerServicePrincipals": {
     "title": "Entidades de serviço",
@@ -1888,7 +1889,7 @@
     "issues": {
       "range": "Digite um número inteiro de dias entre 1 e 3650."
     },
-    "aiStubsHelp": "Conversas de IA esvaziadas pela retenção de transcrições mantêm um registro de sessão reduzido (custo, modelo, sinalizações) até que este período passe. Uma organização sem uma política de retenção de auditoria salva mantém esses registros."
+    "aiStubsHelp": "Conversas de IA esvaziadas pela retenção de transcrições mantêm um registro de sessão reduzido (custo, modelo, número de turnos) até que a última atividade delas seja mais antiga que este período. Uma organização sem uma política de retenção de auditoria salva mantém esses registros."
   },
   "orgBrandingEditor": {
     "title": "Identidade visual",

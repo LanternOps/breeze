@@ -125,12 +125,13 @@
     "retentionBreezeDefault": "Breeze-Standard: {{days}} Tage",
     "partnerRetentionHelp": "Legen Sie fest, wie lange KI-Tool-Ausgaben aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt.",
     "transcriptLabel": "Techniker-KI-Unterhaltungen aufbewahren für (Tage)",
-    "transcriptHelp": "Ältere Unterhaltungen verlieren beim nächtlichen Lauf Nachrichten, Titel und Tool-Details; der Sitzungsdatensatz behält Kosten, Modell und Markierungen. Markierte Unterhaltungen bleiben erhalten. Leer übernimmt den geerbten Wert.",
+    "transcriptHelp": "Sobald die Durchsetzung der Aufbewahrung aktiv ist, verlieren ältere Unterhaltungen beim nächtlichen Lauf Nachrichten, Titel und Tool-Details; der Sitzungsdatensatz behält Kosten, Modell und Anzahl der Runden. Markierte Unterhaltungen bleiben erhalten. Leer übernimmt den geerbten Wert.",
     "transcriptAuditNote": "Audit-Protokolleinträge zu einer Techniker-Sitzung, einschließlich Tool-Eingaben, folgen dem Aufbewahrungszeitraum des Audit-Protokolls, nicht diesem.",
     "transcriptClientNote": "Client-KI-Unterhaltungen (AI for Office) haben einen eigenen Zeitraum.",
     "transcriptClientLink": "Aufbewahrungseinstellungen für Client-KI",
     "transcriptAboveCeiling": "Ihr Partner bewahrt Techniker-KI-Unterhaltungen höchstens {{days}} Tage auf.",
-    "partnerTranscriptHelp": "Legen Sie fest, wie lange Techniker-KI-Unterhaltungen aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Organisationen können den Zeitraum nur verkürzen. Ältere Unterhaltungen verlieren beim nächtlichen Lauf Nachrichten, Titel und Tool-Details."
+    "partnerTranscriptHelp": "Legen Sie fest, wie lange Techniker-KI-Unterhaltungen aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Organisationen können den Zeitraum nur verkürzen. Sobald die Durchsetzung der Aufbewahrung aktiv ist, verlieren ältere Unterhaltungen beim nächtlichen Lauf Nachrichten, Titel und Tool-Details.",
+    "invalidDays": "Geben Sie eine ganze Zahl von Tagen ein."
   },
   "partnerServicePrincipals": {
     "title": "Dienstprinzipale",
@@ -1888,7 +1889,7 @@
     "issues": {
       "range": "Geben Sie eine ganze Zahl zwischen 1 und 3650 Tagen ein."
     },
-    "aiStubsHelp": "KI-Unterhaltungen, die durch die Transkript-Aufbewahrung geleert wurden, behalten einen reduzierten Sitzungsdatensatz (Kosten, Modell, Markierungen), bis dieser Zeitraum abläuft. Eine Organisation ohne gespeicherte Audit-Aufbewahrungsrichtlinie behält diese Datensätze."
+    "aiStubsHelp": "KI-Unterhaltungen, die durch die Transkript-Aufbewahrung geleert wurden, behalten einen reduzierten Sitzungsdatensatz (Kosten, Modell, Anzahl der Runden), bis ihre letzte Aktivität älter als dieser Zeitraum ist. Eine Organisation ohne gespeicherte Audit-Aufbewahrungsrichtlinie behält diese Datensätze."
   },
   "orgBrandingEditor": {
     "title": "Branding",

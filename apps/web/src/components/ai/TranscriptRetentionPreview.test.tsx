@@ -7,7 +7,7 @@ vi.mock('react-i18next', () => ({
 const fetchWithAuth = vi.hoisted(() => vi.fn());
 vi.mock('@/stores/auth', () => ({ fetchWithAuth }));
 
-import TranscriptRetentionPreview, { TRANSCRIPT_PREVIEW_DEBOUNCE_MS, parseTranscriptPreview } from './TranscriptRetentionPreview';
+import TranscriptRetentionPreview, { TRANSCRIPT_PREVIEW_DEBOUNCE_MS, parseTranscriptPreview, previewDays } from './TranscriptRetentionPreview';
 
 const json = (body: unknown, ok = true) => ({ ok, status: ok ? 200 : 403, json: async () => body });
 const settle = async (ms = TRANSCRIPT_PREVIEW_DEBOUNCE_MS) => {
@@ -26,6 +26,15 @@ describe('parseTranscriptPreview', () => {
     expect(parseTranscriptPreview({ eligible: '3', capped: false, enforced: true })).toBeNull();
     expect(parseTranscriptPreview({ policy: null })).toBeNull();
     expect(parseTranscriptPreview(null)).toBeNull();
+  });
+});
+
+describe('previewDays', () => {
+  it.each([
+    ['30', 30], [' 30 ', 30], [3650, 3650], ['1', 1],
+    ['0', null], ['3651', null], ['1.5', null], ['-5', null], ['1e3', null], ['', null], [null, null], [undefined, null],
+  ])('%j → %j', (raw, expected) => {
+    expect(previewDays(raw as string | number | null | undefined)).toBe(expected);
   });
 });
 
@@ -81,10 +90,57 @@ describe('TranscriptRetentionPreview', () => {
   });
 
   it('shows an unavailable line, not a stale or invented count, when the preview fails', async () => {
-    fetchWithAuth.mockResolvedValue(json({ error: 'Forbidden' }, false));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValue({ ok: false, status: 502, json: async () => ({}) });
     render(<TranscriptRetentionPreview url="/p?days=30" scope="org" testId="pv" />);
     await settle();
     expect(screen.getByTestId('pv')).toHaveTextContent('transcriptRetention.preview.unavailable');
+  });
+
+  it('renders nothing (and logs the status) when the caller may not read AI sessions (403)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValue(json({ error: 'Forbidden' }, false));
+    render(<TranscriptRetentionPreview url="/p?days=30" scope="org" testId="pv" />);
+    await settle();
+    expect(screen.queryByTestId('pv')).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[TranscriptRetentionPreview]'), 403, '/p?days=30');
+    warn.mockRestore();
+  });
+
+  it('logs and shows unavailable for any other failure (5xx, malformed body, network)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    const { unmount } = render(<TranscriptRetentionPreview url="/p?days=30" scope="org" testId="pv" />);
+    await settle();
+    expect(screen.getByTestId('pv')).toHaveTextContent('transcriptRetention.preview.unavailable');
+    unmount();
+    fetchWithAuth.mockResolvedValue(json({ policy: null }));
+    const second = render(<TranscriptRetentionPreview url="/p?days=31" scope="org" testId="pv" />);
+    await settle();
+    expect(screen.getByTestId('pv')).toHaveTextContent('transcriptRetention.preview.unavailable');
+    second.unmount();
+    fetchWithAuth.mockRejectedValue(new Error('offline'));
+    render(<TranscriptRetentionPreview url="/p?days=32" scope="org" testId="pv" />);
+    await settle();
+    expect(screen.getByTestId('pv')).toHaveTextContent('transcriptRetention.preview.unavailable');
+    expect(warn).toHaveBeenCalledTimes(3);
+    warn.mockRestore();
+  });
+
+  it('never shows a late answer for a window the admin already changed', async () => {
+    let resolveA!: (v: unknown) => void;
+    fetchWithAuth.mockImplementationOnce(() => new Promise((r) => { resolveA = r; }));
+    fetchWithAuth.mockImplementationOnce(async () => json({ eligible: 2, capped: false, enforced: false }));
+    const { rerender } = render(<TranscriptRetentionPreview url="/p?days=10" scope="org" testId="pv" />);
+    await settle();
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    rerender(<TranscriptRetentionPreview url="/p?days=20" scope="org" testId="pv" />);
+    expect(screen.getByTestId('pv')).toHaveTextContent('transcriptRetention.preview.counting');
+    await act(async () => { resolveA(json({ eligible: 99, capped: false, enforced: false })); });
+    expect(screen.getByTestId('pv')).not.toHaveTextContent('"count":99');
+    await settle();
+    expect(screen.getByTestId('pv')).toHaveTextContent('"count":2');
+    expect(screen.getByTestId('pv')).not.toHaveTextContent('"count":99');
   });
 
   it('renders nothing and fetches nothing when there is no window (keep forever / invalid days)', async () => {

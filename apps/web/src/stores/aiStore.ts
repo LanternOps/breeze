@@ -146,7 +146,11 @@ interface AiState {
   isInterrupting: boolean;
   isFlagged: boolean;
   flagReason: string | null;
-  /** #4342 W4: set when transcript retention emptied the loaded session (only a History pick can open one). */
+  /**
+   * #4342 W4: set when transcript retention emptied the loaded session. Only
+   * `switchSession` can open one (History, the AI-origin chip): `loadSession`
+   * and `adoptSession` refuse non-active sessions, and a stub is never active.
+   */
   transcriptPurgedAt: string | null;
   // M365 customer binding (Delegant helpdesk tools)
   m365Connections: M365Connection[];
@@ -704,7 +708,7 @@ function startAttach(
       if (outcome.kind === 'not_found') {
         settleReady('not_found');
         set({
-          sessionId: null, sessionOrgId: null, messages: [], isLoading: false,
+          sessionId: null, sessionOrgId: null, messages: [], transcriptPurgedAt: null, isLoading: false,
           isStreaming: false, joinedMidResponse: false, pendingApproval: null, pendingPlan: null, activePlan: null,
         });
         return;
@@ -1447,7 +1451,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null, isStreaming: false, joinedMidResponse: false });
+      set({ sessionId: null, sessionOrgId: null, messages: [], transcriptPurgedAt: null, boundM365ConnectionId: null, isStreaming: false, joinedMidResponse: false });
       resetModelPicker();
     } catch (err) {
       console.error('[AI] Failed to close session:', err);

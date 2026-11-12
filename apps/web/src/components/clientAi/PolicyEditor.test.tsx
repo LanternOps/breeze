@@ -239,12 +239,12 @@ describe('PolicyEditor', () => {
   describe('client transcript retention preview (#4342 W4)', () => {
     beforeEach(() => { preview = { eligible: 3, capped: false, enforced: false }; });
 
-    it('previews the stored window and says nothing is deleted while enforcement is off', async () => {
+    it('previews the stored window and says nothing is removed while enforcement is off', async () => {
       mockApi({ ...DEFAULT_POLICY, retentionDays: 30 });
       render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
       const el = await screen.findByTestId('ai-office-policy-retention-preview', {}, { timeout: 2000 });
       await waitFor(() => expect(el).toHaveTextContent(/3 conversations/));
-      expect(el).toHaveTextContent(/Nothing is deleted yet/);
+      expect(el).toHaveTextContent(/Nothing is removed yet/);
       expect(previewUrls()).toEqual([`/client-ai/admin/orgs/${ORG_ID}/policy/transcript-retention-preview?days=30`]);
     });
 
