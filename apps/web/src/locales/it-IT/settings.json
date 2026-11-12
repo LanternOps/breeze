@@ -7139,7 +7139,7 @@
   },
   "orgDomains": {
     "title": "Domini",
-    "description": "Domini email che appartengono a questo cliente. Un dominio dichiarato instrada la posta in arrivo verso questa organizzazione. Un dominio verificato è la prova che il cliente ne è il proprietario, e su di essa si basano l’autoregistrazione al portale e l’accesso con Google.",
+    "description": "Domini email che appartengono a questo cliente. Un dominio dichiarato instrada la posta in arrivo verso questa organizzazione. Un dominio verificato è la prova che il cliente ne è il proprietario, e su di essa si basano funzionalità come l’autoregistrazione al portale.",
     "forbidden": "La gestione dei domini dei clienti richiede un ruolo di amministratore con accesso a tutte le organizzazioni.",
     "partnerOnly": "I domini dei clienti sono gestiti dal tuo fornitore di servizi.",
     "checkingAccess": "Verifica dell’accesso in corso…",
@@ -7241,7 +7241,7 @@
       "resultUnavailable": "Il controllo non è stato completato. {{reason}}",
       "removeVerification": "Rimuovi verifica",
       "removeTitle": "Rimuovere la verifica di {{domain}}?",
-      "removeMessage": "Il dominio resta in questa organizzazione per l’instradamento della posta. L’autoregistrazione e l’accesso con Google non si fidano più di esso finché non viene verificato di nuovo."
+      "removeMessage": "Il dominio resta in questa organizzazione per l’instradamento della posta. Le funzionalità che si basano su domini verificati, come l’autoregistrazione, non si fidano più di esso finché non viene verificato di nuovo."
     },
     "actions": {
       "verify": "Verifica",
@@ -8480,15 +8480,28 @@
       "label": "Accesso con Microsoft"
     },
     "google": {
-      "label": "Accesso con Google"
+      "label": "Accesso con Google",
+      "domainNotVerified": "Verifica uno dei domini di questa organizzazione in Organizzazione › Domini prima di attivare l’accesso con Google.",
+      "domains": {
+        "verified": "Domini verificati: {{domains}}",
+        "none": "Nessun dominio verificato —",
+        "verify": "verificane uno in Organizzazione › Domini",
+        "partner": "Attivo ovunque sia verificato un dominio"
+      }
     },
     "password": {
       "label": "Accesso con password",
       "allowed": "Consentito",
       "ssoOnly": "Disattivato — solo Microsoft/Google",
-      "ssoOnlyNeedsSso": "Disponibile dopo l’attivazione dell’accesso con Microsoft o Google."
+      "ssoOnlyMicrosoft": "Disattivato — solo Microsoft",
+      "ssoOnlyGoogle": "Disattivato — solo Google",
+      "ssoOnlyNeedsSso": "Disponibile dopo l’attivazione dell’accesso con Microsoft o Google.",
+      "ssoOnlyNeedsSsoMicrosoft": "Disponibile dopo l’attivazione dell’accesso con Microsoft.",
+      "ssoOnlyNeedsSsoGoogle": "Disponibile dopo l’attivazione dell’accesso con Google."
     },
     "fallback": "L’accesso con password è attivo perché non è abilitato alcun accesso con Microsoft o Google.",
+    "fallbackMicrosoft": "L’accesso con password è attivo perché l’accesso con Microsoft non è abilitato.",
+    "fallbackGoogle": "L’accesso con password è attivo perché l’accesso con Google non è abilitato.",
     "invites": {
       "label": "Inviti dall’MSP",
       "value": "Sempre attivi"
@@ -8503,6 +8516,8 @@
     },
     "ssoNewPerson": {
       "label": "Primo accesso con Microsoft / Google",
+      "labelMicrosoft": "Primo accesso con Microsoft",
+      "labelGoogle": "Primo accesso con Google",
       "invitedOnly": "Solo persone invitate",
       "approval": "Richiede approvazione",
       "instant": "Immediato"
@@ -8513,6 +8528,8 @@
       "save": "Impossibile salvare le impostazioni di accesso.",
       "methodUnavailable": "Questo metodo di accesso non è ancora disponibile in questa distribuzione di Breeze.",
       "ssoOnlyNeedsSso": "Attiva l’accesso con Microsoft o Google prima di disattivare l’accesso con password.",
+      "ssoOnlyNeedsSsoMicrosoft": "Attiva l’accesso con Microsoft prima di disattivare l’accesso con password.",
+      "ssoOnlyNeedsSsoGoogle": "Attiva l’accesso con Google prima di disattivare l’accesso con password.",
       "tenantNotProven": "Dimostra il tenant Microsoft di questa organizzazione prima di attivare l’accesso con Microsoft.",
       "sessionHours": "Inserisci un numero intero di ore da 1 a 168."
     },
@@ -8521,7 +8538,11 @@
     },
     "sessionHours": {
       "label": "Durata della sessione Microsoft / Google (ore)",
-      "help": "Gli accessi con Microsoft e Google terminano dopo questo numero di ore, indipendentemente da quanto sia attiva la persona. Da 1 a 168."
+      "labelMicrosoft": "Durata della sessione Microsoft (ore)",
+      "labelGoogle": "Durata della sessione Google (ore)",
+      "help": "Gli accessi con Microsoft e Google terminano dopo questo numero di ore, indipendentemente da quanto sia attiva la persona. Da 1 a 168.",
+      "helpMicrosoft": "Gli accessi con Microsoft terminano dopo questo numero di ore, indipendentemente da quanto sia attiva la persona. Da 1 a 168.",
+      "helpGoogle": "Gli accessi con Google terminano dopo questo numero di ore, indipendentemente da quanto sia attiva la persona. Da 1 a 168."
     },
     "entraTenant": {
       "title": "Tenant Microsoft",
@@ -8595,6 +8616,8 @@
       "intro": "Il salvataggio disattiva l’accesso con password per le organizzazioni seguenti.",
       "partnerIntro": "Il salvataggio di questo valore predefinito del partner disattiva l’accesso con password per queste organizzazioni. La pagina di ogni organizzazione elenca gli account che non possono ancora accedere.",
       "explain": "Le persone già collegate a Microsoft perdono la password e vengono disconnesse. Le persone senza un collegamento a Microsoft non possono accedere finché non accettano un invito all’accesso con Microsoft.",
+      "explainGoogle": "Le persone già collegate a Google perdono la password e vengono disconnesse. Le persone senza un collegamento a Google non possono accedere finché non accettano un invito all’accesso con Google.",
+      "explainBoth": "Le persone già collegate a Microsoft o Google perdono la password e vengono disconnesse. Le persone senza un collegamento a Microsoft o Google non possono accedere finché non accettano un invito all’accesso.",
       "columns": {
         "org": "Organizzazione",
         "passwordsToClear": "Password rimosse",
@@ -8605,24 +8628,38 @@
       "strandedMore": "e altri {{count}}",
       "strandedLoadError": "Impossibile caricare i nomi di questi account.",
       "sendInvites": "Dopo il salvataggio, invia a questi account inviti all’accesso con Microsoft",
+      "sendInvitesGoogle": "Dopo il salvataggio, invia a questi account inviti all’accesso con Google",
+      "sendInvitesBoth": "Dopo il salvataggio, invia a questi account inviti all’accesso",
       "confirm": "Disattiva l’accesso con password",
       "changed": "L’impatto è cambiato da quando hai aperto questa finestra. Controlla i nuovi numeri."
     },
     "stranded": {
       "title": "Non possono ancora accedere ({{count}})",
       "description": "Questi account non hanno un collegamento a Microsoft, quindi non possono accedere mentre l’accesso con password è disattivato. Invia a ciascuno un invito all’accesso con Microsoft.",
+      "descriptionGoogle": "Questi account non hanno un collegamento a Google, quindi non possono accedere mentre l’accesso con password è disattivato. Invia a ciascuno un invito all’accesso con Google.",
+      "descriptionBoth": "Questi account non hanno un collegamento a Microsoft o Google, quindi non possono accedere mentre l’accesso con password è disattivato. Invia a ciascuno un invito all’accesso.",
       "loadError": "Impossibile caricare gli account che non possono accedere.",
       "invite": "Invia invito all’accesso con Microsoft",
+      "inviteGoogle": "Invia invito all’accesso con Google",
+      "inviteBoth": "Invia invito all’accesso",
       "inviteAll": "Invita tutti",
       "more": "Visualizzati {{shown}} di {{count}}.",
       "toasts": {
         "invited": "Inviti all’accesso con Microsoft inviati: {{count}}.",
+        "invitedGoogle": "Inviti all’accesso con Google inviati: {{count}}.",
+        "invitedBoth": "Inviti all’accesso inviati: {{count}}.",
         "partial": "Inviti all’accesso con Microsoft inviati: {{invited}} su {{total}}. Gli altri erano già collegati o non è stato possibile invitarli.",
+        "partialGoogle": "Inviti all’accesso con Google inviati: {{invited}} su {{total}}. Gli altri erano già collegati o non è stato possibile invitarli.",
+        "partialBoth": "Inviti all’accesso inviati: {{invited}} su {{total}}. Gli altri erano già collegati o non è stato possibile invitarli.",
         "emailFailed": "{{count}} account sono passati a invitato, ma non è stato possibile inviare l'email di invito. Usa Invia di nuovo nell'elenco degli utenti del portale."
       },
       "errors": {
         "invite": "Impossibile inviare gli inviti all’accesso con Microsoft.",
-        "unavailable": "L’accesso con Microsoft non è disponibile per questa organizzazione, quindi non c’è nulla con cui invitare."
+        "inviteGoogle": "Impossibile inviare gli inviti all’accesso con Google.",
+        "inviteBoth": "Impossibile inviare gli inviti all’accesso.",
+        "unavailable": "L’accesso con Microsoft non è disponibile per questa organizzazione, quindi non c’è nulla con cui invitare.",
+        "unavailableGoogle": "L’accesso con Google non è disponibile per questa organizzazione, quindi non c’è nulla con cui invitare.",
+        "unavailableBoth": "Né l’accesso con Microsoft né quello con Google sono attivi per questa organizzazione, quindi non c’è nulla con cui invitare."
       }
     },
     "domains": {
@@ -8644,6 +8681,7 @@
       "self": "Autoregistrazione",
       "entra": "Accesso con Microsoft",
       "google": "Accesso con Google",
+      "googleWithDomain": "Google · dominio {{domain}}",
       "addin_user": "Componente aggiuntivo AI for Office"
     },
     "selectAll": "Seleziona tutte le richieste",
@@ -8664,7 +8702,8 @@
       "identityLinked": "Accesso già collegato a un altro account",
       "failed": "Impossibile decidere su questa richiesta",
       "entraTenantNotProven": "Il tenant Microsoft di questa organizzazione non è più dimostrato",
-      "domainNotVerified": "Dominio email non più verificato"
+      "domainNotVerified": "Dominio email non più verificato",
+      "googleDomainNotVerified": "Dominio Google Workspace non più verificato"
     },
     "denyDialog": {
       "title": "Rifiuta richiesta di accesso",
@@ -8683,7 +8722,8 @@
       "load": "Impossibile caricare le richieste di accesso.",
       "action": "Impossibile aggiornare la richiesta di accesso.",
       "bulk": "Impossibile decidere sulle richieste selezionate.",
-      "domainNotVerified": "Il dominio email di questa persona non è più verificato per questa organizzazione. Invitala direttamente se deve avere accesso."
+      "domainNotVerified": "Il dominio email di questa persona non è più verificato per questa organizzazione. Invitala direttamente se deve avere accesso.",
+      "googleDomainNotVerified": "Il dominio Google Workspace di questa richiesta non è più verificato per questa organizzazione. Verificalo di nuovo o invita direttamente la persona."
     },
     "summary": {
       "title": "Richieste di accesso in sospeso",

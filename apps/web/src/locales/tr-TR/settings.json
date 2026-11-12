@@ -7146,7 +7146,7 @@
   },
   "orgDomains": {
     "title": "Alan adları",
-    "description": "Bu müşteriye ait e-posta alan adları. Bildirilmiş bir alan adı, gelen e-postayı bu kuruluşa yönlendirir. Doğrulanmış bir alan adı, müşterinin onun sahibi olduğunun kanıtıdır; portal kendi kendine kaydı ve Google ile oturum açma buna dayanır.",
+    "description": "Bu müşteriye ait e-posta alan adları. Bildirilmiş bir alan adı, gelen e-postayı bu kuruluşa yönlendirir. Doğrulanmış bir alan adı, müşterinin onun sahibi olduğunun kanıtıdır; portal kendi kendine kaydı gibi özellikler buna dayanır.",
     "forbidden": "Müşteri alan adlarını yönetmek, tüm kuruluşlara erişimi olan bir yönetici rolü gerektirir.",
     "partnerOnly": "Müşteri alan adları hizmet sağlayıcınız tarafından yönetilir.",
     "checkingAccess": "Erişim denetleniyor…",
@@ -7248,7 +7248,7 @@
       "resultUnavailable": "Denetim tamamlanamadı. {{reason}}",
       "removeVerification": "Doğrulamayı kaldır",
       "removeTitle": "{{domain}} doğrulaması kaldırılsın mı?",
-      "removeMessage": "Alan adı, e-posta yönlendirme için bu kuruluşta kalır. Kendi kendine kayıt ve Google ile oturum açma, yeniden doğrulanana kadar ona güvenmeyi bırakır."
+      "removeMessage": "Alan adı, e-posta yönlendirme için bu kuruluşta kalır. Kendi kendine kayıt gibi doğrulanmış alan adlarına dayanan özellikler, yeniden doğrulanana kadar ona güvenmeyi bırakır."
     },
     "actions": {
       "verify": "Doğrula",
@@ -8480,15 +8480,28 @@
       "label": "Microsoft ile oturum açma"
     },
     "google": {
-      "label": "Google ile oturum açma"
+      "label": "Google ile oturum açma",
+      "domainNotVerified": "Google ile oturum açmayı etkinleştirmeden önce bu kuruluşun alan adlarından birini Kuruluş › Alan adları altında doğrulayın.",
+      "domains": {
+        "verified": "Doğrulanmış alan adları: {{domains}}",
+        "none": "Doğrulanmış alan adı yok —",
+        "verify": "Kuruluş › Alan adları altında bir tane doğrulayın",
+        "partner": "Bir alan adının doğrulandığı her yerde açık"
+      }
     },
     "password": {
       "label": "Şifreyle oturum açma",
       "allowed": "İzinli",
       "ssoOnly": "Kapalı — yalnızca Microsoft/Google",
-      "ssoOnlyNeedsSso": "Microsoft veya Google ile oturum açma etkinleştirildiğinde kullanılabilir."
+      "ssoOnlyMicrosoft": "Kapalı — yalnızca Microsoft",
+      "ssoOnlyGoogle": "Kapalı — yalnızca Google",
+      "ssoOnlyNeedsSso": "Microsoft veya Google ile oturum açma etkinleştirildiğinde kullanılabilir.",
+      "ssoOnlyNeedsSsoMicrosoft": "Microsoft ile oturum açma etkinleştirildiğinde kullanılabilir.",
+      "ssoOnlyNeedsSsoGoogle": "Google ile oturum açma etkinleştirildiğinde kullanılabilir."
     },
     "fallback": "Microsoft veya Google ile oturum açma etkin olmadığı için şifreyle oturum açma açık.",
+    "fallbackMicrosoft": "Microsoft ile oturum açma etkin olmadığı için şifreyle oturum açma açık.",
+    "fallbackGoogle": "Google ile oturum açma etkin olmadığı için şifreyle oturum açma açık.",
     "invites": {
       "label": "MSP davetleri",
       "value": "Her zaman açık"
@@ -8503,6 +8516,8 @@
     },
     "ssoNewPerson": {
       "label": "İlk Microsoft / Google ile oturum açma",
+      "labelMicrosoft": "İlk Microsoft ile oturum açma",
+      "labelGoogle": "İlk Google ile oturum açma",
       "invitedOnly": "Yalnızca davet edilen kişiler",
       "approval": "Onay gerekli",
       "instant": "Anında"
@@ -8513,6 +8528,8 @@
       "save": "Oturum açma ayarları kaydedilemedi.",
       "methodUnavailable": "Bu oturum açma yöntemi bu Breeze dağıtımında henüz kullanılamıyor.",
       "ssoOnlyNeedsSso": "Şifreyle oturum açmayı kapatmadan önce Microsoft veya Google ile oturum açmayı etkinleştirin.",
+      "ssoOnlyNeedsSsoMicrosoft": "Şifreyle oturum açmayı kapatmadan önce Microsoft ile oturum açmayı etkinleştirin.",
+      "ssoOnlyNeedsSsoGoogle": "Şifreyle oturum açmayı kapatmadan önce Google ile oturum açmayı etkinleştirin.",
       "tenantNotProven": "Microsoft ile oturum açmayı açmadan önce bu kuruluşun Microsoft kiracısını kanıtlayın.",
       "sessionHours": "1 ile 168 arasında tam sayı olarak saat girin."
     },
@@ -8521,7 +8538,11 @@
     },
     "sessionHours": {
       "label": "Microsoft / Google oturum süresi (saat)",
-      "help": "Microsoft ve Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında."
+      "labelMicrosoft": "Microsoft oturum süresi (saat)",
+      "labelGoogle": "Google oturum süresi (saat)",
+      "help": "Microsoft ve Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında.",
+      "helpMicrosoft": "Microsoft ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında.",
+      "helpGoogle": "Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında."
     },
     "entraTenant": {
       "title": "Microsoft kiracısı",
@@ -8595,6 +8616,8 @@
       "intro": "Kaydetmek, aşağıdaki kuruluşlar için şifreyle oturum açmayı kapatır.",
       "partnerIntro": "Bu iş ortağı varsayılanını kaydetmek, bu kuruluşlar için şifreyle oturum açmayı kapatır. Her kuruluşun sayfasında henüz oturum açamayan hesaplar listelenir.",
       "explain": "Microsoft'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Microsoft bağlantısı olmayan kişiler, Microsoft ile oturum açma davetini kabul edene kadar oturum açamaz.",
+      "explainGoogle": "Google'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Google bağlantısı olmayan kişiler, Google ile oturum açma davetini kabul edene kadar oturum açamaz.",
+      "explainBoth": "Microsoft'a veya Google'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Microsoft veya Google bağlantısı olmayan kişiler, oturum açma davetini kabul edene kadar oturum açamaz.",
       "columns": {
         "org": "Kuruluş",
         "passwordsToClear": "Kaldırılan şifreler",
@@ -8605,24 +8628,38 @@
       "strandedMore": "ve {{count}} tane daha",
       "strandedLoadError": "Bu hesapların adları yüklenemedi.",
       "sendInvites": "Kaydettikten sonra bu hesaplara Microsoft ile oturum açma davetleri gönder",
+      "sendInvitesGoogle": "Kaydettikten sonra bu hesaplara Google ile oturum açma davetleri gönder",
+      "sendInvitesBoth": "Kaydettikten sonra bu hesaplara oturum açma davetleri gönder",
       "confirm": "Şifreyle oturum açmayı kapat",
       "changed": "Etki, siz bunu açtığınızdan beri değişti. Yeni sayıları gözden geçirin."
     },
     "stranded": {
       "title": "Henüz oturum açamayanlar ({{count}})",
       "description": "Bu hesapların Microsoft bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir Microsoft ile oturum açma daveti gönderin.",
+      "descriptionGoogle": "Bu hesapların Google bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir Google ile oturum açma daveti gönderin.",
+      "descriptionBoth": "Bu hesapların Microsoft veya Google bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir oturum açma daveti gönderin.",
       "loadError": "Oturum açamayan hesaplar yüklenemedi.",
       "invite": "Microsoft ile oturum açma daveti gönder",
+      "inviteGoogle": "Google ile oturum açma daveti gönder",
+      "inviteBoth": "Oturum açma daveti gönder",
       "inviteAll": "Hepsini davet et",
       "more": "{{count}} içinden {{shown}} gösteriliyor.",
       "toasts": {
         "invited": "Gönderilen Microsoft ile oturum açma davetleri: {{count}}.",
+        "invitedGoogle": "Gönderilen Google ile oturum açma davetleri: {{count}}.",
+        "invitedBoth": "Gönderilen oturum açma davetleri: {{count}}.",
         "partial": "Gönderilen Microsoft ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
+        "partialGoogle": "Gönderilen Google ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
+        "partialBoth": "Gönderilen oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
         "emailFailed": "{{count}} hesap davet edildi durumuna geçti ancak davet e-postası gönderilemedi. Portal kullanıcıları listesinde Yeniden gönder'i kullanın."
       },
       "errors": {
         "invite": "Microsoft ile oturum açma davetleri gönderilemedi.",
-        "unavailable": "Bu kuruluş için Microsoft ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok."
+        "inviteGoogle": "Google ile oturum açma davetleri gönderilemedi.",
+        "inviteBoth": "Oturum açma davetleri gönderilemedi.",
+        "unavailable": "Bu kuruluş için Microsoft ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok.",
+        "unavailableGoogle": "Bu kuruluş için Google ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok.",
+        "unavailableBoth": "Bu kuruluş için ne Microsoft ne de Google ile oturum açma açık, bu yüzden davet edilecek bir yol yok."
       }
     },
     "domains": {
@@ -8644,6 +8681,7 @@
       "self": "Kendi kendine kayıt",
       "entra": "Microsoft ile oturum açma",
       "google": "Google ile oturum açma",
+      "googleWithDomain": "Google · {{domain}} alan adı",
       "addin_user": "AI for Office eklentisi"
     },
     "selectAll": "Tüm talepleri seç",
@@ -8664,7 +8702,8 @@
       "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
       "failed": "Bu talebe karar verilemedi",
       "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil",
-      "domainNotVerified": "E-posta alan adı artık doğrulanmış değil"
+      "domainNotVerified": "E-posta alan adı artık doğrulanmış değil",
+      "googleDomainNotVerified": "Google Workspace alan adı artık doğrulanmış değil"
     },
     "denyDialog": {
       "title": "Erişim talebini reddet",
@@ -8683,7 +8722,8 @@
       "load": "Erişim talepleri yüklenemedi.",
       "action": "Erişim talebi güncellenemedi.",
       "bulk": "Seçilen taleplere karar verilemedi.",
-      "domainNotVerified": "Bu kişinin e-posta alan adı artık bu kuruluş için doğrulanmış değil. Erişimi olması gerekiyorsa onu doğrudan davet edin."
+      "domainNotVerified": "Bu kişinin e-posta alan adı artık bu kuruluş için doğrulanmış değil. Erişimi olması gerekiyorsa onu doğrudan davet edin.",
+      "googleDomainNotVerified": "Bu isteğin Google Workspace alan adı artık bu kuruluş için doğrulanmış değil. Yeniden doğrulayın veya kişiyi doğrudan davet edin."
     },
     "summary": {
       "title": "Bekleyen erişim talepleri",

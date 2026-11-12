@@ -7093,7 +7093,7 @@
   },
   "orgDomains": {
     "title": "Dominios",
-    "description": "Dominios de correo electrónico que pertenecen a este cliente. Un dominio declarado enruta el correo entrante a esta organización. Un dominio verificado es la prueba de que el cliente es su propietario, y en ella se basan el autorregistro del portal y el inicio de sesión con Google.",
+    "description": "Dominios de correo electrónico que pertenecen a este cliente. Un dominio declarado enruta el correo entrante a esta organización. Un dominio verificado es la prueba de que el cliente es su propietario, y en ella se basan funciones como el autorregistro del portal.",
     "forbidden": "Administrar los dominios de clientes requiere un rol de administrador con acceso a todas las organizaciones.",
     "partnerOnly": "Los dominios de clientes los administra su proveedor de servicios.",
     "checkingAccess": "Comprobando el acceso…",
@@ -7195,7 +7195,7 @@
       "resultUnavailable": "La comprobación no pudo terminar. {{reason}}",
       "removeVerification": "Quitar verificación",
       "removeTitle": "¿Quitar la verificación de {{domain}}?",
-      "removeMessage": "El dominio permanece en esta organización para el enrutamiento de correo. El autorregistro y el inicio de sesión con Google dejan de confiar en él hasta que se verifique de nuevo."
+      "removeMessage": "El dominio permanece en esta organización para el enrutamiento de correo. Las funciones que dependen de dominios verificados, como el autorregistro, dejan de confiar en él hasta que se verifique de nuevo."
     },
     "actions": {
       "verify": "Verificar",
@@ -8480,15 +8480,28 @@
       "label": "Inicio de sesión con Microsoft"
     },
     "google": {
-      "label": "Inicio de sesión con Google"
+      "label": "Inicio de sesión con Google",
+      "domainNotVerified": "Verifique uno de los dominios de esta organización en Organización › Dominios antes de activar el inicio de sesión con Google.",
+      "domains": {
+        "verified": "Dominios verificados: {{domains}}",
+        "none": "Ningún dominio verificado —",
+        "verify": "verifique uno en Organización › Dominios",
+        "partner": "Activado dondequiera que haya un dominio verificado"
+      }
     },
     "password": {
       "label": "Inicio de sesión con contraseña",
       "allowed": "Permitido",
       "ssoOnly": "Desactivado — solo Microsoft/Google",
-      "ssoOnlyNeedsSso": "Disponible cuando se active el inicio de sesión con Microsoft o Google."
+      "ssoOnlyMicrosoft": "Desactivado — solo Microsoft",
+      "ssoOnlyGoogle": "Desactivado — solo Google",
+      "ssoOnlyNeedsSso": "Disponible cuando se active el inicio de sesión con Microsoft o Google.",
+      "ssoOnlyNeedsSsoMicrosoft": "Disponible cuando se active el inicio de sesión con Microsoft.",
+      "ssoOnlyNeedsSsoGoogle": "Disponible cuando se active el inicio de sesión con Google."
     },
     "fallback": "El inicio de sesión con contraseña está activado porque no hay ningún inicio de sesión con Microsoft o Google habilitado.",
+    "fallbackMicrosoft": "El inicio de sesión con contraseña está activado porque el inicio de sesión con Microsoft no está habilitado.",
+    "fallbackGoogle": "El inicio de sesión con contraseña está activado porque el inicio de sesión con Google no está habilitado.",
     "invites": {
       "label": "Invitaciones del MSP",
       "value": "Siempre activadas"
@@ -8503,6 +8516,8 @@
     },
     "ssoNewPerson": {
       "label": "Primer inicio de sesión con Microsoft / Google",
+      "labelMicrosoft": "Primer inicio de sesión con Microsoft",
+      "labelGoogle": "Primer inicio de sesión con Google",
       "invitedOnly": "Solo personas invitadas",
       "approval": "Requiere aprobación",
       "instant": "Inmediato"
@@ -8513,6 +8528,8 @@
       "save": "No se pudo guardar la configuración de inicio de sesión.",
       "methodUnavailable": "Este método de inicio de sesión aún no está disponible en esta implementación de Breeze.",
       "ssoOnlyNeedsSso": "Active el inicio de sesión con Microsoft o Google antes de desactivar el inicio de sesión con contraseña.",
+      "ssoOnlyNeedsSsoMicrosoft": "Active el inicio de sesión con Microsoft antes de desactivar el inicio de sesión con contraseña.",
+      "ssoOnlyNeedsSsoGoogle": "Active el inicio de sesión con Google antes de desactivar el inicio de sesión con contraseña.",
       "tenantNotProven": "Compruebe el inquilino de Microsoft de esta organización antes de activar el inicio de sesión con Microsoft.",
       "sessionHours": "Ingrese un número entero de horas del 1 al 168."
     },
@@ -8521,7 +8538,11 @@
     },
     "sessionHours": {
       "label": "Duración de la sesión de Microsoft / Google (horas)",
-      "help": "Los inicios de sesión con Microsoft y Google terminan después de esta cantidad de horas, sin importar qué tan activa esté la persona. De 1 a 168."
+      "labelMicrosoft": "Duración de la sesión de Microsoft (horas)",
+      "labelGoogle": "Duración de la sesión de Google (horas)",
+      "help": "Los inicios de sesión con Microsoft y Google terminan después de esta cantidad de horas, sin importar qué tan activa esté la persona. De 1 a 168.",
+      "helpMicrosoft": "Los inicios de sesión con Microsoft terminan después de esta cantidad de horas, sin importar qué tan activa esté la persona. De 1 a 168.",
+      "helpGoogle": "Los inicios de sesión con Google terminan después de esta cantidad de horas, sin importar qué tan activa esté la persona. De 1 a 168."
     },
     "entraTenant": {
       "title": "Inquilino de Microsoft",
@@ -8595,6 +8616,8 @@
       "intro": "Al guardar, se desactiva el inicio de sesión con contraseña para las organizaciones siguientes.",
       "partnerIntro": "Al guardar este valor predeterminado del socio, se desactiva el inicio de sesión con contraseña para estas organizaciones. La página de cada organización muestra las cuentas que aún no pueden iniciar sesión.",
       "explain": "Las personas que ya están conectadas a Microsoft pierden su contraseña y se les cierra la sesión. Las personas sin conexión con Microsoft no podrán iniciar sesión hasta que acepten una invitación de inicio de sesión con Microsoft.",
+      "explainGoogle": "Las personas que ya están conectadas a Google pierden su contraseña y se les cierra la sesión. Las personas sin conexión con Google no podrán iniciar sesión hasta que acepten una invitación de inicio de sesión con Google.",
+      "explainBoth": "Las personas que ya están conectadas a Microsoft o Google pierden su contraseña y se les cierra la sesión. Las personas sin conexión con Microsoft o Google no podrán iniciar sesión hasta que acepten una invitación de inicio de sesión.",
       "columns": {
         "org": "Organización",
         "passwordsToClear": "Contraseñas eliminadas",
@@ -8605,24 +8628,38 @@
       "strandedMore": "y {{count}} más",
       "strandedLoadError": "No se pudieron cargar los nombres de estas cuentas.",
       "sendInvites": "Enviar invitaciones de inicio de sesión con Microsoft a estas cuentas después de guardar",
+      "sendInvitesGoogle": "Enviar invitaciones de inicio de sesión con Google a estas cuentas después de guardar",
+      "sendInvitesBoth": "Enviar invitaciones de inicio de sesión a estas cuentas después de guardar",
       "confirm": "Desactivar el inicio de sesión con contraseña",
       "changed": "El impacto cambió desde que abrió esta ventana. Revise las nuevas cifras."
     },
     "stranded": {
       "title": "Aún no pueden iniciar sesión ({{count}})",
       "description": "Estas cuentas no tienen conexión con Microsoft, por lo que no pueden iniciar sesión mientras el inicio de sesión con contraseña esté desactivado. Envíe a cada una una invitación de inicio de sesión con Microsoft.",
+      "descriptionGoogle": "Estas cuentas no tienen conexión con Google, por lo que no pueden iniciar sesión mientras el inicio de sesión con contraseña esté desactivado. Envíe a cada una una invitación de inicio de sesión con Google.",
+      "descriptionBoth": "Estas cuentas no tienen conexión con Microsoft o Google, por lo que no pueden iniciar sesión mientras el inicio de sesión con contraseña esté desactivado. Envíe a cada una una invitación de inicio de sesión.",
       "loadError": "No se pudieron cargar las cuentas que no pueden iniciar sesión.",
       "invite": "Enviar invitación de inicio de sesión con Microsoft",
+      "inviteGoogle": "Enviar invitación de inicio de sesión con Google",
+      "inviteBoth": "Enviar invitación de inicio de sesión",
       "inviteAll": "Invitar a todos",
       "more": "Mostrando {{shown}} de {{count}}.",
       "toasts": {
         "invited": "Invitaciones de inicio de sesión con Microsoft enviadas: {{count}}.",
+        "invitedGoogle": "Invitaciones de inicio de sesión con Google enviadas: {{count}}.",
+        "invitedBoth": "Invitaciones de inicio de sesión enviadas: {{count}}.",
         "partial": "Invitaciones de inicio de sesión con Microsoft enviadas: {{invited}} de {{total}}. Las demás ya estaban conectadas o no se pudieron invitar.",
+        "partialGoogle": "Invitaciones de inicio de sesión con Google enviadas: {{invited}} de {{total}}. Las demás ya estaban conectadas o no se pudieron invitar.",
+        "partialBoth": "Invitaciones de inicio de sesión enviadas: {{invited}} de {{total}}. Las demás ya estaban conectadas o no se pudieron invitar.",
         "emailFailed": "{{count}} cuenta(s) pasaron a invitadas, pero no se pudo enviar el correo de invitación. Usa Reenviar en la lista de usuarios del portal."
       },
       "errors": {
         "invite": "No se pudieron enviar las invitaciones de inicio de sesión con Microsoft.",
-        "unavailable": "El inicio de sesión con Microsoft no está disponible para esta organización, por lo que no hay nada con qué invitar."
+        "inviteGoogle": "No se pudieron enviar las invitaciones de inicio de sesión con Google.",
+        "inviteBoth": "No se pudieron enviar las invitaciones de inicio de sesión.",
+        "unavailable": "El inicio de sesión con Microsoft no está disponible para esta organización, por lo que no hay nada con qué invitar.",
+        "unavailableGoogle": "El inicio de sesión con Google no está disponible para esta organización, por lo que no hay nada con qué invitar.",
+        "unavailableBoth": "Ni el inicio de sesión con Microsoft ni el de Google están activados para esta organización, por lo que no hay nada con qué invitar."
       }
     },
     "domains": {
@@ -8644,6 +8681,7 @@
       "self": "Autorregistro",
       "entra": "Inicio de sesión con Microsoft",
       "google": "Inicio de sesión con Google",
+      "googleWithDomain": "Google · dominio {{domain}}",
       "addin_user": "Complemento AI for Office"
     },
     "selectAll": "Seleccionar todas las solicitudes",
@@ -8664,7 +8702,8 @@
       "identityLinked": "Inicio de sesión ya vinculado a otra cuenta",
       "failed": "No se pudo resolver esta solicitud",
       "entraTenantNotProven": "El inquilino de Microsoft de esta organización ya no está comprobado",
-      "domainNotVerified": "Dominio de correo ya no verificado"
+      "domainNotVerified": "Dominio de correo ya no verificado",
+      "googleDomainNotVerified": "Dominio de Google Workspace ya no verificado"
     },
     "denyDialog": {
       "title": "Denegar solicitud de acceso",
@@ -8683,7 +8722,8 @@
       "load": "No se pudieron cargar las solicitudes de acceso.",
       "action": "No se pudo actualizar la solicitud de acceso.",
       "bulk": "No se pudieron resolver las solicitudes seleccionadas.",
-      "domainNotVerified": "El dominio de correo de esta persona ya no está verificado para esta organización. Invítela directamente si debe tener acceso."
+      "domainNotVerified": "El dominio de correo de esta persona ya no está verificado para esta organización. Invítela directamente si debe tener acceso.",
+      "googleDomainNotVerified": "El dominio de Google Workspace de esta solicitud ya no está verificado para esta organización. Verifíquelo de nuevo o invite a la persona directamente."
     },
     "summary": {
       "title": "Solicitudes de acceso pendientes",

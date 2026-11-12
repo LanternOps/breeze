@@ -2,7 +2,13 @@ import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
 import { i18n } from '@/lib/i18n';
 import { PORTAL_ACCESS_POLICY_ERROR_CODES, type PortalAccessPolicyView } from '@breeze/shared';
-import { isPortalAccessPolicyView, type PortalAccessPolicyDraft } from '../../portalAccess/types';
+import {
+  capabilityProviderSet,
+  effectiveProviderSet,
+  isPortalAccessPolicyView,
+  type PortalAccessPolicyDraft,
+} from '../../portalAccess/types';
+import { SSO_COPY_KEYS } from '../../portalAccess/ssoProviderCopy';
 import { confirmRequiredImpact, isConfirmRequiredStatus, withAcknowledge } from '../../portalAccess/ssoOnlyActions';
 import { requestSsoOnlyConfirm } from '../../portalAccess/ssoOnlyConfirmRequests';
 import { showToast } from '../../../shared/Toast';
@@ -51,7 +57,8 @@ class SsoOnlySaveDeclinedError extends Error {
   }
 }
 
-function patchPolicy(draft: PortalAccessPolicyUnitValue['draft'], acknowledge: string | null) {
+function patchPolicy(value: PortalAccessPolicyUnitValue, acknowledge: string | null) {
+  const { draft } = value;
   return runAction<{ data: PortalAccessPolicyView }>({
     request: () => fetchWithAuth(withAcknowledge(POLICY_URL, acknowledge), {
       method: 'PATCH',
@@ -67,7 +74,10 @@ function patchPolicy(draft: PortalAccessPolicyUnitValue['draft'], acknowledge: s
     },
     friendly: (code) => {
       if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.METHOD_UNAVAILABLE) return i18n.t('settings:portalAccessPolicy.errors.methodUnavailable');
-      if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.SSO_ONLY_NEEDS_SSO) return i18n.t('settings:portalAccessPolicy.errors.ssoOnlyNeedsSso');
+      if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.SSO_ONLY_NEEDS_SSO) {
+        // W7 ships dark: name only the providers this deployment can run.
+        return i18n.t(/* i18n-dynamic */ SSO_COPY_KEYS.needsSsoError[capabilityProviderSet(value.view.capabilities)]);
+      }
       return undefined;
     },
     // The confirmation 409 opens the dialog instead of a toast.
@@ -86,7 +96,7 @@ const save = () => saveSlice<PortalAccessPolicyUnitValue>('portalAccessPolicy', 
   let acknowledge: string | null = null;
   for (;;) {
     try {
-      const body = await patchPolicy(value.draft, acknowledge);
+      const body = await patchPolicy(value, acknowledge);
       return { value: { view: body.data, draft: {} } };
     } catch (err) {
       const impact = confirmRequiredImpact(err);
@@ -97,7 +107,10 @@ const save = () => saveSlice<PortalAccessPolicyUnitValue>('portalAccessPolicy', 
         }
         throw err;
       }
-      const confirmed = await requestSsoOnlyConfirm(impact, { changed: acknowledge !== null });
+      const confirmed = await requestSsoOnlyConfirm(impact, {
+        changed: acknowledge !== null,
+        providers: effectiveProviderSet(value.view, value.draft),
+      });
       if (!confirmed) throw new SsoOnlySaveDeclinedError();
       acknowledge = impact.impactDigest;
     }

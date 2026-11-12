@@ -7146,7 +7146,7 @@
   },
   "orgDomains": {
     "title": "Domínios",
-    "description": "Domínios de e-mail que pertencem a este cliente. Um domínio declarado encaminha os e-mails recebidos para esta organização. Um domínio verificado é a prova de que o cliente é o proprietário dele, e o cadastro próprio no portal e o login com Google dependem disso.",
+    "description": "Domínios de e-mail que pertencem a este cliente. Um domínio declarado encaminha os e-mails recebidos para esta organização. Um domínio verificado é a prova de que o cliente é o proprietário dele, e recursos como o cadastro próprio no portal dependem disso.",
     "forbidden": "Gerenciar os domínios de clientes exige uma função de administrador com acesso a todas as organizações.",
     "partnerOnly": "Os domínios de clientes são gerenciados pelo seu provedor de serviços.",
     "checkingAccess": "Verificando o acesso…",
@@ -7248,7 +7248,7 @@
       "resultUnavailable": "Não foi possível concluir a verificação. {{reason}}",
       "removeVerification": "Remover verificação",
       "removeTitle": "Remover a verificação de {{domain}}?",
-      "removeMessage": "O domínio continua nesta organização para o encaminhamento de e-mails. O cadastro próprio e o login com Google deixam de confiar nele até que seja verificado novamente."
+      "removeMessage": "O domínio continua nesta organização para o encaminhamento de e-mails. Recursos que dependem de domínios verificados, como o cadastro próprio, deixam de confiar nele até que seja verificado novamente."
     },
     "actions": {
       "verify": "Verificar",
@@ -8480,15 +8480,28 @@
       "label": "Login com Microsoft"
     },
     "google": {
-      "label": "Login com Google"
+      "label": "Login com Google",
+      "domainNotVerified": "Verifique um dos domínios desta organização em Organização › Domínios antes de ativar o login com Google.",
+      "domains": {
+        "verified": "Domínios verificados: {{domains}}",
+        "none": "Nenhum domínio verificado —",
+        "verify": "verifique um em Organização › Domínios",
+        "partner": "Ativado onde houver um domínio verificado"
+      }
     },
     "password": {
       "label": "Login com senha",
       "allowed": "Permitido",
       "ssoOnly": "Desativado — somente Microsoft/Google",
-      "ssoOnlyNeedsSso": "Disponível depois que o login com Microsoft ou Google for ativado."
+      "ssoOnlyMicrosoft": "Desativado — somente Microsoft",
+      "ssoOnlyGoogle": "Desativado — somente Google",
+      "ssoOnlyNeedsSso": "Disponível depois que o login com Microsoft ou Google for ativado.",
+      "ssoOnlyNeedsSsoMicrosoft": "Disponível depois que o login com Microsoft for ativado.",
+      "ssoOnlyNeedsSsoGoogle": "Disponível depois que o login com Google for ativado."
     },
     "fallback": "O login com senha está ativado porque nenhum login com Microsoft ou Google está habilitado.",
+    "fallbackMicrosoft": "O login com senha está ativado porque o login com Microsoft não está habilitado.",
+    "fallbackGoogle": "O login com senha está ativado porque o login com Google não está habilitado.",
     "invites": {
       "label": "Convites do MSP",
       "value": "Sempre ativados"
@@ -8503,6 +8516,8 @@
     },
     "ssoNewPerson": {
       "label": "Primeiro login com Microsoft / Google",
+      "labelMicrosoft": "Primeiro login com Microsoft",
+      "labelGoogle": "Primeiro login com Google",
       "invitedOnly": "Somente pessoas convidadas",
       "approval": "Requer aprovação",
       "instant": "Imediato"
@@ -8513,6 +8528,8 @@
       "save": "Não foi possível salvar as configurações de login.",
       "methodUnavailable": "Este método de login ainda não está disponível nesta implantação do Breeze.",
       "ssoOnlyNeedsSso": "Ative o login com Microsoft ou Google antes de desativar o login com senha.",
+      "ssoOnlyNeedsSsoMicrosoft": "Ative o login com Microsoft antes de desativar o login com senha.",
+      "ssoOnlyNeedsSsoGoogle": "Ative o login com Google antes de desativar o login com senha.",
       "tenantNotProven": "Comprove o locatário da Microsoft desta organização antes de ativar o login com Microsoft.",
       "sessionHours": "Informe um número inteiro de horas de 1 a 168."
     },
@@ -8521,7 +8538,11 @@
     },
     "sessionHours": {
       "label": "Duração da sessão Microsoft / Google (horas)",
-      "help": "Os logins com Microsoft e Google terminam após esta quantidade de horas, independentemente de quão ativa a pessoa esteja. De 1 a 168."
+      "labelMicrosoft": "Duração da sessão Microsoft (horas)",
+      "labelGoogle": "Duração da sessão Google (horas)",
+      "help": "Os logins com Microsoft e Google terminam após esta quantidade de horas, independentemente de quão ativa a pessoa esteja. De 1 a 168.",
+      "helpMicrosoft": "Os logins com Microsoft terminam após esta quantidade de horas, independentemente de quão ativa a pessoa esteja. De 1 a 168.",
+      "helpGoogle": "Os logins com Google terminam após esta quantidade de horas, independentemente de quão ativa a pessoa esteja. De 1 a 168."
     },
     "entraTenant": {
       "title": "Locatário da Microsoft",
@@ -8595,6 +8616,8 @@
       "intro": "Ao salvar, o login com senha é desativado para as organizações abaixo.",
       "partnerIntro": "Ao salvar este padrão do parceiro, o login com senha é desativado para estas organizações. A página de cada organização lista as contas que ainda não conseguem fazer login.",
       "explain": "As pessoas já conectadas à Microsoft perdem a senha e são desconectadas. As pessoas sem conexão com a Microsoft não conseguem fazer login até aceitarem um convite de login com Microsoft.",
+      "explainGoogle": "As pessoas já conectadas ao Google perdem a senha e são desconectadas. As pessoas sem conexão com o Google não conseguem fazer login até aceitarem um convite de login com Google.",
+      "explainBoth": "As pessoas já conectadas à Microsoft ou ao Google perdem a senha e são desconectadas. As pessoas sem conexão com a Microsoft ou o Google não conseguem fazer login até aceitarem um convite de login.",
       "columns": {
         "org": "Organização",
         "passwordsToClear": "Senhas removidas",
@@ -8605,24 +8628,38 @@
       "strandedMore": "e mais {{count}}",
       "strandedLoadError": "Não foi possível carregar os nomes dessas contas.",
       "sendInvites": "Enviar convites de login com Microsoft a essas contas após salvar",
+      "sendInvitesGoogle": "Enviar convites de login com Google a essas contas após salvar",
+      "sendInvitesBoth": "Enviar convites de login a essas contas após salvar",
       "confirm": "Desativar login com senha",
       "changed": "O impacto mudou desde que você abriu esta janela. Revise os novos números."
     },
     "stranded": {
       "title": "Ainda não conseguem fazer login ({{count}})",
       "description": "Essas contas não têm conexão com a Microsoft, então não conseguem fazer login enquanto o login com senha estiver desativado. Envie a cada uma um convite de login com Microsoft.",
+      "descriptionGoogle": "Essas contas não têm conexão com o Google, então não conseguem fazer login enquanto o login com senha estiver desativado. Envie a cada uma um convite de login com Google.",
+      "descriptionBoth": "Essas contas não têm conexão com a Microsoft ou o Google, então não conseguem fazer login enquanto o login com senha estiver desativado. Envie a cada uma um convite de login.",
       "loadError": "Não foi possível carregar as contas que não conseguem fazer login.",
       "invite": "Enviar convite de login com Microsoft",
+      "inviteGoogle": "Enviar convite de login com Google",
+      "inviteBoth": "Enviar convite de login",
       "inviteAll": "Convidar todos",
       "more": "Mostrando {{shown}} de {{count}}.",
       "toasts": {
         "invited": "Convites de login com Microsoft enviados: {{count}}.",
+        "invitedGoogle": "Convites de login com Google enviados: {{count}}.",
+        "invitedBoth": "Convites de login enviados: {{count}}.",
         "partial": "Convites de login com Microsoft enviados: {{invited}} de {{total}}. Os demais já estavam conectados ou não puderam ser convidados.",
+        "partialGoogle": "Convites de login com Google enviados: {{invited}} de {{total}}. Os demais já estavam conectados ou não puderam ser convidados.",
+        "partialBoth": "Convites de login enviados: {{invited}} de {{total}}. Os demais já estavam conectados ou não puderam ser convidados.",
         "emailFailed": "{{count}} conta(s) passaram para convidada, mas o e-mail de convite não pôde ser enviado. Use Reenviar na lista de usuários do portal."
       },
       "errors": {
         "invite": "Não foi possível enviar os convites de login com Microsoft.",
-        "unavailable": "O login com Microsoft não está disponível para esta organização, então não há com o que convidar."
+        "inviteGoogle": "Não foi possível enviar os convites de login com Google.",
+        "inviteBoth": "Não foi possível enviar os convites de login.",
+        "unavailable": "O login com Microsoft não está disponível para esta organização, então não há com o que convidar.",
+        "unavailableGoogle": "O login com Google não está disponível para esta organização, então não há com o que convidar.",
+        "unavailableBoth": "Nem o login com Microsoft nem o login com Google estão ativados para esta organização, então não há com o que convidar."
       }
     },
     "domains": {
@@ -8644,6 +8681,7 @@
       "self": "Autocadastro",
       "entra": "Login com Microsoft",
       "google": "Login com Google",
+      "googleWithDomain": "Google · domínio {{domain}}",
       "addin_user": "Suplemento AI for Office"
     },
     "selectAll": "Selecionar todas as solicitações",
@@ -8664,7 +8702,8 @@
       "identityLinked": "Login já vinculado a outra conta",
       "failed": "Não foi possível decidir esta solicitação",
       "entraTenantNotProven": "O locatário da Microsoft desta organização não está mais comprovado",
-      "domainNotVerified": "Domínio de e-mail não está mais verificado"
+      "domainNotVerified": "Domínio de e-mail não está mais verificado",
+      "googleDomainNotVerified": "Domínio do Google Workspace não está mais verificado"
     },
     "denyDialog": {
       "title": "Negar solicitação de acesso",
@@ -8683,7 +8722,8 @@
       "load": "Não foi possível carregar as solicitações de acesso.",
       "action": "Não foi possível atualizar a solicitação de acesso.",
       "bulk": "Não foi possível decidir as solicitações selecionadas.",
-      "domainNotVerified": "O domínio de e-mail desta pessoa não está mais verificado para esta organização. Convide-a diretamente se ela precisar de acesso."
+      "domainNotVerified": "O domínio de e-mail desta pessoa não está mais verificado para esta organização. Convide-a diretamente se ela precisar de acesso.",
+      "googleDomainNotVerified": "O domínio do Google Workspace desta solicitação não está mais verificado para esta organização. Verifique-o novamente ou convide a pessoa diretamente."
     },
     "summary": {
       "title": "Solicitações de acesso pendentes",
