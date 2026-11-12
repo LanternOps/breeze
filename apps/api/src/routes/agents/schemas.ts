@@ -810,6 +810,14 @@ export function parseRestorePointOutcome(raw: unknown): RestorePointOutcome | nu
   return classified.ok ? classified.outcome : null;
 }
 
+/**
+ * Longest command id an agent may send back. Every id the API issues is a
+ * short prefix plus a UUID, and agent-made ids (a session, tunnel or snapshot
+ * id after a prefix) are as short. The id becomes part of log lines and cache
+ * keys, so a frame carrying a longer one is refused at the schema.
+ */
+export const MAX_AGENT_COMMAND_ID_LENGTH = 128;
+
 export const commandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'timeout']),
   exitCode: z.number().int().optional(),

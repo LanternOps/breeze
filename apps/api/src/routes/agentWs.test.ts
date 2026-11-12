@@ -496,6 +496,7 @@ import {
 } from '../services/softwareDeploymentResult';
 import { getRedis, isRedisAvailable } from '../services/redis';
 import { orphanedResultExpectationKey } from '../services/orphanedResultExpectations';
+import { MAX_AGENT_COMMAND_ID_LENGTH } from './agents/schemas';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
@@ -7810,6 +7811,27 @@ describe('orphaned result expectations are shared across replicas (#4135)', () =
       expect(set).toHaveBeenCalledTimes(1);
     } finally {
       warning.mockRestore();
+    }
+  });
+
+  it('refuses a command_result whose command id is longer than the agent command-id limit, without a Redis read', async () => {
+    const redis = sharedRedis();
+    const { handlers, ws } = await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
+    vi.mocked(getRedis).mockReturnValue(redis as never);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await handlers.onMessage({
+        data: JSON.stringify(failedPoll(`snmp-${'x'.repeat(MAX_AGENT_COMMAND_ID_LENGTH)}`)),
+      } as any, ws as any);
+
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(redis.getdel).not.toHaveBeenCalled();
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('INVALID_MESSAGE'));
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    } finally {
+      warning.mockRestore();
+      error.mockRestore();
     }
   });
 

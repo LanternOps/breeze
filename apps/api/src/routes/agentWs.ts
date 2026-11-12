@@ -114,6 +114,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 import {
   commandResultSchema as baseCommandResultSchema,
   commandResultResultByteLength,
+  MAX_AGENT_COMMAND_ID_LENGTH,
   MAX_COMMAND_RESULT_BYTES,
 } from './agents/schemas';
 import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
@@ -722,7 +723,7 @@ function recordOrphanedResultExpectation(agentId: string, command: AgentCommand)
 // duplicating the very thing this removes.
 const commandResultSchema = baseCommandResultSchema.extend({
   type: z.literal('command_result'),
-  commandId: z.string(),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
 });
 
 type AgentCommandResult = z.infer<typeof commandResultSchema>;
@@ -972,7 +973,7 @@ function decodeTerminalOutput(data: string, encoding?: 'base64'): string | null 
 // progress body is dropped rather than failing the whole WS message parse.
 const backupProgressMessageSchema = z.object({
   type: z.literal('backup_progress'),
-  commandId: z.string(),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
   progress: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -998,7 +999,7 @@ const revocationLeaseRenewSchema = z.object({
 // be a quiet drop in applyCommandProgress, not an INVALID_MESSAGE error frame.
 const commandProgressMessageSchema = z.object({
   type: z.literal('command_progress'),
-  commandId: z.string().max(128),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
   stage: z.string().max(32),
 });
 
