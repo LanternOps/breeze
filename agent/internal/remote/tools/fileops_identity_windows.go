@@ -4,6 +4,8 @@ package tools
 
 import (
 	"encoding/binary"
+	"errors"
+	"io/fs"
 	"os"
 	"unsafe"
 
@@ -64,30 +66,35 @@ func identityOfHandle(h windows.Handle) (fileIdentity, uint32, error) {
 	}, links, nil
 }
 
-// Windows opens follow reparse points; the scan compares the opened file
-// with the walked one and checks the handle's final path instead.
-const (
-	scanFileOpenFlags = 0
-	scanRootOpenFlags = 0
-)
-
-func isNoFollowRefusal(error) bool { return false }
-
 // identityOfOpenFile returns the identity and link count of an open file
 // (the link count is 1 for anything but a regular file).
 func identityOfOpenFile(f *os.File) (fileIdentity, uint32, error) {
 	return identityOfHandle(windows.Handle(f.Fd()))
 }
 
-// identityOfPath returns the identity of the file p names, following links.
-// It opens for attribute access only, which a file held open exclusively
-// (such as a loaded registry hive) still allows.
-func identityOfPath(p string) (fileIdentity, bool) {
+// identityOfPath returns the identity of the regular file p names,
+// following links. It opens for attribute access only, which a file held
+// open exclusively (such as a loaded registry hive) still allows. ok is
+// false when p does not exist or is a folder; err reports any other failure.
+func identityOfPath(p string) (id fileIdentity, ok bool, err error) {
 	h, err := openFollowing(p, windows.FILE_READ_ATTRIBUTES)
 	if err != nil {
-		return fileIdentity{}, false
+		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+			return fileIdentity{}, false, nil
+		}
+		return fileIdentity{}, false, err
 	}
 	defer windows.CloseHandle(h)
-	id, _, err := identityOfHandle(h)
-	return id, err == nil
+	var std fileStandardInfo
+	if err := windows.GetFileInformationByHandleEx(h, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&std)), uint32(unsafe.Sizeof(std))); err == nil && std.Directory != 0 {
+		return fileIdentity{}, false, nil
+	}
+	id, _, err = identityOfHandle(h)
+	return id, err == nil, err
 }
+
+// deviceOfInfo: Windows volumes are anchored by drive letter instead.
+func deviceOfInfo(string, fs.FileInfo) (uint64, bool) { return 0, false }
+
+// runsPrivileged: the agent runs as LocalSystem on Windows.
+func runsPrivileged() bool { return true }

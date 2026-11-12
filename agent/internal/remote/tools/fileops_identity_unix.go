@@ -4,6 +4,7 @@ package tools
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"syscall"
 )
@@ -31,17 +32,6 @@ func identityFromInfo(info os.FileInfo) (fileIdentity, uint32, error) {
 	return fileIdentity{volume: uint64(st.Dev), idLow: uint64(st.Ino)}, links, nil
 }
 
-// scanFileOpenFlags opens a queued scan file without following a link at the
-// leaf and without blocking on a FIFO; scanRootOpenFlags opens a scan root
-// (which may be reached through linked ancestors) without blocking.
-const (
-	scanFileOpenFlags = syscall.O_NONBLOCK | syscall.O_NOFOLLOW
-	scanRootOpenFlags = syscall.O_NONBLOCK
-)
-
-// isNoFollowRefusal reports an open refused because the leaf is a link.
-func isNoFollowRefusal(err error) bool { return errors.Is(err, syscall.ELOOP) }
-
 // identityOfOpenFile returns the identity and link count of an open file
 // (the link count is 1 for anything but a regular file).
 func identityOfOpenFile(f *os.File) (fileIdentity, uint32, error) {
@@ -52,12 +42,34 @@ func identityOfOpenFile(f *os.File) (fileIdentity, uint32, error) {
 	return identityFromInfo(info)
 }
 
-// identityOfPath returns the identity of the file p names, following links.
-func identityOfPath(p string) (fileIdentity, bool) {
+// identityOfPath returns the identity of the regular file p names,
+// following links. ok is false when p does not exist or is not a regular
+// file; err reports any other failure to read it.
+func identityOfPath(p string) (id fileIdentity, ok bool, err error) {
 	info, err := os.Stat(p)
-	if err != nil || !info.Mode().IsRegular() {
-		return fileIdentity{}, false
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fileIdentity{}, false, nil
+		}
+		return fileIdentity{}, false, err
 	}
-	id, _, err := identityFromInfo(info)
-	return id, err == nil
+	if !info.Mode().IsRegular() {
+		return fileIdentity{}, false, nil
+	}
+	id, _, err = identityFromInfo(info)
+	return id, err == nil, err
 }
+
+// deviceOfInfo returns the device a file lives on.
+func deviceOfInfo(_ string, info fs.FileInfo) (uint64, bool) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(st.Dev), true
+}
+
+// runsPrivileged reports whether the agent runs as root, so that a protected
+// folder it cannot read is a gap rather than a folder it could not read
+// through any name either.
+func runsPrivileged() bool { return os.Geteuid() == 0 }

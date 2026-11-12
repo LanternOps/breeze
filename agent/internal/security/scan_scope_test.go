@@ -179,3 +179,67 @@ func TestAutoQuarantineDoesNotAttemptProtectedFile(t *testing.T) {
 		t.Fatalf("protected file was moved: %v", err)
 	}
 }
+
+// A queued file replaced by another file after the walk saw it is not read:
+// the worker reads only the file the walk listed.
+func TestScanWorkerSkipsFileReplacedAfterTheWalk(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "a.txt")
+	second := filepath.Join(root, "b.txt")
+	writeFixture(t, first, "x")
+	writeFixture(t, second, "x")
+	replacement := filepath.Join(t.TempDir(), "other.txt")
+	writeFixture(t, replacement, "different file")
+
+	m := &recordingMatcher{}
+	m.onScan = func(p string) {
+		if p != first {
+			return
+		}
+		if err := os.Rename(replacement, second); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := walkAndMatch(context.Background(), []string{root}, defaultThreatScanOptions(), m, yaraCfg(1)); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range m.scanned() {
+		if p == second {
+			t.Fatalf("a file replaced after the walk was read: %v", m.scanned())
+		}
+	}
+}
+
+// The scan reads at most the size limit, measured on the open file when it
+// is scanned, even if the file grew after the walk measured it.
+func TestScanSizeLimitAppliesWhenTheFileIsRead(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "a.bin")
+	second := filepath.Join(root, "b.bin")
+	writeFixture(t, first, "x")
+	writeFixture(t, second, "x")
+	opts := defaultThreatScanOptions()
+	opts.MaxFileSize = 16
+
+	m := &recordingMatcher{}
+	m.onScan = func(p string) {
+		if p != first {
+			return
+		}
+		f, err := os.OpenFile(second, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = f.Write(make([]byte, 4096))
+		_ = f.Close()
+	}
+	if _, err := walkAndMatch(context.Background(), []string{root}, opts, m, yaraCfg(1)); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if size, ok := m.sizes[second]; ok && size > opts.MaxFileSize {
+		t.Fatalf("scanned %d bytes of a file over the %d-byte limit", size, opts.MaxFileSize)
+	}
+}

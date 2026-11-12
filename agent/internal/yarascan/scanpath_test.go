@@ -15,7 +15,11 @@ func scanPath(w Worker, p string) ([]Match, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return w.ScanFile(f, p)
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	return w.ScanFile(f, st.Size(), p)
 }
 
 // The worker scans, and quotes evidence from, the file it was handed, even
@@ -53,7 +57,11 @@ func TestWorkerScansTheOpenFileNotThePath(t *testing.T) {
 	if err := os.Rename(other, p); err != nil {
 		t.Fatal(err)
 	}
-	got, err := w.ScanFile(h, p)
+	st, err := h.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.ScanFile(h, st.Size(), p)
 	if err != nil || len(got) != 1 || len(got[0].Strings) == 0 || got[0].Strings[0].Offset != 3 {
 		t.Fatalf("matches = %+v, err = %v; want the opened file's match", got, err)
 	}

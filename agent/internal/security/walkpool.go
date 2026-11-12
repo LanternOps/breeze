@@ -181,7 +181,18 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 				}
 				var matches []yarascan.Match
 				if err == nil {
-					matches, err = w.ScanFile(f, job.path)
+					// The size limit applies to the file as it is now: it may
+					// have grown since the walk measured it. The scan reads at
+					// most the size measured here.
+					var size int64
+					size, err = scanSize(f, options, cfg)
+					if errors.Is(err, tools.ErrScanSkipped) {
+						_ = f.Close()
+						continue
+					}
+					if err == nil {
+						matches, err = w.ScanFile(f, size, job.path)
+					}
 				}
 				closeJob := func() {
 					if f != nil {
@@ -315,6 +326,21 @@ func fileSHA256(p string) (string, error) {
 	return readerSHA256(f)
 }
 
+// scanSize measures the open file f for the scan. Where the walk skips
+// files over the size limit (the YARA engine), a file that has grown past
+// the limit since the walk is skipped as well.
+func scanSize(f *os.File, options threatScanOptions, cfg walkConfig) (int64, error) {
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := st.Size()
+	if cfg.SkipOversized && options.MaxFileSize > 0 && size > options.MaxFileSize {
+		return 0, tools.ErrScanSkipped
+	}
+	return size, nil
+}
+
 // readerSHA256 hashes r from its start (at most maxHashBytes), whatever its
 // current offset, so the handle a worker scanned can be hashed as is.
 func readerSHA256(r io.ReaderAt) (string, error) {
@@ -335,6 +361,10 @@ func readerSHA256(r io.ReaderAt) (string, error) {
 // isExcludedPath, regular files only.
 func produce(ctx context.Context, roots []string, options threatScanOptions, cfg walkConfig, jobs chan<- fileJob, ec *errCollector, scope *tools.ScanScope) error {
 	send := func(p string, info fs.FileInfo) error {
+		// Load the file's ID now, while the walk is looking at it: on Windows
+		// a walked FileInfo otherwise reads it lazily, by path, when it is
+		// first compared, which would be after the worker's open.
+		_ = os.SameFile(info, info)
 		size := info.Size()
 		if cfg.SkipOversized && options.MaxFileSize > 0 && size > options.MaxFileSize {
 			return nil
@@ -393,13 +423,13 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 				ec.file(cur, werr)
 				return nil
 			}
-			if isExcludedPath(cur, options.ExcludePaths) || scope.Skip(scanRoot, cur, d.IsDir()) {
+			if isExcludedPath(cur, options.ExcludePaths) {
 				if d.IsDir() {
 					return fs.SkipDir
 				}
 				return nil
 			}
-			if d.Type()&os.ModeSymlink != 0 || d.IsDir() {
+			if d.Type()&os.ModeSymlink != 0 {
 				return nil
 			}
 			fi, err := d.Info()
@@ -409,7 +439,13 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 				}
 				return nil
 			}
-			if !fi.Mode().IsRegular() {
+			if scope.Skip(scanRoot, cur, fi) {
+				if d.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if d.IsDir() || !fi.Mode().IsRegular() {
 				return nil
 			}
 			return send(cur, fi)

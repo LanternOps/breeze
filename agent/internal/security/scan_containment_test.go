@@ -16,6 +16,7 @@ import (
 type recordingMatcher struct {
 	mu     sync.Mutex
 	paths  []string
+	sizes  map[string]int64 // bytes the worker was told to scan, by path
 	onScan func(path string)
 	hit    bool // report one match for every file
 }
@@ -33,9 +34,13 @@ func (r *recordingMatcher) scanned() []string {
 type recordingWorker struct{ r *recordingMatcher }
 
 func (w recordingWorker) Close() {}
-func (w recordingWorker) ScanFile(_ *os.File, p string) ([]yarascan.Match, error) {
+func (w recordingWorker) ScanFile(_ *os.File, size int64, p string) ([]yarascan.Match, error) {
 	w.r.mu.Lock()
 	w.r.paths = append(w.r.paths, p)
+	if w.r.sizes == nil {
+		w.r.sizes = map[string]int64{}
+	}
+	w.r.sizes[p] = size
 	hook := w.r.onScan
 	w.r.mu.Unlock()
 	if hook != nil {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -198,17 +197,10 @@ type legacyWorker legacyMatcher
 
 func (legacyWorker) Close() {}
 
-func (l legacyWorker) ScanFile(f *os.File, path string) ([]yarascan.Match, error) {
-	// The caller opened f without following a link and checked it; the
-	// signatures read the content through f.
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, nil
-	}
-	found, err := scanFileForThreats(path, info, f, l.options)
+func (l legacyWorker) ScanFile(f *os.File, size int64, path string) ([]yarascan.Match, error) {
+	// The caller opened f without following a link, checked it and measured
+	// it; the signatures read at most size bytes of the content through f.
+	found, err := scanFileForThreats(path, size, io.NewSectionReader(f, 0, size), l.options)
 	out := make([]yarascan.Match, 0, len(found))
 	for _, th := range found {
 		out = append(out, yarascan.Match{RuleName: th.Name, Severity: th.Severity, ThreatType: th.Type})
@@ -232,8 +224,8 @@ func RemoveThreat(threat Threat) error {
 	return nil
 }
 
-func scanFileForThreats(path string, info fs.FileInfo, content io.ReaderAt, options threatScanOptions) ([]Threat, error) {
-	nameLower := strings.ToLower(info.Name())
+func scanFileForThreats(path string, size int64, content io.ReaderAt, options threatScanOptions) ([]Threat, error) {
+	nameLower := strings.ToLower(filepath.Base(path))
 	pathLower := strings.ToLower(path)
 	var matches []Threat
 
@@ -256,7 +248,7 @@ func scanFileForThreats(path string, info fs.FileInfo, content io.ReaderAt, opti
 		return matches, nil
 	}
 
-	if info.Size() <= 0 || (options.MaxFileSize > 0 && info.Size() > options.MaxFileSize) {
+	if size <= 0 || (options.MaxFileSize > 0 && size > options.MaxFileSize) {
 		return matches, nil
 	}
 

@@ -102,3 +102,18 @@ func TestMakeDirectoryCreatesAbsoluteLocalPath(t *testing.T) {
 		t.Fatalf("folder not created: %v", err)
 	}
 }
+
+// Names Windows maps to devices in any folder are recognised (the agent
+// refuses them on Windows).
+func TestWindowsReservedDeviceNames(t *testing.T) {
+	for _, p := range []string{"C:/x/COM1", "C:/x/nul.txt", "C:/x/con", "C:/x/LPT9.log", "C:/x/aux .txt", "C:/conin$", "C:/x/NUL:stream"} {
+		if !hasWindowsReservedDeviceName(p) {
+			t.Errorf("%s: not recognised", p)
+		}
+	}
+	for _, p := range []string{"C:/x/COM10", "C:/x/console.txt", "C:/x/nullable", "C:/x/LPT0", "C:/Logs/report.txt"} {
+		if hasWindowsReservedDeviceName(p) {
+			t.Errorf("%s: wrongly recognised", p)
+		}
+	}
+}

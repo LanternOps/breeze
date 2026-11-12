@@ -50,7 +50,7 @@ The File Browser tab lets you navigate the device's filesystem, download files, 
 - **Upload files.** Click the upload button to send a file to the device at the current path. You can upload text or binary files.
 - **Create folders.** Click **New folder** in the toolbar (v0.127.0), enter a name, and Breeze creates the folder in the current directory and refreshes the listing. Like uploads, this needs the `scripts:execute` permission in addition to device access, and it is recorded in the audit log.
 
-File Browser paths must be absolute paths, such as `/var/log` or `C:\Logs`. UNC paths (`\\server\share`), device-namespace paths (`\\?\`, `\\.\`) and relative paths are refused. Mapped drives and mounted volumes are reached through ordinary absolute paths.
+File Browser paths must be absolute paths, such as `/var/log` or `C:\Logs`. UNC paths (`\\server\share`), device-namespace paths (`\\?\`, `\\.\`) and relative paths are refused. Mapped drives and mounted volumes are reached through ordinary absolute paths. The File Browser does not read or change the agent's own folders (`C:\ProgramData\Breeze`, `/Library/Application Support/Breeze`, `/etc/breeze` and `/var/lib/breeze`) or the system credential stores, including through another name (a hard link) of one of their files.
 
 ### File Browser API reference
 
