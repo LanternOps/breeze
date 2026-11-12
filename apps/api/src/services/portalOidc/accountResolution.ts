@@ -24,7 +24,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { portalUserIdentities, portalUsers } from '../../db/schema';
-import { resolveLinkableEntraAddress } from '../clientAiEntraAddress';
 import { createPortalAccessRequest } from '../portalAccessRequests';
 import {
   PortalAccountTransitionError,
@@ -33,15 +32,16 @@ import {
   type PortalAccountWriter,
 } from '../portalAccountState';
 import { isSignInMethodAllowed, resolvePortalAccessPolicy } from '../portalAccessPolicy';
-import { findOrgByProvenEntraTenant } from '../portalEntraTenantProof';
 import { createIdentityOnlyAccount } from '../portalIdentityAccounts';
 import {
-  entraIssuer,
   findPortalUserIdByEntraIdentity,
+  identityIssuerSubject,
   linkPortalUserIdentity,
   portalUserHasIdentitySql,
+  type PortalIdentityKey,
 } from '../portalUserIdentities';
 import { getActiveOrgTenant } from '../tenantStatus';
+import { signInProviderFor, type PortalOidcResolvedOrg, type PortalOidcSignInProvider } from './signInProviders';
 import type { PortalOidcPurpose, PortalOidcVerifiedIdentity } from './types';
 
 /**
@@ -83,11 +83,15 @@ type Session = Extract<PortalOidcSignInOutcome, { kind: 'session' }>;
 type SsoNewPersonMode = 'invited_only' | 'approval' | 'instant';
 
 interface Resolution {
+  /** Selected from the verified identity's provider, never from request input (D4). */
+  adapter: PortalOidcSignInProvider;
   identity: ResolvePortalOidcSignInInput['identity'];
+  /** `adapter.identityKey(identity)`: lookup, touch and link all use it. */
+  key: PortalIdentityKey;
   purpose: ResolvePortalOidcSignInInput['purpose'];
   inviteConsumer: ResolvePortalOidcSignInInput['inviteConsumer'];
-  tid: string;
-  oid: string;
+  /** Step 0's org, with the proof observation the write branches fence on (D15). */
+  org: PortalOidcResolvedOrg;
   orgId: string;
   partnerId: string;
   /** Effective `password_mode = sso_only` (D12: links and sign-ins clear the password hash). */
@@ -107,7 +111,9 @@ class ResolutionRefusal extends Error {
 const denied = (reason: PortalOidcDenyReason, orgId: string | null): Denied => ({ kind: 'denied', reason, orgId });
 
 function session(r: Resolution, portalUserId: string, authEpoch: number, via: Session['via']): Session {
-  return { kind: 'session', portalUserId, orgId: r.orgId, authEpoch, entraTenantId: r.tid, via };
+  const pin = r.adapter.sessionPin(r.identity);
+  if (pin.entraTenantId === null) throw new Error('portal OIDC session without an Entra tenant pin');
+  return { kind: 'session', portalUserId, orgId: r.orgId, authEpoch, entraTenantId: pin.entraTenantId, via };
 }
 
 /** One write branch: a system context, a transaction inside it, refusals caught OUTSIDE the transaction. */
@@ -186,25 +192,29 @@ function planOrRefuse(account: LockedAccount, writer: PortalAccountWriter, reaso
 }
 
 async function touchIdentity(r: Resolution, portalUserId: string): Promise<void> {
+  const { issuer, subject } = identityIssuerSubject(r.key);
   await db
     .update(portalUserIdentities)
     .set({ lastUsedAt: r.now })
     .where(and(
-      eq(portalUserIdentities.issuer, entraIssuer(r.tid)),
-      eq(portalUserIdentities.subject, r.oid),
+      eq(portalUserIdentities.issuer, issuer),
+      eq(portalUserIdentities.subject, subject),
       eq(portalUserIdentities.portalUserId, portalUserId),
     ));
 }
 
+/** Step 1's reader: the account the identity key belongs to. */
+function findIdentityOwner(key: PortalIdentityKey): Promise<{ portalUserId: string; orgId: string } | null> {
+  if (key.provider === 'entra') return findPortalUserIdByEntraIdentity(db, { tid: key.tid, oid: key.oid });
+  throw new Error('portal OIDC sign-in: no identity reader for this provider');
+}
+
 /**
- * Step 1 (and step 5): the identity `(entraIssuer(tid), oid)` already exists.
+ * Step 1 (and step 5): the identity `identityIssuerSubject(key)` already exists.
  * Returns null when it does not (the caller goes on to step 2, 3 or 4).
  */
 async function resolveKnownIdentity(r: Resolution): Promise<PortalOidcSignInOutcome | null> {
-  const found = await withSystemDbAccessContext(
-    () => findPortalUserIdByEntraIdentity(db, { tid: r.tid, oid: r.oid }),
-    'portalOidc.resolve.identity',
-  );
+  const found = await withSystemDbAccessContext(() => findIdentityOwner(r.key), 'portalOidc.resolve.identity');
   if (!found) return null;
   // inv. 4: an identity's org is its account's org (composite FK); a token for
   // a tenant now proven elsewhere never signs in to the old org's account here.
@@ -279,32 +289,11 @@ async function resolveKnownIdentity(r: Resolution): Promise<PortalOidcSignInOutc
   return request.kind === 'capped' ? denied('requests_capped', r.orgId) : { kind: 'request_sent', orgId: r.orgId };
 }
 
-/**
- * Whether any login holds `(tid, oid)` on its legacy `portal_users
- * (entra_tenant_id, entra_oid)` columns (the W3 D4 writer fence keeps them
- * until identities release C). A login with those columns and no identity row
- * (drift the daily reconcile only reports) is invisible to step 1, yet
- * `linkPortalUserIdentity` refuses it as a conflict — so the invite step reads
- * it BEFORE spending the invite. This also refuses the edge where the invited
- * account itself is the drifted holder: the invite is not known until it is
- * consumed, and an unspent invite plus a generic refusal is the safe side.
- */
-async function legacyEntraKeyHeld(r: Resolution): Promise<boolean> {
-  const [holder] = await withSystemDbAccessContext(
-    () => db
-      .select({ id: portalUsers.id })
-      .from(portalUsers)
-      .where(and(eq(portalUsers.entraTenantId, r.tid), eq(portalUsers.entraOid, r.oid)))
-      .limit(1),
-    'portalOidc.resolve.legacyEntraKey',
-  );
-  return Boolean(holder);
-}
-
 /** Step 2: an invitation-bound sign-in activates the invited account and links the identity. */
 async function acceptInvite(r: Resolution, inviteTokenHash: string): Promise<PortalOidcSignInOutcome> {
-  // D11: a conflict that is knowable before consumption never spends the invite.
-  if (await legacyEntraKeyHeld(r)) return denied('identity_conflict', r.orgId);
+  // D11: a conflict that is knowable before consumption never spends the invite
+  // (Entra: a login holding the key on the legacy columns; see the adapter).
+  if (await r.adapter.legacyKeyHeld(r.identity)) return denied('identity_conflict', r.orgId);
 
   const consumed = await r.inviteConsumer(inviteTokenHash);
   if (!consumed || consumed.orgId !== r.orgId) return denied('invite_invalid', r.orgId);
@@ -321,9 +310,7 @@ async function acceptInvite(r: Resolution, inviteTokenHash: string): Promise<Por
     const link = await linkPortalUserIdentity(db, {
       orgId: r.orgId,
       portalUserId: account.id,
-      provider: 'entra',
-      tid: r.tid,
-      oid: r.oid,
+      ...r.key,
       linkedVia: 'invite',
       clearPasswordHash: r.ssoOnly,
       now: r.now,
@@ -367,9 +354,7 @@ async function linkSignedIn(
     const link = await linkPortalUserIdentity(db, {
       orgId: r.orgId,
       portalUserId: account.id,
-      provider: 'entra',
-      tid: r.tid,
-      oid: r.oid,
+      ...r.key,
       linkedVia: 'self_link',
       clearPasswordHash: r.ssoOnly,
       now: r.now,
@@ -381,24 +366,17 @@ async function linkSignedIn(
 
 /** Step 4: a new person (login purpose, no identity). */
 async function resolveNewPerson(r: Resolution): Promise<PortalOidcSignInOutcome> {
-  // D10: the email is the linkable address (the existing contact rule), else
-  // the lowercased UPN (always on a tenant-verified domain).
-  const linkable = await withSystemDbAccessContext(
-    () => resolveLinkableEntraAddress(r.orgId, r.partnerId, r.identity),
-    'portalOidc.resolve.address',
-  );
-  const linkableEmail = linkable.kind === 'linkable' ? linkable.email.trim().toLowerCase() : null;
-  const upn = r.identity.upn?.trim().toLowerCase() || null;
-  const email = linkableEmail ?? upn;
-  if (!email) return denied('no_address', r.orgId);
+  // The adapter's address rule (Entra: W4 D10). No DB context is held here.
+  const address = await r.adapter.newPersonAddress(r.identity, { orgId: r.orgId, partnerId: r.partnerId });
+  if (!address) return denied('no_address', r.orgId);
+  const { email } = address;
 
-  // An account at either address is a refusal, never a link (inv. 5).
-  const addresses = [...new Set([email, upn, linkableEmail].filter((a): a is string => Boolean(a)))];
+  // An account at any of the adapter's addresses is a refusal, never a link (inv. 5).
   const [existing] = await withSystemDbAccessContext(
     () => db
       .select({ id: portalUsers.id })
       .from(portalUsers)
-      .where(and(eq(portalUsers.orgId, r.orgId), inArray(sql`lower(${portalUsers.email})`, addresses)))
+      .where(and(eq(portalUsers.orgId, r.orgId), inArray(sql`lower(${portalUsers.email})`, address.refuseIfAnyAccountAt)))
       .limit(1),
     'portalOidc.resolve.accountExists',
   );
@@ -410,22 +388,21 @@ async function resolveNewPerson(r: Resolution): Promise<PortalOidcSignInOutcome>
   switch (r.mode) {
     case 'approval': {
       // Outside every transaction: it opens its own isolated system context.
-      const request = await createPortalAccessRequest({
-        source: 'entra', orgId: r.orgId, email, name: r.identity.name, tid: r.tid, oid: r.oid,
-      }, r.now);
+      const request = await createPortalAccessRequest(
+        r.adapter.accessRequest(r.identity, { orgId: r.orgId, email, name: r.identity.name }),
+        r.now,
+      );
       return request.kind === 'capped' ? denied('requests_capped', r.orgId) : { kind: 'request_sent', orgId: r.orgId };
     }
     case 'instant': {
       const created = await inWriteTransaction(r, 'portalOidc.resolve.instant', async () => {
         const outcome = await createIdentityOnlyAccount(db, {
           orgId: r.orgId,
-          provider: 'entra',
-          tid: r.tid,
-          oid: r.oid,
+          ...r.key,
           email,
           name: r.identity.name,
-          // D10: a contact link only for a linkable address.
-          contactAddress: linkableEmail,
+          // The adapter's contact rule (Entra: W4 D10, a linkable address only).
+          contactAddress: address.contactAddress,
           actorUserId: null,
           writer: 'sso_instant',
           now: r.now,
@@ -472,28 +449,28 @@ export async function resolvePortalOidcSignIn(input: ResolvePortalOidcSignInInpu
   }
   const now = input.now ?? new Date();
   const { identity, purpose } = input;
-  const tid = identity.entraTenantId;
+  // The Google adapter lands in the next commit; until then only Entra resolves.
+  if (identity.provider !== 'entra') return denied('org_unresolved', null);
+  const adapter = signInProviderFor(identity.provider);
 
-  // The verifier guarantees this; refuse rather than trust a mismatched shape.
-  if (identity.provider !== 'entra' || identity.issuer !== entraIssuer(tid)) return denied('org_unresolved', null);
-
-  // Step 0.
-  const org = await findOrgByProvenEntraTenant(tid);
+  // Step 0 (the adapter refuses a mismatched identity shape with null).
+  const org = await adapter.resolveOrg(identity);
   if (!org) return denied('org_unresolved', null);
   const orgId = org.orgId;
   if (input.hostOrgId !== null && input.hostOrgId !== orgId) return denied('host_mismatch', orgId);
   const tenant = await getActiveOrgTenant(orgId);
   if (!tenant) return denied('org_unavailable', orgId);
   const policy = await resolvePortalAccessPolicy(orgId);
-  if (!isSignInMethodAllowed(policy, 'entra')) return denied('method_off', orgId);
+  if (!isSignInMethodAllowed(policy, adapter.provider)) return denied('method_off', orgId);
   if (purpose.kind === 'link' && purpose.orgId !== orgId) return denied('link_invalid', orgId);
 
   const r: Resolution = {
+    adapter,
     identity,
+    key: adapter.identityKey(identity),
     purpose,
     inviteConsumer: input.inviteConsumer,
-    tid,
-    oid: identity.subject,
+    org,
     orgId,
     partnerId: tenant.partnerId,
     ssoOnly: policy.effective.passwordMode.value === 'sso_only',
