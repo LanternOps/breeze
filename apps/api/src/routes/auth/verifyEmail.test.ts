@@ -394,7 +394,7 @@ describe('POST /verify-email', () => {
     );
     const passwordHash = await actualPassword.hashPassword('signup-password');
     vi.mocked(checkSignupPassword).mockImplementationOnce(actualCheck.checkSignupPassword);
-    vi.mocked(getRedis).mockReturnValue({ get: vi.fn(async () => null), incr: vi.fn(async () => 1), expire: vi.fn(), del: vi.fn() } as any);
+    vi.mocked(getRedis).mockReturnValue({ eval: vi.fn(async () => 1), del: vi.fn(async () => 0) } as any);
     vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, passwordHash, rawToken: 'credential-test' });
     // Everything account creation would read, so only the password decides.
     primeFinalizeSelects([]);
@@ -622,6 +622,11 @@ describe('POST /verify-email — signup password attempts', () => {
       }),
       expire: vi.fn(async () => 1),
       del: vi.fn(async (key: string) => (attemptStore.delete(key) ? 1 : 0)),
+      eval: vi.fn(async (_script: string, _keys: number, key: string) => {
+        const next = Number(attemptStore.get(key) ?? '0') + 1;
+        attemptStore.set(key, String(next));
+        return next;
+      }),
     } as any);
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
     vi.mocked(isAccountLocked).mockResolvedValue(false);
@@ -729,6 +734,22 @@ describe('POST /verify-email — signup password attempts', () => {
     expect(await last!.json()).toEqual(INVALID_LINK_BODY);
     expect(retireVerificationToken).toHaveBeenCalledWith('existing');
     expect(consumeVerificationToken).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 and keeps the link when the attempt counter is unreachable', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    const redis = vi.mocked(getRedis)() as any;
+    redis.eval.mockRejectedValueOnce(new Error('redis down'));
+
+    const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
+
+    expect(res.status).toBe(503);
+    expect(retireVerificationToken).not.toHaveBeenCalled();
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'check_unavailable', userId: 'u-9' }),
+    );
   });
 
   it('claims an existing account link with the hash the password was verified against', async () => {

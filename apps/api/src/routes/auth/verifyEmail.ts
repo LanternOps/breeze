@@ -149,10 +149,10 @@ const INVALID_VERIFICATION_LINK_BODY = { error: 'Invalid or expired verification
 
 /**
  * Answer a refused signup-password confirmation. Every refusal is audited with
- * its reason. The caller sees one of two bodies: "password required" while the
- * link can still be used (missing, wrong, or account locked out), or the
- * ordinary invalid-link body once the link has used up its attempts and has
- * been retired.
+ * its reason. The caller sees "password required" while the link can still be
+ * used (missing, wrong, or account locked out), the ordinary invalid-link body
+ * once the link has used up its attempts and has been retired, or 503 when the
+ * attempt counter is unreachable (nothing was checked; the link is kept).
  */
 async function refuseSignupPassword(
   c: Context,
@@ -167,6 +167,9 @@ async function refuseSignupPassword(
     userId: subject.userId,
     email: subject.email,
   });
+  if (reason === 'check_unavailable') {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
   if (reason !== 'attempts_exhausted') {
     return c.json(SIGNUP_PASSWORD_REQUIRED_BODY, 400);
   }

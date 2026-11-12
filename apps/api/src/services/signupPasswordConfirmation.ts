@@ -29,7 +29,10 @@ export type SignupPasswordFailure =
   | 'password_required'
   | 'password_mismatch'
   | 'account_locked'
-  | 'attempts_exhausted';
+  | 'attempts_exhausted'
+  // The attempt counter could not be reached. Nothing is checked; the caller
+  // answers "temporarily unavailable" and the link stays usable.
+  | 'check_unavailable';
 
 export type SignupPasswordOutcome = { ok: true } | { ok: false; reason: SignupPasswordFailure };
 
@@ -39,7 +42,24 @@ export interface SignupPasswordAccount {
   clearFailures(): Promise<void>;
 }
 
-type AttemptStore = Pick<Redis, 'get' | 'incr' | 'expire' | 'del'>;
+type AttemptStore = Pick<Redis, 'eval' | 'del'>;
+
+// One round trip, atomic on the server: count this attempt and start the
+// window on the first one.
+const RESERVE_ATTEMPT_SCRIPT = `
+local n = redis.call('INCR', KEYS[1])
+if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return n
+`;
+
+async function reserveAttempt(redis: AttemptStore, key: string): Promise<number | null> {
+  try {
+    const n = Number(await redis.eval(RESERVE_ATTEMPT_SCRIPT, 1, key, String(ATTEMPT_WINDOW_SECONDS)));
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 export async function checkSignupPassword(input: {
   redis: AttemptStore;
@@ -48,19 +68,6 @@ export async function checkSignupPassword(input: {
   password: string | undefined;
   account?: SignupPasswordAccount;
 }): Promise<SignupPasswordOutcome> {
-  const key = signupPasswordAttemptKey(input.tokenHash);
-
-  // Fail closed: without a readable counter the attempt cap cannot hold.
-  let attempts: number;
-  try {
-    attempts = Number(await input.redis.get(key) ?? '0');
-  } catch {
-    return { ok: false, reason: 'attempts_exhausted' };
-  }
-  if (!Number.isFinite(attempts) || attempts >= SIGNUP_PASSWORD_MAX_ATTEMPTS) {
-    return { ok: false, reason: 'attempts_exhausted' };
-  }
-
   if (input.account && await input.account.isLocked()) {
     return { ok: false, reason: 'account_locked' };
   }
@@ -71,21 +78,26 @@ export async function checkSignupPassword(input: {
     return { ok: false, reason: 'password_required' };
   }
 
+  // Reserve the attempt before checking the password, so concurrent requests
+  // cannot all pass the cap: at most SIGNUP_PASSWORD_MAX_ATTEMPTS checks run
+  // per link. Fails closed when the counter is unreachable.
+  const key = signupPasswordAttemptKey(input.tokenHash);
+  const attempt = await reserveAttempt(input.redis, key);
+  if (attempt === null) {
+    return { ok: false, reason: 'check_unavailable' };
+  }
+  if (attempt > SIGNUP_PASSWORD_MAX_ATTEMPTS) {
+    return { ok: false, reason: 'attempts_exhausted' };
+  }
+
   if (await verifyPassword(input.passwordHash, input.password)) {
     await input.redis.del(key).catch(() => undefined);
     await input.account?.clearFailures();
     return { ok: true };
   }
 
-  let count: number;
-  try {
-    count = await input.redis.incr(key);
-    if (count === 1) await input.redis.expire(key, ATTEMPT_WINDOW_SECONDS);
-  } catch {
-    count = SIGNUP_PASSWORD_MAX_ATTEMPTS;
-  }
   await input.account?.recordFailure();
-  return count >= SIGNUP_PASSWORD_MAX_ATTEMPTS
+  return attempt >= SIGNUP_PASSWORD_MAX_ATTEMPTS
     ? { ok: false, reason: 'attempts_exhausted' }
     : { ok: false, reason: 'password_mismatch' };
 }
