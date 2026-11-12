@@ -86,7 +86,7 @@ Partner self-registration allows MSPs and IT companies to create their own Breez
 
 5. **User opens the verification link** in the email, which lands on a page holding the token. As of v0.116.0, the token is **not** submitted automatically on page load — the page shows a **Confirm your email** button, and only clicking it calls `POST /auth/verify-email`. (Before v0.116.0, the page auto-submitted on load, which meant a mail-security scanner that renders JavaScript to prescan links — Microsoft 365 Safe Links, Proofpoint/Mimecast detonation — could complete the registration itself, before the real recipient ever saw the email.)
 
-   The account is created with the password chosen in step 2, so the confirmation also asks for that password. After the first click the page shows a **Signup password** field; the account is created only when the password matches. A wrong or missing password changes nothing, and the same link can be used again with the right password until it expires.
+   The account is created with the password chosen in step 2, so the confirmation also asks for that password. After the first click the page shows a **Signup password** field; the account is created only when the password matches. A wrong or missing password changes nothing, and the same link can be used again with the right password until it expires. After five wrong passwords the link stops working and the signup has to be started again.
 
 6. **Slug generation and account creation** -- Inside a single database transaction, the API derives a URL-safe slug from the company name (lowercased, non-alphanumeric characters replaced with hyphens, trimmed to 50 characters, with a numeric suffix appended on collision), then creates four records:
    - A **partner** with type `msp` and plan `free`
@@ -435,7 +435,9 @@ Registration is two calls: `POST /auth/register-partner` requests the signup and
 }
 ```
 
-`password` is required to complete a registration. Without it, or when it does not match, the response is `400` with `{ "error": "Enter the password you chose when signing up.", "status": "password_required" }` and nothing is created or consumed. An email-change confirmation link does not need it.
+`password` is required to complete a registration. Without it, or when it does not match, the response is `400` with `{ "error": "Enter the password you chose when signing up.", "status": "password_required" }` and nothing is created or consumed. Each link accepts five wrong passwords; after that it is retired and the response is the ordinary invalid-link `400`. Every refused attempt is recorded in the audit log as `auth.email_verify_failed` with the reason. An email-change confirmation link does not need a password.
+
+Signup verification links for accounts created before email-first signup ask for the account password the same way. For those accounts a wrong password also counts toward the account's sign-in lockout, and while the account is locked the confirmation is refused.
 
 **Success response (200):**
 

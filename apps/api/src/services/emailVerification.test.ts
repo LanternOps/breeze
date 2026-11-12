@@ -1,4 +1,3 @@
-import { hashPassword } from './password';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => {
@@ -72,6 +71,8 @@ import {
   consumeVerificationToken,
   generateVerificationToken,
   invalidateOpenTokens,
+  peekSignupPasswordConfirmation,
+  retireVerificationToken,
 } from './emailVerification';
 
 function chainSelect(rows: unknown[]) {
@@ -188,25 +189,74 @@ function mockConsumeSelects(
 describe('signup link password confirmation', () => {
   beforeEach(() => vi.resetAllMocks());
 
-  it.each([undefined, 'incorrect'])('does not claim a signup link without the account password (%s)', async (password) => {
-    const passwordHash = await hashPassword('SignupPassword123');
-    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1, passwordHash });
+  it.each([undefined, 'some-other-hash'])('does not claim a signup link unless the verified password hash is current (%s)', async (confirmed) => {
+    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1, passwordHash: 'stored-hash' });
     // A claim would succeed if attempted; only the password check stops it.
     vi.mocked(db.update).mockReturnValue(chainUpdateReturning([{ id: 'claimed' }]) as any);
 
-    const result = await consumeVerificationToken('token', password);
+    const result = await consumeVerificationToken('token', confirmed === undefined ? undefined : { confirmedPasswordHash: confirmed });
 
     expect(db.update).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: false, error: 'password_required' });
   });
 
-  it('claims a signup link when the account password matches', async () => {
-    const passwordHash = await hashPassword('SignupPassword123');
-    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1, passwordHash });
+  it('claims a signup link when the verified password hash is still the stored one', async () => {
+    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1, passwordHash: 'stored-hash' });
     vi.mocked(db.update).mockReturnValue(chainUpdateReturning([{ id: 'claimed' }]) as any);
-    const result = await consumeVerificationToken('token', 'SignupPassword123');
+
+    const result = await consumeVerificationToken('token', { confirmedPasswordHash: 'stored-hash' });
+
     expect(result.ok).toBe(true);
     expect(db.update).toHaveBeenCalled();
+  });
+});
+
+describe('peekSignupPasswordConfirmation', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  function mockPeekSelects(token: Record<string, unknown> | null, user: Record<string, unknown> | null) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainSelect(token ? [token] : []) as any)
+      .mockReturnValueOnce(chainSelect(user ? [user] : []) as any);
+  }
+
+  it('returns the account to confirm for a live signup link on an account with a password', async () => {
+    mockPeekSelects(tokenRow(), { id: 'u-1', email: 'A@b.com', name: 'A', emailEpoch: 1, passwordHash: 'stored-hash' });
+
+    expect(await peekSignupPasswordConfirmation('token')).toEqual({
+      tokenHash: expect.any(String),
+      userId: 'u-1',
+      email: 'a@b.com',
+      name: 'A',
+      passwordHash: 'stored-hash',
+    });
+  });
+
+  it.each([
+    ['an email-change link', tokenRow({ purpose: 'email_change' }), { passwordHash: 'h' }],
+    ['a used link', tokenRow({ consumedAt: new Date() }), { passwordHash: 'h' }],
+    ['a replaced link', tokenRow({ supersededAt: new Date() }), { passwordHash: 'h' }],
+    ['an expired link', tokenRow({ expiresAt: new Date(Date.now() - 1000) }), { passwordHash: 'h' }],
+    ['a link for an older address', tokenRow({ email: 'old@b.com' }), { passwordHash: 'h' }],
+    ['an account without a password', tokenRow(), { passwordHash: null }],
+  ])('returns nothing for %s', async (_label, token, userOverrides) => {
+    mockPeekSelects(token, { id: 'u-1', email: 'a@b.com', name: 'A', emailEpoch: 1, ...userOverrides });
+
+    expect(await peekSignupPasswordConfirmation('token')).toBeNull();
+  });
+});
+
+describe('retireVerificationToken', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it('marks the unused link as replaced so it can no longer be redeemed', async () => {
+    const update = chainUpdateNoReturning();
+    vi.mocked(db.update).mockReturnValue(update as any);
+
+    await retireVerificationToken('token');
+
+    expect(db.update).toHaveBeenCalledOnce();
+    expect(update.set).toHaveBeenCalledWith({ supersededAt: expect.any(Date) });
   });
 });
 

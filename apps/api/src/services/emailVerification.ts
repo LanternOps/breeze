@@ -5,7 +5,6 @@ import { db, withSystemDbAccessContext } from '../db';
 import { emailVerificationTokens, partners, users } from '../db/schema';
 import { shouldActivatePendingPartner, activatePartnerRow } from './partnerActivation';
 import { advanceUserEpochs, revokeAllRefreshFamilies } from './authLifecycle';
-import { verifyPassword } from './password';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -101,9 +100,9 @@ export type ConsumeFailureReason =
   // and the WHOLE transaction rolled back — this row is untouched (pending NOT
   // cleared, email NOT moved, no session revocation).
   | 'email_taken'
-  // Signup only. The account has a password and the request did not supply
-  // it (or supplied a different one). Nothing was claimed; the caller asks
-  // for the password and submits the same token again.
+  // Signup only. The account has a password and the caller did not confirm
+  // it (or confirmed a hash that is no longer the stored one). Nothing was
+  // claimed; the caller asks for the password and submits the same token again.
   | 'password_required';
 
 export type ConsumeResult =
@@ -136,7 +135,17 @@ export type ConsumeResult =
  * Atomicity is bound to this function via an explicit `db.transaction`
  * so the single-claim guarantee holds regardless of caller scope.
  */
-export async function consumeVerificationToken(rawToken: string, password?: string): Promise<ConsumeResult> {
+export interface ConsumeOptions {
+  /**
+   * Signup links on an account with a password: the stored hash the caller
+   * already verified the password against (see peekSignupPasswordConfirmation
+   * and services/signupPasswordConfirmation.ts). The claim re-checks under the
+   * row lock that it is still the stored hash; no password is hashed here.
+   */
+  confirmedPasswordHash?: string;
+}
+
+export async function consumeVerificationToken(rawToken: string, options: ConsumeOptions = {}): Promise<ConsumeResult> {
   const tokenHash = hashToken(rawToken);
 
   return withSystemDbAccessContext(async () => {
@@ -317,12 +326,12 @@ export async function consumeVerificationToken(rawToken: string, password?: stri
         return { ok: false, error: 'address_changed' as const };
       }
 
-      // Confirming a signup also needs the password chosen at signup, so a
-      // mailbox click alone cannot activate an account whose password was
-      // set by someone else. Accounts without a password (SSO-only) have
-      // nothing to confirm. Nothing is claimed or written when this fails;
-      // the same link works once the password is supplied.
-      if (liveUser.passwordHash && (!password || !(await verifyPassword(liveUser.passwordHash, password)))) {
+      // Confirming a signup also needs the account password. The caller
+      // verified it before this transaction; here we only check that the hash
+      // it verified against is still the stored one. Accounts without a
+      // password (SSO-only) have nothing to confirm. Nothing is claimed or
+      // written when this fails; the same link works once confirmed.
+      if (liveUser.passwordHash && liveUser.passwordHash !== options.confirmedPasswordHash) {
         return { ok: false, error: 'password_required' as const };
       }
 
@@ -410,6 +419,98 @@ export async function consumeVerificationToken(rawToken: string, password?: stri
       }
       throw err;
     }
+  });
+}
+
+export interface SignupPasswordConfirmationTarget {
+  tokenHash: string;
+  userId: string;
+  email: string;
+  name: string | null;
+  passwordHash: string;
+}
+
+/**
+ * Read-only lookup for a signup link whose account has a password: the hash to
+ * confirm the password against, outside any transaction or row lock. Returns
+ * null for every other case (unknown, used, replaced or expired link, an
+ * email-change link, an address that moved, an account without a password),
+ * which consumeVerificationToken then answers on its own.
+ */
+export async function peekSignupPasswordConfirmation(
+  rawToken: string,
+): Promise<SignupPasswordConfirmationTarget | null> {
+  const tokenHash = hashToken(rawToken);
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({
+        userId: emailVerificationTokens.userId,
+        email: emailVerificationTokens.email,
+        emailEpoch: emailVerificationTokens.emailEpoch,
+        purpose: emailVerificationTokens.purpose,
+        expiresAt: emailVerificationTokens.expiresAt,
+        consumedAt: emailVerificationTokens.consumedAt,
+        supersededAt: emailVerificationTokens.supersededAt,
+      })
+      .from(emailVerificationTokens)
+      .where(eq(emailVerificationTokens.tokenHash, tokenHash))
+      .limit(1);
+    if (
+      !row ||
+      row.purpose !== 'signup' ||
+      row.consumedAt ||
+      row.supersededAt ||
+      row.expiresAt.getTime() <= Date.now()
+    ) {
+      return null;
+    }
+
+    const [user] = await db
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        emailEpoch: users.emailEpoch,
+        passwordHash: users.passwordHash,
+      })
+      .from(users)
+      .where(eq(users.id, row.userId))
+      .limit(1);
+    if (
+      !user?.passwordHash ||
+      user.email.toLowerCase() !== row.email.toLowerCase() ||
+      (row.emailEpoch !== null && row.emailEpoch !== user.emailEpoch)
+    ) {
+      return null;
+    }
+
+    return {
+      tokenHash,
+      userId: user.id,
+      email: user.email.toLowerCase(),
+      name: user.name ?? null,
+      passwordHash: user.passwordHash,
+    };
+  });
+}
+
+/**
+ * Retire one unused link (marked superseded), e.g. after it has used up its
+ * password attempts. A new link has to be requested.
+ */
+export async function retireVerificationToken(rawToken: string): Promise<void> {
+  const tokenHash = hashToken(rawToken);
+  await withSystemDbAccessContext(async () => {
+    await db
+      .update(emailVerificationTokens)
+      .set({ supersededAt: new Date() })
+      .where(
+        and(
+          eq(emailVerificationTokens.tokenHash, tokenHash),
+          isNull(emailVerificationTokens.consumedAt),
+          isNull(emailVerificationTokens.supersededAt)
+        )
+      );
   });
 }
 

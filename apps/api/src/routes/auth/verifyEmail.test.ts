@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sendVerificationEmailMock = vi.fn(async () => undefined);
 const sendEmailChangedMock = vi.fn(async () => undefined);
@@ -62,14 +62,27 @@ vi.mock('../../db/schema', () => ({
 }));
 
 vi.mock('../../services', () => ({
-  verifyPassword: vi.fn(async () => true),
   rateLimiter: vi.fn(async () => ({ allowed: true })),
   getRedis: vi.fn(() => ({})),
   createTokenPair: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti', expiresInSeconds: 900 })),
   mintRefreshTokenFamily: vi.fn(async () => 'family-id'),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
   getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
+  isAccountLocked: vi.fn(async () => false),
+  clearAccountFailures: vi.fn(async () => undefined),
 }));
+
+vi.mock('./login', () => ({
+  recordAccountFailureAndMaybeNotify: vi.fn(async () => undefined),
+}));
+
+// Real attempt logic is opted into per test (see the signup password attempts
+// block); elsewhere the password is treated as confirmed so the rest of the
+// flow can be exercised with placeholder hashes.
+vi.mock('../../services/signupPasswordConfirmation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/signupPasswordConfirmation')>();
+  return { ...actual, checkSignupPassword: vi.fn(async () => ({ ok: true })) };
+});
 
 vi.mock('../../services/pendingRegistration', () => ({
   peekPendingRegistration: vi.fn(async () => null),
@@ -222,6 +235,8 @@ vi.mock('../../services/emailVerification', () => ({
   consumeVerificationToken: vi.fn(),
   generateVerificationToken: vi.fn(async () => 'fresh-token'),
   invalidateOpenTokens: vi.fn(async () => 0),
+  peekSignupPasswordConfirmation: vi.fn(async () => null),
+  retireVerificationToken: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -259,11 +274,15 @@ vi.mock('./helpers', async () => {
 
 import { verifyEmailRoutes } from './verifyEmail';
 import { db } from '../../db';
-import { rateLimiter, getRedis, verifyPassword } from '../../services';
+import { rateLimiter, getRedis, isAccountLocked } from '../../services';
+import { recordAccountFailureAndMaybeNotify } from './login';
+import { checkSignupPassword, SIGNUP_PASSWORD_MAX_ATTEMPTS } from '../../services/signupPasswordConfirmation';
 import {
   consumeVerificationToken,
   generateVerificationToken,
   invalidateOpenTokens,
+  peekSignupPasswordConfirmation,
+  retireVerificationToken,
 } from '../../services/emailVerification';
 import { consumePendingRegistration, peekPendingRegistration } from '../../services/pendingRegistration';
 import { dispatchHook } from '../../services/partnerHooks';
@@ -354,7 +373,6 @@ async function postJson(path: string, body: unknown, headers: Record<string, str
 describe('POST /verify-email', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(verifyPassword).mockReset().mockResolvedValue(true);
     vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
     vi.mocked(getRedis).mockReturnValue({} as any);
     transitionState.finishError = null;
@@ -370,9 +388,13 @@ describe('POST /verify-email', () => {
   });
 
   it.each([undefined, 'wrong-password'])('creates no account until the signup password is confirmed (%s)', async (password) => {
-    const actualPassword = await import('../../services/password');
+    const actualPassword = await vi.importActual<typeof import('../../services/password')>('../../services/password');
+    const actualCheck = await vi.importActual<typeof import('../../services/signupPasswordConfirmation')>(
+      '../../services/signupPasswordConfirmation',
+    );
     const passwordHash = await actualPassword.hashPassword('signup-password');
-    vi.mocked(verifyPassword).mockImplementation(actualPassword.verifyPassword);
+    vi.mocked(checkSignupPassword).mockImplementationOnce(actualCheck.checkSignupPassword);
+    vi.mocked(getRedis).mockReturnValue({ get: vi.fn(async () => null), incr: vi.fn(async () => 1), expire: vi.fn(), del: vi.fn() } as any);
     vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, passwordHash, rawToken: 'credential-test' });
     // Everything account creation would read, so only the password decides.
     primeFinalizeSelects([]);
@@ -579,6 +601,149 @@ describe('POST /verify-email', () => {
   });
 });
 
+describe('POST /verify-email — signup password attempts', () => {
+  let attemptStore: Map<string, string>;
+  let signupHash: string;
+
+  beforeAll(async () => {
+    const actualPassword = await vi.importActual<typeof import('../../services/password')>('../../services/password');
+    signupHash = await actualPassword.hashPassword('signup-password');
+  });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    attemptStore = new Map();
+    vi.mocked(getRedis).mockReturnValue({
+      get: vi.fn(async (key: string) => attemptStore.get(key) ?? null),
+      incr: vi.fn(async (key: string) => {
+        const next = Number(attemptStore.get(key) ?? '0') + 1;
+        attemptStore.set(key, String(next));
+        return next;
+      }),
+      expire: vi.fn(async () => 1),
+      del: vi.fn(async (key: string) => (attemptStore.delete(key) ? 1 : 0)),
+    } as any);
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
+    vi.mocked(isAccountLocked).mockResolvedValue(false);
+    const actual = await vi.importActual<typeof import('../../services/signupPasswordConfirmation')>(
+      '../../services/signupPasswordConfirmation',
+    );
+    vi.mocked(checkSignupPassword).mockImplementation(actual.checkSignupPassword);
+  });
+
+  afterEach(() => {
+    vi.mocked(checkSignupPassword).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(peekPendingRegistration).mockReset().mockResolvedValue(null);
+    vi.mocked(peekSignupPasswordConfirmation).mockReset().mockResolvedValue(null);
+    vi.mocked(getRedis).mockReturnValue({} as any);
+  });
+
+  const PASSWORD_REQUIRED_BODY = {
+    error: 'Enter the password you chose when signing up.',
+    status: 'password_required',
+  };
+  const INVALID_LINK_BODY = { error: 'Invalid or expired verification link' };
+
+  function existingAccount() {
+    return { tokenHash: 'existing-token-hash', userId: 'u-9', email: 'owner@corp.com', name: 'Owner', passwordHash: signupHash };
+  }
+
+  it.each([
+    [undefined, 'password_required'],
+    ['wrong-password', 'password_mismatch'],
+  ])('records a refused signup confirmation (%s) in the audit log as %s', async (password, reason) => {
+    vi.mocked(peekPendingRegistration).mockResolvedValue({ ...PENDING_RECORD, passwordHash: signupHash, rawToken: 'p' });
+
+    const res = await postJson('/verify-email', { token: 'p', password });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', result: 'failure', reason, email: 'new@corp.com' }),
+    );
+  });
+
+  it(`retires a pending signup after ${SIGNUP_PASSWORD_MAX_ATTEMPTS} wrong passwords`, async () => {
+    vi.mocked(peekPendingRegistration).mockResolvedValue({ ...PENDING_RECORD, passwordHash: signupHash, rawToken: 'p' });
+
+    const bodies: unknown[] = [];
+    for (let i = 0; i < SIGNUP_PASSWORD_MAX_ATTEMPTS; i += 1) {
+      const res = await postJson('/verify-email', { token: 'p', password: `wrong-${i}` });
+      expect(res.status).toBe(400);
+      bodies.push(await res.json());
+    }
+
+    expect(bodies.slice(0, -1)).toEqual(Array(SIGNUP_PASSWORD_MAX_ATTEMPTS - 1).fill(PASSWORD_REQUIRED_BODY));
+    expect(bodies.at(-1)).toEqual(INVALID_LINK_BODY);
+    expect(consumePendingRegistration).toHaveBeenCalledOnce();
+    expect(createPartner).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'attempts_exhausted' }),
+    );
+  });
+
+  it('counts a wrong password on an existing account toward its sign-in lockout', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+
+    const res = await postJson('/verify-email', { token: 'existing', password: 'wrong-password' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
+    expect(recordAccountFailureAndMaybeNotify).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'u-9', email: 'owner@corp.com', name: 'Owner' },
+      'owner@corp.com',
+    );
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'password_mismatch', userId: 'u-9' }),
+    );
+  });
+
+  it('refuses a locked-out account even with the right password', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    vi.mocked(isAccountLocked).mockResolvedValue(true);
+
+    const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(PASSWORD_REQUIRED_BODY);
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'account_locked', userId: 'u-9' }),
+    );
+  });
+
+  it(`retires an existing account's signup link after ${SIGNUP_PASSWORD_MAX_ATTEMPTS} wrong passwords`, async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+
+    let last: Response | undefined;
+    for (let i = 0; i < SIGNUP_PASSWORD_MAX_ATTEMPTS; i += 1) {
+      last = await postJson('/verify-email', { token: 'existing', password: `wrong-${i}` });
+    }
+
+    expect(await last!.json()).toEqual(INVALID_LINK_BODY);
+    expect(retireVerificationToken).toHaveBeenCalledWith('existing');
+    expect(consumeVerificationToken).not.toHaveBeenCalled();
+  });
+
+  it('claims an existing account link with the hash the password was verified against', async () => {
+    vi.mocked(peekSignupPasswordConfirmation).mockResolvedValue(existingAccount());
+    vi.mocked(consumeVerificationToken).mockResolvedValueOnce({
+      ok: true, purpose: 'signup', partnerId: 'p-1', userId: 'u-9', email: 'owner@corp.com', autoActivated: false,
+    });
+
+    const res = await postJson('/verify-email', { token: 'existing', password: 'signup-password' });
+
+    expect(res.status).toBe(200);
+    expect(consumeVerificationToken).toHaveBeenCalledWith('existing', { confirmedPasswordHash: signupHash });
+  });
+});
+
 describe('POST /verify-email — SR2-21 pending-registration finalization (step 2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -747,10 +912,7 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
   });
 
   it('a pending-registration token creates the partner with the STEP-1 attribution, not the click IP', async () => {
-    const actualPassword = await import('../../services/password');
-    const passwordHash = await actualPassword.hashPassword('signup-password');
-    vi.mocked(verifyPassword).mockImplementationOnce(actualPassword.verifyPassword);
-    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, passwordHash, rawToken: 'raw' });
+    vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
     primeFinalizeSelects([]);
 
     const res = await postJson('/verify-email', { token: 'raw' });

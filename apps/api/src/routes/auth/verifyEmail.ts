@@ -12,14 +12,22 @@ import type { PartnerStatus, PartnerTrustState } from '../../db/schema/orgs';
 import {
   rateLimiter,
   getRedis,
-  verifyPassword,
+  isAccountLocked,
+  clearAccountFailures,
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import {
   consumeVerificationToken,
   generateVerificationToken,
   invalidateOpenTokens,
+  peekSignupPasswordConfirmation,
+  retireVerificationToken,
 } from '../../services/emailVerification';
+import {
+  checkSignupPassword,
+  type SignupPasswordFailure,
+} from '../../services/signupPasswordConfirmation';
+import { recordAccountFailureAndMaybeNotify } from './login';
 import {
   consumePendingRegistration,
   peekPendingRegistration,
@@ -133,6 +141,44 @@ function registrationIssuanceError(c: Context, error: unknown): Response | null 
   return null;
 }
 
+const SIGNUP_PASSWORD_REQUIRED_BODY = {
+  error: 'Enter the password you chose when signing up.',
+  status: 'password_required',
+} as const;
+const INVALID_VERIFICATION_LINK_BODY = { error: 'Invalid or expired verification link' } as const;
+
+/**
+ * Answer a refused signup-password confirmation. Every refusal is audited with
+ * its reason. The caller sees one of two bodies: "password required" while the
+ * link can still be used (missing, wrong, or account locked out), or the
+ * ordinary invalid-link body once the link has used up its attempts and has
+ * been retired.
+ */
+async function refuseSignupPassword(
+  c: Context,
+  reason: SignupPasswordFailure,
+  subject: { userId?: string; email: string },
+  retireLink: () => Promise<unknown>,
+): Promise<Response> {
+  writeAuthAudit(c, {
+    action: 'auth.email_verify_failed',
+    result: 'failure',
+    reason,
+    userId: subject.userId,
+    email: subject.email,
+  });
+  if (reason !== 'attempts_exhausted') {
+    return c.json(SIGNUP_PASSWORD_REQUIRED_BODY, 400);
+  }
+  try {
+    await retireLink();
+  } catch (err) {
+    console.error('[verify-email] failed to retire a signup link after its password attempts', err);
+    captureException(err);
+  }
+  return c.json(INVALID_VERIFICATION_LINK_BODY, 400);
+}
+
 const verifyEmailSchema = z.object({
   token: z.string().min(1, 'token required'),
   password: z.string().max(1024).optional(),
@@ -169,22 +215,68 @@ verifyEmailRoutes.post(
     const pending = await peekPendingRegistration(tokenHash);
     if (pending) {
       // The account is created with the password chosen at signup, so the
-      // person confirming must know it as well as hold the mailbox. The
-      // pending record stays untouched on a mismatch; the page asks for the
-      // password and submits the same token again.
-      if (!password || !(await verifyPassword(pending.passwordHash, password))) {
-        return c.json({ error: 'Enter the password you chose when signing up.', status: 'password_required' }, 400);
+      // person confirming must know it as well as hold the mailbox. A refusal
+      // leaves the pending record untouched (the page asks for the password
+      // and submits the same token again) until the link has used up its
+      // attempts; then the pending registration is discarded.
+      const check = await checkSignupPassword({
+        redis,
+        tokenHash,
+        passwordHash: pending.passwordHash,
+        password,
+      });
+      if (!check.ok) {
+        return refuseSignupPassword(c, check.reason, { email: pending.email }, () => consumePendingRegistration(tokenHash));
       }
       return finalizePendingRegistration(c, Object.freeze({ ...pending }), tokenHash);
     }
 
-    const result = await consumeVerificationToken(token, password);
+    // A signup link for an account that already exists and has a password:
+    // confirm that password here, before the claim transaction, against the
+    // same per-account lockout the login route uses.
+    const signupAccount = await peekSignupPasswordConfirmation(token);
+    if (signupAccount) {
+      const check = await checkSignupPassword({
+        redis,
+        tokenHash: signupAccount.tokenHash,
+        passwordHash: signupAccount.passwordHash,
+        password,
+        account: {
+          isLocked: () => isAccountLocked(redis, signupAccount.email),
+          recordFailure: () => recordAccountFailureAndMaybeNotify(
+            c,
+            { id: signupAccount.userId, email: signupAccount.email, name: signupAccount.name },
+            signupAccount.email,
+          ),
+          clearFailures: () => clearAccountFailures(redis, signupAccount.email),
+        },
+      });
+      if (!check.ok) {
+        return refuseSignupPassword(
+          c,
+          check.reason,
+          { userId: signupAccount.userId, email: signupAccount.email },
+          () => retireVerificationToken(token),
+        );
+      }
+    }
 
-    // Returned as its own status (not the uniform failure body below): it is
-    // reached only with a live signup token, and the page needs it to show
-    // the password field.
+    const result = await consumeVerificationToken(
+      token,
+      signupAccount ? { confirmedPasswordHash: signupAccount.passwordHash } : {},
+    );
+
+    // The stored password changed between the check above and the claim, or
+    // the account gained one: ask again rather than claim.
     if (!result.ok && result.error === 'password_required') {
-      return c.json({ error: 'Enter the password you chose when signing up.', status: 'password_required' }, 400);
+      writeAuthAudit(c, {
+        action: 'auth.email_verify_failed',
+        result: 'failure',
+        reason: 'password_required',
+        userId: signupAccount?.userId,
+        email: signupAccount?.email,
+      });
+      return c.json(SIGNUP_PASSWORD_REQUIRED_BODY, 400);
     }
 
     if (!result.ok) {
@@ -197,7 +289,7 @@ verifyEmailRoutes.post(
         result: 'failure',
         reason: result.error,
       });
-      return c.json({ error: 'Invalid or expired verification link' }, 400);
+      return c.json(INVALID_VERIFICATION_LINK_BODY, 400);
     }
 
     // SR2-17: the pending address has just been swapped in, the user has been
