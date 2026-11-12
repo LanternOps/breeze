@@ -156,8 +156,18 @@ export async function runRetentionTarget(
  *
  * The caller decides whether a returned `{ table, error }` fails its job.
  */
+export interface RetentionTargetEntry {
+  target: RetentionTarget;
+  knobs: RetentionKnobs;
+  /**
+   * The variable that enables THIS target, when targets in one job carry their
+   * own flags (W5). Overrides `RetentionRunOptions.enforceVar` in its log line.
+   */
+  enforceVar?: string;
+}
+
 export async function runRetentionTargets(
-  targets: ReadonlyArray<{ target: RetentionTarget; knobs: RetentionKnobs }>,
+  targets: ReadonlyArray<RetentionTargetEntry>,
   o: RetentionRunOptions,
 ): Promise<Array<RetentionTargetResult | { table: string; error: string }>> {
   const seen = new Set<RetentionJobName>();
@@ -170,9 +180,9 @@ export async function runRetentionTargets(
 
   const now = o.now ?? new Date();
   const results: Array<RetentionTargetResult | { table: string; error: string }> = [];
-  for (const { target, knobs } of targets) {
+  for (const { target, knobs, enforceVar } of targets) {
     try {
-      results.push(await runRetentionTarget(target, knobs, { ...o, now }));
+      results.push(await runRetentionTarget(target, knobs, { ...o, now, enforceVar: enforceVar ?? o.enforceVar }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`${o.logPrefix} Retention target ${target.table} failed:`, err);

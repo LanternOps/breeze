@@ -1799,6 +1799,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W5 — report-only history retention sweep (twelve targets).
+    name: 'historyRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/historyRetention');
+      return {
+        init: m.initializeHistoryRetention,
+        shutdown: m.shutdownHistoryRetention,
+      };
+    },
+  },
+  {
     // #7608 W10: daily AI chargeback close. Its closure is db + services only
     // (no route graph, no socket import) — `global`, like the retention workers.
     name: 'aiChargebackWorker',
