@@ -65,89 +65,130 @@ describe('AccountSetupStep — partner trust onboarding copy', () => {
 });
 
 /**
- * #2428: a committed email change advances auth_epoch and revokes every refresh
- * family — including THIS wizard's own session. The step must re-authenticate
- * with the new address before it does anything else, or it reports success and
- * then ejects the user on the next request.
+ * An email change is only REQUESTED here: the API keeps the current address
+ * until the link sent to the new one is opened, and the request does not end
+ * the session. So the step never signs in with the new address or writes it to
+ * the store; it tells the user to check their inbox. A password change in the
+ * same submit runs FIRST, because a password change cancels a pending email
+ * change.
  */
-describe('AccountSetupStep — email change re-authenticates (#2428)', () => {
+describe('AccountSetupStep — email change request', () => {
+  const inboxMessage = 'Check your inbox at new@example.com and open the link to confirm your new address. Until then, keep signing in with your current address.';
+
   beforeEach(() => {
     vi.clearAllMocks();
     authMocks.fetchWithAuth.mockResolvedValue(ok());
     authMocks.apiLogin.mockResolvedValue({
       success: true,
-      user: { id: 'u-1', email: 'new@example.com' },
+      user: { id: 'u-1', email: 'old@example.com' },
       tokens: { accessToken: 'a' },
     });
   });
 
-  async function submitEmailChange(user: ReturnType<typeof userEvent.setup>) {
-    await user.type(screen.getByLabelText(/email/i), 'new@example.com');
+  const calledPaths = () => authMocks.fetchWithAuth.mock.calls.map((call) => call[0]).filter((path) => path !== '/partner/trust');
+
+  async function fill(user: ReturnType<typeof userEvent.setup>, opts: { email?: string; newPassword?: string }) {
+    if (opts.email) await user.type(screen.getByLabelText(/email address/i), opts.email);
     await user.type(screen.getByLabelText(/current password/i), 'CurrentPass1!');
-    await user.click(screen.getByRole('button', { name: /continue|save|next/i }));
+    if (opts.newPassword) {
+      await user.type(screen.getByLabelText(/^new password/i), opts.newPassword);
+      await user.type(screen.getByLabelText(/confirm/i), opts.newPassword);
+    }
+    await user.click(screen.getByRole('button', { name: /save & continue/i }));
   }
 
-  it('re-authenticates with the NEW address after the email PATCH, then advances', async () => {
+  it('requests the change, keeps the current address and session, and asks the user to check their inbox', async () => {
     const onNext = vi.fn();
     const user = userEvent.setup();
     render(<AccountSetupStep onNext={onNext} />);
 
-    await submitEmailChange(user);
+    await fill(user, { email: 'new@example.com' });
 
-    await waitFor(() => {
-      expect(authMocks.fetchWithAuth).toHaveBeenCalledWith(
-        '/users/me',
-        expect.objectContaining({ method: 'PATCH' })
-      );
-    });
+    expect(await screen.findByText(inboxMessage)).toBeInTheDocument();
+    expect(authMocks.fetchWithAuth).toHaveBeenCalledWith('/users/me', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ email: 'new@example.com', currentPassword: 'CurrentPass1!' }),
+    }));
+    expect(authMocks.apiLogin).not.toHaveBeenCalled();
+    expect(authMocks.updateUser).not.toHaveBeenCalled();
 
-    // The session the PATCH just killed is replaced before anything else runs.
-    await waitFor(() => {
-      expect(authMocks.apiLogin).toHaveBeenCalledWith('new@example.com', 'CurrentPass1!');
-    });
-    expect(authMocks.login).toHaveBeenCalled();
-
-    await waitFor(() => expect(onNext).toHaveBeenCalled(), { timeout: 2000 });
+    // The message stays until the user moves on.
+    await new Promise((r) => setTimeout(r, 700));
+    expect(onNext).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /^continue$/i }));
+    expect(onNext).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT advance the wizard when the re-login fails (no false success)', async () => {
+  it('changes the password before requesting the email change, then sends the new password as the step-up', async () => {
+    const user = userEvent.setup();
+    render(<AccountSetupStep onNext={vi.fn()} />);
+
+    await fill(user, { email: 'new@example.com', newPassword: 'BrandNewPass1!' });
+
+    expect(await screen.findByText(inboxMessage)).toBeInTheDocument();
+    expect(calledPaths()).toEqual(['/auth/change-password', '/users/me']);
+    // The password change ends the session: sign in again with the CURRENT address.
+    expect(authMocks.apiLogin).toHaveBeenCalledTimes(1);
+    expect(authMocks.apiLogin).toHaveBeenCalledWith('old@example.com', 'BrandNewPass1!');
+    expect(authMocks.fetchWithAuth).toHaveBeenCalledWith('/users/me', expect.objectContaining({
+      body: JSON.stringify({ email: 'new@example.com', currentPassword: 'BrandNewPass1!' }),
+    }));
+    expect(authMocks.updateUser).not.toHaveBeenCalled();
+  });
+
+  it('does not request the email change when the password change fails', async () => {
+    authMocks.fetchWithAuth.mockImplementation(async (path: string) =>
+      path === '/auth/change-password' ? { ok: false, json: async () => ({ error: 'Weak password' }) } : ok());
     const onNext = vi.fn();
-    authMocks.apiLogin.mockResolvedValue({ success: false });
     const user = userEvent.setup();
     render(<AccountSetupStep onNext={onNext} />);
 
-    await submitEmailChange(user);
+    await fill(user, { email: 'new@example.com', newPassword: 'BrandNewPass1!' });
 
-    await waitFor(() => expect(authMocks.apiLogin).toHaveBeenCalled());
-    expect(authMocks.login).not.toHaveBeenCalled();
-
-    // Reporting success and moving on would strand the user on a dead session.
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => expect(calledPaths()).toEqual(['/auth/change-password']));
+    expect(screen.queryByText(inboxMessage)).toBeNull();
     expect(onNext).not.toHaveBeenCalled();
   });
 
-  it('does not re-login when the email is unchanged (no needless round-trip)', async () => {
+  it('shows the error and stays on the step when the email request fails', async () => {
+    authMocks.fetchWithAuth.mockImplementation(async (path: string) =>
+      path === '/users/me' ? { ok: false, json: async () => ({ error: 'Address already in use' }) } : ok());
     const onNext = vi.fn();
     const user = userEvent.setup();
     render(<AccountSetupStep onNext={onNext} />);
 
-    await user.type(screen.getByLabelText(/current password/i), 'CurrentPass1!');
-    await user.type(screen.getByLabelText(/^new password/i), 'BrandNewPass1!');
-    await user.type(screen.getByLabelText(/confirm/i), 'BrandNewPass1!');
-    await user.click(screen.getByRole('button', { name: /continue|save|next/i }));
+    await fill(user, { email: 'new@example.com' });
 
-    await waitFor(() => {
-      expect(authMocks.fetchWithAuth).toHaveBeenCalledWith(
-        '/auth/change-password',
-        expect.objectContaining({ method: 'POST' })
-      );
-    });
+    expect(await screen.findByText('Address already in use')).toBeInTheDocument();
+    expect(screen.queryByText(inboxMessage)).toBeNull();
+    await new Promise((r) => setTimeout(r, 700));
+    expect(onNext).not.toHaveBeenCalled();
+  });
 
-    // No PATCH /users/me at all, and exactly one login — the password one.
-    const patched = authMocks.fetchWithAuth.mock.calls.some((call) => call[0] === '/users/me');
-    expect(patched).toBe(false);
-    expect(authMocks.apiLogin).toHaveBeenCalledTimes(1);
+  it('a password-only change signs in again with the current address and advances', async () => {
+    const onNext = vi.fn();
+    const user = userEvent.setup();
+    render(<AccountSetupStep onNext={onNext} />);
+
+    await fill(user, { newPassword: 'BrandNewPass1!' });
+
+    await waitFor(() => expect(onNext).toHaveBeenCalled(), { timeout: 2000 });
+    expect(calledPaths()).toEqual(['/auth/change-password']);
     expect(authMocks.apiLogin).toHaveBeenCalledWith('old@example.com', 'BrandNewPass1!');
+  });
+
+  it('does NOT advance the wizard when the sign-in after a password change fails', async () => {
+    authMocks.apiLogin.mockResolvedValue({ success: false });
+    const onNext = vi.fn();
+    const user = userEvent.setup();
+    render(<AccountSetupStep onNext={onNext} />);
+
+    await fill(user, { email: 'new@example.com', newPassword: 'BrandNewPass1!' });
+
+    await waitFor(() => expect(authMocks.apiLogin).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 700));
+    expect(onNext).not.toHaveBeenCalled();
+    expect(calledPaths()).toEqual(['/auth/change-password']);
   });
 });
 
