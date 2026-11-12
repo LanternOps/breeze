@@ -19,7 +19,7 @@ func platformAccountNameForIdentity(identity string) (string, error) {
 	}
 	account, domain, _, err := sid.LookupAccount("")
 	if err != nil {
-		return "", err
+		return "", classifyWindowsLookupError(err)
 	}
 	if account == "" {
 		return "", fmt.Errorf("SID %s has no account name", identity)
@@ -35,7 +35,7 @@ func platformAccountNameForIdentity(identity string) (string, error) {
 func platformAccountIdentityForName(name string) (string, error) {
 	sid, _, _, err := windows.LookupSID("", name)
 	if err != nil {
-		return "", err
+		return "", classifyWindowsLookupError(err)
 	}
 	return sid.String(), nil
 }

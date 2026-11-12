@@ -33,9 +33,25 @@ const maxAccountNameLen = 512
 // accountLookupTimeout bounds one account lookup. Directory lookups can
 // block for a long time when a domain controller or LDAP server is
 // unreachable; an abandoned lookup finishes in the background.
-var accountLookupTimeout = 3 * time.Second
+const accountLookupTimeout = 3 * time.Second
 
-var errAccountLookupTimeout = errors.New("account lookup timed out")
+var (
+	errAccountLookupTimeout = errors.New("account lookup timed out")
+	// errAccountNotFound marks a lookup the account database answered:
+	// there is no such account.
+	errAccountNotFound = errors.New("no such account")
+	// errAccountDirectoryUnavailable marks a lookup the account database
+	// could not answer (domain controller or directory unreachable, trust
+	// failure, lookup tool failure).
+	errAccountDirectoryUnavailable = errors.New("account directory unavailable")
+)
+
+// directoryCouldNotAnswer reports whether a failed name lookup may fall
+// back to the account names resolved for connected sessions. An answer of
+// "no such account", or any failure not known to be transient, may not.
+func directoryCouldNotAnswer(err error) bool {
+	return errors.Is(err, errAccountLookupTimeout) || errors.Is(err, errAccountDirectoryUnavailable)
+}
 
 // accountDirectory translates between account names and the identity keys
 // the kernel reports for IPC peers.
@@ -56,7 +72,14 @@ func (b *Broker) accountLookups() accountDirectory {
 	return platformAccounts
 }
 
-func lookupWithTimeout(lookup func(string) (string, error), key string) (string, error) {
+func (b *Broker) accountTimeout() time.Duration {
+	if b.lookupTimeout > 0 {
+		return b.lookupTimeout
+	}
+	return accountLookupTimeout
+}
+
+func lookupWithTimeout(timeout time.Duration, lookup func(string) (string, error), key string) (string, error) {
 	type answer struct {
 		value string
 		err   error
@@ -66,7 +89,7 @@ func lookupWithTimeout(lookup func(string) (string, error), key string) (string,
 		value, err := lookup(key)
 		done <- answer{value, err}
 	}()
-	timer := time.NewTimer(accountLookupTimeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case a := <-done:
@@ -82,7 +105,7 @@ func (b *Broker) peerAccountName(identity string) string {
 	if identity == "" {
 		return ""
 	}
-	name, err := lookupWithTimeout(b.accountLookups().nameForIdentity, identity)
+	name, err := lookupWithTimeout(b.accountTimeout(), b.accountLookups().nameForIdentity, identity)
 	if err != nil || strings.TrimSpace(name) == "" {
 		reason := "empty account name"
 		if err != nil {
@@ -109,17 +132,23 @@ func validAccountName(name string) bool {
 }
 
 // accountIdentityForName resolves a requested account name to the identity
-// key of the account. When the account database cannot answer, the name is
-// matched against the account names resolved from connected sessions'
-// verified identities; a name that matches more than one account resolves
-// to nothing.
+// key of the account. When the account database cannot answer (it is
+// unreachable or does not answer in time), the name is matched against the
+// account names resolved from connected sessions' verified identities; a
+// name that matches more than one account resolves to nothing. When the
+// database answers that there is no such account, the name resolves to
+// nothing.
 func (b *Broker) accountIdentityForName(username string) string {
 	name := strings.TrimSpace(username)
 	if !validAccountName(name) {
 		return ""
 	}
-	if identity, err := lookupWithTimeout(b.accountLookups().identityForName, name); err == nil && identity != "" {
+	identity, err := lookupWithTimeout(b.accountTimeout(), b.accountLookups().identityForName, name)
+	if err == nil {
 		return identity
+	}
+	if !directoryCouldNotAnswer(err) {
+		return ""
 	}
 
 	b.mu.RLock()

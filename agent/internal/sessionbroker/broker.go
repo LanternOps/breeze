@@ -259,6 +259,8 @@ type Broker struct {
 
 	// accounts overrides the platform account lookups (tests only).
 	accounts *accountDirectory
+	// lookupTimeout overrides accountLookupTimeout (tests only).
+	lookupTimeout time.Duration
 
 	// broadcastNotifyUndelivered counts broadcast notifications a helper
 	// answered with Delivered=false (#9266). See BroadcastNotification.

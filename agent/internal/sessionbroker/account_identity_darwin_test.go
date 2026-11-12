@@ -3,6 +3,7 @@
 package sessionbroker
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"testing"
@@ -20,7 +21,7 @@ func TestSystemAccountEntryUsesOpenDirectory(t *testing.T) {
 	if err != nil || byName != name || byNameUID != uid {
 		t.Fatalf("systemAccountEntry(%q) = %q, %q, %v", name, byName, byNameUID, err)
 	}
-	if _, _, err := systemAccountEntry("breeze-test-no-such-account"); err == nil {
-		t.Fatal("an unknown account resolved")
+	if _, _, err := systemAccountEntry("breeze-test-no-such-account"); !errors.Is(err, errAccountNotFound) {
+		t.Fatalf("unknown account: err = %v, want no such account", err)
 	}
 }

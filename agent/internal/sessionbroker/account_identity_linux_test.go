@@ -3,6 +3,7 @@
 package sessionbroker
 
 import (
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -94,5 +95,31 @@ func TestSystemAccountEntryUsesGetent(t *testing.T) {
 	byName, byNameUID, err := systemAccountEntry(name)
 	if err != nil || byName != name || byNameUID != uid {
 		t.Fatalf("systemAccountEntry(%q) = %q, %q, %v", name, byName, byNameUID, err)
+	}
+}
+
+// getent exit 2 is an answer ("no such account"); exit 1 and a missing getent
+// mean the account database did not answer.
+func TestGetentFailuresAreClassified(t *testing.T) {
+	if _, err := user.Lookup("no.such.user"); err == nil {
+		t.Skip("no.such.user exists")
+	}
+	fakeGetent(t, "dir.user:*:4242:4242::/home/dir.user:/bin/sh")
+	if _, err := platformAccountIdentityForName("no.such.user"); !errors.Is(err, errAccountNotFound) {
+		t.Fatalf("getent exit 2: err = %v, want no such account", err)
+	}
+
+	dir := t.TempDir()
+	failing := filepath.Join(dir, "getent")
+	if err := os.WriteFile(failing, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	getentPaths = []string{failing}
+	if _, err := platformAccountIdentityForName("no.such.user"); !errors.Is(err, errAccountDirectoryUnavailable) {
+		t.Fatalf("getent exit 1: err = %v, want directory unavailable", err)
+	}
+	getentPaths = []string{filepath.Join(dir, "missing")}
+	if _, err := platformAccountIdentityForName("no.such.user"); !errors.Is(err, errAccountDirectoryUnavailable) {
+		t.Fatalf("no getent: err = %v, want directory unavailable", err)
 	}
 }

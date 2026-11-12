@@ -5,7 +5,9 @@ package sessionbroker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/procspawn"
@@ -19,7 +21,7 @@ var getentPaths = []string{"/usr/bin/getent", "/bin/getent"}
 // returns its name and UID.
 func systemAccountEntry(key string) (name, uid string, err error) {
 	if !validAccountName(key) {
-		return "", "", errors.New("invalid account key")
+		return "", "", fmt.Errorf("%w: invalid account key", errAccountNotFound)
 	}
 	getent := ""
 	for _, p := range getentPaths {
@@ -29,15 +31,34 @@ func systemAccountEntry(key string) (name, uid string, err error) {
 		}
 	}
 	if getent == "" {
-		return "", "", errors.New("getent not available")
+		return "", "", fmt.Errorf("%w: getent not available", errAccountDirectoryUnavailable)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), accountLookupTimeout)
 	defer cancel()
 	out, err := procspawn.CommandContext(ctx, getent, "passwd", key).Output()
 	if err != nil {
-		return "", "", err
+		return "", "", classifyGetentError(ctx, err)
 	}
 	return parsePasswdEntry(string(out))
+}
+
+// classifyGetentError maps getent's exit status: 2 is "key not found"; 1
+// (bad arguments or database) and a timeout mean the database did not
+// answer.
+func classifyGetentError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: getent: %v", errAccountDirectoryUnavailable, err)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		switch exitErr.ExitCode() {
+		case 2:
+			return fmt.Errorf("%w: getent: %v", errAccountNotFound, err)
+		case 1:
+			return fmt.Errorf("%w: getent: %v", errAccountDirectoryUnavailable, err)
+		}
+	}
+	return err
 }
 
 // parsePasswdEntry reads name and UID from the first line of passwd output.

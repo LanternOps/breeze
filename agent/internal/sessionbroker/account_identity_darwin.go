@@ -5,6 +5,8 @@ package sessionbroker
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -19,6 +21,13 @@ func runID(args ...string) (string, error) {
 	defer cancel()
 	out, err := procspawn.CommandContext(ctx, idPath, args...).Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		switch {
+		case ctx.Err() != nil:
+			return "", fmt.Errorf("%w: id: %v", errAccountDirectoryUnavailable, err)
+		case errors.As(err, &exitErr) && strings.Contains(string(exitErr.Stderr), "no such user"):
+			return "", fmt.Errorf("%w: id: %v", errAccountNotFound, err)
+		}
 		return "", err
 	}
 	value := strings.TrimSpace(string(out))
@@ -33,7 +42,7 @@ func runID(args ...string) (string, error) {
 // answer is checked in both directions.
 func systemAccountEntry(key string) (name, uid string, err error) {
 	if !validAccountName(key) {
-		return "", "", errors.New("invalid account key")
+		return "", "", fmt.Errorf("%w: invalid account key", errAccountNotFound)
 	}
 	if _, numErr := strconv.ParseUint(key, 10, 32); numErr == nil {
 		if name, err = runID("-nu", key); err != nil {

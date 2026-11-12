@@ -2,8 +2,10 @@ package sessionbroker
 
 import (
 	"errors"
+	"fmt"
 	"os/user"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -11,7 +13,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-var errNoDirectory = errors.New("directory unavailable")
+var errNoDirectory = fmt.Errorf("test directory: %w", errAccountDirectoryUnavailable)
 
 // fakeAccounts resolves names through byName (name -> identity key) and the
 // reverse; a nil map makes every lookup fail, as when the directory that
@@ -182,9 +184,7 @@ func TestPeerAccountNameComesFromTheVerifiedIdentity(t *testing.T) {
 		nameForIdentity: func(string) (string, error) { <-release; return "late", nil },
 		identityForName: func(string) (string, error) { <-release; return "1001", nil },
 	}
-	prev := accountLookupTimeout
-	accountLookupTimeout = 50 * time.Millisecond
-	defer func() { accountLookupTimeout = prev }()
+	b.lookupTimeout = 50 * time.Millisecond
 	start := time.Now()
 	if got := b.peerAccountName("1001"); got != "" {
 		t.Fatalf("peerAccountName with a stalled lookup = %q, want empty", got)
@@ -214,5 +214,66 @@ func TestPlatformAccountLookupRoundTrip(t *testing.T) {
 	}
 	if identity != current.Uid {
 		t.Fatalf("identityForName(%q) = %q, want %q", name, identity, current.Uid)
+	}
+}
+
+// directoryAnswering returns a directory whose name lookups all fail with err
+// and whose identity lookups answer from byIdentity.
+func directoryAnswering(err error, byIdentity map[string]string) *accountDirectory {
+	return &accountDirectory{
+		identityForName: func(string) (string, error) { return "", err },
+		nameForIdentity: func(identity string) (string, error) {
+			if name, ok := byIdentity[identity]; ok {
+				return name, nil
+			}
+			return "", errAccountNotFound
+		},
+	}
+}
+
+// The connected-session names stand in for the directory only when it
+// cannot answer; when it answers that the account does not exist, no
+// session is selected.
+func TestSessionForUserTrustsADirectoryThatAnswersNoSuchAccount(t *testing.T) {
+	now := time.Now()
+	alice := accountSession("alice", "S-1-5-21-10-20-30-1104", `CORP\alice`, ipc.HelperRoleUser, now)
+
+	// A failure not known to be transient is treated the same way.
+	for _, err := range []error{errAccountNotFound, fmt.Errorf("lookup alice: %w", errAccountNotFound), errors.New("unclassified failure")} {
+		b := accountBroker("windows", directoryAnswering(err, nil), alice)
+		if got := b.SessionForUser(`CORP\alice`); got != nil {
+			t.Fatalf("directory answered %v, SessionForUser selected %q", err, got.SessionID)
+		}
+	}
+
+	// Unreachable directory, transient failure, or no answer in time: the
+	// session names resolved at admission are used.
+	b := accountBroker("windows", directoryAnswering(errNoDirectory, nil), alice)
+	if got := b.SessionForUser(`CORP\alice`); got != alice {
+		t.Fatalf("with the directory unavailable, SessionForUser = %v, want alice's session", got)
+	}
+	release := make(chan struct{})
+	defer close(release)
+	b = accountBroker("windows", &accountDirectory{
+		identityForName: func(string) (string, error) { <-release; return "", errAccountNotFound },
+		nameForIdentity: func(string) (string, error) { return "", errAccountNotFound },
+	}, alice)
+	b.lookupTimeout = 20 * time.Millisecond
+	if got := b.SessionForUser("alice"); got != alice {
+		t.Fatalf("with a stalled lookup, SessionForUser = %v, want alice's session", got)
+	}
+}
+
+func TestWindowsLookupErrorsAreClassified(t *testing.T) {
+	if err := classifyWindowsLookupError(winErrorNoneMapped); !errors.Is(err, errAccountNotFound) || directoryCouldNotAnswer(err) {
+		t.Fatalf("ERROR_NONE_MAPPED: %v", err)
+	}
+	for _, errno := range []syscall.Errno{winErrorNoLogonServers, winRPCServerUnavailable, winErrorTrustedRelationFailure, winErrorDCNotFound} {
+		if err := classifyWindowsLookupError(errno); !directoryCouldNotAnswer(err) {
+			t.Fatalf("errno %d: %v, want directory unavailable", errno, err)
+		}
+	}
+	if err := classifyWindowsLookupError(syscall.Errno(5)); directoryCouldNotAnswer(err) || errors.Is(err, errAccountNotFound) {
+		t.Fatalf("ERROR_ACCESS_DENIED classified: %v", err)
 	}
 }
