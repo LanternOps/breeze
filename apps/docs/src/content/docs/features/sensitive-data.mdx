@@ -69,9 +69,9 @@ Policies created from the **Policies** tab can be owned by a single organization
 
 | Action | Destructive | Description |
 |--------|-------------|-------------|
-| `encrypt` | Yes | Encrypt the file in place using the configured encryption key |
+| `encrypt` | Yes | Encrypt the file in place using the configured encryption key. A file with more than one hard link is refused |
 | `quarantine` | Yes | Move the file to a quarantine directory on the device |
-| `secure_delete` | Yes | Permanently and securely delete the file |
+| `secure_delete` | Yes | Permanently and securely delete the file. A file with more than one hard link is refused, because overwriting it would also change its other names |
 | `accept_risk` | No | Acknowledge the finding and accept the risk |
 | `false_positive` | No | Mark the finding as a false positive |
 | `mark_remediated` | No | Manually mark the finding as remediated |
@@ -149,7 +149,7 @@ Authorization: Bearer <token>
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `includePaths` | string[] | Paths to scan (max 256, each up to 2,048 chars). When empty or omitted, the agent scans the `Desktop`, `Documents` and `Downloads` folders of every user profile on the device (`C:\Users\*` on Windows, `/Users/*` on macOS, `/home/*` on Linux). The scan does not follow symbolic links, junctions or other reparse points it finds, in the default scope or below an include path; on Windows that includes OneDrive cloud files. Skipped links are counted in `agentSummary.linksSkipped` |
+| `includePaths` | string[] | Paths to scan (max 256, each up to 2,048 chars). When empty or omitted, the agent scans the `Desktop`, `Documents` and `Downloads` folders of every user profile on the device (`C:\Users\*` on Windows, `/Users/*` on macOS, `/home/*` on Linux). The scan does not follow symbolic links, junctions or other reparse points it finds, in the default scope or below an include path; on Windows that includes OneDrive cloud files. It also skips files that have more than one hard link. Skipped links are counted in `agentSummary.linksSkipped`. Include paths must be absolute local paths; network shares, device namespaces and relative paths are refused |
 | `excludePaths` | string[] | Paths to exclude from scanning (max 256) |
 | `fileTypes` | string[] | File extensions to scan (max 128, each up to 32 chars) |
 | `maxFileSizeBytes` | integer | Maximum file size to scan (1 KB to 1 GB) |
