@@ -476,6 +476,26 @@ describe('DR plan tools match the route', () => {
     expect(createDrExecutionAndEnqueue).not.toHaveBeenCalled();
   });
 
+  it('execute_dr_plan refuses an approved definition that arrives without the release intent id', async () => {
+    mockSelectSequence([[planRow]]);
+    const { verifiedDrPlan } = approvedContext([]);
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(), { verifiedDrPlan },
+    ));
+    expect(result.error).toBe('approved_definition_required');
+    expect(createDrExecutionAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('execute_dr_plan refuses an approved definition of another org', async () => {
+    mockSelectSequence([[planRow]]);
+    const result = JSON.parse(await toolMap.get('execute_dr_plan')!.handler(
+      { planId: PLAN_ID, executionType: 'rehearsal' }, makeAuth(),
+      approvedContext([], { orgId: '88888888-8888-8888-8888-888888888888' }),
+    ));
+    expect(result.error).toBe('approved_definition_required');
+    expect(createDrExecutionAndEnqueue).not.toHaveBeenCalled();
+  });
+
   it('execute_dr_plan hands the approved definition to the execution unchanged', async () => {
     mockSelectSequence([[planRow]]);
     vi.mocked(resolveAiCallerPermissions).mockResolvedValue(grant(['devices', 'execute'], ['backup', 'write']) as any);
