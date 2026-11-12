@@ -55,6 +55,7 @@ vi.mock('./assignmentRows', () => ({
 
 import { buildCatalogSummary, buildOrgModelDefaults, buildPartnerModelsSnapshot } from './registryView';
 import { endpointFingerprint } from './gatewayCapabilities';
+import { SURFACE_READINESS_KEY, SURFACE_TURN_VERSION, readinessProfileKey } from './surfaceReadiness';
 import { FIDELITY_HARNESS_VERSION } from '../llm/providerFidelityHarness';
 
 const P = '22222222-2222-4222-8222-222222222222';
@@ -278,6 +279,8 @@ describe('buildPartnerModelsSnapshot', () => {
     const O2 = '10000000-0000-4000-8000-000000000002';
     const O3 = '10000000-0000-4000-8000-000000000003';
     const O4 = '10000000-0000-4000-8000-000000000004';
+    const ABSENT = { state: 'absent', at: null, profile: null, promptTokens: null, cachedTokens: null, summary: null };
+    const ABSENT_SURFACES = { chat: ABSENT, helper: ABSENT, script_builder: ABSENT, ai_agents: ABSENT, office_chat: ABSENT };
 
     it('connection DTO: baseUrl + managedBy, never key material, and no inference geography (D7)', async () => {
       h.platformGeo = 'us';
@@ -334,16 +337,51 @@ describe('buildPartnerModelsSnapshot', () => {
       ]);
       const s = await buildPartnerModelsSnapshot(P);
       const v = (id: string | null) => s.offerings.find((o) => o.id === id)!.verification;
-      expect(v(O1)).toEqual({ state: 'verified', at: '2026-10-01T00:00:00.000Z', harnessVersion: FIDELITY_HARNESS_VERSION, summary: null });
+      expect(v(O1)).toEqual({ state: 'verified', at: '2026-10-01T00:00:00.000Z', harnessVersion: FIDELITY_HARNESS_VERSION, summary: null, surfaces: ABSENT_SURFACES });
       expect(v(O2)).toMatchObject({ state: 'stale', at: '2026-10-01T00:00:00.000Z' });
       expect(v(O3)).toMatchObject({ state: 'failed', summary: 'tool_call: no tool call returned' });
-      expect(v(O4)).toEqual({ state: 'unverified', at: null, harnessVersion: null, summary: null });
+      expect(v(O4)).toEqual({ state: 'unverified', at: null, harnessVersion: null, summary: null, surfaces: ABSENT_SURFACES });
       expect(v(A)).toBeNull();
       expect(v(B)).toBeNull();
       expect(v(null)).toBeNull(); // synthesized platform row
       // The raw tree / record never reaches the DTO.
       expect(JSON.stringify(s.offerings)).not.toContain('breeze_verification');
       expect(JSON.stringify(s.offerings)).not.toContain(fp(URL_));
+    });
+
+    it('#11397 per-surface readiness: passed / failed / inconclusive / stale / absent, judged against the current endpoint and profile', async () => {
+      h.connections = [conn({ id: G, kind: 'openai_compatible', baseUrl: URL_ })];
+      const minimal = { toolProfile: 'minimal' as const, toolAllowlist: null, effectiveWindow: null, transport: 'gateway' as const };
+      const entry = (surface: 'chat' | 'helper' | 'script_builder' | 'ai_agents', o: Record<string, unknown> = {}) => ({
+        state: 'passed', profileKey: readinessProfileKey(minimal, surface), exposureFingerprint: '0123456789abcdef', profile: 'minimal',
+        endpointFingerprint: fp(URL_), version: SURFACE_TURN_VERSION, at: '2026-11-12T01:00:00.000Z',
+        promptTokens: 3100, cachedTokens: 200, summary: null, ...o,
+      });
+      setOfferings([{
+        ...gw(O1, {
+          ...record({}),
+          [SURFACE_READINESS_KEY]: {
+            chat: entry('chat'),
+            helper: entry('helper', { state: 'failed', summary: 'answered without calling a tool' }),
+            script_builder: entry('script_builder', { state: 'inconclusive', summary: 'the endpoint failed: HTTP 503' }),
+            ai_agents: entry('ai_agents', { endpointFingerprint: fp('https://old.example.com/v1') }),
+          },
+        }),
+        toolProfile: 'minimal',
+      }]);
+      const s = await buildPartnerModelsSnapshot(P);
+      const surfaces = s.offerings.find((o) => o.id === O1)!.verification!.surfaces;
+      expect(surfaces.chat).toEqual({ state: 'passed', at: '2026-11-12T01:00:00.000Z', profile: 'minimal', promptTokens: 3100, cachedTokens: 200, summary: null });
+      expect(surfaces.helper).toMatchObject({ state: 'failed', summary: 'answered without calling a tool' });
+      expect(surfaces.script_builder).toMatchObject({ state: 'inconclusive' });
+      expect(surfaces.ai_agents).toMatchObject({ state: 'stale', at: '2026-11-12T01:00:00.000Z' });
+      expect(surfaces.office_chat).toEqual(ABSENT);
+      // Switching the profile makes every entry stale (none describes the exposure the surfaces now use).
+      setOfferings([{ ...gw(O1, { ...record({}), [SURFACE_READINESS_KEY]: { chat: entry('chat') } }), toolProfile: 'standard' }]);
+      const after = await buildPartnerModelsSnapshot(P);
+      expect(after.offerings.find((o) => o.id === O1)!.verification!.surfaces.chat.state).toBe('stale');
+      expect(JSON.stringify(after.offerings)).not.toContain(SURFACE_READINESS_KEY);
+      expect(JSON.stringify(after.offerings)).not.toContain('profileKey');
     });
 
     it('#11396 offering DTO carries the context window facts for gateway offerings; non-gateway offerings carry null', async () => {

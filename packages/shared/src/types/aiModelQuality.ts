@@ -30,6 +30,10 @@ export interface AiQualityMetricsDto {
   refusals: number;
   /** refusals / invocations (declined calls per model call, as on the spend view). */
   refusalRate: number;
+  /** Calls in a turn where the model gateway refused a tool-call batch it could not use (W04 #11397). */
+  refusedToolBatches: number;
+  /** refusedToolBatches / invocations; 0 with no calls (as refusalRate). */
+  refusedToolBatchRate: number;
   /** Calls served by a failover hop. null: this server does not record failovers yet. */
   failovers: number | null;
   failoverRate: number | null;
@@ -61,7 +65,7 @@ export interface AiQualityMetricsDto {
 }
 
 export interface AiQualityRowDto extends AiQualityMetricsDto {
-  /** groupBy=model: the offering id, or 'unattributed'. surface: the AiSurface. prompt_profile: the profile, or 'unrecorded'. */
+  /** groupBy=model: the offering id, or 'unattributed'. surface: the AiSurface. prompt_profile / tool_profile: the profile, or 'unrecorded'. */
   key: string;
   /** groupBy=model only: the offering's display name; null when the offering is gone. Other groupings: null (the client labels keys). */
   label: string | null;

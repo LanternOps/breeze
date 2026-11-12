@@ -1,3 +1,4 @@
+import { noteGatewayFailure } from '../failureNotes';
 import { GATEWAY_IDLE_TIMEOUT_MS, GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS } from '../limits';
 import { scrubSecrets } from '../scrub';
 import { encodeSse, parseSse } from './sse';
@@ -15,6 +16,8 @@ export interface TranslateStreamContext {
   /** Diagnostics only: identify the grant/connection in warnings. */
   grantId?: string;
   connectionId?: string;
+  /** The grant's AI session: a refused batch is noted for the turn by name (W04 #11397). */
+  aiSessionId?: string | null;
   /** Secrets scrubbed from any logged text (the connection credential). */
   secrets?: ReadonlyArray<string | null>;
   /**
@@ -210,7 +213,9 @@ export async function* translateChatStream(
   }
   const toolUses = overLimit ? null : validateToolCalls(assembler.calls, ctx.tools);
   if (toolUses === null) {
-    warn('tool-call batch not emitted', overLimit ? 'refused: the stream exceeded its tool-call limits' : describeRefusedToolCalls(assembler.calls, ctx.tools));
+    const refused = describeRefusedToolCalls(assembler.calls, ctx.tools);
+    warn('tool-call batch not emitted', overLimit ? 'refused: the stream exceeded its tool-call limits' : refused);
+    noteGatewayFailure(ctx.aiSessionId ?? null, overLimit ? `${refused} (over the gateway's tool-call limits)` : refused, 'refused_tool_batch');
     if (!textOpen) {
       yield encodeSse('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
       textOpen = true;

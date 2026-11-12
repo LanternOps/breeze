@@ -5,6 +5,12 @@ export const OFF = '22222222-2222-4222-8222-222222222222';
 export const PM = '33333333-3333-4333-8333-333333333333';
 export const RATES = { inputCentsPerM: 300, outputCentsPerM: 1500, cacheReadCentsPerM: 30, cacheWriteCentsPerM: 375 };
 
+/** #11397: a gateway verification with no surface turn recorded on any surface. */
+const NO_SURFACE_TURN = { state: 'absent', at: null, profile: null, promptTokens: null, cachedTokens: null, summary: null } as const;
+export const NO_SURFACE_TURNS: NonNullable<AiOfferingDto['verification']>['surfaces'] = {
+  chat: NO_SURFACE_TURN, helper: NO_SURFACE_TURN, script_builder: NO_SURFACE_TURN, ai_agents: NO_SURFACE_TURN, office_chat: NO_SURFACE_TURN,
+};
+
 export function offeringRow(over: Partial<AiOfferingDto> = {}): AiOfferingDto {
   return {
     id: OFF, platformModelId: null, connectionId: null, source: 'platform', modelId: 'm-1', displayName: 'Model One',

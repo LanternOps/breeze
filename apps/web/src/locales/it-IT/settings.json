@@ -711,12 +711,14 @@
       "groupBy": {
         "model": "Modello",
         "surface": "Funzione",
-        "prompt_profile": "Famiglia di modelli"
+        "prompt_profile": "Famiglia di modelli",
+        "tool_profile": "Profilo strumenti"
       },
       "columns": {
         "conversations": "Conversazioni",
         "costPerConversation": "Costo / conversazione",
         "refusalRate": "Tasso di rifiuto",
+        "refusedToolBatches": "Chiamate a strumenti inutilizzabili",
         "failoverRate": "Tasso di failover",
         "flagRate": "Tasso di segnalazione",
         "leftRate": "Passate a un altro modello",
@@ -727,6 +729,7 @@
         "conversations": "Sessioni di chat ed esecuzioni agente la cui ultima chiamata al modello in questo periodo era su questa riga.",
         "costPerConversation": "Spesa media su questa riga per ogni conversazione che l'ha usata.",
         "refusalRate": "Chiamate al modello rifiutate dal modello, per chiamata.",
+        "refusedToolBatches": "Chiamate al modello in un turno in cui il modello ha chiesto di eseguire uno strumento in una forma che Breeze non poteva usare (uno strumento non offerto o input non conformi), per chiamata. Non è stato eseguito nulla.",
         "failoverRate": "Chiamate passate a un modello di riserva perché questo ha avuto un errore o non era disponibile.",
         "flagRate": "Sessioni segnalate da una persona. Le segnalazioni automatiche dopo un errore di strumento sono contate a parte.",
         "leftRate": "Conversazioni passate a un altro modello o proseguite in una nuova sessione su un altro modello.",
@@ -738,6 +741,12 @@
         "claude-standard": "Claude Standard",
         "claude-small": "Claude Small",
         "generic": "Altri modelli"
+      },
+      "toolProfiles": {
+        "full": "Completo",
+        "standard": "Intermedio",
+        "minimal": "Minimo",
+        "custom": "Personalizzato"
       },
       "unrecorded": "Non registrato",
       "unattributed": "Non attribuito a un modello",
@@ -751,6 +760,8 @@
       "leftBreakdown": "{{switched}} passate, {{continued}} proseguite",
       "resolvedCount_one": "{{count}} risolta",
       "resolvedCount_other": "{{count}} risolte",
+      "refusedToolBatchCount_one": "{{count}} rifiutata",
+      "refusedToolBatchCount_other": "{{count}} rifiutate",
       "loading": "Caricamento della qualità…",
       "empty": "Nessuna chiamata al modello in questo periodo.",
       "error": "Impossibile caricare la vista Qualità.",

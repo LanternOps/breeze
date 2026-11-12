@@ -307,7 +307,7 @@ export const aiUsageQuerySchema = withUsageRangeRules(aiUsageQueryBaseSchema);
 export type AiUsageQuery = z.infer<typeof aiUsageQuerySchema>;
 
 /** W11 (#7609): the quality view's groupings (spec §13: by model, surface and prompt profile). */
-export const AI_QUALITY_GROUP_BYS = ['model', 'surface', 'prompt_profile'] as const;
+export const AI_QUALITY_GROUP_BYS = ['model', 'surface', 'prompt_profile', 'tool_profile'] as const;
 export type AiQualityGroupBy = (typeof AI_QUALITY_GROUP_BYS)[number];
 
 export const aiQualityQuerySchema = withUsageRangeRules(

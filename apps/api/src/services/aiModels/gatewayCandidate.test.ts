@@ -23,6 +23,7 @@ import { checkEligibility, type EligibilityContext } from './eligibility';
 import { endpointFingerprint, verifiedCapabilitiesTree } from './gatewayCapabilities';
 import { gatewayCandidate } from './gatewayCandidate';
 import { effectiveToolProfile, toolProfileKey } from './toolExposure';
+import { SURFACE_READINESS_KEY, SURFACE_TURN_VERSION, readinessProfileKey } from './surfaceReadiness';
 
 const CONN = {
   id: 'c1', partnerId: 'p1', kind: 'openai_compatible', name: 'vLLM', baseUrl: 'https://llm.example.com/v1',
@@ -90,6 +91,46 @@ describe('gatewayCandidate', () => {
     const allowlist = { domains: ['devices'], tools: ['search_logs'] };
     const c = await gatewayCandidate({ offering: offering({ toolProfile: 'custom', toolAllowlist: allowlist }), conn: conn() });
     expect(c.toolProfileFacts).toEqual({ toolProfile: 'custom', toolAllowlist: allowlist, effectiveWindow: null, transport: 'gateway' });
+  });
+
+  describe('per-surface readiness (#11397)', () => {
+    const FP = endpointFingerprint(CONN);
+    const minimalChatKey = readinessProfileKey({ toolProfile: 'minimal', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' }, 'chat');
+    const entry = (over: Record<string, unknown> = {}) => ({
+      state: 'failed', profileKey: minimalChatKey, exposureFingerprint: '0123456789abcdef', profile: 'minimal',
+      endpointFingerprint: FP, version: SURFACE_TURN_VERSION, at: '2026-11-23T00:00:00.000Z',
+      promptTokens: 3000, cachedTokens: 0, summary: 'answered without calling a tool', ...over,
+    });
+    const withReadiness = (readiness: Record<string, unknown>, over: Record<string, unknown> = {}) =>
+      offering({ toolProfile: 'minimal', capabilities: { ...verified, [SURFACE_READINESS_KEY]: readiness }, ...over });
+
+    it('ON MERGE: a verified record without readiness refuses no surface', async () => {
+      const c = await gatewayCandidate({ offering: offering(), conn: conn() });
+      expect(c.facts.failedToolSurfaces).toEqual([]);
+      for (const surface of ['chat', 'helper', 'script_builder', 'ai_agents', 'office_chat'] as const) {
+        expect(checkEligibility(c.facts, { ...CTX, surface }), surface).toBeNull();
+      }
+    });
+
+    it('a current failed chat entry refuses chat only', async () => {
+      const c = await gatewayCandidate({ offering: withReadiness({ chat: entry() }), conn: conn() });
+      expect(c.facts.failedToolSurfaces).toEqual(['chat']);
+      expect(checkEligibility(c.facts, CTX)).toBe('tools_unverified_surface');
+      expect(checkEligibility(c.facts, { ...CTX, surface: 'helper' })).toBeNull();
+      expect(checkEligibility(c.facts, { ...CTX, surface: 'script_builder' })).toBeNull();
+    });
+
+    it('an operator profile change, a new base URL or an inconclusive turn makes the entry refuse nothing', async () => {
+      for (const o of [
+        withReadiness({ chat: entry() }, { toolProfile: 'standard' }),
+        withReadiness({ chat: entry({ state: 'inconclusive' }) }),
+        withReadiness({ chat: entry({ version: '0' }) }),
+      ]) {
+        expect((await gatewayCandidate({ offering: o, conn: conn() })).facts.failedToolSurfaces).toEqual([]);
+      }
+      const moved = await gatewayCandidate({ offering: withReadiness({ chat: entry() }), conn: conn({ baseUrl: 'https://other.example.com/v1' }) });
+      expect(moved.facts.failedToolSurfaces).toEqual([]);
+    });
   });
 
   describe('the effective context window (#11396 T7)', () => {
