@@ -82,7 +82,7 @@ export const wispCheckIns = pgTable('wisp_check_ins', {
   /** Why Breeze cancelled it (≤ 200 chars); null when Wisp or the user cancelled it. */
   cancelReason: text('cancel_reason'),
   /**
-   * Who cancelled it (#11611, migrations/2027-01-23-241000-wisp-check-ins-cancelled-by.sql);
+   * Who cancelled it (#11611, migrations/2027-01-24-110000-wisp-check-ins-cancelled-by.sql);
    * null while not cancelled, and on rows cancelled before the column existed.
    */
   cancelledBy: text('cancelled_by').$type<WispCheckInCancelledBy>(),
