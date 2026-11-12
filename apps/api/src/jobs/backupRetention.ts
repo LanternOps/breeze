@@ -941,13 +941,27 @@ function identityOrgMapKey(identityKey: string, orgId: string): string {
   return `${identityKey}\u0000${orgId}`;
 }
 
+/**
+ * The API and worker read a `local` destination only from its own
+ * <BACKUP_LOCAL_ROOT>/<org id>/<config id> directory
+ * (services/apiLocalBackupStorage.ts), so two local destinations with the
+ * same stored path are still two directories. Each local configuration is
+ * therefore its own GC unit and its own listing; S3 identities stay grouped
+ * per (bucket, org) as before.
+ */
+function isPerConfigurationStorage(provider: string): boolean {
+  return provider === 'local';
+}
+
 function groupBackupConfigsByStorageIdentity(
   configs: BackupGcDestination[],
 ): Map<string, BackupGcStorageIdentity> {
   const identities = new Map<string, BackupGcStorageIdentity>();
   for (const config of configs) {
     const key = normalizeStorageIdentity(config.provider, asRecord(config.providerConfig));
-    const mapKey = identityOrgMapKey(key, config.orgId);
+    const mapKey = isPerConfigurationStorage(config.provider)
+      ? `${identityOrgMapKey(key, config.orgId)}\u0000${config.id}`
+      : identityOrgMapKey(key, config.orgId);
     const existing = identities.get(mapKey);
     if (existing) {
       existing.configIds.push(config.id);
@@ -1802,7 +1816,8 @@ function gcUnitStorage(
     configId: identity.configIds[0],
     root,
     skipSetKey: legacy ? identity.key : `${identity.key}::${keyRootId(root)}`,
-    label: legacy ? identity.key : `${identity.key} root ${keyRootId(root)}`,
+    label: (legacy ? identity.key : `${identity.key} root ${keyRootId(root)}`)
+      + (isPerConfigurationStorage(identity.provider) ? ` config ${identity.configIds[0]}` : ''),
   };
 }
 
@@ -2264,6 +2279,10 @@ async function loadIdentityGcState(
   retainedSnapshotIds: string[];
   nullIdentityRows: { id: string; snapshotId: string }[];
   retiredSnapshotIds: Map<string, string>;
+  /** Unswept retirements of the same org and identity that belong to another local destination. */
+  otherDestinationRetiredIds: string[];
+  /** Retained snapshots of the same org and identity that belong to another local destination. */
+  otherDestinationRetainedIds: string[];
   legacyHelper: { deferred: boolean; deviceId?: string; version?: string | null };
 }> {
   return withSystemDbAccessContext(async () => {
@@ -2278,7 +2297,7 @@ async function loadIdentityGcState(
     // filtered by configId (storage_identity is denormalized onto the row
     // at publish time, so it survives a later providerConfig edit).
     const retainedRows = await db
-      .select({ snapshotId: backupSnapshots.snapshotId })
+      .select({ snapshotId: backupSnapshots.snapshotId, configId: backupSnapshots.configId })
       .from(backupSnapshots)
       .where(and(
         eq(backupSnapshots.storageIdentity, identity.key),
@@ -2299,8 +2318,17 @@ async function loadIdentityGcState(
         recordedUnderRoot(backupSnapshots, root),
       ));
 
+    // A local unit is one configuration's directory: it reclaims and
+    // confirms only that configuration's retirements, and leaves the ids
+    // another configuration retired (or one with no configuration) alone.
+    const perConfiguration = isPerConfigurationStorage(identity.provider);
+    const unitConfigId = identity.configIds[0]!;
     const retirementRows = await db
-      .select({ id: backupSnapshotRetirements.id, snapshotId: backupSnapshotRetirements.snapshotId })
+      .select({
+        id: backupSnapshotRetirements.id,
+        snapshotId: backupSnapshotRetirements.snapshotId,
+        configId: backupSnapshotRetirements.configId,
+      })
       .from(backupSnapshotRetirements)
       .where(and(
         eq(backupSnapshotRetirements.storageIdentity, identity.key),
@@ -2308,13 +2336,24 @@ async function loadIdentityGcState(
         isNull(backupSnapshotRetirements.sweptAt),
         recordedUnderRoot(backupSnapshotRetirements, root),
       ));
+    const ownRetirementRows = perConfiguration
+      ? retirementRows.filter((r) => r.configId === unitConfigId)
+      : retirementRows;
+    const otherDestinationRetiredIds = perConfiguration
+      ? retirementRows.filter((r) => r.configId !== unitConfigId).map((r) => r.snapshotId)
+      : [];
+    const otherDestinationRetainedIds = perConfiguration
+      ? retainedRows.filter((r) => r.configId !== unitConfigId).map((r) => r.snapshotId)
+      : [];
 
     const legacyHelper = await identityHasLegacyHelper(identity, nowMs);
 
     return {
       retainedSnapshotIds: retainedRows.map((r) => r.snapshotId),
       nullIdentityRows,
-      retiredSnapshotIds: new Map(retirementRows.map((r) => [r.snapshotId, r.id])),
+      retiredSnapshotIds: new Map(ownRetirementRows.map((r) => [r.snapshotId, r.id])),
+      otherDestinationRetiredIds,
+      otherDestinationRetainedIds,
       legacyHelper,
     };
   });
@@ -2712,6 +2751,11 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   // each key root (listedIdsKey), for confirming an abandoned prefix is gone
   // before its reservation is deleted.
   const listedIdsByIdentityKey = new Map<string, Set<string>>();
+  // Identity/root pairs with at least one listing that failed this run. Local
+  // destinations sharing a stored path are listed once per directory; a
+  // prefix is confirmed gone only if every one of those listings succeeded
+  // and none of them shows it.
+  const unlistedIdentityKeys = new Set<string>();
 
   let deleted = 0;
   let skippedIdentities = 0;
@@ -2731,14 +2775,20 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   // incident). Insertion order is preserved (Map iteration order = first-
   // seen order from `identities`), so run behavior/ordering is otherwise
   // unchanged from a single flat loop.
+  // A local destination is listed from its own directory only (see
+  // isPerConfigurationStorage), so it is never grouped with another unit.
   const identityGroupsByKey = new Map<string, BackupGcStorageIdentity[]>();
   for (const identity of identities.values()) {
-    const group = identityGroupsByKey.get(identity.key);
+    const groupKey = isPerConfigurationStorage(identity.provider)
+      ? `${identityOrgMapKey(identity.key, identity.orgId)}\u0000${identity.configIds[0]}`
+      : identity.key;
+    const group = identityGroupsByKey.get(groupKey);
     if (group) group.push(identity);
-    else identityGroupsByKey.set(identity.key, [identity]);
+    else identityGroupsByKey.set(groupKey, [identity]);
   }
 
-  for (const [physicalKey, orgIdentities] of identityGroupsByKey) {
+  for (const orgIdentities of identityGroupsByKey.values()) {
+    const physicalKey = orgIdentities[0]!.key;
     if (deletesRemaining <= 0) {
       console.log('[BackupGC] Deletion cap reached for this run — stopping cleanly; remaining identities resume next run');
       break;
@@ -2916,12 +2966,16 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         skippedIdentities += rootUnits.length;
         blockedIdentities += rootUnits.length;
         unitsAccounted += rootUnits.length;
+        unlistedIdentityKeys.add(listedIdsKey(physicalKey, root));
         console.error(`[BackupGC] Identity ${rootStorage.label}: listing failed — isolated, other identities proceed:`, error);
         captureException(error instanceof Error ? error : new Error(String(error)));
         continue;
       }
 
-      listedIdsByIdentityKey.set(listedIdsKey(physicalKey, root), new Set(groups.keys()));
+      const listedKey = listedIdsKey(physicalKey, root);
+      const alreadyListed = listedIdsByIdentityKey.get(listedKey);
+      if (alreadyListed) for (const id of groups.keys()) alreadyListed.add(id);
+      else listedIdsByIdentityKey.set(listedKey, new Set(groups.keys()));
       const fencedRefsCache = new Map<string, Set<string> | 'unresolved'>();
       const originGuard = originGuardFor(root, keyRoots);
 
@@ -3042,6 +3096,18 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
             );
           }
 
+          // A local unit marks every retained manifest stored in its own
+          // directory (manifest keys are relative to that directory), its own
+          // configuration's retained snapshots always (a missing one still
+          // fails the mark phase), and leaves another configuration's
+          // retained snapshot that is not in this directory alone.
+          const otherRetainedNotListed = new Set(
+            state.otherDestinationRetainedIds.filter((snapshotId) => !groups.has(snapshotId)),
+          );
+          const unitRetainedSnapshotIds = otherRetainedNotListed.size === 0
+            ? state.retainedSnapshotIds
+            : state.retainedSnapshotIds.filter((snapshotId) => !otherRetainedNotListed.has(snapshotId));
+
           const owners = snapshotOwnersByIdentityKey.get(identity.key);
           const foreignOwnedSnapshotIds: ReadonlySet<string> = new Set([
             ...(owners
@@ -3056,10 +3122,14 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
             ...fencedForeignIds,
             // Rule 3: recorded under another key root.
             ...crossRootIds,
+            // Retired by another local destination of this org: not this
+            // directory's to reclaim or confirm.
+            ...state.otherDestinationRetiredIds,
+            ...otherRetainedNotListed,
           ]);
 
           const identityResult = await sweepStorageIdentity(
-            unit, groups, state.retainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
+            unit, groups, unitRetainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
             foreignOwnedSnapshotIds,
             nowMs, deletesRemaining, graceMs, orphanWindowMs, manifestlessWindowMs,
             identityDeferred,
@@ -3156,6 +3226,7 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   // proves its prefix gone; an unreadable root never does.
   const reclaimable = reservationState.reclaimable
     .filter((r) => r.root !== null
+      && !unlistedIdentityKeys.has(listedIdsKey(r.storageIdentity, r.root))
       && listedIdsByIdentityKey.get(listedIdsKey(r.storageIdentity, r.root))?.has(r.snapshotId) === false)
     .map((r) => r.snapshotId);
   if (reclaimable.length > 0) {

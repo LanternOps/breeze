@@ -669,3 +669,73 @@ runDb('a retired snapshot\'s reservation is tombstoned once its prefix is confir
   `));
   expect(rows[0]).toMatchObject({ reservation: 0, tombstone: 'retired' });
 });
+
+// ---------------------------------------------------------------------------
+// Local destinations: each (organization, configuration) has its own
+// directory under BACKUP_LOCAL_ROOT, even when destinations share one stored
+// path. The sweep lists and deletes in each directory on its own.
+// ---------------------------------------------------------------------------
+
+runDb('local destinations sharing a stored path are swept one directory at a time, each from its own listing', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const storedPath = await mkdtemp(join(tmpdir(), 'breeze-gc-stored-'));
+  const OLD = 20 * DAY_MS;
+
+  const seedA1 = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${unique}-a`, storedPath));
+  const seedB1 = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${unique}-b`, storedPath));
+  const seedA2 = await withSystemDbAccessContext(async () => {
+    const [config] = await db.insert(backupConfigs).values({
+      orgId: seedA1.orgId, name: `GC Config ${unique}-a2`, type: 'file', provider: 'local', providerConfig: { path: storedPath },
+    }).returning({ id: backupConfigs.id });
+    const dir = join(operatorRoot, seedA1.orgId, config!.id);
+    await mkdir(dir, { recursive: true });
+    return { ...seedA1, configId: config!.id, dir };
+  });
+  expect(new Set([seedA1.identity, seedA2.identity, seedB1.identity]).size).toBe(1);
+
+  const units = [['A1', seedA1], ['A2', seedA2], ['B1', seedB1]] as const;
+  await withSystemDbAccessContext(async () => {
+    for (const [label, seed] of units) {
+      await writeAged(seed.dir, `snapshots/${label}-LIVE/manifest.json`, OLD, JSON.stringify({ files: [
+        { backupPath: `snapshots/${label}-LIVE/files/live.dat` },
+      ] }));
+      await writeAged(seed.dir, `snapshots/${label}-LIVE/files/live.dat`, OLD);
+      await insertSnapshotRow({ ...seed, snapshotId: `${label}-LIVE` });
+
+      await writeAged(seed.dir, `snapshots/${label}-RETIRED/manifest.json`, OLD, JSON.stringify({ files: [
+        { backupPath: `snapshots/${label}-RETIRED/files/only.dat` },
+      ] }));
+      await writeAged(seed.dir, `snapshots/${label}-RETIRED/files/only.dat`, OLD);
+      await db.insert(backupSnapshotRetirements).values({
+        orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
+        snapshotId: `${label}-RETIRED`, storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
+      });
+    }
+    // Recent objects under A1's retired id in the other directories belong
+    // to those destinations, not to A1's retirement.
+    await writeAged(seedA2.dir, 'snapshots/A1-RETIRED/files/only.dat', 1000);
+    await writeAged(seedB1.dir, 'snapshots/A1-RETIRED/files/only.dat', 1000);
+  });
+
+  await sweepUnreferencedBackupObjects();
+  await sweepUnreferencedBackupObjects();
+
+  expect((await listAll(seedA1.dir)).sort()).toEqual([
+    'snapshots/A1-LIVE/files/live.dat', 'snapshots/A1-LIVE/manifest.json',
+  ]);
+  expect((await listAll(seedA2.dir)).sort()).toEqual([
+    'snapshots/A1-RETIRED/files/only.dat', 'snapshots/A2-LIVE/files/live.dat', 'snapshots/A2-LIVE/manifest.json',
+  ]);
+  expect((await listAll(seedB1.dir)).sort()).toEqual([
+    'snapshots/A1-RETIRED/files/only.dat', 'snapshots/B1-LIVE/files/live.dat', 'snapshots/B1-LIVE/manifest.json',
+  ]);
+  expect(await listAll(storedPath)).toEqual([]);
+
+  const retirements = await withSystemDbAccessContext(() =>
+    db.select({ snapshotId: backupSnapshotRetirements.snapshotId, sweptAt: backupSnapshotRetirements.sweptAt })
+      .from(backupSnapshotRetirements)
+      .where(eq(backupSnapshotRetirements.storageIdentity, seedA1.identity)),
+  );
+  expect(retirements.map((r) => r.snapshotId).sort()).toEqual(['A1-RETIRED', 'A2-RETIRED', 'B1-RETIRED']);
+  for (const row of retirements) expect(row.sweptAt, row.snapshotId).not.toBeNull();
+});
