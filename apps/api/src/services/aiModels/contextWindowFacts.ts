@@ -16,7 +16,7 @@
  * it no longer constrains. Every number is plausibility-bounded the same way
  * the gateway bounds a stated window.
  */
-import { CONTEXT_WINDOW_MEMO_TTL_MS, MAX_PLAUSIBLE_TOKENS, MIN_PLAUSIBLE_WINDOW } from './gateway/openai/contextWindow';
+import { CONTEXT_WINDOW_MEMO_TTL_MS, MAX_PLAUSIBLE_TOKENS, MIN_PLAUSIBLE_WINDOW, type KnownWindow } from './gateway/openai/contextWindow';
 
 /** The `partner_ai_models` window columns, as Drizzle reads them. Absent = null (older fixtures). */
 export interface ContextWindowFields {
@@ -36,8 +36,8 @@ export interface EffectiveContextWindow {
   observedFresh: boolean;
 }
 
-/** A known window and where it came from (never `unknown`). */
-export interface KnownContextWindow { window: number; source: Exclude<ContextWindowSource, 'unknown'> }
+/** A known window and where it came from (never `unknown`); the gateway's own shape. */
+export type KnownContextWindow = KnownWindow;
 
 export const UNKNOWN_CONTEXT_WINDOW: Readonly<EffectiveContextWindow> = Object.freeze({
   value: null, source: 'unknown', observedFresh: false,

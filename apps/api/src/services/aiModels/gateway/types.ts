@@ -22,6 +22,8 @@ export interface GatewayCredential {
 export interface DiscoveredConnectionModel {
   modelId: string;
   displayName: string | null;
+  /** #11396: the context window the listing states (plausibility-bounded); absent = not stated. */
+  contextLength?: number;
 }
 
 export type GatewayGrantPurpose = 'dispatch' | 'verification' | 'discovery';

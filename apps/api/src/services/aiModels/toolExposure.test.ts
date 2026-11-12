@@ -231,6 +231,30 @@ describe('pickAutoProfile', () => {
     expect(pickAutoProfile(1_000_000, 'chat')).toBe('full');
   });
 
+  /**
+   * #11396 (W02, `auto` goes live): the smallest window at which each profile
+   * is picked on each surface, from the MEASURED pins. This is the behaviour
+   * a gateway offering gets once its window is known; the PR body's table is
+   * this table. A re-measured pin moves a threshold and must update it here.
+   */
+  it.each([
+    ['chat', 7_647, 16_728, 171_067],
+    ['helper', 7_147, 10_291, 16_920],
+    ['script_builder', 7_777, 9_929, 14_730],
+    ['ai_agents', 7_353, 15_983, 105_428],
+  ] as const)('%s: minimal from %i, standard from %i, full from %i (measured pins)', (surface, minimal, standard, full) => {
+    expect(pickAutoProfile(minimal - 1, surface)).toBe('too_small');
+    expect(pickAutoProfile(minimal, surface)).toBe('minimal');
+    expect(pickAutoProfile(standard - 1, surface)).toBe('minimal');
+    expect(pickAutoProfile(standard, surface)).toBe('standard');
+    expect(pickAutoProfile(full - 1, surface)).toBe('standard');
+    expect(pickAutoProfile(full, surface)).toBe('full');
+  });
+
+  it('office_chat stays full at any window (its prefixes are unmeasured)', () => {
+    for (const w of [4_096, 8_192, 131_072]) expect(pickAutoProfile(w, 'office_chat')).toBe('full');
+  });
+
   it('auto + tooSmall resolves minimal with tooSmall set', () => {
     const e = resolveToolExposure(input({ facts: facts({ effectiveWindow: 4096 }) }), { prefixTokens: FIXTURE_PREFIX });
     expect(e).toMatchObject({ profile: 'minimal', tooSmall: true });
