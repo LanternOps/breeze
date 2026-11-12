@@ -150,6 +150,45 @@ After creating a configuration, test that Breeze can reach the storage target:
 
 ---
 
+## Local Destinations on the API Server
+
+A local destination's **Local Path** is the path the agent uses on the device. The API server never uses that path for its own file access.
+
+Some features read a local destination from the API server: the connectivity test, file-level browsing of a snapshot (index hydration), server-side integrity verification, the storage sweep and reconciliation, token-based recovery downloads, and bare-metal recovery media. These work only when the self-hosting operator sets [`BACKUP_LOCAL_ROOT`](/deploy/environment/#backup-enterprise-agent-backup) and provides one directory per destination:
+
+```text
+<BACKUP_LOCAL_ROOT>/<organization ID>/<storage configuration ID>/
+```
+
+- `BACKUP_LOCAL_ROOT` must be an absolute path and not `/`. The organization and configuration directories must already exist; Breeze does not create them.
+- Breeze takes both IDs from its own records, not from the destination settings. Each destination can only reach its own directory.
+- Symbolic links are refused at every level below `BACKUP_LOCAL_ROOT`, including the per-destination directory itself. Use a bind mount to expose existing storage there.
+- Mount the same storage at the same path in every `api` and `worker` container.
+- Two configurations that point at the same storage each need that storage mounted at their own directory.
+
+Without `BACKUP_LOCAL_ROOT`, or without the directory for a destination, these features stop for that destination with the message *API local backup storage is unavailable for this destination*. The connectivity test reports a failure. Server-side integrity verification stays pending instead of failing. The storage sweep skips the destination, keeps its objects and deletes nothing. Agents keep writing backups to the device's local path.
+
+The connectivity test only checks that the destination's directory exists and the API can read and write it. It creates no files or directories. It does not test whether the device can reach its local path.
+
+### Upgrading an install that uses API-side local storage
+
+Earlier versions read local destinations on the API server from the **Local Path** setting. After upgrading, those reads stop until the directories above exist. Breeze does not move data or rewrite settings for you:
+
+<Steps>
+1. List the local configurations whose API-side features you use (configuration ID, organization ID and current path).
+2. For each one, create `<BACKUP_LOCAL_ROOT>/<organization ID>/<configuration ID>/` and bind-mount the existing storage there, in every `api` and `worker` container. The data stays where it is.
+3. Set `BACKUP_LOCAL_ROOT` and restart the `api` and `worker` containers.
+4. Run the connectivity test for each configuration. Then check a file-level browse, a recovery download and the next storage sweep log.
+</Steps>
+
+Leave the **Local Path** setting unchanged; agents still use it. Do not delete objects or edit storage settings to make a test pass.
+
+A snapshot whose storage configuration was deleted, or that was recorded without a configuration, has no destination directory. It stays unavailable for API-side local reads until its configuration link is restored.
+
+To turn API-side local access off again, unset `BACKUP_LOCAL_ROOT`. The stored data is not touched.
+
+---
+
 ## Editing a Configuration
 
 Click the **Edit** action on any configuration to reopen the wizard. Changes are merged — updating a single field (like the bucket name) won't erase your other settings.

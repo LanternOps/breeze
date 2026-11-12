@@ -178,6 +178,14 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
+### Unreleased — local backup destinations on the API server
+
+Both Compose files gain one optional mapping, `BACKUP_LOCAL_ROOT` (`${BACKUP_LOCAL_ROOT:-}`), shared by `api` and `worker`.
+
+| Change | Required action |
+|---|---|
+| The API and worker no longer read a local backup destination from its **Local Path** setting. They read it only from `<BACKUP_LOCAL_ROOT>/<organization ID>/<storage configuration ID>/`. | Nothing, unless you use server-side features on local destinations (connectivity test, file-level browse, server-side verification, storage sweep, recovery downloads, recovery media). If you do, follow [Upgrading an install that uses API-side local storage](/backup/storage/#upgrading-an-install-that-uses-api-side-local-storage) before relying on them. Until then they are unavailable and the storage sweep deletes nothing from those destinations. |
+
 ### Unreleased — history retention settings mapped
 
 Both Compose files gain 26 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
