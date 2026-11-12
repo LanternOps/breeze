@@ -29,7 +29,7 @@ The Script Builder AI maintains a conversational session with full context about
 
 Script Builder sessions are distinct from general Breeze AI sessions. They are scoped to the `script_builder` type and have access to a curated set of tools specific to script authoring.
 
-A Script Builder session is private to the user who started it. Only that user can load its transcript, send messages, interrupt a response, approve a tool request or close the session; other users in the organization get `404 Session not found` for it.
+A Script Builder session is private to the user who started it. Only that user can load its transcript, send messages, interrupt a response, approve a tool request from the session or close the session; other users in the organization get `404 Session not found` for it. Requests that go to the Approvals queue follow that queue's approver rules.
 
 | Attribute | Value |
 |-----------|-------|
