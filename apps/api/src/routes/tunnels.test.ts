@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './tunnels';
 import { __resetTunnelOriginConfigForTests } from '../config/tunnelOrigin';
 import { isTunnelOriginEnabledForOrg } from '../services/tunnelOriginOptIn';
+import { getTrustedClientIp } from '../services/clientIp';
 
 // --- UUID constants ---
 const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -3922,5 +3923,217 @@ describe('VNC tunnel responses carry the session clipboard policy (#8269)', () =
     expect(db.insert).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     expect(createWsTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('Tunnel destination and source rules (IPv4 and IPv6)', () => {
+  let app: Hono;
+  const RULE_ID = 'f2f2f2f2-f2f2-4f2f-8f2f-f2f2f2f2f2f2';
+
+  function rigInsertCapture(returned: any) {
+    const valuesSpy = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([returned]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
+    return valuesSpy;
+  }
+
+  function postProxyTunnel(targetHost: string, targetPort: number) {
+    return app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'proxy', targetHost, targetPort }),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.update).mockReset();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('opens a proxy tunnel to an IPv6 target permitted by an IPv6 destination rule', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ direction: 'destination', enabled: true, siteId: null, pattern: '2001:db8::/32:443' }]) as any);
+    vi.mocked(db.insert).mockReturnValue(
+      makeAuditAwareInsertChain([{ ...sessionRecord, type: 'proxy', targetHost: '2001:db8::10', targetPort: 443 }]) as any,
+    );
+
+    const res = await postProxyTunnel('2001:db8::10', 443);
+
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses an IPv6 target outside the IPv6 destination rule', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ direction: 'destination', enabled: true, siteId: null, pattern: '2001:db8::/32:443' }]) as any);
+
+    const res = await postProxyTunnel('2001:db9::10', 443);
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it.each(['::1', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1', 'fe80::1'])(
+    'refuses %s as a blocked target even when a rule would permit it',
+    async (targetHost) => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+        .mockReturnValueOnce(makeSelectChain([]) as any)
+        .mockReturnValueOnce(makeSelectChain([{ direction: 'destination', enabled: true, siteId: null, pattern: '::/0:*' }]) as any);
+
+      const res = await postProxyTunnel(targetHost, 8080);
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/Target blocked/);
+      expect(db.insert).not.toHaveBeenCalled();
+    },
+  );
+
+  it('admits a client whose address matches an IPv6 source rule', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ direction: 'source', enabled: true, siteId: null, pattern: '::/0' }]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ direction: 'destination', enabled: true, siteId: null, pattern: '10.0.0.0/8:*' }]) as any);
+    vi.mocked(db.insert).mockReturnValue(
+      makeAuditAwareInsertChain([{ ...sessionRecord, type: 'proxy', targetHost: '10.0.0.5', targetPort: 8080 }]) as any,
+    );
+
+    vi.mocked(getTrustedClientIp).mockReturnValue('2001:db8::77');
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'proxy', targetHost: '10.0.0.5', targetPort: 8080 }),
+    });
+
+    expect(res.status).toBe(201);
+    vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
+  });
+
+  it('refuses a client outside every IPv6 source rule', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ direction: 'source', enabled: true, siteId: null, pattern: '2001:db8::/32' }]) as any);
+    vi.mocked(getTrustedClientIp).mockReturnValue('2001:db9::77');
+
+    const res = await postProxyTunnel('10.0.0.5', 8080);
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/Source IP/);
+    vi.mocked(getTrustedClientIp).mockReturnValue('127.0.0.1');
+  });
+
+  it.each(['2001:db8::/129:443', 'host.example:443', '2001:db8::/32:', '2001:db8::5/32:443', '10.0.0.1:+80'])(
+    'POST /allowlist refuses the destination pattern %s',
+    async (pattern) => {
+      const valuesSpy = rigInsertCapture({ id: RULE_ID });
+      const res = await app.request('/tunnels/allowlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction: 'destination', pattern }),
+      });
+      expect(res.status).toBe(400);
+      expect(valuesSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it('POST /allowlist refuses a source pattern that carries a port', async () => {
+    const valuesSpy = rigInsertCapture({ id: RULE_ID });
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ direction: 'source', pattern: '198.51.100.0/24:443' }),
+    });
+    expect(res.status).toBe(400);
+    expect(valuesSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['destination', '2001:db8::/32:80-443'],
+    ['source', '2001:db8::/48'],
+  ])('POST /allowlist stores the %s pattern %s', async (direction, pattern) => {
+    const valuesSpy = rigInsertCapture({ id: RULE_ID, orgId: ORG_ID, direction, pattern });
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ direction, pattern }),
+    });
+    expect(res.status).toBe(201);
+    expect(valuesSpy.mock.calls[0]![0]).toEqual(expect.objectContaining({ pattern }));
+  });
+
+  function rigExistingRule(existing: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{ id: RULE_ID, orgId: ORG_ID, siteId: null, ...existing }]) as any);
+    const set = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: RULE_ID, ...existing }]) }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
+    return set;
+  }
+
+  it('PUT /allowlist/:id refuses an invalid replacement pattern', async () => {
+    const set = rigExistingRule({ direction: 'destination', pattern: '10.0.0.0/8:*', enabled: true });
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pattern: '2001:db8::/129:443' }),
+    });
+    expect(res.status).toBe(400);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('PUT /allowlist/:id refuses to enable a stored rule that does not parse', async () => {
+    const set = rigExistingRule({ direction: 'destination', pattern: '2001:db8::5/32:443', enabled: false });
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(res.status).toBe(400);
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('PUT /allowlist/:id still lets an administrator disable or describe a stored rule that does not parse', async () => {
+    const set = rigExistingRule({ direction: 'destination', pattern: '2001:db8::5/32:443', enabled: true });
+    const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false, description: 'retired' }),
+    });
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, description: 'retired' }));
+  });
+
+  it('POST /proxy-connect writes a single-address /128 rule for an IPv6 asset', async () => {
+    const ASSET_ID = 'a8a8a8a8-a8a8-4a8a-8a8a-a8a8a8a8a8a8';
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ id: ASSET_ID, orgId: ORG_ID, siteId: DEVICE_SITE_ID, ipAddress: '2001:db8::20' }]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any);
+    const insertedRule = { id: RULE_ID, orgId: ORG_ID, siteId: DEVICE_SITE_ID, direction: 'destination', pattern: '2001:db8::20/128:8080', enabled: true };
+    const ruleValues = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([insertedRule]) });
+    vi.mocked(db.insert)
+      .mockReturnValueOnce({ values: ruleValues } as any)
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any)
+      .mockReturnValueOnce(makeInsertChain([{ ...sessionRecord, type: 'proxy', targetHost: '2001:db8::20', targetPort: 8080 }]) as any)
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any);
+
+    const res = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, discoveredAssetId: ASSET_ID, port: 8080, scheme: 'http', skipTlsVerify: false }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(ruleValues.mock.calls[0]![0]).toEqual(expect.objectContaining({ pattern: '2001:db8::20/128:8080' }));
   });
 });
