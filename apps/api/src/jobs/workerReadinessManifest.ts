@@ -313,6 +313,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),
+  // #4342 W5. Plain Redis-required consumer, no feature flag.
+  consumers('historyRetention'),
   // Wisp W05b (#9917): daily concern retention — same shape (one Worker, no
   // flag gate before construction, attached under its registry-key name).
   consumers('wispConcernRetention'),

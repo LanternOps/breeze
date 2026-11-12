@@ -47,7 +47,8 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations } from '../../db/schema/orgs';
-import { organizationUsers, permissions, rolePermissions, users } from '../../db/schema/users';
+import { organizationUsers, users } from '../../db/schema/users';
+import { getRolesPermissionGrants } from '../roleInheritance';
 import { wispEnabled } from '../../config/env';
 import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
 import type { WispCeilingSnapshot, WispGrantStatus } from '../../db/schema/wisp';
@@ -584,7 +585,8 @@ function normalizeMembershipSites(raw: unknown): string[] | null {
 
 /**
  * The grantor's `organization_users` rows for `orgIds`, with their role keys
- * (the role → permissions read of permissions.ts buildPerms, batched). The
+ * (each role's runtime grants, inherited ones included, via
+ * services/roleInheritance.ts #11702 — what permissions.ts buildPerms resolves, batched). The
  * table has no (org_id, user_id) unique key; the resolver would pick one row
  * arbitrarily, so several rows for one org INTERSECT here (fail closed).
  * Must run inside the caller's system context.
@@ -600,16 +602,12 @@ async function readOrgMemberships(userId: string, orgIds: string[]): Promise<Liv
   if (withRole.length === 0) return [];
 
   const roleIds = [...new Set(withRole.map((r) => r.roleId))];
-  const rolePerms = await db
-    .select({ roleId: rolePermissions.roleId, resource: permissions.resource, action: permissions.action })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(inArray(rolePermissions.roleId, roleIds));
+  // Each role's runtime grants INCLUDING inherited ones (services/roleInheritance.ts,
+  // #11702) — the same set getUserPermissions resolves for that role.
+  const grantsByRole = await getRolesPermissionGrants(roleIds);
   const keysByRole = new Map<string, string[]>();
-  for (const p of rolePerms) {
-    const keys = keysByRole.get(p.roleId) ?? [];
-    keys.push(`${p.resource}:${p.action}`);
-    keysByRole.set(p.roleId, keys);
+  for (const [roleId, grants] of grantsByRole) {
+    keysByRole.set(roleId, grants.map((g) => `${g.resource}:${g.action}`));
   }
 
   const byOrg = new Map<string, LiveOrgMembership>();

@@ -8,7 +8,8 @@
  *
  * `securityRecipients` is the smallest existing-permissions recipient rule
  * for rejection notifications: active users whose actual role grants
- * `alerts:read` (the incident-read permission) on this org — org members
+ * `alerts:read` (the incident-read permission, own or inherited through
+ * `parent_role_id`, #11702) on this org — org members
  * without a site restriction, or partner members with `all` / this org
  * selected. Not a new preference setting.
  */
@@ -17,6 +18,8 @@ import { db, assertInTransaction } from '../../db';
 import type { VerificationRow } from './types';
 import { addCallerVerificationSystemComment } from '../ticketService';
 import { markRequestAuditWritten } from '../auditRequestTracking';
+import { permissionGrantMatches } from '../permissionMatching';
+import { getRolesPermissionGrants } from '../roleInheritance';
 
 const SYSTEM_ACTOR = '00000000-0000-0000-0000-000000000000';
 
@@ -36,12 +39,30 @@ export async function recordEffect(row: VerificationRow, event: string, actorUse
 }
 
 export async function securityRecipients(orgId: string): Promise<Array<{ id: string; email: string }>> {
-  const rows = await db.execute(sql`SELECT DISTINCT u.id, u.email FROM users u WHERE u.status='active' AND EXISTS (
-    SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id
-    WHERE p.resource IN ('alerts','*') AND p.action IN ('read','*') AND (
-      EXISTS(SELECT 1 FROM organization_users ou WHERE ou.user_id = u.id AND ou.org_id = ${orgId}::uuid AND ou.role_id = rp.role_id AND ou.site_ids IS NULL)
-      OR EXISTS(SELECT 1 FROM partner_users pu JOIN organizations o ON o.partner_id = pu.partner_id
-        WHERE o.id = ${orgId}::uuid AND pu.user_id = u.id AND pu.role_id = rp.role_id
-        AND (pu.org_access = 'all' OR (pu.org_access = 'selected' AND o.id = ANY(pu.org_ids))))))`);
-  return rows as unknown as Array<{ id: string; email: string }>;
+  // Candidate memberships only (the membership rules, no permission join); the
+  // role's grants — own + inherited via parent_role_id (#9600/#11702) — resolve
+  // in TS. Stays on the ambient db: this runs in the caller's transaction.
+  const candidates = (await db.execute(sql`
+    SELECT u.id, u.email, ou.role_id
+    FROM users u
+    JOIN organization_users ou ON ou.user_id = u.id
+    WHERE u.status = 'active' AND ou.org_id = ${orgId}::uuid AND ou.site_ids IS NULL
+    UNION
+    SELECT u.id, u.email, pu.role_id
+    FROM users u
+    JOIN partner_users pu ON pu.user_id = u.id
+    JOIN organizations o ON o.partner_id = pu.partner_id
+    WHERE u.status = 'active' AND o.id = ${orgId}::uuid
+      AND (pu.org_access = 'all' OR (pu.org_access = 'selected' AND o.id = ANY(pu.org_ids)))`,
+  )) as unknown as Array<{ id: string; email: string; role_id: string }>;
+  if (candidates.length === 0) return [];
+  const grants = await getRolesPermissionGrants([...new Set(candidates.map((c) => c.role_id))]);
+  const out = new Map<string, { id: string; email: string }>();
+  for (const c of candidates) {
+    if (out.has(c.id)) continue;
+    if ((grants.get(c.role_id) ?? []).some((g) => permissionGrantMatches(g, 'alerts', 'read'))) {
+      out.set(c.id, { id: c.id, email: c.email });
+    }
+  }
+  return [...out.values()];
 }
