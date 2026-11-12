@@ -108,7 +108,12 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
         });
         if (!emailRes.ok) {
           const data = await emailRes.json().catch(() => null);
-          setError(extractApiError(data, t('setup.account.errors.updateEmailFailed')));
+          const reason = extractApiError(data, t('setup.account.errors.updateEmailFailed'));
+          // The password change above already took effect; say so, so the
+          // user does not keep using the old password.
+          setError(newPassword && currentPassword
+            ? t('setup.account.errors.emailFailedAfterPasswordChange', { reason })
+            : reason);
           setLoading(false);
           return;
         }

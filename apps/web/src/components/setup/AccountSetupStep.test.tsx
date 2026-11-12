@@ -165,6 +165,21 @@ describe('AccountSetupStep — email change request', () => {
     expect(onNext).not.toHaveBeenCalled();
   });
 
+  it('says the password was changed when the email request then fails', async () => {
+    authMocks.fetchWithAuth.mockImplementation(async (path: string) =>
+      path === '/users/me' ? { ok: false, json: async () => ({ error: 'Address already in use' }) } : ok());
+    const onNext = vi.fn();
+    const user = userEvent.setup();
+    render(<AccountSetupStep onNext={onNext} />);
+
+    await fill(user, { email: 'new@example.com', newPassword: 'BrandNewPass1!' });
+
+    expect(await screen.findByText('Your password was changed. The email change could not be requested: Address already in use')).toBeInTheDocument();
+    expect(calledPaths()).toEqual(['/auth/change-password', '/users/me']);
+    expect(screen.queryByText(inboxMessage)).toBeNull();
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
   it('a password-only change signs in again with the current address and advances', async () => {
     const onNext = vi.fn();
     const user = userEvent.setup();
