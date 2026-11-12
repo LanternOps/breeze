@@ -54,6 +54,7 @@ import {
   type UncoveredDevices, type OrgDeviceSnapshot, type GroupMembers,
 } from './contractCoverage';
 import type { InvoiceActor } from './invoiceTypes';
+import { assertContractBillingEnabled } from './contractBillingGate';
 import { applyAllowance, billsOverage, overageValue, type ResolvedQuantity } from './contractAllowance';
 
 export type ContractActorT = ContractActor;
@@ -444,6 +445,7 @@ export async function createContract(input: {
   autoRenew?: boolean; renewalTermMonths?: number | null; renewalNoticeDays?: number | null;
 }, actor: ContractActor) {
   requireOrgAccess(actor, input.orgId);
+  await assertContractBillingEnabled(input.orgId);
   // Site axis: a brand-new contract carries no line and is therefore
   // unattributable to a site — denied to a site-restricted actor, mirroring
   // createManualInvoice rejecting a null-site invoice.
@@ -1236,6 +1238,7 @@ export async function loadCatalogPriceInputs(
 
 export async function updateContract(contractId: string, patch: UpdateContractInput, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
+  await assertContractBillingEnabled(c.orgId);
   await requireWholeContractSiteAccess(actor, contractId);
   assertEditable(c);
   // Schedule fields (billingTiming, intervalMonths, startDate) drive next_billing_at.
@@ -1296,6 +1299,7 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
 /** Returns the deleted contract's id, org and name so the caller can audit the delete. */
 export async function deleteDraftContract(contractId: string, actor: ContractActor): Promise<{ id: string; orgId: string; name: string }> {
   const c = await getOwnedContractOr404(contractId, actor);
+  await assertContractBillingEnabled(c.orgId);
   await requireWholeContractSiteAccess(actor, contractId);
   assertDraft(c);
   await db.delete(contracts).where(eq(contracts.id, contractId)); // lines cascade
@@ -1578,6 +1582,7 @@ export async function changeContractCurrency(
     // so a concurrent activate, line write or billing run serializes against the
     // restamp — which is what makes the eligibility check below race-safe.
     const c = await lockContract(tx, contractId, actor);
+    await assertContractBillingEnabled(c.orgId);
     // Restamping rewrites every line's currency — a whole-document write.
     await requireWholeContractSiteAccess(actor, contractId, tx);
     if (c.status !== 'draft') {
@@ -1709,6 +1714,7 @@ function mapCatalogResolveError(err: unknown): never {
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
+    await assertContractBillingEnabled(c.orgId);
     // Site axis: a line write acts on the whole document (and the new line's own
     // site is checked below, once the line type has decided whether it keeps one).
     await requireWholeContractSiteAccess(actor, contractId, tx);
@@ -1845,6 +1851,7 @@ export async function updateContractLine(
 ): Promise<{ line: DecoratedContractLine; audit: ContractLineAudit }> {
   const { before, line, contract } = await db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
+    await assertContractBillingEnabled(c.orgId);
     await requireWholeContractSiteAccess(actor, contractId, tx);
     assertEditable(c);
 
@@ -1981,6 +1988,7 @@ export async function removeContractLine(
 ): Promise<ContractLineAudit> {
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
+    await assertContractBillingEnabled(c.orgId);
     await requireWholeContractSiteAccess(actor, contractId, tx);
     assertEditable(c);
     // #3205 W03: read before deleting so contract.line.removed names the real
@@ -2022,6 +2030,7 @@ export async function activateContract(contractId: string, actor: ContractActor,
   // or a concurrent line write (same lock order as every other contract writer).
   const { row, c } = await db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
+    await assertContractBillingEnabled(c.orgId);
     await requireWholeContractSiteAccess(actor, contractId, tx);
     if (c.status !== 'draft' && c.status !== 'paused') {
       throw new ContractServiceError('Only draft/paused contracts can be activated', 409, 'INVALID_STATE');
@@ -2300,6 +2309,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
   }
   if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
+  // Partner billing master switch: after the not-due no-ops (nothing to write
+  // there) and before any write. Throws BILLING_DISABLED; worker handling is PR 3.
+  await assertContractBillingEnabled(c.orgId);
 
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
@@ -2599,6 +2611,7 @@ export interface CreatedContractWithLines {
 export async function createContractWithLinesDetailed(
   spec: NewContractSpec,
 ): Promise<CreatedContractWithLines> {
+  await assertContractBillingEnabled(spec.orgId);
   // #4547 W03 (index C7): a quote cannot express a block, and this path inserts
   // the contract row BEFORE its lines — reject first so no orphan draft remains.
   if (spec.lines.some((l) => (l.lineType as string) === 'hour_block')) {

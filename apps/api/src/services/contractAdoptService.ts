@@ -22,6 +22,7 @@ import { agreementRequests, contractDocuments } from '../db/schema/contractDocum
 import { contracts } from '../db/schema/contracts';
 import { serviceDeliverables } from '../db/schema/serviceDeliverables';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { assertContractBillingEnabled } from './contractBillingGate';
 import { lockContractRow, requireWholeContractSiteAccess } from './contractService';
 import { ContractServiceError, type ContractActor } from './contractTypes';
 import { DeliverableServiceError, moveDeliverablesWithin } from './serviceDeliverableService';
@@ -81,6 +82,10 @@ export async function adoptDraftContract(
     // A draft in another org — even one this caller can see — is not a
     // candidate: same 404 as a missing id, so nothing about it is revealed.
     if (source.orgId !== target.orgId) notFound();
+    // The adopt deletes the source draft, so it is gated like draft delete (spec
+    // §7.1). After every access check above, so a BILLING_DISABLED 404 never
+    // reveals another partner's flag.
+    await assertContractBillingEnabled(target.orgId);
     // Site axis (app-layer only): this rewrites one contract and deletes the
     // other, so the caller must reach every line of both — the bar
     // deleteDraftContract sets for the delete alone.

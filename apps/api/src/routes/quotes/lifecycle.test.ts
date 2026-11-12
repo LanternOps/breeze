@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
 import { Hono } from 'hono';
 
 // Route-level RBAC test for POST /:id/send. The previously-vacuous
@@ -56,6 +57,7 @@ vi.mock('../../services/quoteLifecycle', () => ({
 // The two new routes audit-log; the writer is fire-and-forget and DB-backed.
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/quoteService', () => ({ getQuote: vi.fn() }));
+vi.mock('../../services/quoteBillingGate', () => ({ assertQuoteBillingEnabled: vi.fn() }));
 vi.mock('../../jobs/quoteSendQueue', () => ({
   scheduleQuoteSend: vi.fn(),
   cancelQuoteSend: vi.fn(),
@@ -109,6 +111,8 @@ vi.mock('../../db', async (importActual) => {
 
 import { quoteLifecycleRoutes } from './lifecycle';
 import { getQuote } from '../../services/quoteService';
+import { assertQuoteBillingEnabled } from '../../services/quoteBillingGate';
+import { QuoteServiceError } from '../../services/quoteTypes';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { fetchRemoteImage, writeQuoteImage, sniffImageMime, RemoteImageError, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
@@ -1061,5 +1065,74 @@ describe('POST /:id/decline-on-behalf (#6634)', () => {
   // No partner-axis write: the decline runs under the ordinary request context.
   it('stays under the ambient request transaction', () => {
     expect(isSelfManagedDbContextRoute('POST', `/api/v1/quotes/${QUOTE_ID}/decline-on-behalf`)).toBe(false);
+  });
+});
+
+// Partner billing master switch (partners.billing_enabled), spec §7.2: the
+// routes below that live outside a service are gated at the route; the kept-open
+// ones (decline-on-behalf) must keep working with billing off.
+describe('billing master switch on lifecycle routes', () => {
+  const PERMS = ['quotes:read', 'quotes:write', 'quotes:send', 'quotes:accept'];
+  const jsonReq = (body: unknown) => ({
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const off = () => vi.mocked(assertQuoteBillingEnabled).mockRejectedValueOnce(new QuoteServiceError('Not found', 404, 'BILLING_DISABLED'));
+  const app = () => {
+    const a = appWith('partner', PERMS);
+    a.onError((err, c) => err instanceof QuoteServiceError
+      ? c.json({ error: err.message, code: err.code }, err.status as never)
+      : c.json({ error: 'boom' }, 500));
+    return a;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org-1', partnerId: 'p1', status: 'draft' },
+      lines: [{ customerVisible: true }], blocks: [],
+    } as never);
+  });
+
+  it('POST /:id/schedule-send -> 404 BILLING_DISABLED, nothing scheduled', async () => {
+    off();
+    const res = await app().request(`/${QUOTE_ID}/schedule-send`, jsonReq({}));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(assertQuoteBillingEnabled).toHaveBeenCalledWith('org-1');
+    expect(scheduleQuoteSend).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /:id/schedule-send -> 404 BILLING_DISABLED, nothing canceled', async () => {
+    off();
+    const res = await app().request(`/${QUOTE_ID}/schedule-send`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(cancelQuoteSend).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/images -> 404 BILLING_DISABLED, no remote fetch and no write', async () => {
+    off();
+    const res = await app().request(`/${QUOTE_ID}/images`, jsonReq({ url: 'https://img.example/a.png' }));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(fetchRemoteImage).not.toHaveBeenCalled();
+    expect(writeQuoteImage).not.toHaveBeenCalled();
+  });
+
+  it('billing on: schedule-send proceeds past the gate', async () => {
+    vi.mocked(scheduleQuoteSend).mockResolvedValue({ sendScheduledAt: new Date('2026-07-18T12:00:30.000Z') });
+    const res = await app().request(`/${QUOTE_ID}/schedule-send`, jsonReq({}));
+    expect(res.status).toBe(200);
+    expect(assertQuoteBillingEnabled).toHaveBeenCalledWith('org-1');
+  });
+
+  it('decline-on-behalf stays open with billing off (gate never consulted)', async () => {
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org1', partnerId: 'p1', status: 'sent' }, blocks: [], lines: [],
+    } as never);
+    off();
+    const res = await app().request(`/${QUOTE_ID}/decline-on-behalf`, jsonReq({ method: 'email', reference: 'ref-1' }));
+    expect(res.status).toBe(200);
+    expect(assertQuoteBillingEnabled).not.toHaveBeenCalled();
   });
 });

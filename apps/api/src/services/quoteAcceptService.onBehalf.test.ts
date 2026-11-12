@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+// Partner billing master switch is covered by quoteBillingGate.test.ts; pass-through here.
+vi.mock('./quoteBillingGate', () => ({ assertQuoteBillingEnabled: vi.fn() }));
 
 const { stagePax8OrderFromQuoteMock, createContractMock, createExecutedDocumentsMock } = vi.hoisted(() => ({
   stagePax8OrderFromQuoteMock: vi.fn(),

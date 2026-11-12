@@ -46,6 +46,7 @@ import {
   type QuoteSupersedeResult,
 } from './quoteLifecycle';
 import type { QuoteLineForMath } from './quoteMath';
+import { assertQuoteBillingEnabled } from './quoteBillingGate';
 import { syncDraftQuoteTaxRate } from './quoteService';
 
 export interface AcceptQuoteParams {
@@ -192,6 +193,12 @@ export async function acceptQuote(
   // both pass the status guard and each create an invoice (atom-1/C2).
   const [quote] = await db.select().from(quotes).where(eq(quotes.id, params.quoteId)).for('update').limit(1);
   if (!quote) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
+  // Partner billing master switch, before any write and before the caller revokes
+  // the public jti (it revokes only after a successful return, so the link stays
+  // valid for when billing is re-enabled). `partners` is RLS-hidden from an
+  // org-scoped context, which would make the gate fail OPEN silently — every
+  // caller of acceptQuote therefore runs it inside withSystemDbAccessContext.
+  await assertQuoteBillingEnabled(quote.orgId);
   // Durable single-use backstop (#2875, wave-3 schema 2026-08-06-c): a
   // token-based response whose jti was already consumed on this row is a
   // replay — even when the Redis revocation marker was lost (flush/failover/

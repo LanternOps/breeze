@@ -1,4 +1,5 @@
 vi.mock('./autopay/autopayGate', () => ({ isAutopayEnabledForPartner: vi.fn().mockResolvedValue(false) }));
+vi.mock('./contractBillingGate', () => ({ assertContractBillingEnabled: vi.fn() }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type QueuedQuery = { rows: unknown[] } | { error: unknown };

@@ -1,5 +1,8 @@
 vi.mock('./autopay/autopayGate', () => ({ isAutopayEnabledForPartner: vi.fn().mockResolvedValue(false) }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Partner billing master switch is covered by contractBillingGate.test.ts; pass-through here.
+vi.mock('./contractBillingGate', () => ({ assertContractBillingEnabled: vi.fn() }));
+
 
 // Controllable Drizzle chain mock (same pattern as invoiceService.test.ts /
 // quoteService.test.ts): every builder method returns the same chain; a query

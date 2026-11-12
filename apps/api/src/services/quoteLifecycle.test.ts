@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Partner billing master switch is covered by quoteBillingGate.test.ts; pass-through here.
+vi.mock('./quoteBillingGate', () => ({ assertQuoteBillingEnabled: vi.fn() }));
+
 
 // Controllable Drizzle chain mock (same pattern as quoteService.test.ts): every
 // builder method returns the same chain; a query resolves when awaited (the
@@ -112,6 +115,8 @@ vi.mock('./quoteDeviceSet', async (importOriginal) => {
 
 import { buildPublicQuoteAcceptUrl, portalBase, sendQuote, resendQuote, getQuoteShareLink, assertQuoteSendGates } from './quoteLifecycle';
 import { renderQuotePdf } from './quotePdf';
+import { assertQuoteBillingEnabled } from './quoteBillingGate';
+import { QuoteServiceError } from './quoteTypes';
 import { countQuoteDeviceSetLines } from './quoteDeviceSet';
 
 const countQuoteDeviceSetLinesMock = vi.mocked(countQuoteDeviceSetLines);
@@ -1922,5 +1927,38 @@ describe('getQuoteShareLink', () => {
 
     // Both callers hand out the SAME url, and it is the one that is recorded.
     expect(result.acceptUrl).toBe(buildPublicQuoteAcceptUrl(winner!));
+  });
+});
+
+// Partner billing master switch (spec §7.2): sending, re-sending and handing out
+// the accept link are billing operations. The gate throws right after the
+// org-scoped getQuote, before the tax-rate sync write, the claim and any mail.
+describe('quoteLifecycle billing master switch', () => {
+  const QUOTE = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' as const,
+    quoteNumber: 'Q-2026-0001', currencyCode: 'USD', total: '1000.00', expiryDate: null,
+    taxRate: null, depositType: 'none' as const, depositPercent: null,
+  };
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    insertValueCalls.length = 0;
+    vi.clearAllMocks();
+    vi.mocked(assertQuoteBillingEnabled).mockRejectedValueOnce(new QuoteServiceError('Not found', 404, 'BILLING_DISABLED'));
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock (ignored by the others' queues; they stop at the gate)
+    queueResult([QUOTE]); queueResult([]); queueResult([]); queueResult([]); queueResult([]); queueResult([]); queueResult([]);
+  });
+
+  it.each([
+    ['sendQuote', () => sendQuote('q1', actor)],
+    ['resendQuote', () => resendQuote('q1', actor)],
+    ['getQuoteShareLink', () => getQuoteShareLink('q1', actor)],
+  ])('%s answers 404 BILLING_DISABLED and writes nothing', async (_n, run) => {
+    // resend/share-link do not take sendQuote's leading row lock: drop it.
+    if (_n !== 'sendQuote') results.shift();
+    await expect(run()).rejects.toMatchObject({ status: 404, code: 'BILLING_DISABLED' });
+    expect(assertQuoteBillingEnabled).toHaveBeenCalledWith('org1');
+    expect(setCalls).toHaveLength(0);
+    expect(insertValueCalls).toHaveLength(0);
   });
 });

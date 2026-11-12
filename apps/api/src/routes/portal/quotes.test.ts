@@ -444,6 +444,44 @@ describe('portal quote mutation security', () => {
   });
 });
 
+// Partner billing master switch (spec §7.2): portal accept is a billing
+// operation (blocked), decline is not (kept). The real gate lives in acceptQuote,
+// which the route calls inside runOutsideDbContext(withSystemDbAccessContext(...))
+// because partners is RLS-hidden from this org-scoped portal context (a bare read
+// would fail OPEN and let the accept through).
+describe('portal quotes with partners.billing_enabled = false', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbResults.length = 0;
+    declineQuoteByActorMock.mockResolvedValue({ status: 'declined' });
+  });
+
+  it('POST /quotes/:id/accept answers 404 BILLING_DISABLED and emits nothing', async () => {
+    const { QuoteServiceError } = await import('../../services/quoteTypes');
+    acceptQuoteMock.mockRejectedValueOnce(new QuoteServiceError('Not found', 404, 'BILLING_DISABLED'));
+    dbResults.push([{ id: QUOTE_ID }]); // quote ownership lookup
+    dbResults.push([{ id: 'recipient-1' }]); // recipient authorization lookup
+    dbResults.push([]); // quote blocks
+
+    const res = await app(ORG_ID, { email: 'buyer@customer.example' }).request(`/quotes/${QUOTE_ID}/accept`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signerName: 'Buyer' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(emitAcceptInvoiceIssuedMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /quotes/:id/decline keeps working', async () => {
+    dbResults.push([{ id: QUOTE_ID }]); // quote ownership lookup
+    dbResults.push([{ id: 'recipient-1' }]); // recipient authorization lookup
+    const res = await app(ORG_ID, { email: 'buyer@customer.example' }).request(`/quotes/${QUOTE_ID}/decline`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'No' }),
+    });
+    expect(res.status).toBe(200);
+    expect(declineQuoteByActorMock).toHaveBeenCalled();
+  });
+});
+
 describe('portal quotes GET /quotes/:id/contract-file/:blockId', () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -61,6 +61,7 @@ vi.mock('../../services/blobStorage', async (importActual) => {
 });
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/quoteBillingGate', () => ({ assertQuoteBillingEnabled: vi.fn() }));
 vi.mock('../../services/quoteService', () => ({ getQuote: vi.fn() }));
 vi.mock('./quotes', async () => {
   const { QuoteServiceError } = await import('../../services/quoteTypes');
