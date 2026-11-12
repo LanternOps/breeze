@@ -45,7 +45,7 @@ interface GatewayGrantInputBase {
   /**
    * #11396: per bound wire model, the window known before any rejection (the
    * offering's effective window). Seeds `planRequest`, so a fresh process caps
-   * `max_tokens` up front. Absent = nothing known (today's behaviour).
+   * `max_tokens` up front. Absent = nothing known: the gateway learns the window only from rejections.
    */
   knownWindows?: ReadonlyMap<string, KnownWindow>;
   /**

@@ -96,7 +96,7 @@ export interface AiOfferingContextWindowDto {
   effective: number | null;
   source: 'override' | 'discovered' | 'observed' | 'unknown';
   override: number | null;
-  /** Stated by the endpoint's model listing on the last discovery sync. */
+  /** Stated by the endpoint's model listing on the last discovery sync that listed the model. */
   discovered: number | null;
   /** Stated by the endpoint in a context-length rejection. */
   observed: { value: number; at: string; fresh: boolean } | null;

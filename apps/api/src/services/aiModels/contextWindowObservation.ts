@@ -17,7 +17,9 @@
  *    busy session does not write on every rejection. A failed write is not
  *    deduped.
  *
- * It never touches `updated_at`: the row's edit time is the operator's.
+ * It never touches `updated_at`: that is the offering's write version
+ * (`expectedUpdatedAt`), and a background observation must not make an
+ * operator's open edit fail as stale.
  */
 import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -87,7 +89,13 @@ export function recordObservedContextWindow(o: ContextWindowObservation): void {
       console.warn('[aiModels] could not persist an observed context window; the turn is unaffected', {
         offeringId: o.offeringId, configVersion: o.configVersion, contextWindow: o.contextWindow, error: safeErrorMessage(error),
       });
-      captureException(error, undefined, { service: 'contextWindowObservation', partner_id: o.partnerId });
+      // The scrubbed message only (safeDbError contract), one Sentry group.
+      captureException(
+        new Error(`context window observation write failed: ${safeErrorMessage(error)}`),
+        undefined,
+        { service: 'contextWindowObservation', partner_id: o.partnerId },
+        { fingerprint: ['aiModels', 'contextWindowObservation'] },
+      );
     }
   })();
   pending.add(task);

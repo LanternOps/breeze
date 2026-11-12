@@ -101,9 +101,11 @@ export interface SessionToolExposure {
 }
 
 /**
- * Throws `ToolProfileUnderpoweredError` when the exposure drops a tool the
- * surface requires — before any provider call. Never called for `ai_agents`
- * (the run loop checks its run-specific floor itself).
+ * Throws `ContextWindowTooSmallError` when `auto` finds no profile that fits
+ * the model's known window (#11396), and `ToolProfileUnderpoweredError` when
+ * the exposure drops a tool the surface requires — both before any provider
+ * call. The coverage check is never run for `ai_agents` (the run loop checks
+ * its run-specific floor itself).
  */
 export function finalizeSessionToolExposure(input: SessionToolExposureInput): SessionToolExposure {
   const { surface, facts, allowedTools, extraTools, approvalMode, breezeServer } = input;

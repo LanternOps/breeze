@@ -2,11 +2,13 @@
  * Fits `max_tokens` to an OpenAI-compatible endpoint's context window (#10577).
  *
  * These endpoints reject prompt + max_tokens over their window with a 400, and
- * the Agent SDK CLI asks for a large fixed max_tokens on every call. Nothing
- * stored says how large a BYO model's window is, so the gateway learns it from
- * the rejection itself: the endpoint states its window and usually its exact
- * prompt count. The request is retried once with a max_tokens that fits, and
- * the window is remembered so that later requests are capped up front.
+ * the Agent SDK CLI asks for a large fixed max_tokens on every call. The grant
+ * may carry a window already known for the model (#11396: an operator
+ * override, the `/models` listing, or a persisted rejection), which seeds the
+ * plan. Otherwise the gateway learns it from the rejection itself: the
+ * endpoint states its window and usually its exact prompt count. The request
+ * is retried once with a max_tokens that fits, and the window is remembered so
+ * that later requests are capped up front.
  *
  * The memo is per process, per connection version and model, and expires, so an
  * endpoint restarted with a larger window recovers on its own. Only numbers are
@@ -17,7 +19,12 @@
 export const CONTEXT_MIN_OUTPUT_TOKENS = 1024;
 export const CONTEXT_WINDOW_MEMO_TTL_MS = 60 * 60_000;
 export const CONTEXT_WINDOW_MEMO_MAX_ENTRIES = 1_000;
-/** Refusing with no provider call needs a window the endpoint stated this recently; past it the endpoint is asked again. */
+/**
+ * A memo may refuse with no provider call only this long after the endpoint
+ * stated its window; past it the endpoint is asked again. A known window
+ * (#11396) refuses only when it is an override or a persisted observation,
+ * never a discovered (listed) one.
+ */
 export const CONTEXT_WINDOW_REFUSAL_FRESH_MS = 10 * 60_000;
 
 /** Bounds a stated, discovered or persisted window must fall within (#11396 reads them too). */
@@ -155,8 +162,11 @@ function logKnownCapOnce(k: string, window: number): boolean {
  * and model and, when given, the window known for it (#11396). Precedence:
  * an operator override always wins over the memo; otherwise the smaller of
  * the memo and the known window. The memo's calibration of the byte estimate
- * applies whichever window is used. A known window refuses a clearly
- * over-window prompt before any provider call, as a fresh memo does.
+ * applies whichever window is used. When the known window is the one used,
+ * an override or a persisted observation refuses a clearly over-window prompt
+ * before any provider call; a discovered window only caps. An override is
+ * trusted over the endpoint's own statement: one set larger than what the
+ * endpoint serves is rejected and retried on every request.
  */
 export function planRequest(
   key: ContextWindowKey,
@@ -177,7 +187,13 @@ export function planRequest(
   }
   const contextWindow = useKnown ? known!.window : entry!.contextWindow;
   const promptTokens = Math.round(estimatedPromptTokens * (entry?.estimateRatio ?? 1));
-  const mayRefuse = useKnown || Date.now() - entry!.at <= CONTEXT_WINDOW_REFUSAL_FRESH_MS;
+  // An override (the operator's statement) or a persisted observation (the
+  // endpoint's own statement) may refuse up front. A discovered window is the
+  // listing's advertised value and the estimate is uncalibrated bytes/3: it
+  // only caps, and the endpoint, whose count is exact, decides.
+  const mayRefuse = useKnown
+    ? known!.source !== 'discovered'
+    : Date.now() - entry!.at <= CONTEXT_WINDOW_REFUSAL_FRESH_MS;
   if (mayRefuse && promptTokens >= contextWindow * CLEARLY_OVER_WINDOW_FACTOR) {
     return { kind: 'too_large', contextWindow, promptTokens };
   }

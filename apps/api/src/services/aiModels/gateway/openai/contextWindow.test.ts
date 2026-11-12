@@ -226,9 +226,17 @@ describe('planRequest with a known window (#11396 T7)', () => {
     expect(planRequest(KEY, 32_000, 108_301, null)).toEqual({ kind: 'send', maxTokens: 32_000 });
   });
 
-  it('a prompt clearly over the known window is refused before send', () => {
+  it('a prompt clearly over an override or a fresh observed window is refused before send', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(planRequest(KEY, 32_000, WINDOW * 2, DISCOVERED)).toEqual({ kind: 'too_large', contextWindow: WINDOW, promptTokens: WINDOW * 2 });
+    for (const source of ['override', 'observed'] as const) {
+      expect(planRequest(KEY, 32_000, WINDOW * 2, { window: WINDOW, source }))
+        .toEqual({ kind: 'too_large', contextWindow: WINDOW, promptTokens: WINDOW * 2 });
+    }
+  });
+
+  it('a discovered (listed, never stated by a rejection) window caps but never refuses up front: the endpoint decides', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(planRequest(KEY, 32_000, WINDOW * 2, DISCOVERED)).toEqual({ kind: 'send', maxTokens: CONTEXT_MIN_OUTPUT_TOKENS });
   });
 
   it('a memo of 8192 beats a known discovered 131072 (min of the two)', () => {

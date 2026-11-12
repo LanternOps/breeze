@@ -93,7 +93,7 @@ Codex exec read-only xhigh 2026-11-08: **AGREE WITH CHANGES — folded in.**
 | `aiToolSearchPolicy.ts` | `ToolSearchReason += 'profile_static'`; `profileSearch` input | W01 |
 | `turnBinding.ts` | `toolExposureFingerprint: string | null`; `liveQueryKey` suffix | W01 |
 | `aiAgentSystemPrompt.ts`, `aiToolIndex.ts`, `aiTools.ts` | `AI_SYSTEM_PROMPT_COMPACT`, `composeConstrainedSystemPrompt`, `compactDescription?` | W03 |
-| `gateway/openai/translateRequest.ts`, `gateway/openai/schemaCompaction.ts` (new), `gateway/grants.ts:56`, `gateway/types.ts`, `connectionFactory.ts openGatewayGrant` | compaction on upstream params; grant `compactSchemas`, `contextWindow`, `windowSource`, `observers` | W03 (window fields W02) |
+| `gateway/openai/translateRequest.ts`, `gateway/openai/schemaCompaction.ts` (new), `gateway/grants.ts:56`, `gateway/types.ts`, `connectionFactory.ts openGatewayGrant` | compaction on upstream params; grant `compactSchemas`, `knownWindows` (per wire model, as built in W02), `observers` | W03 (window fields W02) |
 | `db/schema/aiInvocations.ts`, `invocationLedgerWrite.ts`, `tenantExportPolicyRegistry.ts:154` | `tool_profile`, `tool_exposure_fingerprint` (`included`) | W03 |
 | `llm/__scripts__/tool-capture.ts:34`, `llm/toolCapture/runSurface.ts:139,173`, `surfaces.ts` | `--offering <id>` / `--profile <p>` → exposure-aware capture | W03 |
 | `gateway/openai/discovery.ts`, `gateway/types.ts:21`, `aiModels/discovery.ts syncConnectionModels` | `contextLength` read + `context_window_discovered` write | W02 |
@@ -120,7 +120,7 @@ Worked `auto` example the thresholds must reproduce, **corrected in W02 (#11396)
 |---|---|---|---|
 | chat | 7,647 | 16,728 | 171,067 |
 | helper | 7,147 | 10,291 | 16,920 |
-| script builder | 7,777 | 9,929 | 14,730 |
+| script builder | 7,777 (but `minimal` drops `execute_script_on_device`, so the builder refuses `tool_profile_underpowered` below 9,929) | 9,929 | 14,730 |
 | AI agents | 7,353 | 15,983 | 105,428 |
 | Office | `full` at any window (prefixes unmeasured) | | |
 
@@ -264,7 +264,7 @@ Migration slot: **`2027-01-22-210500-ai-invocations-tool-profile.sql`** — re-c
 
 ### Task 6: persisted observation, per wire model, best-effort
 
-**Files:** Create `services/aiModels/contextWindowObservation.ts` + unit test + `__tests__/integration/contextWindowObservation.integration.test.ts`. Modify `gateway/types.ts`, `gateway/grants.ts:56-66` (copy `observers`, `contextWindow`, `windowSource`), `connectionFactory.ts:268-295` (`observers` keyed by each wire model from `resolved.offering.id` and the refusal fallback's offering), `adapter.ts:128,139`.
+**Files:** Create `services/aiModels/contextWindowObservation.ts` + unit test + `__tests__/integration/contextWindowObservation.integration.test.ts`. Modify `gateway/types.ts`, `gateway/grants.ts:56-66` (copy `observers` and `knownWindows: Map<wireModel, { window, source }>` — as built in W02, one entry per bound wire model, not a single `contextWindow`/`windowSource` pair), `connectionFactory.ts:268-295` (`observers` keyed by each wire model from `resolved.offering.id` and the refusal fallback's offering), `adapter.ts:128,139`.
 
 **Interfaces — Produces:** `recordObservedContextWindow({ offeringId, partnerId, configVersion, contextWindow }): void` — fire-and-forget, deduped per `(offeringId, configVersion, contextWindow)` for the TTL, `runOutsideDbContext(() => withSystemDbAccessContext(…))`, `UPDATE partner_ai_models SET … WHERE id = $id AND partner_id = $p AND EXISTS (SELECT 1 FROM partner_ai_connections c WHERE c.id = partner_ai_models.connection_id AND c.config_version = $cv)`; throws are logged + `captureException`, never rethrown.
 

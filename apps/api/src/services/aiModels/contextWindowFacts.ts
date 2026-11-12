@@ -7,8 +7,8 @@
  *  1. the operator's override, when set;
  *  2. otherwise the SMALLER of the discovered window (the `/models` listing)
  *     and a FRESH observed one (an endpoint's own context-length rejection):
- *     a serving limit below the advertised maximum (an LM Studio model loaded
- *     at 8k) beats the maximum;
+ *     a serving limit below the advertised maximum (a model served with a
+ *     smaller context than its listing states) beats the maximum;
  *  3. otherwise unknown (`auto` then stays `full`).
  *
  * An observation is fresh only under the connection's CURRENT config_version

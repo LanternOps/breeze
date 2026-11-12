@@ -234,8 +234,8 @@ describe('pickAutoProfile', () => {
   /**
    * #11396 (W02, `auto` goes live): the smallest window at which each profile
    * is picked on each surface, from the MEASURED pins. This is the behaviour
-   * a gateway offering gets once its window is known; the PR body's table is
-   * this table. A re-measured pin moves a threshold and must update it here.
+   * a gateway offering gets once its window is known; the plan's corrected
+   * worked-example table (W02) is this table. A re-measured pin moves a threshold and must update it here.
    */
   it.each([
     ['chat', 7_647, 16_728, 171_067],

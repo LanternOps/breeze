@@ -561,7 +561,8 @@ export async function syncConnectionModels(
       // enabled, prices and display_name are deliberately never written on
       // conflict: discovery never enables or re-prices (spec §6). #11396: a
       // gateway listing's stated window is the current truth, so it is
-      // overwritten (cleared when no longer stated); BYOK/catalog listings
+      // overwritten for every model it lists (cleared when no longer stated;
+      // a model missing from the listing keeps its value); BYOK/catalog listings
       // never set it. The override and the observation are never touched.
       if (rows[0]?.inserted) added += 1;
     }
