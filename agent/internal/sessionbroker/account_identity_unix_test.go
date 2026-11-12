@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"net"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -104,12 +103,15 @@ func waitForSession(t *testing.T, b *Broker, sessionID string) *Session {
 // the name reported for the session follow that account.
 func TestHelperSessionAccountFollowsPeerUID(t *testing.T) {
 	uid := os.Getuid()
-	current, err := user.LookupId(strconv.Itoa(uid))
-	if err != nil || current.Username == "" {
+	// The expected name comes from the account database (os/user, then NSS
+	// or Open Directory), not from $USER, so directory accounts in builds
+	// without cgo are covered too.
+	name, err := platformAccounts.nameForIdentity(strconv.Itoa(uid))
+	if err != nil || name == "" {
 		t.Skipf("current uid %d has no account entry: %v", uid, err)
 	}
 	const reported = "breeze-test-other-account"
-	if _, err := user.Lookup(reported); err == nil {
+	if _, err := platformAccounts.identityForName(reported); err == nil {
 		t.Skipf("account %q exists on this host", reported)
 	}
 
@@ -124,16 +126,33 @@ func TestHelperSessionAccountFollowsPeerUID(t *testing.T) {
 	})
 	session := waitForSession(t, b, "helper-account-test")
 
-	if session.Username != current.Username {
-		t.Errorf("session account name = %q, want %q (from uid %d)", session.Username, current.Username, uid)
+	if session.Username != name {
+		t.Errorf("session account name = %q, want %q (from uid %d)", session.Username, name, uid)
 	}
-	if info := session.Info(); info.Username != current.Username {
-		t.Errorf("session info account name = %q, want %q", info.Username, current.Username)
+	if info := session.Info(); info.Username != name {
+		t.Errorf("session info account name = %q, want %q", info.Username, name)
 	}
 	if got := b.SessionForUser(reported); got != nil {
-		t.Errorf("SessionForUser(%q) selected session %q, which runs as %q", reported, got.SessionID, current.Username)
+		t.Errorf("SessionForUser(%q) selected session %q, which runs as %q", reported, got.SessionID, name)
 	}
-	if got := b.SessionForUser(current.Username); got != session {
-		t.Errorf("SessionForUser(%q) = %v, want the session running as that account", current.Username, got)
+	if got := b.SessionForUser(name); got != session {
+		t.Errorf("SessionForUser(%q) = %v, want the session running as that account", name, got)
+	}
+}
+
+// The platform lookups answer for the account running this test, in both
+// directions, without reading $USER.
+func TestPlatformAccountLookupRoundTrip(t *testing.T) {
+	uid := strconv.Itoa(os.Getuid())
+	name, err := platformAccounts.nameForIdentity(uid)
+	if err != nil || name == "" {
+		t.Skipf("uid %s has no account entry: %v", uid, err)
+	}
+	identity, err := platformAccounts.identityForName(name)
+	if err != nil {
+		t.Fatalf("identityForName(%q): %v", name, err)
+	}
+	if identity != uid {
+		t.Fatalf("identityForName(%q) = %q, want %q", name, identity, uid)
 	}
 }

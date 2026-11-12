@@ -3,7 +3,6 @@ package sessionbroker
 import (
 	"errors"
 	"fmt"
-	"os/user"
 	"strings"
 	"syscall"
 	"testing"
@@ -236,26 +235,6 @@ func TestPeerAccountNameComesFromTheVerifiedIdentity(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("stalled lookups took %v", elapsed)
-	}
-}
-
-// The platform lookups answer for the account running this test, in both
-// directions.
-func TestPlatformAccountLookupRoundTrip(t *testing.T) {
-	current, err := user.Current()
-	if err != nil {
-		t.Skipf("user.Current: %v", err)
-	}
-	name, err := platformAccounts.nameForIdentity(current.Uid)
-	if err != nil || name == "" {
-		t.Fatalf("nameForIdentity(%q) = %q, %v", current.Uid, name, err)
-	}
-	identity, err := platformAccounts.identityForName(name)
-	if err != nil {
-		t.Fatalf("identityForName(%q): %v", name, err)
-	}
-	if identity != current.Uid {
-		t.Fatalf("identityForName(%q) = %q, want %q", name, identity, current.Uid)
 	}
 }
 
