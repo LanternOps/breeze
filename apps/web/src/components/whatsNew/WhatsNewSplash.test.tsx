@@ -70,6 +70,35 @@ describe('WhatsNewSplash', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
+  // On a phone the notes can be taller than the screen while the page scroll is
+  // locked: the notes must scroll inside a panel capped at the viewport, with
+  // the buttons outside the scrolling area so they always stay reachable.
+  it('scrolls the notes inside a viewport-capped panel and keeps the buttons outside it', async () => {
+    render(<WhatsNewSplash />);
+    const body = await screen.findByTestId('whats-new-body');
+    const actions = screen.getByTestId('whats-new-actions');
+    const panel = screen.getByRole('dialog');
+
+    expect(panel.className).toContain('max-h-[calc(100dvh-4rem)]');
+    expect(panel.className).toContain('flex-col');
+    expect(body.className).toContain('overflow-y-auto');
+    expect(body).toContainElement(screen.getByText(/whatsNew\.title:/));
+    expect(body).not.toContainElement(screen.getByText('whatsNew.gotIt'));
+    expect(actions).toContainElement(screen.getByText('whatsNew.gotIt'));
+    expect(actions).toContainElement(screen.getByText('whatsNew.later'));
+  });
+
+  // The Dialog focuses the first focusable element. That must be the scrolling
+  // notes region (at its top), not the "Learn more" link at the bottom, which
+  // would scroll the title out of view on a small screen.
+  it('gives initial focus to the notes region, not the learn-more link', async () => {
+    render(<WhatsNewSplash />);
+    const body = await screen.findByTestId('whats-new-body');
+    await waitFor(() => expect(body).toHaveFocus());
+    expect(body).toHaveAttribute('role', 'region');
+    expect(body).toHaveAttribute('aria-labelledby', 'whats-new-heading');
+  });
+
   // The sidebar link reopens via a window event and ignores the dismissal floor.
   it('reopens on the sidebar event even when the floor suppresses the splash', async () => {
     window.localStorage.setItem(LAST_SEEN_KEY, '99.0.0');
