@@ -32,7 +32,7 @@ import { lifecycleForAlert } from '../services/alertLifecycle/resolve';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 import { escapeLike } from '../utils/sql';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { dispatchWake } from '../services/wakeOnLan';
 import { executeScriptOnDevices } from '../services/scriptExecution';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -1896,6 +1896,13 @@ mobileRoutes.get(
 
     const orgFilter = orgCheck.orgIds === null ? undefined : inArray;
     const perms = c.get('permissions') as UserPermissions | undefined;
+    // Each result group needs the permission of the screen that opens it: the
+    // alert inbox (alerts:read) and AI conversations (ai_sessions:use). A
+    // caller without one of them still gets the other groups.
+    const canReadAlerts = !!perms
+      && hasPermission(perms, PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+    const canUseAi = !!perms
+      && hasPermission(perms, PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action);
     const allowedDeviceIds = perms?.allowedSiteIds && auth.orgId
       ? await resolveSiteAllowedDeviceIds(auth.orgId, perms)
       : null;
@@ -1953,7 +1960,7 @@ mobileRoutes.get(
         .where(deviceWhere)
         .orderBy(desc(devices.lastSeenAt))
         .limit(perKind),
-      db
+      canReadAlerts ? db
         .select({
           id: alerts.id,
           orgId: alerts.orgId,
@@ -1973,8 +1980,8 @@ mobileRoutes.get(
         .leftJoin(devices, eq(alerts.deviceId, devices.id))
         .where(alertWhere)
         .orderBy(desc(alerts.triggeredAt))
-        .limit(perKind),
-      db
+        .limit(perKind) : Promise.resolve([]),
+      canUseAi ? db
         .select({
           id: aiSessions.id,
           orgId: aiSessions.orgId,
@@ -1987,7 +1994,7 @@ mobileRoutes.get(
         .from(aiSessions)
         .where(sessionWhere)
         .orderBy(desc(aiSessions.lastActivityAt))
-        .limit(perKind)
+        .limit(perKind) : Promise.resolve([])
     ]);
 
     const severityRank: Record<string, number> = {
