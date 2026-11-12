@@ -13,11 +13,12 @@ import (
 )
 
 // The verify call carries the agent credential; a redirect answered by the
-// server must not take it, or the request, to another host or to http.
+// server must not take it, or the request, to another host or port.
 func TestHTTPVerifierKeepsRedirectsOnServerHost(t *testing.T) {
 	for _, target := range []string{
 		"http://other.example.test/next",
 		"http://sub.control.example.test/next",
+		"http://control.example.test:8080/next",
 	} {
 		t.Run(target, func(t *testing.T) {
 			var (

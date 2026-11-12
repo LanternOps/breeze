@@ -30,16 +30,17 @@ var ErrTooManyRedirects = fmt.Errorf("stopped after %d redirects", MaxRedirects)
 //
 // net/http's default policy follows a redirect to any host. It drops
 // Authorization only when the new host is neither the original host nor a
-// subdomain of it, it keeps custom headers, and on 307/308 it sends the
-// request body again. A Breeze server never redirects an agent to another
-// host, so the policy refuses that outright, and the caller gets an error
-// instead of a response from somewhere else.
+// subdomain of it, it ignores the port, it keeps custom headers, and on
+// 307/308 it sends the request body again. A Breeze server never redirects
+// an agent to another origin, so the policy refuses that outright, and the
+// caller gets an error instead of a response from somewhere else.
 //
-// Allowed: another path on the same host, a different port on the same host,
-// and an http to https upgrade. Refused: any other host (subdomains
-// included), an https to http downgrade, and more than MaxRedirects hops.
-// Each hop is compared with the one before it, so a chain cannot leave the
-// host and come back.
+// Each hop must have the same scheme, host and port as the one before it,
+// with one exception: an http to https upgrade on the same host, where the
+// port may change (the API's http:80 to https:443 redirect). Refused: any
+// other host (subdomains included), another port on the same host, an https
+// to http downgrade, and more than MaxRedirects hops. Because each hop is
+// compared with the one before it, a chain cannot leave and come back.
 func RefuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) == 0 {
 		return nil
@@ -52,10 +53,42 @@ func RefuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
 	if !strings.EqualFold(req.URL.Hostname(), prev.URL.Hostname()) {
 		return fmt.Errorf("refusing redirect from host %s to untrusted host %s during credentialed request", prev.URL.Hostname(), req.URL.Hostname())
 	}
-	if strings.EqualFold(prev.URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+	prevScheme, nextScheme := strings.ToLower(prev.URL.Scheme), strings.ToLower(req.URL.Scheme)
+	if prevScheme == "https" && nextScheme != "https" {
 		return fmt.Errorf("refusing https->%s downgrade redirect to %s during credentialed request", req.URL.Scheme, req.URL.Hostname())
 	}
+	if prevScheme == "http" && nextScheme == "https" {
+		return nil
+	}
+	prevPort, prevOK := effectivePort(prevScheme, prev.URL.Port())
+	nextPort, nextOK := effectivePort(nextScheme, req.URL.Port())
+	if prevScheme != nextScheme || !prevOK || !nextOK || prevPort != nextPort {
+		return fmt.Errorf("refusing redirect from %s://%s to %s://%s during credentialed request", prev.URL.Scheme, prev.URL.Host, req.URL.Scheme, req.URL.Host)
+	}
 	return nil
+}
+
+// effectivePort returns port, or the scheme's default port when port is
+// empty. ok is false for a port outside 1-65535 or a scheme other than http
+// or https.
+func effectivePort(scheme, port string) (n int, ok bool) {
+	if port == "" {
+		switch scheme {
+		case "http":
+			return 80, true
+		case "https":
+			return 443, true
+		}
+		return 0, false
+	}
+	if scheme != "http" && scheme != "https" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return 0, false
+	}
+	return n, true
 }
 
 // NewClient returns an http.Client over transport (nil means
@@ -84,15 +117,8 @@ func origin(rawURL string) (string, error) {
 	if u.User != nil || u.Hostname() == "" {
 		return "", errNoOrigin
 	}
-	port := u.Port()
-	if port == "" {
-		port = "80"
-		if scheme == "https" {
-			port = "443"
-		}
-	}
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 {
+	n, ok := effectivePort(scheme, u.Port())
+	if !ok {
 		return "", errNoOrigin
 	}
 	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), strconv.Itoa(n)), nil

@@ -270,9 +270,9 @@ type AgentConfig struct {
 // credentialed agent requests, including pre-enrollment bootstrap. Every
 // request the normal API client makes carries the device token: Enroll sends
 // it as the x-agent-reenrollment-token header, the other calls send it as
-// Authorization: Bearer. A redirect to another host, or from https to http,
-// is refused and surfaced to the caller; see httpguard.RefuseUntrustedRedirect
-// for the full rule. See #1043.
+// Authorization: Bearer. A redirect to another host or port, or from https to
+// http, is refused and surfaced to the caller; see
+// httpguard.RefuseUntrustedRedirect for the full rule. See #1043.
 func RefuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
 	return httpguard.RefuseUntrustedRedirect(req, via)
 }

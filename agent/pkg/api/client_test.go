@@ -150,7 +150,8 @@ func TestRefuseUntrustedRedirect(t *testing.T) {
 		{name: "same host and scheme, different path", target: "https://api.example.com/b", prev: "https://api.example.com/a", wantErr: false},
 		{name: "http to https upgrade on same host", target: "https://api.example.com/b", prev: "http://api.example.com/a", wantErr: false},
 		{name: "host comparison is case-insensitive", target: "https://API.Example.com/b", prev: "https://api.example.com/a", wantErr: false},
-		{name: "different port on same host is allowed", target: "https://api.example.com:8443/b", prev: "https://api.example.com/a", wantErr: false},
+		{name: "different port on same host is refused", target: "https://api.example.com:8443/b", prev: "https://api.example.com/a", wantErr: true},
+		{name: "http to https upgrade to another port on same host", target: "https://api.example.com:8443/b", prev: "http://api.example.com/a", wantErr: false},
 		{name: "different host is refused", target: "https://evil.example.com/b", prev: "https://api.example.com/a", wantErr: true},
 		{name: "https to http downgrade is refused", target: "http://api.example.com:8443/b", prev: "https://api.example.com:8443/a", wantErr: true},
 	}

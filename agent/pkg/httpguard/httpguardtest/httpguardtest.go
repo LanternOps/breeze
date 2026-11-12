@@ -20,12 +20,13 @@ const (
 	startPath = "/start"
 )
 
-// OffHostTargets are redirect targets that leave the original host or drop
-// from https to http. A client that carries the agent credential must not
-// send a request to any of them.
+// OffHostTargets are redirect targets that leave the original host, move to
+// another port on it, or drop from https to http. A client that carries the
+// agent credential must not send a request to any of them.
 var OffHostTargets = []string{
 	"https://other.example.test/next",
 	"https://sub.api.example.test/next",
+	"https://api.example.test:8443/next",
 	"http://api.example.test/next",
 }
 
@@ -112,9 +113,9 @@ func RequireNoOffHostRedirect(t testing.TB, client *http.Client) {
 }
 
 // RequireSameHostRedirectsOnly is RequireNoOffHostRedirect plus the other half
-// of the shared policy: the client reports an error for an off-host redirect,
-// and it still follows a redirect to another path on the same host, keeping
-// the credential.
+// of the shared policy: the client reports an error for each of the
+// OffHostTargets, and it still follows a redirect to another path on the same
+// host and port, keeping the credential.
 func RequireSameHostRedirectsOnly(t testing.TB, client *http.Client) {
 	t.Helper()
 	RequireNoOffHostRedirect(t, client)
