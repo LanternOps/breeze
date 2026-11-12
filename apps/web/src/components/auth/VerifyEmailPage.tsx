@@ -19,7 +19,9 @@ type State =
   // registration for a mailbox they merely scanned — verifying an address for
   // someone who never controlled it. A human clicks; a scanner does not.
   // A signup confirmation also asks for the password chosen at signup; the
-  // first click without it comes back as `password_required`.
+  // first click without it comes back as `password_required`. A wrong password
+  // and an account locked out after failed sign-ins get the same answer, as at
+  // sign-in, so the message covers both.
   | { phase: 'confirm'; token: string; requirePassword?: boolean; passwordRejected?: boolean }
   | { phase: 'success'; autoActivated: boolean }
   // SR2-21 step 2: the token completed a PENDING REGISTRATION — the account was
@@ -149,7 +151,9 @@ export default function VerifyEmailPage() {
             </span>
             {state.passwordRejected && (
               <span role="alert" className="block text-destructive">
-                {t('verifyEmail.password.mismatch', { defaultValue: 'That password does not match the one chosen at signup.' })}
+                {t('verifyEmail.password.notAccepted', {
+                  defaultValue: 'That password was not accepted. Check it and try again. After several failed attempts, wait a few minutes before trying again.',
+                })}
               </span>
             )}
           </label>

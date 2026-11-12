@@ -52,7 +52,9 @@ describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
     });
   });
 
-  it('says so when the signup password does not match', async () => {
+  // The same answer covers a wrong password and an account that is locked out
+  // after failed sign-ins (the API does not tell them apart, like sign-in).
+  it('says the password was not accepted and to wait after repeated failures', async () => {
     authMocks.apiVerifyEmail
       .mockResolvedValueOnce({ success: false, status: 'password_required' })
       .mockResolvedValueOnce({ success: false, status: 'password_required' });
@@ -61,7 +63,9 @@ describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     fireEvent.change(await screen.findByLabelText(/Signup password/), { target: { value: 'not-it' } });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm my email' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('That password does not match the one chosen at signup.');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'That password was not accepted. Check it and try again. After several failed attempts, wait a few minutes before trying again.',
+    );
   });
 
   it('asks for the signup password before completing a pending account', async () => {
