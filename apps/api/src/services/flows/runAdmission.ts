@@ -4,7 +4,9 @@
  *
  * A slot is a THROUGHPUT limiter, not mutual exclusion of effects: at most one
  * `running` run per (flow, org) and at most `flowMaxRunningPerOwner()`
- * running runs per flow owner. Parked runs (`waiting`, `awaiting_approval`)
+ * running runs per flow owner. For a partner-wide flow both caps (running
+ * and active) count the runs in the run's own org, so one customer org cannot
+ * use them up for the partner's other orgs. Parked runs (`waiting`, `awaiting_approval`)
  * hold no slot; an approved step released by the intent release worker runs
  * outside it (Decision 8 rationale).
  *
@@ -27,7 +29,8 @@ import * as store from './runStore';
 /** The active-run cap (W04) and the monthly caps (W05, Decision 15). */
 export type FlowRunAdmissionRefusal = FlowAdmissionRefusal;
 
-/** Active = queued + running + waiting + awaiting_approval, per flow owner (Decision 8). */
+/** Active = queued + running + waiting + awaiting_approval, per flow owner (Decision 8);
+ *  per (partner, org) for a partner-wide flow. */
 export const FLOW_MAX_ACTIVE_RUNS_PER_OWNER = 1000;
 
 const ADMITTABLE: ReadonlySet<string> = new Set(['queued', 'waiting', 'awaiting_approval']);
@@ -61,10 +64,11 @@ export async function claimRunSlot(
  */
 export async function assertActiveCapacity(
   owner: ToolOwnerRef,
+  runOrgId: string,
 ): Promise<{ ok: true } | { ok: false; error: 'flow_queue_full' }> {
   const active = getCurrentDbAccessContext()?.scope === 'system'
-    ? await store.countActiveRunsForOwner(owner)
-    : await inSystemTx(() => store.countActiveRunsForOwner(owner), 'flows.runAdmission.activeCapacity');
+    ? await store.countActiveRunsForOwner(owner, runOrgId)
+    : await inSystemTx(() => store.countActiveRunsForOwner(owner, runOrgId), 'flows.runAdmission.activeCapacity');
   return active < FLOW_MAX_ACTIVE_RUNS_PER_OWNER ? { ok: true } : { ok: false, error: 'flow_queue_full' };
 }
 
@@ -81,9 +85,9 @@ export async function assertActiveCapacity(
 export async function assertFlowRunAdmission(
   owner: ToolOwnerRef,
   flowId: string,
-  ctx: { doc: Pick<FlowDocumentV1, 'limits'>; at: Date },
+  ctx: { doc: Pick<FlowDocumentV1, 'limits'>; at: Date; runOrgId: string },
 ): Promise<{ ok: true; caps: { flowCap: number; ownerCap: number } } | { ok: false; error: FlowRunAdmissionRefusal }> {
-  const active = await assertActiveCapacity(owner);
+  const active = await assertActiveCapacity(owner, ctx.runOrgId);
   if (!active.ok) return active;
   const limits = await resolveFlowLimits(owner);
   const flowCap = effectiveFlowMonthlyCap(limits, ctx.doc);
