@@ -267,6 +267,10 @@ var sensitiveReadPatterns = []string{
 	"/programdata/breeze",                 // Windows default
 	"/etc/breeze",                         // Linux default
 	"/library/application support/breeze", // macOS default (also covers the data dir under it)
+	// The agent's data folder on Linux, which holds keys/ (the PAM rule cache
+	// key) beside its state stores. On Windows and macOS the data folder sits
+	// inside the configuration folder listed above.
+	"/var/lib/breeze",
 }
 
 // sensitiveReadBasenames are lowercased filenames that are credential stores
