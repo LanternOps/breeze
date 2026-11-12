@@ -154,7 +154,9 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
   const calls: StubCall[] = [];
   let calledTool: string | null = null;
   let usage: { prompt: number; cached: number } | null = null;
-  let result: { subtype?: unknown; is_error?: unknown; result?: unknown; usage?: unknown } | null = null;
+  type ResultMessage = { subtype?: unknown; is_error?: unknown; result?: unknown; usage?: unknown };
+  // A holder: TS does not see the assignment inside the for-await loop below.
+  const final: { message: ResultMessage | null } = { message: null };
   let failureRead = false;
   let failure: GatewayFailure | null = null;
   const gatewayFailure = (): GatewayFailure | null => {
@@ -170,7 +172,7 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
     cachedTokens: usage?.cached ?? null,
     calledTool,
     zodValid: calls.some((c) => c.valid),
-    sentinelSeen: typeof result?.result === 'string' && result.result.includes(sentinel),
+    sentinelSeen: typeof final.message?.result === 'string' && final.message.result.includes(sentinel),
   });
 
   let sdk: SurfaceTurnSdk;
@@ -222,7 +224,7 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
           }
         }
       } else if (message.type === 'result') {
-        result = raw as typeof result;
+        final.message = raw as ResultMessage;
       }
     }
   } catch (error) {
@@ -235,6 +237,7 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
     cwd?.remove();
   }
 
+  const result = final.message;
   usage ??= firstUsage(result?.usage);
   if (timedOut) return verdict('inconclusive', `did not finish within ${Math.round(input.deadlineMs / 1000)} s`);
   if (!result) return verdict('inconclusive', 'the session ended without a result');

@@ -46,7 +46,7 @@ import { createAnthropicClient } from './connectionFactory';
 import { getConnection } from './connections';
 import { getGatewayAdapter, type GatewayGrant } from './gateway';
 import { takeGatewayFailure } from './gateway/failureNotes';
-import type { KnownWindow } from './gateway/types';
+import type { KnownWindow } from './gateway/openai/contextWindow';
 import type { SurfaceTurnInput, SurfaceTurnResult } from '../llm/surfaceTurnHarness';
 import type { SurfaceTurnPlanResult } from '../llm/surfaceTurnStubs';
 import { knownContextWindow, resolveEffectiveContextWindow } from './contextWindowFacts';
