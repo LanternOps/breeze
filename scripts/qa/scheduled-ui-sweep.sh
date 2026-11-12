@@ -52,6 +52,27 @@ state_set() {  # state_set <jq-filter> [--arg k v ...]
 }
 SECRET_RE='sk_live_|sk_test_|rk_live_|sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|xox[baprs]-'
 ENVVALS="$QA_HOME/.envvals"   # literal .env values; outside RUN_DIR so the agent can't read it
+# The stack's env files (.env is a copy of the developer's, with real secrets)
+# are parked here while the agent runs: the agent's cwd is the worktree, and a
+# Read deny rule does not cover every tool that can read a file. Compose only
+# needs them at (re)start, so the running stack is unaffected.
+STACK_ENV_DIR="$QA_HOME/.stack-env"
+hide_stack_env() {
+  local f
+  ( umask 077; mkdir -p "$STACK_ENV_DIR" ) && chmod 0700 "$STACK_ENV_DIR" || return 1
+  for f in "$QA_WORKTREE"/.env "$QA_WORKTREE"/.env.*; do
+    case "$f" in *.example) continue ;; esac
+    if [ -f "$f" ]; then mv -f "$f" "$STACK_ENV_DIR/" || return 1; fi
+  done
+  return 0
+}
+restore_stack_env() {
+  local f
+  for f in "$STACK_ENV_DIR"/.env "$STACK_ENV_DIR"/.env.*; do
+    if [ -f "$f" ]; then mv -f "$f" "$QA_WORKTREE/"; fi
+  done
+  return 0
+}
 # body_ok <file>: gate for anything headed to a PUBLIC GitHub sink.
 body_ok() {
   [ -s "$1" ] && [ "$(wc -c < "$1")" -le 60000 ] || return 1
@@ -85,6 +106,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 STACK_UP=0
 cleanup() {
+  restore_stack_env
   if [ "$STACK_UP" = 1 ]; then
     log "tearing down stack"
     (cd "$QA_WORKTREE" && pnpm wt-stack down) || log "WARN: wt-stack down failed"
@@ -102,7 +124,8 @@ log "=== QA sweep $RUN_ID ==="
 # QA_CLAUDE_AUTH_DIR pins a specific claude.ai login profile (multi-account setups).
 [ -n "${QA_CLAUDE_AUTH_DIR:-}" ] && export CLAUDE_SECURESTORAGE_CONFIG_DIR="$QA_CLAUDE_AUTH_DIR"
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
-      CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+      CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY \
+      CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD   # no CLAUDE.md from the agent-writable RUN_DIR
 AUTH_METHOD="$(claude auth status --json 2>/dev/null | jq -r '.authMethod // empty')"
 if [ "$AUTH_METHOD" != "claude.ai" ]; then
   notify "QA sweep skipped: Claude is not logged in with a subscription (auth=${AUTH_METHOD:-none}). Run: claude auth login"
@@ -157,6 +180,7 @@ fi
 # a [QA] issue so the release's self-hoster upgrade notes can't miss it.
 DRIFT="$RUN_DIR/env-drift.md"; : > "$DRIFT"
 
+restore_stack_env   # a run killed while the agent ran leaves them parked
 [ -f .env ] || cp "$QA_SOURCE_REPO/.env" .env 2>/dev/null || { notify "QA sweep: no .env for the QA worktree"; exit 1; }
 # Infra *_IMAGE_REF (postgres/redis/caddy/coturn) -> always main's value (image
 # pins are main's contract, not a dev preference). BREEZE_* refs are release
@@ -293,6 +317,9 @@ log "stack at $BASE_URL"
 # --- the sweep ---------------------------------------------------------------
 SLICE="$(state_get .nextSlice)"; SLICE="${SLICE:-0}"
 mkdir -p "$RUN_DIR/outbox" "$RUN_DIR/browser"
+# RUN_DIR is agent-writable and passed with --add-dir; a read-only, empty
+# .claude/ keeps skills/commands/agents/settings from being created there.
+mkdir -p "$RUN_DIR/.claude" && chmod 0555 "$RUN_DIR/.claude"
 
 # PR scope is computed here (trusted) so the agent needs no git access.
 if [ -n "$PREV_SHA" ] && git cat-file -e "$PREV_SHA" 2>/dev/null; then
@@ -325,14 +352,23 @@ HOSTED_PRS="$(tr '\n' ' ' < "$HOSTED_PRS_FILE")"
 for pr in $HOSTED_PRS; do case "$IN_SCOPE" in *" $pr "*) ;; *) IN_SCOPE="$IN_SCOPE$pr ";; esac; done
 log "hosted-phase PRs: $HOSTED_PRS"
 
-# Per-run browser config: only the local stack is reachable (no exfil to the
-# internet via the browser); file:// stays blocked (Playwright MCP default).
+# Per-run browser config: HTTP(S) requests limited to the local stack origin;
+# file:// stays blocked (Playwright MCP default). With --ignore-roots the
+# server's cwd is its file workspace (explicit `filename` arguments resolve
+# there), so it is started in RUN_DIR/browser, never in the worktree.
 ORIGIN="$(printf '%s' "$BASE_URL" | sed -E 's#^(https?://[^/]+).*#\1#')"
-jq --arg o "$ORIGIN" --arg out "$RUN_DIR/browser" \
-  '.mcpServers.playwright.args += ["--allowed-origins", $o, "--output-dir", $out]' \
-  "$SCRIPT_DIR/qa-mcp.json" > "$RUN_DIR/mcp.json"
+# shellcheck disable=SC2016  # $o/$out are jq variables; $0/$1/$@ belong to the sh wrapper
+MCP_FILTER='
+  .mcpServers.playwright |= (. + {
+    command: "/bin/sh",
+    args: (["-c", "cd \"$1\" || exit 1; shift; exec \"$0\" \"$@\"", .command, $out] + .args
+           + ["--allowed-origins", $o, "--output-dir", $out])
+  })
+'
+jq --arg o "$ORIGIN" --arg out "$RUN_DIR/browser" "$MCP_FILTER" "$SCRIPT_DIR/qa-mcp.json" > "$RUN_DIR/mcp.json" \
+  || { notify "QA sweep: could not build the MCP config"; exit 1; }
 
-PROMPT="Run the ui-qa-sweep skill in **Scheduled mode** (read its 'Scheduled mode' section first and follow it exactly).
+PROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
 - RUN_DIR=$RUN_DIR   (write report.md, ledger.md and outbox/*.json here — nowhere else)
 - BASE_URL=$BASE_URL (stack descriptor: $QA_WORKTREE/.breeze-stack.json)
@@ -398,33 +434,66 @@ fi
 
 # Least privilege. The agent reads untrusted text (public issue/PR bodies, page
 # content), so: no permission bypass (dontAsk = unlisted tools are denied, never
-# prompted); reads limited to the worktree + RUN_DIR with .env denied; writes
-# limited to RUN_DIR; Bash limited to read-only gh queries (no curl/jq/git, no
-# --body-file); GitHub writes go through the outbox, validated + published by
-# this script. QA_HOME/bin and state.json are out of reach.
+# prompted); reads limited to the worktree + RUN_DIR; writes limited to RUN_DIR;
+# Bash limited to read-only gh queries (no curl/jq/git, no --body-file); GitHub
+# writes go through the outbox, validated + published by this script.
+# QA_HOME/bin and state.json are out of reach. The stack's .env files are moved
+# out of the worktree for the duration of each run (hide_stack_env).
+# Skills and slash commands are off (Skill denied, --disable-slash-commands,
+# disableSkillShellExecution): the agent reads SKILL.md as a plain file.
+# Browser: an explicit list of navigation/snapshot/interaction tools. No page
+# JavaScript (browser_evaluate, browser_run_code_unsafe), no request routing,
+# no local file upload/drop.
+PW_TOOLS=(
+  browser_navigate browser_navigate_back browser_tabs browser_close browser_resize
+  browser_snapshot browser_find browser_take_screenshot browser_wait_for
+  browser_click browser_hover browser_drag browser_type browser_press_key
+  browser_fill_form browser_select_option browser_handle_dialog browser_emulate_media
+  browser_console_messages browser_network_requests browser_network_request
+)
 ALLOWED_TOOLS=(
-  "mcp__playwright" "Skill" "ToolSearch" "TodoWrite"
+  "${PW_TOOLS[@]/#/mcp__playwright__}" "ToolSearch" "TodoWrite"
   "Read(/$QA_WORKTREE/**)" "Read(/$RUN_DIR/**)"
   "Edit(/$RUN_DIR/**)"   # Edit rules cover Write too
   "Bash(gh issue list:*)" "Bash(gh issue view:*)"
   "Bash(gh pr list:*)" "Bash(gh pr view:*)" "Bash(gh pr diff:*)"
 )
 DENIED_TOOLS=(
+  "Skill"
   "Read(/$QA_WORKTREE/.env*)" "Read(/$QA_WORKTREE/**/.env*)"
   "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/hosted-prs.txt)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
+  "Edit(/$RUN_DIR/.claude/**)" "Edit(/$RUN_DIR/**/.claude/**)"
+  "Edit(/$RUN_DIR/CLAUDE.md)" "Edit(/$RUN_DIR/**/CLAUDE.md)" "Edit(/$RUN_DIR/**/CLAUDE.local.md)"
   "Read(/$RUN_DIR/*.log)" "Read(/$RUN_DIR/transcript*.jsonl)" "Read(/$RUN_DIR/claude*.err)"
-  "mcp__playwright__browser_run_code_unsafe"
+  "mcp__playwright__browser_evaluate" "mcp__playwright__browser_run_code_unsafe"
+  "mcp__playwright__browser_route" "mcp__playwright__browser_unroute"
+  "mcp__playwright__browser_route_list" "mcp__playwright__browser_network_state_set"
+  "mcp__playwright__browser_file_upload" "mcp__playwright__browser_drop"
+  # Built-in read-only shell commands can run without an allow rule, and a Read
+  # deny rule doesn't bind a command that reads without naming the file
+  # (`grep -r x .`). Bash is here only for gh, so deny the readers outright.
+  "Bash(cat:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(less:*)" "Bash(more:*)"
+  "Bash(grep:*)" "Bash(egrep:*)" "Bash(fgrep:*)" "Bash(rg:*)" "Bash(ag:*)"
+  "Bash(find:*)" "Bash(xargs:*)" "Bash(sed:*)" "Bash(awk:*)" "Bash(cut:*)"
+  "Bash(sort:*)" "Bash(uniq:*)" "Bash(diff:*)" "Bash(cmp:*)" "Bash(comm:*)"
+  "Bash(strings:*)" "Bash(xxd:*)" "Bash(od:*)" "Bash(hexdump:*)" "Bash(base64:*)"
+  "Bash(nl:*)" "Bash(tac:*)" "Bash(rev:*)" "Bash(wc:*)" "Bash(jq:*)" "Bash(git:*)"
   "WebFetch" "WebSearch" "Agent" "Task"
 )
 run_agent() {  # run_agent <prompt> <timeout> <transcript-suffix>
   local args=(-p "$1" --permission-mode dontAsk
     --allowedTools "${ALLOWED_TOOLS[@]}" --disallowedTools "${DENIED_TOOLS[@]}"
+    --disable-slash-commands --settings '{"disableSkillShellExecution":true}'
     --strict-mcp-config --mcp-config "$RUN_DIR/mcp.json" --add-dir "$RUN_DIR"
     --output-format stream-json --verbose)
   [ -n "${QA_MODEL:-}" ] && args+=(--model "$QA_MODEL")
+  if ! hide_stack_env; then
+    restore_stack_env; log "FATAL could not move the stack env files out of the worktree; agent not started"
+    return 1
+  fi
   log "claude start [$3] (timeout $2)"
   gtimeout --kill-after=2m "$2" claude "${args[@]}" > "$RUN_DIR/transcript$3.jsonl" 2> "$RUN_DIR/claude$3.err"
-  local rc=$?; log "claude exit [$3]=$rc"; return $rc
+  local rc=$?; restore_stack_env; log "claude exit [$3]=$rc"; return $rc
 }
 
 run_agent "$PROMPT" "$QA_TIMEOUT" ""
@@ -435,7 +504,7 @@ HOSTED_OK=1
 if [ "$RC" = 0 ] && [ -n "${HOSTED_PRS// /}" ]; then
   HOSTED_OK=0
   if switch_to_hosted; then
-    HPROMPT="Run the ui-qa-sweep skill in **Scheduled mode — Hosted phase** (read the skill's 'Hosted phase' subsection first and follow it exactly).
+    HPROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section, **Hosted phase** subsection, exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
 - RUN_DIR=$RUN_DIR   (append to report.md; update ledger.md; add outbox/*.json — nowhere else)
 - BASE_URL=$BASE_URL (same stack and data as the self-hosted phase, now IS_HOSTED=true with Wisp enabled + entitled)
