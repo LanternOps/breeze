@@ -43,6 +43,8 @@ import {
   type LoadedCandidate,
 } from './candidateLoader';
 import { resolveEffectiveContextWindow } from './contextWindowFacts';
+import { readSurfaceReadiness, readinessProfileKey, surfaceReadinessState, type ToolSurface } from './surfaceReadiness';
+import { toolProfileFactsFrom } from './toolProfileFacts';
 import { enableBlockerFor, type EnableEligibilityContext } from './eligibility';
 import { getPlatformInferenceGeo, listPlatformModels, type PlatformModel } from './platformModels';
 import { listConnections, type PartnerAiConnection } from './connections';
@@ -78,11 +80,37 @@ export async function buildCatalogSummary(): Promise<AiModelsSnapshotDto['catalo
  */
 function verificationDto(o: Offering, conn: PartnerAiConnection | undefined): AiOfferingVerificationDto | null {
   if (!conn || !isGatewayConnectionKind(conn.kind)) return null;
-  const { state, record } = verifiedGatewayCapabilities(
-    o.capabilities,
-    endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null }),
-  );
-  return { state, at: record?.at ?? null, harnessVersion: record?.harnessVersion ?? null, summary: record?.summary ?? null };
+  const fingerprint = endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null });
+  const { state, record } = verifiedGatewayCapabilities(o.capabilities, fingerprint);
+  return {
+    state, at: record?.at ?? null, harnessVersion: record?.harnessVersion ?? null, summary: record?.summary ?? null,
+    surfaces: surfaceReadinessDto(o, conn, fingerprint),
+  };
+}
+
+/**
+ * #11397: each tool surface's verify round trip, judged as the resolver
+ * judges it (the current endpoint, stage version and the profile the surface
+ * resolves to now). Only the verdict, time, profile, tokens and scrubbed
+ * summary leave; never the binding keys.
+ */
+function surfaceReadinessDto(o: Offering, conn: PartnerAiConnection, fingerprint: string): AiOfferingVerificationDto['surfaces'] {
+  const readiness = readSurfaceReadiness(o.capabilities);
+  const facts = toolProfileFactsFrom(o, 'gateway', resolveEffectiveContextWindow(o, conn.configVersion).value);
+  const out = {} as AiOfferingVerificationDto['surfaces'];
+  for (const surface of TOOL_REQUIRING_SURFACES as readonly ToolSurface[]) {
+    const entry = readiness[surface];
+    const state = surfaceReadinessState(entry, { endpointFingerprint: fingerprint, profileKey: readinessProfileKey(facts, surface) });
+    out[surface] = {
+      state,
+      at: entry?.at ?? null,
+      profile: entry?.profile ?? null,
+      promptTokens: entry?.promptTokens ?? null,
+      cachedTokens: entry?.cachedTokens ?? null,
+      summary: entry?.summary ?? null,
+    };
+  }
+  return out;
 }
 
 /**

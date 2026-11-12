@@ -4,7 +4,7 @@
  * them unchanged. Never add key material, fingerprints or raw provider config.
  */
 import type { AiConnectionEnvFields, AiConnectionKind } from '../constants/aiConnectionKinds';
-import type { AiSurface } from '../constants/aiSurfaces';
+import type { AiSurface, TOOL_REQUIRING_SURFACES } from '../constants/aiSurfaces';
 import type { EffortLevel, ModelLifecycle, ModelRates, OfferingOptions, OptionSupport } from '../validators/aiModelOptions';
 import type { AiAssignmentWriteRole, AiUsageGroupBy } from '../validators/aiModelRegistryApi';
 
@@ -103,12 +103,36 @@ export interface AiOfferingContextWindowDto {
 }
 
 export type OfferingVerificationState = 'unverified' | 'verified' | 'failed' | 'stale';
+
+/** #11397: a surface that needs tools (and so can carry a verify `surface_turn` verdict). */
+export type AiToolSurface = (typeof TOOL_REQUIRING_SURFACES)[number];
+/**
+ * #11397: one surface's verify round trip, judged against the CURRENT endpoint
+ * and the tool profile the surface resolves to now. Only `failed` refuses the
+ * surface; `inconclusive` (the endpoint failed, not the model), `stale` and
+ * `absent` (never run, e.g. records from before W04, or Office) refuse nothing.
+ */
+export type AiSurfaceReadinessState = 'passed' | 'failed' | 'inconclusive' | 'stale' | 'absent';
+export interface AiSurfaceReadinessDto {
+  state: AiSurfaceReadinessState;
+  at: string | null;
+  /** The resolved profile the turn ran under. */
+  profile: 'full' | 'standard' | 'minimal' | 'custom' | null;
+  /** The turn's first-request prompt tokens (cache reads/writes included), as the endpoint reported them. */
+  promptTokens: number | null;
+  cachedTokens: number | null;
+  /** Short, scrubbed reason when not passed (≤ 200 chars). */
+  summary: string | null;
+}
+
 export interface AiOfferingVerificationDto {
   state: OfferingVerificationState;
   at: string | null;
   harnessVersion: string | null;
   /** Short, scrubbed reason for 'failed' (≤ 200 chars). */
   summary: string | null;
+  /** #11397: per tool surface; every surface `absent` until a verify runs a surface turn on it. */
+  surfaces: Record<AiToolSurface, AiSurfaceReadinessDto>;
 }
 
 export interface AiAssignmentRowDto {

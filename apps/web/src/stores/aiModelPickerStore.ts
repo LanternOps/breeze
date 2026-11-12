@@ -13,6 +13,8 @@ export const RECOVERABLE_MODEL_CODES: ReadonlySet<string> = new Set([
   'residency_unavailable', 'unpriced', 'connection_unavailable', 'tools_unsupported',
   // #11396: the model's tool profile / known window cannot serve the surface; another model can.
   'context_window_too_small', 'tool_profile_underpowered',
+  // #11397: the model failed its verify tool round trip on this surface; another model can serve it.
+  'tools_unverified_surface',
 ]);
 
 export interface AiModelPickerState {

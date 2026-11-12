@@ -87,6 +87,7 @@ export function planSurfaceTurn(surface: SurfaceTurnSurface, facts: ToolProfileF
       surface,
       profile: request.exposure.profile,
       fingerprint: request.exposure.fingerprint,
+      compactSchemas: request.exposure.compactSchemas,
       systemPrompt: request.system,
       mcpServerName: capture.mcpServerName,
       tools,

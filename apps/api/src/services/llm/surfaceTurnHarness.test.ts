@@ -21,6 +21,7 @@ function plan(overrides: Partial<SurfaceTurnPlan> = {}): SurfaceTurnPlan {
     surface: 'chat',
     profile: 'minimal',
     fingerprint: 'abc123',
+    compactSchemas: true,
     systemPrompt: 'You are Breeze.',
     mcpServerName: 'breeze',
     tools: [

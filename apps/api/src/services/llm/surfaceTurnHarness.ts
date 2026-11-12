@@ -34,8 +34,8 @@ import type { GatewayFailure } from '../aiModels/gateway/failureNotes';
 import { createIsolatedSdkCwd, type IsolatedSdkCwd } from '../aiModels/sdkChildEnv';
 import type { ResolvedToolProfile } from '../aiModels/toolExposure';
 
-/** Bump when the stage gets stricter: every stored readiness entry at an older version reads as stale. */
-export const SURFACE_TURN_VERSION = '1';
+/** The stage version lives with the stored record (aiModels/surfaceReadiness.ts) so readers need not load the harness. */
+export { SURFACE_TURN_VERSION } from '../aiModels/surfaceReadiness';
 export const SURFACE_TURN_MAX_TURNS = 4;
 const DETAIL_MAX = 200;
 
@@ -46,6 +46,8 @@ export interface SurfaceTurnPlan {
   profile: ResolvedToolProfile;
   /** The exposure's fingerprint (the ledger's `tool_exposure_fingerprint`). */
   fingerprint: string;
+  /** The exposure compacts the advertised upstream schemas (a constrained gateway grant does). */
+  compactSchemas: boolean;
   systemPrompt: string;
   /** The `mcpServers` key (and the `<server>` in `mcp__<server>__<tool>`). */
   mcpServerName: string;

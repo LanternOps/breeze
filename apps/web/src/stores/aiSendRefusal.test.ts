@@ -14,6 +14,8 @@ describe('classifySendRefusal', () => {
     // #11396: another model fixes a tool-exposure refusal.
     [409, 'context_window_too_small', 'choose_model'],
     [409, 'tool_profile_underpowered', 'choose_model'],
+    // #11397: the model failed its verify round trip on this surface; another model fixes it.
+    [409, 'tools_unverified_surface', 'choose_model'],
     [409, 'topology_model_changed', 'choose_model'],
     [409, 'turn_limit_reached', 'turn_limit'],
     [409, 'something_else', 'error'],

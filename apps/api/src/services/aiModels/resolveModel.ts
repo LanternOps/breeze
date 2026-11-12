@@ -155,6 +155,8 @@ export function unavailableMessage(reason: ResolveFailureReason, displayName?: s
       return 'The AI provider connection for this model is unavailable. Reconnect it under AI Providers & Models.';
     case 'tools_unsupported':
       return 'This AI model cannot use tools, which this feature needs. An administrator can choose a model that supports tools under AI Providers & Models.';
+    case 'tools_unverified_surface':
+      return 'This AI model failed Breeze\'s tool check for this feature. An administrator can re-verify it, change its tool profile, or choose another model under AI Providers & Models.';
     case 'no_eligible_model': return 'No AI model is available for this feature. Ask an administrator to enable one.';
     case 'registry_unavailable': return 'AI configuration is being upgraded. Try again in a moment.';
   }
