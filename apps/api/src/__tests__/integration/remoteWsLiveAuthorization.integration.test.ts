@@ -11,6 +11,7 @@ import {
   devices,
   organizationUsers,
   remoteSessions,
+  roles,
   tunnelSessions,
 } from '../../db/schema';
 import { getRedis } from '../../services/redis';
@@ -21,10 +22,52 @@ import {
   revalidateRemoteWsAuthorityBounded,
 } from '../../services/remoteWsAuthorization';
 import { isViewerSessionRevoked, revokeViewerSession } from '../../services/viewerTokenRevocation';
-import { createSite, setupTestEnvironment } from './db-utils';
+import { createRole, createSite, grantRolePermissions, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL && !!process.env.REDIS_URL);
+
+/** A live terminal session for a fresh org member whose OWN role grants nothing; `parentOf` picks its parent role. */
+async function terminalSessionWithParent(parentOf: (env: Awaited<ReturnType<typeof setupTestEnvironment>>) => Promise<string>) {
+  const env = await setupTestEnvironment({ rolePermissions: [] });
+  await getTestDb().update(roles).set({ parentRoleId: await parentOf(env) }).where(eq(roles.id, env.role.id));
+  const [device] = await getTestDb().insert(devices).values({
+    orgId: env.organization.id,
+    siteId: env.site.id,
+    agentId: `live-auth-inh-${randomUUID()}`,
+    hostname: 'synthetic-live-auth-inherit',
+    osType: 'linux',
+    osVersion: 'test',
+    architecture: 'x64',
+    agentVersion: 'test',
+    status: 'online',
+  }).returning({ id: devices.id });
+  const [session] = await getTestDb().insert(remoteSessions).values({
+    orgId: env.organization.id,
+    deviceId: device!.id,
+    userId: env.user.id,
+    type: 'terminal',
+    status: 'active',
+  }).returning({ id: remoteSessions.id });
+  return { sessionId: session!.id, sessionType: 'terminal' as const, userId: env.user.id };
+}
+
+describe('remote WebSocket live authority — role inheritance (#9600)', () => {
+  runDb('admits a member whose role holds remote:access only through its parent', async () => {
+    const subject = await terminalSessionWithParent(async (env) => {
+      const parent = await createRole({ scope: 'organization', orgId: env.organization.id, name: `Remote parent ${randomUUID()}` });
+      await grantRolePermissions(parent.id, [{ resource: 'remote', action: 'access' }]);
+      return parent.id;
+    });
+    await expect(revalidateRemoteWsAuthority(subject)).resolves.toEqual({ ok: true });
+  });
+
+  runDb('refuses when the parent granting remote:access belongs to another organization', async () => {
+    const foreign = await setupTestEnvironment({ rolePermissions: [{ resource: 'remote', action: 'access' }] });
+    const subject = await terminalSessionWithParent(async () => foreign.role.id);
+    await expect(revalidateRemoteWsAuthority(subject)).resolves.toMatchObject({ ok: false, reason: 'permission_denied' });
+  });
+});
 
 describe('remote WebSocket live authority — real PostgreSQL and Redis', () => {
   runDb('allows the current site, then denies after a committed membership narrowing', async () => {

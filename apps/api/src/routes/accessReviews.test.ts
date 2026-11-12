@@ -129,6 +129,14 @@ vi.mock('../services/roleAssignment', async (importOriginal) => {
   return { ...actual, assertCanManageTarget: assertCanManageTargetMock };
 });
 
+// The per-role permission list resolves through roleInheritance (own + inherited
+// grants, #11702); the resolver itself is covered in roleInheritance.test.ts.
+const { getRolesPermissionGrantsMock } = vi.hoisted(() => ({ getRolesPermissionGrantsMock: vi.fn() }));
+vi.mock('../services/roleInheritance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/roleInheritance')>()),
+  getRolesPermissionGrants: getRolesPermissionGrantsMock,
+}));
+
 const { canSelfDecideMock } = vi.hoisted(() => ({ canSelfDecideMock: vi.fn() }));
 vi.mock('../services/accessReviewSelfDecision', () => ({
   canSelfDecideAccessReviewItem: canSelfDecideMock,
@@ -155,6 +163,9 @@ describe('access review routes', () => {
       });
       return next();
     });
+    getRolesPermissionGrantsMock.mockImplementation(
+      async (ids: string[]) => new Map(ids.map((id) => [id, []])),
+    );
     app = new Hono();
     app.route('/access-reviews', accessReviewRoutes);
   });
@@ -321,13 +332,6 @@ describe('access review routes', () => {
               })
             })
           })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockResolvedValue([])
-            })
-          })
         } as any);
 
       const res = await app.request('/access-reviews/review-1', {
@@ -342,6 +346,51 @@ describe('access review routes', () => {
       // The caller (user-123) has no item here, so there is nothing to gate.
       expect(body.viewer).toEqual({ userId: 'user-123', selfDecision: null });
       expect(canSelfDecideMock).not.toHaveBeenCalled();
+    });
+
+    it('lists a role\'s inherited permissions, not just its own rows (#11702)', async () => {
+      getRolesPermissionGrantsMock.mockResolvedValueOnce(new Map([
+        ['role-child', [{ resource: 'devices', action: 'read' }, { resource: 'tickets', action: 'write' }]],
+        ['role-bare', []],
+      ]));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'review-1', name: 'Access Review', description: null, status: 'pending',
+                reviewerId: 'user-1', dueDate: null, createdAt: new Date(), completedAt: null
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  { id: 'i1', userId: 'u1', userName: 'A', userEmail: 'a@x', roleId: 'role-child', roleName: 'Child',
+                    decision: 'pending', notes: null, reviewedAt: null },
+                  { id: 'i2', userId: 'u2', userName: 'B', userEmail: 'b@x', roleId: 'role-bare', roleName: 'Bare',
+                    decision: 'pending', notes: null, reviewedAt: null },
+                  { id: 'i3', userId: 'u3', userName: 'C', userEmail: 'c@x', roleId: 'role-child', roleName: 'Child',
+                    decision: 'pending', notes: null, reviewedAt: null },
+                ])
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/access-reviews/review-1', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(getRolesPermissionGrantsMock).toHaveBeenCalledTimes(1);
+      expect(getRolesPermissionGrantsMock.mock.calls[0]![0]).toEqual(['role-child', 'role-bare']);
+      const byId = Object.fromEntries(body.items.map((i: any) => [i.id, i.permissions]));
+      expect(byId.i1).toEqual(['devices:read', 'tickets:write']);
+      expect(byId.i3).toEqual(['devices:read', 'tickets:write']);
+      expect(byId.i2).toEqual([]);
     });
 
     it('does not gate (or evaluate) your own item once the review is completed', async () => {
@@ -364,11 +413,6 @@ describe('access review routes', () => {
                 ])
               })
             })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
           })
         } as any);
 
@@ -404,11 +448,6 @@ describe('access review routes', () => {
                   ])
                 })
               })
-            })
-          } as any)
-          .mockReturnValueOnce({
-            from: vi.fn().mockReturnValue({
-              innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
             })
           } as any);
         canSelfDecideMock.mockResolvedValueOnce(allowed);
