@@ -3,7 +3,6 @@ package tools
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/wire"
@@ -92,9 +91,7 @@ func TestReadFileReadsOrdinaryHardLinkedFile(t *testing.T) {
 
 // Encrypt checks the file it actually opened, not only the path it was given.
 func TestEncryptFileChecksTheFileItOpened(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation needs a privilege Windows CI does not grant")
-	}
+	requireSymlinks(t)
 	t.Setenv("SENSITIVE_DATA_KEYRING_JSON", "")
 	t.Setenv("SENSITIVE_DATA_ENCRYPTION_KEY_B64", fixedKeyBase64('K'))
 	secrets := protectedConfigFixture(t, filepath.Join(t.TempDir(), "agentcfg"))

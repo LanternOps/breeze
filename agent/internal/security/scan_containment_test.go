@@ -159,9 +159,7 @@ func TestThreatHashIsOfTheScannedFile(t *testing.T) {
 // A file the walk queued is checked again when a worker picks it up: if it
 // has since become a link into a protected location, it is not read.
 func TestScanWorkerRechecksQueuedFileBeforeReading(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation needs a privilege Windows CI does not grant")
-	}
+	requireSymlinks(t)
 	protected := filepath.Join(t.TempDir(), ".env")
 	writeFixture(t, protected, "x")
 

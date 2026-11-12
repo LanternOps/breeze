@@ -29,17 +29,10 @@ func lstatT(t *testing.T, p string) fs.FileInfo {
 	return info
 }
 
-func skipWithoutSymlinks(t *testing.T) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation needs a privilege Windows CI does not grant")
-	}
-}
-
 // OpenFile judges the file where the handle really landed: a path that
 // reaches a protected folder through a linked folder is not read.
 func TestScanOpenFileChecksWhereTheHandleLanded(t *testing.T) {
-	skipWithoutSymlinks(t)
+	requireSymlinks(t)
 	base := t.TempDir()
 	secrets := protectedConfigFixture(t, filepath.Join(base, "agentcfg"))
 	link := filepath.Join(base, "link")
@@ -78,7 +71,7 @@ func TestScanOpenFileRefusesADifferentFileThanTheWalkSaw(t *testing.T) {
 
 // OpenFile does not follow a link at the leaf.
 func TestScanOpenFileDoesNotFollowALinkAtTheLeaf(t *testing.T) {
-	skipWithoutSymlinks(t)
+	requireSymlinks(t)
 	dir := t.TempDir()
 	target := filepath.Join(dir, "ordinary.bin")
 	writeScanFixture(t, target, "x")
@@ -98,7 +91,7 @@ func TestScanOpenFileDoesNotFollowALinkAtTheLeaf(t *testing.T) {
 // Skip judges an entry at the root's canonical location too, so a root
 // reached through a link still recognises a protected folder below it.
 func TestScanSkipJudgesEntriesAtTheCanonicalRoot(t *testing.T) {
-	skipWithoutSymlinks(t)
+	requireSymlinks(t)
 	base := t.TempDir()
 	real := filepath.Join(base, "real")
 	protectedConfigFixture(t, filepath.Join(real, "agentcfg"))
@@ -119,7 +112,7 @@ func TestScanSkipJudgesEntriesAtTheCanonicalRoot(t *testing.T) {
 
 // The sensitive-data scan checks each opened file where it really is.
 func TestSensitiveScanFileChecksWhereTheHandleLanded(t *testing.T) {
-	skipWithoutSymlinks(t)
+	requireSymlinks(t)
 	base := t.TempDir()
 	cfg := filepath.Join(base, "agentcfg")
 	protectedConfigFixture(t, cfg)

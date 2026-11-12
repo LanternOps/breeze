@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -56,9 +55,7 @@ func TestScanRefusesAnotherSpellingOfProtectedRoot(t *testing.T) {
 
 // A root reached through a linked ancestor is judged where it really is.
 func TestScanSkipsProtectedFolderBelowLinkedAncestor(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation needs a privilege Windows CI does not grant")
-	}
+	requireSymlinks(t)
 	base := t.TempDir()
 	agentConfigFixture(t, filepath.Join(base, "real", "Library", "Application Support", "Breeze"))
 	writeFixture(t, filepath.Join(base, "real", "Library", "Application Support", "normal.txt"), "x")
