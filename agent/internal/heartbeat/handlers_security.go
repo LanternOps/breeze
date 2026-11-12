@@ -65,10 +65,8 @@ func handleSecurityScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	// Refuse a custom root the scanner would refuse before preparing rule
 	// sets for it (the scanner applies the same check).
 	if scanType == "custom" {
-		for _, path := range paths {
-			if err := tools.EnforcePathContainment("scan", path); err != nil {
-				return tools.NewErrorResult(err, time.Since(start).Milliseconds())
-			}
+		if err := security.CheckCustomScanRoots(paths); err != nil {
+			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 		}
 	}
 

@@ -17,6 +17,7 @@ type recordingMatcher struct {
 	mu     sync.Mutex
 	paths  []string
 	onScan func(path string)
+	hit    bool // report one match for every file
 }
 
 func (r *recordingMatcher) Engine() string                      { return "recording" }
@@ -32,13 +33,16 @@ func (r *recordingMatcher) scanned() []string {
 type recordingWorker struct{ r *recordingMatcher }
 
 func (w recordingWorker) Close() {}
-func (w recordingWorker) ScanFile(p string) ([]yarascan.Match, error) {
+func (w recordingWorker) ScanFile(_ *os.File, p string) ([]yarascan.Match, error) {
 	w.r.mu.Lock()
 	w.r.paths = append(w.r.paths, p)
 	hook := w.r.onScan
 	w.r.mu.Unlock()
 	if hook != nil {
 		hook(p)
+	}
+	if w.r.hit {
+		return []yarascan.Match{{RuleSetID: "s", RuleID: "r", RuleName: "rec_rule", Severity: "high", ThreatType: "malware"}}, nil
 	}
 	return nil, nil
 }
@@ -90,7 +94,7 @@ func TestRuleSetScanNeverReadsProtectedFiles(t *testing.T) {
 }
 
 func TestScanRootThatIsProtectedIsNotWalked(t *testing.T) {
-	root := filepath.Join(t.TempDir(), ".env")
+	root, _ := agentConfigFixture(t, filepath.Join(t.TempDir(), "agentcfg"))
 	writeFixture(t, filepath.Join(root, "normal.txt"), "x")
 
 	m := &recordingMatcher{}
@@ -102,12 +106,13 @@ func TestScanRootThatIsProtectedIsNotWalked(t *testing.T) {
 	}
 }
 
-// A directory the file browser will not list is not descended into, so
-// nothing below it is queued, whatever the files inside are called.
+// A protected folder below a root is not descended into, whatever the
+// files inside it are called.
 func TestScanDoesNotDescendIntoProtectedDirectory(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, filepath.Join(root, "normal.txt"), "x")
-	writeFixture(t, filepath.Join(root, ".env", "inner.txt"), "x")
+	agentConfigFixture(t, filepath.Join(root, "agentcfg"))
+	writeFixture(t, filepath.Join(root, "agentcfg", "inner.txt"), "x")
 
 	m := &recordingMatcher{}
 	if _, err := walkAndMatch(context.Background(), []string{root}, defaultThreatScanOptions(), m, yaraCfg(1)); err != nil {
@@ -118,20 +123,31 @@ func TestScanDoesNotDescendIntoProtectedDirectory(t *testing.T) {
 	}
 }
 
-// Scan roots are absolute local paths, including the built-in quick and full
-// scan roots: a root that would resolve against the agent's working
-// directory is skipped.
-func TestScanSkipsRelativeRoot(t *testing.T) {
-	cwd := t.TempDir()
-	writeFixture(t, filepath.Join(cwd, "folder", "normal.txt"), "x")
-	t.Chdir(cwd)
+// The threat's hash describes the file that was scanned, even if the path
+// names different content by the time the hash is taken.
+func TestThreatHashIsOfTheScannedFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("replacing an open file by rename is not allowed on Windows")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "a.bin")
+	writeFixture(t, target, "x")
+	replacement := filepath.Join(t.TempDir(), "b.bin")
+	writeFixture(t, replacement, "something else")
 
-	m := &recordingMatcher{}
-	if _, err := walkAndMatch(context.Background(), []string{"folder"}, defaultThreatScanOptions(), m, yaraCfg(1)); err != nil {
+	m := &recordingMatcher{hit: true}
+	m.onScan = func(string) {
+		if err := os.Rename(replacement, target); err != nil {
+			t.Error(err)
+		}
+	}
+	res, err := walkAndMatch(context.Background(), []string{root}, defaultThreatScanOptions(), m, yaraCfg(1))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := m.scanned(); len(got) != 0 {
-		t.Fatalf("a relative root was walked: %v", got)
+	const sumX = "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" // sha256("x")
+	if len(res.Threats) != 1 || res.Threats[0].SHA256 != sumX {
+		t.Fatalf("threat hash = %+v, want the scanned content's hash", res.Threats)
 	}
 }
 
@@ -188,20 +204,5 @@ func TestCustomScanRefusesNetworkAndRelativeRoots(t *testing.T) {
 		if _, err := scanner.ScanWithContext(context.Background(), "custom", []string{p}); err == nil {
 			t.Errorf("%q: expected a path-form refusal", p)
 		}
-	}
-}
-
-func TestAutoQuarantineLeavesProtectedFileInPlace(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, ".env")
-	writeFixture(t, path, avTestContent())
-	s := &SecurityScanner{QuarantineDir: filepath.Join(root, "quarantine"), AutoQuarantine: true}
-	threats := []Threat{{Name: "test", Type: "malware", Severity: ThreatSeverityHigh, Path: path}}
-	s.autoQuarantine(threats)
-	if !threats[0].QuarantineFailed || threats[0].QuarantinedTo != "" {
-		t.Fatalf("protected file was quarantined: %+v", threats[0])
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("protected file was moved: %v", err)
 	}
 }

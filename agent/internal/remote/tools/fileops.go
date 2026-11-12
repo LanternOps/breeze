@@ -346,6 +346,28 @@ func isSensitiveNormalizedForm(norm string, configForms []string) bool {
 		}
 	}
 
+	if matchesSensitiveFileName(norm) {
+		return true
+	}
+
+	// The agent's own config/secrets directory at its actual configured
+	// location (covers a non-default install path; the well-known defaults
+	// are also covered statically in sensitiveReadPatterns above so this
+	// still denies even if ConfigDir() cannot be resolved for some reason).
+	for _, configForm := range configForms {
+		if matchesPathFragment(norm, configForm) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchesSensitiveFileName applies the rules that identify a credential
+// store by its own name (browser password and cookie databases, SSH private
+// keys, cloud CLI credentials, keychain files) to one lowercased,
+// forward-slashed spelling of a path, wherever it sits.
+func matchesSensitiveFileName(norm string) bool {
 	base := norm
 	if i := strings.LastIndex(norm, "/"); i >= 0 {
 		base = norm[i+1:]
@@ -382,16 +404,6 @@ func isSensitiveNormalizedForm(norm string, configForms []string) bool {
 	// "/library/keychains" entry in sensitiveReadPatterns.
 	if strings.HasSuffix(base, ".keychain") || strings.HasSuffix(base, ".keychain-db") {
 		return true
-	}
-
-	// The agent's own config/secrets directory at its actual configured
-	// location (covers a non-default install path; the well-known defaults
-	// are also covered statically in sensitiveReadPatterns above so this
-	// still denies even if ConfigDir() cannot be resolved for some reason).
-	for _, configForm := range configForms {
-		if matchesPathFragment(norm, configForm) {
-			return true
-		}
 	}
 
 	return false
@@ -697,13 +709,6 @@ func treeEntrySensitivity(root string) func(path string) bool {
 		}
 		return isSensitiveReadPath(filepath.Join(resolvedRoot, rel))
 	}
-}
-
-// TreeEntryProtected returns the deny-list test for the entries of a walk
-// rooted at root that does not follow links, such as the security scan.
-// root itself is resolved once here; check it with EnforcePathContainment.
-func TreeEntryProtected(root string) func(path string) bool {
-	return treeEntrySensitivity(root)
 }
 
 // enforceWriteContainment blocks an operation that would CREATE or OVERWRITE

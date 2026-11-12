@@ -54,7 +54,11 @@ type Match struct {
 
 // Worker scans files on one goroutine. Not safe for concurrent use.
 type Worker interface {
-	ScanFile(path string) ([]Match, error)
+	// ScanFile scans the open file f. path names it for the rules' filename
+	// globals and for messages only: the file is read through f, never
+	// reopened by path, so what is scanned (and quoted as matched-string
+	// evidence) is the file the caller opened and checked.
+	ScanFile(f *os.File, path string) ([]Match, error)
 	Close()
 }
 
@@ -120,14 +124,15 @@ func (w *yaraWorker) dropScanner() {
 
 func (w *yaraWorker) Close() { w.dropScanner() }
 
-func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
+func (w *yaraWorker) ScanFile(f *os.File, path string) (out []Match, err error) {
 	if err := w.ensureScanner(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrWorkerUnavailable, err)
 	}
-	var size int64
-	if st, statErr := os.Stat(path); statErr == nil {
-		size = st.Size()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
+	size := st.Size()
 	defer func() {
 		if r := recover(); r != nil {
 			// The guest may be in an unknown state: discard this scanner.
@@ -149,7 +154,7 @@ func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 			return nil, fmt.Errorf("set YARA global %s: %w", name, gerr)
 		}
 	}
-	res, err := w.s.ScanFile(path)
+	res, err := w.s.ScanReaderAt(f, size)
 	if err != nil {
 		return nil, err
 	}
@@ -157,14 +162,8 @@ func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 	if len(rules) == 0 {
 		return nil, nil
 	}
-	var evidence io.ReaderAt
-	if f, oerr := os.Open(path); oerr != nil {
-		log.Warn("could not re-read a matched file for evidence; reporting the match without matched strings", "path", path, "error", oerr.Error())
-	} else {
-		defer func() { _ = f.Close() }()
-		evidence = f
-	}
-	return buildMatches(w.entry, rules, evidence), nil
+	// Evidence is read back from the same handle.
+	return buildMatches(w.entry, rules, f), nil
 }
 
 // buildMatches turns the engine's matching rules into Matches (rule index

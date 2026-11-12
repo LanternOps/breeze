@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -97,6 +98,24 @@ func (o ScanOutcome) toScanResult() ScanResult {
 	}
 }
 
+// CheckCustomScanRoots checks the roots of a custom scan before any work
+// starts: each must be an absolute path in a form the agent accepts and must
+// not be a protected location (the agent's configuration folder, the system
+// credential stores, a credential file), judged at the spelling the
+// filesystem stores. A root that cannot be inspected (missing, unreadable)
+// is left to the scan, which skips or reports it as before.
+func CheckCustomScanRoots(paths []string) error {
+	scope := tools.NewScanScope()
+	for _, path := range paths {
+		_, err := scope.CheckRoot(path)
+		var pathErr *fs.PathError
+		if err != nil && !errors.As(err, &pathErr) {
+			return err
+		}
+	}
+	return nil
+}
+
 // ScanWithContext runs a scan honouring the scanner's Exclusions, MaxFileSize
 // and Timeout. A deadline is reported as an outcome (TimedOut/Partial with
 // the threats found so far), never as an error — see DECISION 4 in the W01
@@ -113,13 +132,8 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 		if len(paths) == 0 {
 			return ScanOutcome{}, fmt.Errorf("custom scan requires one or more paths")
 		}
-		// Custom roots follow the file browser's rules: absolute local
-		// paths outside the protected locations (agent configuration,
-		// credential stores). The walk applies the same list below each root.
-		for _, path := range paths {
-			if err := tools.EnforcePathContainment("scan", path); err != nil {
-				return ScanOutcome{}, err
-			}
+		if err := CheckCustomScanRoots(paths); err != nil {
+			return ScanOutcome{}, err
 		}
 		targets = filterExistingPaths(paths)
 	default:
@@ -228,9 +242,10 @@ func (s *SecurityScanner) autoQuarantine(threats []Threat) {
 		if th.RuleSetID != "" && !th.autoQuarantine {
 			continue
 		}
-		if tools.EnforcePathContainment("quarantine", th.Path) != nil {
-			// A protected file is never moved, whatever matched it.
-			done[th.Path], th.QuarantineFailed = "", true
+		if err := tools.EnforcePathContainment("quarantine", th.Path); err != nil {
+			// A protected file is never moved, whatever matched it. It is
+			// reported as not quarantined (not attempted), not as a failure.
+			log.Warn("auto-quarantine not attempted: the file is in a protected location", "path", th.Path, "name", th.Name, "error", err.Error())
 			continue
 		}
 		if dest, seen := done[th.Path]; seen {

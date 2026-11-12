@@ -31,6 +31,17 @@ func identityFromInfo(info os.FileInfo) (fileIdentity, uint32, error) {
 	return fileIdentity{volume: uint64(st.Dev), idLow: uint64(st.Ino)}, links, nil
 }
 
+// scanFileOpenFlags opens a queued scan file without following a link at the
+// leaf and without blocking on a FIFO; scanRootOpenFlags opens a scan root
+// (which may be reached through linked ancestors) without blocking.
+const (
+	scanFileOpenFlags = syscall.O_NONBLOCK | syscall.O_NOFOLLOW
+	scanRootOpenFlags = syscall.O_NONBLOCK
+)
+
+// isNoFollowRefusal reports an open refused because the leaf is a link.
+func isNoFollowRefusal(err error) bool { return errors.Is(err, syscall.ELOOP) }
+
 // identityOfOpenFile returns the identity and link count of an open file
 // (the link count is 1 for anything but a regular file).
 func identityOfOpenFile(f *os.File) (fileIdentity, uint32, error) {

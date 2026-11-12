@@ -64,6 +64,15 @@ func identityOfHandle(h windows.Handle) (fileIdentity, uint32, error) {
 	}, links, nil
 }
 
+// Windows opens follow reparse points; the scan compares the opened file
+// with the walked one and checks the handle's final path instead.
+const (
+	scanFileOpenFlags = 0
+	scanRootOpenFlags = 0
+)
+
+func isNoFollowRefusal(error) bool { return false }
+
 // identityOfOpenFile returns the identity and link count of an open file
 // (the link count is 1 for anything but a regular file).
 func identityOfOpenFile(f *os.File) (fileIdentity, uint32, error) {
