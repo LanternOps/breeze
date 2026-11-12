@@ -72,6 +72,14 @@ describe('getPortalGoogleConfig', () => {
     }
   });
 
+  it('refuses a client id in another case: aud is compared exactly (D1), so it would fail every sign-in', () => {
+    configure({ PUBLIC_URL: 'https://breeze.example.com', PORTAL_GOOGLE_CLIENT_SECRET: 'shh' });
+    for (const bad of [CLIENT_ID.toUpperCase(), CLIENT_ID.replace('abcdef', 'ABCDEF'), '123456789012-abc.apps.GoogleUserContent.com']) {
+      configure({ PORTAL_GOOGLE_CLIENT_ID: bad });
+      expect(() => getPortalGoogleConfig(), bad).toThrow(/PORTAL_GOOGLE_CLIENT_ID/);
+    }
+  });
+
   it('builds the callback from PORTAL_GOOGLE_CALLBACK_BASE_URL, else PUBLIC_URL, else PUBLIC_APP_URL, else PUBLIC_API_URL', () => {
     configure({
       PORTAL_GOOGLE_CLIENT_ID: CLIENT_ID,

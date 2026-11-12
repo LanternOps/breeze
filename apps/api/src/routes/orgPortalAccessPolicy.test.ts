@@ -118,6 +118,8 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../db', () => ({
   db: h.db,
   hasDbAccessContext: () => true,
+  // W7: the held context is a request (partner) context, so W5 reads go through runOutsideDbContext.
+  getCurrentDbAccessContext: () => ({ scope: 'partner' }),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   withDbTransaction: (fn: () => unknown) => fn(),
   withDbTransactionIfHeld: (fn: () => unknown) => fn(),

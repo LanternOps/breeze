@@ -10,19 +10,19 @@ import {
   type PortalPolicySource,
   type PortalSignInCapabilities,
 } from '@breeze/shared';
-import { db, runOutsideDbContext, withDbTransaction } from '../db';
+import { db, withDbTransaction } from '../db';
 import { portalAccessPolicies } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import {
   getPortalSignInCapabilities,
+  listOrgVerifiedDomains,
   pickEffectivePortalAccessPolicy,
   readPortalAccessPolicyRows,
   toPortalAccessPolicyRowValues,
   type PortalPolicyOrgFacts,
 } from './portalAccessPolicy';
 import { findProvenEntraTenantForOrg } from './portalEntraTenantProof';
-import { listVerifiedDomainsForOrg } from './portalDomainVerification';
 import {
   clearPasswordsForSsoOnly,
   lockSsoOnlyImpact,
@@ -158,14 +158,15 @@ async function isOrgEntraTenantProven(orgId: string): Promise<boolean> {
 
 /**
  * Org owners only: the org's currently verified domains, lowercase and sorted
- * (W6 OD6 counts them; W7 D6 masks Google without one). W5's read API runs in
- * system scope and throws inside a request transaction, so it runs outside the
- * caller's context, and never inside a write savepoint. ONE read serves the
- * count, the list and the Google fact. A failure propagates (fail closed).
+ * (W6 OD6 counts them; W7 D6 masks Google without one), through the resolver's
+ * {@link listOrgVerifiedDomains}: W5's read API throws inside a request
+ * transaction, so under the routes' request context it runs through
+ * runOutsideDbContext, and it is never called inside a write savepoint. ONE
+ * read serves the count, the list and the Google fact. A failure propagates
+ * (fail closed).
  */
 async function readVerifiedDomains(orgId: string): Promise<string[]> {
-  const facts = await runOutsideDbContext(() => listVerifiedDomainsForOrg(orgId));
-  return [...new Set(facts.map((f) => f.domain.toLowerCase()))].sort();
+  return listOrgVerifiedDomains(orgId);
 }
 
 /** The org-only facts an org view carries (W4 D2, W6 OD6, W7 D6). A partner view has neither. */

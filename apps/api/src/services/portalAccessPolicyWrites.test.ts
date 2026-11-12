@@ -60,6 +60,8 @@ vi.mock('./portalDomainVerification', () => ({
 
 vi.mock('../db', () => ({
   hasDbAccessContext: () => true,
+  // W7: the held context is a request (partner) context, so W5 reads go through runOutsideDbContext.
+  getCurrentDbAccessContext: () => ({ scope: 'partner' }),
   runOutsideDbContext: async (fn: () => Promise<unknown>) => {
     const prev = w5.outside.current;
     w5.outside.current = true;
