@@ -25,6 +25,7 @@
 // uploaded copy says "as recorded" and never claims an electronic acceptance:
 // the page attests what was recorded (and, for an upload, the upload).
 
+import { crc32 } from 'node:zlib';
 import PDFKitDocument from 'pdfkit';
 import { PDFDocument, PageSizes } from 'pdf-lib';
 import { eq, sql } from 'drizzle-orm';
@@ -347,43 +348,90 @@ function toMergeError(err: unknown, what: string): PdfMergeError {
 /**
  * Largest PNG, in pixels, the certified copy decodes: a Letter page scanned
  * at 600 dpi is about 34 million. pdf-lib decodes a PNG to full RGBA in memory
- * (several bytes per pixel, more than once), so the size is read from the
- * header first. A JPEG is embedded without decoding its pixels and needs no
- * check.
+ * (several bytes per pixel, more than once), so the header is read first. A
+ * JPEG is embedded without decoding its pixels and needs no check.
  */
 export const MAX_CERTIFIED_PNG_PIXELS = 36_000_000;
 
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** Longest side, in pixels, of a PNG the certified copy decodes. */
+export const MAX_CERTIFIED_PNG_SIDE = 20_000;
 
 /**
- * Refuses a PNG the certificate will not decode, from its chunk headers alone:
- * a declared size over MAX_CERTIFIED_PNG_PIXELS, or animation chunks (pdf-lib
- * renders every frame before it rejects an animated PNG). The walk visits the
- * chunks the way pdf-lib's decoder does (every chunk up to IEND, in any
- * order), so a later header or frame chunk is seen too. Anything else that is
- * malformed is left to pdf-lib, which reports it as unreadable.
+ * Largest buffer the decoder may allocate for the image rows, which depends on
+ * the bit depth and channels as well as the pixel count: a maximum-size 8-bit
+ * RGBA page fits; the same page at 16 bits per channel does not.
+ */
+export const MAX_CERTIFIED_PNG_DECODED_BYTES = 150_000_000;
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** Channels per pixel by colour type, and the bit depths PNG defines for it. */
+const PNG_COLOR_TYPES: ReadonlyMap<number, { channels: number; depths: ReadonlySet<number> }> = new Map([
+  [0, { channels: 1, depths: new Set([1, 2, 4, 8, 16]) }], // greyscale
+  [2, { channels: 3, depths: new Set([8, 16]) }], // RGB
+  [3, { channels: 1, depths: new Set([1, 2, 4, 8]) }], // palette
+  [4, { channels: 2, depths: new Set([8, 16]) }], // greyscale + alpha
+  [6, { channels: 4, depths: new Set([8, 16]) }], // RGBA
+]);
+
+function unreadablePng(detail: string): PdfMergeError {
+  return new PdfMergeError(`The signed agreement image could not be read: ${detail}`);
+}
+
+function tooLargePng(detail: string): PdfMergeError {
+  return new PdfMergeError(`The signed agreement image is too large for a certified copy: ${detail}`, 422, 'CONTRACT_IMAGE_TOO_LARGE');
+}
+
+/**
+ * Refuses, from the chunk headers alone, a PNG the certificate will not
+ * decode. The header must be exactly what the decoder will use: a PNG
+ * signature, then one IHDR chunk, first, 13 bytes long with a matching CRC,
+ * and no other IHDR anywhere (pdf-lib's decoder reads every IHDR it meets,
+ * in any position, and ignores CRCs). From that header it refuses a defined
+ * colour type / bit depth / interlace combination only; an empty image; a side
+ * over MAX_CERTIFIED_PNG_SIDE; more than MAX_CERTIFIED_PNG_PIXELS; or row
+ * buffers over MAX_CERTIFIED_PNG_DECODED_BYTES. Animation chunks are refused
+ * too, since pdf-lib renders every frame before it rejects an animated PNG.
+ * The walk visits chunks up to IEND, as the decoder does, reading only each
+ * chunk's length and type.
  */
 function assertPngWithinDecodeLimits(data: Buffer): void {
-  if (data.length < 8 || !data.subarray(0, 8).equals(PNG_SIGNATURE)) return;
-  // Each step reads only a chunk's length and type, and skips its data.
-  for (let offset = 8; offset + 8 <= data.length;) {
+  if (data.length < 8 + 25 || !data.subarray(0, 8).equals(PNG_SIGNATURE)) throw unreadablePng('not a PNG file');
+  if (data.readUInt32BE(8) !== 13 || data.toString('latin1', 12, 16) !== 'IHDR') {
+    throw unreadablePng('the image header is not the first chunk');
+  }
+  if (crc32(data.subarray(12, 29)) !== data.readUInt32BE(29)) throw unreadablePng('the image header is damaged');
+
+  const width = data.readUInt32BE(16);
+  const height = data.readUInt32BE(20);
+  const depth = data[24]!;
+  const colorType = data[25]!;
+  const interlace = data[28]!;
+  const color = PNG_COLOR_TYPES.get(colorType);
+  if (!color || !color.depths.has(depth) || data[26] !== 0 || data[27] !== 0 || (interlace !== 0 && interlace !== 1)) {
+    throw unreadablePng(`unsupported image format (colour type ${colorType}, bit depth ${depth})`);
+  }
+  if (width === 0 || height === 0) throw unreadablePng('the image has no pixels');
+  if (width > MAX_CERTIFIED_PNG_SIDE || height > MAX_CERTIFIED_PNG_SIDE) {
+    throw tooLargePng(`${width}×${height} pixels, over the ${MAX_CERTIFIED_PNG_SIDE}-pixel side limit`);
+  }
+  if (width * height > MAX_CERTIFIED_PNG_PIXELS) {
+    throw tooLargePng(`${width}×${height} pixels, over the ${MAX_CERTIFIED_PNG_PIXELS}-pixel limit`);
+  }
+  // What the decoder allocates for the rows: one filter byte per row (two when
+  // interlaced), then a second copy of the rows when it de-interlaces.
+  const rowBytes = Math.ceil((width * color.channels * depth) / 8);
+  const decodedBytes = (rowBytes + 1 + interlace) * height + (interlace ? rowBytes * height : 0);
+  if (decodedBytes > MAX_CERTIFIED_PNG_DECODED_BYTES) {
+    throw tooLargePng(`${decodedBytes} bytes of image rows, over the ${MAX_CERTIFIED_PNG_DECODED_BYTES}-byte limit`);
+  }
+
+  for (let offset = 8 + 25; offset + 8 <= data.length;) {
     const length = data.readUInt32BE(offset);
     const type = data.toString('latin1', offset + 4, offset + 8);
-    if (type === 'IHDR' && offset + 16 <= data.length) {
-      const width = data.readUInt32BE(offset + 8);
-      const height = data.readUInt32BE(offset + 12);
-      if (width * height > MAX_CERTIFIED_PNG_PIXELS) {
-        throw new PdfMergeError(
-          `The signed agreement image is ${width}×${height} pixels, over the ${MAX_CERTIFIED_PNG_PIXELS}-pixel limit for a certified copy`,
-          422,
-          'CONTRACT_IMAGE_TOO_LARGE',
-        );
-      }
-    } else if (type === 'acTL' || type === 'fcTL' || type === 'fdAT') {
-      throw new PdfMergeError('The signed agreement image is an animated PNG, which a certified copy cannot embed', 422, 'CONTRACT_IMAGE_TOO_LARGE');
-    } else if (type === 'IEND') {
-      return;
-    }
+    if (type === 'IHDR') throw unreadablePng('the image has more than one header');
+    if (type === 'acTL' || type === 'fcTL' || type === 'fdAT') throw tooLargePng('an animated PNG cannot be embedded');
+    if (type === 'IEND') return;
     offset += 12 + length;
   }
 }

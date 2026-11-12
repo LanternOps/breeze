@@ -44,6 +44,7 @@ import {
   certificateText,
   loadCertifiedAgreementInput,
   MAX_CERTIFIED_PNG_PIXELS,
+  MAX_CERTIFIED_PNG_SIDE,
   renderCertifiedAgreementPdf,
   type CertifiedAgreementInput,
 } from './agreementCertificate';
@@ -266,18 +267,27 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
       crc.writeUInt32BE(crc32(body));
       return Buffer.concat([length, body, crc]);
     };
-    function ihdr(width: number, height: number): Buffer {
+    type Header = { depth?: number; colorType?: number; interlace?: number };
+    function ihdrData(width: number, height: number, { depth = 8, colorType = 6, interlace = 0 }: Header = {}): Buffer {
       const data = Buffer.alloc(13);
       data.writeUInt32BE(width, 0);
       data.writeUInt32BE(height, 4);
-      data[8] = 8; // bit depth
-      data[9] = 6; // RGBA
-      return chunk('IHDR', data);
+      data[8] = depth;
+      data[9] = colorType;
+      data[12] = interlace;
+      return data;
     }
-    function png(width: number, height: number, extra: Buffer[] = [], afterData: Buffer[] = []): Buffer {
+    function ihdr(width: number, height: number, header: Header = {}): Buffer {
+      return chunk('IHDR', ihdrData(width, height, header));
+    }
+    const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    function png(width: number, height: number, extra: Buffer[] = [], afterData: Buffer[] = [], header: Header = {}): Buffer {
+      return pngWithHeader(ihdr(width, height, header), extra, afterData);
+    }
+    function pngWithHeader(header: Buffer, extra: Buffer[] = [], afterData: Buffer[] = []): Buffer {
       return Buffer.concat([
-        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-        ihdr(width, height),
+        SIGNATURE,
+        header,
         ...extra,
         chunk('IDAT', Buffer.from([0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01])),
         ...afterData,
@@ -285,23 +295,76 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
       ]);
     }
 
-    async function refusedWithoutDecoding(data: Buffer) {
+    async function refusedWithoutDecoding(data: Buffer, code = 'CONTRACT_IMAGE_TOO_LARGE') {
       const decode = vi.spyOn(PDFDocument.prototype, 'embedPng').mockRejectedValue(new Error('decoder reached'));
       try {
         const err = await renderCertifiedAgreementPdf(makeInput(data, 'image/png')).catch((e: unknown) => e);
         expect(err).toBeInstanceOf(PdfMergeError);
-        expect(err).toMatchObject({ code: 'CONTRACT_IMAGE_TOO_LARGE' });
+        expect(err).toMatchObject({ code });
         expect(decode).not.toHaveBeenCalled();
       } finally {
         decode.mockRestore();
       }
     }
 
+    async function reachesDecoder(data: Buffer) {
+      const decode = vi.spyOn(PDFDocument.prototype, 'embedPng').mockRejectedValue(new Error('decoder reached'));
+      try {
+        // Reaching the decoder is the point; the fake pixel data then fails it.
+        await expect(renderCertifiedAgreementPdf(makeInput(data, 'image/png'))).rejects.toBeInstanceOf(PdfMergeError);
+        expect(decode).toHaveBeenCalledTimes(1);
+      } finally {
+        decode.mockRestore();
+      }
+    }
+
+    it('refuses an image with no pixels or with a side over the per-side limit', async () => {
+      await refusedWithoutDecoding(png(0, 100), 'CONTRACT_PDF_UNREADABLE');
+      await refusedWithoutDecoding(png(100, 0), 'CONTRACT_PDF_UNREADABLE');
+      await refusedWithoutDecoding(png(MAX_CERTIFIED_PNG_SIDE + 1, 1));
+      await refusedWithoutDecoding(png(1, MAX_CERTIFIED_PNG_SIDE + 1));
+    });
+
+    it('refuses an image whose decoded rows would exceed the byte limit at its bit depth', async () => {
+      // 5,000 × 5,000 is under the pixel limit, but 16-bit RGBA is 8 bytes a pixel.
+      await refusedWithoutDecoding(png(5000, 5000, [], [], { depth: 16, colorType: 6 }));
+      await reachesDecoder(png(5000, 5000, [], [], { depth: 8, colorType: 6 }));
+    });
+
+    it('refuses a header the decoder would not read the same way', async () => {
+      const unreadable = 'CONTRACT_PDF_UNREADABLE';
+      // Colour type and bit depth combinations PNG does not define.
+      await refusedWithoutDecoding(png(10, 10, [], [], { depth: 4, colorType: 2 }), unreadable);
+      await refusedWithoutDecoding(png(10, 10, [], [], { depth: 8, colorType: 5 }), unreadable);
+      await refusedWithoutDecoding(png(10, 10, [], [], { depth: 16, colorType: 3 }), unreadable);
+      // Unknown interlace method.
+      await refusedWithoutDecoding(png(10, 10, [], [], { interlace: 2 }), unreadable);
+      // A second header, before or after the image data.
+      await refusedWithoutDecoding(png(10, 10, [ihdr(10, 10)]), unreadable);
+      await refusedWithoutDecoding(png(10, 10, [], [ihdr(10, 10)]), unreadable);
+      // The header is not the first chunk.
+      await refusedWithoutDecoding(pngWithHeader(chunk('tEXt', Buffer.from('a\0b')), [ihdr(10, 10)]), unreadable);
+      // Wrong header length, or a header whose checksum does not match.
+      await refusedWithoutDecoding(pngWithHeader(chunk('IHDR', Buffer.concat([ihdrData(10, 10), Buffer.alloc(1)]))), unreadable);
+      const badCrc = ihdr(10, 10);
+      badCrc[badCrc.length - 1]! ^= 0xff;
+      await refusedWithoutDecoding(pngWithHeader(badCrc), unreadable);
+      // Not a PNG signature at all.
+      await refusedWithoutDecoding(Buffer.concat([Buffer.from('GIF89a..'), ihdr(10, 10)]), unreadable);
+    });
+
+    it('still decodes interlaced and palette images of ordinary size', async () => {
+      await reachesDecoder(png(2550, 3300, [], [], { interlace: 1 }));
+      await reachesDecoder(png(2550, 3300, [], [], { depth: 1, colorType: 3 }));
+      await reachesDecoder(png(2550, 3300, [], [], { depth: 16, colorType: 0 }));
+    });
+
     it('refuses a PNG whose declared size is over the pixel limit, without decoding it', async () => {
       await refusedWithoutDecoding(png(30_000, 30_000));
       await refusedWithoutDecoding(png(1, MAX_CERTIFIED_PNG_PIXELS + 1));
-      // The decoder takes the size from the last header it reads.
-      await refusedWithoutDecoding(png(10, 10, [], [ihdr(30_000, 30_000)]));
+      // The decoder takes the size from the last header it reads, so a later
+      // header is refused whatever size it declares.
+      await refusedWithoutDecoding(png(10, 10, [], [ihdr(30_000, 30_000)]), 'CONTRACT_PDF_UNREADABLE');
     });
 
     it('refuses an animated PNG without decoding its frames', async () => {
@@ -313,15 +376,7 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
     });
 
     it('still embeds a PNG at a scanned-page size', async () => {
-      const page = png(2550, 3300);
-      const decode = vi.spyOn(PDFDocument.prototype, 'embedPng').mockRejectedValue(new Error('decoder reached'));
-      try {
-        // Reaching the decoder is the point; the fake pixel data then fails it.
-        await expect(renderCertifiedAgreementPdf(makeInput(page, 'image/png'))).rejects.toBeInstanceOf(PdfMergeError);
-        expect(decode).toHaveBeenCalledTimes(1);
-      } finally {
-        decode.mockRestore();
-      }
+      await reachesDecoder(png(2550, 3300));
     });
   });
 
