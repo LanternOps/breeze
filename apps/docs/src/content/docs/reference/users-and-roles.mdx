@@ -109,6 +109,17 @@ Removing a user from a scope (`DELETE /users/:id`) deletes the association recor
 
 Authenticated users can view and update their own profile at `GET /users/me` and `PATCH /users/me` without any special permissions. Updatable fields are `name`, `email`, and `preferences`. Avatars are managed separately via `POST /users/me/avatar` (upload) and `DELETE /users/me/avatar` (remove) -- `PATCH /users/me` rejects an `avatarUrl` field with `400` rather than silently dropping it.
 
+Changing `email` does not move the address straight away: the new address is held as pending and a confirmation link is sent to it, and the change takes effect when that link is opened. A pending change is cancelled, and the link stops working, when any of the following happens before the link is opened. Request the change again afterwards.
+
+- the password is reset or changed
+- an administrator changes the account's status (for example disables or re-enables it)
+- the user is removed from a partner or organization, including by a completed access review
+- the user's partner is suspended
+- the user signs out
+- an administrator resets the user's MFA factors
+
+The confirmation link also does nothing while the account is disabled.
+
 ---
 
 ## Authentication

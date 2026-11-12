@@ -544,6 +544,11 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const familyUpdates = txMockState.updates.filter((u) => u.values && 'revokedReason' in u.values);
     expect(epochUpdates).toHaveLength(2);
     expect(familyUpdates).toHaveLength(2);
+    // Each disabled user's pending email-address change is cancelled too.
+    const pendingEmailCancels = txMockState.updates.filter(
+      (u) => u.values && u.values.pendingEmail === null && u.values.pendingEmailRequestedAt === null,
+    );
+    expect(pendingEmailCancels).toHaveLength(2);
 
     // Audit log written with the right action + details.
     expect(createAuditLog).toHaveBeenCalledTimes(1);

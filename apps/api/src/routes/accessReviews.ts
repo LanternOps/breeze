@@ -18,6 +18,7 @@ import { buildAccessReviewNotifyEmail } from '../services/accessReviewNotifyEmai
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
+import { cancelPendingEmailChange } from '../services/pendingEmailCancellation';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
@@ -725,6 +726,7 @@ accessReviewRoutes.post(
               // is untouched.
               await advanceUserEpochs(tx, userId, { auth: true, mfa: true });
               await revokeAllRefreshFamilies(tx, userId, 'membership-removed');
+              await cancelPendingEmailChange(tx, userId);
               const { neutralized } = await neutralizeUserIfOrphaned(tx, userId);
               if (neutralized) neutralizedUserIds.push(userId);
             }

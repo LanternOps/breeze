@@ -150,11 +150,13 @@ function mockEmailChangeSelects(
     pendingEmail: 'a@b.com',
     emailEpoch: 1,
     name: 'User',
+    status: 'active',
   }
 ) {
   vi.mocked(db.select)
     .mockReturnValueOnce(chainSelect([token]) as any)
-    .mockReturnValueOnce(chainSelect(liveUser ? [liveUser] : []) as any);
+    // Accounts are active unless a test says otherwise.
+    .mockReturnValueOnce(chainSelect(liveUser ? [{ status: 'active', ...liveUser }] : []) as any);
 }
 
 /** An update whose terminal `.where()` rejects (used to force the swap 23505). */
@@ -520,6 +522,22 @@ describe('consumeVerificationToken', () => {
   // every refresh family — one transaction. The purpose branch is a security
   // boundary (a signup token cannot drive it, and vice versa).
   describe('email_change commit (SR2-17)', () => {
+    it.each(['disabled', 'invited'])('does not move the address of a %s account', async (status) => {
+      mockEmailChangeSelects(changeTokenRow(), {
+        email: 'old@b.com', pendingEmail: 'a@b.com', emailEpoch: 1, name: 'User', status,
+      });
+      // A claim and swap would succeed if attempted; only the status check stops them.
+      vi.mocked(db.update)
+        .mockReturnValueOnce(chainUpdateReturning([{ id: 'evt-1' }]) as any)
+        .mockReturnValueOnce(chainUpdateNoReturning() as any);
+
+      const result = await consumeVerificationToken('rawtoken');
+
+      expect(db.update).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'account_inactive' });
+      expect(vi.mocked(advanceUserEpochs)).not.toHaveBeenCalled();
+    });
+
     it('swaps the address, clears pending, advances auth+email epochs, revokes families', async () => {
       mockEmailChangeSelects(changeTokenRow());
 

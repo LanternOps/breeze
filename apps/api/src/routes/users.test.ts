@@ -2763,6 +2763,8 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(200);
+      // A pending email-address change is cancelled in the same transaction.
+      expect(capturedUpdates).toContainEqual(expect.objectContaining({ pendingEmail: null, pendingEmailRequestedAt: null }));
       // advanceUserEpochs-shaped update on `users` (auth_epoch increment).
       expect(capturedUpdates.some((v) => 'authEpoch' in v)).toBe(true);
       // revokeAllRefreshFamilies-shaped update on `refresh_token_families`
@@ -2851,6 +2853,8 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      // A role change signs the user out but leaves a pending email change.
+      expect(capturedUpdates.some((v) => 'pendingEmail' in v)).toBe(false);
       // advanceUserEpochs-shaped update on `users` (auth_epoch increment).
       expect(capturedUpdates.some((v) => 'authEpoch' in v)).toBe(true);
       // revokeAllRefreshFamilies-shaped update on `refresh_token_families`
@@ -3273,7 +3277,8 @@ describe('user routes', () => {
         set: (values: Record<string, unknown>) => {
           capturedUpdates.push(values);
           calls.push(
-            'authEpoch' in values ? 'epochs'
+            'pendingEmail' in values ? 'cancel-email-change'
+              : 'authEpoch' in values ? 'epochs'
               : 'revokedReason' in values ? 'families'
               : 'mfaSecret' in values ? 'clear-factors'
               : values.status === 'disabled' ? 'neutralize'
@@ -3403,7 +3408,7 @@ describe('user routes', () => {
       const res = await app.request(`/users/${TARGET}`, { method: 'DELETE', headers: { Authorization: 'Bearer token' } });
 
       expect(res.status).toBe(200);
-      expect(calls).toEqual(['delete-membership', 'epochs', 'families', 'neutralize', 'clear-factors', 'delete-passkeys']);
+      expect(calls).toEqual(['delete-membership', 'epochs', 'families', 'cancel-email-change', 'neutralize', 'clear-factors', 'delete-passkeys']);
       const epochs = capturedUpdates.find((v) => 'authEpoch' in v)!;
       expect(epochs).toHaveProperty('mfaEpoch'); // D3: neutralization bumps BOTH epochs
       expect(capturedUpdates.filter((v) => 'authEpoch' in v)).toHaveLength(1); // exactly one bump — no double-bump
@@ -3418,7 +3423,7 @@ describe('user routes', () => {
       const res = await app.request('/users/11111111-1111-1111-1111-111111111111', { method: 'DELETE', headers: { Authorization: 'Bearer token' } });
 
       expect(res.status).toBe(200);
-      expect(calls).toEqual(['delete-membership', 'epochs', 'families']);
+      expect(calls).toEqual(['delete-membership', 'epochs', 'families', 'cancel-email-change']);
       expect(capturedUpdates.some((v) => v.status === 'disabled')).toBe(false);
       expect(calls).not.toContain('delete-passkeys');
     });
@@ -3514,7 +3519,9 @@ describe('user routes', () => {
         set: (values: Record<string, unknown>) => {
           capturedUpdates.push(values);
           calls.push(
-            'mfaEpoch' in values
+            'pendingEmail' in values
+              ? 'cancel-email-change'
+              : 'mfaEpoch' in values
               ? 'epochs'
               : 'revokedReason' in values
                 ? 'families'
@@ -3564,7 +3571,7 @@ describe('user routes', () => {
       // One transaction: target membership locked FIRST (rank check made
       // atomic with the reset) → mfa_epoch bump → families → Office binding
       // revoke → users clear → passkey delete.
-      expect(calls).toEqual(['lock-membership', 'epochs', 'families', 'office-binding', 'clear-factors', 'delete-passkeys']);
+      expect(calls).toEqual(['lock-membership', 'epochs', 'families', 'office-binding', 'clear-factors', 'delete-passkeys', 'cancel-email-change']);
       expect(capturedUpdates.some((v) => v.mfaEnabled === false && v.mfaSecret === null && v.phoneNumber === null && v.phoneVerified === false)).toBe(true);
       expect(capturedUpdates.some((v) => 'mfaEpoch' in v)).toBe(true);
       expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);

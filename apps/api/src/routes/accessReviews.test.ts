@@ -922,6 +922,8 @@ describe('access review routes', () => {
       expect(capturedUpdates.filter((v) => 'authEpoch' in v)).toHaveLength(2);
       // revokeAllRefreshFamilies-shaped updates (revoked_at/revoked_reason).
       expect(capturedUpdates.filter((v) => 'revokedReason' in v)).toHaveLength(2);
+      // Each revoked user's pending email-address change is cancelled too.
+      expect(capturedUpdates.filter((v) => v.pendingEmail === null && v.pendingEmailRequestedAt === null)).toHaveLength(2);
       // Post-commit cleanup (Redis token cutoff, permission-cache clear,
       // OAuth-artifact revocation) runs once per unique revoked user.
       expect(runPostCommitCleanup).toHaveBeenCalledWith('user-1');

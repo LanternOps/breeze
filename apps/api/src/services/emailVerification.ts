@@ -100,6 +100,9 @@ export type ConsumeFailureReason =
   // and the WHOLE transaction rolled back — this row is untouched (pending NOT
   // cleared, email NOT moved, no session revocation).
   | 'email_taken'
+  // email_change only. The account is not active (disabled, or never
+  // activated); the address is not moved and the link is not claimed.
+  | 'account_inactive'
   // Signup only. The account has a password and the caller did not confirm
   // it (or confirmed a hash that is no longer the stored one). Nothing was
   // claimed; the caller asks for the password and submits the same token again.
@@ -205,6 +208,7 @@ export async function consumeVerificationToken(rawToken: string, options: Consum
             pendingEmail: users.pendingEmail,
             emailEpoch: users.emailEpoch,
             name: users.name,
+            status: users.status,
           })
           .from(users)
           .where(eq(users.id, row.userId))
@@ -213,6 +217,13 @@ export async function consumeVerificationToken(rawToken: string, options: Consum
 
         if (!liveUser) {
           return { ok: false, error: 'superseded' as const };
+        }
+
+        // The link is redeemed without signing in, so the account's own
+        // state decides: a disabled (or never-activated) account keeps its
+        // address. Nothing is claimed, so the link stays unused.
+        if (liveUser.status !== 'active') {
+          return { ok: false, error: 'account_inactive' as const };
         }
 
         // The pending state must still exist, must still be the address this
