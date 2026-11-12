@@ -25,7 +25,7 @@ export const aiDataPolicies = pgTable(
   /**
    * Technician-AI transcript window (#4342 W4), same semantics as
    * toolOutputRetentionDays: NULL on a partner row = keep forever; NULL on an
-   * org row = inherit. CHECK in 2027-01-23-242000.
+   * org row = inherit. CHECK in 2027-01-24-120000.
    */
   transcriptRetentionDays: integer('transcript_retention_days'),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),

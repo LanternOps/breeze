@@ -138,7 +138,7 @@ export const aiSessions = pgTable('ai_sessions', {
   idOrgIdx: uniqueIndex('ai_sessions_id_org_uidx').on(table.id, table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
   statusIdx: index('ai_sessions_status_idx').on(table.status),
-  // #4342 W4 retention scan (2027-01-23-242100).
+  // #4342 W4 retention scan (2027-01-24-120100).
   retentionScanIdx: index('ai_sessions_retention_scan_idx').on(table.orgId, table.lastActivityAt).where(sql`${table.flaggedAt} IS NULL`),
   // flaggedAt partial index created via SQL migration (WHERE flagged_at IS NOT NULL)
   offeringFk: foreignKey({
@@ -413,7 +413,7 @@ export const aiBudgetAlertEvents = pgTable('ai_budget_alert_events', {
 
 export const aiActionPlans = pgTable('ai_action_plans', {
   id: uuid('id').primaryKey().defaultRandom(),
-  // ON DELETE CASCADE since #4342 W4 (2027-01-23-242000): a retention stub is hard-deleted with its plans.
+  // ON DELETE CASCADE since #4342 W4 (2027-01-24-120000): a retention stub is hard-deleted with its plans.
   sessionId: uuid('session_id').notNull().references(() => aiSessions.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   status: aiPlanStatusEnum('status').notNull().default('pending'),
@@ -436,7 +436,7 @@ export const aiScreenshots = pgTable('ai_screenshots', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  // ON DELETE CASCADE since #4342 W4 (2027-01-23-242000). The retention job
+  // ON DELETE CASCADE since #4342 W4 (2027-01-24-120000). The retention job
   // never relies on it: it expires a session's screenshots first so
   // helperScreenshotRetention removes the file, and deletes a stub only once
   // none remain (a cascaded row would orphan its file).

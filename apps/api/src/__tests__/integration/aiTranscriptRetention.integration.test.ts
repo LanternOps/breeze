@@ -330,13 +330,13 @@ describe('aiTranscriptRetention (real Postgres, breeze_app pool)', () => {
   });
 });
 
-describe('W4 migration 2027-01-23-242000 (partner backfill)', () => {
+describe('W4 migration 2027-01-24-120000 (partner backfill)', () => {
   const ROLLBACK = new Error('roll back the migration replay');
 
   it('backfills 365 on partner rows only, and re-applying keeps a later NULL', async () => {
     const { readFile } = await import('node:fs/promises');
     const migration = await readFile(
-      new URL('../../../migrations/2027-01-23-242000-ai-transcript-retention-columns.sql', import.meta.url),
+      new URL('../../../migrations/2027-01-24-120000-ai-transcript-retention-columns.sql', import.meta.url),
       'utf8',
     );
     const { partnerId, orgId } = await newOrg(365);
