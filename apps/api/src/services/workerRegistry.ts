@@ -319,6 +319,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W4 (#11591): nightly AI transcript retention (stub sessions past
+    // their window, delete stubs past the audit window). Report-only until
+    // AI_TRANSCRIPT_RETENTION_ENFORCE. `global`: db + services only; the SDK
+    // transcript delete is best effort, as aiToolOutputRetention's.
+    name: 'aiTranscriptRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiTranscriptRetention');
+      return { init: m.initializeAiTranscriptRetention, shutdown: m.shutdownAiTranscriptRetention };
+    },
+  },
+  {
     // #9050: nightly sweep of orphaned SDK transcripts on this container's own
     // disk. socket-owner ON PURPOSE (not the mechanical `global` its closure
     // would classify it as): transcripts are written by the API role, so it

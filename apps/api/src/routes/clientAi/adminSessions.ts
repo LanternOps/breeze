@@ -74,6 +74,8 @@ const sessionSelection = {
   flagReason: aiSessions.flagReason,
   createdAt: aiSessions.createdAt,
   lastActivityAt: aiSessions.lastActivityAt,
+  /** Set when transcript retention stubbed the session (#4342 W4); null otherwise. */
+  transcriptPurgedAt: aiSessions.transcriptPurgedAt,
 };
 
 // ── GET /sessions — filtered, paginated list ─────────────────────────────────
@@ -132,6 +134,7 @@ clientAiAdminSessionRoutes.get(
         flaggedAt: r.flaggedAt,
         flagReason: r.flagReason,
         status: r.status,
+        transcriptPurgedAt: r.transcriptPurgedAt,
       })),
       pagination: { total: Number(totalRow?.n ?? 0), limit: q.limit, offset: q.offset },
     });

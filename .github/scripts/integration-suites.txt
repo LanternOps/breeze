@@ -67,6 +67,7 @@ suite ai sources apps/api/src/jobs/patchScheduleBackfill.ts
 suite ai sources apps/api/src/jobs/softwareComplianceWorker.ts
 suite ai sources apps/api/src/jobs/softwareRemediationWorker.ts
 suite ai sources apps/api/src/routes/agents/helpers.ts
+suite ai sources apps/api/src/routes/partnerAiDataPolicy.ts
 suite ai sources apps/api/src/routes/backup/verificationService.ts
 suite ai sources apps/api/src/services/accounting/accountingConnectionService.ts
 suite ai sources apps/api/src/services/accounting/accountingInvoicePush.ts

@@ -63,6 +63,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('fleetRemediationDispatchWorker'),
   consumers('mlOutputRetention'),
   consumers('aiToolOutputRetention'),
+  consumers('aiTranscriptRetention'),
   consumers('aiTranscriptSweeper'),
   consumers('offlineDetector'),
   consumers('notificationDispatcher'),
