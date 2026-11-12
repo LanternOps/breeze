@@ -90,6 +90,11 @@ export const remoteSessions = pgTable('remote_sessions', {
   index('remote_sessions_device_live_idx')
     .on(t.deviceId)
     .where(remoteSessionIsLive(t.status)),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): ended-session
+  // age scan (jobs/historyRetention/accessHistory.ts).
+  index('remote_sessions_terminal_age_idx')
+    .on(sql`(COALESCE(${t.endedAt}, ${t.createdAt}))`)
+    .where(sql`${t.status} IN ('disconnected', 'failed', 'denied')`),
   check(
     'remote_sessions_desktop_prompt_mode_check',
     sql`${t.desktopPromptMode} IS NULL OR ${t.desktopPromptMode} IN ('off', 'notify', 'consent')`,

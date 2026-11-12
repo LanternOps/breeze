@@ -1263,6 +1263,39 @@
     },
     "troubleshootingLink": "Troubleshooting guide"
   },
+  "failureCause": {
+    "storage_access_denied": {
+      "hint": "The backup destination refused the request. Check that the access key is valid and can write, the bucket policy and the storage account's standing, then run Test connection."
+    },
+    "storage_not_found": {
+      "hint": "The backup destination says the bucket or its objects are missing. Check that the bucket still exists and that no lifecycle rule deletes backup data."
+    },
+    "storage_clock_skew": {
+      "hint": "The backup destination rejected the time on the request, which commonly means a clock that is far off. Check the date and time on the device."
+    },
+    "storage_operation_failed": {
+      "hint": "Breeze could not complete a storage operation with the destination. This is usually temporary or a provider incompatibility. If it keeps happening, contact support."
+    },
+    "storage_session_expired": {
+      "hint": "The upload session ended before the run finished. The next run continues from where this one stopped."
+    },
+    "helper_stopped": {
+      "hint": "The backup process on the device was stopped mid-run, commonly because the device slept, restarted or shut down. Keep it awake and on during the backup window."
+    },
+    "run_cancelled_on_device": {
+      "hint": "The run was interrupted on the device, commonly by a restart or shutdown."
+    },
+    "never_started": {
+      "hint": "The device never started this run, usually because another backup was still running or the agent was restarting."
+    },
+    "no_agent_signal": {
+      "hint": "Breeze stopped hearing from the device during the run."
+    },
+    "destination": {
+      "title": "{{name}}: the latest backup failed on {{failing}} of {{total}} devices",
+      "link": "Open backup profiles to test the connection"
+    }
+  },
   "fullRunReason": {
     "no_prior_snapshot": "First backup for this device and destination",
     "base_expired": "The previous backup had expired under retention",

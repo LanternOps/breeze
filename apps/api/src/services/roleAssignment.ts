@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
-import { roles, permissions, rolePermissions } from '../db/schema';
+import { roles } from '../db/schema';
 import {
   getUserPermissions,
   hasPermission,
@@ -9,6 +9,7 @@ import {
   type UserPermissions,
 } from './permissions';
 import { normalizeSiteAllowlist } from './siteAllowlist';
+import { getEffectiveRolePermissionSources } from './roleInheritance';
 
 /**
  * Canonical assignable-role validation. Lifted VERBATIM out of routes/users.ts
@@ -153,38 +154,17 @@ export async function getProviderAxisRole(roleId: string, scopeContext: ScopeCon
   return null;
 }
 
+/**
+ * The role's effective grants — its own plus its "Inherit From" ancestors' —
+ * from the same cycle-safe, depth-bounded, tenant-confined walk the runtime
+ * resolver uses (services/roleInheritance.ts, #9600), so an assignment ceiling
+ * can never be computed over a different set than the member will hold.
+ */
 export async function getEffectiveRolePermissions(
-  roleId: string,
-  visited: Set<string> = new Set()
+  roleId: string
 ): Promise<Array<{ resource: string; action: string }>> {
-  if (visited.has(roleId)) return [];
-  visited.add(roleId);
-
-  const [role] = await db
-    .select({ parentRoleId: roles.parentRoleId })
-    .from(roles)
-    .where(eq(roles.id, roleId))
-    .limit(1);
-
-  const directPermissions = await db
-    .select({
-      resource: permissions.resource,
-      action: permissions.action
-    })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(eq(rolePermissions.roleId, roleId));
-
-  if (!role?.parentRoleId) {
-    return directPermissions;
-  }
-
-  const inheritedPermissions = await getEffectiveRolePermissions(role.parentRoleId, visited);
-  const result = new Map<string, { resource: string; action: string }>();
-  for (const permission of [...directPermissions, ...inheritedPermissions]) {
-    result.set(`${permission.resource}:${permission.action}`, permission);
-  }
-  return [...result.values()];
+  const sources = await getEffectiveRolePermissionSources(roleId);
+  return sources.map(({ resource, action }) => ({ resource, action }));
 }
 
 export async function getCallerPermissions(
