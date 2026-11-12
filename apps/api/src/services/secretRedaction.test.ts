@@ -4,6 +4,7 @@ import {
   redactOptionalSecretText,
   redactAgentResultErrorFields,
   redactSecretsDeep,
+  SECRET_OUTPUT_REDACTIONS,
 } from './secretRedaction';
 
 // A representative base64 body line that must never survive redaction.
@@ -131,6 +132,32 @@ describe('redactSecretsFromOutput', () => {
     const out = redactSecretsFromOutput(`JWT ${jwt} done`);
     expect(out).not.toContain(jwt);
     expect(out).toContain('[JWT_REDACTED]');
+  });
+
+  it('redacts command output in linear time', () => {
+    for (const output of ['eyJ'.repeat(25_000), `${'eyJ'.repeat(25_000)}.x`, `${'eyJa-'.repeat(15_000)}.eyJ`, `${'a'.repeat(75_000)}eyJ`, `${'x-eyJ'.repeat(15_000)}`]) {
+      const started = performance.now();
+      redactSecretsFromOutput(output);
+      expect(performance.now() - started).toBeLessThan(150);
+    }
+  });
+
+  it('finds exactly the JWT spans the previous pattern found', () => {
+    // The JWT rule before it was made linear, kept as the reference.
+    const reference = /eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g;
+    const rule = SECRET_OUTPUT_REDACTIONS.find((r) => r.replacement === '[JWT_REDACTED]')!.pattern;
+    const spans = (re: RegExp, text: string) => [...text.matchAll(new RegExp(re.source, re.flags))].map((m) => [m.index, m[0]]);
+    const alphabet = ['eyJ', 'eyJ', 'e', 'y', 'J', '.', '.', 'a', '-', '_', ' ', 'x.', '\n'];
+    let seed = 0x4a5b6c;
+    const next = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed;
+    };
+    for (let i = 0; i < 20_000; i += 1) {
+      let text = '';
+      for (let j = next() % 16; j > 0; j -= 1) text += alphabet[next() % alphabet.length];
+      expect([text, spans(rule, text)]).toEqual([text, spans(reference, text)]);
+    }
   });
 });
 

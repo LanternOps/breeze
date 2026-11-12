@@ -47,9 +47,15 @@ export const SECRET_OUTPUT_REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacem
   },
   // Bearer tokens.
   { pattern: /bearer\s+[a-zA-Z0-9_\-.]+/gi, replacement: 'Bearer [TOKEN_REDACTED]' },
-  // JWTs (header.payload.signature).
+  // JWTs (header.payload.signature): `eyJ…\.eyJ…\.…`. Every `eyJ` inside one
+  // run of token characters reaches the same first `.`, so all of them match or
+  // none does, and a match starts at the run's first `eyJ`. The lookbehind tries
+  // only that one (after the cheap `(?=eyJ)`, so other positions cost nothing),
+  // which keeps the scan linear in the length of the text. Same spans as
+  // `/eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g` (and as the agent's
+  // RE2 rule); secretRedaction.test.ts compares the two.
   {
-    pattern: /eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g,
+    pattern: /(?=eyJ)(?<=(?<![a-zA-Z0-9_-])(?:(?!eyJ)[a-zA-Z0-9_-])*)eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g,
     replacement: '[JWT_REDACTED]',
   },
 ];
