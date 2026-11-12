@@ -4,17 +4,19 @@ import { organizations, partners, portalBranding } from '../db/schema';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
 import { resolveDocumentBrand } from './partnerDocumentBrand';
+import { checkPngDecodable } from './pngDecodeLimits';
 
 /** Parse intrinsic width/height from a PNG data URL (IHDR is always the first
- * chunk: width at byte 16, height at byte 20). Returns null for non-PNG data. */
+ * chunk: width at byte 16, height at byte 20). Returns null for non-PNG data,
+ * and for a PNG `checkPngDecodable` refuses, since the report renderer decodes
+ * the logo and a null aspect leaves it out. */
 export function pngAspectFromDataUrl(dataUrl: string): number | null {
   if (!dataUrl.startsWith('data:image/png;base64,')) return null;
   try {
     const buf = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
-    if (buf.length < 24 || buf.toString('latin1', 12, 16) !== 'IHDR') return null;
-    const w = buf.readUInt32BE(16);
-    const h = buf.readUInt32BE(20);
-    return w > 0 && h > 0 ? w / h : null;
+    const check = checkPngDecodable(buf);
+    if (!check.ok) return null;
+    return check.header.width / check.header.height;
   } catch {
     return null;
   }

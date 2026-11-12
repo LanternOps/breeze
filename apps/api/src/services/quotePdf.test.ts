@@ -14,7 +14,7 @@ vi.mock('./sentry', async (importActual) => {
 });
 
 import { captureException } from './sentry';
-import { renderQuotePdf, contractUploadedMarker, imageIntrinsicSize } from './quotePdf';
+import { renderQuotePdf, contractUploadedMarker, imageIntrinsicSize, imageIsDrawable } from './quotePdf';
 import { documentColumnsFor } from './documentPdfTable';
 import { renderRichTextIntoPdf, WEB_TYPOGRAPHY } from './richTextPdf';
 
@@ -1269,6 +1269,45 @@ describe('renderQuotePdf theme + page size (Task 6)', () => {
     const text = extractPdfText(buf);
     expect(text).toContain('Themed heading');
     expect(text).toContain('Themed body copy');
+  });
+});
+
+describe('imageIsDrawable — PNG size limits', () => {
+  // An RGBA PNG: pdfkit decodes these (to split out the alpha channel), so
+  // this is the path whose memory the checks bound.
+  function rgbaPng(width: number, height: number, rows: Buffer): Buffer {
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width, 0);
+    ihdr.writeUInt32BE(height, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6; // RGBA
+    return Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', ihdr),
+      pngChunk('IDAT', zlib.deflateSync(rows)),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+  }
+
+  it('draws an ordinary RGBA image', () => {
+    expect(imageIsDrawable(rgbaPng(10, 10, Buffer.alloc(10 * (10 * 4 + 1))))).toBe(true);
+  });
+
+  it('skips an image whose declared size is over the decode limits', () => {
+    expect(imageIsDrawable(rgbaPng(30_000, 30_000, Buffer.alloc(16)))).toBe(false);
+  });
+
+  it('stops inflating an image at the size its header declares', () => {
+    const inflate = vi.spyOn(zlib, 'inflateSync');
+    try {
+      // More data than the 10×10 header declares.
+      expect(imageIsDrawable(rgbaPng(10, 10, Buffer.alloc(64 * 1024 * 1024)))).toBe(false);
+      for (const [, options] of inflate.mock.calls) {
+        expect((options as zlib.ZlibOptions | undefined)?.maxOutputLength).toBeLessThanOrEqual(10_000);
+      }
+    } finally {
+      inflate.mockRestore();
+    }
   });
 });
 

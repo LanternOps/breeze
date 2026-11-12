@@ -28,6 +28,7 @@ import { renderRichTextIntoPdf, measureRichTextLead, parseRichText, WEB_TYPOGRAP
 import { registerThemeFonts, pdfPageSize, type DocumentThemeId, type DocumentPageSize, type PdfThemeFonts } from './documentThemes';
 import { parseTable, measureTable, renderTableIntoPdf, tableLeadHeight, type EnsureRoomRich } from './tablePdf';
 import { renderCalloutIntoPdf, measureCalloutLead } from './calloutPdf';
+import { checkPngDecodable } from './pngDecodeLimits';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -111,9 +112,16 @@ function brandHeadingColor(hex: string | null | undefined): string | null {
  *  doc.image() has returned. Corrupt pixel data then throws outside every
  *  try/catch here, reaches the process's uncaughtException handler, and the
  *  document never ends. Inflate those PNGs synchronously first: if the data
- *  doesn't decompress, the caller skips the image. */
+ *  doesn't decompress, the caller skips the image.
+ *
+ *  Every PNG must also pass `checkPngDecodable` (a header the decoder reads the
+ *  same way, within the size limits), and the inflate stops at the size its
+ *  header declares, so this check and pdfkit's decode stay within those
+ *  limits. */
 export function imageIsDrawable(data: Buffer): boolean {
   if (data.length < 8 || data.readUInt32BE(0) !== 0x89504e47) return true; // not a PNG (e.g. JPEG)
+  const check = checkPngDecodable(data);
+  if (!check.ok) return false;
   let offset = 8;
   let colorType = -1;
   let transparency = false;
@@ -131,7 +139,8 @@ export function imageIsDrawable(data: Buffer): boolean {
   }
   if (colorType !== 4 && colorType !== 6 && !transparency) return true;
   try {
-    zlib.inflateSync(Buffer.concat(idat));
+    // Interlaced rows carry a filter byte per pass row; the margin covers that.
+    zlib.inflateSync(Buffer.concat(idat), { maxOutputLength: check.header.decodedBytes + 4 * check.header.height + 64 });
     return true;
   } catch {
     return false;

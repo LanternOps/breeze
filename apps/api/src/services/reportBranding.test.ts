@@ -1,3 +1,4 @@
+import { crc32 } from 'node:zlib';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const selectMock = vi.fn();
@@ -57,14 +58,26 @@ function stage(orgRows: unknown[], partnerRows: unknown[] = [], brandRows: unkno
 }
 
 /** Build a minimal-but-valid PNG data URL with the given intrinsic dimensions
- * (8-byte PNG signature + a 13-byte IHDR chunk carrying width/height). */
+ * (signature, an IHDR chunk with its CRC carrying width/height, IEND). */
 function png(w: number, h: number): string {
-  const b = Buffer.alloc(24);
-  b.write('\x89PNG\r\n\x1a\n', 0, 'binary');
-  b.writeUInt32BE(13, 8);
-  b.write('IHDR', 12);
-  b.writeUInt32BE(w, 16);
-  b.writeUInt32BE(h, 20);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // RGBA
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const b = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
   return 'data:image/png;base64,' + b.toString('base64');
 }
 
@@ -89,6 +102,11 @@ describe('pngAspectFromDataUrl', () => {
 
   it('returns null for malformed/truncated PNG data', () => {
     expect(pngAspectFromDataUrl('data:image/png;base64,abcd')).toBeNull();
+  });
+
+  it('returns null (no logo) for a PNG too large to embed', () => {
+    expect(pngAspectFromDataUrl(png(30_000, 30_000))).toBeNull();
+    expect(pngAspectFromDataUrl(png(0, 10))).toBeNull();
   });
 });
 
