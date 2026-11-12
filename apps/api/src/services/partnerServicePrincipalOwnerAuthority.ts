@@ -24,14 +24,14 @@ const OWNER_NOT_AUTHORIZED_MESSAGE = 'Partner service principal owner is no long
  */
 export type PartnerServicePrincipalSurface = 'partner_api' | 'mcp';
 
-async function loadOwnerStatus(ownerUserId: string): Promise<string | null> {
+async function loadOwner(ownerUserId: string): Promise<{ status: string; isPlatformAdmin: boolean } | null> {
   return withSystemDbAccessContext(async () => {
     const [row] = await db
-      .select({ status: users.status })
+      .select({ status: users.status, isPlatformAdmin: users.isPlatformAdmin })
       .from(users)
       .where(eq(users.id, ownerUserId))
       .limit(1);
-    return row?.status ?? null;
+    return row ? { status: row.status, isPlatformAdmin: row.isPlatformAdmin === true } : null;
   });
 }
 
@@ -40,15 +40,10 @@ function ownerNotAuthorized(): HTTPException {
 }
 
 /**
- * The owner's authority through their partner membership, or null when it
- * does not hold. A thrown lookup propagates (the caller denies).
+ * The owner's partner role, when it still qualifies, or null. A thrown lookup
+ * propagates (the caller denies).
  */
-async function ownerPartnerAuthority(
-  ownerUserId: string,
-  partnerId: string,
-): Promise<{ permissions: UserPermissions; orgIds: string[] } | null> {
-  const access = await resolvePartnerAccess(partnerId, ownerUserId);
-  if (!access.isMember) return null;
+async function qualifyingPartnerRole(ownerUserId: string, partnerId: string): Promise<UserPermissions | null> {
   // bypassCache: the owner gate must see a demotion on the very next request
   // even if a cross-process cache invalidation was lost; a cached entry can
   // otherwise outlive a downgrade by up to the 5-minute TTL.
@@ -63,7 +58,7 @@ async function ownerPartnerAuthority(
   // all-org access, the principal is denied outright, so it can neither
   // exceed the owner nor degrade into a partial view of the partner.
   if (permissions.orgAccess !== 'all') return null;
-  return { permissions, orgIds: access.orgIds };
+  return permissions;
 }
 
 /**
@@ -74,10 +69,12 @@ async function ownerPartnerAuthority(
  * cannot be out-run by the principal. Every failure, including a thrown
  * lookup, denies.
  *
- * A platform admin can also create a principal for a partner they are not a
- * member of (routes/partnerServicePrincipals.ts). On the Partner API that
- * principal is accepted while its owner is still an active platform admin
- * whose platform grants back its scopes; MCP keeps requiring a partner owner.
+ * An owner who is a member of the partner is bounded by that membership,
+ * whatever else they are. A platform admin can also create a principal for a
+ * partner they are NOT a member of (routes/partnerServicePrincipals.ts). On
+ * the Partner API that principal is accepted while its owner is still an
+ * active platform admin whose platform grants back its scopes; MCP keeps
+ * requiring a partner owner.
  */
 export async function authorizePartnerServicePrincipalOwner(input: {
   ownerUserId: string;
@@ -90,21 +87,17 @@ export async function authorizePartnerServicePrincipalOwner(input: {
     : validatePartnerServicePrincipalScopeDelegation(input.scopes, permissions).ok);
 
   try {
-    if ((await loadOwnerStatus(input.ownerUserId)) !== 'active') {
-      throw ownerNotAuthorized();
-    }
+    const owner = await loadOwner(input.ownerUserId);
+    if (owner?.status !== 'active') throw ownerNotAuthorized();
 
-    const partner = await ownerPartnerAuthority(input.ownerUserId, input.partnerId);
-    if (partner && backs(partner.permissions)) {
-      return { orgIds: partner.orgIds };
-    }
-
-    if (input.surface === 'partner_api') {
+    const access = await resolvePartnerAccess(input.partnerId, input.ownerUserId);
+    if (access.isMember) {
+      const role = await qualifyingPartnerRole(input.ownerUserId, input.partnerId);
+      if (role && backs(role)) return { orgIds: access.orgIds };
+    } else if (input.surface === 'partner_api' && owner.isPlatformAdmin) {
       // Not cached: re-derived from the live users row on every call.
       const platform = await getUserPermissions(input.ownerUserId, { scope: 'system' });
-      if (platform?.scope === 'system' && backs(platform)) {
-        return { orgIds: [] };
-      }
+      if (platform?.scope === 'system' && backs(platform)) return { orgIds: [] };
     }
   } catch {
     throw ownerNotAuthorized();

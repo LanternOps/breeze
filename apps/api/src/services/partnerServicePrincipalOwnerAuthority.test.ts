@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   ownerStatus: 'active' as string | null,
+  isPlatformAdmin: false,
 }));
 
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
   for (const method of ['select', 'from', 'where']) chain[method] = vi.fn(() => chain);
-  chain.limit = vi.fn(async () => (state.ownerStatus === null ? [] : [{ status: state.ownerStatus }]));
+  chain.limit = vi.fn(async () => (state.ownerStatus === null ? [] : [{ status: state.ownerStatus, isPlatformAdmin: state.isPlatformAdmin }]));
   return {
     db: chain,
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
@@ -60,6 +61,7 @@ describe('authorizePartnerServicePrincipalOwner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.ownerStatus = 'active';
+    state.isPlatformAdmin = false;
   });
 
   it('admits a partner-wide owner whose role backs every scope, with the membership\'s org reach', async () => {
@@ -104,9 +106,25 @@ describe('authorizePartnerServicePrincipalOwner', () => {
   });
 
   it('admits a platform-admin owner on the Partner API only', async () => {
+    state.isPlatformAdmin = true;
     owner({ member: false, partner: null, platform: platformPerms() });
     await expect(authorize('partner_api', ['organizations:write', 'tickets:write'])).resolves.toEqual({ orgIds: [] });
     await expect(authorize('mcp', ['ai:read'])).rejects.toMatchObject(OWNER_REFUSED);
+  });
+
+  it.each([
+    ['a read-only role', partnerPerms(READ_ONLY)],
+    ['selected org access', partnerPerms(ALL, { orgAccess: 'selected' })],
+  ])('a platform admin who is a partner member is bounded by that membership: refused with %s', async (_label, perms) => {
+    state.isPlatformAdmin = true;
+    owner({ member: true, partner: perms, platform: platformPerms() });
+    await expect(authorize('partner_api', ['organizations:read', 'tickets:write'])).rejects.toMatchObject(OWNER_REFUSED);
+  });
+
+  it('never resolves platform permissions for an owner who is not a platform admin', async () => {
+    owner({ member: false, partner: null, platform: null });
+    await expect(authorize('partner_api', ['organizations:read'])).rejects.toMatchObject(OWNER_REFUSED);
+    expect(getUserPermissions).not.toHaveBeenCalledWith(OWNER, { scope: 'system' });
   });
 
   it('refuses on any lookup error, with the same answer', async () => {

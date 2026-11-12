@@ -242,9 +242,12 @@ it. Every request re-checks the owner's current access:
   `organizations.write`).
 
 If any of these stops holding, every request with the principal's keys returns
-`401` until it holds again. The principal's access is never narrowed to the
-scopes the owner still covers. A principal that a system operator created for
-a partner is accepted while that operator is still a platform administrator.
+`401`. The principal's access is never narrowed to the scopes the owner still
+covers. Restoring the owner's role or organization access restores the
+principal. A password or MFA change, or removing the owner from the partner,
+ends the existing keys for good; the owner issues new ones. A principal that a
+system operator created for a partner they are not a member of is accepted
+while that operator is still a platform administrator.
 Before an owner leaves or changes role, create a replacement principal under
 an operator who holds the needed access and move the consumer to its key.
 

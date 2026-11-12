@@ -203,7 +203,9 @@ create tenancy unattended — no MFA challenge is involved because no human is.
 Each route requires the listed scope on the principal.
 A principal is bounded by its owner, the admin who created it: every request
 re-checks that the owner is still a partner member with all-organization
-access whose current role grants every scope the principal holds (see
+access whose current role grants every scope the principal holds, or, for a
+principal a platform administrator created without being a partner member,
+that the owner is still a platform administrator (see
 [Who can manage a partner service principal](/reference/api-keys/#who-can-manage-a-partner-service-principal)).
 The full contract (response envelope, cursors, idempotency, enrollment keys)
 is in the repository's

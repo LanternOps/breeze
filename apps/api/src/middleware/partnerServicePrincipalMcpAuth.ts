@@ -31,8 +31,9 @@ import {
  *     admin session gets); currentPartnerId: partnerId.
  *
  * Owner = `partner_service_principals.created_by`. The owner check itself
- * lives in services/partnerServicePrincipalCredential.ts, shared with the
- * Partner API. Per-tool RBAC over MCP
+ * lives in services/partnerServicePrincipalOwnerAuthority.ts and is run by
+ * services/partnerServicePrincipalCredential.ts for both this endpoint and
+ * the Partner API. Per-tool RBAC over MCP
  * resolves `getUserPermissions(auth.user.id)` (aiGuardrails), exactly as it
  * already does for org service-principal keys, so the principal's per-tool
  * authority is bounded by its owner's LIVE partner role. Only the owner issues

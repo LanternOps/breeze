@@ -247,6 +247,16 @@ describe('Partner API key bounded by its owner', () => {
     expect(await createTicket(key.rawKey, org.id)).toBe(401);
   }, 30_000);
 
+  runDb('a platform admin who is also a partner member is bounded by that membership', async () => {
+    const p = await fixture();
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, p.owner.user.id));
+    expect(await createTicket(p.key.rawKey, p.org.id)).toBe(201);
+    await reduceToReadOnly(p.owner.role.id);
+    await clearPermissionCache(p.owner.user.id);
+    expect(await createTicket(p.key.rawKey, p.org.id)).toBe(401);
+    expect(await listOrganizations(p.key.rawKey)).toBe(401);
+  }, 30_000);
+
   runDb('a key another admin issued keeps working, and is bounded by the owner, not the issuer', async () => {
     const p = await fixture();
     const otherAdmin = await partnerAdmin(p.partner.id);
