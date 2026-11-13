@@ -54,7 +54,7 @@ export type HydrationOutcome =
 
 export type HydrationDeps = {
   /** The manifest's bytes. W03 passes a device upload through this same seam. */
-  openManifest: (args: { provider: string; providerConfig: Record<string, unknown>; key: string }) => Promise<NodeJS.ReadableStream>;
+  openManifest: (args: { orgId?: string; configId?: string; provider: string; providerConfig: Record<string, unknown>; key: string }) => Promise<NodeJS.ReadableStream>;
   now?: () => Date;
   /** Test seams for the spool: where it goes, its cap, and a failing disk. */
   spoolBaseDir?: string;
@@ -306,7 +306,7 @@ type LoadedSnapshot = NonNullable<Awaited<ReturnType<typeof loadSnapshotForHydra
 // null check and its use live in different functions, so a plain narrowed
 // re-read of `snapshot.storageIdentity` at the return site doesn't survive the
 // function boundary; this type carries the guarantee across it instead.
-type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & HydrationClaim & { storageIdentity: string; keyRoot: SnapshotKeyRoot };
+type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & HydrationClaim & { storageIdentity: string; keyRoot: SnapshotKeyRoot; localConfigId?: string };
 
 /**
  * Phase 1 (short transaction): load the snapshot, apply the skip checks,
@@ -446,7 +446,8 @@ async function claimSnapshotForHydration(
           // Rebuilt (not the bare narrowed variable) so the object literal's own
           // storageIdentity field carries the non-null type this scope just
           // proved, across the function boundary into ClaimedSnapshot.
-          snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity, keyRoot },
+          snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity, keyRoot,
+            localConfigId: resolved?.config?.orgId === claimedRow.orgId ? resolved.localConfigId : undefined },
           providerType,
           providerConfig,
         };
@@ -503,6 +504,8 @@ async function spoolManifestForHydration(
   try {
     const source = await deps.openManifest({
       provider: providerType,
+      orgId: snapshot.orgId,
+      configId: snapshot.localConfigId,
       providerConfig,
       key: physicalKeyFor(snapshot.keyRoot, backupSnapshotManifestKey(snapshot.snapshotId)),
     });

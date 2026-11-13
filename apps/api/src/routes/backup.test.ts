@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import os from 'node:os';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { backupRoutes } from './backup';
 
 // Valid UUID constants for tests
@@ -263,75 +265,85 @@ describe('backup routes', () => {
   it('should create, update, and test backup configuration', async () => {
     const now = new Date();
     const localProbePath = os.tmpdir();
-    const configRecord = {
-      id: CONFIG_ID,
-      orgId: ORG_ID,
-      name: 'Archive Local',
-      type: 'file',
-      provider: 'local',
-      providerConfig: { path: localProbePath },
-      isActive: true,
-      createdAt: now,
-      updatedAt: now,
-    };
+    // API-side local storage is reached only under the operator root, as
+    // <BACKUP_LOCAL_ROOT>/<orgId>/<configId>; the stored path is not authority.
+    const operatorRoot = await mkdtemp(join(os.tmpdir(), 'breeze-backup-route-'));
+    await mkdir(join(operatorRoot, ORG_ID, CONFIG_ID), { recursive: true });
+    vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
+    try {
+      const configRecord = {
+        id: CONFIG_ID,
+        orgId: ORG_ID,
+        name: 'Archive Local',
+        type: 'file',
+        provider: 'local',
+        providerConfig: { path: localProbePath },
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      };
 
-    // Mock insert for create
-    insertMock.mockReturnValueOnce(chainMock([configRecord]));
+      // Mock insert for create
+      insertMock.mockReturnValueOnce(chainMock([configRecord]));
 
-    const createRes = await app.request('/backup/configs', {
-        method: 'POST',
+      const createRes = await app.request('/backup/configs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+          name: 'Archive Local',
+          provider: 'local',
+          enabled: true,
+          details: { path: localProbePath }
+        })
+      });
+
+      expect(createRes.status).toBe(201);
+      const created = await createRes.json();
+      expect(created.id).toBeDefined();
+      expect(created.name).toBe('Archive Local');
+      expect(created.details.path).toBe(localProbePath);
+
+      // Mock update for patch
+      const updatedRecord = {
+        ...configRecord,
+        isActive: false,
+        providerConfig: { storageClass: 'GLACIER' },
+      };
+      // PATCH now does a pre-update SELECT to merge provider config secrets and
+      // assert encryption support before applying the update.
+      selectMock.mockReturnValueOnce(chainMock([configRecord]));
+      updateMock.mockReturnValueOnce(chainMock([updatedRecord]));
+
+      const updateRes = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({
-        name: 'Archive Local',
-        provider: 'local',
-        enabled: true,
-        details: { path: localProbePath }
-      })
-    });
+          enabled: false,
+          details: { storageClass: 'GLACIER' }
+        })
+      });
 
-    expect(createRes.status).toBe(201);
-    const created = await createRes.json();
-    expect(created.id).toBeDefined();
-    expect(created.name).toBe('Archive Local');
-    expect(created.details.path).toBe(localProbePath);
+      expect(updateRes.status).toBe(200);
+      const updated = await updateRes.json();
+      expect(updated.enabled).toBe(false);
+      expect(updated.details.storageClass).toBe('GLACIER');
 
-    // Mock update for patch
-    const updatedRecord = {
-      ...configRecord,
-      isActive: false,
-      providerConfig: { storageClass: 'GLACIER' },
-    };
-    // PATCH now does a pre-update SELECT to merge provider config secrets and
-    // assert encryption support before applying the update.
-    selectMock.mockReturnValueOnce(chainMock([configRecord]));
-    updateMock.mockReturnValueOnce(chainMock([updatedRecord]));
+      // Mock select for test endpoint
+      selectMock.mockReturnValueOnce(chainMock([configRecord]));
 
-    const updateRes = await app.request(`/backup/configs/${CONFIG_ID}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({
-        enabled: false,
-        details: { storageClass: 'GLACIER' }
-      })
-    });
+      const testRes = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
 
-    expect(updateRes.status).toBe(200);
-    const updated = await updateRes.json();
-    expect(updated.enabled).toBe(false);
-    expect(updated.details.storageClass).toBe('GLACIER');
-
-    // Mock select for test endpoint
-    selectMock.mockReturnValueOnce(chainMock([configRecord]));
-
-    const testRes = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer token' }
-    });
-
-    expect(testRes.status).toBe(200);
-    const tested = await testRes.json();
-    expect(tested.status).toBe('success');
-    expect(tested.checkedAt).toBeDefined();
+      expect(testRes.status).toBe(200);
+      const tested = await testRes.json();
+      expect(tested.status).toBe('success');
+      expect(tested.checkedAt).toBeDefined();
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(operatorRoot, { recursive: true, force: true });
+    }
   });
 
   it('should report device backup status via config policy resolver', async () => {

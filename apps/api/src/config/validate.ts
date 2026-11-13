@@ -737,6 +737,9 @@ const envObjectSchema = z
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
     AGENT_BACKUP_SERVER_URL: z.string().optional(),
+    // API-side directory for local backup destinations (self-hosted only;
+    // refused on a hosted deployment, see superRefine). '' = unset.
+    BACKUP_LOCAL_ROOT: z.string().optional(),
 
     // Platform date from which partners without an explicit approval-security
     // enforcement choice require an approver device for high/critical
@@ -1349,6 +1352,21 @@ const envSchema = envObjectSchema
             'AGENT_BACKUP_SERVER_URL must be a valid https:// URL (http:// allowed only for localhost)',
         });
       }
+    }
+
+    // API-side local backup storage reads operator-provisioned directories on
+    // the API and worker servers. A hosted deployment does not offer it, so a
+    // value there is a configuration mistake and refuses to boot.
+    const backupLocalRoot = (data.BACKUP_LOCAL_ROOT ?? '').trim();
+    const hostedForLocalBackup = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+    if (backupLocalRoot && hostedForLocalBackup) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BACKUP_LOCAL_ROOT'],
+        message:
+          'BACKUP_LOCAL_ROOT is not supported on a hosted deployment (IS_HOSTED=true). '
+          + 'API-side local backup storage is a self-hosted feature; unset BACKUP_LOCAL_ROOT.',
+      });
     }
 
     // --- JWT signing keyring (zero-downtime rotation) ---

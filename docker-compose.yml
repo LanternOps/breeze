@@ -194,6 +194,10 @@ x-api-env: &api-env
   # already-mounted api_data volume instead. Mapped here explicitly (not just
   # set in .env) per the compose-interpolation rule above.
   RECOVERY_MEDIA_WORK_DIR: ${RECOVERY_MEDIA_WORK_DIR:-/data/recovery-work}
+  # Server-side directory for local backup destinations: <root>/<org id>/<config id>,
+  # provisioned by the operator in both api and worker. Unset = server-side local
+  # access off. See docs: backup/storage, "Local destinations on the API server".
+  BACKUP_LOCAL_ROOT: ${BACKUP_LOCAL_ROOT:-}
   # Backup GC per-object grace (ms). Lab/test knob only; leave unset in production (48h).
   BACKUP_GC_GRACE_MS: ${BACKUP_GC_GRACE_MS:-}
   # Backup storage reclamation (D18, #5429). All optional; unset = default. Production floors apply.

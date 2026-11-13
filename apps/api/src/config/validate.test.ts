@@ -73,6 +73,24 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('BACKUP_LOCAL_ROOT', () => {
+    it('refuses to start a hosted deployment with API-side local backup storage configured', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'true', BACKUP_LOCAL_ROOT: '/srv/breeze-local' }, () => {
+        expect(() => validateConfig()).toThrow(/BACKUP_LOCAL_ROOT is not supported on a hosted deployment/);
+      });
+    });
+    it('accepts it on a self-hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', BACKUP_LOCAL_ROOT: '/srv/breeze-local' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+    it('treats an empty value as unset on a hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'true', BACKUP_LOCAL_ROOT: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   describe('BREEZE_AI_ARTIFACT_CAPTURE_ENABLED (#6732)', () => {
     const blob = { ARTIFACT_S3_ACCESS_KEY: 'k', ARTIFACT_S3_SECRET_KEY: 's', S3_BUCKET: 'b' };
     it('is off/valid when unset', () => {
