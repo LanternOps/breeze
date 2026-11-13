@@ -10,6 +10,7 @@ import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
   commandResultSchema,
+  MAX_AGENT_COMMAND_ID_LENGTH,
   securityCommandTypes,
   filesystemAnalysisCommandType,
   sensitiveDataCommandTypes,
@@ -203,7 +204,7 @@ function normalizeCriticalResultIfNeeded(
 
 const commandResultParamSchema = z.object({
   id: z.string().min(1),
-  commandId: z.string().min(1),
+  commandId: z.string().min(1).max(MAX_AGENT_COMMAND_ID_LENGTH),
 });
 
 commandsRoutes.get('/:id/commands', async (c) => {

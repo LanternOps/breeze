@@ -16,7 +16,8 @@
 // `afterMarker` is carried on each upload entry for that future interleaving
 // pass; v1 doesn't use it for placement, only pdf-lib page order does.
 
-import { PDFDocument } from 'pdf-lib';
+import type { PDFDocument } from 'pdf-lib';
+import { PdfLoadLimitError, loadPdfDocument } from './pdfLoadLimits';
 
 /** A merge input that pdf-lib can't load (encrypted, truncated, or otherwise
  *  corrupt), or an aggregate page count over MAX_MERGED_PAGES. Uploads are
@@ -36,6 +37,11 @@ export class PdfMergeError extends Error {
     super(message);
     this.name = 'PdfMergeError';
   }
+}
+
+/** The PdfMergeError for a PDF loadPdfDocument refused for how far it inflates. */
+export function pdfTooLargeError(what: string, err: PdfLoadLimitError): PdfMergeError {
+  return new PdfMergeError(`${what} is too large to read: ${err.message}`, 422, 'CONTRACT_PDF_TOO_LARGE');
 }
 
 /** Generous aggregate cap (main document + every uploaded contract's pages) on
@@ -75,13 +81,22 @@ export async function mergeUploadedContractPdfs(
   if (uploads.length === 0) return mainPdf;
 
   const pin = options.pinDates;
-  const mainDoc = await PDFDocument.load(mainPdf, pin ? { updateMetadata: false } : undefined);
+  // Every document is read with loadPdfDocument, which refuses one whose
+  // compressed object data inflates past MAX_PDF_LOAD_DECODED_BYTES.
+  let mainDoc: PDFDocument;
+  try {
+    mainDoc = await loadPdfDocument(mainPdf, pin ? { updateMetadata: false } : undefined);
+  } catch (err) {
+    if (err instanceof PdfLoadLimitError) throw pdfTooLargeError('The contract PDF', err);
+    throw err;
+  }
   let pageCount = mainDoc.getPageCount();
   for (const upload of uploads) {
     let uploadDoc: PDFDocument;
     try {
-      uploadDoc = await PDFDocument.load(upload.data);
+      uploadDoc = await loadPdfDocument(upload.data);
     } catch (err) {
+      if (err instanceof PdfLoadLimitError) throw pdfTooLargeError('An attached contract PDF', err);
       // Uploads are pre-validated at write time, so reaching here means a stored
       // version's bytes are unreadable (encrypted/corrupt). Raise a typed error a
       // route can map to a 4xx rather than letting the raw pdf-lib throw 500.

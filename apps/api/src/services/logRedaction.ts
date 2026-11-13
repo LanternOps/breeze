@@ -5,7 +5,33 @@ export { SECRET_ASSIGNMENT_PATTERNS };
 
 const REDACTED = '[REDACTED]';
 
-const SECRET_KEY_PATTERN = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
+/**
+ * A field name that names a secret: any of the words in SECRET_KEY_WORDS, or a
+ * pair from SECRET_KEY_WORD_PAIRS in order on one line (what `api.*key`,
+ * `access.*key`, `private.*key` and `client.*secret` meant in the single
+ * pattern this replaced). The pairs are checked by position rather than with
+ * `.*`, which keeps the check linear in the length of the name.
+ */
+const SECRET_KEY_WORDS = /password|passwd|pwd|token|secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
+const SECRET_KEY_WORD_PAIRS: ReadonlyArray<readonly [first: RegExp, firstLength: number, second: RegExp]> = [
+  [/api/i, 3, /key/i],
+  [/access/i, 6, /key/i],
+  [/private/i, 7, /key/i],
+  [/client/i, 6, /secret/i],
+];
+/** Line breaks as `.` sees them: a pair never spans one. */
+const LINE_BREAK = /[\n\r\u2028\u2029]/;
+
+function hasSecretKeyWordPair(key: string): boolean {
+  for (const line of key.split(LINE_BREAK)) {
+    for (const [first, firstLength, second] of SECRET_KEY_WORD_PAIRS) {
+      // The first occurrence leaves the longest tail to find the second word in.
+      const at = line.search(first);
+      if (at >= 0 && second.test(line.slice(at + firstLength))) return true;
+    }
+  }
+  return false;
+}
 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -13,7 +39,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * SECRET_KEY_PATTERN minus `session` (#6140).
+ * The secret field-name check (SECRET_KEY_WORDS + pairs) minus `session` (#6140).
  *
  * Every other token in that pattern names a key whose VALUE is the secret
  * itself (`password`, `token`, `clientSecret`, `cookie`, `community`, …), so a
@@ -24,8 +50,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * still a bearer-ish string, so `session: "sid_…"` remains redacted; only the
  * container case is re-opened. See `redactToolOutputFields`.
  */
-const SECRET_MATERIAL_KEY_PATTERN =
-  /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
+const SECRET_MATERIAL_KEY_WORDS =
+  /password|passwd|pwd|token|secret|authorization|cookie|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
 
 /**
  * Stored key material named by what it is rather than by the words above:
@@ -41,7 +67,7 @@ const KEY_MATERIAL_KEY_PATTERN =
   /(?:encrypt(?:ed|ion)_?keys?|recovery_?keys?|key_?hash(?:es)?|communities|[a-z0-9]_?encrypted)$/i;
 
 function isToolOutputSecretMaterialKey(key: string): boolean {
-  return SECRET_MATERIAL_KEY_PATTERN.test(key) || KEY_MATERIAL_KEY_PATTERN.test(key);
+  return SECRET_MATERIAL_KEY_WORDS.test(key) || hasSecretKeyWordPair(key) || KEY_MATERIAL_KEY_PATTERN.test(key);
 }
 
 /**
@@ -62,7 +88,7 @@ const ISO_TIMESTAMP =
   /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
 
 function isSecretKey(key: string): boolean {
-  return SECRET_KEY_PATTERN.test(key);
+  return SECRET_KEY_WORDS.test(key) || hasSecretKeyWordPair(key);
 }
 
 /**
@@ -208,7 +234,7 @@ export function redactLogFields(value: unknown, depth = 0): unknown {
 //   * array ELEMENTS are policy-checked under the ARRAY's key, since an element
 //     has no key of its own (`activeSessions: ["sk_live_…"]` -> redacted).
 //   * array / object                       -> recursed, UNLESS the key names
-//     secret material (SECRET_MATERIAL_KEY_PATTERN). Recursion keeps the
+//     secret material (isToolOutputSecretMaterialKey). Recursion keeps the
 //     structure and still redacts every secret leaf inside it by key and by the
 //     inline-assignment string pass. `credentials: {...}` / `tokens: [...]`
 //     stay wiped wholesale.

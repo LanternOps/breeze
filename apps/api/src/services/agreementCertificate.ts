@@ -40,7 +40,9 @@ import { users } from '../db/schema/users';
 import { organizations, partners } from '../db/schema/orgs';
 import { computeAgreementSha256 } from './agreementContentHash';
 import { registerThemeFonts, resolvePageSize, type DocumentPageSize } from './documentThemes';
-import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs } from './pdfMerge';
+import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs, pdfTooLargeError } from './pdfMerge';
+import { PdfLoadLimitError, loadPdfDocument } from './pdfLoadLimits';
+import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngImageData, hasPngSignature, withPngDecodeSlot } from './pngDecodeLimits';
 import { certificateVersionFromColumn, type CertificateVersion } from './agreementCertificateVersion';
 
 // ---------------------------------------------------------------------------
@@ -344,28 +346,64 @@ function toMergeError(err: unknown, what: string): PdfMergeError {
   return new PdfMergeError(`${what}: ${err instanceof Error ? err.message : String(err)}`);
 }
 
+/** PNG limits for a certified copy (see pngDecodeLimits.ts). A JPEG is
+ *  embedded without decoding its pixels and needs no check. */
+export const MAX_CERTIFIED_PNG_PIXELS = MAX_PNG_DECODE_PIXELS;
+export const MAX_CERTIFIED_PNG_SIDE = MAX_PNG_DECODE_SIDE;
+export const MAX_CERTIFIED_PNG_DECODED_BYTES = MAX_PNG_DECODED_BYTES;
+
+/** Refuses, before pdf-lib decodes it, a PNG `checkPngImageData` refuses: a
+ *  header outside the limits, or image data that inflates past what the
+ *  header declares (pdf-lib would drop the excess, but only after inflating
+ *  all of it). */
+async function assertPngWithinDecodeLimits(data: Buffer): Promise<void> {
+  const check = await checkPngImageData(data);
+  if (check.ok) return;
+  if (check.reason === 'too_large') {
+    throw new PdfMergeError(
+      `The signed agreement image is too large for a certified copy: ${check.detail}`,
+      422,
+      'CONTRACT_IMAGE_TOO_LARGE',
+    );
+  }
+  throw new PdfMergeError(`The signed agreement image could not be read: ${check.detail}`);
+}
+
 /** The original as PDF bytes plus its last page's size. PNG/JPEG → one image
  *  per page, scaled to fit the partner page size. */
 async function normalizeOriginal(input: CertifiedAgreementInput): Promise<{ pdf: Buffer; last: { width: number; height: number } | null }> {
   const { pdfData, mime } = input.document;
   if (mime === 'image/png' || mime === 'image/jpeg') {
+    // The checks follow the bytes, not the stored type: PNG bytes are checked
+    // whatever they are labelled.
+    if (mime === 'image/png' || hasPngSignature(pdfData)) await assertPngWithinDecodeLimits(pdfData);
     try {
-      const out = await PDFDocument.create({ updateMetadata: false });
-      const image = mime === 'image/png' ? await out.embedPng(pdfData) : await out.embedJpg(pdfData);
-      const [pw, ph] = input.pageSize === 'letter' ? PageSizes.Letter : PageSizes.A4;
-      const page = out.addPage([pw, ph]);
-      const margin = 36;
-      const scale = Math.min((pw - 2 * margin) / image.width, (ph - 2 * margin) / image.height);
-      const w = image.width * scale;
-      const h = image.height * scale;
-      page.drawImage(image, { x: (pw - w) / 2, y: (ph - h) / 2, width: w, height: h });
-      return { pdf: Buffer.from(await out.save()), last: { width: pw, height: ph } };
+      // A large PNG is decoded and saved holding the process-wide large-decode
+      // slot (pngDecodeLimits.ts), so only one is in memory at a time.
+      return await withPngDecodeSlot(pdfData, async () => {
+        const out = await PDFDocument.create({ updateMetadata: false });
+        const image = mime === 'image/png' ? await out.embedPng(pdfData) : await out.embedJpg(pdfData);
+        const [pw, ph] = input.pageSize === 'letter' ? PageSizes.Letter : PageSizes.A4;
+        const page = out.addPage([pw, ph]);
+        const margin = 36;
+        const scale = Math.min((pw - 2 * margin) / image.width, (ph - 2 * margin) / image.height);
+        const w = image.width * scale;
+        const h = image.height * scale;
+        page.drawImage(image, { x: (pw - w) / 2, y: (ph - h) / 2, width: w, height: h });
+        return { pdf: Buffer.from(await out.save()), last: { width: pw, height: ph } };
+      });
     } catch (err) {
       throw toMergeError(err, 'The signed agreement image could not be read');
     }
   }
   try {
-    const original = await PDFDocument.load(pdfData, { updateMetadata: false });
+    let original: PDFDocument;
+    try {
+      original = await loadPdfDocument(pdfData, { updateMetadata: false });
+    } catch (err) {
+      if (err instanceof PdfLoadLimitError) throw pdfTooLargeError('The signed agreement PDF', err);
+      throw err;
+    }
     const count = original.getPageCount();
     if (count + 1 > MAX_MERGED_PAGES) {
       throw new PdfMergeError(

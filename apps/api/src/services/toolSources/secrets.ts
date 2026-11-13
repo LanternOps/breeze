@@ -4,6 +4,7 @@ import {
   type EncryptedColumnSpec,
 } from '../encryptedColumnRegistry';
 import { decryptSecret, encryptSecret, hmacFingerprint } from '../secretCrypto';
+import { JWT_FIRST_IN_RUN } from '../redactionPatterns';
 
 /**
  * The shape a `tool_sources` row's decrypted `auth_config_encrypted` column
@@ -145,14 +146,15 @@ export function secretValuesOf(cfg: ToolSourceAuthConfig): string[] {
 // debug trace, a leaked `sk-`-prefixed provider key. Literal replacement alone
 // can't catch those because we don't have the string to match against, so
 // redaction also runs a small set of shape-based patterns over the full text.
-const GENERIC_SECRET_PATTERNS: RegExp[] = [
+export const GENERIC_SECRET_PATTERNS: RegExp[] = [
   // `Authorization: Bearer <token>` — matches the credential value only,
   // consistent with base64url alphabet (RFC 6750 b64token).
   /Bearer\s+[A-Za-z0-9\-._~+/]+=*/g,
   // JSON Web Token: three base64url segments separated by dots. Anchored on
   // the `eyJ` prefix (base64 of `{"`), which every compact JWT header starts
-  // with, to avoid matching arbitrary dotted identifiers.
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+  // with, to avoid matching arbitrary dotted identifiers. Linear time (see
+  // JWT_FIRST_IN_RUN).
+  new RegExp(String.raw`${JWT_FIRST_IN_RUN}eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`, 'g'),
   // OpenAI-style `sk-` secret keys, which show up unprompted in a lot of
   // proxied/echoed tool output.
   /\bsk-[A-Za-z0-9_-]{16,}\b/g,
