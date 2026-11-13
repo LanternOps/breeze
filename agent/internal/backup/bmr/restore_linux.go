@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // linuxRestorer applies Linux-specific system state during BMR.
@@ -107,7 +110,7 @@ func (r *linuxRestorer) InjectDrivers(_ string) (int, error) {
 // Tracked for a systemstate follow-up; do not assume restored /etc
 // permissions are trustworthy in the meantime.
 func (r *linuxRestorer) restoreEtcTree(stagingDir, targetEtc string) ([]string, error) {
-	return r.restoreEtcTreeMode(stagingDir, targetEtc, true)
+	return r.restoreEtcTreeMode(stagingDir, targetEtc, true, "")
 }
 
 // restoreEtcTreeMode is restoreEtcTree's implementation. applyExcludes is
@@ -120,7 +123,7 @@ func (r *linuxRestorer) restoreEtcTree(stagingDir, targetEtc string) ([]string, 
 // there faithfully, same as every other restored file; the rebuild engine's
 // later identity phase is what mutates machine-id/hostname for a fresh
 // identity, not this exclusion list).
-func (r *linuxRestorer) restoreEtcTreeMode(stagingDir, targetEtc string, applyExcludes bool) ([]string, error) {
+func (r *linuxRestorer) restoreEtcTreeMode(stagingDir, targetEtc string, applyExcludes bool, guardRoot string) ([]string, error) {
 	srcDir := filepath.Join(stagingDir, "etc")
 	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
 		slog.Info("bmr: no etc/ artifact in staging dir, skipping /etc restore")
@@ -152,6 +155,37 @@ func (r *linuxRestorer) restoreEtcTreeMode(stagingDir, targetEtc string, applyEx
 		info, infoErr := d.Info() // Lstat-based: does not follow symlinks
 		if infoErr != nil {
 			copyErrs = append(copyErrs, fmt.Errorf("%s: stat: %w", relPath, infoErr))
+			return nil
+		}
+		if guardRoot != "" {
+			relative, relErr := filepath.Rel(guardRoot, dst)
+			if relErr != nil {
+				return relErr
+			}
+			var entryErr error
+			var owner *securefs.Owner
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok && os.Geteuid() == 0 {
+				owner = &securefs.Owner{UID: int(stat.Uid), GID: int(stat.Gid)}
+			}
+			switch {
+			case d.IsDir():
+				entryErr = securefs.InstallDir(guardRoot, relative, info.Mode(), true, owner, info.ModTime())
+			case info.Mode()&os.ModeSymlink != 0:
+				target, err := os.Readlink(path)
+				if err != nil {
+					entryErr = err
+				} else {
+					_, entryErr = securefs.InstallSymlink(guardRoot, relative, target, owner)
+				}
+			case info.Mode().IsRegular():
+				_, entryErr = securefs.CopyFileFromRoot(guardRoot, relative, stagingDir, filepath.Join("etc", relPath), info.Mode(), info.ModTime(), owner)
+			}
+			if entryErr != nil {
+				copyErrs = append(copyErrs, fmt.Errorf("%s: %w", relPath, entryErr))
+				if d.IsDir() {
+					return fs.SkipDir
+				}
+			}
 			return nil
 		}
 		if d.IsDir() {
@@ -421,21 +455,32 @@ func (r *linuxRestorer) reinstallDnf(listPath string) error {
 // services/systemd.txt, restricted to units whose STATE was "enabled"
 // (parseSystemdEnabledUnits in restore_linux_logic.go). When root is non-empty
 // (an offline apply under a mounted-but-not-booted tree — see
-// RestoreSystemStateOffline), each unit is enabled via
-// `systemctl --root=<root> enable <unit>` instead of the live-system form.
+// RestoreSystemStateOffline), each unit with a unit file in the tree is
+// enabled via `SYSTEMCTL_SKIP_SYSV=1 systemctl --root=<root> enable -- <unit>`
+// instead of the live-system form, and the rest are reported as warnings.
 func (r *linuxRestorer) restoreServices(stagingDir, root string) error {
 	listPath := filepath.Join(stagingDir, "services", "systemd.txt")
-	if _, err := os.Stat(listPath); os.IsNotExist(err) {
+	if _, err := statRootedFile(stagingDir, filepath.Join("services", "systemd.txt")); os.IsNotExist(err) {
 		slog.Info("bmr: no service list found in staging dir, skipping service restore")
 		return nil
 	}
 
-	data, err := os.ReadFile(listPath)
+	data, err := readRootedFile(stagingDir, filepath.Join("services", "systemd.txt"))
 	if err != nil {
 		return fmt.Errorf("read %s: %w", listPath, err)
 	}
 
 	services := parseSystemdEnabledUnits(data)
+	for _, svc := range services {
+		if !validServiceUnitName(svc) {
+			return fmt.Errorf("invalid service unit name %q", svc)
+		}
+	}
+	if root != "" && len(services) > 0 {
+		if err := validateOfflineServiceDirectories(root); err != nil {
+			return err
+		}
+	}
 	if root == "" {
 		// Live restore: the source's own breeze-* units were deliberately
 		// not restored (isBreezeAgentEtcPath) — the recovery target runs its
@@ -461,16 +506,42 @@ func (r *linuxRestorer) restoreServices(stagingDir, root string) error {
 		return nil
 	}
 
+	if root != "" {
+		// A unit with no unit file in the restored tree is a SysV init
+		// script at most; its restored /etc/rc?.d links already carry its
+		// state, and systemctl could only hand it to the SysV helper.
+		var kept, noUnitFile []string
+		for _, svc := range services {
+			if offlineUnitFileExists(root, svc) {
+				kept = append(kept, svc)
+			} else {
+				noUnitFile = append(noUnitFile, svc)
+			}
+		}
+		if len(noUnitFile) > 0 {
+			slog.Warn("bmr: not enabling units with no unit file in the restored tree", "units", strings.Join(noUnitFile, ", "))
+			r.warnings = append(r.warnings, fmt.Sprintf("services: not enabled, no unit file in the restored system (a SysV init script keeps its restored rc links): %s", strings.Join(noUnitFile, ", ")))
+		}
+		services = kept
+		if len(services) == 0 {
+			return nil
+		}
+	}
+
 	var errs []error
 	enabled := 0
 	for _, svc := range services {
-		var args []string
+		var out []byte
+		var runErr error
 		if root != "" {
-			args = []string{"--root=" + root, "enable", svc}
+			// SYSTEMCTL_SKIP_SYSV=1: the host's systemctl never hands a unit
+			// that also has an /etc/init.d script to systemd-sysv-install,
+			// which would run the restored tree's update-rc.d or chkconfig
+			// in a chroot.
+			out, runErr = runCommandEnv(context.Background(), []string{"SYSTEMCTL_SKIP_SYSV=1"}, "systemctl", "--root="+root, "enable", "--", svc)
 		} else {
-			args = []string{"enable", svc}
+			out, runErr = runCommand(context.Background(), "systemctl", "enable", "--", svc)
 		}
-		out, runErr := runCommand(context.Background(), "systemctl", args...)
 		if runErr != nil {
 			slog.Warn("bmr: failed to enable service",
 				"service", svc, "error", runErr.Error(), "output", string(out))
@@ -485,6 +556,79 @@ func (r *linuxRestorer) restoreServices(stagingDir, root string) error {
 		return fmt.Errorf("failed to enable %d/%d service(s): %w", len(errs), len(services), errors.Join(errs...))
 	}
 	return nil
+}
+
+// offlineUnitDirs are the system unit directories systemctl --root searches
+// that a restored tree can carry.
+var offlineUnitDirs = []string{"etc/systemd/system", "usr/local/lib/systemd/system", "usr/lib/systemd/system", "lib/systemd/system"}
+
+// offlineUnitFileExists reports whether root holds a unit file (or link) for
+// unit, or for its template when unit is an instance (name@instance.service).
+// Lookups stay inside root.
+func offlineUnitFileExists(root, unit string) bool {
+	names := []string{unit}
+	if at := strings.IndexByte(unit, '@'); at > 0 {
+		names = append(names, unit[:at+1]+".service")
+	}
+	tree, err := os.OpenRoot(root)
+	if err != nil {
+		return false
+	}
+	defer tree.Close()
+	for _, dir := range offlineUnitDirs {
+		for _, name := range names {
+			if _, err := tree.Lstat(filepath.Join(filepath.FromSlash(dir), name)); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// validateOfflineServiceDirectories checks the destination namespace used by
+// systemctl enable. Unit-file links are normal; directory links are not.
+func validateOfflineServiceDirectories(root string) error {
+	const directory = "etc/systemd/system"
+	if err := securefs.InstallDir(root, filepath.FromSlash(directory), 0o755, false, nil, time.Time{}); err != nil {
+		return fmt.Errorf("service directory: %w", err)
+	}
+	tree, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return fs.WalkDir(tree.FS(), directory, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			unit := entry.Name()
+			if !validServiceUnitName(unit) && !strings.HasSuffix(unit, ".target") && !strings.HasSuffix(unit, ".socket") && !strings.HasSuffix(unit, ".timer") && !strings.HasSuffix(unit, ".path") && !strings.HasSuffix(unit, ".mount") && !strings.HasSuffix(unit, ".automount") && !strings.HasSuffix(unit, ".swap") && !strings.HasSuffix(unit, ".slice") {
+				return fmt.Errorf("service directory %s is a link", name)
+			}
+		}
+		return nil
+	})
+}
+
+func validServiceUnitName(name string) bool {
+	if len(name) > 255 || len(name) <= len(".service") || !strings.HasSuffix(name, ".service") || strings.HasPrefix(name, "-") {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("_.:@-", rune(c)) {
+			continue
+		}
+		if c == '\\' && i+3 < len(name) && name[i+1] == 'x' {
+			if _, err := strconv.ParseUint(name[i+2:i+4], 16, 8); err == nil {
+				i += 3
+				continue
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // restoreFirewall applies saved iptables rules from firewall/iptables.rules.
@@ -518,6 +662,12 @@ func (r *linuxRestorer) restoreFirewall(stagingDir string) error {
 // instead of shelling out.
 func (r *linuxRestorer) restoreCrontabs(stagingDir, root string) error {
 	spoolDir := filepath.Join(stagingDir, "crontabs", "spool")
+	if err := securefs.EnsureNoReparsePointsAlong(stagingDir, filepath.Join("crontabs", "spool")); err != nil {
+		return err
+	}
+	if err := securefs.EnsureNoReparsePointsAlong(stagingDir, filepath.Join("crontabs", "spool", "crontabs")); err != nil {
+		return err
+	}
 	if _, err := os.Stat(spoolDir); os.IsNotExist(err) {
 		slog.Info("bmr: no crontab spool found in staging dir, skipping crontab restore")
 		return nil
@@ -541,7 +691,7 @@ func (r *linuxRestorer) restoreCrontabs(stagingDir, root string) error {
 	}
 
 	if root != "" {
-		return placeCrontabsOffline(root, entries)
+		return placeCrontabsOffline(root, stagingDir, entries)
 	}
 
 	var errs []error
@@ -569,7 +719,7 @@ func (r *linuxRestorer) restoreCrontabs(stagingDir, root string) error {
 // directly). Defaults to the Debian layout — the more common convention —
 // when neither family's own marker is present in the restored tree.
 func crontabsSpoolDirIsDebian(root string) bool {
-	_, rhelErr := os.Stat(filepath.Join(root, "usr", "sbin", "grub2-mkconfig"))
+	_, rhelErr := statRootedFile(root, filepath.Join("usr", "sbin", "grub2-mkconfig"))
 	return rhelErr != nil
 }
 
@@ -578,37 +728,36 @@ func crontabsSpoolDirIsDebian(root string) bool {
 // would install on a live system: mode 0600, owned by the user (uid looked
 // up from the restored /etc/passwd) and the crontab group (gid looked up
 // from the restored /etc/group) when this process can chown at all.
-func placeCrontabsOffline(root string, entries map[string]string) error {
+func placeCrontabsOffline(root, stagingDir string, entries map[string]string) error {
 	debian := crontabsSpoolDirIsDebian(root)
 	gid := lookupGroupGID(root, "crontab")
 	var errs []error
 	for user, srcPath := range entries {
-		data, err := os.ReadFile(srcPath)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("read %s: %w", srcPath, err))
-			continue
-		}
+
 		var dst string
 		if debian {
 			dst = filepath.Join(root, "var", "spool", "cron", "crontabs", user)
 		} else {
 			dst = filepath.Join(root, "var", "spool", "cron", user)
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			errs = append(errs, fmt.Errorf("mkdir for %s: %w", user, err))
+		relative, err := filepath.Rel(root, dst)
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil {
-			errs = append(errs, fmt.Errorf("write crontab for %s: %w", user, err))
+		sourceRelative, err := filepath.Rel(stagingDir, srcPath)
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
+		var owner *securefs.Owner
 		if os.Geteuid() == 0 {
-			uid := lookupPasswdUID(root, user)
-			if uid >= 0 {
-				if err := os.Lchown(dst, uid, gid); err != nil {
-					slog.Warn("bmr: failed to chown offline crontab", "user", user, "path", dst, "error", err.Error())
-				}
+			if uid := lookupPasswdUID(root, user); uid >= 0 {
+				owner = &securefs.Owner{UID: uid, GID: gid}
 			}
+		}
+		if _, err := securefs.CopyFileFromRoot(root, relative, stagingDir, sourceRelative, 0o600, time.Time{}, owner); err != nil {
+			errs = append(errs, fmt.Errorf("write crontab for %s: %w", user, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -620,7 +769,7 @@ func placeCrontabsOffline(root string, entries map[string]string) error {
 // lookupPasswdUID returns the uid for user from root's restored
 // /etc/passwd, or -1 when not found or unreadable.
 func lookupPasswdUID(root, user string) int {
-	data, err := os.ReadFile(filepath.Join(root, "etc", "passwd"))
+	data, err := readRootedFile(root, filepath.Join("etc", "passwd"))
 	if err != nil {
 		return -1
 	}
@@ -640,7 +789,7 @@ func lookupPasswdUID(root, user string) int {
 // lookupGroupGID returns the gid for group name from root's restored
 // /etc/group, or 0 when not found or unreadable.
 func lookupGroupGID(root, name string) int {
-	data, err := os.ReadFile(filepath.Join(root, "etc", "group"))
+	data, err := readRootedFile(root, filepath.Join("etc", "group"))
 	if err != nil {
 		return 0
 	}
@@ -665,17 +814,16 @@ func lookupGroupGID(root, name string) int {
 // boot; otherwise they're staged at a Breeze-owned recovery path and the
 // returned warning tells the operator where to find them.
 func (r *linuxRestorer) restoreFirewallOffline(stagingDir, root string) (string, error) {
-	rulesPath := filepath.Join(stagingDir, "firewall", "iptables.rules")
-	data, err := os.ReadFile(rulesPath)
+	_, err := statRootedFile(stagingDir, filepath.Join("firewall", "iptables.rules"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
-		return "", fmt.Errorf("read %s: %w", rulesPath, err)
+		return "", fmt.Errorf("read firewall rules: %w", err)
 	}
 
-	hasPersistent := fileExistsOffline(filepath.Join(root, "usr", "sbin", "netfilter-persistent")) ||
-		fileExistsOffline(filepath.Join(root, "usr", "sbin", "iptables-restore"))
+	hasPersistent := fileExistsOffline(root, filepath.Join("usr", "sbin", "netfilter-persistent")) ||
+		fileExistsOffline(root, filepath.Join("usr", "sbin", "iptables-restore"))
 
 	var dst, warning string
 	if hasPersistent {
@@ -684,17 +832,18 @@ func (r *linuxRestorer) restoreFirewallOffline(stagingDir, root string) (string,
 		dst = filepath.Join(root, "etc", "breeze", "recovery", "iptables.rules")
 		warning = "firewall rules staged at /etc/breeze/recovery/iptables.rules (no iptables-persistent in the restored system)"
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", fmt.Errorf("mkdir for firewall rules: %w", err)
+	relative, err := filepath.Rel(root, dst)
+	if err != nil {
+		return "", err
 	}
-	if err := os.WriteFile(dst, data, 0o640); err != nil {
+	if _, err := securefs.CopyFileFromRoot(root, relative, stagingDir, filepath.Join("firewall", "iptables.rules"), 0o640, time.Time{}, nil); err != nil {
 		return "", fmt.Errorf("write firewall rules: %w", err)
 	}
 	return warning, nil
 }
 
-func fileExistsOffline(path string) bool {
-	_, err := os.Stat(path)
+func fileExistsOffline(root, path string) bool {
+	_, err := statRootedFile(root, path)
 	return err == nil
 }
 
@@ -714,7 +863,7 @@ func RestoreSystemStateOffline(ctx context.Context, root, stagingDir string) ([]
 	r := &linuxRestorer{}
 	var warnings []string
 	var errs []error
-	if skipped, err := r.restoreEtcTreeMode(stagingDir, filepath.Join(root, "etc"), false); err != nil {
+	if skipped, err := r.restoreEtcTreeMode(stagingDir, filepath.Join(root, "etc"), false, root); err != nil {
 		errs = append(errs, fmt.Errorf("etc: %w", err))
 	} else if len(skipped) > 0 {
 		warnings = append(warnings, fmt.Sprintf("etc: skipped %d excluded path(s)", len(skipped)))
@@ -733,6 +882,7 @@ func RestoreSystemStateOffline(ctx context.Context, root, stagingDir string) ([]
 	if err := r.restoreCrontabs(stagingDir, root); err != nil {
 		errs = append(errs, fmt.Errorf("crontabs: %w", err))
 	}
+	warnings = append(warnings, r.warnings...)
 	_ = ctx // no long-running step here needs cancellation today; kept for the call-site contract
 	return warnings, errors.Join(errs...)
 }

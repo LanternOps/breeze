@@ -441,7 +441,7 @@ var (
 	publishTemporary = renameRelative
 )
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32, sec *SecurityApplier) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, winAttrs uint32, sec *SecurityApplier, removeSource bool, input *os.File) ([]error, error) {
 	parent := base
 	if dir := filepath.Dir(relative); dir != "." {
 		parent = filepath.Join(base, dir)
@@ -511,7 +511,7 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	// nothing else. Failure is a fidelity warning, never a failed restore.
 	sparseWarn := maybeSetSparse(tempHandle, winAttrs)
 
-	src, err := os.Open(source)
+	src, err := openInstallSource(source, input)
 	if err != nil {
 		return nil, fmt.Errorf("open staging file: %w", err)
 	}
@@ -598,8 +598,10 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		}
 	}
 	committed = true
-	if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
-		warnings = append(warnings, fmt.Errorf("remove staging file: %w", err))
+	if removeSource {
+		if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
+			warnings = append(warnings, fmt.Errorf("remove staging file: %w", err))
+		}
 	}
 	return warnings, nil
 }
@@ -763,7 +765,7 @@ func statFile(base, relative string) (os.FileInfo, error) {
 	}
 	chain, err := openVerifiedDir(parent, false, nil, 0)
 	if err != nil {
-		return nil, err
+		return nil, reportAbsence(err)
 	}
 	defer chain.close()
 
@@ -771,7 +773,7 @@ func statFile(base, relative string) (os.FileInfo, error) {
 	handle, err := openRelativeComponent(chain.leaf(), name, windows.FILE_READ_ATTRIBUTES,
 		shareFile, windows.FILE_OPEN, ntFileOptions, nil)
 	if err != nil {
-		return nil, err
+		return nil, reportAbsence(err)
 	}
 	f := os.NewFile(uintptr(handle), filepath.Join(parent, name))
 	defer func() { _ = f.Close() }()

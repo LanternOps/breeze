@@ -25,12 +25,6 @@ func (realSystem) Run(ctx context.Context, name string, args ...string) ([]byte,
 	return procspawn.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-func (s realSystem) Chroot(root string) func(context.Context, string, ...string) ([]byte, error) {
-	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return s.Run(ctx, "chroot", append([]string{root, name}, args...)...)
-	}
-}
-
 func (s realSystem) BlockDeviceSize(path string) (int64, error) {
 	out, err := s.Run(context.Background(), "blockdev", "--getsize64", path)
 	if err != nil {
@@ -116,26 +110,8 @@ func (s realSystem) Mount(ctx context.Context, device, dir, fstype string, opts 
 	return nil
 }
 
-func (s realSystem) BindMount(ctx context.Context, src, dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if out, err := s.Run(ctx, "mount", "--bind", src, dir); err != nil {
-		return fmt.Errorf("bind mount %s %s: %s: %w", src, dir, strings.TrimSpace(string(out)), err)
-	}
-	// systemd makes / rshared, so the copy joins the host's peer group:
-	// anything the chroot mounts under it (grub-install's efivarfs) would
-	// propagate to the host, and the recursive unmount back again. Private,
-	// as arch-chroot does.
-	if out, err := s.Run(ctx, "mount", "--make-rprivate", dir); err != nil {
-		return fmt.Errorf("make %s private: %s: %w", dir, strings.TrimSpace(string(out)), err)
-	}
-	return nil
-}
-
-// Unmount is recursive: a chroot'd grub-install mounts efivarfs under the
-// bind-mounted /sys, and a plain umount of /sys (then of the root partition)
-// fails "target is busy".
+// Unmount is recursive, so a mount left below dir never makes the unmount of
+// its parent fail "target is busy".
 func (s realSystem) Unmount(ctx context.Context, dir string) error {
 	if out, err := s.Run(ctx, "umount", "-R", dir); err != nil {
 		return fmt.Errorf("umount %s: %s: %w", dir, strings.TrimSpace(string(out)), err)

@@ -78,8 +78,8 @@ func TestExecBareMetalRebuild_BuildsOptionsFromBootstrapAndReportsProgress(t *te
 	if opts.Identity != rebuild.IdentityNew || opts.Marker != nil {
 		t.Errorf("identity = %q marker = %+v, want identity from the bootstrap (new) and no marker", opts.Identity, opts.Marker)
 	}
-	if opts.SnapshotID != "snap-1" || opts.Provider == nil || !opts.RegenerateInitramfs {
-		t.Errorf("snapshot=%q provider=%v regenerateInitramfs=%v", opts.SnapshotID, opts.Provider != nil, opts.RegenerateInitramfs)
+	if opts.SnapshotID != "snap-1" || opts.Provider == nil {
+		t.Errorf("snapshot=%q provider=%v", opts.SnapshotID, opts.Provider != nil)
 	}
 	if got := statuses(); strings.Join(got, ",") != "planned,restoring,validated" {
 		t.Errorf("posted statuses = %v", got)
@@ -94,6 +94,37 @@ func TestExecBareMetalRebuild_BuildsOptionsFromBootstrapAndReportsProgress(t *te
 	}
 	if out.RecoveryID != "rec-1" || out.Status != "completed" || len(out.Warnings) != 1 {
 		t.Errorf("result = %+v (stdout %s)", out, res.Stdout)
+	}
+}
+
+// The server-dispatched rebuild runs on a host with an installed agent: it
+// never asks the engine to run the restored system's boot tools, and payload
+// fields naming them are not read.
+func TestExecBareMetalRebuild_RunsNoRestoredBootTools(t *testing.T) {
+	server, _ := newTokenModeTestServer(t, biosLayoutJSON(t))
+	payload := json.RawMessage(fmt.Sprintf(`{
+		"recoveryId": "rec-1", "token": "brz_rec_test", "server": %q,
+		"target": {"kind": "vhdx", "path": "/srv/rebuild/dev-1.vhdx", "imageSizeBytes": 42949672960},
+		"identity": "original",
+		"regenerateInitramfs": true, "RegenerateInitramfs": true,
+		"restoredBootTools": true, "RestoredBootTools": true,
+		"confirmRestoredBootTools": true, "ConfirmRestoredBootTools": true
+	}`, server.URL))
+	fake := &fakeRebuild{}
+	fake.push(&rebuild.Result{Status: "completed", Plan: &rebuild.Plan{}}, nil)
+	fake.push(&rebuild.Result{Status: "completed", PhaseReached: rebuild.PhaseConvert}, nil)
+	res := execBareMetalRebuild(context.Background(), payload, fake.fn)
+	if !res.Success {
+		t.Fatalf("expected success, got stderr=%q", res.Stderr)
+	}
+	if len(fake.calls) != 2 {
+		t.Fatalf("calls = %d, want a dry run then the real run", len(fake.calls))
+	}
+	for i, opts := range fake.calls {
+		if opts.RegenerateInitramfs || opts.RestoredBootTools || opts.ConfirmRestoredBootTools {
+			t.Errorf("call %d: regenerateInitramfs=%v restoredBootTools=%v confirm=%v, want all false",
+				i, opts.RegenerateInitramfs, opts.RestoredBootTools, opts.ConfirmRestoredBootTools)
+		}
 	}
 }
 

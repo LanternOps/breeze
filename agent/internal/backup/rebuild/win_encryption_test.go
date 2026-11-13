@@ -22,6 +22,9 @@ func bitlockerRun(t *testing.T, kind TargetKind, bitlocker bool) *run {
 	if err := os.MkdirAll(rootDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "vol-root"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return &run{opts: Options{Target: Target{Kind: kind}}, rootVolume: filepath.Join(dir, "vol-root"), rootDir: rootDir, result: &Result{}, layout: lay}
 }
 
