@@ -47,6 +47,7 @@ agent/internal/logging/
 agent/internal/mtls/
 agent/internal/netcache/
 agent/internal/procspawn/
+agent/internal/psscript/
 agent/internal/recoveryconsole/
 agent/internal/secmem/
 agent/internal/securefs/
