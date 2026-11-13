@@ -234,6 +234,20 @@ func protectedIdentitiesCached() protectedIdentitySet {
 	return protectedIdentitiesCache.set
 }
 
+// handleVolumeRoot returns the root of the volume the open file f is on,
+// named by the volume's GUID (\\?\Volume{GUID}\), or "" where volumes are
+// not named that way. volumeSourcesOf lists the protected files and folders
+// at a volume's top. Variables so a test can stand in for a volume.
+var (
+	handleVolumeRoot = func(f *os.File) string {
+		if vol, ok := handleVolumePath(f); ok {
+			return volumeGUIDRoot(vol)
+		}
+		return ""
+	}
+	volumeSourcesOf = volumeProtectedSources
+)
+
 // volumeIdentitiesCache keeps, briefly, the protected-file identities at the
 // root of each mounted volume the file operations have met.
 var volumeIdentitiesCache struct {
@@ -242,19 +256,32 @@ var volumeIdentitiesCache struct {
 	at   map[string]time.Time
 }
 
+// mountedVolumeTop returns top, the top folder of a mounted volume found
+// from the mount table (or by device), or "" when top is "" or the
+// filesystem root, whose protected files are in protectedIdentitiesCached.
+// It applies only to such tops: a volume root named by its GUID is always its
+// own parent folder, and gets its own set whichever volume it is.
+func mountedVolumeTop(top string) string {
+	if top == "" || filepath.Dir(top) == top {
+		return ""
+	}
+	return top
+}
+
 // volumeIdentitiesOfHandle returns the protected-file identities at the root
 // of the volume the open file f (final path final) is on: on Windows the
-// volume named by its GUID, elsewhere the mount point holding it. The system
-// root and an unknown volume give an empty, complete set (the system's own
-// files are in protectedIdentitiesCached).
+// volume named by its GUID (every volume, the system volume included),
+// elsewhere the mount point holding it. The filesystem root and an unknown
+// volume give an empty, complete set (the system's own files are in
+// protectedIdentitiesCached).
 func volumeIdentitiesOfHandle(f *os.File, final string) protectedIdentitySet {
-	top := ""
-	if vol, ok := handleVolumePath(f); ok {
-		top = volumeGUIDRoot(vol)
-	} else if table, ok := loadMountTable(); ok && final != "" {
-		top = longestMountPoint(table, final)
+	top := handleVolumeRoot(f)
+	if top == "" {
+		if table, ok := loadMountTable(); ok && final != "" {
+			top = mountedVolumeTop(longestMountPoint(table, final))
+		}
 	}
-	if top == "" || filepath.Dir(top) == top {
+	if top == "" {
 		return protectedIdentitySet{complete: true}
 	}
 	volumeIdentitiesCache.Lock()
@@ -265,7 +292,7 @@ func volumeIdentitiesOfHandle(f *os.File, final string) protectedIdentitySet {
 	if set, ok := volumeIdentitiesCache.sets[top]; ok && time.Since(volumeIdentitiesCache.at[top]) <= protectedIdentitiesTTL {
 		return set
 	}
-	files, dirs, skips := volumeProtectedSources(top)
+	files, dirs, skips := volumeSourcesOf(top)
 	set := collectIdentities(files, dirs, skips)
 	volumeIdentitiesCache.sets[top], volumeIdentitiesCache.at[top] = set, time.Now()
 	return set

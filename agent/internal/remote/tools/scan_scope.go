@@ -73,7 +73,7 @@ func (s *ScanScope) volumeIDs(top string) protectedIdentitySet {
 	if set, ok := s.volIDs[top]; ok {
 		return set
 	}
-	files, dirs, skips := volumeProtectedSources(top)
+	files, dirs, skips := volumeSourcesOf(top)
 	set := collectIdentities(files, dirs, skips)
 	s.volIDs[top] = set
 	return set
@@ -291,8 +291,8 @@ func (s *ScanScope) OpenFile(path string, walked fs.FileInfo) (*os.File, fs.File
 		if s.locationProtected(final, false, top) {
 			return fail(ErrScanSkipped)
 		}
-		if top != "" && filepath.Dir(top) != top {
-			sets = append(sets, func() protectedIdentitySet { return s.volumeIDs(top) })
+		if mounted := mountedVolumeTop(top); mounted != "" {
+			sets = append(sets, func() protectedIdentitySet { return s.volumeIDs(mounted) })
 		}
 	case handleCheckMandatory:
 		if _, ok := handleVolumePath(f); !ok {
@@ -301,6 +301,8 @@ func (s *ScanScope) OpenFile(path string, walked fs.FileInfo) (*os.File, fs.File
 	}
 	// On Windows the file is also judged from the root of its own volume,
 	// whatever drive letter or mount folder the DOS spelling went through.
+	// (A volume root named by its GUID is its own parent folder: it is not
+	// passed through mountedVolumeTop.)
 	if vol, ok := handleVolumePath(f); ok {
 		if s.locationProtected(vol, false, "") {
 			return fail(ErrScanSkipped)
@@ -366,8 +368,8 @@ func pathFromVolumeTop(p, top string) string {
 	if top == "" {
 		return ""
 	}
-	top = filepath.Clean(top)
-	if top == filepath.Dir(top) {
+	top = mountedVolumeTop(filepath.Clean(top))
+	if top == "" {
 		return ""
 	}
 	rel, err := filepath.Rel(top, p)
