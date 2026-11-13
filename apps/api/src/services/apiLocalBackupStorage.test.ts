@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -133,6 +133,41 @@ describe('operator managed API local backup storage', () => {
     const copy = join(base, 'work', 'copy');
     await copyApiLocalBackupObjectTo('recovery-media/a1/artifact.tar.gz', 'org-a', 'destination', copy);
     expect(await readFile(copy, 'utf8')).toBe('replacement');
+  });
+
+  it('refuses to create a directory where a link, even a dangling one, or a file already has the name', async () => {
+    const source = join(base, 'source');
+    await writeFile(source, 'artifact bytes');
+    await symlink(join(outside, 'missing'), join(destination, 'dangling'));
+    await symlink(outside, join(destination, 'linked'));
+    await writeFile(join(destination, 'plain'), 'a file');
+    await expect(writeApiLocalBackupObject('dangling/new', 'org-a', 'destination', source)).rejects.toThrow('unavailable');
+    await expect(writeApiLocalBackupObject('linked/new', 'org-a', 'destination', source)).rejects.toThrow('unavailable');
+    await expect(writeApiLocalBackupObject('plain/new', 'org-a', 'destination', source)).rejects.toMatchObject({ code: 'ENOTDIR' });
+    expect((await readdir(outside)).sort()).toEqual(['kept']);
+    expect(await readFile(join(destination, 'plain'), 'utf8')).toBe('a file');
+    expect((await lstat(join(destination, 'dangling'))).isSymbolicLink()).toBe(true);
+  });
+
+  it('writes into directories that already exist without replacing them', async () => {
+    const source = join(base, 'source');
+    await writeFile(source, 'second');
+    await mkdir(join(destination, 'snapshots', 's1'), { recursive: true });
+    await writeFile(join(destination, 'snapshots', 's1', 'first'), 'first');
+    await writeApiLocalBackupObject('snapshots/s1/second', 'org-a', 'destination', source);
+    expect((await readdir(join(destination, 'snapshots', 's1'))).sort()).toEqual(['first', 'second']);
+  });
+
+  // Root ignores directory permissions, so the create cannot fail there.
+  it.skipIf(process.getuid?.() === 0)('reports why a missing directory could not be created', async () => {
+    const source = join(base, 'source');
+    await writeFile(source, 'bytes');
+    await chmod(destination, 0o500);
+    try {
+      await expect(writeApiLocalBackupObject('new/object', 'org-a', 'destination', source)).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      await chmod(destination, 0o750);
+    }
   });
 
   it('replaces a link at the object name instead of writing through it', async () => {

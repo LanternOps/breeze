@@ -155,26 +155,30 @@ async function directoryOpenRefusal(path: string, error: unknown): Promise<Error
   return undefined;
 }
 
+/**
+ * Opens one directory below `parent`. With `create`, the directory is made
+ * first (an existing entry of any kind is left as it is) and then opened
+ * once; what is used is always the opened handle, never an earlier look at
+ * the name.
+ */
 async function openChildDir(parent: OpenDir, name: string, create: boolean): Promise<OpenDir> {
   const flags = constants.O_RDONLY | O_DIRECTORY! | O_NOFOLLOW!;
   const path = childPathOf(parent, name);
+  let createError: unknown;
+  if (create) {
+    try {
+      await mkdir(path, 0o750);
+    } catch (error) {
+      if (errorCode(error) !== 'EEXIST') createError = error;
+    }
+  }
   let handle: FileHandle;
   try {
     handle = await open(path, flags);
   } catch (error) {
     const refusal = await directoryOpenRefusal(path, error);
     if (refusal) throw refusal;
-    if (!(create && errorCode(error) === 'ENOENT')) throw error;
-    try {
-      await mkdir(path, 0o750);
-    } catch (mkdirError) {
-      if (errorCode(mkdirError) !== 'EEXIST') throw mkdirError;
-    }
-    try {
-      handle = await open(path, flags);
-    } catch (reopenError) {
-      throw (await directoryOpenRefusal(path, reopenError)) ?? reopenError;
-    }
+    throw createError !== undefined && errorCode(error) === 'ENOENT' ? createError : error;
   }
   const info = await handle.stat();
   if (!info.isDirectory()) {
@@ -312,7 +316,7 @@ export async function copyApiLocalBackupObjectTo(key: string, orgId: string | un
 
 /**
  * Publishes `sourcePath` (a file the API owns) as one object. Missing
- * directories are created one level at a time and reopened without following
+ * directories are created one level at a time and opened without following
  * links; the bytes go to a new exclusive file that is renamed into place.
  */
 export async function writeApiLocalBackupObject(key: string, orgId: string | undefined, configId: string | undefined, sourcePath: string): Promise<void> {
