@@ -1,5 +1,5 @@
 import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
@@ -16,6 +16,8 @@ import {
 } from '../services/deploymentEngine';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { createDraftDeployment } from '../services/deploymentWrites';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 
 export const deploymentRoutes = new Hono();
 const requireDeploymentRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -139,6 +141,19 @@ const listDevicesQuerySchema = z.object({
 // ============================================
 
 deploymentRoutes.use('*', authMiddleware);
+
+/**
+ * Creating, editing, deleting, initializing or driving a deployment changes
+ * an organization-wide object (see services/deploymentWrites.ts). Callers with
+ * a site or exact-device ceiling are refused before the deployment is read.
+ * The per-device retry route keeps its own device/site check instead.
+ */
+const requireUnrestrictedDeploymentAccess = async (c: Context, next: Next) => {
+  if (!canMutateOrgWideGovernance(c.get('auth'))) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
+  return next();
+};
 
 // ============================================
 // Helper Functions
@@ -344,6 +359,7 @@ deploymentRoutes.get(
 deploymentRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
+  requireUnrestrictedDeploymentAccess,
   requireDeploymentWrite,
   requireMfa(),
   zValidator('json', createDeploymentSchema),
@@ -376,21 +392,17 @@ deploymentRoutes.post(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
-    const [deployment] = await db
-      .insert(deployments)
-      .values({
-        orgId: orgId!,
-        name: payload.name,
-        type: payload.type,
-        payload: payload.payload,
-        targetType: payload.targetType,
-        targetConfig: payload.targetConfig,
-        schedule: payload.schedule ?? null,
-        rolloutConfig: payload.rolloutConfig,
-        status: 'draft',
-        createdBy: auth.user.id
-      })
-      .returning();
+    const deployment = await createDraftDeployment(auth, {
+      orgId: orgId!,
+      name: payload.name,
+      type: payload.type,
+      payload: payload.payload,
+      targetType: payload.targetType,
+      targetConfig: payload.targetConfig,
+      schedule: payload.schedule ?? null,
+      rolloutConfig: payload.rolloutConfig,
+      createdBy: auth.user.id
+    });
 
     if (!deployment) {
       return c.json({ error: 'Failed to create deployment' }, 500);
@@ -461,6 +473,7 @@ deploymentRoutes.get(
 deploymentRoutes.put(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireUnrestrictedDeploymentAccess,
   requireDeploymentWrite,
   requireMfa(),
   zValidator('param', idParamSchema),
@@ -523,6 +536,7 @@ deploymentRoutes.put(
 deploymentRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireUnrestrictedDeploymentAccess,
   requireDeploymentWrite,
   requireMfa(),
   zValidator('param', idParamSchema),
@@ -561,6 +575,7 @@ deploymentRoutes.delete(
 deploymentRoutes.post(
   '/:id/initialize',
   requireScope('organization', 'partner', 'system'),
+  requireUnrestrictedDeploymentAccess,
   requireDeploymentExecute,
   requireMfa(),
   zValidator('param', idParamSchema),
@@ -614,6 +629,7 @@ deploymentRoutes.post(
 deploymentRoutes.post(
   '/:id/start',
   requireScope('organization', 'partner', 'system'),
+  requireUnrestrictedDeploymentAccess,
   requireDeploymentExecute,
   requireMfa(),
   zValidator('param', idParamSchema),
@@ -668,6 +684,7 @@ deploymentRoutes.post(
 deploymentRoutes.post(
   '/:id/pause',
   requireScope('organization', 'partner', 'system'),
+  requireUnrestrictedDeploymentAccess,
   requireDeploymentExecute,
   requireMfa(),
   zValidator('param', idParamSchema),
@@ -718,6 +735,7 @@ deploymentRoutes.post(
 deploymentRoutes.post(
   '/:id/resume',
   requireScope('organization', 'partner', 'system'),
+  requireUnrestrictedDeploymentAccess,
   requireDeploymentExecute,
   requireMfa(),
   zValidator('param', idParamSchema),
@@ -768,6 +786,7 @@ deploymentRoutes.post(
 deploymentRoutes.post(
   '/:id/cancel',
   requireScope('organization', 'partner', 'system'),
+  requireUnrestrictedDeploymentAccess,
   requireDeploymentExecute,
   requireMfa(),
   zValidator('param', idParamSchema),

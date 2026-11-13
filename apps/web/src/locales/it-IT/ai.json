@@ -20,6 +20,30 @@
     "urgentWarning": "Meno di 30 secondi rimanenti. Questa richiesta verrà rifiutata automaticamente.",
     "progressLabel": "Tempo rimanente prima del rifiuto automatico",
     "showParameters": "Mostra parametri",
+    "ticketComment": {
+      "publicTo": "Risposta visibile al cliente per {{recipient}}",
+      "publicNoRecipient": "Risposta visibile al cliente (inviata via email al richiedente)",
+      "publicNoEmail": "Risposta visibile al cliente (nessuna email del richiedente registrata, quindi non viene inviata alcuna email)",
+      "internal": "Nota interna (non visibile al cliente)"
+    },
+    "memory": {
+      "heading": "Wisp ricorderà",
+      "subjectKey": "Chiave: {{key}} (sostituisce qualsiasi ricordo precedente con questa chiave)",
+      "moreInParameters": "Altri campi sono solo in Mostra parametri.",
+      "scope": {
+        "user": "Solo tu",
+        "org": "Questo cliente",
+        "partner": "Tutto il tuo MSP"
+      },
+      "types": {
+        "preference": "Preferenza",
+        "standing_instruction": "Istruzione permanente",
+        "fact": "Fatto",
+        "decision": "Decisione",
+        "concern_outcome": "Esito della segnalazione",
+        "work_summary": "Riepilogo del lavoro"
+      }
+    },
     "approve": "Approva",
     "reject": "Rifiuta",
     "approveVerify": "Verifica e approva",
@@ -313,8 +337,10 @@
     "noLimit": "Nessun limite",
     "messagesPerMinute": "Messaggi/min per utente",
     "messagesPerHour": "Messaggi/ora per organizzazione",
-    "retentionDays": "Conservazione trascrizioni (giorni)",
+    "retentionDays": "Conservazione trascrizioni IA client (giorni)",
     "keepForever": "Conserva per sempre",
+    "retentionScope": "Si applica alle conversazioni IA client (AI for Office). Vuoto le conserva per sempre. Le conversazioni IA dei tecnici hanno un proprio periodo.",
+    "retentionTechnicianLink": "Impostazioni di conservazione IA dei tecnici",
     "brandingDescription": "Mostrato nel piè di pagina del componente aggiuntivo: \"Gestito dal tuo fornitore IT\" — punto di personalizzazione white-label (specifica §11).",
     "displayName": "Nome visualizzato",
     "mspNamePlaceholder": "Nome del tuo MSP",
@@ -1059,5 +1085,24 @@
     "feedbackGivenUseful": "Hai segnato questo come utile",
     "feedbackGivenNotUseful": "Hai segnato questo come non utile",
     "feedbackSaved": "Grazie. Wisp se lo ricorderà."
+  },
+  "transcriptRetention": {
+    "removedOn": "Trascrizione rimossa dalla conservazione il {{date}}",
+    "removedLabel": "Rimossa dalla conservazione",
+    "removedHelp": "Messaggi, titolo e dettagli degli strumenti sono stati rimossi in base al periodo di conservazione delle trascrizioni. Costo, modello e numero di turni restano.",
+    "preview": {
+      "counting": "Conteggio delle conversazioni più vecchie di questo periodo…",
+      "unavailable": "Impossibile contare le conversazioni più vecchie di questo periodo.",
+      "noneEnforced": "Nessuna conversazione è da rimuovere con questo periodo.",
+      "nonePending": "Nessuna conversazione è da rimuovere con questo periodo. L'applicazione della conservazione è disattivata, quindi non viene ancora rimosso nulla.",
+      "orgPending_one": "{{display}} conversazione è da rimuovere con questo periodo. Non viene ancora rimosso nulla: l'applicazione della conservazione è disattivata e i suoi messaggi verranno rimossi quando sarà attivata.",
+      "orgPending_other": "{{display}} conversazioni sono da rimuovere con questo periodo. Non viene ancora rimosso nulla: l'applicazione della conservazione è disattivata e i loro messaggi verranno rimossi quando sarà attivata.",
+      "orgEnforced_one": "{{display}} conversazione è da rimuovere con questo periodo; i suoi messaggi verranno rimossi nella prossima esecuzione notturna.",
+      "orgEnforced_other": "{{display}} conversazioni sono da rimuovere con questo periodo; i loro messaggi verranno rimossi nella prossima esecuzione notturna.",
+      "partnerPending_one": "{{display}} conversazione nelle tue organizzazioni è da rimuovere con questo periodo. Non viene ancora rimosso nulla: l'applicazione della conservazione è disattivata e i suoi messaggi verranno rimossi quando sarà attivata.",
+      "partnerPending_other": "{{display}} conversazioni nelle tue organizzazioni sono da rimuovere con questo periodo. Non viene ancora rimosso nulla: l'applicazione della conservazione è disattivata e i loro messaggi verranno rimossi quando sarà attivata.",
+      "partnerEnforced_one": "{{display}} conversazione nelle tue organizzazioni è da rimuovere con questo periodo; i suoi messaggi verranno rimossi nella prossima esecuzione notturna.",
+      "partnerEnforced_other": "{{display}} conversazioni nelle tue organizzazioni sono da rimuovere con questo periodo; i loro messaggi verranno rimossi nella prossima esecuzione notturna."
+    }
   }
 }

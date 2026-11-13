@@ -3,6 +3,7 @@ import {
   Cloud,
   Loader2,
   Lock,
+  MinusCircle,
   Pencil,
   Plus,
   Server,
@@ -125,7 +126,8 @@ export function destinationPrefixError(form: ConfigFormState): string | null {
 
 export type DestinationMode = "select" | "create" | "edit";
 
-export type TestStatus = "idle" | "testing" | "success" | "failed";
+/** "unsupported": the server does not test this destination (not a failure). */
+export type TestStatus = "idle" | "testing" | "success" | "failed" | "unsupported";
 
 // ── Capability helpers (also used by the Protection section) ───────────────────
 export function getObjectLockCapability(config?: BackupConfig | null) {
@@ -331,6 +333,9 @@ function DestinationCard({
               {testStatus === "failed" && (
                 <XCircle className="h-3 w-3 text-destructive" />
               )}
+              {testStatus === "unsupported" && (
+                <MinusCircle className="h-3 w-3 text-muted-foreground" />
+              )}
               {testStatus === "idle" && <Shield className="h-3 w-3" />}
               {testStatus === "testing"
                 ? i18n.t(
@@ -344,7 +349,11 @@ function DestinationCard({
                     ? i18n.t(
                         "policies:configurationPolicies.featureTabs.backupTab.failed2",
                       )
-                    : i18n.t(
+                    : testStatus === "unsupported"
+                      ? i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.notTestedHere",
+                        )
+                      : i18n.t(
                         "policies:configurationPolicies.featureTabs.backupTab.test",
                       )}
             </button>

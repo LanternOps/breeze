@@ -1097,3 +1097,91 @@ describe('POST /organizations/:id/portal-users/:userId/browser-access (W4)', () 
     expect(auditMock).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Portal registration W7 (#11384) D12: Google in the invite email and the
+// bulk SSO invite. The W4 cases above pin the Microsoft and password paths.
+// ---------------------------------------------------------------------------
+
+describe('W7: Google in invites and sso-invite (D12)', () => {
+  const INVITE_URL = 'https://x/portal/accept-invite?token=raw-token';
+  const newInvite = () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])          // org existence
+      .mockResolvedValueOnce([])                        // no existing portal user
+      .mockResolvedValueOnce([{ id: 'ct-1' }])          // the contact on the address
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);    // org name
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new', authEpoch: 1 }]);
+    return makeApp().request(`/organizations/${ORG_ID}/portal-users/invite`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'new@acme.example' }),
+    });
+  };
+  const sent = () => sendInvite.mock.calls[0]![0] as Record<string, unknown>;
+
+  it('invite email offers Google when only Google is effective, and both buttons when both are', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ inviteUrl: INVITE_URL, googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: true });
+    expect(sent().microsoftUrl).toBeUndefined();
+
+    sendInvite.mockClear();
+    resolveMethods.mockResolvedValue({ microsoft: true, google: true, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({
+      microsoftUrl: `${INVITE_URL}&method=microsoft`, googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: true,
+    });
+  });
+
+  it('invite email hides the password option under sso_only with only Google', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: false });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: false });
+    expect(sent().microsoftUrl).toBeUndefined();
+  });
+
+  it('invite email is unchanged when no SSO method is effective', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: false, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ inviteUrl: INVITE_URL, passwordAllowed: true });
+    expect(sent().microsoftUrl).toBeUndefined();
+    expect(sent().googleUrl).toBeUndefined();
+  });
+
+  describe('sso-invite', () => {
+    const PU1 = '00000000-0000-4000-8000-000000000001';
+    const stranded = {
+      id: PU1, orgId: ORG_ID, email: '1@acme.example', name: null, passwordHash: null, authMethod: 'password',
+      status: 'invited', authEpoch: 5, browserAccess: 'granted', hasExternalIdentity: false,
+    };
+    const ssoInvite = () => makeApp().request(`/organizations/${ORG_ID}/portal-users/sso-invite`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portalUserIds: [PU1] }),
+    });
+
+    it('sso-invite works for a Google-only org and refuses 409 when neither SSO method is effective', async () => {
+      resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: false });
+      txState.impl = (fn) => fn();
+      selectResult
+        .mockResolvedValueOnce([{ id: ORG_ID }])      // org existence
+        .mockResolvedValueOnce([{ name: 'Acme Co' }]) // org name
+        .mockResolvedValueOnce([{ id: PU1 }])         // row lock
+        .mockResolvedValueOnce([stranded])            // facts under the lock
+        .mockResolvedValueOnce([]);                   // invite branding
+      insertReturning.mockResolvedValueOnce([{ authEpoch: 6 }]);
+      const ok = await ssoInvite();
+      expect(ok.status).toBe(200);
+      expect((await ok.json()).data).toEqual([{ portalUserId: PU1, result: 'invited', emailSent: true }]);
+      expect(sent()).toMatchObject({ to: '1@acme.example', googleUrl: expect.stringContaining('&method=google'), passwordAllowed: false });
+      expect(sent().microsoftUrl).toBeUndefined();
+
+      vi.clearAllMocks();
+      selectResult.mockReset().mockResolvedValue([]);
+      resolveMethods.mockResolvedValue({ microsoft: false, google: false, password: true });
+      selectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      const refused = await ssoInvite();
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: expect.any(String), code: 'PORTAL_SSO_INVITE_UNAVAILABLE' });
+      expect(setSpy).not.toHaveBeenCalled();
+      expect(sendInvite).not.toHaveBeenCalled();
+    });
+  });
+});

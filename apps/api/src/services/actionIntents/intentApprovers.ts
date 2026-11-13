@@ -5,7 +5,8 @@
  *
  * Given an org, returns the distinct set of user ids eligible to decide a
  * Tier-3 action intent: a user is eligible iff their role in (or covering)
- * the org grants `approvals:decide`.
+ * the org grants `approvals:decide` — directly or through role inheritance
+ * (`roles.parent_role_id`; usersWithPermission → roleInheritance, #11702).
  *
  * Mirrors `resolveElevationApprovers` (services/pamApprovers.ts) EXACTLY for
  * the role/membership resolution — role-ids granting the permission (incl.

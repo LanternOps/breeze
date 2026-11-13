@@ -64,10 +64,20 @@ vi.mock('./contacts/loginLink', () => ({
   linkLoginToContact: vi.fn(async () => ({ contactId: 'contact-1', outcome: 'linked' })),
 }));
 
+// W7 D8: the domain-row fence is W5's (FOR SHARE shape: portalDomainVerification/service.test.ts).
+const fence = vi.hoisted(() => ({ answer: true, at: [] as Array<{ callsBefore: number; depth: number }> }));
+vi.mock('./portalDomainVerification', () => ({
+  lockVerifiedDomainRow: vi.fn(async () => {
+    fence.at.push({ callsBefore: h.calls.length, depth: h.txDepth.current });
+    return fence.answer;
+  }),
+}));
+
 import { clientAiTenantMappings, portalAccessRequests, portalUserIdentities, portalUsers } from '../db/schema';
 import { withDbTransaction, withSystemDbAccessContextIsolated } from '../db';
 import { lockPortalInviteAddresses } from './contacts/portalInvite';
 import { linkLoginToContact } from './contacts/loginLink';
+import { lockVerifiedDomainRow } from './portalDomainVerification';
 import { PORTAL_ACCOUNT_TRANSITION_REFUSED, PortalAccountTransitionError } from './portalAccountState';
 import {
   PORTAL_ACCESS_REQUEST_PENDING_CAP,
@@ -113,6 +123,8 @@ beforeEach(() => {
   h.calls.length = 0;
   h.results.length = 0;
   h.txDepth.current = 0;
+  fence.answer = true;
+  fence.at.length = 0;
   vi.clearAllMocks();
 });
 
@@ -169,15 +181,15 @@ describe('createPortalAccessRequest', () => {
   });
 
   it('stores Entra claims as issuer/subject/tenant and Google claims as the google issuer', async () => {
-    h.results.push([], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    h.results.push([], [], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
     await createPortalAccessRequest({ source: 'entra', orgId: ORG, email: 'a@x.test', name: null, tid: TID, oid: 'oid-1' }, NOW);
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID, portalUserId: null,
     });
 
     h.calls.length = 0;
-    h.results.push([], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
-    await createPortalAccessRequest({ source: 'google', orgId: ORG, email: 'a@x.test', name: null, sub: 'sub-1' }, NOW);
+    h.results.push([], [], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    await createPortalAccessRequest({ source: 'google', orgId: ORG, email: 'a@x.test', name: null, sub: 'sub-1', hostedDomain: 'x.test' }, NOW);
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       source: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1', entraTenantId: null,
     });
@@ -188,6 +200,121 @@ describe('createPortalAccessRequest', () => {
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       source: 'addin_user', issuer: null, subject: null, entraTenantId: null, portalUserId: 'pu-1',
     });
+  });
+});
+
+describe('createPortalAccessRequest: google requests and conflicting pending requests (W7 D8, D9)', () => {
+  const GOOGLE = 'https://accounts.google.com';
+  const ENTRA = `https://login.microsoftonline.com/${TID}/v2.0`;
+  const google = (over: Record<string, unknown> = {}) => ({
+    source: 'google' as const, orgId: ORG, email: 'ada@example.com', name: null, sub: 'sub-1', hostedDomain: 'example.com', ...over,
+  });
+  const pendingClaims = (over: Record<string, unknown> = {}) => ({
+    id: REQ, source: 'google', issuer: GOOGLE, subject: 'sub-1', googleHostedDomain: 'example.com', ...over,
+  });
+
+  it('creates a google request with google_hosted_domain', async () => {
+    h.results.push([], [], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    const outcome = await createPortalAccessRequest(google({ hostedDomain: ' Example.COM ' }), NOW);
+    expect(outcome).toEqual({ kind: 'created', requestId: REQ });
+    expect(h.calls.map((c) => c.op)).toEqual(['execute', 'update', 'select', 'select', 'insert']);
+    expect(h.calls.every((c) => c.depth === 1)).toBe(true);
+
+    // The pending row at (org, email) is read under the admission lock, before the count and the upsert.
+    const pending = h.calls[2]!;
+    expect(stepsOf(pending, 'from')).toEqual([[portalAccessRequests]]);
+    const where = new PgDialect().sqlToQuery(stepsOf(pending, 'where')[0]![0] as SQL);
+    expect(where.params).toEqual(expect.arrayContaining([ORG, 'ada@example.com', 'pending']));
+
+    const insert = inserts()[0];
+    expect(firstArg(insert, 'values')).toMatchObject({
+      source: 'google', issuer: GOOGLE, subject: 'sub-1', entraTenantId: null, portalUserId: null, googleHostedDomain: 'example.com',
+    });
+    expect(firstArg(insert, 'onConflictDoUpdate').set).toEqual({ lastRequestedAt: NOW, updatedAt: NOW, googleHostedDomain: 'example.com' });
+  });
+
+  it('every non-google request stores a null google_hosted_domain', async () => {
+    h.results.push([], [], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    await createPortalAccessRequest({ source: 'entra', orgId: ORG, email: 'a@x.test', name: null, tid: TID, oid: 'oid-1' }, NOW);
+    h.results.push([], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    await createPortalAccessRequest({ source: 'self', orgId: ORG, email: 'a@x.test', name: null }, NOW);
+    h.results.push([], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    await createPortalAccessRequest({ source: 'addin_user', orgId: ORG, portalUserId: 'pu-1', email: 'a@x.test', name: null }, NOW);
+    expect(inserts().map((c) => firstArg(c, 'values').googleHostedDomain)).toEqual([null, null, null]);
+  });
+
+  it('a google request without a hosted domain is a programming error, never written', async () => {
+    await expect(createPortalAccessRequest(google({ hostedDomain: '  ' }), NOW)).rejects.toThrow(/hosted domain/);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('a google create at an address pending for another sub → claims_conflict, nothing written (D9)', async () => {
+    h.results.push([], [], [pendingClaims({ subject: 'sub-other' })]);
+    expect(await createPortalAccessRequest(google(), NOW)).toEqual({ kind: 'claims_conflict', requestId: REQ });
+    expect(inserts()).toHaveLength(0);
+    // The only write is the stale-row expiry every create runs; the pending row is untouched.
+    expect(updates()).toHaveLength(1);
+    expect(firstArg(updates()[0], 'set')).toEqual({ status: 'expired', updatedAt: NOW });
+  });
+
+  it('a google create at an address pending as entra (provider switch) → claims_conflict', async () => {
+    h.results.push([], [], [pendingClaims({ source: 'entra', issuer: ENTRA, subject: 'sub-1', googleHostedDomain: null })]);
+    expect(await createPortalAccessRequest(google(), NOW)).toEqual({ kind: 'claims_conflict', requestId: REQ });
+    expect(inserts()).toHaveLength(0);
+
+    // A pending `self` or `addin_user` row holds no SSO identity: also a different identity for an SSO create.
+    for (const source of ['self', 'addin_user']) {
+      h.calls.length = 0;
+      h.results.push([], [], [pendingClaims({ source, issuer: null, subject: null, googleHostedDomain: null })]);
+      expect(await createPortalAccessRequest(google(), NOW)).toEqual({ kind: 'claims_conflict', requestId: REQ });
+      expect(inserts()).toHaveLength(0);
+    }
+  });
+
+  it('an entra create at an address pending for another oid → claims_conflict (deliberate W3 change)', async () => {
+    const entra = { source: 'entra' as const, orgId: ORG, email: 'ada@example.com', name: null, tid: TID, oid: 'oid-1' };
+    h.results.push([], [], [pendingClaims({ source: 'entra', issuer: ENTRA, subject: 'oid-other', googleHostedDomain: null })]);
+    expect(await createPortalAccessRequest(entra, NOW)).toEqual({ kind: 'claims_conflict', requestId: REQ });
+    expect(inserts()).toHaveLength(0);
+
+    // Another tenant, same oid: a different identity too.
+    h.calls.length = 0;
+    h.results.push([], [], [pendingClaims({
+      source: 'entra', issuer: 'https://login.microsoftonline.com/99999999-8888-4777-8666-555555555555/v2.0', subject: 'oid-1', googleHostedDomain: null,
+    })]);
+    expect(await createPortalAccessRequest(entra, NOW)).toEqual({ kind: 'claims_conflict', requestId: REQ });
+
+    // The same identity re-requesting keeps the W3 bump.
+    h.calls.length = 0;
+    h.results.push(
+      [], [], [pendingClaims({ source: 'entra', issuer: ENTRA, subject: 'oid-1', googleHostedDomain: null })],
+      [{ n: 0 }], [{ id: REQ, inserted: false }],
+    );
+    expect(await createPortalAccessRequest(entra, NOW)).toEqual({ kind: 'already_pending', requestId: REQ });
+    expect(firstArg(inserts()[0], 'onConflictDoUpdate').set).toEqual({ lastRequestedAt: NOW, updatedAt: NOW });
+  });
+
+  it('the same google sub re-requesting with a new hd bumps and refreshes google_hosted_domain', async () => {
+    h.results.push([], [], [pendingClaims({ googleHostedDomain: 'example.com' })], [{ n: 0 }], [{ id: REQ, inserted: false }]);
+    const outcome = await createPortalAccessRequest(google({ hostedDomain: 'sub.example.com' }), NOW);
+    expect(outcome).toEqual({ kind: 'already_pending', requestId: REQ });
+    expect(firstArg(inserts()[0], 'onConflictDoUpdate').set).toEqual({
+      lastRequestedAt: NOW, updatedAt: NOW, googleHostedDomain: 'sub.example.com',
+    });
+  });
+
+  it("a self re-request keeps the W3 bump and never touches a pending google request's claims", async () => {
+    for (const input of [
+      { source: 'self' as const, orgId: ORG, email: 'ada@example.com', name: null },
+      { source: 'addin_user' as const, orgId: ORG, portalUserId: 'pu-1', email: 'ada@example.com', name: null },
+    ]) {
+      h.calls.length = 0;
+      h.results.push([], [], [{ n: 0 }], [{ id: REQ, inserted: false }]);
+      expect(await createPortalAccessRequest(input, NOW)).toEqual({ kind: 'already_pending', requestId: REQ });
+      // No pending-row read: W3's call sequence exactly, and the bump writes no claim column.
+      expect(h.calls.map((c) => c.op)).toEqual(['execute', 'update', 'select', 'insert']);
+      expect(firstArg(inserts()[0], 'onConflictDoUpdate').set).toEqual({ lastRequestedAt: NOW, updatedAt: NOW });
+    }
   });
 });
 
@@ -301,10 +428,10 @@ describe('approvePortalAccessRequest', () => {
         .toBe('account_created');
 
       h.results.push(
-        [pendingRow({ source: 'google', email: 'ada@example.com', issuer: 'https://accounts.google.com', subject: 'sub-1' })],
+        [pendingRow({ source: 'google', email: 'ada@example.com', issuer: 'https://accounts.google.com', subject: 'sub-1', googleHostedDomain: 'example.com' })],
         [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
       );
-      expect((await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified })).outcome)
+      expect((await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, selfDomainVerified, googleDomain: { verifiedAt: NOW } })).outcome)
         .toBe('account_created');
 
       h.results.push(
@@ -342,10 +469,10 @@ describe('approvePortalAccessRequest', () => {
 
   it('google: auth_method google, no entra_* columns, google issuer identity', async () => {
     h.results.push(
-      [pendingRow({ source: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1' })],
+      [pendingRow({ source: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1', googleHostedDomain: 'customer.test' })],
       [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
     );
-    await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW });
+    await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, googleDomain: { verifiedAt: NOW } });
     const [account, identity] = inserts();
     const values = firstArg(account, 'values');
     expect(values).toMatchObject({ authMethod: 'google', status: 'active', browserAccess: 'granted' });
@@ -422,11 +549,96 @@ describe('approvePortalAccessRequest', () => {
 
   it('google: no tenant read (only entra requests carry a tenant)', async () => {
     h.results.push(
-      [pendingRow({ source: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1' })],
+      [pendingRow({ source: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1', googleHostedDomain: 'customer.test' })],
       [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
     );
-    await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW });
+    await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, googleDomain: { verifiedAt: NOW } });
     expect(h.calls.some((c) => stepsOf(c, 'from').some(([t]) => t === clientAiTenantMappings))).toBe(false);
+  });
+
+  describe('google: Workspace-bound approval (W7 D8, D3)', () => {
+    const VERIFIED_AT = new Date('2027-01-30T09:00:00.000Z');
+    const googleRow = (over: Record<string, unknown> = {}) => pendingRow({
+      source: 'google', email: 'ada@example.com', issuer: 'https://accounts.google.com', subject: 'sub-1', googleHostedDomain: 'example.com', ...over,
+    });
+    const GOOGLE_DOMAIN_NOT_VERIFIED = {
+      code: 'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED',
+      httpStatus: 409,
+      message: "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.",
+    };
+
+    it.each([
+      ['a null fact (the hd is not verified for this org)', {}, { googleDomain: null }, true, false],
+      ['no fact at all (a caller that forgot the pre-check)', {}, {}, true, false],
+      ['a request with no google_hosted_domain', { googleHostedDomain: null }, { googleDomain: { verifiedAt: VERIFIED_AT } }, true, false],
+      ['a stale fact (no row with that verified_at to lock)', {}, { googleDomain: { verifiedAt: VERIFIED_AT } }, false, true],
+    ])('approve refuses a google request with a null or stale googleDomain fact (409 GOOGLE_DOMAIN_NOT_VERIFIED), nothing written: %s', async (
+      _name, rowOver, input, fenceAnswer, fenceRuns,
+    ) => {
+      fence.answer = fenceAnswer;
+      h.results.push([googleRow(rowOver)]);
+      const err = await rejection(approvePortalAccessRequest({
+        orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, googleContactAllowed: true, ...input,
+      }));
+      expect(err).toBeInstanceOf(PortalAccessRequestError);
+      expect(err).toMatchObject(GOOGLE_DOMAIN_NOT_VERIFIED);
+      expect(lockVerifiedDomainRow).toHaveBeenCalledTimes(fenceRuns ? 1 : 0);
+      expect(h.calls.map((c) => c.op)).toEqual(['select']);
+      expect(lockPortalInviteAddresses).not.toHaveBeenCalled();
+      expect(linkLoginToContact).not.toHaveBeenCalled();
+      expect(inserts()).toHaveLength(0);
+      expect(updates()).toHaveLength(0);
+    });
+
+    it('approve of a google request with a verified hd creates an identity-only google account', async () => {
+      h.results.push([googleRow()], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], []);
+      const result = await approvePortalAccessRequest({
+        orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, googleDomain: { verifiedAt: VERIFIED_AT }, googleContactAllowed: true,
+      });
+      expect(result).toEqual({
+        outcome: 'account_created', portalUserId: 'pu-new', email: 'ada@example.com', name: 'Ada', authEpoch: 1, source: 'google',
+      });
+      // The fence ran inside the approval transaction, right after the request row lock and before any other statement.
+      expect(lockVerifiedDomainRow).toHaveBeenCalledTimes(1);
+      expect(lockVerifiedDomainRow).toHaveBeenCalledWith(expect.anything(), { orgId: ORG, domain: 'example.com', verifiedAt: VERIFIED_AT });
+      expect(fence.at).toEqual([{ callsBefore: 1, depth: 1 }]);
+      const [account, identity] = inserts();
+      expect(firstArg(account, 'values')).toMatchObject({ authMethod: 'google', status: 'active', browserAccess: 'granted', email: 'ada@example.com' });
+      expect(firstArg(identity, 'values')).toMatchObject({ provider: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1', linkedVia: 'jit' });
+      expect(firstArg(updates()[0], 'set')).toMatchObject({ status: 'approved', portalUserId: 'pu-new' });
+    });
+
+    it('approve links the contact only when googleContactAllowed is true', async () => {
+      h.results.push([googleRow()], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], []);
+      await approvePortalAccessRequest({
+        orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, googleDomain: { verifiedAt: VERIFIED_AT }, googleContactAllowed: true,
+      });
+      expect(linkLoginToContact).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ orgId: ORG, email: 'ada@example.com' }));
+      expect(firstArg(inserts()[0], 'values')).toMatchObject({ contactId: 'contact-1' });
+
+      for (const googleContactAllowed of [false, undefined]) {
+        vi.mocked(linkLoginToContact).mockClear();
+        h.calls.length = 0;
+        h.results.push([googleRow()], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], []);
+        await approvePortalAccessRequest({
+          orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, googleDomain: { verifiedAt: VERIFIED_AT }, googleContactAllowed,
+        });
+        expect(linkLoginToContact).not.toHaveBeenCalled();
+        expect(firstArg(inserts()[0], 'values')).toMatchObject({ contactId: null });
+        // ACCOUNT_EXISTS still guards the request's own address.
+        expect(lockPortalInviteAddresses).toHaveBeenLastCalledWith(expect.anything(), ORG, ['ada@example.com']);
+      }
+    });
+
+    it('entra approvals ignore googleDomain and googleContactAllowed (the contact is linked as before)', async () => {
+      h.results.push(
+        [pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID })],
+        [{ tenantId: TID }], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
+      );
+      await approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW, googleDomain: null, googleContactAllowed: false });
+      expect(lockVerifiedDomainRow).not.toHaveBeenCalled();
+      expect(linkLoginToContact).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('addin_user: plans access_request_approve and writes it guarded by the read epoch, no bump', async () => {
@@ -525,6 +737,25 @@ describe('listPortalAccessRequests', () => {
     expect(items[0]!.requestedAt).toBe(NOW.toISOString());
   });
 
+  it('the list carries googleHostedDomain and domainVerified for google rows', async () => {
+    const rows = () => [
+      row({ source: 'google', email: 'ada@other.test', googleHostedDomain: 'example.com' }),
+      row({ source: 'google', email: 'bob@example.com', googleHostedDomain: 'lapsed.example.com' }),
+      row({ source: 'google', email: 'cy@example.com', googleHostedDomain: null }),
+      row({ source: 'self', email: 'di@example.com', googleHostedDomain: null }),
+    ];
+    h.results.push(rows());
+    const { items } = await listPortalAccessRequests(ORG, { status: 'pending', now: NOW, verifiedDomains: new Set(['example.com']) });
+    // A google row is judged by its hd (the domain approval fences on), never by its email's domain.
+    expect(items.map((i) => [i.googleHostedDomain, i.domainVerified])).toEqual([
+      ['example.com', true], ['lapsed.example.com', false], [null, false], [null, true],
+    ]);
+
+    h.results.push(rows());
+    const unknown = await listPortalAccessRequests(ORG, { status: 'pending', now: NOW });
+    expect(unknown.items.map((i) => i.domainVerified)).toEqual([false, false, false, false]);
+  });
+
   it('domainVerified: self rows against the verified-domain set, null for other sources; no set fails closed', async () => {
     const rows = () => [
       row({ email: 'ada@example.com' }),
@@ -560,7 +791,22 @@ describe('readPortalAccessRequestForDecision', () => {
     expect(await readPortalAccessRequestForDecision(ORG, 'not-a-uuid')).toBeNull();
     expect(h.calls).toHaveLength(0);
   });
+
+  it('W7 D8: also reads google_hosted_domain, the hd the route re-checks before a google approval', async () => {
+    h.results.push([{ source: 'google', email: 'ada@example.com', googleHostedDomain: 'example.com' }]);
+    expect(await readPortalAccessRequestForDecision(ORG, REQ))
+      .toEqual({ source: 'google', email: 'ada@example.com', googleHostedDomain: 'example.com' });
+    expect(firstSelectColumns(h.calls[0])).toEqual({
+      source: portalAccessRequests.source,
+      email: portalAccessRequests.email,
+      googleHostedDomain: portalAccessRequests.googleHostedDomain,
+    });
+  });
 });
+
+function firstSelectColumns(call: Call | undefined): unknown {
+  return call?.args[0];
+}
 
 describe('summarizePendingPortalAccessRequests', () => {
   it('totals the per-org counts', async () => {

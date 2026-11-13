@@ -8,6 +8,7 @@ import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m3
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
 import { getPortalEntraConfig } from './portalEntra';
+import { getPortalGoogleConfig } from './portalGoogle';
 import { warnOnTrustedProxyCidrMismatch } from './proxyTrustBootCheck';
 import {
   OFFICIAL_RELEASE_REPOSITORY,
@@ -736,6 +737,9 @@ const envObjectSchema = z
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
     AGENT_BACKUP_SERVER_URL: z.string().optional(),
+    // API-side directory for local backup destinations (self-hosted only;
+    // refused on a hosted deployment, see superRefine). '' = unset.
+    BACKUP_LOCAL_ROOT: z.string().optional(),
 
     // Platform date from which partners without an explicit approval-security
     // enforcement choice require an approver device for high/critical
@@ -1077,6 +1081,14 @@ const envObjectSchema = z
     PORTAL_ENTRA_CLIENT_SECRET: z.string().optional(),
     PORTAL_ENTRA_CALLBACK_BASE_URL: z.string().optional(),
 
+    // Customer portal "Sign in with Google" (portal registration W7). The
+    // portal's own Google OAuth client; off unless BOTH the id and the secret
+    // are set. Parsed at call time by config/portalGoogle.ts; validated at boot
+    // below, like the Entra app.
+    PORTAL_GOOGLE_CLIENT_ID: z.string().optional(),
+    PORTAL_GOOGLE_CLIENT_SECRET: z.string().optional(),
+    PORTAL_GOOGLE_CALLBACK_BASE_URL: z.string().optional(),
+
     // Customer-portal self-registration kill switch (portal registration W6,
     // plan D2). Unset/empty, true or 1 → on; false or 0 → off. Read at call
     // time by config/portalSelfRegistration.ts (same accepted values); any
@@ -1340,6 +1352,21 @@ const envSchema = envObjectSchema
             'AGENT_BACKUP_SERVER_URL must be a valid https:// URL (http:// allowed only for localhost)',
         });
       }
+    }
+
+    // API-side local backup storage reads operator-provisioned directories on
+    // the API and worker servers. A hosted deployment does not offer it, so a
+    // value there is a configuration mistake and refuses to boot.
+    const backupLocalRoot = (data.BACKUP_LOCAL_ROOT ?? '').trim();
+    const hostedForLocalBackup = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+    if (backupLocalRoot && hostedForLocalBackup) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BACKUP_LOCAL_ROOT'],
+        message:
+          'BACKUP_LOCAL_ROOT is not supported on a hosted deployment (IS_HOSTED=true). '
+          + 'API-side local backup storage is a self-hosted feature; unset BACKUP_LOCAL_ROOT.',
+      });
     }
 
     // --- JWT signing keyring (zero-downtime rotation) ---
@@ -3273,6 +3300,8 @@ export function validateConfig(): AppConfig {
   // first throw on a customer's request. Throws only when the app is
   // configured (both id and secret set).
   getPortalEntraConfig(env);
+  // Portal Google client (W7): the same boot check for its client id and base.
+  getPortalGoogleConfig(env);
 
   // (The APP_ENCRYPTION_KEY_ID ↔ M365_GRAPH_ACTIONS_TOOLS_ENABLED pairing rule
   // used to live here as a post-parse throw reading `env` directly. It now runs

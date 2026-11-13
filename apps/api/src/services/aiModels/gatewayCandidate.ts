@@ -33,6 +33,8 @@ import type { GatewayConnectionConfig, GatewayCredential } from './gateway/types
 import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
 import type { Offering } from './offerings';
 import { toolProfileFactsFrom } from './toolProfileFacts';
+import { failedToolSurfaces } from './surfaceReadiness';
+import { knownContextWindow, resolveEffectiveContextWindow } from './contextWindowFacts';
 import type { RateSnapshot } from './pricing';
 import { safeErrorMessage } from './safeDbError';
 
@@ -170,10 +172,8 @@ export async function gatewayCandidate(input: { offering: Offering; conn: Partne
   const credential = read.kind === 'ok' ? read.credential : null;
   const keyUsable = credential !== null;
 
-  const verified = verifiedGatewayCapabilities(
-    offering.capabilities,
-    endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null }),
-  ).capabilities;
+  const fingerprint = endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null });
+  const verified = verifiedGatewayCapabilities(offering.capabilities, fingerprint).capabilities;
   const capabilities: DerivedCapabilities = adapterCarriesThinking(conn.kind) || verified.thinkingMode === 'unknown'
     ? verified
     : { ...verified, thinkingMode: 'none', effortLevels: [] };
@@ -183,6 +183,10 @@ export async function gatewayCandidate(input: { offering: Offering; conn: Partne
   // is nothing the gateway could bind or send, so it is unusable.
   const wireModel = offering.modelId?.trim() ? offering.modelId : '';
   const config = wireModel ? gatewayConfigFor(conn) : null;
+  // #11396: override → min(discovered, fresh observed) → unknown, against the
+  // connection version this candidate dispatches under.
+  const window = resolveEffectiveContextWindow(offering, conn.configVersion);
+  const toolProfileFacts = toolProfileFactsFrom(offering, 'gateway', window.value);
   return {
     facts: {
       ownerPartnerId: offering.partnerId,
@@ -196,6 +200,9 @@ export async function gatewayCandidate(input: { offering: Offering; conn: Partne
       supportsTools: capabilities.supportsTools,
       inferenceGeo: null,
       supportedInferenceGeos: [],
+      // #11397: a surface refuses only on a CURRENT failed verify turn for it
+      // (this endpoint, this stage version, this surface's profile now).
+      failedToolSurfaces: failedToolSurfaces(offering.capabilities, { endpointFingerprint: fingerprint, facts: toolProfileFacts }),
     },
     offeringId: offering.id,
     connectionId: conn.id,
@@ -211,8 +218,9 @@ export async function gatewayCandidate(input: { offering: Offering; conn: Partne
     allowedOptions: offering.allowedOptions as AllowedOptions | null,
     refusalFallbackOfferingId: offering.refusalFallbackOfferingId,
     promptProfile: 'generic',
-    limits: { maxInputTokens: null, maxOutputTokens: null },
+    limits: { maxInputTokens: window.value, maxOutputTokens: null },
     configVersion: conn.configVersion,
-    toolProfileFacts: toolProfileFactsFrom(offering, 'gateway'),
+    toolProfileFacts,
+    contextWindow: knownContextWindow(window),
   };
 }

@@ -3,7 +3,8 @@ import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStale
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, lt, lte, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { db, hasDbAccessContext, withDbTransaction } from '../db';
+import { db, hasDbAccessContext, runAfterDbContextCommit, withDbTransaction } from '../db';
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 import {
   deviceCommands,
   scriptExecutions,
@@ -1802,6 +1803,9 @@ export async function reapStaleBackupJobs(): Promise<number> {
 
   if (reaped > 0) {
     console.log(`[StaleCommandReaper] Reaped ${reaped} stale/orphaned backup jobs`);
+    // #11772: reaped jobs can change a destination's verdict. One nudge per
+    // cycle, after commit; it coalesces per kind and never throws.
+    runAfterDbContextCommit('backupDestinationHealth.nudge', () => nudgeConnectionHealth('backup_destination'));
   }
 
   return reaped;

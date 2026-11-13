@@ -42,6 +42,8 @@ type writeEnv struct {
 	// busyResolves answers that many objects:resolve calls with
 	// previous_writer_active (Retry-After 1).
 	busyResolves int
+	// storageHook answers a storage request itself when it returns true.
+	storageHook func(w http.ResponseWriter, r *http.Request) bool
 }
 
 func newWriteEnv(t *testing.T) *writeEnv {
@@ -50,7 +52,11 @@ func newWriteEnv(t *testing.T) *writeEnv {
 	e.storage = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.mu.Lock()
 		e.storageHeaders = append(e.storageHeaders, r.Header.Clone())
+		hook := e.storageHook
 		e.mu.Unlock()
+		if hook != nil && hook(w, r) {
+			return
+		}
 		q := r.URL.Query()
 		key := q.Get("k")
 		switch r.Method {

@@ -322,7 +322,7 @@ export function checkInRunUnfinishedBody(status: string, postBody: string): stri
 async function cancelRunning(checkInId: string, now: Date, reason: string): Promise<boolean> {
   const changed = await sys(() => db
     .update(wispCheckIns)
-    .set({ status: 'cancelled', cancelledAt: now, cancelReason: reason })
+    .set({ status: 'cancelled', cancelledAt: now, cancelReason: reason, cancelledBy: 'breeze' })
     .where(and(eq(wispCheckIns.id, checkInId), eq(wispCheckIns.status, 'running')))
     .returning({ id: wispCheckIns.id }), 'wisp-check-in-run-cancel');
   return changed.length > 0;

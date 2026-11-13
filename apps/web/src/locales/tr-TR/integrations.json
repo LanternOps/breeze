@@ -374,6 +374,9 @@
       "delivery_failed": "Teslimatlar başarısız",
       "sync_stale": "Eşitleme durdu",
       "verification_failed": "Doğrulama başarısız",
+      "destination_access_denied": "Hedef erişimi reddetti",
+      "destination_not_found": "Hedef bulunamadı",
+      "destination_failing": "Hedef başarısız oluyor",
       "unknown": "İlgilenilmesi gerekiyor"
     }
   },

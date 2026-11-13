@@ -37,6 +37,7 @@ import {
   revokeAllRefreshFamilies,
   runPostCommitCleanup,
 } from '../../services/authLifecycle';
+import { cancelPendingEmailChange } from '../../services/pendingEmailCancellation';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 
 const { db, withSystemDbAccessContext } = dbModule;
@@ -257,6 +258,7 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
           { auth: true, passwordReset: true, credential: true },
           { passwordResetEpoch: envelope.passwordResetEpoch, email: live.email },
         );
+        await cancelPendingEmailChange(tx, userId);
         await revokeAllRefreshFamilies(tx, userId, 'password-reset');
       })
     );
@@ -399,6 +401,7 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
         { auth: true, passwordReset: true, credential: true },
         { authEpoch: expectedAuthEpoch },
       );
+      await cancelPendingEmailChange(tx, auth.user.id);
       await revokeAllRefreshFamilies(tx, auth.user.id, 'password-change');
     });
   } catch (error) {

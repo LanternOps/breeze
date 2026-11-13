@@ -177,6 +177,47 @@ describe('BackupDashboard usage history chart', () => {
     expect(screen.queryByText(/\/ --/)).toBeNull();
   });
 
+  it('renders a destination-level attention item from its structured fields (#11768)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            latestJobs: [],
+            storageProviders: [],
+            attentionItems: [
+              {
+                id: 'backup-destination-cfg-1',
+                kind: 'destination_failing',
+                // Server fallback text must not be what the user sees.
+                title: 'SERVER FALLBACK TITLE',
+                description: 'SERVER FALLBACK DESCRIPTION',
+                severity: 'critical',
+                configId: 'cfg-1',
+                destinationName: 'Primary S3',
+                failureCategory: 'storage',
+                failureCause: 'storage_access_denied',
+                failingDevices: 3,
+                totalDevices: 3,
+              },
+            ],
+          },
+        });
+      }
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    expect(await screen.findByText('Primary S3: the latest backup failed on 3 of 3 devices')).toBeTruthy();
+    expect(screen.queryByText('SERVER FALLBACK TITLE')).toBeNull();
+    expect(screen.getByText(/refused the request/)).toBeTruthy();
+    expect(screen.getByTestId('backup-destination-attention-link').getAttribute('href')).toBe('/backup#profiles');
+  });
+
   it('shows the recovery bootstrap tab', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);

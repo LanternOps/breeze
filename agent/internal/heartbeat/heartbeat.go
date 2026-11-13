@@ -72,6 +72,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workerpool"
 	"github.com/breeze-rmm/agent/pkg/api"
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 var log = logging.L("heartbeat")
@@ -1290,7 +1291,9 @@ func newHeartbeatHTTPClient(tlsCfg *tls.Config) *http.Client {
 	// ECH dialer (#8869), plain-first. TLS (including the mTLS client cert)
 	// sits above the cache, so hostname verification is unchanged — the cache
 	// alters where we dial, never what we trust. A nil tlsCfg is handled.
-	return &http.Client{Timeout: 30 * time.Second, Transport: ech.NewTransport(tlsCfg)}
+	// Every call on this client carries the device credential, so redirects
+	// follow the shared credentialed-request policy.
+	return httpguard.NewClient(ech.NewTransport(tlsCfg), 30*time.Second)
 }
 
 func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString, tlsCfg *tls.Config) *Heartbeat {

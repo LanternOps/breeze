@@ -229,6 +229,33 @@ describe('searchSnapshotFiles', () => {
 });
 
 describe('resolveSelectedSnapshotPathsInDb', () => {
+  runDb('a page past its statement timeout is IndexQueryTimeoutError, and the transaction stays usable', async () => {
+    await withSystemDbAccessContext(async () => {
+      const snap = await seedSnapshot([]);
+      await seedMany(snap.id, '/srv/walk/file-', 200_000);
+      const failure = await resolveSelectedSnapshotPathsInDb(snap.id, ['/nowhere'], { statementTimeoutMs: 1 })
+        .catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(IndexQueryTimeoutError);
+      const [row] = await db.select({ id: backupSnapshots.id }).from(backupSnapshots).where(eq(backupSnapshots.id, snap.id));
+      expect(row?.id).toBe(snap.id);
+      const [setting] = (await db.execute(sql`SELECT current_setting('statement_timeout') AS v`)) as unknown as Array<{ v: string }>;
+      expect(setting!.v).not.toBe('1ms');
+    });
+  }, 120_000);
+
+  runDb('a walk that outlasts its overall deadline stops with IndexQueryTimeoutError', async () => {
+    await withSystemDbAccessContext(async () => {
+      const snap = await seedSnapshot([]);
+      await seedMany(snap.id, '/srv/walk/file-', 4 * SELECTION_PAGE_SIZE);
+      // The walk as a whole is bounded, not only each page statement.
+      const failure = await resolveSelectedSnapshotPathsInDb(snap.id, ['/nowhere'], { deadlineMs: 1 })
+        .catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(IndexQueryTimeoutError);
+      // The same walk with time to finish answers normally.
+      expect(await resolveSelectedSnapshotPathsInDb(snap.id, ['/nowhere'])).toMatchObject({ ok: false });
+    });
+  }, 120_000);
+
   runDb('a 50,000-file folder walked in pages resolves to one prefix', async () => {
     await withSystemDbAccessContext(async () => {
       const snap = await seedSnapshot(['C:\\Users\\alex\\keep.txt']);

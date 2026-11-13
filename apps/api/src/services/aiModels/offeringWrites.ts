@@ -16,7 +16,7 @@
  * failure goes through toRegistryWriteError.
  */
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
-import { isConfigurableAiSurface, type AiSurface, type OfferingDetailsPatch, type OfferingOptions } from '@breeze/shared';
+import { isConfigurableAiSurface, isGatewayConnectionKind, type AiSurface, type AiToolAllowlist, type AiToolProfile, type OfferingDetailsPatch, type OfferingOptions } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgents, aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
 import { isHosted } from '../../config/env';
@@ -26,6 +26,7 @@ import { tryLockPartnerRegistryWrite } from './registryWriteLock';
 import { enableOffering, getOffering, offeringPriceSource, type Offering } from './offerings';
 import { getPlatformInferenceGeo, getPlatformModelById, type PlatformModel } from './platformModels';
 import { CONNECTION_DISCONNECTED_MESSAGE, REGISTRY_BUSY_MESSAGE, RegistryWriteError, toRegistryWriteError } from './registryWriteErrors';
+import { hasToolSettings, loadServedToolSurfaces, validateToolSettingsPatch, type ToolProfileCatalog } from './toolSettingsWrite';
 
 export interface OfferingInUse { surface: AiSurface; level: 'partner' | 'org'; orgId: string | null }
 
@@ -291,17 +292,49 @@ async function assertNotEnvManagedConnection(partnerId: string, connectionId: st
   }
 }
 
+/** The tool settings of an offering, before and after a write (#11398, for the audit record). */
+export interface ToolSettingsSnapshot {
+  toolProfile: AiToolProfile;
+  toolAllowlist: AiToolAllowlist | null;
+  contextWindowOverride: number | null;
+}
+export type OfferingDetailsResult = Offering & {
+  /** Set when the patch carried a tool field; null otherwise. */
+  toolSettingsChange: { from: ToolSettingsSnapshot; to: ToolSettingsSnapshot } | null;
+};
+
+const toolSettingsOf = (o: Offering): ToolSettingsSnapshot => ({
+  toolProfile: o.toolProfile,
+  toolAllowlist: o.toolAllowlist ?? null,
+  contextWindowOverride: o.contextWindowOverride ?? null,
+});
+
+/** The offering's connection when it is a gateway (OpenAI-compatible) one; null otherwise. Ambient context. */
+async function gatewayConnectionOf(partnerId: string, connectionId: string | null): Promise<{ configVersion: number } | null> {
+  if (!connectionId) return null;
+  const [conn] = await db
+    .select({ kind: partnerAiConnections.kind, configVersion: partnerAiConnections.configVersion })
+    .from(partnerAiConnections)
+    .where(and(eq(partnerAiConnections.id, connectionId), eq(partnerAiConnections.partnerId, partnerId)))
+    .limit(1);
+  return conn && isGatewayConnectionKind(conn.kind) ? { configVersion: conn.configVersion } : null;
+}
+
 export async function updateOfferingDetails(input: {
   partnerId: string; offeringId: string; patch: OfferingDetailsPatch;
-}): Promise<Offering> {
+  /** Required when the patch carries a tool field (#11398); built by the routes (toolProfileCatalog.ts). */
+  toolCatalog?: ToolProfileCatalog;
+}): Promise<OfferingDetailsResult> {
   return inPartnerRegistryWrite(input.partnerId, 'aiModels.updateOfferingDetails', 'Could not save the model.',
     () => updateOfferingDetailsLocked(input));
 }
 
 async function updateOfferingDetailsLocked(input: {
-  partnerId: string; offeringId: string; patch: OfferingDetailsPatch;
-}): Promise<Offering> {
+  partnerId: string; offeringId: string; patch: OfferingDetailsPatch; toolCatalog?: ToolProfileCatalog;
+}): Promise<OfferingDetailsResult> {
   const { patch } = input;
+  const toolPatch = hasToolSettings(patch);
+  if (toolPatch && !input.toolCatalog) throw new Error('updateOfferingDetails: a tool settings patch needs the tool catalog');
   const current = await getOffering(input.offeringId);
   if (!current || current.partnerId !== input.partnerId) throw new RegistryWriteError('Model not found.', 'not_found', 404);
   if (!sameVersion(current.updatedAt, patch.expectedUpdatedAt)) {
@@ -374,6 +407,21 @@ async function updateOfferingDetailsLocked(input: {
     set.refusalFallbackOfferingId = patch.refusalFallbackOfferingId;
   }
 
+  // #11398: tool profile, custom allow-list, context window override. Access
+  // policy like the options above (so an env-managed connection's models take
+  // it too), validated on the merged state against every surface this model
+  // serves, inside this locked transaction so an assignment cannot move
+  // between the check and the write.
+  if (toolPatch) {
+    Object.assign(set, validateToolSettingsPatch({
+      stored: current,
+      patch,
+      gateway: await gatewayConnectionOf(input.partnerId, current.connectionId),
+      served: await loadServedToolSurfaces(input.partnerId, input.offeringId),
+      catalog: input.toolCatalog!,
+    }));
+  }
+
   const [updated] = await db
     .update(partnerAiModels)
     .set(set)
@@ -384,7 +432,7 @@ async function updateOfferingDetailsLocked(input: {
     ))
     .returning();
   if (!updated) throw new RegistryWriteError('This model was changed by someone else. Reload and try again.', 'stale_write', 409);
-  return updated;
+  return { ...updated, toolSettingsChange: toolPatch ? { from: toolSettingsOf(current), to: toolSettingsOf(updated) } : null };
 }
 
 export interface OfferingReference extends OfferingInUse { via: 'default' | 'fallback' | 'permitted' }

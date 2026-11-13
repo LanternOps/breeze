@@ -258,6 +258,31 @@ describe('switchSession (History pick)', () => {
     expect(s.error).toBe('Failed to load session');
     expect(streamCalls()).toHaveLength(0);
   });
+
+  it('records transcriptPurgedAt for a session retention emptied, and clears it on the next pick (#4342 W4)', async () => {
+    useAiStore.setState({ sessionId: 's0', hydratedSessionId: 's0' });
+    on('/ai/sessions/s1', () => session({ status: 'expired', title: null, transcriptPurgedAt: '2027-02-01T03:15:00.000Z' }));
+    on('/ai/sessions/s2', () => json({ session: { id: 's2', status: 'active', orgId: ORG_A, type: 'general', topologySiteId: null }, messages: [] }));
+    on('/ai/sessions/s1/stream', () => sse(frame(snap({ turn: 'idle', turnId: null }))));
+    on('/ai/sessions/s2/stream', () => sse(frame(snap({ turn: 'idle', turnId: null }))));
+
+    await useAiStore.getState().switchSession('s1');
+    await flush();
+    expect(useAiStore.getState().sessionId).toBe('s1');
+    expect(useAiStore.getState().transcriptPurgedAt).toBe('2027-02-01T03:15:00.000Z');
+
+    await useAiStore.getState().switchSession('s2');
+    await flush();
+    expect(useAiStore.getState().transcriptPurgedAt).toBeNull();
+  });
+
+  it('closing a purged session clears the marker, so a failed new chat never shows the banner (#4342 W4)', async () => {
+    useAiStore.setState({ sessionId: 's1', hydratedSessionId: 's1', transcriptPurgedAt: '2027-02-01T03:15:00.000Z' });
+    fetchMock.mockImplementation(async () => json({ success: true }));
+    await useAiStore.getState().closeSession();
+    expect(useAiStore.getState().sessionId).toBeNull();
+    expect(useAiStore.getState().transcriptPurgedAt).toBeNull();
+  });
 });
 
 describe('a send refused because another turn is running (Gate B #7)', () => {

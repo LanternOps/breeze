@@ -687,10 +687,10 @@ describe('wisp check-in tools — handlers', () => {
     });
   });
 
-  it('cancel_check_in: cancelCheckIn(grant, id); unknown or no longer cancellable → check_in_not_found', async () => {
+  it('cancel_check_in: cancelCheckIn(grant, id, "wisp"); unknown or no longer cancellable → check_in_not_found', async () => {
     svc.cancelCheckIn.mockResolvedValueOnce(row({ status: 'cancelled', cancelledAt: new Date() }));
     expect(await run('cancel_check_in', { checkInId: CHECK_IN })).toBe(`Check-in ${CHECK_IN} cancelled.`);
-    expect(svc.cancelCheckIn).toHaveBeenLastCalledWith(GRANT, CHECK_IN);
+    expect(svc.cancelCheckIn).toHaveBeenLastCalledWith(GRANT, CHECK_IN, 'wisp');
 
     svc.cancelCheckIn.mockResolvedValueOnce(null);
     expect(await json(run('cancel_check_in', { checkInId: CHECK_IN_2 }))).toEqual({ error: 'check_in_not_found' });

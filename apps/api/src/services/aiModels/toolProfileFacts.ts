@@ -12,7 +12,7 @@ export const FULL_IDENTITY_FINGERPRINT = 'full';
 export interface ToolProfileFacts {
   toolProfile: AiToolProfile;
   toolAllowlist: AiToolAllowlist | null;
-  /** Effective context window (override → min(discovered, fresh observed)); null = unknown. W02 fills it. */
+  /** Effective context window (override → min(discovered, fresh observed)); null = unknown (#11396). */
   effectiveWindow: number | null;
   /** `gateway` = OpenAI-compatible translation (schemas can be compacted); `anthropic` = platform/BYO/catalog. */
   transport: 'gateway' | 'anthropic';
@@ -24,13 +24,13 @@ export const DEFAULT_TOOL_PROFILE_FACTS: Readonly<ToolProfileFacts> = Object.fre
 });
 
 /**
- * Facts from an offering row. The window stays unknown until W02 reads the
- * `context_window_*` columns, so `auto` resolves to `full` for every offering
- * in W01 (ships dark).
+ * Facts from an offering row. `effectiveWindow` is the caller's
+ * `resolveEffectiveContextWindow` value (#11396); null keeps `auto` on `full`.
  */
 export function toolProfileFactsFrom(
   offering: { toolProfile?: AiToolProfile | null; toolAllowlist?: AiToolAllowlist | null } | null,
   transport: ToolProfileFacts['transport'],
+  effectiveWindow: number | null = null,
 ): ToolProfileFacts {
   // The column is jsonb: a row that does not parse (hand-edited, a future
   // bug) is treated as an empty allow-list, so `custom` keeps only the
@@ -50,7 +50,7 @@ export function toolProfileFactsFrom(
   return {
     toolProfile: offering?.toolProfile ?? 'auto',
     toolAllowlist,
-    effectiveWindow: null,
+    effectiveWindow,
     transport,
   };
 }

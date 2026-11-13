@@ -226,6 +226,7 @@ import { commandsRoutes } from './commands';
 import { and, eq } from 'drizzle-orm';
 import { deploymentResults } from '../../db/schema';
 import { encryptSensitivePayloadFields } from '../../services/sensitiveCommandPayload';
+import { MAX_AGENT_COMMAND_ID_LENGTH } from './schemas';
 
 describe('agent commands routes', () => {
   let app: Hono;
@@ -466,6 +467,17 @@ describe('agent commands routes', () => {
       expect(callerReceiptMock).not.toHaveBeenCalled();
       expect(callerLateDecisionMock).not.toHaveBeenCalled();
     });
+  });
+
+  it('refuses a result whose path command id is over the agent command-id limit', async () => {
+    const longId = 'c'.repeat(MAX_AGENT_COMMAND_ID_LENGTH + 1);
+    const res = await app.request(`/agents/${agentId}/commands/${longId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'completed', exitCode: 0 }),
+    });
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   it('dispatches a script result to the shared handler over the HTTP path', async () => {

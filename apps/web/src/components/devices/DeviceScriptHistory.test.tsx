@@ -321,6 +321,42 @@ describe('DeviceScriptHistory run context (#4888)', () => {
   });
 });
 
+describe('DeviceScriptHistory purged output (#4342 W2)', () => {
+  function mockHistory(execution: Record<string, unknown>) {
+    fetchWithAuthMock.mockImplementation(async (input: string) => {
+      const url = String(input);
+      if (url === `/devices/${DEVICE_ID}/scripts`) {
+        return jsonResponse({ data: [execution] });
+      }
+      return jsonResponse({}, 404);
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the retention note instead of "No output" when outputPurgedAt is set', async () => {
+    mockHistory({ ...executionRow, stdout: null, stderr: null, outputPurgedAt: '2026-01-01T00:00:00Z' });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+
+    expect((await screen.findAllByText(/Output removed after the retention window \([^{}]*\d[^{}]*\)/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText('No output')).toBeNull();
+  });
+
+  it('keeps the existing "No output" copy when outputPurgedAt is null', async () => {
+    mockHistory({ ...executionRow, stdout: '', stderr: '', outputPurgedAt: null });
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} />);
+
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+
+    expect((await screen.findAllByText('No output')).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Output removed after the retention window/)).toBeNull();
+  });
+});
+
 describe('DeviceScriptHistory AI initiator chip (#5022 W02)', () => {
   function mockHistory(execution: Record<string, unknown>) {
     fetchWithAuthMock.mockImplementation(async (input: string) => {

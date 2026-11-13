@@ -360,6 +360,7 @@ import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
 import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { isReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
@@ -370,7 +371,7 @@ import {
   attributeExtensionError,
   extensionRootsSnapshot,
 } from './extensions/faultAttribution';
-import { syncBinaries } from './services/binarySync';
+import { isBinarySyncDeferred, stopDeferredBinarySyncRetry, syncBinaries } from './services/binarySync';
 import { syncBuiltinYaraPack } from './services/yaraBuiltinPack';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
@@ -457,6 +458,8 @@ let warnedWorkersNeverStarted = false;
 
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
+  checkDbReadOnly: () => checkDatabaseReadOnly(),
+  binarySyncPending: () => isBinarySyncDeferred(),
   checkRedis: () => checkRedisConnectivity(),
   workerRegistry: workerReadinessRegistry,
   workersInitialized: () => {
@@ -1433,6 +1436,19 @@ async function checkDatabaseConnectivity(): Promise<boolean> {
   }
 }
 
+/**
+ * #11731: reachable but read-only (a provider's `default_transaction_read_only
+ * = on`, or a standby). `select 1` still succeeds there, so readiness needs
+ * this to report `db-read-only` instead of claiming a healthy database.
+ * Throws on failure; the readiness evaluator reports it and treats the
+ * answer as unknown.
+ */
+async function checkDatabaseReadOnly(): Promise<boolean> {
+  return runWithSystemDbAccess(async () =>
+    isReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
+  );
+}
+
 async function checkRedisConnectivity(): Promise<boolean> {
   try {
     const redis = getRedis();
@@ -1490,6 +1506,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   stopDbPoolHealthMonitor();
   stopWedgedBackendMonitor();
   stopRedisMemoryMonitor();
+  // #11731: a deferred binary registration must not start against a pool
+  // that is draining.
+  stopDeferredBinarySyncRetry();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;

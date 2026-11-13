@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 const (
@@ -87,8 +89,9 @@ type SensitiveDataScanSummary struct {
 	TimedOut      bool  `json:"timedOut"`
 	Partial       bool  `json:"partial"`
 	// LinksSkipped counts symlinks, junctions and other reparse points
-	// (OneDrive placeholders included) the walk refused to follow; they are
-	// also in FilesSkipped.
+	// (OneDrive placeholders included) the walk refused to follow, and files
+	// skipped because they have other hard links; they are also in
+	// FilesSkipped.
 	LinksSkipped   int                      `json:"linksSkipped"`
 	Errors         []SensitiveDataScanError `json:"errors"`
 	DurationMs     int64                    `json:"durationMs"`
@@ -764,52 +767,77 @@ func computeSensitiveConfidence(patternID, dataType string, matchCount int, path
 	return clampFloat64(confidence, 0.5, 0.995)
 }
 
-func scanSensitiveFile(path string, patterns []sensitivePattern, scope sensitiveScopeConfig) (int, int, int64, []SensitiveDataFinding, []SensitiveDataScanError) {
+// sensitiveLinkCount reads an open file's hard-link count (a variable so a
+// test can make it fail).
+var sensitiveLinkCount = linkCountOfFile
+
+// scanSensitiveFile reads one file. linkSkipped reports a file skipped because
+// it also has other names (hard links), which the summary counts with the
+// symbolic links the walk skips.
+func scanSensitiveFile(path string, patterns []sensitivePattern, scope sensitiveScopeConfig) (scanned, skipped int, bytesScanned int64, findings []SensitiveDataFinding, scanErrs []SensitiveDataScanError, linkSkipped bool) {
 	// Lstat, never Stat: a link is skipped, not followed (#10380 security
 	// review). The walk already filters links; this is the last gate before
 	// the file is opened as SYSTEM/root.
 	info, err := os.Lstat(path)
 	if err != nil {
-		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}, false
 	}
 	if !info.Mode().IsRegular() || isSensitiveScanLink(info) {
-		return 0, 1, 0, nil, nil
+		return 0, 1, 0, nil, nil, false
 	}
 	if info.Size() <= 0 {
-		return 0, 1, 0, nil, nil
+		return 0, 1, 0, nil, nil, false
 	}
 	if info.Size() > scope.maxFileSizeBytes {
-		return 0, 1, 0, nil, nil
+		return 0, 1, 0, nil, nil, false
 	}
 	if shouldSuppressSensitivePath(path, scope) {
-		return 0, 1, 0, nil, nil
+		return 0, 1, 0, nil, nil, false
 	}
 
 	file, err := os.Open(path)
 	if err != nil {
-		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}, false
 	}
 	defer file.Close()
 	// The path could have been swapped for a link between Lstat and Open.
 	// Read only if the opened handle is the file that was checked.
 	opened, err := file.Stat()
 	if err != nil {
-		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}, false
 	}
 	if !os.SameFile(info, opened) {
-		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: "file changed while it was being scanned; skipped"}}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: "file changed while it was being scanned; skipped"}}, false
+	}
+	// The handle is checked where it really landed (its canonical path, and
+	// its identity if it has other names), not only by the walked spelling.
+	if err := checkOpenedForContainment("scan", path, file); err != nil {
+		if errorCodeOf(err) == wire.ErrCodeSensitivePathDenied {
+			return 0, 1, 0, nil, nil, false
+		}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}, false
+	}
+	// A hard link is a second name for the same file, possibly in a folder the
+	// profile owner cannot read; like a symbolic link it is not followed. A
+	// link count that cannot be read is an error, not a skipped link.
+	links, err := sensitiveLinkCount(file, opened)
+	if err != nil {
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: "cannot read the file's link count: " + err.Error()}}, false
+	}
+	if links > 1 {
+		return 0, 1, 0, nil, nil, true
 	}
 
 	probe := make([]byte, 1024)
 	n, readErr := file.Read(probe)
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: readErr.Error()}}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: readErr.Error()}}, false
 	}
 	if n > 0 && isLikelyBinary(probe[:n]) {
-		return 0, 1, 0, nil, nil
+		return 0, 1, 0, nil, nil, false
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}, false
 	}
 
 	reader := bufio.NewReaderSize(file, sensitiveStreamChunkBytes)
@@ -851,12 +879,12 @@ func scanSensitiveFile(path string, patterns []sensitivePattern, scope sensitive
 		if errors.Is(err, io.EOF) {
 			break
 		}
-		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}, false
 	}
 
 	owner := getFileOwner(info)
 	modifiedAt := info.ModTime().UTC().Format(time.RFC3339)
-	findings := make([]SensitiveDataFinding, 0, 4)
+	findings = make([]SensitiveDataFinding, 0, 4)
 	for _, pattern := range patterns {
 		matchCount := totals[pattern.id]
 		if matchCount <= 0 {
@@ -875,7 +903,7 @@ func scanSensitiveFile(path string, patterns []sensitivePattern, scope sensitive
 		findings = append(findings, finding)
 	}
 
-	return 1, 0, info.Size(), findings, nil
+	return 1, 0, info.Size(), findings, nil, false
 }
 
 // ScanSensitiveData scans bounded file scope for sensitive data patterns and
@@ -963,11 +991,14 @@ func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []st
 				default:
 				}
 
-				scanned, skipped, scannedBytes, found, scanErrs := scanSensitiveFile(path, patterns, scope)
+				scanned, skipped, scannedBytes, found, scanErrs, linkSkipped := scanSensitiveFile(path, patterns, scope)
 
 				mu.Lock()
 				filesScanned += scanned
 				filesSkipped += skipped
+				if linkSkipped {
+					linksSkipped++
+				}
 				bytesScanned += scannedBytes
 				recordErrors(scanErrs)
 				if len(found) > 0 {
@@ -992,6 +1023,9 @@ func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []st
 	// itself could not be listed (permission denied, macOS TCC), so the caller
 	// does not count a root it never read as scanned.
 	walkErr := func(root string, rootUnreadable *bool) error {
+		// Entries are judged under their walked spelling and under the
+		// root's resolved, stored spelling plus the same relative path.
+		protected := treeEntrySensitivity(root)
 		return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if path == root {
@@ -1035,7 +1069,7 @@ func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []st
 			// happens to contain a credential store would turn the scan into an
 			// oracle over it. The per-entry cost rides along with the two path
 			// predicates already evaluated here.
-			if isSensitiveReadPath(path) {
+			if protected(path) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}

@@ -78,6 +78,9 @@ vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() 
 vi.mock('./aiAgentSdkTools', () => ({
   createBreezeMcpServer: vi.fn(() => ({ type: 'sdk' })),
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
+  // #11395: read only under a constrained tool profile.
+  listChatSurfaceToolNames: () => ['query_devices', 'set_device_context'],
+  chatToolDomain: () => undefined,
 }));
 vi.mock('./aiAgentSdk', () => ({
   createSessionPreToolUse: vi.fn(() => vi.fn()),
@@ -245,6 +248,18 @@ describe('result → settleInvocation (registry price only)', () => {
       { usage: { costCents: number; inputTokens: number; outputTokens: number } } | undefined;
     expect(done!.usage.costCents).toBeCloseTo(0.3, 6);  // 1000×200/1e6 + 100×1000/1e6
     expect(done!.usage).toMatchObject({ inputTokens: 1000, outputTokens: 100 });
+  });
+
+  it('#11395: settlement records the live query\'s tool exposure (identity: full/full; constrained: its profile and fingerprint)', async () => {
+    const usage = [sdkResult({ usage: { input_tokens: 10, output_tokens: 1 }, modelUsage: { [SONNET]: { inputTokens: 10, outputTokens: 1, costUSD: 0 } } })];
+    await runOneTurn('s-tx-full', makeResolvedModel(), usage, { reservationId: 'r1', ledgerUserId: 'u1' });
+    expect(settleCalls().at(-1)!.toolExposure).toEqual({ profile: 'full', fingerprint: 'full' });
+    const minimal = makeResolvedModel('platform', {
+      toolProfileFacts: { toolProfile: 'minimal', toolAllowlist: null, effectiveWindow: null, transport: 'anthropic' },
+    });
+    const session = await runOneTurn('s-tx-min', minimal, usage, { reservationId: 'r2', ledgerUserId: 'u1' });
+    expect(settleCalls().at(-1)!.toolExposure).toEqual({ profile: 'minimal', fingerprint: session.toolExposure!.fingerprint });
+    expect(session.toolExposure!.fingerprint).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it('Office per-user usage hook gets the registry price even when the SDK reports $0, before settlement (#5557 order)', async () => {

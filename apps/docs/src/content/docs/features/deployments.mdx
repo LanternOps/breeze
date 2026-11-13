@@ -280,6 +280,14 @@ Use per-device retry when:
 
 ---
 
+## Site-Restricted Users
+
+A deployment has no site of its own. Its target is resolved against the whole organization when it is initialized, so creating, editing, deleting, initializing, starting, pausing, resuming, or cancelling a deployment is an organization-wide change. These actions require a user with no site restriction, in addition to the usual device permission and MFA. The same rule applies when the change is requested through Breeze AI (`manage_deployments`).
+
+Users restricted to specific sites can still list and view deployments whose devices are all within their sites, view the per-device records for their sites, and retry a failed device in one of their sites. A request for a change returns `403` with a message to ask an unrestricted administrator.
+
+---
+
 ## API Reference
 
 | Method | Path | Description |
@@ -312,6 +320,9 @@ Two common causes: (1) the device was offline at the time its batch was dispatch
 
 **A device keeps failing even after retries.**
 Check device connectivity and agent status before assuming a software problem. If `retryConfig.maxRetries` has been exhausted, no further automatic retries will occur. Use the per-device retry endpoint to force one more attempt after verifying the device is healthy, but note that the retry count still applies.
+
+**A site-restricted user cannot create or start a deployment.**
+This is expected. Deployment changes affect the whole organization, so they need a user without a site restriction. See [Site-Restricted Users](#site-restricted-users).
 
 **Cannot edit or delete a deployment.**
 Only deployments in `draft` status can be modified or deleted. Once a deployment has been initialized (status `pending` or later), its configuration is locked. To start over, cancel the existing deployment and create a new one with the corrected configuration.

@@ -23,6 +23,7 @@ import {
   type AiConnectionDto,
   type AiModelsSnapshotDto,
   type AiOfferingDto,
+  type AiOfferingContextWindowDto,
   type AiOfferingVerificationDto,
   type AiOrgModelDefaultsDto,
   type AiSurface,
@@ -41,6 +42,10 @@ import {
   platformModelView,
   type LoadedCandidate,
 } from './candidateLoader';
+import { resolveEffectiveContextWindow } from './contextWindowFacts';
+import { readSurfaceReadiness, readinessProfileKey, surfaceReadinessState, type ToolSurface } from './surfaceReadiness';
+import { toolProfileFactsFrom } from './toolProfileFacts';
+import { buildToolProfileDto, type StoredToolSettings, type ToolProfileCatalog } from './toolSettingsWrite';
 import { enableBlockerFor, type EnableEligibilityContext } from './eligibility';
 import { getPlatformInferenceGeo, listPlatformModels, type PlatformModel } from './platformModels';
 import { listConnections, type PartnerAiConnection } from './connections';
@@ -76,12 +81,72 @@ export async function buildCatalogSummary(): Promise<AiModelsSnapshotDto['catalo
  */
 function verificationDto(o: Offering, conn: PartnerAiConnection | undefined): AiOfferingVerificationDto | null {
   if (!conn || !isGatewayConnectionKind(conn.kind)) return null;
-  const { state, record } = verifiedGatewayCapabilities(
-    o.capabilities,
-    endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null }),
-  );
-  return { state, at: record?.at ?? null, harnessVersion: record?.harnessVersion ?? null, summary: record?.summary ?? null };
+  const fingerprint = endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null });
+  const { state, record } = verifiedGatewayCapabilities(o.capabilities, fingerprint);
+  return {
+    state, at: record?.at ?? null, harnessVersion: record?.harnessVersion ?? null, summary: record?.summary ?? null,
+    surfaces: surfaceReadinessDto(o, conn, fingerprint),
+  };
 }
+
+/**
+ * #11397: each tool surface's verify round trip, judged as the resolver
+ * judges it (the current endpoint, stage version and the profile the surface
+ * resolves to now). Only the verdict, time, profile, tokens and scrubbed
+ * summary leave; never the binding keys.
+ */
+function surfaceReadinessDto(o: Offering, conn: PartnerAiConnection, fingerprint: string): AiOfferingVerificationDto['surfaces'] {
+  const readiness = readSurfaceReadiness(o.capabilities);
+  const facts = toolProfileFactsFrom(o, 'gateway', resolveEffectiveContextWindow(o, conn.configVersion).value);
+  const out = {} as AiOfferingVerificationDto['surfaces'];
+  for (const surface of TOOL_REQUIRING_SURFACES as readonly ToolSurface[]) {
+    const entry = readiness[surface];
+    const state = surfaceReadinessState(entry, { endpointFingerprint: fingerprint, profileKey: readinessProfileKey(facts, surface) });
+    out[surface] = {
+      state,
+      at: entry?.at ?? null,
+      profile: entry?.profile ?? null,
+      promptTokens: entry?.promptTokens ?? null,
+      cachedTokens: entry?.cachedTokens ?? null,
+      summary: entry?.summary ?? null,
+    };
+  }
+  return out;
+}
+
+/**
+ * #11396: the context window evidence for a gateway offering, judged against
+ * the connection's CURRENT config_version. null for every non-gateway offering.
+ */
+function contextWindowDto(o: Offering, conn: PartnerAiConnection | undefined): AiOfferingContextWindowDto | null {
+  if (!conn || !isGatewayConnectionKind(conn.kind)) return null;
+  const w = resolveEffectiveContextWindow(o, conn.configVersion);
+  const observed = o.contextWindowObserved != null && o.contextWindowObservedAt != null
+    ? { value: o.contextWindowObserved, at: o.contextWindowObservedAt.toISOString(), fresh: w.observedFresh }
+    : null;
+  return {
+    effective: w.value,
+    source: w.source,
+    override: o.contextWindowOverride ?? null,
+    discovered: o.contextWindowDiscovered ?? null,
+    observed,
+  };
+}
+
+/**
+ * #11398: the tool profile set on the model and what each surface resolves
+ * to now. The window is the gateway's effective one (null elsewhere, so `auto`
+ * stays `full` there). The `ai_agents` floor shown is the device
+ * troubleshooting run's, the only run profile with registry tools it requires.
+ */
+function toolProfileDto(o: StoredToolSettings, conn: PartnerAiConnection | undefined, toolCatalog: ToolProfileCatalog): AiOfferingDto['toolProfile'] {
+  const gateway = Boolean(conn && isGatewayConnectionKind(conn.kind));
+  const effectiveWindow = gateway ? resolveEffectiveContextWindow(o, conn!.configVersion).value : null;
+  return buildToolProfileDto(o, { effectiveWindow, gateway, catalog: toolCatalog, troubleshootingRuns: true });
+}
+
+/** A model with no stored row (a synthesized platform offering): `auto`, nothing set. */
+const NO_TOOL_SETTINGS: StoredToolSettings = { toolProfile: 'auto', toolAllowlist: null };
 
 function offeringDto(
   o: Offering,
@@ -89,6 +154,7 @@ function offeringDto(
   blocker: AiOfferingDto['enableBlocker'],
   defaultFor: AiOfferingDto['defaultFor'],
   conn: PartnerAiConnection | undefined,
+  toolCatalog: ToolProfileCatalog,
 ): AiOfferingDto {
   const own = o.priceInputCentsPerM === null || o.priceOutputCentsPerM === null
     || o.priceCacheReadCentsPerM === null || o.priceCacheWriteCentsPerM === null
@@ -127,6 +193,8 @@ function offeringDto(
     defaultFor,
     updatedAt: o.updatedAt.toISOString(),
     verification: verificationDto(o, conn),
+    contextWindow: contextWindowDto(o, conn),
+    toolProfile: toolProfileDto(o, conn, toolCatalog),
   };
 }
 
@@ -136,6 +204,7 @@ function synthesizedPlatformOffering(
   pm: PlatformModel,
   platformGeo: string | null,
   ctx: EnableEligibilityContext,
+  toolCatalog: ToolProfileCatalog,
 ): AiOfferingDto {
   const view = platformModelView(pm);
   return {
@@ -167,6 +236,8 @@ function synthesizedPlatformOffering(
     defaultFor: [],
     updatedAt: null,
     verification: null,
+    contextWindow: null,
+    toolProfile: buildToolProfileDto(NO_TOOL_SETTINGS, { effectiveWindow: null, gateway: false, catalog: toolCatalog, troubleshootingRuns: true }),
   };
 }
 
@@ -212,7 +283,11 @@ function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
   };
 }
 
-export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiModelsSnapshotDto> {
+/**
+ * `toolCatalog` (#11398) is the tool registries' view (toolProfileCatalog.ts),
+ * passed in by the route so the registries stay out of this module's import graph.
+ */
+export async function buildPartnerModelsSnapshot(partnerId: string, toolCatalog: ToolProfileCatalog): Promise<AiModelsSnapshotDto> {
   const facts = await loadPartnerFacts(partnerId);
   const hosted = isHosted();
   const ctx: EnableEligibilityContext = { partnerId, partnerPlan: facts.plan, hosted };
@@ -258,12 +333,12 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
         return true;
       });
     const conn = o.connectionId === null ? undefined : connectionsById.get(o.connectionId);
-    offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor, conn));
+    offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor, conn, toolCatalog));
   }
   const added = new Set(offerings.filter((o) => o.connectionId === null).map((o) => o.platformModelId));
   for (const pm of platformModels) {
     if (!pm.platformOffered || pm.lifecycle !== 'available' || added.has(pm.id)) continue;
-    offeringDtos.push(synthesizedPlatformOffering(partnerId, pm, platformGeo, ctx));
+    offeringDtos.push(synthesizedPlatformOffering(partnerId, pm, platformGeo, ctx, toolCatalog));
   }
 
   const catalogEnabled = isLlmProviderCatalogEnabled();

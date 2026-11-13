@@ -3,10 +3,32 @@ import type { PortalAccessPolicyRowValues, PortalSignInCapabilities } from '@bre
 
 const dbState = vi.hoisted(() => ({
   inContext: false,
+  /** The held context's scope when `inContext` (W7: decides runOutsideDbContext for the W5 read). */
+  heldScope: 'organization' as 'system' | 'organization' | 'partner',
+  outsideCalls: 0,
   selectResults: [] as unknown[][],
   systemContextCalls: 0,
   /** The builder methods each select chain was given, in order (one entry per db.select). */
   chains: [] as string[][],
+}));
+
+const selfReg = vi.hoisted(() => ({ available: false }));
+
+// W7 (#11384): W5's read API, as the resolver sees it. Records whether a DB context was held at the call.
+const domains = vi.hoisted(() => ({
+  list: [] as Array<{ domain: string; orgId: string }>,
+  error: null as Error | null,
+  calls: [] as Array<{ orgId: string; inContext: boolean }>,
+}));
+vi.mock('./portalDomainVerification', () => ({
+  listVerifiedDomainsForOrg: vi.fn(async (orgId: string) => {
+    domains.calls.push({ orgId, inContext: dbState.inContext });
+    if (domains.error) throw domains.error;
+    return domains.list.map((d) => ({ ...d, partnerId: 'p', method: 'dns_txt', verifiedAt: new Date() }));
+  }),
+}));
+vi.mock('../config/portalSelfRegistration', () => ({
+  isPortalSelfRegistrationAvailable: () => selfReg.available,
 }));
 
 vi.mock('../db', () => {
@@ -22,6 +44,17 @@ vi.mock('../db', () => {
   return {
     db: { select: vi.fn(() => nextChain()) },
     hasDbAccessContext: () => dbState.inContext,
+    getCurrentDbAccessContext: () => (dbState.inContext ? { scope: dbState.heldScope } : undefined),
+    runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => {
+      dbState.outsideCalls += 1;
+      const held = dbState.inContext;
+      dbState.inContext = false;
+      try {
+        return fn();
+      } finally {
+        dbState.inContext = held;
+      }
+    }),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
       dbState.systemContextCalls += 1;
       return fn();
@@ -46,9 +79,9 @@ const blank: PortalAccessPolicyRowValues = {
 };
 const NO_CAPS: PortalSignInCapabilities = { entra: false, google: false, selfRegistration: false };
 const ALL_CAPS: PortalSignInCapabilities = { entra: true, google: true, selfRegistration: true };
-/** W3 semantics (no tenant gate): the org's Entra tenant is proven. */
-const PROVEN: PortalPolicyOrgFacts = { entraTenantProven: true };
-const UNPROVEN: PortalPolicyOrgFacts = { entraTenantProven: false };
+/** W3 semantics (no tenant gate): the org's Entra tenant is proven (and, W7, it has a verified domain). */
+const PROVEN: PortalPolicyOrgFacts = { entraTenantProven: true, googleDomainVerified: true };
+const UNPROVEN: PortalPolicyOrgFacts = { entraTenantProven: false, googleDomainVerified: true };
 
 const ORG_ID = '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d';
 const PARTNER_ID = '9f8e7d6c-5b4a-4f3e-9d2c-1b0a9f8e7d6c';
@@ -57,7 +90,13 @@ const TENANT_B = 'b2b2b2b2-c3c3-4d4d-9e5e-f6f6f6f6f6f6';
 const PROVEN_AT = new Date('2027-01-23T10:00:00.000Z');
 
 beforeEach(() => {
+  selfReg.available = false;
   dbState.inContext = false;
+  dbState.heldScope = 'organization';
+  dbState.outsideCalls = 0;
+  domains.list = [];
+  domains.error = null;
+  domains.calls = [];
   dbState.selectResults = [];
   dbState.systemContextCalls = 0;
   dbState.chains = [];
@@ -257,6 +296,25 @@ describe('capabilities', () => {
     expect(getPortalSignInCapabilities()).toEqual(NO_CAPS);
   });
 
+  it('selfRegistration capability is isPortalSelfRegistrationAvailable()', () => {
+    // W06b Task 10: the kill switch AND an email service, read at call time.
+    selfReg.available = true;
+    expect(getPortalSignInCapabilities()).toEqual({ entra: false, google: false, selfRegistration: true });
+    selfReg.available = false;
+    expect(getPortalSignInCapabilities().selfRegistration).toBe(false);
+  });
+
+  it('effective selfRegistrationMode is off while the capability is off, whatever the rows say', () => {
+    const org = { ...blank, selfRegistrationMode: 'instant' as const };
+    const partner = { ...blank, selfRegistrationMode: 'approval' as const };
+    selfReg.available = false;
+    expect(pickEffectivePortalAccessPolicy(org, partner, getPortalSignInCapabilities(), PROVEN).effective.selfRegistrationMode.value).toBe('off');
+    expect(pickEffectivePortalAccessPolicy(blank, partner, getPortalSignInCapabilities(), PROVEN).effective.selfRegistrationMode.value).toBe('off');
+    selfReg.available = true;
+    expect(pickEffectivePortalAccessPolicy(org, partner, getPortalSignInCapabilities(), PROVEN).effective.selfRegistrationMode.value).toBe('instant');
+    expect(pickEffectivePortalAccessPolicy(blank, partner, getPortalSignInCapabilities(), PROVEN).effective.selfRegistrationMode.value).toBe('approval');
+  });
+
   it('__testOnly.setCapabilities throws outside NODE_ENV=test', () => {
     vi.stubEnv('NODE_ENV', 'production');
     expect(() => __testOnly.setCapabilities(ALL_CAPS)).toThrow();
@@ -368,5 +426,170 @@ describe('resolvePortalAccessPolicy (mocked db)', () => {
     expect(b.effective).toEqual(a1.effective);
     expect(b.fingerprint).not.toBe(a1.fingerprint);
     expect(b.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W7 (#11384): Google capability and the verified-domain mask (plan D6, D11)
+// ---------------------------------------------------------------------------
+
+const GOOGLE_CLIENT_ID = '123456789012-abcdefghijklmnop.apps.googleusercontent.com';
+const GOOGLE_ONLY: PortalSignInCapabilities = { entra: false, google: true, selfRegistration: false };
+const NO_DOMAIN: PortalPolicyOrgFacts = { entraTenantProven: true, googleDomainVerified: false };
+
+describe('W7: Google capability', () => {
+  beforeEach(() => {
+    for (const name of ['PORTAL_ENTRA_CLIENT_ID', 'PORTAL_ENTRA_CLIENT_SECRET', 'PORTAL_GOOGLE_CLIENT_ID', 'PORTAL_GOOGLE_CLIENT_SECRET']) {
+      vi.stubEnv(name, '');
+    }
+  });
+
+  it('getPortalSignInCapabilities().google follows the portal Google config', () => {
+    expect(getPortalSignInCapabilities().google).toBe(false);
+    vi.stubEnv('PORTAL_GOOGLE_CLIENT_ID', GOOGLE_CLIENT_ID);
+    expect(getPortalSignInCapabilities().google).toBe(false);
+    vi.stubEnv('PORTAL_GOOGLE_CLIENT_SECRET', 'portal-google-secret');
+    expect(getPortalSignInCapabilities()).toEqual({ entra: false, google: true, selfRegistration: false });
+    // Either one blank: off again, read at call time.
+    vi.stubEnv('PORTAL_GOOGLE_CLIENT_ID', '  ');
+    expect(getPortalSignInCapabilities().google).toBe(false);
+    // The test override keeps precedence.
+    vi.stubEnv('PORTAL_GOOGLE_CLIENT_ID', GOOGLE_CLIENT_ID);
+    __testOnly.setCapabilities(NO_CAPS);
+    expect(getPortalSignInCapabilities().google).toBe(false);
+  });
+
+  it('ships dark: with PORTAL_GOOGLE_* unset, google is off and a stored googleEnabled true resolves false without any domain read', async () => {
+    expect(getPortalSignInCapabilities().google).toBe(false);
+    dbState.selectResults = [
+      [{ partnerId: PARTNER_ID, entraTenantId: null, entraTenantProvenAt: null }],
+      [{ ...blank, orgId: ORG_ID, partnerId: null, googleEnabled: true, passwordMode: 'sso_only' }],
+    ];
+    domains.list = [{ domain: 'contoso.example.com', orgId: ORG_ID }];
+    const r = await resolvePortalAccessPolicy(ORG_ID);
+    expect(r.effective.googleEnabled).toEqual({ value: false, source: 'org' });
+    expect(isSignInMethodAllowed(r, 'google')).toBe(false);
+    // Existing sign-in paths are untouched: password stays allowed (sso_only has no SSO method to hold it).
+    expect(r.effective.passwordMode.value).toBe('allowed');
+    expect(isSignInMethodAllowed(r, 'password')).toBe(true);
+    expect(r.googleDomains).toBeNull();
+    expect(domains.calls).toEqual([]);
+  });
+});
+
+describe('W7: pickEffectivePortalAccessPolicy domain mask', () => {
+  it('googleEnabled is masked off when the org has no verified domain (source stays org)', () => {
+    const org = { ...blank, googleEnabled: true };
+    expect(pickEffectivePortalAccessPolicy(org, null, GOOGLE_ONLY, NO_DOMAIN).effective.googleEnabled)
+      .toEqual({ value: false, source: 'org' });
+    expect(pickEffectivePortalAccessPolicy(null, org, GOOGLE_ONLY, NO_DOMAIN).effective.googleEnabled)
+      .toEqual({ value: false, source: 'partner' });
+    expect(pickEffectivePortalAccessPolicy(org, null, GOOGLE_ONLY, PROVEN).effective.googleEnabled)
+      .toEqual({ value: true, source: 'org' });
+    // Capability mask first: a verified domain cannot turn Google on where the deployment cannot run it.
+    expect(pickEffectivePortalAccessPolicy(org, null, NO_CAPS, PROVEN).effective.googleEnabled)
+      .toEqual({ value: false, source: 'org' });
+    // The domain mask touches only Google.
+    const both = pickEffectivePortalAccessPolicy({ ...org, entraEnabled: true }, null, ALL_CAPS, NO_DOMAIN);
+    expect(both.effective.entraEnabled).toEqual({ value: true, source: 'org' });
+  });
+
+  it('sso_only with Google the only SSO method falls back to allowed without a verified domain', () => {
+    const org = { ...blank, passwordMode: 'sso_only' as const, googleEnabled: true };
+    const verified = pickEffectivePortalAccessPolicy(org, null, GOOGLE_ONLY, PROVEN);
+    expect(verified.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
+    const lapsed = pickEffectivePortalAccessPolicy(org, null, GOOGLE_ONLY, NO_DOMAIN);
+    expect(lapsed.effective.passwordMode).toEqual({ value: 'allowed', source: 'org' });
+    expect(lapsed.passwordModeFallback).toBe(true);
+  });
+});
+
+describe('W7: resolvePortalAccessPolicy verified-domain read (mocked db + W5)', () => {
+  const orgRead = [{ partnerId: PARTNER_ID, entraTenantId: null, entraTenantProvenAt: null }];
+  const googleRow = (over: Partial<Record<string, unknown>> = {}) => [{ ...blank, orgId: ORG_ID, partnerId: null, googleEnabled: true, ...over }];
+
+  beforeEach(() => {
+    __testOnly.setCapabilities(GOOGLE_ONLY);
+  });
+
+  it('googleEnabled is masked off when the org has no verified domain (source stays org)', async () => {
+    dbState.selectResults = [orgRead, googleRow()];
+    const r = await resolvePortalAccessPolicy(ORG_ID);
+    expect(r.effective.googleEnabled).toEqual({ value: false, source: 'org' });
+    expect(r.googleDomains).toEqual([]);
+    expect(isSignInMethodAllowed(r, 'google')).toBe(false);
+  });
+
+  it('sso_only falls back to allowed when the last verified domain lapses and Google was the only SSO method', async () => {
+    const rows = googleRow({ passwordMode: 'sso_only' });
+    domains.list = [{ domain: 'contoso.example.com', orgId: ORG_ID }];
+    dbState.selectResults = [orgRead, rows];
+    const before = await resolvePortalAccessPolicy(ORG_ID);
+    expect(before.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
+    expect(isSignInMethodAllowed(before, 'google')).toBe(true);
+    expect(isSignInMethodAllowed(before, 'password')).toBe(false);
+
+    domains.list = [];
+    dbState.selectResults = [orgRead, rows];
+    const after = await resolvePortalAccessPolicy(ORG_ID);
+    expect(after.effective.googleEnabled).toEqual({ value: false, source: 'org' });
+    expect(after.effective.passwordMode).toEqual({ value: 'allowed', source: 'org' });
+    expect(after.passwordModeFallback).toBe(true);
+    expect(isSignInMethodAllowed(after, 'password')).toBe(true);
+    // The fingerprint follows the effective change (W6 tokens die with it).
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+  });
+
+  it('the verified-domain read is skipped when the picked googleEnabled is false (read API mock not called)', async () => {
+    dbState.selectResults = [orgRead, googleRow({ googleEnabled: false })];
+    expect((await resolvePortalAccessPolicy(ORG_ID)).googleDomains).toBeNull();
+    dbState.selectResults = [orgRead, []];
+    expect((await resolvePortalAccessPolicy(ORG_ID)).googleDomains).toBeNull();
+    // Picked on, but the deployment cannot run Google: still no read.
+    __testOnly.setCapabilities(NO_CAPS);
+    dbState.selectResults = [orgRead, googleRow()];
+    expect((await resolvePortalAccessPolicy(ORG_ID)).googleDomains).toBeNull();
+    expect(domains.calls).toEqual([]);
+    // An inherited partner true is a picked true: read.
+    __testOnly.setCapabilities(GOOGLE_ONLY);
+    dbState.selectResults = [orgRead, [{ ...blank, orgId: null, partnerId: PARTNER_ID, googleEnabled: true }]];
+    await resolvePortalAccessPolicy(ORG_ID);
+    expect(domains.calls).toHaveLength(1);
+  });
+
+  it('googleDomains lists the verified domains lowercase and sorted; null when not read', async () => {
+    domains.list = [
+      { domain: 'Zeta.Example.com', orgId: ORG_ID },
+      { domain: 'alpha.example.com', orgId: ORG_ID },
+      { domain: 'contoso.example.com', orgId: ORG_ID },
+    ];
+    dbState.selectResults = [orgRead, googleRow()];
+    const r = await resolvePortalAccessPolicy(ORG_ID);
+    expect(r.googleDomains).toEqual(['alpha.example.com', 'contoso.example.com', 'zeta.example.com']);
+    expect(r.effective.googleEnabled).toEqual({ value: true, source: 'org' });
+    expect(domains.calls).toEqual([{ orgId: ORG_ID, inContext: false }]);
+  });
+
+  it('under a held request context the read goes through runOutsideDbContext', async () => {
+    domains.list = [{ domain: 'contoso.example.com', orgId: ORG_ID }];
+    dbState.inContext = true;
+    dbState.heldScope = 'organization';
+    dbState.selectResults = [orgRead, googleRow()];
+    const r = await resolvePortalAccessPolicy(ORG_ID);
+    expect(dbState.outsideCalls).toBe(1);
+    expect(domains.calls).toEqual([{ orgId: ORG_ID, inContext: false }]);
+    expect(r.effective.googleEnabled.value).toBe(true);
+    // A held SYSTEM context reads under it (W5's inSystemContext accepts one).
+    dbState.heldScope = 'system';
+    dbState.selectResults = [orgRead, googleRow()];
+    await resolvePortalAccessPolicy(ORG_ID);
+    expect(dbState.outsideCalls).toBe(1);
+    expect(domains.calls[1]).toEqual({ orgId: ORG_ID, inContext: true });
+  });
+
+  it('a W5 read that throws propagates; it never masks Google off or re-allows passwords', async () => {
+    domains.error = new Error('evidence read failed');
+    dbState.selectResults = [orgRead, googleRow({ passwordMode: 'sso_only' })];
+    await expect(resolvePortalAccessPolicy(ORG_ID)).rejects.toThrow('evidence read failed');
   });
 });

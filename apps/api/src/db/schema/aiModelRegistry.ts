@@ -110,7 +110,7 @@ export const partnerAiModels = pgTable('partner_ai_models', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
   missedSyncCount: integer('missed_sync_count').notNull().default(0),
   /**
-   * Tool profiles (#11393 W01, ships dark): which tools and prompt a surface
+   * Tool profiles (#11393; `auto` narrows gateway offerings with a known window since W02 #11396): which tools and prompt a surface
    * gives this model. `auto` + unknown window = `full` = today's behaviour.
    */
   toolProfile: text('tool_profile').$type<AiToolProfile>().notNull().default('auto'),

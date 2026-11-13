@@ -1263,6 +1263,39 @@
     },
     "troubleshootingLink": "Guía de solución de problemas"
   },
+  "failureCause": {
+    "storage_access_denied": {
+      "hint": "El destino de la copia de seguridad rechazó la solicitud. Verifique que la clave de acceso sea válida y tenga permiso de escritura, la política del bucket y el estado de la cuenta de almacenamiento, y luego ejecute Probar conexión."
+    },
+    "storage_not_found": {
+      "hint": "El destino de la copia de seguridad indica que el bucket o sus objetos no existen. Verifique que el bucket siga existiendo y que ninguna regla de ciclo de vida elimine los datos de la copia."
+    },
+    "storage_clock_skew": {
+      "hint": "El destino de la copia de seguridad rechazó la hora de la solicitud, lo que comúnmente indica un reloj muy desfasado. Revise la fecha y la hora del dispositivo."
+    },
+    "storage_operation_failed": {
+      "hint": "Breeze no pudo completar una operación de almacenamiento con el destino. Por lo general es algo temporal o una incompatibilidad del proveedor. Si sigue ocurriendo, comuníquese con soporte."
+    },
+    "storage_session_expired": {
+      "hint": "La sesión de carga terminó antes de que finalizara la ejecución. La siguiente ejecución continúa desde donde se detuvo esta."
+    },
+    "helper_stopped": {
+      "hint": "El proceso de copia de seguridad del dispositivo se detuvo a mitad de la ejecución, comúnmente porque el dispositivo entró en suspensión, se reinició o se apagó. Manténgalo activo y encendido durante la ventana de copia de seguridad."
+    },
+    "run_cancelled_on_device": {
+      "hint": "La ejecución se interrumpió en el dispositivo, comúnmente por un reinicio o apagado."
+    },
+    "never_started": {
+      "hint": "El dispositivo nunca inició esta ejecución, por lo general porque otra copia de seguridad seguía en curso o el agente se estaba reiniciando."
+    },
+    "no_agent_signal": {
+      "hint": "Breeze dejó de recibir señales del dispositivo durante la ejecución."
+    },
+    "destination": {
+      "title": "{{name}}: la última copia de seguridad falló en {{failing}} de {{total}} dispositivos",
+      "link": "Abrir perfiles de copia de seguridad para probar la conexión"
+    }
+  },
   "fullRunReason": {
     "no_prior_snapshot": "Primera copia para este dispositivo y destino",
     "base_expired": "La copia anterior había caducado según la retención",

@@ -681,6 +681,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/backups.ts': { exempt: 'portal' },
   'portal/branding.ts': { exempt: 'portal' },
   'portal/oidc.ts': { exempt: 'portal' },
+  'portal/oidcGoogle.ts': { exempt: 'portal' },
+  'portal/oidcShared.ts': { exempt: 'portal' },
   'portal/selfRegistration.ts': { exempt: 'portal' },
   'portal/dashboard.ts': { exempt: 'portal' },
   'portal/devices.ts': { exempt: 'portal' },

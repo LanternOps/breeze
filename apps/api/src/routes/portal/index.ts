@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { brandingRoutes } from './branding';
 import { authRoutes, portalAuthMiddleware } from './auth';
 import { oidcRoutes } from './oidc';
+import { oidcGoogleRoutes } from './oidcGoogle';
 import { selfRegistrationRoutes } from './selfRegistration';
 import { deviceRoutes } from './devices';
 import { ticketRoutes, portalTicketsEnabledMiddleware } from './tickets';
@@ -60,6 +61,12 @@ portalRoutes.route('/', selfRegistrationRoutes);
 portalRoutes.use('/auth/oidc/entra/link/*', portalAuthMiddleware);
 portalRoutes.use('/auth/oidc/entra/link-status', portalAuthMiddleware);
 portalRoutes.route('/', oidcRoutes);
+// Sign in with Google (W7 #11384, plan Task 7): the same shape on the shared
+// OIDC callback core (./oidcShared). Ships dark: every route 404s until the
+// portal Google client is configured.
+portalRoutes.use('/auth/oidc/google/link/*', portalAuthMiddleware);
+portalRoutes.use('/auth/oidc/google/link-status', portalAuthMiddleware);
+portalRoutes.route('/', oidcGoogleRoutes);
 // Exact `/branding` requires auth (Task 3.3 — org-scoped projection with the
 // five visibility flags); `/branding/:domain` stays public below it because
 // this exact-path middleware does not match the wildcard segment.

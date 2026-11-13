@@ -6,6 +6,7 @@ import type { TenantVariableScope } from './tenantVariableResolution';
 import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
 import type { ApprovalBinding } from './networkIsolation/service';
+import type { VerifiedDrPlan } from './drPlanDefinition';
 import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 import type { WispUnattendedRead } from './wisp/unattendedReads';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
@@ -77,6 +78,15 @@ export type VerifiedRunScript = {
  */
 export type ToolExecutionContext = {
   verifiedRunScript?: VerifiedRunScript;
+  /**
+   * An `execute_dr_plan` release's plan definition, as the release path's
+   * effect-digest recompute read it, with that digest. Set ONLY from that
+   * recompute on a MATCH, never from model arguments, and travels with
+   * `actionIntentId`. The handler refuses without both; execution creation
+   * re-reads the definition under the plan row lock and refuses when it no
+   * longer has this digest.
+   */
+  verifiedDrPlan?: VerifiedDrPlan;
   /**
    * The `action_intents` row whose approved release is executing this call —
    * set by BOTH release paths (jobs/intentReleaseWorker.ts, and the inline

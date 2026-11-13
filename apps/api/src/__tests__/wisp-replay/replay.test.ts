@@ -1,8 +1,8 @@
 /**
  * #10432 (W09 Task 2): the Wisp replay regression suite.
  *
- * Five synthetic sessions, one per defect class filed from the 2026-10-28
- * review, played through the real session manager (harness.ts) and scored
+ * Synthetic sessions, one per defect class filed from the 2026-10-28
+ * review (plus #11671's specialist verdict and #11685's back-online check-in), played through the real session manager (harness.ts) and scored
  * (score.ts). Each asserts the thresholds the merged waves (W01–W08) meet. A
  * fixture that fails is a regression: fix the code, never the threshold.
  *
@@ -44,6 +44,12 @@ vi.mock('../../db', async () => {
       case 'partners':
         return [{ settings: {} }];
       case 'ai_budgets':
+        return [];
+      // #11671: the specialist-results read (runs, then their files and pending steps).
+      case 'ai_agent_runs':
+        return replayWorld.agentRuns;
+      case 'ai_run_artifacts':
+      case 'action_intents':
         return [];
       case 'ai_messages':
         // The previous assistant reply for the extractor: none in a fresh session.
@@ -217,15 +223,18 @@ vi.mock('../../services/toolSources/sdkBridge', () => ({ buildTenantSdkTools: ()
 vi.mock('../../services/toolSources/resolver', () => ({ resolveTenantTools: async () => [] }));
 vi.mock('../../services/flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
+import { scheduleCheckInSchema } from '@breeze/shared';
 import { STANDING_CHECK_UNAVAILABLE_MESSAGE } from '../../services/wisp/standingInstructionGate';
 import { replaySession, type ReplayFixture, type ReplayTurnExpectation } from './harness';
 import { scoreTrace, type ReplayScore, type ReplayTrace, type ReplayTurnTrace } from './score';
 import { replayWorld } from './world';
+import { backOnlineFixture, PARTNER_MBP } from './fixtures/backOnline';
 import { checkBackFixture } from './fixtures/checkBack';
 import { dontRebootFixture } from './fixtures/dontReboot';
 import { needsAttentionFixture } from './fixtures/needsAttention';
 import { noopDispatchFixture } from './fixtures/noopDispatch';
 import { stillLookingFixture } from './fixtures/stillLooking';
+import { specialistVerdictFixture } from './fixtures/specialistVerdict';
 
 const FIXTURES: ReplayFixture[] = [
   stillLookingFixture,
@@ -233,6 +242,8 @@ const FIXTURES: ReplayFixture[] = [
   checkBackFixture,
   dontRebootFixture,
   noopDispatchFixture,
+  backOnlineFixture,
+  specialistVerdictFixture,
 ];
 
 function expectTurn(turn: ReplayTurnTrace | undefined, want: ReplayTurnExpectation, where: string): void {
@@ -240,6 +251,9 @@ function expectTurn(turn: ReplayTurnTrace | undefined, want: ReplayTurnExpectati
   const t = turn!;
   expect(t.done, `${where}: the turn ended without done`).toBe(true);
   if (want.standingStateSent !== undefined) expect(t.standingStateSent, `${where}: standing state sent`).toBe(want.standingStateSent);
+  if (want.specialistResultsGiven !== undefined) {
+    expect(t.specialistResultsGiven, `${where}: specialist results given`).toEqual(want.specialistResultsGiven);
+  }
   if (want.maxToolCalls !== undefined) {
     expect(t.toolCalls.length, `${where}: tool calls (${t.toolCalls.map((c) => c.tool).join(', ')})`).toBeLessThanOrEqual(want.maxToolCalls);
   }
@@ -302,5 +316,17 @@ describe('Wisp replay regression suite (#10432)', () => {
     expect(trace.turns[1]!.toolCalls[0]!.output).toMatch(/standing instruction \('don't reboot PC-01 and PC-02'\)/);
     // A refusal, not the check failing closed (which refuses too).
     for (const call of trace.turns.flatMap((t) => t.toolCalls)) expect(call.output).not.toContain(STANDING_CHECK_UNAVAILABLE_MESSAGE);
+  }, 30_000);
+
+  it("'tell me the moment it's back online' is a device_online check-in, never a watch (#11685)", async () => {
+    const trace = await replayClean(backOnlineFixture);
+    const calls = trace.turns.flatMap((t) => t.toolCalls);
+    expect(calls.map((c) => c.tool)).toEqual(['query_devices', 'schedule_check_in']);
+    const checkIn = calls[1]!;
+    // The input the handler would parse: one trigger, on the device the lookup found.
+    const parsed = scheduleCheckInSchema.parse(checkIn.input);
+    expect(parsed.trigger).toMatchObject({ event: 'device_online', subjectId: PARTNER_MBP });
+    expect(parsed.delayMinutes).toBeUndefined();
+    expect(checkIn.isError || checkIn.unverified).toBe(false);
   }, 30_000);
 });

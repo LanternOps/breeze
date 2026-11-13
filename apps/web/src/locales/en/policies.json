@@ -437,6 +437,7 @@
         "testing2": "Testing...",
         "connected": "Connected",
         "failed2": "Failed",
+        "notTestedHere": "Not tested here",
         "test": "Test",
         "off": "off",
         "s3Prefix": "s3Prefix",

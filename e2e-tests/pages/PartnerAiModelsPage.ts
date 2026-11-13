@@ -27,7 +27,8 @@ export class PartnerAiModelsPage extends BasePage {
   offeringDisableConfirm = () => this.page.getByTestId('ai-offering-disable-confirm');
   offeringDisableConfirmSurfaces = () => this.page.getByTestId('ai-offering-disable-confirm-surfaces');
   defaultsSelect = (surface: string) => this.page.getByTestId(`ai-defaults-default-${surface}`);
-  defaultsSave = () => this.page.getByTestId('ai-defaults-save');
+  /** The defaults card has no Save of its own since #9990: the partner settings header Save commits it. */
+  defaultsSave = () => this.page.getByTestId('partner-settings-save');
 
   // --- W06 (#7604): OpenAI-compatible connections ---------------------------
   connectionsCard = () => this.page.getByTestId('ai-connections-card');
@@ -48,6 +49,15 @@ export class PartnerAiModelsPage extends BasePage {
   offeringVerify = () => this.page.getByTestId('ai-offering-verify');
   offeringCancel = () => this.page.getByTestId('ai-offering-cancel');
   offeringPrice = (field: 'input' | 'output' | 'cacheRead' | 'cacheWrite') => this.page.getByTestId(`ai-offering-price-${field}`);
+
+  // --- #11398 W05: Tools and context ----------------------------------------
+  offeringToolsSection = () => this.page.getByTestId('ai-offering-tools-section');
+  offeringToolProfile = () => this.page.getByTestId('ai-offering-tool-profile');
+  offeringContextWindow = () => this.page.getByTestId('ai-offering-context-window');
+  offeringContextFacts = () => this.page.getByTestId('ai-offering-context-facts');
+  offeringToolSurface = (surface: string) => this.page.getByTestId(`ai-offering-tool-surface-${surface}`);
+  offeringReadiness = (surface: string) => this.page.getByTestId(`ai-offering-readiness-${surface}`);
+  offeringVerifyCost = () => this.page.getByTestId('ai-offering-verify-cost');
 
   /** Opens the add-connection chooser and the OpenAI-compatible form. */
   async openAddOpenAiConnection() {

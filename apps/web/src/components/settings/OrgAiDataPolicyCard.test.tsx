@@ -19,13 +19,15 @@ import { ActionError } from '@/lib/runAction';
 const resolved = {
   deviceFileReadLevel: 'no_user_profiles',
   toolOutputRetentionDays: 30,
-  source: { deviceFileReadLevel: 'partner', toolOutputRetentionDays: 'default' },
+  transcriptRetentionDays: 365,
+  source: { deviceFileReadLevel: 'partner', toolOutputRetentionDays: 'default', transcriptRetentionDays: 'partner' },
 };
 // effective differs from ceiling: the org stored a tighter level than the partner ceiling.
 const effectiveOff = {
   deviceFileReadLevel: 'off',
   toolOutputRetentionDays: 30,
-  source: { deviceFileReadLevel: 'org', toolOutputRetentionDays: 'default' },
+  transcriptRetentionDays: 365,
+  source: { deviceFileReadLevel: 'org', toolOutputRetentionDays: 'default', transcriptRetentionDays: 'partner' },
 };
 let currentPolicy: Record<string, unknown> | null = null;
 let currentEffective: Record<string, unknown> = resolved;
@@ -96,6 +98,7 @@ describe('OrgAiDataPolicyCard', () => {
 
   it.each([
     ['toolOutputRetentionDays', 'aiDataPolicy.retentionAboveCeiling'],
+    ['transcriptRetentionDays', 'aiDataPolicy.transcriptAboveCeiling'],
     ['deviceFileReadLevel', 'aiDataPolicy.aboveCeilingLevel'],
   ])('translates a server 422 above_partner_ceiling (%s) instead of toasting the raw token', async (field, key) => {
     const actual = await vi.importActual<typeof import('@/lib/runAction')>('@/lib/runAction');
@@ -109,7 +112,7 @@ describe('OrgAiDataPolicyCard', () => {
     if (field === 'deviceFileReadLevel') {
       fireEvent.click(await screen.findByTestId('org-ai-data-policy-level-off'));
     } else {
-      const input = await screen.findByTestId('org-ai-data-policy-retention');
+      const input = await screen.findByTestId(field === 'transcriptRetentionDays' ? 'org-ai-data-policy-transcript-retention' : 'org-ai-data-policy-retention');
       fireEvent.change(input, { target: { value: '20' } });
       fireEvent.blur(input);
     }
@@ -117,5 +120,109 @@ describe('OrgAiDataPolicyCard', () => {
     const messages = showToast.mock.calls.map(([a]) => (a as { message: string }).message);
     expect(messages.some((m) => m.startsWith(key))).toBe(true);
     expect(messages.join(' ')).not.toContain('above_partner_ceiling');
+  });
+
+  describe('technician transcript retention (#4342 W4)', () => {
+    const PREVIEW = '/ai/data-policy/transcript-retention-preview';
+    const previewUrls = () => fetchWithAuth.mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith(PREVIEW));
+    beforeEach(() => {
+      fetchWithAuth.mockImplementation(async (url: string) =>
+        String(url).startsWith(PREVIEW)
+          ? { ok: true, json: async () => ({ eligible: 4, capped: false, enforced: false }) }
+          : getResponse());
+    });
+
+    it('renders the transcript field beside the tool-output field, inheriting the partner window', async () => {
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      const input = (await screen.findByTestId('org-ai-data-policy-transcript-retention')) as HTMLInputElement;
+      expect(screen.getByTestId('org-ai-data-policy-retention')).toBeInTheDocument();
+      expect(input.value).toBe('');
+      expect(input.placeholder).toContain('aiDataPolicy.retentionInherit');
+      expect(input.placeholder).toContain('365');
+      expect(input.max).toBe('365');
+      // Scope, the audit carve-out, and the link to the client-AI window.
+      expect(screen.getByTestId('org-ai-data-policy-transcript-audit-note')).toHaveTextContent('aiDataPolicy.transcriptAuditNote');
+      expect(screen.getByTestId('org-ai-data-policy-transcript-client-link')).toHaveAttribute('href', '/ai-for-office#policy/org-1');
+    });
+
+    it('previews the inherited window on load, then the typed window after the debounce', async () => {
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      const preview = await screen.findByTestId('org-ai-data-policy-transcript-preview');
+      await waitFor(() => expect(preview).toHaveTextContent('transcriptRetention.preview.orgPending'));
+      expect(previewUrls()).toEqual([`${PREVIEW}?orgId=org-1&days=365`]);
+      fireEvent.change(screen.getByTestId('org-ai-data-policy-transcript-retention'), { target: { value: '90' } });
+      await waitFor(() => expect(previewUrls()).toEqual([`${PREVIEW}?orgId=org-1&days=365`, `${PREVIEW}?orgId=org-1&days=90`]));
+    });
+
+    it('previews the window in force when untouched and the partner ceiling when cleared', async () => {
+      currentPolicy = { deviceFileReadLevel: null, toolOutputRetentionDays: null, transcriptRetentionDays: 90 };
+      currentEffective = { ...resolved, transcriptRetentionDays: 90, source: { ...resolved.source, transcriptRetentionDays: 'org' } };
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      await waitFor(() => expect(previewUrls()).toEqual([`${PREVIEW}?orgId=org-1&days=90`]));
+      fireEvent.change(screen.getByTestId('org-ai-data-policy-transcript-retention'), { target: { value: '' } });
+      await waitFor(() => expect(previewUrls()).toEqual([`${PREVIEW}?orgId=org-1&days=90`, `${PREVIEW}?orgId=org-1&days=365`]));
+    });
+
+    it('shows no preview for a typed window above the partner ceiling', async () => {
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      await waitFor(() => expect(previewUrls()).toHaveLength(1));
+      fireEvent.change(screen.getByTestId('org-ai-data-policy-transcript-retention'), { target: { value: '400' } });
+      expect(screen.queryByTestId('org-ai-data-policy-transcript-preview')).toBeNull();
+      await new Promise((r) => setTimeout(r, 600));
+      expect(previewUrls()).toHaveLength(1);
+    });
+
+    it('refuses an unparseable number on blur instead of clearing the override', async () => {
+      currentPolicy = { deviceFileReadLevel: null, toolOutputRetentionDays: null, transcriptRetentionDays: 90 };
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      const input = (await screen.findByTestId('org-ai-data-policy-transcript-retention')) as HTMLInputElement;
+      // A browser reports partial input such as "1e" as value "" with validity.badInput.
+      Object.defineProperty(input, 'validity', { configurable: true, value: { badInput: true } });
+      fireEvent.change(input, { target: { value: '' } });
+      fireEvent.blur(input);
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error', message: 'aiDataPolicy.invalidDays',
+      })));
+      expect(runAction).not.toHaveBeenCalled();
+    });
+
+    it('does not preview an out-of-range window', async () => {
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      await waitFor(() => expect(previewUrls()).toHaveLength(1));
+      fireEvent.change(await screen.findByTestId('org-ai-data-policy-transcript-retention'), { target: { value: '0' } });
+      await new Promise((r) => setTimeout(r, 600));
+      expect(previewUrls()).toHaveLength(1);
+      expect(screen.queryByTestId('org-ai-data-policy-transcript-preview')).toBeNull();
+    });
+
+    it('saves transcriptRetentionDays through runAction on blur, and blank sends null', async () => {
+      currentPolicy = { deviceFileReadLevel: null, toolOutputRetentionDays: null, transcriptRetentionDays: 200 };
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      const input = await screen.findByTestId('org-ai-data-policy-transcript-retention');
+      fireEvent.change(input, { target: { value: '90' } });
+      fireEvent.blur(input);
+      await waitFor(() => expect(runAction).toHaveBeenCalledTimes(1));
+      expect(fetchWithAuth).toHaveBeenCalledWith('/ai/data-policy?orgId=org-1', expect.objectContaining({
+        method: 'PUT', body: JSON.stringify({ transcriptRetentionDays: 90 }),
+      }));
+      const again = await screen.findByTestId('org-ai-data-policy-transcript-retention');
+      fireEvent.change(again, { target: { value: '' } });
+      fireEvent.blur(again);
+      await waitFor(() => expect(runAction).toHaveBeenCalledTimes(2));
+      expect(fetchWithAuth).toHaveBeenCalledWith('/ai/data-policy?orgId=org-1', expect.objectContaining({
+        method: 'PUT', body: JSON.stringify({ transcriptRetentionDays: null }),
+      }));
+    });
+
+    it('refuses a transcript window above the partner ceiling client-side', async () => {
+      render(<OrgAiDataPolicyCard orgId="org-1" />);
+      const input = await screen.findByTestId('org-ai-data-policy-transcript-retention');
+      fireEvent.change(input, { target: { value: '400' } });
+      fireEvent.blur(input);
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error', message: expect.stringContaining('aiDataPolicy.transcriptAboveCeiling'),
+      })));
+      expect(runAction).not.toHaveBeenCalled();
+    });
   });
 });

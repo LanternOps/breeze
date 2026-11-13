@@ -66,13 +66,15 @@ export function OutputSection({
   content,
   icon: Icon,
   defaultOpen = true,
-  variant = 'default'
+  variant = 'default',
+  purgedNote
 }: {
   title: string;
   content?: string;
   icon: typeof Terminal;
   defaultOpen?: boolean;
   variant?: 'default' | 'error';
+  purgedNote?: string;
 }) {
   const { t } = useTranslation('scripts');
   const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -153,7 +155,7 @@ export function OutputSection({
       {isOpen && (
         <div className="p-4">
           {isEmpty ? (
-            <p className="text-sm text-muted-foreground italic">{t('executionDetails.output.noOutput')}</p>
+            <p className="text-sm text-muted-foreground italic">{purgedNote ?? t('executionDetails.output.noOutput')}</p>
           ) : (
             <pre className={cn(
               'overflow-x-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap wrap-break-word',
@@ -268,6 +270,9 @@ export default function ExecutionDetails({
   const canCancel = hasPermission(permissions, 'scripts', 'execute');
   const isCancellable = CANCELLABLE_STATUSES.has(execution.status);
   const isCancelling = execution.status === 'cancelling';
+  const purgedNote = execution.outputPurgedAt
+    ? t('executionDetails.output.purged', { date: formatDateTime(execution.outputPurgedAt, timezone) })
+    : undefined;
 
   const handleConfirmCancel = async (graceSeconds: number) => {
     if (!onCancel) return;
@@ -412,6 +417,7 @@ export default function ExecutionDetails({
               content={execution.stdout}
               icon={Terminal}
               defaultOpen={true}
+              purgedNote={purgedNote}
             />
 
             <OutputSection
@@ -420,6 +426,7 @@ export default function ExecutionDetails({
               icon={AlertOctagon}
               defaultOpen={!!execution.stderr}
               variant="error"
+              purgedNote={purgedNote}
             />
           </div>
 

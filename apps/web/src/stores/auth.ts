@@ -2276,7 +2276,7 @@ export async function apiResetPassword(token: string, password: string): Promise
   }
 }
 
-export async function apiVerifyEmail(token: string): Promise<{
+export async function apiVerifyEmail(token: string, password?: string): Promise<{
   success: boolean;
   error?: 'invalid' | 'expired' | 'consumed' | string;
   partnerId?: string;
@@ -2290,7 +2290,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   // holder to sign in.
   user?: User;
   tokens?: Tokens;
-  status?: 'sign_in';
+  status?: 'sign_in' | 'password_required';
   signupIntent?: SignupIntent;
   redirectUrl?: string;
 }> {
@@ -2299,12 +2299,12 @@ export async function apiVerifyEmail(token: string): Promise<{
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ token })
+      body: JSON.stringify({ token, password })
     });
 
     const data = await response.json();
     if (!response.ok) {
-      return { success: false, error: data.error };
+      return { success: false, error: data.error, ...(data.status === 'password_required' ? { status: 'password_required' as const } : {}) };
     }
 
     // Registration-completion path bounced to sign-in (address already taken).

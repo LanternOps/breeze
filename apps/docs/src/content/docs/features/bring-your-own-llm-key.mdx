@@ -91,7 +91,7 @@ Connect any server that speaks the OpenAI `chat/completions` API with function c
 
 4. Open the model and set a **price** in US dollars per million tokens. `0` is fine for a local model. A model without a price cannot be enabled.
 
-5. Click **Verify**. Breeze runs a fidelity test through the endpoint, including a tool call. This spends a few thousand tokens on your own endpoint; Breeze does not bill for it.
+5. Click **Verify**. Breeze runs a fidelity test through the endpoint, including a tool call, then one real tool round trip for each tool-using feature the model is assigned to. This is real traffic on your own endpoint, billed by your provider, not by Breeze: the basic check is a few thousand tokens, but a round trip sends that feature's whole prompt and tool list on each of up to 4 model turns, so on chat with the **Full** tool profile one request is about 128,000 tokens and one chat check can approach 500,000. See [Tool profiles and context window](#tool-profiles-and-context-window).
 
 6. Enable the model, then assign it as the default for the features you want under **Defaults by feature**.
 
@@ -149,7 +149,33 @@ The **Connections** card lists the Breeze platform connection plus any connectio
 
 ### Models
 
-The **Models** card groups the models each connection offers, with context size and per-1M-token prices. The switch on a row enables or disables the model and saves immediately; a model with no price cannot be enabled, and disabling a model that is still a feature default asks you to confirm and lists the affected features. A row's details drawer sets a display name, price, premium flag, default and allowed effort or speed options, and an optional refusal fallback, which must be another enabled model on the same connection.
+The **Models** card groups the models each connection offers, with context size and per-1M-token prices. The switch on a row enables or disables the model and saves immediately; a model with no price cannot be enabled, and disabling a model that is still a feature default asks you to confirm and lists the affected features. A row's details drawer sets a display name, price, premium flag, default and allowed effort or speed options, and an optional refusal fallback, which must be another enabled model on the same connection. It also has a **Tools and context** section, described next.
+
+#### Tool profiles and context window
+
+Small self-hosted models often cannot hold Breeze's full tool list and prompt in their context window. A model's **tool profile** decides how many tools each AI feature offers it. It is set by the partner on the model; organizations choose models but cannot override the profile.
+
+| Profile | What the model gets |
+|---|---|
+| **Auto** (default) | The largest profile that fits the model's known context window. While the window is unknown, every tool stays available, as before. |
+| **Full** | Every tool each feature offers. |
+| **Standard** | About 40 everyday helpdesk tools and a shorter prompt. |
+| **Minimal** | About a dozen read-only tools and a short prompt. |
+| **Custom** | Only the tool areas and individual tools you list, on every feature that uses the model. |
+
+A profile only hides tools from the model. It never grants anything: permissions, approvals and guardrails apply exactly as before.
+
+**Context window.** Breeze learns a window only for models on your own OpenAI-compatible endpoint: from the endpoint's model listing, or from the endpoint's own "context length exceeded" reply. The drawer shows the window **Auto** is using and where it came from. A window the endpoint reported is shown with its age; one that is over an hour old, or from before the connection's settings changed, no longer limits anything and is shown only as a hint. If the endpoint reports nothing, set **Context window override (tokens)** yourself. The override is accepted only on OpenAI-compatible endpoint models; clear it to go back to what the endpoint lists or reports.
+
+**What each feature uses now.** The drawer lists chat, the helper, the script builder, AI agents and Office chat with the profile each one resolves to and why (chosen by you, picked by **Auto** from the window, **Auto** with the window unknown, or **Auto** on a feature Breeze does not narrow yet, which is Office chat today). If you chose a profile larger than **Auto** would pick for the current window, the drawer says so.
+
+**Required tools.** Some features cannot work without certain tools: the script builder needs to run and apply scripts, and a device-troubleshooting agent run needs to run commands and scripts. Saving a profile, custom list or override is refused when it would take one of those away from a feature this model is configured for (as a default, a model on a feature's permitted list, a fallback, or an agent's pinned model), or leave that feature with a context window too small for any profile. The drawer lists each feature and what it would lose. Choose a larger profile, add the tools to the custom list, raise or clear the override, or assign another model to that feature first.
+
+A feature can still end up below its floor without such a save: you assign the model later, a smaller window is discovered, or a user picks the model on a feature where every model is allowed (the default when a feature has no permitted list). That feature then refuses the model at the start of a session with the same explanation instead of running without the tools, and the drawer shows the gap on that feature's row.
+
+**Verify readiness.** For each tool-using feature the drawer shows the last verify round trip: **passed** (with the prompt size it measured), **failed** (that feature refuses the model until a later verify passes), **inconclusive** (the endpoint failed, not the model, so nothing is refused), **out of date** (the endpoint or profile changed; verify again), or not run yet. Office chat is not checked by verify.
+
+**When a change takes effect.** A profile change applies on the next message. If it changes what a feature uses, open conversations on that model restart their AI session and ask the user to send the message again. A changed context window override is used by new conversations; open ones keep their current limit unless the profile they use changes.
 
 ### Defaults by feature (and org overrides)
 
@@ -190,7 +216,7 @@ Both price values must be zero or greater.
 
 - **Chat moves to this model only where chat used the platform default.** A partner that picked its own model or connection keeps it.
 - **The old chat-only runtime is removed.** The model now runs through the same verified path as a partner-added connection, so tools work.
-- **Partners cannot change the endpoint, key, prices or models** of an env-managed connection; they can enable or disable its model.
+- **Partners cannot change the endpoint, key, prices or models** of an env-managed connection; they can enable or disable its model and set its [tool profile and context window](#tool-profiles-and-context-window).
 - **If you remove the variables**, each env-managed connection stays in place, still read-only, and keeps working until a partner admin disconnects it. Setting the variables again picks the same connection back up; chat is not moved a second time.
 - **A model that fails tool verification cannot serve chat.** See [Troubleshooting](#troubleshooting) above; the most common cause is a server started without function calling enabled.
 - The same network rules apply as for a partner-added connection: loopback is never reachable, and private (RFC 1918 / ULA) addresses and cleartext `http` to a private address require `IS_HOSTED=false`. Point `MCP_LLM_BASE_URL` at the model host's container service name or LAN address, not `localhost`.

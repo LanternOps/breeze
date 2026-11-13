@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { AiOfferingDto } from '@breeze/shared';
 import { jsonRes, CONN } from './testFixtures';
-import { OFF, RATES, offeringRow as row } from './offeringFixtures';
+import { NO_SURFACE_TURNS, OFF, RATES, offeringRow as row } from './offeringFixtures';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -185,7 +185,7 @@ describe('OfferingDrawer', () => {
   });
 
   it('explains the tool-calling test for a gateway offering only', () => {
-    const gw = row({ id: OFF, connectionId: CONN, funding: 'partner_key', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null } });
+    const gw = row({ id: OFF, connectionId: CONN, funding: 'partner_key', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null, surfaces: NO_SURFACE_TURNS } });
     const { unmount } = render(<OfferingDrawer offering={gw} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByTestId('ai-offering-verify-hint').textContent).toMatch(/tool-calling test/i);
     unmount();

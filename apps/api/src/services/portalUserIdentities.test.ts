@@ -21,9 +21,12 @@ vi.mock('../db', () => ({
 }));
 
 import {
+  PORTAL_GOOGLE_ISSUER,
   ensureEntraIdentity,
   entraIssuer,
   findPortalUserIdByEntraIdentity,
+  findPortalUserIdByIdentity,
+  identityIssuerSubject,
   insertEntraIdentity,
   linkPortalUserIdentity,
   listIdentityProvidersByUser,
@@ -287,6 +290,120 @@ describe('linkPortalUserIdentity (W4: invite / self_link / jit, W3 D4 writer fen
     state.insertReturns.push([{ id: 'i-1' }]);
     state.updateReturns.push([]);
     await expect(linkPortalUserIdentity(fakeExec(), input)).rejects.toThrow(/not in this org/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W7 (#11384, plan D5): the provider-neutral key, reader and the Google link
+// ---------------------------------------------------------------------------
+
+const SUB = '109876543210987654321';
+
+describe('identityIssuerSubject', () => {
+  it('derives the Entra issuer from the tenant and the Google issuer as the constant; the subject is never normalized', () => {
+    expect(identityIssuerSubject({ provider: 'entra', tid: TID, oid: OID })).toEqual({ issuer: entraIssuer(TID), subject: OID });
+    expect(identityIssuerSubject({ provider: 'google', sub: 'AbC-123' })).toEqual({ issuer: PORTAL_GOOGLE_ISSUER, subject: 'AbC-123' });
+    expect(PORTAL_GOOGLE_ISSUER).toBe('https://accounts.google.com');
+  });
+});
+
+describe('findPortalUserIdByIdentity', () => {
+  it('findPortalUserIdByIdentity finds google and entra identities; the entra wrapper is unchanged', async () => {
+    state.selectReturns.push([{ portalUserId: USER, orgId: ORG }]);
+    await expect(findPortalUserIdByIdentity(fakeExec(), { provider: 'google', sub: SUB }))
+      .resolves.toEqual({ portalUserId: USER, orgId: ORG });
+    const google = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(google.sql).toContain('"portal_user_identities"."provider"');
+    expect(google.sql).toContain('"portal_user_identities"."issuer"');
+    expect(google.sql).toContain('"portal_user_identities"."subject"');
+    expect(google.params).toEqual(['google', PORTAL_GOOGLE_ISSUER, SUB]);
+    expect(state.selects[0]!.from).toBe(portalUserIdentities);
+    expect(state.selects[0]!.limited).toBe(true);
+
+    state.selectReturns.push([{ portalUserId: USER, orgId: ORG }]);
+    await expect(findPortalUserIdByIdentity(fakeExec(), { provider: 'entra', tid: TID, oid: OID }))
+      .resolves.toEqual({ portalUserId: USER, orgId: ORG });
+    expect(new PgDialect().sqlToQuery(state.selects[1]!.where as never).params).toEqual(['entra', entraIssuer(TID), OID]);
+
+    // The wrapper reads exactly what the generic reader does for an Entra key.
+    state.selectReturns.push([]);
+    await expect(findPortalUserIdByEntraIdentity(fakeExec(), { tid: TID, oid: OID })).resolves.toBeNull();
+    expect(new PgDialect().sqlToQuery(state.selects[2]!.where as never))
+      .toEqual(new PgDialect().sqlToQuery(state.selects[1]!.where as never));
+
+    state.selectReturns.push([]);
+    await expect(findPortalUserIdByIdentity(fakeExec(), { provider: 'google', sub: SUB })).resolves.toBeNull();
+  });
+});
+
+describe('linkPortalUserIdentity: google (W7 D5)', () => {
+  const google = {
+    orgId: ORG, portalUserId: USER, provider: 'google' as const, sub: SUB,
+    linkedVia: 'invite' as const, clearPasswordHash: false, now: NOW,
+  };
+
+  it('linkPortalUserIdentity google: writes the identity with PORTAL_GOOGLE_ISSUER and leaves entra_* untouched', async () => {
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await expect(linkPortalUserIdentity(fakeExec(), google)).resolves.toEqual({ kind: 'linked' });
+
+    // No legacy entra_* pre-check: Google has no portal_users legacy columns.
+    expect(state.selects).toHaveLength(0);
+    expect(state.inserts).toHaveLength(1);
+    expect(state.inserts[0]!.table).toBe(portalUserIdentities);
+    expect(state.inserts[0]!.onConflict).toBe(true);
+    expect(state.inserts[0]!.values).toEqual({
+      orgId: ORG, portalUserId: USER, provider: 'google', issuer: PORTAL_GOOGLE_ISSUER, subject: SUB,
+      entraTenantId: null, linkedVia: 'invite', lastUsedAt: NOW,
+    });
+    // The login row is still org-checked, but never gets an entra_* write.
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]!.table).toBe(portalUsers);
+    // toStrictEqual: an `entraTenantId: undefined` key would still be a write of NULL.
+    expect(state.updates[0]!.set).toStrictEqual({ updatedAt: NOW });
+    const where = new PgDialect().sqlToQuery(state.updates[0]!.where as never);
+    expect(where.sql).toContain('"portal_users"."id"');
+    expect(where.sql).toContain('"portal_users"."org_id"');
+    expect(where.params).toEqual(expect.arrayContaining([USER, ORG]));
+  });
+
+  it('linkPortalUserIdentity google: clearPasswordHash nulls the hash; conflict writes nothing', async () => {
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await linkPortalUserIdentity(fakeExec(), { ...google, linkedVia: 'self_link', clearPasswordHash: true });
+    expect(state.selects).toHaveLength(0);
+    expect(state.updates[0]!.set).toStrictEqual({ passwordHash: null, updatedAt: NOW });
+    expect(state.inserts[0]!.values).toMatchObject({ linkedVia: 'self_link', provider: 'google' });
+
+    // (issuer, sub) held by another account, or this account already has a Google identity.
+    state.inserts.length = 0;
+    state.updates.length = 0;
+    state.insertReturns.push([]);
+    await expect(linkPortalUserIdentity(fakeExec(), { ...google, clearPasswordHash: true })).resolves.toEqual({ kind: 'conflict' });
+    expect(state.inserts).toHaveLength(1);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('linkPortalUserIdentity google: throws (the caller rolls back) when the login is not in the org', async () => {
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([]);
+    await expect(linkPortalUserIdentity(fakeExec(), google)).rejects.toThrow(/not in this org/);
+  });
+
+  it('linkPortalUserIdentity entra is unchanged (legacy pre-check, entra_* fence)', async () => {
+    state.selectReturns.push([]);
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await linkPortalUserIdentity(fakeExec(), {
+      orgId: ORG, portalUserId: USER, provider: 'entra', tid: TID, oid: OID, linkedVia: 'jit', clearPasswordHash: true, now: NOW,
+    });
+    expect(state.selects).toHaveLength(1);
+    expect(state.selects[0]!.from).toBe(portalUsers);
+    expect(state.inserts[0]!.values).toEqual({
+      orgId: ORG, portalUserId: USER, provider: 'entra', issuer: entraIssuer(TID), subject: OID,
+      entraTenantId: TID, linkedVia: 'jit', lastUsedAt: NOW,
+    });
+    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, passwordHash: null, updatedAt: NOW });
   });
 });
 

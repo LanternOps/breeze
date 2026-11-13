@@ -21,6 +21,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { writeRouteAudit } from '../services/auditEvents';
 import { cancelCheckIn, listCheckIns, toCheckInDto } from '../services/wisp/checkIns';
+import { forgetStandingStateFacts } from '../services/wisp/standingStateTurn';
 import { loadOwnThread } from './wispThreads';
 
 const NOT_FOUND = { error: 'Wisp thread not found', code: 'not_found' } as const;
@@ -45,8 +46,10 @@ wispCheckInRoutes.delete('/:id/check-ins/:checkInId', async (c) => {
   if (!checkInId.success) return c.json(CHECK_IN_NOT_FOUND, 404);
   const own = await loadOwnThread(c);
   if (!own) return c.json(NOT_FOUND, 404);
-  const cancelled = await cancelCheckIn(own.grant.id, checkInId.data);
+  const cancelled = await cancelCheckIn(own.grant.id, checkInId.data, 'user');
   if (!cancelled) return c.json(CHECK_IN_NOT_FOUND, 404);
+  // #11611: Wisp's next turn says the user cancelled it, not a cached count from before.
+  forgetStandingStateFacts(own.grant.id);
   writeRouteAudit(c, {
     orgId: cancelled.orgId,
     partnerId: own.thread.partnerId,

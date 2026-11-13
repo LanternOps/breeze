@@ -2,11 +2,13 @@
  * Fits `max_tokens` to an OpenAI-compatible endpoint's context window (#10577).
  *
  * These endpoints reject prompt + max_tokens over their window with a 400, and
- * the Agent SDK CLI asks for a large fixed max_tokens on every call. Nothing
- * stored says how large a BYO model's window is, so the gateway learns it from
- * the rejection itself: the endpoint states its window and usually its exact
- * prompt count. The request is retried once with a max_tokens that fits, and
- * the window is remembered so that later requests are capped up front.
+ * the Agent SDK CLI asks for a large fixed max_tokens on every call. The grant
+ * may carry a window already known for the model (#11396: an operator
+ * override, the `/models` listing, or a persisted rejection), which seeds the
+ * plan. Otherwise the gateway learns it from the rejection itself: the
+ * endpoint states its window and usually its exact prompt count. The request
+ * is retried once with a max_tokens that fits, and the window is remembered so
+ * that later requests are capped up front.
  *
  * The memo is per process, per connection version and model, and expires, so an
  * endpoint restarted with a larger window recovers on its own. Only numbers are
@@ -17,11 +19,17 @@
 export const CONTEXT_MIN_OUTPUT_TOKENS = 1024;
 export const CONTEXT_WINDOW_MEMO_TTL_MS = 60 * 60_000;
 export const CONTEXT_WINDOW_MEMO_MAX_ENTRIES = 1_000;
-/** Refusing with no provider call needs a window the endpoint stated this recently; past it the endpoint is asked again. */
+/**
+ * A memo may refuse with no provider call only this long after the endpoint
+ * stated its window; past it the endpoint is asked again. A known window
+ * (#11396) refuses only when it is an override or a persisted observation,
+ * never a discovered (listed) one.
+ */
 export const CONTEXT_WINDOW_REFUSAL_FRESH_MS = 10 * 60_000;
 
-const MIN_PLAUSIBLE_WINDOW = 1024;
-const MAX_PLAUSIBLE_TOKENS = 100_000_000;
+/** Bounds a stated, discovered or persisted window must fall within (#11396 reads them too). */
+export const MIN_PLAUSIBLE_WINDOW = 1024;
+export const MAX_PLAUSIBLE_TOKENS = 100_000_000;
 const MIN_SAFETY_MARGIN = 256;
 const SAFETY_MARGIN_RATIO = 0.01;
 /**
@@ -64,6 +72,7 @@ interface MemoEntry { contextWindow: number; estimateRatio: number; at: number; 
 
 const memo = new Map<string, MemoEntry>();
 const unknownLogged = new Set<string>();
+const knownCapLogged = new Set<string>();
 
 const keyOf = (k: ContextWindowKey): string => JSON.stringify([k.connectionId, k.configVersion, k.model]);
 
@@ -133,29 +142,71 @@ function logUnknownOnce(key: ContextWindowKey, k: string, requestedMaxTokens: nu
     + `model ${JSON.stringify(key.model)}; forwarding max_tokens ${requestedMaxTokens} unchanged.`);
 }
 
-/** The max_tokens to send first, from what is remembered for this connection and model. */
-export function planRequest(key: ContextWindowKey, requestedMaxTokens: number, estimatedPromptTokens: number): RequestPlan {
+/**
+ * A window known before any rejection (#11396): the offering's effective
+ * window (operator override, discovered from `/models`, or a persisted fresh
+ * observation), carried on the grant per wire model.
+ */
+export interface KnownWindow { window: number; source: 'override' | 'discovered' | 'observed' }
+
+function logKnownCapOnce(k: string, window: number): boolean {
+  const logKey = `${k}:${window}`;
+  if (knownCapLogged.has(logKey)) return false;
+  if (knownCapLogged.size >= CONTEXT_WINDOW_MEMO_MAX_ENTRIES) knownCapLogged.clear();
+  knownCapLogged.add(logKey);
+  return true;
+}
+
+/**
+ * The max_tokens to send first, from what is remembered for this connection
+ * and model and, when given, the window known for it (#11396). Precedence:
+ * an operator override always wins over the memo; otherwise the smaller of
+ * the memo and the known window. The memo's calibration of the byte estimate
+ * applies whichever window is used. When the known window is the one used,
+ * an override or a persisted observation refuses a clearly over-window prompt
+ * before any provider call; a discovered window only caps. An override is
+ * trusted over the endpoint's own statement: one set larger than what the
+ * endpoint serves is rejected and retried on every request.
+ */
+export function planRequest(
+  key: ContextWindowKey,
+  requestedMaxTokens: number,
+  estimatedPromptTokens: number,
+  known?: KnownWindow | null,
+): RequestPlan {
   const k = keyOf(key);
   let entry = memo.get(k);
   if (entry && Date.now() - entry.at > CONTEXT_WINDOW_MEMO_TTL_MS) {
     memo.delete(k);
     entry = undefined;
   }
-  if (!entry) {
+  const useKnown = known != null && (known.source === 'override' || !entry || known.window < entry.contextWindow);
+  if (!entry && !useKnown) {
     logUnknownOnce(key, k, requestedMaxTokens);
     return { kind: 'send', maxTokens: requestedMaxTokens };
   }
-  const promptTokens = Math.round(estimatedPromptTokens * entry.estimateRatio);
-  const confirmedRecently = Date.now() - entry.at <= CONTEXT_WINDOW_REFUSAL_FRESH_MS;
-  if (confirmedRecently && promptTokens >= entry.contextWindow * CLEARLY_OVER_WINDOW_FACTOR) {
-    return { kind: 'too_large', contextWindow: entry.contextWindow, promptTokens };
+  const contextWindow = useKnown ? known!.window : entry!.contextWindow;
+  const promptTokens = Math.round(estimatedPromptTokens * (entry?.estimateRatio ?? 1));
+  // An override (the operator's statement) or a persisted observation (the
+  // endpoint's own statement) may refuse up front. A discovered window is the
+  // listing's advertised value and the estimate is uncalibrated bytes/3: it
+  // only caps, and the endpoint, whose count is exact, decides.
+  const mayRefuse = useKnown
+    ? known!.source !== 'discovered'
+    : Date.now() - entry!.at <= CONTEXT_WINDOW_REFUSAL_FRESH_MS;
+  if (mayRefuse && promptTokens >= contextWindow * CLEARLY_OVER_WINDOW_FACTOR) {
+    return { kind: 'too_large', contextWindow, promptTokens };
   }
-  const room = Math.max(roomFor(entry.contextWindow, promptTokens), CONTEXT_MIN_OUTPUT_TOKENS);
+  const room = Math.max(roomFor(contextWindow, promptTokens), CONTEXT_MIN_OUTPUT_TOKENS);
   const maxTokens = Math.min(requestedMaxTokens, room);
-  if (maxTokens < requestedMaxTokens && !entry.capLogged) {
-    entry.capLogged = true;
-    console.warn(`[modelGateway] capping max_tokens ${requestedMaxTokens} to ${maxTokens} for connection ${key.connectionId}, `
-      + `model ${JSON.stringify(key.model)} (context_window ${entry.contextWindow}, prompt_tokens_est ${promptTokens}).`);
+  if (maxTokens < requestedMaxTokens) {
+    const shouldLog = useKnown ? logKnownCapOnce(k, contextWindow) : !entry!.capLogged;
+    if (!useKnown) entry!.capLogged = true;
+    if (shouldLog) {
+      console.warn(`[modelGateway] capping max_tokens ${requestedMaxTokens} to ${maxTokens} for connection ${key.connectionId}, `
+        + `model ${JSON.stringify(key.model)} (context_window ${contextWindow}${useKnown ? ` ${known!.source}` : ''}, `
+        + `prompt_tokens_est ${promptTokens}).`);
+    }
   }
   return { kind: 'send', maxTokens };
 }
@@ -170,4 +221,5 @@ export function contextWindowExceededMessage(contextWindow: number, promptTokens
 export function __resetContextWindowsForTests(): void {
   memo.clear();
   unknownLogged.clear();
+  knownCapLogged.clear();
 }

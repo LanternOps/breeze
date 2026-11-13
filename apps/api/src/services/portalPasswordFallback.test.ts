@@ -19,6 +19,8 @@ const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const TID = 'a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5';
 const ALL_CAPS: PortalSignInCapabilities = { entra: true, google: true, selfRegistration: true };
 const NO_ENTRA: PortalSignInCapabilities = { entra: false, google: true, selfRegistration: true };
+/** W7 (#11384) fixture: the org has a verified domain, so Google is not domain-masked (the pre-W7 picks). */
+const VERIFIED = { googleDomainVerified: true };
 
 const row = (over: Partial<PortalAccessPolicyRowValues> = {}): PortalAccessPolicyRowValues => ({
   entraEnabled: null,
@@ -32,34 +34,34 @@ const row = (over: Partial<PortalAccessPolicyRowValues> = {}): PortalAccessPolic
 
 describe('passwordFallbackImpactFrom', () => {
   it('Microsoft on through the partner default: the fallback takes effect, password was already allowed', () => {
-    expect(passwordFallbackImpactFrom({ org: null, partner: row({ entraEnabled: true }) }, ALL_CAPS))
+    expect(passwordFallbackImpactFrom({ org: null, partner: row({ entraEnabled: true }) }, ALL_CAPS, VERIFIED))
       .toEqual({ passwordModeFallback: false });
   });
 
   it('Microsoft on through an org override with sso_only: password sign-in comes back (passwordModeFallback)', () => {
     expect(passwordFallbackImpactFrom(
       { org: row({ entraEnabled: true, passwordMode: 'sso_only' }), partner: null },
-      ALL_CAPS,
+      ALL_CAPS, VERIFIED,
     )).toEqual({ passwordModeFallback: true });
   });
 
   it('sso_only held up by Google too: Microsoft falls back but password stays off', () => {
     expect(passwordFallbackImpactFrom(
       { org: row({ entraEnabled: true, googleEnabled: true, passwordMode: 'sso_only' }), partner: null },
-      ALL_CAPS,
+      ALL_CAPS, VERIFIED,
     )).toEqual({ passwordModeFallback: false });
   });
 
   it('Microsoft off (default, or an org false beating a partner true): losing the proof changes nothing → null', () => {
-    expect(passwordFallbackImpactFrom({ org: null, partner: null }, ALL_CAPS)).toBeNull();
+    expect(passwordFallbackImpactFrom({ org: null, partner: null }, ALL_CAPS, VERIFIED)).toBeNull();
     expect(passwordFallbackImpactFrom(
       { org: row({ entraEnabled: false }), partner: row({ entraEnabled: true }) },
-      ALL_CAPS,
+      ALL_CAPS, VERIFIED,
     )).toBeNull();
   });
 
   it('a deployment without the portal Entra app never had Microsoft on → null', () => {
-    expect(passwordFallbackImpactFrom({ org: row({ entraEnabled: true }), partner: null }, NO_ENTRA)).toBeNull();
+    expect(passwordFallbackImpactFrom({ org: row({ entraEnabled: true }), partner: null }, NO_ENTRA, VERIFIED)).toBeNull();
   });
 });
 

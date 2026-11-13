@@ -285,6 +285,36 @@ describe('chatRunBridge (spec §5.5)', () => {
     expect(readRunForDelivery).not.toHaveBeenCalled();
   });
 
+  it('#11671: a Wisp hand-off streams its card but is not queued (the next turn reads it from the run row)', async () => {
+    const { session, published } = fakeSession();
+    sessionGet.mockReturnValue(session);
+    expect(watchRunForOriginSession({ runId: RUN, sessionId: SESSION, orgId: ORG })).toBe(true);
+
+    await deliverRunEvent({ type: 'ai.agent.run.completed', payload: { runId: RUN } });
+
+    expect(published).toEqual([expect.objectContaining({ type: 'run_result', runId: RUN, status: 'completed' })]);
+    expect(session.pendingRunResults).toEqual([]);
+    expect(incChatRunDelivery).toHaveBeenCalledWith('card_only');
+    expect(incChatRunDelivery).not.toHaveBeenCalledWith('completed');
+  });
+
+  it('#11671: the drain renders queued and durable results in one block, each run and status once', () => {
+    const { session } = fakeSession();
+    session.pendingRunResults = [{ runId: 'run-q', status: 'completed', summary: 'Queued.', artifacts: [] }];
+    const injected = drainPendingRunResults(session as never, [
+      { runId: 'run-q', status: 'completed', summary: 'Queued.', artifacts: [] },
+      { runId: 'run-d', status: 'cancelled', profile: 'device_troubleshooting', summary: 'Stopped by a technician.', artifacts: [] },
+    ]);
+    expect(injected?.match(/\[breeze:analysis-results\]/g)).toHaveLength(1);
+    expect(injected?.match(/Run run-q completed\./g)).toHaveLength(1);
+    expect(injected).toContain('Device troubleshooting run run-d cancelled.');
+    expect(session.pendingRunResults).toEqual([]);
+    // Durable results alone render too; nothing at all is null.
+    expect(drainPendingRunResults(session as never, [{ runId: 'run-d', status: 'completed', summary: null, artifacts: [] }]))
+      .toContain('(no summary was produced)');
+    expect(drainPendingRunResults(session as never, [])).toBeNull();
+  });
+
   it('maps a failed run to a run_result the card can render', async () => {
     const { session, published } = fakeSession();
     sessionGet.mockReturnValue(session);

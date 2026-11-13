@@ -109,6 +109,19 @@ describe('backup configs site-ceiling gate', () => {
     expect(insertMock).not.toHaveBeenCalled();
   });
 
+  it.each(['POST', 'PATCH'])('exact-device caller: %s cannot select an organization storage path', async (method) => {
+    authRef.current = { ...orgAuth(undefined), allowedDeviceIds: ['device-1'] };
+    const url = method === 'POST' ? '/backup/configs' : `/backup/configs/${CONFIG_ID}`;
+    const body = method === 'POST'
+      ? { name: 'Local backup', provider: 'local', details: { path: '/operator/org/other-site' } }
+      : { details: { path: '/operator/org/other-site' } };
+    const res = await app().request(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it('restricted caller: PATCH /backup/configs/:id denied 403 before any read', async () => {
     authRef.current = orgAuth(['s1']);
     const res = await app().request(`/backup/configs/${CONFIG_ID}`, {

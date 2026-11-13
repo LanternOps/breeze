@@ -5,9 +5,8 @@ import { isPinnedLink } from '@/lib/wispLinksApi';
 import { cancelWispCheckIn, listWispCheckIns } from '@/lib/wispCheckInsApi';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
-import { AI_SESSION_IDLE_TIMEOUT_MS, AI_SESSION_MAX_AGE_MS, WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
+import { WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
-import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
 import AiChatInput from '../ai/AiChatInput';
 import AiThinkingIndicator, { approvalWaitFromPending } from '../ai/AiThinkingIndicator';
@@ -33,59 +32,17 @@ type Wisp = NonNullable<WispState>;
 type Binding = 'binding' | 'live' | 'failed' | 'not_configured';
 
 /**
- * Past the server's chat-session lifetime (the shared AI_SESSION_* limits; a
- * send past either is refused with 410) by the session's own timestamps. An
- * unreadable timestamp is left to the status.
- */
-function pastSessionLifetime(session: { createdAt?: unknown; lastActivityAt?: unknown }, now = Date.now()): boolean {
-  const ageOf = (value: unknown) => (typeof value === 'string' ? now - Date.parse(value) : Number.NaN);
-  return ageOf(session.createdAt) > AI_SESSION_MAX_AGE_MS || ageOf(session.lastActivityAt) > AI_SESSION_IDLE_TIMEOUT_MS;
-}
-
-/**
- * `thread.lastSessionId` is the last session stamped on the thread, not the
- * last live one: an idled-out (`expired`) or closed session would load its
- * transcript and then refuse the first send. Resume only an active session
- * that still runs under this grant and is within the server's lifetime: the
- * read reports a stale session as expired (#11430), and this check covers an
- * older API or a read that raced the expiry. A failed read is "not resumable".
- */
-async function resumable(sessionId: string, grantId: string): Promise<boolean> {
-  try {
-    const res = await fetchWithAuth(`/ai/sessions/${encodeURIComponent(sessionId)}`);
-    if (!res.ok) {
-      console.warn('[WispHomeThread] checking the last Wisp session failed; starting a new one', res.status);
-      return false;
-    }
-    const body = (await res.json().catch((err: unknown) => {
-      console.warn('[WispHomeThread] the last Wisp session read was not JSON; starting a new one', err);
-      return null;
-    })) as { session?: { status?: unknown; wispGrantId?: unknown; createdAt?: unknown; lastActivityAt?: unknown } } | null;
-    return body?.session?.status === 'active' && body.session.wispGrantId === grantId && !pastSessionLifetime(body.session);
-  } catch (err) {
-    console.warn('[WispHomeThread] could not check the last Wisp session; starting a new one', err);
-    return false;
-  }
-}
-
-/**
  * Bind the global chat (aiStore) to this thread's Wisp session without
- * minting a session per visit: reuse the live one, else resume the thread's
- * last session when it is still active (the store keeps Wisp mode when the
- * session runs under the same grant), else start a new one. Only for an
- * active grant — a paused or ended one cannot run a turn, so nothing is
- * created for it.
+ * minting a session per visit: reuse the live one, else `enterWispMode`
+ * resumes the thread's last session when it is still active under the grant
+ * (the same path the side panel takes, #11672), else starts a new one. Only
+ * for an active grant — a paused or ended one cannot run a turn, so nothing
+ * is created for it.
  */
 async function bindWispSession(wisp: Wisp, lastSessionId: string | null): Promise<boolean> {
   const store = useAiStore.getState();
   if (store.wisp?.threadId === wisp.threadId && store.sessionId) return true;
-  if (lastSessionId && (await resumable(lastSessionId, wisp.grantId))) {
-    useAiStore.setState({ wisp });
-    await store.switchSession(lastSessionId);
-    const after = useAiStore.getState();
-    if (after.sessionId === lastSessionId && after.wisp?.grantId === wisp.grantId) return true;
-  }
-  await useAiStore.getState().enterWispMode(wisp);
+  await store.enterWispMode({ ...wisp, lastSessionId });
   return boundTo(wisp);
 }
 

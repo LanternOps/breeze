@@ -11,7 +11,7 @@ import { Hono } from 'hono';
 const h = vi.hoisted(() => {
   const store = { orgs: [] as Array<{ id: string; partnerId: string }> };
   const db = {
-    select: vi.fn(() => ({
+    select: vi.fn(() => (ctx.readDepths.push(ctx.authDepth), {
       from: () => ({
         where: () => {
           const rows = store.orgs.map((r) => ({ ...r }));
@@ -20,7 +20,7 @@ const h = vi.hoisted(() => {
       }),
     })),
   };
-  const ctx = { outsideDepth: 0 };
+  const ctx = { outsideDepth: 0, authDepth: 0, readDepths: [] as number[] };
   return {
     store,
     db,
@@ -57,6 +57,10 @@ vi.mock('../middleware/auth', () => ({
     const perms: string[] | undefined = c.get('auth').perms;
     if (perms && !perms.includes(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
     await next();
+  },
+  withAuthDbAccessContext: async (_auth: unknown, fn: () => Promise<unknown>) => {
+    h.ctx.authDepth += 1;
+    try { return await fn(); } finally { h.ctx.authDepth -= 1; }
   },
 }));
 
@@ -313,6 +317,22 @@ describe('verification', () => {
     expect(h.svc.verifyCustomerDomain).toHaveBeenCalledWith({
       orgId: ORG_ID, partnerId: PARTNER_ID, domainId: DOMAIN_ID, method: 'dns_txt', actorUserId: USER_ID,
     });
+  });
+
+  it('verification/check reads in a short caller-scoped context and checks DNS with none held', async () => {
+    h.ctx.readDepths.length = 0;
+    let lookupDepth = -1;
+    let checkDepth = -1;
+    h.svc.listOrgCustomerDomains.mockImplementation(async () => { lookupDepth = h.ctx.authDepth; return [view(DOMAIN_ID)]; });
+    h.svc.verifyCustomerDomain.mockImplementation(async () => {
+      checkDepth = h.ctx.authDepth;
+      return { result: 'verified', method: 'dns_txt', displacedOrgId: null };
+    });
+    const res = await makeApp().request(`${BASE}/${DOMAIN_ID}/verification/check`, json('POST', { method: 'dns_txt' }));
+    expect(res.status).toBe(200);
+    expect(h.ctx.readDepths).toEqual([1]);
+    expect(lookupDepth).toBe(1);
+    expect(checkDepth).toBe(0);
   });
 
   it('verification/check returns 200 result failed/unavailable without a 4xx', async () => {

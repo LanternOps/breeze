@@ -57,7 +57,7 @@ export function createGuardedS3Client(config: S3ClientConfig): S3Client {
       ? (config.requestHandler as Record<string, unknown>)
       : {};
 
-  return new S3Client({
+  const client = new S3Client({
     ...config,
     requestHandler: {
       ...callerHandler,
@@ -65,4 +65,86 @@ export function createGuardedS3Client(config: S3ClientConfig): S3Client {
       httpsAgent,
     },
   });
+  client.middlewareStack.addRelativeTo(tolerateAbortDateMiddleware, {
+    // "after" the deserializer runs inside it, so this sees the raw response
+    // before the SDK parses it (the S3 client's own throw-200-exceptions
+    // middleware is registered the same way).
+    relation: 'after',
+    toMiddleware: 'deserializerMiddleware',
+    name: 'breezeTolerateAbortDateMiddleware',
+    override: true,
+  });
+  return client;
 }
+
+/**
+ * `x-amz-abort-date` is informational: the time a bucket lifecycle rule will
+ * abort an incomplete multipart upload. The SDK binds it to `AbortDate`
+ * (CreateMultipartUpload, ListParts) as an HTTP-date and throws on any value
+ * its parser rejects, failing a request the store already carried out. Some
+ * S3-compatible stores (Wasabi, #11764) send it as a Go `time.Time.String()`
+ * rendering, which made every multipart backup write fail. Nothing in Breeze
+ * reads `AbortDate`, so a value that is not an IMF-fixdate is dropped before
+ * deserialization. A well-formed value is left alone.
+ */
+const ABORT_DATE_HEADER = 'x-amz-abort-date';
+const IMF_FIXDATE =
+  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (\d{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2})(?:\.\d+)? GMT$/;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * True for an IMF-fixdate (RFC 7231 §7.1.1.1, the only form a sender may
+ * generate) naming a real calendar time. Deliberately stricter than the SDK:
+ * the obsolete RFC 850 and asctime forms are treated as unparseable, since
+ * dropping a header nothing reads costs nothing and keeping one the SDK
+ * rejects fails the request.
+ */
+function isImfFixdate(value: string): boolean {
+  const m = IMF_FIXDATE.exec(value);
+  if (!m) return false;
+  const [day, year, hour, minute, second] = [m[1], m[3], m[4], m[5], m[6]].map(Number) as [number, number, number, number, number];
+  const month = MONTHS.indexOf(m[2]!);
+  if (hour > 23 || minute > 59 || second > 59) return false;
+  const date = new Date(Date.UTC(year, month, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month && date.getUTCDate() === day;
+}
+
+// Once per process: a store that sends a malformed value sends it on every
+// multipart create, so a per-response line would be noise, but the first one
+// keeps the store's non-conformance visible after the symptom is gone.
+let abortDateWarned = false;
+
+/** Test seam: re-arms the once-per-process warning. */
+export function __resetAbortDateWarningForTests(): void {
+  abortDateWarned = false;
+}
+
+/** Removes an `x-amz-abort-date` header (any case) whose value is not an IMF-fixdate. Mutates `headers`. */
+export function dropUnparseableAbortDate(headers: Record<string, string | undefined>): void {
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() !== ABORT_DATE_HEADER) continue;
+    const value = headers[name];
+    if (typeof value === 'string' && isImfFixdate(value)) continue;
+    delete headers[name];
+    if (!abortDateWarned) {
+      abortDateWarned = true;
+      console.warn('[guardedS3Client] dropped an x-amz-abort-date response header that is not an HTTP-date (logged once per process)', {
+        value: String(value).slice(0, 120),
+      });
+    }
+  }
+}
+
+// A deserialize-step middleware, typed structurally: @smithy/types is not a
+// direct dependency, and the stack's own parameter type is a union of every
+// step's middleware shape.
+type DeserializeHandler = (args: unknown) => Promise<{ response: unknown }>;
+
+const tolerateAbortDateMiddleware = ((next: DeserializeHandler) => async (args: unknown) => {
+  const result = await next(args);
+  const headers = (result.response as { headers?: unknown } | undefined)?.headers;
+  if (headers && typeof headers === 'object') {
+    dropUnparseableAbortDate(headers as Record<string, string | undefined>);
+  }
+  return result;
+}) as unknown as Parameters<S3Client['middlewareStack']['addRelativeTo']>[0];

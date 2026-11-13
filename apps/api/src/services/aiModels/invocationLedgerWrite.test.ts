@@ -40,6 +40,20 @@ describe('recordInvocation chargeback stamp (#7608)', () => {
   });
 });
 
+describe('recordInvocation tool exposure provenance (#11395)', () => {
+  const shadow: NewInvocation = { ...base, ledgerMode: 'shadow' };
+  it('writes toolProfile and toolExposureFingerprint', async () => {
+    await recordInvocation({ ...shadow, toolProfile: 'minimal', toolExposureFingerprint: '0123456789abcdef' });
+    expect(inserted.at(-1)).toMatchObject({ toolProfile: 'minimal', toolExposureFingerprint: '0123456789abcdef' });
+  });
+  it('writes NULL for both when the caller has none, also after a JSON replay', async () => {
+    await recordInvocation(shadow);
+    expect(inserted.at(-1)).toMatchObject({ toolProfile: null, toolExposureFingerprint: null });
+    await recordInvocation(JSON.parse(JSON.stringify({ ...shadow, toolProfile: 'full', toolExposureFingerprint: 'full' })));
+    expect(inserted.at(-1)).toMatchObject({ toolProfile: 'full', toolExposureFingerprint: 'full' });
+  });
+});
+
 describe('recordInvocation prompt provenance (W11 #7609)', () => {
   // Shadow rows need no chargeback stamp, so these stay independent of #7608.
   const shadow: NewInvocation = { ...base, ledgerMode: 'shadow' };

@@ -1263,6 +1263,39 @@
     },
     "troubleshootingLink": "Leitfaden zur Fehlerbehebung"
   },
+  "failureCause": {
+    "storage_access_denied": {
+      "hint": "Das Sicherungsziel hat die Anfrage abgelehnt. Prüfen Sie, ob der Zugriffsschlüssel gültig ist und Schreibrechte hat, außerdem die Bucket-Richtlinie und den Status des Speicherkontos, und führen Sie dann „Verbindung testen“ aus."
+    },
+    "storage_not_found": {
+      "hint": "Das Sicherungsziel meldet, dass der Bucket oder seine Objekte fehlen. Prüfen Sie, ob der Bucket noch existiert und keine Lifecycle-Regel Sicherungsdaten löscht."
+    },
+    "storage_clock_skew": {
+      "hint": "Das Sicherungsziel hat die Uhrzeit der Anfrage abgelehnt, was häufig auf eine stark abweichende Uhr hinweist. Prüfen Sie Datum und Uhrzeit des Geräts."
+    },
+    "storage_operation_failed": {
+      "hint": "Breeze konnte einen Speichervorgang mit dem Ziel nicht abschließen. Das ist meist vorübergehend oder eine Inkompatibilität des Anbieters. Wenn es weiterhin auftritt, wenden Sie sich an den Support."
+    },
+    "storage_session_expired": {
+      "hint": "Die Upload-Sitzung wurde vor dem Ende des Laufs beendet. Der nächste Lauf setzt dort fort, wo dieser aufgehört hat."
+    },
+    "helper_stopped": {
+      "hint": "Der Sicherungsprozess auf dem Gerät wurde mitten im Lauf beendet, häufig weil das Gerät in den Ruhezustand ging, neu gestartet oder heruntergefahren wurde. Lassen Sie es während des Sicherungsfensters eingeschaltet und aktiv."
+    },
+    "run_cancelled_on_device": {
+      "hint": "Der Lauf wurde auf dem Gerät unterbrochen, häufig durch einen Neustart oder ein Herunterfahren."
+    },
+    "never_started": {
+      "hint": "Das Gerät hat diesen Lauf nie gestartet, meist weil noch eine andere Sicherung lief oder der Agent gerade neu gestartet wurde."
+    },
+    "no_agent_signal": {
+      "hint": "Breeze hat während des Laufs nichts mehr vom Gerät gehört."
+    },
+    "destination": {
+      "title": "{{name}}: Die letzte Sicherung ist auf {{failing}} von {{total}} Geräten fehlgeschlagen",
+      "link": "Sicherungsprofile öffnen, um die Verbindung zu testen"
+    }
+  },
   "fullRunReason": {
     "no_prior_snapshot": "Erste Sicherung für dieses Gerät und Ziel",
     "base_expired": "Die vorherige Sicherung war durch die Aufbewahrung abgelaufen",

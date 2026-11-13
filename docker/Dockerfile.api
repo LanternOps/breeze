@@ -42,6 +42,7 @@ COPY agent/go.mod agent/go.sum ./
 RUN go mod download
 COPY agent/cmd/breeze-yarac ./cmd/breeze-yarac
 COPY agent/internal ./internal
+COPY agent/pkg/httpguard ./pkg/httpguard
 RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /out/breeze-yarac ./cmd/breeze-yarac
 
 FROM base AS runner

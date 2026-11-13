@@ -23,6 +23,9 @@ const h = vi.hoisted(() => ({
   platformCaps: null as unknown,
   /** When set, the REAL loadGatewayCredential runs against this key row. */
   material: null as Record<string, unknown> | null,
+  /** #11397: the tool surfaces the offering is assigned to (listOfferingToolSurfaces). */
+  surfaces: [] as string[],
+  surfacesThrow: null as Error | null,
 }));
 
 vi.mock('../../db', async (orig) => ({
@@ -63,12 +66,17 @@ vi.mock('./offeringVerificationStore', () => ({
     h.writes.push(input);
     return h.writeOutcome;
   },
+  listOfferingToolSurfaces: async () => {
+    if (h.surfacesThrow) throw h.surfacesThrow;
+    return [...h.surfaces];
+  },
 }));
 
 import { getLlmEgressProxy } from '../llm/llmEgressProxy';
 import { closeModelGateway, getModelGateway } from './gateway';
 import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
-import { verifyConnectionOffering } from './offeringVerification';
+import { SURFACE_TURN_DEADLINE_MS, verifyConnectionOffering } from './offeringVerification';
+import { readinessProfileKey } from './surfaceReadiness';
 
 const BASE_URL = 'https://llm.example.com/v1';
 const FINGERPRINT = endpointFingerprint({ kind: 'openai_compatible', baseUrl: BASE_URL, providerConfig: null });
@@ -96,6 +104,8 @@ beforeEach(async () => {
   h.credential = { secret: UPSTREAM_KEY };
   h.platformCaps = null;
   h.material = null;
+  h.surfaces = [];
+  h.surfacesThrow = null;
   await getModelGateway();
 });
 afterEach(async () => {
@@ -353,5 +363,229 @@ describe('verifyConnectionOffering', () => {
     const read = verifiedGatewayCapabilities(writtenCaps(), FINGERPRINT);
     expect(read.capabilities.thinkingMode).toBe('none');
     expect(read.capabilities.effortLevels).toEqual([]);
+  });
+});
+
+describe('verifyConnectionOffering — surface_turn (#11397)', () => {
+  type Plan = import('../llm/surfaceTurnHarness').SurfaceTurnPlan;
+  type Input = import('../llm/surfaceTurnHarness').SurfaceTurnInput;
+  type Result = import('../llm/surfaceTurnHarness').SurfaceTurnResult;
+  type PlanResult = import('../llm/surfaceTurnStubs').SurfaceTurnPlanResult;
+
+  const fakePlan = (surface: string, over: Partial<Plan> = {}): Plan => ({
+    surface: surface as Plan['surface'], profile: 'minimal', fingerprint: 'feedfacecafebeef', compactSchemas: true,
+    systemPrompt: 'p', mcpServerName: 'breeze', tools: [], allowedTools: [], targetTool: 'query_devices',
+    validate: () => ({ success: true }), ...over,
+  });
+  const result = (over: Partial<Result> = {}): Result => ({
+    outcome: 'passed', passed: true, detail: 'called query_devices and read its result', promptTokens: 3100, cachedTokens: 0,
+    calledTool: 'query_devices', zodValid: true, sentinelSeen: true, ...over,
+  });
+
+  function deps(opts: {
+    plan?: (surface: string, facts: unknown) => PlanResult;
+    run?: (input: Input) => Promise<Result>;
+  } = {}) {
+    const planned: string[] = [];
+    const ran: Input[] = [];
+    return {
+      planned, ran,
+      deps: {
+        surfaceTurn: {
+          plan: async (surface: string, facts: unknown) => {
+            planned.push(surface);
+            return opts.plan ? opts.plan(surface, facts) : { kind: 'planned' as const, plan: fakePlan(surface) };
+          },
+          run: async (input: Input) => { ran.push(input); return opts.run ? opts.run(input) : result(); },
+        },
+      } as never,
+    };
+  }
+  const readinessWritten = () => written().surfaceReadiness as Record<string, Record<string, unknown>> | undefined;
+
+  it('runs once per assigned tool surface, chat first, after the basic stages pass', async () => {
+    h.surfaces = ['ai_agents', 'helper', 'chat'];
+    const d = deps();
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(d.planned).toEqual(['chat', 'helper', 'ai_agents']);
+    expect(d.ran.map((i) => i.plan.surface)).toEqual(['chat', 'helper', 'ai_agents']);
+    expect(Object.keys(readinessWritten()!)).toEqual(['chat', 'helper', 'ai_agents']);
+    expect(r.surfaceTurns.map((t) => [t.surface, t.state])).toEqual([['chat', 'passed'], ['helper', 'passed'], ['ai_agents', 'passed']]);
+  });
+
+  it('no surface turn when the basic stages fail, or when no tool surface is assigned', async () => {
+    h.surfaces = ['chat'];
+    h.harness = { ...PASS, passed: false, steps: [{ name: 'direct_tool_use', ok: false, detail: 'no tool_use' }] };
+    const failed = deps();
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, failed.deps);
+    expect(failed.planned).toEqual([]);
+    expect(readinessWritten()).toEqual({});
+
+    h.harness = PASS;
+    h.surfaces = [];
+    const none = deps();
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, none.deps);
+    expect(none.planned).toEqual([]);
+  });
+
+  it('a surface with a CURRENT failed entry is re-run even when no longer assigned, so a re-verify can clear it', async () => {
+    h.surfaces = ['helper'];
+    const failedChat = {
+      state: 'failed', profileKey: 'full', exposureFingerprint: 'full', profile: 'full', endpointFingerprint: FINGERPRINT,
+      version: '1', at: '2026-11-12T00:00:00.000Z', promptTokens: null, cachedTokens: null, summary: 'answered without calling a tool',
+    };
+    const staleAgents = { ...failedChat, endpointFingerprint: 'f'.repeat(64) };
+    h.offering = { ...h.offering!, capabilities: { breeze_surface_readiness: { chat: failedChat, ai_agents: staleAgents } } };
+    const d = deps();
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(d.planned).toEqual(['chat', 'helper']);
+    expect(readinessWritten()!.chat).toMatchObject({ state: 'passed' });
+  });
+
+  it('Office and non-tool surfaces are never run', async () => {
+    h.surfaces = ['office_chat', 'catalog_enrichment', 'chat'];
+    const d = deps();
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(d.planned).toEqual(['chat']);
+  });
+
+  it('each turn runs on its own org-less verification grant bound to the offering model, compacted per the exposure, revoked after', async () => {
+    h.surfaces = ['chat', 'helper'];
+    const gw = await getModelGateway();
+    const grantSpy = vi.spyOn(gw, 'grant');
+    const live: Array<{ models: unknown; other: number }> = [];
+    const bases: string[] = [];
+    let previousTurnGrantStatus: number | null = null;
+    const d = deps({
+      plan: (surface) => ({ kind: 'planned', plan: fakePlan(surface, { compactSchemas: surface === 'chat' }) }),
+      run: async (input) => {
+        const base = input.childEnv.ANTHROPIC_BASE_URL!;
+        // The previous turn's grant is already dead when the next turn starts.
+        if (bases.length > 0) previousTurnGrantStatus = (await fetch(`${bases.at(-1)}/v1/models`)).status;
+        bases.push(base);
+        live.push({
+          models: await (await fetch(`${base}/v1/models`)).json(),
+          other: (await fetch(`${base}/v1/messages`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-other', max_tokens: 5, messages: [{ role: 'user', content: 'x' }] }),
+          })).status,
+        });
+        return result();
+      },
+    });
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    const surfaceGrants = grantSpy.mock.calls.map((c) => c[0]).filter((g) => g.aiSessionId !== null);
+    expect(surfaceGrants).toHaveLength(2);
+    for (const g of surfaceGrants) expect(g).toMatchObject({ orgId: null, purpose: 'verification', wireModels: ['qwen'] });
+    expect(surfaceGrants.map((g) => g.compactSchemas)).toEqual([true, false]);
+    expect(surfaceGrants.every((g) => !g.observers || g.observers.size === 0)).toBe(true);
+    expect(live).toHaveLength(2);
+    expect(bases[0]).not.toBe(bases[1]);
+    expect(previousTurnGrantStatus).toBe(401);
+    for (const l of live) {
+      expect((l.models as { data: Array<{ id: string }> }).data.map((m) => m.id)).toEqual(['qwen']);
+      expect(l.other).toBe(403);
+    }
+    // Revoked: every surface grant URL is dead after the run.
+    for (const input of d.ran) expect((await fetch(`${input.childEnv.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
+  });
+
+  it('writes each entry bound to the endpoint, stage version and profile key, with tokens and a scrubbed summary', async () => {
+    h.surfaces = ['chat'];
+    h.offering = { ...h.offering!, toolProfile: 'minimal' };
+    const d = deps({ run: async () => result({ outcome: 'failed', passed: false, detail: `echoed ${UPSTREAM_KEY} instead of calling a tool` }) });
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(r.state).toBe('verified'); // the basic record is unchanged by a failed surface turn
+    const chat = readinessWritten()!.chat!;
+    expect(chat).toMatchObject({
+      state: 'failed', profile: 'minimal', exposureFingerprint: 'feedfacecafebeef', endpointFingerprint: FINGERPRINT,
+      version: '1', promptTokens: 3100, cachedTokens: 0,
+      profileKey: readinessProfileKey({ toolProfile: 'minimal', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' }, 'chat'),
+    });
+    expect(chat.summary).not.toContain(UPSTREAM_KEY);
+    expect(String(chat.summary).length).toBeLessThanOrEqual(200);
+    // The store is handed the same verified basic tree as before.
+    expect(writtenCaps()).toMatchObject({ tool_use: { supported: true }, breeze_verification: { passed: true } });
+  });
+
+  it('the turn is planned with the offering facts (its profile and effective window)', async () => {
+    h.surfaces = ['chat'];
+    h.offering = { ...h.offering!, toolProfile: 'auto', contextWindowOverride: 32_768 };
+    let factsSeen: unknown = null;
+    const d = deps({ plan: (surface, facts) => { factsSeen = facts; return { kind: 'planned', plan: fakePlan(surface) }; } });
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(factsSeen).toEqual({ toolProfile: 'auto', toolAllowlist: null, effectiveWindow: 32_768, transport: 'gateway' });
+    expect(d.ran[0]!.deadlineMs).toBeGreaterThan(0);
+  });
+
+  it('a surface the profile refuses up front is not run and not recorded', async () => {
+    h.surfaces = ['chat', 'script_builder'];
+    const d = deps({
+      plan: (surface) => (surface === 'script_builder'
+        ? { kind: 'refused', reason: 'tool_profile_underpowered', message: 'underpowered' }
+        : { kind: 'planned', plan: fakePlan(surface) }),
+    });
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(d.ran.map((i) => i.plan.surface)).toEqual(['chat']);
+    expect(Object.keys(readinessWritten()!)).toEqual(['chat']);
+    expect(r.surfaceTurns).toContainEqual({ surface: 'script_builder', state: 'refused', summary: 'underpowered' });
+  });
+
+  it('a throwing turn or plan records inconclusive (so a re-verify clears an old failure) and never fails the verification', async () => {
+    h.surfaces = ['chat', 'helper', 'script_builder'];
+    const d = deps({
+      plan: (surface) => { if (surface === 'script_builder') throw new Error('planner bug'); return { kind: 'planned', plan: fakePlan(surface) }; },
+      run: async (input) => { if (input.plan.surface === 'chat') throw new Error(`boom ${UPSTREAM_KEY}`); return result(); },
+    });
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(r.state).toBe('verified');
+    const stored = readinessWritten()!;
+    expect(Object.keys(stored)).toEqual(['chat', 'helper', 'script_builder']);
+    expect(stored.chat).toMatchObject({ state: 'inconclusive', summary: 'Breeze could not run this check; try again.' });
+    expect(stored.script_builder).toMatchObject({ state: 'inconclusive', exposureFingerprint: 'unknown' });
+    expect(JSON.stringify(stored)).not.toContain(UPSTREAM_KEY);
+    expect(JSON.stringify(h.captured.map(String))).not.toContain(UPSTREAM_KEY);
+    expect(r.surfaceTurns.map((t) => t.state)).toEqual(['inconclusive', 'passed', 'inconclusive']);
+  });
+
+  it('every turn gets the full deadline (no budget squeeze turns a slow endpoint into an inconclusive overwrite)', async () => {
+    h.surfaces = ['chat', 'helper', 'script_builder', 'ai_agents'];
+    const d = deps();
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(d.ran.map((i) => i.deadlineMs)).toEqual([SURFACE_TURN_DEADLINE_MS, SURFACE_TURN_DEADLINE_MS, SURFACE_TURN_DEADLINE_MS, SURFACE_TURN_DEADLINE_MS]);
+  });
+
+  it('a malformed stored allow-list or window field never makes the basic run "could not run"', async () => {
+    h.surfaces = ['chat'];
+    h.offering = { ...h.offering!, contextWindowObservedAt: 'not-a-date', contextWindowObserved: 9000, contextWindowObservedConfigVersion: 2 };
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, deps().deps);
+    expect(r.state).toBe('verified');
+  });
+
+  it('the turn reads its own gateway note (the grant session key is the note key)', async () => {
+    h.surfaces = ['chat'];
+    const d = deps({
+      run: async (input) => {
+        const base = input.childEnv.ANTHROPIC_BASE_URL!;
+        // An upstream that cannot be reached notes an uncoded failure under the grant's session.
+        await fetch(`${base}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'qwen', max_tokens: 5, messages: [{ role: 'user', content: 'x' }] }),
+        }).catch(() => undefined);
+        const note = input.gatewayFailure?.();
+        return result(note ? { outcome: 'inconclusive', passed: false, detail: `note: ${note.message}` } : { outcome: 'failed', passed: false, detail: 'no note' });
+      },
+    });
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(readinessWritten()!.chat).toMatchObject({ state: 'inconclusive' });
+  });
+
+  it('a failed assignment listing skips the surface stage; the basic record is still written', async () => {
+    h.surfacesThrow = new Error('db down');
+    const d = deps();
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }, d.deps);
+    expect(r.state).toBe('verified');
+    expect(d.planned).toEqual([]);
+    expect(h.writes).toHaveLength(1);
   });
 });

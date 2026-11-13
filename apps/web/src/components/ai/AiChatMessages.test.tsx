@@ -277,6 +277,27 @@ describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
     expect(onIntentDecided).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards ticketContext to the approval card (#11674)', () => {
+    approvalDialog.props.length = 0;
+    const ticketContext = { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow' };
+
+    render(
+      <AiChatMessages
+        {...baseProps}
+        messages={[{ id: '1', role: 'user', content: 'reply to Dana' }] as never}
+        pendingApproval={{
+          executionId: 'e1',
+          toolName: 'manage_tickets',
+          input: { action: 'comment', isPublic: true, content: 'Hi' },
+          description: 'Post PUBLIC comment on ticket T-2026-0001',
+          ticketContext,
+        }}
+      />,
+    );
+
+    expect(approvalDialog.props.at(-1)!.ticketContext).toEqual(ticketContext);
+  });
+
   it('remounts the approval card for each new execution so decide state cannot leak', () => {
     // pendingApproval is REPLACED in place by every approval_required event.
     // Without key={executionId} React reconciles the same instance and the
@@ -940,5 +961,22 @@ describe('timed extras and Load earlier (Wisp companion W02b)', () => {
     stampGeometry(el, { scrollHeight: 1600, clientHeight: 300, scrollTop: 0 });
     rerender(<AiChatMessages {...baseProps} messages={[u('u0', -60), ...newer] as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
     expect(el.scrollTop).toBe(0);
+  });
+});
+
+describe('transcript removed by retention (#4342 W4)', () => {
+  it('shows the dated banner instead of the quick-action empty state', () => {
+    const { getByTestId, queryByText } = render(
+      <AiChatMessages {...baseProps} messages={[]} transcriptPurgedAt="2027-02-01T03:15:00.000Z" />,
+    );
+    const banner = getByTestId('ai-chat-transcript-purged');
+    expect(banner).toHaveTextContent(/Transcript removed by retention on/);
+    expect(banner).toHaveTextContent(/2027/);
+    expect(queryByText(/Ask about your devices/)).toBeNull();
+  });
+
+  it('renders unchanged when transcriptPurgedAt is null', () => {
+    const { queryByTestId } = render(<AiChatMessages {...baseProps} messages={[]} transcriptPurgedAt={null} />);
+    expect(queryByTestId('ai-chat-transcript-purged')).toBeNull();
   });
 });

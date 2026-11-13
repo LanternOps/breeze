@@ -38,8 +38,14 @@ describe('buildQualityQuery', () => {
     ['surface', 'i.surface'],
     ['prompt_profile', `COALESCE(i.prompt_profile, 'unrecorded')`],
     ['prompt_variant', `i.surface || '/' || i.prompt_profile || '@base'`],
+    ['tool_profile', `COALESCE(i.tool_profile, 'unrecorded')`],
   ] as const)('groupBy %s keys on %s', (groupBy, expr) => {
     expect(render(base({ groupBy })).sql).toContain(expr);
+  });
+  it('counts refused tool-call batches by their ledger stop reason (W04 #11397)', () => {
+    const { sql } = render(base({ groupBy: 'tool_profile' }));
+    expect(sql).toContain(`COUNT(*) FILTER (WHERE stop_reason = 'refused_tool_batch') AS refused_tool_batches`);
+    expect(sql).toContain('c.refused_tool_batches::text AS refused_tool_batches');
   });
   it('an optional surface filter narrows the ledger', () => {
     const { sql, params } = render(base({ groupBy: 'prompt_variant', surfaces: ['chat', 'ai_agents'] }));
@@ -88,7 +94,7 @@ describe('buildQualityQuery', () => {
 
 const raw = (over: Record<string, string | null> = {}) => ({
   key: 'k', label: null, connection_name: null,
-  invocations: '10', cost_cents: '100', refusals: '2', failovers: '1', touched: '4', conversation_cost: '80',
+  invocations: '10', cost_cents: '100', refusals: '2', refused_tool_batches: '3', failovers: '1', touched: '4', conversation_cost: '80',
   conversations: '3', sessions: '2', flagged: '1', auto_flagged: '1', continued: '1',
   resolved_sessions: '1', median_turns: '3.5', agent_runs: '1', agent_runs_completed: '1', switched_away: '1',
   left_conversations: '2', ...over,
@@ -98,6 +104,7 @@ describe('toQualityMetrics', () => {
   it('computes rates over their own denominators', () => {
     expect(toQualityMetrics(raw(), { failover: true, continuation: true })).toEqual({
       invocations: 10, costCents: 100, refusals: 2, refusalRate: 0.2,
+      refusedToolBatches: 3, refusedToolBatchRate: 0.3,
       failovers: 1, failoverRate: 0.1,
       conversations: 3, costPerConversationCents: 20,
       sessions: 2, flagged: 1, autoFlagged: 1, flagRate: 0.5,
@@ -115,8 +122,8 @@ describe('toQualityMetrics', () => {
     expect(toQualityMetrics(raw({ touched: '2', switched_away: '1', continued: '1', left_conversations: '1' }), { failover: true, continuation: true }).leftRate).toBe(0.5);
   });
   it('null rates with no denominator', () => {
-    const m3 = toQualityMetrics(raw({ invocations: '0', refusals: '0', touched: '0', sessions: '0', agent_runs: '0', median_turns: null }), { failover: true, continuation: true });
-    expect(m3).toMatchObject({ refusalRate: 0, failoverRate: null, costPerConversationCents: null, flagRate: null, leftRate: null, agentCompletionRate: null, medianTurnsToResolution: null });
+    const m3 = toQualityMetrics(raw({ invocations: '0', refusals: '0', refused_tool_batches: '0', touched: '0', sessions: '0', agent_runs: '0', median_turns: null }), { failover: true, continuation: true });
+    expect(m3).toMatchObject({ refusalRate: 0, refusedToolBatchRate: 0, failoverRate: null, costPerConversationCents: null, flagRate: null, leftRate: null, agentCompletionRate: null, medianTurnsToResolution: null });
   });
 });
 

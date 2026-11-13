@@ -263,7 +263,10 @@ listRoutes.get(
     // request context — patch_job_results is device-join RLS.
     const installFailures = await loadPatchInstallFailures(
       patchList.map((patch) => patch.id),
-      { orgId: query.orgId }
+      {
+        orgId: query.orgId,
+        allowedSiteIds: auth.scope === 'organization' ? auth.allowedSiteIds : undefined,
+      }
     );
 
     // Device axis (#8728): how many devices in the caller's scope still need

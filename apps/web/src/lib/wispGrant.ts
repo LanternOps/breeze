@@ -137,6 +137,8 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
     unattendedReads: grant?.unattendedReads === true,
     // #10390: off unless the server says literally true.
     summaryRefine: grant?.summaryRefine === true,
+    // #11672: the session a surface entering Wisp resumes when it is still live.
+    lastSessionId: str(thread?.lastSessionId) || null,
   };
 }
 

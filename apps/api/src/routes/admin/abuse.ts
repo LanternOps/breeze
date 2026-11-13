@@ -16,6 +16,7 @@ import {
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
+import { cancelPendingEmailChange } from '../../services/pendingEmailCancellation';
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { getBreezeBillingClient } from '../../services/breezeBillingClient';
@@ -193,6 +194,7 @@ export async function suspendPartnerForAbuse(
         for (const { id } of disableResult) {
           await advanceUserEpochs(tx, id, { auth: true });
           await revokeAllRefreshFamilies(tx, id, 'suspended');
+          await cancelPendingEmailChange(tx, id);
         }
 
         // Revoke API keys for orgs under this partner.

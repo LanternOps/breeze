@@ -631,3 +631,342 @@ describe('step 4 — new person (login, no identity)', () => {
     expect(m.createIdentityOnlyAccount).toHaveBeenCalledTimes(1);
   });
 });
+
+// ===========================================================================
+// W7 (#11384, plan Task 5): Google through the same resolver (D2–D4, D9, D13,
+// D15). Appended; every case above is unchanged. vi.hoisted / vi.mock are
+// hoisted to the top of the file by vitest.
+// ===========================================================================
+
+const gm = vi.hoisted(() => ({
+  findOrgByVerifiedDomain: vi.fn(),
+  isDomainVerifiedForOrg: vi.fn(),
+  lockVerifiedDomainRow: vi.fn(),
+}));
+vi.mock('../portalDomainVerification', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../portalDomainVerification')>()),
+  findOrgByVerifiedDomain: gm.findOrgByVerifiedDomain,
+  isDomainVerifiedForOrg: gm.isDomainVerifiedForOrg,
+  lockVerifiedDomainRow: gm.lockVerifiedDomainRow,
+}));
+
+describe('W7 google', () => {
+  const HD = 'acme.example.com';
+  const SUB = '109876543210987654321';
+  const GOOGLE_ISSUER = 'https://accounts.google.com';
+  const VERIFIED_AT = new Date('2027-01-31T08:00:00.000Z');
+  const EMAIL = `pat@${HD}`;
+  const gIdentity = {
+    provider: 'google' as const,
+    issuer: GOOGLE_ISSUER as 'https://accounts.google.com',
+    subject: SUB,
+    entraTenantId: null,
+    upn: null,
+    emailClaim: EMAIL as string | null,
+    emailDomainOwnerVerified: true,
+    name: 'Pat',
+    googleHostedDomain: HD,
+  };
+  const gInput = (over: Partial<ResolvePortalOidcSignInInput> = {}) => input({ identity: gIdentity, ...over });
+  function gPolicy(opts: { google?: boolean; ssoOnly?: boolean; mode?: Mode } = {}) {
+    const p = policy({ entra: false, ssoOnly: opts.ssoOnly, mode: opts.mode });
+    const google = opts.google ?? true;
+    return {
+      ...p,
+      effective: { ...p.effective, googleEnabled: { value: google, source: 'org' as const } },
+      googleDomains: google ? [HD] : null,
+    };
+  }
+  const gSession = (over: Record<string, unknown>) => ({
+    kind: 'session', portalUserId: USER, orgId: ORG, method: 'google', entraTenantId: null, googleHostedDomain: HD, ...over,
+  });
+  /** Where the google fence ran: [transaction depth, db calls made before it]. */
+  let fenceAt: Array<[number, number]> = [];
+
+  beforeEach(() => {
+    fenceAt = [];
+    gm.findOrgByVerifiedDomain.mockResolvedValue({ domain: HD, orgId: ORG, partnerId: PARTNER, method: 'dns_txt', verifiedAt: VERIFIED_AT });
+    gm.isDomainVerifiedForOrg.mockResolvedValue(false);
+    gm.lockVerifiedDomainRow.mockImplementation(async () => {
+      fenceAt.push([h.state.txDepth, h.calls.length]);
+      return true;
+    });
+    m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy());
+  });
+
+  describe('step 0', () => {
+    it('google: unverified or declared-only hd → org_unresolved', async () => {
+      // RF2, inv. 2: findOrgByVerifiedDomain answers only a CURRENT verification;
+      // a declared-only row or a lapsed one reads as null.
+      gm.findOrgByVerifiedDomain.mockResolvedValue(null);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('org_unresolved', null));
+      expect(gm.findOrgByVerifiedDomain).toHaveBeenCalledWith(HD);
+      expect(m.findOrgByProvenEntraTenant).not.toHaveBeenCalled();
+      expect(m.getActiveOrgTenant).not.toHaveBeenCalled();
+      expect(h.calls).toHaveLength(0);
+    });
+
+    it('google: hd verified for org B never signs into org A; custom host for A + hd for B → host_mismatch', async () => {
+      // inv. 1: the org is the hd's, never the host's.
+      gm.findOrgByVerifiedDomain.mockResolvedValue({ domain: HD, orgId: OTHER_ORG, partnerId: PARTNER, method: 'dns_txt', verifiedAt: VERIFIED_AT });
+      expect(await resolvePortalOidcSignIn(gInput({ hostOrgId: ORG }))).toEqual(denied('host_mismatch', OTHER_ORG));
+      expect(m.getActiveOrgTenant).not.toHaveBeenCalled();
+      expect(h.calls).toHaveLength(0);
+
+      // On the shared host the sign-in lands in B (the hd's org), never A.
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ mode: 'invited_only' }));
+      h.results.push([], []);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('invited_only', OTHER_ORG));
+      expect(m.getActiveOrgTenant).toHaveBeenCalledWith(OTHER_ORG);
+      expect(m.resolvePortalAccessPolicy).toHaveBeenCalledWith(OTHER_ORG);
+      expect(whereOf(h.calls[1]).params).toEqual(expect.arrayContaining([OTHER_ORG, EMAIL]));
+      expect(whereOf(h.calls[1]).params).not.toContain(ORG);
+    });
+
+    it('google: googleEnabled off (masked or set) → method_off', async () => {
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ google: false }));
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('method_off'));
+      // Microsoft on does not let a Google identity in.
+      m.resolvePortalAccessPolicy.mockResolvedValue(policy({ entra: true }));
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('method_off'));
+      expect(h.calls).toHaveLength(0);
+    });
+
+    it('google: an identity of the wrong shape (issuer) is refused before any read', async () => {
+      const forged = { ...gIdentity, issuer: 'https://evil.example.com' as 'https://accounts.google.com' };
+      expect(await resolvePortalOidcSignIn(gInput({ identity: forged }))).toEqual(denied('org_unresolved', null));
+      expect(gm.findOrgByVerifiedDomain).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('step 1 — google identity found', () => {
+    it('looks up (PORTAL_GOOGLE_ISSUER, sub) only, never the Entra reader; session pinned to hd, no fence', async () => {
+      h.results.push([{ portalUserId: USER, orgId: ORG }], [account({ hasEntraIdentity: false, hasGoogleIdentity: true })], [], []);
+      const out = await resolvePortalOidcSignIn(gInput());
+      expect(out).toEqual(gSession({ authEpoch: 3, via: 'identity' }));
+      expect(m.findPortalUserIdByEntraIdentity).not.toHaveBeenCalled();
+      const lookup = whereOf(h.calls[0]);
+      expect(lookup.params).toEqual(['google', GOOGLE_ISSUER, SUB]);
+      const [touch] = updates();
+      expect(touch!.args[0]).toBe(portalUserIdentities);
+      expect(whereOf(touch).params).toEqual(expect.arrayContaining([GOOGLE_ISSUER, SUB, USER]));
+      // D15: a plain session is read-only for placement; D7's per-request check covers it.
+      expect(gm.lockVerifiedDomainRow).not.toHaveBeenCalled();
+    });
+
+    it('identity_other_org: a google identity in another org (inv. 4)', async () => {
+      h.results.push([{ portalUserId: USER, orgId: OTHER_ORG }]);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('identity_other_org'));
+      expect(updates()).toHaveLength(0);
+    });
+
+    it('step 5, instant: the browser grant is fenced first; a fence refusal → org_unresolved, rolled back', async () => {
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ mode: 'instant' }));
+      const addin = account({ browserAccess: 'none', authMethod: 'google', hasPasswordHash: false, hasGoogleIdentity: true });
+      h.results.push([{ portalUserId: USER, orgId: ORG }], [addin], [{ authEpoch: 3 }], []);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(gSession({ authEpoch: 3, via: 'instant_grant' }));
+      expect(fenceAt).toEqual([[1, 2]]);
+
+      h.calls.length = 0;
+      gm.lockVerifiedDomainRow.mockResolvedValue(false);
+      h.results.push([{ portalUserId: USER, orgId: ORG }], [addin]);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('org_unresolved'));
+      expect(updates()).toHaveLength(0);
+    });
+
+    it('step 5, invited_only: a google identity on a browser_access none account gets no session', async () => {
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ mode: 'invited_only' }));
+      h.results.push([{ portalUserId: USER, orgId: ORG }], [account({ browserAccess: 'none', hasGoogleIdentity: true })]);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('invited_only'));
+      expect(updates()).toHaveLength(0);
+    });
+  });
+
+  describe('step 2 — google invite', () => {
+    const purpose = { kind: 'invite' as const, inviteTokenHash: HASH };
+    const invited = (over: Record<string, unknown> = {}) => account({
+      status: 'invited', hasPasswordHash: false, hasExternalIdentity: false, hasEntraIdentity: false, hasGoogleIdentity: false, ...over,
+    });
+
+    it('no legacy pre-check; fence first in the transaction; links (google, sub) linked_via invite → session pinned to hd', async () => {
+      consumer.mockResolvedValue({ portalUserId: USER, orgId: ORG, authEpoch: 3 });
+      h.results.push([], [invited()], [{ authEpoch: 4 }]);
+      const out = await resolvePortalOidcSignIn(gInput({ purpose }));
+      expect(out).toEqual(gSession({ authEpoch: 4, via: 'invite' }));
+      // Only the identity lookup ran before the fence: no portal_users legacy read for Google.
+      expect(fenceAt).toEqual([[1, 1]]);
+      expect(gm.lockVerifiedDomainRow).toHaveBeenCalledWith(expect.anything(), { orgId: ORG, domain: HD, verifiedAt: VERIFIED_AT });
+      expect(m.linkPortalUserIdentity).toHaveBeenCalledWith(expect.anything(), {
+        orgId: ORG, portalUserId: USER, provider: 'google', sub: SUB, linkedVia: 'invite', clearPasswordHash: false, now: NOW,
+      });
+      expect(setOf(updates()[0])).not.toHaveProperty('authMethod');
+    });
+
+    it('an account that already has an entra identity accepts a google invite (one identity per provider)', async () => {
+      consumer.mockResolvedValue({ portalUserId: USER, orgId: ORG, authEpoch: 3 });
+      h.results.push([], [invited({ hasEntraIdentity: true, hasExternalIdentity: true })], [{ authEpoch: 4 }]);
+      expect(await resolvePortalOidcSignIn(gInput({ purpose }))).toMatchObject({ kind: 'session', via: 'invite', method: 'google' });
+    });
+
+    it('invite_invalid: the invited account already has a google identity — no link', async () => {
+      consumer.mockResolvedValue({ portalUserId: USER, orgId: ORG, authEpoch: 3 });
+      h.results.push([], [invited({ hasGoogleIdentity: true, hasExternalIdentity: true })]);
+      expect(await resolvePortalOidcSignIn(gInput({ purpose }))).toEqual(denied('invite_invalid'));
+      expect(m.linkPortalUserIdentity).not.toHaveBeenCalled();
+      expect(updates()).toHaveLength(0);
+    });
+
+    it('a bound google identity never completes an invite: identity_conflict, invite NOT consumed (D11)', async () => {
+      h.results.push([{ portalUserId: USER, orgId: ORG }]);
+      expect(await resolvePortalOidcSignIn(gInput({ purpose }))).toEqual(denied('identity_conflict'));
+      expect(consumer).not.toHaveBeenCalled();
+    });
+
+    it('the fence refuses (hd no longer verified for the org) → org_unresolved, nothing linked', async () => {
+      consumer.mockResolvedValue({ portalUserId: USER, orgId: ORG, authEpoch: 3 });
+      gm.lockVerifiedDomainRow.mockResolvedValue(false);
+      h.results.push([]);
+      expect(await resolvePortalOidcSignIn(gInput({ purpose }))).toEqual(denied('org_unresolved'));
+      expect(m.linkPortalUserIdentity).not.toHaveBeenCalled();
+      expect(h.state.rolledBack).toBe(1);
+    });
+  });
+
+  describe('step 3 — google link', () => {
+    const purpose = { kind: 'link' as const, portalUserId: USER, orgId: ORG, authEpoch: 3 };
+
+    it('an entra-linked account links google (self_link), fenced first', async () => {
+      h.results.push([], [account({ hasEntraIdentity: true, hasGoogleIdentity: false })]);
+      expect(await resolvePortalOidcSignIn(gInput({ purpose }))).toEqual({ kind: 'linked', portalUserId: USER, orgId: ORG });
+      expect(fenceAt).toEqual([[1, 1]]);
+      expect(m.linkPortalUserIdentity).toHaveBeenCalledWith(expect.anything(), {
+        orgId: ORG, portalUserId: USER, provider: 'google', sub: SUB, linkedVia: 'self_link', clearPasswordHash: false, now: NOW,
+      });
+    });
+
+    it('a google-linked account linking a second google identity is refused (link_invalid, W4 parity), no link', async () => {
+      h.results.push([], [account({ hasEntraIdentity: false, hasGoogleIdentity: true })]);
+      expect(await resolvePortalOidcSignIn(gInput({ purpose }))).toEqual(denied('link_invalid'));
+      expect(m.linkPortalUserIdentity).not.toHaveBeenCalled();
+    });
+
+    it('the fence refuses → org_unresolved, nothing linked', async () => {
+      gm.lockVerifiedDomainRow.mockResolvedValue(false);
+      h.results.push([]);
+      expect(await resolvePortalOidcSignIn(gInput({ purpose }))).toEqual(denied('org_unresolved'));
+      expect(m.linkPortalUserIdentity).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('step 4 — google new person', () => {
+    it('google new person with an existing same-email account → account_exists, no link', async () => {
+      // RF1, inv. 5: instant mode would otherwise create or link.
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ mode: 'instant' }));
+      h.results.push([], [{ id: OTHER_USER }], []);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual({ kind: 'account_exists', orgId: ORG });
+      const where = whereOf(h.calls[1]);
+      expect(where.sql).toContain('lower("portal_users"."email")');
+      expect(where.params).toEqual([ORG, EMAIL]);
+      expect(m.createIdentityOnlyAccount).not.toHaveBeenCalled();
+      expect(m.linkPortalUserIdentity).not.toHaveBeenCalled();
+      expect(m.createPortalAccessRequest).not.toHaveBeenCalled();
+      expect(gm.lockVerifiedDomainRow).not.toHaveBeenCalled();
+    });
+
+    it('google: approval → google request with sub and hostedDomain; instant → identity-only google account', async () => {
+      h.results.push([], []);
+      m.createPortalAccessRequest.mockImplementation(async () => {
+        expect(h.state.systemDepth).toBe(0);
+        return { kind: 'created', requestId: 'req-1' };
+      });
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual({ kind: 'request_sent', orgId: ORG });
+      expect(m.createPortalAccessRequest).toHaveBeenCalledWith(
+        { source: 'google', orgId: ORG, email: EMAIL, name: 'Pat', sub: SUB, hostedDomain: HD },
+        NOW,
+      );
+
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ mode: 'instant' }));
+      h.results.push([], []);
+      m.createIdentityOnlyAccount.mockImplementation(async () => {
+        expect(h.state.txDepth).toBe(1);
+        expect(fenceAt).toHaveLength(1); // fenced before the write
+        return { kind: 'created', portalUserId: USER, authEpoch: 1 };
+      });
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(gSession({ authEpoch: 1, via: 'instant' }));
+      expect(m.createIdentityOnlyAccount).toHaveBeenCalledWith(expect.anything(), {
+        orgId: ORG, provider: 'google', sub: SUB, email: EMAIL, name: 'Pat',
+        contactAddress: EMAIL, actorUserId: null, writer: 'sso_instant', now: NOW,
+      });
+      expect(gm.lockVerifiedDomainRow).toHaveBeenCalledWith(expect.anything(), { orgId: ORG, domain: HD, verifiedAt: VERIFIED_AT });
+    });
+
+    it('instant: an email on a domain not verified for the org → the account, no contact (D3)', async () => {
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ mode: 'instant' }));
+      h.results.push([], []);
+      m.createIdentityOnlyAccount.mockResolvedValue({ kind: 'created', portalUserId: USER, authEpoch: 1 });
+      const identity = { ...gIdentity, emailClaim: 'pat@personal.example.com' };
+      await resolvePortalOidcSignIn(gInput({ identity }));
+      expect(gm.isDomainVerifiedForOrg).toHaveBeenCalledWith('personal.example.com', ORG);
+      expect(m.createIdentityOnlyAccount).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        email: 'pat@personal.example.com', contactAddress: null,
+      }));
+    });
+
+    it('instant: the hd is displaced between step 0 and the write → org_unresolved, rolled back, no step-1 retry', async () => {
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ mode: 'instant' }));
+      gm.lockVerifiedDomainRow.mockResolvedValue(false);
+      h.results.push([], []);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('org_unresolved'));
+      expect(m.createIdentityOnlyAccount).not.toHaveBeenCalled();
+      expect(h.state.rolledBack).toBe(1);
+      expect(h.calls.filter((c) => c.op === 'select')).toHaveLength(2); // lookup + account-exists; no retry
+    });
+
+    it('google: invited_only → invited_only', async () => {
+      m.resolvePortalAccessPolicy.mockResolvedValue(gPolicy({ mode: 'invited_only' }));
+      h.results.push([], []);
+      expect(await resolvePortalOidcSignIn(gInput())).toEqual(denied('invited_only'));
+      expect(m.createPortalAccessRequest).not.toHaveBeenCalled();
+      expect(m.createIdentityOnlyAccount).not.toHaveBeenCalled();
+    });
+
+    it('no_address: a google identity without an email claim', async () => {
+      h.results.push([]);
+      expect(await resolvePortalOidcSignIn(gInput({ identity: { ...gIdentity, emailClaim: null } }))).toEqual(denied('no_address'));
+    });
+  });
+});
+
+describe('W7 D9 — a conflicting pending request is refused, never overwritten', () => {
+  it('entra approval: claims_conflict → request_conflict (was request_sent before W7)', async () => {
+    h.results.push([]);
+    m.createPortalAccessRequest.mockResolvedValue({ kind: 'claims_conflict', requestId: 'req-other' });
+    expect(await resolvePortalOidcSignIn(input())).toEqual(denied('request_conflict'));
+  });
+
+  it('google approval: claims_conflict → request_conflict', async () => {
+    const base = policy({ entra: false });
+    m.resolvePortalAccessPolicy.mockResolvedValue({
+      ...base,
+      effective: { ...base.effective, googleEnabled: { value: true, source: 'org' as const } },
+      googleDomains: ['acme.example.com'],
+    });
+    gm.findOrgByVerifiedDomain.mockResolvedValue({
+      domain: 'acme.example.com', orgId: ORG, partnerId: PARTNER, method: 'dns_txt', verifiedAt: NOW,
+    });
+    h.results.push([], []);
+    m.createPortalAccessRequest.mockResolvedValue({ kind: 'claims_conflict', requestId: 'req-other' });
+    const identity = {
+      provider: 'google' as const, issuer: 'https://accounts.google.com' as const, subject: 'sub-1', entraTenantId: null,
+      upn: null, emailClaim: 'pat@acme.example.com', emailDomainOwnerVerified: true, name: 'Pat', googleHostedDomain: 'acme.example.com',
+    };
+    expect(await resolvePortalOidcSignIn(input({ identity }))).toEqual(denied('request_conflict'));
+  });
+
+  it('step 5 add-in request: claims_conflict → request_conflict', async () => {
+    m.findPortalUserIdByEntraIdentity.mockResolvedValue({ portalUserId: USER, orgId: ORG });
+    h.results.push([account({ browserAccess: 'none', authMethod: 'entra', hasPasswordHash: false })]);
+    m.createPortalAccessRequest.mockResolvedValue({ kind: 'claims_conflict', requestId: 'req-other' });
+    expect(await resolvePortalOidcSignIn(input())).toEqual(denied('request_conflict'));
+  });
+});

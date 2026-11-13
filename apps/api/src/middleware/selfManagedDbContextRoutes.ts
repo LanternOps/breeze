@@ -56,6 +56,33 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // (#1105). The handler reads the device in a short caller-scoped context.
   { method: 'POST', pattern: /^\/api\/v1\/devices\/[0-9a-f-]{36}\/oem-updates\/run\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/security\/scans\/[0-9a-f-]{36}\/cancel\/?$/i },
+  // Connection tests and probes against a provider or a caller-supplied URL:
+  // the handler reads in a short caller-scoped context and makes the outbound
+  // call with no transaction held, so waiting on the other host holds no
+  // pooled database connection.
+  { method: 'POST', pattern: /^\/api\/v1\/google\/connection\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/unifi\/(?:connect|test)\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/unifi\/hosts\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pax8\/integration\/test\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/integrations\/monitoring\/test\/?$/ },
+  // Catalog image import downloads a caller-supplied URL between a short
+  // ownership read and a short image write.
+  { method: 'POST', pattern: /^\/api\/v1\/catalog\/[0-9a-f-]{36}\/image\/from-url\/?$/i },
+  // Quote image upload or copy-from-URL: same shape (short read, download with
+  // nothing held, short write).
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[0-9a-f-]{36}\/images\/?$/i },
+  // Quick Support end waits on the agent relay twice (the self-destruct
+  // command, then the socket close). The handler reads the session in a short
+  // caller-scoped context; endSupportSession opens its own short contexts.
+  { method: 'POST', pattern: /^\/api\/v1\/remote\/support-sessions\/[0-9a-f-]{36}\/end\/?$/i },
+  // Customer domain ownership check: a DNS (or HTTPS) lookup of the domain
+  // between short reads; the verification service owns its own contexts.
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/organizations\/[^/]+\/customer-domains\/[^/]+\/verification\/check\/?$/ },
+  // Billing portal session and support message: forwarded to the billing
+  // service. The support handler reads the sender in a short caller-scoped
+  // context; the portal handler does no DB work of its own.
+  { method: 'POST', pattern: /^\/api\/v1\/billing\/portal\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/support\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.
   { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },

@@ -27,7 +27,9 @@
  * prompt (no seed or tool reads wisp_thread_posts), so it is sanitized
  * (`sanitizeUntrustedToolText`: injection spans, dangerous Unicode, forged
  * fences) and capped rather than fenced; the fence is applied where the same
- * text enters a prompt (chatRunBridge drain, the continuation seed).
+ * text enters a prompt (chatRunBridge drain, which also renders the run-row
+ * results specialistResultsTurn reads each Wisp turn (#11671); the
+ * continuation seed).
  *
  * Both functions read under short system contexts of their own and never
  * throw for a run or intent that should not post: they return

@@ -121,6 +121,28 @@ If a group can't start, the execution error names the specific missing prerequis
 
 DR plan steps that restore a backup also follow the [restore integrity checks](/backup/restoring/#integrity-checks-on-restore): each target device needs a v0.120.0 or later agent, and a plan cannot restore a **Not verified** (unattested) snapshot, because that needs a technician's two-factor confirmation. Restore such a snapshot from the console instead.
 
+### What an execution runs
+
+Each execution runs the recovery groups as they were when it started: their devices, sequence order, dependencies and restore configuration are saved with the execution, and later plan edits never change a queued or running execution.
+
+What is saved is the plan definition, not every object it refers to. Objects referenced by ID are resolved when each group starts: for a bare-metal rebuild step, each device's latest **Bare-metal restorable** snapshot; the storage destination of the backup configuration a restore reads from; and the authorization of each target device and source. A group that starts later in a run can therefore use a newer snapshot than existed when the execution began, and a device the initiating user can no longer reach stops the run.
+
+While an execution of a plan is pending or running, the plan and its recovery groups cannot be edited or archived, and the plan cannot be started again. The console shows an error, and the API returns `409` with the code `dr_plan_execution_in_progress`. Wait for the execution to finish, or abort it, then make the change or start the plan again.
+
+A recovery group can only depend on another group of the same plan (otherwise the API returns `400` with the code `invalid_group_dependency`). A group that another group depends on cannot be deleted until that dependency is changed or removed (`409`, `dr_plan_group_has_dependents`).
+
+When an AI assistant or API key asks to run a plan, a second person approves it. The approval covers every recovery group's devices, order, dependencies and restore configuration, not only the plan name. If the plan or any of its groups changes after approval, the run is refused (`dr_plan_changed`) and a new approval is needed.
+
+<Aside type="caution" title="Upgrading">
+Executions that were already queued or running before the upgrade have no saved group definition. They stop with `execution_definition_unavailable` instead of continuing, and commands already sent to devices are not recalled. Review pending and running executions before upgrading, and start a new execution afterwards if one is still needed. Approvals to run a plan that were granted but not yet carried out before the upgrade must be requested again.
+
+Avoid starting DR executions while a rolling deploy is in progress: an execution created by an API instance still on the earlier version has no saved definition and is stopped the same way.
+</Aside>
+
+<Aside type="note" title="Merging organizations">
+Merging an organization while one of its DR executions is pending or running stops that execution (`execution_definition_unavailable`), because the saved definition still names the original organization. Let executions finish, or abort them, before a merge, and start them again afterwards.
+</Aside>
+
 ### Viewing Execution History
 
 Past executions are listed on the plan detail page, showing:

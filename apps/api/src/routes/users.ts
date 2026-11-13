@@ -54,6 +54,7 @@ import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { getScopedUser, hasFullPartnerMembership, listScopedUsers } from '../services/userDirectory';
 import { requestPendingEmailChange } from '../services/pendingEmail';
+import { cancelPendingEmailChange } from '../services/pendingEmailCancellation';
 import { resolveDelegatedSiteIds } from '../services/organizationMembershipDelegation';
 import { clearEmailOptOut, isOptedOut, setEmailOptOut } from '../services/emailOptouts';
 
@@ -1851,6 +1852,7 @@ userRoutes.patch(
             // account does not resurrect keys minted before it (#7489).
             await advanceUserEpochs(tx, userId, { auth: true, credential: true });
             await revokeAllRefreshFamilies(tx, userId, `status:${row.status ?? 'changed'}`);
+            await cancelPendingEmailChange(tx, userId);
           }
           return [row];
         })
@@ -1977,6 +1979,7 @@ async function removeMembershipForScope(
         // never bumps epochs itself, so there is exactly one bump per removal.
         await advanceUserEpochs(tx, userId, { auth: true, mfa: true });
         await revokeAllRefreshFamilies(tx, userId, 'membership-removed');
+        await cancelPendingEmailChange(tx, userId);
         await neutralizeUserIfOrphaned(tx, userId);
         return { deleted: true };
       })

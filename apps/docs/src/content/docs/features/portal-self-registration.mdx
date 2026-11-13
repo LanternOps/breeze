@@ -1,0 +1,100 @@
+---
+title: Customer Portal Self-Registration
+description: Let people at a customer's verified email domain request their own Customer Portal access, with MSP approval or instantly, and understand what Breeze checks and what the requester sees.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+Self-registration lets a person at a customer's company ask for their own Customer Portal login instead of waiting for an invite. They enter their name and work email, confirm a link sent to that mailbox, and then either wait for you to approve the request or, if you allow it, get an account straight away. Invites from you keep working whatever this setting says.
+
+It is **off by default**. You turn it on per customer organization, or as a partner-wide default.
+
+## Requirements
+
+Both must be true for an organization:
+
+1. **At least one verified email domain.** Breeze only trusts a domain it has proof the customer owns. See [Customer domain verification](/features/portal-domain-verification/).
+2. **Self-registration is set to Needs approval or Instant** on the **Sign-in & registration** card. Set the partner default under **Settings → Partner → Customer portal**; an organization overrides it under **Settings → Organizations → [organization] → Customer Portal → Sign-in & registration**. See [Sign-in & registration](/features/portal/#sign-in--registration).
+
+If the mode is on but the organization has no verified domain, the organization's card shows a warning and nobody can use the feature until a domain is verified. The warning is not shown on the partner default.
+
+## The two modes
+
+| Mode | What happens when the person confirms their email |
+|---|---|
+| **Needs approval** | Breeze creates a pending request in the organization's queue (**Portal users → Requests**). You **Approve** it, which sends the normal portal invite, or **Deny** it, which sends a neutral "not approved" email. |
+| **Instant** | Breeze creates the account and takes the person straight to the account set-up page, where they choose a password. If the organization's password sign-in is off (Microsoft-only), that page offers Microsoft sign-in instead. |
+
+**Needs approval** is the safer choice. **Instant** suits a customer whose domain you fully trust, because anyone who can read mail at that domain gets an account.
+
+## What the requester sees
+
+<Steps>
+1. They open the **Request access** page, enter their **name** and **work email**, and submit.
+2. The page shows: "If this address can request access, we've emailed you." They see this for every address.
+3. They open the email and click the link. It opens a page with a **Confirm my request** button. They must click it; opening the link alone does nothing.
+4. In **Needs approval** mode they are told the request is waiting for the organization to approve it. In **Instant** mode they land on the account set-up page.
+</Steps>
+
+The confirmation link works once and is valid for **30 minutes**. An expired or already-used link shows "This link is invalid or has expired", and the person can submit the form again. Requiring the button click means an email scanner that pre-fetches links cannot confirm a request on the person's behalf.
+
+If the address already has a portal account in that organization, the email says so ("you already have an account") instead of creating a second one.
+
+## Where people find the Request access page
+
+A **Request access** link appears on the login page only on the organization's **verified custom portal domain**, and only while the organization's mode is on and it has at least one verified email domain. It never appears on the shared portal host: there Breeze cannot tell which customer the visitor belongs to, and the link would show to every customer of every MSP on the server.
+
+The page itself still works on any host. The path is `/request-access` under the portal's base path, for example:
+
+```
+https://<your-breeze-domain>/portal/request-access
+```
+
+So an MSP without a custom portal domain can share that URL with the customer directly, in a welcome email or on an intranet page. The person's email domain, not the URL, decides which organization the request goes to.
+
+## What Breeze checks, and what it never reveals
+
+- **The email's domain must match exactly.** `jane@example.com` matches a verified `example.com`. A subdomain such as `mail.example.com` does not match unless that subdomain is itself verified.
+- **A verified domain belongs to one organization**, so a match always resolves to a single customer.
+- **The page never says whether an address is eligible or already has an account.** It shows the same confirmation message every time, so the form cannot be used to find out who works at a customer or who has a login. Only the email in the person's own mailbox differs.
+- **Requests are rate-limited** per IP address, per email address and per domain, and the confirmation page is rate-limited too. A person who hits a limit is told to try again later.
+
+## Managing requests
+
+In **Needs approval** mode, requests wait under **Access requests** above the organization's portal users list, alongside the other request types described in [Access requests](/features/portal/#access-requests). The **Requests (N)** button on the Sign-in & registration card jumps there.
+
+- A pending request **expires after 14 days** if nobody decides it.
+- Each organization holds at most **200 pending requests**. When the queue is full, new requests are not added until some are decided or expire.
+- Approve and Deny work singly or in bulk, the same as for the other request types.
+
+## When a domain loses verification
+
+If a domain's verification is cleared (see [Keeping verification current](/features/portal-domain-verification/#keeping-verification-current)), Breeze stops trusting it straight away:
+
+- No new confirmation links are sent for that domain.
+- Links already sent but not yet used stop working.
+- **Approve** is disabled on a pending self-registration request from that domain, and the row shows a **Domain no longer verified** badge. To give that person access, invite them directly from the Customer Portal tab. You can still **Deny** the request.
+
+Re-verify the domain and new requests work again.
+
+## Self-hosting
+
+Self-registration is available when two things are true on your deployment:
+
+| Requirement | Detail |
+|---|---|
+| **An email service is configured** | The confirmation link is the proof that the person controls the mailbox. Without an email service the feature is unavailable. |
+| **`PORTAL_SELF_REGISTRATION_ENABLED` is not turned off** | Unset or empty, `true` or `1` means on (the default). `false` or `0` turns self-registration off for **every** organization. Any other value stops the API from starting. |
+
+With the variable set to `false`, or with no email service, the request routes return `404` and the self-registration option is hidden on the Sign-in & registration card. The variable is a deployment-wide switch for shutting the feature off quickly if it is abused. It does not replace the per-organization setting, which still has to be on for the feature to work.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| No **Request access** link on the login page | The person is on the shared portal host, the organization's mode is Off, or the organization has no verified domain. Share the `/request-access` URL directly. |
+| The person got no email | Their domain is not verified for any organization, the mode is Off, or they already hold an account (that email says so). The page cannot tell them which. Check the organization's **Domains** tab. |
+| "This link is invalid or has expired" | The link is older than 30 minutes, was already used, or its domain lost verification. Ask them to submit the form again. |
+| The self-registration option is missing from the card | The deployment has it turned off or has no email service; see [Self-hosting](#self-hosting). |
+| **Approve** is disabled with "Domain no longer verified" | Re-verify the domain, or invite the person directly. |
+| The person sees a "try again later" message | A rate limit was hit. Wait and retry. |

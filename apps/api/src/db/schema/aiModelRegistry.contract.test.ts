@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
 import { getOrgCascadeDeleteOrder, __testOnly as tenantCascadeTestOnly } from '../../services/tenantCascade';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
-import { AI_INVOCATION_LEDGER_MODES } from './aiInvocations';
+import { AI_INVOCATION_LEDGER_MODES, aiInvocations } from './aiInvocations';
 import { PARTNER_AI_CONNECTION_KINDS, PARTNER_AI_MODEL_SOURCES, partnerAiModels } from './aiModelRegistry';
 
 export function readMigration(name: string): string {
@@ -237,5 +237,30 @@ describe('partner_ai_models tool profile + context window columns (#11394, featu
   it('partner_ai_models stays partner-axis: not org-cascaded, not in the export policy', () => {
     expect(getOrgCascadeDeleteOrder()).not.toContain('partner_ai_models');
     expect(CORE_TENANT_EXPORT_POLICY['partner_ai_models']).toBeUndefined();
+  });
+});
+
+describe('ai_invocations tool exposure provenance (#11395 W03)', () => {
+  const sqlText = readMigration('2027-01-23-240000-ai-invocations-tool-profile.sql');
+
+  it('adds two nullable text columns with IF NOT EXISTS, mirrored in Drizzle', () => {
+    for (const [sqlName, tsName] of [['tool_profile', 'toolProfile'], ['tool_exposure_fingerprint', 'toolExposureFingerprint']] as const) {
+      expect(sqlText).toMatch(new RegExp(`ALTER TABLE public\\.ai_invocations ADD COLUMN IF NOT EXISTS ${sqlName} text;`));
+      const column = getTableConfig(aiInvocations).columns.find((c) => c.name === sqlName);
+      expect(column, sqlName).toMatchObject({ notNull: false, columnType: 'PgText' });
+      expect((aiInvocations as unknown as Record<string, { name: string }>)[tsName]?.name).toBe(sqlName);
+    }
+  });
+
+  it('writes no rows and has no inner transaction control', () => {
+    const code = sqlText.replace(/--[^\n]*/g, '');
+    expect(code).not.toMatch(/\b(INSERT|UPDATE|DELETE|MERGE)\b/i);
+    expect(code).not.toMatch(/^\s*(BEGIN|COMMIT)\s*;/im);
+  });
+
+  it('both columns are classified in the tenant export policy (ai_invocations is org-cascaded)', () => {
+    const policy = JSON.stringify(CORE_TENANT_EXPORT_POLICY['ai_invocations']);
+    expect(policy).toContain('"tool_profile"');
+    expect(policy).toContain('"tool_exposure_fingerprint"');
   });
 });
