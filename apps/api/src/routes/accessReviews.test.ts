@@ -143,7 +143,7 @@ vi.mock('../services/accessReviewSelfDecision', () => ({
 }));
 
 import { db } from '../db';
-import { users, userPasskeys } from '../db/schema';
+import { users, userPasskeys, accessReviews, accessReviewItems } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { runPostCommitCleanup } from '../services/authLifecycle';
 import { getEmailService } from '../services/email';
@@ -560,6 +560,7 @@ describe('access review routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            for: vi.fn().mockReturnThis(),
             limit: vi.fn().mockResolvedValue(rows)
           })
         })
@@ -592,6 +593,25 @@ describe('access review routes', () => {
         body: JSON.stringify(body)
       });
     }
+
+    it('holds the review row lock while recording a decision, so completion sees it', async () => {
+      const lockModes: string[] = [];
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            for: vi.fn(function (this: unknown, mode: string) { lockModes.push(mode); return this; }),
+            limit: vi.fn().mockResolvedValue([{ id: 'review-1', status: 'in_progress' }])
+          })
+        })
+      } as any);
+      selectOnce([{ id: 'item-1', userId: 'other-user' }]);
+      mockItemUpdate({ id: 'item-1', decision: 'revoked', notes: null, reviewedAt: new Date(), selfDecided: false }, false);
+
+      const res = await patch({ decision: 'revoked' });
+
+      expect(res.status).toBe(200);
+      expect(lockModes).toEqual(['update']);
+    });
 
     describe('separation of duties (own item)', () => {
       it('refuses a decision on your own item when another eligible decider exists (403, nothing written)', async () => {
@@ -673,6 +693,7 @@ describe('access review routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            for: vi.fn().mockReturnThis(),
             limit: vi.fn().mockResolvedValue([{ id: 'review-1', status: 'pending' }])
           })
         })
@@ -709,6 +730,7 @@ describe('access review routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            for: vi.fn().mockReturnThis(),
             limit: vi.fn().mockResolvedValue([])
           })
         })
@@ -727,6 +749,7 @@ describe('access review routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
+            for: vi.fn().mockReturnThis(),
             limit: vi.fn().mockResolvedValue([{ id: 'review-1', status: 'completed' }])
           })
         })
@@ -757,6 +780,7 @@ describe('access review routes', () => {
   });
 
   describe('POST /access-reviews/:id/complete', () => {
+    let currentReviewItems: Array<{ userId: string; decision: string }> = [];
     const updatedReview = {
       id: 'review-1',
       status: 'completed',
@@ -771,12 +795,15 @@ describe('access review routes', () => {
     // accessReviews update both just need a truthy row back;
     // revokeAllRefreshFamilies never calls .returning() at all.
     function mockCompleteTx(opts: {
+      currentItems?: Array<{ userId: string; decision: string }>;
+      lockedStatus?: string;
       hasOtherMembership?: boolean;
       passkeyRows?: Array<{ id: string; credentialId: string; name: string | null }>;
     } = {}) {
       const { hasOtherMembership = true, passkeyRows = [] } = opts;
       const capturedUpdates: Array<Record<string, unknown>> = [];
       const capturedDeletes: unknown[] = [];
+      const reviewLockModes: string[] = [];
       const txDelete = vi.fn((table: unknown) => {
         capturedDeletes.push(table);
         return {
@@ -790,15 +817,25 @@ describe('access review routes', () => {
       // Orphan checks read partnerUsers/organizationUsers; the factor-reset
       // inventory snapshot reads `users` — route by table identity.
       const txSelect = vi.fn(() => ({
-        from: vi.fn((table: unknown) => ({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue(
-              table === users
-                ? [{ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc', mfaRecoveryCodes: ['h1'], phoneNumber: null, phoneVerified: false }]
-                : hasOtherMembership ? [{ id: 'other-link' }] : []
-            )
-          })
-        }))
+        from: vi.fn((table: unknown) => {
+          if (table === accessReviews) {
+            return {
+              where: () => {
+                const chain: any = {
+                  for: (mode: string) => { reviewLockModes.push(mode); return chain; },
+                  limit: async () => [{ id: 'review-1', status: opts.lockedStatus ?? 'in_progress' }],
+                };
+                return chain;
+              },
+            };
+          }
+          if (table === accessReviewItems) return { where: async () => opts.currentItems ?? currentReviewItems };
+          return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(
+            table === users
+              ? [{ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc', mfaRecoveryCodes: ['h1'], phoneNumber: null, phoneVerified: false }]
+              : hasOtherMembership ? [{ id: 'other-link' }] : [],
+          ) }) };
+        }),
       }));
       const txUpdate = vi.fn((_table: any) => ({
         set: (values: Record<string, unknown>) => {
@@ -815,13 +852,14 @@ describe('access review routes', () => {
       vi.mocked(db.transaction).mockImplementation(async (fn) => {
         return fn({ delete: txDelete, update: txUpdate, select: txSelect } as any);
       });
-      return { txDelete, txUpdate, txSelect, capturedUpdates, capturedDeletes };
+      return { txDelete, txUpdate, txSelect, capturedUpdates, capturedDeletes, reviewLockModes };
     }
 
     function seedReviewSelects(
       revokedItems: Array<{ userId: string }>,
       targetRows?: Array<{ userId: string; roleId: string; roleIsSystem: boolean }>
     ) {
+      currentReviewItems = revokedItems.map((item) => ({ ...item, decision: 'revoked' }));
       const chain = vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -858,9 +896,28 @@ describe('access review routes', () => {
       }
     }
 
+    it.each(['revoked', 'pending'])('refuses a changed decision set before applying completion (%s)', async (decision) => {
+      seedReviewSelects([]);
+      const { txDelete, txUpdate } = mockCompleteTx({ currentItems: [{ userId: 'late-user', decision }] });
+      const res = await app.request('/access-reviews/review-1/complete', { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(txDelete).not.toHaveBeenCalled();
+      expect(txUpdate).not.toHaveBeenCalled();
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses completion when another completion acquired the review first', async () => {
+      seedReviewSelects([]);
+      const { txDelete, txUpdate } = mockCompleteTx({ lockedStatus: 'completed' });
+      const res = await app.request('/access-reviews/review-1/complete', { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(txDelete).not.toHaveBeenCalled();
+      expect(txUpdate).not.toHaveBeenCalled();
+    });
+
     it('should complete a review, advance each revoked user\'s epoch + revoke their refresh families in-tx, and run post-commit cleanup', async () => {
       seedReviewSelects([{ userId: 'user-1' }, { userId: 'user-2' }]);
-      const { capturedUpdates } = mockCompleteTx();
+      const { capturedUpdates, reviewLockModes } = mockCompleteTx();
 
       const res = await app.request('/access-reviews/review-1/complete', {
         method: 'POST',
@@ -868,6 +925,9 @@ describe('access review routes', () => {
       });
 
       expect(res.status).toBe(200);
+      // The review row is locked inside the apply transaction before its
+      // decisions are re-read, so a decision recorded meanwhile is serialized.
+      expect(reviewLockModes).toEqual(['update']);
       const body = await res.json();
       expect(body.status).toBe('completed');
       expect(body.revokedCount).toBe(2);
@@ -876,6 +936,8 @@ describe('access review routes', () => {
       expect(capturedUpdates.filter((v) => 'authEpoch' in v)).toHaveLength(2);
       // revokeAllRefreshFamilies-shaped updates (revoked_at/revoked_reason).
       expect(capturedUpdates.filter((v) => 'revokedReason' in v)).toHaveLength(2);
+      // Each revoked user's pending email-address change is cancelled too.
+      expect(capturedUpdates.filter((v) => v.pendingEmail === null && v.pendingEmailRequestedAt === null)).toHaveLength(2);
       // Post-commit cleanup (Redis token cutoff, permission-cache clear,
       // OAuth-artifact revocation) runs once per unique revoked user.
       expect(runPostCommitCleanup).toHaveBeenCalledWith('user-1');

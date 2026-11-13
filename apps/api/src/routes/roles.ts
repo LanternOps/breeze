@@ -30,6 +30,7 @@ import {
 
 import {
   MAX_ROLE_INHERITANCE_DEPTH,
+  getRolePermissionGrants,
   getRoleSubtreeHeight,
   isPermittedParentRole,
   resolveRoleLineage,
@@ -245,6 +246,44 @@ function validateAssignablePermissions(
   }
 
   return null;
+}
+
+// An edit that can lower what a role grants needs every grant the role carries
+// now (its own and inherited), so a caller can never strip a grant they do not
+// hold themselves. Unlike validateAssignablePermissions this does not refuse
+// wildcard or retired keys: a caller who holds them may still edit the role.
+function findRoleGrantNotHeld(
+  roleGrants: Array<{ resource: string; action: string }>,
+  callerPermissions: UserPermissions | null
+): string | null {
+  if (roleGrants.length === 0) {
+    return null;
+  }
+  if (!callerPermissions) {
+    return 'No permissions found';
+  }
+  for (const grant of roleGrants) {
+    if (!hasPermission(callerPermissions, grant.resource, grant.action)) {
+      return `Cannot edit a role with permission not held by caller: ${grant.resource}:${grant.action}`;
+    }
+  }
+  return null;
+}
+
+class RoleEditCeilingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoleEditCeilingError';
+  }
+}
+
+const OWN_ROLE_MFA_REQUIREMENT_ERROR = 'Another administrator must remove the MFA requirement from a role you hold.';
+
+class OwnRoleMfaRequirementError extends Error {
+  constructor() {
+    super(OWN_ROLE_MFA_REQUIREMENT_ERROR);
+    this.name = 'OwnRoleMfaRequirementError';
+  }
 }
 
 async function getAssignedUserIdsForRoles(roleIds: string[], scopeContext: ScopeContext): Promise<string[]> {
@@ -592,7 +631,8 @@ roleRoutes.patch(
         isSystem: roles.isSystem,
         scope: roles.scope,
         partnerId: roles.partnerId,
-        orgId: roles.orgId
+        orgId: roles.orgId,
+        forceMfa: roles.forceMfa
       })
       .from(roles)
       .where(eq(roles.id, roleId))
@@ -651,7 +691,49 @@ roleRoutes.patch(
     }
     const affectedUserIds = await getAssignedUserIdsForRoles([...affectedRoleIds], scopeContext);
 
+    // A role's MFA requirement applies to its direct members, so a member may
+    // turn it on but another administrator has to turn it off. Saving other
+    // edits with forceMfa:false stays allowed while the role does not
+    // require MFA; the locked re-read in the transaction covers a requirement
+    // switched on after this request read the role.
+    const callerHoldsRole = body.forceMfa === false && (
+      affectedRoleIds.size === 1
+        ? affectedUserIds
+        : await getAssignedUserIdsForRoles([roleId], scopeContext)
+    ).includes(auth.user.id);
+    if (callerHoldsRole && role.forceMfa) {
+      return c.json({ error: OWN_ROLE_MFA_REQUIREMENT_ERROR }, 403);
+    }
+
+    // Edits that can lower what the role grants: its permission list, its
+    // parent, or turning off its MFA requirement. These need every grant the
+    // role carries (own and inherited), checked below on the locked row so a
+    // grant or requirement added after this request's first read still counts.
+    const changesGrants = body.permissions !== undefined || body.parentRoleId !== undefined;
+    const mayLowerRole = changesGrants || body.forceMfa === false;
+
     const result = await db.transaction(async (tx) => {
+      if (callerHoldsRole || mayLowerRole) {
+        const [locked] = await tx
+          .select({ forceMfa: roles.forceMfa })
+          .from(roles)
+          .where(eq(roles.id, roleId))
+          .for('update')
+          .limit(1);
+        if (callerHoldsRole && locked?.forceMfa) {
+          throw new OwnRoleMfaRequirementError();
+        }
+        if (changesGrants || (body.forceMfa === false && locked?.forceMfa)) {
+          const ceilingError = findRoleGrantNotHeld(
+            await getRolePermissionGrants(roleId, tx),
+            callerPermissions
+          );
+          if (ceilingError) {
+            throw new RoleEditCeilingError(ceilingError);
+          }
+        }
+      }
+
       // Update role fields
       const updates: {
         name?: string;
@@ -713,7 +795,14 @@ roleRoutes.patch(
       }
 
       return updatedRole;
+    }).catch((error: unknown): { refused: string } => {
+      if (error instanceof OwnRoleMfaRequirementError) return { refused: OWN_ROLE_MFA_REQUIREMENT_ERROR };
+      if (error instanceof RoleEditCeilingError) return { refused: error.message };
+      throw error;
     });
+    if ('refused' in result) {
+      return c.json({ error: result.refused }, 403);
+    }
     await clearPermissionCachesForUsers(affectedUserIds);
 
     // Get updated permissions

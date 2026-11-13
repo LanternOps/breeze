@@ -267,6 +267,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // reasoning already recorded for timeSuggestionService.ts and orgArchive.ts.
   'services/mfaFactorReset.ts':
     "clears ONE target user's factor columns and user_passkeys rows; routes/users.ts gates reset with USERS_WRITE + requireMfa + tenant-scoped getScopedUser, and tombstone reinvite with USERS_INVITE + requireMfa + tenant-scoped email visibility. Neutralization callers enforce membership-removal authority. Never writes partner-wide config; gating here would block organization admins from resetting their own users",
+  'services/pendingEmailCancellation.ts':
+    "clears ONE target user's pending_email/pending_email_requested_at inside the caller's transaction, never partner-wide config. Each caller establishes its own authority first: password reset/change (routes/auth/password.ts, the acting user or a redeemed reset token), status change and membership removal (routes/users.ts, USERS_WRITE/USERS_DELETE + requireMfa + tenant-scoped user), partner suspension (routes/admin/abuse.ts, platform admin), access-review revocation (routes/accessReviews.ts, gated on canManagePartnerWidePolicies), terminal logout and MFA factor reset (services/terminalLogout.ts, services/mfaFactorReset.ts). Gating here would block organization admins and self-service password changes",
   'services/mfaAssurance.ts':
     "revokes Office bindings for exactly ONE factor-changing user id in the same transaction as that user's MFA epoch advance; the binding partner_id is only the RLS axis, never caller-selected partner-wide configuration. Self-service and scoped admin factor authority is established by each caller before this primitive",
   'services/userNeutralization.ts':

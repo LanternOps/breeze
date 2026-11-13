@@ -1224,6 +1224,103 @@ describe('role routes', () => {
       expect(res.status).toBe(200);
     });
 
+    describe('role MFA requirement held by the caller', () => {
+      // Queues exactly the reads each request makes, so nothing is left
+      // queued for later tests: the role, its members, and (only when the
+      // update commits) the role's permission list.
+      function mockRoleAndMembers(role: { forceMfa: boolean }, members: string[], commits: boolean) {
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: () => ({ where: () => ({ limit: async () => [{ id: 'role-2', scope: 'partner', partnerId: 'partner-123', orgId: null, isSystem: false, forceMfa: role.forceMfa }] }) })
+          } as any)
+          .mockReturnValueOnce({ from: () => ({ where: async () => members.map((userId) => ({ userId })) }) } as any);
+        if (commits) {
+          vi.mocked(db.select).mockReturnValueOnce({ from: () => ({ innerJoin: () => ({ where: async () => [] }) }) } as any);
+        }
+      }
+
+      function mockRoleTx(lockedForceMfa: boolean) {
+        const set = vi.fn(() => ({ where: () => ({ returning: async () => [{ id: 'role-2', name: 'Ops', forceMfa: false }] }) }));
+        const lockModes: string[] = [];
+        // The locked re-read, then (when the edit can lower the role) the
+        // role-edit ceiling's walk: the role row and its grants (none here).
+        const select = vi.fn(() => ({
+          from: () => ({
+            where: () => {
+              const chain: any = {
+                for: (mode: string) => { lockModes.push(mode); return chain; },
+                limit: async () => [{ forceMfa: lockedForceMfa }],
+              };
+              return chain;
+            },
+            innerJoin: () => ({ where: async () => [] }),
+          }),
+        }));
+        vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: () => ({ set }), select }));
+        return { set, select, lockModes };
+      }
+
+      function patchRole(body: Record<string, unknown>) {
+        return app.request('/roles/role-2', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+
+      it('refuses to remove the MFA requirement from a role the caller holds', async () => {
+        mockRoleAndMembers({ forceMfa: true }, ['user-123', 'user-456'], false);
+        const { set } = mockRoleTx(true);
+
+        const res = await patchRole({ forceMfa: false });
+
+        expect(set).not.toHaveBeenCalled();
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toMatch(/another administrator/i);
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
+
+      it('refuses when the requirement was turned on after the request read the role', async () => {
+        mockRoleAndMembers({ forceMfa: false }, ['user-123'], false);
+        const { set, lockModes } = mockRoleTx(true);
+
+        const res = await patchRole({ name: 'Ops', forceMfa: false });
+
+        expect(set).not.toHaveBeenCalled();
+        expect(lockModes).toEqual(['update']);
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toMatch(/another administrator/i);
+      });
+
+      it('saves other edits to a role the caller holds when it does not require MFA', async () => {
+        mockRoleAndMembers({ forceMfa: false }, ['user-123'], true);
+        const { set } = mockRoleTx(false);
+
+        const res = await patchRole({ name: 'Ops', forceMfa: false });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ name: 'Ops', forceMfa: false }));
+      });
+
+      // Removing the requirement can lower the role, so it takes the row lock
+      // and the role-edit ceiling (the caller holds '*:*'); turning it on
+      // does neither.
+      it.each([
+        { label: 'another administrator removes it', members: ['user-456'], forceMfa: false, lockModes: ['update'] },
+        { label: 'a member turns it on', members: ['user-123'], forceMfa: true, lockModes: [] },
+      ])('allows the change when $label', async ({ members, forceMfa, lockModes: expectedLocks }) => {
+        mockRoleAndMembers({ forceMfa: true }, members, true);
+        const { set, select, lockModes } = mockRoleTx(true);
+
+        const res = await patchRole({ forceMfa });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ forceMfa }));
+        expect(lockModes).toEqual(expectedLocks);
+        if (expectedLocks.length === 0) expect(select).not.toHaveBeenCalled();
+      });
+    });
+
     it('should update a role and its permissions', async () => {
       const rolePerms = [{ resource: 'devices', action: 'write' }];
 
@@ -1298,8 +1395,20 @@ describe('role routes', () => {
         values: vi.fn().mockResolvedValue(undefined)
       });
 
+      // The locked role row, then the role-edit ceiling's walk over the
+      // role's current grants (none here).
+      const txSelect = vi.fn(() => ({
+        from: () => ({
+          where: () => {
+            const chain: any = { for: () => chain, limit: async () => [{ forceMfa: false }] };
+            return chain;
+          },
+          innerJoin: () => ({ where: async () => [] })
+        })
+      }));
+
       vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ update: txUpdate, delete: txDelete, insert: txInsert } as any);
+        return fn({ select: txSelect, update: txUpdate, delete: txDelete, insert: txInsert } as any);
       });
 
       const res = await app.request('/roles/role-2', {

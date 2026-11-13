@@ -109,6 +109,17 @@ Removing a user from a scope (`DELETE /users/:id`) deletes the association recor
 
 Authenticated users can view and update their own profile at `GET /users/me` and `PATCH /users/me` without any special permissions. Updatable fields are `name`, `email`, and `preferences`. Avatars are managed separately via `POST /users/me/avatar` (upload) and `DELETE /users/me/avatar` (remove) -- `PATCH /users/me` rejects an `avatarUrl` field with `400` rather than silently dropping it.
 
+Changing `email` does not move the address straight away: the new address is held as pending and a confirmation link is sent to it, and the change takes effect when that link is opened. A pending change is cancelled, and the link stops working, when any of the following happens before the link is opened. Request the change again afterwards.
+
+- the password is reset or changed
+- an administrator changes the account's status (for example disables or re-enables it)
+- the user is removed from a partner or organization, including by a completed access review
+- the user's partner is suspended
+- the user signs out
+- an administrator resets the user's MFA factors
+
+The confirmation link also does nothing while the account is disabled.
+
 ---
 
 ## Authentication
@@ -152,7 +163,7 @@ When enabled (`ENABLE_REGISTRATION=true`), self-service MSP signup is a **two-st
 | Endpoint | Purpose |
 |---|---|
 | `POST /auth/register-partner` | Step 1: validates the request and queues a verification email. Creates no user, partner, or token, and performs no email-existence lookup -- the response body is identical whether or not the address already has an account. |
-| `POST /auth/verify-email` | Step 2: the emailed link's token. Creates the partner, admin role, user, and association inside one database transaction, then issues tokens. |
+| `POST /auth/verify-email` | Step 2: the emailed link's token plus the password chosen in step 1. Creates the partner, admin role, user, and association inside one database transaction, then issues tokens. |
 | `POST /auth/register` | Legacy path, kept only so old clients don't see a broken response shape. It is a **no-op**: it runs the same rate-limit and password checks but never creates an account. |
 
 Registration is rate-limited to 5 attempts per IP per hour for `/auth/register` and 3 for `/auth/register-partner` (`/auth/verify-email` has its own separate limit). Password strength requirements are enforced on step 1. See [Partner Management: Self-Registration](/reference/partner-management/#self-registration) for the full request/response shapes.
@@ -625,6 +636,10 @@ Custom roles are created with `POST /roles` and must include a name. Permissions
 ```
 
 Set `forceMfa: true` (the **Require MFA for this role** toggle in Settings → Roles) to require every member assigned this role to enrol in MFA. It defaults to `false`, can be changed later with `PATCH /roles/:id`, and is not inherited through `parentRoleId` — each role sets it for its own members. Roles that require MFA show an **MFA required** badge in the roles list. The built-in Partner Admin role requires MFA and, like every system role, cannot be edited.
+
+You cannot turn off the MFA requirement on a role you are assigned yourself: `PATCH /roles/:id` with `forceMfa: false` returns `403` while the role requires MFA and you hold it in that partner or organisation. Another administrator has to make that change. Turning the requirement on, and saving other edits to a role you hold that does not require MFA, work as before.
+
+To change what a role grants you must hold every permission the role carries now, including those it inherits through `parentRoleId`. `PATCH /roles/:id` returns `403` when the request sends `permissions` or `parentRoleId`, or sends `forceMfa: false` while the role requires MFA, and the role carries a permission you do not hold. Renaming the role or changing its description is not affected.
 
 A role's owner axis is fixed at creation. Partner-scope callers choose it with `ownerScope`:
 

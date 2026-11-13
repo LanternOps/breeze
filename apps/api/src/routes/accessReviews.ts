@@ -18,6 +18,7 @@ import { buildAccessReviewNotifyEmail } from '../services/accessReviewNotifyEmai
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
+import { cancelPendingEmailChange } from '../services/pendingEmailCancellation';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
@@ -393,10 +394,15 @@ accessReviewRoutes.patch(
       );
     }
 
+    // Row lock held until this request's transaction commits: completion
+    // takes the same lock before it reads the decisions it applies, so a
+    // decision either lands before completion reads it or sees the review
+    // completed.
     const [review] = await db
       .select({ id: accessReviews.id, status: accessReviews.status })
       .from(accessReviews)
       .where(whereClause)
+      .for('update')
       .limit(1);
 
     if (!review) {
@@ -655,6 +661,37 @@ accessReviewRoutes.post(
     const result = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
         db.transaction(async (tx) => {
+          // Lock the review, then re-read its decisions inside this
+          // transaction. The revocations applied below must be exactly the
+          // decisions the review holds when it is marked completed; if a
+          // decision changed after the checks above, or another completion
+          // got here first, nothing is applied and the caller reloads.
+          const [lockedReview] = await tx
+            .select({ id: accessReviews.id, status: accessReviews.status })
+            .from(accessReviews)
+            .where(whereClause)
+            .for('update')
+            .limit(1);
+          if (!lockedReview || lockedReview.status === 'completed') {
+            throw new HTTPException(409, { message: 'Review changed. Reload it before completing.' });
+          }
+          const currentItems = await tx
+            .select({ userId: accessReviewItems.userId, decision: accessReviewItems.decision })
+            .from(accessReviewItems)
+            .where(eq(accessReviewItems.reviewId, reviewId));
+          const currentRevoked = currentItems
+            .filter((item) => item.decision === 'revoked')
+            .map((item) => item.userId)
+            .sort();
+          const checkedRevoked = [...revokedUserIds].sort();
+          if (
+            currentItems.some((item) => item.decision === 'pending') ||
+            currentRevoked.length !== checkedRevoked.length ||
+            currentRevoked.some((userId, index) => userId !== checkedRevoked[index])
+          ) {
+            throw new HTTPException(409, { message: 'Review decisions changed. Reload it before completing.' });
+          }
+
           const neutralizedUserIds: string[] = [];
 
           // Apply revocations - remove users from the scope
@@ -689,6 +726,7 @@ accessReviewRoutes.post(
               // is untouched.
               await advanceUserEpochs(tx, userId, { auth: true, mfa: true });
               await revokeAllRefreshFamilies(tx, userId, 'membership-removed');
+              await cancelPendingEmailChange(tx, userId);
               const { neutralized } = await neutralizeUserIfOrphaned(tx, userId);
               if (neutralized) neutralizedUserIds.push(userId);
             }
