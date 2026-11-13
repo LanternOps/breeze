@@ -41,6 +41,8 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // services/drPlanDefinition.ts lists dr_plan_groups columns at import time.
+  drPlanGroups: {},
   // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
   patches: { severity: 'patches.severity', category: 'patches.category' },
   devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
