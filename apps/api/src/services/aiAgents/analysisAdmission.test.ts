@@ -20,6 +20,9 @@ vi.mock('./runService', () => ({ createAndEnqueueAgentRun, GrantDepthExceededErr
 const resolveArtifact = vi.hoisted(() => vi.fn());
 vi.mock('../artifacts/artifactService', () => ({ resolveArtifact }));
 
+const verifiedAnalysisSiteId = vi.hoisted(() => vi.fn());
+vi.mock('./analysisRunSite', () => ({ verifiedAnalysisSiteId }));
+
 import { admitAnalysisRun, SKIP_REASON_REFUSALS, type AdmitAnalysisRunInput } from './analysisAdmission';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000a1';
@@ -43,12 +46,27 @@ function input(over: Partial<AdmitAnalysisRunInput> = {}): AdmitAnalysisRunInput
 beforeEach(() => {
   vi.clearAllMocks();
   resolveArtifact.mockResolvedValue({ id: HANDLE, orgId: ORG_ID });
+  verifiedAnalysisSiteId.mockImplementation(async (_orgId: string, siteId: string | null) => siteId);
   createAndEnqueueAgentRun.mockResolvedValue({
     created: true, run: { id: RUN_ID, status: 'queued', errorCode: null },
   });
 });
 
 describe('admitAnalysisRun', () => {
+  it('records the requested site only when the site check confirms it', async () => {
+    const SITE = '00000000-0000-4000-8000-0000000000b1';
+    verifiedAnalysisSiteId.mockResolvedValueOnce(SITE);
+    await admitAnalysisRun(input({ siteId: SITE, deviceIds: ['dev-1', 'dev-2'] }));
+    expect(verifiedAnalysisSiteId).toHaveBeenCalledWith(ORG_ID, SITE, ['dev-1', 'dev-2']);
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).triggerRef.siteId).toBe(SITE);
+
+    verifiedAnalysisSiteId.mockResolvedValueOnce(null);
+    await admitAnalysisRun(input({ siteId: SITE, deviceIds: ['dev-1', 'dev-2'] }));
+    // A site that does not hold every input device is not recorded; the run is still admitted.
+    expect((createAndEnqueueAgentRun.mock.calls[1]![0] as any).triggerRef.siteId).toBeNull();
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
+  });
+
   it('admits as profile analysis with the frozen inputs, never as a device-bound run', async () => {
     await expect(admitAnalysisRun(input({ stagedHandles: [HANDLE] }))).resolves.toEqual({
       created: true, runId: RUN_ID, status: 'queued',

@@ -18,6 +18,7 @@
  * COMPILE ERROR here, not a blank toast in production.
  */
 import { resolveArtifact } from '../artifacts/artifactService';
+import { verifiedAnalysisSiteId } from './analysisRunSite';
 import {
   createAndEnqueueAgentRun,
   GrantDepthExceededError,
@@ -177,10 +178,17 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
   // `runService` because it is the only thing about this input that
   // `createAndEnqueueAgentRun` has no reason to know: the frozen handles are
   // W05's, and a bad one must not consume an admission slot.
+  // This check is by organization only. A caller that takes handles from a
+  // person must first resolve each one with `findArtifactForAuth`, which also
+  // applies that person's site restriction.
   for (const handle of input.stagedHandles) {
     const record = await resolveArtifact(handle, { orgId: input.orgId });
     if (!record) return { created: false, refusal: 'artifact_forbidden' };
   }
+
+  // The recorded site decides which site-restricted users see this run's
+  // artifacts, so it is kept only when it holds every input device.
+  const siteId = await verifiedAnalysisSiteId(input.orgId, input.siteId, input.deviceIds);
 
   let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>>;
   try {
@@ -200,7 +208,7 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
         source: 'chat_analysis',
         goal: input.goal,
         chatSessionId: input.sessionId,
-        siteId: input.siteId,
+        siteId,
         requestedByUserId: input.requestedByUserId,
       },
       analysis: { deviceIds: input.deviceIds, inputHandles: input.stagedHandles },
