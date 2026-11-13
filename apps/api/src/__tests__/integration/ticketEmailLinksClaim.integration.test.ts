@@ -227,7 +227,7 @@ describe('ticket_email_links claim', () => {
       inReplyTo: threadKey,
       references: [threadKey],
       messageId: replyMessageId,
-      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: janeEmail.split('@')[1]!.toLowerCase() },
       attachments: [],
       raw: {}
     } as NormalizedInboundEmail;
@@ -308,7 +308,7 @@ describe('add-in create vs. inbound poller (Task 16)', () => {
       inReplyTo: null,
       references: [],
       messageId: args.messageId,
-      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: args.senderEmail.split('@')[1]!.toLowerCase() },
       attachments: [],
       raw: {}
     } as unknown as NormalizedInboundEmail;

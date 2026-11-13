@@ -96,6 +96,8 @@ function message(id: string, from: string, mailbox: string, inReplyTo?: string):
     { name: 'To', value: mailbox },
     { name: 'Subject', value: inReplyTo ? 'Re: Printer down' : 'Printer down' },
     { name: 'Message-ID', value: `<${id}@client.test>` },
+    // Gmail adds Return-Path at delivery.
+    { name: 'Return-Path', value: '<bounce@mail.example.net>' },
     { name: 'Authentication-Results', value: 'mx.google.com; spf=pass; dkim=pass; dmarc=pass' },
   ];
   if (inReplyTo) headers.push({ name: 'In-Reply-To', value: inReplyTo });
