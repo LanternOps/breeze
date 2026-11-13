@@ -39,7 +39,7 @@ func scanOne(t *testing.T, m Matcher, path string) []Match {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	got, err := w.ScanFile(path)
+	got, err := scanPath(w, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestWorkerRecyclesAfterLargeFile(t *testing.T) {
 	if err := os.WriteFile(big, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := w.ScanFile(big)
+	got, err := scanPath(w, big)
 	if err != nil || len(got) != 1 || got[0].Strings[0].Offset != 1000 {
 		t.Fatalf("large file scan wrong: %+v %v", got, err)
 	}
@@ -254,7 +254,7 @@ func TestWorkerRecyclesAfterLargeFile(t *testing.T) {
 		t.Fatal("scanner not dropped after a file above the recycle threshold")
 	}
 	// And the worker transparently re-creates its scanner.
-	if got, err := w.ScanFile("testdata/files/fixture-a.bin"); err != nil || len(got) != 1 {
+	if got, err := scanPath(w, "testdata/files/fixture-a.bin"); err != nil || len(got) != 1 {
 		t.Fatalf("scan after recycle failed: %+v %v", got, err)
 	}
 }

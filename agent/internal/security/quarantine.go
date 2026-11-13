@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/obfuscate"
@@ -204,6 +205,20 @@ func quarantineEncodeFile(srcPath, destPath string) (string, error) {
 	return sha, nil
 }
 
+// CheckQuarantineSource checks the source of a restore. A payload inside the
+// agent's own default quarantine folder is the agent's own file; that folder
+// lives inside the agent's data folder, which is a protected location for
+// every other operation, so it is not checked against the protected
+// locations. Any other source must pass the file operations' path checks.
+func CheckQuarantineSource(cleanSource string) error {
+	dir := filepath.Clean(DefaultQuarantineDir())
+	if rel, err := filepath.Rel(dir, cleanSource); err == nil && rel != "." && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+		return nil
+	}
+	return tools.EnforcePathContainment("restore", cleanSource)
+}
+
 // RestoreQuarantined reverses a quarantine. If quarantinedPath has a sibling
 // `.bqz.json` manifest, the file is XOR-decoded, its digest is verified
 // against the manifest, and it is written back to the manifest's
@@ -214,7 +229,7 @@ func quarantineEncodeFile(srcPath, destPath string) (string, error) {
 // move.
 func RestoreQuarantined(quarantinedPath, originalPath string) (string, error) {
 	cleanSource := filepath.Clean(quarantinedPath)
-	if err := tools.EnforcePathContainment("restore", cleanSource); err != nil {
+	if err := CheckQuarantineSource(cleanSource); err != nil {
 		return "", err
 	}
 
