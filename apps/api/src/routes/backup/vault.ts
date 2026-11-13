@@ -9,7 +9,8 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from '../../services/vaultDeviceCommands';
-import { updateVaultWithinCurrentSite } from '../../services/localVaultUpdate';
+import { createLocalVault, updateVaultWithinCurrentSite } from '../../services/localVaultUpdate';
+import { UnsupportedLocalStoreTargetError } from '../../services/localStoreTargets';
 import { resolveScopedOrgId } from './helpers';
 import {
   vaultCreateSchema,
@@ -138,9 +139,9 @@ vaultRoutes.post(
   }
   const now = new Date();
 
-  const [row] = await db
-    .insert(localVaults)
-    .values({
+  let row: typeof localVaults.$inferSelect | undefined;
+  try {
+    row = await createLocalVault({
       orgId,
       deviceId: payload.deviceId,
       vaultPath: payload.vaultPath,
@@ -148,8 +149,11 @@ vaultRoutes.post(
       retentionCount: payload.retentionCount,
       createdAt: now,
       updatedAt: now,
-    })
-    .returning();
+    });
+  } catch (err) {
+    if (err instanceof UnsupportedLocalStoreTargetError) return c.json({ error: err.message }, 400);
+    throw err;
+  }
 
   if (!row) {
     return c.json({ error: 'Failed to create vault' }, 500);
@@ -199,7 +203,13 @@ vaultRoutes.patch(
     if (payload.retentionCount !== undefined) updateData.retentionCount = payload.retentionCount;
     if (payload.isActive !== undefined) updateData.isActive = payload.isActive;
 
-    const row = await updateVaultWithinCurrentSite(orgId, id, updateData, permissions?.allowedSiteIds);
+    let row: Awaited<ReturnType<typeof updateVaultWithinCurrentSite>>;
+    try {
+      row = await updateVaultWithinCurrentSite(orgId, id, updateData, permissions?.allowedSiteIds);
+    } catch (err) {
+      if (err instanceof UnsupportedLocalStoreTargetError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
 
     if (!row) {
       return c.json({ error: 'Vault not found' }, 404);

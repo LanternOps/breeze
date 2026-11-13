@@ -90,7 +90,7 @@ func newStagedManager(t *testing.T) (*backup.BackupManager, string, string) {
 	storeDir := t.TempDir()
 	stagingBase := t.TempDir()
 	mgr := backup.NewBackupManager(backup.BackupConfig{
-		Provider:   providers.NewLocalProvider(storeDir),
+		Provider:   privateTestLocalProvider(t, storeDir),
 		StagingDir: stagingBase,
 	})
 	return mgr, storeDir, stagingBase

@@ -29,7 +29,7 @@ func backupRunTestPayload(t *testing.T) json.RawMessage {
 	if err := os.WriteFile(filepath.Join(srcDir, "hello.txt"), []byte("hello world"), 0o644); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
-	destDir := t.TempDir()
+	destDir := privateStoreTempDir(t)
 
 	payload, err := json.Marshal(map[string]any{
 		"provider": "local",
@@ -102,7 +102,7 @@ func nextBackupResult(t *testing.T, ch <-chan recvResult) *ipc.Envelope {
 // keys the restore point on. Without this, deleting `SnapshotID: snapshotID`
 // from the closure makes Part 1 a silent no-op with every other test green.
 func TestHandleBackupCommand_BackupRunProgressCarriesSnapshotID(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})
 
 	agentSide, helperSide := net.Pipe()
@@ -190,7 +190,7 @@ collect:
 }
 
 func TestHandleBackupCommand_AsyncBackupRunSendsAckThenUnsolicitedResult(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})
 
 	agentSide, helperSide := net.Pipe()
@@ -276,7 +276,7 @@ func TestHandleBackupCommand_AsyncBackupRunSendsAckThenUnsolicitedResult(t *test
 // envelope ID), and never a second, unsolicited backup_result. An old
 // server would parse a stray ack as a malformed terminal result.
 func TestHandleBackupCommand_SyncBackupRunSendsExactlyOneReply(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider})
 
 	agentSide, helperSide := net.Pipe()
@@ -409,7 +409,7 @@ func TestHandleBackupCommand_AsyncResultDurationTracksElapsed(t *testing.T) {
 	}
 
 	provider := &slowUploadProvider{
-		BackupProvider: providers.NewLocalProvider(t.TempDir()),
+		BackupProvider: privateTestLocalProvider(t, t.TempDir()),
 		delay:          uploadDelay,
 	}
 	// Paths live on the manager (not the command payload) on purpose: a
@@ -478,7 +478,7 @@ func TestInitBackupManager_CarriesAgentIDIntoManager(t *testing.T) {
 		BackupEnabled:   true,
 		BackupPaths:     []string{t.TempDir()},
 		BackupProvider:  "local",
-		BackupLocalPath: t.TempDir(),
+		BackupLocalPath: privateStoreTempDir(t),
 		BackupRetention: 7,
 	}
 
@@ -511,7 +511,7 @@ func TestInitBackupManager_CaptureSecurityDescriptorsOnlyWithSystemState(t *test
 				BackupEnabled:            true,
 				BackupPaths:              []string{t.TempDir()},
 				BackupProvider:           "local",
-				BackupLocalPath:          t.TempDir(),
+				BackupLocalPath:          privateStoreTempDir(t),
 				BackupSystemStateEnabled: tc.systemState,
 			})
 			if mgr == nil {
@@ -537,7 +537,7 @@ func TestInitBackupManager_CaptureSecurityDescriptorsOnlyWithSystemState(t *test
 // how handleBackupCommand calls it for a real policy-managed device.
 
 func TestExecuteCommand_MSSQLBackupNilManagerUsesPayloadProvider(t *testing.T) {
-	baseDir := t.TempDir()
+	baseDir := privateStoreTempDir(t)
 
 	origRunMSSQLBackup := runMSSQLBackup
 	t.Cleanup(func() { runMSSQLBackup = origRunMSSQLBackup })
@@ -617,7 +617,7 @@ func TestExecuteCommand_MSSQLBackupNilManagerNoProviderConfigFailsWithSpecificMe
 }
 
 func TestExecuteCommand_HypervBackupNilManagerUsesPayloadProvider(t *testing.T) {
-	baseDir := t.TempDir()
+	baseDir := privateStoreTempDir(t)
 
 	payload, err := json.Marshal(map[string]any{
 		"vmName":          "Accounting VM",
@@ -684,8 +684,8 @@ func TestExecuteCommand_HypervBackupNilManagerNoProviderConfigFailsWithSpecificM
 }
 
 func TestExecuteCommand_MSSQLRestoreNilManagerUsesPayloadProvider(t *testing.T) {
-	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	baseDir := privateStoreTempDir(t)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "mssql-nil-mgr-restore-20260909"
 	prefix := path.Join("snapshots", snapshotID)
 
@@ -777,8 +777,8 @@ func TestExecuteCommand_MSSQLRestoreNilManagerNoProviderConfigFailsWithSpecificM
 }
 
 func TestExecuteCommand_MSSQLVerifyNilManagerUsesPayloadProvider(t *testing.T) {
-	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	baseDir := privateStoreTempDir(t)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "mssql-nil-mgr-verify-20260909"
 	prefix := path.Join("snapshots", snapshotID)
 
@@ -868,7 +868,7 @@ func TestExecuteCommand_MSSQLVerifyNilManagerNoProviderConfigFailsWithSpecificMe
 }
 
 func TestExecuteCommand_HypervRestoreNilManagerReachesExecFunction(t *testing.T) {
-	baseDir := t.TempDir()
+	baseDir := privateStoreTempDir(t)
 
 	payload, err := json.Marshal(map[string]any{
 		"snapshotId": "hyperv-nil-mgr-restore-20260909",

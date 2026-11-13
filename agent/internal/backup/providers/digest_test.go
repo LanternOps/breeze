@@ -382,7 +382,7 @@ func TestLocalProvider_UploadWithDigestDescribesDownloadedContent(t *testing.T) 
 	for _, remote := range []string{"snapshots/s1/files/a.bin", "snapshots/s1/files/a.bin.gz"} {
 		t.Run(remote, func(t *testing.T) {
 			src, data := writeUploadSource(t, 200*1024)
-			p := NewLocalProvider(t.TempDir())
+			p := privateTestLocalProvider(t, t.TempDir())
 			var du DigestUploader = p
 			got, err := du.UploadWithDigest(context.Background(), src, remote)
 			if err != nil {
@@ -404,7 +404,7 @@ func TestLocalProvider_UploadWithDigestDescribesDownloadedContent(t *testing.T) 
 func TestLocalProvider_UploadWithDigestFailureKeepsExistingObject(t *testing.T) {
 	src, data := writeUploadSource(t, 4096)
 	base := t.TempDir()
-	p := NewLocalProvider(base)
+	p := privateTestLocalProvider(t, base)
 	const remote = "snapshots/s1/files/a.bin.gz"
 	if _, err := p.UploadWithDigest(context.Background(), src, remote); err != nil {
 		t.Fatalf("first upload: %v", err)
@@ -470,14 +470,14 @@ func TestFallbackProvider_DigestUploadUnavailableWithoutPrimarySupport(t *testin
 func TestLocalProvider_UploadWithDigestRetriesATransientRenameFailure(t *testing.T) {
 	src, data := writeUploadSource(t, 4096)
 	base := t.TempDir()
-	p := NewLocalProvider(base)
+	p := privateTestLocalProvider(t, base)
 	fails := 2
-	restore := setLocalRenameForTest(func(from, to string) error {
+	restore := setLocalRenameForTest(func(tree *os.Root, from, to string) error {
 		if fails > 0 {
 			fails--
 			return &os.LinkError{Op: "rename", Old: from, New: to, Err: errors.New("the process cannot access the file because it is being used by another process")}
 		}
-		return os.Rename(from, to)
+		return tree.Rename(from, to)
 	})
 	defer restore()
 	if _, err := p.UploadWithDigest(context.Background(), src, "snapshots/s1/files/a.bin"); err != nil {
@@ -491,8 +491,8 @@ func TestLocalProvider_UploadWithDigestRetriesATransientRenameFailure(t *testing
 func TestLocalProvider_UploadWithDigestPersistentRenameFailureLeavesNoTemp(t *testing.T) {
 	src, _ := writeUploadSource(t, 4096)
 	base := t.TempDir()
-	p := NewLocalProvider(base)
-	restore := setLocalRenameForTest(func(string, string) error { return errors.New("access denied") })
+	p := privateTestLocalProvider(t, base)
+	restore := setLocalRenameForTest(func(*os.Root, string, string) error { return errors.New("access denied") })
 	defer restore()
 	if _, err := p.UploadWithDigest(context.Background(), src, "snapshots/s1/files/a.bin"); err == nil {
 		t.Fatal("expected a persistent rename failure to fail the upload")
@@ -529,7 +529,7 @@ func TestLocalProvider_SweepStaleUploadsRemovesOnlyOldTempFiles(t *testing.T) {
 	old := time.Now().Add(-48 * time.Hour)
 	_ = os.Chtimes(outsideStale, old, old)
 
-	n, err := NewLocalProvider(base).SweepStaleUploads("snapshots/s1", 24*time.Hour)
+	n, err := privateTestLocalProvider(t, base).SweepStaleUploads("snapshots/s1", 24*time.Hour)
 	if err != nil {
 		t.Fatalf("SweepStaleUploads: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestLocalProvider_SweepStaleUploadsRemovesOnlyOldTempFiles(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatal("stale temp upload not removed")
 	}
-	if _, err := NewLocalProvider(base).SweepStaleUploads("../escape", time.Hour); err == nil {
+	if _, err := privateTestLocalProvider(t, base).SweepStaleUploads("../escape", time.Hour); err == nil {
 		t.Fatal("a prefix outside the base must be refused")
 	}
 }

@@ -492,7 +492,7 @@ func TestStorageSessionWiring_HypervRestore(t *testing.T) {
 		importedDisk = ""
 		var mgr *backup.BackupManager
 		if withMgr {
-			mgr = backup.NewBackupManager(backup.BackupConfig{Provider: providers.NewLocalProvider(t.TempDir())})
+			mgr = backup.NewBackupManager(backup.BackupConfig{Provider: privateTestLocalProvider(t, t.TempDir())})
 		}
 		result := executeCommand(backupipc.BackupCommandRequest{CommandID: "h", CommandType: "hyperv_restore", Payload: sessionPayloadJSON(t, map[string]any{
 			"snapshotId": id, "vmName": "vm1-restored", "storageSession": e.session(),

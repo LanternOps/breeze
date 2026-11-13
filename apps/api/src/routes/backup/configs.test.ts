@@ -31,6 +31,16 @@ const recordCredentialChangeMock = vi.fn(async () => undefined);
 // Tracks whether a statement runs inside withDbTransaction.
 const txn = { depth: 0, log: [] as string[] };
 
+// The local-destination probe writes to the API host's filesystem. Pass it
+// through, but keep spies so a test can prove the probe never ran.
+const fsSpies = vi.hoisted(() => ({ mkdir: vi.fn(), actualMkdir: undefined as unknown as (...args: any[]) => any }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  fsSpies.actualMkdir = actual.mkdir as any;
+  fsSpies.mkdir.mockImplementation(actual.mkdir as any);
+  return { ...actual, mkdir: fsSpies.mkdir };
+});
+
 vi.mock('../../services/backupStorageCredentialHistory', () => ({
   recordCredentialChange: (...args: unknown[]) => recordCredentialChangeMock(...(args as [])),
 }));
@@ -1702,6 +1712,119 @@ describe('backup config routes', () => {
   // bailing out on a validation/existence error would silently leave the org
   // with no default at all — and their scheduled backups would start skipping
   // with no obvious cause. Validate first; demote+promote atomically.
+  describe('network share local destinations are not supported', () => {
+    it.each([
+      ['a UNC path', '\\\\nas\\breeze'],
+      ['an extended UNC path', '\\\\?\\UNC\\nas\\breeze'],
+      ['a forward-slash UNC path', '//nas/breeze'],
+      ['a device path', '\\\\.\\D:\\breeze'],
+      ['a GLOBALROOT path', '\\\\?\\GLOBALROOT\\Device\\WebDavRedirector\\nas\\breeze'],
+    ])('refuses to create a local destination on %s', async (_label, path) => {
+      const res = await app.request('/backup/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'NAS', provider: 'local', details: { path } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toMatch(/not supported/);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(recordCredentialChangeMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [{ Path: '\\\\nas\\breeze' }],
+      [{ PATH: '\\\\nas\\breeze' }],
+      [{}],
+    ])('refuses to create a local destination with settings %j', async (details) => {
+      const res = await app.request('/backup/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'NAS', provider: 'local', details }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to update a local destination to a differently spelled path key', async () => {
+      selectMock.mockReturnValue(chainMock([makeConfig({ provider: 'local', providerConfig: { path: '/var/backups/breeze' } })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ details: { path: '/var/backups/breeze', Path: '\\\\nas\\breeze' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to move a local destination onto a network share', async () => {
+      selectMock.mockReturnValue(chainMock([makeConfig({ provider: 'local', providerConfig: { path: '/var/backups/breeze' } })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ details: { path: '\\\\nas\\breeze' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toMatch(/not supported/);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    // The destination form re-sends the saved path on every save, so a
+    // destination saved on a share is refused the next time it is saved.
+    it('refuses to re-save a saved destination that is on a network share', async () => {
+      selectMock.mockReturnValue(chainMock([makeConfig({ provider: 'local', providerConfig: { path: '\\\\nas\\breeze' } })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'NAS', details: { path: '\\\\nas\\breeze' } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('still accepts an attached-disk local destination', async () => {
+      insertMock.mockReturnValueOnce(chainMock([makeConfig({ provider: 'local', providerConfig: { path: 'D:\\BreezeBackups' } })]));
+
+      const res = await app.request('/backup/configs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Disk', provider: 'local', details: { path: 'D:\\BreezeBackups' } }),
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('reports a saved network share destination as unsupported without probing it', async () => {
+      selectMock.mockReturnValueOnce(chainMock([makeConfig({ provider: 'local', providerConfig: { path: '\\\\nas\\breeze' } })]));
+      updateMock.mockReturnValueOnce(chainMock([makeConfig({ provider: 'local', providerConfig: { path: '\\\\nas\\breeze' } })]));
+      checkBackupProviderCapabilitiesMock.mockResolvedValue({ objectLock: { supported: false, error: 'n/a' } });
+      // Never create a share-named directory on this host if the probe runs.
+      fsSpies.mkdir.mockImplementation(async () => { throw new Error('probe ran'); });
+      let res: Response;
+      try {
+        res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token' },
+        });
+      } finally {
+        fsSpies.mkdir.mockImplementation(fsSpies.actualMkdir);
+      }
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.status).toBe('failed');
+      expect(body.error).toMatch(/not supported/);
+      expect(fsSpies.mkdir).not.toHaveBeenCalled();
+    });
+  });
+
   describe('default destination', () => {
     it('does not demote the current default when the target config does not exist', async () => {
       selectMock.mockReturnValue(chainMock([])); // no such config in this org

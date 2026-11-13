@@ -55,7 +55,7 @@ func TestExecBackupRestoreWithProgressUsesWrapperCommandID(t *testing.T) {
 	backupRestoreWorkRoot = func() string { return t.TempDir() }
 	t.Cleanup(func() { backupRestoreWorkRoot = originalWorkRoot })
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "restore-progress-1"
 	prefix := filepath.Join("snapshots", snapshotID)
 
@@ -176,7 +176,7 @@ func TestApplyCommandStorageEncryptionFailsClosedForUnsupportedProvider(t *testi
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	err = applyCommandStorageEncryption(providers.NewLocalProvider(t.TempDir()), payload)
+	err = applyCommandStorageEncryption(privateTestLocalProvider(t, t.TempDir()), payload)
 	if err == nil {
 		t.Fatal("expected unsupported provider error")
 	}
@@ -196,7 +196,7 @@ func TestApplyCommandStorageEncryptionAllowsDisabledPayload(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	if err := applyCommandStorageEncryption(providers.NewLocalProvider(t.TempDir()), payload); err != nil {
+	if err := applyCommandStorageEncryption(privateTestLocalProvider(t, t.TempDir()), payload); err != nil {
 		t.Fatalf("disabled encryption should not fail: %v", err)
 	}
 }

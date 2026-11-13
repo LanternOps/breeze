@@ -14,7 +14,8 @@ import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from './vaultDeviceCommands';
-import { updateVaultWithinCurrentSite } from './localVaultUpdate';
+import { createLocalVault, updateVaultOnDevice, updateVaultWithinCurrentSite } from './localVaultUpdate';
+import { UnsupportedLocalStoreTargetError } from './localStoreTargets';
 import {
   deviceScopeCondition,
   deviceSiteDenied,
@@ -41,6 +42,10 @@ function safeHandler(toolName: string, fn: VaultHandler): VaultHandler {
     try {
       return await fn(input, auth);
     } catch (err) {
+      // A refused vault target is an answer for the caller, not a server fault.
+      if (err instanceof UnsupportedLocalStoreTargetError) {
+        return JSON.stringify({ error: err.message });
+      }
       const message = err instanceof Error ? err.message : 'Internal error';
       console.error(`[vault:${toolName}] ${err?.constructor?.name ?? 'Error'}:`, message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
@@ -405,8 +410,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           vaultPath: { type: 'string', description: 'Vault path' },
           vaultType: {
             type: 'string',
-            enum: ['local', 'smb', 'usb'],
-            description: 'Vault storage type',
+            enum: ['local', 'usb'],
+            description: 'Vault storage type: a local or USB disk attached to the device. SMB and NAS shares are not supported.',
           },
           retentionCount: { type: 'number', description: 'Retention count to keep in the vault' },
           isActive: { type: 'boolean', description: 'Whether the vault should be active' },
@@ -444,19 +449,16 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         }
 
         const now = new Date();
-        const [vault] = await db
-          .insert(localVaults)
-          .values({
-            orgId: device.orgId,
-            deviceId,
-            vaultPath,
-            vaultType: (input.vaultType as string) ?? 'local',
-            retentionCount: Number(input.retentionCount) || 3,
-            isActive: typeof input.isActive === 'boolean' ? input.isActive : true,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
+        const vault = await createLocalVault({
+          orgId: device.orgId,
+          deviceId,
+          vaultPath,
+          vaultType: (input.vaultType as string) ?? 'local',
+          retentionCount: Number(input.retentionCount) || 3,
+          isActive: typeof input.isActive === 'boolean' ? input.isActive : true,
+          createdAt: now,
+          updatedAt: now,
+        });
 
         const deviceConfig = await pushDeviceVaultConfig(auth, deviceId, device.orgId);
         return JSON.stringify({ success: true, vault, deviceConfig });
@@ -492,17 +494,9 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         // sites), so a concurrent site move cannot land between the check
         // above and this write. Unrestricted callers keep the CAS-bound update.
         const allowedSites = siteAllowlistOf(auth);
-        const [vault] = allowedSites !== undefined
-          ? [await updateVaultWithinCurrentSite(existing.orgId, vaultId, updateData, allowedSites)]
-          : await db
-            .update(localVaults)
-            .set(updateData)
-            .where(and(
-              eq(localVaults.id, vaultId),
-              eq(localVaults.orgId, existing.orgId),
-              eq(localVaults.deviceId, existing.deviceId),
-            ))
-            .returning();
+        const vault = allowedSites !== undefined
+          ? await updateVaultWithinCurrentSite(existing.orgId, vaultId, updateData, allowedSites)
+          : await updateVaultOnDevice(existing.orgId, vaultId, existing.deviceId, updateData);
 
         if (!vault) return JSON.stringify({ error: 'Vault not found or access denied' });
         const deviceConfig = await pushDeviceVaultConfig(auth, existing.deviceId, existing.orgId);

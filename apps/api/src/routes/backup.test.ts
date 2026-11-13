@@ -307,7 +307,7 @@ describe('backup routes', () => {
       const updatedRecord = {
         ...configRecord,
         isActive: false,
-        providerConfig: { storageClass: 'GLACIER' },
+        providerConfig: { path: localProbePath, storageClass: 'GLACIER' },
       };
       // PATCH now does a pre-update SELECT to merge provider config secrets and
       // assert encryption support before applying the update.
@@ -319,7 +319,8 @@ describe('backup routes', () => {
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({
           enabled: false,
-          details: { storageClass: 'GLACIER' }
+          // A local destination's settings always carry its path.
+          details: { path: localProbePath, storageClass: 'GLACIER' }
         })
       });
 

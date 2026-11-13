@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // TestSnapshotExpectsSystemState pins the #5412 derivation shared by every
@@ -48,7 +46,7 @@ func TestSnapshotExpectsSystemState(t *testing.T) {
 // applied no OS state and still reported "completed" to the server.
 func TestRunRecoveryWithToken_SystemImageNullManifest_NeverCompleted(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-5412-system-image"
 	buildOrdinaryManifestFixture(t, provider, snapshotID)
 	useFakeRestorer(t, &fakeStateRestorer{})

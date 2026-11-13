@@ -32,6 +32,32 @@ func EnsurePrivateDir(path string) error {
 	return ensureDir(path, 0o700, true)
 }
 
+// CheckPrivateDir verifies an existing directory's owner-only access without
+// changing its permissions. New private directories use EnsurePrivateDir.
+func CheckPrivateDir(path string) error {
+	_, err := PrivateDirInfo(path)
+	return err
+}
+
+// PrivateDirInfo returns identity metadata from the same pinned directory
+// handle whose owner and privacy policy were verified.
+func PrivateDirInfo(path string) (os.FileInfo, error) {
+	return privateDirInfo(path)
+}
+
+// EnsurePrivateDirInRoot creates or restricts a relative directory through the
+// supplied root handle, without resolving the root's pathname again.
+func EnsurePrivateDirInRoot(root *os.Root, relative string) error {
+	if root == nil {
+		return errors.New("directory root is required")
+	}
+	clean, err := CleanRelative(relative)
+	if err != nil {
+		return err
+	}
+	return ensurePrivateDirInRoot(root, clean)
+}
+
 // Owner is the uid/gid a restored entry should end up with. nil means "leave
 // whatever the creating process produced".
 type Owner struct {

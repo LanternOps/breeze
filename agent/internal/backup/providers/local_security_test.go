@@ -19,7 +19,7 @@ func TestLocalProvider_Upload_EmptyBasePath(t *testing.T) {
 }
 
 func TestLocalProvider_Upload_EmptyLocalPath(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Upload("", "dest")
 	if err == nil {
 		t.Fatal("expected error for empty local path")
@@ -30,7 +30,7 @@ func TestLocalProvider_Upload_EmptyLocalPath(t *testing.T) {
 }
 
 func TestLocalProvider_Upload_EmptyRemotePath(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Upload("/tmp/src", "")
 	if err == nil {
 		t.Fatal("expected error for empty remote path")
@@ -41,7 +41,7 @@ func TestLocalProvider_Upload_EmptyRemotePath(t *testing.T) {
 }
 
 func TestLocalProvider_Upload_SourceNotFound(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Upload("/nonexistent/file.txt", "backup.txt")
 	if err == nil {
 		t.Fatal("expected error for nonexistent source")
@@ -49,7 +49,7 @@ func TestLocalProvider_Upload_SourceNotFound(t *testing.T) {
 }
 
 func TestLocalProvider_Upload_PathTraversal(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	srcDir := t.TempDir()
 	srcPath := filepath.Join(srcDir, "data.txt")
 	os.WriteFile(srcPath, []byte("evil"), 0644)
@@ -72,7 +72,7 @@ func TestLocalProvider_Download_EmptyBasePath(t *testing.T) {
 }
 
 func TestLocalProvider_Download_EmptyRemotePath(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Download("", "/tmp/dest")
 	if err == nil {
 		t.Fatal("expected error for empty remote path")
@@ -80,7 +80,7 @@ func TestLocalProvider_Download_EmptyRemotePath(t *testing.T) {
 }
 
 func TestLocalProvider_Download_EmptyLocalPath(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Download("src", "")
 	if err == nil {
 		t.Fatal("expected error for empty local path")
@@ -88,7 +88,7 @@ func TestLocalProvider_Download_EmptyLocalPath(t *testing.T) {
 }
 
 func TestLocalProvider_Download_PathTraversal(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Download("../../etc/shadow", "/tmp/stolen")
 	if err == nil {
 		t.Fatal("expected error for path traversal in download")
@@ -99,7 +99,7 @@ func TestLocalProvider_Download_PathTraversal(t *testing.T) {
 }
 
 func TestLocalProvider_Download_FileNotFound(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Download("nonexistent.txt", filepath.Join(t.TempDir(), "out.txt"))
 	if err == nil {
 		t.Fatal("expected error for nonexistent remote file")
@@ -115,7 +115,7 @@ func TestLocalProvider_List_EmptyBasePath(t *testing.T) {
 }
 
 func TestLocalProvider_List_PathTraversal(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	_, err := p.List("../../etc")
 	if err == nil {
 		t.Fatal("expected error for path traversal in list")
@@ -131,7 +131,7 @@ func TestLocalProvider_Delete_EmptyBasePath(t *testing.T) {
 }
 
 func TestLocalProvider_Delete_EmptyRemotePath(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Delete("")
 	if err == nil {
 		t.Fatal("expected error for empty remote path")
@@ -139,7 +139,7 @@ func TestLocalProvider_Delete_EmptyRemotePath(t *testing.T) {
 }
 
 func TestLocalProvider_Delete_PathTraversal(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Delete("../../etc/important")
 	if err == nil {
 		t.Fatal("expected error for path traversal in delete")

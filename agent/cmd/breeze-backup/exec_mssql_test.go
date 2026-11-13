@@ -17,7 +17,7 @@ import (
 func TestExecMSSQLBackupEmitsStandardEnvelope(t *testing.T) {
 	baseDir := t.TempDir()
 	stagingDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	mgr := backup.NewBackupManager(backup.BackupConfig{
 		Provider:   provider,
 		StagingDir: stagingDir,
@@ -137,7 +137,7 @@ func TestExecMSSQLBackupEmitsStandardEnvelope(t *testing.T) {
 
 func TestExecMSSQLRestoreStagesSnapshotArtifact(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "mssql-prod-appdb-20260331"
 	prefix := path.Join("snapshots", snapshotID)
 
@@ -228,7 +228,7 @@ func TestExecMSSQLRestoreStagesSnapshotArtifact(t *testing.T) {
 
 func TestExecMSSQLVerifyStagesSnapshotPrefixArtifact(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "mssql-prod-appdb-20260331"
 	prefix := path.Join("snapshots", snapshotID)
 
@@ -333,7 +333,7 @@ var errUploadFailedForTest = fmt.Errorf("simulated upload failure")
 // result.BackupFile itself once the upload attempt is done.
 func TestExecMSSQLBackupRemovesLocalBackupFileAfterSuccessfulUpload(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	mgr := backup.NewBackupManager(backup.BackupConfig{
 		Provider:   provider,
 		StagingDir: t.TempDir(),
@@ -464,7 +464,7 @@ func setupMSSQLSnapshotFixture(t *testing.T, provider providers.BackupProvider, 
 // ad-hoc staging tempdir.
 func TestExecMSSQLRestoreDownloadsArtifactIntoResolvedTargetDir(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "mssql-prod-appdb-restore-targetdir"
 	backupBytes := []byte("restore-target-dir-bytes")
 	setupMSSQLSnapshotFixture(t, provider, snapshotID, backupBytes)
@@ -517,7 +517,7 @@ func TestExecMSSQLRestoreDownloadsArtifactIntoResolvedTargetDir(t *testing.T) {
 // already covered by TestExecMSSQLRestoreStagesSnapshotArtifact above).
 func TestExecMSSQLRestoreRemovesLocalArtifactWhenRestoreFails(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "mssql-prod-appdb-restore-fails"
 	backupBytes := []byte("restore-fails-bytes")
 	setupMSSQLSnapshotFixture(t, provider, snapshotID, backupBytes)
@@ -568,7 +568,7 @@ func TestExecMSSQLRestoreRemovesLocalArtifactWhenRestoreFails(t *testing.T) {
 // whether verify succeeds or fails.
 func TestExecMSSQLVerifyDownloadsArtifactIntoResolvedTargetDir(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "mssql-prod-appdb-verify-targetdir"
 	backupBytes := []byte("verify-target-dir-bytes")
 	setupMSSQLSnapshotFixture(t, provider, snapshotID, backupBytes)
@@ -618,7 +618,7 @@ func TestExecMSSQLVerifyDownloadsArtifactIntoResolvedTargetDir(t *testing.T) {
 
 func TestExecMSSQLVerifyRemovesLocalArtifactWhenVerifyFails(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "mssql-prod-appdb-verify-fails"
 	backupBytes := []byte("verify-fails-bytes")
 	setupMSSQLSnapshotFixture(t, provider, snapshotID, backupBytes)
