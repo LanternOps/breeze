@@ -258,8 +258,21 @@ export async function peekPortalCapabilityToken(
   purpose: PortalCapabilityPurpose,
   rawToken: string,
 ): Promise<ConsumedCapability | null> {
+  return peekPortalCapabilityTokenByHash(purpose, hashToken(rawToken));
+}
+
+/**
+ * {@link peekPortalCapabilityToken} by the stored sha256 instead of the raw
+ * token (W7: the Google invite callback holds only the hash its state carries
+ * and must learn the invited account BEFORE it consumes the token). A value
+ * that is not a lowercase sha256 hex digest names no token.
+ */
+export async function peekPortalCapabilityTokenByHash(
+  purpose: PortalCapabilityPurpose,
+  tokenHash: string,
+): Promise<ConsumedCapability | null> {
+  if (!SHA256_HEX.test(tokenHash)) return null;
   const s = storage(purpose);
-  const tokenHash = hashToken(rawToken);
   let raw: string | null;
   if (PORTAL_USE_REDIS) {
     const redis = getRedis();

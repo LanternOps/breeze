@@ -9,7 +9,7 @@ import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 
 type MembershipAction = 'added' | 'removed';
 type MembershipReason = 'manual' | 'filter_match' | 'filter_unmatch' | 'pinned' | 'unpinned';
-type GroupMembershipDatabase = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete'>;
+type GroupMembershipDatabase = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete' | 'execute'>;
 
 export interface MembershipUpdateSummary {
   evaluatedGroups: number;
@@ -396,10 +396,7 @@ async function writeDeviceMembership(
   return { evaluatedGroups: 1, added: add ? 1 : 0, removed: add ? 0 : 1 };
 }
 
-export async function evaluateGroupMembership(
-  groupId: string,
-  options: { exportLockBeforeWrites?: boolean } = {},
-): Promise<MembershipUpdateSummary> {
+export async function evaluateGroupMembership(groupId: string): Promise<MembershipUpdateSummary> {
   const [group] = await db
     .select()
     .from(deviceGroups)
@@ -454,11 +451,15 @@ export async function evaluateGroupMembership(
     }
   }
 
-  if (options.exportLockBeforeWrites && (toAdd.length > 0 || toRemove.length > 0)) {
-    // The sweep shares export admission with per-device writers. Finish the
-    // filter-fields backfill (group row lock) FIRST: route PATCH holds that row
-    // before writing memberships, so export -> group row would form a cycle.
-    // As in orgMerge/moveDeviceOrgInTransaction, export precedes membership rows.
+  if (toAdd.length > 0 || toRemove.length > 0) {
+    // Every caller (the group create and update routes, and the sweep) shares
+    // export admission with the per-device writer, which takes it before its
+    // first membership row. Taking it here first too keeps one order: the
+    // membership triggers would otherwise take it AFTER this writer holds the
+    // rows, and each writer would wait on the other. Finish the filter-fields
+    // backfill (group row lock) FIRST: route PATCH holds that row before
+    // writing memberships, so export -> group row would form a cycle. As in
+    // orgMerge/moveDeviceOrgInTransaction, export precedes membership rows.
     await acquireMembershipExportOrgLock(orgId);
     if (toAdd.length > 0) {
       const stillInOrg = await db.select({ id: devices.id }).from(devices)
@@ -539,7 +540,7 @@ async function requireOrgOwnedGroup(
   groupId: string,
   database: GroupMembershipDatabase,
   loadedGroup?: GroupOwner,
-): Promise<void> {
+): Promise<string> {
   const group = loadedGroup ?? (await database
     .select({ id: deviceGroups.id, orgId: deviceGroups.orgId })
     .from(deviceGroups)
@@ -547,6 +548,7 @@ async function requireOrgOwnedGroup(
     .limit(1))[0];
   if (!group || group.id !== groupId) throw new Error('device group not found');
   if (group.orgId === null) throw new Error('partner-owned device groups are read-only');
+  return group.orgId;
 }
 
 /**
@@ -581,6 +583,10 @@ export async function pruneGroupMembershipsOutsideSite(
     return options.deferPeripheralReconciliation ? { removed: 0, deviceIds: [] } : { removed: 0 };
   }
 
+  // Export admission before the first membership row, the order every
+  // membership writer uses (see evaluateGroupMembership); the delete trigger
+  // then re-enters a lock this transaction already holds.
+  await acquireMembershipExportOrgLock(orgId, database);
   await database
     .delete(deviceGroupMemberships)
     .where(and(
@@ -680,6 +686,9 @@ export async function pinDeviceToGroup(
   loadedGroup?: GroupOwner,
 ): Promise<void> {
   await requireOrgOwnedGroup(groupId, db, loadedGroup);
+  // Export admission before the membership row is read or written, the order
+  // every membership writer uses (see evaluateGroupMembership).
+  await acquireMembershipExportOrgLock(orgId);
   const [membership] = await db
     .select({
       deviceId: deviceGroupMemberships.deviceId,
@@ -897,21 +906,27 @@ export async function addManualGroupMemberships(params: {
     );
 
   const existingSet = new Set(existing.map((row) => row.deviceId));
-  const added = requested.filter((deviceId) => !existingSet.has(deviceId));
+  const candidates = requested.filter((deviceId) => !existingSet.has(deviceId));
+  if (candidates.length === 0) return { added: [], skipped: existingSet.size };
 
+  await acquireMembershipExportOrgLock(orgId, database);
+  // Another writer may have added one of these rows since the read above
+  // (it waited on the same lock): RETURNING says which rows this call added.
+  const inserted = await database.insert(deviceGroupMemberships).values(
+    candidates.map((deviceId) => ({
+      deviceId,
+      groupId,
+      orgId,
+      addedBy: 'manual' as const
+    }))
+  ).onConflictDoNothing().returning({ deviceId: deviceGroupMemberships.deviceId });
+  const insertedSet = new Set(inserted.map((row) => row.deviceId));
+  const added = candidates.filter((deviceId) => insertedSet.has(deviceId));
   if (added.length > 0) {
-    await database.insert(deviceGroupMemberships).values(
-      added.map((deviceId) => ({
-        deviceId,
-        groupId,
-        orgId,
-        addedBy: 'manual' as const
-      }))
-    );
     await schedulePeripheralMembershipChanges(added, 'manual_membership_changed');
   }
 
-  return { added, skipped: existingSet.size };
+  return { added, skipped: requested.length - added.length };
 }
 
 export interface ManualMembershipRemoval {
@@ -938,7 +953,9 @@ export async function removeManualGroupMemberships(params: {
   const { groupId } = params;
   const requested = [...new Set(params.deviceIds)];
   if (requested.length === 0) return { removed: [], notMember: [] };
-  await requireOrgOwnedGroup(groupId, database, params.group);
+  const groupOrgId = await requireOrgOwnedGroup(groupId, database, params.group);
+  // Export admission before the first membership row (see evaluateGroupMembership).
+  await acquireMembershipExportOrgLock(groupOrgId, database);
 
   const deleted = await database
     .delete(deviceGroupMemberships)

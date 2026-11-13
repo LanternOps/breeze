@@ -51,6 +51,8 @@ vi.mock('../../services/permissions', () => ({
   userCanDecideApprovals: vi.fn(() => permissionsState.approvalsDecide),
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+const TOOL_CATALOG = vi.hoisted(() => ({ sentinel: 'tool-catalog' }));
+vi.mock('../../services/aiModels/toolProfileCatalog', () => ({ breezeToolProfileCatalog: () => TOOL_CATALOG }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn((fn: () => unknown) => fn()), withSystemDbAccessContext: vi.fn() }));
 vi.mock('../../services/redis', () => ({ getRedis: vi.fn(() => ({})) }));
@@ -149,6 +151,8 @@ const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
   ['POST', `/offerings/platform/${PM}`, { enabled: true }],
   ['POST', `/offerings/${A}/enabled`, { enabled: true }],
   ['PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' }],
+  // #11398: the tool profile / window override write rides the same gates.
+  ['PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', toolProfile: 'standard', contextWindowOverride: 32768 }],
   ['POST', `/offerings/${A}/verify`],
   ['DELETE', `/offerings/${A}`],
   ['PUT', '/assignments', { assignments: [chatRow] }],
@@ -266,7 +270,7 @@ describe('/ai/models partner routes — authz matrix', () => {
   it('GET / needs BILLING_MANAGE but not MFA', async () => {
     authGates.mfaDenied = true;
     expect((await call('GET', '/')).status).toBe(200);
-    expect(buildPartnerModelsSnapshot).toHaveBeenCalledWith(P);
+    expect(buildPartnerModelsSnapshot).toHaveBeenCalledWith(P, TOOL_CATALOG);
     authGates.permissionDenied = true;
     expect((await call('GET', '/')).status).toBe(403);
   });
@@ -511,6 +515,39 @@ describe('/ai/models partner routes — behaviour', () => {
       action: 'ai_models.offering.updated', details: { offeringId: A, fields: ['displayName'] },
     }));
   });
+  it('a tool settings patch passes the tool catalog and audits the settings before and after (#11398)', async () => {
+    const from = { toolProfile: 'auto', toolAllowlist: null, contextWindowOverride: null };
+    const to = { toolProfile: 'standard', toolAllowlist: null, contextWindowOverride: 32768 };
+    vi.mocked(updateOfferingDetails).mockResolvedValue({ ...offeringRow, toolSettingsChange: { from, to } } as any);
+    const res = await call('PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', toolProfile: 'standard', contextWindowOverride: 32768 });
+    expect(res.status).toBe(200);
+    expect(updateOfferingDetails).toHaveBeenCalledWith(expect.objectContaining({
+      partnerId: P, offeringId: A, toolCatalog: TOOL_CATALOG,
+      patch: expect.objectContaining({ toolProfile: 'standard', contextWindowOverride: 32768 }),
+    }));
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ai_models.offering.updated',
+      details: { offeringId: A, fields: ['toolProfile', 'contextWindowOverride'], toolSettings: { from, to } },
+    }));
+  });
+  it('a patch without tool fields never loads the tool catalog (#11398)', async () => {
+    await call('PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' });
+    expect(vi.mocked(updateOfferingDetails).mock.calls[0]![0]).not.toHaveProperty('toolCatalog');
+  });
+  it('a tool profile refusal is a 422 with the per-surface gaps, and nothing is audited (#11398)', async () => {
+    const surfaces = [{ surface: 'script_builder', missing: ['execute_script_on_device'] }];
+    vi.mocked(updateOfferingDetails).mockRejectedValue(
+      new RegistryWriteError('This tool profile drops tools…', 'tool_profile_underpowered', 422, { field: 'toolProfile', surfaces }));
+    const res = await call('PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', toolProfile: 'minimal' });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'tool_profile_underpowered', details: { field: 'toolProfile', surfaces } });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+  it('the PATCH body rejects a malformed tool field before any write (#11398)', async () => {
+    const res = await call('PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', contextWindowOverride: 1023 });
+    expect(res.status).toBe(400);
+    expect(updateOfferingDetails).not.toHaveBeenCalled();
+  });
   it('rethrows non-registry errors (programming bugs stay visible)', async () => {
     vi.mocked(updateOfferingDetails).mockRejectedValue(new TypeError('boom'));
     const res = await call('PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' });
@@ -550,6 +587,13 @@ describe('/ai/models partner routes — script reviewer offering gate', () => {
     vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'chat', level: 'partner', orgId: null }]);
     permissionsState.approvalsDecide = false;
     expect((await patch({ allowedOptions: { effort: ['low'] } })).status).toBe(200);
+    expect(updateOfferingDetails).toHaveBeenCalled();
+  });
+  it('reviewer default + tool profile / window patch without approvals:decide → 200 (#11398: exposure, not reviewer behaviour)', async () => {
+    // The reviewer runs no tools; the window only caps request size. Neither widens what the reviewer may do.
+    vi.mocked(listOfferingDefaultUses).mockResolvedValue([{ surface: 'script_reviewer', level: 'partner', orgId: null }]);
+    permissionsState.approvalsDecide = false;
+    expect((await patch({ toolProfile: 'standard', toolAllowlist: null, contextWindowOverride: 32768 })).status).toBe(200);
     expect(updateOfferingDetails).toHaveBeenCalled();
   });
   it('reviewer default rename / price patch without approvals:decide → 200', async () => {

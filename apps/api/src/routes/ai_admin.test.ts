@@ -12,6 +12,7 @@ vi.mock('../services/topology/aiSessionAccess', () => ({
   resolveTopologySessionVisibility: vi.fn(async () => ({ kind: 'all' })),
   topologySessionAccessCondition: vi.fn(async () => undefined),
   topologySessionCondition: vi.fn(() => undefined),
+  topologyAuditSessionCondition: vi.fn(() => undefined),
 }));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -804,6 +805,22 @@ describe('AI routes', () => {
       for (const chain of chains) {
         expect(JSON.stringify(chain.where.mock.calls[0])).toContain('site-filter');
       }
+    });
+
+    it('security-events applies the fail-closed audit-row condition for the caller visibility, before LIMIT', async () => {
+      const { resolveTopologySessionVisibility, topologyAuditSessionCondition } = await import('../services/topology/aiSessionAccess');
+      const visibility = { kind: 'none' as const };
+      vi.mocked(resolveTopologySessionVisibility).mockResolvedValueOnce(visibility);
+      const AUDIT_FILTER = { sentinel: 'audit-session-filter' };
+      vi.mocked(topologyAuditSessionCondition).mockReturnValueOnce(AUDIT_FILTER as never);
+      const chain = makeChainMock([]);
+      vi.mocked(db.select).mockReturnValueOnce(chain);
+
+      const res = await app.request(`/ai/admin/security-events?orgId=${ORG_ID}`, { headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(topologyAuditSessionCondition).toHaveBeenCalledWith(visibility);
+      expect(JSON.stringify(chain.where.mock.calls[0])).toContain('audit-session-filter');
     });
   });
 

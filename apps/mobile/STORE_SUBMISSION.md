@@ -132,7 +132,10 @@ keytool -printcert -jarfile app/build/outputs/bundle/release/app-release.aab | g
 - `feature-graphic.png` — 1024×500
 - `screenshots/1-home.png … 5-settings.png` — 1080×2160 (2:1) phone screenshots
   from the 2026-09-15 emulator run, signed in as the reviewer demo account.
-  Retake after any visual change. No 7-inch/10-inch tablet screenshots: the
+  **Play rejects 2:1** — it accepts only 9:16 or 16:9. The 2026-11-09 upload
+  used copies padded to 1080×1920 with the app background colour, and left out
+  `5-settings.png` because it shows emulator-only copy. Capture 9:16 next time
+  (a 1080×1920 AVD skin), and retake after any visual change. No 7-inch/10-inch tablet screenshots: the
   app is phone-only on iOS and Play lists tablets as optional.
 - Short description (≤80): `Your fleet, in one chat. Alerts, approvals, tickets and time for MSPs.`
 - Full description: reuse the App Store description above verbatim, replacing
@@ -148,13 +151,16 @@ it is deletable via account deletion.
 
 | Data type | Collected | Purpose | Notes |
 |---|---|---|---|
-| Personal info → Email address, Name | Yes, required | App functionality, Account management, Analytics | Sentry user context; PostHog identify only when `EXPO_PUBLIC_POSTHOG_KEY` is set |
+| Personal info → Email address, Name, User IDs | Yes, required | App functionality, Account management (+ Analytics for email and user IDs) | Sentry user context; PostHog identify only when `EXPO_PUBLIC_POSTHOG_KEY` is set |
 | App info and performance → Crash logs, Diagnostics | Yes | Analytics, App functionality | Sentry |
-| App activity → App interactions | Yes | Analytics | PostHog, only when configured in the shipped build |
+| App activity → App interactions | Only if PostHog is configured | Analytics | Not declared on 2026-11-09: the shipped build had no `EXPO_PUBLIC_POSTHOG_KEY`. Declare it before shipping a build that has one |
 | Device or other IDs | Yes | App functionality, Fraud prevention, security | push token, approver device id, Play Integrity / attestation |
-| Photos and videos | Yes, optional | App functionality | ticket attachments, user-initiated only |
+| Photos and videos → Photos | Yes, optional | App functionality | ticket attachments, user-initiated only |
+| Files and docs | Yes, optional | App functionality | PDF ticket attachments |
+| Messages → Other in-app messages; App activity → Other user-generated content | Yes, optional | App functionality | ticket comments, chat with Breeze |
+| Location → Precise location | Yes, optional | App functionality | site-pin time suggestions (`expo-location`, foreground only); stored only when the user saves a site's location |
 | Audio → Voice or sound recordings | No (processed on-device, not stored) | — | expo-speech-recognition; declare "collected, not stored" if the reviewer asks |
-| Location, Contacts, Financial, Health, Messages, Files | No | — | |
+| Contacts, Financial, Health | No | — | |
 
 Security practices: data encrypted in transit; users can request deletion
 (in-app "Delete account" → per-region page). No independent security review

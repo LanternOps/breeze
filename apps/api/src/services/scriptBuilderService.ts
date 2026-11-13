@@ -58,12 +58,17 @@ export async function createScriptBuilderSession(
 }
 
 /**
- * Get a script builder session, verifying it belongs to the user's org and is type script_builder.
+ * Get a script builder session the caller created: the row must be a
+ * script_builder session, owned by the calling user, in an organization the
+ * caller can access. The load, close, interrupt and approve routes resolve
+ * their session here; the message route resolves it through the owner-bound
+ * getSession in its pre-flight checks.
  */
 export async function getScriptBuilderSession(sessionId: string, auth: AuthContext) {
   const conditions = [
     eq(aiSessions.id, sessionId),
     eq(aiSessions.type, 'script_builder'),
+    eq(aiSessions.userId, auth.user.id),
   ];
   const orgCondition = auth.orgCondition(aiSessions.orgId);
   if (orgCondition) conditions.push(orgCondition);
@@ -78,7 +83,8 @@ export async function getScriptBuilderSession(sessionId: string, auth: AuthConte
 }
 
 /**
- * Get messages for a script builder session.
+ * Get messages for a script builder session. Callers pass the id of a session
+ * already resolved through getScriptBuilderSession.
  */
 export async function getScriptBuilderMessages(sessionId: string) {
   return db
@@ -91,7 +97,8 @@ export async function getScriptBuilderMessages(sessionId: string) {
 /**
  * Update the system prompt with the latest editor state.
  * Called on each message to keep the AI aware of manual edits.
- * The update is org-scoped via auth to enforce tenant isolation.
+ * The update is bound to the calling user's own script builder session in an
+ * organization the caller can access.
  */
 export async function updateEditorContext(
   sessionId: string,
@@ -100,7 +107,11 @@ export async function updateEditorContext(
 ): Promise<string> {
   const systemPrompt = buildScriptBuilderSystemPrompt(context);
 
-  const conditions = [eq(aiSessions.id, sessionId)];
+  const conditions = [
+    eq(aiSessions.id, sessionId),
+    eq(aiSessions.type, 'script_builder'),
+    eq(aiSessions.userId, auth.user.id),
+  ];
   const orgCondition = auth.orgCondition(aiSessions.orgId);
   if (orgCondition) conditions.push(orgCondition);
 
@@ -113,7 +124,7 @@ export async function updateEditorContext(
 }
 
 /**
- * Close a script builder session.
+ * Close a script builder session the caller created.
  */
 export async function closeScriptBuilderSession(sessionId: string, auth: AuthContext) {
   const session = await getScriptBuilderSession(sessionId, auth);
@@ -122,5 +133,9 @@ export async function closeScriptBuilderSession(sessionId: string, auth: AuthCon
   await db
     .update(aiSessions)
     .set({ status: 'closed' })
-    .where(eq(aiSessions.id, sessionId));
+    .where(and(
+      eq(aiSessions.id, session.id),
+      eq(aiSessions.userId, auth.user.id),
+      eq(aiSessions.orgId, session.orgId),
+    ));
 }

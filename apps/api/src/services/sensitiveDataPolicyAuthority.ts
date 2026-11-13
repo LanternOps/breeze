@@ -1,19 +1,17 @@
 import { createHash, randomUUID } from 'crypto';
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   organizationUsers,
   organizations,
   partnerUsers,
-  permissions,
-  rolePermissions,
-  roles,
   users,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from './permissions';
 import { permissionGrantMatches } from './permissionMatching';
+import { getRoleGrantRows } from './roleInheritance';
 
 export type SensitiveDataAuthorityKind =
   | 'organization_restricted'
@@ -249,27 +247,15 @@ export async function resolveSensitiveDataAuthorityInCurrentSystemContext(
     roleId: string,
     expected: { scope: 'organization'; orgId: string } | { scope: 'partner'; partnerId: string },
   ): Promise<boolean> => {
-    const grants = await db
-      .select({
-        resource: permissions.resource, action: permissions.action,
-        roleScope: roles.scope, roleIsSystem: roles.isSystem,
-        roleOrgId: roles.orgId, rolePartnerId: roles.partnerId,
-      })
-      .from(rolePermissions)
-      .innerJoin(roles, eq(roles.id, rolePermissions.roleId))
-      .innerJoin(permissions, eq(permissions.id, rolePermissions.permissionId))
-      .where(and(
-        eq(rolePermissions.roleId, roleId),
-        inArray(permissions.resource, [PERMISSIONS.DEVICES_EXECUTE.resource, '*']),
-        inArray(permissions.action, [PERMISSIONS.DEVICES_EXECUTE.action, '*']),
-        eq(roles.scope, expected.scope),
-        or(
-          eq(roles.isSystem, true),
-          expected.scope === 'organization'
-            ? eq(roles.orgId, expected.orgId)
-            : eq(roles.partnerId, expected.partnerId),
-        ),
-      ));
+    // Runtime grants INCLUDING inherited ones, tagged with the base role's
+    // ownership (services/roleInheritance.ts, #11702). A role that is not
+    // visible yields no rows, so it grants nothing.
+    const grants = (await getRoleGrantRows([roleId])).filter((grant) =>
+      grant.roleScope === expected.scope
+      && (grant.roleIsSystem
+        || (expected.scope === 'organization'
+          ? grant.roleOrgId === expected.orgId
+          : grant.rolePartnerId === expected.partnerId)));
     return grants.some((grant) => permissionGrantMatches(
       grant, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action,
     ));

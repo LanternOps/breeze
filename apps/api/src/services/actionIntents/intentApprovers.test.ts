@@ -56,7 +56,33 @@ vi.mock('../permissions', async (importOriginal) => {
   return { ...actual, getUserPermissions: vi.fn() };
 });
 
+// usersWithPermission expands the direct-grantor seed to the roles that inherit
+// it (#11702); the walk itself is roleInheritance's, so it is a passthrough here
+// (no inheriting roles) and the db.select order below stays as documented.
+vi.mock('../roleInheritance', async () => {
+  const { db: mockedDb } = await import('../../db');
+  const { and, eq, inArray } = await import('drizzle-orm');
+  const schema = await import('../../db/schema');
+  const expandToInheritingRoleIds = vi.fn(async (ids: string[]) => ids);
+  return {
+    expandToInheritingRoleIds,
+    // The resolver's direct-grantor read (consumes the queued select) then the expansion.
+    getRoleIdsHoldingPermission: async (permission: { resource: string; action: string }) => {
+      const rows = (await mockedDb
+        .select({ roleId: schema.rolePermissions.roleId })
+        .from(schema.rolePermissions)
+        .innerJoin(schema.permissions, eq(schema.rolePermissions.permissionId, schema.permissions.id))
+        .where(and(
+          inArray(schema.permissions.resource, [permission.resource, '*']),
+          inArray(schema.permissions.action, [permission.action, '*']),
+        ))) as Array<{ roleId: string }>;
+      return expandToInheritingRoleIds([...new Set(rows.map((r) => r.roleId))]);
+    },
+  };
+});
+
 import { db } from '../../db';
+import { expandToInheritingRoleIds } from '../roleInheritance';
 import { devices, organizationUsers, partnerUsers, users } from '../../db/schema';
 import { requiredPermissionsForTool } from '../aiGuardrails';
 import { getUserPermissions, type UserPermissions } from '../permissions';
@@ -442,6 +468,19 @@ describe('resolveIntentApprovers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.select).mockReset();
+  });
+
+  it('counts an approver whose role holds approvals:decide only through inheritance (#11702)', async () => {
+    vi.mocked(expandToInheritingRoleIds).mockResolvedValueOnce(['role-parent', 'role-child']);
+    const { orgMembersWhere } = queueSelects({
+      grantingRoles: [{ roleId: 'role-parent' }],
+      org: [{ partnerId: null }],
+      orgMembers: [{ userId: 'u-child' }],
+      partnerMembers: [],
+    });
+    await expect(resolveIntentApprovers('org-1')).resolves.toEqual(['u-child']);
+    expect(expandToInheritingRoleIds).toHaveBeenCalledWith(['role-parent']);
+    expect(orgMembersWhere).toHaveBeenCalledTimes(1);
   });
 
   it('returns distinct userIds across org members AND partner members with org_access covering the org', async () => {

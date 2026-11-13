@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
+import { requireScope, requirePermission, withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   createCatalogItemSchema, updateCatalogItemSchema, listCatalogQuerySchema
@@ -15,6 +15,7 @@ import {
   writeCatalogItemImage, readCatalogItemImage, deleteCatalogItemImage,
   fetchImageFromUrl, sniffImageMime, MAX_CATALOG_IMAGE_SIZE_BYTES, CATALOG_IMAGE_WEBP_REJECTED_MESSAGE,
 } from '../../services/catalogImageStorage';
+import { ResponseDeadlineError } from '../../services/urlSafety';
 
 export const catalogItemRoutes = new Hono();
 
@@ -110,16 +111,22 @@ catalogItemRoutes.post('/:id/image',
 // user-supplied URL (SSRF-guarded via safeFetch), then store it (replaces). The
 // download/validation failure is mapped to a single generic 400 so internal
 // fetch/SSRF errors don't leak to the client. catalog:write; ownership-checked.
+//
+// The route owns its DB context (SELF_MANAGED_DB_CONTEXT_ROUTES): the ownership
+// read and the image write each run in a short caller-scoped context, and the
+// download runs between them with no transaction held.
 catalogItemRoutes.post('/:id/image/from-url',
   scopes, writePerm, zValidator('param', idParam),
   zValidator('json', z.object({ url: z.string().url() })),
   async (c) => {
     const id = c.req.valid('param').id;
     const { url } = c.req.valid('json');
+    const auth = c.get('auth') as AuthContext;
     const actor = catalogActorFrom(c);
     try {
-      await getCatalogItem(id, actor); // 404 if not this partner's
+      await withAuthDbAccessContext(auth, () => getCatalogItem(id, actor)); // 404 if not this partner's
       if (!actor.partnerId) return c.json({ error: 'Catalog is partner-scoped' }, 400);
+      const partnerId = actor.partnerId;
       let mime: string, buffer: Buffer;
       try {
         ({ mime, buffer } = await fetchImageFromUrl(url));
@@ -127,9 +134,13 @@ catalogItemRoutes.post('/:id/image/from-url',
         if (err instanceof Error && err.message === CATALOG_IMAGE_WEBP_REJECTED_MESSAGE) {
           return c.json({ error: CATALOG_IMAGE_WEBP_REJECTED_MESSAGE }, 415);
         }
+        // Out of time (total deadline or inactivity): 504, as the quote image copy answers.
+        if (err instanceof ResponseDeadlineError || (err instanceof Error && /timed out/i.test(err.message))) {
+          return c.json({ error: 'The image took too long to download.' }, 504);
+        }
         return c.json({ error: 'Could not download a valid image from that URL.' }, 400);
       }
-      const written = await writeCatalogItemImage(id, actor.partnerId, mime, buffer);
+      const written = await withAuthDbAccessContext(auth, () => writeCatalogItemImage(id, partnerId, mime, buffer));
       return c.json({ data: { imageId: written.id, mime, byteSize: written.byteSize } });
     } catch (err) { return handleServiceError(c, err); }
   });

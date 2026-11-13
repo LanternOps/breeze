@@ -13,10 +13,16 @@ const authState: { value: any } = {
   },
 };
 
+const authContext = vi.hoisted(() => ({ depth: 0, readDepths: [] as number[] }));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: any, next: any) => {
     c.set('auth', authState.value);
     await next();
+  },
+  withAuthDbAccessContext: async (_auth: unknown, fn: () => Promise<unknown>) => {
+    authContext.depth += 1;
+    try { return await fn(); } finally { authContext.depth -= 1; }
   },
   requirePermission: vi.fn(() => async (c: any, next: any) => {
     if (authGates.permissionDenied) {
@@ -44,7 +50,7 @@ vi.mock('../services/auditEvents', () => ({
 
 vi.mock('../db', () => ({
   db: {
-    select: () => ({
+    select: () => (authContext.readDepths.push(authContext.depth), {
       from: () => ({
         where: () => ({
           limit: () => Promise.resolve([{ email: 'u@example.com', name: 'U' }]),
@@ -317,6 +323,38 @@ describe('externalServicesRoutes', () => {
       expect(body.retryAfter).toBeGreaterThan(0);
       expect(body.retryAfter).toBeLessThanOrEqual(42);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the billing service is called with no transaction held, and not waited on forever', () => {
+    it('/support reads the user in a short context and bounds the upstream call', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      authContext.readDepths.length = 0;
+      let depthAtFetch = -1;
+      fetchMock.mockImplementationOnce(async () => {
+        depthAtFetch = authContext.depth;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+      const res = await app().request('/support', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ subject: 'hi', message: 'help' }),
+      });
+      expect(res.status).toBe(200);
+      expect(authContext.readDepths).toEqual([1]);
+      expect(depthAtFetch).toBe(0);
+      expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('/billing/portal bounds the upstream call', async () => {
+      process.env.BREEZE_BILLING_URL = 'http://billing';
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ url: 'https://x' }), { status: 200 }));
+      await app().request('/billing/portal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ returnUrl: 'https://app.example.com/settings' }),
+      });
+      expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
     });
   });
 

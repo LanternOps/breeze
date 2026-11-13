@@ -8,6 +8,7 @@ const {
   redisDelMock,
   getRedisMock,
   captureExceptionMock,
+  cancelPendingEmailChangeMock,
 } = vi.hoisted(() => ({
   getCurrentDbAccessContextMock: vi.fn(),
   runOutsideDbContextMock: vi.fn((fn: () => unknown) => fn()),
@@ -16,6 +17,7 @@ const {
   redisDelMock: vi.fn(),
   getRedisMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  cancelPendingEmailChangeMock: vi.fn(async () => undefined),
 }));
 
 vi.mock('../db', () => ({
@@ -33,6 +35,7 @@ vi.mock('../db/schema', () => ({
 vi.mock('./mfaAssurance', () => ({ invalidateMfaAssuranceAfterFactorChange: invalidateMock }));
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
+vi.mock('./pendingEmailCancellation', () => ({ cancelPendingEmailChange: cancelPendingEmailChangeMock }));
 
 import {
   MAX_AUDITED_PASSKEYS,
@@ -167,6 +170,20 @@ describe('resetAllFactorsAndInvalidate', () => {
       pendingSweepOk: true,
       inventory: expect.objectContaining({ passkeysDeleted: 1, previousMethod: 'sms' }),
     });
+  });
+
+  it('cancels a pending email-address change inside the reset transaction', async () => {
+    await resetAllFactorsAndInvalidate(USER, 'admin-mfa-reset');
+
+    expect(cancelPendingEmailChangeMock).toHaveBeenCalledWith(fakeTx.tx, USER);
+  });
+
+  it('leaves a pending email-address change to the caller when only the factors are cleared', async () => {
+    const { tx } = makeTx();
+
+    await resetAllFactors(tx, USER);
+
+    expect(cancelPendingEmailChangeMock).not.toHaveBeenCalled();
   });
 
   it('propagates a transaction failure and never sweeps', async () => {

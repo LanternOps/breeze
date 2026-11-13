@@ -60,7 +60,7 @@ import {
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db, withDbTransaction } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
-import { eq, and, desc, gte, lte, count, avg, isNotNull, isNull, ne, notExists, notInArray, or, sql as drizzleSql, type SQL } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql, type SQL } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -100,9 +100,11 @@ import { resolveSessionTurn } from '../services/aiModels/sessionModel';
 import { loadContinuationSummary, withContinuationContext } from '../services/aiModels/continuation';
 // A leaf module (db + sanitizer): it does not load the Wisp graph.
 import { loadFiredCheckIns, markCheckInsConsumed, renderCheckInBlock, type FiredCheckIn } from '../services/wisp/checkInTurn';
+import type { SpecialistResultsTurn } from '../services/wisp/specialistResultsTurn';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
-import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
+import { turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
+import { resolvedLiveQueryKey, toolExposureRefusal } from '../services/aiModels/sessionToolExposure';
 import { continuationMessage, planModelTransition, planTransitionWithFailover, readPreviousTurn, readSessionOfferingId } from '../services/aiModels/modelTransition';
 import { lastTurnModelOf, turnDisplayFrom } from '../services/aiModels/turnModel';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
@@ -114,33 +116,16 @@ const loadTopologyTurn = () => import('./aiTopologyTurn');
 const loadSessionContinuation = () => import('./aiSessionContinue');
 // #10426: the Wisp standing-state block, only for a Wisp session (it loads the Wisp graph).
 const loadStandingStateTurn = () => import('../services/wisp/standingStateTurn');
+// #11671: settled specialist hand-offs of a Wisp session, read from the run rows.
+const loadSpecialistResultsTurn = () => import('../services/wisp/specialistResultsTurn');
 /** Topology sessions get a fixed title: no model or evidence text ever names a session. */
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import {
   resolveTopologySessionVisibility,
+  topologyAuditSessionCondition,
   topologySessionCondition,
-  type TopologySessionVisibility,
 } from '../services/topology/aiSessionAccess';
 
-/**
- * M4-D2 for audit rows: an `ai_session` audit row (tool calls, authority
- * changes, injection flags) names its session and carries the tool input, so a
- * row about a topology session pinned to a site the caller cannot read is
- * withheld exactly like the session itself. Applied in SQL before LIMIT.
- */
-function topologyAuditSessionCondition(visibility: TopologySessionVisibility): SQL | undefined {
-  if (visibility.kind === 'all') return undefined;
-  const hidden = visibility.kind === 'none'
-    ? isNotNull(aiSessions.topologySiteId)
-    : and(isNotNull(aiSessions.topologySiteId), notInArray(aiSessions.topologySiteId, visibility.siteIds));
-  return or(
-    ne(auditLogs.resourceType, 'ai_session'),
-    isNull(auditLogs.resourceId),
-    notExists(
-      db.select({ one: drizzleSql`1` }).from(aiSessions).where(and(eq(aiSessions.id, auditLogs.resourceId), hidden)),
-    ),
-  );
-}
 import { createTicketFromChatSchema, type AiContinuationRequired, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
@@ -161,7 +146,8 @@ import {
  * env OpenAI-compatible deployments included, resolves through the registry.
  */
 function topologyProviderRevision(model: ResolvedModel): string {
-  return `sdk:${liveQueryKey(turnBindingFrom(model))}`;
+  // #11395: the full live-query key, tool profile segment included.
+  return `sdk:${resolvedLiveQueryKey(model)}`;
 }
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
@@ -963,6 +949,29 @@ aiRoutes.post(
       }
     }
 
+    // #11671: specialist hand-offs this session made that have settled since
+    // it was last given them. Read from the run rows, not the live session's
+    // queue: the session is rotated away just below, before every turn, so a
+    // result queued on it between turns never reached the model. Rendered in
+    // the analysis-results block (outermost); recorded as given only once the
+    // turn is dispatched. A failure never blocks the turn.
+    let specialistResults: SpecialistResultsTurn | null = null;
+    let markSpecialistResultsDelivered: ((sessionId: string, keys: readonly string[]) => Promise<void>) | null = null;
+    if (wispGrantId && wispGrantRevisionId) {
+      try {
+        const specialistResultsTurn = await loadSpecialistResultsTurn();
+        markSpecialistResultsDelivered = specialistResultsTurn.markSpecialistResultsDelivered;
+        specialistResults = await timePreStreamPhase('wispSpecialistResults', () => specialistResultsTurn.specialistResultsForTurn({
+          grantId: wispGrantId, revisionId: wispGrantRevisionId, sessionId,
+        }));
+      } catch (err) {
+        console.warn('[AI] failed to read settled Wisp specialist results; sending the turn without them', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_specialist_results_phase: 'read' });
+      }
+    }
+
     // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
     // approval-only prior turn, then rotate the idle query so this turn is
     // created with the exact durable reservation ceiling.
@@ -1058,6 +1067,11 @@ aiRoutes.post(
       };
       return c.json(answer, 409);
     }
+    // #11395: a failover hop registers ITS model's tool profile, so the prompt
+    // follows it (rebuilt only when that model's prompt exposure differs).
+    const turnSystemPrompt = !topology && model !== resolvedModel && preflight.systemPromptFor
+      ? await preflight.systemPromptFor(model)
+      : systemPrompt;
     // Spec §9.2: the turn binding (offering, options, rate, connection
     // identity, wire model) is written onto the reservation in its own
     // transaction; funding is the resolved offering's, decided before admission.
@@ -1122,7 +1136,7 @@ aiRoutes.post(
           },
           auth,
           c,
-          topology ? topology.systemPrompt : systemPrompt,
+          topology ? topology.systemPrompt : turnSystemPrompt,
           budgetDispatch.maxBudgetUsd,
           model,
           // Topology: the SDK is handed ONLY the topology tools; the pre-tool
@@ -1136,6 +1150,11 @@ aiRoutes.post(
             : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true, ledgerUserId: auth.user.id, modelSwitch: transition.kind === 'switch_resume' },
         );
       } catch (err) {
+        // #11396: a model whose known window is too small for any tool
+        // profile (or whose profile drops a required tool) is refused at
+        // session start with a 409 naming why, never a 500.
+        const refusal = toolExposureRefusal(err);
+        if (refusal) return { kind: 'refused', response: c.json(refusal, 409) };
         return { kind: 'failed', error: err };
       }
 
@@ -1194,8 +1213,9 @@ aiRoutes.post(
       // report back to a session this way). Its summary is prepended HERE
       // rather than pushed when it arrived — pushing then would start a turn
       // with no SSE subscriber, so the assistant's reply would never reach the
-      // browser.
-      const pendingRunResults = drainPendingRunResults(activeSession);
+      // browser. #11671: a Wisp session's settled specialist hand-offs (read
+      // above, from the run rows) share the same block.
+      const pendingRunResults = drainPendingRunResults(activeSession, specialistResults?.results ?? []);
       // W05 (#7603): a continuation's FIRST turn carries the summary (read
       // above) as delimited, sanitised, untrusted background — never the
       // system prompt. The persisted user row above keeps the plain text, so
@@ -1266,6 +1286,17 @@ aiRoutes.post(
       } catch (err) {
         // The turn is already dispatched: never fail its response over this.
         console.warn('[AI] failed to record the Wisp standing state as sent; it is sent again next turn', {
+          orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    // #11671: the model has these specialist results now; each is given once.
+    // A failure only gives them again next turn: logged, never thrown.
+    if (specialistResults && markSpecialistResultsDelivered) {
+      try {
+        await markSpecialistResultsDelivered(sessionId, specialistResults.keys);
+      } catch (err) {
+        console.warn('[AI] failed to record the Wisp specialist results as delivered; they are given again next turn', {
           orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
         });
       }

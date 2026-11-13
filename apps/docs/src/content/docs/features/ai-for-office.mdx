@@ -30,12 +30,12 @@ Once your partner is entitled, you configure AI for Office per customer organiza
 | Data-loss protection | Redaction rules that strip sensitive data (such as PII) before it leaves the document |
 | Budgets | Optional daily and monthly spend caps |
 | Rate limits | Per-user and per-organization message limits |
-| Retention | How long chat history is kept |
+| Retention | How long chat history is kept after a conversation's last activity. Blank keeps it. A nightly job removes the content of older conversations and keeps a stub (who, when, cost, and each tool call with its input and output replaced by a marker); flagged conversations are held. The job is report-only until `AI_TRANSCRIPT_RETENTION_ENFORCE=true`; see [AI conversation retention](/features/ai/#conversation-retention-preview) |
 | Branding | A display name and logo shown to end-users |
 
 ### Mapping the Customer's Microsoft Tenant
 
-Each customer organization must be mapped to its **Microsoft Entra tenant** so sign-ins resolve to the right org. This mapping is the foundation of tenant isolation and is set once per organization. Creating or changing a tenant mapping requires multi-factor authentication.
+Each customer organization must be mapped to its **Microsoft Entra tenant** so sign-ins resolve to the right org. This mapping is the foundation of tenant isolation and is set once per organization. Creating or changing a tenant mapping requires multi-factor authentication and a user without a site restriction.
 
 <Steps>
 1. Open the AI for Office admin area and select the customer organization.
@@ -110,9 +110,9 @@ Manage the links at **Settings → Outlook Add-in Bindings**. The list shows eac
 
 ## Permissions
 
-Viewing AI for Office configuration requires organization read access; changing org policies requires organization write access. Tenant-mapping changes additionally require multi-factor authentication. The per-partner entitlement is operator-only.
+Viewing AI for Office configuration requires organization read access; changing org policies or the tenant mapping requires organization write access and multi-factor authentication. Because the policy and the tenant mapping apply to the whole organization, a user restricted to specific sites cannot change them, or flag and unflag end-user sessions for review, and receives a `403` asking an unrestricted administrator to make the change. The per-partner entitlement is operator-only.
 
-**Prompt templates have their own permissions** (v0.122.1). The template manager needs `client_ai_templates:read` to view templates and `client_ai_templates:write` to create, edit or delete them; creating, editing and deleting also require MFA when your MFA policy requires it. The **Templates** tab is hidden from users without read access, and its edit controls are hidden from users without write access.
+**Prompt templates have their own permissions** (v0.122.1). The template manager needs `client_ai_templates:read` to view templates and `client_ai_templates:write` to create, edit or delete them; creating, editing and deleting also require MFA when your MFA policy requires it. Users restricted to specific sites can view and use templates but cannot create, edit or delete them. The **Templates** tab is hidden from users without read access, and its edit controls are hidden from users without write access.
 
 On upgrade, every role that held organization read access receives `client_ai_templates:read`, and every role that held organization write access receives `client_ai_templates:write`. Among the built-in roles, Partner Technician, Partner Viewer and Partner Security Approver can view templates; Org Admin can view and manage them (new for that role); Org Technician and Org Viewer can do neither; Partner Admin has full access. Adjust custom roles under **Settings → Roles**. See [Users and Roles](/reference/users-and-roles/#permission-model).
 

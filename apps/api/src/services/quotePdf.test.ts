@@ -14,7 +14,9 @@ vi.mock('./sentry', async (importActual) => {
 });
 
 import { captureException } from './sentry';
-import { renderQuotePdf, contractUploadedMarker, imageIntrinsicSize } from './quotePdf';
+import { renderQuotePdf, contractUploadedMarker, imageIntrinsicSize, imageIsDrawable } from './quotePdf';
+import { withPngDecodeSlot } from './pngDecodeLimits';
+import { ordinaryPng, pngInflatingTo } from './__fixtures__/pngImageData';
 import { documentColumnsFor } from './documentPdfTable';
 import { renderRichTextIntoPdf, WEB_TYPOGRAPHY } from './richTextPdf';
 
@@ -458,6 +460,100 @@ describe('renderQuotePdf', () => {
     // title and the body content that follows must both still be legible.
     expect(text).toContain('COVERTITLE');
     expect(text).toContain('BODYAFTERCOVER');
+  });
+
+  it('renders that draw a large image take turns', async () => {
+    // RGBA (pdfkit decodes these) just over the single-flight estimate.
+    const side = 2100;
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(side, 0);
+    ihdr.writeUInt32BE(side, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    const row = Buffer.alloc(1 + side * 4, 0x80);
+    row[0] = 0;
+    const large = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', ihdr),
+      pngChunk('IDAT', zlib.deflateSync(Buffer.concat(Array.from({ length: side }, () => row)))),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+    const events: string[] = [];
+    const draw = PDFKitDocument.prototype.image;
+    const imageSpy = vi.spyOn(PDFKitDocument.prototype, 'image').mockImplementation(function (this: PDFKit.PDFDocument, ...args: unknown[]) {
+      events.push('draw');
+      return (draw as (...a: unknown[]) => PDFKit.PDFDocument).apply(this, args);
+    });
+    const render = (label: string) => renderQuotePdf(
+      {
+        id: label, quoteNumber: label, oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+        coverPage: { enabled: true, title: label, coverImageId: label },
+      } as never,
+      [],
+      [],
+      async () => ({ data: large }),
+      {},
+    ).then(() => { events.push('done'); });
+    try {
+      await Promise.all([render('A'), render('B')]);
+    } finally {
+      imageSpy.mockRestore();
+    }
+    // Both renders drew their image, and one finished before the other drew.
+    expect(events.filter((e) => e === 'draw')).toHaveLength(2);
+    expect(events.slice(events.indexOf('draw') + 1, events.lastIndexOf('draw'))).toContain('done');
+  });
+
+  it('a large PNG logo labelled image/jpeg is checked and waits for the large-decode slot', async () => {
+    const side = 2100;
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(side, 0);
+    ihdr.writeUInt32BE(side, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    const row = Buffer.alloc(1 + side * 4, 0x80);
+    row[0] = 0;
+    const png = (w: number, h: number, data: Buffer) => {
+      const header = Buffer.from(ihdr);
+      header.writeUInt32BE(w, 0);
+      header.writeUInt32BE(h, 4);
+      return Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        pngChunk('IHDR', header),
+        pngChunk('IDAT', zlib.deflateSync(data)),
+        pngChunk('IEND', Buffer.alloc(0)),
+      ]);
+    };
+    const asJpegUrl = (bytes: Buffer) => `data:image/jpeg;base64,${bytes.toString('base64')}`;
+    const quote = {
+      id: 'q-logo', quoteNumber: 'Q-LOGO', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+    } as never;
+
+    // Over the limits: refused like any undecodable logo (the name is drawn).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await renderQuotePdf(quote, [], [], async () => null, { logoUrl: asJpegUrl(png(30_000, 30_000, Buffer.alloc(16))) });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('partner logo'), expect.anything());
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Large: waits while another large decode holds the slot.
+    const events: string[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const other = withPngDecodeSlot(png(4000, 4000, Buffer.alloc(16)), async () => {
+      events.push('other decode running');
+      await gate;
+      events.push('other decode done');
+    });
+    await vi.waitFor(() => expect(events).toContain('other decode running'));
+    const large = png(side, side, Buffer.concat(Array.from({ length: side }, () => row)));
+    const render = renderQuotePdf(quote, [], [], async () => null, { logoUrl: asJpegUrl(large) }).then(() => { events.push('render done'); });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    await Promise.all([other, render]);
+    expect(events).toEqual(['other decode running', 'other decode done', 'render done']);
   });
 
   it('cover image: centre-crops (align/valign center) like the on-screen preview', async () => {
@@ -1269,6 +1365,74 @@ describe('renderQuotePdf theme + page size (Task 6)', () => {
     const text = extractPdfText(buf);
     expect(text).toContain('Themed heading');
     expect(text).toContain('Themed body copy');
+  });
+});
+
+describe('imageIsDrawable — PNG size limits', () => {
+  // An RGBA PNG: pdfkit decodes these (to split out the alpha channel), so
+  // this is the path whose memory the checks bound.
+  function rgbaPng(width: number, height: number, rows: Buffer): Buffer {
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width, 0);
+    ihdr.writeUInt32BE(height, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6; // RGBA
+    return Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', ihdr),
+      pngChunk('IDAT', zlib.deflateSync(rows)),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+  }
+
+  it('draws an ordinary RGBA image', async () => {
+    expect(await imageIsDrawable(rgbaPng(10, 10, Buffer.alloc(10 * (10 * 4 + 1))))).toBe(true);
+  });
+
+  it('skips an image whose declared size is over the decode limits', async () => {
+    expect(await imageIsDrawable(rgbaPng(30_000, 30_000, Buffer.alloc(16)))).toBe(false);
+  });
+
+  it('stops inflating an image at the size its header declares', async () => {
+    const started = Date.now();
+    // More data than the 10×10 header declares.
+    expect(await imageIsDrawable(rgbaPng(10, 10, Buffer.alloc(64 * 1024 * 1024)))).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  // pdfkit also decodes an interlaced PNG without transparency (to
+  // de-interlace it), so its image data is bounded the same way.
+  it('skips an interlaced opaque image whose data inflates past its declared size', async () => {
+    const shape = { width: 10, height: 10, colorType: 2, interlaced: true };
+    expect(await imageIsDrawable(pngInflatingTo(shape, 32 * 1024 * 1024))).toBe(false);
+  });
+
+  it('draws ordinary opaque and interlaced images', async () => {
+    for (const shape of [
+      { width: 37, height: 23, colorType: 2 },
+      { width: 37, height: 23, colorType: 2, interlaced: true },
+      { width: 37, height: 23, colorType: 6, interlaced: true },
+    ]) {
+      const png = ordinaryPng(shape);
+      expect(await imageIsDrawable(png)).toBe(true);
+      const doc = new PDFKitDocument();
+      const done = new Promise<void>((resolve, reject) => { doc.on('end', resolve); doc.on('error', reject); doc.resume(); });
+      doc.image(png, 0, 0, { width: 37 });
+      doc.end();
+      await done;
+    }
+  });
+
+  it('leaves an opaque non-interlaced image to pdfkit, which embeds it without inflating', async () => {
+    // pdfkit copies this image data into the PDF as it is; nothing here
+    // inflates it, so its size is not checked.
+    const inflate = vi.spyOn(zlib, 'createInflate');
+    try {
+      expect(await imageIsDrawable(ordinaryPng({ width: 37, height: 23, colorType: 2 }))).toBe(true);
+      expect(inflate).not.toHaveBeenCalled();
+    } finally {
+      inflate.mockRestore();
+    }
   });
 });
 

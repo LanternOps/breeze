@@ -1,3 +1,5 @@
+import { drExecutions, drPlanGroups } from '../db/schema';
+import { drPlanDefinitionDigest } from './drPlanDefinition';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -106,6 +108,7 @@ import {
   createDrExecutionAndEnqueue,
   dispatchDrPendingWork,
   dispatchGroup,
+  DrPlanDefinitionError,
   DrRecoveryAuthorizationDeniedError,
   reconcileDrExecution,
   resolveDrGroupAuthorizationRefs,
@@ -129,6 +132,7 @@ function createQueryChain(rows: any[] = []) {
   chain.where = vi.fn(() => chain);
   chain.orderBy = vi.fn(() => chain);
   chain.limit = vi.fn(() => chain);
+  chain.for = vi.fn(() => chain);
   chain.innerJoin = vi.fn(() => chain);
   chain.then = (resolve: (value: any[]) => unknown, reject?: (error: unknown) => unknown) =>
     Promise.resolve(rows).then(resolve, reject);
@@ -325,6 +329,15 @@ describe('drExecutionService', () => {
     ]);
   });
 
+  const PLAN_REVISION = new Date('2026-08-01T00:00:00.000Z');
+  const planHeader = (overrides: Record<string, unknown> = {}) => ({
+    id: PLAN_ID, orgId: ORG_ID, updatedAt: PLAN_REVISION, status: 'active', ...overrides,
+  });
+  const liveDefinition = (groups = [groupRow()], overrides: Record<string, unknown> = {}) => ({
+    planId: PLAN_ID, orgId: ORG_ID, updatedAt: PLAN_REVISION.toISOString(), status: 'active', groups, ...overrides,
+  });
+  const snapshotRef = () => createQueryChain([{ id: '77777777-7777-7777-7777-777777777777', snapshotId: 'snap-1' }]);
+
   it('creates a DR execution with initial manifest and enqueues reconciliation', async () => {
     const insertChain = createInsertChain([{
       id: EXECUTION_ID,
@@ -333,23 +346,34 @@ describe('drExecutionService', () => {
       executionType: 'rehearsal',
       status: 'pending',
     }]);
+    const planQuery = createQueryChain([planHeader()]);
+    const groupsQuery = createQueryChain([groupRow()]);
     vi.mocked(db.select)
-      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
-      .mockImplementationOnce(() => createQueryChain([{
-        id: '77777777-7777-7777-7777-777777777777',
-        snapshotId: 'snap-1',
-      }]) as any);
+      .mockImplementationOnce(() => planQuery as any)
+      .mockImplementationOnce(() => groupsQuery as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
+      .mockImplementationOnce(() => snapshotRef() as any);
     vi.mocked(db.insert).mockImplementationOnce(() => insertChain as any);
 
+    const validateDefinition = vi.fn();
     const execution = await createDrExecutionAndEnqueue({
       planId: PLAN_ID,
       orgId: ORG_ID,
       executionType: 'rehearsal',
       initiatedBy: 'user-1',
       auth: { principal: { kind: 'user_session' } } as any,
+      validateDefinition,
     });
 
     expect(execution?.id).toBe(EXECUTION_ID);
+    // The plan row is read FOR UPDATE: plan writers take the same lock.
+    expect(planQuery.for).toHaveBeenCalledWith('update');
+    // Groups sharing a sequence still have one order: sequence, then id.
+    expect(groupsQuery.orderBy.mock.calls[0]).toHaveLength(2);
+    expect(validateDefinition).toHaveBeenCalledWith([groupRow()]);
+    expect(insertChain.values.mock.calls[0]![0].results.definition).toEqual({
+      version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [groupRow()],
+    });
     expect(authorizationMocks.capture).toHaveBeenCalled();
     expect(insertChain.values).toHaveBeenCalledWith(expect.objectContaining({
       authorizationPrincipalKind: 'user_session',
@@ -358,6 +382,137 @@ describe('drExecutionService', () => {
       authorizationState: 'pending',
     }));
     expect(enqueueDrExecutionReconcile).toHaveBeenCalledWith(EXECUTION_ID);
+  });
+
+  it('validates the captured definition before creating execution authority', async () => {
+    const captured = groupRow();
+    const validator = vi.fn(() => { throw new DrPlanDefinitionError('backup_write_required'); });
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([planHeader()]) as any)
+      .mockImplementationOnce(() => createQueryChain([captured]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any); // no pending or running execution
+    await expect(createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', auth: {} as any,
+      validateDefinition: validator })).rejects.toThrow('backup_write_required');
+    expect(validator).toHaveBeenCalledWith([captured]);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('runs an approved definition that the plan still matches under the lock, and keeps its own copy', async () => {
+    const approvedGroup = groupRow();
+    approvedGroup.restoreConfig.payload = { snapshotId: 'snap-1', vmName: 'approved' } as any;
+    const approved = liveDefinition([approvedGroup]);
+    const insert = createInsertChain([{ id: EXECUTION_ID }]);
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([planHeader()]) as any)
+      .mockImplementationOnce(() => createQueryChain([structuredClone(approvedGroup)]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
+      .mockImplementation(() => snapshotRef() as any);
+    vi.mocked(db.insert).mockReturnValue(insert as any);
+    await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', auth: {} as any,
+      verifiedDefinition: { digest: drPlanDefinitionDigest(approved), definition: approved } });
+    approvedGroup.devices.push('later-device');
+    const saved = insert.values.mock.calls[0]![0];
+    expect(saved.results.definition.groups[0].devices).toEqual([DEVICE_ID]);
+    expect(saved.results.definition.groups[0].restoreConfig.payload.vmName).toBe('approved');
+  });
+
+  it.each([
+    ['a group edited after approval', [planHeader()], [{ ...groupRow(), devices: ['66666666-6666-6666-6666-666666666666'] }]],
+    ['a group added after approval', [planHeader()], [groupRow(), { ...groupRow(), id: '88888888-8888-8888-8888-888888888888', sequence: 2 }]],
+    ['a group removed after approval', [planHeader()], []],
+    ['a plan revised after approval', [planHeader({ updatedAt: new Date('2026-08-02T00:00:00.000Z') })], [groupRow()]],
+  ] as const)('refuses an approved definition when the plan has %s', async (_case, plan, groups) => {
+    const approved = liveDefinition();
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([...plan]) as any)
+      .mockImplementationOnce(() => createQueryChain([...groups]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
+      .mockImplementation(() => snapshotRef() as any);
+    const error = await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', auth: {} as any,
+      verifiedDefinition: { digest: drPlanDefinitionDigest(approved), definition: approved } }).then(() => null, (e: unknown) => e);
+    expect(classifyDrExecutionAuthorizationError(error)).toEqual({ status: 409, code: 'dr_plan_changed' });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(enqueueDrExecutionReconcile).not.toHaveBeenCalled();
+  });
+
+  it('refuses an approved definition for a different plan', async () => {
+    const approved = liveDefinition([groupRow()], { planId: '99999999-9999-9999-9999-999999999999' });
+    const error = await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', auth: {} as any,
+      verifiedDefinition: { digest: drPlanDefinitionDigest(approved), definition: approved } }).then(() => null, (e: unknown) => e);
+    expect(classifyDrExecutionAuthorizationError(error)).toEqual({ status: 409, code: 'dr_plan_changed' });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an archived plan', [planHeader({ status: 'archived' })], 400, 'plan_archived'],
+    ['a missing plan', [], 404, 'plan_not_found'],
+  ] as const)('refuses to start %s, read under the lock', async (_case, plan, status, code) => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([...plan]) as any)
+      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
+      .mockImplementation(() => snapshotRef() as any);
+    const error = await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', auth: {} as any })
+      .then(() => null, (e: unknown) => e);
+    expect(classifyDrExecutionAuthorizationError(error)).toEqual({ status, code });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('refuses to start a plan that already has a pending or running execution, under the lock', async () => {
+    const activeQuery = createQueryChain([{ id: EXECUTION_ID }]);
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([planHeader()]) as any)
+      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
+      .mockImplementationOnce(() => activeQuery as any)
+      .mockImplementation(() => snapshotRef() as any);
+    const error = await createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'failover', auth: {} as any })
+      .then(() => null, (e: unknown) => e);
+    expect(classifyDrExecutionAuthorizationError(error)).toEqual({ status: 409, code: 'dr_plan_execution_in_progress' });
+    expect(activeQuery.from).toHaveBeenCalledWith(drExecutions);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(enqueueDrExecutionReconcile).not.toHaveBeenCalled();
+  });
+
+  it('refuses a plan holding a group of another plan or org', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([planHeader()]) as any)
+      .mockImplementationOnce(() => createQueryChain([{ ...groupRow(), orgId: '99999999-9999-9999-9999-999999999999' }]) as any)
+      .mockImplementationOnce(() => createQueryChain([]) as any) // no pending or running execution
+      .mockImplementation(() => snapshotRef() as any);
+    await expect(createDrExecutionAndEnqueue({ planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', auth: {} as any }))
+      .rejects.toThrow();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a historical queued execution without a full definition', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => createQueryChain([{ id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, status: 'pending', results: null }]) as any);
+    const update = createUpdateChain([{ id: EXECUTION_ID, status: 'failed' }]);
+    vi.mocked(db.update).mockReturnValue(update as any);
+    const result = await reconcileDrExecution(EXECUTION_ID);
+    expect(result.pending).toEqual([]);
+    expect(update.set).toHaveBeenCalledWith(expect.objectContaining({ authorizationDenialCode: 'execution_definition_unavailable' }));
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues a later group from its persisted definition after live plan edits', async () => {
+    const first = groupRow();
+    const second = { ...groupRow(), id: '88888888-8888-8888-8888-888888888888', sequence: 2,
+      restoreConfig: { commandType: 'vm_restore_from_backup', payload: { snapshotId: 'snap-1', vmName: 'approved-next' } } };
+    const definition = { version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [first, second] };
+    const row = { id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal', status: 'running',
+      startedAt: new Date(), createdAt: new Date(), initiatedBy: 'user-1', results: { definition, queuedCommands: [
+        { groupId: GROUP_ID, groupName: first.name, deviceId: DEVICE_ID, commandId: 'cmd-first', commandType: 'vm_restore_from_backup', status: 'completed' },
+      ] } };
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createQueryChain([row]) as any)
+      .mockImplementationOnce(() => createQueryChain([{ id: 'cmd-first', status: 'completed', completedAt: new Date() }]) as any)
+      .mockImplementation(() => createQueryChain([{ id: '77777777-7777-7777-7777-777777777777', snapshotId: 'snap-1' }]) as any);
+    const update = createUpdateChain([{ id: EXECUTION_ID, status: 'running' }]);
+    vi.mocked(db.update).mockReturnValue(update as any);
+    const result = await reconcileDrExecution(EXECUTION_ID);
+    expect(result.pending).toEqual([expect.objectContaining({ payload: expect.objectContaining({ vmName: 'approved-next' }) })]);
+    expect(update.set.mock.calls[0]![0].results.definition).toEqual(definition);
+    expect(vi.mocked(db.select).mock.results.flatMap((call) => call.type === 'return' ? vi.mocked(call.value.from).mock.calls.map((args: unknown[]) => args[0]) : [])).not.toContain(drPlanGroups);
   });
 
   // #242 hardening: reconcileDrExecution runs inside ONE ambient
@@ -379,10 +534,9 @@ describe('drExecutionService', () => {
         startedAt: new Date('2026-03-30T00:00:00.000Z'),
         completedAt: null,
         initiatedBy: 'user-1',
-        results: null,
+        results: { definition: { version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [groupRow()] } },
         createdAt: new Date('2026-03-30T00:00:00.000Z'),
       }]) as any)
-      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
       .mockImplementationOnce(() => createQueryChain([{
         id: '77777777-7777-7777-7777-777777777777',
         snapshotId: 'snap-1',
@@ -420,11 +574,10 @@ describe('drExecutionService', () => {
     const pendingExecution = {
       id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal',
       status: 'pending', startedAt: new Date('2026-03-30T00:00:00.000Z'), completedAt: null,
-      initiatedBy: 'user-1', results: null, createdAt: new Date('2026-03-30T00:00:00.000Z'),
+      initiatedBy: 'user-1', results: { definition: { version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [groupRow()] } }, createdAt: new Date('2026-03-30T00:00:00.000Z'),
     };
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([pendingExecution]) as any)
-      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
       .mockImplementationOnce(() => createQueryChain([{
         id: '77777777-7777-7777-7777-777777777777', snapshotId: 'snap-1',
       }]) as any)
@@ -446,7 +599,7 @@ describe('drExecutionService', () => {
     vi.mocked(db.select).mockImplementationOnce(() => createQueryChain([{
       id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal',
       status: 'completed', startedAt: new Date(), completedAt: new Date(),
-      initiatedBy: 'user-1', results: null, createdAt: new Date(),
+      initiatedBy: 'user-1', results: { definition: { version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [groupRow()] } }, createdAt: new Date(),
     }]) as any);
 
     await reconcileDrExecution(EXECUTION_ID);
@@ -458,11 +611,10 @@ describe('drExecutionService', () => {
     const pending = {
       id: EXECUTION_ID, planId: PLAN_ID, orgId: ORG_ID, executionType: 'rehearsal',
       status: 'pending', startedAt: new Date('2026-03-30T00:00:00.000Z'), completedAt: null,
-      initiatedBy: 'user-1', results: null, createdAt: new Date('2026-03-30T00:00:00.000Z'),
+      initiatedBy: 'user-1', results: { definition: { version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [groupRow()] } }, createdAt: new Date('2026-03-30T00:00:00.000Z'),
     };
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([pending]) as any)
-      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
       .mockImplementationOnce(() => createQueryChain([{
         id: '77777777-7777-7777-7777-777777777777', snapshotId: 'snap-1',
       }]) as any)
@@ -488,7 +640,7 @@ describe('drExecutionService', () => {
       startedAt: new Date('2026-03-30T00:00:00.000Z'),
       completedAt: null,
       initiatedBy: 'user-1',
-      results: { authorizedDeviceIds: [DEVICE_ID] },
+      results: { definition: { version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [groupRow()] }, authorizedDeviceIds: [DEVICE_ID] },
       createdAt: new Date('2026-03-30T00:00:00.000Z'),
       authorizationPrincipalKind: 'user_session',
       authorizationPrincipalId: 'user-1',
@@ -499,7 +651,6 @@ describe('drExecutionService', () => {
     };
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([deniedExecution]) as any)
-      .mockImplementationOnce(() => createQueryChain([groupRow()]) as any)
       .mockImplementationOnce(() => createQueryChain([{
         id: '77777777-7777-7777-7777-777777777777',
         snapshotId: 'snap-1',
@@ -560,7 +711,7 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
       startedAt: T0,
       completedAt: null,
       initiatedBy: 'user-1',
-      results,
+      results: { definition: { version: 1, planId: PLAN_ID, orgId: ORG_ID, groups: [bmrGroup()] }, ...(results as object ?? {}) },
       createdAt: T0,
       authorizationPrincipalKind: 'user_session',
       authorizationPrincipalId: 'user-1',
@@ -1030,7 +1181,7 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     });
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([execution('failover')]) as any)
-      .mockImplementationOnce(() => createQueryChain([bmrGroup()]) as any);
+;
 
     const tick1 = await reconcileDrExecution(EXECUTION_ID);
     expect(bmrMocks.createBareMetalRecovery).toHaveBeenCalledTimes(2);
@@ -1042,7 +1193,6 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     const afterTick1 = execution('failover', persisted.results);
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([afterTick1]) as any)
-      .mockImplementationOnce(() => createQueryChain([bmrGroup()]) as any)
       .mockImplementationOnce(() => createQueryChain([recoveryRow(REC_1, DEVICE_ID, 'restoring'), recoveryRow(REC_2, DEVICE_2, 'media_booted')]) as any);
 
     const tick2 = await reconcileDrExecution(EXECUTION_ID);
@@ -1055,7 +1205,6 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     const afterTick2 = execution('failover', persisted.results);
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([afterTick2]) as any)
-      .mockImplementationOnce(() => createQueryChain([bmrGroup()]) as any)
       .mockImplementationOnce(() => createQueryChain([recoveryRow(REC_1, DEVICE_ID, 'checked_in'), recoveryRow(REC_2, DEVICE_2, 'checked_in')]) as any);
 
     const tick3 = await reconcileDrExecution(EXECUTION_ID);
@@ -1086,7 +1235,6 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
     const old = new Date(Date.now() - 2 * 3600_000);
     vi.mocked(db.select)
       .mockImplementationOnce(() => createQueryChain([execution('failover', queuedResults)]) as any)
-      .mockImplementationOnce(() => createQueryChain([bmrGroup()]) as any)
       .mockImplementationOnce(() => createQueryChain([
         recoveryRow(REC_1, DEVICE_ID, 'created', { createdAt: old }),
         recoveryRow(REC_2, DEVICE_2, 'checked_in', { createdAt: old, checkedInAt: new Date() }),

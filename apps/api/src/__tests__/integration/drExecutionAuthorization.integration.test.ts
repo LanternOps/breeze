@@ -259,12 +259,13 @@ describe('BARE_METAL_REBUILD step against real PostgreSQL', () => {
     await insertSnapshot('bad', new Date('2026-09-01T00:00:00Z'), false);
 
     const [plan] = await testDb.insert(drPlans).values({ orgId: org.id, name: `BMR plan ${sfx}` }).returning({ id: drPlans.id });
-    await testDb.insert(drPlanGroups).values({
+    const groups = await testDb.insert(drPlanGroups).values({
       planId: plan!.id, orgId: org.id, name: 'Tier 1', sequence: 1, devices: [deviceId],
       restoreConfig: { commandType: 'BARE_METAL_REBUILD', snapshotSelection: 'latest_restorable', outputDir: '/var/lib/breeze/rebuild/out', waitTimeoutMinutes: 60 },
-    });
+    }).returning();
     const [execution] = await testDb.insert(drExecutions).values({
       planId: plan!.id, orgId: org.id, executionType: 'failover', status: 'pending',
+      results: { definition: { version: 1, planId: plan!.id, orgId: org.id, groups } },
       authorizationPrincipalKind: 'api_key', authorizationPrincipalId: crypto.randomUUID(),
       authorizationGrantRevision: 'grant', authorizationState: 'authorized', authorizationCheckedAt: new Date(),
     }).returning({ id: drExecutions.id });

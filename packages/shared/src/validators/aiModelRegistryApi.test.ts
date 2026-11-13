@@ -134,10 +134,20 @@ describe('offeringDetailsPatchSchema', () => {
     expect(offeringDetailsPatchSchema.safeParse({ ...base, requiredPermission: null }).success).toBe(true);
     expect(offeringDetailsPatchSchema.safeParse({ ...base, requiredPermission: 'billing:manage' }).success).toBe(false);
   });
-  it('does not accept the tool fields yet: they ship dark until the write path validates merged state (#11393 W05)', () => {
+  it('accepts the tool fields (#11398 W05: the write path validates merged state server-side)', () => {
     const base = { expectedUpdatedAt: '2026-10-01T00:00:00.000Z' };
-    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolProfile: 'standard' }).success).toBe(false);
-    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: 32768 }).success).toBe(false);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolProfile: 'standard', toolAllowlist: null }).success).toBe(true);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: 32768 }).success).toBe(true);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: null }).success).toBe(true);
+    expect(offeringDetailsPatchSchema.safeParse({
+      ...base, toolProfile: 'custom', toolAllowlist: { domains: ['devices'], tools: ['search_logs'] },
+    }).success).toBe(true);
+  });
+  it('applies the same bounds to the tool fields as offeringToolSettingsPatchSchema', () => {
+    const base = { expectedUpdatedAt: '2026-10-01T00:00:00.000Z' };
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, contextWindowOverride: 1023 }).success).toBe(false);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolProfile: 'tiny' }).success).toBe(false);
+    expect(offeringDetailsPatchSchema.safeParse({ ...base, toolAllowlist: { domains: [], tools: [] } }).success).toBe(false);
   });
 });
 
@@ -281,6 +291,9 @@ describe('W11 quality contract', () => {
     for (const g of AI_QUALITY_GROUP_BYS) expect(aiQualityQuerySchema.safeParse({ groupBy: g }).success).toBe(true);
     expect(aiQualityQuerySchema.safeParse({ groupBy: 'user' }).success).toBe(false);
     expect(aiQualityQuerySchema.safeParse({ groupBy: 'prompt_variant' }).success).toBe(false);
+  });
+  it('aiQualityQuerySchema accepts groupBy tool_profile (W04 #11397)', () => {
+    expect(aiQualityQuerySchema.safeParse({ groupBy: 'tool_profile' }).success).toBe(true);
   });
   it('aiQualityQuerySchema keeps the usage range rules (both-or-neither, ordered, ≤ 92 days)', () => {
     expect(aiQualityQuerySchema.safeParse({ groupBy: 'surface', to: '2026-10-01' }).success).toBe(false);

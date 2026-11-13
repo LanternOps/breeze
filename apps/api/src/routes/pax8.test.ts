@@ -125,6 +125,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../middleware/auth', () => ({
+  withAuthDbAccessContext: vi.fn(async (_auth, fn) => fn()),
   authMiddleware: vi.fn((c: any, next: any) => {
     const ids = authState.accessibleOrgIds;
     c.set('auth', {

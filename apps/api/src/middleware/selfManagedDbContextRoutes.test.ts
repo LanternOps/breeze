@@ -868,3 +868,41 @@ it('self-manages the reattach request and the candidates read, and nothing near 
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reattach/extra')).toBe(false);
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123')).toBe(false);
 });
+
+describe('routes that wait on another host self-manage their DB context', () => {
+  const ID = '3f2c1b9e-8a7d-4e6f-9c5b-1a2b3c4d5e6f';
+  it.each([
+    ['POST', '/api/v1/integrations/monitoring/test'],
+    ['POST', '/api/v1/integrations/monitoring/test/'],
+    ['POST', '/api/v1/google/connection'],
+    ['POST', '/api/v1/unifi/connect'],
+    ['POST', '/api/v1/unifi/test'],
+    ['GET', '/api/v1/unifi/hosts'],
+    ['POST', '/api/v1/pax8/integration/test'],
+    ['POST', `/api/v1/catalog/${ID}/image/from-url`],
+    ['POST', `/api/v1/remote/support-sessions/${ID}/end`],
+    ['POST', '/api/v1/billing/portal'],
+    ['POST', '/api/v1/support'],
+    ['POST', `/api/v1/quotes/${ID}/images`],
+    ['POST', `/api/v1/orgs/organizations/${ID}/customer-domains/${ID}/verification/check`],
+  ])('self-manages %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
+
+  it.each([
+    ['GET', '/api/v1/integrations/monitoring'],
+    ['POST', '/api/v1/integrations/monitoring'],
+    ['GET', '/api/v1/google/connection'],
+    ['DELETE', '/api/v1/google/connection'],
+    ['POST', '/api/v1/unifi/disconnect'],
+    ['POST', `/api/v1/catalog/${ID}/image`],
+    ['GET', `/api/v1/catalog/${ID}/image`],
+    ['GET', `/api/v1/remote/support-sessions/${ID}`],
+    ['POST', '/api/v1/remote/support-sessions'],
+    ['GET', '/api/v1/support/download/windows'],
+    ['GET', `/api/v1/quotes/${ID}/images/${ID}`],
+    ['POST', `/api/v1/orgs/organizations/${ID}/customer-domains/${ID}/verification/dns`],
+  ])('keeps the ambient transaction for %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
+  });
+});

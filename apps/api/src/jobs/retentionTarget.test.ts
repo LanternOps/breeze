@@ -332,4 +332,21 @@ describe('runRetentionTargets', () => {
     expect(seen).toHaveLength(2);
     expect(seen[0]).toBe(seen[1]);
   });
+
+  // #4342 W5: one job, one flag per target. Each REPORT-ONLY line must name
+  // the flag that turns ITS target on, not a job-wide one.
+  it('names each entry\'s own enforce variable in its REPORT-ONLY line, falling back to the run option', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await runRetentionTargets(
+      [
+        { target: target({ table: 'a', metricName: 'audit_retention' }), knobs: knobs(), enforceVar: 'A_RETENTION_ENFORCE' },
+        { target: target({ table: 'b', metricName: 'snmp_retention' }), knobs: knobs() },
+      ],
+      { ...opts, enforceVar: 'JOB_RETENTION_ENFORCE' },
+    );
+    const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('REPORT-ONLY'));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('set A_RETENTION_ENFORCE=true');
+    expect(lines[1]).toContain('set JOB_RETENTION_ENFORCE=true');
+  });
 });

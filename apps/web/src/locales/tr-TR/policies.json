@@ -437,6 +437,7 @@
         "testing2": "Test ediliyor...",
         "connected": "Bağlandı",
         "failed2": "Başarısız",
+        "notTestedHere": "Burada test edilmedi",
         "test": "Testi",
         "off": "kapalı",
         "s3Prefix": "s3Öneki",

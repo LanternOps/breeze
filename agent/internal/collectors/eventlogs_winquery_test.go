@@ -127,8 +127,17 @@ func TestBuildWinEventCommand(t *testing.T) {
 	if strings.Count(got, "exit 3") != 2 {
 		t.Errorf("only terminating errors and empty failed queries should exit 3: %s", got)
 	}
-	if got := psSingleQuote("a'b"); got != "'a''b'" {
-		t.Errorf("psSingleQuote=%q", got)
+}
+
+func TestBuildWinEventCommandQuotesArguments(t *testing.T) {
+	got := buildWinEventCommand("Vendor\u2019s Log", "*[System[Provider[@Name='O\u2018Brien']]]")
+	for _, want := range []string{
+		"-LogName 'Vendor\u2019\u2019s Log' -FilterXPath",
+		"-FilterXPath '*[System[Provider[@Name=''O\u2018\u2018Brien'']]]' -Oldest",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("command missing %q: %s", want, got)
+		}
 	}
 }
 

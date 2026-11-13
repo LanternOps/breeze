@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { PortalAccessPolicyForm } from './PortalAccessPolicyForm';
 import { makePolicyView } from './viewFixture';
 import type { PortalAccessPolicyView } from '@breeze/shared';
@@ -40,7 +40,8 @@ describe('PortalAccessPolicyForm', () => {
   it('sso_only option is disabled with a hint while no SSO method is on', () => {
     renderForm(makePolicyView());
     expect(radio('portal-access-policy-password-sso_only').disabled).toBe(true);
-    expect(screen.getByText('Available once Microsoft or Google sign-in is turned on.')).toBeInTheDocument();
+    // No Google capability: the hint names Microsoft only (W7 ships dark).
+    expect(screen.getByText('Available once Microsoft sign-in is turned on.')).toBeInTheDocument();
   });
 
   it('sso_only option is enabled once the draft turns an available SSO method on', () => {
@@ -49,7 +50,7 @@ describe('PortalAccessPolicyForm', () => {
   });
 
   it('an inherited SSO method also enables sso_only', () => {
-    renderForm(makePolicyView({ capabilities: { google: true }, inherited: { googleEnabled: true } }));
+    renderForm(makePolicyView({ capabilities: { google: true }, inherited: { googleEnabled: true }, verifiedDomains: ['acme.example.com'] }));
     expect(radio('portal-access-policy-password-sso_only').disabled).toBe(false);
   });
 
@@ -61,7 +62,7 @@ describe('PortalAccessPolicyForm', () => {
   it('shows the fallback notice', () => {
     renderForm(makePolicyView({ values: { passwordMode: 'sso_only' }, passwordModeFallback: true }));
     expect(screen.getByTestId('portal-access-policy-fallback')).toHaveTextContent(
-      'Password sign-in is on because no Microsoft or Google sign-in is enabled.',
+      'Password sign-in is on because Microsoft sign-in is not enabled.',
     );
   });
 
@@ -175,5 +176,99 @@ describe('PortalAccessPolicyForm', () => {
     cleanup();
     renderForm(makePolicyView({ capabilities: { entra: true }, inherited: { entraEnabled: true }, entraTenantProven: true }));
     expect(radio('portal-access-policy-password-sso_only').disabled).toBe(false);
+  });
+
+  describe('W6: self-registration with no verified domain', () => {
+    const NO_DOMAIN = 'self-registration-no-domain';
+    const selfReg = { selfRegistration: true };
+
+    it('the org form warns when self-registration is on with no verified domain and links to #domains', () => {
+      renderForm(makePolicyView({ capabilities: selfReg, values: { selfRegistrationMode: 'approval' }, verifiedDomainCount: 0 }));
+      const warning = screen.getByTestId(NO_DOMAIN);
+      expect(warning).toHaveTextContent('No verified domain: nobody can register until you verify one.');
+      expect(within(warning).getByRole('link')).toHaveAttribute('href', '#domains');
+    });
+
+    it('an inherited mode that is on also warns', () => {
+      renderForm(makePolicyView({ capabilities: selfReg, inherited: { selfRegistrationMode: 'instant' }, verifiedDomainCount: 0 }));
+      expect(screen.getByTestId(NO_DOMAIN)).toBeInTheDocument();
+    });
+
+    it('follows the unsaved choice: turning it on warns, turning it off clears the warning', () => {
+      renderForm(makePolicyView({ capabilities: selfReg, verifiedDomainCount: 0 }), { selfRegistrationMode: 'instant' });
+      expect(screen.getByTestId(NO_DOMAIN)).toBeInTheDocument();
+      cleanup();
+      renderForm(
+        makePolicyView({ capabilities: selfReg, values: { selfRegistrationMode: 'approval' }, verifiedDomainCount: 0 }),
+        { selfRegistrationMode: 'off' },
+      );
+      expect(screen.queryByTestId(NO_DOMAIN)).toBeNull();
+    });
+
+    it('no warning while the mode is off or the org has a verified domain', () => {
+      renderForm(makePolicyView({ capabilities: selfReg, verifiedDomainCount: 0 }));
+      expect(screen.queryByTestId(NO_DOMAIN)).toBeNull();
+      cleanup();
+      renderForm(makePolicyView({ capabilities: selfReg, values: { selfRegistrationMode: 'approval' }, verifiedDomainCount: 2 }));
+      expect(screen.queryByTestId(NO_DOMAIN)).toBeNull();
+    });
+
+    it('no warning while the deployment cannot run self-registration', () => {
+      renderForm(makePolicyView({ values: { selfRegistrationMode: 'approval' }, verifiedDomainCount: 0 }));
+      expect(screen.queryByTestId(NO_DOMAIN)).toBeNull();
+    });
+
+    it('the partner form never shows the no-domain warning', () => {
+      renderForm(makePolicyView({ kind: 'partner', capabilities: selfReg, values: { selfRegistrationMode: 'approval' } }));
+      expect(screen.getByTestId('portal-access-policy-self-registration')).toBeInTheDocument();
+      expect(screen.queryByTestId(NO_DOMAIN)).toBeNull();
+    });
+  });
+
+  describe('W7 (#11384): Google row and provider-conditional copy', () => {
+    it('renders the google slot under the Google row only when the row is visible', () => {
+      renderForm(makePolicyView({ capabilities: { entra: true } }), {}, { googleSlot: <div data-testid="gslot">domains</div> });
+      expect(screen.queryByTestId('gslot')).toBeNull();
+      cleanup();
+      renderForm(makePolicyView({ capabilities: { google: true } }), {}, { googleSlot: <div data-testid="gslot">domains</div> });
+      expect(within(screen.getByTestId('portal-access-policy-google-row')).getByTestId('gslot')).toBeInTheDocument();
+    });
+
+    it('an inherited Google method with no verified domain does not enable sso_only (D6 mask)', () => {
+      renderForm(makePolicyView({ capabilities: { google: true }, inherited: { googleEnabled: true }, verifiedDomains: [] }));
+      expect(radio('portal-access-policy-password-sso_only').disabled).toBe(true);
+    });
+
+    it('with Google not available, no Google word renders anywhere on the form', () => {
+      const { container } = render(
+        <PortalAccessPolicyForm
+          view={makePolicyView({ capabilities: { entra: true, selfRegistration: true }, values: { passwordMode: 'sso_only' }, passwordModeFallback: true })}
+          draft={{}}
+          onChange={vi.fn()}
+        />,
+      );
+      const text = container.textContent ?? '';
+      expect(text).not.toMatch(/google/i);
+      expect(text).toContain('Off — Microsoft only');
+      expect(text).toContain('First Microsoft sign-in');
+      expect(text).toContain('Microsoft session length (hours)');
+      expect(text).toContain('Password sign-in is on because Microsoft sign-in is not enabled.');
+    });
+
+    it('with only Google available the copy names Google, and with both it names both', () => {
+      const { container, unmount } = render(
+        <PortalAccessPolicyForm view={makePolicyView({ capabilities: { google: true }, passwordModeFallback: true })} draft={{}} onChange={vi.fn()} />,
+      );
+      expect(container.textContent).toContain('Off — Google only');
+      expect(container.textContent).toContain('Available once Google sign-in is turned on.');
+      expect(container.textContent).toContain('First Google sign-in');
+      expect(container.textContent).not.toMatch(/microsoft/i);
+      unmount();
+      const both = render(
+        <PortalAccessPolicyForm view={makePolicyView({ capabilities: { entra: true, google: true } })} draft={{}} onChange={vi.fn()} />,
+      );
+      expect(both.container.textContent).toContain('Off — Microsoft/Google only');
+      expect(both.container.textContent).toContain('Available once Microsoft or Google sign-in is turned on.');
+    });
   });
 });

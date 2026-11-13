@@ -374,6 +374,9 @@
       "delivery_failed": "Zustellungen schlagen fehl",
       "sync_stale": "Synchronisierung steht still",
       "verification_failed": "Überprüfung fehlgeschlagen",
+      "destination_access_denied": "Sicherungsziel verweigert den Zugriff",
+      "destination_not_found": "Sicherungsziel nicht gefunden",
+      "destination_failing": "Sicherungsziel schlägt fehl",
       "unknown": "Erfordert Aufmerksamkeit"
     }
   },

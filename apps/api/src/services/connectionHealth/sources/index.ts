@@ -1,5 +1,6 @@
 import type { HealthSource } from '../types';
 import { accountingSource } from './accounting';
+import { backupDestinationSource } from './backupDestination';
 import { backupProviderSource } from './backupProvider';
 import { dnsFilterSource } from './dnsFilter';
 import { edrSource } from './edr';
@@ -36,6 +37,7 @@ export const HEALTH_SOURCES: readonly HealthSource[] = [
   webhookSource,
   psaTicketingSource,
   googleWorkspaceSource,
+  backupDestinationSource,
 ];
 
 /** Connection tables deliberately without a health source, and why. */

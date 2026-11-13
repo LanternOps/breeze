@@ -34,7 +34,7 @@ func (s *stubMatcher) NewWorker() (yarascan.Worker, error) {
 type stubWorker struct{ s *stubMatcher }
 
 func (w stubWorker) Close() {}
-func (w stubWorker) ScanFile(p string) ([]yarascan.Match, error) {
+func (w stubWorker) ScanFile(_ *os.File, _ int64, p string) ([]yarascan.Match, error) {
 	w.s.calls.Add(1)
 	time.Sleep(w.s.delay)
 	if err := w.s.fileErr[filepath.Base(p)]; err != nil {

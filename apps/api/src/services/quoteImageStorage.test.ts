@@ -13,7 +13,7 @@ vi.mock('./urlSafety', async (importActual) => {
 });
 
 import { fetchRemoteImage, RemoteImageError, MAX_QUOTE_IMAGE_SIZE_BYTES, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE } from './quoteImageStorage';
-import { safeFetch, SsrfBlockedError, ResponseTooLargeError } from './urlSafety';
+import { safeFetch, SsrfBlockedError, ResponseTooLargeError, ResponseDeadlineError } from './urlSafety';
 
 const safeFetchMock = vi.mocked(safeFetch);
 
@@ -46,7 +46,11 @@ describe('fetchRemoteImage', () => {
     const out = await fetchRemoteImage('https://cdn.example.com/logo.png');
     expect(out.mime).toBe('image/png');
     expect(out.buffer.equals(PNG)).toBe(true);
-    expect(safeFetchMock).toHaveBeenCalledWith('https://cdn.example.com/logo.png', { timeoutMs: 8000, maxBytes: MAX_QUOTE_IMAGE_SIZE_BYTES });
+    expect(safeFetchMock).toHaveBeenCalledWith('https://cdn.example.com/logo.png', expect.objectContaining({ timeoutMs: 8000, maxBytes: MAX_QUOTE_IMAGE_SIZE_BYTES }));
+    // timeoutMs measures inactivity; deadlineMs bounds total duration.
+    const deadline = (safeFetchMock.mock.calls[0]![1] as { deadlineMs?: number }).deadlineMs;
+    expect(deadline).toBeGreaterThan(0);
+    expect(deadline).toBeLessThanOrEqual(30_000);
   });
 
   it('caps the body while it streams and maps the overrun to "too_large"', async () => {
@@ -59,6 +63,11 @@ describe('fetchRemoteImage', () => {
     safeFetchMock.mockRejectedValue(new SsrfBlockedError('blocked'));
     await expect(fetchRemoteImage('https://internal/x.png')).rejects.toBeInstanceOf(RemoteImageError);
     await expect(fetchRemoteImage('https://internal/x.png')).rejects.toMatchObject({ reason: 'unreachable' });
+  });
+
+  it('maps the total deadline to reason "timeout"', async () => {
+    safeFetchMock.mockRejectedValue(new ResponseDeadlineError(20_000));
+    await expect(fetchRemoteImage('https://slow/x.png')).rejects.toMatchObject({ reason: 'timeout' });
   });
 
   it('maps a timeout error to reason "timeout"', async () => {

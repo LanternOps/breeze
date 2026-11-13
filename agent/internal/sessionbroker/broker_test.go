@@ -64,6 +64,7 @@ func newTestUserSession(t *testing.T, sessionID, username string, lastSeen time.
 
 	serverConn, clientConn := createSocketPair(t)
 	session := NewSession(ipc.NewConn(serverConn), 1000, "1000", username, "x11:0", sessionID, []string{"notify", "tray", "run_as_user"})
+	session.accountIdentity = "1000"
 	session.HelperRole = ipc.HelperRoleUser
 	session.ConnectedAt = lastSeen.Add(-time.Minute)
 	session.LastSeen = lastSeen
@@ -89,6 +90,7 @@ func TestSessionForUserPrefersMostRecentUserSession(t *testing.T) {
 			userSessionNew.SessionID: userSessionNew,
 		},
 		byIdentity: make(map[string][]*Session),
+		accounts:   fakeAccounts(map[string]string{"alice": "1000"}, nil),
 	}
 
 	got := b.SessionForUser("alice")
@@ -113,6 +115,7 @@ func TestSessionForUserSelectsRDPHelper(t *testing.T) {
 			rdpSession.SessionID:     rdpSession,
 		},
 		byIdentity: make(map[string][]*Session),
+		accounts:   fakeAccounts(map[string]string{"alice": "1000"}, nil),
 	}
 
 	if got := b.SessionForUser("alice"); got != rdpSession {

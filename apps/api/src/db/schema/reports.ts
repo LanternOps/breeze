@@ -370,6 +370,11 @@ export const reportRuns = pgTable('report_runs', {
   ),
   orgIdIdx: index('report_runs_org_id_idx').on(table.orgId),
   partnerIdIdx: index('report_runs_partner_id_idx').on(table.partnerId),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): finished-run
+  // age scan (jobs/historyRetention/runHistory.ts).
+  terminalAgeIdx: index('report_runs_terminal_age_idx')
+    .on(sql`(COALESCE(${table.completedAt}, ${table.createdAt}))`)
+    .where(sql`${table.status} IN ('completed', 'failed')`),
 }));
 
 export const REPORT_RUN_DELIVERY_STATES = ['pending', 'claimed', 'sent', 'failed', 'unknown'] as const;

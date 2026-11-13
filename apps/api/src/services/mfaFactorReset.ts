@@ -3,6 +3,7 @@ import { getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessConte
 import { users, userPasskeys } from '../db/schema';
 import type { Tx } from './authLifecycle';
 import { invalidateMfaAssuranceAfterFactorChange, type FactorChangeResult } from './mfaAssurance';
+import { cancelPendingEmailChange } from './pendingEmailCancellation';
 import { getRedis } from './redis';
 import { captureException } from './sentry';
 
@@ -164,6 +165,7 @@ export async function resetAllFactorsAndInvalidate(userId: string, reason: strin
             }
           }
           inventory = await resetAllFactors(tx, userId);
+          await cancelPendingEmailChange(tx, userId);
         }, undefined, options?.lockTarget),
       ),
     );

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
+import { authMiddleware, withAuthDbAccessContext, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { db, runOutsideDbContext } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
@@ -133,12 +133,12 @@ unifiRoutes.post('/connect', partnerScopes, writePerm, requireMfa(), zValidator(
     console.error('[unifi] connect: non-auth failure validating API key:', err);
     return c.json({ success: false, message: 'Could not reach UniFi to validate the key. Please try again shortly.' }, 502);
   }
-  const conn = await upsertConnection(db, partner.partnerId, {
+  const conn = await withAuthDbAccessContext(auth, () => upsertConnection(db, partner.partnerId, {
     baseUrl: base,
     apiKey,
     accountLabel: accountLabel ?? null,
     createdBy: auth.user.id,
-  });
+  }));
   return c.json({ connected: true, status: conn.status });
 });
 
@@ -164,9 +164,12 @@ unifiRoutes.post('/test', partnerScopes, writePerm, requireMfa(), async (c) => {
   const auth = c.get('auth');
   const partner = resolvePartnerId(auth, requestedPartnerId(c));
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const conn = await getConnection(db, partner.partnerId);
+  // One short read; the UniFi call below runs with no transaction held.
+  const { conn, apiKey } = await withAuthDbAccessContext(auth, async () => {
+    const found = await getConnection(db, partner.partnerId);
+    return { conn: found, apiKey: found ? await getDecryptedApiKey(db, partner.partnerId) : null };
+  });
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  const apiKey = await getDecryptedApiKey(db, partner.partnerId);
   if (!apiKey) return c.json({ success: false, message: 'No API key found' }, 400);
   try {
     const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
@@ -199,9 +202,12 @@ unifiRoutes.get('/hosts', partnerScopes, readPerm, async (c) => {
   const auth = c.get('auth');
   const partner = resolvePartnerId(auth, requestedPartnerId(c));
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const conn = await getConnection(db, partner.partnerId);
+  // One short read; the UniFi call below runs with no transaction held.
+  const { conn, apiKey } = await withAuthDbAccessContext(auth, async () => {
+    const found = await getConnection(db, partner.partnerId);
+    return { conn: found, apiKey: found ? await getDecryptedApiKey(db, partner.partnerId) : null };
+  });
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  const apiKey = await getDecryptedApiKey(db, partner.partnerId);
   if (!apiKey) return c.json({ success: false, message: 'No API key found' }, 400);
   try {
     const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });

@@ -43,8 +43,12 @@ describe('resolveToolExposure', () => {
     });
   });
 
-  it('auto with a known window but unmeasured prefixes stays full (ships dark)', () => {
-    expect(resolveToolExposure(input({ facts: facts({ effectiveWindow: 8192 }) })).profile).toBe('full');
+  it('auto with an unknown window stays full (ships dark: no window is known until W02)', () => {
+    expect(resolveToolExposure(input({ facts: facts({ effectiveWindow: null }) })).profile).toBe('full');
+  });
+
+  it('#11395: auto with a known window resolves from the measured pins', () => {
+    expect(resolveToolExposure(input({ facts: facts({ effectiveWindow: 8192 }) })).profile).toBe('minimal');
   });
 
   it('explicit full is the identity exposure too', () => {
@@ -213,9 +217,42 @@ describe('pickAutoProfile', () => {
     expect(pickAutoProfile(20000, 'chat', under)).toBe('minimal');
   });
 
-  it('unmeasured prefixes resolve to full (nothing constrained before W03 measures)', () => {
+  it('unmeasured prefixes resolve to full (nothing constrained on a guess)', () => {
     expect(pickAutoProfile(8192, 'helper', FIXTURE_PREFIX)).toBe('full');
-    expect(pickAutoProfile(8192, 'chat')).toBe('full');
+    // Office is not measured (#11395): its pins stay null.
+    expect(pickAutoProfile(8192, 'office_chat')).toBe('full');
+  });
+
+  it('#11395: the measured chat pins: 8k → minimal, 32k → standard, 131k → standard (full is ~128k on a gateway), 4k → too_small', () => {
+    expect(pickAutoProfile(8192, 'chat')).toBe('minimal');
+    expect(pickAutoProfile(32768, 'chat')).toBe('standard');
+    expect(pickAutoProfile(131072, 'chat')).toBe('standard');
+    expect(pickAutoProfile(4096, 'chat')).toBe('too_small');
+    expect(pickAutoProfile(1_000_000, 'chat')).toBe('full');
+  });
+
+  /**
+   * #11396 (W02, `auto` goes live): the smallest window at which each profile
+   * is picked on each surface, from the MEASURED pins. This is the behaviour
+   * a gateway offering gets once its window is known; the plan's corrected
+   * worked-example table (W02) is this table. A re-measured pin moves a threshold and must update it here.
+   */
+  it.each([
+    ['chat', 7_647, 16_728, 171_067],
+    ['helper', 7_147, 10_291, 16_920],
+    ['script_builder', 7_777, 9_929, 14_730],
+    ['ai_agents', 7_353, 15_983, 105_428],
+  ] as const)('%s: minimal from %i, standard from %i, full from %i (measured pins)', (surface, minimal, standard, full) => {
+    expect(pickAutoProfile(minimal - 1, surface)).toBe('too_small');
+    expect(pickAutoProfile(minimal, surface)).toBe('minimal');
+    expect(pickAutoProfile(standard - 1, surface)).toBe('minimal');
+    expect(pickAutoProfile(standard, surface)).toBe('standard');
+    expect(pickAutoProfile(full - 1, surface)).toBe('standard');
+    expect(pickAutoProfile(full, surface)).toBe('full');
+  });
+
+  it('office_chat stays full at any window (its prefixes are unmeasured)', () => {
+    for (const w of [4_096, 8_192, 131_072]) expect(pickAutoProfile(w, 'office_chat')).toBe('full');
   });
 
   it('auto + tooSmall resolves minimal with tooSmall set', () => {

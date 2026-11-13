@@ -67,6 +67,14 @@ func newMessageEvent(show ipc.MessageShow, eventType string, s *sessionbroker.Se
 // deduplicates, and W1 has no outbox — a lost event leaves the audit trail one
 // row short, it never re-shows a card.
 func (h *Heartbeat) emitMessageEvent(ev messageEvent) {
+	if ev.Session.Username == "" {
+		// The API requires the session's account name. A helper whose account
+		// name could not be resolved from its verified identity has none, so
+		// its receipt is skipped rather than sent and refused.
+		log.Warn("endpoint message event not posted: helper session has no resolved account name",
+			"messageId", ev.MessageID, "eventType", ev.EventType, "sid", ev.Session.SID)
+		return
+	}
 	if h.messageEventSink != nil {
 		go h.messageEventSink(ev)
 		return

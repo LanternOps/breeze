@@ -6767,6 +6767,21 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
     });
   });
 
+  it('logs only the start of a long mismatched ipHistoryUpdate.deviceId', async () => {
+    arrange();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const resp = await beat({ ...minimalHeartbeatBody, ipHistoryUpdate: { deviceId: 'd'.repeat(1_000_000) } });
+      expect(resp.status).toBe(200);
+      const lines = warn.mock.calls.map((call) => call.map(String).join(' '));
+      const mismatch = lines.find((line) => line.includes('mismatched ipHistoryUpdate.deviceId'));
+      expect(mismatch).toBeDefined();
+      expect(mismatch!.length).toBeLessThan(1_000);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('hostname change emits a state_change audit with before/after', async () => {
     arrange(); // status already online, hostname host-1
     const resp = await beat({ ...minimalHeartbeatBody, hostname: 'renamed-host' });

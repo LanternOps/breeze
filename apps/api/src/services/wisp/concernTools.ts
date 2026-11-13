@@ -346,7 +346,7 @@ export function registerWispConcernTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'ask Wisp to keep an eye on something: a waiting ticket, alert pattern, backups, patching, security findings',
     definition: {
       name: 'create_watch',
-      description: 'Ask Wisp to check something on a cadence (every 15 minutes to 7 days) for one customer, or for every customer on a partner-wide grant, and raise a concern when it needs you.',
+      description: 'Ask Wisp to check a condition on a cadence (every 15 minutes to 7 days) for one customer, or for every customer on a partner-wide grant, and raise a concern when it needs you. Not for waiting on one event (a device coming online, a script finishing, a run settling): use schedule_check_in.',
       input_schema: inputSchemaFor(createWatchShape),
     },
     handler: createWatchHandler,

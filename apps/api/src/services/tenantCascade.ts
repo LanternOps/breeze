@@ -891,7 +891,6 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // every org_id-columned public table be enumerated for auditability).
   'partner_enrollment_key_idempotency',
   'patch_compliance_reports',
-  'patch_compliance_snapshots',
   'patch_jobs',
   'pax8_company_mappings',
   'pax8_contract_line_links',

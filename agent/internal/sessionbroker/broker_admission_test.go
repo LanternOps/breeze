@@ -604,3 +604,30 @@ func TestCommitAfterBrokerShutdownReleasesReservationWithoutPublishing(t *testin
 		t.Fatal("shutdown commit published candidate session")
 	}
 }
+
+// Two helpers that claimed the same session ID both pass the pre-auth
+// duplicate check when neither is registered yet; registration admits only
+// the first and leaves it in place.
+func TestRegisterRefusesASessionIDRegisteredSinceTheHandshakeCheck(t *testing.T) {
+	b := New("/tmp/breeze-test-unused.sock", nil)
+	first := NewSession(nil, 1000, "1000", "alice", "", "same-id", userHelperScopes)
+	first.HelperRole = ipc.HelperRoleUser
+	second := NewSession(nil, 1001, "1001", "bob", "", "same-id", userHelperScopes)
+	second.HelperRole = ipc.HelperRoleUser
+
+	if err := b.registerNonLifecycleSession("1000", ipc.HelperRoleUser, first, nil); err != nil {
+		t.Fatalf("first registration: %v", err)
+	}
+	if err := b.registerNonLifecycleSession("1001", ipc.HelperRoleUser, second, nil); err == nil {
+		t.Fatal("second registration with the same session ID was accepted")
+	}
+	if got := b.SessionByID("same-id"); got != first {
+		t.Fatalf("session same-id is %p, want the first registration %p", got, first)
+	}
+	b.mu.RLock()
+	n := len(b.byIdentity["1001"])
+	b.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("refused session was indexed under its identity (%d entries)", n)
+	}
+}

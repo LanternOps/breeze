@@ -63,8 +63,9 @@ export const deviceFilesystemCleanupRuns = pgTable('device_filesystem_cleanup_ru
   kind: text('kind').notNull().default('files'),
   /**
    * The queued `system_cleanup_run` command for a system run (W04). No FK:
-   * device_commands rows are pruned independently, and a pruned command must
-   * not take the record of what was done with it.
+   * device_commands rows are pruned independently (jobs/deviceCommandRetention.ts,
+   * report-only until enabled), and a pruned command must not take the record
+   * of what was done with it.
    */
   commandId: uuid('command_id'),
   requestedBy: uuid('requested_by').references(() => users.id),

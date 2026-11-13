@@ -42,8 +42,64 @@ const CSS_DANGEROUS_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> 
   { pattern: /behavior\s*:/i, label: 'behavior:' }
 ];
 
-// Matches url(...), with or without quotes, capturing the raw value.
-const CSS_URL_PATTERN = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
+const CSS_WHITESPACE = /\s/;
+
+function isCssUrlStop(ch: string | undefined): boolean {
+  return ch === "'" || ch === '"' || ch === ')';
+}
+
+/**
+ * The raw value of each url(...) in `css`, with or without quotes, in order.
+ * It reports exactly what `/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi` would capture,
+ * in time linear in the length of `css` (this check runs on every portal page
+ * load).
+ */
+function* cssUrlValues(css: string): Generator<string> {
+  const opener = /url\(/gi;
+  // nextStop[k]: index of the first quote or `)` at or after k (css.length if none).
+  let nextStop: Int32Array | null = null;
+  const stopAt = (from: number): number => {
+    if (!nextStop) {
+      nextStop = new Int32Array(css.length + 1);
+      nextStop[css.length] = css.length;
+      for (let k = css.length - 1; k >= 0; k -= 1) nextStop[k] = isCssUrlStop(css[k]) ? k : nextStop[k + 1]!;
+    }
+    return nextStop[from]!;
+  };
+  const skipWhitespace = (from: number): number => {
+    let k = from;
+    while (k < css.length && CSS_WHITESPACE.test(css[k]!)) k += 1;
+    return k;
+  };
+
+  let from = 0;
+  for (;;) {
+    opener.lastIndex = from;
+    const open = opener.exec(css);
+    if (!open) return;
+    const start = skipWhitespace(open.index + 4);
+    const quote = css[start];
+    if (quote === "'" || quote === '"') {
+      const end = stopAt(start + 1);
+      if (css[end] === quote) {
+        const close = skipWhitespace(end + 1);
+        if (css[close] === ')') {
+          yield css.slice(start + 1, end);
+          from = close + 1;
+          continue;
+        }
+      }
+    } else {
+      const end = stopAt(start);
+      if (css[end] === ')') {
+        yield css.slice(start, end);
+        from = end + 1;
+        continue;
+      }
+    }
+    from = open.index + 1;
+  }
+}
 
 // CSS identifiers/at-keywords support backslash escapes (CSS Syntax Module
 // §4.3.7): `\` + 1-6 hex digits (+ one optional trailing whitespace) decodes
@@ -83,10 +139,8 @@ export function findUnsafePortalCssPattern(css: string): string | null {
     if (pattern.test(decoded)) return label;
   }
 
-  CSS_URL_PATTERN.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = CSS_URL_PATTERN.exec(decoded)) !== null) {
-    const value = (match[2] ?? '').trim();
+  for (const raw of cssUrlValues(decoded)) {
+    const value = raw.trim();
     if (!/^(https:|data:)/i.test(value)) {
       return value ? `url(${value})` : 'url()';
     }

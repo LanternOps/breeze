@@ -54,7 +54,12 @@ export async function loadReachabilityInputs(assetIds: string[]): Promise<Map<st
     })
     .from(discoveredAssets)
     .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-    .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+    // The profile counts only while it is in the asset's org and site.
+    .leftJoin(discoveryProfiles, and(
+      eq(discoveryJobs.profileId, discoveryProfiles.id),
+      eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+      eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+    ))
     .where(inArray(discoveredAssets.id, ids));
 
   if (assetRows.length === 0) return out;

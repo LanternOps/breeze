@@ -11,6 +11,14 @@ export const ENTRA_CONSUMER_TENANT_ID = '9188040d-6c67-4c5b-b112-36a304b66dad';
 /** The authority every user sign-in uses (structural guest refusal); only a proof run pins a tenant (D6). */
 export const PORTAL_ENTRA_SIGN_IN_AUTHORITY = 'organizations';
 
+/**
+ * The `iss` of a Google ID token, normalized: the issuer stored for every
+ * Google identity and access request, and a Google flow state's authority
+ * (W7). Defined here, dependency-free, so the state store needs no DB-backed
+ * module; services/portalUserIdentities.ts re-exports it.
+ */
+export const PORTAL_GOOGLE_ISSUER = 'https://accounts.google.com';
+
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 

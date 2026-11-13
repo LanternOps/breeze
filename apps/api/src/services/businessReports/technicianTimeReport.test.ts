@@ -14,7 +14,7 @@ const ctx = vi.hoisted(() => ({
 }));
 
 vi.mock('../../db', () => ({
-  db: { execute: vi.fn() },
+  db: { execute: vi.fn(), select: vi.fn() },
   getCurrentDbAccessContext: () => ctx.current,
   hasDbAccessContext: () => ctx.current !== undefined,
   withSystemDbAccessContext: async <T,>(fn: () => Promise<T>): Promise<T> => {
@@ -28,6 +28,9 @@ vi.mock('../../db', () => ({
     }
   },
 }));
+vi.mock('../roleInheritance', () => ({
+  getRolesPermissionGrants: vi.fn(async () => new Map()),
+}));
 vi.mock('../portal/timezone', () => ({
   resolveOrgTimezone: vi.fn(async () => 'UTC'),
   resolvePartnerTimezone: vi.fn(async () => 'UTC'),
@@ -35,6 +38,7 @@ vi.mock('../portal/timezone', () => ({
 
 import type { TechnicianTimeSummary } from '@breeze/shared';
 import { db } from '../../db';
+import { getRolesPermissionGrants } from '../roleInheritance';
 import { ReportScopeMismatchError } from '../reportScope';
 import type { ReportGenerationAuthority } from '../siteScope';
 import { PARTNER_ORG_LIST_NOTE, SITE_RESTRICTED_NOTE } from './common';
@@ -62,6 +66,28 @@ function queueExecute(...resultSets: unknown[][]) {
     calls.push({ sql: compiled.sql, params: compiled.params, contextScope: ctx.current?.scope });
     return queue.shift() ?? [];
   }) as never);
+}
+
+/**
+ * The technician candidates read: partner_users ⋈ users ⋈ roles under the base
+ * role filter (active user, partner-scope role that is built-in or owned by
+ * the partner). Their grants then resolve through roleInheritance (#11702).
+ */
+let candidateWhere: unknown[] = [];
+function queueCandidates(rows: Array<{ userId: string; roleId: string }>) {
+  vi.mocked(db.select).mockImplementation((() => ({
+    from: () => ({
+      innerJoin: () => ({
+        innerJoin: () => ({
+          where: (w: unknown) => { candidateWhere.push(w); return Promise.resolve(rows); },
+        }),
+      }),
+    }),
+  })) as never);
+}
+function grantsByRole(m: Record<string, Array<{ resource: string; action: string }>>) {
+  vi.mocked(getRolesPermissionGrants).mockImplementation((async (ids: string[]) =>
+    new Map(ids.map((id) => [id, m[id] ?? []]))) as never);
 }
 
 const partnerAuthority: ReportGenerationAuthority = {
@@ -112,6 +138,47 @@ describe('generateTechnicianTimeBillabilityReport', () => {
     calls.length = 0;
     ctx.current = undefined;
     ctx.systemOpens = 0;
+    candidateWhere = [];
+    queueCandidates([]);
+    grantsByRole({});
+  });
+
+  it('technician roster includes a user whose role holds time_entries:read only through inheritance (#11702)', async () => {
+    queueCandidates([
+      { userId: TECH_1, roleId: 'r-child' },
+      { userId: TECH_IDLE, roleId: 'r-nogrant' },
+    ]);
+    grantsByRole({
+      'r-child': [{ resource: 'time_entries', action: 'read' }],
+      'r-nogrant': [{ resource: 'tickets', action: 'read' }],
+    });
+    queueExecute(TECH_ROWS, [], OVERALL, [], []);
+    await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority);
+    expect(getRolesPermissionGrants).toHaveBeenCalledTimes(1);
+    expect(calls[0]!.sql).not.toContain('role_permissions');
+    expect(calls[0]!.params).toContain(TECH_1);
+    expect(calls[0]!.params).not.toContain(TECH_IDLE);
+  });
+
+  it('a wildcard-only grant (*:*) makes a technician; an empty roster yields an empty techs CTE', async () => {
+    queueCandidates([{ userId: TECH_1, roleId: 'r-admin' }]);
+    grantsByRole({ 'r-admin': [{ resource: '*', action: '*' }] });
+    queueExecute(TECH_ROWS, [], OVERALL, [], []);
+    await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority);
+    expect(calls[0]!.params).toContain(TECH_1);
+
+    calls.length = 0;
+    queueCandidates([]);
+    queueExecute(TECH_ROWS, [], OVERALL, [], []);
+    await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority);
+    expect(calls[0]!.sql).toContain('ARRAY[]::uuid[]');
+  });
+
+  it('org scope never reads the technician candidates', async () => {
+    queueExecute(TECH_ROWS, [], OVERALL, [], []);
+    await generateTechnicianTimeBillabilityReport(orgScope, { period: AUGUST }, orgAuthority);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(getRolesPermissionGrants).not.toHaveBeenCalled();
   });
 
   it('utilization = logged ÷ prorated capacity (2,400 of 21 × 8h × 60 = 10,080)', async () => {
@@ -148,11 +215,11 @@ describe('generateTechnicianTimeBillabilityReport', () => {
     queueExecute(TECH_ROWS, [], OVERALL, [], []);
     await generateTechnicianTimeBillabilityReport(partnerScope(), { period: AUGUST }, partnerAuthority);
     expect(calls[0]!.sql).toMatch(/FROM roster r\s+LEFT JOIN entries e ON e\.user_id = r\.user_id/);
-    // Mirrors roleGrantsReportAction: '*' rows survive so Partner Admin counts.
-    expect(calls[0]!.sql).toContain(`p.resource IN ('time_entries', '*')`);
-    expect(calls[0]!.sql).toContain(`p.action IN ('read', '*')`);
-    expect(calls[0]!.sql).toContain(`u.status = 'active'`);
-    expect(calls[0]!.sql).toContain(`r.scope = 'partner'`);
+    // The candidate read keeps the base-role filter (active user, partner-scope
+    // role, built-in or this partner's); the grant check moved to TS.
+    const where = dialect.sqlToQuery(candidateWhere[0] as never);
+    expect(where.sql).toContain('"scope"');
+    expect(where.params).toEqual(expect.arrayContaining([PARTNER, 'partner', 'active']));
   });
 
   it('billability splits on coverage and falls back to is_billable when coverage is NULL', async () => {

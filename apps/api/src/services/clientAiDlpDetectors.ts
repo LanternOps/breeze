@@ -17,6 +17,8 @@
  * is reused from it — the secret shapes above come from aiToolOutput.ts.)
  */
 
+import { JWT_FIRST_IN_RUN } from './redactionPatterns';
+
 export interface DlpMatch {
   /** Inclusive start offset in the scanned string. */
   start: number;
@@ -153,12 +155,13 @@ export function detectIban(text: string): DlpMatch[] {
 // ── apiKey ───────────────────────────────────────────────────────────────────
 // Specific token shapes — seeded from BARE_SECRET_PATTERNS in
 // services/aiToolOutput.ts, plus Breeze brz_ tokens (services/apiKeys.ts).
-const API_KEY_PATTERNS: RegExp[] = [
+export const API_KEY_PATTERNS: RegExp[] = [
   /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}\b/g,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
-  /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
+  // JWT, in linear time (see JWT_FIRST_IN_RUN).
+  new RegExp(String.raw`${JWT_FIRST_IN_RUN}eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b`, 'g'),
   /\bbrz_[0-9a-f]{32,64}\b/g,
 ];
 

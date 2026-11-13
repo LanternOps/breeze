@@ -19,6 +19,7 @@ import { captureException } from '../../services/sentry';
 import { runOutsideDbContext } from '../../db';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
+import type { ToolProfileCatalog } from '../../services/aiModels/toolSettingsWrite';
 
 // Fixed-length tuples, not MiddlewareHandler[]: Hono's typed route overloads
 // only accept a spread whose length is known.
@@ -202,4 +203,15 @@ export async function queueOfferingVerification(
     captureException(error, undefined, { service: 'aiModels', stage: 'enqueue' });
     return c.json({ error: 'Could not queue the verification. Try again in a moment.', code: 'queue_unavailable' }, 503);
   }
+}
+
+/**
+ * #11398: the tool registries' catalog for tool profile validation and the
+ * snapshot DTO. Loaded lazily: the registries pull in the whole tool handler
+ * graph, which these routes (and every test that mounts them) should not load
+ * at import time. Cached by the module system after the first call.
+ */
+export async function loadToolProfileCatalog(): Promise<ToolProfileCatalog> {
+  const { breezeToolProfileCatalog } = await import('../../services/aiModels/toolProfileCatalog');
+  return breezeToolProfileCatalog();
 }

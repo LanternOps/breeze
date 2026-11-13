@@ -4,7 +4,7 @@
  * One record per started sign-in: the purpose, nonce, PKCE verifier and a
  * browser binding. It is
  *   - stored under `PORTAL_REDIS_KEYS.oidcState(sha256(state))` for 600 s —
- *     the raw `state` travels only through the browser and Microsoft;
+ *     the raw `state` travels only through the browser and the identity provider (Microsoft or Google);
  *   - single-use: consumed by the shared Lua GET+DEL (`luaGetDel`) on Redis,
  *     a get + delete in one synchronous tick in memory, so a replayed or
  *     double-delivered callback gets nothing;
@@ -23,7 +23,7 @@ import { generatePKCEChallenge } from '../sso';
 import { PORTAL_REDIS_KEYS, PORTAL_USE_REDIS } from '../../routes/portal/schemas';
 import { PORTAL_OIDC_STATE_CAP, capMapByOldest, luaGetDel, portalOidcStates } from '../../routes/portal/helpers';
 import type { PortalOidcProvider, PortalOidcPurpose, PortalOidcState } from './types';
-import { PORTAL_ENTRA_SIGN_IN_AUTHORITY, isGuid, isProvableEntraTenantId, isSha256Hex } from './validators';
+import { PORTAL_ENTRA_SIGN_IN_AUTHORITY, PORTAL_GOOGLE_ISSUER, isGuid, isProvableEntraTenantId, isSha256Hex } from './validators';
 
 export const PORTAL_OIDC_STATE_TTL_SECONDS = 600;
 export const PORTAL_OIDC_BINDING_COOKIE = 'breeze_portal_oidc';
@@ -82,7 +82,7 @@ export async function createPortalOidcState(input: {
   };
   // A caller bug (an unpinned proof, an authority that does not match the
   // purpose, a non-GUID id) fails here, at start, instead of burning the state
-  // at the callback after a full Microsoft round trip.
+  // at the callback after a full identity-provider round trip.
   if (typeof recordShape(record) === 'string') {
     throw new Error('createPortalOidcState: the purpose, authority or host org is not a well-formed flow state');
   }
@@ -143,32 +143,48 @@ function parsePurpose(value: unknown): PortalOidcPurpose | null {
 }
 
 /**
- * The only authority a purpose may carry: the pinned tenant for a proof run
- * (D6), `organizations` for every user sign-in (the structural guest refusal).
- * The callback redeems the code at the stored authority, so a record pairing a
- * purpose with any other authority is refused.
+ * The only authority a provider + purpose may carry, or null when the pair is
+ * not a flow at all.
+ *   - Entra: the pinned tenant for a proof run (D6), `organizations` for every
+ *     user sign-in (the structural guest refusal). The callback redeems the
+ *     code at the stored authority.
+ *   - Google (W7): exactly `PORTAL_GOOGLE_ISSUER`, and only for `login`,
+ *     `invite` or `link`. Google has no tenant proof.
+ * A record pairing a purpose with any other authority is refused.
  */
-function authorityFor(purpose: PortalOidcPurpose): string {
-  return purpose.kind === 'tenant_proof' ? purpose.expectedTenantId : PORTAL_ENTRA_SIGN_IN_AUTHORITY;
+function authorityFor(provider: PortalOidcProvider, purpose: PortalOidcPurpose): string | null {
+  switch (provider) {
+    case 'entra':
+      return purpose.kind === 'tenant_proof' ? purpose.expectedTenantId : PORTAL_ENTRA_SIGN_IN_AUTHORITY;
+    case 'google':
+      return purpose.kind === 'tenant_proof' ? null : PORTAL_GOOGLE_ISSUER;
+    default:
+      return null;
+  }
+}
+
+function parseProvider(value: unknown): PortalOidcProvider | null {
+  return value === 'entra' || value === 'google' ? value : null;
 }
 
 /** The record, or why it is not one. Pure (no log, no clock), so create and consume share it. */
 function recordShape(parsed: unknown): PortalOidcState | 'version' | 'shape' {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'shape';
-  const { v, provider, purpose: rawPurpose, nonce, codeVerifier, bindingHash, hostOrgId, authority, createdAt } =
+  const { v, provider: rawProvider, purpose: rawPurpose, nonce, codeVerifier, bindingHash, hostOrgId, authority, createdAt } =
     parsed as Record<string, unknown>;
   if (v !== 1) return 'version';
 
+  const provider = parseProvider(rawProvider);
   const purpose = parsePurpose(rawPurpose);
   const host = hostOrgId === null ? null : isGuid(hostOrgId) ? hostOrgId : undefined;
   if (
-    provider !== 'entra'
+    !provider
     || !purpose
     || !isNonEmptyString(nonce)
     || !isNonEmptyString(codeVerifier)
     || !isSha256Hex(bindingHash)
     || typeof authority !== 'string'
-    || authority !== authorityFor(purpose)
+    || authority !== authorityFor(provider, purpose)
     || typeof createdAt !== 'number'
     || !Number.isFinite(createdAt)
     || host === undefined
@@ -233,7 +249,7 @@ export async function consumePortalOidcState(
 
 function bindingCookieAttributes(secure: boolean, maxAgeSeconds: number): string {
   // Always Lax, never the configurable portal SameSite: the cookie must ride
-  // Microsoft's top-level cross-site GET back to the callback
+  // the identity provider's top-level cross-site GET back to the callback
   // (response_mode=query), which Strict would drop and None does not need.
   return `; Path=${BINDING_COOKIE_PATH}; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}; Max-Age=${maxAgeSeconds}`;
 }

@@ -32,6 +32,8 @@ export type ResolveFailureReason =
   | 'connection_unavailable'
   | 'model_unavailable'
   | 'tools_unsupported'
+  /** #11397: the model failed the verify tool round trip on THIS surface under its current tool profile. */
+  | 'tools_unverified_surface'
   /** Task 6A: the partner has not been cut over to the registry yet and could not be now. */
   | 'registry_unavailable';
 
@@ -62,6 +64,12 @@ export interface CandidateFacts {
   supportsTools: boolean;
   inferenceGeo: string | null;
   supportedInferenceGeos: readonly string[];
+  /**
+   * #11397: tool surfaces whose CURRENT `surface_turn` readiness entry failed
+   * (surfaceReadiness.failedToolSurfaces). Gateway offerings only; absent or
+   * empty = nothing refused (every record without a readiness entry).
+   */
+  failedToolSurfaces?: readonly AiSurface[];
 }
 
 export interface EligibilityContext {
@@ -87,6 +95,10 @@ export function checkEligibility(c: CandidateFacts, ctx: EligibilityContext): Re
   if (c.rate === null) return 'unpriced';
   if ((TOOL_REQUIRING_SURFACES as readonly string[]).includes(ctx.surface) && !c.supportsTools) {
     return 'tools_unsupported';
+  }
+  // #11397: refuses only the surface whose verify turn failed, never the others.
+  if ((TOOL_REQUIRING_SURFACES as readonly string[]).includes(ctx.surface) && c.failedToolSurfaces?.includes(ctx.surface)) {
+    return 'tools_unverified_surface';
   }
   if (ctx.userInitiated && c.requiredPermission && !ctx.userHoldsPermission(c.requiredPermission)) {
     return 'permission_required';
@@ -164,6 +176,7 @@ function neutralised(c: CandidateFacts): CandidateFacts {
     enabled: true,
     connection: onDisconnectedConnection(c) ? c.connection : { ...c.connection, status: 'active', keyUsable: true },
     supportsTools: true,
+    failedToolSurfaces: [],
     requiredPermission: null,
   };
 }

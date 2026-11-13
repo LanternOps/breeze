@@ -25,6 +25,7 @@ import { and, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, organizations, remoteSessions, supportSessions } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { inToolDbPhase } from './aiToolDbContext';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { endSupportSession, type EndSupportSessionResult } from './quickSupportEnd';
@@ -131,6 +132,9 @@ export function registerSupportSessionTools(aiTools: Map<string, AiTool>): void 
   aiTools.set('manage_support_sessions', {
     tier: 1,
     domain: 'devices',
+    // Ending a session waits on the agent relay twice; no transaction may be
+    // held across it.
+    selfManagedDbContext: ['end'],
     searchHint: 'Quick Support sessions (temporary remote-support clients): list, check, end',
     definition: {
       name: 'manage_support_sessions',
@@ -157,7 +161,11 @@ export function registerSupportSessionTools(aiTools: Map<string, AiTool>): void 
           return bounded({ sessions: await views(auth, rows) });
         }
         if (typeof input.sessionId !== 'string') return jsonError('sessionId is required', 'VALIDATION_ERROR');
-        const [session] = await loadSessions(auth, eq(supportSessions.id, input.sessionId), 1);
+        const sessionId = input.sessionId;
+        // `end` manages its own DB context (it waits on the agent relay): the
+        // read runs in a short caller-scoped context; other actions join the
+        // dispatcher's.
+        const [session] = await inToolDbPhase(auth, () => loadSessions(auth, eq(supportSessions.id, sessionId), 1));
         if (!session) return notFound('Support session');
         if (action === 'get') return bounded({ session: (await views(auth, [session]))[0] });
 

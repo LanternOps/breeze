@@ -45,6 +45,7 @@ import type { GatewayConnectionConfig, GatewayCredential } from './gateway/types
 import { gatewayCandidate } from './gatewayCandidate';
 import { findOfferingIdForModel, getOffering, type Offering } from './offerings';
 import { toolProfileFactsFrom, type ToolProfileFacts } from './toolProfileFacts';
+import type { KnownContextWindow } from './contextWindowFacts';
 import {
   effectivePlatformInferenceGeos,
   getPlatformDefaultModel,
@@ -97,6 +98,8 @@ export interface LoadedCandidate {
   configVersion?: number;
   /** #11393: the offering's tool profile facts; absent = DEFAULT_TOOL_PROFILE_FACTS (no offering row). */
   toolProfileFacts?: ToolProfileFacts;
+  /** #11396: the offering's effective window and source (gateway offerings only); absent/null = unknown. */
+  contextWindow?: KnownContextWindow | null;
 }
 
 /** W01's empty support: nothing selectable, `speed` is always at least `standard`. */

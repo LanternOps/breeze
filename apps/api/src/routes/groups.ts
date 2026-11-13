@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
-import { isPartnerOwnedGroup, PARTNER_GROUP_READ_ONLY_BODY, resolveOrgSessionPartnerId, readPartnerGroupsForOrgSession, type OrgSessionPartnerGroupRow } from '../services/deviceGroupOwnership';
+import { acquireMembershipExportOrgLock, isPartnerOwnedGroup, PARTNER_GROUP_READ_ONLY_BODY, resolveOrgSessionPartnerId, readPartnerGroupsForOrgSession, type OrgSessionPartnerGroupRow } from '../services/deviceGroupOwnership';
 import { zValidator, formatZodError } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
@@ -1314,6 +1314,9 @@ groupRoutes.delete(
       return c.json({ error: 'Device is not a member of this group' }, 404);
     }
 
+    // Export admission before the first membership row, the order every membership
+    // writer uses (services/groupMembership.ts evaluateGroupMembership).
+    await acquireMembershipExportOrgLock(membership.orgId);
     await db
       .delete(deviceGroupMemberships)
       .where(

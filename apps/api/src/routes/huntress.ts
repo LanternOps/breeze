@@ -25,6 +25,8 @@ import {
   reserveHuntressWebhookMessage,
 } from '../services/huntressWebhookReplay';
 import { getRedis } from '../services/redis';
+import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
+import { rateLimiter } from '../services/rate-limit';
 import { ensureBuiltinPackage } from '../services/builtinDeploymentPackages';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -178,7 +180,7 @@ async function resolveWebhookIntegration(params: {
     webhookSecretEncrypted: string | null;
     isActive: boolean;
   }
-  | { error: string; status: 404 | 409 }
+  | { error: string; status: 404 | 409; reason: 'not_found' | 'account_mismatch' | 'ambiguous' }
 > {
   if (params.integrationId) {
     const row = await runWithSystemDbAccess(async () => {
@@ -196,25 +198,26 @@ async function resolveWebhookIntegration(params: {
       return row ?? null;
     });
     if (!row || !row.isActive) {
-      return { error: 'No active Huntress integration found for webhook payload', status: 404 };
+      return { error: 'No active Huntress integration found for webhook payload', status: 404, reason: 'not_found' };
     }
     if (row.accountId && params.accountId && row.accountId !== params.accountId) {
-      return { error: 'Webhook account does not match the selected Huntress integration', status: 409 };
+      return { error: 'Webhook account does not match the selected Huntress integration', status: 409, reason: 'account_mismatch' };
     }
     return row;
   }
 
   if (!params.accountId) {
-    return { error: 'No active Huntress integration found for webhook payload', status: 404 };
+    return { error: 'No active Huntress integration found for webhook payload', status: 404, reason: 'not_found' };
   }
   const lookup = await findHuntressIntegrationByAccount(params.accountId);
   if (lookup.status === 'none') {
-    return { error: 'No active Huntress integration found for webhook payload', status: 404 };
+    return { error: 'No active Huntress integration found for webhook payload', status: 404, reason: 'not_found' };
   }
   if (lookup.status === 'ambiguous') {
     return {
       error: 'Multiple active Huntress integrations match this account. Provide integrationId in the query string or x-huntress-integration-id header.',
-      status: 409
+      status: 409,
+      reason: 'ambiguous',
     };
   }
   return { ...lookup.integration, isActive: true };
@@ -235,7 +238,20 @@ function isHuntressTestDelivery(payload: unknown): boolean {
 }
 
 // Public webhook receiver (no user auth). Signature verification applied when webhook secret is configured.
+// Every delivery is metered per source address before the body is read or an
+// integration is looked up, and every failure before the signature verifies
+// gets the same 401; the reason is logged for the operator.
 huntressRoutes.post('/webhook', async (c) => {
+  const ip = getTrustedClientIp(c, 'unknown');
+  const rate = await rateLimiter(getRedis(), `huntress-webhook:${rateLimitIpKey(ip)}`, 600, 60);
+  if (!rate.allowed) {
+    c.header('Retry-After', '60');
+    return c.body(null, 429);
+  }
+  const refuse = (reason: string, detail?: string) => {
+    console.warn('[huntress] Webhook authentication refused', detail ? { reason, detail } : { reason });
+    return c.json({ error: 'Webhook authentication failed' }, 401);
+  };
   const rawBody = await c.req.text();
   let payload: unknown = {};
   try {
@@ -251,6 +267,9 @@ huntressRoutes.post('/webhook', async (c) => {
       ? String((payload as Record<string, unknown>).integrationId)
       : null);
   const accountId = c.req.header('x-huntress-account-id') ?? extractHuntressWebhookAccountId(payload);
+  if (accountId !== null && accountId !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$/.test(accountId)) {
+    return refuse('invalid_account_id');
+  }
 
   const integration = await resolveWebhookIntegration({
     integrationId: integrationId && integrationId !== 'undefined' && UUID_REGEX.test(integrationId)
@@ -259,17 +278,17 @@ huntressRoutes.post('/webhook', async (c) => {
     accountId,
   });
   if ('error' in integration) {
-    return c.json({ error: integration.error }, integration.status);
+    return refuse('integration_unavailable', integration.reason);
   }
 
   // Webhook signature verification is mandatory. Reject if no secret is configured.
   if (!integration.webhookSecretEncrypted) {
-    return c.json({ error: 'Webhook secret not configured for this integration. Configure a webhook secret to enable webhook ingestion.' }, 403);
+    return refuse('secret_absent');
   }
 
   const webhookSecret = decryptForColumn('huntress_integrations', 'webhook_secret_encrypted', integration.webhookSecretEncrypted);
   if (!webhookSecret) {
-    return c.json({ error: 'Webhook secret is not configured correctly' }, 401);
+    return refuse('secret_unreadable');
   }
 
   // Standard Webhooks (what Huntress sends, via Svix) or the legacy
@@ -280,15 +299,16 @@ huntressRoutes.post('/webhook', async (c) => {
     header: (name) => c.req.header(name),
   });
   if (!signatureCheck.ok) {
-    // The 401 body is all Huntress's delivery log shows; this line is the
-    // self-hoster's side. Never log the secret or the signature itself.
+    // The 401 body is the same generic refusal as every other pre-verification
+    // failure; this line is the self-hoster's diagnostic. Never log the secret
+    // or the signature itself.
     const secretFormat = webhookSecret.trim().startsWith('whsec_')
       ? 'whsec_-prefixed'
       : 'no whsec_ prefix (used as raw bytes)';
     console.warn(
       `[huntress] Webhook signature rejected integration=${integration.id} scheme=${signatureCheck.scheme} secret=${secretFormat}: ${signatureCheck.error}`
     );
-    return c.json({ error: signatureCheck.error }, 401);
+    return refuse('signature_invalid');
   }
 
   // Huntress's "Send Test" (body `{"event_type":"test.event",...}`) proves

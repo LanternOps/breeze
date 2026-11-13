@@ -30,7 +30,7 @@ import { requestLikeFromSnapshot, writeAuditEvent, type RequestLike } from '../a
 import { listFeatureLinks, policyAccessCondition, updateConfigPolicy } from '../configurationPolicy';
 import { deleteDeviceGroup } from '../deviceGroupDelete';
 import { restoreDeviceFunction } from '../deviceFunction';
-import { addManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
+import { addManualGroupMemberships, removeManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { canonical, snapshotLinks } from './apply';
 import { snapshotFleetMonitors } from './monitorAttachments';
@@ -360,14 +360,9 @@ async function rollbackFunction(ctx: RollbackCtx, row: FleetDesignLedgerRow): Pr
   const removed = beforeMembers.filter((d) => !snapshot.includes(d));
   const toRemove = added.filter((d) => currentMembers.includes(d));
   if (toRemove.length > 0) {
-    await db
-      .delete(deviceGroupMemberships)
-      .where(and(eq(deviceGroupMemberships.groupId, groupId), eq(deviceGroupMemberships.orgId, ctx.orgId), inArray(deviceGroupMemberships.deviceId, toRemove)));
-    for (const deviceId of toRemove) {
-      await schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
-        console.error(`[fleetDesign] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
-      });
-    }
+    // The shared manual writer: export lock before the rows, and the
+    // removed devices' reconciliation scheduled after the commit.
+    await removeManualGroupMemberships({ groupId, deviceIds: toRemove });
   }
   const toRestore = removed.filter((d) => !currentMembers.includes(d));
   if (toRestore.length > 0) {

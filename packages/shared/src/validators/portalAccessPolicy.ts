@@ -58,8 +58,9 @@ export type PortalAccessPolicyPatch = z.infer<typeof portalAccessPolicyPatchSche
 
 /**
  * What the deployment can run. `entra` is on when the portal Entra app is configured
- * (W4: PORTAL_ENTRA_CLIENT_ID + PORTAL_ENTRA_CLIENT_SECRET); W7 (google) and W6
- * (self-registration) flip their own key.
+ * (W4: PORTAL_ENTRA_CLIENT_ID + PORTAL_ENTRA_CLIENT_SECRET), `google` when the portal
+ * Google OAuth client is (W7: PORTAL_GOOGLE_CLIENT_ID + PORTAL_GOOGLE_CLIENT_SECRET);
+ * W6 (self-registration) flips its own key.
  */
 export interface PortalSignInCapabilities {
   entra: boolean;
@@ -95,6 +96,13 @@ export interface PortalAccessPolicyView {
    * Partner view: null (verification is a fact about one org).
    */
   verifiedDomainCount: number | null;
+  /**
+   * Org view: the org's currently verified email domains (W5's read API),
+   * lowercase and sorted; `verifiedDomainCount` is its length. Google sign-in
+   * is effectively off without one (W7 #11384, plan D6), inherited or not.
+   * Partner view: null.
+   */
+  verifiedDomains: string[] | null;
 }
 
 export const PORTAL_ACCESS_POLICY_ERROR_CODES = {
@@ -104,6 +112,8 @@ export const PORTAL_ACCESS_POLICY_ERROR_CODES = {
   TENANT_NOT_PROVEN: 'PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN',
   /** W4 D12: an `sso_only` save without the current impact acknowledgement (409). */
   SSO_ONLY_CONFIRM_REQUIRED: 'PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED',
+  /** W7: an org override turns Google on before the org has a verified email domain (400). */
+  GOOGLE_DOMAIN_NOT_VERIFIED: 'PORTAL_ACCESS_POLICY_GOOGLE_DOMAIN_NOT_VERIFIED',
 } as const;
 export type PortalAccessPolicyErrorCode =
   typeof PORTAL_ACCESS_POLICY_ERROR_CODES[keyof typeof PORTAL_ACCESS_POLICY_ERROR_CODES];

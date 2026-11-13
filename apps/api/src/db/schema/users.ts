@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer, bigint } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer, bigint, index } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 
 // Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
@@ -162,4 +162,8 @@ export const sessions = pgTable('sessions', {
   userAgent: text('user_agent'),
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (t) => ({
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): the auth
+  // session age scan (jobs/historyRetention/accessHistory.ts).
+  createdAtIdx: index('sessions_created_at_idx').on(t.createdAt),
+}));

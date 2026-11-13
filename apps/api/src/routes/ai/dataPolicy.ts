@@ -8,8 +8,14 @@ import { zValidator } from '../../lib/validation';
 import { PERMISSIONS } from '../../services/permissions';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { createAuditLogAsync } from '../../services/auditService';
-import { levelRank, resolveAiDataPolicyCeiling, resolveAiDataPolicyWithCeiling } from '../../services/aiDataPolicy';
+import { levelRank, resolveAiDataPolicyCeiling, resolveAiDataPolicyWithCeiling, transcriptPreviewDaysSchema } from '../../services/aiDataPolicy';
 import { aiDataPolicyBodySchema, toAiDataPolicyDto } from '../partnerAiDataPolicy';
+import {
+  AI_TRANSCRIPT_RETENTION_ENFORCE,
+  countTranscriptPreview,
+  technicianStubPredicate,
+  transcriptCutoffIso,
+} from '../../services/aiTranscriptRetentionPredicates';
 
 /**
  * AI data policy (#8852 W1): the ORG override half of `ai_data_policies`.
@@ -17,6 +23,7 @@ import { aiDataPolicyBodySchema, toAiDataPolicyDto } from '../partnerAiDataPolic
  * saved row never lies about what is in force.
  */
 const orgQuerySchema = z.object({ orgId: z.string().guid().optional() });
+const transcriptPreviewQuerySchema = orgQuerySchema.extend({ days: transcriptPreviewDaysSchema });
 
 type TargetOrg = { orgId: string } | { error: string; status: 400 | 403 };
 
@@ -56,6 +63,30 @@ aiDataPolicyRoutes.get(
   },
 );
 
+/**
+ * Preview of the ORG transcript window (#4342 W4): how many of the org's
+ * technician sessions are past window N today, counted with the job's own
+ * predicate. Same scope/permission/org resolution as the GET above; the count
+ * runs on the request path under the caller's RLS (no system escape).
+ */
+aiDataPolicyRoutes.get(
+  '/data-policy/transcript-retention-preview',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PERMISSIONS.AI_AGENTS_READ.action),
+  zValidator('query', transcriptPreviewQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const target = resolveTargetOrg(auth, query.orgId);
+    if ('error' in target) return c.json({ error: target.error }, target.status);
+    const now = new Date();
+    const { eligible, capped } = await countTranscriptPreview(
+      technicianStubPredicate(target.orgId, transcriptCutoffIso(query.days, now), now),
+    );
+    return c.json({ eligible, capped, enforced: AI_TRANSCRIPT_RETENTION_ENFORCE });
+  },
+);
+
 aiDataPolicyRoutes.put(
   '/data-policy',
   requireScope('organization', 'partner', 'system'),
@@ -80,6 +111,13 @@ aiDataPolicyRoutes.put(
       && body.toolOutputRetentionDays > ceiling.toolOutputRetentionDays
     ) {
       return c.json({ error: 'above_partner_ceiling', field: 'toolOutputRetentionDays' }, 422);
+    }
+    if (
+      body.transcriptRetentionDays != null
+      && ceiling.transcriptRetentionDays !== null
+      && body.transcriptRetentionDays > ceiling.transcriptRetentionDays
+    ) {
+      return c.json({ error: 'above_partner_ceiling', field: 'transcriptRetentionDays' }, 422);
     }
     const now = new Date();
     const [row] = await db

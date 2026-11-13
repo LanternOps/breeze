@@ -396,9 +396,14 @@ const FILE_OPS: FileOp[] = [
 ];
 
 describe.each(FILE_OPS)('file $name refuses every spelling of the agent config directory', (op) => {
-  it.each(CONFIG_DIR_SPELLINGS)('%s: %s', async (_label, path) => {
+  it.each(CONFIG_DIR_SPELLINGS)('%s: %s', async (label, path) => {
     const res = await op.request(path);
-    await op.denied(res);
+    if (label === 'device namespace prefix with alias' || label === 'admin share with alias') {
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('absolute local path');
+    } else {
+      await op.denied(res);
+    }
     expect(executeCommandMock).not.toHaveBeenCalled();
   });
 
