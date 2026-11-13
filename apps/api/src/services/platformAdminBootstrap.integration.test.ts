@@ -34,7 +34,7 @@ import { and, eq } from 'drizzle-orm';
 
 import { bootstrapPlatformAdmins } from './platformAdminBootstrap';
 import { auditLogs, users } from '../db/schema';
-import { createPartner, createUser } from '../__tests__/integration/db-utils';
+import { createOrganization, createPartner, createUser } from '../__tests__/integration/db-utils';
 import { getTestDb } from '../__tests__/integration/setup';
 
 const ORIGINAL_ENV = process.env.BREEZE_PLATFORM_ADMINS;
@@ -207,6 +207,61 @@ describe('bootstrapPlatformAdmins — real Postgres (#2655)', () => {
       const warned = warnSpy.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
       expect(warned).toContain(`pending-${suffix}@example.com`);
       expect(warned).not.toContain(`ready-${suffix}@example.com`);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not promote a listed account that belongs to an organization', async () => {
+    const partner = await createPartner({ status: 'active' });
+    const org = await createOrganization({ partnerId: partner.id });
+    const email = `org-member-${Date.now()}@example.com`;
+    const user = await createVerifiedUser({ partnerId: partner.id, orgId: org.id, status: 'active', email });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      setAdmins(email);
+      await bootstrapPlatformAdmins();
+
+      expect(await isPlatformAdmin(user.id)).toBe(false);
+      const warned = warnSpy.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+      expect(warned).toContain(email);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('promotes no account when more than one account matches a listed address, and names them', async () => {
+    const partner = await createPartner({ status: 'active' });
+    const suffix = Date.now();
+    const first = await createVerifiedUser({ partnerId: partner.id, status: 'active', email: `Twin-${suffix}@Example.com` });
+    const second = await createVerifiedUser({ partnerId: partner.id, status: 'active', email: `twin-${suffix}@example.com` });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      setAdmins(`twin-${suffix}@example.com`);
+      await bootstrapPlatformAdmins();
+
+      expect(await isPlatformAdmin(first.id)).toBe(false);
+      expect(await isPlatformAdmin(second.id)).toBe(false);
+      const warned = warnSpy.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+      expect(warned).toContain(first.id);
+      expect(warned).toContain(second.id);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('still reports platform admins when the list is empty', async () => {
+    const partner = await createPartner({ status: 'active' });
+    const user = await createVerifiedUser({ partnerId: partner.id, status: 'active', email: `kept-${Date.now()}@example.com` });
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, user.id));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      setAdmins('   ');
+      await bootstrapPlatformAdmins();
+
+      const warned = warnSpy.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+      expect(warned).toContain(user.id);
+      expect(await isPlatformAdmin(user.id)).toBe(true);
     } finally {
       warnSpy.mockRestore();
     }

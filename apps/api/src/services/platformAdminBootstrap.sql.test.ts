@@ -81,4 +81,10 @@ describe('buildUnpromotedAdminMatch — rendered SQL shape (#2655 regression)', 
     expect(params).toContain('active');
     expect(sql.toLowerCase()).toMatch(/"email_verified_at" is not null/);
   });
+
+  it('matches only partner-level accounts whose address no other account shares', () => {
+    const { sql } = render(['a@x.com']);
+    expect(sql.toLowerCase()).toMatch(/"org_id" is null/);
+    expect(sql.toLowerCase()).toContain('not exists');
+  });
 });

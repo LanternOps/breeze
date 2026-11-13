@@ -119,7 +119,7 @@ Platform admin is a separate authorization axis from the partner/organization RB
 | Property | Implementation |
 |---|---|
 | **Schema** | `users.is_platform_admin` boolean column (defaults to `false`) |
-| **Bootstrap** | `BREEZE_PLATFORM_ADMINS` env var — comma-separated email allowlist, applied on API startup to `active` accounts whose address is verified (`email_verified_at` set). Each promotion writes a `platform_admin.bootstrap_promote` audit row in the same transaction. Never demotes; the startup log names listed addresses with no account or not yet eligible, and flagged accounts that are no longer listed. A removed account re-invited later starts without the flag or a verified address |
+| **Bootstrap** | `BREEZE_PLATFORM_ADMINS` env var — comma-separated email allowlist, applied on API startup to an account that is `active`, has a verified address (`email_verified_at` set), is partner-level (`org_id` NULL) and is the only account with that address ignoring case. Each promotion writes a `platform_admin.bootstrap_promote` audit row in the same transaction. Never demotes; the startup log names listed addresses with no account, shared by several accounts or not eligible, and flagged accounts that are not listed (also when the list is empty). A removed account re-invited later starts without the flag or a verified address |
 | **Middleware** | `platformAdminMiddleware` (`apps/api/src/middleware/platformAdmin.ts`) — runs `authMiddleware` then enforces `isPlatformAdmin === true`, fails closed with 403 |
 | **Audit** | Every authorized request is recorded as `platform_admin.<route>` in `audit_logs`, including method, path, actor, and trusted client IP |
 
@@ -555,7 +555,7 @@ All scanners run in CI and **block merges** on failure.
 | `MFA_RECOVERY_CODE_PEPPER` | Server-side pepper for SHA-256 recovery-code hashes | 32+ characters |
 | `AGENT_ENROLLMENT_SECRET` | Shared secret presented at agent enrollment | 32-byte hex |
 | `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | Base64 SPKI Ed25519 key(s) used to verify signed agent release manifests; **required when `BINARY_SOURCE=github` in production** — the API config validator refuses to boot without it | base64 SPKI |
-| `BREEZE_PLATFORM_ADMINS` | Optional. Comma-separated email allowlist applied on startup to bootstrap `users.is_platform_admin` for active accounts with a verified address. Without it, no user has cross-tenant admin access. List only addresses whose account already exists. | n/a |
+| `BREEZE_PLATFORM_ADMINS` | Optional. Comma-separated email allowlist applied on startup to bootstrap `users.is_platform_admin` for active, partner-level accounts with a verified address. Without it, no user has cross-tenant admin access. List only accounts in the operator's own partner, created before they are listed. | n/a |
 
 ### Production Enforcement
 

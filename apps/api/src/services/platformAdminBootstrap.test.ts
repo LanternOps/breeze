@@ -75,6 +75,10 @@ describe('parseAdminEmails', () => {
     ]);
   });
 
+  it('lists each address once', () => {
+    expect(parseAdminEmails('a@x.com, A@X.com,b@x.com,a@x.com')).toEqual(['a@x.com', 'b@x.com']);
+  });
+
   it('drops blank entries from messy CSV', () => {
     expect(parseAdminEmails('a@x.com,, ,b@x.com,')).toEqual(['a@x.com', 'b@x.com']);
   });
