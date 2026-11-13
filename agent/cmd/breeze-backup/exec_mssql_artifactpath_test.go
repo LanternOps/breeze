@@ -74,7 +74,7 @@ func TestMSSQLLocalArtifactPathWithControlCharacterRefused(t *testing.T) {
 // A snapshot manifest that names a backup file with a control character is
 // refused for restore and verify before anything is staged or run.
 func TestMSSQLManifestArtifactNameWithControlCharacterRefused(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := providers.NewLocalProvider(privateStoreTempDir(t))
 	snapshotID := "mssql-prod-appdb-control-name"
 	remote := path.Join("snapshots", snapshotID, "files", "AppDB_full_20260101_000000.bak\nrest")
 	manifest := backup.Snapshot{
