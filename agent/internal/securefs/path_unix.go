@@ -229,6 +229,57 @@ func describeComponentError(dirFD int, component string, err error) error {
 	return fmt.Errorf("refusing to write through path component %q: it is a symlink: %w", component, err)
 }
 
+func privateDirInfo(path string) (os.FileInfo, error) {
+	fd, err := openAbsoluteDir(path, false, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return nil, err
+	}
+	if stat.Uid != uint32(os.Geteuid()) {
+		return nil, fmt.Errorf("private directory owner does not match the service account")
+	}
+	if stat.Mode&0o077 != 0 {
+		return nil, fmt.Errorf("directory grants access to another account (mode %04o)", stat.Mode&0o777)
+	}
+	if hasACL, err := dirHasExtendedACL(fd); err != nil {
+		return nil, fmt.Errorf("inspect directory access control list: %w", err)
+	} else if hasACL {
+		return nil, fmt.Errorf("directory carries an extended or default access control list")
+	}
+	duplicate, err := unix.Dup(fd)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(duplicate), path)
+	defer file.Close()
+	return file.Stat()
+}
+
+func ensurePrivateDirInRoot(root *os.Root, relative string) error {
+	base, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer base.Close()
+	fd, err := openRelativeDir(int(base.Fd()), relative, true, 0o700)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return err
+	}
+	if stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("private directory owner does not match the service account")
+	}
+	return unix.Fchmod(fd, 0o700)
+}
+
 func ensureDir(path string, mode os.FileMode, private bool) error {
 	fd, err := openAbsoluteDir(path, true, uint32(mode.Perm()))
 	if err != nil {

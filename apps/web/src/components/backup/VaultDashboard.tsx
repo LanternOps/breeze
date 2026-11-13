@@ -51,7 +51,9 @@ const statusConfig: Record<VaultStatus, { icon: typeof CheckCircle2; className: 
 
 const typeConfig: Record<VaultType, { icon: typeof HardDrive; label: string; className: string }> = {
   local: { icon: HardDrive, label: 'Local', className: 'bg-primary/10 text-primary' },
-  smb: { icon: Server, label: 'SMB', className: 'bg-warning/10 text-warning' },
+  // A vault saved with the SMB share type before it was refused; the device
+  // does not use it.
+  smb: { icon: Server, label: 'SMB (unsupported)', className: 'bg-warning/10 text-warning' },
   usb: { icon: Usb, label: 'USB', className: 'bg-muted text-muted-foreground' },
 };
 
@@ -207,7 +209,7 @@ export default function VaultDashboard() {
 
   return (
     <div className="space-y-6">
-      <AlphaBadge variant="banner" disclaimer="Local vault (SMB/USB) caching is in early access. Vault sync, retention, and fallback restore are functional but have not been tested across all network and storage configurations." />
+      <AlphaBadge variant="banner" disclaimer="Local vault (local disk/USB) caching is in early access. Vault sync, retention, and fallback restore are functional but have not been tested across all storage configurations. Network shares are not supported as vaults." />
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {error}

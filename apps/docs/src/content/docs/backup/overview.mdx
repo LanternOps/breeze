@@ -38,9 +38,9 @@ Breeze supports two storage providers:
 | Provider | Best for |
 |----------|----------|
 | **Amazon S3** (or S3-compatible) | Primary cloud storage — works with MinIO, Wasabi, Backblaze B2, and other S3-compatible services by setting a custom endpoint |
-| **Local / NAS** | Fast restores from on-site storage, USB drives, or SMB shares |
+| **Local disk** | Fast restores from a disk or USB drive attached to the device (network shares are not supported) |
 
-You can configure multiple storage targets and assign different ones to different policies. For example, critical servers might back up to S3 with a local vault mirror, while workstations use local NAS only.
+You can configure multiple storage targets and assign different ones to different policies. For example, critical servers might back up to S3 with a local vault mirror, while workstations use a local disk only.
 
 ---
 

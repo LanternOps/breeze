@@ -110,7 +110,7 @@ func TestLocalProvider_UploadContextReportsUploadProgress(t *testing.T) {
 		t.Run(remote, func(t *testing.T) {
 			src, data := writeUploadSource(t, size)
 			base := t.TempDir()
-			provider := NewLocalProvider(base)
+			provider := privateTestLocalProvider(t, base)
 			rec := &progressRecorder{}
 			ctx := WithUploadProgress(context.Background(), rec.record)
 			if err := provider.UploadContext(ctx, src, remote); err != nil {

@@ -103,7 +103,7 @@ describe('backup configs site-ceiling gate', () => {
     const res = await app().request('/backup/configs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Local backup', provider: 'local' }),
+      body: JSON.stringify({ name: 'Local backup', provider: 'local', details: { path: '/var/backups/breeze' } }),
     });
     expect(res.status).toBe(403);
     expect(insertMock).not.toHaveBeenCalled();
@@ -158,7 +158,7 @@ describe('backup configs site-ceiling gate', () => {
     const res = await app().request('/backup/configs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Local backup', provider: 'local' }),
+      body: JSON.stringify({ name: 'Local backup', provider: 'local', details: { path: '/var/backups/breeze' } }),
     });
     expect(res.status).toBe(201);
     expect(insertMock).toHaveBeenCalledTimes(1);

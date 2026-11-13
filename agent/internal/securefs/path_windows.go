@@ -181,25 +181,35 @@ func openVerifiedDir(path string, create bool, finalSA *windows.SecurityAttribut
 	if volume == "" {
 		return nil, fmt.Errorf("directory must name a volume: %q", path)
 	}
+	components, err := splitWindowsComponents(strings.Trim(path[len(volume):], `\/`))
+	if err != nil {
+		return nil, fmt.Errorf("directory %q: %w", path, err)
+	}
 	// The volume root is the one component that must be opened by path. It
-	// cannot be a reparse point.
+	// cannot be a reparse point. When the path is the volume root itself (for
+	// example a bare UNC share), the root handle is the leaf: it gets
+	// READ_CONTROL so its owner and access list can be checked, and nothing
+	// more. A caller asking for further access to a volume root (WRITE_DAC to
+	// make it private, say) is refused rather than handed a handle that could
+	// rewrite a whole drive's or share's security.
+	rootAccess := uint32(windows.FILE_READ_ATTRIBUTES | windows.FILE_LIST_DIRECTORY)
+	if len(components) == 0 {
+		if finalAccess&^windows.READ_CONTROL != 0 {
+			return nil, fmt.Errorf("refusing to open volume root %q for modification", volume)
+		}
+		rootAccess |= windows.READ_CONTROL
+	}
 	rootWide, err := windows.UTF16PtrFromString(volume + string(filepath.Separator))
 	if err != nil {
 		return nil, err
 	}
-	root, err := windows.CreateFile(rootWide, windows.FILE_READ_ATTRIBUTES|windows.FILE_LIST_DIRECTORY,
+	root, err := windows.CreateFile(rootWide, rootAccess,
 		shareNoDelete|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING,
 		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open volume root %q: %w", volume, err)
 	}
 	chain := &dirChain{handles: []windows.Handle{root}}
-
-	components, err := splitWindowsComponents(strings.Trim(path[len(volume):], `\/`))
-	if err != nil {
-		chain.close()
-		return nil, fmt.Errorf("directory %q: %w", path, err)
-	}
 	for i, component := range components {
 		if component == ".." {
 			chain.close()
@@ -355,6 +365,130 @@ func VerifyPrivateDir(path string) error {
 	}
 	defer chain.close()
 	return VerifyPrivateDirHandle(chain.leaf())
+}
+
+func privateDirInfo(path string) (os.FileInfo, error) {
+	chain, err := openVerifiedDir(path, false, nil, windows.READ_CONTROL)
+	if err != nil {
+		return nil, err
+	}
+	defer chain.close()
+	if err := verifyPrivateDirOwner(chain.leaf()); err != nil {
+		return nil, err
+	}
+	// An existing root may inherit its entries (older agents created the
+	// default store under the protected data directory, so it carries only
+	// inherited SYSTEM and Administrators entries); every entry must still
+	// meet the private policy.
+	conforms, err := privateDACLConformsHandle(chain.leaf(), false)
+	if err != nil {
+		return nil, err
+	}
+	if !conforms {
+		return nil, errors.New("directory access list grants access to another account or lacks full control for the service account")
+	}
+	var duplicate windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), chain.leaf(), windows.CurrentProcess(), &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(duplicate), path)
+	defer file.Close()
+	return file.Stat()
+}
+
+func ensurePrivateDirInRoot(root *os.Root, relative string) error {
+	base, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer base.Close()
+	sa, err := PrivateDirSecurityAttributes()
+	if err != nil {
+		return err
+	}
+	components, err := splitWindowsComponents(relative)
+	if err != nil {
+		return err
+	}
+	chain := &dirChain{}
+	defer chain.close()
+	parent := windows.Handle(base.Fd())
+	for _, component := range components {
+		access := uint32(windows.FILE_READ_ATTRIBUTES | windows.READ_CONTROL | windows.FILE_LIST_DIRECTORY | windows.FILE_TRAVERSE | windows.WRITE_DAC)
+		handle, err := openRelativeComponent(parent, component, access, shareNoDelete, windows.FILE_OPEN_IF, ntDirOptions, sa)
+		if err != nil {
+			return err
+		}
+		chain.handles = append(chain.handles, handle)
+		if err := rejectReparseOrNonDir(handle, component); err != nil {
+			return err
+		}
+		parent = handle
+	}
+	if len(chain.handles) == 0 {
+		return errors.New("relative directory is required")
+	}
+	if err := verifyPrivateDirOwner(chain.leaf()); err != nil {
+		return err
+	}
+	// Setting a DACL on a directory re-propagates its inheritable entries to
+	// every existing child, so it is applied only when the directory does not
+	// already carry the private DACL (one created just above with the private
+	// security attributes already does).
+	conforms, err := privateDACLConformsHandle(chain.leaf(), true)
+	if err != nil {
+		return err
+	}
+	if conforms {
+		return nil
+	}
+	if err := applyPrivateDACLInRoot(chain.leaf()); err != nil {
+		return err
+	}
+	conforms, err = privateDACLConformsHandle(chain.leaf(), true)
+	if err != nil {
+		return err
+	}
+	if !conforms {
+		return errors.New("directory access list could not be made private")
+	}
+	return nil
+}
+
+// applyPrivateDACLInRoot is applyPrivateDACL; a test seam.
+var applyPrivateDACLInRoot = applyPrivateDACL
+
+// privateDirPolicy derives the DACL policy from the private-directory
+// descriptor: its trustees are the only ones allowed, and every one of them
+// except Administrators needs full control (SYSTEM, and the agent's own
+// account when it is not SYSTEM).
+func privateDirPolicy(requireProtected bool) (privateDACLPolicy, error) {
+	expected, err := PrivateDirSecurityAttributes()
+	if err != nil {
+		return privateDACLPolicy{}, err
+	}
+	policy := privateDACLPolicy{allowed: map[string]bool{}, fullAccess: map[string]bool{}, requireProtected: requireProtected}
+	for _, fields := range directoryACEFields(expected.SecurityDescriptor.String()) {
+		policy.allowed[fields[5]] = true
+		if fields[5] != "BA" {
+			policy.fullAccess[fields[5]] = true
+		}
+	}
+	return policy, nil
+}
+
+// privateDACLConformsHandle reads the directory's DACL through handle and
+// checks it against the private-directory policy.
+func privateDACLConformsHandle(handle windows.Handle, requireProtected bool) (bool, error) {
+	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false, fmt.Errorf("read directory access list: %w", err)
+	}
+	policy, err := privateDirPolicy(requireProtected)
+	if err != nil {
+		return false, err
+	}
+	return privateDACLConforms(sd.String(), policy), nil
 }
 
 func ensureDir(path string, mode os.FileMode, private bool) error {

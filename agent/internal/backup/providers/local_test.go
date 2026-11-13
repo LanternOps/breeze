@@ -40,7 +40,7 @@ func TestLocalProvider_BackupIdentity(t *testing.T) {
 
 func TestLocalProvider_UploadAndDownload_PlainFile(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	// Create a source file
 	srcDir := t.TempDir()
@@ -83,7 +83,7 @@ func TestLocalProvider_UploadAndDownload_PlainFile(t *testing.T) {
 
 func TestLocalProvider_UploadAndDownload_GzipFile(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	// Create a source file
 	srcDir := t.TempDir()
@@ -127,7 +127,7 @@ func TestLocalProvider_UploadAndDownload_GzipFile(t *testing.T) {
 
 func TestLocalProvider_Delete(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	// Create a file
 	dir := filepath.Join(baseDir, "snapshots", "snap1")
@@ -147,7 +147,7 @@ func TestLocalProvider_Delete(t *testing.T) {
 }
 
 func TestLocalProvider_Delete_NonexistentFile(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 
 	// Should not error when file doesn't exist
 	err := p.Delete("nonexistent/file.gz")
@@ -158,7 +158,7 @@ func TestLocalProvider_Delete_NonexistentFile(t *testing.T) {
 
 func TestLocalProvider_Delete_CleansEmptyDirs(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	// Create a nested file
 	dir := filepath.Join(baseDir, "snapshots", "snap1", "files")
@@ -178,7 +178,7 @@ func TestLocalProvider_Delete_CleansEmptyDirs(t *testing.T) {
 
 func TestLocalProvider_List_Empty(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	items, err := p.List("snapshots")
 	if err != nil {
@@ -191,7 +191,7 @@ func TestLocalProvider_List_Empty(t *testing.T) {
 
 func TestLocalProvider_List_WithFiles(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	// Create some files in the backup store
 	dir := filepath.Join(baseDir, "snapshots", "snap1", "files")
@@ -218,7 +218,7 @@ func TestLocalProvider_List_WithFiles(t *testing.T) {
 
 func TestLocalProvider_Upload_LargeFile(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	srcDir := t.TempDir()
 	srcPath := filepath.Join(srcDir, "large.bin")
@@ -250,7 +250,7 @@ func TestLocalProvider_Upload_LargeFile(t *testing.T) {
 
 func TestLocalProvider_Upload_PreservesModTime_PlainCopy(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	srcDir := t.TempDir()
 	srcPath := filepath.Join(srcDir, "timed.txt")
@@ -277,7 +277,7 @@ func TestLocalProvider_Upload_PreservesModTime_PlainCopy(t *testing.T) {
 
 func TestLocalProvider_GzipRoundTrip_PreservesName(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	srcDir := t.TempDir()
 	srcPath := filepath.Join(srcDir, "original_name.txt")
@@ -310,7 +310,7 @@ func TestLocalProvider_GzipRoundTrip_PreservesName(t *testing.T) {
 
 func TestLocalProvider_List_WithPrefix(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	// Create files under different prefixes
 	os.MkdirAll(filepath.Join(baseDir, "snapshots", "snap1"), 0755)
@@ -342,7 +342,7 @@ func TestLocalProvider_List_WithPrefix(t *testing.T) {
 
 func TestLocalProvider_List_EmptyPrefix(t *testing.T) {
 	baseDir := t.TempDir()
-	p := NewLocalProvider(baseDir)
+	p := privateTestLocalProvider(t, baseDir)
 
 	os.WriteFile(filepath.Join(baseDir, "root_file.txt"), []byte("root"), 0644)
 	os.MkdirAll(filepath.Join(baseDir, "sub"), 0755)
@@ -358,7 +358,7 @@ func TestLocalProvider_List_EmptyPrefix(t *testing.T) {
 }
 
 func TestLocalProvider_Download_MissingFileWrapsErrObjectNotFound(t *testing.T) {
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	err := p.Download("snapshots/does-not-exist/manifest.json", filepath.Join(t.TempDir(), "out.json"))
 	if err == nil {
 		t.Fatal("expected an error for a missing object")

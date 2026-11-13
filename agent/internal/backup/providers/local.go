@@ -3,6 +3,7 @@ package providers
 import (
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 const maxDecompressSize = 2 * 1024 * 1024 * 1024 // 2GB decompression limit
@@ -40,6 +43,9 @@ type LocalProvider struct {
 
 // NewLocalProvider creates a LocalProvider rooted at basePath.
 func NewLocalProvider(basePath string) *LocalProvider {
+	if strings.TrimSpace(basePath) == "" {
+		return &LocalProvider{}
+	}
 	return &LocalProvider{
 		BasePath: filepath.Clean(basePath),
 	}
@@ -57,31 +63,148 @@ func (p *LocalProvider) Upload(localPath, remotePath string) error {
 
 // UploadContext copies a file into the local backup store with cancellation support.
 func (p *LocalProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if p.BasePath == "" {
-		return errors.New("local provider base path is required")
-	}
-	if localPath == "" {
-		return errors.New("local source path is required")
-	}
-	if remotePath == "" {
-		return errors.New("remote path is required")
-	}
+	_, err := p.UploadWithDigest(ctx, localPath, remotePath)
+	return err
+}
 
-	destPath, err := containedPath(p.BasePath, remotePath)
+// openStoreRoot is os.OpenRoot; a test seam.
+var openStoreRoot = os.OpenRoot
+
+// openStore returns the store directory as an *os.Root that every operation
+// resolves keys through. The directory's ownership and access are verified on
+// a descriptor reached by a walk that does not follow a link at the store path
+// itself; the returned root is then accepted only when it is that same
+// directory (same file identity), so the root that operations use is always
+// the one that was verified.
+func (p *LocalProvider) openStore(create bool) (*os.Root, error) {
+	if strings.TrimSpace(p.BasePath) == "" {
+		return nil, errors.New("local provider base path is required")
+	}
+	base, err := filepath.Abs(p.BasePath)
+	if err != nil {
+		return nil, err
+	}
+	// Network shares are refused before the path is created, opened or
+	// checked, so the operator sees why rather than an access-check failure.
+	if err := refuseNetworkShare(p.BasePath, base); err != nil {
+		return nil, err
+	}
+	if filepath.Dir(base) == base {
+		return nil, errors.New("local backup store requires a dedicated directory")
+	}
+	if _, err := os.Lstat(base); errors.Is(err, fs.ErrNotExist) {
+		if !create {
+			return nil, err
+		}
+		if err := securefs.EnsurePrivateDir(base); err != nil {
+			return nil, fmt.Errorf("create backup store: %w", err)
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	verified, err := securefs.PrivateDirInfo(base)
+	if err != nil {
+		return nil, fmt.Errorf("local backup store is not private: stop using this destination, verify it is a dedicated backup directory, migrate to a new private directory or restrict existing directory access to the service account, and review all existing object permissions before retrying: %w", err)
+	}
+	root, err := openStoreRoot(base)
+	if err != nil {
+		return nil, err
+	}
+	captured, err := root.Stat(".")
+	if err != nil || !os.SameFile(verified, captured) {
+		root.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("backup store directory changed while opening")
+	}
+	// The opened root itself must not be on a network volume, however its
+	// path was spelled; a check that cannot decide refuses the store.
+	remote, err := storeRootIsRemote(root)
+	if err != nil {
+		root.Close()
+		return nil, fmt.Errorf("local backup store %q: determine whether it is on a network share: %w", p.BasePath, err)
+	}
+	if remote {
+		root.Close()
+		return nil, fmt.Errorf("local backup store %q is on a network share: %w", p.BasePath, ErrNetworkShareStore)
+	}
+	return root, nil
+}
+
+// Prepare creates or verifies the dedicated, owner-only store directory.
+func (p *LocalProvider) Prepare() error {
+	tree, err := p.openStore(true)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return fmt.Errorf("failed to create backup directory: %w", err)
-	}
+	return tree.Close()
+}
 
-	if strings.HasSuffix(remotePath, ".gz") {
-		return compressFileContext(ctx, localPath, destPath)
+func (p *LocalProvider) prepareObjectParents(root *os.Root, key string) error {
+	var parents []string
+	for dir := filepath.Dir(key); dir != "."; dir = filepath.Dir(dir) {
+		parents = append(parents, dir)
 	}
-	return copyFileContext(ctx, localPath, destPath)
+	for i := len(parents) - 1; i >= 0; i-- {
+		if err := securefs.EnsurePrivateDirInRoot(root, parents[i]); err != nil {
+			return fmt.Errorf("backup object directory: %w", err)
+		}
+	}
+	return nil
+}
+
+func (p *LocalProvider) objectRelative(root *os.Root, key string) (string, error) {
+	target, err := containedPath(p.BasePath, key)
+	if err != nil {
+		return "", err
+	}
+	base, err := filepath.Abs(p.BasePath)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(base, target)
+	if err != nil {
+		return "", err
+	}
+	if relative == "." {
+		return relative, nil
+	}
+	relative, err = securefs.CleanRelative(relative)
+	if err != nil {
+		return "", err
+	}
+	current := ""
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := root.Lstat(current)
+		if errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("backup object path contains a link")
+		}
+		if err := checkStoreEntryType(current, info.Mode()); err != nil {
+			return "", err
+		}
+	}
+	return relative, nil
+}
+
+// checkStoreEntryType refuses a store entry that is neither a regular file
+// nor a directory: links, named pipes, devices, sockets and, on Windows,
+// junctions and other reparse points that are reported as irregular.
+func checkStoreEntryType(name string, mode fs.FileMode) error {
+	if mode.IsRegular() || mode.IsDir() {
+		return nil
+	}
+	if mode&os.ModeSymlink != 0 {
+		return fmt.Errorf("backup object %s is a link", filepath.ToSlash(name))
+	}
+	return fmt.Errorf("backup object %s is not a regular file or directory", filepath.ToSlash(name))
 }
 
 // UploadWithDigest implements DigestUploader. It writes the object exactly as
@@ -103,12 +226,20 @@ func (p *LocalProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 	if remotePath == "" {
 		return UploadDigest{}, errors.New("remote path is required")
 	}
-	destPath, err := containedPath(p.BasePath, remotePath)
+	tree, err := p.openStore(true)
 	if err != nil {
 		return UploadDigest{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return UploadDigest{}, fmt.Errorf("failed to create backup directory: %w", err)
+	defer tree.Close()
+	destPath, err := p.objectRelative(tree, remotePath)
+	if err != nil {
+		return UploadDigest{}, err
+	}
+	if destPath == "." {
+		return UploadDigest{}, errors.New("backup object key is required")
+	}
+	if err := p.prepareObjectParents(tree, destPath); err != nil {
+		return UploadDigest{}, err
 	}
 
 	srcFile, err := os.Open(localPath)
@@ -121,16 +252,16 @@ func (p *LocalProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 		return UploadDigest{}, fmt.Errorf("failed to stat source file: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(destPath), "."+filepath.Base(destPath)+localUploadTempMarker+"*")
+	tmpPath := filepath.Join(filepath.Dir(destPath), "."+filepath.Base(destPath)+localUploadTempMarker+rand.Text())
+	tmp, err := tree.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return UploadDigest{}, fmt.Errorf("failed to create destination file: %w", err)
 	}
-	tmpPath := tmp.Name()
 	committed := false
 	defer func() {
 		if !committed {
 			_ = tmp.Close()
-			_ = os.Remove(tmpPath)
+			_ = tree.Remove(tmpPath)
 		}
 	}()
 
@@ -149,33 +280,32 @@ func (p *LocalProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 	} else if _, err := io.Copy(tmp, reader); err != nil {
 		return UploadDigest{}, fmt.Errorf("failed to copy file: %w", err)
 	}
-	// No fsync, like the in-place writers: the rename keeps a failed upload
+	// No explicit fsync: the rename keeps a failed upload
 	// from replacing an existing object, and a restore checks every byte
 	// against the recorded digest anyway.
 	if err := tmp.Close(); err != nil {
 		return UploadDigest{}, fmt.Errorf("failed to close destination file: %w", err)
 	}
-	// Same permissions os.Create gives the in-place writers.
-	_ = os.Chmod(tmpPath, 0o644)
+
 	if !strings.HasSuffix(remotePath, ".gz") {
-		if err := os.Chtimes(tmpPath, srcInfo.ModTime(), srcInfo.ModTime()); err != nil {
+		if err := tree.Chtimes(tmpPath, srcInfo.ModTime(), srcInfo.ModTime()); err != nil {
 			return UploadDigest{}, fmt.Errorf("failed to copy file: %w", err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return UploadDigest{}, err
 	}
-	if err := renameWithRetry(tmpPath, destPath); err != nil {
+	if err := renameWithRetry(tree, tmpPath, destPath); err != nil {
 		return UploadDigest{}, fmt.Errorf("failed to store backup file: %w", err)
 	}
 	committed = true
 	return sum.digest(), nil
 }
 
-// localRename is os.Rename; a test seam.
-var localRename = os.Rename
+// localRename renames within the open store root; a test seam.
+var localRename = func(tree *os.Root, from, to string) error { return tree.Rename(from, to) }
 
-func setLocalRenameForTest(fn func(string, string) error) (restore func()) {
+func setLocalRenameForTest(fn func(*os.Root, string, string) error) (restore func()) {
 	old := localRename
 	localRename = fn
 	return func() { localRename = old }
@@ -184,11 +314,11 @@ func setLocalRenameForTest(fn func(string, string) error) (restore func()) {
 // renameWithRetry renames from over to, retrying a few times over about a
 // second: on Windows, replacing a file fails while another process (a
 // virus scanner, the search indexer) briefly holds it open.
-func renameWithRetry(from, to string) error {
+func renameWithRetry(tree *os.Root, from, to string) error {
 	delay := 25 * time.Millisecond
 	var err error
 	for attempt := 0; attempt < 5; attempt++ {
-		if err = localRename(from, to); err == nil {
+		if err = localRename(tree, from, to); err == nil {
 			return nil
 		}
 		if attempt < 4 {
@@ -208,36 +338,45 @@ const localUploadTempMarker = ".upload-"
 // are older than olderThan — left behind when the helper stopped mid-upload.
 // Nothing else is touched.
 func (p *LocalProvider) SweepStaleUploads(prefix string, olderThan time.Duration) (int, error) {
-	if p.BasePath == "" {
-		return 0, errors.New("local provider base path is required")
+	tree, err := p.openStore(false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
 	}
-	root, err := containedPath(p.BasePath, prefix)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
+	defer tree.Close()
+	key, err := p.objectRelative(tree, prefix)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tree.Stat(key); errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
 	}
-	cutoff := time.Now().Add(-olderThan)
-	removed := 0
-	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	cutoff, removed := time.Now().Add(-olderThan), 0
+	err = fs.WalkDir(tree.FS(), filepath.ToSlash(key), func(name string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return err
 		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, ".") || !strings.Contains(name, localUploadTempMarker) {
+		if !entry.Type().IsRegular() {
+			// Never act on an entry that is not a regular file.
+			return nil
+		}
+		if !strings.HasPrefix(entry.Name(), ".") || !strings.Contains(entry.Name(), localUploadTempMarker) {
 			return nil
 		}
 		info, err := entry.Info()
-		if err != nil || !info.ModTime().Before(cutoff) {
-			return nil
+		if err != nil {
+			return err
 		}
-		if err := os.Remove(path); err == nil {
-			removed++
+		if info.ModTime().Before(cutoff) {
+			if err := tree.Remove(name); err == nil {
+				removed++
+			}
 		}
 		return nil
 	})
-	return removed, walkErr
+	return removed, err
 }
 
 // Download retrieves a file from the local backup store.
@@ -254,219 +393,183 @@ func (p *LocalProvider) DownloadContext(ctx context.Context, remotePath, localPa
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if p.BasePath == "" {
-		return errors.New("local provider base path is required")
+	if remotePath == "" || localPath == "" {
+		return errors.New("remote and local paths are required")
 	}
-	if remotePath == "" {
-		return errors.New("remote path is required")
+	tree, err := p.openStore(false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %s", ErrObjectNotFound, err)
 	}
-	if localPath == "" {
-		return errors.New("local destination path is required")
-	}
-
-	srcPath, err := containedPath(p.BasePath, remotePath)
 	if err != nil {
 		return err
 	}
-	// Positively confirm the SOURCE object is absent before attempting
-	// anything else. copyFileContext/decompressFile also touch the
-	// destination side (os.Create, os.Chtimes) after this point, and their
-	// own fmt.Errorf wrapping would let a DESTINATION-side ENOENT (a
-	// concurrently-removed destination directory, however unlikely) also
-	// satisfy errors.Is(_, fs.ErrNotExist) — which must never be classified
-	// the same as "the requested remote object doesn't exist" (the
-	// fail-open bug ErrObjectNotFound exists to prevent; see
-	// fetchPublishedManifest's three-state contract).
-	if _, statErr := os.Stat(srcPath); statErr != nil {
-		if errors.Is(statErr, fs.ErrNotExist) {
-			return fmt.Errorf("%w: %s", ErrObjectNotFound, statErr)
-		}
-		return fmt.Errorf("failed to stat local backup object: %w", statErr)
+	defer tree.Close()
+	key, err := p.objectRelative(tree, remotePath)
+	if err != nil {
+		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		return fmt.Errorf("failed to create destination directory: %w", err)
+	source, err := tree.Open(key)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %s", ErrObjectNotFound, err)
 	}
-
+	if err != nil {
+		return fmt.Errorf("open backup object: %w", err)
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("backup object is not a regular file")
+	}
+	var reader io.Reader = &contextReader{ctx: ctx, reader: source}
 	if strings.HasSuffix(remotePath, ".gz") {
-		return decompressFileContext(ctx, srcPath, localPath)
+		zipped, err := gzip.NewReader(reader)
+		if err != nil {
+			return fmt.Errorf("open compressed object: %w", err)
+		}
+		defer zipped.Close()
+		reader = io.LimitReader(zipped, maxDecompressSize)
 	}
-	return copyFileContext(ctx, srcPath, localPath)
+	// localPath is the caller's destination, not a store key: its missing
+	// parents get the mode every other provider gives them, and the restored
+	// file itself is owner-only.
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	target, err := os.OpenFile(localPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := target.Chmod(0o600); err != nil {
+		target.Close()
+		return err
+	}
+	_, copyErr := io.Copy(DownloadProgressWriter(ctx, target), reader)
+	closeErr := target.Close()
+	if copyErr != nil {
+		_ = os.Remove(localPath)
+		return fmt.Errorf("copy backup object: %w", copyErr)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if !strings.HasSuffix(remotePath, ".gz") {
+		return os.Chtimes(localPath, info.ModTime(), info.ModTime())
+	}
+	return nil
 }
 
 // List enumerates files under the given prefix.
 func (p *LocalProvider) List(prefix string) ([]string, error) {
-	if p.BasePath == "" {
-		return nil, errors.New("local provider base path is required")
+	tree, err := p.openStore(false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []string{}, nil
 	}
-
-	root := p.BasePath
-	if prefix != "" {
-		var containErr error
-		root, containErr = containedPath(p.BasePath, prefix)
-		if containErr != nil {
-			return nil, containErr
-		}
+	if err != nil {
+		return nil, err
 	}
-
-	if _, err := os.Stat(root); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []string{}, nil
-		}
-		return nil, fmt.Errorf("failed to stat prefix %s: %w", root, err)
+	defer tree.Close()
+	key, err := p.objectRelative(tree, prefix)
+	if err != nil {
+		return nil, err
 	}
-
-	var results []string
-	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	if _, err := tree.Stat(key); errors.Is(err, fs.ErrNotExist) {
+		return []string{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	results := []string{}
+	err = fs.WalkDir(tree.FS(), filepath.ToSlash(key), func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := checkStoreEntryType(name, entry.Type()); err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			results = append(results, filepath.ToSlash(name))
+		}
+		return nil
+	})
+	return results, err
+}
+
+// ObjectSizes returns the size of every object under prefix, keyed like
+// List, from one walk through one store root.
+func (p *LocalProvider) ObjectSizes(prefix string) (map[string]int64, error) {
+	tree, err := p.openStore(false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]int64{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer tree.Close()
+	key, err := p.objectRelative(tree, prefix)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tree.Stat(key); errors.Is(err, fs.ErrNotExist) {
+		return map[string]int64{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	sizes := map[string]int64{}
+	err = fs.WalkDir(tree.FS(), filepath.ToSlash(key), func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := checkStoreEntryType(name, entry.Type()); err != nil {
 			return err
 		}
 		if entry.IsDir() {
 			return nil
 		}
-		relPath, err := filepath.Rel(p.BasePath, path)
+		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
-		results = append(results, filepath.ToSlash(relPath))
+		sizes[filepath.ToSlash(name)] = info.Size()
 		return nil
 	})
-	if walkErr != nil {
-		return nil, fmt.Errorf("failed to list backup files: %w", walkErr)
+	if err != nil {
+		return nil, err
 	}
-	return results, nil
+	return sizes, nil
 }
 
 // Delete removes a file from the local backup store.
 func (p *LocalProvider) Delete(remotePath string) error {
-	if p.BasePath == "" {
-		return errors.New("local provider base path is required")
-	}
 	if remotePath == "" {
 		return errors.New("remote path is required")
 	}
-
-	target, err := containedPath(p.BasePath, remotePath)
+	tree, err := p.openStore(false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(target); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	defer tree.Close()
+	key, err := p.objectRelative(tree, remotePath)
+	if err != nil {
+		return err
+	}
+	if key == "." {
+		return errors.New("backup object key is required")
+	}
+	if err := tree.Remove(key); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("failed to delete backup file: %w", err)
+		return err
 	}
-
-	p.cleanupEmptyDirs(filepath.Dir(target))
-	return nil
-}
-
-func (p *LocalProvider) cleanupEmptyDirs(startPath string) {
-	base := filepath.Clean(p.BasePath)
-	path := filepath.Clean(startPath)
-
-	for path != base && path != "." && path != string(filepath.Separator) {
-		entries, err := os.ReadDir(path)
-		if err != nil || len(entries) > 0 {
-			return
+	for dir := filepath.Dir(key); dir != "."; dir = filepath.Dir(dir) {
+		if err := tree.Remove(dir); err != nil {
+			break
 		}
-		if err := os.Remove(path); err != nil {
-			return
-		}
-		path = filepath.Dir(path)
-	}
-}
-
-func copyFileContext(ctx context.Context, srcPath, destPath string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	srcFile, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %w", err)
-	}
-	info, statErr := srcFile.Stat()
-	if statErr != nil {
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to stat source file: %w", statErr)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to create destination directory: %w", err)
-	}
-
-	destFile, err := os.Create(destPath)
-	if err != nil {
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to create destination file: %w", err)
-	}
-
-	_, err = io.Copy(DownloadProgressWriter(ctx, destFile), &contextReader{ctx: ctx, reader: uploadProgressSource(ctx, srcFile)})
-	closeErr := destFile.Close()
-	if err == nil {
-		err = closeErr
-	}
-	closeErr = srcFile.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Chtimes(destPath, info.ModTime(), info.ModTime())
-	}
-
-	if err != nil {
-		_ = os.Remove(destPath)
-		return fmt.Errorf("failed to copy file: %w", err)
-	}
-	return nil
-}
-
-func compressFileContext(ctx context.Context, srcPath, destPath string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	srcFile, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %w", err)
-	}
-	srcInfo, statErr := srcFile.Stat()
-	if statErr != nil {
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to stat source file: %w", statErr)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to create destination directory: %w", err)
-	}
-
-	destFile, err := os.Create(destPath)
-	if err != nil {
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to create destination file: %w", err)
-	}
-
-	gzipWriter := gzip.NewWriter(destFile)
-	gzipWriter.Name = filepath.Base(srcPath)
-	gzipWriter.ModTime = srcInfo.ModTime()
-
-	_, err = io.Copy(gzipWriter, &contextReader{ctx: ctx, reader: uploadProgressSource(ctx, srcFile)})
-	closeErr := gzipWriter.Close()
-	if err == nil {
-		err = closeErr
-	}
-	closeErr = destFile.Close()
-	if err == nil {
-		err = closeErr
-	}
-	closeErr = srcFile.Close()
-	if err == nil {
-		err = closeErr
-	}
-
-	if err != nil {
-		_ = os.Remove(destPath)
-		return fmt.Errorf("failed to compress file: %w", err)
 	}
 	return nil
 }
@@ -483,52 +586,4 @@ func (r *contextReader) Read(p []byte) (int, error) {
 		}
 	}
 	return r.reader.Read(p)
-}
-
-func decompressFileContext(ctx context.Context, srcPath, destPath string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	srcFile, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %w", err)
-	}
-
-	gzipReader, err := gzip.NewReader(&contextReader{ctx: ctx, reader: srcFile})
-	if err != nil {
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		_ = gzipReader.Close()
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to create destination directory: %w", err)
-	}
-
-	destFile, err := os.Create(destPath)
-	if err != nil {
-		_ = gzipReader.Close()
-		_ = srcFile.Close()
-		return fmt.Errorf("failed to create destination file: %w", err)
-	}
-
-	_, err = io.Copy(DownloadProgressWriter(ctx, destFile), io.LimitReader(gzipReader, maxDecompressSize))
-	closeErr := destFile.Close()
-	if err == nil {
-		err = closeErr
-	}
-	closeErr = gzipReader.Close()
-	if err == nil {
-		err = closeErr
-	}
-	closeErr = srcFile.Close()
-	if err == nil {
-		err = closeErr
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to decompress file: %w", err)
-	}
-	return nil
 }

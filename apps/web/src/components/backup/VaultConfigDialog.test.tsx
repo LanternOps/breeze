@@ -55,14 +55,14 @@ describe('VaultConfigDialog (#8385)', () => {
     const onClose = vi.fn();
     render(<VaultConfigDialog vault={{ id: 'v-1', deviceId: 'd-2', vaultPath: '/vault', type: 'local' }} onClose={onClose} />);
     await screen.findByText('bbb-vault-device');
-    fireEvent.click(screen.getByLabelText(/^SMB/));
+    fireEvent.click(screen.getByLabelText(/^USB/));
     fireEvent.click(screen.getByRole('button', { name: 'Update Vault' }));
     await waitFor(() => expect(onClose).toHaveBeenCalledWith(true));
     const [url, init] = mutations()[0] as [string, RequestInit];
     expect(url).toBe('/backup/vault/v-1');
     expect(init.method).toBe('PATCH');
     const body = JSON.parse(init.body as string);
-    expect(body.vaultType).toBe('smb');
+    expect(body.vaultType).toBe('usb');
     expect(body).not.toHaveProperty('type');
     expect(body).not.toHaveProperty('deviceId');
   });
@@ -71,15 +71,15 @@ describe('VaultConfigDialog (#8385)', () => {
     const onClose = vi.fn();
     render(<VaultConfigDialog vault={null} onClose={onClose} />);
     fireEvent.click(await screen.findByText('bbb-vault-device'));
-    fireEvent.change(document.getElementById('vault-path') as HTMLInputElement, { target: { value: '\\\\nas\\v' } });
-    fireEvent.click(screen.getByLabelText(/^SMB/));
+    fireEvent.change(document.getElementById('vault-path') as HTMLInputElement, { target: { value: 'E:\\Vault' } });
+    fireEvent.click(screen.getByLabelText(/^USB/));
     fireEvent.click(screen.getByRole('button', { name: 'Create Vault' }));
     await waitFor(() => expect(onClose).toHaveBeenCalledWith(true));
     const [url, init] = mutations()[0] as [string, RequestInit];
     expect(url).toBe('/backup/vault');
     expect(init.method).toBe('POST');
     const body = JSON.parse(init.body as string);
-    expect(body).toMatchObject({ deviceId: 'd-2', vaultType: 'smb', vaultPath: '\\\\nas\\v' });
+    expect(body).toMatchObject({ deviceId: 'd-2', vaultType: 'usb', vaultPath: 'E:\\Vault' });
     expect(body).not.toHaveProperty('type');
   });
 
@@ -109,5 +109,43 @@ describe('VaultConfigDialog (#8385)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Update Vault' }));
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'nope' })));
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+// SMB share vaults are not supported: the type is not offered, and a vault
+// saved with it is explained and saved only with a supported type.
+describe('VaultConfigDialog without SMB share vaults', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockImplementation(async (input: string) => {
+      if (String(input).includes('/devices/options')) return json({ data: [dev('d-2', 'bbb-vault-device')], page });
+      if (String(input).startsWith('/backup/vault')) return json({ id: 'v-1', deviceConfig: { status: 'queued' } });
+      return json({}, false, 404);
+    });
+  });
+
+  it('offers local disk and USB only, with no share path hint', async () => {
+    render(<VaultConfigDialog vault={null} onClose={vi.fn()} />);
+    await screen.findByText('bbb-vault-device');
+    expect(screen.queryByLabelText(/SMB/)).toBeNull();
+    expect(screen.getByLabelText(/^Local/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^USB/)).toBeInTheDocument();
+    for (const option of [/^Local/, /^USB/]) {
+      fireEvent.click(screen.getByLabelText(option));
+      expect(document.getElementById('vault-path')?.getAttribute('placeholder') ?? '').not.toContain('\\\\');
+    }
+  });
+
+  it('explains a saved SMB share vault and saves it only as a supported type', async () => {
+    const onClose = vi.fn();
+    render(<VaultConfigDialog vault={{ id: 'v-1', deviceId: 'd-2', vaultPath: '\\\\nas\\v', type: 'smb' }} onClose={onClose} />);
+    await screen.findByText('bbb-vault-device');
+    expect(screen.getByText(/SMB share vaults are not supported/i)).toBeInTheDocument();
+
+    fireEvent.change(document.getElementById('vault-path') as HTMLInputElement, { target: { value: 'D:\\Vault' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Update Vault' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledWith(true));
+    const [, init] = fetchMock.mock.calls.find(([url]) => String(url).startsWith('/backup/vault')) as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({ vaultType: 'local', vaultPath: 'D:\\Vault' });
   });
 });

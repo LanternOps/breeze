@@ -204,7 +204,7 @@ func TestLocalProvider_DownloadContext_HonoursCancelledContext(t *testing.T) {
 	if err := os.WriteFile(src, []byte(strings.Repeat("data", 1024)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p := NewLocalProvider(base)
+	p := privateTestLocalProvider(t, base)
 	for _, key := range []string{"s/files/plain.txt", "s/files/packed.txt.gz"} {
 		if err := p.Upload(src, key); err != nil {
 			t.Fatalf("upload %s: %v", key, err)

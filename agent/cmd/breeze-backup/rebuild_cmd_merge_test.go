@@ -8,7 +8,6 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 )
 
@@ -32,7 +31,7 @@ func TestTokenModeRebuildOptions_KeepsEveryBootstrapField(t *testing.T) {
 		t.Fatal(err)
 	}
 	fromToken := rebuild.Options{
-		SnapshotID: "snap-1", Provider: providers.NewLocalProvider(t.TempDir()), Identity: rebuild.IdentityMode("new"),
+		SnapshotID: "snap-1", Provider: privateTestLocalProvider(t, t.TempDir()), Identity: rebuild.IdentityMode("new"),
 		Marker: &rebuild.Marker{RecoveryID: "r", Nonce: "n"}, Layout: &layout.Manifest{}, ExpectSystemState: true, Integrity: e,
 	}
 	cli := rebuild.Options{

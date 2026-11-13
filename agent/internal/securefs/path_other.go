@@ -16,6 +16,14 @@ import (
 // Non-Linux platforms lack the handle-relative implementation used on Linux.
 // This rejects observed symlinks/reparse points and uses an exclusive sibling
 // temporary file, but callers must retain runtime validation as a residual.
+func privateDirInfo(path string) (os.FileInfo, error) {
+	return nil, fmt.Errorf("private directory verification is unsupported on this platform")
+}
+
+func ensurePrivateDirInRoot(root *os.Root, relative string) error {
+	return fmt.Errorf("rooted private directory creation is unsupported on this platform")
+}
+
 func ensureDir(path string, mode os.FileMode, private bool) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("directory must be absolute: %q", path)

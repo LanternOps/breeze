@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // recordingTestRestoreProvider is called from concurrent verify workers, so
@@ -71,7 +69,7 @@ func setupTestSnapshot(t *testing.T, basePath string) string {
 	}
 
 	// Upload it through the provider (creates .gz)
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	backupPath := path.Join(prefix, "files", "hello.txt.gz")
 	if err := provider.Upload(srcFile, backupPath); err != nil {
 		t.Fatal(err)
@@ -100,7 +98,7 @@ func setupTestSnapshot(t *testing.T, basePath string) string {
 func TestVerifyIntegrity_AllPass(t *testing.T) {
 	basePath := t.TempDir()
 	snapshotID := setupTestSnapshot(t, basePath)
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 
 	result, err := VerifyIntegrity(provider, snapshotID)
 	if err != nil {
@@ -119,7 +117,7 @@ func TestVerifyIntegrity_AllPass(t *testing.T) {
 
 func TestVerifyIntegrity_MissingManifest(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 
 	result, err := VerifyIntegrity(provider, "nonexistent-snapshot")
 	if err != nil {
@@ -148,7 +146,7 @@ func TestVerifyIntegrity_MissingFile(t *testing.T) {
 	os.MkdirAll(manifestDir, 0o755)
 	os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644)
 
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	result, err := VerifyIntegrity(provider, snapshotID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -176,7 +174,7 @@ func TestVerifyIntegrity_VolatileSizeMismatch_WarnsNotFails(t *testing.T) {
 	if err := os.WriteFile(volatileSrc, []byte("0123456789"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	volatileBackupPath := path.Join(prefix, "files", "volatile.log.gz")
 	if err := provider.Upload(volatileSrc, volatileBackupPath); err != nil {
 		t.Fatal(err)
@@ -258,7 +256,7 @@ func TestVerifyIntegrity_CorruptedGzip(t *testing.T) {
 	manifestDir := filepath.Join(basePath, prefix)
 	os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644)
 
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	result, err := VerifyIntegrity(provider, snapshotID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -274,7 +272,7 @@ func TestVerifyIntegrity_CorruptedGzip(t *testing.T) {
 func TestTestRestore_HappyPath(t *testing.T) {
 	basePath := t.TempDir()
 	snapshotID := setupTestSnapshot(t, basePath)
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 
 	var progressCalls int
 	progressFn := func(current, total int) { progressCalls++ }
@@ -321,7 +319,7 @@ func TestTestRestore_MissingFile(t *testing.T) {
 	os.MkdirAll(manifestDir, 0o755)
 	os.WriteFile(filepath.Join(manifestDir, "manifest.json"), manifestBytes, 0o644)
 
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	result, err := TestRestore(provider, snapshotID, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
