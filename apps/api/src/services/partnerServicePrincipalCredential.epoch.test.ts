@@ -18,7 +18,15 @@ vi.mock('../db', () => {
   };
 });
 
-import { loadPartnerServicePrincipalCredential } from './partnerServicePrincipalCredential';
+const authorizeOwner = vi.hoisted(() => vi.fn());
+vi.mock('./partnerServicePrincipalOwnerAuthority', () => ({
+  authorizePartnerServicePrincipalOwner: authorizeOwner,
+}));
+
+import { authenticatePartnerServicePrincipalKey } from './partnerServicePrincipalCredential';
+
+const authenticateForPartnerApi = (hash: string, ip: string | undefined) =>
+  authenticatePartnerServicePrincipalKey(hash, ip, 'partner_api');
 
 const OWNER = '66666666-6666-4666-8666-666666666666';
 
@@ -51,31 +59,39 @@ function liveRow(overrides: Record<string, unknown> = {}) {
 describe('partner service principal key: owner credential binding', () => {
   beforeEach(() => {
     rowRef.current = liveRow();
+    authorizeOwner.mockReset();
+    authorizeOwner.mockResolvedValue({ orgIds: [] });
   });
 
   it('authenticates while the owner\'s credential and MFA epochs match the key', async () => {
-    const loaded = await loadPartnerServicePrincipalCredential('hash', undefined);
+    const loaded = await authenticateForPartnerApi('hash', undefined);
     expect(loaded.ownerUserId).toBe(OWNER);
-    expect(loaded.keyIssuedBy).toBe(OWNER);
+    expect(authorizeOwner).toHaveBeenCalledWith(expect.objectContaining({ ownerUserId: OWNER, surface: 'partner_api' }));
   });
 
   it('stops authenticating after the owner\'s password is changed or reset', async () => {
     rowRef.current = liveRow({ ownerCredentialEpoch: 4 });
-    await expect(loadPartnerServicePrincipalCredential('hash', undefined)).rejects.toMatchObject({ status: 401 });
+    await expect(authenticateForPartnerApi('hash', undefined)).rejects.toMatchObject({ status: 401 });
   });
 
   it('stops authenticating after the owner\'s MFA factors change', async () => {
     rowRef.current = liveRow({ ownerMfaEpoch: 6 });
-    await expect(loadPartnerServicePrincipalCredential('hash', undefined)).rejects.toMatchObject({ status: 401 });
+    await expect(authenticateForPartnerApi('hash', undefined)).rejects.toMatchObject({ status: 401 });
   });
 
   it('stops authenticating while the owner\'s account is not active', async () => {
     rowRef.current = liveRow({ ownerStatus: 'disabled' });
-    await expect(loadPartnerServicePrincipalCredential('hash', undefined)).rejects.toMatchObject({ status: 401 });
+    await expect(authenticateForPartnerApi('hash', undefined)).rejects.toMatchObject({ status: 401 });
   });
 
   it('refuses a key that carries no owner credential snapshot', async () => {
     rowRef.current = liveRow({ keyOwnerCredentialEpoch: null });
-    await expect(loadPartnerServicePrincipalCredential('hash', undefined)).rejects.toMatchObject({ status: 401 });
+    await expect(authenticateForPartnerApi('hash', undefined)).rejects.toMatchObject({ status: 401 });
+  });
+
+  it('never reaches the owner check for a key whose owner binding failed', async () => {
+    rowRef.current = liveRow({ ownerCredentialEpoch: 4 });
+    await expect(authenticateForPartnerApi('hash', undefined)).rejects.toMatchObject({ status: 401 });
+    expect(authorizeOwner).not.toHaveBeenCalled();
   });
 });

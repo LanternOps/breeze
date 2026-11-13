@@ -11,7 +11,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 /**
  * Request-scoped "never serve this user's permissions from cache". Used for a
  * partner service principal's MCP request (middleware/
- * partnerServicePrincipalMcpAuth.ts): its owner gate reads permissions
+ * partnerServicePrincipalMcpAuth.ts): its owner gate
+ * (services/partnerServicePrincipalOwnerAuthority.ts) reads permissions
  * uncached, and every per-tool check later in the SAME request
  * (aiGuardrails.checkPermissionRequirements and the tools' own
  * getUserPermissions(auth.user.id) reads) must see that same fresh state, not
