@@ -196,3 +196,59 @@ func TestSqlcmdFallbackPaths_IncludesODBC180(t *testing.T) {
 		t.Fatalf("expected sqlcmdFallbackPaths to include %q, got %v", want, sqlcmdFallbackPaths)
 	}
 }
+
+// Every sqlcmd invocation turns off sqlcmd's own script commands and its
+// scripting-variable substitution, including the retry made without -C, so
+// the -Q text is only ever handled as T-SQL.
+func TestRunSqlcmdDisablesScriptCommandsAndVariablesOnEveryAttempt(t *testing.T) {
+	resetTrustCertProbe(t)
+	r := &recordingRunner{respond: func(args []string) ([]byte, error) {
+		for _, flag := range []string{"-X1", "-x"} {
+			if !containsArg(args, flag) {
+				t.Errorf("missing %s in %v", flag, args)
+			}
+		}
+		if containsArg(args, "-C") {
+			return []byte("Sqlcmd: Unknown Option '-C'."), fmt.Errorf("exit status 1")
+		}
+		return []byte("1"), nil
+	}}
+	withRecordingRunner(t, r)
+	if _, err := runSqlcmd(".", "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.calls) != 2 {
+		t.Fatalf("calls=%v", r.calls)
+	}
+}
+
+// The -Q text is always a single line of printable text: a statement that
+// would span lines (or carry any other control character) is refused before
+// sqlcmd runs.
+func TestRunSqlcmdRefusesQueryTextThatIsNotOneLine(t *testing.T) {
+	for _, q := range []string{
+		"SELECT 1\nSELECT 2",
+		"SELECT 1\rSELECT 2",
+		"SELECT 1\r\nSELECT 2",
+		"SELECT 1\x00",
+		"SELECT 1\tFROM x",
+		"SELECT 1\x0bSELECT 2",
+		"SELECT 1\x0cSELECT 2",
+		"SELECT 1\u0085SELECT 2",
+		"SELECT 1\u2028SELECT 2",
+		"SELECT 1\u2029SELECT 2",
+		"SELECT '\xff'",
+	} {
+		t.Run(fmt.Sprintf("%q", q), func(t *testing.T) {
+			resetTrustCertProbe(t)
+			r := &recordingRunner{}
+			withRecordingRunner(t, r)
+			if _, err := runSqlcmd(".", q); err == nil {
+				t.Fatal("expected the query to be refused")
+			}
+			if len(r.calls) != 0 {
+				t.Fatalf("sqlcmd ran: %v", r.calls)
+			}
+		})
+	}
+}
