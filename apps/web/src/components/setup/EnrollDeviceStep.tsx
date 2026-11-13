@@ -533,7 +533,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                   ) : (
                     <p
                       className="text-sm text-muted-foreground"
-                      data-testid="setup-cli-command-needs-token"
+                      data-testid='setup-cli-command-needs-token'
                     >
                       {t('setup.enroll.cli.commandNeedsToken')}
                     </p>

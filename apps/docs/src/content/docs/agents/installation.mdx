@@ -125,34 +125,10 @@ for the script-based fleet install.
     ```
   </TabItem>
   <TabItem label="Windows">
-    ```powershell
-    # Check the minimum supported OS before downloading anything
-    $osv = [System.Environment]::OSVersion.Version
-    if ($osv.Major -lt 10) {
-      throw "Breeze: Windows 10 or Windows Server 2016 or later is required (detected $($osv.Major).$($osv.Minor))"
-    }
+    1. Open **Add Device**, select **CLI Commands**, and generate an enrollment token.
+    2. Copy the Windows command and run it in PowerShell 5.1 or later as Administrator.
 
-    # Older PowerShell/.NET defaults (e.g. Windows Server 2016) can omit
-    # TLS 1.2, which makes Invoke-WebRequest fail outright.
-    [Net.ServicePointManager]::SecurityProtocol = `
-      [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-
-    # Download the agent into a temp directory. Do not download into
-    # C:\Windows\system32 (an elevated PowerShell's default directory):
-    # Defender's ASR rule "Block use of copied or impersonated system tools"
-    # then blocks the service binary that `service install` copies out of it.
-    Set-Location (New-Item -ItemType Directory -Force -Path "$env:TEMP\breeze-install")
-    Invoke-WebRequest -Uri "https://breeze.yourdomain.com/api/v1/agents/download/windows/amd64" `
-      -OutFile "breeze-agent.exe"
-
-    # Enroll (run as Administrator)
-    .\breeze-agent.exe enroll YOUR_ENROLLMENT_KEY `
-      --server https://breeze.yourdomain.com `
-      --enrollment-secret YOUR_ENROLLMENT_SECRET
-
-    # Install as a Windows Service
-    .\breeze-agent.exe service install
-    ```
+    The copied command downloads the PowerShell installer from the API URL returned during onboarding. It checks for HTTP 200, disables redirects, and verifies that the first line defines `Install-BreezeAgent` before running the script. HTTPS relies on a certificate trusted by the target machine. Plain HTTP is supported for self-hosted LAN deployments, where the network must be trusted. The installer verifies the agent version and SHA-256 checksum, checks Authenticode when available, and enforces the operating system requirement.
 
     Alternatively, use the MSI installer for silent deployment:
     ```powershell
