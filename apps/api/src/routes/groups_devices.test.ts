@@ -18,6 +18,7 @@ vi.mock('../services', () => ({}));
 // keeping the new cross-owner lookups out of their queued Drizzle responses.
 vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  acquireMembershipExportOrgLock: vi.fn(async () => {}),
   resolveOrgSessionPartnerId: vi.fn().mockResolvedValue(null),
   readPartnerGroupsForOrgSession: vi.fn().mockResolvedValue([]),
   findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
@@ -286,7 +287,7 @@ describe('groups routes', () => {
         } as any);
 
       vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockResolvedValue(undefined)
+        values: vi.fn((rows: Array<{ deviceId: string }>) => ({ onConflictDoNothing: () => ({ returning: async () => rows.map(({ deviceId }) => ({ deviceId })) }) }))
       } as any);
 
       const res = await app.request(`/groups/${GROUP_ID}/devices`, {

@@ -33,7 +33,7 @@ import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
 import { selectedSnapshotPathError } from './backupSelectedPaths';
-import { resolveSelectedSnapshotPathsInDb } from './backupSnapshotBrowse';
+import { IndexQueryTimeoutError, resolveSelectedSnapshotPathsInDb } from './backupSnapshotBrowse';
 import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
@@ -797,7 +797,15 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         // Map each selection (possibly in the browse tree's forward-slash
         // form) back to the stored original the agent matches against, and
         // each folder to its stored-form prefix (#11026).
-        const resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, selectedPaths ?? []);
+        let resolution: Awaited<ReturnType<typeof resolveSelectedSnapshotPathsInDb>>;
+        try {
+          resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, selectedPaths ?? []);
+        } catch (err) {
+          if (err instanceof IndexQueryTimeoutError) {
+            return JSON.stringify({ error: 'Resolving the selected files took too long. Try again in a moment, or select fewer folders.', code: 'index_query_timeout' });
+          }
+          throw err;
+        }
         if (!resolution.ok && resolution.reason === 'no_readable_index') {
           return JSON.stringify({ error: 'Selective restore is unavailable for snapshots without indexed files' });
         }

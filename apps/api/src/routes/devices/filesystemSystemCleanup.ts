@@ -134,12 +134,14 @@ filesystemSystemCleanupRoutes.get(
     const auth = c.get('auth');
     const { id: deviceId, commandId } = c.req.valid('param');
 
-    // One context for both reads: this route is polled while the catalogue loads.
-    const scoped = await withAuthDbAccessContext(auth, async () => {
-      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
-      if (device === SITE_ACCESS_DENIED || !device) return { device, inCurrentOrg: null };
-      return { device, inCurrentOrg: await deviceCommandsInCurrentOrg(device) };
-    });
+    // This route keeps the request's transaction (it is not self-managed), so
+    // both reads run in it: a context of its own would hold a second pooled
+    // connection while this one is held, on a route polled while the catalogue
+    // loads.
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    const scoped = device === SITE_ACCESS_DENIED || !device
+      ? { device, inCurrentOrg: null }
+      : { device, inCurrentOrg: await deviceCommandsInCurrentOrg(device) };
     if (scoped.device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
     if (!scoped.inCurrentOrg) return c.json({ success: false, error: 'Device not found' }, 404);
 
@@ -244,7 +246,8 @@ filesystemSystemCleanupRoutes.get(
     const auth = c.get('auth');
     const { id: deviceId, cleanupRunId } = c.req.valid('param');
 
-    const device = await withAuthDbAccessContext(auth, () => getDeviceWithOrgAndSiteCheck(c, deviceId, auth));
+    // In the request's own transaction (this route is not self-managed).
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
     if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
 
@@ -306,7 +309,8 @@ filesystemSystemCleanupRoutes.post(
     const auth = c.get('auth');
     const { id: deviceId, cleanupRunId } = c.req.valid('param');
 
-    const device = await withAuthDbAccessContext(auth, () => getDeviceWithOrgAndSiteCheck(c, deviceId, auth));
+    // In the request's own transaction (this route is not self-managed).
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
     if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
 

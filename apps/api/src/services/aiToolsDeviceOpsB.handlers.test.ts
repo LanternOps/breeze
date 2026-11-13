@@ -38,6 +38,9 @@ vi.mock('../db', () => ({
   db: { select: h.select },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  // The support-session `end` action reads in its own short context.
+  hasDbAccessContext: () => false,
+  withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 vi.mock('./aiTools', () => ({ verifyDeviceAccess: h.verify }));
 vi.mock('./aiDispatch', () => ({ aiExecuteCommand: h.exec }));

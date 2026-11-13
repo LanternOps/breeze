@@ -200,6 +200,16 @@ A backup is also stopped and marked failed if the device moves to another organi
 
 ---
 
+## Selective restore returns 503 `index_query_timeout`
+
+**Symptom:** Starting a selective restore fails with `503` and the code `index_query_timeout` ("Resolving the selected files took too long").
+
+**Cause:** Before a selective restore is created, Breeze matches each selected file and folder against the snapshot's file index. That lookup has a time limit (30 seconds in total, 15 seconds per index read), so a very large index, read just after it was built or while the database is busy, can run out of time. Nothing is created when this happens.
+
+**Fix:** Wait a minute and try again; an index that was just built is usually much faster on the next attempt. If it keeps failing, select fewer folders per restore, or restore the full snapshot.
+
+---
+
 ## Restore or verification will not start
 
 **Symptom:** Starting a restore or verification returns an error immediately.

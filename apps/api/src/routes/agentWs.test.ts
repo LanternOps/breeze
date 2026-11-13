@@ -3738,15 +3738,45 @@ describe('agent websocket command results', () => {
     });
   });
 
+  function queueWsCredential(token: string) {
+    vi.mocked(getAgentTenantState).mockResolvedValue("active");
+    vi.mocked(db.select).mockReturnValueOnce({ from: () => ({ innerJoin: () => ({ where: () => ({ limit: async () => [{
+      id: 'ws-budget-device', orgId: 'ws-budget-org', partnerId: 'ws-budget-partner', status: 'online',
+      agentTokenHash: createHash('sha256').update(token).digest('hex'), previousTokenHash: null,
+      previousTokenExpiresAt: null, watchdogTokenHash: null, previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null, agentTokenSuspendedAt: null,
+    }] }) }) }) } as any);
+  }
+
+  it('leaves device connection budget untouched for a credential-free request', async () => {
+    vi.mocked(rateLimiter).mockClear();
+    const app = createAgentWsRoutes((() => async () => new Response('ok')) as any);
+    expect((await app.request('/budget-unauthenticated/ws')).status).toBe(401);
+    expect(rateLimiter).not.toHaveBeenCalled();
+  });
+
+  it('leaves the device connection budget untouched for a missing or wrong credential while the budget store is up', async () => {
+    const { getRedis } = await import('../services/redis');
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(rateLimiter).mockClear();
+    const app = createAgentWsRoutes((() => async () => new Response('ok')) as any);
+    expect((await app.request('/budget-unauthenticated/ws')).status).toBe(401);
+    queueWsCredential('brz_budget_token_right');
+    const wrong = await app.request('/budget-unauthenticated/ws', { headers: { Authorization: 'Bearer brz_budget_token_wrong' } });
+    expect(wrong.status).toBe(401);
+    expect(rateLimiter).not.toHaveBeenCalled();
+  });
+
   // M-D2: rate limiter calls the Redis helper with the expected key/limit
   it('M-D2 rate limiter delegates to Redis sliding-window helper', async () => {
     const { getRedis } = await import('../services/redis');
     // Pretend Redis is available so the helper is consulted (not in-memory fallback).
     const fakeRedis = {} as any;
-    vi.mocked(getRedis).mockReturnValueOnce(fakeRedis);
+    vi.mocked(getRedis).mockReturnValue(fakeRedis);
+    queueWsCredential("brz_budget_token_one");
 
     const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
-    await app.request('/agent-xyz/ws');
+    await app.request('/agent-xyz/ws', { headers: { Authorization: 'Bearer brz_budget_token_one' } });
 
     expect(rateLimiter).toHaveBeenCalledWith(
       fakeRedis,
@@ -3758,12 +3788,14 @@ describe('agent websocket command results', () => {
 
   it('M-D2 rejects with 429 when Redis rate-limit helper returns not allowed', async () => {
     const { getRedis } = await import('../services/redis');
-    vi.mocked(getRedis).mockReturnValueOnce({} as any);
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    queueWsCredential("brz_budget_token_two");
     vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
 
     const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
-    const res = await app.request('/agent-overlimit/ws');
+    const res = await app.request('/agent-overlimit/ws', { headers: { Authorization: 'Bearer brz_budget_token_two' } });
     expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("60");
   });
 });
 

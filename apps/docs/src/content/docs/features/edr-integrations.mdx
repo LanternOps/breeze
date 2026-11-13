@@ -97,7 +97,7 @@ A delivery whose signed body has an `event_type` of `test.event` (what Huntress'
 </Aside>
 
 <Aside type="caution">
-  Webhook signature verification is mandatory. If no webhook secret is configured for the integration, all incoming webhooks are rejected with a 403 error. Always configure a webhook secret when enabling webhook ingestion.
+  Webhook signature verification is mandatory. If no webhook secret is configured for the integration, all incoming webhooks are rejected with the generic 401 response. Always configure a webhook secret when enabling webhook ingestion.
 </Aside>
 
 #### Webhook Routing
@@ -549,27 +549,21 @@ Huntress webhooks are verified with Standard Webhooks HMAC-SHA256 signatures (or
 
 Activate the integration by updating it with `isActive: true` before triggering a sync.
 
-### Huntress webhook returns 403 "Webhook secret not configured"
-
-You must configure a webhook secret on the integration before Breeze will accept webhook payloads. Paste the signing secret from Huntress's **View Signing Secret** (it starts with `whsec_`) into **Webhook Secret** and save, or send it as the `webhookSecret` value when updating the integration through the API.
-
 ### Huntress webhook returns 401
 
-The delivery reached Breeze but its signature did not verify. The response body says why:
+Every delivery that Breeze cannot authenticate gets the same response: `401` with the body `"Webhook authentication failed"`. The body is the same for every cause; the reason is in the API log, on a `[huntress] Webhook authentication refused` line:
 
-- **"Invalid Huntress webhook signature"**: the secret in Breeze does not match Huntress's. Copy the value from Huntress's **View Signing Secret** again, including the `whsec_` prefix, paste it into **Webhook Secret**, and save.
-- **"Webhook signature timestamp is outside the replay window"**: the delivery's timestamp is more than 10 minutes from the Breeze server's clock. Check the server's time sync, or redeliver a fresh event rather than replaying an old one.
-- **"Missing Standard Webhooks header(s): ..."** or **"Missing webhook signature header ..."**: the signature headers did not reach Breeze. Check that no proxy in front of Breeze strips `webhook-*` headers.
-
-The API log has a matching `[huntress] Webhook signature rejected` line with the integration ID, the scheme, and whether the stored secret has the `whsec_` prefix. The line never includes the secret.
+- **`secret_absent`**: the integration has no webhook secret. Paste the signing secret from Huntress's **View Signing Secret** (it starts with `whsec_`) into **Webhook Secret** and save, or send it as the `webhookSecret` value when updating the integration through the API.
+- **`signature_invalid`**: the signature did not verify. A matching `[huntress] Webhook signature rejected` line gives the integration ID, the scheme, whether the stored secret has the `whsec_` prefix, and the verifier's reason. The line never includes the secret.
+  - **"Invalid Huntress webhook signature"**: the secret in Breeze does not match Huntress's. Copy the value from Huntress's **View Signing Secret** again, including the `whsec_` prefix, paste it into **Webhook Secret**, and save.
+  - **"Webhook signature timestamp is outside the replay window"**: the delivery's timestamp is more than 10 minutes from the Breeze server's clock. Check the server's time sync, or redeliver a fresh event rather than replaying an old one.
+  - **"Missing Standard Webhooks header(s): ..."** or **"Missing webhook signature header ..."**: the signature headers did not reach Breeze. Check that no proxy in front of Breeze strips `webhook-*` headers.
+- **`integration_unavailable`**: Breeze found no single active integration for the delivery. Either no active integration matches, the account in the payload belongs to a different Huntress account than the selected integration, or several active integrations share the same account ID. In the last case, include the `integrationId` as a query parameter on your webhook URL or in the `x-huntress-integration-id` header.
+- **`invalid_account_id`** or **`secret_unreadable`**: the account ID in the delivery is malformed, or the stored secret could not be decrypted. Save the webhook secret again.
 
 ### Huntress webhook returns 503
 
 Breeze could not reach Redis to record the delivery's `webhook-id`, so it asked Huntress to retry instead of risking double processing. Huntress retries automatically. Check the API's Redis connection if this persists.
-
-### Huntress webhook returns 409 "Multiple active integrations match"
-
-When multiple Huntress integrations share the same account ID, Breeze cannot determine which one to route the webhook to. Include the `integrationId` as a query parameter on your webhook URL or in the `x-huntress-integration-id` header.
 
 ### SentinelOne isolation returns 502
 

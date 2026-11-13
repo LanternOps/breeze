@@ -47,11 +47,20 @@ vi.mock('../../services/partnerTrust', () => ({
 
 // Scripted select results, consumed in call order.
 const selectResults: unknown[][] = [];
+// How many caller-scoped contexts are open, and the depth seen by each read.
+const { authContext } = vi.hoisted(() => ({ authContext: { depth: 0, selectDepths: [] as number[] } }));
+vi.mock('../../middleware/auth', () => ({
+  withAuthDbAccessContext: async (_auth: unknown, fn: () => Promise<unknown>) => {
+    authContext.depth += 1;
+    try { return await fn(); } finally { authContext.depth -= 1; }
+  },
+}));
 const insertedValues: unknown[] = [];
 const insertReturns: unknown[][] = [];
 
 vi.mock('../../db', () => {
   const select = vi.fn(() => {
+    authContext.selectDepths.push(authContext.depth);
     const rows = selectResults.shift() ?? [];
     const builder: Record<string, unknown> = {};
     for (const m of ['from', 'where', 'orderBy', 'innerJoin', 'leftJoin']) {
@@ -407,6 +416,20 @@ describe('POST /support-sessions/:id/end', () => {
       expect.objectContaining({ agentDisconnect: 'close-failed', commandDelivered: false }),
       '203.0.113.7',
     );
+  });
+
+  it('reads the session in a short caller-scoped context and ends it with none held', async () => {
+    authContext.selectDepths.length = 0;
+    let depthAtEnd = -1;
+    endSupportSession.mockImplementationOnce(async () => {
+      depthAtEnd = authContext.depth;
+      return { ended: true, disconnect: 'closed', commandDelivered: true };
+    });
+    selectResults.push([{ ...SESSION_ROW, status: 'ready', deviceId: 'dev-1' }]);
+
+    expect((await end()).status).toBe(200);
+    expect(authContext.selectDepths).toEqual([1]);
+    expect(depthAtEnd).toBe(0);
   });
 
   it('409s an already-ended session without re-running teardown', async () => {

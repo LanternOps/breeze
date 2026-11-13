@@ -81,6 +81,23 @@ export class ResponseTooLargeError extends Error {
 }
 
 /**
+ * The whole exchange — resolution, connect, headers and body — outlasted the
+ * caller's `deadlineMs`. `timeoutMs` measures inactivity; `deadlineMs` bounds
+ * total duration.
+ */
+export class ResponseDeadlineError extends Error {
+  constructor(public readonly deadlineMs: number) {
+    super(`request did not complete within ${deadlineMs}ms`);
+    this.name = 'ResponseDeadlineError';
+  }
+}
+
+/** The error an aborted request settles with: the deadline's own, or the caller's plain abort. */
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof ResponseDeadlineError ? signal.reason : new Error('aborted');
+}
+
+/**
  * The response headers did not arrive within the caller's `headersTimeoutMs`
  * (measured from the call, so it covers DNS, connect and the wait for the
  * status line). The request is destroyed.
@@ -360,6 +377,14 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * no headers deadline (existing behaviour).
    */
   headersTimeoutMs?: number;
+  /**
+   * Total deadline, from the moment `safeFetch` is called, for the whole
+   * exchange: resolution, connect, headers and the body. `timeoutMs` measures
+   * inactivity; `deadlineMs` bounds total duration. On expiry the request is
+   * destroyed and the call (or, with `streamResponse`, the body) fails with
+   * `ResponseDeadlineError`. Unset = no total deadline (existing behaviour).
+   */
+  deadlineMs?: number;
 }
 
 /**
@@ -380,7 +405,7 @@ function boundPreDial<T>(
   return new Promise<T>((resolve, reject) => {
     const timers: NodeJS.Timeout[] = [];
     let done = false;
-    const onAbort = (): void => finish(() => reject(new Error('aborted')));
+    const onAbort = (): void => finish(() => reject(abortError(signal!)));
     function finish(settle: () => void): void {
       if (done) return;
       done = true;
@@ -542,10 +567,53 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   // it (Huntress/Pax8/SSO/DNS/SentinelOne/webhooks/PSA/log-forwarding). Note:
   // modules that call global `fetch()` directly bypass safeFetch and are NOT
   // covered by this guard — instrumenting those is out of scope for this slice.
-  // Warn-only in prod; throws in CI (strict) so a new violation fails the build
-  // instead of surfacing only in Sentry after an incident.
-  assertOutsideHeldDbContext('safeFetch');
+  // Warn-only by default; throws when DB_CONTEXT_TRIPWIRE_STRICT is set (the
+  // suites that exercise the tripwire set it), so a test that runs a new
+  // violation under it fails instead of only logging.
+  //
+  // `includeOuterTransaction`: runOutsideDbContext only re-routes queries, so a
+  // fetch inside it while an outer context is still open pins that context's
+  // connection just the same.
+  assertOutsideHeldDbContext('safeFetch', { includeOuterTransaction: true });
 
+  const deadlineMs = init.deadlineMs !== undefined && init.deadlineMs > 0 ? init.deadlineMs : undefined;
+  if (deadlineMs === undefined) return safeFetchWithin(urlStr, init, init.signal, () => {});
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new ResponseDeadlineError(deadlineMs)), deadlineMs);
+  timer.unref?.();
+  const signal = init.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal;
+  return safeFetchWithin(urlStr, init, signal, () => clearTimeout(timer));
+}
+
+/**
+ * `safeFetch` after its deadline is armed. `signal` is the caller's signal
+ * combined with the deadline; `release` clears the deadline once the request
+ * is over (or never started).
+ */
+async function safeFetchWithin(
+  urlStr: string,
+  init: SafeFetchInit,
+  signal: AbortSignal | undefined,
+  release: () => void,
+): Promise<Response> {
+  let started = false;
+  try {
+    const response = await safeFetchRequest(urlStr, init, signal, () => {
+      started = true;
+    }, release);
+    return response;
+  } finally {
+    if (!started) release();
+  }
+}
+
+async function safeFetchRequest(
+  urlStr: string,
+  init: SafeFetchInit,
+  signal: AbortSignal | undefined,
+  onRequestStarted: () => void,
+  release: () => void,
+): Promise<Response> {
   const u = new URL(urlStr);
 
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {
@@ -568,7 +636,7 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       allowPrivateNetwork: init.allowPrivateNetwork,
       allowCarrierNat: init.allowCarrierNat
     }),
-    { signal: init.signal, timeoutMs: init.timeoutMs, headersTimeoutMs }
+    { signal, timeoutMs: init.timeoutMs, headersTimeoutMs }
   );
   const safeRecord = safe[0]!;
 
@@ -848,19 +916,23 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       req.once('close', clearHeadersTimer);
     }
 
-    if (init.signal) {
+    // The request owns the deadline from here: it is cleared when the request
+    // is over, which for a streamed body is when the body ends or is cancelled.
+    onRequestStarted();
+    req.once('close', release);
+
+    if (signal) {
       // Abort settles the promise directly: an already-closed request emits no
       // further 'error', so relying on destroy() alone could leave it pending.
       // Once a response is out, a live body is failed through req's 'error'.
       const onAbort = (): void => {
-        const err = new Error('aborted');
+        const err = abortError(signal);
         if (!responded) reject(err);
         req.destroy(err);
       };
-      if (init.signal.aborted) {
+      if (signal.aborted) {
         onAbort();
       } else {
-        const signal = init.signal;
         signal.addEventListener('abort', onAbort, { once: true });
         // Drop the listener once the request is finished with, so a long-lived
         // caller signal does not accumulate one closure per completed request.
@@ -938,6 +1010,8 @@ export async function safeFetchFollowingRedirects(
 ): Promise<Response> {
   let currentUrl = urlStr;
   let currentInit: SafeFetchInit = init;
+  // One deadline for the whole chain, not a fresh one per hop.
+  const endsAt = init.deadlineMs !== undefined && init.deadlineMs > 0 ? Date.now() + init.deadlineMs : undefined;
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
     if (options.allowHost) {
@@ -946,7 +1020,20 @@ export async function safeFetchFollowingRedirects(
         throw new HostNotAllowedError(target.hostname);
       }
     }
-    const response = await safeFetch(currentUrl, currentInit);
+    if (endsAt !== undefined) {
+      const remaining = endsAt - Date.now();
+      if (remaining <= 0) throw new ResponseDeadlineError(init.deadlineMs!);
+      currentInit = { ...currentInit, deadlineMs: remaining };
+    }
+    let response: Response;
+    try {
+      response = await safeFetch(currentUrl, currentInit);
+    } catch (err) {
+      // A hop runs on what is left of the chain's deadline; report the
+      // caller's own deadline, not the remainder.
+      if (err instanceof ResponseDeadlineError && init.deadlineMs !== undefined) throw new ResponseDeadlineError(init.deadlineMs);
+      throw err;
+    }
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
     const location = response.headers.get('location');

@@ -37,7 +37,7 @@ describe('partner group sweep discovery', () => {
     const evaluate = vi.spyOn(groupMembership, 'evaluateGroupMembership');
     expect(await runPartnerGroupSweep({ enqueue, random: () => 0 })).toEqual({ partnerGroups: 1, orgGroups: 1 });
     expect(enqueue).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ groupId: f.group.id, revision: null }), { delayMs: 0 });
-    expect(evaluate).toHaveBeenCalledExactlyOnceWith(f.software.id, { exportLockBeforeWrites: true });
+    expect(evaluate).toHaveBeenCalledExactlyOnceWith(f.software.id);
     expect((await members(f.software.id)).map(row => row.deviceId)).toEqual([f.a.deviceId]);
     expect(await members(f.hostname.id)).toEqual([]);
     expect(await members(f.manual.id)).toEqual([]);
@@ -53,7 +53,7 @@ describe('partner group sweep discovery', () => {
     await expect(runPartnerGroupSweep({ enqueue, random: () => 0 })).rejects.toMatchObject({
       name: 'AggregateError', errors: [failure],
     });
-    expect(evaluate).toHaveBeenCalledExactlyOnceWith(f.software.id, { exportLockBeforeWrites: true });
+    expect(evaluate).toHaveBeenCalledExactlyOnceWith(f.software.id);
     expect(enqueue).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ groupId: f.group.id }), { delayMs: 0 });
     expect(await members(f.software.id)).toEqual([]);
   });
