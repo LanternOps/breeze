@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -86,16 +85,6 @@ func isNetworkSharePath(path string, windowsForm bool) bool {
 		return false
 	}
 	return strings.HasPrefix(p, `\\`)
-}
-
-// storeVolumeRoot returns the root of the volume that the absolute path base
-// names ("C:\", "\\?\C:\"), or "" when it names none.
-func storeVolumeRoot(base string) string {
-	volume := filepath.VolumeName(base)
-	if volume == "" {
-		return ""
-	}
-	return volume + string(filepath.Separator)
 }
 
 // Device types and characteristics from FILE_FS_DEVICE_INFORMATION that mark

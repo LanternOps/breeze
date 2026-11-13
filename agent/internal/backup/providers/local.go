@@ -112,7 +112,7 @@ func (p *LocalProvider) openStore(create bool) (*os.Root, error) {
 	}
 	captured, err := root.Stat(".")
 	if err != nil || !os.SameFile(verified, captured) {
-		root.Close()
+		_ = root.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -122,11 +122,11 @@ func (p *LocalProvider) openStore(create bool) (*os.Root, error) {
 	// path was spelled; a check that cannot decide refuses the store.
 	remote, err := storeRootIsRemote(root)
 	if err != nil {
-		root.Close()
+		_ = root.Close()
 		return nil, fmt.Errorf("local backup store %q: determine whether it is on a network share: %w", p.BasePath, err)
 	}
 	if remote {
-		root.Close()
+		_ = root.Close()
 		return nil, fmt.Errorf("local backup store %q is on a network share: %w", p.BasePath, ErrNetworkShareStore)
 	}
 	return root, nil
@@ -230,7 +230,7 @@ func (p *LocalProvider) UploadWithDigest(ctx context.Context, localPath, remoteP
 	if err != nil {
 		return UploadDigest{}, err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	destPath, err := p.objectRelative(tree, remotePath)
 	if err != nil {
 		return UploadDigest{}, err
@@ -345,7 +345,7 @@ func (p *LocalProvider) SweepStaleUploads(prefix string, olderThan time.Duration
 	if err != nil {
 		return 0, err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	key, err := p.objectRelative(tree, prefix)
 	if err != nil {
 		return 0, err
@@ -403,7 +403,7 @@ func (p *LocalProvider) DownloadContext(ctx context.Context, remotePath, localPa
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	key, err := p.objectRelative(tree, remotePath)
 	if err != nil {
 		return err
@@ -415,7 +415,7 @@ func (p *LocalProvider) DownloadContext(ctx context.Context, remotePath, localPa
 	if err != nil {
 		return fmt.Errorf("open backup object: %w", err)
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 	info, err := source.Stat()
 	if err != nil {
 		return err
@@ -429,7 +429,7 @@ func (p *LocalProvider) DownloadContext(ctx context.Context, remotePath, localPa
 		if err != nil {
 			return fmt.Errorf("open compressed object: %w", err)
 		}
-		defer zipped.Close()
+		defer func() { _ = zipped.Close() }()
 		reader = io.LimitReader(zipped, maxDecompressSize)
 	}
 	// localPath is the caller's destination, not a store key: its missing
@@ -443,7 +443,7 @@ func (p *LocalProvider) DownloadContext(ctx context.Context, remotePath, localPa
 		return err
 	}
 	if err := target.Chmod(0o600); err != nil {
-		target.Close()
+		_ = target.Close()
 		return err
 	}
 	_, copyErr := io.Copy(DownloadProgressWriter(ctx, target), reader)
@@ -470,7 +470,7 @@ func (p *LocalProvider) List(prefix string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	key, err := p.objectRelative(tree, prefix)
 	if err != nil {
 		return nil, err
@@ -506,7 +506,7 @@ func (p *LocalProvider) ObjectSizes(prefix string) (map[string]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	key, err := p.objectRelative(tree, prefix)
 	if err != nil {
 		return nil, err
@@ -552,7 +552,7 @@ func (p *LocalProvider) Delete(remotePath string) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	key, err := p.objectRelative(tree, remotePath)
 	if err != nil {
 		return err

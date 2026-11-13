@@ -234,7 +234,7 @@ func privateDirInfo(path string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return nil, err
@@ -255,7 +255,7 @@ func privateDirInfo(path string) (os.FileInfo, error) {
 		return nil, err
 	}
 	file := os.NewFile(uintptr(duplicate), path)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return file.Stat()
 }
 
@@ -264,12 +264,12 @@ func ensurePrivateDirInRoot(root *os.Root, relative string) error {
 	if err != nil {
 		return err
 	}
-	defer base.Close()
+	defer func() { _ = base.Close() }()
 	fd, err := openRelativeDir(int(base.Fd()), relative, true, 0o700)
 	if err != nil {
 		return err
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return err

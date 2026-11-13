@@ -4,6 +4,7 @@ package providers
 
 import (
 	"os"
+	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -85,4 +86,14 @@ func finalNTPath(handle windows.Handle) (string, error) {
 		}
 		buf = make([]uint16, n+1)
 	}
+}
+
+// storeVolumeRoot returns the root of the volume that the absolute path base
+// names ("C:\", "\\?\C:\"), or "" when it names none.
+func storeVolumeRoot(base string) string {
+	volume := filepath.VolumeName(base)
+	if volume == "" {
+		return ""
+	}
+	return volume + string(filepath.Separator)
 }
