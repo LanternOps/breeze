@@ -35,6 +35,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/remote/desktop/wayland"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -361,6 +362,13 @@ func Main(v string) {
 	// cobra dispatch — so the helper re-exec short-circuits cleanly. No-op on
 	// non-Windows.
 	pamactuator.MaybeRunSessionLaunchHelper()
+
+	// In-session Wayland capture. systemd-run re-execs the agent binary as
+	// the graphical user; it must exit before Sentry, cobra, and enrollment.
+	if len(os.Args) > 1 && os.Args[1] == "wayland-capture" {
+		wayland.RunHelper()
+		return
+	}
 
 	if v != "" {
 		version = v
