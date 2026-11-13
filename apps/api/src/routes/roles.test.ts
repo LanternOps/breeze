@@ -1242,6 +1242,8 @@ describe('role routes', () => {
       function mockRoleTx(lockedForceMfa: boolean) {
         const set = vi.fn(() => ({ where: () => ({ returning: async () => [{ id: 'role-2', name: 'Ops', forceMfa: false }] }) }));
         const lockModes: string[] = [];
+        // The locked re-read, then (when the edit can lower the role) the
+        // role-edit ceiling's walk: the role row and its grants (none here).
         const select = vi.fn(() => ({
           from: () => ({
             where: () => {
@@ -1251,6 +1253,7 @@ describe('role routes', () => {
               };
               return chain;
             },
+            innerJoin: () => ({ where: async () => [] }),
           }),
         }));
         vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: () => ({ set }), select }));
@@ -1299,18 +1302,22 @@ describe('role routes', () => {
         expect(set).toHaveBeenCalledWith(expect.objectContaining({ name: 'Ops', forceMfa: false }));
       });
 
+      // Removing the requirement can lower the role, so it takes the row lock
+      // and the role-edit ceiling (the caller holds '*:*'); turning it on
+      // does neither.
       it.each([
-        { label: 'another administrator removes it', members: ['user-456'], forceMfa: false },
-        { label: 'a member turns it on', members: ['user-123'], forceMfa: true },
-      ])('allows the change when $label', async ({ members, forceMfa }) => {
+        { label: 'another administrator removes it', members: ['user-456'], forceMfa: false, lockModes: ['update'] },
+        { label: 'a member turns it on', members: ['user-123'], forceMfa: true, lockModes: [] },
+      ])('allows the change when $label', async ({ members, forceMfa, lockModes: expectedLocks }) => {
         mockRoleAndMembers({ forceMfa: true }, members, true);
-        const { set, select } = mockRoleTx(true);
+        const { set, select, lockModes } = mockRoleTx(true);
 
         const res = await patchRole({ forceMfa });
 
         expect(res.status).toBe(200);
         expect(set).toHaveBeenCalledWith(expect.objectContaining({ forceMfa }));
-        expect(select).not.toHaveBeenCalled();
+        expect(lockModes).toEqual(expectedLocks);
+        if (expectedLocks.length === 0) expect(select).not.toHaveBeenCalled();
       });
     });
 
@@ -1388,8 +1395,20 @@ describe('role routes', () => {
         values: vi.fn().mockResolvedValue(undefined)
       });
 
+      // The locked role row, then the role-edit ceiling's walk over the
+      // role's current grants (none here).
+      const txSelect = vi.fn(() => ({
+        from: () => ({
+          where: () => {
+            const chain: any = { for: () => chain, limit: async () => [{ forceMfa: false }] };
+            return chain;
+          },
+          innerJoin: () => ({ where: async () => [] })
+        })
+      }));
+
       vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ update: txUpdate, delete: txDelete, insert: txInsert } as any);
+        return fn({ select: txSelect, update: txUpdate, delete: txDelete, insert: txInsert } as any);
       });
 
       const res = await app.request('/roles/role-2', {

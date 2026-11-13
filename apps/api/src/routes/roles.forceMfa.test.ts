@@ -234,7 +234,18 @@ describe('role routes — force_mfa (#5317)', () => {
           ])
         })
       }));
-      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: vi.fn(() => ({ set })) }));
+      // forceMfa:false takes the row lock; the role requires MFA there, so the
+      // role-edit ceiling then walks its grants (none; the caller holds '*:*').
+      const select = vi.fn(() => ({
+        from: () => ({
+          where: () => {
+            const chain: any = { for: () => chain, limit: async () => [{ forceMfa: true }] };
+            return chain;
+          },
+          innerJoin: () => ({ where: async () => [] })
+        })
+      }));
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ select, update: vi.fn(() => ({ set })) }));
       return set;
     }
 

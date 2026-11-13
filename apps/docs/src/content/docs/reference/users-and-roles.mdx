@@ -639,6 +639,8 @@ Set `forceMfa: true` (the **Require MFA for this role** toggle in Settings → R
 
 You cannot turn off the MFA requirement on a role you are assigned yourself: `PATCH /roles/:id` with `forceMfa: false` returns `403` while the role requires MFA and you hold it in that partner or organisation. Another administrator has to make that change. Turning the requirement on, and saving other edits to a role you hold that does not require MFA, work as before.
 
+To change what a role grants you must hold every permission the role carries now, including those it inherits through `parentRoleId`. `PATCH /roles/:id` returns `403` when the request sends `permissions` or `parentRoleId`, or sends `forceMfa: false` while the role requires MFA, and the role carries a permission you do not hold. Renaming the role or changing its description is not affected.
+
 A role's owner axis is fixed at creation. Partner-scope callers choose it with `ownerScope`:
 
 | `ownerScope` | Result |
