@@ -32,7 +32,10 @@ func TestBuildBackupQuery_OmitsCompressionForExpressEdition(t *testing.T) {
 	if include {
 		t.Fatal("expected compression to be omitted for Express edition")
 	}
-	q := buildBackupQuery("TestDB", `C:\Backups\breeze\TestDB_full.bak`, "full", include)
+	q, err := buildBackupQuery("TestDB", `C:\Backups\breeze\TestDB_full.bak`, "full", include)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(q, "COMPRESSION") {
 		t.Fatalf("expected no COMPRESSION in query for Express edition, got %q", q)
 	}
@@ -43,7 +46,10 @@ func TestBuildBackupQuery_IncludesCompressionForNonExpressEdition(t *testing.T) 
 	if !include {
 		t.Fatal("expected compression to be included for Enterprise edition")
 	}
-	q := buildBackupQuery("TestDB", `C:\Backups\breeze\TestDB_full.bak`, "full", include)
+	q, err := buildBackupQuery("TestDB", `C:\Backups\breeze\TestDB_full.bak`, "full", include)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(q, "COMPRESSION") {
 		t.Fatalf("expected COMPRESSION in query for Enterprise edition, got %q", q)
 	}
@@ -57,17 +63,24 @@ func TestBuildBackupQuery_StatementsUnchangedAsideFromCompression(t *testing.T) 
 		includeCompression bool
 		want               string
 	}{
-		{"full", true, "BACKUP DATABASE [TestDB] TO DISK='C:\\Backups\\breeze\\TestDB_full.bak' WITH COMPRESSION, INIT, STATS=10"},
-		{"full", false, "BACKUP DATABASE [TestDB] TO DISK='C:\\Backups\\breeze\\TestDB_full.bak' WITH INIT, STATS=10"},
-		{"differential", true, "BACKUP DATABASE [TestDB] TO DISK='C:\\Backups\\breeze\\TestDB_full.bak' WITH DIFFERENTIAL, COMPRESSION, INIT, STATS=10"},
-		{"differential", false, "BACKUP DATABASE [TestDB] TO DISK='C:\\Backups\\breeze\\TestDB_full.bak' WITH DIFFERENTIAL, INIT, STATS=10"},
-		{"log", true, "BACKUP LOG [TestDB] TO DISK='C:\\Backups\\breeze\\TestDB_full.bak' WITH COMPRESSION, INIT, STATS=10"},
-		{"log", false, "BACKUP LOG [TestDB] TO DISK='C:\\Backups\\breeze\\TestDB_full.bak' WITH INIT, STATS=10"},
+		{"full", true, " BACKUP DATABASE [TestDB] TO DISK=@backup_file WITH COMPRESSION, INIT, STATS=10"},
+		{"full", false, " BACKUP DATABASE [TestDB] TO DISK=@backup_file WITH INIT, STATS=10"},
+		{"differential", true, " BACKUP DATABASE [TestDB] TO DISK=@backup_file WITH DIFFERENTIAL, COMPRESSION, INIT, STATS=10"},
+		{"differential", false, " BACKUP DATABASE [TestDB] TO DISK=@backup_file WITH DIFFERENTIAL, INIT, STATS=10"},
+		{"log", true, " BACKUP LOG [TestDB] TO DISK=@backup_file WITH COMPRESSION, INIT, STATS=10"},
+		{"log", false, " BACKUP LOG [TestDB] TO DISK=@backup_file WITH INIT, STATS=10"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s_compression=%v", tt.backupType, tt.includeCompression), func(t *testing.T) {
-			got := buildBackupQuery("TestDB", `C:\Backups\breeze\TestDB_full.bak`, tt.backupType, tt.includeCompression)
-			if got != tt.want {
+			got, err := buildBackupQuery("TestDB", `C:\Backups\breeze\TestDB_full.bak`, tt.backupType, tt.includeCompression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding, err := bindBackupFile(`C:\Backups\breeze\TestDB_full.bak`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != binding+tt.want {
 				t.Fatalf("got %q, want %q", got, tt.want)
 			}
 		})

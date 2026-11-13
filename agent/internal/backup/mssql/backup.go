@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// validateSQLIdentifier ensures a SQL identifier (database or instance name) contains
+// validateSQLIdentifier ensures a SQL identifier (a database name) contains
 // only safe characters: alphanumeric, underscore, hyphen, dot, space.
 // This prevents T-SQL injection via crafted identifiers.
 func validateSQLIdentifier(name string) error {
@@ -46,7 +46,7 @@ func RunBackup(instance, database, backupType, outputPath string) (*BackupResult
 	if database == "" {
 		return nil, fmt.Errorf("%w: database name is required", ErrBackupFailed)
 	}
-	if err := validateSQLIdentifier(instance); err != nil {
+	if err := validateInstanceName(instance); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
 	}
 	if err := validateSQLIdentifier(database); err != nil {
@@ -122,11 +122,11 @@ func RunBackup(instance, database, backupType, outputPath string) (*BackupResult
 	}
 
 	// Query LSN information from backup header
-	lsnQuery := fmt.Sprintf(
-		`RESTORE HEADERONLY FROM DISK='%s'`,
-		strings.ReplaceAll(backupFile, "'", "''"),
-	)
-	lsnOut, lsnErr := runSqlcmd(serverName, lsnQuery)
+	lsnQuery, lsnErr := buildHeaderOnlyQuery(backupFile)
+	var lsnOut string
+	if lsnErr == nil {
+		lsnOut, lsnErr = runSqlcmd(serverName, lsnQuery)
+	}
 	if lsnErr != nil {
 		slog.Warn("mssql: failed to retrieve LSN info", "error", lsnErr.Error())
 	} else {
@@ -190,6 +190,9 @@ func ListBackups(instance, database string, limit int) ([]BackupResult, error) {
 	if instance == "" {
 		return nil, fmt.Errorf("%w: instance name is required", ErrBackupFailed)
 	}
+	if err := validateInstanceName(instance); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBackupFailed, err)
+	}
 
 	serverName := buildServerName(instance)
 
@@ -197,13 +200,16 @@ func ListBackups(instance, database string, limit int) ([]BackupResult, error) {
 		limit = 20
 	}
 
-	escapedDB := strings.ReplaceAll(database, "'", "''")
-	whereClause := ""
+	binding, whereClause := "", ""
 	if database != "" {
-		whereClause = fmt.Sprintf("WHERE bs.database_name = '%s'", escapedDB)
+		bound, bindErr := bindNVarchar("@database_name", database)
+		if bindErr != nil {
+			return nil, fmt.Errorf("list backups: %w", bindErr)
+		}
+		binding, whereClause = bound+" ", "WHERE bs.database_name = @database_name"
 	}
 
-	query := fmt.Sprintf(`SELECT TOP %d
+	query := binding + fmt.Sprintf(singleLine(`SELECT TOP %d
 		bs.database_name,
 		CASE bs.type WHEN 'D' THEN 'full' WHEN 'I' THEN 'differential' WHEN 'L' THEN 'log' ELSE 'other' END,
 		bmf.physical_device_name,
@@ -216,7 +222,7 @@ func ListBackups(instance, database string, limit int) ([]BackupResult, error) {
 	FROM msdb.dbo.backupset bs
 	JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
 	%s
-	ORDER BY bs.backup_start_date DESC`,
+	ORDER BY bs.backup_start_date DESC`),
 		limit, whereClause,
 	)
 
