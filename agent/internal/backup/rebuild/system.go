@@ -18,8 +18,6 @@ var ErrUnsupportedHost = errors.New("the rebuild engine has no implementation fo
 // (system_fake_test.go).
 type System interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
-	// Chroot returns a runner that executes inside root (via `chroot root name args…`).
-	Chroot(root string) func(ctx context.Context, name string, args ...string) ([]byte, error)
 	BlockDeviceSize(path string) (int64, error) // blockdev --getsize64
 	// AttachImage creates a sparse file if missing, then attaches it via
 	// losetup --find --show --partscan, returning the loop device and a
@@ -36,7 +34,6 @@ type System interface {
 	MountedSources() ([]string, error) // every SOURCE in /proc/self/mounts
 	RootSources() ([]string, error)    // devices backing / and /run/live/medium (findmnt -no SOURCE)
 	Mount(ctx context.Context, device, dir, fstype string, opts ...string) error
-	BindMount(ctx context.Context, src, dir string) error
 	Unmount(ctx context.Context, dir string) error
 	Sync(ctx context.Context) error
 	Arch() string // runtime.GOARCH

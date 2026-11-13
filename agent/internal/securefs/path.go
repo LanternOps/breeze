@@ -2,6 +2,7 @@ package securefs
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +49,54 @@ func InstallFile(base, relative, source string, mode os.FileMode, modTime time.T
 	return InstallFileWithAttrs(base, relative, source, mode, modTime, owner, 0)
 }
 
+// CopyFile publishes source beneath base using the same pinned destination
+// operations as InstallFile, while preserving source for retries and reuse.
+func CopyFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
+	clean, err := CleanRelative(relative)
+	if err != nil {
+		return nil, err
+	}
+	return installFile(base, clean, source, mode, modTime, owner, 0, nil, false, nil)
+}
+
+// CopyFileFromRoot copies a regular source file read through sourceRoot's
+// directory handle and preserves it for reuse. Both sides remain rooted.
+func CopyFileFromRoot(base, relative, sourceRoot, sourceRelative string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
+	clean, err := CleanRelative(relative)
+	if err != nil {
+		return nil, err
+	}
+	sourceName, err := CleanRelative(sourceRelative)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(sourceRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	source, err := root.Open(sourceName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = source.Close() }()
+	info, err := source.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("copy source is not a regular file")
+	}
+	return installFile(base, clean, "", mode, modTime, owner, 0, nil, false, source)
+}
+
+func openInstallSource(path string, input *os.File) (*os.File, error) {
+	if input != nil {
+		return input, nil
+	}
+	return os.Open(path)
+}
+
 // InstallFileWithAttrs is InstallFile plus winAttrs — the Windows file
 // attributes (Hidden/System/ReadOnly/Temporary/NotContentIndexed/SparseFile)
 // the backup manifest captured for this file (#5407). They are applied to the
@@ -91,7 +140,7 @@ func InstallFileWithSecurity(base, relative, source string, mode os.FileMode, mo
 	if err != nil {
 		return nil, err
 	}
-	return installFile(base, clean, source, mode, modTime, owner, winAttrs, sec)
+	return installFile(base, clean, source, mode, modTime, owner, winAttrs, sec, true, nil)
 }
 
 // ApplyDirSecurity opens the EXISTING directory base/relative with the same
@@ -146,7 +195,9 @@ func InstallDir(base, relative string, mode os.FileMode, applyMode bool, owner *
 }
 
 // StatFile returns metadata for a regular file beneath base without following
-// a symbolic link in the destination path.
+// a symbolic link in the destination path. An error for a missing file or
+// directory satisfies errors.Is(err, fs.ErrNotExist) on every platform, as
+// for OpenFile.
 func StatFile(base, relative string) (os.FileInfo, error) {
 	clean, err := CleanRelative(relative)
 	if err != nil {

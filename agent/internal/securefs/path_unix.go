@@ -251,7 +251,7 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 // winAttrs is accepted and ignored here: Windows file attributes have no
 // Unix equivalent, so a Windows manifest restored onto Linux/macOS simply
 // drops them (the same way Owner is dropped in the other direction).
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32, sec *SecurityApplier) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32, sec *SecurityApplier, removeSource bool, input *os.File) ([]error, error) {
 	baseFD, err := openAbsoluteDir(base, true, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open target base: %w", err)
@@ -264,7 +264,7 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	}
 	defer func() { _ = unix.Close(parentFD) }()
 
-	src, err := os.Open(source)
+	src, err := openInstallSource(source, input)
 	if err != nil {
 		return nil, fmt.Errorf("open staging file: %w", err)
 	}
@@ -348,8 +348,10 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		return nil, fmt.Errorf("publish target file: %w", err)
 	}
 	committed = true
-	if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
-		warnings = append(warnings, fmt.Errorf("remove staging file: %w", err))
+	if removeSource {
+		if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
+			warnings = append(warnings, fmt.Errorf("remove staging file: %w", err))
+		}
 	}
 	return warnings, nil
 }

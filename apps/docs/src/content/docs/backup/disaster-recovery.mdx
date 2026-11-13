@@ -79,7 +79,7 @@ Each device recovers from its own latest snapshot marked **Bare-metal restorable
 | | Linux rebuild host | Windows rebuild host |
 |---|---|---|
 | OS | Any Linux with the tools below; same distro family is not required | Windows Server or Windows 10/11 with Hyper-V |
-| Tools | `util-linux`, `sgdisk`, `dosfstools`, `e2fsprogs`/`xfsprogs`, `grub-efi`, `efibootmgr`, `qemu-utils` (used to convert a raw image to VHDX) | Built-in `bcdboot.exe`, `dism.exe`, `format.com`; Hyper-V role for automatic VM creation |
+| Tools | `util-linux`, `sgdisk`, `dosfstools`, `e2fsprogs`/`xfsprogs`, `efibootmgr`, `qemu-utils` (used to convert a raw image to VHDX) | Built-in `bcdboot.exe`, `dism.exe`, `format.com`; Hyper-V role for automatic VM creation |
 | Target snapshot platform | Must match the rebuild host's OS — Breeze refuses the pair otherwise | Must match the rebuild host's OS — Breeze refuses the pair otherwise |
 
 ### Example Recovery Order

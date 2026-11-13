@@ -121,7 +121,7 @@ func rejectLinkedPath(base, relative string, create bool) error {
 	return nil
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32, sec *SecurityApplier) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32, sec *SecurityApplier, removeSource bool, input *os.File) ([]error, error) {
 	if err := rejectLinkedPath(base, filepath.Dir(relative), true); err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 			_ = os.Remove(tempPath)
 		}
 	}()
-	src, err := os.Open(source)
+	src, err := openInstallSource(source, input)
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +196,10 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		return nil, err
 	}
 	committed = true
-	if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
-		warnings = append(warnings, fmt.Errorf("remove staging file: %w", err))
+	if removeSource {
+		if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
+			warnings = append(warnings, fmt.Errorf("remove staging file: %w", err))
+		}
 	}
 	return warnings, nil
 }

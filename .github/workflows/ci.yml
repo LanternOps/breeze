@@ -2471,6 +2471,33 @@ jobs:
             exit 1
           fi
 
+      # The offline system-state apply enables units with the host's
+      # `systemctl --root=<tree>`. These tests run the real systemctl against
+      # synthetic trees: one whose unit directory or unit file is a link (nothing
+      # outside the tree changes), one whose SysV helper programs leave a marker
+      # when run (no program from the tree runs). They need systemctl (present
+      # on the Ubuntu runner) and opt in with BREEZE_TEST_SYSTEMCTL=1; a skip
+      # must not read as a pass.
+      - name: Offline service enable boundary test (real systemctl)
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          command -v systemctl
+          cd agent
+          # Build as the runner user; only the test binary runs as root.
+          go test -c -o /tmp/bmr-offline.test ./internal/backup/bmr/
+          cd internal/backup/bmr
+          sudo env BREEZE_TEST_SYSTEMCTL=1 /tmp/bmr-offline.test -test.count=1 -test.run '^(TestOfflineServiceManagerRootBoundary|TestOfflineServiceEnableRunsNothingFromTheTree)$' -test.v 2>&1 | tee /tmp/offline-systemctl.log
+          if grep -q -- '--- SKIP' /tmp/offline-systemctl.log; then
+            echo "::error::The offline systemctl test was SKIPPED, not proven - see the skip reason logged above."
+            exit 1
+          fi
+          passes=$(grep -cE -- '^--- PASS: (TestOfflineServiceManagerRootBoundary|TestOfflineServiceEnableRunsNothingFromTheTree) ' /tmp/offline-systemctl.log || true)
+          if [ "$passes" -ne 2 ]; then
+            echo "::error::expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this step"
+            exit 1
+          fi
+
       - name: Test build-edition.sh (edition fail-closed matrix + real build)
         run: agent/scripts/build-edition_test.sh
 
@@ -2907,6 +2934,29 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 16) { throw "expected exactly 16 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # Bare-metal rebuild phases after the restore work inside the restored
+      # volume. These plant a junction (securefs.InstallJunction) in the
+      # restored tree and check that the hive path check, the hive fallback,
+      # the identity phase and the post-restore actions writer refuse it and
+      # leave the junction's target unchanged; one more holds a loaded hive's
+      # files without sharing and checks the next hive's path check still
+      # passes. Junction creation fails the test rather than skipping it;
+      # assert PASS counts and zero skips.
+      - name: Run Windows rebuild junction boundary tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup/bmr ./internal/backup/rebuild -run '^Test(TreeHivePathRefusesJunctionsOnWindows|TreeHivePathWithHeldSiblingOnWindows|SelectOfflineHivesRefusesJunctionOnWindows|WinIdentityRefusesJunctionOnWindows|WinEncryptionRefusesJunctionOnWindows)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the rebuild junction boundary tests SKIPPED" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 5) { throw "expected exactly 5 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # Grant-mode diagnostic reads (diag_file_list / diag_file_read) refuse any
       # path whose final, handle-resolved location differs from the requested

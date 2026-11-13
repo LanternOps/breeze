@@ -31,9 +31,10 @@ type fakeSystem struct {
 	arch        string
 	mountLog    []string // "device dir"
 	unmounts    []string
-	lastRun     []string         // name + args of the most recent Run call
-	lookPathErr map[string]error // LookPath answers err for these names, "" path + nil otherwise
-	freeSpace   int64            // FreeSpace answer (default 1 PiB)
+	lastRun     []string          // name + args of the most recent Run call
+	lookPathErr map[string]error  // LookPath answers err for these names, "" path + nil otherwise
+	freeSpace   int64             // FreeSpace answer (default 1 PiB)
+	outputs     map[string][]byte // command prefix → output of a successful run
 }
 
 func newFakeSystem(dir string, diskSize int64) *fakeSystem {
@@ -66,6 +67,11 @@ func (f *fakeSystem) record(name string, args ...string) ([]byte, error) {
 			return []byte("simulated failure"), err
 		}
 	}
+	for prefix, out := range f.outputs {
+		if strings.HasPrefix(line, prefix) {
+			return out, nil
+		}
+	}
 	return nil, nil
 }
 
@@ -74,11 +80,6 @@ func (f *fakeSystem) Run(_ context.Context, name string, args ...string) ([]byte
 	f.lastRun = append([]string{name}, args...)
 	f.mu.Unlock()
 	return f.record(name, args...)
-}
-func (f *fakeSystem) Chroot(root string) func(context.Context, string, ...string) ([]byte, error) {
-	return func(_ context.Context, name string, args ...string) ([]byte, error) {
-		return f.record("chroot", append([]string{root, name}, args...)...)
-	}
 }
 func (f *fakeSystem) BlockDeviceSize(string) (int64, error) { return f.diskSize, nil }
 func (f *fakeSystem) AttachImage(path string, size int64) (string, func() error, error) {
@@ -103,13 +104,6 @@ func (f *fakeSystem) Mount(_ context.Context, device, dir, fstype string, opts .
 		return err
 	}
 	f.mountLog = append(f.mountLog, device+" "+dir)
-	return os.MkdirAll(dir, 0o755)
-}
-func (f *fakeSystem) BindMount(_ context.Context, src, dir string) error {
-	_, err := f.record("mount", "--bind", src, dir)
-	if err != nil {
-		return err
-	}
 	return os.MkdirAll(dir, 0o755)
 }
 func (f *fakeSystem) Unmount(_ context.Context, dir string) error {

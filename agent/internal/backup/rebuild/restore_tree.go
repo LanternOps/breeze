@@ -8,18 +8,23 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // mountTree mounts every planned partition with a mount point under the
 // staging root, shallowest first (/ then /boot then /boot/efi).
 func mountTree(ctx context.Context, r *run) error {
+	if err := validateMountPoints(r.result.Plan.Partitions); err != nil {
+		return err
+	}
 	parts := make([]PlannedPartition, 0, len(r.result.Plan.Partitions))
 	for _, p := range r.result.Plan.Partitions {
-		if p.MountPoint != "" && p.Filesystem != "swap" && p.Filesystem != "" {
+		if p.mounted() {
 			parts = append(parts, p)
 		}
 	}
@@ -34,7 +39,19 @@ func mountTree(ctx context.Context, r *run) error {
 		return errors.New("plan has no root mount point")
 	}
 	for _, p := range parts {
-		dir := filepath.Join(r.staging, filepath.FromSlash(strings.TrimPrefix(p.MountPoint, "/")))
+		dir := r.staging
+		if p.MountPoint != "/" {
+			// The target is created beneath the mounted tree without
+			// following a link; mount then names the directory just checked.
+			relative := filepath.FromSlash(strings.TrimPrefix(p.MountPoint, "/"))
+			if err := securefs.InstallDir(r.staging, relative, 0o755, false, nil, time.Time{}); err != nil {
+				return fmt.Errorf("mount point %s: %w", p.MountPoint, err)
+			}
+			if err := checkMountAncestors(r.staging, relative); err != nil {
+				return fmt.Errorf("mount point %s: %w", p.MountPoint, err)
+			}
+			dir = filepath.Join(r.staging, relative)
+		}
 		fstype := p.Filesystem
 		if fstype == "fat32" {
 			fstype = "vfat"
@@ -47,6 +64,33 @@ func mountTree(ctx context.Context, r *run) error {
 		} else {
 			r.treeMounts = append(r.treeMounts, dir)
 		}
+	}
+	return nil
+}
+
+// checkMountAncestors refuses a mount target beneath a directory, from the
+// staging root down to the target's parent, that is a link or that users
+// other than the owner can write to. mount names the target by path, so no
+// other user may be able to rename or replace a directory on that path.
+func checkMountAncestors(staging, relative string) error {
+	tree, err := os.OpenRoot(staging)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tree.Close() }()
+	current := "."
+	for _, component := range strings.Split(filepath.ToSlash(relative), "/") {
+		info, err := tree.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%s is not a plain directory", current)
+		}
+		if writableByOthers(info) {
+			return fmt.Errorf("directory %s is writable by other users", current)
+		}
+		current = filepath.Join(current, component)
 	}
 	return nil
 }
@@ -84,11 +128,10 @@ func restoreTree(ctx context.Context, r *run) error {
 	if recordErr != nil {
 		return recordErr
 	}
-	// Belt-and-braces (#5493): run this even when boot() will be skipped
-	// (Options.SkipBoot) — boot() is the phase that actually bind-mounts
-	// /proc, /sys, /dev, /run, but a SkipBoot run still produces a staging
-	// tree that must be a bootable disk image, so the mount points must
-	// exist regardless of whether boot() itself runs.
+	// Belt-and-braces (#5493): the restored system mounts /proc, /sys,
+	// /dev, /run when it boots, and the snapshot may not carry those
+	// directories, so create them here for every run, including SkipBoot
+	// runs (a SkipBoot run still produces a bootable disk image).
 	if err := ensureMountpoints(r.staging); err != nil {
 		return fmt.Errorf("ensure mount points: %w", err)
 	}
