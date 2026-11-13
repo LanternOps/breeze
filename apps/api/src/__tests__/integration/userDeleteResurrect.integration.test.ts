@@ -375,6 +375,22 @@ describe('user reactivation through PATCH /users/:id', () => {
     expect(row.emailVerifiedAt).toBeNull();
   });
 
+  it('setting a removed account back to invited does not keep platform-admin or its verified address', async () => {
+    const target = await seedFlaggedUser({ removed: true });
+    const app = await buildApp();
+    const res = await app.request(`/users/${target.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'invited' }),
+    });
+    expect(res.status).toBe(200);
+
+    const row = await readUser(target.id);
+    expect(row.status).toBe('invited');
+    expect(row.isPlatformAdmin).toBe(false);
+    expect(row.emailVerifiedAt).toBeNull();
+  });
+
   it('re-enabling a disabled account that still has its password keeps platform-admin and its verified address', async () => {
     const target = await seedFlaggedUser({ removed: false });
     const res = await reactivate(target.id);
