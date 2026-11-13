@@ -1,5 +1,7 @@
-import { and, asc, eq, inArray, notInArray, or } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { and, eq, inArray, notInArray, or } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../db';
+import { drPlanDefinitionDigest, readDrPlanDefinition, type VerifiedDrPlan } from './drPlanDefinition';
+import { DR_EXECUTION_ACTIVE_STATUSES } from './drPlanWrites';
 import {
   BARE_METAL_RECOVERY_TERMINAL,
   backupConfigs,
@@ -190,7 +192,20 @@ type GroupResult = {
   devices: GroupDeviceStatus[];
 };
 
+/**
+ * The group definition an execution runs, captured once at creation (under the
+ * plan row lock) and never re-read from the live plan. Internal: status views
+ * strip it (drExecutionView.ts).
+ */
+export type DrExecutionDefinition = {
+  version: 1;
+  planId: string;
+  orgId: string;
+  groups: DrPlanGroupRecord[];
+};
+
 export type DrExecutionResults = {
+  definition?: DrExecutionDefinition;
   dispatchStatus: 'queued' | 'running' | 'partial' | 'failed' | 'completed';
   queuedAt: string;
   groupCount: number;
@@ -461,14 +476,6 @@ export function computeGroupResults(
   });
 }
 
-async function loadDrPlanGroups(planId: string, orgId: string, tx: DrDb = db): Promise<DrPlanGroupRecord[]> {
-  return tx
-    .select()
-    .from(drPlanGroups)
-    .where(and(eq(drPlanGroups.planId, planId), eq(drPlanGroups.orgId, orgId)))
-    .orderBy(asc(drPlanGroups.sequence));
-}
-
 export class DrRecoveryAuthorizationDeniedError extends Error {
   readonly retriable = false;
 
@@ -496,8 +503,38 @@ export const DR_MISSING_PREREQUISITE_DENIAL_CODES: ReadonlySet<string> = new Set
   'no_recovery_source',
 ]);
 
+/**
+ * The plan definition captured for an execution cannot run for this request:
+ * the plan is gone or archived, (for an approved execution) it no longer
+ * matches the definition the approval covered, or a caller check on the
+ * captured groups refused (`validateDefinition`).
+ */
+export type DrPlanDefinitionErrorCode =
+  | 'plan_not_found'
+  | 'plan_archived'
+  | 'dr_plan_changed'
+  | 'dr_plan_execution_in_progress'
+  | 'backup_write_required';
+
+const DR_PLAN_DEFINITION_ERROR_STATUS: Record<DrPlanDefinitionErrorCode, 400 | 403 | 404 | 409> = {
+  plan_not_found: 404,
+  plan_archived: 400,
+  dr_plan_changed: 409,
+  dr_plan_execution_in_progress: 409,
+  backup_write_required: 403,
+};
+
+export class DrPlanDefinitionError extends Error {
+  readonly retriable = false;
+
+  constructor(readonly code: DrPlanDefinitionErrorCode) {
+    super(code);
+    this.name = 'DrPlanDefinitionError';
+  }
+}
+
 export type DrExecutionAuthorizationFailure = {
-  status: 400 | 403 | 404 | 503;
+  status: 400 | 403 | 404 | 409 | 503;
   code: string;
 };
 
@@ -533,6 +570,9 @@ export function classifyDrExecutionAuthorizationError(
       status: DR_MISSING_PREREQUISITE_DENIAL_CODES.has(error.code) ? 404 : 400,
       code: error.code,
     };
+  }
+  if (error instanceof DrPlanDefinitionError) {
+    return { status: DR_PLAN_DEFINITION_ERROR_STATUS[error.code], code: error.code };
   }
   return null;
 }
@@ -744,12 +784,58 @@ async function resolveAllExecutionRefs(
   return refs;
 }
 
+/**
+ * Capture the definition an execution will run, under the plan row lock.
+ *
+ * Plan writers (drPlanWrites.ts) take the same lock and refuse while an
+ * execution is pending or running, so once this transaction commits the
+ * pending execution row exists and the definition cannot change under it.
+ * The same lock makes one execution per plan at a time: a second start (two
+ * approved intents, or two HTTP requests) waits for the first to commit, then
+ * sees its pending execution and refuses, so no restore is sent twice.
+ * An approved execution (`verified`) must still match the definition its
+ * approval digest covered; anything else refuses with `dr_plan_changed`.
+ */
+async function captureExecutionDefinition(
+  planId: string,
+  orgId: string,
+  verified: VerifiedDrPlan | undefined,
+  tx: Database,
+): Promise<DrPlanGroupRecord[]> {
+  if (verified && (verified.definition.planId !== planId || verified.definition.orgId !== orgId)) {
+    throw new DrPlanDefinitionError('dr_plan_changed');
+  }
+  const live = await readDrPlanDefinition(planId, tx, { orgId, lock: true });
+  if (!live) throw new DrPlanDefinitionError('plan_not_found');
+  const [active] = await tx
+    .select({ id: drExecutions.id })
+    .from(drExecutions)
+    .where(and(
+      eq(drExecutions.planId, planId),
+      inArray(drExecutions.status, [...DR_EXECUTION_ACTIVE_STATUSES]),
+    ))
+    .limit(1);
+  if (active) throw new DrPlanDefinitionError('dr_plan_execution_in_progress');
+  if (verified && drPlanDefinitionDigest(live) !== verified.digest) {
+    throw new DrPlanDefinitionError('dr_plan_changed');
+  }
+  if (live.status === 'archived') throw new DrPlanDefinitionError('plan_archived');
+  if (live.groups.some((group) => group.planId !== planId || group.orgId !== orgId)) {
+    throw new Error('DR plan group does not belong to the plan being executed');
+  }
+  return structuredClone(verified ? verified.definition.groups : live.groups);
+}
+
 export async function createDrExecutionAndEnqueue(input: {
   planId: string;
   orgId: string;
   executionType: 'rehearsal' | 'failover' | 'failback';
   initiatedBy?: string | null;
   auth: AuthContext;
+  /** The definition an approved release verified; execution refuses unless the plan still matches it. */
+  verifiedDefinition?: VerifiedDrPlan;
+  /** Caller-specific checks run against the captured groups before any execution row exists. */
+  validateDefinition?: (groups: readonly DrPlanGroupRecord[]) => void | Promise<void>;
 }): Promise<DrExecutionRecord | null> {
   const subject = await captureRecoveryAuthorizationSubject(
     input.auth,
@@ -759,9 +845,16 @@ export async function createDrExecutionAndEnqueue(input: {
   const now = new Date();
   const execution = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const tx = db;
-    const groups = await loadDrPlanGroups(input.planId, input.orgId, tx);
+    const groups = await captureExecutionDefinition(input.planId, input.orgId, input.verifiedDefinition, tx);
+    await input.validateDefinition?.(groups);
     const refs = await resolveAllExecutionRefs(groups, input.orgId, tx);
     await authorizeQueuedRecoveryWork(subject, input.orgId, refs, DR_RECOVERY_AUTHORIZATION_INTENT);
+    const definition: DrExecutionDefinition = {
+      version: 1,
+      planId: input.planId,
+      orgId: input.orgId,
+      groups: structuredClone(groups),
+    };
     const [created] = await tx
       .insert(drExecutions)
       .values({
@@ -771,7 +864,7 @@ export async function createDrExecutionAndEnqueue(input: {
         status: 'pending',
         startedAt: now,
         initiatedBy: input.initiatedBy ?? null,
-        results: buildInitialResults(groups, now),
+        results: { ...buildInitialResults(groups, now), definition },
         createdAt: now,
         ...subject,
       })
@@ -1423,6 +1516,35 @@ async function authorizeDrGroup(execution: DrExecutionRecord, group: DrPlanGroup
   return new Date();
 }
 
+function savedExecutionDefinition(
+  execution: Pick<DrExecutionRecord, 'planId' | 'orgId'>,
+  value: unknown,
+): DrPlanGroupRecord[] | null {
+  const definition = asRecord(value);
+  if (
+    definition.version !== 1
+    || definition.planId !== execution.planId
+    || definition.orgId !== execution.orgId
+    || !Array.isArray(definition.groups)
+  ) {
+    return null;
+  }
+  const wellFormed = definition.groups.every((value) => {
+    const group = asRecord(value);
+    return group.planId === execution.planId
+      && group.orgId === execution.orgId
+      && typeof group.id === 'string'
+      && typeof group.name === 'string'
+      && typeof group.sequence === 'number'
+      && Array.isArray(group.devices)
+      && group.devices.every((id: unknown) => typeof id === 'string')
+      && !!group.restoreConfig
+      && typeof group.restoreConfig === 'object'
+      && !Array.isArray(group.restoreConfig);
+  });
+  return wellFormed ? structuredClone(definition.groups) as DrPlanGroupRecord[] : null;
+}
+
 /**
  * Terminal execution statuses: once a row reaches one of these no reconcile
  * tick may move it again.
@@ -1475,8 +1597,18 @@ export async function reconcileDrExecution(executionId: string): Promise<DrRecon
     };
   }
 
-  const groups = await loadDrPlanGroups(execution.planId, execution.orgId);
   const currentResultsRecord = asRecord(execution.results);
+  // Run only the definition captured at creation. An execution persisted
+  // without one cannot be reconstructed (plannedGroups holds device counts,
+  // not devices), so it stops instead of adopting the live plan.
+  const groups = savedExecutionDefinition(execution, currentResultsRecord.definition);
+  if (!groups) {
+    return {
+      execution: await persistDrAuthorizationDenial(execution, 'execution_definition_unavailable', new Date()),
+      nextDelayMs: null,
+      pending: [],
+    };
+  }
   let results: DrExecutionResults = {
     ...buildInitialResults(groups, execution.startedAt ?? execution.createdAt),
     ...currentResultsRecord,
