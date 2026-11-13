@@ -145,13 +145,18 @@ async function touchPlanRevision(planId: string, orgId: string, revisedAt: Date)
  * Run `write` under the plan lock, with the revision moved in the same
  * transaction. `write` returns null when its target row is gone; that rolls
  * back the revision move and reports `missing`.
+ *
+ * `withDbTransaction` runs all of it in a savepoint of the caller's
+ * transaction, so a foreign-key failure stops there and the caller's
+ * transaction stays usable. `onForeignKeyViolation` maps that failure to a
+ * refusal; the catch must stay outside the savepoint (#11203).
  */
 async function writeUnderPlanLock<T>(
   planId: string,
   orgId: string,
   missing: Refusal,
   write: (revisedAt: Date) => Promise<T | null | undefined>,
-  options: { movesRevision?: boolean } = {},
+  options: { movesRevision?: boolean; onForeignKeyViolation?: Refusal } = {},
 ): Promise<DrPlanWriteResult<T>> {
   try {
     const row = await withDbTransaction(async () => {
@@ -165,6 +170,7 @@ async function writeUnderPlanLock<T>(
     return { status: 'written', row };
   } catch (error) {
     if (error instanceof DrPlanWriteRefused) return error.result;
+    if (options.onForeignKeyViolation && pgErrorCode(error) === '23503') return options.onForeignKeyViolation;
     throw error;
   }
 }
@@ -234,28 +240,25 @@ export async function deleteDrPlanGroup(input: {
   orgId: string;
   groupId: string;
 }): Promise<DrPlanWriteResult<{ id: string }>> {
-  try {
-    return await writeUnderPlanLock(input.planId, input.orgId, { status: 'group_not_found' }, async () => {
-      const [dependent] = await db
-        .select({ id: drPlanGroups.id })
-        .from(drPlanGroups)
-        .where(eq(drPlanGroups.dependsOnGroupId, input.groupId))
-        .limit(1);
-      if (dependent) throw new DrPlanWriteRefused({ status: 'group_has_dependents' });
-      const [row] = await db
-        .delete(drPlanGroups)
-        .where(and(
-          eq(drPlanGroups.id, input.groupId),
-          eq(drPlanGroups.planId, input.planId),
-          eq(drPlanGroups.orgId, input.orgId),
-        ))
-        .returning({ id: drPlanGroups.id });
-      return row;
-    });
-  } catch (error) {
+  return writeUnderPlanLock(input.planId, input.orgId, { status: 'group_not_found' }, async () => {
+    const [dependent] = await db
+      .select({ id: drPlanGroups.id })
+      .from(drPlanGroups)
+      .where(eq(drPlanGroups.dependsOnGroupId, input.groupId))
+      .limit(1);
+    if (dependent) throw new DrPlanWriteRefused({ status: 'group_has_dependents' });
+    const [row] = await db
+      .delete(drPlanGroups)
+      .where(and(
+        eq(drPlanGroups.id, input.groupId),
+        eq(drPlanGroups.planId, input.planId),
+        eq(drPlanGroups.orgId, input.orgId),
+      ))
+      .returning({ id: drPlanGroups.id });
+    return row;
+  }, {
     // A dependent this scope cannot see (another org's row, stored before the
     // dependency check existed) is still enforced by the foreign key.
-    if (pgErrorCode(error) === '23503') return { status: 'group_has_dependents' };
-    throw error;
-  }
+    onForeignKeyViolation: { status: 'group_has_dependents' },
+  });
 }
