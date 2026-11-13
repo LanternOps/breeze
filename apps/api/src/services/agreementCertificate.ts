@@ -40,7 +40,8 @@ import { users } from '../db/schema/users';
 import { organizations, partners } from '../db/schema/orgs';
 import { computeAgreementSha256 } from './agreementContentHash';
 import { registerThemeFonts, resolvePageSize, type DocumentPageSize } from './documentThemes';
-import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs } from './pdfMerge';
+import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs, pdfTooLargeError } from './pdfMerge';
+import { PdfLoadLimitError, loadPdfDocument } from './pdfLoadLimits';
 import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngImageData, hasPngSignature, withPngDecodeSlot } from './pngDecodeLimits';
 import { certificateVersionFromColumn, type CertificateVersion } from './agreementCertificateVersion';
 
@@ -396,7 +397,13 @@ async function normalizeOriginal(input: CertifiedAgreementInput): Promise<{ pdf:
     }
   }
   try {
-    const original = await PDFDocument.load(pdfData, { updateMetadata: false });
+    let original: PDFDocument;
+    try {
+      original = await loadPdfDocument(pdfData, { updateMetadata: false });
+    } catch (err) {
+      if (err instanceof PdfLoadLimitError) throw pdfTooLargeError('The signed agreement PDF', err);
+      throw err;
+    }
     const count = original.getPageCount();
     if (count + 1 > MAX_MERGED_PAGES) {
       throw new PdfMergeError(

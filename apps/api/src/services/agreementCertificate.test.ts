@@ -51,6 +51,7 @@ import {
 import { computeAgreementSha256 } from './agreementContentHash';
 import { MAX_MERGED_PAGES, PdfMergeError } from './pdfMerge';
 import { ordinaryPng, pngInflatingTo } from './__fixtures__/pngImageData';
+import { pdfWithExpandingStreams } from './__fixtures__/expandingPdf';
 
 const DOC_ID = '22222222-2222-4222-8222-222222222222';
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
@@ -451,6 +452,33 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
     const huge = await makePdf(MAX_MERGED_PAGES);
     await expect(renderCertifiedAgreementPdf(makeInput(huge, 'application/pdf')))
       .rejects.toMatchObject({ name: 'PdfMergeError', code: 'CONTRACT_PDF_PAGE_LIMIT_EXCEEDED' });
+  });
+});
+
+describe('renderCertifiedAgreementPdf — how far a PDF original expands while it is read', () => {
+  it('refuses a PDF whose compressed object streams inflate past the limit', async () => {
+    // 64 MB of object-stream data, from a file of about 64 KB.
+    const pdf = pdfWithExpandingStreams([{ inflatesTo: 64 * 1024 * 1024 }]);
+    expect(pdf.length).toBeLessThan(256 * 1024);
+    const err = await renderCertifiedAgreementPdf(makeInput(pdf, 'application/pdf')).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PdfMergeError);
+    expect(err).toMatchObject({ status: 422, code: 'CONTRACT_PDF_TOO_LARGE' });
+  });
+
+  it('still certifies an ordinary PDF that uses object streams', async () => {
+    const original = await PDFDocument.create();
+    original.addPage([612, 792]);
+    original.addPage([612, 792]);
+    const bytes = Buffer.from(await original.save({ useObjectStreams: true }));
+    expect(bytes.includes(Buffer.from('/ObjStm'))).toBe(true);
+    const out = await renderCertifiedAgreementPdf(makeInput(bytes, 'application/pdf'));
+    expect((await PDFDocument.load(out)).getPageCount()).toBe(3);
+  });
+
+  it('still certifies a PDF whose object streams stay within the limit', async () => {
+    const pdf = pdfWithExpandingStreams([{ inflatesTo: 1024 * 1024 }]);
+    const out = await renderCertifiedAgreementPdf(makeInput(pdf, 'application/pdf'));
+    expect((await PDFDocument.load(out)).getPageCount()).toBe(2);
   });
 });
 

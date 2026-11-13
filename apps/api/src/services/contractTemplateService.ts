@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { PDFDocument, EncryptedPDFError } from 'pdf-lib';
+import { EncryptedPDFError } from 'pdf-lib';
+import { MAX_PDF_LOAD_DECODED_BYTES, PdfLoadLimitError, loadPdfDocument } from './pdfLoadLimits';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type {
   ContractTemplateOwnership,
@@ -489,8 +490,11 @@ export async function createUploadedVersion(
   // when a tech can still fix the file. pdf-lib refuses encrypted docs by default
   // (no ignoreEncryption), which is exactly what we want.
   try {
-    await PDFDocument.load(file.data);
+    await loadPdfDocument(file.data);
   } catch (err) {
+    if (err instanceof PdfLoadLimitError) {
+      throw new ContractTemplateServiceError(`File expands too far to read — its compressed contents inflate past the ${MAX_PDF_LOAD_DECODED_BYTES / (1024 * 1024)}MB limit`, 400, 'FILE_TOO_LARGE');
+    }
     // Detect encryption by class OR message: pdf-lib's EncryptedPDFError message
     // always contains "encrypted", and a message check survives the ESM/CJS
     // dual-package hazard that can make `instanceof` fail across module copies.
