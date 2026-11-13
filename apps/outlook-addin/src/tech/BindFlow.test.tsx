@@ -54,8 +54,9 @@ describe('BindFlow', () => {
   });
 
   it.each([
-    ['invalid_credentials', 401, /email or password/i],
-    ['not_a_technician', 403, /technician account/i],
+    ['invalid_credentials', 401, /could not sign in with that email and password.*wait a few minutes/i],
+    ['ip_not_allowed', 403, /network/i],
+    ['rate_limited', 429, /too many attempts/i],
     ['mfa_enrollment_required', 403, /multi-factor/i],
     ['identity_already_bound', 409, /already linked/i],
   ])('surfaces %s inline', async (code, status, pattern) => {
