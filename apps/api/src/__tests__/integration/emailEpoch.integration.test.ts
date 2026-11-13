@@ -48,6 +48,12 @@ async function readUser(userId: string) {
   return row;
 }
 
+// A signup link on an account with a password is claimed only with the stored
+// hash that POST /auth/verify-email confirmed the password against.
+function signupConfirmation(user: { passwordHash: string | null }) {
+  return { confirmedPasswordHash: user.passwordHash ?? undefined };
+}
+
 /**
  * Commit an email change the way PATCH /users/me does: the address write, the
  * verification-flag clear, and the epoch advance in one transaction.
@@ -145,7 +151,7 @@ describe('email_epoch generation gate — real Postgres (#2428)', () => {
       email,
     });
 
-    const result = await consumeVerificationToken(token);
+    const result = await consumeVerificationToken(token, signupConfirmation(user));
 
     expect(result.ok).toBe(true);
     const after = await readUser(user.id);
@@ -159,7 +165,7 @@ describe('email_epoch generation gate — real Postgres (#2428)', () => {
 
     // Verify the ORIGINAL address for real, through the service.
     const token = await generateVerificationToken({ partnerId: partner.id, userId: user.id, email });
-    expect((await consumeVerificationToken(token)).ok).toBe(true);
+    expect((await consumeVerificationToken(token, signupConfirmation(user))).ok).toBe(true);
     expect((await readUser(user.id)).emailVerifiedAt).not.toBeNull();
 
     await changeEmail(user.id, `carry-new-${Date.now()}@example.com`);
@@ -187,7 +193,7 @@ describe('email_epoch generation gate — real Postgres (#2428)', () => {
       email: newEmail,
     });
 
-    const result = await consumeVerificationToken(fresh);
+    const result = await consumeVerificationToken(fresh, signupConfirmation(user));
 
     expect(result.ok).toBe(true);
     const after = await readUser(user.id);
