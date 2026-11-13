@@ -97,7 +97,7 @@ func identityOfPath(p string) (id fileIdentity, ok bool, err error) {
 		}
 		return fileIdentity{}, false, err
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	var std fileStandardInfo
 	if err := windows.GetFileInformationByHandleEx(h, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&std)), uint32(unsafe.Sizeof(std))); err == nil && std.Directory != 0 {
 		return fileIdentity{}, false, nil

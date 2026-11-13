@@ -14,7 +14,6 @@ import (
 // shares it.
 type fileIdentity struct {
 	volume uint64
-	idHigh uint64
 	idLow  uint64
 }
 

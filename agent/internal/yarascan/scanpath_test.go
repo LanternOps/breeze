@@ -14,7 +14,7 @@ func scanPath(w Worker, p string) ([]Match, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -49,7 +49,7 @@ func TestWorkerScansTheOpenFileNotThePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 	other := filepath.Join(dir, "b.bin")
 	if err := os.WriteFile(other, []byte("nothing here"), 0o600); err != nil {
 		t.Fatal(err)

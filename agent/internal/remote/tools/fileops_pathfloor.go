@@ -59,7 +59,7 @@ func isASCIILetter(c byte) bool {
 // folded.
 func hasWindowsReservedDeviceName(norm string) bool {
 	for _, c := range strings.Split(norm, "/") {
-		if i := strings.IndexByte(c, ':'); i >= 0 && !(i == 1 && len(c) == 2) {
+		if i := strings.IndexByte(c, ':'); i >= 0 && (i != 1 || len(c) != 2) {
 			c = c[:i]
 		}
 		if i := strings.IndexByte(c, '.'); i >= 0 {

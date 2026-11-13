@@ -238,7 +238,7 @@ func TestIncompleteIdentitySetRefusesMultiLinkedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if !isOtherNameOfProtectedFile(f, nil, func() protectedIdentitySet { return ids }) {
 		t.Fatal("a multi-linked file was cleared against an incomplete identity set")
 	}
@@ -248,7 +248,7 @@ func TestIncompleteIdentitySetRefusesMultiLinkedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	if isOtherNameOfProtectedFile(g, nil, func() protectedIdentitySet { return ids }) {
 		t.Fatal("a single-link file was refused")
 	}
@@ -264,7 +264,7 @@ func TestUnreadableIdentityIsTreatedAsProtected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	complete := func() protectedIdentitySet { return protectedIdentitySet{complete: true} }
 
 	origLinks := openFileLinks
@@ -290,7 +290,7 @@ func TestSingleLinkFileSkipsIdentityLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	orig := openFileIdentity
 	called := false
 	openFileIdentity = func(f *os.File) (fileIdentity, uint32, error) { called = true; return orig(f) }

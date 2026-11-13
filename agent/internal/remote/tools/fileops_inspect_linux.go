@@ -31,7 +31,7 @@ func openScanFile(p string) (*os.File, error) {
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: p, Err: err}
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return nil, &os.PathError{Op: "fstat", Path: p, Err: err}

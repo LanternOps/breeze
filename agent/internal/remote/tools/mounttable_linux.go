@@ -9,7 +9,7 @@ func readMountTable() ([]string, bool) {
 	if err != nil {
 		return nil, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	table := parseMountInfo(f)
 	return table, len(table) > 0
 }

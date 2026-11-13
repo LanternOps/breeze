@@ -343,7 +343,7 @@ func EncryptFile(payload map[string]any) CommandResult {
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to read file: %w", err), time.Since(start).Milliseconds())
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 	// The file that is read is the file that is checked: the handle's real
 	// location, not only the path, must be outside the protected locations.
 	if err := checkOpenedForContainment("encrypt", sourcePath, source); err != nil {

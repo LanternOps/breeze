@@ -15,7 +15,7 @@ func canonicalExistingPath(p string) string {
 	if err != nil {
 		return p
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	final, err := finalPathOfFile(f)
 	if err != nil || final == "" {
 		return p

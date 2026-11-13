@@ -16,7 +16,7 @@ func isVolumeMountPoint(p string) bool {
 	if err != nil {
 		return false
 	}
-	defer windows.CloseHandle(h)
+	defer func() { _ = windows.CloseHandle(h) }()
 	buf := make([]byte, windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
 	var returned uint32
 	if err := windows.DeviceIoControl(h, windows.FSCTL_GET_REPARSE_POINT, nil, 0, &buf[0], uint32(len(buf)), &returned, nil); err != nil {
