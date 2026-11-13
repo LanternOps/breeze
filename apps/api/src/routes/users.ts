@@ -259,8 +259,8 @@ async function getScopedMembership(
   return row ?? null;
 }
 
-/** Thrown inside the MFA-reset transaction when the target's membership no
- * longer matches the row the rank + scope check was made against. */
+/** Thrown inside the MFA-reset or resend-invite transaction when the target's
+ * membership no longer matches the row the rank + scope check was made against. */
 class ScopedMembershipChangedError extends Error {
   constructor(readonly removed: boolean) {
     super(removed ? 'membership removed' : 'membership changed');
@@ -450,7 +450,15 @@ async function generateAndDeliverInvite(
   invitee: { email: string; name: string },
   inviter: { name?: string; email?: string }
 ): Promise<{ inviteEmailSent: boolean; inviteUrl?: string; warning?: string }> {
-  const inviteToken = await generateInviteToken(userId);
+  return deliverInvite(scopeContext, invitee, inviter, await generateInviteToken(userId));
+}
+
+async function deliverInvite(
+  scopeContext: ScopeContext,
+  invitee: { email: string; name: string },
+  inviter: { name?: string; email?: string },
+  inviteToken: string | null
+): Promise<{ inviteEmailSent: boolean; inviteUrl?: string; warning?: string }> {
   if (!inviteToken) {
     return {
       inviteEmailSent: false,
@@ -1736,11 +1744,52 @@ userRoutes.post(
       return c.json({ error: 'User is not in invited status' }, 400);
     }
 
-    const invite = await generateAndDeliverInvite(
-      record.id,
+    // A resent link grants the pending membership's role and site access, so
+    // the caller gets the same rank + scope check as other member management:
+    // it must be able to assign that role and, when site-restricted, reach
+    // every site the membership carries. A role that does not resolve in the
+    // caller's scope is refused.
+    const inviteRole = await getScopedRole(record.roleId, scopeContext);
+    const inviteManageError = inviteRole
+      ? await assertCanManageTarget(c, auth, scopeContext, {
+          roleId: record.roleId,
+          isSystem: record.roleIsSystem,
+          siteIds: 'siteIds' in record ? record.siteIds : undefined,
+        })
+      : 'Cannot resolve the invited user\'s role for this scope';
+    if (inviteManageError) {
+      return c.json({ error: inviteManageError }, 403);
+    }
+
+    // Issue the new token while the membership row is locked and still
+    // carries the role and site allowlist checked above. A concurrent change
+    // takes the same row lock, so the check and the token issue are atomic.
+    // System context for the FOR UPDATE, as in the MFA reset; the WHERE pins
+    // the caller's own partner/org.
+    let inviteToken: string | null;
+    try {
+      inviteToken = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db.transaction(async (tx) => {
+            await lockAndVerifyScopedMembership(tx, record.id, scopeContext, record);
+            return generateInviteToken(record.id);
+          })
+        )
+      );
+    } catch (err) {
+      if (err instanceof ScopedMembershipChangedError) {
+        return err.removed
+          ? jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found')
+          : c.json({ error: 'User membership changed; retry the resend' }, 409);
+      }
+      throw err;
+    }
+
+    const invite = await deliverInvite(
       scopeContext,
       { email: record.email, name: record.name },
-      auth.user
+      auth.user,
+      inviteToken
     );
 
     writeUserAudit(c, auth, scopeContext, {

@@ -3,7 +3,7 @@ vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/deviceGroupOwnership')>()),
   findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
 }));
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ERROR_CODES } from '@breeze/shared';
 import { Hono } from 'hono';
 
@@ -1347,41 +1347,221 @@ describe('user routes', () => {
   });
 
   describe('POST /users/resend-invite', () => {
-    it('should resend an invite for invited users', async () => {
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  {
-                    id: '11111111-1111-1111-1111-111111111111',
-                    email: 'invitee@example.com',
-                    name: 'Invitee',
-                    status: 'invited',
-                    roleId: 'role-1',
-                    roleName: 'Admin',
-                    orgAccess: 'all',
-                    orgIds: null
-                  }
-                ])
-              })
-            })
-          })
-        })
-      } as any);
+    const INVITEE = '11111111-1111-1111-1111-111111111111';
+    const INVITE_ROLE = '44444444-4444-4444-4444-444444444444';
+    const ORG = '33333333-3333-3333-3333-333333333333';
+    const SITE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const SITE_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
-      const res = await app.request('/users/resend-invite', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: '11111111-1111-1111-1111-111111111111'
+    // These cases exercise the real rank + scope check rather than the
+    // file-wide permissive stub, and restore the stub afterwards.
+    beforeEach(async () => {
+      const actual = await vi.importActual<typeof import('../services/roleAssignment')>('../services/roleAssignment');
+      assertCanManageTargetMock.mockImplementation(actual.assertCanManageTarget);
+    });
+    afterEach(() => {
+      assertCanManageTargetMock.mockReset().mockResolvedValue(null);
+    });
+
+    // Select order in the handler: scoped invitee membership, the invite's
+    // scoped role, then the role-ceiling reads (parent role, role permissions).
+    function mockInvitee(row: Record<string, unknown> | null) {
+      return { from: vi.fn().mockReturnValue(joinChain(row ? [row] : [])) } as any;
+    }
+    function mockInviteRole(role: Record<string, unknown> | null) {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(role ? [role] : []) })
+        })
+      } as any;
+    }
+    const partnerRole = {
+      id: INVITE_ROLE, scope: 'partner', name: 'Partner Admin', description: null,
+      isSystem: false, parentRoleId: null, partnerId: 'partner-123', orgId: null
+    };
+    function mockParentRole() {
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any;
+    }
+    function mockRolePermissions(perms: Array<{ resource: string; action: string }>) {
+      return { from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(perms) }) }) } as any;
+    }
+    const inviteeRow = {
+      id: INVITEE, email: 'invitee@example.com', name: 'Invitee', status: 'invited',
+      roleId: INVITE_ROLE, roleName: 'Partner Admin', roleIsSystem: false, orgAccess: 'all', orgIds: null
+    };
+    // The resend transaction locks the invitee's membership row; `lockedRoleId`
+    // is the role that row carries at lock time.
+    function mockResendTransaction(lockedRoleId: string | null, lockedSiteIds?: string[] | null) {
+      const forUpdate = vi.fn().mockResolvedValue(
+        lockedRoleId ? [{ roleId: lockedRoleId, siteIds: lockedSiteIds }] : []
+      );
+      const txSelect = vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ for: forUpdate }) })
         })
       });
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ select: txSelect }));
+      return forUpdate;
+    }
+    function inviteTokenWrites() {
+      const redis = getRedis() as unknown as { setex: ReturnType<typeof vi.fn> };
+      return redis.setex.mock.calls.filter(([key]) => String(key).startsWith('invite:'));
+    }
+    function resend() {
+      return app.request('/users/resend-invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: INVITEE })
+      });
+    }
+
+    it('resends an invite whose role the caller may assign', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockInvitee(inviteeRow))
+        .mockReturnValueOnce(mockInviteRole(partnerRole))
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([{ resource: 'users', action: 'read' }]));
+      const forUpdate = mockResendTransaction(INVITE_ROLE);
+
+      const res = await resend();
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(body.inviteEmailSent).toBe(true);
+      expect(assertCanManageTargetMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        { scope: 'partner', partnerId: 'partner-123' },
+        { roleId: INVITE_ROLE, isSystem: false, siteIds: undefined }
+      );
+      expect(inviteTokenWrites().length).toBeGreaterThan(0);
+      expect(sendInviteMock).toHaveBeenCalledTimes(1);
+      // The membership row is locked (and its role re-read) before the new
+      // token is written.
+      expect(forUpdate).toHaveBeenCalledWith('update');
+      const redis = getRedis() as unknown as { setex: ReturnType<typeof vi.fn> };
+      expect(forUpdate.mock.invocationCallOrder[0]!).toBeLessThan(redis.setex.mock.invocationCallOrder[0]!);
+    });
+
+    it('resend-invite applies the same role check as creating an invite', async () => {
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        permissions: [{ resource: 'users', action: 'invite' }, { resource: 'users', action: 'read' }],
+        partnerId: 'partner-123',
+        orgId: null,
+        roleId: 'role-user-manager',
+        scope: 'partner'
+      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockInvitee(inviteeRow))
+        .mockReturnValueOnce(mockInviteRole(partnerRole))
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([{ resource: 'users', action: 'delete' }]));
+      mockResendTransaction(INVITE_ROLE);
+
+      const res = await resend();
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({
+        error: 'Cannot assign a role with permission not held by caller: users:delete'
+      });
+      expect(inviteTokenWrites()).toHaveLength(0);
+      expect(sendInviteMock).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a site-restricted caller resending an invite outside its sites', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: 'partner-123',
+          orgId: ORG,
+          user: { id: 'user-123', email: 'restricted@example.com' }
+        });
+        return next();
+      });
+      vi.mocked(getUserPermissions).mockResolvedValue({
+        permissions: [{ resource: '*', action: '*' }],
+        partnerId: 'partner-123',
+        orgId: ORG,
+        roleId: 'role-site-admin',
+        scope: 'organization',
+        allowedSiteIds: [SITE_A]
+      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockInvitee({
+          id: INVITEE, email: 'invitee@example.com', name: 'Invitee', status: 'invited',
+          roleId: INVITE_ROLE, roleName: 'Technician', roleIsSystem: false,
+          siteIds: [SITE_B], deviceGroupIds: null
+        }))
+        .mockReturnValueOnce(mockInviteRole({ ...partnerRole, scope: 'organization', partnerId: null, orgId: ORG }))
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([]));
+      mockResendTransaction(INVITE_ROLE, [SITE_B]);
+
+      const res = await resend();
+
+      try {
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'Cannot manage a user outside your site access' });
+        expect(inviteTokenWrites()).toHaveLength(0);
+        expect(sendInviteMock).not.toHaveBeenCalled();
+        expect(db.transaction).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(getUserPermissions).mockResolvedValue({
+          permissions: [{ resource: '*', action: '*' }],
+          partnerId: 'partner-123',
+          orgId: null,
+          roleId: 'role-admin',
+          scope: 'partner'
+        } as any);
+      }
+    });
+
+    it('refuses when the invite role cannot be resolved in the caller scope', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockInvitee(inviteeRow))
+        // A custom role owned by another partner does not resolve here.
+        .mockReturnValueOnce(mockInviteRole({ ...partnerRole, partnerId: 'partner-other' }));
+      mockResendTransaction(INVITE_ROLE);
+
+      const res = await resend();
+
+      expect(res.status).toBe(403);
+      expect(inviteTokenWrites()).toHaveLength(0);
+      expect(sendInviteMock).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('issues no token when the invite role changed after it was checked', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockInvitee(inviteeRow))
+        .mockReturnValueOnce(mockInviteRole(partnerRole))
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([]));
+      mockResendTransaction('55555555-5555-5555-5555-555555555555');
+
+      const res = await resend();
+
+      expect(res.status).toBe(409);
+      expect(inviteTokenWrites()).toHaveLength(0);
+      expect(sendInviteMock).not.toHaveBeenCalled();
+    });
+
+    it('issues no token when the invite membership was removed after it was checked', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockInvitee(inviteeRow))
+        .mockReturnValueOnce(mockInviteRole(partnerRole))
+        .mockReturnValueOnce(mockParentRole())
+        .mockReturnValueOnce(mockRolePermissions([]));
+      mockResendTransaction(null);
+
+      const res = await resend();
+
+      expect(res.status).toBe(404);
+      expect(inviteTokenWrites()).toHaveLength(0);
+      expect(sendInviteMock).not.toHaveBeenCalled();
     });
   });
 
