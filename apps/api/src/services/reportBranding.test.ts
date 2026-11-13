@@ -36,6 +36,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { loadReportBrandingForOrg, loadReportBrandingForPartner, pngAspectFromDataUrl } from './reportBranding';
+import { asDataUrl, ordinaryPng, pngInflatingTo } from './__fixtures__/pngImageData';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
@@ -57,9 +58,12 @@ function stage(orgRows: unknown[], partnerRows: unknown[] = [], brandRows: unkno
     .mockReturnValueOnce(selectChain(partnerRows));
 }
 
-/** Build a minimal-but-valid PNG data URL with the given intrinsic dimensions
- * (signature, an IHDR chunk with its CRC carrying width/height, IEND). */
+/** A PNG data URL with the given intrinsic dimensions. Up to 4096 pixels a
+ * side it is a real image (rows and all, as the report renderer decodes it);
+ * past that, only the signature, IHDR and IEND, which is enough for the
+ * header checks that refuse it. */
 function png(w: number, h: number): string {
+  if (w > 0 && h > 0 && w <= 4096 && h <= 4096) return asDataUrl(ordinaryPng({ width: w, height: h }));
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(w, 0);
   ihdr.writeUInt32BE(h, 4);
@@ -91,22 +95,35 @@ beforeEach(() => {
 });
 
 describe('pngAspectFromDataUrl', () => {
-  it('returns width/height for a valid PNG data URL', () => {
-    expect(pngAspectFromDataUrl(png(1, 2))).toBe(0.5);
+  it('returns width/height for a valid PNG data URL', async () => {
+    expect(await pngAspectFromDataUrl(png(1, 2))).toBe(0.5);
   });
 
-  it('returns null for non-PNG data URLs', () => {
-    expect(pngAspectFromDataUrl('data:image/jpeg;base64,abcd')).toBeNull();
-    expect(pngAspectFromDataUrl('https://example.com/logo.png')).toBeNull();
+  it('returns null for non-PNG data URLs', async () => {
+    expect(await pngAspectFromDataUrl('data:image/jpeg;base64,abcd')).toBeNull();
+    expect(await pngAspectFromDataUrl('https://example.com/logo.png')).toBeNull();
   });
 
-  it('returns null for malformed/truncated PNG data', () => {
-    expect(pngAspectFromDataUrl('data:image/png;base64,abcd')).toBeNull();
+  it('returns null for malformed/truncated PNG data', async () => {
+    expect(await pngAspectFromDataUrl('data:image/png;base64,abcd')).toBeNull();
   });
 
-  it('returns null (no logo) for a PNG too large to embed', () => {
-    expect(pngAspectFromDataUrl(png(30_000, 30_000))).toBeNull();
-    expect(pngAspectFromDataUrl(png(0, 10))).toBeNull();
+  it('returns null (no logo) for a PNG whose image data inflates past its declared size', async () => {
+    // A 10×10 header in front of 32 MB of image data: the report renderer
+    // would inflate all of it before comparing it with the declared rows.
+    const logo = asDataUrl(pngInflatingTo({ width: 10, height: 10 }, 32 * 1024 * 1024));
+    expect(logo.length).toBeLessThan(64 * 1024);
+    expect(await pngAspectFromDataUrl(logo)).toBeNull();
+  });
+
+  it('keeps an ordinary logo, interlaced or not', async () => {
+    expect(await pngAspectFromDataUrl(asDataUrl(ordinaryPng({ width: 300, height: 100 })))).toBe(3);
+    expect(await pngAspectFromDataUrl(asDataUrl(ordinaryPng({ width: 300, height: 100, interlaced: true })))).toBe(3);
+  });
+
+  it('returns null (no logo) for a PNG too large to embed', async () => {
+    expect(await pngAspectFromDataUrl(png(30_000, 30_000))).toBeNull();
+    expect(await pngAspectFromDataUrl(png(0, 10))).toBeNull();
   });
 });
 

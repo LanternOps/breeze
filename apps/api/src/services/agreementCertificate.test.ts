@@ -50,6 +50,7 @@ import {
 } from './agreementCertificate';
 import { computeAgreementSha256 } from './agreementContentHash';
 import { MAX_MERGED_PAGES, PdfMergeError } from './pdfMerge';
+import { ordinaryPng, pngInflatingTo } from './__fixtures__/pngImageData';
 
 const DOC_ID = '22222222-2222-4222-8222-222222222222';
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
@@ -351,6 +352,18 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
       await refusedWithoutDecoding(pngWithHeader(badCrc), unreadable);
       // Not a PNG signature at all.
       await refusedWithoutDecoding(Buffer.concat([Buffer.from('GIF89a..'), ihdr(10, 10)]), unreadable);
+    });
+
+    it('refuses a PNG whose image data inflates past its declared size, without decoding it', async () => {
+      await refusedWithoutDecoding(pngInflatingTo({ width: 10, height: 10 }, 32 * 1024 * 1024));
+      await refusedWithoutDecoding(pngInflatingTo({ width: 10, height: 10, interlaced: true }, 32 * 1024 * 1024));
+    });
+
+    it('still embeds an ordinary PNG, interlaced or not', async () => {
+      for (const interlaced of [false, true]) {
+        const out = await renderCertifiedAgreementPdf(makeInput(ordinaryPng({ width: 300, height: 200, interlaced }), 'image/png'));
+        expect((await PDFDocument.load(out)).getPageCount()).toBe(2);
+      }
     });
 
     it('still decodes interlaced and palette images of ordinary size', async () => {

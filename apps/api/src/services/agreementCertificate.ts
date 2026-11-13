@@ -41,7 +41,7 @@ import { organizations, partners } from '../db/schema/orgs';
 import { computeAgreementSha256 } from './agreementContentHash';
 import { registerThemeFonts, resolvePageSize, type DocumentPageSize } from './documentThemes';
 import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs } from './pdfMerge';
-import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngDecodable, hasPngSignature, withPngDecodeSlot } from './pngDecodeLimits';
+import { MAX_PNG_DECODED_BYTES, MAX_PNG_DECODE_PIXELS, MAX_PNG_DECODE_SIDE, checkPngImageData, hasPngSignature, withPngDecodeSlot } from './pngDecodeLimits';
 import { certificateVersionFromColumn, type CertificateVersion } from './agreementCertificateVersion';
 
 // ---------------------------------------------------------------------------
@@ -351,9 +351,12 @@ export const MAX_CERTIFIED_PNG_PIXELS = MAX_PNG_DECODE_PIXELS;
 export const MAX_CERTIFIED_PNG_SIDE = MAX_PNG_DECODE_SIDE;
 export const MAX_CERTIFIED_PNG_DECODED_BYTES = MAX_PNG_DECODED_BYTES;
 
-/** Refuses, before pdf-lib decodes it, a PNG `checkPngDecodable` refuses. */
-function assertPngWithinDecodeLimits(data: Buffer): void {
-  const check = checkPngDecodable(data);
+/** Refuses, before pdf-lib decodes it, a PNG `checkPngImageData` refuses: a
+ *  header outside the limits, or image data that inflates past what the
+ *  header declares (pdf-lib would drop the excess, but only after inflating
+ *  all of it). */
+async function assertPngWithinDecodeLimits(data: Buffer): Promise<void> {
+  const check = await checkPngImageData(data);
   if (check.ok) return;
   if (check.reason === 'too_large') {
     throw new PdfMergeError(
@@ -372,7 +375,7 @@ async function normalizeOriginal(input: CertifiedAgreementInput): Promise<{ pdf:
   if (mime === 'image/png' || mime === 'image/jpeg') {
     // The checks follow the bytes, not the stored type: PNG bytes are checked
     // whatever they are labelled.
-    if (mime === 'image/png' || hasPngSignature(pdfData)) assertPngWithinDecodeLimits(pdfData);
+    if (mime === 'image/png' || hasPngSignature(pdfData)) await assertPngWithinDecodeLimits(pdfData);
     try {
       // A large PNG is decoded and saved holding the process-wide large-decode
       // slot (pngDecodeLimits.ts), so only one is in memory at a time.

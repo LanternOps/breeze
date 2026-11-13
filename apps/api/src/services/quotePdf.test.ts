@@ -16,6 +16,7 @@ vi.mock('./sentry', async (importActual) => {
 import { captureException } from './sentry';
 import { renderQuotePdf, contractUploadedMarker, imageIntrinsicSize, imageIsDrawable } from './quotePdf';
 import { withPngDecodeSlot } from './pngDecodeLimits';
+import { ordinaryPng, pngInflatingTo } from './__fixtures__/pngImageData';
 import { documentColumnsFor } from './documentPdfTable';
 import { renderRichTextIntoPdf, WEB_TYPOGRAPHY } from './richTextPdf';
 
@@ -1384,22 +1385,51 @@ describe('imageIsDrawable — PNG size limits', () => {
     ]);
   }
 
-  it('draws an ordinary RGBA image', () => {
-    expect(imageIsDrawable(rgbaPng(10, 10, Buffer.alloc(10 * (10 * 4 + 1))))).toBe(true);
+  it('draws an ordinary RGBA image', async () => {
+    expect(await imageIsDrawable(rgbaPng(10, 10, Buffer.alloc(10 * (10 * 4 + 1))))).toBe(true);
   });
 
-  it('skips an image whose declared size is over the decode limits', () => {
-    expect(imageIsDrawable(rgbaPng(30_000, 30_000, Buffer.alloc(16)))).toBe(false);
+  it('skips an image whose declared size is over the decode limits', async () => {
+    expect(await imageIsDrawable(rgbaPng(30_000, 30_000, Buffer.alloc(16)))).toBe(false);
   });
 
-  it('stops inflating an image at the size its header declares', () => {
-    const inflate = vi.spyOn(zlib, 'inflateSync');
+  it('stops inflating an image at the size its header declares', async () => {
+    const started = Date.now();
+    // More data than the 10×10 header declares.
+    expect(await imageIsDrawable(rgbaPng(10, 10, Buffer.alloc(64 * 1024 * 1024)))).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  // pdfkit also decodes an interlaced PNG without transparency (to
+  // de-interlace it), so its image data is bounded the same way.
+  it('skips an interlaced opaque image whose data inflates past its declared size', async () => {
+    const shape = { width: 10, height: 10, colorType: 2, interlaced: true };
+    expect(await imageIsDrawable(pngInflatingTo(shape, 32 * 1024 * 1024))).toBe(false);
+  });
+
+  it('draws ordinary opaque and interlaced images', async () => {
+    for (const shape of [
+      { width: 37, height: 23, colorType: 2 },
+      { width: 37, height: 23, colorType: 2, interlaced: true },
+      { width: 37, height: 23, colorType: 6, interlaced: true },
+    ]) {
+      const png = ordinaryPng(shape);
+      expect(await imageIsDrawable(png)).toBe(true);
+      const doc = new PDFKitDocument();
+      const done = new Promise<void>((resolve, reject) => { doc.on('end', resolve); doc.on('error', reject); doc.resume(); });
+      doc.image(png, 0, 0, { width: 37 });
+      doc.end();
+      await done;
+    }
+  });
+
+  it('leaves an opaque non-interlaced image to pdfkit, which embeds it without inflating', async () => {
+    // pdfkit copies this image data into the PDF as it is; nothing here
+    // inflates it, so its size is not checked.
+    const inflate = vi.spyOn(zlib, 'createInflate');
     try {
-      // More data than the 10×10 header declares.
-      expect(imageIsDrawable(rgbaPng(10, 10, Buffer.alloc(64 * 1024 * 1024)))).toBe(false);
-      for (const [, options] of inflate.mock.calls) {
-        expect((options as zlib.ZlibOptions | undefined)?.maxOutputLength).toBeLessThanOrEqual(10_000);
-      }
+      expect(await imageIsDrawable(ordinaryPng({ width: 37, height: 23, colorType: 2 }))).toBe(true);
+      expect(inflate).not.toHaveBeenCalled();
     } finally {
       inflate.mockRestore();
     }

@@ -14,7 +14,6 @@
 // `loadImage`, branding via `branding`) so it is unit-testable without a DB; the
 // route in routes/quotes/quotes.ts supplies the real quote_images loader.
 
-import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { formatMoney as sharedFormatMoney, type CoverPage } from '@breeze/shared';
 import { buildQuoteDocumentModel, documentLabelsFor, type CustomerQuoteDocument, type CustomerQuoteLineDto, type DocumentLineTableModel } from '@breeze/shared/documents';
@@ -28,7 +27,7 @@ import { renderRichTextIntoPdf, measureRichTextLead, parseRichText, WEB_TYPOGRAP
 import { registerThemeFonts, pdfPageSize, type DocumentThemeId, type DocumentPageSize, type PdfThemeFonts } from './documentThemes';
 import { parseTable, measureTable, renderTableIntoPdf, tableLeadHeight, type EnsureRoomRich } from './tablePdf';
 import { renderCalloutIntoPdf, measureCalloutLead } from './calloutPdf';
-import { checkPngDecodable, createPngDecodeSlotHolder, imageBytesFromDataUrl } from './pngDecodeLimits';
+import { checkPngDecodable, checkPngImageData, createPngDecodeSlotHolder, imageBytesFromDataUrl } from './pngDecodeLimits';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -106,51 +105,42 @@ function brandHeadingColor(hex: string | null | undefined): string | null {
 
 /** Whether pdfkit can draw this image without crashing the process.
  *
- *  pdfkit embeds JPEGs and opaque PNGs without decoding them, but a PNG with
- *  an alpha channel (colour types 4/6) or a tRNS transparency chunk has its
- *  pixels inflated ASYNCHRONOUSLY to split out the soft mask — after
- *  doc.image() has returned. Corrupt pixel data then throws outside every
- *  try/catch here, reaches the process's uncaughtException handler, and the
- *  document never ends. Inflate those PNGs synchronously first: if the data
- *  doesn't decompress, the caller skips the image.
+ *  pdfkit embeds JPEGs and opaque, non-interlaced PNGs without decoding them,
+ *  but a PNG with an alpha channel (colour types 4/6), a tRNS transparency
+ *  chunk, or interlacing has its pixels inflated ASYNCHRONOUSLY (to split out
+ *  the soft mask, or to de-interlace) — after doc.image() has returned.
+ *  Corrupt pixel data then throws outside every try/catch here, reaches the
+ *  process's uncaughtException handler, and the document never ends. Those
+ *  PNGs pass `checkPngImageData` first (the inflate stops one 64 KB piece
+ *  past the size the header declares): if the data doesn't decompress, or
+ *  inflates past that size, the caller skips the image.
  *
  *  Every PNG must also pass `checkPngDecodable` (a header the decoder reads the
- *  same way, within the size limits), and the inflate stops at the size its
- *  header declares, so this check and pdfkit's decode stay within those
+ *  same way, within the size limits), so pdfkit's decode stays within those
  *  limits. */
-export function imageIsDrawable(data: Buffer): boolean {
+export async function imageIsDrawable(data: Buffer): Promise<boolean> {
   if (data.length < 8 || data.readUInt32BE(0) !== 0x89504e47) return true; // not a PNG (e.g. JPEG)
   const check = checkPngDecodable(data);
   if (!check.ok) return false;
-  let offset = 8;
-  let colorType = -1;
   let transparency = false;
-  const idat: Buffer[] = [];
-  while (offset + 8 <= data.length) {
+  for (let offset = 8; offset + 8 <= data.length;) {
     const length = data.readUInt32BE(offset);
     const type = data.toString('latin1', offset + 4, offset + 8);
     const start = offset + 8;
     if (start + length > data.length) return false; // truncated chunk
-    if (type === 'IHDR' && length >= 10) colorType = data[start + 9]!;
-    else if (type === 'tRNS') transparency = true;
-    else if (type === 'IDAT') idat.push(data.subarray(start, start + length));
+    if (type === 'tRNS') transparency = true;
     else if (type === 'IEND') break;
     offset = start + length + 4; // + CRC
   }
-  if (colorType !== 4 && colorType !== 6 && !transparency) return true;
-  try {
-    // Interlaced rows carry a filter byte per pass row; the margin covers that.
-    zlib.inflateSync(Buffer.concat(idat), { maxOutputLength: check.header.decodedBytes + 4 * check.header.height + 64 });
-    return true;
-  } catch {
-    return false;
-  }
+  const { colorType, interlaced } = check.header;
+  if (colorType !== 4 && colorType !== 6 && !transparency && !interlaced) return true;
+  return (await checkPngImageData(data)).ok;
 }
 
 /** Load-time gate for every image this renderer draws: a buffer pdfkit would
  *  crash on (see imageIsDrawable) is reported and treated as missing. */
-function drawableOrNull(img: { data: Buffer } | null, what: string): { data: Buffer } | null {
-  if (!img?.data || imageIsDrawable(img.data)) return img;
+async function drawableOrNull(img: { data: Buffer } | null, what: string): Promise<{ data: Buffer } | null> {
+  if (!img?.data || (await imageIsDrawable(img.data))) return img;
   const err = new Error(`[quotePdf] undecodable PNG skipped: ${what}`);
   console.error(err.message);
   captureException(err);
@@ -160,12 +150,12 @@ function drawableOrNull(img: { data: Buffer } | null, what: string): { data: Buf
 interface PdfLogo { data: Buffer; width: number; height: number }
 
 /** An uploaded logo (PNG/JPEG data URL) as drawable bytes, or null. */
-export function decodeLogo(logoUrl: string | null | undefined): PdfLogo | null {
+export async function decodeLogo(logoUrl: string | null | undefined): Promise<PdfLogo | null> {
   const m = logoUrl ? /^data:image\/(?:png|jpe?g);base64,([A-Za-z0-9+/=\s]+)$/i.exec(logoUrl.trim()) : null;
   if (!m) return null;
   const data = Buffer.from(m[1]!, 'base64');
   const dims = imageIntrinsicSize(data);
-  if (!dims || !drawableOrNull({ data }, 'partner logo')) return null;
+  if (!dims || !(await drawableOrNull({ data }, 'partner logo'))) return null;
   return { data, ...dims };
 }
 
@@ -545,11 +535,11 @@ async function loadLineThumbnails(
   for (const l of lines) {
     try {
       if (l.imageId) {
-        const img = drawableOrNull(await loadQuoteImage(l.imageId), `line image ${l.imageId}`);
+        const img = await drawableOrNull(await loadQuoteImage(l.imageId), `line image ${l.imageId}`);
         if (img?.data) { byLine.set(l.id, img.data); continue; }
       }
       if (l.catalogItemId) {
-        const img = drawableOrNull(await loadCatalogImage(l.catalogItemId), `catalog image ${l.catalogItemId}`);
+        const img = await drawableOrNull(await loadCatalogImage(l.catalogItemId), `catalog image ${l.catalogItemId}`);
         if (img?.data) byLine.set(l.id, img.data);
       }
     } catch (e) {
@@ -597,7 +587,7 @@ async function renderCoverPage(
   if (cp.coverImageId) {
     let img: { data: Buffer } | null = null;
     try {
-      img = drawableOrNull(await loadImage(cp.coverImageId), `cover image ${cp.coverImageId}`);
+      img = await drawableOrNull(await loadImage(cp.coverImageId), `cover image ${cp.coverImageId}`);
     } catch (e) {
       console.error('[quotePdf] cover image load failed', cp.coverImageId, e instanceof Error ? e.message : e);
       captureException(e instanceof Error ? e : new Error(String(e)));
@@ -764,7 +754,7 @@ async function renderQuotePdfDocument(
   // otherwise the classic ink, and rich-text subheads keep their own colour.
   const brandHeading = brandHeadingColor(branding.secondaryColor);
   const headingColor = brandHeading ?? DEFAULT_HEADING_COLOR;
-  const logo = decodeLogo(branding.logoUrl);
+  const logo = await decodeLogo(branding.logoUrl);
   if (branding.logoUrl?.trim() && !logo) {
     // Report-PDF parity (reportBranding.ts): say why the name prints instead.
     console.warn('[quotePdf] partner logo is not an embeddable PNG/JPEG data URL; drawing the name instead', { quoteId: quote.id });

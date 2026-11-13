@@ -1,11 +1,13 @@
-import { crc32 } from 'node:zlib';
+import zlib, { crc32 } from 'node:zlib';
 
 /**
  * Size limits for PNGs the API decodes itself or hands to a PDF library that
- * decodes them (pdf-lib's embedPng, pdfkit for a PNG with transparency, jsPDF
- * for report logos). Decoding expands the image to its full pixel rows in
- * memory, so the header is checked first and decoding stays within these
- * limits.
+ * decodes them (pdf-lib's embedPng, pdfkit for a PNG with transparency or
+ * interlacing, jsPDF for report logos). Decoding expands the image to its full
+ * pixel rows in memory, so the header is checked first and decoding stays
+ * within these limits. The decoders inflate all of the image data before they
+ * compare it with the rows the header declares, so checkPngImageData also
+ * checks how far the data inflates.
  */
 
 /** Largest image, in pixels: a Letter page scanned at 600 dpi is about 34 million. */
@@ -131,6 +133,115 @@ export function checkPngDecodable(data: Buffer, limits: Partial<PngDecodeLimits>
   return { ok: true, header: { width, height, bitDepth, colorType, interlaced: interlace === 1, decodedBytes, peakBytes } };
 }
 
+/** The Adam7 passes: x offset, y offset, x step, y step. */
+const ADAM7_PASSES: ReadonlyArray<readonly [number, number, number, number]> = [
+  [0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2],
+];
+
+/**
+ * Bytes the image data of a PNG with this header inflates to: each row's
+ * filter byte and packed pixels, and for an interlaced image the rows of each
+ * non-empty Adam7 pass (PNG specification, sections 7.2 and 8.2). Never more
+ * than `decodedBytes`.
+ */
+export function pngImageDataBytes(header: Pick<PngHeader, 'width' | 'height' | 'bitDepth' | 'colorType' | 'interlaced'>): number {
+  const { width, height, bitDepth, colorType, interlaced } = header;
+  const bitsPerPixel = PNG_COLOR_TYPES.get(colorType)!.channels * bitDepth;
+  const rowsOf = (w: number, h: number) => (w > 0 && h > 0 ? (Math.ceil((w * bitsPerPixel) / 8) + 1) * h : 0);
+  if (!interlaced) return rowsOf(width, height);
+  let total = 0;
+  for (const [x0, y0, dx, dy] of ADAM7_PASSES) {
+    total += rowsOf(width > x0 ? Math.ceil((width - x0) / dx) : 0, height > y0 ? Math.ceil((height - y0) / dy) : 0);
+  }
+  return total;
+}
+
+/** Output buffer for the inflate check: also the most it can run past the limit. */
+const INFLATE_CHECK_CHUNK_BYTES = 64 * 1024;
+
+type InflatedSize = 'within' | 'over' | 'trailing' | 'damaged';
+
+/**
+ * Inflates a zlib stream, counting and discarding the output, and stops as
+ * soon as it passes `maxBytes`, so the check holds at most one output chunk.
+ * 'trailing': the stream ended before the input did. Node stops there, but
+ * pako (fast-png, behind jsPDF) starts inflating a second stream from the
+ * rest, so the rest is refused rather than skipped.
+ */
+function inflatedSize(compressed: Buffer, maxBytes: number): Promise<InflatedSize> {
+  return new Promise((resolve) => {
+    const inflate = zlib.createInflate({ chunkSize: INFLATE_CHECK_CHUNK_BYTES });
+    let total = 0;
+    let settled = false;
+    const settle = (result: InflatedSize) => {
+      if (settled) return;
+      settled = true;
+      inflate.destroy();
+      resolve(result);
+    };
+    inflate.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) settle('over');
+    });
+    inflate.on('error', () => settle('damaged'));
+    inflate.on('end', () => settle(inflate.bytesWritten === compressed.length ? 'within' : 'trailing'));
+    inflate.end(compressed);
+  });
+}
+
+/** The image data (every IDAT chunk up to IEND, in order), or null when a
+ *  chunk runs past the end of the file. */
+function pngImageData(data: Buffer): Buffer[] | null {
+  const idat: Buffer[] = [];
+  for (let offset = 8; offset + 8 <= data.length;) {
+    const length = data.readUInt32BE(offset);
+    const type = data.toString('latin1', offset + 4, offset + 8);
+    const start = offset + 8;
+    if (start + length > data.length) return null;
+    if (type === 'IDAT') idat.push(data.subarray(start, start + length));
+    else if (type === 'IEND') break;
+    offset = start + length + 4;
+  }
+  return idat;
+}
+
+/**
+ * `checkPngDecodable`, and then whether the image data inflates to no more
+ * than the rows the header declares (pngImageDataBytes). Run it before
+ * handing a PNG to a decoder: once it passes, the decode is no larger than
+ * the header-based estimate, which the large-decode slot also uses.
+ *
+ * The inflate runs off the main thread in 64 KB pieces that are counted and
+ * dropped; it stops one piece past the declared size. Refused: image data
+ * that inflates past the declared size ('too_large'); data that is damaged,
+ * missing, or continues after the end of its compressed stream
+ * ('unreadable'). Data that inflates to less than declared is left to the
+ * decoder, as before.
+ */
+export async function checkPngImageData(data: Buffer, limits: Partial<PngDecodeLimits> = {}): Promise<PngDecodeCheck> {
+  const check = checkPngDecodable(data, limits);
+  if (!check.ok) return check;
+  const chunks = pngImageData(data);
+  if (!chunks) return { ok: false, reason: 'unreadable', detail: 'a chunk runs past the end of the file' };
+  if (chunks.length === 0) return { ok: false, reason: 'unreadable', detail: 'the image has no image data' };
+  const declared = pngImageDataBytes(check.header);
+  const compressed = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks);
+  switch (await inflatedSize(compressed, declared)) {
+    case 'within':
+      return check;
+    case 'over':
+      return {
+        ok: false,
+        reason: 'too_large',
+        detail: `the image data inflates past the ${declared} bytes its ${check.header.width}×${check.header.height} header declares`,
+      };
+    case 'trailing':
+      return { ok: false, reason: 'unreadable', detail: 'the image data continues after the end of its compressed stream' };
+    case 'damaged':
+      return { ok: false, reason: 'unreadable', detail: 'the image data is damaged' };
+  }
+}
+
 /** The bytes of a base64 `data:image/…` URL, or null for anything else. The
  *  label is not trusted: callers pass the bytes on, and the checks here sniff
  *  the PNG signature. */
@@ -145,6 +256,12 @@ export function hasPngSignature(data: Buffer): boolean {
 }
 
 // ── single flight for large decodes ─────────────────────────────────────────
+// The slot goes by the header-based estimate, which bounds a decode only once
+// the image has passed checkPngImageData: every PNG that is decoded reaches
+// its decoder through that check (report logos in reportBranding.ts, pdfkit
+// images in quotePdf.ts's imageIsDrawable, certified-copy originals in
+// agreementCertificate.ts; pdfkit copies opaque, non-interlaced PNGs into the
+// PDF without decoding them).
 
 let slotHeld = false;
 const slotQueue: Array<() => void> = [];
