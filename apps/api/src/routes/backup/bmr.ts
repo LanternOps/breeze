@@ -505,6 +505,9 @@ bmrRoutes.post(
   '/bmr/tokens',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  // A recovery token restores the snapshot's device: the same execute
+  // permission as every other restore lane (restore.ts, vmrestore.ts).
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', bmrCreateTokenSchema),
   async (c) => {
