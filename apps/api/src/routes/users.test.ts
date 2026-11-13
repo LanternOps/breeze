@@ -1323,6 +1323,38 @@ describe('user routes', () => {
       expect(capturedTxSets.some((v) => v.status === 'invited' && v.phoneNumber === null && v.phoneVerified === false)).toBe(true);
     });
 
+    it('U-7c: a re-invited removed account starts without platform-admin or a verified address', async () => {
+      const TOMBSTONE = '46464646-4646-4646-4646-464646464646';
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: '22222222-2222-2222-2222-222222222222', scope: 'partner', name: 'Admin', description: null, isSystem: true, partnerId: null, orgId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: TOMBSTONE, status: 'disabled', passwordHash: null }]) }) }) } as any);
+      resetAllFactorsAndInvalidateMock.mockResolvedValueOnce({
+        mfaEpoch: 3, cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true }, remoteSessionsTerminated: 0, pendingSweepOk: true,
+        inventory: { wasEnabled: false, previousMethod: null, hadTotp: false, hadSms: false, hadRecoveryCodes: false, hadPhone: false, passkeys: [], passkeysDeleted: 0 },
+      });
+
+      const capturedTxSets: Array<Record<string, unknown>> = [];
+      const txSelect = vi.fn()
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: TOMBSTONE, email: 'returning@example.com', status: 'disabled', passwordHash: null, isPlatformAdmin: true, emailVerifiedAt: new Date('2026-01-01T00:00:00Z') }]) }) }) })
+        .mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) });
+      const txUpdate = vi.fn(() => ({ set: (values: Record<string, unknown>) => { capturedTxSets.push(values); return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: TOMBSTONE, email: 'returning@example.com', name: 'Returning', status: 'invited' }]) }) }; } }));
+      const txInsert = vi.fn().mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'link-1' }]) }) });
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn({ select: txSelect, update: txUpdate, insert: txInsert } as any));
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'returning@example.com', name: 'Returning', roleId: '22222222-2222-2222-2222-222222222222', orgAccess: 'none' })
+      });
+
+      expect(res.status).toBe(201);
+      const reset = capturedTxSets.find((v) => v.status === 'invited');
+      expect(reset).toBeDefined();
+      expect(reset).toMatchObject({ isPlatformAdmin: false, emailVerifiedAt: null });
+    });
+
     it('U-7b: an existing ACTIVE user (multi-scope add) is not pre-flight reset', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: '22222222-2222-2222-2222-222222222222', scope: 'partner', name: 'Admin', description: null, isSystem: true, partnerId: null, orgId: null }]) }) }) } as any)

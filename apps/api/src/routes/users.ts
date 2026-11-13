@@ -6,7 +6,7 @@ import { zValidator } from '../lib/validation';
 import { jsonError } from '../lib/jsonError';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -1593,6 +1593,11 @@ userRoutes.post(
             mfaRecoveryCodes: null,
             phoneNumber: null,
             phoneVerified: false,
+            // The invitee is a new holder of this row: nothing the previous
+            // holder proved or was granted carries over. Platform-admin is
+            // granted only by the startup bootstrap, to an eligible account.
+            isPlatformAdmin: false,
+            emailVerifiedAt: null,
             updatedAt: new Date()
           })
           .where(eq(users.id, user.id))
@@ -1860,6 +1865,8 @@ userRoutes.patch(
       name?: string;
       status?: 'active' | 'invited' | 'disabled';
       disabledReason?: string | null;
+      isPlatformAdmin?: SQL<boolean>;
+      emailVerifiedAt?: SQL<Date | null>;
       updatedAt: Date;
     } = {
       updatedAt: new Date()
@@ -1876,6 +1883,15 @@ userRoutes.patch(
       // "disabled for another reason" (partner unsuspend must not re-enable it)
       // and so reactivation never leaves a stale marker behind. See #917 L-5.
       updates.disabledReason = null;
+      if (data.status !== 'disabled') {
+        // Reactivating a removed account (disabled, no password) makes its
+        // holder a new holder of the row, as on re-invite: nothing the previous
+        // holder proved or was granted carries over. Evaluated against the row
+        // as it is when the UPDATE runs, so it cannot race a concurrent change.
+        const removedAccount = sql`(${users.status} = 'disabled' AND ${users.passwordHash} IS NULL)`;
+        updates.isPlatformAdmin = sql<boolean>`CASE WHEN ${removedAccount} THEN false ELSE ${users.isPlatformAdmin} END`;
+        updates.emailVerifiedAt = sql<Date | null>`CASE WHEN ${removedAccount} THEN NULL ELSE ${users.emailVerifiedAt} END`;
+      }
     }
 
     const [updated] = await runOutsideDbContext(() =>

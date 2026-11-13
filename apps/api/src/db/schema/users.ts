@@ -57,7 +57,8 @@ export const users = pgTable('users', {
   preferences: jsonb('preferences'),
   emailVerifiedAt: timestamp('email_verified_at'),
   // Platform-level admin flag — bootstrapped from BREEZE_PLATFORM_ADMINS env
-  // var at API startup, gates the cross-tenant /admin/* endpoints (e.g.
+  // var at API startup (eligible accounts only: active, verified, partner-level; see
+  // services/platformAdminBootstrap.ts), gates the cross-tenant /admin/* endpoints (e.g.
   // suspend-for-abuse). Intentionally lives outside the partner role system.
   isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
   // Durable authentication-state epochs (core-auth hardening PR 1). Advanced by
