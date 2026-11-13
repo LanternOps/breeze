@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { auditLogs, users } from '../db/schema';
+import { markRequestAuditWritten } from './auditRequestTracking';
 
 /** Actor id recorded on audit rows written by this startup job (no user acts). */
 const BOOTSTRAP_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
@@ -96,6 +97,7 @@ export async function bootstrapPlatformAdmins(): Promise<void> {
           },
         }))
       );
+      markRequestAuditWritten();
     }
 
     const listed = await db
