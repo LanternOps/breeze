@@ -266,4 +266,23 @@ describe('bootstrapPlatformAdmins — real Postgres (#2655)', () => {
       warnSpy.mockRestore();
     }
   });
+
+  it('names a listed platform admin whose account no longer meets the rules', async () => {
+    const partner = await createPartner({ status: 'active' });
+    const org = await createOrganization({ partnerId: partner.id });
+    const email = `flagged-org-${Date.now()}@example.com`;
+    const user = await createUser({ partnerId: partner.id, orgId: org.id, status: 'active', email });
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, user.id));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      setAdmins(email);
+      await bootstrapPlatformAdmins();
+
+      const warned = warnSpy.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+      expect(warned).toContain(user.id);
+      expect(await isPlatformAdmin(user.id)).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });

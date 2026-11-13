@@ -138,21 +138,30 @@ export async function bootstrapPlatformAdmins(): Promise<void> {
   const shared = [...rowsByAddress.entries()].filter(([, rows]) => rows.length > 1);
   if (shared.length > 0) {
     console.warn(
-      `[platform-admin-bootstrap] ${shared.length} listed address(es) match more than one account and none of them was promoted: ` +
+      `[platform-admin-bootstrap] ${shared.length} listed address(es) match more than one account; this run promoted none of them ` +
+        '(an account that already has the flag keeps it): ' +
         shared.map(([address, rows]) => `${address} (user ids: ${rows.map((row) => row.id).join(', ')})`).join('; ') +
         '. Remove the accounts that should not exist.'
     );
   }
 
-  const ineligible = [...rowsByAddress.entries()]
-    .filter(([, rows]) => rows.length === 1)
-    .map(([, rows]) => rows[0]!)
-    .filter((row) => !row.isPlatformAdmin && (row.status !== 'active' || row.emailVerifiedAt === null || row.orgId !== null))
-    .map((row) => row.address);
+  const failsRules = (row: (typeof listedRows)[number]) =>
+    row.status !== 'active' || row.emailVerifiedAt === null || row.orgId !== null;
+  const singleRows = [...rowsByAddress.values()].filter((rows) => rows.length === 1).map((rows) => rows[0]!);
+  const ineligible = singleRows.filter((row) => !row.isPlatformAdmin && failsRules(row)).map((row) => row.address);
   if (ineligible.length > 0) {
     console.warn(
       `[platform-admin-bootstrap] ${ineligible.length} listed account(s) were not promoted because the account is not ` +
         `active, its address is not verified, or it belongs to an organization rather than a partner: ${ineligible.join(', ')}.`
+    );
+  }
+
+  const flaggedFailing = singleRows.filter((row) => row.isPlatformAdmin && failsRules(row));
+  if (flaggedFailing.length > 0) {
+    console.warn(
+      `[platform-admin-bootstrap] ${flaggedFailing.length} listed platform admin account(s) keep the flag but would not be ` +
+        `promoted today (not active, address not verified, or belongs to an organization) — user ids: ` +
+        `${flaggedFailing.map((row) => row.id).join(', ')}. The flag is not removed automatically; review each account.`
     );
   }
 
