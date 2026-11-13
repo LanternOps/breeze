@@ -45,7 +45,7 @@ func writeRecoveryMarker(r *run, root, dir string) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	if err := tree.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func applyNewIdentity(root string) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	if err := tree.WriteFile(filepath.Join("etc", "machine-id"), []byte{}, 0o644); err != nil {
 		return err
 	}

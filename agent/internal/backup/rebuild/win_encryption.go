@@ -70,7 +70,7 @@ func winEncryption(_ context.Context, r *run) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	dir := filepath.Join("ProgramData", "Breeze", "data")
 	if err := tree.MkdirAll(dir, 0o700); err != nil {
 		return err

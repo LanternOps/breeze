@@ -74,12 +74,12 @@ func CopyFileFromRoot(base, relative, sourceRoot, sourceRelative string, mode os
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	source, err := root.Open(sourceName)
 	if err != nil {
 		return nil, err
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 	info, err := source.Stat()
 	if err != nil {
 		return nil, err

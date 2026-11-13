@@ -132,7 +132,7 @@ func hashTreeFile(base, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, file); err != nil {
 		return "", err
@@ -146,7 +146,7 @@ func readTreeFile(base, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return io.ReadAll(file)
 }
 
@@ -157,7 +157,7 @@ func treeFileExists(base, name string) bool {
 	if err != nil {
 		return false
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	_, err = tree.Stat(name)
 	return err == nil
 }
@@ -169,7 +169,7 @@ func openTreeFile(base, name string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	info, err := tree.Stat(name)
 	if err != nil {
 		return nil, err

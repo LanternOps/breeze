@@ -37,7 +37,7 @@ func selectOfflineHives(root, stagingDir string) (warning string, err error) {
 	if openErr != nil {
 		return "", openErr
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	var treeMissing []string
 	for _, h := range offlineRequiredHives {
 		_, statErr := securefs.StatFile(root, filepath.Join("Windows", "System32", "config", h))

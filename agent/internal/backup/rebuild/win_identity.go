@@ -43,7 +43,7 @@ func winIdentity(_ context.Context, r *run) error {
 	if err != nil {
 		return fmt.Errorf("identity: %w", err)
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	switch r.opts.Identity {
 	case IdentityOriginal:
 		if r.opts.Marker == nil {

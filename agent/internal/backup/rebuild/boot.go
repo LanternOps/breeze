@@ -26,7 +26,7 @@ func bootloaderID(root string) string {
 	if err != nil {
 		return "linux"
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	if data, err := tree.ReadFile(filepath.Join("etc", "os-release")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if k, v, ok := strings.Cut(line, "="); ok && k == "ID" {
@@ -87,7 +87,7 @@ func readRootedDir(root *os.Root, name string) ([]os.DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }()
 	return dir.ReadDir(-1)
 }
 
@@ -121,7 +121,7 @@ func ensureMountpoints(root string) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	for _, m := range []struct {
 		name string
 		kind mountpointKind
@@ -217,7 +217,7 @@ func boot(ctx context.Context, r *run) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	_, efiFile := grubTarget(r.sys.Arch())
 	vendorDir, vendorLoader := espVendorLoader(r.staging, tree, esp, bootloaderID(r.staging), r.sys.Arch())
 
@@ -423,7 +423,7 @@ func copyFile(root, src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	source, err := filepath.Rel(root, src)
 	if err != nil {
 		return err

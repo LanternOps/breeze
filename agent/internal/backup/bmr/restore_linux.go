@@ -574,7 +574,7 @@ func offlineUnitFileExists(root, unit string) bool {
 	if err != nil {
 		return false
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	for _, dir := range offlineUnitDirs {
 		for _, name := range names {
 			if _, err := tree.Lstat(filepath.Join(filepath.FromSlash(dir), name)); err == nil {
@@ -596,7 +596,7 @@ func validateOfflineServiceDirectories(root string) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	return fs.WalkDir(tree.FS(), directory, func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err

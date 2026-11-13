@@ -77,7 +77,7 @@ func checkMountAncestors(staging, relative string) error {
 	if err != nil {
 		return err
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	current := "."
 	for _, component := range strings.Split(filepath.ToSlash(relative), "/") {
 		info, err := tree.Lstat(current)
