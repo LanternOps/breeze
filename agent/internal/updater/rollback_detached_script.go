@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
 type windowsRollbackOperation string
@@ -19,10 +21,6 @@ type windowsRollbackScriptOptions struct {
 	Operation   windowsRollbackOperation
 }
 
-func powershellQuote(value string) string {
-	return strings.ReplaceAll(value, "'", "''")
-}
-
 func rollbackJournalPayload(journal rollbackSwapJournal, state string, next int) (string, error) {
 	journal.State = state
 	journal.Next = next
@@ -30,24 +28,24 @@ func rollbackJournalPayload(journal rollbackSwapJournal, state string, next int)
 	if err != nil {
 		return "", err
 	}
-	return powershellQuote(string(payload)), nil
+	return psscript.EscapeSingleQuoted(string(payload)), nil
 }
 
 func appendWindowsRecovery(lines []string, journal rollbackSwapJournal, journalPath string, indent string) []string {
 	for _, entry := range journal.Artifacts {
 		recoveryPath := entry.LivePath + ".breeze-recover-" + rollbackPathToken(journal.DirectiveID)
 		lines = append(lines,
-			fmt.Sprintf("%sCopy-RecoveryFile '%s' '%s'", indent, powershellQuote(entry.BackupPath), powershellQuote(recoveryPath)),
-			fmt.Sprintf("%sMove-WriteThrough '%s' '%s'", indent, powershellQuote(recoveryPath), powershellQuote(entry.LivePath)),
+			fmt.Sprintf("%sCopy-RecoveryFile '%s' '%s'", indent, psscript.EscapeSingleQuoted(entry.BackupPath), psscript.EscapeSingleQuoted(recoveryPath)),
+			fmt.Sprintf("%sMove-WriteThrough '%s' '%s'", indent, psscript.EscapeSingleQuoted(recoveryPath), psscript.EscapeSingleQuoted(entry.LivePath)),
 		)
 	}
 	for _, entry := range journal.Artifacts {
 		lines = append(lines,
-			fmt.Sprintf("%sRemove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", indent, powershellQuote(entry.BackupPath)),
-			fmt.Sprintf("%sRemove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", indent, powershellQuote(entry.NewPath)),
+			fmt.Sprintf("%sRemove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", indent, psscript.EscapeSingleQuoted(entry.BackupPath)),
+			fmt.Sprintf("%sRemove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", indent, psscript.EscapeSingleQuoted(entry.NewPath)),
 		)
 	}
-	return append(lines, fmt.Sprintf("%sRemove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", indent, powershellQuote(journalPath)))
+	return append(lines, fmt.Sprintf("%sRemove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", indent, psscript.EscapeSingleQuoted(journalPath)))
 }
 
 // buildWindowsRollbackScript renders the detached, stop-before-mutate helper
@@ -78,11 +76,11 @@ func buildWindowsRollbackScript(opts windowsRollbackScriptOptions) (string, erro
 		"  }",
 		"}",
 		"function Write-RollbackJournal([string]$payload) {",
-		fmt.Sprintf("  $tempPath = '%s.tmp-' + $PID", powershellQuote(opts.JournalPath)),
+		fmt.Sprintf("  $tempPath = '%s.tmp-' + $PID", psscript.EscapeSingleQuoted(opts.JournalPath)),
 		"  $bytes = [Text.UTF8Encoding]::new($false).GetBytes($payload)",
 		"  $stream = [IO.FileStream]::new($tempPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)",
 		"  try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }",
-		fmt.Sprintf("  Move-WriteThrough $tempPath '%s'", powershellQuote(opts.JournalPath)),
+		fmt.Sprintf("  Move-WriteThrough $tempPath '%s'", psscript.EscapeSingleQuoted(opts.JournalPath)),
 		"}",
 		"function Copy-RecoveryFile([string]$source, [string]$target) {",
 		"  Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue",
@@ -106,7 +104,7 @@ func buildWindowsRollbackScript(opts windowsRollbackScriptOptions) (string, erro
 			}
 			lines = append(lines,
 				fmt.Sprintf("  Write-RollbackJournal '%s'", payload),
-				fmt.Sprintf("  Move-WriteThrough '%s' '%s'", powershellQuote(entry.NewPath), powershellQuote(entry.LivePath)),
+				fmt.Sprintf("  Move-WriteThrough '%s' '%s'", psscript.EscapeSingleQuoted(entry.NewPath), psscript.EscapeSingleQuoted(entry.LivePath)),
 			)
 		}
 		payload, err := rollbackJournalPayload(opts.Journal, "swapped", len(opts.Journal.Artifacts))
