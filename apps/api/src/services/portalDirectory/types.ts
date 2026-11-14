@@ -11,4 +11,6 @@ export interface DisableIdentityInput {
 export type DisableIdentityResult =
   | { kind: 'disabled'; portalUserId: string; accountDisabled: boolean; keepsPassword: boolean }
   | { kind: 'blocker_added'; portalUserId: string; accountDisabled: boolean }     // already disabled by another blocker
-  | { kind: 'skipped'; reason: 'already_blocked' | 'not_found' | 'chain_changed' | 'rearmed' };
+  // action_not_held: the run's action is no longer `held` (dismissed, superseded or already applied
+  // between applyRun's read and this action's transaction) — nothing is written.
+  | { kind: 'skipped'; reason: 'already_blocked' | 'not_found' | 'chain_changed' | 'rearmed' | 'action_not_held' };

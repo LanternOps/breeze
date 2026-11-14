@@ -70,6 +70,7 @@ const CALL_SITES: Record<string, { fact: Fact; reason: string }> = {
 const LEGACY_ENTRA_COLUMN_USERS: Record<string, string> = {
   'apps/api/src/services/portalUserIdentities.ts': 'writer fence on link; legacy pre-check refuses (conflict); drift report only',
   'apps/api/src/services/portalOidc/signInProviders.ts': 'legacyKeyHeld: refuses an invite before consumption (identity_conflict)',
+  'apps/api/src/services/portalDirectory/identityDisable.ts': 'OD3 remove: the W3 D4 fence clears the removed identity\'s legacy columns (WHERE matches them); never finds an account',
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');

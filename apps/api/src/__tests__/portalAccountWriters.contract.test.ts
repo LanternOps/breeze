@@ -66,6 +66,11 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // creates an invited + browser-granted account
   // (initialPortalAccountState('self_registration_instant')).
   'apps/api/src/services/portalSelfRegistration/complete.ts': { kind: 'state-module' },
+  // Portal registration W8 (#11385) plan D2/D9: disablePortalIdentity's
+  // account rule (directory_deprovision) and Restore's msp_reactivate, both
+  // planned by the state module under the account row lock, each writing
+  // disabledBy; plus OD3's remove (the W3 D4 entra_* fence, no state).
+  'apps/api/src/services/portalDirectory/identityDisable.ts': { kind: 'state-module' },
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');
