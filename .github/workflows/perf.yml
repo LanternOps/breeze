@@ -254,8 +254,9 @@ jobs:
   # #8642: nightly storm-suite, one fault schedule per run (api-kill, rolling-deploy,
   # socket-drop, slow-loop, stall) against a 400-agent lab stack. Warn-only until
   # the repository variable PERF_GATES_ENFORCE is 'true' (owner decision: flip it on
-  # or after 2026-10-31; no PR needed). A red gate while warn-only is a ::warning::
-  # and a green job; once enforced it fails the job and the notifier files the issue.
+  # or after 2026-10-31; no PR needed). A measured red gate while warn-only is a
+  # ::warning:: and a green job; a harness failure is always red (see the step).
+  # Once enforced a red gate fails the job and the notifier files the issue.
   # needs: gate serializes it on the single runner; always() so a KPI regression
   # does not hide the storm result.
   storm:
@@ -352,10 +353,15 @@ jobs:
           docker network prune -f || true
           docker volume prune -a -f || true
 
-      # continue-on-error is the warn-only switch: unset PERF_GATES_ENFORCE keeps
-      # the job green, and the step still reports the red gate below.
+      # Warn-only covers a measured gate miss and nothing else: while
+      # PERF_GATES_ENFORCE is not 'true', exit 3 (storm.sh: .storm.pass is false)
+      # becomes a ::warning:: and a green step only if storm-measured.sh confirms
+      # every fault fired, every event ran its window and every failing gate has
+      # data. Anything else is the harness failing (the stack did not start, the
+      # simulator never ran its window, agents never reached the API) and fails
+      # the job, which files the nightly issue (#11623: a dead stack was a green
+      # 3.5-min job).
       - name: Run storm-suite with gates
-        continue-on-error: ${{ vars.PERF_GATES_ENFORCE != 'true' }}
         env:
           PERF_GATES_ENFORCE: ${{ vars.PERF_GATES_ENFORCE }}
         run: |
@@ -366,8 +372,12 @@ jobs:
             --gate-heartbeat-p95 "$STORM_GATE_HEARTBEAT_P95" \
             --gate-pool-min-ratio "$STORM_GATE_POOL_MIN_RATIO" \
             --gate-pool-recovery "$STORM_GATE_POOL_RECOVERY" || rc=$?
-          if [ "$rc" -ne 0 ] && [ "$PERF_GATES_ENFORCE" != 'true' ]; then
-            echo "::warning::storm-suite exited $rc (3 = a gate failed); warn-only until PERF_GATES_ENFORCE=true"
+          if [ "$rc" -eq 3 ] && [ "$PERF_GATES_ENFORCE" != 'true' ] && load-tests/perf/storm-measured.sh "$OUT/storm/storm.json"; then
+            echo "::warning::storm-suite: a gate failed (exit 3); warn-only until PERF_GATES_ENFORCE=true"
+            exit 0
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::storm-suite exited $rc (3 with enforcement off = the run did not measure, see storm-measured above; 3 enforced = a gate failed; anything else = the harness failed)"
           fi
           exit "$rc"
 
