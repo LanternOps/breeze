@@ -329,7 +329,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   device_lifecycle: `inlineSettings {purgeRemovedAfterDays: number|null} — permanently delete removed devices N days after removal (1..3650); null/absent = keep forever. Purge is IRREVERSIBLE: it destroys the device record and all of its history. A daily job applies it; devices whose agent uninstall is still queued are skipped until it completes. Closest level wins, so an org-level link with null opts that org out of a partner-wide window.`,
   remote_access: `{ webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 30, maxSessionDurationHours: 8 (whole hours, 1..12 — remote desktop sessions are hard-capped at 12h and "unlimited"/0 is rejected), sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic", allowUserEndSession?: true (the person at the device may end the session from the on-screen indicator, after a confirmation; default true) } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.`,
   onedrive_helper: `{ silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }`,
-  software_policy: `Link-only: featurePolicyId → existing software policy UUID; no inlineSettings.`,
+  software_policy: `Link-only: featurePolicyId → existing software policy UUID; no inlineSettings. Multiple distinct software policies may be linked and apply additively. Blocklist rules win app conflicts.`,
   peripheral_control: `Link-only: featurePolicyId → existing peripheral policy UUID; no inlineSettings.`,
   monitors: `{ items: [{ monitorId: "existing monitor definition UUID", enabled: true, overrides?: {}, sortOrder?: 0 }], inheritance: "cumulative"|"replace" (default "cumulative"), checkIntervalSeconds: 60 }. Check interval accepts 10–3600 seconds and controls agent service/process checks. Up to 200 attachments; create monitor definitions with manage_monitor_definitions before linking.`,
   hardware_monitoring: `{ enabled: true, pollIntervalMinutes: 10, diskHealthIntervalMinutes: 60 } — inline-only RAID and disk-health collection settings. All fields are optional; these are the defaults. enabled is boolean; pollIntervalMinutes is an integer in 5..60; diskHealthIntervalMinutes is an integer in 15..1440. Collection is enabled without a policy link. Attach hardware monitors separately for alerts.`,
@@ -1319,7 +1319,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           throw err;
         }
         if (!link) {
-          return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
+          return JSON.stringify({ error: featureType === 'software_policy'
+            ? 'This software policy is already linked to this configuration policy.'
+            : `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
         }
         return JSON.stringify({
           success: true,

@@ -47,6 +47,7 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/softwarePolicyConflicts', () => ({ getSoftwareBlocklistRulesForDevice: vi.fn(async () => []) }));
 vi.mock('../db', () => ({
   db: { select: dbSelectMock, update: () => ({ set: dbUpdateSetMock }) },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),

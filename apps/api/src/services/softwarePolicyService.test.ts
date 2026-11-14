@@ -10,6 +10,8 @@ import {
   cleanupSoftwarePolicyElevations,
   compareSoftwareVersions,
   evaluateSoftwareInventory,
+  evaluateSoftwarePolicyAgainstInventory,
+  isSoftwareRuleBlocked,
   matchesSoftwareRule,
   normalizeSoftwarePolicyRules,
   withStableViolationTimestamps,
@@ -310,6 +312,33 @@ describe('missing violations carry the rule catalogId', () => {
     const stabilised = withStableViolationTimestamps(next, previous);
     expect(stabilised[0]?.detectedAt).toBe('2026-01-01T00:00:00.000Z');
     expect(stabilised[0]?.rule?.catalogId).toBe(CATALOG_ID);
+  });
+});
+
+
+describe('additive software policy conflicts — blocklist wins', () => {
+  const required = { name: 'TeamViewer Host', catalogId: 'catalog-1' };
+  it('suppresses an absent allowlist requirement prohibited by another policy', () => {
+    const result = evaluateSoftwarePolicyAgainstInventory({ mode: 'allowlist', rules: { software: [required], allowUnknown: true } }, [], [{ name: 'TeamViewer*' }]);
+    expect(result).toEqual({ status: 'compliant', violations: [] });
+  });
+  it('preserves unrelated required installs and unknown installed applications', () => {
+    const result = evaluateSoftwarePolicyAgainstInventory({ mode: 'allowlist', rules: { software: [required, { name: 'Chrome', catalogId: 'catalog-2' }], allowUnknown: true } }, [{ name: 'Other app', version: null, vendor: null, catalogId: null }], [{ name: 'TeamViewer*' }]);
+    expect(result.violations).toEqual([expect.objectContaining({ type: 'missing', rule: expect.objectContaining({ name: 'Chrome' }) })]);
+  });
+  it('retains the blocklist violation for an installed app also explicitly allowed', () => {
+    const inventory = [{ name: required.name, version: '1.0', vendor: null, catalogId: required.catalogId }];
+    expect(evaluateSoftwarePolicyAgainstInventory({ mode: 'allowlist', rules: { software: [required], allowUnknown: true } }, inventory, [{ name: 'TeamViewer*' }]).status).toBe('compliant');
+    expect(evaluateSoftwarePolicyAgainstInventory({ mode: 'blocklist', rules: { software: [{ name: 'TeamViewer*' }] } }, inventory).violations).toEqual([expect.objectContaining({ type: 'unauthorized' })]);
+  });
+  it('detects overlapping wildcard requirements conservatively', () => {
+    expect(isSoftwareRuleBlocked({ name: 'Foo*' }, [{ name: '*Bar' }])).toBe(true);
+    expect(isSoftwareRuleBlocked({ name: 'Foo*' }, [{ name: 'Other*' }])).toBe(false);
+  });
+  it('does not confuse distinct catalogs, vendors or disjoint version ranges', () => {
+    expect(isSoftwareRuleBlocked(required, [{ name: required.name, catalogId: 'another' }])).toBe(false);
+    expect(isSoftwareRuleBlocked({ name: 'App', vendor: 'A' }, [{ name: 'App', vendor: 'B' }])).toBe(false);
+    expect(isSoftwareRuleBlocked({ name: 'App', minVersion: '3' }, [{ name: 'App', maxVersion: '2' }])).toBe(false);
   });
 });
 

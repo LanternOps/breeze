@@ -33,7 +33,7 @@
       "search": "Buscar...",
       "loading": "Cargando...",
       "restrictThisAssignmentToDevicesWithSpecific": "Restrinja esta asignación a dispositivos con roles específicos. Déjelo vacío para aplicar a todos los roles.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Los valores más bajos anulan los más altos cuando varias políticas apuntan al mismo dispositivo en el mismo nivel.",
+      "lowerValuesOverrideHigherOnesWhenMultiple": "Los valores más bajos anulan los más altos cuando varias políticas apuntan al mismo dispositivo en el mismo nivel. Las políticas de software se suman: la prioridad de asignación no elimina otras políticas de software que se aplican.",
       "partner": "socio",
       "scopeOfTheAssignmentMoreSpecificLevels": "Alcance del encargo. Los niveles más específicos (dispositivo) tienen prioridad sobre los más amplios (organización).",
       "organization": "organización",
@@ -1173,7 +1173,9 @@
         "executableRulesInThisPolicyAlsoGate": "Las reglas ejecutables en esta política también bloquean las solicitudes de elevación UAC en los dispositivos asignados: una coincidencia de lista permitida se aprueba automáticamente, una coincidencia de lista bloqueada se deniega automáticamente, antes de que se ejecute cualquier regla PAM.",
         "rules": "Normas (",
         "and": "...y",
-        "more": "más"
+        "more": "más",
+        "addSoftwarePolicy": "Agregar política de software",
+        "policiesApplyTogether": "Todas las políticas de software vinculadas se aplican en conjunto, incluidas las heredadas de asignaciones de mayor alcance. Agregar una política no reemplaza otra política de software."
       },
       "vulnerabilityTab": {
         "enableVulnerabilityScanning": "Habilitar el escaneo de vulnerabilidades",

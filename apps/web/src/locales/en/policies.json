@@ -33,7 +33,7 @@
       "search": "Search...",
       "loading": "Loading...",
       "restrictThisAssignmentToDevicesWithSpecific": "Restrict this assignment to devices with specific roles. Leave empty to apply to all roles.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Lower values override higher ones when multiple policies target the same device at the same level.",
+      "lowerValuesOverrideHigherOnesWhenMultiple": "Lower values override higher ones when multiple policies target the same device at the same level. Software policies are additive: assignment priority does not remove other applying software policies.",
       "partner": "partner",
       "scopeOfTheAssignmentMoreSpecificLevels": "Scope of the assignment. More specific levels (device) take precedence over broader ones (organization).",
       "organization": "organization",
@@ -1173,7 +1173,9 @@
         "executableRulesInThisPolicyAlsoGate": "Executable rules in this policy also gate UAC elevation requests on assigned devices — an allowlist match auto-approves, a blocklist match auto-denies, before any PAM rules run.",
         "rules": "Rules (",
         "and": "...and",
-        "more": "more"
+        "more": "more",
+        "addSoftwarePolicy": "Add software policy",
+        "policiesApplyTogether": "All linked software policies apply together, including policies inherited from broader assignments. Adding a policy does not replace another software policy."
       },
       "vulnerabilityTab": {
         "enableVulnerabilityScanning": "Enable vulnerability scanning",

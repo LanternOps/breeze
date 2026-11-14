@@ -33,7 +33,7 @@
       "search": "Rechercher...",
       "loading": "Chargement...",
       "restrictThisAssignmentToDevicesWithSpecific": "Limitez cette affectation aux appareils ayant des rôles précis. Laissez ce champ vide pour l’appliquer à tous les rôles.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Des valeurs plus basses supplantent les plus élevées lorsque plusieurs politiques ciblent le même appareil au même niveau.",
+      "lowerValuesOverrideHigherOnesWhenMultiple": "Des valeurs plus basses supplantent les plus élevées lorsque plusieurs politiques ciblent le même appareil au même niveau. Les politiques logicielles se cumulent : la priorité d’affectation ne supprime pas les autres politiques logicielles applicables.",
       "partner": "partenaire",
       "scopeOfTheAssignmentMoreSpecificLevels": "Portée du devoir. Les niveaux plus spécifiques (dispositif) ont le pas sur les niveaux plus larges (organisation).",
       "organization": "Organisation",
@@ -1173,7 +1173,9 @@
         "executableRulesInThisPolicyAlsoGate": "Les règles exécutables de cette politique bloquent également les requêtes d’élévation UAC sur les appareils assignés — une correspondance allowlist approuve automatiquement, une correspondance de liste de blocage refuse automatiquement, avant que toute règle PAM ne s’exécute.",
         "rules": "Règles (",
         "and": "... et",
-        "more": "plus"
+        "more": "plus",
+        "addSoftwarePolicy": "Ajouter une politique logicielle",
+        "policiesApplyTogether": "Toutes les politiques logicielles liées s’appliquent ensemble, y compris celles héritées d’affectations de portée plus large. L’ajout d’une politique ne remplace aucune autre politique logicielle."
       },
       "vulnerabilityTab": {
         "enableVulnerabilityScanning": "Activer l’analyse des vulnérabilités",

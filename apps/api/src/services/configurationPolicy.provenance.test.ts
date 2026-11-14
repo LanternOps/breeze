@@ -52,7 +52,8 @@ function mockResolverCalls(assignmentRows: Array<Record<string, unknown>>) {
     .mockReturnValueOnce(selectChain([DEVICE]) as any) // device
     .mockReturnValueOnce(selectChain([ORG]) as any) // org
     .mockReturnValueOnce(selectChain([]) as any) // group memberships
-    .mockReturnValueOnce(selectChain(assignmentRows) as any); // assignments join
+    .mockReturnValueOnce(selectChain(assignmentRows) as any)
+    .mockReturnValue(selectChain([]) as any); // assignments join
   if (assignmentRows.some((r) => r.inherited)) {
     mock.mockReturnValueOnce(selectChain(PARENT_NAMES) as any); // authoring-policy names
   }
@@ -200,4 +201,50 @@ describe('resolveEffectiveConfig inheritance provenance', () => {
     expect(r!.features.remote_access!.inheritedFromPolicyId).toBeNull();
     expect(r!.features.remote_access!.inheritedFromPolicyName).toBeNull();
   });
+});
+
+
+it('effective configuration lists additive software policies while maintenance remains closest-wins', async () => {
+  vi.mocked(db.select).mockReset();
+  mockResolverCalls([
+    row({ featureType: 'software_policy', featurePolicyId: 'required', featurePolicyName: 'Required apps', policyId: 'partner', assignmentLevel: 'partner' }),
+    row({ featureType: 'software_policy', featurePolicyId: 'blocked', featurePolicyName: 'Blocked apps', policyId: 'org', assignmentLevel: 'organization' }),
+    row({ featureType: 'maintenance', policyId: 'partner', assignmentLevel: 'partner' }),
+    row({ featureType: 'maintenance', policyId: 'org', assignmentLevel: 'organization' }),
+  ]);
+  const result = await resolveEffectiveConfig('dev-1', systemAuth);
+  expect(result?.softwarePolicies.map((entry) => entry.featurePolicyName)).toEqual(['Blocked apps', 'Required apps']);
+  expect(result?.features.maintenance?.sourcePolicyId).toBe('org');
+});
+
+it('effective configuration includes explicit org software targets without a configuration link', async () => {
+  vi.mocked(db.select).mockReset();
+  mockResolverCalls([]);
+  vi.mocked(db.select).mockReturnValue(selectChain([
+    { id: 'default-blocklist', name: 'Default Blocklist', targetType: 'organization', targetIds: ['org-1'], priority: 10 },
+  ]) as any);
+  const result = await resolveEffectiveConfig('dev-1', systemAuth, { includeBaseline: true });
+  expect(result?.softwarePolicies).toEqual([expect.objectContaining({
+    featurePolicyId: 'default-blocklist', featurePolicyName: 'Default Blocklist', sourceKind: 'software_policy',
+  })]);
+  expect(result?.features.software_policy?.featurePolicyId).toBe('default-blocklist');
+  expect(result?.features.software_policy?.sourceLevel).not.toBe('default');
+  expect(result?.inheritanceChain).toEqual([expect.objectContaining({
+    level: 'default', featureTypes: expect.not.arrayContaining(['software_policy']),
+  })]);
+});
+
+it('effective configuration omits disabled software links while retaining other feature types', async () => {
+  vi.mocked(db.select).mockReset();
+  mockResolverCalls([
+    row({ featureType: 'software_policy', featurePolicyId: 'disabled', softwarePolicyActive: false }),
+    row({ featureType: 'software_policy', featurePolicyId: 'missing', softwarePolicyActive: null }),
+    row({ featureType: 'software_policy', featurePolicyId: 'active', softwarePolicyActive: true, policyId: 'active-config' }),
+    row({ featureType: 'maintenance', softwarePolicyActive: null }),
+  ]);
+  const result = await resolveEffectiveConfig('dev-1', systemAuth);
+  expect(result?.softwarePolicies.map((p) => p.featurePolicyId)).toEqual(['active']);
+  expect(result?.features.software_policy?.featurePolicyId).toBe('active');
+  expect(result?.features.maintenance).toBeDefined();
+  expect(result?.inheritanceChain.every((entry) => entry.policyId !== 'child-1' || !entry.featureTypes.includes('software_policy'))).toBe(true);
 });

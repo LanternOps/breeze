@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getSoftwareBlocklistRulesForDevice } from '../services/softwarePolicyConflicts';
 
 const {
   addMock,
@@ -58,6 +59,7 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/softwarePolicyConflicts', () => ({ getSoftwareBlocklistRulesForDevice: vi.fn(async () => []) }));
 vi.mock('../db', () => ({
   db: { select: dbSelectMock, update: () => ({ set: dbUpdateSetMock }) },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -367,6 +369,15 @@ describe('processCheckPolicy — install remediation wiring', () => {
     if (!call) throw new Error('upsertSoftwareComplianceStatuses was never called');
     return call[0] as unknown as Array<Record<string, unknown>>;
   }
+
+  it('does not queue a required install that an applying blocklist prohibits', async () => {
+    primePass(['device-1'], []);
+    vi.mocked(getSoftwareBlocklistRulesForDevice).mockResolvedValueOnce([{ name: 'Google Chrome', catalogId: 'catalog-abc' }]);
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+    expect(result.installRemediationQueued).toBe(0);
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+    expect(upsertedRows()[0]).toMatchObject({ status: 'compliant', violations: [] });
+  });
 
   it('queues an install for a device whose allowlist rule is missing', async () => {
     primePass(['device-1'], []);

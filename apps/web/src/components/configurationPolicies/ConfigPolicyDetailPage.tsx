@@ -345,13 +345,13 @@ export default function ConfigPolicyDetailPage({
     }
   };
   const handleLinkChanged = useCallback(
-    (link: FeatureLink | null, featureType: FeatureType) => {
+    (link: FeatureLink | null, featureType: FeatureType, removedLinkId?: string) => {
       setFeatureLinks((prev) => {
         if (link === null) {
           // Remove
-          return prev.filter((l) => l.featureType !== featureType);
+          return prev.filter((l) => removedLinkId ? l.id !== removedLinkId : l.featureType !== featureType);
         }
-        const idx = prev.findIndex((l) => l.featureType === featureType);
+        const idx = prev.findIndex((l) => featureType === "software_policy" ? l.id === link.id : l.featureType === featureType);
         if (idx >= 0) {
           // Update
           const next = [...prev];
@@ -372,7 +372,7 @@ export default function ConfigPolicyDetailPage({
   // attachments for cumulative resolution; existingLink still governs saves.
   const effectiveLinks = [
     ...featureLinks,
-    ...parentFeatureLinks.filter((link) => !linkFor(link.featureType)),
+    ...parentFeatureLinks.filter((link) => link.featureType === "software_policy" || !linkFor(link.featureType)),
   ];
   // Partner-wide ("all organizations") policies carry orgId === null (#1724).
   // A fixed, small set of feature types are fundamentally org-scoped (backup

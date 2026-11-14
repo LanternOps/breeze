@@ -33,7 +33,7 @@
       "search": "Ara...",
       "loading": "Yükleniyor...",
       "restrictThisAssignmentToDevicesWithSpecific": "Bu atamayı belirli rollere sahip cihazlarla sınırlandırın. Tüm rollere başvurmak için boş bırakın.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Birden fazla politika aynı cihazı aynı düzeyde hedeflediğinde daha düşük değerler daha yüksek değerleri geçersiz kılar.",
+      "lowerValuesOverrideHigherOnesWhenMultiple": "Birden fazla politika aynı cihazı aynı düzeyde hedeflediğinde daha düşük değerler daha yüksek değerleri geçersiz kılar. Yazılım politikaları birlikte uygulanır: atama önceliği, geçerli olan diğer yazılım politikalarını kaldırmaz.",
       "partner": "ortak",
       "scopeOfTheAssignmentMoreSpecificLevels": "Görevin kapsamı. Daha spesifik düzeyler (cihaz), daha geniş düzeylere (organizasyon) göre önceliklidir.",
       "organization": "organizasyon",
@@ -1173,7 +1173,9 @@
         "executableRulesInThisPolicyAlsoGate": "Bu politikadaki yürütülebilir kurallar aynı zamanda atanmış cihazlardaki UAC yükseltme isteklerini de kapsar; herhangi bir PAM kuralı çalıştırılmadan önce izin verilenler listesi eşleşmesi otomatik olarak onaylanır, engellenenler listesi eşleşmesi otomatik olarak reddedilir.",
         "rules": "Kurallar (",
         "and": "...ve",
-        "more": "daha fazla"
+        "more": "daha fazla",
+        "addSoftwarePolicy": "Yazılım politikası ekle",
+        "policiesApplyTogether": "Bağlı tüm yazılım politikaları, daha geniş kapsamlı atamalardan devralınanlar da dahil olmak üzere birlikte uygulanır. Bir politika eklemek başka bir yazılım politikasının yerini almaz."
       },
       "vulnerabilityTab": {
         "enableVulnerabilityScanning": "Güvenlik açığı taramasını etkinleştir",
