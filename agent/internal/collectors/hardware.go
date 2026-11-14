@@ -322,8 +322,8 @@ func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {
 		hw.RAMTotalMB = vmem.Total / 1024 / 1024
 	}
 
-	// Disk — use platform-appropriate root path
-	rootPath := "/"
+	// Disk — use platform-appropriate OS volume path
+	rootPath := osUsagePath()
 	if runtime.GOOS == "windows" {
 		rootPath = os.Getenv("SystemDrive") + "\\"
 		if rootPath == "\\" {

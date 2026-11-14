@@ -50,9 +50,13 @@ export function displayedDisks(
 
   const findVolume = (mountPoint: string) =>
     disks.find((disk) => isDisplayableDisk(disk) && disk.mountPoint === mountPoint);
+  // The agent's flag wins when present: Windows agents send it from
+  // SystemDrive, and Linux agents send it so immutable systems (read-only composefs root) point at the real
+  // storage such as /sysroot. Older agents fall back to the mount-point rules.
+  const flagged = disks.find((disk) => isDisplayableDisk(disk) && disk.isOsVolume === true);
   const volume = os === 'windows'
-    ? disks.find((disk) => isDisplayableDisk(disk) && disk.isOsVolume === true)
-    : (os === 'macos' ? findVolume('/System/Volumes/Data') : undefined) ?? findVolume('/');
+    ? flagged
+    : flagged ?? (os === 'macos' ? findVolume('/System/Volumes/Data') : undefined) ?? findVolume('/');
   return volume ? [volume] : [];
 }
 
