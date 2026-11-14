@@ -5266,7 +5266,9 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Utilisez plutôt votre clé d'accès ou votre code d'authentification — rechargez la page pour mettre à jour vos options.",
     "pendingActivatesOnFirstApproval": "En attente — s'active dès la première approbation",
     "sessionExpiredReloadAndTryAgain": "Session expirée — rechargez la page et réessayez.",
-    "registrationCancelled": "L'inscription a été annulée."
+    "registrationCancelled": "L'inscription a été annulée.",
+    "ssoVerificationExpired": "La vérification auprès de votre fournisseur d'identité est expirée ou a déjà été utilisée. Vérifiez de nouveau pour enregistrer cet appareil.",
+    "signInOptionsChanged": "Vos options de connexion ont changé. Rechargez la page et réessayez."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Réponses préfabriquées",
@@ -7633,7 +7635,10 @@
     "authenticatorCode": "Code d'authentification",
     "confirmYourPassword": "Confirmez votre mot de passe",
     "switchToAuthenticatorCode": "Utiliser plutôt l’application d’authentification",
-    "usePasskeyInstead": "Utiliser plutôt votre clé d’accès"
+    "usePasskeyInstead": "Utiliser plutôt votre clé d’accès",
+    "ssoVerifyFirst": "Ce compte se connecte au moyen de votre fournisseur d'identité et n'a pas de mot de passe. Vérifiez d'abord auprès de votre fournisseur, puis enregistrez cet appareil.",
+    "ssoVerifyButton": "Vérifier auprès de votre fournisseur d'identité",
+    "ssoVerified": "Identité vérifiée. Enregistrez cet appareil d'ici 5 minutes."
   },
   "tenantVariablesPage": {
     "orgOwnedNote": "Les variables propres à une organisation sont répertoriées sous celle-ci.",

@@ -28,6 +28,14 @@ describe('ssoReauthIntent (#4055)', () => {
     expect(sessionStorage.getItem(SSO_REAUTH_INTENT_KEY)).toBeNull();
   });
 
+  // #9007: the approver section's register form is a third landing.
+  it('round-trips the approver_device intent and consumes it', () => {
+    stashSsoReauthIntent('approver_device');
+
+    expect(takeSsoReauthIntent()).toBe('approver_device');
+    expect(sessionStorage.getItem(SSO_REAUTH_INTENT_KEY)).toBeNull();
+  });
+
   it('returns null when nothing was stashed', () => {
     expect(takeSsoReauthIntent()).toBeNull();
   });

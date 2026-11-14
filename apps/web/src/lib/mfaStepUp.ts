@@ -9,10 +9,10 @@ import { fetchWithAuth } from '../stores/auth';
  *
  * Extracted from stores/authenticator.ts's `mintRegisterGrant` so the
  * maintenance dialog and approver-device registration cannot drift on the
- * ceremony or on the `skipUnauthorizedRetry` rationale. The store's `password`
- * branch stays there: it targets a different endpoint
- * (/authenticator/register-grant) and `password` is not a valid step-up method
- * for a resource-bound operation.
+ * ceremony or on 401 handling (since #4470 / #9007 neither road sets
+ * `skipUnauthorizedRetry`). The store's `password` and `sso` branches stay
+ * there: they target a different endpoint (/authenticator/register-grant), and
+ * neither is a valid step-up method for a resource-bound operation.
  */
 export type StepUpReauth = { method: 'totp'; code: string } | { method: 'passkey' };
 
@@ -21,7 +21,7 @@ export class StepUpMintError extends Error {
     readonly code: 'invalid_factor' | 'unavailable',
     message: string,
     /** Preserved so the approver-device store can keep exposing `status` to
-     * its callers, which map 401/403/429 to distinct copy. */
+     * its callers, which map 400/401/403/429 to distinct copy. */
     readonly status?: number,
     readonly responseCode?: string,
   ) {

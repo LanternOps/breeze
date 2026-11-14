@@ -5266,7 +5266,9 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Usa invece la passkey o il codice authenticator — ricarica la pagina per aggiornare le opzioni.",
     "pendingActivatesOnFirstApproval": "In sospeso — si attiva alla prima approvazione",
     "sessionExpiredReloadAndTryAgain": "Sessione scaduta — ricarica la pagina e riprova.",
-    "registrationCancelled": "Registrazione annullata."
+    "registrationCancelled": "Registrazione annullata.",
+    "ssoVerificationExpired": "La verifica con il tuo provider di identità è scaduta o è già stata usata. Verifica di nuovo per registrare questo dispositivo.",
+    "signInOptionsChanged": "Le tue opzioni di accesso sono cambiate. Ricarica la pagina e riprova."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Risposte predefinite",
@@ -7633,7 +7635,10 @@
     "authenticatorCode": "Codice authenticator",
     "confirmYourPassword": "Conferma la password",
     "switchToAuthenticatorCode": "Usa invece l’app di autenticazione",
-    "usePasskeyInstead": "Usa invece la tua passkey"
+    "usePasskeyInstead": "Usa invece la tua passkey",
+    "ssoVerifyFirst": "Questo account accede tramite il tuo provider di identità e non ha una password. Verifica prima con il tuo provider, poi registra questo dispositivo.",
+    "ssoVerifyButton": "Verifica con il tuo provider di identità",
+    "ssoVerified": "Identità verificata. Registra questo dispositivo entro 5 minuti."
   },
   "tenantVariablesPage": {
     "orgOwnedNote": "Le variabili appartenenti a un’organizzazione sono elencate nella rispettiva organizzazione.",

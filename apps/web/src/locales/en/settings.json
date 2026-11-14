@@ -5266,14 +5266,19 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Use your passkey or authenticator code instead — reload the page to update your options.",
     "pendingActivatesOnFirstApproval": "Pending — activates on first approval",
     "sessionExpiredReloadAndTryAgain": "Session expired — reload the page and try again.",
-    "registrationCancelled": "Registration was cancelled."
+    "registrationCancelled": "Registration was cancelled.",
+    "ssoVerificationExpired": "Your identity provider verification has expired or was already used. Verify again to register this device.",
+    "signInOptionsChanged": "Your sign-in options changed. Reload the page and try again."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
     "authenticatorCode": "Authenticator code",
     "confirmYourPassword": "Confirm your password",
     "switchToAuthenticatorCode": "Use authenticator app instead",
-    "usePasskeyInstead": "Use your passkey instead"
+    "usePasskeyInstead": "Use your passkey instead",
+    "ssoVerifyFirst": "This account signs in through your identity provider and has no password. Verify with your provider first, then register this device.",
+    "ssoVerifyButton": "Verify with your identity provider",
+    "ssoVerified": "Identity verified. Register this device within 5 minutes."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Canned responses",
