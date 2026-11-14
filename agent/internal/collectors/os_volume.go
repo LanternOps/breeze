@@ -3,10 +3,14 @@ package collectors
 import (
 	"bufio"
 	"io"
+	"log/slog"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/shirou/gopsutil/v3/disk"
 )
 
 // Immutable Linux systems (Fedora Silverblue/Kinoite, Bazzite, CoreOS, bootc
@@ -19,12 +23,13 @@ import (
 //
 // The decision is made from mount information (filesystem type and overlay
 // layers), not from distribution names, so any image-rooted system with one
-// of the writable mounts below is handled.
+// of the mounts below on real storage is handled.
 
 // osMountCandidates are tried in order when / is a read-only image. /sysroot
 // is the physical root filesystem on ostree systems; /var and /etc are the
 // writable mounts that remain when /sysroot is not visible (for example a
-// bootc host with a separate /var partition).
+// bootc host with a separate /var partition, in which case /var is what is
+// reported).
 var osMountCandidates = []string{"/sysroot", "/var", "/etc"}
 
 // imageFSTypes are filesystems that only ever hold a packed, read-only image.
@@ -34,6 +39,16 @@ var imageFSTypes = map[string]bool{
 	"squashfs":  true,
 	"cramfs":    true,
 	"composefs": true,
+}
+
+// nonStorageFSTypes are never accepted as the OS volume: their statfs numbers
+// describe RAM (tmpfs, ramfs, devtmpfs) or another layered view (overlay), so
+// picking one would trade a false 100% for a false near-0%.
+var nonStorageFSTypes = map[string]bool{
+	"tmpfs":    true,
+	"ramfs":    true,
+	"devtmpfs": true,
+	"overlay":  true,
 }
 
 // mountInfoEntry is one line of /proc/<pid>/mountinfo.
@@ -50,16 +65,17 @@ type mountInfoEntry struct {
 //
 //	36 35 98:0 /mnt1 /mnt2 rw,noatime master:1 - ext3 /dev/root rw,errors=continue
 //
-// Malformed lines are skipped so one odd entry cannot hide the rest.
-func parseMountInfo(r io.Reader) []mountInfoEntry {
+// Malformed lines are skipped so one odd entry cannot hide the rest. A read
+// error (including a line longer than the scanner limit) is returned with the
+// entries parsed so far; callers must not treat that table as complete.
+func parseMountInfo(r io.Reader) ([]mountInfoEntry, error) {
 	var entries []mountInfoEntry
 	scanner := bufio.NewScanner(r)
 	// Overlay super options list every layer and can exceed the default
 	// 64 KiB token limit on hosts with deep container image stacks.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		pre, post, ok := strings.Cut(line, " - ")
+		pre, post, ok := strings.Cut(scanner.Text(), " - ")
 		if !ok {
 			continue
 		}
@@ -80,11 +96,12 @@ func parseMountInfo(r io.Reader) []mountInfoEntry {
 		}
 		entries = append(entries, entry)
 	}
-	return entries
+	return entries, scanner.Err()
 }
 
 // unescapeMountInfo decodes the octal escapes (\040 space, \011 tab, \012
-// newline, \134 backslash) the kernel uses in mountinfo paths.
+// newline, \134 backslash) the kernel uses in mountinfo paths. Anything that
+// is not a valid three-digit octal byte is kept literally.
 func unescapeMountInfo(s string) string {
 	if !strings.Contains(s, `\`) {
 		return s
@@ -104,34 +121,87 @@ func unescapeMountInfo(s string) string {
 	return b.String()
 }
 
-// isImageFilesystem reports whether a mount is a read-only image whose
-// statfs numbers describe the image rather than usable storage.
+// isImageFilesystem reports whether a mount is itself a packed read-only
+// image (by filesystem type, or composefs as the mount source).
 func isImageFilesystem(e mountInfoEntry) bool {
-	if imageFSTypes[e.FSType] || e.Source == "composefs" {
-		return true
-	}
-	if e.FSType == "overlay" {
-		// An overlay without an upper layer cannot be written, and statfs
-		// reports its top lower layer — on composefs, the erofs image.
-		return !hasMountOption(e.SuperOptions, "upperdir")
-	}
-	return false
+	return imageFSTypes[e.FSType] || e.Source == "composefs"
 }
 
-func hasMountOption(options, key string) bool {
+// isImageRoot reports whether the root mount is a read-only image whose
+// statfs numbers describe the image rather than usable storage. Besides a
+// plain image filesystem, that is an overlay with no upper layer whose top
+// lower layer is an image: statfs on an upper-less overlay reports the top
+// lower layer, which on composefs is the erofs metadata image. Composefs
+// overlays are recognised by their data-only lower layers (datadir+= or the
+// "::" separator) even when the erofs mount itself is not visible.
+func isImageRoot(root mountInfoEntry, top map[string]mountInfoEntry) bool {
+	if isImageFilesystem(root) {
+		return true
+	}
+	if root.FSType != "overlay" {
+		return false
+	}
+	opts := mountOptionValues(root.SuperOptions)
+	if _, ok := opts["upperdir"]; ok {
+		return false
+	}
+	if _, ok := opts["datadir+"]; ok {
+		return true
+	}
+	lower := opts["lowerdir"]
+	if strings.Contains(lower, "::") {
+		return true
+	}
+	firstLower, _, _ := strings.Cut(lower, ":")
+	if firstLower == "" {
+		firstLower = opts["lowerdir+"]
+	}
+	if firstLower == "" {
+		return false
+	}
+	backing, ok := containingMount(firstLower, top)
+	return ok && isImageFilesystem(backing)
+}
+
+// mountOptionValues splits a comma-separated option string. For a repeated
+// key (lowerdir+= appears once per layer) the first value is kept.
+func mountOptionValues(options string) map[string]string {
+	values := make(map[string]string)
 	for _, opt := range strings.Split(options, ",") {
-		name, _, _ := strings.Cut(opt, "=")
-		if name == key {
-			return true
+		name, value, _ := strings.Cut(opt, "=")
+		if _, seen := values[name]; !seen {
+			values[name] = value
 		}
 	}
-	return false
+	return values
+}
+
+// containingMount returns the mount, other than / itself, with the longest
+// mount point that contains path.
+func containingMount(path string, top map[string]mountInfoEntry) (mountInfoEntry, bool) {
+	var best mountInfoEntry
+	found := false
+	for mp, e := range top {
+		if mp == "/" || (path != mp && !strings.HasPrefix(path, mp+"/")) {
+			continue
+		}
+		if !found || len(mp) > len(best.MountPoint) {
+			best, found = e, true
+		}
+	}
+	return best, found
+}
+
+// isStorageMount reports whether a candidate mount describes real storage.
+func isStorageMount(e mountInfoEntry) bool {
+	return !isImageFilesystem(e) && !nonStorageFSTypes[e.FSType]
 }
 
 // resolveOSMountPoint picks the mount point whose usage represents the OS
 // volume. It is / unless / is a read-only image, in which case the first
-// candidate that is mounted on real storage is used. With no such candidate
-// it stays at /, which is no worse than before.
+// candidate mounted on real storage is used. It returns "" when the table has
+// no / entry (nothing to decide from). With an image root and no usable
+// candidate it stays at /, which is no worse than before.
 func resolveOSMountPoint(entries []mountInfoEntry) string {
 	// The last entry for a mount point is the topmost mount, the one this
 	// process actually sees.
@@ -140,11 +210,14 @@ func resolveOSMountPoint(entries []mountInfoEntry) string {
 		top[e.MountPoint] = e
 	}
 	root, ok := top["/"]
-	if !ok || !isImageFilesystem(root) {
+	if !ok {
+		return ""
+	}
+	if !isImageRoot(root, top) {
 		return "/"
 	}
 	for _, candidate := range osMountCandidates {
-		if e, ok := top[candidate]; ok && !isImageFilesystem(e) {
+		if e, ok := top[candidate]; ok && isStorageMount(e) {
 			return candidate
 		}
 	}
@@ -154,16 +227,32 @@ func resolveOSMountPoint(entries []mountInfoEntry) string {
 // mountInfoPath is a variable so tests can point it at a fixture.
 var mountInfoPath = "/proc/self/mountinfo"
 
+// mountInfoWarnOnce keeps a persistent read failure from logging every
+// metrics cycle.
+var mountInfoWarnOnce sync.Once
+
 // linuxOSMountPoint resolves the OS volume from this process's mount table.
-// It returns "" when the table cannot be read, so callers can keep the
-// volume identity unknown instead of guessing.
+// It returns "" when the table cannot be read completely, so callers keep
+// the volume identity unknown instead of guessing.
 func linuxOSMountPoint() string {
 	f, err := os.Open(mountInfoPath)
 	if err != nil {
+		warnMountInfo(err)
 		return ""
 	}
 	defer func() { _ = f.Close() }()
-	return resolveOSMountPoint(parseMountInfo(f))
+	entries, err := parseMountInfo(f)
+	if err != nil {
+		warnMountInfo(err)
+		return ""
+	}
+	return resolveOSMountPoint(entries)
+}
+
+func warnMountInfo(err error) {
+	mountInfoWarnOnce.Do(func() {
+		slog.Warn("could not read the mount table; reporting disk usage for /", "path", mountInfoPath, "error", err.Error())
+	})
 }
 
 // osUsagePath is the path whose disk usage is reported as the device's OS
@@ -177,6 +266,23 @@ func osUsagePath() string {
 		return mp
 	}
 	return "/"
+}
+
+// diskUsageFn is disk.Usage, indirected for tests.
+var diskUsageFn = disk.Usage
+
+// osDiskUsage returns usage for the OS volume. If the resolved mount cannot
+// be read it retries /, so a failure never turns into a silent 0%.
+func osDiskUsage() (*disk.UsageStat, error) {
+	return usageWithRootFallback(osUsagePath())
+}
+
+func usageWithRootFallback(path string) (*disk.UsageStat, error) {
+	usage, err := diskUsageFn(path)
+	if err != nil && path != "/" {
+		return diskUsageFn("/")
+	}
+	return usage, err
 }
 
 // isImagePartition is the inventory-side check on a gopsutil partition.

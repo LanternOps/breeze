@@ -122,7 +122,7 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 
 	// Disk (OS volume: / on most systems, the real storage under a
 	// read-only image root on immutable Linux — see osUsagePath)
-	diskUsage, err := disk.Usage(osUsagePath())
+	diskUsage, err := osDiskUsage()
 	if err == nil {
 		metrics.DiskPercent = diskUsage.UsedPercent
 		metrics.DiskUsedGB = float64(diskUsage.Used) / 1024 / 1024 / 1024

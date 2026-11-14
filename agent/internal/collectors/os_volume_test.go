@@ -1,9 +1,12 @@
 package collectors
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/shirou/gopsutil/v3/disk"
 )
 
 // Mountinfo samples are trimmed to the lines that matter for the decision
@@ -77,9 +80,25 @@ const mountinfoContainerOverlay = `611 540 0:52 / / rw,relatime master:310 - ove
 620 611 8:1 /var/lib/docker/volumes/data/_data /var rw,relatime - ext4 /dev/sda1 rw
 `
 
-// A read-only overlay root (no upper layer) on a writable filesystem.
-const mountinfoReadOnlyOverlay = `22 1 0:21 / / ro,relatime shared:1 - overlay overlay ro,lowerdir=/run/rootfs/lower
+// A read-only overlay root (no upper layer) whose lower layer is a squashfs
+// image: statfs("/") reports the image.
+const mountinfoReadOnlyOverlayOnImage = `20 1 7:0 / /run/rootfs/lower ro,relatime shared:9 - squashfs /dev/loop0 ro
+22 1 0:21 / / ro,relatime shared:1 - overlay overlay ro,lowerdir=/run/rootfs/lower:/run/rootfs/extra
 40 22 8:3 / /var rw,relatime shared:6 - ext4 /dev/sda3 rw
+`
+
+// A read-only overlay root whose lower layer is a directory on ext4:
+// statfs("/") already reports that ext4 filesystem, so / stays.
+const mountinfoReadOnlyOverlayOnDisk = `20 1 8:2 / /media/base ro,relatime shared:9 - ext4 /dev/sda2 rw
+22 1 0:21 / / ro,relatime shared:1 - overlay overlay ro,lowerdir=/media/base/rootfs
+40 22 8:3 / /var rw,relatime shared:6 - ext4 /dev/sda3 rw
+`
+
+// An image root whose /var is RAM-backed: tmpfs is not storage, so / stays
+// rather than reporting a near-empty RAM disk.
+const mountinfoImageRootTmpfsVar = `22 1 7:0 / / ro,relatime shared:1 - squashfs /dev/loop0 ro
+23 22 0:30 / /var rw,relatime shared:2 - tmpfs tmpfs rw,size=1048576k
+24 22 0:31 / /etc rw,relatime shared:3 - overlay overlay rw,lowerdir=/usr/etc,upperdir=/run/etc/upper,workdir=/run/etc/work
 `
 
 // An erofs/squashfs image root with nothing writable mounted at a known spot.
@@ -118,15 +137,18 @@ func TestResolveOSMountPoint(t *testing.T) {
 		{"ext4 root keeps root", mountinfoExt4Root, "/"},
 		{"btrfs subvolume root keeps root", mountinfoBtrfsSubvolumes, "/"},
 		{"container overlay with upper layer keeps root", mountinfoContainerOverlay, "/"},
-		{"read-only overlay root uses var", mountinfoReadOnlyOverlay, "/var"},
+		{"read-only overlay on an image uses var", mountinfoReadOnlyOverlayOnImage, "/var"},
+		{"read-only overlay on a disk directory keeps root", mountinfoReadOnlyOverlayOnDisk, "/"},
 		{"image root without a writable mount keeps root", mountinfoImageRootNoFallback, "/"},
 		{"image var is skipped in favour of etc", mountinfoImageVarEtcFallback, "/etc"},
+		{"tmpfs and overlay candidates are not storage", mountinfoImageRootTmpfsVar, "/"},
 		{"stacked root uses the topmost mount", mountinfoStackedRoot, "/sysroot"},
-		{"empty mountinfo keeps root", "", "/"},
+		{"no root entry is unknown", "", ""},
+		{"table without a root entry is unknown", "26 25 8:3 / /data rw - ext4 /dev/sda3 rw\n", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveOSMountPoint(parseMountInfo(strings.NewReader(tt.mountinfo)))
+			got := resolveOSMountPoint(mustParseMountInfo(t, tt.mountinfo))
 			if got != tt.want {
 				t.Fatalf("resolveOSMountPoint() = %q, want %q", got, tt.want)
 			}
@@ -134,8 +156,17 @@ func TestResolveOSMountPoint(t *testing.T) {
 	}
 }
 
+func mustParseMountInfo(t *testing.T, mountinfo string) []mountInfoEntry {
+	t.Helper()
+	entries, err := parseMountInfo(strings.NewReader(mountinfo))
+	if err != nil {
+		t.Fatalf("parseMountInfo: %v", err)
+	}
+	return entries
+}
+
 func TestParseMountInfo(t *testing.T) {
-	entries := parseMountInfo(strings.NewReader(mountinfoSilverblueComposefs))
+	entries := mustParseMountInfo(t, mountinfoSilverblueComposefs)
 	if len(entries) != 11 {
 		t.Fatalf("parsed %d entries, want 11", len(entries))
 	}
@@ -150,7 +181,7 @@ func TestParseMountInfo(t *testing.T) {
 		t.Fatalf("sysroot entry = %+v", got)
 	}
 
-	escaped := parseMountInfo(strings.NewReader(mountinfoEscapedMountpoint))
+	escaped := mustParseMountInfo(t, mountinfoEscapedMountpoint)
 	if len(escaped) != 2 || escaped[1].MountPoint != "/mnt/My Disk" {
 		t.Fatalf("escaped mount point = %+v", escaped)
 	}
@@ -158,9 +189,94 @@ func TestParseMountInfo(t *testing.T) {
 	// Malformed lines (no " - " separator, too few fields) are skipped
 	// rather than aborting the parse.
 	mixed := "garbage line\n25 1 8:2 / / rw - ext4 /dev/sda2 rw\n1 2 3 - x\n"
-	parsed := parseMountInfo(strings.NewReader(mixed))
+	parsed := mustParseMountInfo(t, mixed)
 	if len(parsed) != 1 || parsed[0].MountPoint != "/" {
 		t.Fatalf("mixed parse = %+v", parsed)
+	}
+
+	// A line past the scanner limit is a read error, not a short table.
+	huge := "25 1 8:2 / / rw - ext4 /dev/sda2 rw\n26 25 0:40 / /x rw - overlay overlay rw,lowerdir=" +
+		strings.Repeat("a", 2*1024*1024) + "\n"
+	if _, err := parseMountInfo(strings.NewReader(huge)); err == nil {
+		t.Fatal("parseMountInfo accepted a line over the scanner limit")
+	}
+}
+
+func TestUnescapeMountInfo(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{`/plain`, `/plain`},
+		{`/My\040Disk`, `/My Disk`},
+		{`/tab\011x`, "/tab\tx"},
+		{`/nl\012x`, "/nl\nx"},
+		{`/back\134slash`, `/back\slash`},
+		{`/trunc\04`, `/trunc\04`},
+		{`/notoctal\09x`, `/notoctal\09x`},
+		{`/big\777`, `/big\777`},
+		{`/utf8\303\251`, "/utf8é"},
+		{`/end\`, `/end\`},
+	}
+	for _, tt := range tests {
+		if got := unescapeMountInfo(tt.in); got != tt.want {
+			t.Errorf("unescapeMountInfo(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestIsImageRoot(t *testing.T) {
+	top := map[string]mountInfoEntry{
+		"/run/lower": {MountPoint: "/run/lower", FSType: "erofs", Source: "/dev/loop0"},
+		"/media":     {MountPoint: "/media", FSType: "ext4", Source: "/dev/sda2"},
+	}
+	tests := []struct {
+		name string
+		root mountInfoEntry
+		want bool
+	}{
+		{"composefs source even with a transient upper", mountInfoEntry{FSType: "overlay", Source: "composefs", SuperOptions: "rw,lowerdir+=/a,upperdir=/run/x/upper,workdir=/run/x/work"}, true},
+		{"data-only lower via datadir+", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "ro,lowerdir+=/hidden,datadir+=/sysroot/ostree/repo/objects"}, true},
+		{"data-only lower via ::", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "ro,lowerdir=/hidden::/sysroot/ostree/repo/objects"}, true},
+		{"upper-less overlay over an erofs mount", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "ro,lowerdir=/run/lower/root:/b"}, true},
+		{"upper-less overlay via lowerdir+ over an erofs mount", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "ro,lowerdir+=/run/lower,lowerdir+=/b"}, true},
+		{"upper-less overlay over an ext4 directory", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "ro,lowerdir=/media/rootfs"}, false},
+		{"upper-less overlay over an unknown path", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "ro,lowerdir=/elsewhere"}, false},
+		{"overlay with an upper layer", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "rw,lowerdir=/run/lower,upperdir=/u,workdir=/w"}, false},
+		{"erofs root", mountInfoEntry{FSType: "erofs", Source: "/dev/loop0"}, true},
+		{"ext4 root", mountInfoEntry{FSType: "ext4", Source: "/dev/sda2"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.root.MountPoint = "/"
+			if got := isImageRoot(tt.root, top); got != tt.want {
+				t.Fatalf("isImageRoot(%+v) = %v, want %v", tt.root, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUsageWithRootFallback(t *testing.T) {
+	original := diskUsageFn
+	t.Cleanup(func() { diskUsageFn = original })
+	var asked []string
+	diskUsageFn = func(path string) (*disk.UsageStat, error) {
+		asked = append(asked, path)
+		if path == "/sysroot" {
+			return nil, errors.New("permission denied")
+		}
+		return &disk.UsageStat{Path: path, UsedPercent: 42}, nil
+	}
+
+	usage, err := usageWithRootFallback("/sysroot")
+	if err != nil || usage.Path != "/" || strings.Join(asked, ",") != "/sysroot,/" {
+		t.Fatalf("fallback: usage=%+v err=%v asked=%v", usage, err, asked)
+	}
+
+	asked = nil
+	diskUsageFn = func(path string) (*disk.UsageStat, error) {
+		asked = append(asked, path)
+		return nil, errors.New("statfs failed")
+	}
+	if _, err := usageWithRootFallback("/"); err == nil || len(asked) != 1 {
+		t.Fatalf("root failure must be returned without a retry: err=%v asked=%v", err, asked)
 	}
 }
 
@@ -174,9 +290,8 @@ func TestIsImageFilesystem(t *testing.T) {
 		{"squashfs", mountInfoEntry{FSType: "squashfs", Source: "/dev/loop0"}, true},
 		{"cramfs", mountInfoEntry{FSType: "cramfs", Source: "/dev/mtdblock0"}, true},
 		{"composefs fstype", mountInfoEntry{FSType: "composefs", Source: "composefs"}, true},
-		{"overlay from composefs", mountInfoEntry{FSType: "overlay", Source: "composefs", SuperOptions: "ro,lowerdir+=/a,upperdir=/run/x/upper,workdir=/run/x/work"}, true},
-		{"overlay without upper layer", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "ro,lowerdir=/a:/b"}, true},
-		{"overlay with upper layer", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "rw,lowerdir=/a,upperdir=/u,workdir=/w"}, false},
+		{"overlay from composefs", mountInfoEntry{FSType: "overlay", Source: "composefs", SuperOptions: "ro,lowerdir+=/a"}, true},
+		{"plain overlay is decided by isImageRoot", mountInfoEntry{FSType: "overlay", Source: "overlay", SuperOptions: "ro,lowerdir=/a:/b"}, false},
 		{"ext4", mountInfoEntry{FSType: "ext4", Source: "/dev/sda2"}, false},
 		{"btrfs", mountInfoEntry{FSType: "btrfs", Source: "/dev/sda3"}, false},
 		{"xfs mounted read-only is still real storage", mountInfoEntry{FSType: "xfs", Source: "/dev/vda4", MountOptions: "ro,relatime"}, false},
@@ -229,6 +344,18 @@ func TestLinuxOSMountPointReadsMountTable(t *testing.T) {
 	mountInfoPath = path + ".missing"
 	if got := linuxOSMountPoint(); got != "" {
 		t.Fatalf("linuxOSMountPoint() with no mount table = %q, want empty", got)
+	}
+
+	// A table cut short by a read error is not trusted either: the entries
+	// that decide the answer may be the ones that were lost.
+	truncated := mountinfoSilverblueComposefs + "99 22 0:40 / /x rw - overlay overlay rw,lowerdir=" +
+		strings.Repeat("a", 2*1024*1024) + "\n"
+	if err := os.WriteFile(path, []byte(truncated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mountInfoPath = path
+	if got := linuxOSMountPoint(); got != "" {
+		t.Fatalf("linuxOSMountPoint() with a truncated table = %q, want empty", got)
 	}
 }
 
