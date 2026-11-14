@@ -133,8 +133,10 @@ export interface AiOfferingToolProfileDto {
 /**
  * #11396: the evidence behind an offering's effective context window. The
  * override is kept apart from what was discovered or observed, so clearing it
- * restores the evidence underneath. A stale or re-versioned observation is
- * still shown (`fresh: false`) but no longer constrains.
+ * restores the evidence underneath. An observation outlives the memo TTL as
+ * a floor while nothing is listed (#11393); one that a config change or a
+ * listed window has superseded is still shown (`applies: false`) but no
+ * longer constrains.
  */
 export interface AiOfferingContextWindowDto {
   /** The window `auto` and the gateway use; null = unknown (`auto` stays full). */
@@ -144,7 +146,7 @@ export interface AiOfferingContextWindowDto {
   /** Stated by the endpoint's model listing on the last discovery sync that listed the model. */
   discovered: number | null;
   /** Stated by the endpoint in a context-length rejection. */
-  observed: { value: number; at: string; fresh: boolean } | null;
+  observed: { value: number; at: string; applies: boolean } | null;
 }
 
 export type OfferingVerificationState = 'unverified' | 'verified' | 'failed' | 'stale';

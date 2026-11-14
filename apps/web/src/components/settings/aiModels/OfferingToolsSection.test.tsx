@@ -41,7 +41,7 @@ describe('OfferingDrawer — Tools and context (#11398)', () => {
   it('auto shows the resolved profile per surface and the window source, with an observed window\'s age', () => {
     const at = new Date(Date.now() - 12 * 60_000).toISOString();
     open(gateway({
-      contextWindow: { effective: 8192, source: 'observed', override: null, discovered: 131072, observed: { value: 8192, at, fresh: true } },
+      contextWindow: { effective: 8192, source: 'observed', override: null, discovered: 131072, observed: { value: 8192, at, applies: true } },
       toolProfile: toolProfileFor({ windowOverrideSupported: true }, {
         chat: { resolved: 'minimal', reason: 'auto_window', autoProfile: 'minimal' },
         script_builder: { resolved: 'minimal', reason: 'auto_window', autoProfile: 'minimal', missingRequired: ['execute_script_on_device'] },
@@ -54,12 +54,21 @@ describe('OfferingDrawer — Tools and context (#11398)', () => {
     expect(screen.getByTestId('ai-offering-tool-surface-script_builder').textContent).toMatch(/execute_script_on_device/);
   });
 
-  it('a stale observation is shown with its age but said not to limit anything (behaviour unchanged)', () => {
+  it('a superseded observation is shown with its age but said not to limit anything', () => {
     const at = new Date(Date.now() - 3 * 3_600_000).toISOString();
-    open(gateway({ contextWindow: { effective: 131072, source: 'discovered', override: null, discovered: 131072, observed: { value: 8192, at, fresh: false } } }));
+    open(gateway({ contextWindow: { effective: 131072, source: 'discovered', override: null, discovered: 131072, observed: { value: 8192, at, applies: false } } }));
     const stale = screen.getByTestId('ai-offering-context-observed-stale').textContent!;
     expect(stale).toMatch(/8,192/);
     expect(stale).toMatch(/3 h/);
+    // #11393: age alone no longer retires a report, so the note does not blame it.
+    expect(stale).not.toMatch(/hour old/);
+  });
+
+  it('#11393: an hours-old observation that still applies is the window, with no "no longer limits" note', () => {
+    const at = new Date(Date.now() - 3 * 3_600_000).toISOString();
+    open(gateway({ contextWindow: { effective: 8192, source: 'observed', override: null, discovered: null, observed: { value: 8192, at, applies: true } } }));
+    expect(screen.getByTestId('ai-offering-context-facts').textContent).toMatch(/8,192/);
+    expect(screen.queryByTestId('ai-offering-context-observed-stale')).toBeNull();
   });
 
   it('custom reveals domains and tools; saving sends toolProfile and toolAllowlist together', async () => {

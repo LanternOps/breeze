@@ -45,7 +45,7 @@ import {
 import { db } from '../../db';
 import { aiAgents, aiModelAssignments } from '../../db/schema';
 import { outcomeToolsForRun } from '../aiAgents/outcomeTools';
-import { resolveEffectiveContextWindow, type ContextWindowFields } from './contextWindowFacts';
+import { isStaleObservedWindow, resolveEffectiveContextWindow, type ContextWindowFields } from './contextWindowFacts';
 import { RegistryWriteError } from './registryWriteErrors';
 import { checkSurfaceCoverage, type RunFloorRef } from './surfaceRequiredTools';
 import { effectiveToolProfile, resolveToolExposure } from './toolExposure';
@@ -196,13 +196,20 @@ export function validateToolSettingsPatch(input: {
   // 4. Floors on every served surface, judged on what each resolves to; only new gaps count.
   const override = patch.contextWindowOverride !== undefined ? patch.contextWindowOverride : (stored.contextWindowOverride ?? null);
   const transport = gateway ? 'gateway' : 'anthropic';
-  const windowOf = (fields: ContextWindowFields) => (gateway ? resolveEffectiveContextWindow(fields, gateway.configVersion).value : null);
-  const before = toolProfileFactsFrom(stored, transport, windowOf(stored));
+  const windowOf = (fields: ContextWindowFields): { effectiveWindow: number | null; windowStale: boolean } => {
+    if (!gateway) return { effectiveWindow: null, windowStale: false };
+    const w = resolveEffectiveContextWindow(fields, gateway.configVersion);
+    return { effectiveWindow: w.value, windowStale: isStaleObservedWindow(w) };
+  };
+  const storedWindow = windowOf(stored);
+  const before = toolProfileFactsFrom(stored, transport, storedWindow.effectiveWindow, storedWindow.windowStale);
+  const afterWindow = windowOf({ ...stored, contextWindowOverride: override });
   const after: ToolProfileFacts = {
     toolProfile: profile,
     toolAllowlist: allowlist,
-    effectiveWindow: windowOf({ ...stored, contextWindowOverride: override }),
+    effectiveWindow: afterWindow.effectiveWindow,
     transport,
+    ...(afterWindow.windowStale ? { windowStale: true } : {}),
   };
   const gaps: ToolSettingsGap[] = [];
   for (const surface of AI_TOOL_PROFILED_SURFACES) {
@@ -233,9 +240,9 @@ function reasonFor(facts: ToolProfileFacts, surface: ProfiledSurface): AiOfferin
 /** The drawer's "Tools and context" facts for one offering (#11398). */
 export function buildToolProfileDto(
   stored: StoredToolSettings,
-  opts: { effectiveWindow: number | null; gateway: boolean; catalog: ToolProfileCatalog; troubleshootingRuns: boolean },
+  opts: { effectiveWindow: number | null; windowStale?: boolean; gateway: boolean; catalog: ToolProfileCatalog; troubleshootingRuns: boolean },
 ): AiOfferingToolProfileDto {
-  const facts = toolProfileFactsFrom(stored, opts.gateway ? 'gateway' : 'anthropic', opts.effectiveWindow);
+  const facts = toolProfileFactsFrom(stored, opts.gateway ? 'gateway' : 'anthropic', opts.effectiveWindow, opts.windowStale ?? false);
   const surfaces = AI_TOOL_PROFILED_SURFACES.map((surface): AiOfferingToolSurfaceDto => {
     const { profile, tooSmall } = effectiveToolProfile(facts, surface);
     const auto = facts.effectiveWindow === null ? null : effectiveToolProfile({ ...facts, toolProfile: 'auto', toolAllowlist: null }, surface);

@@ -635,7 +635,7 @@
           "discovered": "vom Endpunkt aufgelistet"
         },
         "windowObserved": "Kontextfenster: {{tokens}} Tokens (vom Endpunkt gemeldet {{age}}).",
-        "observedStale": "Der Endpunkt hat zuletzt {{age}} {{tokens}} Tokens gemeldet. Diese Meldung ist über eine Stunde alt oder stammt aus einer früheren Endpunkt-Einrichtung und schränkt daher nichts mehr ein.",
+        "observedStale": "Der Endpunkt hat zuletzt {{age}} {{tokens}} Tokens gemeldet. Eine spätere Endpunkt-Einrichtung oder die Modellliste hat diese Meldung ersetzt; sie schränkt daher nichts mehr ein.",
         "overrideLabel": "Überschreibung des Kontextfensters (Tokens)",
         "overrideHint": "Nur für Modelle auf Ihrem eigenen OpenAI-kompatiblen Endpunkt. Leer lassen, um zu verwenden, was der Endpunkt auflistet oder meldet. Neue Unterhaltungen verwenden einen geänderten Wert; offene behalten ihr aktuelles Limit, außer das von ihnen verwendete Profil ändert sich.",
         "surfacesTitle": "Was jede Funktion derzeit verwendet",

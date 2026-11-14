@@ -245,6 +245,27 @@ describe('tool exposure wiring (#11393 W01)', () => {
     expect(prepareSdkChild).not.toHaveBeenCalled();
   });
 
+  it('#11393: a STALE observed floor too small for minimal starts the session on minimal and reaches the SDK (no up-front refusal)', async () => {
+    vi.mocked(prepareSdkChild).mockClear();
+    const staleFloor = facts({ toolProfile: 'auto', effectiveWindow: 4_096, windowStale: true, transport: 'gateway' });
+    const session = await create('s-stale-floor', modelWith(staleFloor));
+    expect(session).toBeDefined();
+    expect(queryMock).toHaveBeenCalled();
+    expect(prepareSdkChild).toHaveBeenCalled();
+    expect(onlyToolsOf()).toBeDefined();
+    expect(session.liveKey).toMatch(/\|tx:[0-9a-f]{16}$/);
+  });
+
+  it('#11393: a warm stale-floor session refuses once a FRESH rejection confirms the window (rotates, no live session)', async () => {
+    const warm = await create('s-stale-then-fresh', modelWith(facts({ toolProfile: 'auto', effectiveWindow: 4_096, windowStale: true, transport: 'gateway' })));
+    warm.state = 'idle';
+    queryMock.mockClear();
+    await expect(create('s-stale-then-fresh', modelWith(facts({ toolProfile: 'auto', effectiveWindow: 4_096, transport: 'gateway' }))))
+      .rejects.toMatchObject({ code: 'context_window_too_small', status: 409 });
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(manager.get('s-stale-then-fresh')).toBeUndefined();
+  });
+
   it('#11396: a warm idle session whose window shrinks into too_small rotates, refuses 409-style, and keeps no live session', async () => {
     const warm = await create('s-shrink', modelWith(facts({ toolProfile: 'auto', effectiveWindow: 8_192, transport: 'gateway' })));
     warm.state = 'idle';

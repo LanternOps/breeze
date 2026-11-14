@@ -635,7 +635,7 @@
           "discovered": "listada por el endpoint"
         },
         "windowObserved": "Ventana de contexto: {{tokens}} tokens (informada por el endpoint {{age}}).",
-        "observedStale": "El endpoint informó por última vez {{tokens}} tokens {{age}}. Ese informe tiene más de una hora o es de una configuración anterior del endpoint, así que ya no limita nada.",
+        "observedStale": "El endpoint informó por última vez {{tokens}} tokens {{age}}. Una configuración posterior del endpoint o la lista de modelos reemplazó ese informe, así que ya no limita nada.",
         "overrideLabel": "Anulación de la ventana de contexto (tokens)",
         "overrideHint": "Solo para modelos en tu propio endpoint compatible con OpenAI. Déjalo en blanco para usar lo que el endpoint liste o informe. Las conversaciones nuevas usan el valor modificado; las abiertas conservan su límite actual, salvo que cambie el perfil que usan.",
         "surfacesTitle": "Lo que usa ahora cada función",

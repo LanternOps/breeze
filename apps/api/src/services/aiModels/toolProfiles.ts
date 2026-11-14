@@ -157,6 +157,24 @@ export const CURATED_PROFILES: Readonly<Record<ProfiledSurface, Readonly<Record<
 });
 
 /**
+ * #11393: the lowest profile `auto` resolves to from a STALE observed window
+ * (an endpoint's rejection past the memo TTL, kept as a floor). A stale
+ * window narrows tools but never into an up-front refusal: neither
+ * `too_small` nor `tool_profile_underpowered` makes a provider call, so
+ * nothing could ever disprove the floor. Each value is the smallest curated
+ * profile that keeps the surface's required tools (`SURFACE_REQUIRED_TOOLS`;
+ * for `ai_agents`, the widest run floor, device troubleshooting's
+ * execute_command / run_script). toolExposure.test.ts pins each one.
+ */
+export const STALE_WINDOW_AUTO_FLOOR: Readonly<Record<ProfiledSurface, ConstrainedProfile>> = Object.freeze({
+  chat: 'minimal',
+  helper: 'minimal',
+  office_chat: 'minimal',
+  script_builder: 'standard',
+  ai_agents: 'standard',
+});
+
+/**
  * Measured fixed prefix (system prompt + advertised tool schemas) per surface
  * and profile, in tokens (bytes / 3), used by `auto` (#11395 W03). Measured
  * on a gateway connection, the transport `auto` is live on: the translated

@@ -241,7 +241,7 @@ export default function OfferingToolsSection({ offering, draft, onChange, disabl
 
       <div className="space-y-1">
         <p data-testid="ai-offering-context-facts" className="text-sm">{windowFacts(offering, t)}</p>
-        {w?.observed && !w.observed.fresh && (
+        {w?.observed && !w.observed.applies && (
           <p data-testid="ai-offering-context-observed-stale" className="text-xs text-muted-foreground">
             {t('aiModels.offering.tools.observedStale', { tokens: formatNumber(w.observed.value), age: ageText(w.observed.at, t) })}
           </p>

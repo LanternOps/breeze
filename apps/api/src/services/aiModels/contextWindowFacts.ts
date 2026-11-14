@@ -9,12 +9,24 @@
  *     and a FRESH observed one (an endpoint's own context-length rejection):
  *     a serving limit below the advertised maximum (a model served with a
  *     smaller context than its listing states) beats the maximum;
- *  3. otherwise unknown (`auto` then stays `full`).
+ *  3. otherwise the discovered window: once an observation is past the memo
+ *     TTL, a listed window replaces it;
+ *  4. otherwise a STALE observed one (#11393): with nothing listed, the last
+ *     window the endpoint stated stays as a floor, so an idle hour does not
+ *     send `auto` back to `full` and cost a refused turn to re-learn it;
+ *  5. otherwise unknown (`auto` then stays `full`).
  *
- * An observation is fresh only under the connection's CURRENT config_version
- * and within the memo TTL; past either it is a hint the drawer can show, and
- * it no longer constrains. Every number is plausibility-bounded the same way
- * the gateway bounds a stated window.
+ * An observation counts only under the connection's CURRENT config_version: a
+ * URL, key or model change clears it. It is fresh within the memo TTL; past
+ * it, it is replaced by a listed window, an operator override, a later
+ * rejection (any window, larger or smaller), or a served prompt larger than it
+ * (`clearDisprovenContextWindow`). A stale observation caps `max_tokens` and
+ * narrows `auto`, but never refuses before the endpoint sees the request:
+ * neither a prompt at the gateway (`KnownWindow.stale`) nor a session as
+ * `too_small` or underpowered (`ToolProfileFacts.windowStale`; `auto` stops
+ * at the surface's `STALE_WINDOW_AUTO_FLOOR`), since a refusal that makes no
+ * provider call can never disprove it. Every number is plausibility-bounded the same way the
+ * gateway bounds a stated window.
  */
 import { CONTEXT_WINDOW_MEMO_TTL_MS, MAX_PLAUSIBLE_TOKENS, MIN_PLAUSIBLE_WINDOW, type KnownWindow } from './gateway/openai/contextWindow';
 
@@ -32,8 +44,15 @@ export type ContextWindowSource = 'override' | 'discovered' | 'observed' | 'unkn
 export interface EffectiveContextWindow {
   value: number | null;
   source: ContextWindowSource;
-  /** The stored observation is current (same config_version, within the TTL). It may still lose to a smaller discovered value. */
+  /** The stored observation is current (same config_version) and within the memo TTL. It may still lose to a smaller discovered value. */
   observedFresh: boolean;
+  /**
+   * The stored observation still takes part in the resolution: fresh, or
+   * stale with no listed window to replace it (#11393). False once a config
+   * change or a listed window has superseded it; the drawer then shows it as
+   * a hint only.
+   */
+  observedApplies: boolean;
 }
 
 /** A known window and where it came from (never `unknown`); the gateway's own shape. */
@@ -49,25 +68,48 @@ export function resolveEffectiveContextWindow(
   now: number = Date.now(),
 ): EffectiveContextWindow {
   const observedAt = f.contextWindowObservedAt ?? null;
-  const observedFresh = isPlausibleContextWindow(f.contextWindowObserved)
+  const observedCurrent = isPlausibleContextWindow(f.contextWindowObserved)
     && observedAt !== null
     && currentConfigVersion !== null
-    && f.contextWindowObservedConfigVersion === currentConfigVersion
-    && now - observedAt.getTime() <= CONTEXT_WINDOW_MEMO_TTL_MS;
+    && f.contextWindowObservedConfigVersion === currentConfigVersion;
+  const observedFresh = observedCurrent && now - observedAt!.getTime() <= CONTEXT_WINDOW_MEMO_TTL_MS;
+  const discovered = isPlausibleContextWindow(f.contextWindowDiscovered) ? f.contextWindowDiscovered : null;
+  // A stale observation stays only while nothing listed replaces it (#11393).
+  const observedApplies = observedFresh || (observedCurrent && discovered === null);
+  const facts = { observedFresh, observedApplies };
 
   if (isPlausibleContextWindow(f.contextWindowOverride)) {
-    return { value: f.contextWindowOverride, source: 'override', observedFresh };
+    return { value: f.contextWindowOverride, source: 'override', ...facts };
   }
-  const discovered = isPlausibleContextWindow(f.contextWindowDiscovered) ? f.contextWindowDiscovered : null;
-  const observed = observedFresh ? f.contextWindowObserved! : null;
+  const observed = observedApplies ? f.contextWindowObserved! : null;
   if (observed !== null && (discovered === null || observed < discovered)) {
-    return { value: observed, source: 'observed', observedFresh };
+    return { value: observed, source: 'observed', ...facts };
   }
-  if (discovered !== null) return { value: discovered, source: 'discovered', observedFresh };
-  return { value: null, source: 'unknown', observedFresh };
+  if (discovered !== null) return { value: discovered, source: 'discovered', ...facts };
+  return { value: null, source: 'unknown', ...facts };
 }
 
-/** The window as a `KnownContextWindow`, or null when unknown. */
-export function knownContextWindow(w: EffectiveContextWindow): KnownContextWindow | null {
-  return w.value === null || w.source === 'unknown' ? null : { window: w.value, source: w.source };
+/**
+ * The resolved window is a STALE observation (#11393): past the memo TTL,
+ * kept only as a floor. It caps `max_tokens` and narrows `auto`, but never
+ * refuses up front — not a prompt at the gateway (`KnownWindow.stale`), not a
+ * session as `too_small` or underpowered (`ToolProfileFacts.windowStale`).
+ */
+export function isStaleObservedWindow(w: EffectiveContextWindow): boolean {
+  return w.value !== null && w.source === 'observed' && !w.observedFresh;
+}
+
+/**
+ * The window as a `KnownContextWindow`, or null when unknown. A stale
+ * observation is marked so the gateway only caps from it. `observedAt` is the
+ * row's `contextWindowObservedAt`: an observed window carries it, so a clear
+ * compares the row it was read from (#11393).
+ */
+export function knownContextWindow(w: EffectiveContextWindow, observedAt?: Date | null): KnownContextWindow | null {
+  if (w.value === null || w.source === 'unknown') return null;
+  const known: KnownContextWindow = isStaleObservedWindow(w)
+    ? { window: w.value, source: w.source, stale: true }
+    : { window: w.value, source: w.source };
+  if (w.source === 'observed' && observedAt) known.observedAt = observedAt.getTime();
+  return known;
 }

@@ -138,6 +138,52 @@ describe('too_small: a window that cannot hold even minimal refuses at session s
   });
 });
 
+describe('a STALE observed floor never refuses up front (#11393)', () => {
+  // Every surface that answers `too_small` as a 409 at session start. A
+  // stale floor (an observation past the memo TTL, nothing listed) cannot be
+  // disproven by a refusal that never reaches the endpoint, so it narrows to
+  // `minimal` and lets the endpoint serve or reject the request.
+  // Each surface starts on its lowest serviceable profile: script builder's
+  // `minimal` lacks execute_script_on_device, so it starts on `standard`.
+  const surfaces: Array<[string, Partial<SessionToolExposureInput>, string]> = [
+    ['chat', {}, 'minimal'],
+    ['helper', { surface: 'helper', allowedTools: ['mcp__breeze__get_device_details'], extraTools: [] }, 'minimal'],
+    ['script_builder', {
+      surface: 'script_builder', breezeServer: false, extraTools: [],
+      allowedTools: ['mcp__script_builder__apply_script_code', 'mcp__script_builder__execute_script_on_device'],
+    }, 'standard'],
+  ];
+
+  it.each(surfaces)('%s: a stale 4,096-token floor starts the session (on %s), no refusal', (_label, over, profile) => {
+    const r = finalizeSessionToolExposure(input({ ...over, facts: facts({ toolProfile: 'auto', effectiveWindow: 4_096, windowStale: true }) }));
+    expect(r.exposure).toMatchObject({ profile, tooSmall: false });
+  });
+
+  it('script_builder: a stale floor in minimal\'s range is not refused as underpowered either; a fresh one is (control)', () => {
+    const sb = surfaces[2]![1];
+    const r = finalizeSessionToolExposure(input({ ...sb, facts: facts({ toolProfile: 'auto', effectiveWindow: 8_192, windowStale: true }) }));
+    expect(r.exposure.profile).toBe('standard');
+    expect(r.allowedTools).toContain('mcp__script_builder__execute_script_on_device');
+    expect(() => finalizeSessionToolExposure(input({ ...sb, facts: facts({ toolProfile: 'auto', effectiveWindow: 8_192 }) })))
+      .toThrow(ToolProfileUnderpoweredError);
+  });
+
+  it.each(surfaces)('%s: a FRESH 4,096-token observation still refuses context_window_too_small (control)', (label, over) => {
+    const run = () => finalizeSessionToolExposure(input({ ...over, facts: facts({ toolProfile: 'auto', effectiveWindow: 4_096 }) }));
+    expect(run).toThrow(ContextWindowTooSmallError);
+    try { run(); } catch (err) {
+      expect(err).toMatchObject({ code: 'context_window_too_small', status: 409, surface: label, contextWindow: 4_096 });
+    }
+  });
+
+  it('the stale and fresh exposures key differently, so a fresh rejection rotates a warm stale-floor session', () => {
+    const stale = facts({ toolProfile: 'auto', effectiveWindow: 4_096, windowStale: true });
+    const fresh = facts({ toolProfile: 'auto', effectiveWindow: 4_096 });
+    const key = (f: ToolProfileFacts) => resolvedLiveQueryKey(makeResolvedModel('openai_compatible', { surface: 'chat', toolProfileFacts: f }));
+    expect(key(stale)).not.toBe(key(fresh));
+  });
+});
+
 describe('chatPromptExposure (#11395)', () => {
   const deps = { registryNames: () => REGISTRY, domainOf: () => undefined };
   it.each([

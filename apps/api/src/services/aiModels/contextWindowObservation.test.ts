@@ -31,6 +31,7 @@ import { captureException } from '../sentry';
 import { CONTEXT_WINDOW_MEMO_TTL_MS } from './gateway/openai/contextWindow';
 import {
   __resetContextWindowObservationsForTests,
+  clearDisprovenContextWindow,
   recordObservedContextWindow,
   settledContextWindowObservations,
 } from './contextWindowObservation';
@@ -112,5 +113,94 @@ describe('recordObservedContextWindow (#11396 T6)', () => {
     recordObservedContextWindow({ ...OBS, contextWindow: 70 });
     await settledContextWindowObservations();
     expect(writes).toHaveLength(0);
+  });
+});
+
+describe('clearDisprovenContextWindow (#11393 floor)', () => {
+  const DISPROOF = { offeringId: 'o1', partnerId: 'p1', configVersion: 4, disprovenWindow: 8192, observedAt: Date.parse('2026-11-11T09:00:00Z'), servedPromptTokens: 9000 };
+
+  it('clears observed, observed_at and observed_config_version in the system context, outside any request context', async () => {
+    clearDisprovenContextWindow(DISPROOF);
+    await settledContextWindowObservations();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.set).toEqual({
+      contextWindowObserved: null,
+      contextWindowObservedAt: null,
+      contextWindowObservedConfigVersion: null,
+    });
+    expect(runOutsideMock).toHaveBeenCalledOnce();
+    expect(systemCtxMock).toHaveBeenCalledOnce();
+  });
+
+  it('returns void and never rethrows a failed write (logged and reported)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    failNext.value = new Error('db down');
+    expect(clearDisprovenContextWindow(DISPROOF)).toBeUndefined();
+    await expect(settledContextWindowObservations()).resolves.toBeUndefined();
+    expect(captureException).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('is written once per disproven window for the TTL (a busy session does not write per request)', async () => {
+    clearDisprovenContextWindow(DISPROOF);
+    clearDisprovenContextWindow({ ...DISPROOF, servedPromptTokens: 9500 });
+    await settledContextWindowObservations();
+    expect(writes).toHaveLength(1);
+  });
+
+  it('a disproof of a NEWER row holding the same value is not deduped against the older one', async () => {
+    clearDisprovenContextWindow(DISPROOF);
+    clearDisprovenContextWindow({ ...DISPROOF, observedAt: DISPROOF.observedAt + 60_000 });
+    await settledContextWindowObservations();
+    expect(writes).toHaveLength(2);
+  });
+
+  it('a served prompt that does not exceed the window clears nothing', async () => {
+    clearDisprovenContextWindow({ ...DISPROOF, servedPromptTokens: 8192 });
+    await settledContextWindowObservations();
+    expect(writes).toHaveLength(0);
+  });
+
+  it('after a clear, the same window stated again by a rejection is written again (not deduped)', async () => {
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    clearDisprovenContextWindow(DISPROOF);
+    await settledContextWindowObservations();
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    expect(writes.map((w) => w.set.contextWindowObserved)).toEqual([8192, null, 8192]);
+  });
+
+  it('a window stated again after a different one is written again: A, B, A lands A (review finding)', async () => {
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    recordObservedContextWindow({ ...OBS, contextWindow: 4096 });
+    await settledContextWindowObservations();
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    expect(writes.map((w) => w.set.contextWindowObserved)).toEqual([8192, 4096, 8192]);
+  });
+
+  it('a failed clear is tagged as a clear for Sentry, a failed set as a set', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    failNext.value = new Error('db down');
+    clearDisprovenContextWindow(DISPROOF);
+    await settledContextWindowObservations();
+    expect(vi.mocked(captureException).mock.calls[0]![2]).toMatchObject({ operation: 'clear' });
+    failNext.value = new Error('db down');
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    expect(vi.mocked(captureException).mock.calls[1]![2]).toMatchObject({ operation: 'set' });
+    warn.mockRestore();
+  });
+
+  it('after a new observation, a later disproof of the same window clears again', async () => {
+    clearDisprovenContextWindow(DISPROOF);
+    await settledContextWindowObservations();
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    clearDisprovenContextWindow(DISPROOF);
+    await settledContextWindowObservations();
+    expect(writes.map((w) => w.set.contextWindowObserved)).toEqual([null, 8192, null]);
   });
 });

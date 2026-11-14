@@ -4,6 +4,7 @@ import {
   FULL_IDENTITY_FINGERPRINT,
   RESULT_CHAR_BUDGET,
   TOOL_EXPOSURE_INPUT_KEYS,
+  effectiveToolProfile,
   pickAutoProfile,
   resolveToolExposure,
   toolProfileKey,
@@ -11,7 +12,9 @@ import {
   type ToolProfileFacts,
 } from './toolExposure';
 import { getToolDomain } from '../aiTools';
-import { CHAT_MINIMAL_TOOLS, type ProfilePrefixTokens } from './toolProfiles';
+import { CHAT_MINIMAL_TOOLS, CURATED_PROFILES, PROFILED_SURFACES, STALE_WINDOW_AUTO_FLOOR, type ProfilePrefixTokens } from './toolProfiles';
+import { requiredToolsFor } from './surfaceRequiredTools';
+import { outcomeToolsForRun } from '../aiAgents/outcomeTools';
 
 const facts = (over: Partial<ToolProfileFacts> = {}): ToolProfileFacts => ({
   toolProfile: 'auto', toolAllowlist: null, effectiveWindow: null, transport: 'gateway', ...over,
@@ -260,5 +263,49 @@ describe('pickAutoProfile', () => {
     expect(e).toMatchObject({ profile: 'minimal', tooSmall: true });
     const ok = resolveToolExposure(input({ facts: facts({ effectiveWindow: 32768 }) }), { prefixTokens: FIXTURE_PREFIX });
     expect(ok).toMatchObject({ profile: 'standard', tooSmall: false });
+  });
+});
+
+describe('a STALE observed window narrows auto, never into an up-front refusal (#11393)', () => {
+  const RANK = { minimal: 0, standard: 1, full: 2 } as const;
+
+  it('every profiled surface\'s stale floor covers what the surface requires, and the profile below it does not', () => {
+    for (const surface of PROFILED_SURFACES) {
+      const floor = STALE_WINDOW_AUTO_FLOOR[surface];
+      const required = surface === 'ai_agents'
+        // The widest run floor beyond outcome tools (outcome tools always ride as extras).
+        ? requiredToolsFor('ai_agents', { profile: 'device_troubleshooting' }).filter((n) => !(outcomeToolsForRun({ profile: 'device_troubleshooting' }) as readonly string[]).includes(n))
+        : requiredToolsFor(surface);
+      const keeps = (p: 'minimal' | 'standard') => new Set<string>([...CURATED_PROFILES[surface][p], ...(surface === 'chat' ? ['set_device_context'] : [])]);
+      expect(required.filter((n) => !keeps(floor).has(n)), surface).toEqual([]);
+      if (floor === 'standard') expect(required.some((n) => !keeps('minimal').has(n)), surface).toBe(true);
+    }
+  });
+
+  it('chat: a stale window too small for minimal resolves minimal, not too_small; fresh stays too_small', () => {
+    expect(effectiveToolProfile(facts({ effectiveWindow: 4_096, windowStale: true }), 'chat')).toEqual({ profile: 'minimal', tooSmall: false });
+    expect(effectiveToolProfile(facts({ effectiveWindow: 4_096 }), 'chat')).toEqual({ profile: 'minimal', tooSmall: true });
+  });
+
+  it('script_builder: a stale window in minimal\'s range resolves standard (minimal cannot run a script); fresh stays minimal', () => {
+    expect(effectiveToolProfile(facts({ effectiveWindow: 8_192 }), 'script_builder')).toEqual({ profile: 'minimal', tooSmall: false });
+    expect(effectiveToolProfile(facts({ effectiveWindow: 8_192, windowStale: true }), 'script_builder')).toEqual({ profile: 'standard', tooSmall: false });
+    expect(effectiveToolProfile(facts({ effectiveWindow: 4_096, windowStale: true }), 'script_builder')).toEqual({ profile: 'standard', tooSmall: false });
+  });
+
+  it('a stale window above the floor narrows exactly as a fresh one does', () => {
+    for (const surface of PROFILED_SURFACES) {
+      for (const window of [16_384, 131_072, 262_144]) {
+        const fresh = effectiveToolProfile(facts({ effectiveWindow: window }), surface);
+        const stale = effectiveToolProfile(facts({ effectiveWindow: window, windowStale: true }), surface);
+        if (fresh.profile !== 'full' && RANK[fresh.profile as 'minimal' | 'standard'] < RANK[STALE_WINDOW_AUTO_FLOOR[surface]]) continue;
+        expect(stale, `${surface} @ ${window}`).toEqual(fresh);
+      }
+    }
+  });
+
+  it('an explicit profile is never raised by a stale window', () => {
+    expect(effectiveToolProfile(facts({ toolProfile: 'minimal', effectiveWindow: 4_096, windowStale: true }), 'script_builder'))
+      .toEqual({ profile: 'minimal', tooSmall: false });
   });
 });

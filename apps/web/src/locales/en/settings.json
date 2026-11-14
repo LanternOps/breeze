@@ -635,7 +635,7 @@
           "discovered": "listed by the endpoint"
         },
         "windowObserved": "Context window: {{tokens}} tokens (reported by the endpoint {{age}}).",
-        "observedStale": "The endpoint last reported {{tokens}} tokens {{age}}. That report is over an hour old or from an earlier endpoint setup, so it no longer limits anything.",
+        "observedStale": "The endpoint last reported {{tokens}} tokens {{age}}. A later endpoint setup or the model listing has replaced that report, so it no longer limits anything.",
         "overrideLabel": "Context window override (tokens)",
         "overrideHint": "For models on your own OpenAI-compatible endpoint only. Leave blank to use what the endpoint lists or reports. New conversations use a changed value; open ones keep their current limit unless the profile they use changes.",
         "surfacesTitle": "What each feature uses now",

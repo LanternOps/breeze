@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CONTEXT_WINDOW_MEMO_TTL_MS, MAX_PLAUSIBLE_TOKENS, MIN_PLAUSIBLE_WINDOW } from './gateway/openai/contextWindow';
-import { resolveEffectiveContextWindow, type ContextWindowFields } from './contextWindowFacts';
+import { isStaleObservedWindow, knownContextWindow, resolveEffectiveContextWindow, type ContextWindowFields } from './contextWindowFacts';
 
 const NOW = Date.parse('2026-11-11T12:00:00Z');
 const minutesAgo = (m: number): Date => new Date(NOW - m * 60_000);
@@ -22,35 +22,35 @@ describe('resolveEffectiveContextWindow (#11396 T5)', () => {
     const r = resolveEffectiveContextWindow({
       ...NONE, contextWindowOverride: 16_384, contextWindowDiscovered: 131_072, ...observed(8_192, minutesAgo(5)),
     }, 4, NOW);
-    expect(r).toEqual({ value: 16_384, source: 'override', observedFresh: true });
+    expect(r).toEqual({ value: 16_384, source: 'override', observedFresh: true, observedApplies: true });
   });
 
   it('a fresh 8192 observed beats 262144 discovered (the serving limit below the advertised maximum)', () => {
     const r = resolveEffectiveContextWindow({
       ...NONE, contextWindowDiscovered: 262_144, ...observed(8_192, minutesAgo(12)),
     }, 4, NOW);
-    expect(r).toEqual({ value: 8_192, source: 'observed', observedFresh: true });
+    expect(r).toEqual({ value: 8_192, source: 'observed', observedFresh: true, observedApplies: true });
   });
 
   it('a fresh observed LARGER than discovered does not raise it: the smaller of the two', () => {
     const r = resolveEffectiveContextWindow({
       ...NONE, contextWindowDiscovered: 32_768, ...observed(65_536, minutesAgo(1)),
     }, 4, NOW);
-    expect(r).toEqual({ value: 32_768, source: 'discovered', observedFresh: true });
+    expect(r).toEqual({ value: 32_768, source: 'discovered', observedFresh: true, observedApplies: true });
   });
 
   it('observed at config_version 3 is ignored under 4 (source discovered)', () => {
     const r = resolveEffectiveContextWindow({
       ...NONE, contextWindowDiscovered: 131_072, ...observed(8_192, minutesAgo(1), 3),
     }, 4, NOW);
-    expect(r).toEqual({ value: 131_072, source: 'discovered', observedFresh: false });
+    expect(r).toEqual({ value: 131_072, source: 'discovered', observedFresh: false, observedApplies: false });
   });
 
-  it('an observation older than the TTL is a hint only (value = discovered, observedFresh false)', () => {
+  it('an observation older than the TTL yields to a discovered (listed) window (#11393 floor rule a)', () => {
     const r = resolveEffectiveContextWindow({
       ...NONE, contextWindowDiscovered: 131_072, ...observed(8_192, new Date(NOW - CONTEXT_WINDOW_MEMO_TTL_MS - 1)),
     }, 4, NOW);
-    expect(r).toEqual({ value: 131_072, source: 'discovered', observedFresh: false });
+    expect(r).toEqual({ value: 131_072, source: 'discovered', observedFresh: false, observedApplies: false });
   });
 
   it('exactly at the TTL is still fresh (control for the boundary above)', () => {
@@ -60,33 +60,83 @@ describe('resolveEffectiveContextWindow (#11396 T5)', () => {
     expect(r.source).toBe('observed');
   });
 
-  it('a stale observation with nothing discovered is unknown', () => {
+  it('#11393 floor: with nothing discovered, an observation past the TTL keeps constraining', () => {
     const r = resolveEffectiveContextWindow({ ...NONE, ...observed(8_192, minutesAgo(61)) }, 4, NOW);
-    expect(r).toEqual({ value: null, source: 'unknown', observedFresh: false });
+    expect(r).toEqual({ value: 8_192, source: 'observed', observedFresh: false, observedApplies: true });
+  });
+
+  it('#11393 floor: days later it still constrains (no expiry without new evidence)', () => {
+    const r = resolveEffectiveContextWindow({ ...NONE, ...observed(8_192, minutesAgo(3 * 24 * 60)) }, 4, NOW);
+    expect(r).toEqual({ value: 8_192, source: 'observed', observedFresh: false, observedApplies: true });
+  });
+
+  it('#11393 floor: an operator override still replaces a stale observation', () => {
+    const r = resolveEffectiveContextWindow({ ...NONE, contextWindowOverride: 32_768, ...observed(8_192, minutesAgo(61)) }, 4, NOW);
+    expect(r).toEqual({ value: 32_768, source: 'override', observedFresh: false, observedApplies: true });
+  });
+
+  it('#11393 floor: a config change clears it (observed under version 3, connection now at 4, nothing discovered)', () => {
+    const r = resolveEffectiveContextWindow({ ...NONE, ...observed(8_192, minutesAgo(61), 3) }, 4, NOW);
+    expect(r).toEqual({ value: null, source: 'unknown', observedFresh: false, observedApplies: false });
   });
 
   it('no current config_version (no connection): an observation never constrains', () => {
     const r = resolveEffectiveContextWindow({ ...NONE, ...observed(8_192, minutesAgo(1)) }, null, NOW);
-    expect(r).toEqual({ value: null, source: 'unknown', observedFresh: false });
+    expect(r).toEqual({ value: null, source: 'unknown', observedFresh: false, observedApplies: false });
   });
 
   it('all null → unknown', () => {
-    expect(resolveEffectiveContextWindow(NONE, 4, NOW)).toEqual({ value: null, source: 'unknown', observedFresh: false });
+    expect(resolveEffectiveContextWindow(NONE, 4, NOW)).toEqual({ value: null, source: 'unknown', observedFresh: false, observedApplies: false });
   });
 
   it('discovered below MIN_PLAUSIBLE_WINDOW or above MAX_PLAUSIBLE_TOKENS is ignored', () => {
     expect(resolveEffectiveContextWindow({ ...NONE, contextWindowDiscovered: MIN_PLAUSIBLE_WINDOW - 1 }, 4, NOW).source).toBe('unknown');
     expect(resolveEffectiveContextWindow({ ...NONE, contextWindowDiscovered: MAX_PLAUSIBLE_TOKENS + 1 }, 4, NOW).source).toBe('unknown');
     expect(resolveEffectiveContextWindow({ ...NONE, contextWindowDiscovered: MIN_PLAUSIBLE_WINDOW }, 4, NOW))
-      .toEqual({ value: MIN_PLAUSIBLE_WINDOW, source: 'discovered', observedFresh: false });
+      .toEqual({ value: MIN_PLAUSIBLE_WINDOW, source: 'discovered', observedFresh: false, observedApplies: false });
   });
 
   it('an implausible observed value is ignored even when fresh', () => {
     const r = resolveEffectiveContextWindow({ ...NONE, contextWindowDiscovered: 32_768, ...observed(70, minutesAgo(1)) }, 4, NOW);
-    expect(r).toEqual({ value: 32_768, source: 'discovered', observedFresh: false });
+    expect(r).toEqual({ value: 32_768, source: 'discovered', observedFresh: false, observedApplies: false });
   });
 
   it('a row without the columns (older fixtures) is unknown', () => {
-    expect(resolveEffectiveContextWindow({}, 4, NOW)).toEqual({ value: null, source: 'unknown', observedFresh: false });
+    expect(resolveEffectiveContextWindow({}, 4, NOW)).toEqual({ value: null, source: 'unknown', observedFresh: false, observedApplies: false });
+  });
+});
+
+describe('knownContextWindow (#11393 floor)', () => {
+  it('a stale observation is handed to the gateway marked stale (it caps, never refuses up front)', () => {
+    const w = resolveEffectiveContextWindow({ ...NONE, ...observed(8_192, minutesAgo(61)) }, 4, NOW);
+    expect(knownContextWindow(w)).toEqual({ window: 8_192, source: 'observed', stale: true });
+  });
+
+  it('an observed window carries its observed_at, so a clear compares the row it was read from', () => {
+    const fields = { ...NONE, ...observed(8_192, minutesAgo(61)) };
+    const w = resolveEffectiveContextWindow(fields, 4, NOW);
+    expect(knownContextWindow(w, fields.contextWindowObservedAt)).toEqual({ window: 8_192, source: 'observed', stale: true, observedAt: minutesAgo(61).getTime() });
+    const listed = { ...NONE, contextWindowDiscovered: 131_072, ...observed(8_192, minutesAgo(61)) };
+    expect(knownContextWindow(resolveEffectiveContextWindow(listed, 4, NOW), listed.contextWindowObservedAt)).toEqual({ window: 131_072, source: 'discovered' });
+  });
+
+  it('a fresh observation is not marked stale (control)', () => {
+    const w = resolveEffectiveContextWindow({ ...NONE, ...observed(8_192, minutesAgo(5)) }, 4, NOW);
+    expect(knownContextWindow(w)).toEqual({ window: 8_192, source: 'observed' });
+  });
+
+  it('unknown is null', () => {
+    expect(knownContextWindow(resolveEffectiveContextWindow(NONE, 4, NOW))).toBeNull();
+  });
+});
+
+describe('isStaleObservedWindow (#11393: a stale floor narrows tools but never refuses up front)', () => {
+  it('true only when the resolved window IS a stale observation', () => {
+    const at = (fields: Partial<ContextWindowFields>) => isStaleObservedWindow(resolveEffectiveContextWindow({ ...NONE, ...fields }, 4, NOW));
+    expect(at(observed(8_192, minutesAgo(61)))).toBe(true);
+    expect(at(observed(8_192, minutesAgo(5)))).toBe(false);
+    expect(at({ contextWindowOverride: 32_768, ...observed(8_192, minutesAgo(61)) })).toBe(false);
+    expect(at({ contextWindowDiscovered: 131_072, ...observed(8_192, minutesAgo(61)) })).toBe(false);
+    expect(at({})).toBe(false);
   });
 });

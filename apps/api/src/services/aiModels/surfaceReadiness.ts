@@ -20,7 +20,7 @@
  */
 import { z } from 'zod';
 import { TOOL_REQUIRING_SURFACES, type AiSurface, type AiToolAllowlist, type AiToolProfile } from '@breeze/shared';
-import { resolveEffectiveContextWindow, type ContextWindowFields } from './contextWindowFacts';
+import { isStaleObservedWindow, resolveEffectiveContextWindow, type ContextWindowFields } from './contextWindowFacts';
 import { FULL_IDENTITY_FINGERPRINT, toolProfileKey, type ResolvedToolProfile } from './toolExposure';
 import { toolProfileFactsFrom, type ToolProfileFacts } from './toolProfileFacts';
 
@@ -130,10 +130,12 @@ export function currentReadinessEntries(
   row: ContextWindowFields & { toolProfile: AiToolProfile | null; toolAllowlist: unknown },
   currentConfigVersion: number,
 ): { kept: SurfaceReadinessMap; dropped: ToolSurface[] } {
+  const window = resolveEffectiveContextWindow(row, currentConfigVersion);
   const facts = toolProfileFactsFrom(
     { toolProfile: row.toolProfile, toolAllowlist: row.toolAllowlist as AiToolAllowlist | null },
     'gateway',
-    resolveEffectiveContextWindow(row, currentConfigVersion).value,
+    window.value,
+    isStaleObservedWindow(window),
   );
   const kept: SurfaceReadinessMap = {};
   const dropped: ToolSurface[] = [];

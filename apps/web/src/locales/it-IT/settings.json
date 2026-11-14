@@ -635,7 +635,7 @@
           "discovered": "elencata dall'endpoint"
         },
         "windowObserved": "Finestra di contesto: {{tokens}} token (segnalata dall'endpoint {{age}}).",
-        "observedStale": "L'endpoint ha segnalato per l'ultima volta {{tokens}} token {{age}}. Quella segnalazione ha più di un'ora o proviene da una configurazione precedente dell'endpoint, quindi non limita più nulla.",
+        "observedStale": "L'endpoint ha segnalato per l'ultima volta {{tokens}} token {{age}}. Una configurazione successiva dell'endpoint o l'elenco dei modelli ha sostituito quella segnalazione, quindi non limita più nulla.",
         "overrideLabel": "Sostituzione della finestra di contesto (token)",
         "overrideHint": "Solo per i modelli sul tuo endpoint compatibile con OpenAI. Lascia vuoto per usare ciò che l'endpoint elenca o segnala. Le nuove conversazioni usano il valore modificato; quelle aperte mantengono il limite attuale, a meno che cambi il profilo che usano.",
         "surfacesTitle": "Cosa usa ora ogni funzione",
