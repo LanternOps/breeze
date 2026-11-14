@@ -2,6 +2,7 @@ import type { AlertOwnerKind } from '@breeze/shared';
 import nodemailer, { type Transporter } from 'nodemailer';
 import { Resend } from 'resend';
 import { captureException } from './sentry';
+import { recordEmailSendFailure, recordEmailSendSuccess, recordResendQuotaHeaders } from './emailMetrics';
 import {
   escapeHtml,
   getSupportEmail,
@@ -516,6 +517,18 @@ export class EmailService {
    * declares a purpose, or the classification G5 depends on leaks away.
    */
   async deliverRaw(message: RawEmailMessage): Promise<void> {
+    // Exactly one breeze_email_send_total sample per call; the error is
+    // rethrown untouched.
+    try {
+      await this.sendViaProvider(message);
+    } catch (err) {
+      recordEmailSendFailure('platform', this.provider, err instanceof EmailTransportError ? err.providerErrorName : undefined);
+      throw err;
+    }
+    recordEmailSendSuccess('platform', this.provider);
+  }
+
+  private async sendViaProvider(message: RawEmailMessage): Promise<void> {
     const { to, cc, subject, html, text, from, replyTo, headers, attachments } = message;
     const sender = from;
 
@@ -524,7 +537,7 @@ export class EmailService {
         throw new Error('Resend transport is not initialized');
       }
 
-      const { error } = await this.resend.emails.send({
+      const { error, headers: responseHeaders } = await this.resend.emails.send({
         from: sender,
         to,
         cc,
@@ -539,6 +552,8 @@ export class EmailService {
           contentType: a.contentType
         }))
       });
+      // Error responses carry it too, which is when it matters most.
+      recordResendQuotaHeaders(responseHeaders);
       if (error) {
         // Text unchanged; the SDK's own name/statusCode now ride along so the
         // partner lane can classify without regex-matching prose.
