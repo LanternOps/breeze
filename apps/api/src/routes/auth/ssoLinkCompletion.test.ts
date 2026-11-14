@@ -127,6 +127,7 @@ import { issueUserSession } from '../../services/userSession';
 import { beginAuthIssuanceForStoredTransition, cancelAuthIssuance, finishAuthIssuance } from '../../services/authBrowserTransition';
 import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { isDomainVerifiedForOrg, isSsoProvisioningBlocked } from '../../services/ssoDomainVerification';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 
 const USER_ID = '00000000-0000-4000-8000-0000000000aa';
 const PROVIDER_ID = '00000000-0000-4000-8000-0000000000bb';
@@ -246,9 +247,11 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       expect.objectContaining({ userId: USER_ID, scope: 'organization', orgId: ORG_ID }),
       expect.any(Object),
     );
-    // Provider fixture has trustsIdpMfa: false ⇒ not assured ⇒ no source.
+    // Provider fixture has trustsIdpMfa: false and the user holds no factor
+    // under a not-required policy ⇒ policy-admitted, like a password login
+    // (#11889).
     expect(issueUserSession).toHaveBeenCalledWith(
-      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.objectContaining({ mfa: true, mfaSrc: 'policy' }),
       expect.anything(),
     );
     const linked = auditSpy.mock.calls.find(([, p]) => (p as { action?: string }).action === 'sso.identity.linked');
@@ -427,6 +430,32 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
     expect(outcome).toEqual({ ok: false, error: 'identity_in_use' });
     expect(issueUserSession).toHaveBeenCalledOnce();
+  });
+
+  // #11889: the no-factor policy arm of the link-completion mint, matched to
+  // the password login and the SSO callback.
+  it('mints mfa:false with no source for an UNENROLLED user when policy REQUIRES MFA and nothing was proven (#11889)', async () => {
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
+      required: true,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+    } as never);
+    wire();
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
+  });
+
+  it('mints mfa:false for an ENROLLED user whose factor was not proven and no trusted IdP assertion exists (#11889)', async () => {
+    wire({ user: { ...USER_ROW, mfaEnabled: true } });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
   });
 
   it('mints mfa:true when the ceremony verified a Breeze-held factor, regardless of IdP amr', async () => {

@@ -3692,6 +3692,15 @@ ssoRoutes.get('/callback', async (c) => {
     // getEffectiveMfaPolicy's own runOutsideDbContext+withSystemDbAccessContext
     // read resolves live policy for existing users. Newly provisioned users
     // conservatively receive mfa:false until their membership commits.
+    //
+    // #11889: the IdP assertion is NOT a precondition of every mfa:true. A
+    // user who holds NO Breeze factor under a policy that does not require
+    // one is policy-admitted, exactly like the password login
+    // (routes/auth/login.ts) and the requireMfa contract (middleware/auth.ts).
+    // Before this, a tenant with MFA off got 403 MFA_REQUIRED on every
+    // MFA-gated route after an SSO sign-in. A user who DOES hold a factor
+    // proved none of it here (the callback runs no Breeze challenge), so only
+    // the trusted IdP assertion can assure them.
     const idpMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
     const ssoPolicy = await getEffectiveMfaPolicy({
       scope: provider.partnerId ? 'partner' : 'organization',
@@ -3699,12 +3708,13 @@ ssoRoutes.get('/callback', async (c) => {
       orgId: provider.partnerId ? null : provider.orgId,
       partnerId: provider.partnerId ?? null,
     });
-    const ssoMfa = idpMfa && (
-      user.mfaEnabled === true
-      || (provisionedRoleId === null && !ssoPolicy.required)
-    );
-    // Every `ssoMfa: true` rests on the trusted IdP assertion (spec D6).
-    const ssoMfaSrc = mfaSrcFor(ssoMfa, 'idp');
+    const ssoPolicyAdmitted = user.mfaEnabled !== true
+      && provisionedRoleId === null
+      && !ssoPolicy.required;
+    const ssoMfa = (idpMfa && user.mfaEnabled === true) || ssoPolicyAdmitted;
+    // 'idp' whenever the trusted assertion is present; otherwise the session
+    // is assured only because policy admits a no-factor user (spec D6).
+    const ssoMfaSrc = mfaSrcFor(ssoMfa, idpMfa ? 'idp' : 'policy');
 
     // Membership resolution + guarded session identity, keyed on the provider's axis.
     let sessionIdentity: UserSessionIdentity;
@@ -3982,7 +3992,7 @@ ssoRoutes.get('/callback', async (c) => {
         expiresInSeconds: issued.expiresInSeconds,
       },
     });
-      return { user, issued, tokenExchangeCode, ip, userAgent, ssoMfa };
+      return { user, issued, tokenExchangeCode, ip, userAgent, ssoMfa, ssoMfaSrc };
     });
     loginCapability = undefined;
     await bindIssuedUserSession(finalized.issued);
@@ -4003,7 +4013,9 @@ ssoRoutes.get('/callback', async (c) => {
         userId: finalized.user.id,
         email: finalized.user.email,
         name: finalized.user.name,
-        mfa: finalized.ssoMfa,
+        // The audit `mfa` records a presented factor or trusted IdP assertion,
+        // as the password login does; a policy-admitted session logs false.
+        mfa: finalized.ssoMfa && finalized.ssoMfaSrc !== 'policy',
         scope: 'partner',
         ip: finalized.ip,
         method: 'sso-partner'

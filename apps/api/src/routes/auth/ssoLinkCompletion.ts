@@ -28,7 +28,7 @@ import {
 import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { auditLogin } from './helpers';
 import { enforceIpAllowlist, isBlocked } from '../../services/ipAllowlist';
-import { mfaSrcFor } from '../../services/mfaAssuranceSource';
+import { mfaSrcFor, type MfaAssuranceSource } from '../../services/mfaAssuranceSource';
 
 /**
  * Shared tail of every SSO-completed sign-in: MFA-claim evaluation, axis
@@ -106,6 +106,7 @@ export type SsoCompletionResult =
       refreshToken: string;
       expiresInSeconds: number;
       mfa: boolean;
+      mfaSrc: MfaAssuranceSource | undefined;
     }
   | { ok: false; error: SsoCompletionErrorCode };
 
@@ -173,6 +174,11 @@ export async function completeSsoLogin(
   // A Breeze-verified factor from the link ceremony (#4067) outranks the IdP
   // evaluation entirely — the user just proved a Breeze-held factor in this
   // very sign-in.
+  //
+  // #11889: a user who holds NO Breeze factor under a policy that does not
+  // require one is policy-admitted without any IdP assertion, exactly like
+  // the password login and the SSO callback. An enrolled user who proved
+  // nothing in the ceremony still needs the trusted assertion.
   const idpMfa = provider.trustsIdpMfa === true && idpMfaAsserted;
   const ssoPolicy = await getEffectiveMfaPolicy({
     scope: provider.partnerId ? 'partner' : 'organization',
@@ -180,12 +186,17 @@ export async function completeSsoLogin(
     orgId: provider.partnerId ? null : provider.orgId,
     partnerId: provider.partnerId ?? null,
   });
+  const ssoPolicyAdmitted = user.mfaEnabled !== true && !ssoPolicy.required;
   const ssoMfa = breezeMfaVerified === true
-    || (idpMfa && (user.mfaEnabled === true || !ssoPolicy.required));
-  // A Breeze-verified factor from the link ceremony outranks the IdP
-  // evaluation for the SOURCE too: 'factor' when Breeze proved it, else the
-  // assurance rests on the IdP assertion (spec D6).
-  const ssoMfaSrc = mfaSrcFor(ssoMfa, breezeMfaVerified === true ? 'factor' : 'idp');
+    || (idpMfa && user.mfaEnabled === true)
+    || ssoPolicyAdmitted;
+  // Source precedence factor → idp → policy (spec D6): 'factor' when Breeze
+  // proved it in the ceremony, 'idp' when the trusted assertion is present,
+  // else the session is assured only because policy admits a no-factor user.
+  const ssoMfaSrc = mfaSrcFor(
+    ssoMfa,
+    breezeMfaVerified === true ? 'factor' : idpMfa ? 'idp' : 'policy',
+  );
 
   // Membership resolution + token payload, keyed on the provider's axis.
   let sessionIdentity: UserSessionIdentity;
@@ -402,6 +413,7 @@ export async function completeSsoLogin(
     refreshToken: issued.refreshToken,
     expiresInSeconds: issued.expiresInSeconds,
     mfa: ssoMfa,
+    mfaSrc: ssoMfaSrc,
   };
 }
 
@@ -672,7 +684,9 @@ export async function finalizeSsoPendingLink(
       userId: user.id,
       email: user.email,
       name: user.name,
-      mfa: completion.mfa,
+      // Records a presented factor or trusted IdP assertion, as the password
+      // login does; a policy-admitted session logs false.
+      mfa: completion.mfa && completion.mfaSrc !== 'policy',
       scope: 'partner',
       ip,
       method: 'sso-partner',

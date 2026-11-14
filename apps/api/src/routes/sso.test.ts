@@ -557,6 +557,7 @@ describe('sso routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mfaPolicyState.required = false;
     ipAllowlistState.decision = { decision: 'allow', reason: 'matched' };
     ipAllowlistState.error = null;
     ipAllowlistState.calls = [];
@@ -2550,14 +2551,14 @@ describe('sso routes', () => {
     });
 
     it('mints mfa:false for amr phr when the provider does NOT trust IdP MFA (#6137)', async () => {
-      wireLinkedLogin({ trustsIdpMfa: false, amr: ['phr'] });
+      wireLinkedLogin({ trustsIdpMfa: false, amr: ['phr'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
     });
 
     it('mints mfa:false for a trusted provider asserting only a single-factor hardware key (#6137)', async () => {
-      wireLinkedLogin({ trustsIdpMfa: true, amr: ['hwk'] });
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['hwk'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
@@ -2583,7 +2584,7 @@ describe('sso routes', () => {
     });
 
     it('mints mfa:false when the provider trusts IdP MFA but amr does NOT attest it', async () => {
-      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'] });
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
@@ -2592,10 +2593,51 @@ describe('sso routes', () => {
     });
 
     it('mints mfa:false when the provider does NOT trust IdP MFA even if amr attests it', async () => {
-      wireLinkedLogin({ trustsIdpMfa: false, amr: ['mfa'] });
+      wireLinkedLogin({ trustsIdpMfa: false, amr: ['mfa'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    // #11889: an SSO session is held to the same contract as a password
+    // session (middleware/auth.ts requireMfa): a user with NO Breeze factor
+    // whose effective policy does NOT require MFA is policy-admitted. Before
+    // the fix the IdP assertion was a precondition of any mfa:true, so a
+    // tenant with MFA off got 403 MFA_REQUIRED on every MFA-gated route after
+    // an SSO sign-in.
+    it('mints a policy-admitted session for an UNENROLLED user when policy does not require MFA and the provider does not trust IdP MFA (#11889)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'policy' }), expect.any(Object));
+    });
+
+    it('mints a policy-admitted session when a trusted provider sends no MFA amr and policy does not require MFA (#11889)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'policy' }), expect.any(Object));
+    });
+
+    it('keeps mfa:false for an UNENROLLED user under a required policy without an IdP assertion (#11889)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, policyRequiresMfa: true, userMfaEnabled: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfa?: boolean; mfaSrc?: string };
+      expect(identity.mfa).toBe(false);
+      expect(identity.mfaSrc).toBeUndefined();
+    });
+
+    // A user who HOLDS a Breeze factor proved none of it in an SSO callback
+    // (there is no Breeze challenge there), so policy never admits them —
+    // the same as the password path, which challenges an enrolled account.
+    it('keeps mfa:false for an ENROLLED user without a trusted IdP assertion, even when policy does not require MFA (#11889)', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, policyRequiresMfa: false, userMfaEnabled: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfa?: boolean; mfaSrc?: string };
+      expect(identity.mfa).toBe(false);
+      expect(identity.mfaSrc).toBeUndefined();
     });
 
     // Adjudicated rule (same one the CF-Access mint sites follow): trusting an
@@ -4000,7 +4042,7 @@ describe('sso routes', () => {
     });
 
     it('sets mfa false when trustsIdpMfa is set but amr does not attest mfa', async () => {
-      wireMfa({ trustsIdpMfa: true, amr: ['pwd'] });
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd'], userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(
@@ -4013,6 +4055,43 @@ describe('sso routes', () => {
     // for a factor the user does not have when policy REQUIRES one.
     it('sets mfa false for an UNENROLLED tech under a required policy despite a trusted amr:mfa assertion', async () => {
       wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], policyRequiresMfa: true, userMfaEnabled: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: false }),
+        expect.any(Object)
+      );
+    });
+
+    // #11889, partner axis: a tech with no factor under a not-required policy
+    // is policy-admitted, exactly like a password login; the audit row does
+    // not record that as MFA (no factor or IdP assertion was presented).
+    it('policy-admits an UNENROLLED tech when policy does not require MFA and the provider does not trust IdP MFA (#11889)', async () => {
+      wireMfa({ trustsIdpMfa: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: true, mfaSrc: 'policy' }),
+        expect.any(Object)
+      );
+      expect(vi.mocked(auditLogin)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: 'sso-partner', mfa: false }),
+      );
+    });
+
+    it('records mfa:true in the partner login audit when a trusted IdP assertion satisfied an enrolled tech (#11889)', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], userMfaEnabled: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(vi.mocked(auditLogin)).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: 'sso-partner', mfa: true }),
+      );
+    });
+
+    it('keeps mfa false for an ENROLLED tech without a trusted IdP assertion (#11889)', async () => {
+      wireMfa({ trustsIdpMfa: false, userMfaEnabled: true });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(
@@ -5111,6 +5190,13 @@ describe('sso routes', () => {
       expect(res.headers.get('location')).toContain('ssoCode=');
       expect(issueUserSessionMock).toHaveBeenCalledWith(
         expect.objectContaining({ userId: NEW_USER_UUID }),
+        expect.any(Object),
+      );
+      // A just-provisioned user's membership is not committed, so its policy
+      // cannot be resolved yet: the first session stays conservative mfa:false
+      // even though no policy requires MFA here (#11889 keeps this arm).
+      expect(issueUserSessionMock).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: NEW_USER_UUID, mfa: false }),
         expect.any(Object),
       );
       expect(ssoTransitionMocks.createDurableSsoExchangeGrant).toHaveBeenCalledTimes(1);

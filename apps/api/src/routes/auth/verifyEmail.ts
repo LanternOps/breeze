@@ -7,7 +7,7 @@ import { createHash } from 'crypto';
 import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users, partners, roles } from '../../db/schema';
-import { mfaSrcFor } from '../../services/mfaAssuranceSource';
+import { mfaSrcFor, resolveNoFactorSessionMfa } from '../../services/mfaAssuranceSource';
 import type { PartnerStatus, PartnerTrustState } from '../../db/schema/orgs';
 import {
   rateLimiter,
@@ -600,8 +600,11 @@ async function createRegistrationAccount(
     security: partnerSettings.security as MfaSecuritySettings | undefined,
     failClosed: true,
   });
-  const mfaEnrollmentRequired = ENABLE_2FA && !userRow.mfaEnabled && policy.required;
-  const mfaSatisfied = !ENABLE_2FA || (!userRow.mfaEnabled && !policy.required);
+  const { mfa: mfaSatisfied, mfaEnrollmentRequired } = resolveNoFactorSessionMfa({
+    twoFactorEnabled: ENABLE_2FA,
+    userMfaEnabled: userRow.mfaEnabled === true,
+    policyRequired: policy.required,
+  });
 
   return {
     created,

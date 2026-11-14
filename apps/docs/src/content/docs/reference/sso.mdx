@@ -405,7 +405,12 @@ The forgot-password and reset-password flows honor SSO enforcement. A partner-sc
 
 ### Satisfying Breeze MFA with your IdP
 
-By default, Breeze never accepts an IdP's own multi-factor authentication as satisfying its own MFA-gated routes (mutating SSO provider config, PAM checkouts, and similar sensitive actions) — every account, SSO-provisioned or not, must separately satisfy Breeze's own MFA requirement on those routes. Set `trustsIdpMfa: true` on a provider (organization or partner-owned) to change that: when the id_token from that provider's login includes either of these [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176) Authentication Method Reference values, Breeze treats MFA as satisfied for that sign-in:
+Breeze's MFA-gated routes (mutating SSO provider config, PAM checkouts, saving settings, and similar sensitive actions) follow the MFA policy that applies to the user, for SSO and password sign-ins alike:
+
+- **Policy does not require MFA, and the user has no Breeze factor enrolled:** an SSO sign-in satisfies those routes, the same as a password sign-in.
+- **Policy requires MFA, or the user has a Breeze factor enrolled:** an SSO sign-in does not satisfy those routes on its own. A user under a requiring policy who has no factor is sent to enroll one.
+
+By default, Breeze never accepts an IdP's own multi-factor authentication in place of a Breeze factor. Set `trustsIdpMfa: true` on a provider (organization or partner-owned) to change that for users who have a Breeze factor enrolled: when the id_token from that provider's login includes either of these [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176) Authentication Method Reference values, Breeze treats MFA as satisfied for that sign-in:
 
 - `mfa`: the user completed multi-factor authentication at the IdP.
 - `phr`: the user completed phishing-resistant authentication at the IdP, such as a passkey / WebAuthn sign-in. Pocket ID, for example, reports a passkey login as `amr: ["phr"]`.

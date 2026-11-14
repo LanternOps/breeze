@@ -9,7 +9,9 @@ import {
   isPasswordStrong,
   getRedis,
   rateLimiter,
+  getEffectiveMfaPolicy,
 } from '../../services';
+import { resolveNoFactorSessionMfa } from '../../services/mfaAssuranceSource';
 import {
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
@@ -29,7 +31,7 @@ import {
   lockActiveRefreshFamiliesForUsers,
   revokeAllRefreshFamilies,
 } from '../../services/authLifecycle';
-import { acceptInviteSchema, invitePreviewSchema } from './schemas';
+import { acceptInviteSchema, invitePreviewSchema, ENABLE_2FA } from './schemas';
 import {
   getClientRateLimitKey,
   resolveCurrentUserTokenContext,
@@ -164,6 +166,7 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
         status: users.status,
         authEpoch: users.authEpoch,
         mfaEpoch: users.mfaEpoch,
+        mfaEnabled: users.mfaEnabled,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -179,6 +182,23 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
   }
 
   const context = await resolveCurrentUserTokenContext(userId);
+  // #11854: record the same MFA state a fresh /auth/login would for this user
+  // under this policy. Setting a password proves no factor, so this is the
+  // login route's no-factor arm: policy-admitted when the effective policy
+  // does not require MFA, locked to enrollment (mfa:false) when it does, and
+  // never assured for an account that already holds a factor it did not prove
+  // here (a re-invited account can keep its factors).
+  const policy = await getEffectiveMfaPolicy({
+    scope: context.scope,
+    userId: user.id,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+  });
+  const sessionMfa = resolveNoFactorSessionMfa({
+    twoFactorEnabled: ENABLE_2FA,
+    userMfaEnabled: user.mfaEnabled === true,
+    policyRequired: policy.required,
+  });
   const identity: UserSessionIdentity = {
     userId: user.id,
     email: user.email,
@@ -186,7 +206,8 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     orgId: context.orgId,
     partnerId: context.partnerId,
     scope: context.scope,
-    mfa: false,
+    mfa: sessionMfa.mfa,
+    mfaSrc: sessionMfa.mfaSrc,
   };
   const passwordHash = await hashPassword(password);
 
@@ -254,9 +275,12 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
         id: user.id,
         email: user.email,
         name: user.name,
-        mfaEnabled: false,
+        mfaEnabled: ENABLE_2FA ? user.mfaEnabled === true : false,
       },
       tokens: toPublicTokens(issued),
+      // Same enrollment signal /auth/login returns for a no-factor session.
+      mfaEnrollmentRequired: sessionMfa.mfaEnrollmentRequired,
+      enrollUrl: sessionMfa.mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
     });
   } catch (err) {
     if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
