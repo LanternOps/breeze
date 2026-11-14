@@ -1,3 +1,4 @@
+import { ticketImportLimits, ZAMMAD_ATTACHMENT_INDEX_LIMITS } from '../../importLimits';
 import type { LoadedTicket, SourceHandle, SourceRow } from '../../moduleContract';
 import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError } from '../../sourceFetch';
 import {
@@ -38,6 +39,16 @@ import {
  *   cap, is read article by article (§11), a few at a time, stopping at the
  *   first failure. Then its tags (Z18), the final survivor of a merged ticket
  *   from its `parent` link (Z9), and the people it names.
+ * - **a per-ticket budget** bounds what one load holds: at most
+ *   TICKET_IMPORT_MAX_TICKET_ARTICLES articles and
+ *   TICKET_IMPORT_MAX_TICKET_READ_BYTES of article JSON, charged as each
+ *   article arrives. Past either the read stops at once and the ticket fails
+ *   `ticket_too_large` (#11296 follow-up): each answer is capped, but a broken
+ *   server could otherwise list articles without end. Attachment files are
+ *   never read at load, so they do not count.
+ * - **the attachment index** the load leaves behind (where each file lives)
+ *   is bounded in entries per ticket and in all (ZAMMAD_ATTACHMENT_INDEX_LIMITS,
+ *   #11730 review): see `rememberFileLocations`.
  */
 
 export const ZAMMAD_BIG_TICKET_ARTICLES = 500;
@@ -142,24 +153,61 @@ export function zammadCursorAfterRow(rawCursor: ZammadCursor | null, rowKey: str
  * handle of the source asks (a file is normally fetched right after its
  * ticket's load) and two sources never share an entry. Nothing personal: ids
  * only. A miss re-reads the ticket's articles (`fetchZammadAttachment`).
+ *
+ * Bounded in entries too, not only tickets (#11730 review, Strix): a ticket
+ * listing more than ZAMMAD_ATTACHMENT_INDEX_LIMITS.perTicket attachments is
+ * not indexed (its files take the miss path), and past `.total` entries
+ * across every source the least recently used tickets go first.
  */
 export type FileLocation = { ticketId: number; articleId: number };
 const LOCATIONS = new Map<string, Map<number, FileLocation>>();
+let indexedEntries = 0;
 export const ZAMMAD_FILE_LOCATION_TICKETS = 64;
 
 function locationKey(src: SourceHandle<unknown>, ticketKey: string): string {
   return `${src.sourceId}\n${src.baseUrl}\n${ticketKey}`;
 }
 
+function dropLocations(key: string): void {
+  const files = LOCATIONS.get(key);
+  if (!files) return;
+  indexedEntries -= files.size;
+  LOCATIONS.delete(key);
+}
+
+/** Where attachment `storeId` lives among `articles`, or null. */
+export function fileLocationIn(articles: readonly ZammadArticle[], storeId: number): FileLocation | null {
+  for (const article of articles) {
+    for (const file of article.attachments ?? []) {
+      if (file.id === storeId) return { ticketId: article.ticket_id, articleId: article.id };
+    }
+  }
+  return null;
+}
+
 export function rememberFileLocations(src: SourceHandle<unknown>, ticketKey: string, articles: readonly ZammadArticle[]): void {
+  const key = locationKey(src, ticketKey);
+  dropLocations(key);
+  const { perTicket, total } = ZAMMAD_ATTACHMENT_INDEX_LIMITS;
+  let stubs = 0;
+  for (const article of articles) stubs += article.attachments?.length ?? 0;
+  // Too many to keep: not indexed, so its files are found by a fresh read.
+  if (stubs > perTicket) return;
   const files = new Map<number, FileLocation>();
   for (const article of articles) {
     for (const file of article.attachments ?? []) files.set(file.id, { ticketId: article.ticket_id, articleId: article.id });
   }
-  const key = locationKey(src, ticketKey);
-  LOCATIONS.delete(key);
   LOCATIONS.set(key, files);
-  while (LOCATIONS.size > ZAMMAD_FILE_LOCATION_TICKETS) LOCATIONS.delete(LOCATIONS.keys().next().value!);
+  indexedEntries += files.size;
+  // perTicket <= total, so the ticket just added always stays.
+  while (LOCATIONS.size > ZAMMAD_FILE_LOCATION_TICKETS || indexedEntries > total) {
+    dropLocations(LOCATIONS.keys().next().value!);
+  }
+}
+
+/** Tests only: the entries the index holds across every source. */
+export function indexedFileLocationCount(): number {
+  return indexedEntries;
 }
 
 export function rememberedFileLocation(src: SourceHandle<unknown>, ticketKey: string, storeId: number): FileLocation | null {
@@ -176,9 +224,10 @@ export function rememberedFileLocation(src: SourceHandle<unknown>, ticketKey: st
 export function forgetFileLocations(sourceId?: string): void {
   if (sourceId === undefined) {
     LOCATIONS.clear();
+    indexedEntries = 0;
     return;
   }
-  for (const key of [...LOCATIONS.keys()]) if (key.startsWith(`${sourceId}\n`)) LOCATIONS.delete(key);
+  for (const key of [...LOCATIONS.keys()]) if (key.startsWith(`${sourceId}\n`)) dropLocations(key);
 }
 
 // ------------------------------------------------------------------- load
@@ -215,9 +264,47 @@ export async function boundedInOrder<T, R>(items: readonly T[], limit: number, f
   return out;
 }
 
-/** Each article on its own (`GET /ticket_articles/:id`), in `by_ticket` order. */
-async function articlesOneByOne(src: SourceHandle<unknown>, ids: readonly number[]): Promise<ZammadArticle[]> {
-  const articles = await boundedInOrder(ids, ZAMMAD_ARTICLE_READS_IN_FLIGHT, (id) => getArticle(src, id));
+/**
+ * A ticket whose articles pass the load's budget. A SourceResponseTooLargeError,
+ * so the framework fails the ticket `ticket_too_large` (runOutcomes'
+ * classifySourceError) and the run goes on.
+ */
+export class ZammadTicketTooLargeError extends SourceResponseTooLargeError {
+  constructor(public readonly limit: 'articles' | 'bytes', max: number) {
+    super(max);
+    this.name = 'ZammadTicketTooLargeError';
+    this.message = limit === 'articles'
+      ? `The ticket has more than ${max} articles`
+      : `The ticket's articles are larger than ${max} bytes`;
+  }
+}
+
+/** What one ticket's load may still hold: articles and article bytes, charged as each article arrives. */
+export type ArticleBudget = { maxArticles: number; maxBytes: number; articles: number; bytes: number };
+
+export function ticketArticleBudget(): ArticleBudget {
+  const limits = ticketImportLimits();
+  return { maxArticles: limits.maxTicketArticles, maxBytes: limits.maxTicketReadBytes, articles: 0, bytes: 0 };
+}
+
+/** Charges one article (its JSON, in UTF-8 bytes); throws the moment either limit is passed. */
+export function chargeArticle(budget: ArticleBudget, article: ZammadArticle): void {
+  budget.articles += 1;
+  if (budget.articles > budget.maxArticles) throw new ZammadTicketTooLargeError('articles', budget.maxArticles);
+  budget.bytes += Buffer.byteLength(JSON.stringify(article));
+  if (budget.bytes > budget.maxBytes) throw new ZammadTicketTooLargeError('bytes', budget.maxBytes);
+}
+
+/**
+ * Each article on its own (`GET /ticket_articles/:id`), in `by_ticket` order,
+ * charged to the budget as it arrives: past it no new read starts.
+ */
+async function articlesOneByOne(src: SourceHandle<unknown>, ids: readonly number[], budget: ArticleBudget): Promise<ZammadArticle[]> {
+  const articles = await boundedInOrder(ids, ZAMMAD_ARTICLE_READS_IN_FLIGHT, async (id) => {
+    const article = await getArticle(src, id);
+    chargeArticle(budget, article);
+    return article;
+  });
   return articles.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id);
 }
 
@@ -238,17 +325,27 @@ export const __zammadReadingTestHooks = {
  * a small answer. (Not `?all=true`: its assets carry every visible article,
  * so it would itself be the large read this avoids.) Over 500, or when
  * `by_ticket` passes the JSON cap, each article is read on its own (§11).
+ *
+ * Every path charges the ticket's article budget: a ticket that lists more
+ * articles than the budget allows fails before any article is read; one read
+ * article by article stops at the article that passes it.
  */
 export async function zammadArticles(src: SourceHandle<unknown>, ticketId: number): Promise<ZammadArticle[]> {
+  const budget = ticketArticleBudget();
   const ids = await getTicketArticleIds(src, ticketId);
+  if (ids && ids.length > budget.maxArticles) throw new ZammadTicketTooLargeError('articles', budget.maxArticles);
   // Without article_ids in the answer only by_ticket can read the ticket, as before this read existed.
-  if (ids && ids.length > bigTicketArticles) return articlesOneByOne(src, ids);
+  if (ids && ids.length > bigTicketArticles) return articlesOneByOne(src, ids, budget);
+  let articles: ZammadArticle[];
   try {
-    return await articlesByTicket(src, ticketId);
+    articles = await articlesByTicket(src, ticketId);
   } catch (error) {
-    if (ids && error instanceof SourceResponseTooLargeError) return articlesOneByOne(src, ids);
+    if (ids && error instanceof SourceResponseTooLargeError) return articlesOneByOne(src, ids, budget);
     throw error;
   }
+  // One answer, already under the JSON cap: the budget still bounds its count and bytes.
+  for (const article of articles) chargeArticle(budget, article);
+  return articles;
 }
 
 /** The final survivor of a merged ticket: its `parent` link, re-pointed along a chain (Z9). */

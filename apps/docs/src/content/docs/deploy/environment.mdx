@@ -1083,6 +1083,8 @@ These enable partners to connect a Microsoft 365 shared support mailbox so custo
 | `TICKET_IMPORT_MAX_CLOCK_SKEW_MS` | `300000` | How far in the future a source time may be and still be clamped to now (5 minutes); beyond, the ticket fails. |
 | `TICKET_IMPORT_MAX_ISSUES_PER_RUN` | `50000` | Report rows one run keeps; the counters stay exact beyond it. |
 | `TICKET_IMPORT_MAX_TICKET_BYTES` | `268435456` | Converted content of one ticket (256 MiB); a larger ticket fails and is listed. |
+| `TICKET_IMPORT_MAX_TICKET_ARTICLES` | `10000` | Articles one ticket may have when read from the source; past it the read stops, and the ticket fails and is listed. |
+| `TICKET_IMPORT_MAX_TICKET_READ_BYTES` | `268435456` | Article bytes one ticket may hold while it is read from the source (256 MiB; attachment files are not counted); past it the read stops, and the ticket fails and is listed. |
 
 ## Customer Microsoft 365 Graph-read consent (optional)
 

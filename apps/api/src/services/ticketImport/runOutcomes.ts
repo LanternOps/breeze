@@ -5,6 +5,7 @@ import { IMPORT_ATTACHMENT_MAX_BYTES } from './importAttachments';
 import type { ImportedTicket } from './importedTicket';
 import type { ImportTicketResult } from './importWriter';
 import type { Conversion, ReportNote } from './moduleContract';
+import type { ItemRow, ItemWrite } from './runLedger';
 import type { IssueBuffer, RunCounters, RunIssue } from './runReport';
 import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceShapeError, SourceUnavailableError } from './sourceFetch';
 
@@ -13,6 +14,32 @@ import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceSh
  * what a conversion's notes, an import result and an error mean for the
  * ledger, the counters and the report. No I/O.
  */
+
+/**
+ * A list row the module could key but not read (`SourceRow.failure`) whose
+ * ticket the ledger shows imported (#11296 follow-up). Not a new failure:
+ * the Breeze ticket is there and nothing new could be read, so failing it
+ * would mark an imported ticket failed on every run until the row reads
+ * again. The item stays imported (its imported version too, so the row is
+ * imported again once it reads), is seen by this run (the deletions phase
+ * does not probe it), is counted skipped and listed once as
+ * `row_unreadable` with the module's code. Returns the item to stage, or
+ * null when the row fails as before: a ticket never imported, or one whose
+ * item is in any other state.
+ */
+export function keepImportedOnUnreadableRow(
+  item: ItemRow | undefined,
+  code: string,
+  seen: Pick<ItemWrite, 'seenVersion' | 'seenRunId'>,
+  counters: RunCounters,
+  issues: IssueBuffer,
+  target: IssueTarget,
+): ItemWrite | null {
+  if (!item || item.state !== 'imported' || item.importedVersion === null) return null;
+  counters.tickets.skipped += 1;
+  issues.add({ sourceTicketKey: target.key, sourceTicketNumber: target.number, kind: 'row_unreadable', code: code.slice(0, 64) });
+  return { ...item, ...seen };
+}
 
 /** A source time clamped to now, or a ticket that fails `clock_skew` (§5.2). */
 export function clampTicketTimes(

@@ -33,6 +33,7 @@ import {
   conversionIdentityViolation,
   importedTicketBytes,
   isInfrastructureError,
+  keepImportedOnUnreadableRow,
   predictTicket,
   recordImportResult,
   SOURCE_SHAPE_INVALID,
@@ -414,8 +415,14 @@ class SliceRunner {
       this.stage({ ...item, ...seen });
       return { kind: 'done', slow: false };
     }
-    // A row the module could key but not read: this ticket fails, never the page.
-    if (row.failure) return this.failItem(row, item, target, row.failure.code);
+    // A row the module could key but not read: this ticket fails, never the
+    // page; one already imported stays so and is only listed (#11296 follow-up).
+    if (row.failure) {
+      const kept = keepImportedOnUnreadableRow(item, row.failure.code, seen, this.counters, this.issues, target);
+      if (!kept) return this.failItem(row, item, target, row.failure.code);
+      this.stage(kept);
+      return { kind: 'done', slow: false };
+    }
     const orgId = this.resolveOrg(row.orgKey);
     if (!orgId) {
       this.counters.tickets.skipped += 1;
