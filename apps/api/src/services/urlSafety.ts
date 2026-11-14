@@ -8,8 +8,10 @@
  *
  * `safeFetch()` closes that window: it resolves the hostname ONCE, filters out
  * private/loopback/link-local addresses, and dials the request with a custom
- * `lookup` function that always returns the validated IP. The hostname is
- * preserved as SNI. `safeFetch` derives the `Host` header from the URL and
+ * `lookup` function that always returns the validated IP. When the connection
+ * to that IP fails or stalls before it is established, the request moves on to
+ * the next validated IP from the SAME resolution (a bounded number of times);
+ * nothing is resolved again. The hostname is preserved as SNI. `safeFetch` derives the `Host` header from the URL and
  * ignores caller-supplied Host values so tenant-controlled headers cannot
  * redirect virtual-host routing. Certificate chain validation is NEVER disabled.
  */
@@ -17,7 +19,7 @@ import { lookup as dnsLookup } from 'dns/promises';
 import type { LookupAddress } from 'dns';
 import https from 'https';
 import http from 'http';
-import type { LookupFunction } from 'net';
+import type { LookupFunction, Socket } from 'net';
 import type { Duplex } from 'stream';
 import { assertOutsideHeldDbContext } from '../db';
 import {
@@ -121,6 +123,26 @@ let lookupImpl: LookupAllFn = (hostname) =>
 /** Test hook — override DNS resolution. Pass `null` to restore default. */
 export function __setLookupForTests(fn: LookupAllFn | null): void {
   lookupImpl = fn ?? ((hostname) => dnsLookup(hostname, { all: true, verbatim: true }));
+}
+
+/**
+ * At most this many validated addresses are tried for one request. A host
+ * that resolves to more is still served by its first few; the cap only bounds
+ * how long a request can spend on addresses that do not answer.
+ */
+const MAX_CONNECT_ATTEMPTS = 3;
+
+/**
+ * How long one address gets to establish a connection (TCP connect, plus the
+ * TLS handshake for https) before the next validated address is tried. Never
+ * applied to the last address, which is governed by `timeoutMs` as before.
+ */
+const DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS = 10_000;
+let connectAttemptTimeoutMs = DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
+
+/** Test hook — override the per-address connect timeout. Pass `null` to restore default. */
+export function __setConnectAttemptTimeoutForTests(ms: number | null): void {
+  connectAttemptTimeoutMs = ms ?? DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
 }
 
 export interface SsrfGuardOptions {
@@ -334,10 +356,15 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    */
   maxBytes?: number;
   /**
-   * Optional callback invoked once with the validated IP `safeFetch` has
-   * pinned for this request, before the socket is dialed. Exists so callers
-   * that need to audit/record which address was actually contacted (e.g. the
-   * LLM egress recorder) don't have to duplicate `resolveSafeRecords`.
+   * Optional callback invoked with the validated IP `safeFetch` has pinned
+   * for this request, before the socket is dialed. Exists so callers that
+   * need to audit/record which address was actually contacted (e.g. the LLM
+   * egress recorder) don't have to duplicate `resolveSafeRecords`.
+   *
+   * Normally called once. When the connection to that address cannot be
+   * established and the request moves on to another validated address from
+   * the same resolution, it is called again before each further dial, so the
+   * last call names the address the request ended on.
    *
    * Fire-and-forget: a throwing `onConnect` is swallowed and never fails the
    * request or surfaces to the caller. Backward compatible — omitting it is a
@@ -638,51 +665,37 @@ async function safeFetchRequest(
     }),
     { signal, timeoutMs: init.timeoutMs, headersTimeoutMs }
   );
-  const safeRecord = safe[0]!;
+  const firstRecord = safe[0]!;
 
-  if (init.onConnect) {
+  const notifyConnect = (ip: string): void => {
+    if (!init.onConnect) return;
     try {
-      init.onConnect(safeRecord.address);
+      init.onConnect(ip);
     } catch {
       // Fire-and-forget by contract — a caller's audit hook must never be
       // able to fail the request it's merely observing.
     }
-  }
+  };
+
+  notifyConnect(firstRecord.address);
 
   // Cleartext is only conceded for the on-LAN hop the operator owns. Checked
-  // against the pinned record specifically, so it cannot drift from the address
-  // actually dialed.
-  if (init.requirePrivateForCleartext && u.protocol === 'http:' && !isRfc1918OrUla(safeRecord.address)) {
+  // against the first pinned record specifically, so it cannot drift from the
+  // address actually dialed; any further address the request may fall back to
+  // must pass the same test (below).
+  const cleartextNeedsPrivate = init.requirePrivateForCleartext === true && u.protocol === 'http:';
+  if (cleartextNeedsPrivate && !isRfc1918OrUla(firstRecord.address)) {
     throw new SsrfBlockedError(
-      `cleartext http is only permitted to private (RFC1918/ULA) addresses; ${hostname} resolves to ${safeRecord.address}`,
+      `cleartext http is only permitted to private (RFC1918/ULA) addresses; ${hostname} resolves to ${firstRecord.address}`,
       { hostname, resolvedIps: allIps }
     );
   }
 
-  // Build a `lookup` that always hands back the validated record, so a DNS
-  // rebind between now and the TCP connect cannot redirect us.
-  const pinnedLookup: LookupFunction = (_hn, opts, cb) => {
-    const callback = (typeof opts === 'function' ? opts : cb) as
-      | ((e: NodeJS.ErrnoException | null, addr: string, family: number) => void)
-      | ((e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)
-      | undefined;
-
-    // Unreachable via Node's connect path (it always supplies a callback), but
-    // if it ever happened, silently returning would hang the request forever
-    // when no timeoutMs is set — throw so it surfaces as a connection error.
-    if (!callback) throw new Error('pinnedLookup invoked without a callback');
-
-    if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all === true) {
-      (callback as (e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)(null, [safeRecord]);
-      return;
-    }
-
-    (callback as (e: NodeJS.ErrnoException | null, addr: string, family: number) => void)(
-      null,
-      safeRecord.address,
-      safeRecord.family
-    );
-  };
+  // The addresses this request may dial, in resolver order. Every one passed
+  // the policy above in this single resolution; nothing is resolved again
+  // before or between attempts, so a rebind cannot add an address.
+  const candidates = (cleartextNeedsPrivate ? safe.filter((r) => isRfc1918OrUla(r.address)) : safe)
+    .slice(0, MAX_CONNECT_ATTEMPTS);
 
   const port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80;
   const method = (init.method || 'GET').toUpperCase();
@@ -732,8 +745,102 @@ async function safeFetchRequest(
     }
   }
 
+  const attempt: DialContext = {
+    url: u, hostname, port, method, headers, bodyBuf, init, signal,
+    headersTimeoutMs, startedAt, onRequestStarted, release
+  };
+
+  // Try the candidates in order. Only an attempt that could not establish its
+  // connection hands over to the next address (see `dialPinned`); anything
+  // else, and every outcome of the last attempt, is returned or thrown as is.
+  for (let i = 0; ; i++) {
+    const record = candidates[i]!;
+    if (i > 0) notifyConnect(record.address);
+    try {
+      return await dialPinned(attempt, record, i === candidates.length - 1);
+    } catch (err) {
+      if (!(err instanceof ConnectAttemptFailed)) throw err;
+      // Logged here because only the LAST attempt's error reaches the caller.
+      const code = (err.attemptError as NodeJS.ErrnoException).code;
+      console.warn(
+        `safeFetch: could not connect to ${hostname} at ${record.address} `
+          + `(${code ? `${code}: ` : ''}${err.attemptError.message}); `
+          + `trying the next resolved address (${i + 2}/${candidates.length})`
+      );
+    }
+  }
+}
+
+/** Everything one dial attempt needs from `safeFetchRequest`; shared by every attempt. */
+interface DialContext {
+  url: URL;
+  hostname: string;
+  port: number;
+  method: string;
+  headers: Record<string, string>;
+  bodyBuf: Buffer | undefined;
+  init: SafeFetchInit;
+  signal: AbortSignal | undefined;
+  headersTimeoutMs: number | undefined;
+  startedAt: number;
+  onRequestStarted: () => void;
+  release: () => void;
+}
+
+/**
+ * One validated address could not establish its connection, and the request
+ * may try the next. Internal to `safeFetch`: the last address never raises it,
+ * so it never reaches a caller.
+ */
+class ConnectAttemptFailed extends Error {
+  constructor(public readonly attemptError: Error) {
+    super(attemptError.message);
+    this.name = 'ConnectAttemptFailed';
+  }
+}
+
+/**
+ * One request, pinned to one validated `record`. When the connection to it
+ * fails or stalls before it is established, and this is not the last
+ * candidate, the attempt rejects with `ConnectAttemptFailed` so the caller can
+ * move on. At that point no request byte has reached the peer: Node holds
+ * cleartext writes until the TCP connect, and TLS application data until the
+ * handshake completes. A TLS handshake that FAILS (as opposed to stalling) is
+ * final, as is anything after the connection is established.
+ */
+function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): Promise<Response> {
+  const {
+    url: u, hostname, port, method, headers, bodyBuf, init, signal,
+    headersTimeoutMs, startedAt, onRequestStarted, release
+  } = ctx;
   const isHttps = u.protocol === 'https:';
   const requester = isHttps ? https.request : http.request;
+  const timeoutMs = init.timeoutMs;
+
+  // Build a `lookup` that always hands back the validated record, so a DNS
+  // rebind between now and the TCP connect cannot redirect us.
+  const pinnedLookup: LookupFunction = (_hn, opts, cb) => {
+    const callback = (typeof opts === 'function' ? opts : cb) as
+      | ((e: NodeJS.ErrnoException | null, addr: string, family: number) => void)
+      | ((e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)
+      | undefined;
+
+    // Unreachable via Node's connect path (it always supplies a callback), but
+    // if it ever happened, silently returning would hang the request forever
+    // when no timeoutMs is set — throw so it surfaces as a connection error.
+    if (!callback) throw new Error('pinnedLookup invoked without a callback');
+
+    if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all === true) {
+      (callback as (e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)(null, [record]);
+      return;
+    }
+
+    (callback as (e: NodeJS.ErrnoException | null, addr: string, family: number) => void)(
+      null,
+      record.address,
+      record.family
+    );
+  };
 
   const reqOptions: https.RequestOptions = {
     method,
@@ -754,8 +861,6 @@ async function safeFetchRequest(
     // original hostname — so SNI and cert hostname check both work correctly.
   };
 
-  const timeoutMs = init.timeoutMs;
-
   return new Promise<Response>((resolve, reject) => {
     // Set once the body has been handed to the caller as a live stream. From
     // that moment a transport error can no longer `reject` (the promise is
@@ -765,6 +870,21 @@ async function safeFetchRequest(
     const clearHeadersTimer = (): void => {
       if (headersTimer !== undefined) clearTimeout(headersTimer);
       headersTimer = undefined;
+    };
+
+    // Connection progress of this attempt (see `dialPinned`).
+    let tcpConnected = false;
+    let established = false;
+    let stalled = false;
+    let handedOff = false;
+    let attemptTimer: NodeJS.Timeout | undefined;
+    const clearAttemptTimer = (): void => {
+      if (attemptTimer !== undefined) clearTimeout(attemptTimer);
+      attemptTimer = undefined;
+    };
+    const markEstablished = (): void => {
+      established = true;
+      clearAttemptTimer();
     };
 
     /**
@@ -795,6 +915,7 @@ async function safeFetchRequest(
     const req = requester(reqOptions, (res) => {
       responded = true;
       clearHeadersTimer();
+      markEstablished();
       // Follow no redirects by default — caller gets the raw response and can
       // re-invoke safeFetch if they want to trust the Location header.
       const status = res.statusCode ?? 0;
@@ -886,6 +1007,16 @@ async function safeFetchRequest(
       if (!responded) reject(new Error('connection closed before a response was received'));
     });
 
+    req.on('socket', (socket: Socket) => {
+      const onTcpConnect = (): void => {
+        tcpConnected = true;
+        if (!isHttps) markEstablished();
+      };
+      if (socket.connecting) socket.once('connect', onTcpConnect);
+      else onTcpConnect();
+      if (isHttps) socket.once('secureConnect', markEstablished);
+    });
+
     req.on('error', (err) => {
       // Includes TLS verification failures — propagate without suppression.
       // Once the body is streaming the promise is already settled, so the only
@@ -897,13 +1028,39 @@ async function safeFetchRequest(
         failStream(err);
         return;
       }
+      // The connect to this address failed, or stalled before the connection
+      // was established: let the next validated address have a go. Never after
+      // the caller's own abort, deadline or headers timeout.
+      if (
+        !isLast && !responded && !established && (!tcpConnected || stalled)
+        && !signal?.aborted && !(err instanceof ResponseHeadersTimeoutError)
+      ) {
+        handedOff = true;
+        reject(new ConnectAttemptFailed(err));
+        return;
+      }
       reject(err);
     });
 
     if (timeoutMs && timeoutMs > 0) {
       req.setTimeout(timeoutMs, () => {
+        if (!established) stalled = true;
         req.destroy(new Error(`request timed out after ${timeoutMs}ms`));
       });
+    }
+
+    if (!isLast) {
+      // Bound how long this address may take to establish the connection, so
+      // one that never answers costs seconds rather than the whole timeoutMs.
+      const attemptMs = timeoutMs && timeoutMs > 0
+        ? Math.min(connectAttemptTimeoutMs, timeoutMs)
+        : connectAttemptTimeoutMs;
+      attemptTimer = setTimeout(() => {
+        attemptTimer = undefined;
+        stalled = true;
+        req.destroy(new Error(`connection to ${record.address} was not established within ${attemptMs}ms`));
+      }, attemptMs);
+      req.once('close', clearAttemptTimer);
     }
 
     if (headersTimeoutMs !== undefined) {
@@ -918,8 +1075,11 @@ async function safeFetchRequest(
 
     // The request owns the deadline from here: it is cleared when the request
     // is over, which for a streamed body is when the body ends or is cancelled.
+    // An attempt that handed over to the next address passes it on instead.
     onRequestStarted();
-    req.once('close', release);
+    req.once('close', () => {
+      if (!handedOff) release();
+    });
 
     if (signal) {
       // Abort settles the promise directly: an already-closed request emits no
