@@ -195,6 +195,9 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
       });
     } catch (err) {
       handleActionError(err, t('savedViewsMenu.toasts.deleteFailed'));
+      // Already deleted elsewhere (another tab, Settings › Saved filters):
+      // refresh so the stale row does not keep failing on every retry.
+      if (err instanceof ActionError && err.status === 404) await fetchViews();
       return;
     }
     if (defaultId === view.id) {
@@ -365,7 +368,7 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
                   {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t('common:actions.save')}
                 </button>
               </div>
-              {orgRequired && (
+              {orgRequired && fleet.needsOrgSelection && !fleet.isFleetScope && (
                 <p data-testid="saved-view-org-required" role="alert" className="text-xs text-destructive">
                   {t('common:layout.orgRequired.title')}
                 </p>

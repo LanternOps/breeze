@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SavedViewsMenu } from './SavedViewsMenu';
@@ -227,19 +227,61 @@ describe('SavedViewsMenu — saving a view names its organization (#11879)', () 
     expect(showToastMock).not.toHaveBeenCalled();
   });
 
-  it('toasts the API error text when a delete fails', async () => {
+  it('toasts the API error text when a delete fails and keeps the default view', async () => {
+    setFocusedOrg('org-aaaa');
+    listPayload = [savedView];
+    window.localStorage.setItem('breeze.devices.defaultView', 'view-1');
+    mutationResponse = jsonResponse({ error: 'Not allowed' }, 403);
+    render(<SavedViewsMenu value={activeFilter} onApply={vi.fn()} />);
+    await waitFor(() => expect(listCalls()).toHaveLength(1));
+    fireEvent.click(screen.getByTestId('saved-views-button'));
+    fireEvent.click(await screen.findByTestId('saved-view-delete-view-1'));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Not allowed' })),
+    );
+    expect(mutationCalls()[0]![0]).toBe('/filters/view-1');
+    expect(window.localStorage.getItem('breeze.devices.defaultView')).toBe('view-1');
+    expect(listCalls()).toHaveLength(1);
+  });
+
+  it('refreshes the list when the view was already deleted elsewhere (404)', async () => {
     setFocusedOrg('org-aaaa');
     listPayload = [savedView];
     mutationResponse = jsonResponse({ error: 'Saved filter not found' }, 404);
     render(<SavedViewsMenu value={null} onApply={vi.fn()} />);
     await waitFor(() => expect(listCalls()).toHaveLength(1));
     fireEvent.click(screen.getByTestId('saved-views-button'));
+    listPayload = [];
     fireEvent.click(await screen.findByTestId('saved-view-delete-view-1'));
 
-    await waitFor(() =>
-      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Saved filter not found' })),
-    );
-    expect(mutationCalls()[0]![0]).toBe('/filters/view-1');
-    expect(listCalls()).toHaveLength(1);
+    await waitFor(() => expect(listCalls()).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByTestId('saved-view-view-1')).toBeNull());
+  });
+
+  it('a successful delete of the default view clears the stored default and refetches', async () => {
+    setFocusedOrg('org-aaaa');
+    listPayload = [savedView];
+    window.localStorage.setItem('breeze.devices.defaultView', 'view-1');
+    mutationResponse = jsonResponse({ data: savedView }, 200);
+    render(<SavedViewsMenu value={activeFilter} onApply={vi.fn()} />);
+    await waitFor(() => expect(listCalls()).toHaveLength(1));
+    fireEvent.click(screen.getByTestId('saved-views-button'));
+    listPayload = [];
+    fireEvent.click(await screen.findByTestId('saved-view-delete-view-1'));
+
+    await waitFor(() => expect(listCalls()).toHaveLength(2));
+    expect(window.localStorage.getItem('breeze.devices.defaultView')).toBeNull();
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('drops the "select an organization" message once the org scope resolves', async () => {
+    useOrgStore.setState({ currentOrgId: null, allOrgs: false, organizations: [], organizationsLoaded: false, error: 'boom' });
+    await openNamingRow();
+    fireEvent.click(screen.getByTestId('saved-view-save-confirm'));
+    expect(await screen.findByTestId('saved-view-org-required')).toBeInTheDocument();
+
+    act(() => setFocusedOrg('org-bbbb'));
+    expect(screen.queryByTestId('saved-view-org-required')).toBeNull();
   });
 });
