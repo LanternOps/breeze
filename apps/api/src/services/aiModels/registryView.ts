@@ -122,7 +122,7 @@ function contextWindowDto(o: Offering, conn: PartnerAiConnection | undefined): A
   if (!conn || !isGatewayConnectionKind(conn.kind)) return null;
   const w = resolveEffectiveContextWindow(o, conn.configVersion);
   const observed = o.contextWindowObserved != null && o.contextWindowObservedAt != null
-    ? { value: o.contextWindowObserved, at: o.contextWindowObservedAt.toISOString(), fresh: w.observedFresh }
+    ? { value: o.contextWindowObserved, at: o.contextWindowObservedAt.toISOString(), applies: w.observedApplies }
     : null;
   return {
     effective: w.value,

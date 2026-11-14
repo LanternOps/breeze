@@ -286,6 +286,7 @@ describe('buildPartnerModelsSnapshot', () => {
     const O2 = '10000000-0000-4000-8000-000000000002';
     const O3 = '10000000-0000-4000-8000-000000000003';
     const O4 = '10000000-0000-4000-8000-000000000004';
+    const O5 = '10000000-0000-4000-8000-000000000005';
     const ABSENT = { state: 'absent', at: null, profile: null, promptTokens: null, cachedTokens: null, summary: null };
     const ABSENT_SURFACES = { chat: ABSENT, helper: ABSENT, script_builder: ABSENT, ai_agents: ABSENT, office_chat: ABSENT };
 
@@ -400,18 +401,25 @@ describe('buildPartnerModelsSnapshot', () => {
         { ...gw(O2, record({})), contextWindowDiscovered: 131_072, contextWindowObserved: 8_192, contextWindowObservedAt: stale, contextWindowObservedConfigVersion: 5 },
         { ...gw(O3, record({})), contextWindowOverride: 16_384, contextWindowDiscovered: 131_072 },
         gw(O4, null),
+        // #11393: nothing listed, observed two hours ago: kept as a floor.
+        { ...gw(O5, record({})), contextWindowObserved: 8_192, contextWindowObservedAt: stale, contextWindowObservedConfigVersion: 5 },
         { ...offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }), contextWindowOverride: 16_384 },
       ]);
       const s = await buildPartnerModelsSnapshot(P, CATALOG);
       const w = (id: string) => s.offerings.find((o) => o.id === id)!.contextWindow;
       expect(w(O1)).toEqual({
         effective: 8_192, source: 'observed', override: null, discovered: 262_144,
-        observed: { value: 8_192, at: at.toISOString(), fresh: true },
+        observed: { value: 8_192, at: at.toISOString(), applies: true },
       });
-      // A stale observation is still shown (a hint), but no longer constrains.
+      // A stale observation that a listed window replaced is still shown (a hint), but no longer constrains.
       expect(w(O2)).toEqual({
         effective: 131_072, source: 'discovered', override: null, discovered: 131_072,
-        observed: { value: 8_192, at: stale.toISOString(), fresh: false },
+        observed: { value: 8_192, at: stale.toISOString(), applies: false },
+      });
+      // #11393: with nothing listed, a stale observation stays as a floor.
+      expect(w(O5)).toEqual({
+        effective: 8_192, source: 'observed', override: null, discovered: null,
+        observed: { value: 8_192, at: stale.toISOString(), applies: true },
       });
       expect(w(O3)).toMatchObject({ effective: 16_384, source: 'override', override: 16_384, discovered: 131_072, observed: null });
       expect(w(O4)).toEqual({ effective: null, source: 'unknown', override: null, discovered: null, observed: null });

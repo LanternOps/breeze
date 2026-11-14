@@ -31,6 +31,12 @@ export interface TranslateStreamContext {
    * with, so the chat turn can name the reason (gateway failure note).
    */
   onFailure?: (message: string) => void;
+  /**
+   * Called once with the endpoint's own usage counters (null when it sent
+   * none) when the stream completes its answer (#11393: a served prompt is
+   * evidence of the window). Never with the gateway's estimate.
+   */
+  onUsage?: (usage: OaiUsage | null) => void;
 }
 
 /** Default keepalive spacing: well inside the server's idle window. */
@@ -231,6 +237,7 @@ export async function* translateChatStream(
   }
   const stop = mapFinish(finish, (toolUses?.length ?? 0) > 0);
   // Billed output covers everything the model generated, including rejected tool-call arguments.
+  try { ctx.onUsage?.(usage); } catch { /* evidence must not change the stream */ }
   const u = resolveUsage(usage, { inputTokens: ctx.estimatedInputTokens, outputChars: emittedChars + argChars });
   yield encodeSse('message_delta', {
     type: 'message_delta',

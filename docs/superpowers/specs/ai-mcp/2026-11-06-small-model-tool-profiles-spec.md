@@ -102,14 +102,23 @@ Three sources feed one **effective window**:
 
 1. **Override:** typed by the operator in the drawer. When set, it is the effective window.
 2. **Discovered:** read, when present, from the `/models` payload discovery already fetches. Recognised fields include `context_length` (OpenRouter-style), `max_model_len` (vLLM) and `max_context_length` / `loaded_context_length` (LM Studio). Numbers only, plausibility-bounded like `contextWindow.ts`. No extra endpoint is called in v1 (no Ollama `/api/show`, no llama.cpp `/props`).
-3. **Observed:** the window `contextWindow.ts` parses from a rejection. It is persisted as an **expiring observation**, under these rules:
-   - It is keyed to the connection's `config_version`.
-   - It is fresh for the memo TTL (1 h). After that it remains as a stale hint shown in the drawer, but no longer constrains.
+3. **Observed:** the window `contextWindow.ts` parses from a rejection. It is persisted as an observation that is **kept as a floor until a larger window is seen** (owner decision 2026-11-14, #11393), under these rules:
+   - It is keyed to the connection's `config_version`. A model or connection config change clears it.
+   - It is fresh for the memo TTL (1 h). Past the TTL it is stale, but it keeps constraining. Only these replace it:
+     - a discovery-listed window (a stale observation yields to a listed one);
+     - an operator override;
+     - evidence of a larger window: a later rejection that states a larger limit (any later rejection overwrites it), or a successful request whose prompt, **as the endpoint itself counted it** (`usage.prompt_tokens`), is larger than the stored window. The gateway's byte estimate is never evidence;
+     - a config change (`config_version`).
+   - A stale observation caps `max_tokens` and narrows `auto` like a fresh one, but it never refuses a prompt before the endpoint sees it. The endpoint, whose count is exact, decides, so a larger window it now serves can show itself.
+   - A served prompt larger than the stored window clears the persisted observation with the same kind of atomic compare (offering id, partner id, `config_version`, and the disproven value, so a newer observation written meanwhile is never erased). The in-process memo below that prompt is dropped too. The effective window then falls back to what is listed, or to unknown until the next rejection states the new window.
+   - The drawer shows an observation that no longer applies (superseded by a config change or a listed window) as a hint only.
    - The write is best-effort and internal. It uses an atomic compare on offering id, partner id and `config_version`, runs in `withSystemDbAccessContext` after `runOutsideDbContext`, and never runs inside a request transaction. A failure is caught and logged and never fails the turn.
 
    The in-process memo keeps its role for `max_tokens` capping.
 
-**Effective window** = override, if set. Otherwise the smaller of `discovered` and a fresh `observed`. Otherwise unknown.
+**Effective window** = override, if set. Otherwise the smaller of `discovered` and a fresh `observed`. Otherwise `discovered`. Otherwise a stale `observed` (the floor). Otherwise unknown.
+
+Before #11393 a stale observation stopped constraining. On an endpoint whose listing states no window, an idle hour then sent `auto` back to `full`, the next request was refused once for its window, the window was learned again, and the following turn was narrowed again.
 
 A fresh rejection that reports a smaller *serving* limit beats a larger advertised *architectural* maximum. This is the LM Studio case: the model supports 262k, but it is loaded at 8k. A higher precedence for discovery would keep a known failure in place.
 
@@ -252,7 +261,8 @@ If the measured rate stays high after profiles ship, a follow-up adds **one** re
 - **Window precedence:**
   - the override wins
   - a fresh smaller observation beats a larger discovered value
-  - a stale observation or a changed `config_version` stops constraining
+  - a changed `config_version` stops an observation constraining; a stale one yields to a listed window
+  - with nothing listed, a stale observation keeps constraining after an idle hour (no refusal round trip), never refuses up front, and is cleared by a served prompt larger than it (#11393)
   - a failed observation write never fails the turn
 - **Contract tests:**
   - every `minimal` tool has base tier 1 and no action that `aiGuardrails` escalates to a write

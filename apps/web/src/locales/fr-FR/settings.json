@@ -635,7 +635,7 @@
           "discovered": "indiquée par le point de terminaison"
         },
         "windowObserved": "Fenêtre de contexte : {{tokens}} jetons (signalée par le point de terminaison {{age}}).",
-        "observedStale": "Le point de terminaison a signalé {{tokens}} jetons pour la dernière fois {{age}}. Ce signalement date de plus d’une heure ou d’une configuration précédente du point de terminaison ; il ne limite donc plus rien.",
+        "observedStale": "Le point de terminaison a signalé {{tokens}} jetons pour la dernière fois {{age}}. Une configuration ultérieure du point de terminaison ou la liste des modèles a remplacé ce signalement ; il ne limite donc plus rien.",
         "overrideLabel": "Remplacement de la fenêtre de contexte (jetons)",
         "overrideHint": "Pour les modèles de votre propre point de terminaison compatible OpenAI uniquement. Laissez vide pour utiliser ce que le point de terminaison indique ou signale. Les nouvelles conversations utilisent la valeur modifiée ; les conversations ouvertes conservent leur limite actuelle, sauf si le profil qu’elles utilisent change.",
         "surfacesTitle": "Ce qu’utilise actuellement chaque fonctionnalité",

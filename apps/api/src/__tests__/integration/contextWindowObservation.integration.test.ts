@@ -4,12 +4,19 @@
  * CURRENT config_version is a real predicate (a stale one matches zero rows),
  * the write runs under forced RLS in the system context, and it never touches
  * the row's updated_at. Seeds use the superuser fixture client.
+ *
+ * #11393: an observation is a floor until a larger window is seen. The clear
+ * on a served prompt is the same kind of compare: it matches only the
+ * disproven value under the current config_version and the owning partner.
  */
 import './setup';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { withSystemDbAccessContext } from '../../db';
+import { resolveEffectiveContextWindow } from '../../services/aiModels/contextWindowFacts';
 import {
   __resetContextWindowObservationsForTests,
+  clearDisprovenContextWindow,
+  clearObservedContextWindow,
   recordObservedContextWindow,
   settledContextWindowObservations,
   writeObservedContextWindow,
@@ -75,5 +82,88 @@ describe.skipIf(!RUN)('context window observation write (#11396)', () => {
     const row = await observedOf(s.offeringId);
     expect(row.context_window_observed).toBe(16_384);
     expect(row.context_window_observed_config_version).toBe(2);
+  });
+});
+
+describe.skipIf(!RUN)('a persisted observation is a floor until disproved (#11393)', () => {
+  const observe = (s: { offeringId: string; partnerId: string }, configVersion: number, contextWindow: number, at = new Date()) =>
+    withSystemDbAccessContext(() => writeObservedContextWindow({ offeringId: s.offeringId, partnerId: s.partnerId, configVersion, contextWindow }, at));
+  const disproof = (s: { offeringId: string; partnerId: string }, over: Partial<{ partnerId: string; configVersion: number; disprovenWindow: number; servedPromptTokens: number }> = {}) => ({
+    offeringId: s.offeringId, partnerId: s.partnerId, configVersion: 4, disprovenWindow: 8192, servedPromptTokens: 9000, ...over,
+  });
+  const fields = (row: Record<string, unknown>) => ({
+    contextWindowObserved: row.context_window_observed as number | null,
+    contextWindowObservedAt: row.context_window_observed_at ? new Date(row.context_window_observed_at as Date) : null,
+    contextWindowObservedConfigVersion: row.context_window_observed_config_version as number | null,
+  });
+
+  it('read back after more than an hour idle, the row still constrains when nothing is listed', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 8192, new Date(Date.now() - 3 * 3_600_000));
+    const w = resolveEffectiveContextWindow(fields(await observedOf(s.offeringId)), 4);
+    expect(w).toMatchObject({ value: 8192, source: 'observed', observedFresh: false, observedApplies: true });
+  });
+
+  it('a larger stated window replaces the stored one', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 8192);
+    expect(await observe(s, 4, 32_768)).toBe(true);
+    expect((await observedOf(s.offeringId)).context_window_observed).toBe(32_768);
+  });
+
+  it('a config change clears it: the stored row no longer constrains under the new version', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 8192, new Date(Date.now() - 3 * 3_600_000));
+    await adminSql`UPDATE partner_ai_connections SET config_version = 5 WHERE id = ${s.connectionId}`;
+    const w = resolveEffectiveContextWindow(fields(await observedOf(s.offeringId)), 5);
+    expect(w).toMatchObject({ value: null, source: 'unknown', observedApplies: false });
+  });
+
+  it('a served prompt larger than the stored window clears it; updated_at is untouched', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 8192);
+    expect(await withSystemDbAccessContext(() => clearObservedContextWindow(disproof(s)))).toBe(true);
+    const row = await observedOf(s.offeringId);
+    expect(row.context_window_observed).toBeNull();
+    expect(row.context_window_observed_at).toBeNull();
+    expect(row.context_window_observed_config_version).toBeNull();
+    expect(new Date(row.updated_at as Date).toISOString()).toBe(new Date(s.updatedAt).toISOString());
+  });
+
+  it('the clear with another partner\'s id matches zero rows', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 8192);
+    const other = await createPartner();
+    expect(await withSystemDbAccessContext(() => clearObservedContextWindow(disproof(s, { partnerId: other.id })))).toBe(false);
+    expect((await observedOf(s.offeringId)).context_window_observed).toBe(8192);
+  });
+
+  it('the clear with a stale config_version matches zero rows', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 8192);
+    expect(await withSystemDbAccessContext(() => clearObservedContextWindow(disproof(s, { configVersion: 3 })))).toBe(false);
+    expect((await observedOf(s.offeringId)).context_window_observed).toBe(8192);
+  });
+
+  it('the clear never erases a newer observation written meanwhile (it matches only the disproven value)', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 4096);
+    expect(await withSystemDbAccessContext(() => clearObservedContextWindow(disproof(s)))).toBe(false);
+    expect((await observedOf(s.offeringId)).context_window_observed).toBe(4096);
+  });
+
+  it('a served prompt that does not exceed the stored window matches zero rows', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 8192);
+    expect(await withSystemDbAccessContext(() => clearObservedContextWindow(disproof(s, { servedPromptTokens: 8192 })))).toBe(false);
+    expect((await observedOf(s.offeringId)).context_window_observed).toBe(8192);
+  });
+
+  it('clearDisprovenContextWindow (fire-and-forget, system context outside any request) lands the clear', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 8192);
+    clearDisprovenContextWindow(disproof(s));
+    await settledContextWindowObservations();
+    expect((await observedOf(s.offeringId)).context_window_observed).toBeNull();
   });
 });

@@ -71,10 +71,25 @@ export type RejectionPlan =
 interface MemoEntry { contextWindow: number; estimateRatio: number; at: number; capLogged: boolean }
 
 const memo = new Map<string, MemoEntry>();
+/**
+ * The largest prompt the endpoint itself counted and served, per key (#11393):
+ * evidence that a persisted observation below it no longer holds.
+ */
+const served = new Map<string, { promptTokens: number; at: number }>();
 const unknownLogged = new Set<string>();
 const knownCapLogged = new Set<string>();
 
 const keyOf = (k: ContextWindowKey): string => JSON.stringify([k.connectionId, k.configVersion, k.model]);
+
+function boundedSet<V>(map: Map<string, V>, k: string, value: V): void {
+  map.delete(k); // re-insert so Map order stays oldest-first
+  map.set(k, value);
+  while (map.size > CONTEXT_WINDOW_MEMO_MAX_ENTRIES) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
 
 function readCount(pattern: RegExp, text: string): number | null {
   const match = pattern.exec(text);
@@ -125,13 +140,42 @@ export function rememberContextLimit(key: ContextWindowKey, reported: ReportedCo
   const estimateRatio = reported.promptTokens !== null && estimatedPromptTokens > 0
     ? Math.min(MAX_ESTIMATE_RATIO, Math.max(MIN_ESTIMATE_RATIO, reported.promptTokens / estimatedPromptTokens))
     : previous?.estimateRatio ?? 1;
-  memo.delete(k); // re-insert so Map order stays oldest-first
-  memo.set(k, { contextWindow: reported.contextWindow, estimateRatio, at: Date.now(), capLogged: false });
-  while (memo.size > CONTEXT_WINDOW_MEMO_MAX_ENTRIES) {
-    const oldest = memo.keys().next().value;
-    if (oldest === undefined) break;
-    memo.delete(oldest);
+  boundedSet(memo, k, { contextWindow: reported.contextWindow, estimateRatio, at: Date.now(), capLogged: false });
+  // The endpoint's latest statement wins over an earlier served prompt.
+  served.delete(k);
+}
+
+/**
+ * A request succeeded and the endpoint counted `promptTokens` for its prompt
+ * (#11393). A remembered window below that is wrong (the endpoint now serves
+ * more), so the memo entry is dropped, and later plans for this key stop
+ * capping from a known OBSERVED window below it for the memo TTL. Returns true
+ * when it disproves the known observed window, so the caller can clear the
+ * persisted one. An override (the operator's statement) and a discovered
+ * window (the listing) are never disproved here. Only the endpoint's own
+ * count is evidence: callers never pass the gateway's byte estimate.
+ */
+export function noteServedPrompt(key: ContextWindowKey, promptTokens: number, known?: KnownWindow | null): boolean {
+  if (!Number.isSafeInteger(promptTokens) || promptTokens <= 0 || promptTokens > MAX_PLAUSIBLE_TOKENS) return false;
+  const k = keyOf(key);
+  const entry = memo.get(k);
+  if (entry && entry.contextWindow < promptTokens) memo.delete(k);
+  const previous = served.get(k);
+  const fresh = previous !== undefined && Date.now() - previous.at <= CONTEXT_WINDOW_MEMO_TTL_MS;
+  if (!fresh || previous.promptTokens < promptTokens) boundedSet(served, k, { promptTokens, at: Date.now() });
+  return known?.source === 'observed' && known.window < promptTokens;
+}
+
+/** A known observed window that a served prompt has disproved within the TTL (#11393). */
+function disproved(k: string, known: KnownWindow): boolean {
+  if (known.source !== 'observed') return false;
+  const evidence = served.get(k);
+  if (!evidence) return false;
+  if (Date.now() - evidence.at > CONTEXT_WINDOW_MEMO_TTL_MS) {
+    served.delete(k);
+    return false;
   }
+  return evidence.promptTokens > known.window;
 }
 
 function logUnknownOnce(key: ContextWindowKey, k: string, requestedMaxTokens: number): void {
@@ -144,10 +188,20 @@ function logUnknownOnce(key: ContextWindowKey, k: string, requestedMaxTokens: nu
 
 /**
  * A window known before any rejection (#11396): the offering's effective
- * window (operator override, discovered from `/models`, or a persisted fresh
+ * window (operator override, discovered from `/models`, or a persisted
  * observation), carried on the grant per wire model.
  */
-export interface KnownWindow { window: number; source: 'override' | 'discovered' | 'observed' }
+export interface KnownWindow {
+  window: number;
+  source: 'override' | 'discovered' | 'observed';
+  /**
+   * #11393: a persisted observation past the memo TTL, kept as a floor. It
+   * caps and narrows like a fresh one but never refuses up front, so the
+   * endpoint (whose count is exact) decides, and a larger window it now
+   * serves can show itself (`noteServedPrompt`).
+   */
+  stale?: true;
+}
 
 function logKnownCapOnce(k: string, window: number): boolean {
   const logKey = `${k}:${window}`;
@@ -180,19 +234,21 @@ export function planRequest(
     memo.delete(k);
     entry = undefined;
   }
-  const useKnown = known != null && (known.source === 'override' || !entry || known.window < entry.contextWindow);
+  const usable = known != null && !disproved(k, known) ? known : null;
+  const useKnown = usable !== null && (usable.source === 'override' || !entry || usable.window < entry.contextWindow);
   if (!entry && !useKnown) {
     logUnknownOnce(key, k, requestedMaxTokens);
     return { kind: 'send', maxTokens: requestedMaxTokens };
   }
-  const contextWindow = useKnown ? known!.window : entry!.contextWindow;
+  const contextWindow = useKnown ? usable!.window : entry!.contextWindow;
   const promptTokens = Math.round(estimatedPromptTokens * (entry?.estimateRatio ?? 1));
-  // An override (the operator's statement) or a persisted observation (the
-  // endpoint's own statement) may refuse up front. A discovered window is the
-  // listing's advertised value and the estimate is uncalibrated bytes/3: it
-  // only caps, and the endpoint, whose count is exact, decides.
+  // An override (the operator's statement) or a fresh persisted observation
+  // (the endpoint's own recent statement) may refuse up front. A discovered
+  // window is the listing's advertised value, and a stale observation may be
+  // out of date (#11393); the estimate is uncalibrated bytes/3, so those only
+  // cap, and the endpoint, whose count is exact, decides.
   const mayRefuse = useKnown
-    ? known!.source !== 'discovered'
+    ? usable!.source !== 'discovered' && !usable!.stale
     : Date.now() - entry!.at <= CONTEXT_WINDOW_REFUSAL_FRESH_MS;
   if (mayRefuse && promptTokens >= contextWindow * CLEARLY_OVER_WINDOW_FACTOR) {
     return { kind: 'too_large', contextWindow, promptTokens };
@@ -204,7 +260,7 @@ export function planRequest(
     if (!useKnown) entry!.capLogged = true;
     if (shouldLog) {
       console.warn(`[modelGateway] capping max_tokens ${requestedMaxTokens} to ${maxTokens} for connection ${key.connectionId}, `
-        + `model ${JSON.stringify(key.model)} (context_window ${contextWindow}${useKnown ? ` ${known!.source}` : ''}, `
+        + `model ${JSON.stringify(key.model)} (context_window ${contextWindow}${useKnown ? ` ${usable!.source}${usable!.stale ? ' stale' : ''}` : ''}, `
         + `prompt_tokens_est ${promptTokens}).`);
     }
   }
@@ -220,6 +276,7 @@ export function contextWindowExceededMessage(contextWindow: number, promptTokens
 
 export function __resetContextWindowsForTests(): void {
   memo.clear();
+  served.clear();
   unknownLogged.clear();
   knownCapLogged.clear();
 }

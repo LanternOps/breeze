@@ -635,7 +635,7 @@
           "discovered": "uç nokta tarafından listelendi"
         },
         "windowObserved": "Bağlam penceresi: {{tokens}} token (uç nokta tarafından bildirildi, {{age}}).",
-        "observedStale": "Uç nokta en son {{tokens}} token bildirdi, {{age}}. Bu bildirim bir saatten eski veya uç noktanın önceki bir kurulumuna ait; bu yüzden artık hiçbir şeyi sınırlamıyor.",
+        "observedStale": "Uç nokta en son {{tokens}} token bildirdi, {{age}}. Uç noktanın sonraki bir kurulumu veya model listesi bu bildirimin yerini aldı; bu yüzden artık hiçbir şeyi sınırlamıyor.",
         "overrideLabel": "Bağlam penceresi geçersiz kılma (token)",
         "overrideHint": "Yalnızca kendi OpenAI uyumlu uç noktanızdaki modeller için. Uç noktanın listelediğini veya bildirdiğini kullanmak için boş bırakın. Yeni konuşmalar değişen değeri kullanır; açık olanlar, kullandıkları profil değişmedikçe mevcut sınırlarını korur.",
         "surfacesTitle": "Her özelliğin şu anda kullandığı",
