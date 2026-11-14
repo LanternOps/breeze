@@ -15,9 +15,11 @@ import { isAutomationPrincipal } from '../middleware/principalKind';
  *
  * `'*'` gates every invocation of the tool, whatever its `action`.
  *
- * Config-policy mutations mirror `requireMfa()` on the HTTP routes
- * (routes/configurationPolicies/featureLinks.ts and siblings), so MCP and the
- * AI assistant are not a weaker path to a fleet-wide config change.
+ * Every entry mirrors `requireMfa()` on the equivalent HTTP route, so MCP and
+ * the AI assistant are not a weaker path to the same mutation. A Tier 2 action
+ * is never approval-gated over MCP, so for those the handler call is the ONLY
+ * gate: enrolling a tool here without calling {@link mfaGatedToolError} from
+ * its handler gates nothing.
  */
 export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly string[]>> = Object.freeze({
   apply_configuration_policy: '*',
@@ -85,6 +87,17 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',
   ]),
+  // Mirrors of requireMfa() routes outside config policies. Each row is pinned
+  // to its route by aiToolMfaGate.routeParity.contract.test.ts.
+  manage_backup_configs: Object.freeze(['create', 'update']),
+  manage_backup_profiles: Object.freeze(['create', 'update', 'delete']),
+  manage_patches: Object.freeze(['approve', 'decline', 'defer', 'bulk_approve']),
+  revoke_elevation: '*',
+  configure_vault: '*',
+  trigger_vault_sync: '*',
+  sync_huntress_data: '*',
+  trigger_c2c_sync: '*',
+  assign_security_training: '*',
 });
 
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
@@ -92,7 +105,7 @@ export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
 export const MFA_REQUIRED_TOOL_MESSAGE =
   'MFA required: this action needs a signed-in session that has completed multi-factor authentication. '
   + 'API keys and MCP connections cannot satisfy it. Run it from the Breeze web app (the AI assistant or the '
-  + 'configuration policy pages) after signing in with MFA.';
+  + 'equivalent page) after signing in with MFA.';
 
 /** True when `action` of `toolName` is in {@link MFA_GATED_TOOL_ACTIONS}. */
 export function isMfaGatedToolAction(toolName: string, action: string | undefined): boolean {

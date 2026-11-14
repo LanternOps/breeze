@@ -10,6 +10,7 @@ import { db } from '../db';
 import { devices, localVaults } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
@@ -300,6 +301,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('trigger_vault_sync', async (input, auth) => {
+      const mfaError = mfaGatedToolError('trigger_vault_sync', undefined, auth);
+      if (mfaError) return mfaError;
       const vaultId = input.vaultId as string;
       if (!vaultId) return JSON.stringify({ error: 'vaultId is required' });
 
@@ -421,6 +424,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('configure_vault', async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('configure_vault', action, auth);
+      if (mfaError) return mfaError;
 
       if (action === 'create') {
         const deviceId = input.deviceId as string;

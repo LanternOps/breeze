@@ -17,6 +17,7 @@ import {
 } from '../db/schema';
 import { eq, and, asc, desc, sql, ilike, inArray, isNull, isNotNull, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import {
@@ -564,6 +565,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const mfaError = mfaGatedToolError('sync_huntress_data', undefined, auth);
+      if (mfaError) return mfaError;
       const requestedIntegrationId = typeof input.integrationId === 'string' ? input.integrationId : undefined;
       if (auth.scope === 'organization') {
         return JSON.stringify({ error: 'Huntress sync is managed at partner scope' });
