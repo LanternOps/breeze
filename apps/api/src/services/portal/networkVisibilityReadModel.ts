@@ -158,6 +158,7 @@ export async function networkOverview(
 
   for (const assetId of assetIds) {
     const reachability = reachabilityByAsset.get(assetId);
+    // Asset removed between the two queries: stays in totalAssets, in neither state.
     if (!reachability) continue;
     if (reachability.state === 'responding') {
       onlineAssets += 1;

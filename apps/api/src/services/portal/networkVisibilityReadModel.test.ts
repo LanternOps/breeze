@@ -228,6 +228,7 @@ describe('networkOverview (#11686)', () => {
       offlineResult('m-dismissed', null, 'd1'),
       offlineResult('m-visible', null, 'a1'),
       offlineResult('m-unlinked', SITE_A, null),
+      offlineResult('m-dismissed-with-site', SITE_A, 'd1'),
     ];
 
     const result = await networkOverview(ORG, NOW);

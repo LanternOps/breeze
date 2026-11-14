@@ -1153,6 +1153,9 @@ describe('networkSiteHealth (CPEV-W2, real Postgres)', () => {
     expect(overviewA.totalAssets).toBe(withAlerts.data.reduce((sum, row) => sum + row.totalAssets, 0));
     expect(overviewA.onlineAssets).toBe(withAlerts.data.reduce((sum, row) => sum + row.onlineAssets, 0));
     expect(overviewA.offlineAssets).toBe(withAlerts.data.reduce((sum, row) => sum + row.offlineAssets, 0));
+    // Per-site sum (2) plus the one unattributable monitor, which only the org total counts;
+    // the monitor linked to the dismissed asset counts nowhere.
+    expect(overviewA.monitorsDown).toBe(withAlerts.data.reduce((sum, row) => sum + row.monitorsDown, 0) + 1);
 
     const healthB = await withDbAccessContext(orgContext(orgB.id, partner.id), () => networkSiteHealth(orgB.id, true, NOW));
     expect(healthB.data).toEqual([
