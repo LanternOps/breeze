@@ -4,9 +4,13 @@ import { z } from 'zod';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { partners } from '../../db/schema';
 import type { PartnerTrustState } from '../../db/schema/orgs';
+import { activeIpClassifier } from '../../config/env';
 import { zValidator } from '../../lib/validation';
 import { requireMfa } from '../../middleware/auth';
 import { loadTrustState, setTrustState } from '../../services/partnerTrust';
+import { readOfflineClassifierStatus, type OfflineClassifierStatus } from '../../services/ipClassifyOffline';
+import type { IpClassifier } from '../../services/ipClassifyOfflineData';
+import { readPromotionBlockers, type RecordedPromotionBlockers } from '../../services/partnerTrustBlockers';
 import { buildEvidenceCard, type EvidenceCard } from '../../services/partnerTrustEvidenceCard';
 
 export const trustAdminRoutes = new Hono();
@@ -43,7 +47,24 @@ export type TrustQueueRow = {
   signupIp: string | null;
   signupIpClass: string;
   signupIpAsn: number | null;
+  /** Which classifier produced signupIpClass; null = recorded before #11698. */
+  signupIpClassSource: string | null;
   deviceCount: number;
+};
+
+export type TrustQueueResponseRow = TrustQueueRow & {
+  /**
+   * What the last partner-trust-promote run found holding a probation
+   * partner; null for restricted partners (held by the restriction itself)
+   * or when no recent run recorded anything.
+   */
+  promotionBlockers: RecordedPromotionBlockers | null;
+};
+
+export type TrustQueueClassifier = {
+  active: IpClassifier;
+  /** The offline baseline's loaded data; null with a keyed provider, or when nothing has classified yet. */
+  offline: OfflineClassifierStatus | null;
 };
 
 function encodeQueueCursor(row: Pick<TrustQueueRow, 'trustChangedAt' | 'id'>): string {
@@ -91,6 +112,7 @@ export function mapTrustQueueRow(row: TrustQueueRow): TrustQueueRow {
     signupIp: row.signupIp,
     signupIpClass: row.signupIpClass,
     signupIpAsn: row.signupIpAsn,
+    signupIpClassSource: row.signupIpClassSource ?? null,
     deviceCount: row.deviceCount,
   };
 }
@@ -174,6 +196,7 @@ trustAdminRoutes.get('/trust/queue', zValidator('query', queueQuerySchema), asyn
       signupIp: partners.signupIp,
       signupIpClass: partners.signupIpClass,
       signupIpAsn: partners.signupIpAsn,
+      signupIpClassSource: partners.signupIpClassSource,
       // NOTE: the inner correlated sub-select MUST reference its own tables
       // and columns as plain SQL text, never as interpolated Drizzle Column
       // objects (`${organizations.id}`) — Drizzle renders a bare column
@@ -197,12 +220,23 @@ trustAdminRoutes.get('/trust/queue', zValidator('query', queueQuerySchema), asyn
 
   const hasMore = rows.length > limit;
   const visibleRows = rows.slice(0, limit);
-  const page = card === '1'
-    ? await Promise.all(visibleRows.map(mapTrustQueueRowWithCard))
-    : visibleRows.map(mapTrustQueueRow);
+  const active = activeIpClassifier();
+  const [mapped, blockers, offline] = await Promise.all([
+    card === '1'
+      ? Promise.all(visibleRows.map(mapTrustQueueRowWithCard))
+      : Promise.resolve(visibleRows.map(mapTrustQueueRow)),
+    readPromotionBlockers(visibleRows.filter((row) => row.trustState === 'probation').map((row) => row.id)),
+    active === 'offline' ? readOfflineClassifierStatus() : Promise.resolve(null),
+  ]);
+  const page = mapped.map((row) => ({
+    ...row,
+    promotionBlockers: row.trustState === 'probation' ? blockers.get(row.id) ?? null : null,
+  }));
   const last = page.at(-1);
+  const classifier: TrustQueueClassifier = { active, offline };
   return c.json({
     partners: page,
     nextCursor: hasMore && last ? encodeQueueCursor(last) : null,
+    classifier,
   });
 });

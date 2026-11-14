@@ -99,6 +99,11 @@ export const partners = pgTable('partners', {
   signupIpClass: ipClassEnum('signup_ip_class').notNull().default('unknown'),
   signupIpAsn: integer('signup_ip_asn'),
   signupIpClassifiedAt: timestamp('signup_ip_classified_at', { withTimezone: true }),
+  // Which classifier produced signupIpClass (#11698): a keyed provider name,
+  // 'offline' (Tor list + hosting ASNs checked), 'offline-partial' (Tor list
+  // only) or 'none' (private address). NULL = classified before this column
+  // existed; the promotion gate reads that as never classified.
+  signupIpClassSource: varchar('signup_ip_class_source', { length: 32 }),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   autopayEnabled: boolean('autopay_enabled').notNull().default(false),

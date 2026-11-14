@@ -95,6 +95,7 @@ describe('buildEvidenceCard', () => {
         signupIp: '198.51.100.10',
         signupIpClass: 'hosting',
         signupIpAsn: 64500,
+        signupIpClassSource: 'offline',
         billingCardholderName: 'Alice Operator',
         billingCardFingerprint: 'fp_same',
         billingDistinctPaymentMethods: 4,
@@ -119,7 +120,7 @@ describe('buildEvidenceCard', () => {
     const card = await buildEvidenceCard(PARTNER_ID);
     expect(card).toMatchObject({
       partner: { id: PARTNER_ID, name: 'Fixture MSP', slug: 'fixture-msp', plan: 'pro', status: 'active', trustState: 'probation' },
-      signup: { ip: '198.51.100.10', ipClass: 'hosting', asn: 64500 },
+      signup: { ip: '198.51.100.10', ipClass: 'hosting', asn: 64500, source: 'offline' },
       emailDomain: { domain: 'example.test', ageDays: null, hasMx: true },
       identity: { userName: 'Alice Operator', cardholderName: 'Alice Operator', namesMatch: true },
       billing: { distinctPaymentMethods: 4, failedAttempts: 7, region: 'CO' },
