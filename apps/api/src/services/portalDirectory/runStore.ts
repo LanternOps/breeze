@@ -29,6 +29,7 @@ import {
   type PortalDirectoryRunReason,
 } from '../../db/schema';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 import { resolvePortalAccessPolicy } from '../portalAccessPolicy';
 import { isPasswordEligible, passwordUsableFor } from '../portalAccountState';
 import { captureMessage } from '../sentry';
@@ -425,6 +426,10 @@ export async function recordEvaluatedRun(tx: RunStoreExecutor, p: {
       details: { source: p.source, affected, usable: usableCount, holdReason },
       result: 'success',
     });
+    // Runs from the m365 sync worker / Google job, where this is a no-op; it
+    // keeps a request that ever records a run from also getting the generic
+    // fallback audit row.
+    markRequestAuditWritten();
   }
   logRun({
     orgId: p.orgId, runId, source: p.source, outcome: 'evaluated', reason: null, mode, usable: usableCount, affected, disposition,
