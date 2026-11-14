@@ -30,6 +30,8 @@ const state = vi.hoisted(() => ({
   gateMfa: true,
   conflictUpdates: [] as unknown[],
   deleteRows: null as unknown[] | null,
+  authScope: 'organization' as string,
+  ruleContactIds: vi.fn(),
 }));
 
 function selectChain(result: unknown[]) {
@@ -129,6 +131,10 @@ vi.mock('../../db/schema', () => ({
     config: 'reports.config',
     seriesId: 'reports.seriesId',
   },
+  reportSeries: {
+    id: 'reportSeries.id',
+    recipientRule: 'reportSeries.recipientRule',
+  },
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -147,7 +153,7 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: async (c: any, next: () => Promise<void>) => {
     if (!c.get('auth')) {
       c.set('auth', {
-        scope: 'organization',
+        scope: state.authScope,
         orgId: ORG_ID,
         user: { id: 'user-1' },
       });
@@ -183,6 +189,10 @@ vi.mock('../../services/permissions', () => ({
     REPORTS_EXPORT: { resource: 'reports', action: 'export' },
   },
   hasPermission: (perms: any, resource: string, action: string) => (perms?.permissions ?? []).some((p: any) => (p.resource === resource || p.resource === '*') && (p.action === action || p.action === '*')),
+}));
+
+vi.mock('../../services/reportSeries/recipients', () => ({
+  resolveSeriesRuleContactIds: state.ruleContactIds,
 }));
 
 vi.mock('./helpers', () => ({
@@ -234,6 +244,8 @@ describe('report recipient routes', () => {
     state.gateMfa = true;
     state.conflictUpdates.length = 0;
     state.deleteRows = null;
+    state.authScope = 'organization';
+    state.ruleContactIds.mockReset();
     const tx = database();
     rootDb.current = {
       ...database(),
@@ -287,6 +299,7 @@ describe('report recipient routes', () => {
         name: 'Alex',
         email: 'alex@example.test',
       }],
+      ruleContactIds: null,
     });
     expect(state.whereConditions.some((condition) =>
       hasEquality(condition, 'recipients.orgId', ORG_ID))).toBe(true);
@@ -740,6 +753,62 @@ describe('report recipient routes', () => {
       expect(res.status).toBe(201);
       const condition = state.updated[0]?.condition as { conditions?: Array<{ type?: string; column?: unknown }> };
       expect(condition.conditions).toContainEqual({ type: 'isNull', column: 'reports.seriesId' });
+    });
+
+    describe('GET ruleContactIds (raw rule match for the preview badge)', () => {
+      const get = async () => (await app().request(`/${REPORT_ID}/recipients`)).json();
+
+      it('a partner caller on a child gets the resolved rule match, parsed from the series row', async () => {
+        state.authScope = 'partner';
+        state.getReport.mockResolvedValue(child());
+        state.results.push([]); // override rows
+        state.results.push([{ recipientRule: { primaryContact: false, roles: ['billing'] } }]); // series row
+        state.ruleContactIds.mockResolvedValue([CONTACT_ID]);
+        expect(await get()).toEqual({ data: [], ruleContactIds: [CONTACT_ID] });
+        expect(state.ruleContactIds).toHaveBeenCalledWith({
+          orgId: ORG_ID,
+          rule: { primaryContact: false, roles: ['billing'] },
+        });
+      });
+
+      it('is [] when the caller sees the series but nothing matches', async () => {
+        state.authScope = 'partner';
+        state.getReport.mockResolvedValue(child());
+        state.results.push([]);
+        state.results.push([{ recipientRule: { primaryContact: true, roles: [] } }]);
+        state.ruleContactIds.mockResolvedValue([]);
+        expect(await get()).toEqual({ data: [], ruleContactIds: [] });
+      });
+
+      it('is null for an org token and never reads the series', async () => {
+        state.getReport.mockResolvedValue(child());
+        state.results.push([]);
+        expect(await get()).toEqual({ data: [], ruleContactIds: null });
+        expect(state.ruleContactIds).not.toHaveBeenCalled();
+      });
+
+      it('is null when RLS hides the series row from the caller', async () => {
+        state.authScope = 'partner';
+        state.getReport.mockResolvedValue(child());
+        state.results.push([]);
+        state.results.push([]); // series row absent
+        expect(await get()).toEqual({ data: [], ruleContactIds: null });
+        expect(state.ruleContactIds).not.toHaveBeenCalled();
+      });
+
+      it('is null for a standalone report', async () => {
+        state.authScope = 'partner';
+        state.results.push([]);
+        expect(await get()).toEqual({ data: [], ruleContactIds: null });
+        expect(state.ruleContactIds).not.toHaveBeenCalled();
+      });
+
+      it('is null for a partner-owned definition', async () => {
+        state.authScope = 'partner';
+        state.getReport.mockResolvedValue({ id: REPORT_ID, orgId: null, partnerId: 'p-1', seriesId: SERIES_ID, config: {} });
+        expect(await get()).toEqual({ data: [], ruleContactIds: null });
+        expect(state.ruleContactIds).not.toHaveBeenCalled();
+      });
     });
 
     describe('DELETE override rows (W02)', () => {

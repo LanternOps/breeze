@@ -5,6 +5,7 @@ import { db } from '../../db';
 import {
   contacts,
   reportScheduleRecipients,
+  reportSeries,
   reports,
 } from '../../db/schema';
 import {
@@ -14,7 +15,8 @@ import {
   requireScope,
 } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { seriesManagedRefusal } from '../../services/reportSeries/types';
+import { resolveSeriesRuleContactIds } from '../../services/reportSeries/recipients';
+import { parseSeriesRecipientRule, seriesManagedRefusal } from '../../services/reportSeries/types';
 import { callerMaySetEmailRecipients, RECIPIENTS_NEED_EXPORT_AND_MFA } from './recipientGate';
 import { createContact } from '../../services/contacts/crud';
 import {
@@ -117,7 +119,7 @@ type ReportPermissions = Parameters<typeof getReportWithOrgCheck>[2];
  * sends it.
  */
 export type RecipientOutcome<T> =
-  | { ok: true; status: 200 | 201; value: T; orgId?: string }
+  | { ok: true; status: 200 | 201; value: T; orgId?: string; ruleContactIds?: string[] | null }
   | { ok: false; status: 400 | 403 | 404 | 409; body: Record<string, unknown> };
 
 const refuse = (status: 400 | 403 | 404 | 409, body: Record<string, unknown>) => ({ ok: false as const, status, body });
@@ -154,7 +156,24 @@ export async function listReportRecipients(
     ))
     .orderBy(asc(contacts.name), asc(contacts.email));
 
-  return { ok: true, status: 200, value: rows as ReportRecipientRow[] };
+  // Raw rule match for a series child, before overrides. null when the caller
+  // cannot read the series (an org token: RLS hides report_series from it) or
+  // the report is not a series child. Route-only: the AI tool's output is unchanged.
+  let ruleContactIds: string[] | null = null;
+  if (report.seriesId && auth.scope !== 'organization') {
+    const [series] = await db.select({ recipientRule: reportSeries.recipientRule })
+      .from(reportSeries)
+      .where(eq(reportSeries.id, report.seriesId))
+      .limit(1);
+    if (series) {
+      ruleContactIds = await resolveSeriesRuleContactIds({
+        orgId,
+        rule: parseSeriesRecipientRule(series.recipientRule),
+      });
+    }
+  }
+
+  return { ok: true, status: 200, value: rows as ReportRecipientRow[], ruleContactIds };
 }
 
 /**
@@ -413,7 +432,9 @@ recipientsRoutes.get(
       c.get('auth'),
       c.get('permissions') as UserPermissions | undefined,
     );
-    return out.ok ? c.json({ data: out.value }, out.status) : c.json(out.body, out.status);
+    return out.ok
+      ? c.json({ data: out.value, ruleContactIds: out.ruleContactIds ?? null }, out.status)
+      : c.json(out.body, out.status);
   },
 );
 
