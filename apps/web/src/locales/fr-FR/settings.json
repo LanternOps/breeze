@@ -595,7 +595,7 @@
       "verify": "Vérifier",
       "verifyQueued": "Vérification du modèle mise en file d'attente",
       "verifyFailed": "Impossible de mettre la vérification du modèle en file d'attente.",
-      "verifyGatewayHint": "Exécute un court test d'appel d'outils sur votre point de terminaison (consomme quelques milliers de jetons).",
+      "verifyGatewayHint": "Exécute un test d'appel d'outils sur votre point de terminaison. Voir la note sur les coûts ci-dessus.",
       "remove": "Retirer le modèle",
       "removeTitle": "Retirer ce modèle ?",
       "removeMessage": "« {{model}} » sera supprimé de cette connexion. L’historique d’utilisation et de coûts est conservé. Vous pourrez le rajouter plus tard.",

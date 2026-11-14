@@ -595,7 +595,7 @@
       "verify": "Prüfen",
       "verifyQueued": "Modellprüfung eingeplant",
       "verifyFailed": "Die Modellprüfung konnte nicht eingeplant werden.",
-      "verifyGatewayHint": "Führt einen kurzen Tool-Calling-Test gegen Ihren Endpunkt aus (verbraucht einige tausend Tokens).",
+      "verifyGatewayHint": "Führt einen Tool-Calling-Test gegen Ihren Endpunkt aus. Siehe den Kostenhinweis oben.",
       "remove": "Modell entfernen",
       "removeTitle": "Dieses Modell entfernen?",
       "removeMessage": "„{{model}}“ wird aus dieser Verbindung gelöscht. Bisherige Nutzungs- und Kostendaten bleiben erhalten. Sie können es später erneut hinzufügen.",
