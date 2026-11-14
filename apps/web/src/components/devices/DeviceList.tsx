@@ -39,6 +39,15 @@ import type {
   HardwareHealth,
 } from "@breeze/shared";
 import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
+import {
+  DiskUsageBars,
+  displayedDisks,
+  diskUsageSortValue,
+  readDiskUsageScope,
+  writeDiskUsageScope,
+  type DeviceDiskUsage,
+  type DiskUsageScope,
+} from "./diskUsage";
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import { WARRANTY_STATUS_BADGE } from "./DeviceWarrantyCard";
 import { formatDateOnly, parseDateOnly } from "@/lib/dateOnly";
@@ -367,6 +376,7 @@ export type Device = {
    * agent" request (#9234); null means it has never reported.
    */
   watchdogLastSeen?: string | null;
+  disks?: DeviceDiskUsage[];
   hardware?: {
     cpuModel?: string;
     cpuCores?: number;
@@ -504,6 +514,7 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "cores",
   "ramTotal",
   "diskTotal",
+  "diskUsage",
   "agentVersion",
   "watchdogVersion",
   "helperVersion",
@@ -551,6 +562,7 @@ type DeviceListProps = {
   listFilters?: ListFilters;
   onListFiltersChange?: (next: ListFilters) => void;
   onWarrantyRequiredChange?: (required: boolean) => void;
+  onDiskUsageColumnVisibilityChange?: (visible: boolean) => void;
   // Initial page size if the user has no stored preference for this browser.
   // Once the component mounts, the live page size comes from localStorage
   // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
@@ -787,7 +799,7 @@ function serverHost(raw: string | null | undefined): string | null {
 // `null` means "renders as a dash" — those rows sort last in BOTH
 // directions so blanks never bury the real data. Strings compare with
 // numeric collation (host-2 < host-10, agent 0.9.x < 0.10.x).
-const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
+const sortValue: Record<Exclude<ColumnId, "diskUsage">, (d: Device) => string | number | null> = {
   hostname: (d) => d.displayName || d.hostname,
   // Unified-list columns (#1322, #4622): sort by the same value the cell
   // renders so header sort stays consistent with every other column (#1284
@@ -930,6 +942,7 @@ export default function DeviceList({
   listFilters,
   onListFiltersChange,
   onWarrantyRequiredChange,
+  onDiskUsageColumnVisibilityChange,
   forceSingleOrg = false,
   columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
@@ -990,6 +1003,17 @@ export default function DeviceList({
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
     readColumnOrder(columnPreset),
   );
+  const hasAgentRows = useMemo(
+    () =>
+      (!networkDevicesEnabled && !devices.some((d) => (d.deviceClass ?? "agent") === "manual")) ||
+      devices.some((d) => (d.deviceClass ?? "agent") === "agent"),
+    [networkDevicesEnabled, devices],
+  );
+  const diskUsageVisible = hasAgentRows && visibleColumns.has("diskUsage");
+  useEffect(() => {
+    onDiskUsageColumnVisibilityChange?.(diskUsageVisible);
+  }, [diskUsageVisible, onDiskUsageColumnVisibilityChange]);
+  const [diskUsageScope, setDiskUsageScope] = useState<DiskUsageScope>(readDiskUsageScope);
   // Custom field columns (#6594) — additive, NOT part of ColumnId/COLUMN_IDS
   // (see customFieldColumnVisibility.ts for why). Definitions come from the
   // same store the advanced filter picker uses; visibility is a separate,
@@ -1257,9 +1281,11 @@ export default function DeviceList({
     }
   }, [vpnFilter, availableVpnProviders]);
 
+  const activeSortField = sortField === "diskUsage" && !diskUsageVisible ? null : sortField;
+
   const handleSort = (field: ColumnId) => {
     const direction: SortDirection =
-      sortField === field ? (sortDirection === "asc" ? "desc" : "asc") : "asc";
+      activeSortField === field ? (sortDirection === "asc" ? "desc" : "asc") : "asc";
     setSortField(field);
     setSortDirection(direction);
     if (sortInHash) writeSortToHash({ field, direction });
@@ -1275,9 +1301,21 @@ export default function DeviceList({
     // key across the whole union: the same `displayName || hostname` the Device
     // column sorts on, with `id` as a stable tiebreaker so client-side
     // pagination is deterministic (a row can't hop pages between renders).
-    if (!sortField) return sortByDisplayName(filteredDevices);
+    if (!activeSortField) return sortByDisplayName(filteredDevices);
 
-    const value = sortValue[sortField];
+    let value: (device: Device) => string | number | null;
+    if (activeSortField === "diskUsage") {
+      // Compute the key once for each device; the comparator runs repeatedly.
+      const diskValues = new Map(filteredDevices.map((device) => [
+        device,
+        (device.deviceClass ?? "agent") === "agent"
+          ? diskUsageSortValue(device.disks, diskUsageScope, device.os)
+          : null,
+      ]));
+      value = (device) => diskValues.get(device) ?? null;
+    } else {
+      value = sortValue[activeSortField];
+    }
     const dir = sortDirection === "desc" ? -1 : 1;
 
     return [...filteredDevices].sort((a, b) => {
@@ -1293,7 +1331,7 @@ export default function DeviceList({
           : nameCollator.compare(String(av), String(bv));
       return dir * cmp;
     });
-  }, [filteredDevices, sortField, sortDirection]);
+  }, [filteredDevices, activeSortField, sortDirection, diskUsageScope]);
 
   const totalPages = Math.ceil(sortedDevices.length / effectivePageSize);
 
@@ -1501,12 +1539,6 @@ export default function DeviceList({
   // view has no use for Class/Type). The manual arm carries no feature flag
   // (independent of PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST), so `hasManualRows`
   // is never gated on `networkDevicesEnabled`.
-  const hasAgentRows = useMemo(
-    () =>
-      (!networkDevicesEnabled && !devices.some((d) => (d.deviceClass ?? "agent") === "manual")) ||
-      devices.some((d) => (d.deviceClass ?? "agent") === "agent"),
-    [networkDevicesEnabled, devices],
-  );
   const hasNetworkRows = useMemo(
     () =>
       networkDevicesEnabled &&
@@ -1603,6 +1635,7 @@ export default function DeviceList({
       const csv = buildDevicesCsv({
         devices: rows,
         columns: renderedColumns,
+        diskUsageScope,
         customFieldDefs: visibleCustomFieldDefs,
         statusLabel: (d) => t(/* i18n-dynamic */ statusFullLabelKeys[d.status]),
         attention,
@@ -2385,6 +2418,22 @@ export default function DeviceList({
         </td>
       ),
     },
+    diskUsage: {
+      header: () => sortHeader("diskUsage", t("deviceList.diskUsage"), t("deviceList.sortByDiskUsage")),
+      cell: (device) => {
+        const disks = displayedDisks(device.disks, diskUsageScope, device.os);
+        const osVolumeUnknown = diskUsageScope === "os" && device.os === "windows"
+          && device.disks?.length && !device.disks.some((disk) => disk?.isOsVolume === true);
+        const missing = osVolumeUnknown
+          ? <span title={t("deviceList.osDiskUsageUnavailable")}>{dash}</span>
+          : dash;
+        return (
+          <td key="diskUsage" data-testid={`device-${device.id}-disk-usage`} className="px-3 py-3 text-sm">
+            {agentCell(device, disks.length > 0 ? <DiskUsageBars disks={disks} /> : missing)}
+          </td>
+        );
+      },
+    },
     diskTotal: {
       header: () => sortHeader("diskTotal", "Disk", "Sort by total disk", true),
       cell: (device) => (
@@ -3076,6 +3125,25 @@ export default function DeviceList({
                 top-bar theme/display menu (Header.tsx). The table still
                 reflects the saved preference via densityTableClasses +
                 subscribeDensity below. */}
+            {renderedColumns.includes("diskUsage") && (
+              <label className="flex items-center gap-2 text-sm">
+                <span>{t("deviceList.diskUsage")}</span>
+                <select
+                  data-testid="disk-usage-scope"
+                  aria-label={t("deviceList.diskUsageScope")}
+                  className="h-8 rounded-md border bg-background px-2 text-sm"
+                  value={diskUsageScope}
+                  onChange={(event) => {
+                    const scope = event.target.value as DiskUsageScope;
+                    setDiskUsageScope(scope);
+                    writeDiskUsageScope(scope);
+                  }}
+                >
+                  <option value="all">{t("deviceList.allDisks")}</option>
+                  <option value="os">{t("deviceList.osDiskOnly")}</option>
+                </select>
+              </label>
+            )}
             <ColumnChooser
               columnOrder={columnOrder}
               visibleColumns={visibleColumns}

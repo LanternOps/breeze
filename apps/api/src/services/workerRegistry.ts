@@ -319,6 +319,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W4 (#11591): nightly AI transcript retention (stub sessions past
+    // their window, delete stubs past the audit window). Report-only until
+    // AI_TRANSCRIPT_RETENTION_ENFORCE. `global`: db + services only; the SDK
+    // transcript delete is best effort, as aiToolOutputRetention's.
+    name: 'aiTranscriptRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiTranscriptRetention');
+      return { init: m.initializeAiTranscriptRetention, shutdown: m.shutdownAiTranscriptRetention };
+    },
+  },
+  {
     // #9050: nightly sweep of orphaned SDK transcripts on this container's own
     // disk. socket-owner ON PURPOSE (not the mechanical `global` its closure
     // would classify it as): transcripts are written by the API role, so it
@@ -1799,6 +1811,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W5 — report-only history retention sweep (twelve targets).
+    name: 'historyRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/historyRetention');
+      return {
+        init: m.initializeHistoryRetention,
+        shutdown: m.shutdownHistoryRetention,
+      };
+    },
+  },
+  {
     // #7608 W10: daily AI chargeback close. Its closure is db + services only
     // (no route graph, no socket import) — `global`, like the retention workers.
     name: 'aiChargebackWorker',
@@ -1940,6 +1964,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W2 — report-only retention sweep (scriptExecutionRetention).
+    name: 'scriptExecutionRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/scriptExecutionRetention');
+      return {
+        init: m.initializeScriptExecutionRetention,
+        shutdown: m.shutdownScriptExecutionRetention,
+      };
+    },
+  },
+  {
     // Reclaims durable AI budget reservations whose
     // TTL passed without settling. `global` — the sweep is one UPDATE with no
     // socket-local state, and leaving it to the socket owner would mean a
@@ -1993,6 +2029,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
         init: m.initializeEdrDetectionRetention,
         shutdown: m.shutdownEdrDetectionRetention,
       };
+    },
+  },
+  {
+    // #4342 W3 — daily closed-alert retention (report-only until
+    // ALERT_RETENTION_ENFORCE=true), then orphaned correlation groups.
+    name: 'alertRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/alertRetention');
+      return { init: m.initializeAlertRetention, shutdown: m.shutdownAlertRetention };
     },
   },
   {
@@ -2120,6 +2166,54 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('./portalSelfRegistration/worker');
       return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (deviceCommandRetention).
+    name: 'deviceCommandRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceCommandRetention');
+      return {
+        init: m.initializeDeviceCommandRetention,
+        shutdown: m.shutdownDeviceCommandRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (filesystemSnapshotRetention).
+    name: 'filesystemSnapshotRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/filesystemSnapshotRetention');
+      return {
+        init: m.initializeFilesystemSnapshotRetention,
+        shutdown: m.shutdownFilesystemSnapshotRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (networkMonitorResultRetention).
+    name: 'networkMonitorResultRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/networkMonitorResultRetention');
+      return {
+        init: m.initializeNetworkMonitorResultRetention,
+        shutdown: m.shutdownNetworkMonitorResultRetention,
+      };
+    },
+  },
+  {
+    // #4342 W1 — report-only retention sweep (deviceSessionRetention).
+    name: 'deviceSessionRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceSessionRetention');
+      return {
+        init: m.initializeDeviceSessionRetention,
+        shutdown: m.shutdownDeviceSessionRetention,
+      };
     },
   },
 ];

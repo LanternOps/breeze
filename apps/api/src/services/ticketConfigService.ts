@@ -693,10 +693,25 @@ const REVIEW_STATUSES = ['quarantined', 'failed'] as const;
  * Extract a display name from a raw From header (`"Jane Doe" <jane@x.com>`
  * → `Jane Doe`). Replicates the Mailgun provider's `extractName` so a converted
  * ticket carries the submitter's name. Returns '' for a bare address.
+ *
+ * Gives the result of `/^\s*"?([^"<]+?)"?\s*</` (captured name, trimmed) in
+ * one pass, in linear time. The name runs from after the optional opening quote
+ * to the first `"` or `<`, and must be followed by `<`, or by `"`, optional
+ * whitespace and `<`.
  */
-function extractFromName(fromHeader: string): string {
-  const m = fromHeader.match(/^\s*"?([^"<]+?)"?\s*</);
-  return m ? (m[1] ?? '').trim() : '';
+export function extractFromName(fromHeader: string): string {
+  const isSpace = (ch: string | undefined) => ch !== undefined && /\s/.test(ch);
+  let start = 0;
+  while (isSpace(fromHeader[start])) start += 1;
+  if (fromHeader[start] === '"') start += 1;
+  let end = start;
+  while (end < fromHeader.length && fromHeader[end] !== '"' && fromHeader[end] !== '<') end += 1;
+  let close = end;
+  if (fromHeader[close] === '"') {
+    close += 1;
+    while (isSpace(fromHeader[close])) close += 1;
+  }
+  return end > start && fromHeader[close] === '<' ? fromHeader.slice(start, end).trim() : '';
 }
 
 export interface EmailInboundQueueRow {

@@ -33,4 +33,26 @@ describe('AiQualityTable', () => {
     expect(err).toHaveBeenCalled();
     err.mockRestore();
   });
+  it('groups by tool profile: header, profile labels, unrecorded rows and the refused tool-call column (W04 #11397)', async () => {
+    const m = {
+      invocations: 10, costCents: 100, refusals: 0, refusalRate: 0, refusedToolBatches: 3, refusedToolBatchRate: 0.3,
+      failovers: null, failoverRate: null, conversations: 3, costPerConversationCents: 33, sessions: 3, flagged: 0, autoFlagged: 0,
+      flagRate: 0, switchedAway: 0, continued: null, leftRate: 0, resolvedSessions: 0, medianTurnsToResolution: null,
+      agentRuns: 0, agentRunsCompleted: 0, agentCompletionRate: null,
+    };
+    fetchWithAuth.mockResolvedValue(jsonRes({
+      groupBy: 'tool_profile', from: '2026-10-01', to: '2026-10-17', orgId: null,
+      rows: [{ ...m, key: 'minimal', label: null, connectionName: null }, { ...m, key: 'unrecorded', label: null, connectionName: null, refusedToolBatches: 0, refusedToolBatchRate: 0 }],
+      totals: m, sources: { failovers: false, continuations: false },
+    }));
+    render(<AiQualityTable groupBy="tool_profile" orgId={null} from="" to="" onRange={vi.fn()} />);
+    const table = await screen.findByTestId('ai-quality-table');
+    expect(fetchWithAuth.mock.calls[0][0]).toBe('/ai/models/usage/quality?groupBy=tool_profile');
+    expect(table.querySelector('thead')!.textContent).toMatch(/Tool profile/);
+    expect(table.querySelector('thead')!.textContent).toMatch(/Unusable tool calls/);
+    expect(screen.getByTestId('ai-quality-row-minimal').textContent).toMatch(/^Minimal/);
+    expect(screen.getByTestId('ai-quality-row-unrecorded').textContent).toMatch(/^Not recorded/);
+    expect(screen.getByTestId('ai-quality-refused-batch-minimal').textContent).toMatch(/30%.*3 refused/);
+    expect(screen.getByTestId('ai-quality-refused-batch-unrecorded').textContent).toBe('0%');
+  });
 });

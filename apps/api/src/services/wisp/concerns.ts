@@ -14,7 +14,7 @@
  *
  * `reapConcerns` (retention) is W05b Task 10's, not this file's yet.
  */
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import {
   CONCERN_FEEDBACK_NOTE_MAX,
@@ -662,6 +662,49 @@ export async function listConcernsForCeiling(ceiling: GrantCeiling, f: { status?
   const statuses = f.status ?? [...LIVE_CONCERN_STATUSES];
   if (statuses.length === 0) return [];
   return selectWithRecipient(ceiling, and(visible, inArray(wispConcerns.status, statuses))!, LIST_LIMIT);
+}
+
+/** A concern a person resolved, or this grant's grantor dismissed, inside the window. */
+export type UserConcernActionRow = {
+  summary: string;
+  outcome: string | null;
+  resolvedAt: Date | null;
+  /** Set only by a person's resolve (the concern route); Wisp's and Breeze's resolves leave it null. */
+  resolvedByUserId: string | null;
+  /** This grant's own dismissal: only the concern route writes it. */
+  dismissedAt: Date | null;
+};
+
+/**
+ * #11611: concerns visible to the ceiling that a person resolved, or that this
+ * grant's grantor dismissed, at or after `since`, newest action first. For the
+ * standing state, so Wisp can state what the user did instead of guessing. A
+ * snooze is not here: Wisp's `snooze_concern` writes the same recipient row,
+ * so the row cannot say who snoozed.
+ */
+export async function listUserConcernActionsSince(ceiling: GrantCeiling, since: Date, limit: number): Promise<UserConcernActionRow[]> {
+  const visible = visibilityWhere(ceiling);
+  if (!visible) return [];
+  const dismissedAt = wispConcernRecipients.dismissedAt;
+  const resolvedByPerson = and(isNotNull(wispConcerns.resolvedByUserId), gte(wispConcerns.resolvedAt, since))!;
+  return inSystemContext(() => db
+    .select({
+      summary: wispConcerns.summary,
+      outcome: wispConcerns.outcome,
+      resolvedAt: wispConcerns.resolvedAt,
+      resolvedByUserId: wispConcerns.resolvedByUserId,
+      dismissedAt,
+    })
+    .from(wispConcerns)
+    .leftJoin(wispConcernRecipients, and(
+      eq(wispConcernRecipients.concernId, wispConcerns.id),
+      eq(wispConcernRecipients.grantId, ceiling.grantId),
+    ))
+    .where(and(visible, or(resolvedByPerson, gte(dismissedAt, since))))
+    // By the newest PERSON action: a later Wisp / Breeze resolve must not lift
+    // an old dismissal over a newer user action and push it past the limit.
+    .orderBy(sql`GREATEST(CASE WHEN ${wispConcerns.resolvedByUserId} IS NOT NULL THEN ${wispConcerns.resolvedAt} END, ${dismissedAt}) DESC NULLS LAST`)
+    .limit(limit));
 }
 
 /** One concern under the ceiling, or null when it does not exist OR is not visible (existence-neutral). */

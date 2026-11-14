@@ -129,11 +129,18 @@ func sanitizeRestoreFileNameComponent(name string) string {
 // data file gets ".mdf" (SQL Server allows only one primary data file per
 // database), every subsequent data file gets ".ndf", every log file gets
 // ".ldf".
-func buildMoveClauses(entries []restoreFileListEntry, targetDB, dataPath, logPath string) []string {
+//
+// Each logical name and physical path is bound to its own variable
+// (@move_logical_N, @move_path_N; see bindNVarchar), so values read back
+// from the backup's file list and from the server never appear in the
+// statement text. It returns the bindings, to place before the statement,
+// and the clauses.
+func buildMoveClauses(entries []restoreFileListEntry, targetDB, dataPath, logPath string) (string, []string, error) {
 	safeTarget := sanitizeRestoreFileNameComponent(targetDB)
+	bindings := make([]string, 0, 2*len(entries))
 	clauses := make([]string, 0, len(entries))
 	dataFileIndex := 0
-	for _, e := range entries {
+	for i, e := range entries {
 		dir, ext := dataPath, ".ndf"
 		switch e.Type {
 		case "L":
@@ -146,43 +153,43 @@ func buildMoveClauses(entries []restoreFileListEntry, targetDB, dataPath, logPat
 		}
 		fileName := fmt.Sprintf("%s_%s%s", safeTarget, sanitizeRestoreFileNameComponent(e.LogicalName), ext)
 		physicalPath := winJoin(dir, fileName)
-		escapedLogical := strings.ReplaceAll(e.LogicalName, "'", "''")
-		escapedPath := strings.ReplaceAll(physicalPath, "'", "''")
-		clauses = append(clauses, fmt.Sprintf("MOVE '%s' TO '%s'", escapedLogical, escapedPath))
+		logicalVar := fmt.Sprintf("@move_logical_%d", i)
+		pathVar := fmt.Sprintf("@move_path_%d", i)
+		logicalBinding, err := bindNVarchar(logicalVar, e.LogicalName)
+		if err != nil {
+			return "", nil, err
+		}
+		pathBinding, err := bindNVarchar(pathVar, physicalPath)
+		if err != nil {
+			return "", nil, err
+		}
+		bindings = append(bindings, logicalBinding, pathBinding)
+		clauses = append(clauses, fmt.Sprintf("MOVE %s TO %s", logicalVar, pathVar))
 	}
-	return clauses
+	return strings.Join(bindings, " "), clauses, nil
 }
 
-// buildRestoreQuery assembles the final RESTORE DATABASE statement. With
-// no moveClauses, this is byte-for-byte the pre-D25 statement RunRestore
-// always produced (the same-name / regression-guarded path).
-func buildRestoreQuery(escapedDB, escapedFile, recoveryOption string, moveClauses []string) string {
+// buildRestoreQuery assembles the final RESTORE DATABASE statement, which
+// reads the backup file from backupFileVar as bound by fileBinding (see
+// bindBackupFile); fileBinding also carries any MOVE bindings. With no
+// moveClauses, the WITH options are the pre-D25 ones RunRestore always
+// produced (the same-name / regression-guarded path).
+func buildRestoreQuery(fileBinding, escapedDB, recoveryOption string, moveClauses []string) string {
 	withClauses := make([]string, 0, len(moveClauses)+3)
 	withClauses = append(withClauses, moveClauses...)
 	withClauses = append(withClauses, recoveryOption, "REPLACE", "STATS=10")
 	return fmt.Sprintf(
-		"RESTORE DATABASE [%s] FROM DISK='%s' WITH %s",
-		escapedDB, escapedFile, strings.Join(withClauses, ", "),
+		"%s RESTORE DATABASE [%s] FROM DISK=%s WITH %s",
+		fileBinding, escapedDB, backupFileVar, strings.Join(withClauses, ", "),
 	)
 }
 
 // queryInstanceDefaultPath resolves one of the instance's default file
-// paths (InstanceDefaultDataPath / InstanceDefaultLogPath) — the same
-// SERVERPROPERTY-and-parseSqlcmdSingleValue pattern resolveBackupTargetDir
-// (backuptarget.go) already uses for InstanceDefaultBackupPath.
+// paths (InstanceDefaultDataPath / InstanceDefaultLogPath) through
+// queryServerPath, the same way resolveBackupTargetDir (backuptarget.go)
+// reads InstanceDefaultBackupPath.
 func queryInstanceDefaultPath(serverName, property string) (string, error) {
-	out, err := runSqlcmd(serverName, fmt.Sprintf("SELECT CAST(SERVERPROPERTY('%s') AS nvarchar(512))", property))
-	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", property, err)
-	}
-	if containsSqlError(out) {
-		return "", fmt.Errorf("resolve %s: %s", property, extractSqlError(out))
-	}
-	value := parseSqlcmdSingleValue(out)
-	if value == "" {
-		return "", fmt.Errorf("resolve %s: returned no usable value", property)
-	}
-	return value, nil
+	return queryServerPath(serverName, property)
 }
 
 // resolveRestoreQuery builds the T-SQL RESTORE DATABASE statement
@@ -197,13 +204,20 @@ func queryInstanceDefaultPath(serverName, property string) (string, error) {
 // If FILELISTONLY or the default-path queries fail, this returns an error
 // naming the failing step rather than falling back to a MOVE-less
 // statement under the new name, which would just re-trigger Msg 1834.
-func resolveRestoreQuery(serverName, backupFile, escapedFile, targetDB, escapedDB, recoveryOption string) (string, error) {
+//
+// backupFile is checked first (ValidateBackupArtifactPath) and is only ever
+// bound to a variable, never written into statement text.
+func resolveRestoreQuery(serverName, backupFile, targetDB, escapedDB, recoveryOption string) (string, error) {
+	fileBinding, err := bindBackupFile(backupFile)
+	if err != nil {
+		return "", err
+	}
 	sourceDB, ok := sourceDatabaseNameFromBackupFile(backupFile)
 	if !ok || strings.EqualFold(sourceDB, targetDB) {
-		return buildRestoreQuery(escapedDB, escapedFile, recoveryOption, nil), nil
+		return buildRestoreQuery(fileBinding, escapedDB, recoveryOption, nil), nil
 	}
 
-	flOut, err := runSqlcmd(serverName, fmt.Sprintf("RESTORE FILELISTONLY FROM DISK='%s'", escapedFile))
+	flOut, err := runSqlcmd(serverName, fileBinding+" RESTORE FILELISTONLY FROM DISK="+backupFileVar)
 	if err != nil {
 		return "", fmt.Errorf("restore FILELISTONLY: %w", err)
 	}
@@ -224,6 +238,9 @@ func resolveRestoreQuery(serverName, backupFile, escapedFile, targetDB, escapedD
 		return "", err
 	}
 
-	moveClauses := buildMoveClauses(entries, targetDB, dataPath, logPath)
-	return buildRestoreQuery(escapedDB, escapedFile, recoveryOption, moveClauses), nil
+	moveBindings, moveClauses, err := buildMoveClauses(entries, targetDB, dataPath, logPath)
+	if err != nil {
+		return "", fmt.Errorf("restore MOVE clauses: %w", err)
+	}
+	return buildRestoreQuery(fileBinding+" "+moveBindings, escapedDB, recoveryOption, moveClauses), nil
 }

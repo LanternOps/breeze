@@ -428,6 +428,13 @@ export const SENTRY_EVENT_CODES = [
    * not delete on this container's disk (`[AiTranscriptSweeper]` log has ids).
    */
   'ai_transcript_sweep_incomplete',
+  /**
+   * #4342 W4: a nightly AI transcript retention run (report or enforce) had
+   * orgs that failed or carried an unusable window, or transcript deletes that
+   * failed, so its counts or its stubbing are incomplete. Per-org errors are in
+   * the worker log (`[AiTranscriptRetention]`).
+   */
+  'ai_transcript_retention_incomplete',
 
   // --- server-side i18n (#3860) -----------------------------------------
   /** `tApi` was asked for a key no bundle defines — the raw key string is

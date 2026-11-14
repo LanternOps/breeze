@@ -13,6 +13,8 @@ describe('testMonitoringProvider', () => {
       expect(fetch).toHaveBeenCalledWith('http://prom.example.com/-/healthy', {
         method: 'GET',
         timeoutMs: 10_000,
+        deadlineMs: 15_000,
+        streamResponse: true,
         allowPrivateNetwork: false
       });
     });
@@ -29,6 +31,8 @@ describe('testMonitoringProvider', () => {
       expect(fetch).toHaveBeenNthCalledWith(2, 'http://prom.example.com/metrics', {
         method: 'GET',
         timeoutMs: 10_000,
+        deadlineMs: 15_000,
+        streamResponse: true,
         allowPrivateNetwork: true
       });
     });
@@ -46,6 +50,8 @@ describe('testMonitoringProvider', () => {
         method: 'GET',
         headers: { Authorization: 'Bearer test-key-123' },
         timeoutMs: 10_000,
+        deadlineMs: 15_000,
+        streamResponse: true,
         allowPrivateNetwork: false
       });
     });
@@ -93,6 +99,8 @@ describe('testMonitoringProvider', () => {
         method: 'GET',
         headers: { Authorization: 'GenieKey valid-key' },
         timeoutMs: 10_000,
+        deadlineMs: 15_000,
+        streamResponse: true,
         allowPrivateNetwork: false
       });
     });
@@ -173,6 +181,8 @@ describe('testMonitoringProvider', () => {
         headers: { 'Content-Type': 'application/json' },
         body: expect.stringContaining('breeze.monitoring.test'),
         timeoutMs: 10_000,
+        deadlineMs: 15_000,
+        streamResponse: true,
         allowPrivateNetwork: false
       });
     });
@@ -234,5 +244,33 @@ describe('testMonitoringProvider', () => {
       );
       expect(result).toEqual({ ok: false, kind: 'invalid', message: 'Unsupported monitoring provider' });
     });
+  });
+});
+describe('testMonitoringProvider bounds every probe', () => {
+  const CASES: Array<[string, Record<string, unknown>]> = [
+    ['prometheus', { endpointUrl: 'http://prom.example.com' }],
+    ['grafana', { url: 'https://grafana.example.com', apiKey: 'k' }],
+    ['opsGenie', { apiKey: 'k' }],
+    ['webhooks', { endpoints: [{ id: 'a', url: 'https://hook.example.com/x', enabled: true }] }],
+  ];
+
+  it.each(CASES)('%s: a total deadline, and the body is never buffered', async (provider, config) => {
+    const cancel = vi.fn();
+    const fetch = vi.fn().mockImplementation(async () => {
+      const body = new ReadableStream({ cancel });
+      return new Response(body, { status: 200 });
+    });
+    const result = await testMonitoringProvider(
+      { provider: provider as never, config, allowPrivateNetwork: false },
+      { fetch },
+    );
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalled();
+    for (const [, init] of fetch.mock.calls) {
+      expect(init.deadlineMs).toBeGreaterThan(0);
+      expect(init.deadlineMs).toBeLessThanOrEqual(15_000);
+      expect(init.streamResponse).toBe(true);
+    }
+    expect(cancel).toHaveBeenCalled();
   });
 });

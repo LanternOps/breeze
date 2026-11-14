@@ -152,6 +152,7 @@ func TestRebuildCommand_TokenModeRefusesSystemImageWithoutSystemState(t *testing
 // whole-machine capture) and no system state into a LocalProvider root.
 func seedLocalStore(t *testing.T, store string) {
 	t.Helper()
+	privateTestLocalProvider(t, store)
 	dir := filepath.Join(store, "snapshots", "snap-1")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

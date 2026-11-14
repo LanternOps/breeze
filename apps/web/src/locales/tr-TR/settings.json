@@ -123,7 +123,15 @@
     "retentionKeepDays": "Şu kadar sakla (gün)",
     "retentionKeepForever": "Süresiz sakla",
     "retentionBreezeDefault": "Breeze varsayılanı: {{days}} gün",
-    "partnerRetentionHelp": "Yapay zeka araç çıktılarının ne kadar saklanacağını seçin veya süresiz saklayın. Daha eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir."
+    "partnerRetentionHelp": "Yapay zeka araç çıktılarının ne kadar saklanacağını seçin veya süresiz saklayın. Daha eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir.",
+    "transcriptLabel": "Teknisyen yapay zeka görüşmelerini şu kadar sakla (gün)",
+    "transcriptHelp": "Saklama uygulaması açıldığında, daha eski görüşmeler gece çalışmasında mesajlarını, başlıklarını ve araç ayrıntılarını kaybeder; oturum kaydı maliyetini, modelini ve tur sayısını korur. İşaretli görüşmeler saklanır. Boş bırakılırsa devralınır.",
+    "transcriptAuditNote": "Bir teknisyen oturumuyla ilgili denetim günlüğü kayıtları, araç girdileri dahil, bu süreyi değil denetim saklama süresini izler.",
+    "transcriptClientNote": "İstemci yapay zeka (AI for Office) görüşmelerinin kendi süresi vardır.",
+    "transcriptClientLink": "İstemci yapay zeka saklama ayarları",
+    "transcriptAboveCeiling": "İş ortağınız teknisyen yapay zeka görüşmelerini en fazla {{days}} gün saklıyor.",
+    "partnerTranscriptHelp": "Teknisyen yapay zeka görüşmelerinin ne kadar süre saklanacağını seçin veya süresiz saklayın. Kuruluşlar bu süreyi yalnızca kısaltabilir. Saklama uygulaması açıldığında, daha eski görüşmeler gece çalışmasında mesajlarını, başlıklarını ve araç ayrıntılarını kaybeder.",
+    "invalidDays": "Tam sayı olarak gün girin."
   },
   "partnerServicePrincipals": {
     "title": "Hizmet sorumluları",
@@ -592,7 +600,74 @@
       "removeTitle": "Bu model kaldırılsın mı?",
       "removeMessage": "“{{model}}” bu bağlantıdan silinecek. Geçmiş kullanım ve maliyet kayıtları korunur. Daha sonra yeniden ekleyebilirsiniz.",
       "removed": "Model kaldırıldı",
-      "removeFailed": "Model kaldırılamadı. Yeniden deneyin."
+      "removeFailed": "Model kaldırılamadı. Yeniden deneyin.",
+      "tools": {
+        "title": "Araçlar ve bağlam",
+        "partnerOnly": "Modelde iş ortağı tarafından belirlenir. Kuruluşlar model seçer; bunu geçersiz kılamaz.",
+        "profileLabel": "Araç profili",
+        "profile": {
+          "auto": "Otomatik (bağlam penceresine uyar)",
+          "full": "Tam (tüm araçlar)",
+          "standard": "Standart",
+          "minimal": "Asgari (salt okunur)",
+          "custom": "Özel"
+        },
+        "profileHint": {
+          "auto": "Breeze, modelin bilinen bağlam penceresine sığan en büyük profili seçer. Pencere bilinmediği sürece tüm araçlar kullanılabilir kalır.",
+          "full": "Her özelliğin bugün sunduğu tüm araçlar.",
+          "standard": "Günlük yardım masası araçları ve daha kısa bir istem (sohbette yaklaşık 40 araç; Helper’da, betik oluşturucuda ve Office'te daha az).",
+          "minimal": "Yaklaşık bir düzine salt okunur araç ve kısa bir prompt, küçük yerel modeller için.",
+          "custom": "Bu modeli kullanan her özellikte yalnızca listelediğiniz araç alanları ve araçlar."
+        },
+        "appliesWhen": "Bir değişiklik bir özelliğin kullandıklarını değiştirdiğinde, bu modeldeki açık konuşmalar bir sonraki iletide yapay zeka oturumunu yeniden başlatır ve kullanıcıdan iletiyi yeniden göndermesini ister.",
+        "domainsLabel": "Araç alanları",
+        "domainCore": "Çekirdek bağlam araçları",
+        "toolsLabel": "Tekil araçlar",
+        "toolsHint": "Araç adları, virgülle veya yeni satırla ayrılmış. Breeze, kaydederken her adı denetler.",
+        "droppedTools": "Bu araçlar artık yok ve yok sayılıyor: {{tools}}.",
+        "underpowered": "Bu değişiklik, bu modeli kullanan bir özelliğin ihtiyaç duyduğu araçları kaldırır:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Kapasite bilinmiyor: hiçbir şey kısıtlanmaz. Otomatik, uç nokta bir bağlam penceresi listeleyene veya bildirene ya da aşağıda siz bir değer belirleyene kadar tüm araçları korur.",
+        "windowNotLearned": "Breeze bağlam pencerelerini yalnızca kendi OpenAI uyumlu uç noktalarınızda öğrenir; bu yüzden Otomatik bu modelde tüm araçları korur.",
+        "windowKnown": "Bağlam penceresi: {{tokens}} token ({{source}}).",
+        "windowSource": {
+          "override": "burada belirlendi",
+          "discovered": "uç nokta tarafından listelendi"
+        },
+        "windowObserved": "Bağlam penceresi: {{tokens}} token (uç nokta tarafından bildirildi, {{age}}).",
+        "observedStale": "Uç nokta en son {{tokens}} token bildirdi, {{age}}. Bu bildirim bir saatten eski veya uç noktanın önceki bir kurulumuna ait; bu yüzden artık hiçbir şeyi sınırlamıyor.",
+        "overrideLabel": "Bağlam penceresi geçersiz kılma (token)",
+        "overrideHint": "Yalnızca kendi OpenAI uyumlu uç noktanızdaki modeller için. Uç noktanın listelediğini veya bildirdiğini kullanmak için boş bırakın. Yeni konuşmalar değişen değeri kullanır; açık olanlar, kullandıkları profil değişmedikçe mevcut sınırlarını korur.",
+        "surfacesTitle": "Her özelliğin şu anda kullandığı",
+        "reason": {
+          "explicit": "burada seçildi",
+          "auto_window": "otomatik, bağlam penceresine göre",
+          "auto_unknown_window": "otomatik, pencere bilinmiyor",
+          "auto_unmeasured": "otomatik; bu özellik henüz kısıtlanmıyor"
+        },
+        "missingRequired": "Bu modeli reddeder: {{tools}} eksik olurdu.",
+        "tooSmall": "Pencere çok küçük",
+        "tooSmallHint": "Hiçbir profil bu pencereye sığmıyor, bu yüzden bu özellik modeli reddeder.",
+        "fitSuggestion": "{{tokens}} token ile Otomatik burada {{profile}} profilini seçerdi; bu profil sığmayabilir.",
+        "readiness": {
+          "tokens": "{{tokens}} prompt tokenı",
+          "passed": "Araç gidiş-dönüş testi geçti.",
+          "failed": "Araç gidiş-dönüş testi başarısız oldu, bu yüzden bu özellik modeli reddeder. {{summary}}",
+          "inconclusive": "Sonuçsuz: model değil, uç nokta başarısız oldu. Hiçbir şey reddedilmez. {{summary}}",
+          "stale": "Güncel değil: uç nokta veya araç profili o zamandan beri değişti. Yeniden denetlemek için yeniden doğrulayın.",
+          "absent": "Henüz araç gidiş-dönüş testi yok. Doğrulama, bu modelin atandığı her özellik için bir tane çalıştırır.",
+          "absentVerified": "Doğrulandı (temel). {{surface}} üzerinde gerçek bir araç gidiş-dönüş testini denetlemek için yeniden doğrulayın.",
+          "officeNotChecked": "Denetlenmedi: Doğrulama bir Office gidiş-dönüş testi çalıştırmaz."
+        },
+        "verifyCost": "Doğrulama, uç noktanıza sağlayıcınız tarafından faturalandırılan gerçek istekler gönderir: temel bir kontrol, ardından bu modelin atandığı her özellik için bir araç gidiş-dönüşü. Bir gidiş-dönüş, her biri istemin tamamını yeniden gönderen en fazla 4 model turu sürebilir: Tam profilli sohbette bir istek yaklaşık 128.000 token olduğundan tek bir sohbet kontrolü 500.000'e yaklaşabilir.",
+        "invalidCustom": "Özel bir profil için en az bir araç alanı veya araç seçin.",
+        "invalidWindow": "{{min}} ile {{max}} arasında tam sayı olarak token girin veya boş bırakın.",
+        "ageMinutes": "{{n}} dk önce",
+        "ageHours": "{{n}} sa önce",
+        "ageDays": "{{n}} g önce",
+        "missingRequiredTroubleshooting": "Cihaz sorun giderme çalıştırmaları bu modeli reddeder: {{tools}} eksik kalır. Diğer ajan çalıştırmaları etkilenmez.",
+        "underpoweredTooSmall": "{{surface}}: bu bağlam penceresine hiçbir araç profili sığmaz"
+      }
     },
     "defaults": {
       "title": "Özellik başına varsayılanlar",
@@ -703,12 +778,14 @@
       "groupBy": {
         "model": "Model",
         "surface": "Özellik",
-        "prompt_profile": "Model ailesi"
+        "prompt_profile": "Model ailesi",
+        "tool_profile": "Araç profili"
       },
       "columns": {
         "conversations": "Konuşmalar",
         "costPerConversation": "Maliyet / konuşma",
         "refusalRate": "Ret oranı",
+        "refusedToolBatches": "Kullanılamayan araç çağrıları",
         "failoverRate": "Yedeğe geçiş oranı",
         "flagRate": "İşaretleme oranı",
         "leftRate": "Başka modele geçti",
@@ -719,6 +796,7 @@
         "conversations": "Bu dönemdeki son model çağrısı bu satırda olan sohbet oturumları ve ajan çalıştırmaları.",
         "costPerConversation": "Bu satırı kullanan her konuşma için bu satırdaki ortalama harcama.",
         "refusalRate": "Modelin reddettiği model çağrıları, çağrı başına.",
+        "refusedToolBatches": "Modelin, Breeze'in kullanamadığı bir biçimde araç çalıştırmak istediği turlardaki model çağrıları (sunulmayan bir araç veya uyuşmayan girdiler), çağrı başına. Hiçbir şey çalıştırılmadı.",
         "failoverRate": "Bu model başarısız olduğu veya kullanılamadığı için yedek modele geçen çağrılar.",
         "flagRate": "Bir kişinin işaretlediği oturumlar. Araç hatasından sonraki otomatik işaretlemeler ayrı sayılır.",
         "leftRate": "Başka bir modele geçen veya başka bir modelle yeni bir oturumda devam eden konuşmalar.",
@@ -730,6 +808,12 @@
         "claude-standard": "Claude Standard",
         "claude-small": "Claude Small",
         "generic": "Diğer modeller"
+      },
+      "toolProfiles": {
+        "full": "Tam",
+        "standard": "Standart",
+        "minimal": "Asgari",
+        "custom": "Özel"
       },
       "unrecorded": "Kaydedilmedi",
       "unattributed": "Bir modele atfedilmedi",
@@ -743,6 +827,8 @@
       "leftBreakdown": "{{switched}} geçti, {{continued}} devam etti",
       "resolvedCount_one": "{{count}} çözüldü",
       "resolvedCount_other": "{{count}} çözüldü",
+      "refusedToolBatchCount_one": "{{count}} reddedildi",
+      "refusedToolBatchCount_other": "{{count}} reddedildi",
       "loading": "Kalite yükleniyor…",
       "empty": "Bu dönemde model çağrısı yok.",
       "error": "Kalite görünümü yüklenemedi.",
@@ -1880,7 +1966,8 @@
     },
     "issues": {
       "range": "1 ile 3650 arasında tam sayı gün girin."
-    }
+    },
+    "aiStubsHelp": "Transkript saklama nedeniyle boşaltılan yapay zeka görüşmeleri, son etkinlikleri bu süreden eski olana kadar azaltılmış bir oturum kaydı (maliyet, model, tur sayısı) tutar. Kayıtlı denetim saklama politikası olmayan bir kuruluş bu kayıtları saklar."
   },
   "orgBrandingEditor": {
     "title": "Markalama",
@@ -7137,7 +7224,7 @@
   },
   "orgDomains": {
     "title": "Alan adları",
-    "description": "Bu müşteriye ait e-posta alan adları. Bildirilmiş bir alan adı, gelen e-postayı bu kuruluşa yönlendirir. Doğrulanmış bir alan adı, müşterinin onun sahibi olduğunun kanıtıdır; portal kendi kendine kaydı ve Google ile oturum açma buna dayanır.",
+    "description": "Bu müşteriye ait e-posta alan adları. Bildirilmiş bir alan adı, gelen e-postayı bu kuruluşa yönlendirir. Doğrulanmış bir alan adı, müşterinin onun sahibi olduğunun kanıtıdır; portal kendi kendine kaydı gibi özellikler buna dayanır.",
     "forbidden": "Müşteri alan adlarını yönetmek, tüm kuruluşlara erişimi olan bir yönetici rolü gerektirir.",
     "partnerOnly": "Müşteri alan adları hizmet sağlayıcınız tarafından yönetilir.",
     "checkingAccess": "Erişim denetleniyor…",
@@ -7239,7 +7326,7 @@
       "resultUnavailable": "Denetim tamamlanamadı. {{reason}}",
       "removeVerification": "Doğrulamayı kaldır",
       "removeTitle": "{{domain}} doğrulaması kaldırılsın mı?",
-      "removeMessage": "Alan adı, e-posta yönlendirme için bu kuruluşta kalır. Kendi kendine kayıt ve Google ile oturum açma, yeniden doğrulanana kadar ona güvenmeyi bırakır."
+      "removeMessage": "Alan adı, e-posta yönlendirme için bu kuruluşta kalır. Kendi kendine kayıt gibi doğrulanmış alan adlarına dayanan özellikler, yeniden doğrulanana kadar ona güvenmeyi bırakır."
     },
     "actions": {
       "verify": "Doğrula",
@@ -8471,15 +8558,28 @@
       "label": "Microsoft ile oturum açma"
     },
     "google": {
-      "label": "Google ile oturum açma"
+      "label": "Google ile oturum açma",
+      "domainNotVerified": "Google ile oturum açmayı etkinleştirmeden önce bu kuruluşun alan adlarından birini Kuruluş › Alan adları altında doğrulayın.",
+      "domains": {
+        "verified": "Doğrulanmış alan adları: {{domains}}",
+        "none": "Doğrulanmış alan adı yok —",
+        "verify": "Kuruluş › Alan adları altında bir tane doğrulayın",
+        "partner": "Bir alan adının doğrulandığı her yerde açık"
+      }
     },
     "password": {
       "label": "Şifreyle oturum açma",
       "allowed": "İzinli",
       "ssoOnly": "Kapalı — yalnızca Microsoft/Google",
-      "ssoOnlyNeedsSso": "Microsoft veya Google ile oturum açma etkinleştirildiğinde kullanılabilir."
+      "ssoOnlyMicrosoft": "Kapalı — yalnızca Microsoft",
+      "ssoOnlyGoogle": "Kapalı — yalnızca Google",
+      "ssoOnlyNeedsSso": "Microsoft veya Google ile oturum açma etkinleştirildiğinde kullanılabilir.",
+      "ssoOnlyNeedsSsoMicrosoft": "Microsoft ile oturum açma etkinleştirildiğinde kullanılabilir.",
+      "ssoOnlyNeedsSsoGoogle": "Google ile oturum açma etkinleştirildiğinde kullanılabilir."
     },
     "fallback": "Microsoft veya Google ile oturum açma etkin olmadığı için şifreyle oturum açma açık.",
+    "fallbackMicrosoft": "Microsoft ile oturum açma etkin olmadığı için şifreyle oturum açma açık.",
+    "fallbackGoogle": "Google ile oturum açma etkin olmadığı için şifreyle oturum açma açık.",
     "invites": {
       "label": "MSP davetleri",
       "value": "Her zaman açık"
@@ -8488,10 +8588,14 @@
       "label": "Kendi kendine kayıt",
       "off": "Kapalı",
       "approval": "Onay gerekli",
-      "instant": "Anında"
+      "instant": "Anında",
+      "noVerifiedDomain": "Doğrulanmış alan adı yok: Siz bir alan adı doğrulayana kadar kimse kaydolamaz.",
+      "verifyDomain": "Alan adı doğrulayın"
     },
     "ssoNewPerson": {
       "label": "İlk Microsoft / Google ile oturum açma",
+      "labelMicrosoft": "İlk Microsoft ile oturum açma",
+      "labelGoogle": "İlk Google ile oturum açma",
       "invitedOnly": "Yalnızca davet edilen kişiler",
       "approval": "Onay gerekli",
       "instant": "Anında"
@@ -8502,6 +8606,8 @@
       "save": "Oturum açma ayarları kaydedilemedi.",
       "methodUnavailable": "Bu oturum açma yöntemi bu Breeze dağıtımında henüz kullanılamıyor.",
       "ssoOnlyNeedsSso": "Şifreyle oturum açmayı kapatmadan önce Microsoft veya Google ile oturum açmayı etkinleştirin.",
+      "ssoOnlyNeedsSsoMicrosoft": "Şifreyle oturum açmayı kapatmadan önce Microsoft ile oturum açmayı etkinleştirin.",
+      "ssoOnlyNeedsSsoGoogle": "Şifreyle oturum açmayı kapatmadan önce Google ile oturum açmayı etkinleştirin.",
       "tenantNotProven": "Microsoft ile oturum açmayı açmadan önce bu kuruluşun Microsoft kiracısını kanıtlayın.",
       "sessionHours": "1 ile 168 arasında tam sayı olarak saat girin."
     },
@@ -8510,7 +8616,11 @@
     },
     "sessionHours": {
       "label": "Microsoft / Google oturum süresi (saat)",
-      "help": "Microsoft ve Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında."
+      "labelMicrosoft": "Microsoft oturum süresi (saat)",
+      "labelGoogle": "Google oturum süresi (saat)",
+      "help": "Microsoft ve Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında.",
+      "helpMicrosoft": "Microsoft ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında.",
+      "helpGoogle": "Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında."
     },
     "entraTenant": {
       "title": "Microsoft kiracısı",
@@ -8584,6 +8694,8 @@
       "intro": "Kaydetmek, aşağıdaki kuruluşlar için şifreyle oturum açmayı kapatır.",
       "partnerIntro": "Bu iş ortağı varsayılanını kaydetmek, bu kuruluşlar için şifreyle oturum açmayı kapatır. Her kuruluşun sayfasında henüz oturum açamayan hesaplar listelenir.",
       "explain": "Microsoft'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Microsoft bağlantısı olmayan kişiler, Microsoft ile oturum açma davetini kabul edene kadar oturum açamaz.",
+      "explainGoogle": "Google'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Google bağlantısı olmayan kişiler, Google ile oturum açma davetini kabul edene kadar oturum açamaz.",
+      "explainBoth": "Microsoft'a veya Google'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Microsoft veya Google bağlantısı olmayan kişiler, oturum açma davetini kabul edene kadar oturum açamaz.",
       "columns": {
         "org": "Kuruluş",
         "passwordsToClear": "Kaldırılan şifreler",
@@ -8594,24 +8706,38 @@
       "strandedMore": "ve {{count}} tane daha",
       "strandedLoadError": "Bu hesapların adları yüklenemedi.",
       "sendInvites": "Kaydettikten sonra bu hesaplara Microsoft ile oturum açma davetleri gönder",
+      "sendInvitesGoogle": "Kaydettikten sonra bu hesaplara Google ile oturum açma davetleri gönder",
+      "sendInvitesBoth": "Kaydettikten sonra bu hesaplara oturum açma davetleri gönder",
       "confirm": "Şifreyle oturum açmayı kapat",
       "changed": "Etki, siz bunu açtığınızdan beri değişti. Yeni sayıları gözden geçirin."
     },
     "stranded": {
       "title": "Henüz oturum açamayanlar ({{count}})",
       "description": "Bu hesapların Microsoft bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir Microsoft ile oturum açma daveti gönderin.",
+      "descriptionGoogle": "Bu hesapların Google bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir Google ile oturum açma daveti gönderin.",
+      "descriptionBoth": "Bu hesapların Microsoft veya Google bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir oturum açma daveti gönderin.",
       "loadError": "Oturum açamayan hesaplar yüklenemedi.",
       "invite": "Microsoft ile oturum açma daveti gönder",
+      "inviteGoogle": "Google ile oturum açma daveti gönder",
+      "inviteBoth": "Oturum açma daveti gönder",
       "inviteAll": "Hepsini davet et",
       "more": "{{count}} içinden {{shown}} gösteriliyor.",
       "toasts": {
         "invited": "Gönderilen Microsoft ile oturum açma davetleri: {{count}}.",
+        "invitedGoogle": "Gönderilen Google ile oturum açma davetleri: {{count}}.",
+        "invitedBoth": "Gönderilen oturum açma davetleri: {{count}}.",
         "partial": "Gönderilen Microsoft ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
+        "partialGoogle": "Gönderilen Google ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
+        "partialBoth": "Gönderilen oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
         "emailFailed": "{{count}} hesap davet edildi durumuna geçti ancak davet e-postası gönderilemedi. Portal kullanıcıları listesinde Yeniden gönder'i kullanın."
       },
       "errors": {
         "invite": "Microsoft ile oturum açma davetleri gönderilemedi.",
-        "unavailable": "Bu kuruluş için Microsoft ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok."
+        "inviteGoogle": "Google ile oturum açma davetleri gönderilemedi.",
+        "inviteBoth": "Oturum açma davetleri gönderilemedi.",
+        "unavailable": "Bu kuruluş için Microsoft ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok.",
+        "unavailableGoogle": "Bu kuruluş için Google ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok.",
+        "unavailableBoth": "Bu kuruluş için ne Microsoft ne de Google ile oturum açma açık, bu yüzden davet edilecek bir yol yok."
       }
     },
     "domains": {
@@ -8633,11 +8759,14 @@
       "self": "Kendi kendine kayıt",
       "entra": "Microsoft ile oturum açma",
       "google": "Google ile oturum açma",
+      "googleWithDomain": "Google · {{domain}} alan adı",
       "addin_user": "AI for Office eklentisi"
     },
     "selectAll": "Tüm talepleri seç",
     "selectOne": "{{email}} kişisinin talebini seç",
     "accountExists": "Zaten bir hesabı var — Kapatmak için reddedin",
+    "domainUnverified": "Alan adı artık doğrulanmış değil",
+    "domainUnverifiedReason": "Onaylanamaz: Bu kişinin erişimi olması gerekiyorsa onu doğrudan davet edin.",
     "actions": {
       "approve": "Onayla",
       "deny": "Reddet",
@@ -8650,7 +8779,9 @@
       "notFound": "Talep bulunamadı",
       "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
       "failed": "Bu talebe karar verilemedi",
-      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil"
+      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil",
+      "domainNotVerified": "E-posta alan adı artık doğrulanmış değil",
+      "googleDomainNotVerified": "Google Workspace alan adı artık doğrulanmış değil"
     },
     "denyDialog": {
       "title": "Erişim talebini reddet",
@@ -8668,7 +8799,9 @@
     "errors": {
       "load": "Erişim talepleri yüklenemedi.",
       "action": "Erişim talebi güncellenemedi.",
-      "bulk": "Seçilen taleplere karar verilemedi."
+      "bulk": "Seçilen taleplere karar verilemedi.",
+      "domainNotVerified": "Bu kişinin e-posta alan adı artık bu kuruluş için doğrulanmış değil. Erişimi olması gerekiyorsa onu doğrudan davet edin.",
+      "googleDomainNotVerified": "Bu isteğin Google Workspace alan adı artık bu kuruluş için doğrulanmış değil. Yeniden doğrulayın veya kişiyi doğrudan davet edin."
     },
     "summary": {
       "title": "Bekleyen erişim talepleri",

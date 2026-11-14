@@ -8,7 +8,7 @@
 
 import { ERROR_CODES } from '@breeze/shared';
 import { findPartnerGroupRefs } from './groupFilterRefs';
-import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_AI_READ_ONLY_BODY } from './deviceGroupOwnership';
+import { acquireMembershipExportOrgLock, findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_AI_READ_ONLY_BODY } from './deviceGroupOwnership';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -79,6 +79,7 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { createDraftDeployment } from './deploymentWrites';
 import { type UserPermissions } from './permissions';
 import { aiCallerPermissions } from './aiToolCallerPermissions';
 import {
@@ -153,6 +154,9 @@ import type {
   FleetFindingSeverity,
   FleetFindingStatus,
 } from '../db/schema/fleetFindings';
+
+/** `manage_deployments` actions that create or drive a deployment. */
+const DEPLOYMENT_CHANGE_ACTIONS = new Set(['create', 'start', 'pause', 'resume', 'cancel']);
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -858,6 +862,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_deployments', async (input, auth, context) => {
       const action = input.action as string;
 
+      // Creating or driving a deployment is an organization-wide change (the
+      // target resolves against the whole org), matching routes/deployments.ts.
+      // Refused for a site- or device-restricted caller before any read.
+      if (DEPLOYMENT_CHANGE_ACTIONS.has(action) && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE, action });
+      }
+
       // Deployments have no siteId column — gate site-restricted callers via
       // their member devices (mirrors routes/deployments.ts:760-766). Control
       // actions affect ALL member devices, so deny if the deployment includes
@@ -1025,7 +1036,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const resolvedOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
         if (!resolvedOrg.orgId) return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
         const orgId = resolvedOrg.orgId;
-        const [dep] = await db.insert(deployments).values({
+        // Same shared writer as POST /deployments: refuses a site- or
+        // device-restricted caller before inserting.
+        const dep = await createDraftDeployment(auth, {
           orgId,
           name: input.name as string,
           type: input.type as string,
@@ -1034,9 +1047,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           targetConfig: input.targetConfig as Record<string, unknown>,
           rolloutConfig: input.rolloutConfig as Record<string, unknown>,
           schedule: (input.schedule as Record<string, unknown>) ?? null,
-          status: 'draft',
           createdBy: auth.user.id,
-        }).returning();
+        });
 
         return JSON.stringify({ success: true, deploymentId: dep?.id, name: dep?.name });
       }
@@ -1401,8 +1413,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         // Computed live from device_patches for every caller. The precomputed
         // `patch_compliance_snapshots` table this used to read for unrestricted
-        // callers has no writer, so that path always answered "No compliance
-        // data available yet" (#10396).
+        // callers had no writer, so that path always answered "No compliance
+        // data available yet" (#10396); the table is now dropped (#11593).
         //
         // Site AND exact-device axes (app-layer only; RLS does NOT enforce
         // either): a narrowed caller is counted over its in-scope devices only
@@ -2147,6 +2159,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access denied: some devices are outside your access', deniedDevices });
         }
 
+        // Export admission before the first membership row, the order every membership
+        // writer uses (services/groupMembership.ts evaluateGroupMembership).
+        await acquireMembershipExportOrgLock(groupOrgId);
         if (action === 'add_devices') {
           const results = await db.insert(deviceGroupMemberships)
             .values(requestedIds.map((deviceId) => ({

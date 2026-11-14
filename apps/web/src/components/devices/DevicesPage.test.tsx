@@ -229,9 +229,9 @@ vi.mock('./DeviceCard', () => ({
 // action over the FULL device array it was given (mirroring the real
 // DeviceList, which hands the unfiltered selection to onBulkAction). Tests use
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
-type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
+type StubDevice = { disks?: unknown[]; id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters, sortInHash, onWarrantyRequiredChange }: { onWarrantyRequiredChange?: (required: boolean) => void; devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void; sortInHash?: boolean }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters, sortInHash, onWarrantyRequiredChange, onDiskUsageColumnVisibilityChange }: { onWarrantyRequiredChange?: (required: boolean) => void; onDiskUsageColumnVisibilityChange?: (visible: boolean) => void; devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void; sortInHash?: boolean }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
@@ -239,6 +239,7 @@ vi.mock('./DeviceList', () => ({
       data-sort-in-hash={sortInHash ? 'true' : 'false'}
       data-can-hide-decommissioned={onHideDecommissioned ? 'true' : 'false'}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
+      data-disks={JSON.stringify(devices.map(d => d.disks))}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
@@ -250,6 +251,8 @@ vi.mock('./DeviceList', () => ({
     >
       <button data-testid="stub-show-warranty" onClick={() => onWarrantyRequiredChange?.(true)}>Show warranty</button>
       <button data-testid="stub-hide-warranty" onClick={() => onWarrantyRequiredChange?.(false)}>Hide warranty</button>
+      <button data-testid="stub-show-disk-usage" onClick={() => onDiskUsageColumnVisibilityChange?.(true)}>Show disk usage</button>
+      <button data-testid="stub-hide-disk-usage" onClick={() => onDiskUsageColumnVisibilityChange?.(false)}>Hide disk usage</button>
       {/* #9035: the page hands its list/grid toggle to the table header strip. */}
       <div data-testid="device-list-header-actions">{headerActions}</div>
       {onClearFilters && (
@@ -412,6 +415,36 @@ beforeEach(() => {
       });
     }
     return jsonResponse({ data: [] }); // /orgs, /orgs/sites, /device-groups
+  });
+});
+
+describe('DevicesPage — disk inventory', () => {
+  it('loads disks in the background when enabled and keeps enriched rows across column toggles', async () => {
+    const disks = [{ mountPoint: '/', totalGb: 200, usedGb: 50, freeGb: 150, usedPercent: 25 }];
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    expect(fetchAllDevices).toHaveBeenLastCalledWith(expect.objectContaining({ includeDisks: false }));
+    const before = vi.mocked(fetchAllDevices).mock.calls.length;
+    vi.mocked(fetchAllDevices).mockResolvedValueOnce({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), disks }, rawDevice(DEV_2, 'host-beta')],
+      pagesWalked: 1,
+    });
+    fireEvent.click(screen.getByTestId('stub-show-disk-usage'));
+    await waitFor(() => {
+      expect(screen.getByTestId('device-list').getAttribute('data-disks')).toBe(JSON.stringify([disks, []]));
+    });
+    expect(screen.getByTestId('device-list')).toBe(list);
+    expect(fetchAllDevices).toHaveBeenLastCalledWith(expect.objectContaining({ includeDisks: true }));
+    fireEvent.click(screen.getByTestId('stub-hide-disk-usage'));
+    fireEvent.click(screen.getByTestId('stub-show-disk-usage'));
+    expect(fetchAllDevices).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it('requests disks on the first walk when the column was remembered', async () => {
+    writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS, 'diskUsage']);
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(fetchAllDevices).toHaveBeenNthCalledWith(1, expect.objectContaining({ includeDisks: true }));
   });
 });
 

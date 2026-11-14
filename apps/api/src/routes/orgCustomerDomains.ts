@@ -9,7 +9,7 @@ import {
 import { runOutsideDbContext } from '../db';
 import { zValidator } from '../lib/validation';
 import { requireCustomerDomainGovernance } from '../middleware/customerDomainGovernance';
-import { requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -195,17 +195,25 @@ export function registerOrgCustomerDomainRoutes(orgRoutes: Hono): void {
     },
   );
 
+  // The check looks the domain up in DNS (or over HTTPS). The route owns its
+  // DB context (SELF_MANAGED_DB_CONTEXT_ROUTES): the access reads run in a
+  // short caller-scoped context, the check runs with none held, and
+  // verifyCustomerDomain opens its own short contexts for its reads and writes.
   orgRoutes.post(
     `${BASE}/:domainId/verification/check`,
     scopes, writePerm, requireCustomerDomainGovernance,
     zValidator('param', domainIdParam), zValidator('json', verifyCustomerDomainSchema),
     async (c) => {
-      const org = await resolveAccessibleOrg(c);
-      if (org instanceof Response) return org;
       const { domainId } = c.req.valid('param');
       const { method } = c.req.valid('json');
       const auth = c.get('auth') as AuthContext;
-      if (!(await ownedDomain(org.id, domainId))) return notFound(c);
+      const org = await withAuthDbAccessContext(auth, async () => {
+        const found = await resolveAccessibleOrg(c);
+        if (found instanceof Response) return found;
+        return (await ownedDomain(found.id, domainId)) ? found : null;
+      });
+      if (org instanceof Response) return org;
+      if (!org) return notFound(c);
       const blocked = await limited(c, org.id, domainId);
       if (blocked) return blocked;
       try {

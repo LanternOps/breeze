@@ -14,7 +14,8 @@ import { CAPTURE_SURFACES, type CaptureSurface } from './surfaces';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from '../../aiAgentSdkTools';
 import { AI_SYSTEM_PROMPT_TAIL } from '../../aiAgentSystemPrompt';
 
-import { composeStaticSystemPrompt } from '../../aiToolIndex';
+import { composeConstrainedSystemPrompt, composeStaticSystemPrompt } from '../../aiToolIndex';
+import { CHAT_MINIMAL_TOOLS, PROFILE_PREFIX_TOKENS } from '../../aiModels/toolProfiles';
 import { buildScriptBuilderSystemPrompt } from '../../scriptBuilderPrompt';
 import { buildHelperSystemPrompt } from '../../helperAiAgent';
 import { getHelperAllowedTools } from '../../helperToolFilter';
@@ -307,5 +308,27 @@ describe('runSurfaceCapture', () => {
         })).rejects.toThrow(/only.*chat/);
       },
     );
+  });
+});
+
+describe('exposure-aware capture: --profile (#11395)', () => {
+  it('chat --profile minimal registers exactly the curated set + set_device_context, the compact prompt, no tool search', async () => {
+    queryMock.mockReturnValueOnce(messages([]));
+    const result = await runSurfaceCapture({ ...baseOpts, profile: 'minimal', toolSearchOverride: 'on' });
+    const expected = [...CHAT_MINIMAL_TOOLS, 'set_device_context'].sort();
+    expect(result.registeredToolNames).toEqual(expected);
+    const options = queryMock.mock.lastCall![0].options;
+    expect([...options.allowedTools].sort()).toEqual(expected.map((n) => `mcp__breeze__${n}`));
+    expect(options.systemPrompt).toBe(composeConstrainedSystemPrompt(expected));
+    expect(options.tools).toEqual([]);
+    expect(result.profile).toBe('minimal');
+    expect(result.advertisedPrefixTokens).toBe(PROFILE_PREFIX_TOKENS.chat.minimal);
+  });
+
+  it('without --profile the capture is unchanged (no profile field)', async () => {
+    queryMock.mockReturnValueOnce(messages([]));
+    const result = await runSurfaceCapture(baseOpts);
+    expect(result.profile).toBeUndefined();
+    expect(result.registeredToolNames.length).toBeGreaterThan(100);
   });
 });

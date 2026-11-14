@@ -300,9 +300,13 @@ deleted or re-verified unsuccessfully.
 
 ### 5.9 Self-registration by email domain (G2)
 
-- The **Request access** link is shown on the shared host whenever the deployment has portal
-  self-registration available, regardless of the address, so its presence reveals nothing. On an org's
-  verified custom domain, it is shown only if that org has self-registration on.
+- The **Request access** link is never shown on the shared host. It is shown only on an org's verified
+  custom portal domain, when the deployment has portal self-registration available, that org's effective
+  `self_registration_mode` is not `off` and it has at least one verified domain. (Decision B, 2026-11-11:
+  on the shared host the link would be shown to every customer of every MSP and work only for orgs that
+  opted in.) The **Request access** page itself answers on every host by direct URL, with the same
+  response for every address, so an MSP without a custom portal domain can share its URL. No
+  deployment-wide "does any org use self-registration" fact is read or shown.
 - Flow:
   1. The person enters name + email.
   2. **Always the same response and the same timing envelope** (the work is done asynchronously): "If this address can request access, we've emailed you."

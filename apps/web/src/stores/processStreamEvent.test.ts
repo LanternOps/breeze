@@ -171,6 +171,26 @@ describe('approval_required — scriptRunContext passthrough (#4888)', () => {
   });
 });
 
+describe('approval_required — ticketContext passthrough (#11674)', () => {
+  it('carries the resolved ticket into pendingApproval so the card can name it', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    const ticketContext = { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow', requesterName: 'Dana' };
+    processStreamEvent(
+      {
+        type: 'approval_required', executionId: 'e1', toolName: 'manage_tickets',
+        input: { action: 'comment', isPublic: true, content: 'Hi' },
+        description: 'Post PUBLIC comment on ticket T-2026-0001',
+        ticketContext,
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval?.ticketContext).toEqual(ticketContext);
+  });
+});
+
 describe('approval_required — selfApprovalRequestId passthrough', () => {
   it('carries selfApprovalRequestId into pendingApproval', () => {
     const state = makeState();

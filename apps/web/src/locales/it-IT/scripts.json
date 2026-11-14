@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(vuoto)",
       "noOutput": "Nessun output",
+      "purged": "Output rimosso dopo il periodo di conservazione ({{date}})",
       "title": "Output",
       "stdout": "Output standard (stdout)",
       "stderr": "Errore standard (stderr)"

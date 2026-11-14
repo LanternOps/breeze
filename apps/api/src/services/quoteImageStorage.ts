@@ -5,7 +5,7 @@ import { quoteImages, quoteLines, quotes } from '../db/schema/quotes';
 import { catalogItems } from '../db/schema/catalog';
 import { readCatalogItemImage } from './catalogImageStorage';
 import { sniffImageMime } from './avatarStorage';
-import { ResponseTooLargeError, safeFetch, SsrfBlockedError } from './urlSafety';
+import { ResponseDeadlineError, ResponseTooLargeError, safeFetch, SsrfBlockedError } from './urlSafety';
 
 export { sniffImageMime };
 export const MAX_QUOTE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // reuse the avatar cap
@@ -89,6 +89,8 @@ export class RemoteImageError extends Error {
 }
 
 const REMOTE_IMAGE_TIMEOUT_MS = 8000;
+/** The longest a remote image copy waits on the remote host, start to finish. */
+const REMOTE_IMAGE_DEADLINE_MS = 20_000;
 
 /**
  * Fetch an image from a user-supplied URL and return its bytes for storage — a
@@ -103,8 +105,10 @@ const REMOTE_IMAGE_TIMEOUT_MS = 8000;
 export async function fetchRemoteImage(url: string): Promise<{ mime: string; buffer: Buffer }> {
   let res: Response;
   try {
+    // timeoutMs is socket inactivity; deadlineMs bounds the whole download.
     res = await runOutsideDbContext(() => safeFetch(url, {
       timeoutMs: REMOTE_IMAGE_TIMEOUT_MS,
+      deadlineMs: REMOTE_IMAGE_DEADLINE_MS,
       maxBytes: MAX_QUOTE_IMAGE_SIZE_BYTES,
     }));
   } catch (err) {
@@ -116,7 +120,7 @@ export async function fetchRemoteImage(url: string): Promise<{ mime: string; buf
     // message (no SSRF-probe fingerprinting) and do NOT alert to Sentry — `cause`
     // still carries the original error for local debugging.
     if (err instanceof SsrfBlockedError) throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: err });
-    if (err instanceof Error && /timed out/i.test(err.message)) {
+    if (err instanceof ResponseDeadlineError || (err instanceof Error && /timed out/i.test(err.message))) {
       throw new RemoteImageError('timeout', 'The image took too long to download', { cause: err });
     }
     throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: err });

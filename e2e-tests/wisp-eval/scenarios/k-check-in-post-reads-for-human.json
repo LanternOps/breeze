@@ -1,0 +1,65 @@
+{
+  "id": "check-in-post-reads-for-human",
+  "title": "A fired device-online check-in posts a line written for the technician, not Wisp's note to itself",
+  "issue": 11675,
+  "expect": "known-red",
+  "door": "wisp",
+  "steps": [
+    {
+      "name": "ask",
+      "type": "say",
+      "approve": "approve",
+      "maxSec": 120,
+      "text": "One of the partners at Harbor Legal says her MacBook has been off the network all afternoon. Which one is it? Schedule a check-in that fires when that device comes back online, so I hear the moment it's back.",
+      "note": "the prompt names the check-in on purpose: asked only to 'tell me the moment it's back online', Wisp set a 15-minute watch instead in 5 of 11 runs on 2026-11-10/11 (#11685), and this scenario is about what happens after a check-in exists. The tool choice has its own scenario (back-online-uses-event-check-in)"
+    },
+    {
+      "name": "scheduled",
+      "type": "wait_sql",
+      "timeoutSec": 30,
+      "required": true,
+      "sql": "select (count(*) > 0)::text from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online' and status = 'scheduled'",
+      "equals": "true"
+    },
+    {
+      "name": "reconnect",
+      "type": "shell",
+      "argv": [
+        "sim.sh",
+        "restart",
+        "hlmac"
+      ]
+    },
+    {
+      "name": "posted",
+      "type": "wait_sql",
+      "timeoutSec": 150,
+      "required": true,
+      "sql": "select (count(*) > 0)::text from wisp_thread_posts where kind = 'check_in' and created_at > {{since}}",
+      "equals": "true"
+    },
+    {
+      "name": "offline-again",
+      "type": "shell",
+      "argv": [
+        "sim.sh",
+        "stop",
+        "hlmac"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "kind": "sql_equals",
+      "equals": "true",
+      "sql": "select coalesce(bool_and(coalesce(title, '') !~* '^check-in due'), false)::text from wisp_thread_posts where kind = 'check_in' and created_at > {{since}}",
+      "note": "#11675: the title says 'Check-in due:' for an event that happened"
+    },
+    {
+      "kind": "sql_equals",
+      "equals": "true",
+      "sql": "select coalesce(bool_and(coalesce(body, '') !~* '((tell|notify) the (technician|user)|do not change anything|read-only)'), false)::text from wisp_thread_posts where kind = 'check_in' and created_at > {{since}}",
+      "note": "#11675: the body is Wisp's instruction to itself (\"Tell the user it is back…\", \"Notify the user…\", \"Read-only: confirm…\")"
+    }
+  ]
+}

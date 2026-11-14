@@ -15,7 +15,7 @@ import {
   WISP_CHECK_IN_STATUSES,
   WISP_CHECK_IN_TRIGGER_KINDS,
 } from '@breeze/shared';
-import type { WispCheckInRow } from '../../db/schema/wispCheckIns';
+import { WISP_CHECK_IN_CANCELLED_BY, type WispCheckInRow } from '../../db/schema/wispCheckIns';
 import { checkInPostBody, toCheckInDto } from './checkIns';
 
 const MIGRATIONS = resolve(import.meta.dirname, '../../../migrations');
@@ -47,6 +47,10 @@ describe('wisp_check_ins CHECKs mirror the shared constants', () => {
     expect(WISP_CHECK_IN_STATUSES).toContain('running');
     expect(lastCheckList('wisp_check_ins_mode_chk')).toEqual([...WISP_CHECK_IN_MODES]);
   });
+
+  it('#11611: who cancelled', () => {
+    expect(lastCheckList('wisp_check_ins_cancelled_by_chk')).toEqual([...WISP_CHECK_IN_CANCELLED_BY]);
+  });
 });
 
 const ID = '00000000-0000-4000-8000-000000000a01';
@@ -76,6 +80,7 @@ function row(over: Partial<WispCheckInRow> = {}): WispCheckInRow {
     triggerSubjectId: null,
     fireReason: null,
     cancelReason: null,
+    cancelledBy: null,
     mode: 'notify',
     runId: null,
     grantRevisionId: null,

@@ -21,6 +21,7 @@ import { useTranslation } from "react-i18next";
 // the store, so no cycle.
 import type { ChatRunState, PendingApproval } from "@/stores/processStreamEvent";
 import AiRunCard from "./AiRunCard";
+import TranscriptPurgedNotice from "./TranscriptPurgedNotice";
 import { dividerParts, groupChatUnits, type ChatRow, type ChatUnit, type ToolCall } from "./aiChatGrouping";
 
 /** A caller-rendered item placed in the thread by time (Wisp companion W02b: a thread post). */
@@ -90,6 +91,8 @@ interface AiChatMessagesProps {
   hasEarlier?: boolean;
   /** An earlier page is loading: the button is disabled and shows a spinner. */
   loadingEarlier?: boolean;
+  /** #4342 W4: transcript retention emptied this session; shown in place of the empty state. */
+  transcriptPurgedAt?: string | null;
 }
 
 const NO_EXTRAS: ChatExtra[] = [];
@@ -172,6 +175,7 @@ export default function AiChatMessages({
   onLoadEarlier,
   hasEarlier = false,
   loadingEarlier = false,
+  transcriptPurgedAt = null,
 }: AiChatMessagesProps) {
   const { t, i18n } = useTranslation("ai");
   const quickActions = [
@@ -496,6 +500,15 @@ export default function AiChatMessages({
   };
 
   if (messages.length === 0 && !leading && extras.length === 0 && !showLoadEarlier) {
+    if (transcriptPurgedAt) {
+      return (
+        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-end p-3"}>
+          <div className={layout === "page" ? "mx-auto w-full max-w-3xl" : undefined}>
+            <TranscriptPurgedNotice purgedAt={transcriptPurgedAt} testId="ai-chat-transcript-purged" />
+          </div>
+        </div>
+      );
+    }
     if (emptyState) {
       return (
         <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-end p-3"}>
@@ -570,6 +583,7 @@ export default function AiChatMessages({
           description={pendingApproval.description}
           input={pendingApproval.input}
           deviceContext={pendingApproval.deviceContext}
+          ticketContext={pendingApproval.ticketContext}
           onApprove={() => onApprove(pendingApproval.executionId)}
           onReject={() => onReject(pendingApproval.executionId)}
           intentBacked={pendingApproval.intentBacked}

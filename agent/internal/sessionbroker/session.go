@@ -28,8 +28,11 @@ type pendingResponse struct {
 
 // Session represents a connected user helper with verified identity.
 type Session struct {
-	UID           uint32 // Numeric UID (0 on Windows; kept for logging/compat)
-	IdentityKey   string // Platform identity: UID string on Unix, SID on Windows
+	UID         uint32 // Numeric UID (0 on Windows; kept for logging/compat)
+	IdentityKey string // Platform identity: UID string on Unix, SID on Windows
+	// Username is the name of the account the helper's verified identity
+	// belongs to, resolved by the broker (see account_identity.go); "" when
+	// it could not be resolved.
 	Username      string
 	DisplayEnv    string
 	SessionID     string
@@ -73,6 +76,11 @@ type Session struct {
 
 	broker      *Broker
 	peerProcess *ownedPeerProcessRef
+
+	// accountIdentity is the kernel-verified identity of the helper's
+	// account (SID on Windows, UID elsewhere), without the per-session
+	// admission suffix IdentityKey may carry. Set once at auth.
+	accountIdentity string
 
 	// Prompt host advertisement (#10190), set once at auth by
 	// applyAuthAdvertisements and never changed afterwards: the clamped

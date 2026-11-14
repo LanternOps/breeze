@@ -660,6 +660,20 @@ describe('W09 ledger provenance', () => {
     });
   });
 
+  it('#11395: toNewInvocations records the tool exposure the turn ran under; none → NULL', () => {
+    const binding = turnBindingFrom(makeResolvedModel('platform'));
+    const base = {
+      binding, orgId: 'org-1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [], outcome: noUsageOutcome(binding.wireModel),
+    };
+    const [constrained] = toNewInvocations({ ...base, toolExposure: { profile: 'minimal', fingerprint: '0123456789abcdef' } }, priceUsage(binding, []));
+    expect(constrained).toMatchObject({ toolProfile: 'minimal', toolExposureFingerprint: '0123456789abcdef' });
+    const [identity] = toNewInvocations({ ...base, toolExposure: { profile: 'full', fingerprint: 'full' } }, priceUsage(binding, []));
+    expect(identity).toMatchObject({ toolProfile: 'full', toolExposureFingerprint: 'full' });
+    const [none] = toNewInvocations(base, priceUsage(binding, []));
+    expect(none).toMatchObject({ toolProfile: null, toolExposureFingerprint: null });
+  });
+
   it('a turn with no failover writes hop 0 and no cause', () => {
     const binding = turnBindingFrom(makeResolvedModel('platform'));
     const [row] = toNewInvocations({

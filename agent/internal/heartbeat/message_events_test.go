@@ -143,3 +143,22 @@ func TestPostMessageEventSendsAgentAuthenticatedRequest(t *testing.T) {
 		t.Fatalf("body = %v", c.body)
 	}
 }
+
+// The API requires the session's account name on a receipt; a helper session
+// whose account name could not be resolved posts none, and the message is
+// still handled.
+func TestMessageEventWithoutAccountNameIsNotPosted(t *testing.T) {
+	unnamed := newHelperProbe(t, ipc.HelperRoleAssist, "", "1", []string{ipc.ScopeAssist, ipc.ScopeMessaging})
+	h, rec := newMessagingHeartbeat(t, unnamed.session)
+	if err := h.endpointMessages.Put(testShow("m1", time.Now().Add(time.Hour)), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	h.handleUserHelperMessage(unnamed.session, helperEvent(t, ipc.TypeMessageAck, ipc.MessageRef{MessageID: "m1"}))
+	if _, ok := h.endpointMessages.Get("m1"); ok {
+		t.Fatal("an acknowledged message must leave the replay store")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := rec.snapshot(); len(got) != 0 {
+		t.Fatalf("posted %d receipt(s) with session %+v, want none", len(got), got[0].Session)
+	}
+}

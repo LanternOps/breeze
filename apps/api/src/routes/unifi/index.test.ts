@@ -25,6 +25,7 @@ vi.mock('../../services/unifi/unifiSyncService', () => ({
 }));
 
 vi.mock('../../middleware/auth', () => ({
+  withAuthDbAccessContext: vi.fn(async (_auth, fn) => fn()),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: authState.scope,

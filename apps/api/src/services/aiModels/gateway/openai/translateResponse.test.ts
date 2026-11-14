@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GATEWAY_MAX_USAGE_TOKENS } from '../limits';
 import { resolveUsage, translateChatResponse, UNSAFE_TOOL_CALL_NOTE } from './translateResponse';
+import { __resetGatewayFailureNotesForTests, takeGatewayFailure } from '../failureNotes';
 
 const SET_ALERT_SCHEMA = {
   type: 'object',
@@ -54,6 +55,26 @@ describe('translateChatResponse', () => {
     expect(line).toContain('mcp__breeze__query_devices (not offered)');
     expect(line).toContain('get_weather');
     warn.mockRestore();
+  });
+  it('a refused batch notes refused_tool_batch with the names under the grant\'s session, never the arguments (W04 #11397)', () => {
+    __resetGatewayFailureNotesForTests();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const m = translateChatResponse({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [
+      { id: 'c', type: 'function', function: { name: 'delete_all_devices', arguments: '{"secret":"hunter2"}' } },
+    ] } }] }, { ...ctx, aiSessionId: 'sess-refused' });
+    warn.mockRestore();
+    expect(m.content).toEqual([{ type: 'text', text: UNSAFE_TOOL_CALL_NOTE }]);
+    const note = takeGatewayFailure('sess-refused');
+    expect(note?.code).toBe('refused_tool_batch');
+    expect(note?.message).toContain('delete_all_devices (not offered)');
+    expect(note?.message).not.toContain('hunter2');
+  });
+  it('a valid batch notes nothing', () => {
+    __resetGatewayFailureNotesForTests();
+    translateChatResponse({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [
+      { id: 'c', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } },
+    ] } }] }, { ...ctx, aiSessionId: 'sess-valid' });
+    expect(takeGatewayFailure('sess-valid')).toBeNull();
   });
   it('unknown tool name never becomes tool_use', () => {
     const m = translateChatResponse({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: 'ok', tool_calls: [{ id: 'c', type: 'function', function: { name: 'delete_all_devices', arguments: '{}' } }] } }] }, ctx);

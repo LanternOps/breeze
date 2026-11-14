@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { LONG_TOKEN_RUNS, matchSpans, mulberry32, tokenShapedText } from '../testUtils/generatedText';
 import {
+  API_KEY_PATTERNS,
   detectApiKey,
   detectCreditCard,
   detectEmail,
@@ -148,5 +150,34 @@ describe('mergeMatches', () => {
       { start: 0, end: 15 },
       { start: 20, end: 25 },
     ]);
+  });
+});
+
+describe('API key JWT shape', () => {
+  // The pattern before it was made linear, kept as the reference.
+  const reference = /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g;
+  const shape = API_KEY_PATTERNS.find((p) => p.source.includes('eyJ'))!;
+
+  it('matches the same input as the previous pattern', () => {
+    const next = mulberry32(0xd1a9);
+    const seen = new Set<string>();
+    let withToken = 0;
+    for (let i = 0; i < 20_000; i += 1) {
+      const text = tokenShapedText(next);
+      seen.add(text);
+      const want = matchSpans(reference, text);
+      if (want.length > 0) withToken += 1;
+      expect([text, matchSpans(shape, text)]).toEqual([text, want]);
+    }
+    expect(seen.size).toBeGreaterThan(15_000);
+    expect(withToken).toBeGreaterThan(3_000);
+  });
+
+  it('scans long token runs in linear time', () => {
+    for (const text of LONG_TOKEN_RUNS) {
+      const started = performance.now();
+      matchSpans(shape, text);
+      expect(performance.now() - started).toBeLessThan(150);
+    }
   });
 });

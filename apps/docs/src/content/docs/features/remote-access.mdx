@@ -366,7 +366,17 @@ A proxy session stays alive as long as it's actively used: each request slides t
 - **Source IP restrictions** limit which users or networks can open proxy sessions.
 - Idle timeout and an absolute 12-hour session cap apply to prevent long-lived, unattended sessions.
 - A built-in SSRF-safe blocklist prevents proxying to internal metadata endpoints and loopback addresses.
+- When partner trust enforcement restricts a partner's remote control, its open tunnels end at their next authorization check: the next proxied request for Network Proxy, and the next 30-second check for a VNC tunnel.
 - Each proxy session is associated with a specific user and fully audit logged.
+
+**Allowlist rule format:**
+
+- **Destination rules** are `address-or-CIDR:port-range`. The address is IPv4 or IPv6, and the port part is a single port, a range, or `*`. Examples: `192.168.1.0/24:80-443`, `10.0.5.20:8080`, `2001:db8::/32:443`, `2001:db8::20:*`. The port is read after the last colon, so IPv6 addresses need no brackets.
+- **Source rules** contain only the address or CIDR, for example `198.51.100.0/24` or `2001:db8::/48`. A rule written as a single address with no prefix length matches only that address.
+- An IPv6 rule never matches an IPv4 address, and an IPv4 rule never matches an IPv6 address. An IPv4-mapped address such as `::ffff:192.0.2.10` counts as IPv4, so `::/0` does not cover IPv4 clients or targets.
+- Write an IPv6 CIDR as its network address (`2001:db8::/32`, not `2001:db8::5/32`). Use `/128` or a bare address for a single IPv6 host.
+- Breeze refuses to save a rule it cannot parse, and refuses to re-enable an older stored rule that does not parse. You can still disable or delete such a rule.
+- The blocklist cannot be overridden by a rule. It covers loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), the unspecified addresses, and the IPv6 cloud metadata addresses. The agent checks every address a host name resolves to and connects to an address it checked. VNC tunnels reach only the device's local VNC service at `127.0.0.1:5900`.
 
 ### Wake-on-LAN
 

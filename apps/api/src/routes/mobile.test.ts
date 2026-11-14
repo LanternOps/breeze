@@ -63,7 +63,7 @@ const {
   assertDeviceExecuteAllowedMock: vi.fn(),
   rateLimitState: { allowed: true },
   authState: {
-    permissions: undefined as { allowedSiteIds?: string[] } | undefined,
+    permissions: undefined as { permissions?: ReadonlyArray<{ resource: string; action: string }>; allowedSiteIds?: string[] } | undefined,
     token: undefined as { mdid?: string } | undefined
   }
   };
@@ -181,7 +181,8 @@ vi.mock('../middleware/userRateLimit', () => ({
 import { db } from '../db';
 import { inArray, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { devices, alerts, mobileDevices } from '../db/schema';
+import { devices, alerts, mobileDevices, aiSessions } from '../db/schema';
+import { PERMISSIONS } from '../services/permissions';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 
 const mockSelectLimitChain = (result: unknown) => ({
@@ -3042,8 +3043,12 @@ describe('mobile routes', () => {
       })
     });
 
+    // A caller who can open every result group; tests narrow it where needed.
+    const SEARCH_GRANTS = [PERMISSIONS.DEVICES_READ, PERMISSIONS.ALERTS_READ, PERMISSIONS.AI_SESSIONS_USE];
+
     beforeEach(() => {
       rateLimitState.allowed = true;
+      authState.permissions = { permissions: SEARCH_GRANTS };
     });
 
     it('rejects empty query with 400', async () => {
@@ -3114,7 +3119,7 @@ describe('mobile routes', () => {
     });
 
     it('narrows device and alert search results for a site-restricted caller', async () => {
-      authState.permissions = { allowedSiteIds: [SITE_ALLOWED] };
+      authState.permissions = { permissions: SEARCH_GRANTS, allowedSiteIds: [SITE_ALLOWED] };
       const captured: { deviceWhere?: unknown; alertWhere?: unknown } = {};
       const deviceRow = {
         id: DEVICE_ALLOWED,
@@ -3226,6 +3231,106 @@ describe('mobile routes', () => {
       const body = await res.json();
       expect(body.results.map((result: { id: string }) => result.id)).toEqual(['alert-1', DEVICE_DENIED]);
       expect(db.select).toHaveBeenCalledTimes(3);
+    });
+
+    describe('result groups follow the permission of the route that opens them', () => {
+      const deviceRow = {
+        id: 'dev-1', orgId: 'org-123', siteId: 'site-1', hostname: 'macbook', displayName: 'Tech Mac',
+        osType: 'macos', status: 'online', lastSeenAt: new Date('2026-05-01T12:00:00Z'), siteName: 'HQ'
+      };
+      const alertRow = {
+        id: 'alert-1', orgId: 'org-123', severity: 'critical', status: 'active', title: 'Disk full',
+        message: 'macbook is at 99%', triggeredAt: new Date('2026-05-02T09:00:00Z'), deviceId: 'dev-1',
+        deviceHostname: 'macbook', deviceDisplayName: 'Tech Mac', source: null
+      };
+      const sessionRow = {
+        id: 'sess-1', orgId: 'org-123', title: 'macbook diagnostics', status: 'active', turnCount: 4,
+        lastActivityAt: new Date('2026-05-03T10:00:00Z'), createdAt: new Date('2026-05-03T09:55:00Z')
+      };
+      // Answers each search query by the table it reads, whatever the call order.
+      const rowsByTable = (table: unknown) =>
+        table === devices ? [deviceRow] : table === alerts ? [alertRow] : table === aiSessions ? [sessionRow] : [];
+      const tail = (table: unknown) => ({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rowsByTable(table)) })
+        })
+      });
+      const queriedTables: unknown[] = [];
+      const mockByTable = () => {
+        queriedTables.length = 0;
+        vi.mocked(db.select).mockImplementation((() => ({
+          from: vi.fn((table: unknown) => {
+            queriedTables.push(table);
+            return { ...tail(table), leftJoin: vi.fn().mockReturnValue(tail(table)) };
+          })
+        })) as any);
+      };
+      const grants = (...names: Array<keyof typeof PERMISSIONS>) => ({
+        permissions: names.map((name) => PERMISSIONS[name])
+      });
+
+      it('returns every group when the caller holds device, alert and AI permissions', async () => {
+        authState.permissions = grants('DEVICES_READ', 'ALERTS_READ', 'AI_SESSIONS_USE');
+        mockByTable();
+
+        const res = await app.request('/mobile/search?q=macbook', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.results.map((r: { kind: string }) => r.kind).sort()).toEqual(['alert', 'device', 'session']);
+      });
+
+      it('leaves out alerts when the caller cannot read alerts', async () => {
+        authState.permissions = grants('DEVICES_READ', 'AI_SESSIONS_USE');
+        mockByTable();
+
+        const res = await app.request('/mobile/search?q=macbook', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.results.map((r: { kind: string }) => r.kind).sort()).toEqual(['device', 'session']);
+        expect(queriedTables).not.toContain(alerts);
+      });
+
+      it('leaves out AI conversations when the caller cannot use the AI assistant', async () => {
+        authState.permissions = grants('DEVICES_READ', 'ALERTS_READ');
+        mockByTable();
+
+        const res = await app.request('/mobile/search?q=macbook', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.results.map((r: { kind: string }) => r.kind).sort()).toEqual(['alert', 'device']);
+        expect(queriedTables).not.toContain(aiSessions);
+      });
+    });
+
+    it('matches only AI conversations the caller created', async () => {
+      let sessionWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSearchChain([]) as any)
+        .mockReturnValueOnce(mockSearchChain([]) as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((where: SQL) => {
+              sessionWhere = where;
+              return {
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([])
+                })
+              };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/mobile/search?q=macbook', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(sessionWhere).toBeDefined();
+      const query = new PgDialect().sqlToQuery(sessionWhere!);
+      const ownerMatch = query.sql.match(/"ai_sessions"\."user_id" = \$(\d+)/);
+      expect(ownerMatch).not.toBeNull();
+      expect(query.params[Number(ownerMatch![1]) - 1]).toBe('user-123');
     });
 
     it('returns 429 when rate limit is exceeded', async () => {

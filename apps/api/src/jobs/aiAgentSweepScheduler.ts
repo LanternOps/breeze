@@ -102,7 +102,7 @@ import { aiAgentSchedules, aiAgents, organizations } from '../db/schema';
 import { envFlag } from '../config/env';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
-import { latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
+import { CronOccurrenceCache } from '../services/aiAgents/sweepOccurrence';
 import {
   effectiveSchedule,
   resolveEffectiveSchedulesForPartner,
@@ -261,6 +261,10 @@ async function claimOccurrence(
   return rows.length > 0;
 }
 
+/** Each baseline schedule's latest occurrence, kept between ticks, so a tick
+ *  evaluates only the minutes since the previous one (see CronOccurrenceCache). */
+const occurrences = new CronOccurrenceCache();
+
 /**
  * One scan of every enabled partner baseline. See this module's header for
  * the add-then-CAS ordering, which is asserted in `aiAgentSweepScheduler.test.ts`.
@@ -281,6 +285,7 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
   const baselines = await runWithSystemDbAccess(loadDueBaselines);
 
   let enqueued = 0;
+  occurrences.beginPass();
   for (const baseline of baselines) {
     // Per-baseline error boundary. One partner must never be able to stop the
     // scan for every other partner, and there are two realistic ways it could:
@@ -290,7 +295,7 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
     // faults; the tick is idempotent and re-runs in 5 minutes, so the right
     // response is to log this one loudly and keep scanning.
     try {
-      const occurrence = latestCronOccurrence(baseline.cron, baseline.timezone, now);
+      const occurrence = occurrences.latest(baseline.cron, baseline.timezone, now);
       if (!occurrence) continue;
       if (occurrence.key === baseline.lastOccurrenceKey) continue;
 
@@ -408,6 +413,7 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
     }
   }
 
+  occurrences.endPass();
   return { scanned: baselines.length, enqueued };
 }
 

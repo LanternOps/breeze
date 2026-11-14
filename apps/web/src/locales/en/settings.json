@@ -123,7 +123,15 @@
     "retentionKeepDays": "Keep for (days)",
     "retentionKeepForever": "Keep forever",
     "retentionBreezeDefault": "Breeze default: {{days}} days",
-    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run."
+    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run.",
+    "transcriptLabel": "Keep technician AI conversations for (days)",
+    "transcriptHelp": "Once retention enforcement is on, older conversations lose their messages, titles and tool details in the nightly run; the session record keeps its cost, model and turn count. Flagged conversations are kept. Blank inherits.",
+    "transcriptAuditNote": "Audit log entries about a technician session, including tool inputs, follow the audit retention window, not this one.",
+    "transcriptClientNote": "Client AI (AI for Office) conversations have their own window.",
+    "transcriptClientLink": "Client AI retention settings",
+    "transcriptAboveCeiling": "Your partner keeps technician AI conversations for at most {{days}} days.",
+    "partnerTranscriptHelp": "Choose how long technician AI conversations are kept, or keep them forever. Organizations can only shorten this. Once retention enforcement is on, older conversations lose their messages, titles and tool details in the nightly run.",
+    "invalidDays": "Enter a whole number of days."
   },
   "partnerServicePrincipals": {
     "title": "Service principals",
@@ -592,7 +600,74 @@
       "removeTitle": "Remove this model?",
       "removeMessage": "“{{model}}” will be deleted from this connection. Past usage and cost history is kept. You can add it again later.",
       "removed": "Model removed",
-      "removeFailed": "Couldn’t remove the model. Try again."
+      "removeFailed": "Couldn’t remove the model. Try again.",
+      "tools": {
+        "title": "Tools and context",
+        "partnerOnly": "Set by the partner on the model. Organizations choose models; they cannot override this.",
+        "profileLabel": "Tool profile",
+        "profile": {
+          "auto": "Auto (fit the context window)",
+          "full": "Full (every tool)",
+          "standard": "Standard",
+          "minimal": "Minimal (read-only)",
+          "custom": "Custom"
+        },
+        "profileHint": {
+          "auto": "Breeze picks the largest profile that fits the model's known context window. While the window is unknown, every tool stays available.",
+          "full": "Every tool each feature offers today.",
+          "standard": "Everyday helpdesk tools and a shorter prompt (about 40 tools in chat, fewer in the helper, script builder and Office).",
+          "minimal": "About a dozen read-only tools and a short prompt, for small local models.",
+          "custom": "Only the tool areas and tools you list, on every feature that uses this model."
+        },
+        "appliesWhen": "When a change alters what a feature uses, open conversations on this model restart their AI session on the next message and ask the user to send it again.",
+        "domainsLabel": "Tool areas",
+        "domainCore": "Core context tools",
+        "toolsLabel": "Individual tools",
+        "toolsHint": "Tool names, separated by commas or new lines. Breeze checks every name when you save.",
+        "droppedTools": "These tools no longer exist and are ignored: {{tools}}.",
+        "underpowered": "This change would take away tools a feature using this model needs:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Capacity unknown: nothing is constrained. Auto keeps every tool until the endpoint lists or reports a context window, or you set one below.",
+        "windowNotLearned": "Breeze learns context windows only on your own OpenAI-compatible endpoints, so Auto keeps every tool on this model.",
+        "windowKnown": "Context window: {{tokens}} tokens ({{source}}).",
+        "windowSource": {
+          "override": "set here",
+          "discovered": "listed by the endpoint"
+        },
+        "windowObserved": "Context window: {{tokens}} tokens (reported by the endpoint {{age}}).",
+        "observedStale": "The endpoint last reported {{tokens}} tokens {{age}}. That report is over an hour old or from an earlier endpoint setup, so it no longer limits anything.",
+        "overrideLabel": "Context window override (tokens)",
+        "overrideHint": "For models on your own OpenAI-compatible endpoint only. Leave blank to use what the endpoint lists or reports. New conversations use a changed value; open ones keep their current limit unless the profile they use changes.",
+        "surfacesTitle": "What each feature uses now",
+        "reason": {
+          "explicit": "chosen here",
+          "auto_window": "auto, from the context window",
+          "auto_unknown_window": "auto, window unknown",
+          "auto_unmeasured": "auto; this feature is not narrowed yet"
+        },
+        "missingRequired": "Refuses this model: it would lack {{tools}}.",
+        "tooSmall": "Window too small",
+        "tooSmallHint": "No profile fits this window, so this feature refuses the model.",
+        "fitSuggestion": "At {{tokens}} tokens, Auto would pick {{profile}} here; this profile may not fit.",
+        "readiness": {
+          "tokens": "{{tokens}} prompt tokens",
+          "passed": "Tool round trip passed.",
+          "failed": "Tool round trip failed, so this feature refuses the model. {{summary}}",
+          "inconclusive": "Inconclusive: the endpoint failed, not the model. Nothing is refused. {{summary}}",
+          "stale": "Out of date: the endpoint or tool profile changed since. Re-verify to check again.",
+          "absent": "No tool round trip yet. Verify runs one for each feature this model is assigned to.",
+          "absentVerified": "Verified (basic). Re-verify to check a real tool round trip on {{surface}}.",
+          "officeNotChecked": "Not checked: Verify does not run an Office round trip."
+        },
+        "verifyCost": "Verify sends real requests to your endpoint, billed by your provider: a basic check, then one tool round trip for each feature this model is assigned to. A round trip can take up to 4 model turns, each resending the whole prompt: on chat with the Full profile one request is about 128,000 tokens, so one chat check can approach 500,000.",
+        "invalidCustom": "Choose at least one tool area or tool for a custom profile.",
+        "invalidWindow": "Enter a whole number of tokens from {{min}} to {{max}}, or leave it blank.",
+        "ageMinutes": "{{n}} min ago",
+        "ageHours": "{{n}} h ago",
+        "ageDays": "{{n}} d ago",
+        "missingRequiredTroubleshooting": "Device troubleshooting runs refuse this model: they would lack {{tools}}. Other agent runs are not affected.",
+        "underpoweredTooSmall": "{{surface}}: no tool profile fits this context window"
+      }
     },
     "defaults": {
       "title": "Defaults by feature",
@@ -703,12 +778,14 @@
       "groupBy": {
         "model": "Model",
         "surface": "Feature",
-        "prompt_profile": "Model family"
+        "prompt_profile": "Model family",
+        "tool_profile": "Tool profile"
       },
       "columns": {
         "conversations": "Conversations",
         "costPerConversation": "Cost / conversation",
         "refusalRate": "Refusal rate",
+        "refusedToolBatches": "Unusable tool calls",
         "failoverRate": "Failover rate",
         "flagRate": "Flag rate",
         "leftRate": "Left for another model",
@@ -719,6 +796,7 @@
         "conversations": "Chat sessions and agent runs whose last model call in this period was on this row.",
         "costPerConversation": "Average spend on this row for each conversation that used it.",
         "refusalRate": "Model calls the model declined, per call.",
+        "refusedToolBatches": "Model calls in a turn where the model asked to run a tool in a form Breeze could not use (a tool it was not offered, or inputs that did not match), per call. Nothing was run.",
         "failoverRate": "Calls that moved to a backup model because this one failed or was unavailable.",
         "flagRate": "Sessions a person flagged. Automatic flags after a tool error are counted separately.",
         "leftRate": "Conversations that switched to another model, or continued in a new session on another model.",
@@ -730,6 +808,12 @@
         "claude-standard": "Standard Claude",
         "claude-small": "Small Claude",
         "generic": "Other models"
+      },
+      "toolProfiles": {
+        "full": "Full",
+        "standard": "Standard",
+        "minimal": "Minimal",
+        "custom": "Custom"
       },
       "unrecorded": "Not recorded",
       "unattributed": "Not attributed to a model",
@@ -743,6 +827,8 @@
       "leftBreakdown": "{{switched}} switched, {{continued}} continued",
       "resolvedCount_one": "{{count}} resolved",
       "resolvedCount_other": "{{count}} resolved",
+      "refusedToolBatchCount_one": "{{count}} refused",
+      "refusedToolBatchCount_other": "{{count}} refused",
       "loading": "Loading quality…",
       "empty": "No model calls in this period.",
       "error": "Couldn't load the quality view.",
@@ -1880,7 +1966,8 @@
     },
     "issues": {
       "range": "Enter a whole number of days between 1 and 3650."
-    }
+    },
+    "aiStubsHelp": "AI conversations emptied by transcript retention keep a stripped session record (cost, model, turn count) until their last activity is older than this window. An organization with no saved audit retention policy keeps those records."
   },
   "orgBrandingEditor": {
     "title": "Branding",
@@ -7132,7 +7219,7 @@
   },
   "orgDomains": {
     "title": "Domains",
-    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which portal self-registration and Sign in with Google rely on.",
+    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which features such as portal self-registration rely on.",
     "forbidden": "Managing customer domains requires an admin role with access to every organization.",
     "partnerOnly": "Customer domains are managed by your service provider.",
     "checkingAccess": "Checking access…",
@@ -7234,7 +7321,7 @@
       "resultUnavailable": "The check could not finish. {{reason}}",
       "removeVerification": "Remove verification",
       "removeTitle": "Remove verification for {{domain}}?",
-      "removeMessage": "The domain stays on this organization for mail routing. Self-registration and Sign in with Google stop trusting it until it is verified again."
+      "removeMessage": "The domain stays on this organization for mail routing. Features that rely on verified domains, such as self-registration, stop trusting it until it is verified again."
     },
     "actions": {
       "verify": "Verify",
@@ -8471,15 +8558,28 @@
       "label": "Microsoft sign-in"
     },
     "google": {
-      "label": "Google sign-in"
+      "label": "Google sign-in",
+      "domainNotVerified": "Verify one of this organization's domains under Organization › Domains before turning on Google sign-in.",
+      "domains": {
+        "verified": "Verified domains: {{domains}}",
+        "none": "No verified domain —",
+        "verify": "verify one under Organization › Domains",
+        "partner": "On wherever a domain is verified"
+      }
     },
     "password": {
       "label": "Password sign-in",
       "allowed": "Allowed",
       "ssoOnly": "Off — Microsoft/Google only",
-      "ssoOnlyNeedsSso": "Available once Microsoft or Google sign-in is turned on."
+      "ssoOnlyMicrosoft": "Off — Microsoft only",
+      "ssoOnlyGoogle": "Off — Google only",
+      "ssoOnlyNeedsSso": "Available once Microsoft or Google sign-in is turned on.",
+      "ssoOnlyNeedsSsoMicrosoft": "Available once Microsoft sign-in is turned on.",
+      "ssoOnlyNeedsSsoGoogle": "Available once Google sign-in is turned on."
     },
     "fallback": "Password sign-in is on because no Microsoft or Google sign-in is enabled.",
+    "fallbackMicrosoft": "Password sign-in is on because Microsoft sign-in is not enabled.",
+    "fallbackGoogle": "Password sign-in is on because Google sign-in is not enabled.",
     "invites": {
       "label": "Invites from the MSP",
       "value": "Always on"
@@ -8488,10 +8588,14 @@
       "label": "Self-registration",
       "off": "Off",
       "approval": "Needs approval",
-      "instant": "Instant"
+      "instant": "Instant",
+      "noVerifiedDomain": "No verified domain: nobody can register until you verify one.",
+      "verifyDomain": "Verify a domain"
     },
     "ssoNewPerson": {
       "label": "First Microsoft / Google sign-in",
+      "labelMicrosoft": "First Microsoft sign-in",
+      "labelGoogle": "First Google sign-in",
       "invitedOnly": "Invited people only",
       "approval": "Needs approval",
       "instant": "Instant"
@@ -8502,6 +8606,8 @@
       "save": "Couldn't save sign-in settings.",
       "methodUnavailable": "This sign-in method isn't available on this Breeze deployment yet.",
       "ssoOnlyNeedsSso": "Turn on Microsoft or Google sign-in before turning off password sign-in.",
+      "ssoOnlyNeedsSsoMicrosoft": "Turn on Microsoft sign-in before turning off password sign-in.",
+      "ssoOnlyNeedsSsoGoogle": "Turn on Google sign-in before turning off password sign-in.",
       "tenantNotProven": "Prove this organization's Microsoft tenant before turning on Microsoft sign-in.",
       "sessionHours": "Enter a whole number of hours from 1 to 168."
     },
@@ -8510,7 +8616,11 @@
     },
     "sessionHours": {
       "label": "Microsoft / Google session length (hours)",
-      "help": "Microsoft and Google sign-ins end after this many hours, however active the person is. From 1 to 168."
+      "labelMicrosoft": "Microsoft session length (hours)",
+      "labelGoogle": "Google session length (hours)",
+      "help": "Microsoft and Google sign-ins end after this many hours, however active the person is. From 1 to 168.",
+      "helpMicrosoft": "Microsoft sign-ins end after this many hours, however active the person is. From 1 to 168.",
+      "helpGoogle": "Google sign-ins end after this many hours, however active the person is. From 1 to 168."
     },
     "entraTenant": {
       "title": "Microsoft tenant",
@@ -8584,6 +8694,8 @@
       "intro": "Saving turns off password sign-in for the organizations below.",
       "partnerIntro": "Saving this partner default turns off password sign-in for these organizations. Each organization's page lists the accounts that can't sign in yet.",
       "explain": "People already connected to Microsoft lose their password and are signed out. People without a Microsoft connection can't sign in until they accept a Microsoft sign-in invite.",
+      "explainGoogle": "People already connected to Google lose their password and are signed out. People without a Google connection can't sign in until they accept a Google sign-in invite.",
+      "explainBoth": "People already connected to Microsoft or Google lose their password and are signed out. People without a Microsoft or Google connection can't sign in until they accept a sign-in invite.",
       "columns": {
         "org": "Organization",
         "passwordsToClear": "Passwords removed",
@@ -8594,24 +8706,38 @@
       "strandedMore": "and {{count}} more",
       "strandedLoadError": "Couldn't load the names of these accounts.",
       "sendInvites": "Send Microsoft sign-in invites to these accounts after saving",
+      "sendInvitesGoogle": "Send Google sign-in invites to these accounts after saving",
+      "sendInvitesBoth": "Send sign-in invites to these accounts after saving",
       "confirm": "Turn off password sign-in",
       "changed": "The impact changed since you opened this. Review the new numbers."
     },
     "stranded": {
       "title": "Can't sign in yet ({{count}})",
       "description": "These accounts have no Microsoft connection, so they can't sign in while password sign-in is off. Send each one a Microsoft sign-in invite.",
+      "descriptionGoogle": "These accounts have no Google connection, so they can't sign in while password sign-in is off. Send each one a Google sign-in invite.",
+      "descriptionBoth": "These accounts have no Microsoft or Google connection, so they can't sign in while password sign-in is off. Send each one a sign-in invite.",
       "loadError": "Couldn't load the accounts that can't sign in.",
       "invite": "Send Microsoft sign-in invite",
+      "inviteGoogle": "Send Google sign-in invite",
+      "inviteBoth": "Send sign-in invite",
       "inviteAll": "Invite all",
       "more": "Showing {{shown}} of {{count}}.",
       "toasts": {
         "invited": "Sent {{count}} Microsoft sign-in invite(s).",
+        "invitedGoogle": "Sent {{count}} Google sign-in invite(s).",
+        "invitedBoth": "Sent {{count}} sign-in invite(s).",
         "partial": "Sent {{invited}} of {{total}} Microsoft sign-in invites. The rest were already connected or couldn't be invited.",
+        "partialGoogle": "Sent {{invited}} of {{total}} Google sign-in invites. The rest were already connected or couldn't be invited.",
+        "partialBoth": "Sent {{invited}} of {{total}} sign-in invites. The rest were already connected or couldn't be invited.",
         "emailFailed": "{{count}} account(s) moved to invited, but their invite email couldn't be sent. Use Resend on the portal users list."
       },
       "errors": {
         "invite": "Couldn't send Microsoft sign-in invites.",
-        "unavailable": "Microsoft sign-in isn't available for this organization, so there is nothing to invite with."
+        "inviteGoogle": "Couldn't send Google sign-in invites.",
+        "inviteBoth": "Couldn't send sign-in invites.",
+        "unavailable": "Microsoft sign-in isn't available for this organization, so there is nothing to invite with.",
+        "unavailableGoogle": "Google sign-in isn't available for this organization, so there is nothing to invite with.",
+        "unavailableBoth": "Neither Microsoft nor Google sign-in is on for this organization, so there is nothing to invite with."
       }
     },
     "domains": {
@@ -8633,11 +8759,14 @@
       "self": "Self-registration",
       "entra": "Microsoft sign-in",
       "google": "Google sign-in",
+      "googleWithDomain": "Google · {{domain}}",
       "addin_user": "AI for Office add-in"
     },
     "selectAll": "Select all requests",
     "selectOne": "Select the request from {{email}}",
     "accountExists": "Already has an account — Deny to dismiss",
+    "domainUnverified": "Domain no longer verified",
+    "domainUnverifiedReason": "Approve is unavailable: invite this person directly if they should have access.",
     "actions": {
       "approve": "Approve",
       "deny": "Deny",
@@ -8650,7 +8779,9 @@
       "notFound": "Request not found",
       "identityLinked": "Sign-in already linked to another account",
       "failed": "Couldn't decide this request",
-      "entraTenantNotProven": "This organization's Microsoft tenant is no longer proven"
+      "entraTenantNotProven": "This organization's Microsoft tenant is no longer proven",
+      "domainNotVerified": "Email domain no longer verified",
+      "googleDomainNotVerified": "Google Workspace domain no longer verified"
     },
     "denyDialog": {
       "title": "Deny access request",
@@ -8668,7 +8799,9 @@
     "errors": {
       "load": "Couldn't load access requests.",
       "action": "Couldn't update the access request.",
-      "bulk": "Couldn't decide the selected requests."
+      "bulk": "Couldn't decide the selected requests.",
+      "domainNotVerified": "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
+      "googleDomainNotVerified": "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly."
     },
     "summary": {
       "title": "Pending access requests",

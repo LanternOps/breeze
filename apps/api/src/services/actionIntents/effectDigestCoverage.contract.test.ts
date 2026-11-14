@@ -250,6 +250,13 @@ describe('effect-digest coverage: every four_eyes surface is pinned or explicitl
     expect(requiresPinnedEffectDigest('run_script')).toBe(false);
   });
 
+  // A DR execution runs exactly the plan definition its approval covered, so
+  // an approval with no pinned definition must never release.
+  it('pins execute_dr_plan and requires the pin', () => {
+    expect(effectDigestResolverKey('execute_dr_plan')).toBe('execute_dr_plan');
+    expect(requiresPinnedEffectDigest('execute_dr_plan', { planId: 'plan-1', executionType: 'failover' })).toBe(true);
+  });
+
   // Tool Catalog W06 (#5221, Decision 5): the fleet built-in is a flow
   // built-in, not a registered tool, so neither four_eyes enumeration nor the
   // supervised tool table visits it. Its parked approval's whole authority is

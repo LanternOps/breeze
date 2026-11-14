@@ -167,7 +167,7 @@ describe('createCheckIn', () => {
     for (let i = 0; i < 5; i += 1) rows.push(await create(fx, now));
     await expect(create(fx, now)).rejects.toBeInstanceOf(CheckInLimitReachedError);
     expect(h.enqueueCheckIn).toHaveBeenCalledTimes(5);
-    expect(await cancelCheckIn(fx.grantId, rows[0]!.id, now)).not.toBeNull();
+    expect(await cancelCheckIn(fx.grantId, rows[0]!.id, 'user', now)).not.toBeNull();
     await expect(create(fx, now)).resolves.toMatchObject({ status: 'scheduled' });
   });
 
@@ -243,7 +243,7 @@ describe('createCheckIn', () => {
     const late = await create(fx, now, { dueInMs: 60 * MIN });
     const early = await create(fx, now, { dueInMs: 5 * MIN });
     const gone = await create(fx, now, { dueInMs: 20 * MIN });
-    await cancelCheckIn(fx.grantId, gone.id, now);
+    await cancelCheckIn(fx.grantId, gone.id, 'user', now);
     expect((await listCheckIns(fx.grantId, { limit: 10 })).map((r) => r.id)).toEqual([early.id, late.id]);
     expect((await listCheckIns(fx.grantId, { limit: 1 })).map((r) => r.id)).toEqual([early.id]);
     const dto = toCheckInDto(early);
@@ -312,7 +312,7 @@ describe('fireCheckIn', () => {
 
     // W04 (#11493): each cancel records why.
     for (const [fx, id, reason] of [[a, ra.id, 'grant_inactive'], [b, rb.id, 'grantor_changed'], [c, rc.id, 'thread_mismatch']] as const) {
-      expect(await rowOf(id)).toMatchObject({ status: 'cancelled', cancelReason: reason, fireReason: null });
+      expect(await rowOf(id)).toMatchObject({ status: 'cancelled', cancelReason: reason, cancelledBy: 'breeze', fireReason: null });
       expect(await postsFor(fx.thread.id)).toHaveLength(0);
     }
     expect(await postsFor(otherThread.id)).toHaveLength(0);
@@ -385,7 +385,7 @@ describe('fireCheckIn', () => {
     const real = vi.mocked(notifyUser).getMockImplementation()!;
     vi.mocked(notifyUser).mockImplementationOnce(async (p) => {
       const out = await real(p);
-      expect(await cancelCheckIn(fx.grantId, row.id)).not.toBeNull();
+      expect(await cancelCheckIn(fx.grantId, row.id, 'user')).not.toBeNull();
       return out;
     });
     expect(await fireCheckIn(row.id)).toBe('skipped');
@@ -403,7 +403,7 @@ describe('cancelCheckIn', () => {
     const row = await create(fx, new Date());
     let ctxOpen: boolean | null = null;
     h.removeCheckInJob.mockImplementation(async () => { ctxOpen = Boolean(getCurrentDbAccessContext()); return true; });
-    const out = await cancelCheckIn(fx.grantId, row.id);
+    const out = await cancelCheckIn(fx.grantId, row.id, 'user');
     expect(out).toMatchObject({ id: row.id, status: 'cancelled' });
     expect(out!.cancelledAt).not.toBeNull();
     expect(h.removeCheckInJob).toHaveBeenCalledWith(row.id);
@@ -414,22 +414,37 @@ describe('cancelCheckIn', () => {
     const fx = await seed();
     const fired = await create(fx, new Date());
     await fireCheckIn(fired.id);
-    expect(await cancelCheckIn(fx.grantId, fired.id)).toMatchObject({ status: 'cancelled' });
-    expect(await cancelCheckIn(fx.grantId, fired.id)).toBeNull();
+    expect(await cancelCheckIn(fx.grantId, fired.id, 'user')).toMatchObject({ status: 'cancelled' });
+    expect(await cancelCheckIn(fx.grantId, fired.id, 'user')).toBeNull();
 
     const consumed = await create(fx, new Date());
     await fireCheckIn(consumed.id);
     await withSystemDbAccessContext(() => db.update(wispCheckIns)
       .set({ status: 'consumed', consumedAt: new Date() }).where(eq(wispCheckIns.id, consumed.id)));
-    expect(await cancelCheckIn(fx.grantId, consumed.id)).toBeNull();
+    expect(await cancelCheckIn(fx.grantId, consumed.id, 'user')).toBeNull();
     expect((await rowOf(consumed.id))!.status).toBe('consumed');
+  });
+
+  runDb('records who cancelled: the user from the chip, Wisp with its tool (#11611)', async () => {
+    const fx = await seed();
+    const mine = await create(fx, new Date());
+    const wisps = await create(fx, new Date());
+    expect(await cancelCheckIn(fx.grantId, mine.id, 'user')).toMatchObject({ status: 'cancelled', cancelledBy: 'user' });
+    expect(await cancelCheckIn(fx.grantId, wisps.id, 'wisp')).toMatchObject({ status: 'cancelled', cancelledBy: 'wisp' });
+    expect((await rowOf(mine.id))!.cancelledBy).toBe('user');
+    expect((await rowOf(wisps.id))!.cancelledBy).toBe('wisp');
+    // A row not cancelled names no one; the column refuses an unknown actor.
+    const open = await create(fx, new Date());
+    expect((await rowOf(open.id))!.cancelledBy).toBeNull();
+    await expect(withSystemDbAccessContext(() => db.update(wispCheckIns)
+      .set({ cancelledBy: 'someone' as never }).where(eq(wispCheckIns.id, open.id)))).rejects.toThrow();
   });
 
   runDb('under another grant → null and the row is untouched', async () => {
     const fx = await seed();
     const other = await seed();
     const row = await create(fx, new Date());
-    expect(await cancelCheckIn(other.grantId, row.id)).toBeNull();
+    expect(await cancelCheckIn(other.grantId, row.id, 'user')).toBeNull();
     expect((await rowOf(row.id))!.status).toBe('scheduled');
     expect(h.removeCheckInJob).not.toHaveBeenCalled();
   });
@@ -440,7 +455,7 @@ describe('cancelCheckIn', () => {
     h.removeCheckInJob.mockRejectedValue(new Error('redis down'));
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(await cancelCheckIn(fx.grantId, row.id)).toMatchObject({ status: 'cancelled' });
+      expect(await cancelCheckIn(fx.grantId, row.id, 'user')).toMatchObject({ status: 'cancelled' });
     } finally {
       err.mockRestore();
     }
@@ -548,7 +563,7 @@ describe('next-turn consumption (W04 #10995, services/wisp/checkInTurn.ts)', () 
     const oldest = (await fired(fx, 1, new Date(base.getTime() - 10 * MIN)))[0]!;
     const stillScheduled = await create(fx, new Date());
     const cancelled = (await fired(fx, 1, base))[0]!;
-    await cancelCheckIn(fx.grantId, cancelled);
+    await cancelCheckIn(fx.grantId, cancelled, 'user');
     // Another grant of the same partner (another grantor) has its own fired row.
     const other = await seed();
     await fired(other, 1, base);
@@ -580,7 +595,7 @@ describe('next-turn consumption (W04 #10995, services/wisp/checkInTurn.ts)', () 
     const { loadFiredCheckIns, markCheckInsConsumed } = await import('../../services/wisp/checkInTurn');
     const read = await withDbAccessContext(grantorCtx(fx), () => loadFiredCheckIns(fx.grantId, fx.user.id));
     expect(read.map((r) => r.id)).toEqual([a, b]);
-    await cancelCheckIn(fx.grantId, b!);
+    await cancelCheckIn(fx.grantId, b!, 'user');
     expect(await withDbAccessContext(grantorCtx(fx), () =>
       markCheckInsConsumed({ grantId: fx.grantId, ids: [a!, b!] }))).toBe(1);
     expect((await rowOf(a!))!.status).toBe('consumed');

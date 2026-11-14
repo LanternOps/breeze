@@ -217,6 +217,18 @@ vi.mock('../services/wisp/standingStateTurn', () => ({
   standingStateForTurn: ss.forTurn,
   markStandingStateSent: ss.markSent,
 }));
+// #11671: the lazily-imported specialist-results half. Default: nothing finished.
+const sr = vi.hoisted(() => ({
+  forTurn: vi.fn(async (..._a: unknown[]) => null as {
+    results: Array<Record<string, unknown>>;
+    keys: string[];
+  } | null),
+  markDelivered: vi.fn(async (..._a: unknown[]) => undefined),
+}));
+vi.mock('../services/wisp/specialistResultsTurn', () => ({
+  specialistResultsForTurn: sr.forTurn,
+  markSpecialistResultsDelivered: sr.markDelivered,
+}));
 
 // W05 (#7603): the transition gate. Typed against the real signatures (Codex
 // review finding 21): an inferred `{ kind: string }` return would reject the
@@ -237,6 +249,7 @@ vi.mock('../services/aiModels/modelTransition', async (orig) => ({
 import { aiRoutes } from './ai';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { ContextWindowTooSmallError } from '../services/aiModels/sessionToolExposure';
 import { runPreFlightChecks } from '../services/aiAgentSdk';
 import { AiBudgetSessionBusyError, reserveAiBudget } from '../services/aiBudgetReservations';
 import { captureException } from '../services/sentry';
@@ -490,6 +503,17 @@ describe('POST /ai/sessions/:id/messages — fired Wisp check-ins (#10995)', () 
     expect(ci.consume).not.toHaveBeenCalled();
   });
 
+  it('#11396: a window too small for any tool profile is a 409 context_window_too_small, consuming nothing', async () => {
+    vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(new ContextWindowTooSmallError('chat', 4_096));
+    const res = await post(app);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This model\'s 4,096-token window is too small for Breeze chat tools.',
+      code: 'context_window_too_small',
+    });
+    expect(ci.consume).not.toHaveBeenCalled();
+  });
+
   it('consumes nothing when the session cannot be created (409 wisp_session_unavailable, or a throw)', async () => {
     vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(
       Object.assign(new Error('grant paused'), { code: 'wisp_session_unavailable' }),
@@ -645,6 +669,124 @@ describe('POST /ai/sessions/:id/messages — fired Wisp check-ins (#10995)', () 
       });
       await (await post(app)).text();
       expect(ss.forTurn).not.toHaveBeenCalled();
+      expect(pushed()).toBe('TOPOLOGY PROMPT');
+    });
+  });
+
+  describe('specialist results that finished between turns (#11671)', () => {
+    const VERDICT = 'RAM 36-61% throughout; no memory pressure. The slowdown is the imaging service.';
+    const SPECIALIST = {
+      results: [{ runId: 'run-9', status: 'completed', profile: 'device_troubleshooting', summary: VERDICT, artifacts: [] }],
+      keys: ['run-9:completed'],
+    };
+
+    beforeEach(() => {
+      sr.forTurn.mockResolvedValue(SPECIALIST);
+      ss.forTurn.mockResolvedValue(null);
+      ci.load.mockResolvedValue([]);
+    });
+
+    it('a result that arrived while no turn was in flight is on the next turn after the session is rotated', async () => {
+      // The live session from the launching turn: rotated away before this turn.
+      const prior = makeActiveSession();
+      prior.state = 'idle';
+      vi.mocked(streamingSessionManager.get).mockReturnValue(prior);
+      await (await post(app)).text();
+
+      expect(streamingSessionManager.remove).toHaveBeenCalledWith(SESSION_ID);
+      expect(sr.forTurn).toHaveBeenCalledWith({ grantId: GRANT_ID, revisionId: REVISION_ID, sessionId: SESSION_ID });
+      const turn = pushed();
+      expect(turn.startsWith('[breeze:analysis-results]')).toBe(true);
+      expect(turn).toContain('Device troubleshooting run run-9 completed.');
+      expect(turn).toContain(VERDICT);
+      expect(turn.endsWith('\n\nhi there')).toBe(true);
+      // The stored user row never carries it.
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ role: 'user', content: 'hi there' }));
+    });
+
+    it('is read before the budget reservation and marked delivered only after dispatch', async () => {
+      await (await post(app)).text();
+      expect(sr.forTurn.mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(reserveAiBudget).mock.invocationCallOrder[0]!);
+      expect(sr.markDelivered).toHaveBeenCalledWith(SESSION_ID, ['run-9:completed']);
+      expect(sr.markDelivered.mock.invocationCallOrder[0]!)
+        .toBeGreaterThan(active.inputController.pushMessage.mock.invocationCallOrder[0]!);
+    });
+
+    it('shares one results block with any queued run result, outermost, before the standing state and check-ins', async () => {
+      ss.forTurn.mockResolvedValue(STANDING);
+      ci.load.mockResolvedValue(FIRED);
+      active.pendingRunResults = [{ runId: 'run-1', status: 'completed', summary: 'All clear.', artifacts: [] }];
+      await (await post(app)).text();
+      const turn = pushed();
+      expect(turn.indexOf('[breeze:analysis-results]')).toBe(0);
+      expect(turn.lastIndexOf('[breeze:analysis-results]')).toBe(0);
+      expect(turn.indexOf('Run run-1 completed.')).toBeGreaterThan(0);
+      expect(turn.indexOf('Device troubleshooting run run-9 completed.')).toBeGreaterThan(turn.indexOf('Run run-1 completed.'));
+      expect(turn.indexOf('<wisp_standing_state')).toBeGreaterThan(turn.indexOf(VERDICT));
+      expect(turn.indexOf('<wisp_check_ins>')).toBeGreaterThan(turn.indexOf('</wisp_standing_state>'));
+      expect(turn.endsWith('\n\nhi there')).toBe(true);
+    });
+
+    it('a refused turn (402) marks nothing, so the next turn still carries it', async () => {
+      vi.mocked(reserveAiBudget).mockResolvedValueOnce({ kind: 'denied', message: 'Daily AI budget exceeded' } as any);
+      expect((await post(app)).status).toBe(402);
+      expect(sr.markDelivered).not.toHaveBeenCalled();
+    });
+
+    it('a session that cannot be created (409 wisp_session_unavailable) marks nothing', async () => {
+      vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(
+        Object.assign(new Error('grant paused'), { code: 'wisp_session_unavailable' }),
+      );
+      expect((await post(app)).status).toBe(409);
+      expect(sr.markDelivered).not.toHaveBeenCalled();
+    });
+
+    it('nothing finished: the turn is unchanged and nothing is marked', async () => {
+      sr.forTurn.mockResolvedValue(null);
+      await (await post(app)).text();
+      expect(pushed()).toBe('hi there');
+      expect(sr.markDelivered).not.toHaveBeenCalled();
+    });
+
+    it('a non-Wisp turn never reads them', async () => {
+      preflight({ ...DB_SESSION, wispGrantId: null, wispGrantRevisionId: null });
+      await (await post(app)).text();
+      expect(sr.forTurn).not.toHaveBeenCalled();
+      expect(pushed()).toBe('hi there');
+    });
+
+    it('a failure to read them is reported and the turn goes out without them', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const boom = new Error('module load failed');
+      sr.forTurn.mockRejectedValue(boom);
+      const res = await post(app);
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(pushed()).toBe('hi there');
+      expect(captureException).toHaveBeenCalledWith(boom, expect.anything(), { wisp_specialist_results_phase: 'read' });
+      expect(sr.markDelivered).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('a failure to mark them delivered still streams the turn', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      sr.markDelivered.mockRejectedValueOnce(new Error('unexpected'));
+      const res = await post(app);
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(pushed()).toContain('run-9');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('specialist results as delivered'), expect.objectContaining({ sessionId: SESSION_ID }));
+      warn.mockRestore();
+    });
+
+    it('a topology turn never reads them', async () => {
+      preflight({ ...DB_SESSION, type: 'topology' });
+      topo.prepare.mockResolvedValueOnce({
+        ok: true,
+        prepared: { kind: 'live', runtime: { abort: topo.abort }, prompt: 'TOPOLOGY PROMPT', systemPrompt: 'TOPOLOGY SYSTEM', allowedMcpTools: [] },
+      });
+      await (await post(app)).text();
+      expect(sr.forTurn).not.toHaveBeenCalled();
       expect(pushed()).toBe('TOPOLOGY PROMPT');
     });
   });

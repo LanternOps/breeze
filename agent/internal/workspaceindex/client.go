@@ -16,6 +16,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 const (
@@ -95,7 +96,7 @@ func NewClient(cfg ClientConfig) *Client {
 	}
 	clientCopy := *httpClient
 	clientCopy.Timeout = requestTimeout
-	clientCopy.CheckRedirect = refuseUntrustedRedirect
+	clientCopy.CheckRedirect = httpguard.RefuseUntrustedRedirect
 
 	// A nil provider is a wiring bug. Keep the client constructible (callers
 	// don't handle an error here) but never let it degrade into a scheme-less
@@ -346,18 +347,4 @@ func isRetryableStatus(status int) bool {
 		status == http.StatusBadGateway ||
 		status == http.StatusServiceUnavailable ||
 		status == http.StatusGatewayTimeout
-}
-
-func refuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) == 0 {
-		return nil
-	}
-	previous := via[len(via)-1]
-	if !strings.EqualFold(req.URL.Hostname(), previous.URL.Hostname()) {
-		return fmt.Errorf("refusing redirect from host %s to untrusted host %s during credentialed request", previous.URL.Hostname(), req.URL.Hostname())
-	}
-	if previous.URL.Scheme == "https" && req.URL.Scheme != "https" {
-		return fmt.Errorf("refusing https-to-%s downgrade redirect to %s during credentialed request", req.URL.Scheme, req.URL.Hostname())
-	}
-	return nil
 }

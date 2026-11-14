@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionError } from '@/lib/runAction';
 import { WispTalkError } from '@/lib/wispTalkError';
 
@@ -31,6 +31,7 @@ const threadBody = (threadId = 'th1', status = 'active') => ({ data: {
   grant: { id: 'g1', status, orgId: null, expiresAt: '2099-01-01T00:00:00Z' },
 } });
 
+beforeAll(async () => { await import('@/lib/wispGrant'); });
 beforeEach(() => {
   vi.clearAllMocks(); resetWispTalkTargetCache();
   h.claims = { status: 'resolved', claims: { scope: 'partner', partnerId: 'p1', orgId: null } };

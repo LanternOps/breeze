@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  revokeAllSessionsForTerminalLogout,
   createTerminalLogoutService,
   type TerminalLogoutDependencies,
   type TerminalLogoutFamily,
@@ -182,5 +183,30 @@ describe('terminal logout transaction boundaries', () => {
     });
     expect(h.tx.retireWithSuccessor).not.toHaveBeenCalled();
     expect(h.tx.markLogoutPending).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('revokeAllSessionsForTerminalLogout', () => {
+  it('signs the user out everywhere and cancels a pending email-address change in the same transaction', async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const tx = {
+      update: vi.fn(() => ({
+        set: (values: Record<string, unknown>) => {
+          writes.push(values);
+          const where: any = () => {
+            const result: any = Promise.resolve(undefined);
+            result.returning = async () => [{ authEpoch: 5, mfaEpoch: 9, emailEpoch: 1, passwordResetEpoch: 1, credentialEpoch: 1 }];
+            return result;
+          };
+          return { where };
+        },
+      })),
+    };
+
+    await revokeAllSessionsForTerminalLogout(tx as any, A);
+
+    expect(writes.some((values) => 'authEpoch' in values)).toBe(true);
+    expect(writes.some((values) => 'revokedReason' in values)).toBe(true);
+    expect(writes).toContainEqual(expect.objectContaining({ pendingEmail: null, pendingEmailRequestedAt: null }));
   });
 });

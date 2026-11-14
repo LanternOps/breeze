@@ -273,7 +273,7 @@ export async function createCheckIn(
       }
       return outcome === 'fired' || outcome === 'running'
         ? { ...row, status: outcome, firedAt: now }
-        : { ...row, status: 'cancelled', cancelledAt: now };
+        : { ...row, status: 'cancelled', cancelledAt: now, cancelledBy: 'breeze' };
     }
   }
   return row;
@@ -298,11 +298,19 @@ export async function listCheckIns(grantId: string, opts: { limit: number }): Pr
  * A `running` row (W07) can be cancelled too: its run is not stopped (it is
  * read-only and already admitted), but its result is never posted
  * (postCheckInRunResult only settles a `running` row).
+ *
+ * `by` is recorded as `cancelled_by` (#11611): the standing state tells Wisp
+ * about the user's cancels, and must not credit the user with Wisp's own.
  */
-export async function cancelCheckIn(grantId: string, checkInId: string, now: Date = new Date()): Promise<WispCheckInRow | null> {
+export async function cancelCheckIn(
+  grantId: string,
+  checkInId: string,
+  by: 'user' | 'wisp',
+  now: Date = new Date(),
+): Promise<WispCheckInRow | null> {
   const [row] = await sys(() => db
     .update(wispCheckIns)
-    .set({ status: 'cancelled', cancelledAt: now })
+    .set({ status: 'cancelled', cancelledAt: now, cancelledBy: by })
     .where(and(
       eq(wispCheckIns.id, checkInId),
       eq(wispCheckIns.grantId, grantId),
@@ -348,7 +356,7 @@ export const CHECK_IN_DEADLINE_EARLY_TOLERANCE_MS = 60_000;
 async function cancelScheduled(checkInId: string, now: Date, reason: CheckInCancelReason): Promise<boolean> {
   const changed = await sys(() => db
     .update(wispCheckIns)
-    .set({ status: 'cancelled', cancelledAt: now, cancelReason: reason })
+    .set({ status: 'cancelled', cancelledAt: now, cancelReason: reason, cancelledBy: 'breeze' })
     .where(and(eq(wispCheckIns.id, checkInId), eq(wispCheckIns.status, 'scheduled')))
     .returning({ id: wispCheckIns.id }), 'wisp-check-in-cancel-unusable');
   return changed.length > 0;

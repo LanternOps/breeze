@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome, AiApprovalWaitingOn, AiStandingInstructionConflict } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome, AiApprovalWaitingOn, AiStandingInstructionConflict, AiApprovalTicketContext } from '@breeze/shared';
 // Subpath, not the barrel: this module loads on the topology island, whose CSP
 // forbids the barrel's JIT-compiled schemas (see topologyImports.test.ts).
 import { topologyAiExplanationSchema } from '@breeze/shared/validators/topologyAi';
@@ -68,6 +68,8 @@ export interface PendingApproval {
   waitingOn?: AiApprovalWaitingOn;
   /** W06: the tool call conflicts with a remembered standing instruction — the card shows a red banner. */
   standingInstructionConflict?: AiStandingInstructionConflict;
+  /** #11674: the ticket a manage_tickets call acts on (number, subject, requester), for the card body. */
+  ticketContext?: AiApprovalTicketContext;
   /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
   selfApprovalRequestId?: string;
   /**
@@ -228,6 +230,7 @@ function pendingApprovalFromCard(card: Extract<AiPendingCardEvent, { type: 'appr
     approvalExpiresAt: card.approvalExpiresAt,
     scriptRunContext: card.scriptRunContext ?? null,
     standingInstructionConflict: card.standingInstructionConflict,
+    ticketContext: card.ticketContext,
   };
 }
 

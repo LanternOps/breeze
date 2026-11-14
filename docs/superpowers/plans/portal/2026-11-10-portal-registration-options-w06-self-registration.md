@@ -539,7 +539,7 @@ it('the org view carries verifiedDomainCount; the partner view carries null');
 - Create: `routes/portal/selfRegistration.ts` (+ `selfRegistration.test.ts`) exporting `selfRegistrationRoutes`. Mount it in `routes/portal/index.ts` with the other public routes (after `authRoutes`, before any `portalAuthMiddleware` use).
 - Modify: `routes/portal/auth.ts`. Add `['/auth/self-register', 'portal.auth.self_register.request']` to `PORTAL_AUTH_AUDIT_ACTIONS`. The wrapper is registered on `/auth/*`, so it covers the new route.
 - Modify: `routes/portal/oidc.ts` `GET /auth/methods`. Add `requestAccess`:
-  - shared host → `getPortalSignInCapabilities().selfRegistration` (a constant);
+  - shared host → `false` (decision B, 2026-11-11; W06b changed this from the capability constant: the shared-host link would show to every customer of every MSP);
   - custom host → the org's effective `selfRegistrationMode !== 'off' && (await listVerifiedDomainsForOrg(orgId)).length > 0`;
   - `PortalAccessPolicyOrgNotFoundError` → the shared answer.
 
@@ -574,7 +574,7 @@ it('verify: unknown, expired and reused tokens get the same 400');              
 it('verify: a refused completion returns the same 400 body as an unknown token');
 it('verify maps request_sent, request_unavailable, existing_account and account_created to their responses');
 it('verify: account_created returns next=/accept-invite?token=… and audits portal.auth.self_register.verify');
-it('/auth/methods: requestAccess is the capability constant on the shared host');
+it('/auth/methods: requestAccess is false on the shared host even when the capability is on');   // decision B (W06b)
 it('/auth/methods: on a custom host, requestAccess needs mode != off and a verified domain');
 ```
 
@@ -723,7 +723,7 @@ Steps:
 - [ ] **Step 0:** Write the two capability tests, watch them fail, flip the capability, sweep, and run `portalAccessPolicy.test.ts`, `portalAccessPolicyWrites.test.ts`, `routes/portal/oidc.test.ts`, `routes/portal/selfRegistration.test.ts` → PASS. Commit: `feat(portal): turn on the self-registration capability (W6)`.
 - [ ] **Step 1:** Write the docs and regenerate the index. Sonnet-eligible.
 - [ ] **Step 2: Browser check** with the `feature-testing` skill on a `worktree-stack` (seed a verified domain by SQL; Mailpit or log transport for the emails). Check:
-  - the login page shows **Request access** (shared host);
+  - the login page shows **Request access** on a verified custom portal host with the mode on, and not on the shared host (decision B);
   - a submit shows the confirmation;
   - the verify link renders without consuming;
   - Confirm in approval mode → the request appears in the org's queue → Approve sends the invite;
@@ -817,7 +817,7 @@ Steps:
 ## Self-review
 
 1. **Spec coverage (§5.9, §7 W6 row):**
-   - Request-access link visibility (shared host constant, custom host gated) → T6 `/auth/methods`, T8; turned on by T10's capability flip.
+   - Request-access link visibility (never on the shared host — decision B; custom host gated) → T6 `/auth/methods`, T8; turned on by T10's capability flip.
    - Name + email form → T8.
    - Same response and timing envelope, work async → D3, T3, T6.
    - Exact domain → the one verified org with mode ≠ off → D5, T3.

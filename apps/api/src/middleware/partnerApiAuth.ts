@@ -17,9 +17,9 @@ import { getRedis, rateLimiter } from '../services';
 import { writeAuditEventAsync } from '../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import {
+  authenticatePartnerServicePrincipalKey,
   hashPartnerApiKey,
   isPartnerServicePrincipalKeyFormat,
-  loadPartnerServicePrincipalCredential,
 } from '../services/partnerServicePrincipalCredential';
 import type { PartnerServicePrincipalScope } from '../services/partnerServicePrincipalScopes';
 import { enforcePreLookupProbeRateLimit } from './apiKeyAuth';
@@ -106,8 +106,10 @@ async function bootstrapCredential(
   trustedClientIp: string | undefined,
 ): Promise<CredentialBootstrap> {
   // Shared with the MCP endpoint (middleware/partnerServicePrincipalMcpAuth.ts)
-  // so both surfaces enforce one credential lifecycle.
-  return (await loadPartnerServicePrincipalCredential(keyHash, trustedClientIp)).credential;
+  // so both surfaces enforce one credential lifecycle and one owner check:
+  // the principal's owner must still hold the authority to delegate every
+  // Partner API scope it carries, re-read on every request.
+  return (await authenticatePartnerServicePrincipalKey(keyHash, trustedClientIp, 'partner_api')).credential;
 }
 
 // The hidden per-partner 'quick_support' org is an internal Quick Support

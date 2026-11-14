@@ -12,6 +12,10 @@ export const RUN_ISSUE_KINDS = [
   'skipped_no_org',
   'skipped_unsupported',
   'failed',
+  // A list row the module could not read, of a ticket already imported: the
+  // ticket stays imported, and the next run reads the row again (#11296
+  // follow-up). The code is the module's failure code.
+  'row_unreadable',
   // Writer decisions.
   'status_kept',
   'attachments_skipped',

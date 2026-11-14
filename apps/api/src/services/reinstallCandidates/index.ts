@@ -246,21 +246,56 @@ type Plan =
   | { source: SourceSnapshot; kind: 'new' | 'upgrade' | 'replace'; best: RankedCandidate }
   | { source: SourceSnapshot; kind: 'clear'; best: null };
 
-async function plan(sourceDeviceId: string): Promise<Plan | { skip: string }> {
-  const source = await readSource(sourceDeviceId);
-  if (!source) return { skip: 'source_not_found' };
+/** A source the search does not run for: a Quick Support session or an ephemeral record. */
+function isUnsearchableSource(source: SourceSnapshot): boolean {
   // A Quick Support session (the hidden org that is not the holding org) is a
   // stranger's machine for one support call, not a reinstall of anything; a
   // parked source IS searched (§7.3).
   const quickSupportSource = isHiddenOrgType(source.orgType) && !isUnassignedPoolOrgType(source.orgType);
-  if (source.isEphemeral || quickSupportSource) return { skip: 'source_ephemeral' };
+  return source.isEphemeral || quickSupportSource;
+}
 
+/** Every qualifying candidate of `source`, ranked (§7.3), with what the flag decision also needs. */
+async function rankForSource(source: SourceSnapshot) {
   const matches = await readMatches(source);
   const ids = [...new Set(matches.map((m) => m.target.id))];
   if (source.storedTargetId && !ids.includes(source.storedTargetId)) ids.push(source.storedTargetId);
   const retired = await readRetiredSources(ids);
   const qualifying = matches.filter((m) => targetIneligibility(source, m.target, retired.has(m.target.id)) === null);
-  const [best] = rankCandidates(source, qualifying);
+  return { matches, retired, ranked: rankCandidates(source, qualifying) };
+}
+
+/** The source as the candidates read (#8318 wave 2-2) reports it. */
+export type RankedCandidatesSource = Pick<
+  SourceSnapshot,
+  'id' | 'orgId' | 'siteId' | 'hostname' | 'osType' | 'orgType' | 'partnerId' | 'storedTargetId' | 'storedReason' | 'enrolledAt'
+>;
+
+/**
+ * The ranked candidates of one source, for the reattach dialog (#8318 wave
+ * 2-2, services/reinstallCandidates/viewer.ts): the SAME search, rules and
+ * order the detection uses, with every qualifying candidate instead of the
+ * best one. Runs in the caller's DB context, which must be system scope (the
+ * search is partner-wide and reads the ledger). Null when the source does not
+ * exist; an empty list for a source the search never runs for.
+ */
+export async function readRankedReinstallCandidates(
+  sourceDeviceId: string,
+): Promise<{ source: RankedCandidatesSource; ranked: RankedCandidate[] } | null> {
+  const source = await readSource(sourceDeviceId);
+  if (!source) return null;
+  if (isUnsearchableSource(source)) return { source, ranked: [] };
+  const { ranked } = await rankForSource(source);
+  return { source, ranked };
+}
+
+async function plan(sourceDeviceId: string): Promise<Plan | { skip: string }> {
+  const source = await readSource(sourceDeviceId);
+  if (!source) return { skip: 'source_not_found' };
+  if (isUnsearchableSource(source)) return { skip: 'source_ephemeral' };
+
+  const { matches, retired, ranked } = await rankForSource(source);
+  const [best] = ranked;
 
   let storedIneligibility: IneligibleReason | 'missing' | null = null;
   let storedTargetOrgId: string | null = null;

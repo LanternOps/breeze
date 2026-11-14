@@ -19,7 +19,8 @@ type VaultConfig struct {
 	Enabled        bool
 }
 
-// VaultManager manages a local vault (SMB share / USB drive) that mirrors
+// VaultManager manages a local vault (a disk or USB drive attached to the
+// device; network shares are refused by the local provider) that mirrors
 // snapshots from the primary backup provider for offline or fast-local recovery.
 type VaultManager struct {
 	config  VaultConfig
@@ -57,14 +58,15 @@ func NewVaultManager(cfg VaultConfig, primary providers.BackupProvider) (*VaultM
 		cfg.RetentionCount = 3
 	}
 
-	if err := os.MkdirAll(cfg.VaultPath, 0o755); err != nil {
+	vault := providers.NewLocalProvider(cfg.VaultPath)
+	if err := vault.Prepare(); err != nil {
 		return nil, fmt.Errorf("failed to create vault directory: %w", err)
 	}
 
 	return &VaultManager{
 		config:  cfg,
 		primary: primary,
-		vault:   providers.NewLocalProvider(cfg.VaultPath),
+		vault:   vault,
 	}, nil
 }
 
@@ -161,14 +163,7 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 		return nil, fmt.Errorf("vault sync failed at manifest upload: %w", manifestErr)
 	}
 	syncResult.ManifestVerified = true
-	if syncedFiles, listErr := v.vault.List(prefix); listErr == nil {
-		var totalSize int64
-		for _, syncedFile := range syncedFiles {
-			filePath := path.Join(v.config.VaultPath, syncedFile)
-			if info, statErr := os.Stat(filePath); statErr == nil {
-				totalSize += info.Size()
-			}
-		}
+	if totalSize, ok := v.vaultTotalSize(prefix); ok {
 		syncResult.TotalBytes = totalSize
 	}
 
@@ -260,17 +255,31 @@ func (v *VaultManager) GetStatus() (*VaultStatus, error) {
 	}
 
 	// Compute total size from all snapshot files
-	allFiles, listErr := v.vault.List(snapshotRootDir)
-	if listErr == nil {
-		for _, f := range allFiles {
-			filePath := path.Join(v.config.VaultPath, f)
-			if info, statErr := os.Stat(filePath); statErr == nil {
-				status.TotalSizeBytes += info.Size()
-			}
-		}
+	if totalSize, ok := v.vaultTotalSize(snapshotRootDir); ok {
+		status.TotalSizeBytes = totalSize
 	}
 
 	return status, nil
+}
+
+// vaultTotalSize sums the sizes of the vault objects under prefix, read in
+// one walk through the vault provider's store root.
+func (v *VaultManager) vaultTotalSize(prefix string) (int64, bool) {
+	sizer, ok := v.vault.(interface {
+		ObjectSizes(string) (map[string]int64, error)
+	})
+	if !ok {
+		return 0, false
+	}
+	sizes, err := sizer.ObjectSizes(prefix)
+	if err != nil {
+		return 0, false
+	}
+	var total int64
+	for _, size := range sizes {
+		total += size
+	}
+	return total, true
 }
 
 // Path returns the configured vault path.

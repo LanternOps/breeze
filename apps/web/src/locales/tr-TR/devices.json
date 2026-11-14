@@ -1661,6 +1661,12 @@
     "online": "Çevrimiçi"
   },
   "deviceList": {
+    "diskUsage": "Disk kullanımı",
+    "diskUsageScope": "Gösterilecek diskler",
+    "allDisks": "Tüm diskler",
+    "osDiskOnly": "Yalnızca sistem diski",
+    "sortByDiskUsage": "Disk kullanımına göre sırala (gösterilen en yüksek kullanım)",
+    "osDiskUsageUnavailable": "Aracı henüz sistem diskini belirlemedi.",
     "selectedComposition": "{{agent}} ajanlı, {{network}} ağ",
     "agentOnlyBulkAction": "Yalnızca ajanlı cihazlar için geçerlidir",
     "eligibleOfSelected": "{{count}} / {{total}}",

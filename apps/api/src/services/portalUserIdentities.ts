@@ -10,7 +10,8 @@
  *
  * Release B (W3, now): **every read of external identity lives here** —
  * `portalUserHasIdentitySql` (identity-managed / bulk-invite / capability
- * facts), `findPortalUserIdByEntraIdentity` (the add-in exchange's lookup) and
+ * facts), `findPortalUserIdByIdentity` (any provider; W7) and its Entra
+ * wrapper `findPortalUserIdByEntraIdentity` (the add-in exchange's lookup) and
  * `listIdentityProvidersByUser` (the portal-user list). Nothing reads
  * `portal_users.entra_*` for a decision any more. Writers still dual-write those
  * columns (plan D4 writer fence) so a rolling-deploy release-A instance, which
@@ -22,6 +23,7 @@
 import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
 import { portalUserIdentities, portalUsers, type PortalIdentityProvider } from '../db/schema/portal';
+import { PORTAL_GOOGLE_ISSUER } from './portalOidc/validators';
 
 /** `db` or a transaction handle (same shape as `ContactExecutor`, services/contacts/compat.ts). */
 export type IdentityExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -32,7 +34,23 @@ export function entraIssuer(tid: string): string {
 }
 
 /** The `iss` of a Google ID token; the issuer stored for a Google request and identity. */
-export const PORTAL_GOOGLE_ISSUER = 'https://accounts.google.com';
+export { PORTAL_GOOGLE_ISSUER };
+
+/**
+ * The key of one external identity, per provider (W7 plan D5). Entra: the
+ * tenant and object id from a verified ID token; Google: the `sub` claim,
+ * compared and stored case-sensitively and never normalized (D1).
+ */
+export type PortalIdentityKey =
+  | { provider: 'entra'; tid: string; oid: string }
+  | { provider: 'google'; sub: string };
+
+/** The `(issuer, subject)` an identity row stores for a key (`portal_user_identities_issuer_subject_uq`). */
+export function identityIssuerSubject(key: PortalIdentityKey): { issuer: string; subject: string } {
+  return key.provider === 'entra'
+    ? { issuer: entraIssuer(key.tid), subject: key.oid }
+    : { issuer: PORTAL_GOOGLE_ISSUER, subject: key.sub };
+}
 
 // ---------------------------------------------------------------------------
 // Readers (identities release B)
@@ -72,22 +90,37 @@ export function entraIdentityMatch(input: { tid: string; oid: string }): SQL {
 }
 
 /**
- * The account an Entra identity belongs to, or null. Its `orgId` is the
- * account's org too (composite same-org FK), so a caller can compare it with
- * the org a tenant maps to before touching the account (spec §6 inv. 4).
+ * The account an identity belongs to, or null, matched on the full key:
+ * provider, issuer and subject (the subject exactly, case-sensitive). Its
+ * `orgId` is the account's org too (composite same-org FK), so a caller can
+ * compare it with the org the sign-in resolved to before touching the account
+ * (spec §6 inv. 4). Each provider's lookup ignores the other's identities.
  * Runs in the caller's DB context: under RLS it only sees identities the
  * context may read.
  */
+export async function findPortalUserIdByIdentity(
+  exec: IdentityExecutor,
+  key: PortalIdentityKey,
+): Promise<{ portalUserId: string; orgId: string } | null> {
+  const { issuer, subject } = identityIssuerSubject(key);
+  const [row] = await exec
+    .select({ portalUserId: portalUserIdentities.portalUserId, orgId: portalUserIdentities.orgId })
+    .from(portalUserIdentities)
+    .where(and(
+      eq(portalUserIdentities.provider, key.provider),
+      eq(portalUserIdentities.issuer, issuer),
+      eq(portalUserIdentities.subject, subject),
+    ))
+    .limit(1);
+  return row ?? null;
+}
+
+/** {@link findPortalUserIdByIdentity} for an Entra key (the add-in exchange and W4 sign-in). */
 export async function findPortalUserIdByEntraIdentity(
   exec: IdentityExecutor,
   input: { tid: string; oid: string },
 ): Promise<{ portalUserId: string; orgId: string } | null> {
-  const [row] = await exec
-    .select({ portalUserId: portalUserIdentities.portalUserId, orgId: portalUserIdentities.orgId })
-    .from(portalUserIdentities)
-    .where(entraIdentityMatch(input))
-    .limit(1);
-  return row ?? null;
+  return findPortalUserIdByIdentity(exec, { provider: 'entra', tid: input.tid, oid: input.oid });
 }
 
 /**
@@ -207,22 +240,28 @@ export type LinkIdentityResult = { kind: 'linked' } | { kind: 'conflict' };
  *     same statement (plan D12: linking while the org is effectively
  *     `sso_only`). No epoch bump.
  *
+ * Google (W7 plan D5) runs step 2 only, then step 3 without the fence: Google
+ * has no `portal_users` legacy columns, so there is no legacy pre-check and no
+ * `entra_*` write, and an existing Entra identity on the account is left as it
+ * is (one identity per provider per account, `(portal_user_id, provider)`).
+ * The login update still clears `password_hash` when asked and still proves
+ * the login is in `orgId`.
+ *
  * Throws when the login is not in `orgId` after the identity was written; the
  * caller's transaction must roll back.
  */
 export async function linkPortalUserIdentity(
   tx: IdentityExecutor,
-  input: {
+  input: PortalIdentityKey & {
     orgId: string;
     portalUserId: string;
-    provider: 'entra';
-    tid: string;
-    oid: string;
     linkedVia: 'invite' | 'self_link' | 'jit';
     clearPasswordHash: boolean;
     now: Date;
   },
 ): Promise<LinkIdentityResult> {
+  if (input.provider === 'google') return linkGoogleIdentity(tx, input);
+
   const [legacyHolder] = await tx
     .select({ id: portalUsers.id })
     .from(portalUsers)
@@ -255,6 +294,46 @@ export async function linkPortalUserIdentity(
     .set({
       entraTenantId: input.tid,
       entraOid: input.oid,
+      ...(input.clearPasswordHash ? { passwordHash: null } : {}),
+      updatedAt: input.now,
+    })
+    .where(and(eq(portalUsers.id, input.portalUserId), eq(portalUsers.orgId, input.orgId)))
+    .returning({ id: portalUsers.id });
+  if (updated.length === 0) throw new Error('linkPortalUserIdentity: the portal account is not in this org');
+  return { kind: 'linked' };
+}
+
+/** The Google branch of {@link linkPortalUserIdentity}. */
+async function linkGoogleIdentity(
+  tx: IdentityExecutor,
+  input: Extract<PortalIdentityKey, { provider: 'google' }> & {
+    orgId: string;
+    portalUserId: string;
+    linkedVia: 'invite' | 'self_link' | 'jit';
+    clearPasswordHash: boolean;
+    now: Date;
+  },
+): Promise<LinkIdentityResult> {
+  const { issuer, subject } = identityIssuerSubject(input);
+  const inserted = await tx
+    .insert(portalUserIdentities)
+    .values({
+      orgId: input.orgId,
+      portalUserId: input.portalUserId,
+      provider: 'google',
+      issuer,
+      subject,
+      entraTenantId: null,
+      linkedVia: input.linkedVia,
+      lastUsedAt: input.now,
+    })
+    .onConflictDoNothing()
+    .returning({ id: portalUserIdentities.id });
+  if (inserted.length === 0) return { kind: 'conflict' };
+
+  const updated = await tx
+    .update(portalUsers)
+    .set({
       ...(input.clearPasswordHash ? { passwordHash: null } : {}),
       updatedAt: input.now,
     })

@@ -79,6 +79,8 @@ vi.mock('../../services/email', async (importOriginal) => {
       sendPortalAccessDeclined: async (m: { to: string }) => { await emailPathStatement(); sentEmails.push({ kind: 'declined', to: m.to }); },
       // A displacement (recordEntraTenantProof) mails the displaced partner; not under test here.
       sendPortalEntraTenantDisplaced: async () => undefined,
+      // So does a W5 domain transfer (W7 race cases); not under test here.
+      sendPortalDomainVerificationLost: async () => undefined,
     }),
   };
 });
@@ -88,6 +90,15 @@ import {
   auditLogs, clientAiTenantMappings, contacts, customerEmailDomains, portalAccessPolicies, portalAccessRequests, portalUserIdentities, portalUsers,
 } from '../../db/schema';
 import { recordEntraTenantProof } from '../../services/portalEntraTenantProof';
+import {
+  findOrgByVerifiedDomain,
+  listVerifiedDomainsForOrg,
+  verifyCustomerDomain,
+  type DomainCheckResult,
+  type DomainCheckTarget,
+  type DomainVerificationChecker,
+  type DomainVerificationCheckers,
+} from '../../services/portalDomainVerification';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { runPolicy } from '../../services/orgMerge';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
@@ -408,6 +419,53 @@ async function seedAddinLogin(orgId: string, email: string) {
   return login!;
 }
 
+/**
+ * W7 D8: a Workspace domain verified for `org` the way W5 records one (dns_txt
+ * evidence, a pass within the stale window), and the read API's fact for it,
+ * read with no DB context held exactly as the approval route reads it.
+ */
+async function seedVerifiedGoogleDomain(org: { id: string; partnerId: string }) {
+  const domain = `ws-${randomUUID().slice(0, 8)}.example.test`;
+  const at = new Date(Date.now() - 60_000);
+  const [row] = await getTestDb().insert(customerEmailDomains).values({
+    partnerId: org.partnerId, orgId: org.id, domain, isActive: true, verificationToken: `tok-${randomUUID()}`,
+    verifiedAt: at, verifiedMethod: 'dns_txt', verifiedEvidence: { via: 'dns_txt', recordName: `_breeze-verify.${domain}` },
+    lastCheckedAt: at, lastPassedAt: at, lastCheckStatus: 'pass',
+  }).returning({ id: customerEmailDomains.id });
+  const fact = await findOrgByVerifiedDomain(domain);
+  expect(fact).toMatchObject({ orgId: org.id, domain });
+  return { rowId: row!.id, domain, verifiedAt: fact!.verifiedAt };
+}
+
+/**
+ * A REAL W5 transfer of `domain` to an org of another partner (D5): the
+ * challenger's DNS check passes, the incumbent's fails, so the incumbent row
+ * is displaced. Checkers are fakes (no DNS); everything else is W5's code.
+ * `run` must be called with no DB context held.
+ */
+async function transferDomainToAnotherPartner(domain: string) {
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const actor = await createUser({ partnerId: partner.id, email: `tech-${randomUUID()}@msp.test` });
+  const [challenger] = await getTestDb().insert(customerEmailDomains).values({
+    partnerId: partner.id, orgId: org.id, domain, isActive: true, verificationToken: `tok-${randomUUID()}`,
+  }).returning({ id: customerEmailDomains.id });
+  const verdict = async (target: DomainCheckTarget): Promise<DomainCheckResult> => (target.rowId === challenger!.id
+    ? { status: 'pass', evidence: { via: 'dns_txt', recordName: `_breeze-verify.${domain}` } }
+    : { status: 'fail', reason: 'record_missing' });
+  const checker = (method: DomainVerificationChecker['method']): DomainVerificationChecker => ({ method, check: verdict });
+  const checkers: DomainVerificationCheckers = {
+    dns_txt: checker('dns_txt'), entra_tenant: checker('entra_tenant'), google_directory: checker('google_directory'),
+  };
+  return {
+    org,
+    run: () => verifyCustomerDomain(
+      { orgId: org.id, partnerId: partner.id, domainId: challenger!.id, method: 'dns_txt', actorUserId: actor.id },
+      { checkers },
+    ),
+  };
+}
+
 describe('service', () => {
   it('create normalizes the email, sets expires_at +14 d, and a repeat returns already_pending with a bumped last_requested_at', async () => {
     const { org } = await serviceFixture();
@@ -548,10 +606,11 @@ describe('service', () => {
     const { org, decider, ctx } = await serviceFixture();
     const email = `goog-${randomUUID()}@example.test`;
     const sub = `google-${randomUUID()}`;
-    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub }));
+    const hd = await seedVerifiedGoogleDomain(org);
+    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: hd.domain }));
 
     const result = await withDbAccessContext(ctx, () =>
-      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id }));
+      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id, googleDomain: { verifiedAt: hd.verifiedAt } }));
     expect(result.outcome).toBe('account_created');
 
     const [login] = await loginsFor(org.id, email);
@@ -628,10 +687,11 @@ describe('service', () => {
       orgId: otherOrg.id, portalUserId: other!.id, provider: 'google', issuer: GOOGLE_ISSUER, subject: sub, linkedVia: 'jit',
     }));
     const email = `linked-${randomUUID()}@example.test`;
-    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub }));
+    const hd = await seedVerifiedGoogleDomain(org);
+    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: hd.domain }));
 
     const err = await rejectionOf(withDbAccessContext(ctx, () =>
-      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id })));
+      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id, googleDomain: { verifiedAt: hd.verifiedAt } })));
     expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
     expect(await loginsFor(org.id, email)).toEqual([]);
     expect((await readRequest(requestId)).status).toBe('pending');
@@ -900,7 +960,7 @@ describe('service', () => {
   it('deny marks denied with decider; a second deny → NOT_PENDING', async () => {
     const { org, decider, ctx } = await serviceFixture();
     const email = `deny-${randomUUID()}@example.test`;
-    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub: `g-${randomUUID()}` }));
+    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub: `g-${randomUUID()}`, hostedDomain: 'example.test' }));
     const now = new Date();
 
     expect(await withDbAccessContext(ctx, () =>
@@ -932,6 +992,278 @@ describe('service', () => {
     const summary = await withDbAccessContext(partnerContext(partner.id, [org.id], decider.id), () =>
       summarizePendingPortalAccessRequests());
     expect(summary).toEqual({ pendingTotal: 2, orgs: [{ orgId: org.id, orgName: org.name, pending: 2 }] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W7 (#11384): Google requests record their Workspace domain (D8), approval is
+// fenced on W5's row for it, and a conflicting pending request is refused (D9).
+// ---------------------------------------------------------------------------
+
+describe('google requests (W7 D8, D9)', () => {
+  const GOOGLE_DOMAIN_NOT_VERIFIED = {
+    code: 'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED',
+    httpStatus: 409,
+    message: "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.",
+  };
+  const googleIdentityRows = (sub: string) => sys(() => db.select().from(portalUserIdentities).where(and(
+    eq(portalUserIdentities.issuer, GOOGLE_ISSUER), eq(portalUserIdentities.subject, sub),
+  )));
+
+  it('creates a google request with google_hosted_domain (lowercased, trimmed)', async () => {
+    const { org } = await serviceFixture();
+    const email = `g-${randomUUID()}@example.test`;
+    const id = requestIdOf(await createPortalAccessRequest({
+      source: 'google', orgId: org.id, email, name: null, sub: `g-${randomUUID()}`, hostedDomain: ' Example.TEST ',
+    }));
+    expect(await readRequest(id)).toMatchObject({ source: 'google', issuer: GOOGLE_ISSUER, googleHostedDomain: 'example.test' });
+  });
+
+  it('a google create at an address pending for another sub → claims_conflict, nothing written (D9)', async () => {
+    const { org } = await serviceFixture();
+    const email = `g-${randomUUID()}@example.test`;
+    const t0 = new Date(Date.now() - HOUR);
+    const first = requestIdOf(await createPortalAccessRequest({
+      source: 'google', orgId: org.id, email, name: 'First', sub: 'sub-first', hostedDomain: 'example.test',
+    }, t0));
+    const before = await readRequest(first);
+
+    expect(await createPortalAccessRequest({
+      source: 'google', orgId: org.id, email: email.toUpperCase(), name: 'Second', sub: 'sub-second', hostedDomain: 'other.example.test',
+    })).toEqual({ kind: 'claims_conflict', requestId: first });
+    // Not even a bump: the queued identity, its domain and its timestamps are exactly as they were.
+    expect(await readRequest(first)).toEqual(before);
+    const rows = await sys(() => db.select({ id: portalAccessRequests.id }).from(portalAccessRequests)
+      .where(and(eq(portalAccessRequests.orgId, org.id), eq(portalAccessRequests.email, email))));
+    expect(rows.map((r) => r.id)).toEqual([first]);
+  });
+
+  it('a google create at an address pending as entra (provider switch) → claims_conflict', async () => {
+    const { org } = await serviceFixture();
+    const email = `switch-${randomUUID()}@example.test`;
+    const first = requestIdOf(await createPortalAccessRequest({
+      source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+    }));
+    const before = await readRequest(first);
+    expect(await createPortalAccessRequest({
+      source: 'google', orgId: org.id, email, name: null, sub: `g-${randomUUID()}`, hostedDomain: 'example.test',
+    })).toEqual({ kind: 'claims_conflict', requestId: first });
+    expect(await readRequest(first)).toEqual(before);
+  });
+
+  it('an entra create at an address pending for another oid → claims_conflict (deliberate W3 change)', async () => {
+    const { org } = await serviceFixture();
+    const email = `entra-${randomUUID()}@example.test`;
+    const tid = randomUUID();
+    const first = requestIdOf(await createPortalAccessRequest({ source: 'entra', orgId: org.id, email, name: null, tid, oid: randomUUID() }));
+    const before = await readRequest(first);
+
+    expect(await createPortalAccessRequest({ source: 'entra', orgId: org.id, email, name: null, tid, oid: randomUUID() }))
+      .toEqual({ kind: 'claims_conflict', requestId: first });
+    expect(await readRequest(first)).toEqual(before);
+
+    // The same identity re-requesting still bumps (W3).
+    const again = await createPortalAccessRequest({ source: 'entra', orgId: org.id, email, name: null, tid, oid: before.subject! });
+    expect(again).toEqual({ kind: 'already_pending', requestId: first });
+    expect((await readRequest(first)).lastRequestedAt.getTime()).toBeGreaterThan(before.lastRequestedAt.getTime());
+  });
+
+  it('the same google sub re-requesting with a new hd bumps and refreshes google_hosted_domain', async () => {
+    const { org } = await serviceFixture();
+    const email = `g-${randomUUID()}@example.test`;
+    const sub = `g-${randomUUID()}`;
+    const t0 = new Date(Date.now() - HOUR);
+    const id = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: 'example.test' }, t0));
+
+    const t1 = new Date(t0.getTime() + 60_000);
+    expect(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: 'sub.example.test' }, t1))
+      .toEqual({ kind: 'already_pending', requestId: id });
+    const after = await readRequest(id);
+    expect(after).toMatchObject({ source: 'google', issuer: GOOGLE_ISSUER, subject: sub, googleHostedDomain: 'sub.example.test' });
+    expect(after.lastRequestedAt.getTime()).toBe(t1.getTime());
+    expect(after.requestedAt.getTime()).toBe(t0.getTime());
+  });
+
+  it("a self re-request keeps the W3 bump and never touches a pending google request's claims", async () => {
+    const { org } = await serviceFixture();
+    const email = `g-${randomUUID()}@example.test`;
+    const sub = `g-${randomUUID()}`;
+    const t0 = new Date(Date.now() - HOUR);
+    const id = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: 'example.test' }, t0));
+
+    const t1 = new Date(t0.getTime() + 60_000);
+    expect(await createPortalAccessRequest({ source: 'self', orgId: org.id, email, name: null }, t1))
+      .toEqual({ kind: 'already_pending', requestId: id });
+    const after = await readRequest(id);
+    expect(after).toMatchObject({ source: 'google', issuer: GOOGLE_ISSUER, subject: sub, googleHostedDomain: 'example.test' });
+    expect(after.lastRequestedAt.getTime()).toBe(t1.getTime());
+  });
+
+  it('approve refuses a google request whose hd is not verified for the org (null fact) or whose fact is stale; nothing written', async () => {
+    const { org, decider, ctx } = await serviceFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const email = `g-${randomUUID()}@example.test`;
+    const sub = `g-${randomUUID()}`;
+    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: hd.domain }));
+
+    for (const googleDomain of [null, undefined, { verifiedAt: new Date(hd.verifiedAt.getTime() - 1) }]) {
+      const err = await rejectionOf(withDbAccessContext(ctx, () => approvePortalAccessRequest({
+        orgId: org.id, requestId, deciderUserId: decider.id, googleDomain, googleContactAllowed: true,
+      })));
+      expect(err).toBeInstanceOf(PortalAccessRequestError);
+      expect(err).toMatchObject(GOOGLE_DOMAIN_NOT_VERIFIED);
+    }
+    expect(await loginsFor(org.id, email)).toEqual([]);
+    expect(await googleIdentityRows(sub)).toEqual([]);
+    expect(await sys(() => db.select().from(contacts).where(and(eq(contacts.orgId, org.id), eq(contacts.email, email))))).toEqual([]);
+    expect((await readRequest(requestId)).status).toBe('pending');
+  });
+
+  it('approve of a google request with a verified hd creates an identity-only google account; the contact only when allowed (D3)', async () => {
+    const { org, decider, ctx } = await serviceFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const linked = { email: `in-${randomUUID()}@example.test`, sub: `g-${randomUUID()}` };
+    const unlinked = { email: `out-${randomUUID()}@example.test`, sub: `g-${randomUUID()}` };
+
+    for (const [person, googleContactAllowed] of [[linked, true], [unlinked, false]] as const) {
+      const requestId = requestIdOf(await createPortalAccessRequest({
+        source: 'google', orgId: org.id, email: person.email, name: null, sub: person.sub, hostedDomain: hd.domain,
+      }));
+      const result = await withDbAccessContext(ctx, () => approvePortalAccessRequest({
+        orgId: org.id, requestId, deciderUserId: decider.id, googleDomain: { verifiedAt: hd.verifiedAt }, googleContactAllowed,
+      }));
+      expect(result).toMatchObject({ outcome: 'account_created', source: 'google', email: person.email });
+      const [login] = await loginsFor(org.id, person.email);
+      expect(login).toMatchObject({ id: result.portalUserId, authMethod: 'google', status: 'active', browserAccess: 'granted' });
+      expect(await identitiesOf(login!.id)).toEqual([expect.objectContaining({ provider: 'google', issuer: GOOGLE_ISSUER, subject: person.sub })]);
+      const contactRows = await sys(() => db.select().from(contacts).where(and(eq(contacts.orgId, org.id), eq(contacts.email, person.email))));
+      if (googleContactAllowed) {
+        expect(login!.contactId).toBe(contactRows[0]!.id);
+      } else {
+        expect(login!.contactId).toBeNull();
+        expect(contactRows).toEqual([]);
+      }
+    }
+  });
+
+  it('a W5 transfer of the hd that commits between the route pre-check and the approval → 409, no identity in the old org', async () => {
+    const { org, decider, ctx } = await serviceFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const email = `race-${randomUUID()}@example.test`;
+    const sub = `g-${randomUUID()}`;
+    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: hd.domain }));
+
+    // The route's pre-check (outside the request transaction) sees the domain verified for this org...
+    const preCheck = await findOrgByVerifiedDomain(hd.domain);
+    expect(preCheck).toMatchObject({ orgId: org.id });
+    // ...then, before the approval transaction starts, W5 moves the domain to another partner's org.
+    const transfer = await transferDomainToAnotherPartner(hd.domain);
+    expect(await transfer.run()).toMatchObject({ result: 'verified', displacedOrgId: org.id });
+
+    const err = await rejectionOf(withDbAccessContext(ctx, () => approvePortalAccessRequest({
+      orgId: org.id, requestId, deciderUserId: decider.id, googleDomain: { verifiedAt: preCheck!.verifiedAt }, googleContactAllowed: true,
+    })));
+    expect(err).toMatchObject(GOOGLE_DOMAIN_NOT_VERIFIED);
+    // The globally unique (issuer, sub) was never placed in the old org: the person can still be admitted where the domain now lives.
+    expect(await googleIdentityRows(sub)).toEqual([]);
+    expect(await loginsFor(org.id, email)).toEqual([]);
+    expect((await readRequest(requestId)).status).toBe('pending');
+  });
+
+  it('a W5 transfer started while the approval holds the row waits for the approval to commit', async () => {
+    const { org, decider, ctx } = await serviceFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const email = `hold-${randomUUID()}@example.test`;
+    const sub = `g-${randomUUID()}`;
+    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: hd.domain }));
+    const transfer = await transferDomainToAnotherPartner(hd.domain);
+
+    // Park the approval inside its transaction, after the domain fence (the contact link runs after it).
+    let parked!: () => void;
+    const isParked = new Promise<void>((resolve) => { parked = resolve; });
+    let letGo!: () => void;
+    const gate = new Promise<void>((resolve) => { letGo = resolve; });
+    routeFaults.contactLinkGate = async () => { parked(); await gate; };
+    try {
+      const approving = settle(withDbAccessContext(ctx, () => approvePortalAccessRequest({
+        orgId: org.id, requestId, deciderUserId: decider.id, googleDomain: { verifiedAt: hd.verifiedAt }, googleContactAllowed: true,
+      })));
+      await isParked;
+      let transferSettled = false;
+      const transferring = settle(transfer.run()).finally(() => { transferSettled = true; });
+      try {
+        // The transfer's FOR UPDATE on the incumbent domain row waits on the approval's FOR SHARE.
+        await waitForLockWaiters('%from "customer_email_domains"%for update%', 1);
+        expect(transferSettled).toBe(false);
+      } finally {
+        letGo();
+      }
+      const approved = await approving;
+      const transferred = await transferring;
+
+      expect(approved.ok, approved.ok ? '' : String(approved.error)).toBe(true);
+      expect(transferred.ok, transferred.ok ? '' : String(transferred.error)).toBe(true);
+      // Serialized: the approval committed in the org that held the domain, then the transfer displaced it.
+      const created = approved.ok ? approved.value : null;
+      expect(created).toMatchObject({ outcome: 'account_created', source: 'google' });
+      expect(await googleIdentityRows(sub)).toEqual([expect.objectContaining({ orgId: org.id, portalUserId: created!.portalUserId })]);
+      expect(transferred.ok && transferred.value).toMatchObject({ result: 'verified', displacedOrgId: org.id });
+      expect((await findOrgByVerifiedDomain(hd.domain))?.orgId).toBe(transfer.org.id);
+    } finally {
+      routeFaults.contactLinkGate = null;
+      letGo();
+    }
+  });
+
+  it('a domain cleared by an uncommitted writer: the approval waits on the row, then re-reads it and refuses', async () => {
+    const { org, decider, ctx } = await serviceFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const email = `wait-${randomUUID()}@example.test`;
+    const sub = `g-${randomUUID()}`;
+    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email, name: null, sub, hostedDomain: hd.domain }));
+
+    // A W5 writer's clear, held uncommitted (the row lock every W5 writer takes, then its UPDATE).
+    const held = holdLock(sql`
+      UPDATE customer_email_domains
+         SET verified_at = NULL, verified_method = NULL, verified_evidence = NULL, last_passed_at = NULL,
+             cleared_at = now(), cleared_reason = 'msp_removed'
+       WHERE id = ${hd.rowId}`);
+    await held.ready;
+    const approving = settle(withDbAccessContext(ctx, () => approvePortalAccessRequest({
+      orgId: org.id, requestId, deciderUserId: decider.id, googleDomain: { verifiedAt: hd.verifiedAt }, googleContactAllowed: true,
+    })));
+    try {
+      await waitForLockWaiters('%from "customer_email_domains"%for share%', 1);
+    } finally {
+      held.release();
+      await held.done;
+    }
+    const outcome = await approving;
+    expect(outcome.ok).toBe(false);
+    expect(outcome.ok ? null : outcome.error).toMatchObject(GOOGLE_DOMAIN_NOT_VERIFIED);
+    expect(await googleIdentityRows(sub)).toEqual([]);
+    expect((await readRequest(requestId)).status).toBe('pending');
+  });
+
+  it('the list carries googleHostedDomain and domainVerified for google rows', async () => {
+    const { org, ctx } = await serviceFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const verifiedId = requestIdOf(await createPortalAccessRequest({
+      // The email's domain differs from hd (OD2): the row is judged by its hd.
+      source: 'google', orgId: org.id, email: `a-${randomUUID()}@other.example.test`, name: null, sub: `g-${randomUUID()}`, hostedDomain: hd.domain,
+    }));
+    const unverifiedId = requestIdOf(await createPortalAccessRequest({
+      source: 'google', orgId: org.id, email: `b-${randomUUID()}@${hd.domain}`, name: null, sub: `g-${randomUUID()}`, hostedDomain: `lapsed.${hd.domain}`,
+    }));
+    const selfId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: `c-${randomUUID()}@${hd.domain}`, name: null }));
+
+    // The route reads the verified set outside the request transaction (W5 read API).
+    const verifiedDomains = new Set((await listVerifiedDomainsForOrg(org.id)).map((f) => f.domain));
+    const page = await withDbAccessContext(ctx, () => listPortalAccessRequests(org.id, { status: 'pending', verifiedDomains }));
+    const byId = new Map(page.items.map((i) => [i.id, i]));
+    expect(byId.get(verifiedId)).toMatchObject({ source: 'google', googleHostedDomain: hd.domain, domainVerified: true });
+    expect(byId.get(unverifiedId)).toMatchObject({ source: 'google', googleHostedDomain: `lapsed.${hd.domain}`, domainVerified: false });
+    expect(byId.get(selfId)).toMatchObject({ source: 'self', googleHostedDomain: null, domainVerified: true });
   });
 });
 
@@ -1106,7 +1438,7 @@ describe('routes (real router)', () => {
       source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: await provenTid(org.id), oid: randomUUID(),
     }));
     const selfId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: selfEmail, name: null }));
-    const denyId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email: denyEmail, name: null, sub: `g-${randomUUID()}` }));
+    const denyId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email: denyEmail, name: null, sub: `g-${randomUUID()}`, hostedDomain: 'example.test' }));
 
     routeFaults.emailDbFault = true;
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -1280,5 +1612,100 @@ describe('routes (real router)', () => {
     // The invite re-invited the account approve created rather than minting another.
     expect((await inviteRes.json()).data.id).toBe(logins[0]!.id);
     expect((await readRequest(requestId)).portalUserId).toBe(logins[0]!.id);
+  });
+
+  // W7 (#11384) D3, D8 through the real router: the route reads the request's
+  // hd and the contact rule with W5's read API outside the request
+  // transaction (it throws inside one), and the service fences the domain row.
+  const googleRequest = async (orgId: string, email: string, hostedDomain: string) => requestIdOf(await createPortalAccessRequest({
+    source: 'google', orgId, email, name: null, sub: `g-${randomUUID()}`, hostedDomain,
+  }));
+  const contactsAt = (orgId: string, email: string) =>
+    sys(() => db.select({ id: contacts.id }).from(contacts).where(and(eq(contacts.orgId, orgId), eq(contacts.email, email))));
+  /** What a W5 clear (`msp_removed`) writes: the row stays, its verification goes. */
+  const clearVerification = async (orgId: string, domain: string) => {
+    const cleared = await getTestDb().update(customerEmailDomains).set({
+      verifiedAt: null, verifiedMethod: null, verifiedEvidence: null, lastPassedAt: null, clearedAt: new Date(), clearedReason: 'msp_removed',
+    }).where(and(eq(customerEmailDomains.orgId, orgId), eq(customerEmailDomains.domain, domain)))
+      .returning({ id: customerEmailDomains.id });
+    expect(cleared).toHaveLength(1);
+  };
+
+  it('approve of a google request: hd re-checked outside the request transaction; the contact linked only under D3', async () => {
+    const { org, post, base } = await routeFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const secondary = await verifiedSelfDomain(org);
+    const people = [
+      { email: `g-on-${randomUUID()}@${hd.domain}`, contact: true },              // address on the hd
+      { email: `g-sec-${randomUUID()}@${secondary}`, contact: true },             // another domain verified for this org
+      { email: `g-off-${randomUUID()}@unverified.example.test`, contact: false }, // a domain nobody verified
+    ];
+    for (const person of people) {
+      const requestId = await googleRequest(org.id, person.email, hd.domain);
+      const res = await post(`${base}/${requestId}/approve`);
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect((await res.json()).data.outcome).toBe('account_created');
+      expect((await readRequest(requestId)).status).toBe('approved');
+      const [login] = await loginsFor(org.id, person.email);
+      expect(login).toMatchObject({ authMethod: 'google', status: 'active', browserAccess: 'granted' });
+      const contactRows = await contactsAt(org.id, person.email);
+      if (person.contact) {
+        expect(login!.contactId).toBe(contactRows[0]!.id);
+      } else {
+        expect(login!.contactId).toBeNull();
+        expect(contactRows).toEqual([]);
+      }
+    }
+    expect(sentEmails.map((e) => e.kind)).toEqual(['approved', 'approved', 'approved']);
+  });
+
+  it('approve refuses a google request whose hd is no longer verified (409), request stays pending', async () => {
+    const { org, get, post, base } = await routeFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    const email = `g-lapsed-${randomUUID()}@${hd.domain}`;
+    const requestId = await googleRequest(org.id, email, hd.domain);
+    await clearVerification(org.id, hd.domain);
+
+    const res = await post(`${base}/${requestId}/approve`);
+    expect(res.status, await res.clone().text()).toBe(409);
+    expect(await res.json()).toEqual({
+      error: "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.",
+      code: 'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED',
+    });
+    expect((await readRequest(requestId)).status).toBe('pending');
+    expect(await loginsFor(org.id, email)).toEqual([]);
+    expect(sentEmails).toEqual([]);
+
+    // The queue shows why: the row's hd is no longer verified.
+    const list = await get(base);
+    expect(list.status).toBe(200);
+    expect((await list.json()).data.find((i: { id: string }) => i.id === requestId))
+      .toMatchObject({ source: 'google', googleHostedDomain: hd.domain, domainVerified: false });
+  });
+
+  it('decide reports domain_not_verified for a google request whose hd now belongs to another org and approves the rest', async () => {
+    const { org, post, base } = await routeFixture();
+    const hd = await seedVerifiedGoogleDomain(org);
+    // Another org of the same partner holds the second request's hd: the fact names that org, not this one.
+    const sibling = await createOrganization({ partnerId: org.partnerId });
+    const elsewhere = await seedVerifiedGoogleDomain(sibling);
+    const okEmail = `g-ok-${randomUUID()}@${hd.domain}`;
+    const movedEmail = `g-moved-${randomUUID()}@${elsewhere.domain}`;
+    const okId = await googleRequest(org.id, okEmail, hd.domain);
+    const movedId = await googleRequest(org.id, movedEmail, elsewhere.domain);
+
+    const res = await post(`${base}/decide`, { requestIds: [movedId, okId], decision: 'approve' });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [
+        { requestId: movedId, result: 'domain_not_verified' },
+        { requestId: okId, result: 'approved' },
+      ],
+    });
+    expect((await readRequest(okId)).status).toBe('approved');
+    expect((await readRequest(movedId)).status).toBe('pending');
+    expect(await loginsFor(org.id, okEmail)).toHaveLength(1);
+    expect(await loginsFor(org.id, movedEmail)).toEqual([]);
+    expect(sentEmails).toEqual([{ kind: 'approved', to: okEmail }]);
   });
 });

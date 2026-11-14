@@ -22,6 +22,19 @@ vi.mock('../permissions', () => ({
   getUserPermissions: shared.getUserPermissions,
 }));
 
+// #11702: role grants come from the role-inheritance resolver. By default the
+// mock delegates to the queued `db.select` rows ({roleId, resource, action}),
+// so the existing cases keep feeding role permissions through the same queue;
+// the inheritance cases override it per call.
+vi.mock('../roleInheritance', () => ({
+  getRolesPermissionGrants: vi.fn(async (roleIds: string[]) => {
+    const rows = (await (shared.selectMock as any)()) as Array<{ roleId: string; resource: string; action: string }>;
+    const byRole = new Map<string, Array<{ resource: string; action: string }>>(roleIds.map((id) => [id, []]));
+    for (const r of rows) byRole.get(r.roleId)?.push({ resource: r.resource, action: r.action });
+    return byRole;
+  }),
+}));
+
 vi.mock('../../middleware/auth', () => ({
   computeAccessibleOrgIds: shared.computeAccessibleOrgIds,
 }));
@@ -52,6 +65,7 @@ import {
 } from './grantAuthority';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_TOOLS } from '../aiToolExposure';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
+import { getRolesPermissionGrants } from '../roleInheritance';
 
 const ceiling = (o: Partial<GrantCeiling> = {}): GrantCeiling => ({
   grantId: 'g', revisionId: 'r', partnerId: 'p', grantorUserId: 'u1', scopeOrgId: null, partnerWide: true, status: 'active',
@@ -705,6 +719,27 @@ describe('computeLiveHumanTerm / resolveGrantCeiling — org memberships', () =>
     expect(() => assertWithinCeiling(c, { orgId: 'o1', permission: 'scripts:execute' })).toThrow(expect.objectContaining({ code: 'permission' }));
     expect(c.orgTerms.get('o1')!.siteIds).toBeNull();
     expect(c.partnerWide).toBe(true);
+  });
+
+  it('#11702: a membership role holding its grants only through inheritance counts (role keys come from the resolver)', async () => {
+    queueResolve([{ orgId: 'o1', roleId: 'child', siteIds: null }], []);
+    vi.mocked(getRolesPermissionGrants).mockResolvedValueOnce(new Map([[
+      'child', [{ resource: 'ai_sessions', action: 'use' }, { resource: 'devices', action: 'read' }],
+    ]]));
+    const c = await resolveGrantCeiling('g1', 'r1');
+    expect(getRolesPermissionGrants).toHaveBeenCalledWith(['child']);
+    expect([...c.orgIds].sort()).toEqual(['o1', 'o2', 'o3']);
+    expect([...c.orgTerms.get('o1')!.permissionKeys]).toEqual(['devices:read']);
+  });
+
+  it('#11702: a membership role whose resolved grants lack ai_sessions:use still drops the org', async () => {
+    queueResolve([{ orgId: 'o1', roleId: 'child', siteIds: null }], []);
+    vi.mocked(getRolesPermissionGrants).mockResolvedValueOnce(new Map([[
+      'child', [{ resource: 'devices', action: 'read' }],
+    ]]));
+    const c = await resolveGrantCeiling('g1', 'r1');
+    expect([...c.orgIds].sort()).toEqual(['o2', 'o3']);
+    expect(c.orgTerms.has('o1')).toBe(false);
   });
 
   it('two membership rows for one org intersect (fail closed, never the wider row)', async () => {

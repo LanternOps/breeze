@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // createTestSnapshot writes a fake snapshot (manifest + one data file) into a
@@ -15,7 +13,7 @@ import (
 func createTestSnapshot(t *testing.T, basePath string, ts time.Time) string {
 	t.Helper()
 
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	snap := &Snapshot{
 		ID:        newSnapshotID(),
 		Timestamp: ts,
@@ -73,11 +71,11 @@ func createTestSnapshot(t *testing.T, basePath string, ts time.Time) string {
 
 func TestVaultSync(t *testing.T) {
 	primaryDir := t.TempDir()
-	vaultDir := t.TempDir()
+	vaultDir := privateStoreTempDir(t)
 
 	snapID := createTestSnapshot(t, primaryDir, time.Now().UTC())
 
-	primary := providers.NewLocalProvider(primaryDir)
+	primary := privateTestLocalProvider(t, primaryDir)
 	vm, err := NewVaultManager(VaultConfig{
 		VaultPath:      vaultDir,
 		RetentionCount: 5,
@@ -99,7 +97,7 @@ func TestVaultSync(t *testing.T) {
 	}
 
 	// Verify files exist in vault
-	vaultProvider := providers.NewLocalProvider(vaultDir)
+	vaultProvider := privateTestLocalProvider(t, vaultDir)
 	items, err := vaultProvider.List("snapshots/" + snapID)
 	if err != nil {
 		t.Fatalf("failed to list vault: %v", err)
@@ -122,12 +120,12 @@ func TestVaultSync(t *testing.T) {
 func TestVaultSyncAfterBackupFrom_ReadsTheGivenPrimary(t *testing.T) {
 	writtenDir := t.TempDir()
 	fallbackDir := t.TempDir()
-	vaultDir := t.TempDir()
+	vaultDir := privateStoreTempDir(t)
 
 	snapID := createTestSnapshot(t, writtenDir, time.Now().UTC())
 
 	vm, err := NewVaultManager(VaultConfig{VaultPath: vaultDir, RetentionCount: 5, Enabled: true},
-		providers.NewLocalProvider(fallbackDir))
+		privateTestLocalProvider(t, fallbackDir))
 	if err != nil {
 		t.Fatalf("failed to create vault manager: %v", err)
 	}
@@ -136,7 +134,7 @@ func TestVaultSyncAfterBackupFrom_ReadsTheGivenPrimary(t *testing.T) {
 		t.Fatal("control: the startup primary does not hold the snapshot, so a sync through it must fail")
 	}
 
-	result, err := vm.SyncAfterBackupFrom(providers.NewLocalProvider(writtenDir), snapID)
+	result, err := vm.SyncAfterBackupFrom(privateTestLocalProvider(t, writtenDir), snapID)
 	if err != nil {
 		t.Fatalf("sync from the backup's own provider failed: %v", err)
 	}
@@ -150,11 +148,11 @@ func TestVaultSyncAfterBackupFrom_ReadsTheGivenPrimary(t *testing.T) {
 
 func TestVaultSync_Idempotent(t *testing.T) {
 	primaryDir := t.TempDir()
-	vaultDir := t.TempDir()
+	vaultDir := privateStoreTempDir(t)
 
 	snapID := createTestSnapshot(t, primaryDir, time.Now().UTC())
 
-	primary := providers.NewLocalProvider(primaryDir)
+	primary := privateTestLocalProvider(t, primaryDir)
 	vm, err := NewVaultManager(VaultConfig{
 		VaultPath:      vaultDir,
 		RetentionCount: 5,
@@ -175,9 +173,9 @@ func TestVaultSync_Idempotent(t *testing.T) {
 
 func TestVaultRetention(t *testing.T) {
 	primaryDir := t.TempDir()
-	vaultDir := t.TempDir()
+	vaultDir := privateStoreTempDir(t)
 
-	primary := providers.NewLocalProvider(primaryDir)
+	primary := privateTestLocalProvider(t, primaryDir)
 	vm, err := NewVaultManager(VaultConfig{
 		VaultPath:      vaultDir,
 		RetentionCount: 3,
@@ -205,7 +203,7 @@ func TestVaultRetention(t *testing.T) {
 	}
 
 	// Verify only 3 snapshots remain
-	vaultProvider := providers.NewLocalProvider(vaultDir)
+	vaultProvider := privateTestLocalProvider(t, vaultDir)
 	remaining, err := ListSnapshots(vaultProvider)
 	if err != nil {
 		t.Fatalf("failed to list vault snapshots: %v", err)
@@ -217,9 +215,9 @@ func TestVaultRetention(t *testing.T) {
 
 func TestVaultStatus(t *testing.T) {
 	primaryDir := t.TempDir()
-	vaultDir := t.TempDir()
+	vaultDir := privateStoreTempDir(t)
 
-	primary := providers.NewLocalProvider(primaryDir)
+	primary := privateTestLocalProvider(t, primaryDir)
 	vm, err := NewVaultManager(VaultConfig{
 		VaultPath:      vaultDir,
 		RetentionCount: 5,
@@ -269,7 +267,7 @@ func TestVaultStatus(t *testing.T) {
 }
 
 func TestNewVaultManager_Errors(t *testing.T) {
-	primary := providers.NewLocalProvider(t.TempDir())
+	primary := privateTestLocalProvider(t, t.TempDir())
 
 	// Missing vault path
 	_, err := NewVaultManager(VaultConfig{}, primary)

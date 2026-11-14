@@ -114,3 +114,12 @@ describe('grant store', () => {
     expect(credential.secret).toBe('sk-secret-xyz');
   });
 });
+
+describe('compactSchemas on the grant (#11395)', () => {
+  it('copies compactSchemas onto the record; absent means false (full exposure unchanged)', () => {
+    const store = createGrantStore(() => 1_000);
+    expect(store.lookup(store.issue(input()).token)?.compactSchemas).toBe(false);
+    expect(store.lookup(store.issue(input({ compactSchemas: true })).token)?.compactSchemas).toBe(true);
+    expect(store.lookup(store.issue(input({ compactSchemas: false })).token)?.compactSchemas).toBe(false);
+  });
+});

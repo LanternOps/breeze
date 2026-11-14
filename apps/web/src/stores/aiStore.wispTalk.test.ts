@@ -41,6 +41,22 @@ describe('talkToWispAbout', () => {
     expect(mutationCalls().map(([url]) => url)).toEqual(['/ai/sessions']);
   });
 
+  it('#11672: continues the thread\'s live session instead of creating a second one', async () => {
+    const recent = new Date().toISOString();
+    h.activeThreadFor.mockResolvedValue(grant({ lastSessionId: 'session-live' }));
+    h.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/session-live' && !init?.method) {
+        return response({ session: { id: 'session-live', type: 'general', status: 'active', orgId: 'org-b', wispGrantId: 'grant-1', createdAt: recent, lastActivityAt: recent }, messages: [] });
+      }
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'session-new', orgId: 'org-b' });
+      return response({ data: [] });
+    });
+    expect(await useAiStore.getState().talkToWispAbout(target)).toBe('opened');
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'session-live', composerDraft: 'About Printer repair: ', wisp: { grantId: 'grant-1' } });
+    expect(mutationCalls()).toEqual([]);
+    expect(h.addWispLink).toHaveBeenCalledWith('thread-1', { kind: target.kind, id: target.id, orgId: target.orgId });
+  });
+
   it('keeps an existing draft, including text typed while pinning', async () => {
     h.addWispLink.mockImplementation(async () => { useAiStore.getState().setComposerDraft('Existing draft'); return { id: 'link-1' }; });
     await useAiStore.getState().talkToWispAbout(target);

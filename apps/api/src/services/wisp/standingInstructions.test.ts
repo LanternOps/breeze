@@ -6,6 +6,7 @@ import {
   isEnforceableDeny,
   isStandingInstructionLapsed,
   isMemoryBlockLapsed,
+  standingInstructionRuleKey,
 } from './standingInstructions';
 
 const DEV = '22222222-2222-4222-8222-222222222222';
@@ -95,5 +96,44 @@ describe('isStandingInstructionLapsed (#11630)', () => {
   });
   it('an unparseable until counts as lapsed, as the gate always did', () => {
     expect(isStandingInstructionLapsed({ until: 'someday' }, now)).toBe(true);
+  });
+});
+
+describe('standingInstructionRuleKey (#11614)', () => {
+  it('ignores the wording, the instruction id and the capture ids', () => {
+    const reworded: StandingInstructionContent = {
+      ...base, text: 'leave PC-01 up', instructionId: '33333333-3333-4333-8333-333333333333',
+    };
+    expect(standingInstructionRuleKey(reworded)).toBe(standingInstructionRuleKey(base));
+  });
+
+  it('normalises the condition and the end time instant', () => {
+    const a = { ...base, condition: 'During  business hours', until: '2026-11-13T23:59:00Z' };
+    const b = { ...base, condition: 'during business hours ', until: '2026-11-13T18:59:00-05:00' };
+    expect(standingInstructionRuleKey(a)).toBe(standingInstructionRuleKey(b));
+  });
+
+  it('a note matches on its named targets, in any order or case', () => {
+    const note = { ...base, deviceId: null, targetLabels: ['PC-02', 'pc-01'] };
+    expect(standingInstructionRuleKey(note)).toBe(standingInstructionRuleKey({ ...note, targetLabels: ['PC-01', 'PC-02'] }));
+    expect(standingInstructionRuleKey(note)).not.toBe(standingInstructionRuleKey(base));
+  });
+
+  it('device, effect, verb, condition and end time each make a different rule', () => {
+    const keys = [
+      base,
+      { ...base, deviceId: '44444444-4444-4444-8444-444444444444' },
+      { ...base, effect: 'require' as const },
+      { ...base, verb: 'shutdown' as const },
+      { ...base, condition: 'after hours' },
+      { ...base, until: '2026-11-13T23:59:00Z' },
+    ].map(standingInstructionRuleKey);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('is null when the rule cannot be compared safely: no verb, or a note naming nothing', () => {
+    expect(standingInstructionRuleKey({ ...base, verb: null })).toBeNull();
+    expect(standingInstructionRuleKey({ ...base, deviceId: null, targetLabels: [] })).toBeNull();
+    expect(standingInstructionRuleKey({ ...base, deviceId: null, targetLabels: ['  '] })).toBeNull();
   });
 });

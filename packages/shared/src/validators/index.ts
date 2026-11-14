@@ -37,6 +37,7 @@ export * from './systemProtectionInlineSettings';
 export * from './containmentPolicy';
 export * from './oemUpdatesPolicy';
 export * from './securityAgents';
+export * from './devicePathFloor';
 export * from './securityScanSweep';
 export * from './safeRelativePath';
 export * from './authenticator';

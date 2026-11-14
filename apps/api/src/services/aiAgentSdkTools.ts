@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERIES, type AiToolDomain } from '@breeze/shared';
 /**
  * AI Agent SDK Tool Definitions
  *
@@ -16,7 +16,8 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
+import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolDomain, getToolSearchHint, compactDescriptionFor, type ExecuteToolOptions } from './aiTools';
+import type { ToolExposure } from './aiModels/toolExposure';
 import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
@@ -890,6 +891,11 @@ export function listChatSurfaceToolNames(): string[] {
   return [...names].sort();
 }
 
+/** #11393: a registry tool's domain, for a `custom` tool profile's domain allow-list. */
+export function chatToolDomain(name: string): AiToolDomain | undefined {
+  return getToolDomain(name);
+}
+
 // All tool names, prefixed for SDK MCP format
 export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
   name => `mcp__breeze__${name}`
@@ -932,6 +938,7 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
 function preToolUseDenialResult(
   toolName: string,
   check: { error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  maxChars?: number,
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
@@ -944,9 +951,23 @@ function preToolUseDenialResult(
           : {}),
       };
   return {
-    text: compactToolResultForChat(toolName, JSON.stringify(payload)),
+    text: compactToolResultForChat(toolName, JSON.stringify(payload), maxChars),
     isError: check.handoff ? handoffIsError(check.handoff) : true,
   };
+}
+
+/**
+ * The chat result budget for the live session (#11394): a constrained tool
+ * profile gets smaller results. `undefined` (no session, no `toolExposure`, a
+ * throwing accessor) lets `compactToolResultForChat` apply its own default
+ * (MAX_TOOL_RESULT_CHARS, 8,000), so `full` sessions are byte-identical.
+ */
+export function sessionResultCharBudget(getActiveSession?: () => ActiveSession | undefined): number | undefined {
+  try {
+    return getActiveSession?.()?.toolExposure?.resultCharBudget;
+  } catch {
+    return undefined;
+  }
 }
 
 async function safePostToolUse(
@@ -1211,7 +1232,7 @@ function makeToolHandler(
         approvalWaitMs = check.approvalWaitMs;
       }
       if (!check.allowed) {
-        const denial = preToolUseDenialResult(toolName, check);
+        const denial = preToolUseDenialResult(toolName, check, sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
@@ -1221,7 +1242,7 @@ function makeToolHandler(
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, getActiveSession?.(), callToolAuth);
     if (missingWispAuth) {
-      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      const denial = preToolUseDenialResult(toolName, missingWispAuth, sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
       return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
@@ -1312,7 +1333,7 @@ function makeToolHandler(
       const modelResult = captureSession?.wispGrant && wispEnabled()
         ? wispDispatchResult(toolName, args, result)
         : result;
-      const compactResult = withApprovalWait(compactToolResultForChat(toolName, modelResult), approvalWaitMs);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, modelResult, sessionResultCharBudget(getActiveSession)), approvalWaitMs);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
       // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
@@ -1380,7 +1401,7 @@ function makeToolHandler(
       const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = refusal
         ? JSON.stringify(refusal)
-        : compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+        : compactToolResultForChat(toolName, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
@@ -1459,7 +1480,7 @@ function makeSessionAwareHandler(
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
-        const denial = preToolUseDenialResult(toolName, check);
+        const denial = preToolUseDenialResult(toolName, check, sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
@@ -1473,7 +1494,7 @@ function makeSessionAwareHandler(
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
     if (missingWispAuth) {
-      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      const denial = preToolUseDenialResult(toolName, missingWispAuth, sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
       return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
@@ -1493,6 +1514,7 @@ function makeSessionAwareHandler(
       const refusalText = compactToolResultForChat(
         toolName,
         JSON.stringify({ error: 'no_action_intent', message: SECRET_ACTION_REFUSED_TEXT }),
+        sessionResultCharBudget(getActiveSession),
       );
       await safePostToolUse(postToolUse, toolName, args, refusalText, true, 0);
       return {
@@ -1554,7 +1576,7 @@ function makeSessionAwareHandler(
         sealed = { intentId, sealedResult: split.sealedResult };
       }
 
-      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result), approvalWaitMs);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result, sessionResultCharBudget(getActiveSession)), approvalWaitMs);
 
       // Detect error responses returned as JSON strings by tool handlers
       let isToolError = false;
@@ -1587,7 +1609,7 @@ function makeSessionAwareHandler(
       const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = refusal
         ? JSON.stringify(refusal)
-        : compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+        : compactToolResultForChat(toolName, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
@@ -1717,6 +1739,8 @@ interface BreezeToolTemplate {
   readonly declarations: readonly SdkTool[];
   /** attachRegistryMeta results, memoized per declaration (lazily: a hint-less tool only throws when registered). */
   readonly withRegistryMeta: WeakMap<SdkTool, SdkTool>;
+  /** #11395: the same, with the compact description a constrained exposure advertises. */
+  readonly withCompactMeta: WeakMap<SdkTool, SdkTool>;
 }
 
 let cachedBreezeToolTemplate: BreezeToolTemplate | undefined;
@@ -1727,17 +1751,30 @@ function breezeToolTemplate(): BreezeToolTemplate {
   // A throw here (an unregistered description) caches nothing: the next call
   // retries, exactly as the per-session build used to fail every time.
   const declarations = Object.freeze(declareBreezeSdkToolTemplates());
-  cachedBreezeToolTemplate = { gateKey, declarations, withRegistryMeta: new WeakMap() };
+  cachedBreezeToolTemplate = { gateKey, declarations, withRegistryMeta: new WeakMap(), withCompactMeta: new WeakMap() };
   return cachedBreezeToolTemplate;
 }
 
-function templateWithRegistryMeta(template: BreezeToolTemplate, declaration: SdkTool): SdkTool {
-  let withMeta = template.withRegistryMeta.get(declaration);
+function templateWithRegistryMeta(template: BreezeToolTemplate, declaration: SdkTool, compact = false): SdkTool {
+  const memo = compact ? template.withCompactMeta : template.withRegistryMeta;
+  let withMeta = memo.get(declaration);
   if (!withMeta) {
-    withMeta = attachRegistryMeta(declaration);
-    template.withRegistryMeta.set(declaration, withMeta);
+    // #11395: a constrained exposure advertises the compact description.
+    withMeta = attachRegistryMeta(compact
+      ? { ...declaration, description: compactDescriptionFor(declaration.name, declaration.description) }
+      : declaration);
+    memo.set(declaration, withMeta);
   }
   return withMeta;
+}
+
+/** The live session's tool exposure, or undefined (no session, or a throwing accessor). */
+function sessionToolExposureOf(getActiveSession?: () => ActiveSession | undefined): ToolExposure | undefined {
+  try {
+    return getActiveSession?.()?.toolExposure;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -2381,6 +2418,7 @@ export function wrapExtraToolWithHooks(
   extraTool: SdkTool,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
+  getActiveSession?: () => ActiveSession | undefined,
 ): SdkTool {
   const { name, handler } = extraTool;
   const toolTimeout = getToolTimeout(name);
@@ -2404,7 +2442,7 @@ export function wrapExtraToolWithHooks(
           check = { allowed: false, error: `Guardrails check failed: ${reason}` };
         }
         if (!check.allowed) {
-          const denial = preToolUseDenialResult(name, check);
+          const denial = preToolUseDenialResult(name, check, sessionResultCharBudget(getActiveSession));
           await safePostToolUse(postToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
           return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
@@ -2420,7 +2458,7 @@ export function wrapExtraToolWithHooks(
       } catch (err) {
         const durationMs = Date.now() - startTime;
         const message = sanitizeThrownToolError(name, err, { durationMs });
-        const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }));
+        const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, name, args, safeError, true, durationMs);
         return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
@@ -6118,7 +6156,22 @@ export function attachRegistryMeta(def: SdkTool): SdkTool {
  * `console.error` line is the only surviving signal — an operator has to be
  * watching API logs, not a Sentry inbox, to catch it there.
  */
-export function createBreezeMcpServer(
+export function createBreezeMcpServer(...args: Parameters<typeof breezeServerTools>) {
+  return createSdkMcpServer({
+    name: 'breeze',
+    version: '1.0.0',
+    tools: breezeServerTools(...args),
+  });
+}
+
+/**
+ * #11395: the exact tool list `createBreezeMcpServer` registers (bound
+ * registry tools, then wrapped extras), so an offline measurement of the
+ * advertised prefix (llm/toolCapture/advertisedPrefix.ts) reads the same
+ * names, descriptions and schemas production sends. See createBreezeMcpServer
+ * above for every option.
+ */
+export function breezeServerTools(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
@@ -6135,12 +6188,26 @@ export function createBreezeMcpServer(
      * the per-call gate is unchanged.
      */
     admitTool?: (toolName: string) => boolean;
+    /**
+     * #11395: the tool exposure to advertise under, for a caller with no
+     * session (headless agent runs). Otherwise the session's own
+     * `toolExposure` is read, so a factory-built server (the helper's) honours
+     * it too. A constrained exposure registers only `exposure.names` (on top
+     * of `onlyTools`) with compact descriptions; the identity exposure, or
+     * none, changes nothing.
+     */
+    toolExposure?: Pick<ToolExposure, 'names' | 'promptMode'> & Partial<Pick<ToolExposure, 'extraToolNames'>>;
   },
 ) {
   // #11004: the static declarations come from the per-process template; only
   // the tools actually registered below get this session's handlers.
   const template = breezeToolTemplate();
   const tools = template.declarations;
+  const exposure = options?.toolExposure ?? sessionToolExposureOf(getActiveSession);
+  // Kept extras count too: a helper session whose tools are all kept as
+  // extras (client-declared) must not lose its registry tools here.
+  const exposedNames = exposure?.names ? new Set([...exposure.names, ...(exposure.extraToolNames ?? [])]) : null;
+  const compactDescriptions = exposure?.promptMode === 'constrained';
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are
   // never in the TOOL_TIERS registry — that's what keeps them off the chat/MCP
@@ -6156,7 +6223,7 @@ export function createBreezeMcpServer(
   // Every extra tool is wrapped so onPreToolUse/onPostToolUse fire for it —
   // see wrapExtraToolWithHooks's own docstring for why this is required, not
   // optional plumbing.
-  const wrappedExtraTools = extraTools.map((extra) => wrapExtraToolWithHooks(extra, onPreToolUse, onPostToolUse));
+  const wrappedExtraTools = extraTools.map((extra) => wrapExtraToolWithHooks(extra, onPreToolUse, onPostToolUse, getActiveSession));
 
   // F2 fix: filter the registry down to the pinned subset BEFORE
   // createSdkMcpServer, so those ~200 definitions never ride along on a
@@ -6197,14 +6264,10 @@ export function createBreezeMcpServer(
   const admit = options?.admitTool ?? (() => true);
   const boundTools = bindBreezeSdkTools(
     registeredTools
-      .filter((t) => admit(t.name))
-      .map((declaration) => templateWithRegistryMeta(template, declaration)),
+      .filter((t) => admit(t.name) && (exposedNames === null || exposedNames.has(t.name)))
+      .map((declaration) => templateWithRegistryMeta(template, declaration, compactDescriptions)),
     { getAuth, getActiveSession, onPreToolUse, onPostToolUse },
   );
 
-  return createSdkMcpServer({
-    name: 'breeze',
-    version: '1.0.0',
-    tools: [...boundTools, ...wrappedExtraTools.filter((t) => admit(t.name))],
-  });
+  return [...boundTools, ...wrappedExtraTools.filter((t) => admit(t.name))];
 }

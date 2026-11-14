@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
+import { pdfWithExpandingStreams } from './__fixtures__/expandingPdf';
 import type { AuthContext } from '../middleware/auth';
 import { inArray, type SQL } from 'drizzle-orm';
 import { PgDialect, type AnyPgColumn } from 'drizzle-orm/pg-core';
@@ -361,6 +362,29 @@ describe('createUploadedVersion', () => {
       svc.createUploadedVersion(auth, ORG_TEMPLATE.id, { data: pdf, mime: 'application/pdf' })
     ).rejects.toMatchObject({ status: 400, code: 'ENCRYPTED_FILE' });
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a PDF whose compressed object streams inflate past the read limit with 400 FILE_TOO_LARGE', async () => {
+    const auth = makeAuth({ scope: 'organization', canAccessOrg: () => true });
+    queueResult([ORG_TEMPLATE]);
+    // 64 MB of object-stream data from a file of about 64 KB, well under the upload cap.
+    const pdf = pdfWithExpandingStreams([{ inflatesTo: 64 * 1024 * 1024 }]);
+    await expect(
+      svc.createUploadedVersion(auth, ORG_TEMPLATE.id, { data: pdf, mime: 'application/pdf' })
+    ).rejects.toMatchObject({ status: 400, code: 'FILE_TOO_LARGE' });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('accepts a PDF that uses object streams', async () => {
+    const auth = makeAuth({ scope: 'organization', canAccessOrg: () => true });
+    queueResult([ORG_TEMPLATE]);
+    queueResult([{ maxVersion: null }]);
+    const doc = await PDFDocument.create();
+    doc.addPage([200, 200]);
+    const pdf = Buffer.from(await doc.save({ useObjectStreams: true }));
+    queueResult([{ id: 'v1', versionNumber: 1, sourceType: 'uploaded' }]);
+    const row = await svc.createUploadedVersion(auth, ORG_TEMPLATE.id, { data: pdf, mime: 'application/pdf' });
+    expect(row.versionNumber).toBe(1);
   });
 
   it('rejects a corrupt PDF that passes the magic-byte gate but is not loadable with 400 INVALID_FILE', async () => {

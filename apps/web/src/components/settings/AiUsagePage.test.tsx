@@ -433,3 +433,31 @@ describe('AiUsagePage Buy credits link (#9450)', () => {
   });
 
 });
+
+describe('AiUsagePage sessions removed by retention (#4342 W4)', () => {
+  const session = (over: Record<string, unknown>) => ({
+    id: 's-1', userId: 'u-1', title: null, model: 'claude', turnCount: 3, totalCostCents: 12, status: 'closed',
+    flaggedAt: null, flaggedBy: null, flagReason: null, createdAt: '2026-01-02T03:04:05Z', ...over,
+  });
+  function mockSessions(rows: unknown[]) {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') return Promise.resolve(jsonRes(usageBody()));
+      if (url.startsWith('/ai/admin/sessions')) return Promise.resolve(jsonRes({ data: rows }));
+      return Promise.resolve(jsonRes({ data: [] }));
+    });
+  }
+
+  it('labels a purged session "Removed by retention" instead of Untitled', async () => {
+    mockSessions([session({ transcriptPurgedAt: '2027-02-01T03:15:00Z' })]);
+    const r = renderPage();
+    await waitFor(() => expect(r.getByTestId('ai-usage-session-title-s-1')).toHaveTextContent('Removed by retention'));
+    expect(r.getByTestId('ai-usage-session-title-s-1')).not.toHaveTextContent('Untitled');
+  });
+
+  it('keeps Untitled when the session was not purged', async () => {
+    mockSessions([session({ transcriptPurgedAt: null })]);
+    const r = renderPage();
+    await waitFor(() => expect(r.getByTestId('ai-usage-session-title-s-1')).toHaveTextContent('Untitled'));
+    expect(r.getByTestId('ai-usage-session-title-s-1')).not.toHaveTextContent('Removed by retention');
+  });
+});

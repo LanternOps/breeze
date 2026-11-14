@@ -171,6 +171,13 @@ export interface PortalInviteEmailParams {
    */
   microsoftUrl?: string;
   /**
+   * Portal registration W7 (#11384) D12: the invitation-bound "Sign in with
+   * Google" link (the invite link with `&method=google`), present only when
+   * Google is effective for the org. A primary button: the only one when
+   * Microsoft is absent, the second when it is present.
+   */
+  googleUrl?: string;
+  /**
    * Whether the org's effective policy allows password sign-in. False
    * (`sso_only`): the email never offers a password.
    */
@@ -1251,13 +1258,15 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
 
 /**
  * The portal invite. Which sign-in methods it offers follows the org's
- * effective policy (W4 #11381, spec §5.5):
- *  - password only (Microsoft off): unchanged — one "Set your password" button;
- *  - Microsoft and password: "Sign in with Microsoft" is the button, and
- *    "Or set a password" a secondary link;
- *  - `sso_only`: Microsoft only; no password line, link or wording.
+ * effective policy (W4 #11381, spec §5.5; W7 #11384 D12):
+ *  - password only (no SSO method): unchanged — one "Set your password" button;
+ *  - one SSO method and password: "Sign in with Microsoft" or "Sign in with
+ *    Google" is the button, and "Or set a password" a secondary link;
+ *  - both SSO methods: two primary buttons, Microsoft then Google, then the
+ *    password link when allowed;
+ *  - `sso_only`: the SSO button(s) only; no password line, link or wording.
  * The subject never changes. A partner's custom button label was written for
- * the password button, so it never relabels the Microsoft one.
+ * the password button, so it never relabels an SSO one.
  */
 export function buildPortalInviteTemplate(params: PortalInviteEmailParams): EmailTemplate {
   const orgName = params.orgName?.trim();
@@ -1267,16 +1276,25 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>`
     : '';
   const custom = params.custom ?? null;
-  const microsoftUrl = params.microsoftUrl || undefined;
-  const passwordOnly = !microsoftUrl && params.passwordAllowed;
-  // No password and no Microsoft: an SSO-only org whose method is not Microsoft
-  // (Google, W7). The plain invite link; its page offers what the org allows.
-  const primary = microsoftUrl
-    ? { url: microsoftUrl, label: 'Sign in with Microsoft', preheader: 'Sign in with Microsoft to access your support portal.' }
+  // The SSO buttons, in display order (an empty URL is absent).
+  const ssoButtons = [
+    params.microsoftUrl ? { url: params.microsoftUrl, label: 'Sign in with Microsoft', provider: 'Microsoft' } : null,
+    params.googleUrl ? { url: params.googleUrl, label: 'Sign in with Google', provider: 'Google' } : null,
+  ].filter((b): b is { url: string; label: string; provider: string } => b !== null);
+  const [firstSso, ...moreSso] = ssoButtons;
+  const passwordOnly = !firstSso && params.passwordAllowed;
+  // No password and no SSO URL (a caller that offers neither): the plain
+  // invite link; its page offers what the org allows.
+  const primary = firstSso
+    ? {
+      url: firstSso.url,
+      label: firstSso.label,
+      preheader: `Sign in with ${ssoButtons.map((b) => b.provider).join(' or ')} to access your support portal.`,
+    }
     : passwordOnly
       ? { url: params.inviteUrl, label: undefined, preheader: 'Set your password to access your support portal.' }
       : { url: params.inviteUrl, label: 'Accept your invite', preheader: 'Accept your invite to access your support portal.' };
-  const passwordSecondary = Boolean(microsoftUrl) && params.passwordAllowed;
+  const passwordSecondary = Boolean(firstSso) && params.passwordAllowed;
   const rendered = renderPartnerEmail({
     id: 'portal_invite',
     custom: !passwordOnly && custom ? { ...custom, buttonLabel: null } : custom,
@@ -1289,14 +1307,15 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     },
     ctaUrl: primary.url,
     ctaLabel: primary.label,
+    ...(moreSso.length > 0 ? { extraCtas: moreSso.map(({ label, url }) => ({ label, url })) } : {}),
     footer: supportFooter(params.supportEmail, 'Need help? Contact'),
     preheader: primary.preheader,
     bodyBeforeCta: messageBlock,
     bodyAfterCta: passwordSecondary ? renderLinkRow([{ label: 'Or set a password', url: params.inviteUrl }]) : '',
   });
   const support = getSupportEmail(params.supportEmail);
-  const actionLines = microsoftUrl
-    ? [`Sign in with Microsoft: ${microsoftUrl}`, passwordSecondary ? `Or set a password: ${params.inviteUrl}` : null]
+  const actionLines = firstSso
+    ? [...ssoButtons.map((b) => `${b.label}: ${b.url}`), passwordSecondary ? `Or set a password: ${params.inviteUrl}` : null]
     : [passwordOnly ? `Set your password: ${params.inviteUrl}` : `Accept your invite: ${params.inviteUrl}`];
   const text = [
     orgName ? `You're invited to the ${orgName} support portal.` : `You're invited to your support portal.`,
