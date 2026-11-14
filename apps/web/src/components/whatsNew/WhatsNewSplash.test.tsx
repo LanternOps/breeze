@@ -30,6 +30,17 @@ describe('WhatsNewSplash', () => {
     expect(screen.getAllByRole('listitem').length).toBeGreaterThan(0);
   });
 
+  // A long entry on a short window must scroll inside the panel so the
+  // "Show me later" / "Got it" buttons stay reachable. jsdom does no layout,
+  // so this pins the height cap and overflow classes that do it in a browser.
+  it('caps the panel height and scrolls its content', async () => {
+    render(<WhatsNewSplash />);
+    await screen.findByText(/whatsNew\.title:/);
+    const panel = screen.getByRole('dialog');
+    expect(panel).toHaveClass('max-h-[90vh]', 'overflow-y-auto');
+    expect(panel).toContainElement(screen.getByText('whatsNew.gotIt'));
+  });
+
   it('"Got it" writes lastSeen and closes', async () => {
     render(<WhatsNewSplash />);
     const gotIt = await screen.findByText('whatsNew.gotIt');
