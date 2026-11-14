@@ -9,6 +9,8 @@ import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubU
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 import { fetchVerifiedMacosPkg, fetchVerifiedHelperInstaller } from '../../services/installerBuilder';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
+import { onboardingServerUrl } from '../../services/onboardingServerUrl';
+import { generateWindowsInstallScript } from '../../services/windowsInstallScript';
 
 export const downloadRoutes = new Hono();
 
@@ -756,6 +758,38 @@ downloadRoutes.get('/install.sh', async (c) => {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-cache',
+    },
+  });
+});
+
+downloadRoutes.get('/install.ps1', async (c) => {
+  const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'windows-install-script-download');
+  if (rateLimited) {
+    const headers = new Headers(rateLimited.headers);
+    headers.set('Cache-Control', 'no-store');
+    return new Response(rateLimited.body, {
+      status: rateLimited.status,
+      statusText: rateLimited.statusText,
+      headers,
+    });
+  }
+
+  const serverUrl = onboardingServerUrl() ?? resolveInstallScriptServerUrl(c.req.url);
+  if (!serverUrl) {
+    return new Response('Installer script unavailable: server URL is not configured', {
+      status: 503,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
+
+  return new Response(generateWindowsInstallScript(serverUrl), {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store, no-transform',
     },
   });
 });
