@@ -1147,6 +1147,13 @@ describe('networkSiteHealth (CPEV-W2, real Postgres)', () => {
       expect(all.pagination.total).toBe(row.totalAssets);
     }
 
+    // #11686: the overview counts the same non-dismissed set as the list and sites.
+    const overviewA = await withDbAccessContext(ctxA, () => networkOverview(orgA.id, NOW));
+    expect(overviewA.totalAssets).toBe(3);
+    expect(overviewA.totalAssets).toBe(withAlerts.data.reduce((sum, row) => sum + row.totalAssets, 0));
+    expect(overviewA.onlineAssets).toBe(withAlerts.data.reduce((sum, row) => sum + row.onlineAssets, 0));
+    expect(overviewA.offlineAssets).toBe(withAlerts.data.reduce((sum, row) => sum + row.offlineAssets, 0));
+
     const healthB = await withDbAccessContext(orgContext(orgB.id, partner.id), () => networkSiteHealth(orgB.id, true, NOW));
     expect(healthB.data).toEqual([
       expect.objectContaining({ siteId: siteB.id, totalAssets: 1, monitorsDown: 1, activeAlertCount: 1 }),
