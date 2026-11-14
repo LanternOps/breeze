@@ -341,10 +341,15 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     expect(intent.arguments).toMatchObject({
       action: 'log_time_entry',
       ticketId: s.ticketId,
-      durationMinutes: AI_TIME_ENTRY_DEFAULT_MINUTES,
       isBillable: true,
-      proposedForUserId: s.tech.id,
     });
+    // The block spans the default duration; no key the tool does not define
+    // (#11861: release would refuse it after a human approved the proposal).
+    const args = intent.arguments as Record<string, unknown>;
+    expect(new Date(String(args.endedAt)).getTime() - new Date(String(args.startedAt)).getTime())
+      .toBe(AI_TIME_ENTRY_DEFAULT_MINUTES * 60_000);
+    expect(Object.keys(args)).not.toEqual(expect.arrayContaining(['durationMinutes']));
+    expect(Object.keys(args)).not.toEqual(expect.arrayContaining(['proposedForUserId']));
 
     // The proposal never auto-executes.
     expect(await entriesForTicket(s.ticketId)).toHaveLength(0);
@@ -408,7 +413,9 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     });
     // Category default (25) beats the module constant; billable comes from
     // the resolver through the partner default billing profile.
-    expect(intents[0]!.arguments).toMatchObject({ action: 'log_time_entry', durationMinutes: 25, isBillable: true });
+    const args = intents[0]!.arguments as Record<string, unknown>;
+    expect(args).toMatchObject({ action: 'log_time_entry', isBillable: true });
+    expect(new Date(String(args.endedAt)).getTime() - new Date(String(args.startedAt)).getTime()).toBe(25 * 60_000);
     expect(await entriesForTicket(s.ticketId)).toHaveLength(0);
   });
 
