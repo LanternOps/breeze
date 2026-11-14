@@ -1,6 +1,6 @@
 ---
 title: Storage Configuration
-description: Set up backup storage targets for S3 (and S3-compatible services like MinIO, Wasabi, and Backblaze B2) or local NAS, with connectivity testing and multiple configurations.
+description: Set up backup storage targets for S3 (and S3-compatible services like MinIO, Wasabi, and Backblaze B2) or a local disk, with connectivity testing and multiple configurations.
 sidebar:
   order: 2
   label: "Storage Configuration"
@@ -8,7 +8,7 @@ sidebar:
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Before you can run backups, you need at least one storage configuration that tells Breeze where to send backup data. You can create multiple configurations — for example, an S3 bucket for off-site cloud storage and a local NAS for fast restores.
+Before you can run backups, you need at least one storage configuration that tells Breeze where to send backup data. You can create multiple configurations — for example, an S3 bucket for off-site cloud storage and a local disk for fast restores.
 
 ---
 
@@ -17,7 +17,7 @@ Before you can run backups, you need at least one storage configuration that tel
 The storage configuration wizard walks you through four steps:
 
 <Steps>
-1. **Select a provider.** Choose Amazon S3 or Local/NAS. Each option shows a brief description to help you decide.
+1. **Select a provider.** Choose Amazon S3 or Local Disk. Each option shows a brief description to help you decide.
 
 2. **Enter provider settings.** The fields change based on your provider:
 
@@ -30,9 +30,10 @@ The storage configuration wizard walks you through four steps:
 
        Also works with S3-compatible services like MinIO, Wasabi, and Backblaze B2 — just set the endpoint URL accordingly. Enter the endpoint as a host (`s3.example.com`) or host and port (`minio.local:9000`), optionally prefixed with `http://` or `https://`; a scheme-less endpoint is treated as `https://`. Other schemes (such as `s3://` or `ftp://`) are rejected with a validation error rather than failing later at backup time.
      </TabItem>
-     <TabItem label="Local / NAS">
-       - **Local Path** — mount point or UNC path (e.g., `/mnt/backups` or `\\nas\breeze`)
+     <TabItem label="Local Disk">
+       - **Local Path** — a dedicated directory on a disk attached to the device (e.g., `/var/backups/breeze` or `D:\BreezeBackups`). Network shares (SMB and NAS shares, UNC paths and mapped network drives) are not supported; see [Network shares](#network-shares).
        - **Retention Tier** — storage tier classification
+       - Use a dedicated directory for backup data. New roots, written directories and new or replaced objects are private to the agent service account. Existing roots must already restrict access to that account; otherwise local backup operations pause with a migration diagnostic, without changing the root permissions. Before upgrading, verify the path is dedicated to backup data and migrate it to a new private directory or harden it explicitly; see [Local destination permissions](#local-destination-permissions). Review all existing object permissions as well, especially Windows ACLs. The filesystem must support these permissions.
      </TabItem>
    </Tabs>
 
@@ -47,7 +48,7 @@ The storage configuration wizard walks you through four steps:
    - **Compliance** — 365 days, 20 versions
    - **Custom** — set your own day count and version count
 
-   Optionally enable encryption. This is only enforceable for S3 destinations with server-side encryption (SSE-S3 or SSE-KMS) configured — see [Encryption](/backup/encryption/) for details. Local/NAS destinations do not support enabling this toggle.
+   Optionally enable encryption. This is only enforceable for S3 destinations with server-side encryption (SSE-S3 or SSE-KMS) configured — see [Encryption](/backup/encryption/) for details. Local disk destinations do not support enabling this toggle.
 
    <Aside type="note" title="What retention removes today">
      When a restore point passes its retention window, Breeze removes it from the snapshot list — it can no
@@ -83,7 +84,7 @@ File backups are written to the target as one object per file, under a `snapshot
 | Provider | Object name | Stored bytes |
 |----------|-------------|--------------|
 | **Amazon S3 and S3-compatible** (MinIO, Wasabi, Backblaze B2) | ends in `.gz` | **Not compressed.** The object is the original file, byte for byte. |
-| **Local / NAS** | ends in `.gz` | gzip-compressed, decompressed again on restore |
+| **Local disk** | ends in `.gz` | gzip-compressed, decompressed again on restore |
 
 On S3 storage the `.gz` suffix is only part of the object name. Expect an S3 target to use roughly as much space as the files you protect, and size buckets and quotas on that basis. If you download a file object directly from the bucket, it is the original file. Rename it to drop the `.gz` instead of running `gunzip` on it, which fails with `not in gzip format`.
 
@@ -121,6 +122,43 @@ From v0.121.0, the credentials in a storage configuration (access keys, secret k
 <Aside type="caution" title="Roll forward only">
   Once that sweep has run, do not roll back to a release older than v0.121.0. Older releases would hand the encrypted values to agents as storage credentials and S3 backups would fail. If you rotate `APP_ENCRYPTION_KEY`, follow [Secret Rotation](/security/secrets/#rotating-app-encryption-key); the re-encryption script covers these credentials.
 </Aside>
+
+### Local destination permissions
+
+The agent writes local backups, and local vault copies, as the account its backup service runs as (normally root on Linux and macOS and LocalSystem on Windows). It requires the destination directory to be private to that account:
+
+- **New destinations.** When the configured path does not exist yet, the agent creates it, and every directory it creates inside it, with owner-only access (`0700` on Linux and macOS, a protected access list for SYSTEM, Administrators and the service account on Windows). Objects are written owner-only (`0600` on Linux and macOS; on Windows they inherit the protected access list), including objects that replace an existing one.
+- **Existing destinations.** An existing directory must already be owned by the service account (on Windows, the service account, SYSTEM or Administrators) and grant no access to other accounts:
+  - Linux and macOS: no group or other permission bits. On Linux the directory must carry no ACL: no POSIX access or default ACL, and no NFSv4 or SMB/CIFS ACL exposed by a network filesystem. On macOS it must carry no extended ACL (`ls -lde` shows none).
+  - Windows: every entry in the access list, whether inherited from the parent or set on the directory, must allow SYSTEM, Administrators or the service account and be inherited by subfolders and files, and SYSTEM (and the service account, when it is not SYSTEM) must have full control. A destination that older agents created under the Breeze data directory meets this through its inherited entries.
+
+  Otherwise backup, restore, listing, retention and vault operations against that destination stop with a "local backup store is not private" message, and bare-metal recovery and other restores that read from that destination stop with it. The agent does not change the permissions of an existing destination for you.
+- **Upgrading from an earlier agent.** Earlier agents created local destinations, including the default `<data directory>/backups` (`/var/lib/breeze/backups` on Linux), with mode `0755`. Those destinations are refused after the upgrade until you migrate them.
+- **The configured path must be a real, dedicated directory.**
+  - A drive or filesystem root (`C:\`, `D:\`, `/`) is refused.
+  - On Linux, no component of the path may be a symbolic link. On macOS, only the system's own root-owned links (such as `/var` → `/private/var`) may appear in the path, and the last component may not be a link. On Windows, no component may be a reparse point: a symbolic link, a junction or a mounted folder.
+  - Inside the destination, any entry that a backup object path passes through must be a plain directory or file. Links, junctions, named pipes and other special files are refused.
+- **The filesystem must support these permissions.** On Windows, FAT and exFAT volumes have no access lists and are refused. On Linux and macOS, a FAT or exFAT volume is checked against the ownership and mode its mount options present.
+
+**Migrating an existing destination** (do this before upgrading, or as soon as backups to the destination report the message above):
+
+1. Pause the backup jobs and vaults that use the destination, and confirm the path is dedicated to Breeze backup data. Never apply recursive permission changes to a system directory or a share that holds other data.
+2. Prefer a new dedicated location provisioned for the agent service account, and point the configuration at it. If you harden the existing dedicated location instead, first record its links, ownership and access lists so you can roll back, then restrict it in a maintenance window.
+3. Review the backup objects already in the destination separately. Protecting the root does not change objects written by earlier versions. Remove or replace any entry not owned by the service account, any link, junction or special file, and any file with more than one hard link. Review existing file permissions as well, especially Windows file ACLs.
+4. Check that the agent can use the destination: run a backup and a test restore of a representative snapshot, then resume the jobs.
+5. Keep any rollback copy in a private location. If you roll the agent back, leave the affected jobs paused until the destination is private: an older agent version does not make the old permissions safe.
+
+#### Network shares
+
+SMB and NAS shares are not supported as local backup destinations or vaults. Use a disk attached to the device for local backups and vaults, and S3-compatible storage for off-device copies.
+
+- **Refused when saved.** Breeze refuses to save a vault of type SMB share. The path of a local destination or vault must be an absolute path on a volume of the device: a drive path (`D:\Backups`), a volume GUID path (`\\?\Volume{GUID}\Backups`) or, on Linux and macOS, an absolute path (`/var/backups/breeze`). Any other form is refused, including UNC paths (`\\server\share\...`, `//server/share/...`), other `\\?\` and `\\.\` device paths, and relative paths. This applies to the web app, the API and the AI tools.
+- **Refused on the device.** On Windows, the agent asks the system whether the volume holding the destination, and the destination directory once it is opened, is reached over the network, and refuses it if so. That covers a drive letter mapped to a share, whatever the path looks like. A UNC path is refused before anything is opened. The message reads "network shares (UNC paths, mapped network drives, SMB and NAS shares) are not supported for local backup destinations or vaults".
+- **Why.** The agent runs as LocalSystem on Windows and reaches a share as the device's computer account. The owner and access list it checks are the ones the file server reports, where SYSTEM and Administrators are the server's own accounts and the device's computer account is neither, so a share cannot show that the directory is private to the agent.
+- **Volumes the agent cannot recognise.** A Windows volume that reports itself as a local disk but is backed by a share or a user-mode filesystem (a VHD or iSCSI disk whose file lives on a share, WinFsp or Dokan filesystems, rclone mounts, cloud-drive clients) is not detected as a network share. Do not use one as a local destination or vault.
+- **Do not add the device's computer account to the file server's Administrators group** to make a share pass these checks. That gives the device, and anything running on it as LocalSystem, administrative control of the file server.
+- **Linux and macOS.** Do not use an NFS, SMB or other NAS mount as a local destination or vault either. The agent does not recognise every mounted network filesystem: it applies the checks above to the owner and mode the mount presents, which reflect the mount options rather than the permissions the server enforces. A mount that exposes an NFSv4 or SMB/CIFS access list on Linux, and an NFS export that maps root to another user (`root_squash`), are refused.
+- **Configurations saved earlier.** A vault or local destination saved on a share before this release keeps its settings. The device refuses it each time it is used, and saving its settings again is refused until you point it at a disk attached to the device or move the backups to an S3 destination. You can still deactivate or delete such a vault.
 
 ### Recommended bucket settings for S3-compatible storage
 
@@ -228,7 +266,7 @@ You can create different configurations for different use cases:
 | Use case | Recommended setup |
 |----------|-------------------|
 | **Critical servers** | S3 (off-site) + local vault (fast restore) |
-| **Workstations** | Local NAS with 30-day retention |
+| **Workstations** | Local disk with 30-day retention |
 | **Compliance** | S3 with 365-day retention and server-side encryption |
 | **Development/test** | Local storage with minimal retention |
 

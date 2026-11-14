@@ -528,7 +528,7 @@ The AI assistant can query, manage, and operate backups, disaster recovery plans
 | `verify_mssql_backup` | 3 | Verify a SQL Server backup on the device that took it (`RESTORE VERIFYONLY`) |
 | `trigger_vault_sync` | 3 | Copy a snapshot to a device's local vault |
 | `trigger_c2c_sync` | 3 | Start a cloud-to-cloud backup sync for a configuration |
-| `configure_vault (create/update)` | 3 | Create or repoint a device's local vault (path, local/SMB/USB type, retention). The device is reconfigured, and the approval names the path |
+| `configure_vault (create/update)` | 3 | Create or repoint a device's local vault (path, local disk or USB type, retention; SMB share vaults and UNC paths are refused). The device is reconfigured, and the approval names the path |
 | `manage_hyperv_vm (start/stop/force_stop/pause/resume/save)` | 3 | Change a Hyper-V VM's power state |
 | `manage_hyperv_checkpoints (create/delete/apply)` | 3 | Create a checkpoint. Deleting or applying one needs a second approver |
 | `restore_snapshot` | 3 | Restore files from a snapshot to a device. Needs a second approver |

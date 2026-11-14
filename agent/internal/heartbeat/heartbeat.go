@@ -7787,9 +7787,10 @@ const defaultCommandInFlightWarnAfter = 2 * time.Hour
 
 // defaultEphemeralCommandInFlightWarnAfter is the short watchdog tier for
 // ephemeral commands (isEphemeralCommand: terminal_data, tunnel_data, desktop
-// input, ...). Those handlers hand off to an interactive session and should
-// return in milliseconds, so one stuck for a minute is a wedged interactive
-// path — worth flagging long before the 2h tier would (issue #2400). Log-only,
+// input, http_request, ...). Those handlers hand off to an interactive session
+// and return in milliseconds, or make one bounded round trip (http_request,
+// capped by httpProxyTimeout), so one stuck for a minute is a wedged path —
+// worth flagging long before the 2h tier would (issue #2400). Log-only,
 // exactly like the default tier: it never fails or kills the command.
 const defaultEphemeralCommandInFlightWarnAfter = 60 * time.Second
 
@@ -7914,12 +7915,24 @@ func isWSDirectOnlyCommand(cmdType string) bool {
 	return cmdType == tools.CmdBackupRun
 }
 
+// isEphemeralCommand reports whether a command is a per-request frame bound to
+// a session or tunnel, whose result travels only on the WebSocket:
+// HandleCommand sends no REST result for it, it gets the short watchdog tier,
+// and it is never journaled.
+//
+// http_request (#11464) is one Network Proxy request, one per asset a proxied
+// device web UI loads. The server's in-memory awaiter (agentCommandAwait)
+// takes its result from the WebSocket reply; there is no device_commands row
+// (id http-req-<tunnelId>-<uuid>) and the REST result route answers it as a
+// no-op, so POSTing it only spent the agent's general rate budget and got its
+// heartbeats refused during an asset-heavy page load.
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {
 	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
 		tools.CmdStartDesktop, tools.CmdStopDesktop,
 		tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig,
-		tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose:
+		tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
+		tools.CmdHttpRequest:
 		return true
 	}
 	return false

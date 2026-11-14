@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { applyBrandingColors, sanitizeBranding } from './branding';
+import { applyBrandingColors, isSecurityWindowHash, sanitizeBranding } from './branding';
 
 afterEach(() => {
   document.documentElement.removeAttribute('style');
@@ -80,4 +80,17 @@ describe('applyBrandingColors', () => {
     applyBrandingColors({});
     expect(style().getPropertyValue('--ws-accent')).toBe('');
   });
+});
+
+describe('isSecurityWindowHash', () => {
+  it.each(['#consent', '#banner', '#caller-verify/abc-123'])('%s is a security window', (hash) => {
+    expect(isSecurityWindowHash(hash)).toBe(true);
+  });
+
+  it.each(['', '#', '#message/1', '#chat/1', '#prompt/1', '#consents', '#banner/x', '#caller-verify', '#settings'])(
+    '%j is not',
+    (hash) => {
+      expect(isSecurityWindowHash(hash)).toBe(false);
+    },
+  );
 });

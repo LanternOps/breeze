@@ -6,12 +6,14 @@ import { deviceSearchCondition } from './searchFilter';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { getRedis } from '../../services/redis';
+import { onboardingServerUrl } from '../../services/onboardingServerUrl';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { CLEARED_AGENT_CREDENTIALS } from '../../services/agentCredentialHashes';
 import { reliabilityProvisionalSql } from '../../services/reliabilityBaselineQueries';
 import {
   devices,
   deviceHardware,
+  deviceDisks,
   deviceHardwareHealth,
   deviceReliability,
   deviceWarranty,
@@ -919,39 +921,6 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-// #8120: the server URL agents should enroll against, for the web's
-// copy/paste install command. The web bundle cannot read PUBLIC_API_URL at
-// runtime (it is frozen in at image build, empty in the published image), so
-// the browser fell back to its own origin, which is the dashboard host on
-// split dashboard/API deployments. The server-built installers already use
-// PUBLIC_API_URL || API_URL, so the command now gets the same value. Never
-// derived from the request Host.
-//
-// The value is pasted inside double quotes into a bash and a PowerShell
-// command, and the startup URL checks only run when FORCE_HTTPS=true. So it
-// is rebuilt from the parsed URL (origin + path, trailing slash removed; the
-// parser percent-encodes spaces, quotes, backticks and non-ASCII), dropped
-// when it has userinfo, a query or a fragment, and dropped when what remains
-// still holds a character either shell expands inside double quotes ($, `,
-// ", \, bash's history !) or whitespace. Any other valid path prefix is kept.
-// Undefined leaves the web on its previous fallback.
-const SHELL_LIVE_IN_DOUBLE_QUOTES = /[\s$`"\\!]/;
-
-function onboardingServerUrl(): string | undefined {
-  const raw = (process.env.PUBLIC_API_URL || process.env.API_URL || '').trim();
-  if (!raw) return undefined;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return undefined;
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
-  if (url.username || url.password || url.search || url.hash) return undefined;
-  const canonical = `${url.origin}${url.pathname}`.replace(/\/+$/, '');
-  return SHELL_LIVE_IN_DOUBLE_QUOTES.test(canonical) ? undefined : canonical;
-}
-
 // #1108: caller-supplied onboarding-token limits. Count maps to maxUsage so one
 // copied CLI command can enroll a whole batch; TTL cap mirrors the enrollment-
 // keys route's 365-day ceiling.
@@ -1128,6 +1097,7 @@ coreRoutes.post(
     const secretRequired = configuredSecret !== null;
     const serverUrl = onboardingServerUrl();
 
+    c.header('Cache-Control', 'no-store');
     return c.json({
       token: key,
       // #11116: the minted key's row id (never the secret), so a client that
@@ -1338,6 +1308,7 @@ coreRoutes.get(
     const offset = isCursorMode ? 0 : Math.max(0, ((Number.parseInt(query.page ?? '1', 10) || 1) - 1) * limit);
 
     const includeWarranty = query.includeWarranty === 'true';
+    const includeDisks = query.includeDisks === 'true';
     const listQuery = db
       .select({
         id: devices.id,
@@ -1488,6 +1459,15 @@ coreRoutes.get(
     // Best current LAN address per device for the opt-in list column (#2503);
     // populated by the batched lateral below. Absent => the column dashes.
     const lanIpByDevice = new Map<string, string>();
+    const disksByDevice = new Map<string, Array<{
+      id: string;
+      mountPoint: string;
+      isOsVolume: boolean | null;
+      totalGb: number;
+      usedGb: number;
+      freeGb: number;
+      usedPercent: number;
+    }>>();
 
     if (deviceIds.length > 0) {
       // Per-device latest-row lookup via LATERAL + LIMIT 1 against the
@@ -1578,6 +1558,41 @@ coreRoutes.get(
       for (const row of lanIpRows) {
         lanIpByDevice.set(row.device_id, row.ip_address);
       }
+
+      if (includeDisks) {
+        // Restrict inventory to the authorized page, after trimming the cursor
+        // peek row. A separate batched lookup avoids a 1:N join duplicating
+        // device rows and changing pagination. device_disks also enforces RLS.
+        const diskRows = await db.execute<{
+          device_id: string;
+          id: string;
+          mount_point: string;
+          is_os_volume: boolean | null;
+          total_gb: number;
+          used_gb: number;
+          free_gb: number;
+          used_percent: number;
+        }>(sql`
+          SELECT disk.device_id, disk.id, disk.mount_point, disk.is_os_volume,
+                 disk.total_gb, disk.used_gb, disk.free_gb, disk.used_percent
+          FROM (VALUES ${idTuples}) AS d(device_id)
+          INNER JOIN ${deviceDisks} AS disk ON disk.device_id = d.device_id
+          ORDER BY disk.device_id, disk.mount_point, disk.id
+        `);
+        for (const row of diskRows) {
+          const disks = disksByDevice.get(row.device_id) ?? [];
+          disks.push({
+            id: row.id,
+            mountPoint: row.mount_point,
+            isOsVolume: row.is_os_volume,
+            totalGb: row.total_gb,
+            usedGb: row.used_gb,
+            freeGb: row.free_gb,
+            usedPercent: row.used_percent,
+          });
+          disksByDevice.set(row.device_id, disks);
+        }
+      }
     }
 
     // Transform to include hardware and latest metrics as nested objects
@@ -1644,6 +1659,7 @@ coreRoutes.get(
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
         ramPercent: latestMetrics?.ramPercent ?? 0,
+        ...(includeDisks ? { disks: disksByDevice.get(d.id) ?? [] } : {}),
         hardware: {
           cpuModel: d.cpuModel,
           cpuCores: d.cpuCores,

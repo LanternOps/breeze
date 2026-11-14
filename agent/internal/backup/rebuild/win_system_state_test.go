@@ -108,6 +108,7 @@ func hiveRun(t *testing.T) (*run, *fakeWinSystem, string) {
 	sys := newFakeWinSystem(dir)
 	seedFakeHives(sys)
 	vol := filepath.Join(dir, "vol-root")
+	seedWinTreeHives(t, vol)
 	r := &run{opts: Options{WinSystem: sys, Target: Target{Kind: TargetVHDX, Path: filepath.Join(dir, "out.vhdx")}},
 		rootVolume: vol, rootDir: filepath.Join(dir, "mnt", "root"), result: &Result{}}
 	return r, sys, vol

@@ -125,6 +125,13 @@ for the script-based fleet install.
     ```
   </TabItem>
   <TabItem label="Windows">
+    1. Open **Add Device**, select **CLI Commands**, and generate an enrollment token.
+    2. Copy the Windows command and run it in PowerShell 5.1 or later as Administrator.
+
+    The copied command downloads the PowerShell installer from the API URL returned during onboarding. It checks for HTTP 200, disables redirects, and verifies that the first line defines `Install-BreezeAgent` before running the script. HTTPS relies on a certificate trusted by the target machine. Plain HTTP is supported for self-hosted LAN deployments, where the network must be trusted. The installer pins the download to one release version, verifies its SHA-256 checksum, checks Authenticode when available, and enforces the operating system requirement.
+
+    To enroll manually instead:
+
     ```powershell
     # Check the minimum supported OS before downloading anything
     $osv = [System.Environment]::OSVersion.Version

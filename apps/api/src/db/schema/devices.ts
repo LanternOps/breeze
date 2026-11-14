@@ -591,6 +591,7 @@ export const deviceDisks = pgTable('device_disks', {
   freeGb: real('free_gb').notNull(),
   usedPercent: real('used_percent').notNull(),
   health: varchar('health', { length: 50 }).default('healthy'),
+  isOsVolume: boolean('is_os_volume'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 

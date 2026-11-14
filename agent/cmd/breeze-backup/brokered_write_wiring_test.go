@@ -18,7 +18,6 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/mssql"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/storagesession"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
@@ -239,7 +238,7 @@ func (e *writeEnv) assertOnlyIssuedKeys() {
 func decoyStore(t *testing.T) (*backup.BackupManager, string) {
 	t.Helper()
 	dir := t.TempDir()
-	return backup.NewBackupManager(backup.BackupConfig{Provider: providers.NewLocalProvider(dir), StagingDir: t.TempDir()}), dir
+	return backup.NewBackupManager(backup.BackupConfig{Provider: privateTestLocalProvider(t, dir), StagingDir: t.TempDir()}), dir
 }
 
 func assertDirEmpty(t *testing.T, dir string) {
@@ -423,7 +422,7 @@ func (r *recordingPrimary) used() []string {
 func TestBrokeredWrite_BackupRunNeverSyncsTheVault(t *testing.T) {
 	e := newWriteEnv(t)
 	primary := &recordingPrimary{}
-	vaultDir := t.TempDir()
+	vaultDir := privateStoreTempDir(t)
 	vault, err := backup.NewVaultManager(backup.VaultConfig{VaultPath: vaultDir}, primary)
 	if err != nil {
 		t.Fatal(err)

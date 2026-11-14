@@ -176,7 +176,7 @@ export function capabilitySummary(config?: BackupConfig | null): string {
 
 const PROVIDER_LABELS: Record<string, string> = {
   s3: "Amazon S3",
-  local: "Local / NAS",
+  local: "Local disk",
 };
 
 export function providerLabel(provider: string): string {
@@ -610,10 +610,10 @@ export default function BackupDestinationSection({
                     {
                       value: "local" as const,
                       label: i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.localNetworkPath",
+                        "policies:configurationPolicies.featureTabs.backupTab.localDiskDestination",
                       ),
                       description: i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.localDiskNASOrUNCShare",
+                        "policies:configurationPolicies.featureTabs.backupTab.localDiskOnDeviceDescription",
                       ),
                       icon: Server,
                     },
@@ -827,13 +827,13 @@ export default function BackupDestinationSection({
                 value={form.localPath}
                 onChange={(e) => onFormChange({ localPath: e.target.value })}
                 placeholder={i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.varBackupsBreezeOrNasBackups",
+                  "policies:configurationPolicies.featureTabs.backupTab.localPathExample",
                 )}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <p className="mt-1 chart-legend-xs text-muted-foreground">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.localDiskPathMountedNASOrUNC",
+                  "policies:configurationPolicies.featureTabs.backupTab.localPathAttachedDiskHelp",
                 )}
               </p>
               <FieldError message={fieldErrors.localPath} />

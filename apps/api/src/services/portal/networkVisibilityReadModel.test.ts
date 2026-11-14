@@ -92,6 +92,10 @@ describe('networkSiteHealth (CPEV-W2)', () => {
       ['a4', reach('responding', 'ok')],
       ['b1', reach('responding')],
     ]);
+    // Seed an attributable monitor and an active alert so the alerts query is
+    // reachable: only the includeAlerts flag keeps it from running.
+    state.byTable.network_monitors = [{ id: 'm-site', siteId: SITE_A, assetId: null }];
+    state.byTable.alerts = [{ severity: 'critical', monitorId: 'm-site' }];
 
     const result = await networkSiteHealth(ORG, false, NOW);
 

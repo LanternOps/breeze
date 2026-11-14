@@ -1661,6 +1661,12 @@
     }
   },
   "deviceList": {
+    "diskUsage": "Utilisation des disques",
+    "diskUsageScope": "Disques à afficher",
+    "allDisks": "Tous les disques",
+    "osDiskOnly": "Disque système uniquement",
+    "sortByDiskUsage": "Trier par utilisation des disques (taux le plus élevé affiché)",
+    "osDiskUsageUnavailable": "L’agent n’a pas encore identifié le disque système.",
     "selectedComposition": "{{agent}} avec agent, {{network}} réseau",
     "agentOnlyBulkAction": "S’applique uniquement aux appareils avec agent",
     "eligibleOfSelected": "{{count}} sur {{total}}",

@@ -260,6 +260,55 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     }
   }, CASE_TIMEOUT);
 
+  runDb('an unreadable list row of a ticket already imported keeps it imported and only lists it, run after run (#11296 follow-up)', async () => {
+    const fx = await seedZammad();
+    const window = await openWindow(fx);
+    const data = loadZammadFixtures('base');
+    data.tickets = data.tickets.filter((t) => [101, 104].includes(t.id));
+    fake.use(data);
+    const first = await startImportRun(fx, 'import', window.id);
+    await drive(fx, first.id, { deps });
+    expect((await ledger(fx.sourceId)).get('104')).toMatchObject({ state: 'imported' });
+    const importedVersion = (await ledger(fx.sourceId)).get('104')!.importedVersion;
+    const ticketBefore = (await importedTickets(fx)).get('104');
+    expect(ticketBefore).toBeDefined();
+
+    // 104's row now lists with an id but is otherwise unreadable, on two runs in a row.
+    const broken = loadZammadFixtures('base');
+    broken.tickets = [
+      broken.tickets.find((t) => t.id === 101)!,
+      { ...broken.tickets.find((t) => t.id === 104)!, customer_id: 'not a user' } as never,
+    ];
+    fake.use(broken);
+    for (let pass = 0; pass < 2; pass += 1) {
+      fake.requests.length = 0;
+      const run = await startImportRun(fx, 'import', window.id);
+      await drive(fx, run.id, { deps });
+      const row = await runRow(run.id);
+      expect(row).toMatchObject({ state: 'completed', stopReason: null });
+      // Before: failed source_shape_invalid on every run until the row read again.
+      expect(normalizeCounters(row.counters).tickets).toMatchObject({ failed: 0, skipped: 1, unchanged: 1 });
+      expect(await issuesOf(run.id)).toEqual(['row_unreadable:104:source_shape_invalid']);
+      expect((await ledger(fx.sourceId)).get('104')).toMatchObject({ state: 'imported', importedVersion, failureCode: null, attempts: 0 });
+      // Seen by the run: the deletions phase does not probe it, and it is never loaded.
+      expect(requested('/api/v1/tickets/104')).toEqual([]);
+      expect(requested('/api/v1/ticket_articles/by_ticket/104')).toEqual([]);
+    }
+    expect((await importedTickets(fx)).get('104')).toEqual(ticketBefore);
+
+    // A row that was never imported still fails as before.
+    const fresh = loadZammadFixtures('base');
+    fresh.tickets = [
+      ...broken.tickets,
+      { ...fresh.tickets.find((t) => t.id === 113)!, id: 150, number: '31050', customer_id: 'not a user' } as never,
+    ];
+    fake.use(fresh);
+    const last = await startImportRun(fx, 'import', window.id);
+    await drive(fx, last.id, { deps });
+    expect((await ledger(fx.sourceId)).get('150')).toMatchObject({ state: 'failed', failureCode: 'source_shape_invalid' });
+    expect(await issuesOf(last.id)).toEqual(['failed:150:source_shape_invalid', 'row_unreadable:104:source_shape_invalid']);
+  }, CASE_TIMEOUT);
+
   runDb('a page that shifts between two slices skips no ticket: the runner resumes after the last row, not at a position (review 8)', async () => {
     const fx = await seedZammad();
     const window = await openWindow(fx);

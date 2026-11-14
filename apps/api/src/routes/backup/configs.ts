@@ -37,6 +37,7 @@ import {
 } from '@breeze/shared';
 import { resolveScopedOrgId } from './helpers';
 import { canonicalizeS3CredentialFields, configSchema, configUpdateSchema, validateS3Details } from './schemas';
+import { assertSupportedBackupDestination, localDestinationTargetError } from '../../services/localStoreTargets';
 
 import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
@@ -249,6 +250,12 @@ configsRoutes.post(
       // #6511: canonicalize accessKeyId/secretAccessKey to accessKey/secretKey
       // — see canonicalizeS3CredentialFields for why.
       canonicalizeS3CredentialFields(details);
+    }
+    // Network share local destinations are not supported (the schema refuses
+    // them too; this is the check that stays with the write).
+    const createTargetError = localDestinationTargetError(payload.provider, details);
+    if (createTargetError) {
+      return c.json({ error: createTargetError }, 400);
     }
     const encryption = payload.encryption ?? false;
     try {
@@ -497,6 +504,14 @@ configsRoutes.patch(
         // wins).
         canonicalizeS3CredentialFields(nextProviderConfig);
       }
+      // A save that writes the destination settings must leave them on a
+      // supported target, including a saved destination already on a share.
+      if (payload.details !== undefined) {
+        const updateTargetError = localDestinationTargetError(current.provider, nextProviderConfig);
+        if (updateTargetError) {
+          return c.json({ error: updateTargetError }, 400);
+        }
+      }
       const nextEncryption = payload.encryption ?? current.encryption;
 
       try {
@@ -691,6 +706,8 @@ configsRoutes.post(
 
   try {
     if (row.provider === 'local') {
+      // A saved destination on a network share is reported, never probed.
+      assertSupportedBackupDestination({ provider: row.provider, providerConfig: details });
       if (!(await probeLocalConfig(orgId, row.id))) {
         status = 'unsupported';
         errorMessage = LOCAL_NOT_TESTED_MESSAGE;

@@ -38,6 +38,8 @@ import {
 } from "./releaseSource";
 import { captureException } from "./sentry";
 import {
+  ResponseDeadlineError,
+  ResponseHeadersTimeoutError,
   ResponseTooLargeError,
   SsrfBlockedError,
   safeFetchFollowingRedirects,
@@ -999,6 +1001,14 @@ function unpublishedPinnedReleaseHint(pinnedTag: string, err: unknown): string {
   );
 }
 
+function pinnedReleaseNetworkFailureHint(pinnedTag: string, err: unknown): string {
+  return (
+    `[binarySync] GitHub sync of pinned release ${pinnedTag} FAILED (${describeFetchFailure(err)}). ` +
+    `This looks transient (a network error or a GitHub outage), not a missing release: nothing was registered for ${pinnedTag} yet, ` +
+    `so the fleet stays on the last successfully synced release until a sync succeeds.`
+  );
+}
+
 /**
  * Server-only boots (the image carries BREEZE_BINARIES_VERSION) never write
  * agent_versions, in either binary-source mode: the binaries they pair with
@@ -1255,6 +1265,161 @@ async function syncLocalBinariesReadOnly(args: {
   );
 }
 
+// ── Boot-time GitHub sync: retry network failures (#11641) ─────────────────
+//
+// In BINARY_SOURCE=github mode a failed boot sync is non-fatal: nothing is
+// registered for the release and the fleet stays on the last synced one. A
+// NETWORK failure (a stalled connect, a reset, a resolver blip) is usually
+// gone a minute later, but boot ran the sync once and never again, so the
+// fleet stayed behind until some later restart happened to get through. Boot
+// now hands a network failure to this bounded background retry. It runs off
+// the boot path on purpose: the HTTP server starts only after boot sync
+// returns, so retrying inline would hold the whole API down for minutes.
+
+/** Wait before each retry; the length is the retry budget. ~15.5 minutes in all. */
+export const GITHUB_SYNC_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000, 120_000, 240_000, 480_000];
+
+const TRANSIENT_NETWORK_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "EHOSTDOWN",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "EPIPE",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+]);
+
+/** Messages `safeFetch` uses for an idle timeout or a peer that went away. */
+const TRANSIENT_NETWORK_MESSAGES = [
+  /^request timed out after \d+ms$/,
+  /^connection closed before a response was received$/,
+  /^response closed before the body was complete$/,
+  /^socket hang up$/,
+];
+
+/** A GitHub gateway error (`syncFromGitHubRelease`): an outage, usually brief. */
+const TRANSIENT_GITHUB_STATUS = /^GitHub API error: (502|503|504)$/;
+
+/**
+ * Whether `err` is a transient failure worth retrying: a timeout, a refused or
+ * reset connection, an unreachable host, a resolver failure, or a GitHub
+ * 502/503/504. Policy refusals (`SsrfBlockedError`), oversized bodies and
+ * other HTTP statuses (404 unpublished, 403 rate limit) are not: a retry
+ * within minutes would get the same answer. Follows `cause` and
+ * `AggregateError`.
+ */
+export function isTransientSyncFailure(err: unknown, depth = 0): boolean {
+  if (!(err instanceof Error) || depth > 5) return false;
+  if (TRANSIENT_GITHUB_STATUS.test(err.message)) return true;
+  if (err instanceof SsrfBlockedError || err instanceof ResponseTooLargeError) return false;
+  if (err instanceof ResponseHeadersTimeoutError || err instanceof ResponseDeadlineError) return true;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (typeof code === "string" && TRANSIENT_NETWORK_CODES.has(code)) return true;
+  if (TRANSIENT_NETWORK_MESSAGES.some((re) => re.test(err.message))) return true;
+  if (err instanceof AggregateError && err.errors.some((e) => isTransientSyncFailure(e, depth + 1))) {
+    return true;
+  }
+  return isTransientSyncFailure(err.cause, depth + 1);
+}
+
+let githubSyncRetryTimer: NodeJS.Timeout | null = null;
+let githubSyncRetryRunning = false;
+/** Set by stopGithubSyncRetry(): an attempt already in flight schedules nothing further. */
+let githubSyncRetryStopped = false;
+
+/** True while a background retry of the boot-time GitHub sync is scheduled or running. */
+export function isGithubSyncRetryPending(): boolean {
+  return githubSyncRetryTimer !== null || githubSyncRetryRunning;
+}
+
+/**
+ * Cancels the retry (shutdown, tests): clears a scheduled attempt, and an
+ * attempt already in flight finishes without scheduling another.
+ */
+export function stopGithubSyncRetry(): void {
+  githubSyncRetryStopped = true;
+  if (githubSyncRetryTimer) clearTimeout(githubSyncRetryTimer);
+  githubSyncRetryTimer = null;
+}
+
+/**
+ * Boot's syncBinaries() failed with `err`. In BINARY_SOURCE=github mode, a
+ * network failure schedules a bounded background retry; anything else is left
+ * as boot already reported it. Returns whether a retry is pending.
+ */
+export function scheduleGithubSyncRetry(err: unknown): boolean {
+  if (getBinarySource() !== "github" || !isTransientSyncFailure(err)) return false;
+  if (isGithubSyncRetryPending()) return true;
+  githubSyncRetryStopped = false;
+  scheduleGithubSyncAttempt(1, err);
+  return true;
+}
+
+function scheduleGithubSyncAttempt(retry: number, lastErr: unknown): void {
+  const total = GITHUB_SYNC_RETRY_DELAYS_MS.length;
+  const delayMs = GITHUB_SYNC_RETRY_DELAYS_MS[retry - 1]!;
+  const tag = pinnedGithubReleaseTag() ?? "latest";
+  console.warn(
+    `[binarySync] GitHub sync of release ${tag} failed with a transient error (${describeFetchFailure(lastErr)}); ` +
+      `retry ${retry} of ${total} in ${delayMs / 1000}s`,
+  );
+  githubSyncRetryTimer = setTimeout(() => {
+    githubSyncRetryTimer = null;
+    runGithubSyncRetry(retry).catch((err: unknown) => {
+      // runGithubSyncRetry handles its own failures; this only catches a bug
+      // in that handling, which must not surface as an unhandled rejection.
+      console.error("[binarySync] GitHub sync retry crashed:", err);
+    });
+  }, delayMs);
+  githubSyncRetryTimer.unref?.();
+}
+
+async function runGithubSyncRetry(retry: number): Promise<void> {
+  const total = GITHUB_SYNC_RETRY_DELAYS_MS.length;
+  const tag = pinnedGithubReleaseTag() ?? "latest";
+  githubSyncRetryRunning = true;
+  try {
+    console.log(`[binarySync] Retrying GitHub sync of release ${tag} (retry ${retry} of ${total})`);
+    await syncBinaries();
+    console.log(`[binarySync] GitHub sync of release ${tag} succeeded on retry ${retry}`);
+  } catch (err) {
+    if (!isTransientSyncFailure(err)) {
+      console.error(
+        `[binarySync] GitHub sync retry ${retry} of ${total} for release ${tag} failed, and not a network failure; ` +
+          `not retrying again: ${describeFetchFailure(err)}`,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        area: "binary_sync_github_retry",
+      });
+      return;
+    }
+    if (githubSyncRetryStopped) return;
+    if (retry < total) {
+      scheduleGithubSyncAttempt(retry + 1, err);
+      return;
+    }
+    const totalMinutes = Math.round(GITHUB_SYNC_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0) / 60_000);
+    const register = tag === "latest"
+      ? "POST /api/v1/agent-versions/sync-github"
+      : `POST /api/v1/agent-versions/sync-github?version=${tag}`;
+    console.error(
+      `[binarySync] GitHub sync of release ${tag} still failing after ${total} retries over about ${totalMinutes} minutes ` +
+        `(last error: ${describeFetchFailure(err)}). No agent binaries were registered for this release, so the fleet ` +
+        `stays on the last successfully synced release. Check outbound HTTPS from this host to the release host, ` +
+        `then register the release with ${register} or restart the API.`,
+    );
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      area: "binary_sync_github_retry",
+    });
+  } finally {
+    githubSyncRetryRunning = false;
+  }
+}
+
 export async function syncBinaries(): Promise<void> {
   // Set only in server-only release images (see getPairedBinariesVersion);
   // undefined for every full-release image, which leaves this function's
@@ -1281,7 +1446,15 @@ export async function syncBinaries(): Promise<void> {
       // promoted row, so that particular mismatch is gone; the reason to
       // refuse the fallback is now intent, not divergence.)
       // Tell the operator what to do instead.
-      if (pinnedTag) console.error(unpublishedPinnedReleaseHint(pinnedTag, err));
+      // A transient failure says nothing about whether the release exists, so it
+      // gets its own wording; boot retries it (scheduleGithubSyncRetry).
+      if (pinnedTag) {
+        console.error(
+          isTransientSyncFailure(err)
+            ? pinnedReleaseNetworkFailureHint(pinnedTag, err)
+            : unpublishedPinnedReleaseHint(pinnedTag, err),
+        );
+      }
       throw err;
     }
     // Safety net: with no pinned version syncFromGitHub() hits /releases/latest

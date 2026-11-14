@@ -186,6 +186,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // #5861 PR 2: the per-asset list opens the same org-scoped context as the
   // overview, so it must opt out of the portal request transaction too.
   { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/assets\/?$/ },
+  // CPEV-W2: the site filter options and the per-site health summary open the
+  // same org-scoped context (with currentPartnerId) as the overview, so they
+  // opt out too; otherwise the portal auth context (currentPartnerId null)
+  // wins and the handler's own context never takes effect.
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/sites\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/sites\/health\/?$/ },
   // #8973 W4 Gate B1: portal ticket create. portalTicketsEnabledMiddleware
   // opens one org-scoped context with currentPartnerId (the validated owning
   // partner) BEFORE its enable_tickets read, so createTicket's business-calendar

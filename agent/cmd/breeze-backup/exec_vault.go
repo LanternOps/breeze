@@ -20,7 +20,7 @@ import (
 func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
 	vaultMgr := vaultState.Get()
 	if vaultMgr == nil {
-		return fail("vault is not configured on this device")
+		return fail(vaultState.unavailableMessage())
 	}
 	var p struct {
 		VaultID    string `json:"vaultId"`
@@ -70,7 +70,7 @@ func sameVaultPath(a, b string) bool {
 func execVaultStatus(vaultState *vaultManagerRef) backupipc.BackupCommandResult {
 	vaultMgr := vaultState.Get()
 	if vaultMgr == nil {
-		return fail("vault is not configured on this device")
+		return fail(vaultState.unavailableMessage())
 	}
 	status, err := vaultMgr.GetStatus()
 	return marshalResult(status, err)
@@ -114,6 +114,7 @@ func execVaultConfigure(payload json.RawMessage, mgr *backup.BackupManager, vaul
 
 	newVaultMgr, err := buildVaultManager(cfg, mgr)
 	if err != nil {
+		vaultState.SetStartupError(err)
 		return fail("failed to initialize vault manager: " + err.Error())
 	}
 	vaultState.Set(newVaultMgr)
@@ -183,6 +184,10 @@ func autoSyncToVault(backupResult string, vaultState *vaultManagerRef, conn *ipc
 	}
 	vaultMgr := vaultState.Get()
 	if vaultMgr == nil {
+		if err := vaultState.StartupError(); err != nil {
+			slog.Warn("vault auto-sync skipped: vault could not start", "snapshotId", result.Snapshot.ID, "error", err.Error())
+			emitVaultAutoSyncResult(conn, result.Snapshot.ID, nil, fmt.Errorf("vault could not start: %w", err))
+		}
 		return
 	}
 	slog.Info("vault auto-sync starting", "snapshotId", result.Snapshot.ID)

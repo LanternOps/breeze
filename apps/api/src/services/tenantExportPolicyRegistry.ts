@@ -400,7 +400,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // vanished from the tenant export (#3257 W05). field_key is denormalized
   // here precisely so this projection is readable without a join.
   "device_custom_field_values": tablePolicy("org_id", {"included":["id","device_id","org_id","definition_id","field_key","value_text","value_number","value_bool","value_date","source","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "device_disks": tablePolicy("org_id", {"included":["id","device_id","org_id","mount_point","device","fs_type","total_gb","used_gb","free_gb","used_percent","health","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "device_disks": tablePolicy("org_id", {"included":["id","device_id","org_id","mount_point","device","fs_type","total_gb","used_gb","free_gb","used_percent","health","is_os_volume","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "device_event_logs": tablePolicy("org_id", {"included":["id","device_id","org_id","timestamp","level","category","source","event_id","message","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"],"specific":{"search_vector":{"decision":"exclude","rationale":"PostgreSQL tsvector search-index data is derived from event content and is not needed in a portable tenant export."}}}),
   // `system` and `external_id` are tenant IDENTIFIERS, not secrets — the same
   // classification organization_external_links and contact_external_links carry.

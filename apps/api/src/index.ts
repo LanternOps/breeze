@@ -371,7 +371,13 @@ import {
   attributeExtensionError,
   extensionRootsSnapshot,
 } from './extensions/faultAttribution';
-import { isBinarySyncDeferred, stopDeferredBinarySyncRetry, syncBinaries } from './services/binarySync';
+import {
+  isBinarySyncDeferred,
+  scheduleGithubSyncRetry,
+  stopDeferredBinarySyncRetry,
+  stopGithubSyncRetry,
+  syncBinaries
+} from './services/binarySync';
 import { syncBuiltinYaraPack } from './services/yaraBuiltinPack';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
@@ -1507,8 +1513,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   stopWedgedBackendMonitor();
   stopRedisMemoryMonitor();
   // #11731: a deferred binary registration must not start against a pool
-  // that is draining.
+  // that is draining. Nor must a network retry of the boot sync (#11641).
   stopDeferredBinarySyncRetry();
+  stopGithubSyncRetry();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -2003,6 +2010,10 @@ async function bootstrap(): Promise<void> {
       throw err;
     }
     console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
+    // #11641: a network failure is retried in the background with backoff
+    // (logged per attempt, explicit error when the retries run out). Not
+    // inline: the server only starts listening after this returns.
+    scheduleGithubSyncRetry(err);
   }
 
   // #6263 W03b: upsert the built-in YARA pack from this release's signed

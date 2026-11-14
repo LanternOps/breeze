@@ -160,6 +160,11 @@ func extractWindowsBuild(v string) string {
 	return v
 }
 
+// cleanHardwareIdentityValue drops firmware placeholder serials, vendors and
+// models. The API refuses the same set as a reinstall match key
+// (PLACEHOLDER_IDENTITY_VALUES in
+// apps/api/src/services/reinstallCandidates/hardwareIdentity.ts); its test
+// parses this switch and fails when the two lists differ.
 func cleanHardwareIdentityValue(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

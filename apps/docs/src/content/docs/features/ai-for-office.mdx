@@ -87,6 +87,8 @@ On an open received message, the pane shows, top to bottom:
 3. Sign in with the technician's Breeze email, password, and MFA code. The account must have an **authenticator app (TOTP)** factor — SMS or passkey-only accounts are refused with an "MFA enrollment required" message and the technician is asked to enrol a TOTP factor in Breeze first.
 </Steps>
 
+This sign-in follows the same rules as signing in to Breeze. Wrong passwords count toward the account's sign-in lockout (`LOGIN_ACCOUNT_LOCKOUT_MAX`), a locked account is refused, and the partner's SSO requirement and IP allowlist apply. A wrong password, a locked account, an account that is not a technician, a suspended partner and a partner that requires SSO all get the same "invalid credentials" answer, after the same minimum response time as sign-in; the audit log records the actual reason. Verification codes are limited per account as at sign-in (five per five minutes).
+
 <Aside type="caution" title="Upgrading to v0.112.0: every technician binding is revoked">
   Bindings created before v0.112.0 do not record the MFA state they were created under, so the upgrade revokes all of them. The next time a bound technician opens the pane it reports the binding as revoked; they simply repeat the sign-in above once (with a TOTP code) to relink. A binding is also revoked automatically from now on whenever the technician's MFA factor is reset or their password/session epoch changes.
 </Aside>

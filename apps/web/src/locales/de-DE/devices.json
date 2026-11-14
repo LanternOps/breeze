@@ -1661,6 +1661,12 @@
     }
   },
   "deviceList": {
+    "diskUsage": "Festplattenbelegung",
+    "diskUsageScope": "Angezeigte Datenträger",
+    "allDisks": "Alle Datenträger",
+    "osDiskOnly": "Nur OS-Disk",
+    "sortByDiskUsage": "Nach Festplattenbelegung sortieren (höchste angezeigte Belegung)",
+    "osDiskUsageUnavailable": "Der Agent hat das Systemlaufwerk noch nicht erkannt.",
     "selectedComposition": "{{agent}} Agent, {{network}} Netzwerk",
     "agentOnlyBulkAction": "Gilt nur für Agent-Geräte",
     "eligibleOfSelected": "{{count}} von {{total}}",

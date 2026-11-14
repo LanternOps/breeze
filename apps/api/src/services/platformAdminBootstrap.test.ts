@@ -6,11 +6,24 @@ const updateMocks = vi.hoisted(() => {
     setSpy: vi.fn(),
     whereSpy: vi.fn(),
     returningSpy: vi.fn(),
+    insertValuesSpy: vi.fn(),
+    selectResults: [] as Array<Array<Record<string, unknown>>>,
   };
 });
 
 vi.mock('../db', () => ({
   db: {
+    insert: vi.fn(() => ({
+      values: (values: unknown) => {
+        updateMocks.insertValuesSpy(values);
+        return Promise.resolve();
+      },
+    })),
+    select: vi.fn(() => ({
+      from: () => ({
+        where: () => Promise.resolve(updateMocks.selectResults.shift() ?? []),
+      }),
+    })),
     update: vi.fn(() => ({
       set: (values: unknown) => {
         updateMocks.setSpy(values);
@@ -32,10 +45,15 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  auditLogs: { id: 'audit_logs.id' },
   users: {
     id: 'users.id',
     email: 'users.email',
     isPlatformAdmin: 'users.isPlatformAdmin',
+    status: 'users.status',
+    emailVerifiedAt: 'users.emailVerifiedAt',
+    partnerId: 'users.partnerId',
+    orgId: 'users.orgId',
   },
 }));
 
@@ -57,6 +75,10 @@ describe('parseAdminEmails', () => {
     ]);
   });
 
+  it('lists each address once', () => {
+    expect(parseAdminEmails('a@x.com, A@X.com,b@x.com,a@x.com')).toEqual(['a@x.com', 'b@x.com']);
+  });
+
   it('drops blank entries from messy CSV', () => {
     expect(parseAdminEmails('a@x.com,, ,b@x.com,')).toEqual(['a@x.com', 'b@x.com']);
   });
@@ -70,6 +92,7 @@ describe('bootstrapPlatformAdmins', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     updateMocks.returningResult = [];
+    updateMocks.selectResults = [];
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
   });
@@ -108,6 +131,15 @@ describe('bootstrapPlatformAdmins', () => {
 
     expect(db.update).toHaveBeenCalledTimes(1);
     expect(updateMocks.setSpy).toHaveBeenCalledWith({ isPlatformAdmin: true });
+    expect(updateMocks.insertValuesSpy).toHaveBeenCalledWith([
+      expect.objectContaining({
+        action: 'platform_admin.bootstrap_promote',
+        actorType: 'system',
+        resourceType: 'user',
+        resourceId: 'u1',
+        result: 'success',
+      }),
+    ]);
     expect(logSpy).toHaveBeenCalledWith(
       expect.stringContaining('promoted 1 user')
     );
@@ -135,6 +167,7 @@ describe('bootstrapPlatformAdmins', () => {
     await bootstrapPlatformAdmins();
 
     expect(db.update).toHaveBeenCalledTimes(1);
+    expect(db.insert).not.toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalledWith(
       expect.stringContaining('promoted 0 user')
     );

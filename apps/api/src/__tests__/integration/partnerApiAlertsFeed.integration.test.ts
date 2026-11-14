@@ -9,7 +9,7 @@ import { partnerApiAuthMiddleware } from '../../middleware/partnerApiAuth';
 import { partnerAlertRoutes } from '../../routes/partnerApi/alerts';
 import { partnerAlertFeedEnvelopeSchema } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
-import { createOrganization, createPartner, createSite, createUser, userEpochs } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -58,6 +58,7 @@ async function seed() {
     updatedBy: user.id,
   }).returning();
   if (!principal) throw new Error('principal seed failed');
+  await ensurePartnerServicePrincipalOwner(user.id, partner.id);
   const { rawKey } = await issuePartnerServicePrincipalKey(admin as unknown as Database, {
     partnerServicePrincipalId: principal.id,
     partnerId: partner.id,
