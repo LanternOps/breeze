@@ -15,7 +15,7 @@
  */
 import './setup';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { and, eq, notInArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { agentVersions, manifestSigningKeys, users } from '../../db/schema';
@@ -37,6 +37,8 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // so remove exactly the key this suite created.
 let preexistingKeyIds: string[] = [];
 let deployKeyId = '';
+// `agent_versions` is not truncated between tests either; drop this suite's rows.
+const insertedPlatforms: string[] = [];
 
 beforeAll(async () => {
   if (!process.env.DATABASE_URL) return;
@@ -47,6 +49,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!process.env.DATABASE_URL) return;
+  if (insertedPlatforms.length > 0) {
+    await getTestDb().delete(agentVersions).where(inArray(agentVersions.platform, insertedPlatforms));
+  }
   await getTestDb().delete(manifestSigningKeys).where(
     preexistingKeyIds.length > 0 ? notInArray(manifestSigningKeys.keyId, preexistingKeyIds) : sql`true`,
   );
@@ -90,6 +95,7 @@ async function partnerScopedPlatformAdmin() {
 async function insertDeploySignedRow(opts: { signature?: string } = {}) {
   const version = `0.0.${randomBytes(3).readUIntBE(0, 3)}`;
   const platform = `promote-${randomBytes(4).toString('hex')}`;
+  insertedPlatforms.push(platform);
   const downloadUrl = `https://example.invalid/agent/${version}/${platform}`;
   const checksum = randomBytes(32).toString('hex');
   const size = 1234;
