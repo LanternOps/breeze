@@ -67,33 +67,32 @@ ticketImportCreatedContactRoutes.post(
     if ('response' in caller) return caller.response;
     const { auth, partnerId } = caller;
     const { id } = c.req.valid('param');
+    // Each removed contact is audited as soon as its own transaction commits
+    // (onRemoved), and the summary row is written in `finally`, so a call that
+    // throws partway still leaves a `contact.delete` row for every contact it
+    // removed and one summary row saying how it ended (§5.13 keeps the live
+    // audit for removal).
+    const removedSoFar: string[] = [];
+    let result: Awaited<ReturnType<typeof removeCreatedContacts>> | null = null;
+    let failed = false;
     try {
       // The source lock serializes with a run's start (startRun locks it too):
       // 409 while a run is active, and a run started mid-batch stops the call.
-      const result = await removeCreatedContacts({
+      result = await removeCreatedContacts({
         partnerId,
         sourceId: id,
         // A human removes customer data: the destination provenance of a technician.
         actor: { userId: auth.user?.id ?? null, destinationSource: 'technician' },
         transaction: (fn) => withAuthDbAccessContext(auth, fn),
-      });
-      for (const contact of result.removed) {
-        writeContactAudit(c as never, {
-          orgId: contact.orgId,
-          action: 'contact.delete',
-          contactId: contact.contactId,
-          contactName: contact.name,
-          details: { isPrimary: contact.isPrimary, via: 'ticket_import.created_contacts_remove', sourceId: id },
-        });
-      }
-      writeRouteAudit(c as never, {
-        orgId: null,
-        action: 'ticket_import.created_contacts_removed',
-        resourceType: 'ticket_import_source',
-        resourceId: id,
-        details: {
-          partnerId, removed: result.removed.length, skipped: result.skipped, skippedBy: result.skippedBy,
-          remaining: result.remaining, stoppedBy: result.stoppedBy,
+        onRemoved: (contact) => {
+          removedSoFar.push(contact.contactId);
+          writeContactAudit(c as never, {
+            orgId: contact.orgId,
+            action: 'contact.delete',
+            contactId: contact.contactId,
+            contactName: contact.name,
+            details: { isPrimary: contact.isPrimary, via: 'ticket_import.created_contacts_remove', sourceId: id },
+          });
         },
       });
       return c.json({
@@ -103,7 +102,26 @@ ticketImportCreatedContactRoutes.post(
         },
       });
     } catch (error) {
+      failed = true;
       return importErrorResponse(c, error);
+    } finally {
+      // Nothing removed and nothing finished (a 409 before the batch, a bad
+      // source): no summary row, as before.
+      if (result || removedSoFar.length > 0) {
+        writeRouteAudit(c as never, {
+          orgId: null,
+          action: 'ticket_import.created_contacts_removed',
+          resourceType: 'ticket_import_source',
+          resourceId: id,
+          result: failed ? 'failure' : 'success',
+          details: result
+            ? {
+              partnerId, removed: result.removed.length, skipped: result.skipped, skippedBy: result.skippedBy,
+              remaining: result.remaining, stoppedBy: result.stoppedBy,
+            }
+            : { partnerId, removed: removedSoFar.length, stoppedBy: 'error' },
+        });
+      }
     }
   },
 );

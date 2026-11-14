@@ -172,6 +172,13 @@ export type RemoveCreatedContactsInput = {
    */
   transaction: <T>(fn: () => Promise<T>) => Promise<T>;
   batch?: number;
+  /**
+   * Called right after each contact's own transaction commits, before the
+   * next one starts. The route writes the live `contact.delete` audit row
+   * here, so a removal stays audited even when a later contact (or the final
+   * count) throws and the call ends in an error.
+   */
+  onRemoved?: (contact: RemovedContact) => void;
   /** Tests only: runs after the batch is chosen, before each contact's transaction. */
   beforeContact?: (contactId: string) => Promise<void>;
 };
@@ -219,7 +226,10 @@ export async function removeCreatedContacts(input: RemoveCreatedContactsInput): 
       stoppedBy = 'run_active';
       break;
     }
-    if (step.kind === 'removed') removed.push(step.contact);
+    if (step.kind === 'removed') {
+      removed.push(step.contact);
+      input.onRemoved?.(step.contact);
+    }
   }
 
   const counts = await input.transaction(async () => {
