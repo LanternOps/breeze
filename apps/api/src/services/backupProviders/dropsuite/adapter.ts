@@ -19,7 +19,7 @@ export function __setDropsuiteClientFactoryForTests(factory: ClientFactory | nul
 function validateBaseUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    const allowed = ['dropsuite.us', 'dropsuite.com', 'dropmyemail.com'];
+    const allowed = ['dropsuite.us', 'dropsuite.com', 'dropsuite-au.com', 'dropmyemail.com'];
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
         || !allowed.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))
         || !url.pathname.startsWith('/api')) {
