@@ -745,3 +745,32 @@ describe('POST /support-sessions/:id/code — New code', () => {
     expect(updateSets).toHaveLength(0);
   });
 });
+
+describe('POST /support-sessions/:id/code — partner trust', () => {
+  it('applies the same partner-trust gate as create: a denied partner gets a 403 and no new code', async () => {
+    partnerTrustMode.mockReturnValue('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+    });
+    selectResults.push([liveRow()]);
+    selectResults.push([{ id: 'qs-org' }]);
+
+    try {
+      const res = await buildApp().request(`/support-sessions/${LIVE_ID}/code`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_PROBATION' }));
+      expect(evaluateCapability).toHaveBeenCalledWith('remote_control', expect.objectContaining({
+        partnerId: 'partner-1',
+        userId: 'user-1',
+        detail: { kind: 'support', reissue: true },
+      }));
+      expect(updateSets).toHaveLength(0);
+      expect(logSessionAudit).not.toHaveBeenCalled();
+    } finally {
+      partnerTrustMode.mockReturnValue('off');
+    }
+  });
+});

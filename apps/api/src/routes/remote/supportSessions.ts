@@ -20,7 +20,7 @@ import { getTrustedClientIp } from '../../services/clientIp';
 import { endSupportSession } from '../../services/quickSupportEnd';
 import { logSessionAudit } from './helpers';
 import { withAuthDbAccessContext } from '../../middleware/auth';
-import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
+import { assertSupportCodeMintAllowed, createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
 import { trustDenyBody } from '../../services/partnerTrust';
 
 export const supportSessionRoutes = new Hono();
@@ -420,6 +420,21 @@ supportSessionRoutes.post('/support-sessions/:id/code', async (c) => {
   const now = new Date();
   if (!isReissuable(session, now)) {
     return jsonError(c, 409, ERROR_CODES.CONFLICT, 'Support session can no longer take a new code');
+  }
+
+  // Same partner-trust gate as create: a fresh code is a fresh credential.
+  try {
+    await assertSupportCodeMintAllowed(auth.partnerId, auth.user.id, { reissue: true });
+  } catch (e) {
+    if (e instanceof RemoteSessionDeniedError) {
+      return c.json(trustDenyBody({
+        allow: false,
+        code: e.code,
+        capability: 'remote_control',
+        reason: e.reason,
+      }, false), 403);
+    }
+    throw e;
   }
 
   const code = generateSupportCode();
