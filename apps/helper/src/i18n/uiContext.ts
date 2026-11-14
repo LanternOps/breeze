@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
-import { applyBrandingColors, sanitizeBranding, type HelperBranding } from './branding';
+import { applyBrandingColors, isSecurityWindowHash, sanitizeBranding, type HelperBranding } from './branding';
 import { resolveLocale, translate, type MessageKey } from './index';
 
 /*
@@ -21,7 +21,8 @@ const listeners = new Set<() => void>();
 
 function set(next: UiContext): void {
   state = next;
-  applyBrandingColors(next.branding);
+  // Security windows never take tenant colours; `{}` also clears any already set.
+  applyBrandingColors(isSecurityWindowHash(window.location.hash) ? {} : next.branding);
   listeners.forEach((l) => l());
 }
 
