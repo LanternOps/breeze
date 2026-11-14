@@ -1,0 +1,27 @@
+{
+  "id": "thread-context-survives-pane",
+  "title": "Opening the pane on another page does not cut /wisp off from the earlier conversation",
+  "issue": 11672,
+  "expect": "known-red",
+  "door": "wisp",
+  "steps": [
+    { "name": "first", "type": "say", "approve": "none", "maxSec": 90,
+      "text": "Quick one before I start: how many devices does Harbor Legal have, and is any of them offline?" },
+    { "name": "to-pane", "type": "open", "door": "pane", "path": "/devices/{{device:NW-FS-01}}" },
+    { "name": "pane", "type": "say", "approve": "none", "maxSec": 90,
+      "text": "What's wrong with this one? One sentence." },
+    { "name": "back", "type": "open", "door": "wisp" },
+    { "name": "recall", "type": "say", "approve": "none", "maxSec": 90,
+      "text": "Quick check: what was the very first thing I asked you today? Quote it." }
+  ],
+  "checks": [
+    { "kind": "reply_matches", "step": "first", "flags": "i", "pattern": "\\b(2|3|two|three)\\b", "precondition": true,
+      "note": "the first question was answered on /wisp" },
+    { "kind": "reply_matches", "step": "pane", "pattern": "\\S{3,}", "precondition": true,
+      "note": "the pane answered" },
+    { "kind": "reply_matches", "step": "recall", "flags": "i", "pattern": "Harbor Legal",
+      "note": "#11672: Wisp should recall the first question asked on /wisp" },
+    { "kind": "reply_not_matches", "step": "recall", "flags": "i", "pattern": "what'?s wrong with this one",
+      "note": "#11672: Wisp names the pane question as the first one" }
+  ]
+}

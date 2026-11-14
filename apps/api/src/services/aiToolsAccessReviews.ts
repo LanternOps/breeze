@@ -19,16 +19,17 @@
  * `reviewerId` must be a member of the review's own scope. The whole tool is
  * `AGENT_HUMAN_ONLY_TOOLS` (identity governance; plan exposure table).
  */
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import {
-  accessReviewItems, accessReviews, organizationUsers, partnerUsers, permissions, rolePermissions, roles, users,
+  accessReviewItems, accessReviews, organizationUsers, partnerUsers, roles, users,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { canSelfDecideAccessReviewItem, type AccessReviewOwner } from './accessReviewSelfDecision';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { getRolesPermissionGrants, type PermissionGrant } from './roleInheritance';
 import { canMutateOrgWideGovernance } from './siteCeilingAccess';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { isRestrictedCaller } from './aiToolsNetworkMonitoringShared';
@@ -158,14 +159,17 @@ async function handle(input: Record<string, unknown>, auth: AuthContext): Promis
     const pageItems = items.slice(page.offset, page.offset + page.limit);
     // Permissions once per role (not per item), so a large review stays inside the result budget.
     const roleIds = [...new Set(pageItems.map((item) => item.roleId))];
-    const rolePerms = roleIds.length
-      ? await db.select({ roleId: rolePermissions.roleId, resource: permissions.resource, action: permissions.action })
-        .from(rolePermissions).innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-        .where(inArray(rolePermissions.roleId, roleIds))
-      : [];
+    // Runtime grants (own + inherited, #9600/#11702), resolved once for the page's roles.
+    const grantsByRole = roleIds.length > 0
+      ? await getRolesPermissionGrants(roleIds)
+      : new Map<string, PermissionGrant[]>();
     const roleMap: Record<string, { name: string; permissions: string[] }> = {};
-    for (const item of pageItems) roleMap[item.roleId] ??= { name: item.roleName, permissions: [] };
-    for (const row of rolePerms) roleMap[row.roleId]?.permissions.push(`${row.resource}:${row.action}`);
+    for (const item of pageItems) {
+      roleMap[item.roleId] ??= {
+        name: item.roleName,
+        permissions: (grantsByRole.get(item.roleId) ?? []).map((g) => `${g.resource}:${g.action}`),
+      };
+    }
     let selfDecision: 'blocked' | 'single_admin_exception' | null = null;
     if (review.status !== 'completed' && items.some((item) => item.userId === auth.user.id)) {
       selfDecision = (await canSelfDecideAccessReviewItem(owner, auth.user.id)) ? 'single_admin_exception' : 'blocked';

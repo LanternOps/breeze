@@ -13,6 +13,7 @@ import {
   getOrgPolicy,
   isClientUserPermitted,
   requireClientAiEnabled,
+  resolveClientTranscriptRetention,
 } from './clientAiPolicy';
 
 const ORG_ID = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -165,5 +166,40 @@ describe('requireClientAiEnabled', () => {
   it('returns null when disabled or absent', async () => {
     mockPolicyRow(undefined);
     expect(await requireClientAiEnabled(ORG_ID)).toBeNull();
+  });
+});
+
+describe('resolveClientTranscriptRetention (#4342 W4)', () => {
+  function captureSelect(row: object | undefined) {
+    const calls: { projection?: Record<string, unknown>; where?: unknown } = {};
+    dbSelectMock.mockImplementation((projection: Record<string, unknown>) => {
+      calls.projection = projection;
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn((w: unknown) => {
+            calls.where = w;
+            return { limit: vi.fn(() => Promise.resolve(row ? [row] : [])) };
+          }),
+        })),
+      };
+    });
+    return calls;
+  }
+
+  it("returns the org row's retention_days", async () => {
+    const calls = captureSelect({ retentionDays: 30 });
+    expect(await resolveClientTranscriptRetention(ORG_ID)).toBe(30);
+    expect(Object.keys(calls.projection ?? {})).toEqual(['retentionDays']);
+    expect(calls.where).toBeDefined();
+  });
+
+  it('returns null (keep forever) when the row has no window', async () => {
+    captureSelect({ retentionDays: null });
+    expect(await resolveClientTranscriptRetention(ORG_ID)).toBeNull();
+  });
+
+  it('returns null when the org has no policy row (no partner fallback)', async () => {
+    captureSelect(undefined);
+    expect(await resolveClientTranscriptRetention(ORG_ID)).toBeNull();
   });
 });

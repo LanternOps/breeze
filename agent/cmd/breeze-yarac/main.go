@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -370,10 +371,23 @@ func cmdScan(args []string, stdout, stderr io.Writer) int {
 		<-sampled
 		return code
 	}
+	// The agent's walk takes absolute roots only; on the command line a
+	// relative root means "relative to the current directory".
+	roots := make([]string, 0, fs.NArg())
+	for _, arg := range fs.Args() {
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			close(stop)
+			<-sampled
+			_, _ = fmt.Fprintf(stderr, "scan root %q: %v\n", arg, err)
+			return exitUsage
+		}
+		roots = append(roots, abs)
+	}
 	m := yarascan.NewMatcherFromEntry(entry)
 	opts := security.WalkOptions{Workers: *workers, MaxFileSize: int64(*maxFileMb) << 20}
 	scanStart := time.Now()
-	res, scanErr := security.WalkAndMatch(context.Background(), fs.Args(), m, opts)
+	res, scanErr := security.WalkAndMatch(context.Background(), roots, m, opts)
 	duration := time.Since(scanStart)
 	close(stop)
 	<-sampled

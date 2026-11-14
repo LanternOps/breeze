@@ -77,7 +77,7 @@ func winValidate(ctx context.Context, r *run) error {
 	checked, mismatched := 0, []string{}
 	for i := 0; i < len(withSum); i += step {
 		f := withSum[i]
-		sum, err := backup.SHA256File(filepath.Join(r.rootVolume, backup.RestoreKey(f)))
+		sum, err := hashTreeFile(r.rootVolume, backup.RestoreKey(f))
 		if err != nil || sum != f.Checksum {
 			mismatched = append(mismatched, backup.RestoreSourceKey(f))
 		}
@@ -91,7 +91,7 @@ func winValidate(ctx context.Context, r *run) error {
 	// rebuilt root volume; a vhdx: target's work dir is on the host and Run
 	// removes it once the rebuild completes.
 	if r.opts.Target.Kind == TargetDisk && r.opts.WorkRoot == "" {
-		if err := os.RemoveAll(filepath.Join(r.rootVolume, "$breeze-rebuild-work")); err != nil {
+		if err := os.RemoveAll(filepath.Join(r.rootVolume, winRestoreWorkDir)); err != nil {
 			r.warn("restore work dir not removed: %v", err)
 		}
 	}

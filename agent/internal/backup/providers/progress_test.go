@@ -49,7 +49,7 @@ func TestLocalProvider_DownloadContext_ReportsProgress(t *testing.T) {
 	if err := os.WriteFile(src, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p := NewLocalProvider(t.TempDir())
+	p := privateTestLocalProvider(t, t.TempDir())
 	for _, key := range []string{"s/files/plain.txt", "s/files/packed.txt.gz"} {
 		if err := p.Upload(src, key); err != nil {
 			t.Fatalf("upload %s: %v", key, err)

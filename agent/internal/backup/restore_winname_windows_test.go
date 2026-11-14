@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // TestRestoreFromSnapshot_RefusesInvalidWindowsNames: manifest entries whose
@@ -19,7 +17,7 @@ import (
 // or space) are reported failed with invalid_windows_name; every other entry
 // restores, and no stream or stripped alias is written.
 func TestRestoreFromSnapshot_RefusesInvalidWindowsNames(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	snapshotID := "winname-snap"
 	prefix := filepath.Join("snapshots", snapshotID)
 

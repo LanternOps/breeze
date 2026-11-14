@@ -3,10 +3,9 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, and, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from '../../services/guardedS3Client';
+import { apiLocalBackupUnavailableReason, probeApiLocalBackupDestination } from '../../services/apiLocalBackupStorage';
 import { assertSafeUrl, SsrfBlockedError } from '../../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { db, withDbTransaction } from '../../db';
@@ -38,6 +37,7 @@ import {
 } from '@breeze/shared';
 import { resolveScopedOrgId } from './helpers';
 import { canonicalizeS3CredentialFields, configSchema, configUpdateSchema, validateS3Details } from './schemas';
+import { assertSupportedBackupDestination, localDestinationTargetError } from '../../services/localStoreTargets';
 
 import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
@@ -74,16 +74,28 @@ function buildCapabilityState(
   };
 }
 
-async function probeLocalConfig(details: Record<string, unknown>): Promise<void> {
-  const rootPath = typeof details.path === 'string' ? details.path : '';
-  if (!rootPath.trim()) {
-    throw new Error('Local backup path is not configured');
-  }
+const LOCAL_NOT_TESTED_MESSAGE =
+  'Local destinations are not tested from this server: API-side local storage (BACKUP_LOCAL_ROOT) is not configured. '
+  + 'Agents write to the destination\'s Local Path on the device.';
+const LOCAL_DIRECTORY_MISSING_MESSAGE =
+  'The API-side directory for this destination does not exist. Create <BACKUP_LOCAL_ROOT>/<organization ID>/<configuration ID>/ on every API and worker server.';
+const LOCAL_DIRECTORY_REFUSED_MESSAGE =
+  'The API-side directory for this destination cannot be used. It must be a directory the API can read and write, with no symbolic links below BACKUP_LOCAL_ROOT.';
 
-  await mkdir(rootPath, { recursive: true });
-  const probePath = join(rootPath, `.breeze-probe-${randomUUID()}`);
-  await writeFile(probePath, 'breeze-backup-probe');
-  await rm(probePath, { force: true });
+/**
+ * Tests the destination's API-side directory. Returns false when this server
+ * has no API-side local storage configured (nothing to test here); throws a
+ * failure message when the directory is missing or cannot be used.
+ */
+async function probeLocalConfig(orgId: string, configId: string): Promise<boolean> {
+  try {
+    await probeApiLocalBackupDestination(orgId, configId);
+    return true;
+  } catch (error) {
+    const reason = apiLocalBackupUnavailableReason(error);
+    if (reason === 'not_configured') return false;
+    throw new Error(reason === 'missing' ? LOCAL_DIRECTORY_MISSING_MESSAGE : LOCAL_DIRECTORY_REFUSED_MESSAGE);
+  }
 }
 
 async function probeS3Config(rawDetails: Record<string, unknown>): Promise<void> {
@@ -238,6 +250,12 @@ configsRoutes.post(
       // #6511: canonicalize accessKeyId/secretAccessKey to accessKey/secretKey
       // — see canonicalizeS3CredentialFields for why.
       canonicalizeS3CredentialFields(details);
+    }
+    // Network share local destinations are not supported (the schema refuses
+    // them too; this is the check that stays with the write).
+    const createTargetError = localDestinationTargetError(payload.provider, details);
+    if (createTargetError) {
+      return c.json({ error: createTargetError }, 400);
     }
     const encryption = payload.encryption ?? false;
     try {
@@ -486,6 +504,14 @@ configsRoutes.patch(
         // wins).
         canonicalizeS3CredentialFields(nextProviderConfig);
       }
+      // A save that writes the destination settings must leave them on a
+      // supported target, including a saved destination already on a share.
+      if (payload.details !== undefined) {
+        const updateTargetError = localDestinationTargetError(current.provider, nextProviderConfig);
+        if (updateTargetError) {
+          return c.json({ error: updateTargetError }, 400);
+        }
+      }
       const nextEncryption = payload.encryption ?? current.encryption;
 
       try {
@@ -680,7 +706,12 @@ configsRoutes.post(
 
   try {
     if (row.provider === 'local') {
-      await probeLocalConfig(details);
+      // A saved destination on a network share is reported, never probed.
+      assertSupportedBackupDestination({ provider: row.provider, providerConfig: details });
+      if (!(await probeLocalConfig(orgId, row.id))) {
+        status = 'unsupported';
+        errorMessage = LOCAL_NOT_TESTED_MESSAGE;
+      }
       capability = await checkBackupProviderCapabilities({
         provider: row.provider,
         providerConfig: details,
@@ -730,7 +761,8 @@ configsRoutes.post(
     config: updated ? toConfigResponse(updated) : undefined,
   };
 
-  if (status === 'failed' || status === 'unsupported') {
+  // A local destination this server does not test is not a failure.
+  if (status === 'failed' || (status === 'unsupported' && row.provider !== 'local')) {
     return c.json(response, 400);
   }
 

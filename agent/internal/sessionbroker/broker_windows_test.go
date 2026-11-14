@@ -169,9 +169,9 @@ func TestNamedPipeFullHandshake(t *testing.T) {
 	// Send auth request with SID (required on Windows)
 	authReq := ipc.AuthRequest{
 		ProtocolVersion: ipc.ProtocolVersion,
-		UID:             0,      // Windows: UID is always 0
-		SID:             cu.Uid, // Go returns SID as Uid on Windows
-		Username:        cu.Username,
+		UID:             0,                           // Windows: UID is always 0
+		SID:             cu.Uid,                      // Go returns SID as Uid on Windows
+		Username:        "reported-name-is-not-used", // the session is named from the SID
 		SessionID:       fmt.Sprintf("test-helper-%d", os.Getpid()),
 		DisplayEnv:      "windows",
 		PID:             os.Getpid(),
@@ -255,6 +255,12 @@ func TestNamedPipeFullHandshake(t *testing.T) {
 	session := broker.SessionForUser(cu.Username)
 	if session == nil {
 		t.Fatal("SessionForUser returned nil")
+	}
+	if session.Username != cu.Username || session.accountIdentity != cu.Uid {
+		t.Fatalf("session account = %q (%s), want %q (%s)", session.Username, session.accountIdentity, cu.Username, cu.Uid)
+	}
+	if other := broker.SessionForUser("reported-name-is-not-used"); other != nil {
+		t.Fatalf("SessionForUser(reported name) selected session %q", other.SessionID)
 	}
 	if session.Capabilities == nil {
 		t.Fatal("capabilities not received")

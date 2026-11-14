@@ -299,7 +299,7 @@ export async function lockOwnerSlots(ownerKey: string): Promise<void> {
   await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`flow_run_slots:${ownerKey}`}, 0))`);
 }
 
-/** The runs of flows this owner owns (org flow ⇒ flows.org_id; partner-wide ⇒ org_id NULL + partner_id). */
+/** The flows this owner owns (org flow ⇒ flows.org_id; partner-wide ⇒ org_id NULL + partner_id). */
 function ownerFlowIds(owner: ToolOwnerRef) {
   const ownerPredicate = owner.orgId
     ? eq(flows.orgId, owner.orgId)
@@ -307,11 +307,24 @@ function ownerFlowIds(owner: ToolOwnerRef) {
   return db.select({ id: flows.id }).from(flows).where(ownerPredicate);
 }
 
+/**
+ * The runs an owner's caps count for a run in `runOrgId`: every run of an org
+ * flow; for a partner-wide flow, only the runs in that same org. A partner-wide
+ * flow runs in every customer org of the partner, and counting all of them
+ * together would let one org's runs use up the caps for all the others.
+ */
+function ownerRunsCountedFor(owner: ToolOwnerRef, runOrgId: string) {
+  return and(
+    inArray(flowRuns.flowId, ownerFlowIds(owner)),
+    owner.orgId ? undefined : eq(flowRuns.orgId, runOrgId),
+  );
+}
+
 export interface SlotSnapshot {
   self: { status: FlowRunStatus; leaseToken: string | null } | null;
   /** Another run of the same (flow, org) is `running`. */
   otherRunningForFlowOrg: boolean;
-  /** `running` runs of the owner's flows, this run excluded. */
+  /** `running` runs of the owner's flows, this run excluded (for a partner-wide flow, in this run's org). */
   ownerRunning: number;
 }
 
@@ -340,7 +353,7 @@ export async function loadSlotSnapshot(
     .where(and(
       eq(flowRuns.status, 'running'),
       sql`${flowRuns.id} <> ${run.id}`,
-      inArray(flowRuns.flowId, ownerFlowIds(owner)),
+      ownerRunsCountedFor(owner, run.orgId),
     ));
   return { self: self ?? null, otherRunningForFlowOrg: !!other, ownerRunning: Number(count?.n ?? 0) };
 }
@@ -368,11 +381,12 @@ export async function casRunToRunning(runId: string, token: string): Promise<boo
   return rows.length > 0;
 }
 
-/** queued + running + waiting + awaiting_approval runs of the owner's flows. */
-export async function countActiveRunsForOwner(owner: ToolOwnerRef): Promise<number> {
+/** queued + running + waiting + awaiting_approval runs of the owner's flows
+ *  (for a partner-wide flow, in `runOrgId` only). */
+export async function countActiveRunsForOwner(owner: ToolOwnerRef, runOrgId: string): Promise<number> {
   const [count] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(flowRuns)
-    .where(and(inArray(flowRuns.status, [...ACTIVE_FLOW_RUN_STATUSES]), inArray(flowRuns.flowId, ownerFlowIds(owner))));
+    .where(and(inArray(flowRuns.status, [...ACTIVE_FLOW_RUN_STATUSES]), ownerRunsCountedFor(owner, runOrgId)));
   return Number(count?.n ?? 0);
 }

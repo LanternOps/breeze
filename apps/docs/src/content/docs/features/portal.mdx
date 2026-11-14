@@ -68,7 +68,7 @@ A saved change applies from the next portal request. Nothing is cached.
 |---------|--------|----------------|
 | Password sign-in | **Allowed**, **Off — Microsoft/Google only** | Allowed |
 
-**Off — Microsoft/Google only** can be chosen only while Microsoft or Google sign-in is on for the organization. Sign in with Microsoft is available once the organization's Microsoft tenant is proven and your deployment has the portal Microsoft app configured; see [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/). Google sign-in to the browser portal is not available yet, so the Google row does not appear on the card. Features that rely on a customer's email domains need those domains verified; see [Customer domain verification](/features/portal-domain-verification/).
+**Off — Microsoft/Google only** can be chosen only while Microsoft or Google sign-in is on for the organization. Sign in with Microsoft is available once the organization's Microsoft tenant is proven and your deployment has the portal Microsoft app configured; see [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/). Sign in with Google is available once the organization has a verified domain matching its people's Google Workspace domain; the Google row appears on the card only when your deployment has a portal Google OAuth client configured. See [Google sign-in for the Customer Portal](/features/portal-google-sign-in/). Features that rely on a customer's email domains need those domains verified; see [Customer domain verification](/features/portal-domain-verification/).
 
 If the policy says **Off** but no Microsoft or Google sign-in is in effect any more (for example, the partner default that enabled it was changed), password sign-in stays on. The card shows: "Password sign-in is on because no Microsoft or Google sign-in is enabled."
 
@@ -78,7 +78,8 @@ The **Password reset** toggle on the Customer Portal tab is a separate setting. 
 
 - **Invites from the MSP** are always on: you can invite people from the Customer Portal tab or the Contacts tab whatever the other settings say. Password sign-in **Off** also stops an invited person from setting a password.
 - **First sign-in with Microsoft** follows the organization's first-sign-in mode: invited only, approval, or instant. See [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/).
-- Self-registration and first sign-in with Google appear on the card once the portal supports them.
+- **Self-registration** lets people at a verified customer domain request their own access, with your approval or instantly. It is off by default; see [Customer portal self-registration](/features/portal-self-registration/).
+- **First sign-in with Google** follows the same first-sign-in mode. We recommend approval for Google; see [Google sign-in for the Customer Portal](/features/portal-google-sign-in/).
 
 ### Access requests
 

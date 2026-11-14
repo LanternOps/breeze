@@ -8,8 +8,6 @@ import {
   partnerServicePrincipalKeys,
   partnerServicePrincipals,
   partnerUsers,
-  permissions,
-  rolePermissions,
   ticketAttachments,
   ticketComments,
   tickets,
@@ -19,6 +17,8 @@ import {
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { createAuditLog } from './auditService';
+import { permissionGrantMatches } from './permissionMatching';
+import { getRolesPermissionGrants, type RoleReadExecutor } from './roleInheritance';
 import { publishEvent } from './eventBus';
 import { consumeStepUpGrant, type StepUpGrantBinding } from './mfaStepUpGrant';
 import { MIGRATION_WINDOW_MIN_WRITES_PER_HOUR, migrationWindowLimits } from './migrationWindowLimits';
@@ -168,20 +168,6 @@ function isUniqueViolationOf(error: unknown, constraint: string): boolean {
 }
 
 /**
- * True when the role on the opener's partner membership grants
- * `permission`, wildcard-aware like hasPermission(): a `*` resource or action
- * matches. `roleId` is the partner_users.role_id column of an enclosing query.
- */
-function roleGrants(roleId: SQLWrapper, permission: { resource: string; action: string }): SQL {
-  return sql`EXISTS (
-    SELECT 1 FROM ${rolePermissions}
-      JOIN ${permissions} ON ${permissions.id} = ${rolePermissions.permissionId}
-     WHERE ${rolePermissions.roleId} = ${roleId}
-       AND ${permissions.resource} IN (${permission.resource}, '*')
-       AND ${permissions.action} IN (${permission.action}, '*'))`;
-}
-
-/**
  * True while `userId` is a partner-wide admin of `partnerId`: a partner_users
  * row with org_access 'all'. A system-scope session has no such row.
  */
@@ -194,19 +180,38 @@ function isPartnerWideAdminSql(userId: SQLWrapper | string, partnerId: SQLWrappe
 }
 
 /**
- * True while one partner-wide membership of `userId` in `partnerId` (the same
- * row: org_access 'all') has a role that still grants every
- * MIGRATION_WINDOW_OPENER_PERMISSIONS entry. Opening requires it, and the
- * sweep closes the window as soon as it stops holding (a role downgrade).
+ * The (user, partner) pairs among `pairs` that still hold every
+ * MIGRATION_WINDOW_OPENER_PERMISSIONS entry: ONE partner-wide membership
+ * (partner_users row with org_access 'all') whose role's runtime grants — its
+ * own plus inherited through `parent_role_id` (#9600/#11702) — cover each
+ * entry, wildcard-aware like hasPermission(). Grants of different memberships
+ * are not pooled. Opening requires it, and the sweep closes the window as soon
+ * as it stops holding (a role downgrade). Keys are `${userId}:${partnerId}`.
+ * `exec` is the caller's transaction handle when it reads inside one.
  */
-function holdsOpenerPermissionsSql(userId: SQLWrapper | string, partnerId: SQLWrapper | string): SQL {
-  const grants = MIGRATION_WINDOW_OPENER_PERMISSIONS.map((permission) => roleGrants(partnerUsers.roleId, permission));
-  return sql`EXISTS (
-    SELECT 1 FROM ${partnerUsers}
-     WHERE ${partnerUsers.userId} = ${userId}
-       AND ${partnerUsers.partnerId} = ${partnerId}
-       AND ${partnerUsers.orgAccess} = 'all'
-       AND ${sql.join(grants, sql` AND `)})`;
+export async function openersHoldingOpenPermissions(
+  pairs: ReadonlyArray<{ userId: string; partnerId: string }>,
+  exec: RoleReadExecutor = db,
+): Promise<Set<string>> {
+  const held = new Set<string>();
+  if (pairs.length === 0) return held;
+  const memberships = await exec
+    .select({ userId: partnerUsers.userId, partnerId: partnerUsers.partnerId, roleId: partnerUsers.roleId })
+    .from(partnerUsers)
+    .where(and(
+      eq(partnerUsers.orgAccess, 'all'),
+      or(...pairs.map((p) => and(eq(partnerUsers.userId, p.userId), eq(partnerUsers.partnerId, p.partnerId)))),
+    ));
+  if (memberships.length === 0) return held;
+  const grants = await getRolesPermissionGrants([...new Set(memberships.map((m) => m.roleId))], exec);
+  for (const m of memberships) {
+    const roleGrantsList = grants.get(m.roleId) ?? [];
+    if (MIGRATION_WINDOW_OPENER_PERMISSIONS.every((need) =>
+      roleGrantsList.some((g) => permissionGrantMatches(g, need.resource, need.action)))) {
+      held.add(`${m.userId}:${m.partnerId}`);
+    }
+  }
+  return held;
 }
 
 /**
@@ -436,7 +441,6 @@ export async function openMigrationWindow(input: OpenMigrationWindowInput): Prom
           credentialEpoch: users.credentialEpoch,
           mfaEpoch: users.mfaEpoch,
           isPartnerWideAdmin: sql<boolean>`${isPartnerWideAdminSql(input.opener.userId, input.partnerId)}`,
-          holdsOpenerPermissions: sql<boolean>`${holdsOpenerPermissionsSql(input.opener.userId, input.partnerId)}`,
         })
         .from(users)
         .where(and(
@@ -453,7 +457,10 @@ export async function openMigrationWindow(input: OpenMigrationWindowInput): Prom
       // admin of the partner whose role still grants what opening needs. Open
       // accepts exactly that, so no window is opened only to be closed by the
       // next sweep (a system-scope admin has no partner membership).
-      if (!opener.isPartnerWideAdmin || !opener.holdsOpenerPermissions) {
+      const holdsOpenerPermissions = opener.isPartnerWideAdmin
+        && (await openersHoldingOpenPermissions([{ userId: input.opener.userId, partnerId: input.partnerId }], tx))
+          .has(`${input.opener.userId}:${input.partnerId}`);
+      if (!opener.isPartnerWideAdmin || !holdsOpenerPermissions) {
         throw new MigrationWindowError(
           'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED',
           MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED_MESSAGE,
@@ -718,7 +725,8 @@ async function sweepCandidates(): Promise<SweepCandidate[]> {
       snapshotCredentialEpoch: migrationWindows.openerCredentialEpoch,
       snapshotMfaEpoch: migrationWindows.openerMfaEpoch,
       openerIsPartnerWideAdmin: sql<boolean>`${isPartnerWideAdminSql(migrationWindows.openedBy, migrationWindows.partnerId)}`,
-      openerHoldsOpenPermissions: sql<boolean>`${holdsOpenerPermissionsSql(migrationWindows.openedBy, migrationWindows.partnerId)}`,
+      openedBy: migrationWindows.openedBy,
+      partnerId: migrationWindows.partnerId,
     })
     .from(migrationWindows)
     .leftJoin(partnerServicePrincipals, and(
@@ -727,10 +735,15 @@ async function sweepCandidates(): Promise<SweepCandidate[]> {
     ))
     .leftJoin(users, eq(users.id, migrationWindows.openedBy))
     .where(eq(migrationWindows.status, 'open'));
-  return rows.map((r) => ({
+  // One membership read and one grant resolution for every open window. A
+  // window whose opener row is gone (opened_by SET NULL) holds nothing.
+  const held = await openersHoldingOpenPermissions(
+    rows.flatMap((r) => (r.openedBy ? [{ userId: r.openedBy, partnerId: r.partnerId }] : [])),
+  );
+  return rows.map(({ openedBy, partnerId, ...r }) => ({
     ...r,
     openerIsPartnerWideAdmin: Boolean(r.openerIsPartnerWideAdmin),
-    openerHoldsOpenPermissions: Boolean(r.openerHoldsOpenPermissions),
+    openerHoldsOpenPermissions: openedBy !== null && held.has(`${openedBy}:${partnerId}`),
   }));
 }
 

@@ -35,7 +35,10 @@ describe('fetchImageFromUrl', () => {
     const out = await fetchImageFromUrl('https://example.test/a.png');
     expect(out.mime).toBe('image/png');
     expect(out.buffer.length).toBe(4);
-    expect(safeFetch).toHaveBeenCalledWith('https://example.test/a.png', { timeoutMs: 10_000, maxBytes: MAX_CATALOG_IMAGE_SIZE_BYTES });
+    expect(safeFetch).toHaveBeenCalledWith('https://example.test/a.png', expect.objectContaining({ timeoutMs: 10_000, maxBytes: MAX_CATALOG_IMAGE_SIZE_BYTES }));
+    // timeoutMs measures inactivity; deadlineMs bounds total duration.
+    expect(safeFetch.mock.calls[0]![1].deadlineMs).toBeGreaterThan(0);
+    expect(safeFetch.mock.calls[0]![1].deadlineMs).toBeLessThanOrEqual(30_000);
   });
 
   it('caps the body while it streams, so an oversized download is cut off rather than buffered', async () => {

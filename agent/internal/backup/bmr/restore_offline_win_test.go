@@ -382,12 +382,12 @@ func TestSelectOfflineHives_FailedLogRenameLeavesTreeMissingHiveAbsent(t *testin
 	orig := renameHive
 	t.Cleanup(func() { renameHive = orig })
 	var renamed []string
-	renameHive = func(from, to string) error {
+	renameHive = func(tree *os.Root, from, to string) error {
 		if filepath.Base(to) == "SYSTEM.LOG1" {
 			return errors.New("injected rename failure")
 		}
 		renamed = append(renamed, filepath.Base(to))
-		return os.Rename(from, to)
+		return tree.Rename(from, to)
 	}
 
 	if _, err := selectOfflineHives(root, staging); err == nil || !strings.Contains(err.Error(), "SYSTEM.LOG1") {
@@ -415,9 +415,9 @@ func TestSelectOfflineHives_RenameOrder(t *testing.T) {
 	orig := renameHive
 	t.Cleanup(func() { renameHive = orig })
 	var order []string
-	renameHive = func(from, to string) error {
+	renameHive = func(tree *os.Root, from, to string) error {
 		order = append(order, filepath.Base(to))
-		return os.Rename(from, to)
+		return tree.Rename(from, to)
 	}
 	if _, err := selectOfflineHives(root, staging); err != nil {
 		t.Fatalf("selectOfflineHives: %v", err)
@@ -440,12 +440,12 @@ func TestSelectOfflineHives_RenameFailureNeverLeavesCompleteMixedTree(t *testing
 
 	calls := 0
 	orig := renameHive
-	renameHive = func(oldpath, newpath string) error {
+	renameHive = func(tree *os.Root, oldpath, newpath string) error {
 		calls++
 		if calls == 2 {
 			return fmt.Errorf("simulated rename failure")
 		}
-		return orig(oldpath, newpath)
+		return orig(tree, oldpath, newpath)
 	}
 	t.Cleanup(func() { renameHive = orig })
 
@@ -454,5 +454,43 @@ func TestSelectOfflineHives_RenameFailureNeverLeavesCompleteMixedTree(t *testing
 	}
 	if _, err := os.Stat(filepath.Join(cfg, "SYSTEM")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("config\\SYSTEM stat err = %v, want the tree-missing hive still absent so a retry re-enters the fallback", err)
+	}
+}
+
+func TestOfflineHiveFallbackPreservesArtifactsForRetry(t *testing.T) {
+	for failAt := 1; failAt <= len(offlineRequiredHives); failAt++ {
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			root := seedTree(t, "SOFTWARE", "SAM", "SECURITY")
+			staging := seedArtifacts(t, "SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+			original := renameHive
+			t.Cleanup(func() { renameHive = original })
+			calls := 0
+			renameHive = func(tree *os.Root, from, to string) error {
+				calls++
+				if calls == failAt {
+					return errors.New("temporary swap failure")
+				}
+				return original(tree, from, to)
+			}
+			if _, err := selectOfflineHives(root, staging); err == nil {
+				t.Fatal("expected swap failure")
+			}
+			for _, hive := range offlineRequiredHives {
+				got, err := os.ReadFile(filepath.Join(staging, "registry", hive))
+				if err != nil || string(got) != "artifact-"+hive {
+					t.Fatalf("source %s changed: %q %v", hive, got, err)
+				}
+			}
+			renameHive = original
+			if _, err := selectOfflineHives(root, staging); err != nil {
+				t.Fatalf("retry: %v", err)
+			}
+			for _, hive := range offlineRequiredHives {
+				got, err := os.ReadFile(filepath.Join(root, "Windows", "System32", "config", hive))
+				if err != nil || string(got) != "artifact-"+hive {
+					t.Fatalf("result %s: %q %v", hive, got, err)
+				}
+			}
+		})
 	}
 }

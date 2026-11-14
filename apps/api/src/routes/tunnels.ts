@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, desc, inArray, isNull, lt, or } from 'drizzle-orm';
@@ -31,6 +32,12 @@ import {
 } from '../services/jwt';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getActiveAllowlistPatterns, tunnelAllowlistRuleAppliesToSite } from '../services/tunnelAllowlist';
+import {
+  tunnelDestinationMatches,
+  tunnelNetworkContains,
+  tunnelTargetBlockReason,
+  validTunnelPattern,
+} from '../services/tunnelPattern';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
@@ -147,6 +154,9 @@ const allowlistRuleSchema = z.object({
   siteId: z.string().guid().optional(),
   source: z.enum(['manual', 'discovery', 'policy']).optional(),
   discoveredAssetId: z.string().guid().optional(),
+}).refine((rule) => validTunnelPattern(rule.direction, rule.pattern), {
+  path: ['pattern'],
+  message: 'Invalid address or port range',
 });
 
 const updateAllowlistSchema = z.object({
@@ -195,49 +205,10 @@ function resolveOrgId(
   return { error: 'orgId is required', status: 400 } as const;
 }
 
-// Hardcoded blocked CIDRs (mirrors agent-side allowlist.go)
-const BLOCKED_CIDRS = [
-  { cidr: '127.0.0.0/8', reason: 'localhost' },
-  { cidr: '169.254.0.0/16', reason: 'link-local / cloud metadata (SSRF prevention)' },
-];
-
-function ipInCidr(ip: string, cidr: string): boolean {
-  const [network, bits] = cidr.split('/');
-  const mask = ~(0xFFFFFFFF >>> parseInt(bits!, 10));
-  const ipNum = ipToInt(ip);
-  const netNum = ipToInt(network!);
-  if (ipNum === null || netNum === null) return false;
-  return (ipNum & mask) === (netNum & mask);
-}
-
-function ipToInt(ip: string): number | null {
-  const parts = ip.split('.');
-  if (parts.length !== 4) return null;
-  let result = 0;
-  for (const part of parts) {
-    const n = parseInt(part, 10);
-    if (isNaN(n) || n < 0 || n > 255) return null;
-    result = (result << 8) | n;
-  }
-  return result >>> 0; // unsigned
-}
-
+// Hardcoded deny list (shared with the agent's; see services/tunnelPattern.ts).
 function isTargetBlocked(host: string, port: number, isVNC: boolean): { blocked: boolean; reason?: string } {
-  if (host === '0.0.0.0' || host === '::') {
-    return { blocked: true, reason: 'Wildcard bind address' };
-  }
-
-  for (const { cidr, reason } of BLOCKED_CIDRS) {
-    if (ipInCidr(host, cidr)) {
-      // VNC exception: allow 127.0.0.1:5900 only
-      if (isVNC && cidr === '127.0.0.0/8' && host === '127.0.0.1' && port === 5900) {
-        continue;
-      }
-      return { blocked: true, reason };
-    }
-  }
-
-  return { blocked: false };
+  const reason = tunnelTargetBlockReason(host, port, isVNC);
+  return reason === null ? { blocked: false } : { blocked: true, reason };
 }
 
 async function isTargetAllowed(host: string, port: number, orgId: string, bridgeSiteId: string | null): Promise<boolean> {
@@ -254,19 +225,7 @@ async function isTargetAllowed(host: string, port: number, orgId: string, bridge
 
   for (const rule of rules) {
     if (!tunnelAllowlistRuleAppliesToSite(rule.siteId ?? null, bridgeSiteId)) continue;
-    const parts = rule.pattern.split(':');
-    if (parts.length !== 2) continue;
-    const [cidr, portRange] = parts;
-
-    if (!ipInCidr(host, cidr!)) continue;
-
-    if (portRange === '*') return true;
-    if (portRange!.includes('-')) {
-      const [min, max] = portRange!.split('-').map(Number);
-      if (port >= min! && port <= max!) return true;
-    } else {
-      if (port === parseInt(portRange!, 10)) return true;
-    }
+    if (tunnelDestinationMatches(rule.pattern, host, port)) return true;
   }
 
   return false;
@@ -290,7 +249,7 @@ async function isSourceIpAllowed(sourceIp: string, orgId: string, bridgeSiteId: 
   if (effectiveRules.length === 0) return true;
 
   for (const rule of effectiveRules) {
-    if (ipInCidr(sourceIp, rule.pattern)) return true;
+    if (tunnelNetworkContains(rule.pattern, sourceIp)) return true;
   }
 
   return false;
@@ -673,7 +632,7 @@ tunnelRoutes.post(
     // re-select the winner's row by the same key (index: org_id, direction,
     // pattern, COALESCE(site_id, nil) — exactly one match). Sidesteps fighting
     // Drizzle's .onConflict API against an expression index.
-    const pattern = `${ip}/32:${body.port}`;
+    const pattern = `${ip}/${isIP(ip) === 6 ? 128 : 32}:${body.port}`;
     const ruleKey = and(
       eq(tunnelAllowlists.orgId, device.orgId),
       eq(tunnelAllowlists.direction, 'destination'),
@@ -996,6 +955,14 @@ tunnelRoutes.put(
     }
     if (!canManageAllowlistAtSite(perms, existing.siteId ?? null)) {
       return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    // A rule that does not parse permits nothing; refuse to store one or to
+    // enable one saved before patterns were validated. Disabling it or editing
+    // its description stays possible.
+    const nextPattern = body.pattern ?? existing.pattern;
+    if ((body.pattern !== undefined || body.enabled === true) && !validTunnelPattern(existing.direction, nextPattern)) {
+      return c.json({ error: 'Invalid address or port range' }, 400);
     }
 
     const updates: Record<string, any> = { updatedAt: new Date() };

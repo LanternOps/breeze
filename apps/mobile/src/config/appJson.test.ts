@@ -63,33 +63,34 @@ describe('app.json iOS scene lifecycle (iOS 27 launch requirement)', () => {
   });
 });
 
-// The expo-modules-jsi pnpm patch (patches/expo-modules-jsi@<ver>.patch) is
-// keyed to an exact transitive version and the root `allowUnusedPatches: true`
-// turns a version drift into a warning buried in install output. Without this
-// guard a routine bump moves the package, the patch silently stops applying,
-// CI on Xcode 26 stays green, and the next Xcode 27.1 Archive dies again with
-// "cannot find type '__ObjC::expo' in scope". Delete this block together with
-// the patch once expo-modules-jsi ships upstream expo/expo#50569.
-describe('expo-modules-jsi Swift 6.4 patch stays attached to the resolved version', () => {
-  const lock = readFileSync(join(__dirname, '../../../../pnpm-lock.yaml'), 'utf8');
-  const rootPkg = JSON.parse(readFileSync(join(__dirname, '../../../../package.json'), 'utf8'));
-  const patched: Record<string, string> = rootPkg.pnpm?.patchedDependencies ?? {};
-  const resolved = [...new Set([...lock.matchAll(/^  expo-modules-jsi@([^:(]+)/gm)].map((m) => m[1]))];
-
-  it('resolves at least one expo-modules-jsi version', () => {
-    expect(resolved.length).toBeGreaterThan(0);
-  });
-
-  it.each(resolved)('has a pnpm patch entry for expo-modules-jsi@%s', (version) => {
-    expect(patched[`expo-modules-jsi@${version}`]).toMatch(/^patches\/expo-modules-jsi@/);
-  });
-});
-
 // Wisp W06: nudges carry `breeze://wisp/thread/:id` deep links. The scheme is
 // registered so the OS owns it; taps route from the push `data` this wave (no
 // Linking listener yet).
 describe('app.json URL scheme (Wisp W06)', () => {
   it('registers the breeze:// scheme', () => {
     expect(expo.scheme).toBe('breeze');
+  });
+});
+
+// Play review flags permissions an app cannot justify. SYSTEM_ALERT_WINDOW
+// ("display over other apps") comes from the React Native template for the dev
+// overlay and READ_EXTERNAL_STORAGE from expo-image-picker's library manifest;
+// the app needs neither (the photo library opens the system Photo Picker).
+// WRITE_EXTERNAL_STORAGE is deliberately NOT blocked: expo-image-picker's
+// camera path requires it below API 29, and minSdk is 24.
+describe('app.json Android blocked permissions', () => {
+  it('blocks SYSTEM_ALERT_WINDOW and READ_EXTERNAL_STORAGE', () => {
+    expect(expo.android.blockedPermissions).toEqual(
+      expect.arrayContaining([
+        'android.permission.SYSTEM_ALERT_WINDOW',
+        'android.permission.READ_EXTERNAL_STORAGE',
+      ])
+    );
+  });
+
+  it('keeps WRITE_EXTERNAL_STORAGE, which camera capture needs on API 24-28', () => {
+    expect(expo.android.blockedPermissions ?? []).not.toContain(
+      'android.permission.WRITE_EXTERNAL_STORAGE'
+    );
   });
 });

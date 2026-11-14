@@ -25,6 +25,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/netpolicy"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 var log = logging.L("updater")
@@ -1592,10 +1593,10 @@ func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte
 
 	// Step 2: Download the actual binary from the manifest URL. info.URL may
 	// be cross-origin from the configured control plane (a signed manifest
-	// legitimately points at a public CDN); downloadFromURL no longer
-	// enforces an origin match itself — destination safety (scheme, dial-time
-	// address, redirect chain, credential stripping) is u.client's job alone,
-	// via the netpolicy.Policy built in updaterPolicy.
+	// legitimately points at a public CDN); downloadFromURL sends the agent
+	// credential only to a control-plane origin, and the rest of destination
+	// safety (scheme, dial-time address, redirect chain, credential stripping)
+	// is u.client's job, via the netpolicy.Policy built in updaterPolicy.
 	tempPath, err := u.downloadFromURL(info.URL)
 	if err != nil {
 		return "", updateManifest{}, nil, err
@@ -1905,12 +1906,24 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 	return nil
 }
 
+// sendsCredentialTo reports whether rawURL has the origin (scheme, host and
+// port) of the configured primary or backup control plane. Only those
+// requests carry the agent credential.
+func (u *Updater) sendsCredentialTo(rawURL string) bool {
+	if httpguard.SameOrigin(rawURL, u.serverURL()) {
+		return true
+	}
+	return u.config != nil && httpguard.SameOrigin(rawURL, u.config.BackupServerURL)
+}
+
 // downloadFromURL downloads a binary directly from the given URL to a temp
 // file. rawURL may be cross-origin from the configured control plane — the
 // signed-manifest flow legitimately follows a control-plane URL to a public
-// CDN — so this method does NOT compare origins itself. All destination
-// safety (scheme, dial-time address, redirect chain, credential stripping on
-// origin change) is enforced by the netpolicy client. During containment,
+// CDN, and a helper dev push supplies its own URL. The agent credential is
+// attached only when rawURL is a control-plane origin (sendsCredentialTo);
+// the download route does not require it. The rest of destination safety
+// (scheme, dial-time address, redirect chain, credential stripping on origin
+// change) is enforced by the netpolicy client. During containment,
 // artifactRequest additionally restricts every hop to control-plane hosts.
 func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	if err := u.checkClient(); err != nil {
@@ -1924,7 +1937,9 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid download URL: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
+	if u.sendsCredentialTo(rawURL) {
+		req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
+	}
 
 	resp, err := u.artifactRequest(req)
 	if err != nil {

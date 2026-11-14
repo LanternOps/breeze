@@ -115,3 +115,76 @@ export function latestCronOccurrence(
   }
   return null;
 }
+
+interface CachedOccurrence {
+  /** The floored minute (ms) the answer was computed for. */
+  evaluatedAtMs: number;
+  occurrence: { at: Date; key: string } | null;
+  pass: number;
+}
+
+/**
+ * `latestCronOccurrence` for a fixed tick that asks about many schedules
+ * every pass. It remembers, per (cron, zone, lookback), the answer and the
+ * minute it was computed for, so the next pass only evaluates the minutes
+ * since then (one or two on a 60 s tick) instead of the whole lookback window
+ * again, and schedules that share a cron and zone are evaluated once. The
+ * answers are exactly `latestCronOccurrence`'s:
+ *
+ *  - the latest due minute in (previous minute, now] if there is one;
+ *  - otherwise the remembered occurrence while it is still inside the window;
+ *  - otherwise null.
+ *
+ * A clock that moved back, or a gap longer than the lookback, recomputes from
+ * scratch. A schedule that throws (bad zone) is not remembered. Entries a pass
+ * did not ask about are dropped at `endPass`, so memory follows the live
+ * schedules. Not safe across concurrent passes; each tick owns one pass.
+ */
+export class CronOccurrenceCache {
+  private readonly entries = new Map<string, CachedOccurrence>();
+  private pass = 0;
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  beginPass(): void {
+    this.pass += 1;
+  }
+
+  endPass(): void {
+    for (const [key, entry] of this.entries) {
+      if (entry.pass !== this.pass) this.entries.delete(key);
+    }
+  }
+
+  latest(
+    cron: string,
+    timeZone: string,
+    now: Date,
+    lookbackMinutes: number = SWEEP_OCCURRENCE_LOOKBACK_MINUTES,
+  ): { at: Date; key: string } | null {
+    const cacheKey = JSON.stringify([lookbackMinutes, timeZone, cron]);
+    const flooredMs = Math.floor(now.getTime() / MINUTE_MS) * MINUTE_MS;
+    const windowStartMs = flooredMs - lookbackMinutes * MINUTE_MS;
+    const cached = this.entries.get(cacheKey);
+    let occurrence: { at: Date; key: string } | null;
+    if (cached && cached.evaluatedAtMs <= flooredMs && cached.evaluatedAtMs >= windowStartMs) {
+      occurrence = null;
+      for (let atMs = flooredMs; atMs > cached.evaluatedAtMs; atMs -= MINUTE_MS) {
+        const at = new Date(atMs);
+        if (isCronDue(cron, timeZone, at)) {
+          occurrence = { at, key: occurrenceKey(at, timeZone) };
+          break;
+        }
+      }
+      if (!occurrence && cached.occurrence && cached.occurrence.at.getTime() >= windowStartMs) {
+        occurrence = cached.occurrence;
+      }
+    } else {
+      occurrence = latestCronOccurrence(cron, timeZone, now, lookbackMinutes);
+    }
+    this.entries.set(cacheKey, { evaluatedAtMs: flooredMs, occurrence, pass: this.pass });
+    return occurrence;
+  }
+}

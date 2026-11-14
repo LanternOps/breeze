@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 func TestRecoveryConfigSerialization(t *testing.T) {
@@ -290,7 +289,7 @@ func TestVMEstimateSerialization(t *testing.T) {
 
 func TestRunRecoveryWithToken_AuthenticatesAndCompletes(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "bmr-session-snapshot"
 	sourcePath := "/original/data.txt"
 	restorePath := filepath.Join(t.TempDir(), "restored", "data.txt")
@@ -515,7 +514,7 @@ func TestRestoreSourcePath_PrefersOriginalPathUnderVSS(t *testing.T) {
 // restored under the literal shadow-device path.
 func TestRestoreFiles_DefaultTargetUsesOriginalPathNotShadowPath(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-vss-default"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
@@ -577,7 +576,7 @@ func TestRestoreFiles_DefaultTargetUsesOriginalPathNotShadowPath(t *testing.T) {
 // never hit under VSS.
 func TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-vss-override"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
@@ -875,7 +874,7 @@ func TestRestoreFiles_CancelledContextBeforeLoopReturnsCtxErr(t *testing.T) {
 // landed with drifted permissions and mtimes.
 func TestRestoreFiles_ReappliesModeAndModTime(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-metadata"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "secret.gz"))
@@ -942,7 +941,7 @@ func TestRestoreFiles_ReplacesReadOnlyDestination(t *testing.T) {
 	}
 
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-readonly-dest"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "readonly.gz"))
@@ -1002,7 +1001,7 @@ func TestRestoreFiles_ReadOnlySourceModeReappliedOverReadOnlyDestination(t *test
 	}
 
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-readonly-src-and-dest"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "readonly.gz"))
@@ -1066,7 +1065,7 @@ func TestRestoreFiles_ReadOnlySourceModeReappliedOverReadOnlyDestination(t *test
 func TestRestoreFiles_CapsFidelityWarningsWithoutCountingAsFailedFiles(t *testing.T) {
 	const totalFiles = 10000
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-fidelity-mass-failure"
 	restoreRoot := t.TempDir()
@@ -1129,7 +1128,7 @@ func TestRestoreFiles_CapsFidelityWarningsWithoutCountingAsFailedFiles(t *testin
 // and the file still counts as restored.
 func TestRestoreFiles_FidelityFailureThenSuccessBothWarnUncapped(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-fidelity-single"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
@@ -1176,7 +1175,7 @@ func TestRestoreFiles_FidelityFailureThenSuccessBothWarnUncapped(t *testing.T) {
 // for BMR's independent manifestFile mirror.
 func TestRestoreFiles_RecreatesSymlinkWithoutDownload(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-symlink"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "real.gz"))
@@ -1237,7 +1236,7 @@ func TestRestoreFiles_RecreatesSymlinkWithoutDownload(t *testing.T) {
 // so the guard can recover stagingRoot as the trusted root to walk from.
 func TestRestoreFiles_ResumedRunDoesNotWriteThroughRestoredSymlink(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "bmr-escape"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "pwned.gz"))

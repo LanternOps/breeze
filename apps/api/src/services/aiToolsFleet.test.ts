@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
   ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  acquireMembershipExportOrgLock: vi.fn(async () => {}),
   findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
 }));
 import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
@@ -169,7 +170,6 @@ vi.mock('../db/schema/patches', async (importOriginal) => {
     devicePatches: {},
     patchJobs: { orgId: 'orgId' },
     patchRollbacks: {},
-    patchComplianceSnapshots: { orgId: 'orgId' },
   };
 });
 

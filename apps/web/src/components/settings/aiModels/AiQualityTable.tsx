@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AiQualityBreakdownDto, AiQualityGroupBy, AiQualityMetricsDto, AiQualityRowDto, AiSurface, PromptProfile } from '@breeze/shared';
+import type { AiQualityBreakdownDto, AiQualityGroupBy, AiQualityMetricsDto, AiQualityRowDto, AiSurface, AiToolProfile, PromptProfile } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/i18n/format';
@@ -17,16 +17,26 @@ const PROFILE_LABEL_KEYS: Record<PromptProfile, string> = {
   generic: 'aiModels.quality.profiles.generic',
 };
 
+// The ledger records the RESOLVED profile, never 'auto'.
+const TOOL_PROFILE_LABEL_KEYS: Record<Exclude<AiToolProfile, 'auto'>, string> = {
+  full: 'aiModels.quality.toolProfiles.full',
+  standard: 'aiModels.quality.toolProfiles.standard',
+  minimal: 'aiModels.quality.toolProfiles.minimal',
+  custom: 'aiModels.quality.toolProfiles.custom',
+};
+
 const GROUP_HEADER_KEYS: Record<AiQualityGroupBy, string> = {
   model: 'aiModels.quality.groupBy.model',
   surface: 'aiModels.quality.groupBy.surface',
   prompt_profile: 'aiModels.quality.groupBy.prompt_profile',
+  tool_profile: 'aiModels.quality.groupBy.tool_profile',
 };
 
 const COLUMNS = [
   ['conversations', 'aiModels.quality.columns.conversations', 'aiModels.quality.help.conversations'],
   ['costPerConversation', 'aiModels.quality.columns.costPerConversation', 'aiModels.quality.help.costPerConversation'],
   ['refusal', 'aiModels.quality.columns.refusalRate', 'aiModels.quality.help.refusalRate'],
+  ['refusedToolBatch', 'aiModels.quality.columns.refusedToolBatches', 'aiModels.quality.help.refusedToolBatches'],
   ['failover', 'aiModels.quality.columns.failoverRate', 'aiModels.quality.help.failoverRate'],
   ['flag', 'aiModels.quality.columns.flagRate', 'aiModels.quality.help.flagRate'],
   ['left', 'aiModels.quality.columns.leftRate', 'aiModels.quality.help.leftRate'],
@@ -97,6 +107,12 @@ export default function AiQualityTable({ groupBy, orgId, from, to, onRange }: {
       const key = PROFILE_LABEL_KEYS[row.key as PromptProfile];
       return key ? t(/* i18n-dynamic */ key) : row.key;
     }
+    if (groupBy === 'tool_profile') {
+      // 'unrecorded': settled before tool profiles, or on a path with no tool exposure.
+      if (row.key === 'unrecorded') return t('aiModels.quality.unrecorded');
+      const key = TOOL_PROFILE_LABEL_KEYS[row.key as Exclude<AiToolProfile, 'auto'>];
+      return key ? t(/* i18n-dynamic */ key) : row.key;
+    }
     if (row.key === 'unattributed') return t('aiModels.quality.unattributed');
     return `${row.label ?? t('aiModels.quality.removedModel')} · ${row.connectionName ?? t('aiModels.quality.platformConnection')}`;
   };
@@ -115,6 +131,10 @@ export default function AiQualityTable({ groupBy, orgId, from, to, onRange }: {
       </td>
       <td className="px-3 py-2 text-right tabular-nums">{m.costPerConversationCents === null ? dash() : formatCurrency(m.costPerConversationCents / 100)}</td>
       <td className="px-3 py-2 text-right tabular-nums" data-testid={`ai-quality-refusal-${key}`}>{pct(m.refusalRate)}</td>
+      <td className="px-3 py-2 text-right tabular-nums" data-testid={`ai-quality-refused-batch-${key}`}>
+        {pct(m.refusedToolBatchRate)}
+        {m.refusedToolBatches > 0 && sub(t('aiModels.quality.refusedToolBatchCount', { count: m.refusedToolBatches }))}
+      </td>
       <td className="px-3 py-2 text-right tabular-nums" data-testid={`ai-quality-failover-${key}`}>
         {m.failoverRate === null ? dash(m.failovers === null ? notRecorded : undefined) : pct(m.failoverRate)}
       </td>

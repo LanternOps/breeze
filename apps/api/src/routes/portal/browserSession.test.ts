@@ -9,21 +9,23 @@ const ORG = '7c0a1f7e-1111-4222-8333-444455556666';
 const USER = '11111111-2222-4333-8444-555566667777';
 const TENANT = '72f988bf-86f1-41af-91ab-2d7cd011db47';
 const OTHER_TENANT = '9b0f1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d';
+const HD = 'contoso.example.com';
+const OTHER_HD = 'fabrikam.example.com';
 const base = { portalUserId: USER, orgId: ORG, authEpoch: 3 };
 const ISO = '2026-11-01T00:00:00.000Z';
 const HOUR = 3_600_000;
 const NOW = Date.parse('2026-11-09T12:00:00.000Z');
 
 /** Effective policies built by the real pick, so the gate is tested against real field shapes. */
-type GatePolicy = Pick<ResolvedPortalAccessPolicy, 'effective' | 'entraTenant'>;
+type GatePolicy = Pick<ResolvedPortalAccessPolicy, 'effective' | 'entraTenant' | 'googleDomains'>;
 const CAPS_ALL = { entra: true, google: true, selfRegistration: false };
-const PROVEN = { entraTenantProven: true };
+const PROVEN = { entraTenantProven: true, googleDomainVerified: true };
 const empty = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
 type Row = Parameters<typeof pickEffectivePortalAccessPolicy>[0];
-/** A gate policy: the real pick, plus the org's proven tenant (null = none proven). */
-function policy(org: Row, tenantId: string | null = TENANT): GatePolicy {
+/** A gate policy: the real pick, plus the org's proven tenant (null = none proven) and verified domains (null = not read). */
+function policy(org: Row, tenantId: string | null = TENANT, googleDomains: string[] | null = [HD]): GatePolicy {
   const picked = pickEffectivePortalAccessPolicy(org, null, CAPS_ALL, PROVEN);
-  return { effective: picked.effective, entraTenant: tenantId ? { tenantId, provenAt: ISO } : null };
+  return { effective: picked.effective, entraTenant: tenantId ? { tenantId, provenAt: ISO } : null, googleDomains };
 }
 const allowedPolicy = policy(null);
 const ssoOnlyEntra = policy({ ...empty, entraEnabled: true, passwordMode: 'sso_only' });
@@ -34,29 +36,29 @@ const entraCap = (hours: number) => policy({ ...empty, entraEnabled: true, passw
 const passwordUser = { authMethod: 'password', browserAccess: 'granted' };
 const entraUser = { authMethod: 'entra', browserAccess: 'granted' };
 
-const pw = (over: Partial<{ createdAtMs: number | null }> = {}) => ({ method: 'password' as const, createdAtMs: null, entraTenantId: null, ...over });
+const pw = (over: Partial<{ createdAtMs: number | null }> = {}) => ({ method: 'password' as const, createdAtMs: null, entraTenantId: null, googleHostedDomain: null, ...over });
 const entra = (over: Partial<{ createdAtMs: number | null; entraTenantId: string | null }> = {}) =>
-  ({ method: 'entra' as const, createdAtMs: NOW - HOUR, entraTenantId: TENANT, ...over });
+  ({ method: 'entra' as const, createdAtMs: NOW - HOUR, entraTenantId: TENANT, googleHostedDomain: null, ...over });
 
 describe('parseStoredPortalSession', () => {
   it('parses a pre-W4 password payload (no entraTenantId) unchanged', () => {
     expect(parseStoredPortalSession({ ...base, method: 'password', createdAt: ISO }))
-      .toEqual({ ...base, method: 'password', createdAtMs: Date.parse(ISO), entraTenantId: null });
+      .toEqual({ ...base, method: 'password', createdAtMs: Date.parse(ISO), entraTenantId: null, googleHostedDomain: null });
     // pre-W3: no method; a password session never needed createdAt.
     expect(parseStoredPortalSession({ ...base, createdAt: ISO }))
-      .toEqual({ ...base, method: 'password', createdAtMs: Date.parse(ISO), entraTenantId: null });
-    expect(parseStoredPortalSession({ ...base })).toEqual({ ...base, method: 'password', createdAtMs: null, entraTenantId: null });
-    expect(parseStoredPortalSession({ ...base, createdAt: 'x' })).toEqual({ ...base, method: 'password', createdAtMs: null, entraTenantId: null });
+      .toEqual({ ...base, method: 'password', createdAtMs: Date.parse(ISO), entraTenantId: null, googleHostedDomain: null });
+    expect(parseStoredPortalSession({ ...base })).toEqual({ ...base, method: 'password', createdAtMs: null, entraTenantId: null, googleHostedDomain: null });
+    expect(parseStoredPortalSession({ ...base, createdAt: 'x' })).toEqual({ ...base, method: 'password', createdAtMs: null, entraTenantId: null, googleHostedDomain: null });
     // The in-memory twin stores createdAt as a Date.
     expect(parseStoredPortalSession({ ...base, createdAt: new Date(ISO) }))
-      .toEqual({ ...base, method: 'password', createdAtMs: Date.parse(ISO), entraTenantId: null });
+      .toEqual({ ...base, method: 'password', createdAtMs: Date.parse(ISO), entraTenantId: null, googleHostedDomain: null });
     // A password session carries no tenant, whatever the payload says.
     expect(parseStoredPortalSession({ ...base, method: 'password', createdAt: ISO, entraTenantId: TENANT })?.entraTenantId).toBeNull();
   });
 
   it('refuses an entra payload without createdAt or with a non-GUID entraTenantId', () => {
     const ok = { ...base, method: 'entra', createdAt: ISO, entraTenantId: TENANT };
-    expect(parseStoredPortalSession(ok)).toEqual({ ...base, method: 'entra', createdAtMs: Date.parse(ISO), entraTenantId: TENANT });
+    expect(parseStoredPortalSession(ok)).toEqual({ ...base, method: 'entra', createdAtMs: Date.parse(ISO), entraTenantId: TENANT, googleHostedDomain: null });
     expect(parseStoredPortalSession({ ...ok, createdAt: new Date(ISO) })?.createdAtMs).toBe(Date.parse(ISO));
     expect(parseStoredPortalSession({ ...ok, entraTenantId: TENANT.toUpperCase() })?.entraTenantId).toBe(TENANT);
 
@@ -78,10 +80,73 @@ describe('parseStoredPortalSession', () => {
   });
 
   it('a google session needs a createdAt (SSO absolute lifetime) and carries no tenant', () => {
-    expect(parseStoredPortalSession({ ...base, method: 'google', createdAt: ISO, entraTenantId: TENANT }))
-      .toEqual({ ...base, method: 'google', createdAtMs: Date.parse(ISO), entraTenantId: null });
-    expect(parseStoredPortalSession({ ...base, method: 'google' })).toBeNull();
-    expect(parseStoredPortalSession({ ...base, method: 'google', createdAt: 'x' })).toBeNull();
+    expect(parseStoredPortalSession({ ...base, method: 'google', createdAt: ISO, entraTenantId: TENANT, googleHostedDomain: HD }))
+      .toEqual({ ...base, method: 'google', createdAtMs: Date.parse(ISO), entraTenantId: null, googleHostedDomain: HD });
+    expect(parseStoredPortalSession({ ...base, method: 'google', googleHostedDomain: HD })).toBeNull();
+    expect(parseStoredPortalSession({ ...base, method: 'google', createdAt: 'x', googleHostedDomain: HD })).toBeNull();
+  });
+
+  // W7 (#11384) plan D7: a google session pins the verified Workspace domain (`hd`) it signed in with.
+  it('parses a google payload with createdAt and googleHostedDomain; refuses one without hd or with an invalid hd', () => {
+    const ok = { ...base, method: 'google', createdAt: ISO, googleHostedDomain: HD };
+    expect(parseStoredPortalSession(ok)).toEqual({ ...base, method: 'google', createdAtMs: Date.parse(ISO), entraTenantId: null, googleHostedDomain: HD });
+    expect(parseStoredPortalSession({ ...ok, googleHostedDomain: 'sub.contoso.example.com' })?.googleHostedDomain).toBe('sub.contoso.example.com');
+
+    const { googleHostedDomain: _h, ...noHd } = ok;
+    for (const raw of [
+      noHd,
+      { ...ok, googleHostedDomain: null },
+      { ...ok, googleHostedDomain: '' },
+      { ...ok, googleHostedDomain: 42 },
+      { ...ok, googleHostedDomain: ['contoso.example.com'] },
+      // Stored lowercase or not at all: an uppercase pin is a payload this release never wrote.
+      { ...ok, googleHostedDomain: 'Contoso.Example.com' },
+      { ...ok, googleHostedDomain: ' contoso.example.com' },
+      { ...ok, googleHostedDomain: 'contoso.example.com ' },
+      { ...ok, googleHostedDomain: '*' },
+      { ...ok, googleHostedDomain: '*.example.com' },
+      { ...ok, googleHostedDomain: 'localhost' },
+      { ...ok, googleHostedDomain: 'contoso..example.com' },
+      { ...ok, googleHostedDomain: 'pat@contoso.example.com' },
+      { ...ok, googleHostedDomain: 'gmail.com' },
+      // The hd alone is not enough: the SSO lifetime still needs createdAt.
+      { ...base, method: 'google', googleHostedDomain: HD },
+    ]) {
+      expect(parseStoredPortalSession(raw)).toBeNull();
+    }
+  });
+
+  it('the in-memory twin refuses a google session without googleHostedDomain exactly as the Redis payload does', () => {
+    // The Redis payload is JSON (createdAt an ISO string); the in-memory twin is a
+    // PortalSession (token, createdAt and expiresAt as Dates). Both go through the one parse.
+    const created = new Date(ISO);
+    const twin = (extra: Record<string, unknown>) => ({
+      token: 't'.repeat(48), ...base, method: 'google', createdAt: created, expiresAt: new Date(created.getTime() + SESSION_TTL_MS), ...extra,
+    });
+    const redisPayload = (extra: Record<string, unknown>) =>
+      JSON.parse(JSON.stringify({ ...base, method: 'google', createdAt: created.toISOString(), ...extra })) as unknown;
+
+    const expected = { ...base, method: 'google', createdAtMs: created.getTime(), entraTenantId: null, googleHostedDomain: HD };
+    expect(parseStoredPortalSession(twin({ googleHostedDomain: HD }))).toEqual(expected);
+    expect(parseStoredPortalSession(redisPayload({ googleHostedDomain: HD }))).toEqual(expected);
+    for (const extra of [{}, { googleHostedDomain: undefined }, { googleHostedDomain: null }, { googleHostedDomain: 'CONTOSO.EXAMPLE.COM' }, { googleHostedDomain: 'not a domain' }]) {
+      expect(parseStoredPortalSession(twin(extra))).toBeNull();
+      expect(parseStoredPortalSession(redisPayload(extra))).toBeNull();
+    }
+  });
+
+  it('password and entra payloads parse unchanged and carry googleHostedDomain null', () => {
+    expect(parseStoredPortalSession({ ...base, method: 'password', createdAt: ISO }))
+      .toEqual({ ...base, method: 'password', createdAtMs: Date.parse(ISO), entraTenantId: null, googleHostedDomain: null });
+    expect(parseStoredPortalSession({ ...base, method: 'entra', createdAt: ISO, entraTenantId: TENANT }))
+      .toEqual({ ...base, method: 'entra', createdAtMs: Date.parse(ISO), entraTenantId: TENANT, googleHostedDomain: null });
+    // A stray hd on a non-google payload is ignored, never carried into the session.
+    expect(parseStoredPortalSession({ ...base, method: 'password', createdAt: ISO, googleHostedDomain: HD })?.googleHostedDomain).toBeNull();
+    expect(parseStoredPortalSession({ ...base, createdAt: ISO, googleHostedDomain: HD })?.googleHostedDomain).toBeNull();
+    expect(parseStoredPortalSession({ ...base, method: 'entra', createdAt: ISO, entraTenantId: TENANT, googleHostedDomain: HD })?.googleHostedDomain).toBeNull();
+    // ...and a garbage one does not refuse them either.
+    expect(parseStoredPortalSession({ ...base, method: 'password', createdAt: ISO, googleHostedDomain: 42 })?.method).toBe('password');
+    expect(parseStoredPortalSession({ ...base, method: 'entra', createdAt: ISO, entraTenantId: TENANT, googleHostedDomain: 42 })?.method).toBe('entra');
   });
 
   it('rejects an unknown method and a non-integer authEpoch', () => {
@@ -162,11 +227,70 @@ describe('isBrowserSessionAllowed', () => {
   });
 
   it('a google session needs google allowed and is capped like any SSO session', () => {
-    const google = { method: 'google' as const, createdAtMs: NOW - HOUR, entraTenantId: null };
+    const google = { method: 'google' as const, createdAtMs: NOW - HOUR, entraTenantId: null, googleHostedDomain: HD };
     expect(isBrowserSessionAllowed(google, entraUser, googleOnly, NOW)).toBe(true);
     expect(isBrowserSessionAllowed(google, entraUser, ssoOnlyEntra, NOW)).toBe(false);
     expect(isBrowserSessionAllowed({ ...google, createdAtMs: NOW - 12 * HOUR }, entraUser, googleOnly, NOW)).toBe(false);
     expect(isBrowserSessionAllowed({ ...google, createdAtMs: null }, entraUser, googleOnly, NOW)).toBe(false);
+  });
+
+  // W7 (#11384) plan D7 / Review Focus 3.
+  const gsession = (over: Partial<{ createdAtMs: number | null; googleHostedDomain: string | null }> = {}) =>
+    ({ method: 'google' as const, createdAtMs: NOW - HOUR, entraTenantId: null, googleHostedDomain: HD, ...over });
+  const googleUser = { authMethod: 'google', browserAccess: 'granted' };
+  const googleCap = (hours: number, googleDomains: string[] | null = [HD]) =>
+    policy({ ...empty, googleEnabled: true, passwordMode: 'sso_only', ssoSessionMaxHours: hours }, TENANT, googleDomains);
+
+  it('google session allowed inside the cap while its hd is in policy.googleDomains', () => {
+    expect(googleOnly.effective.googleEnabled.value).toBe(true);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleOnly, NOW)).toBe(true);
+    // Not account auth method or password eligibility: a password account's google session is gated by google alone.
+    expect(isBrowserSessionAllowed(gsession(), passwordUser, googleOnly, NOW)).toBe(true);
+    // One of several verified domains.
+    expect(isBrowserSessionAllowed(gsession(), googleUser, policy({ ...empty, googleEnabled: true }, null, ['alpha.example.com', HD, 'zeta.example.com']), NOW)).toBe(true);
+    // No proven Entra tenant changes nothing for a google session.
+    expect(isBrowserSessionAllowed(gsession(), googleUser, policy({ ...empty, googleEnabled: true }, null), NOW)).toBe(true);
+    // One millisecond inside the cap; refused at it; the CURRENT cap is the one read.
+    expect(isBrowserSessionAllowed(gsession({ createdAtMs: NOW - 12 * HOUR + 1 }), googleUser, googleCap(12), NOW)).toBe(true);
+    expect(isBrowserSessionAllowed(gsession({ createdAtMs: NOW - 12 * HOUR }), googleUser, googleCap(12), NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession({ createdAtMs: NOW - 2 * HOUR }), googleUser, googleCap(1), NOW)).toBe(false);
+    // Browser access is still required.
+    expect(isBrowserSessionAllowed(gsession(), { ...googleUser, browserAccess: 'none' }, googleOnly, NOW)).toBe(false);
+  });
+
+  it('google session refused when its hd is not in policy.googleDomains, or googleDomains is null', () => {
+    // Google on, inside the cap; only the domain list differs.
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleCap(12, [HD]), NOW)).toBe(true);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleCap(12, [OTHER_HD]), NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleCap(12, []), NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleCap(12, null), NOW)).toBe(false);
+    // Exact match only: no suffix, parent-domain or case-folded match.
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleCap(12, ['example.com']), NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleCap(12, [`sub.${HD}`]), NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession({ googleHostedDomain: `sub.${HD}` }), googleUser, googleCap(12, [HD]), NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleCap(12, [HD.toUpperCase()]), NOW)).toBe(false);
+    // A session with no pin never passes, whatever the list holds.
+    expect(isBrowserSessionAllowed(gsession({ googleHostedDomain: null }), googleUser, googleCap(12, [HD]), NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession({ googleHostedDomain: null }), googleUser, googleCap(12, null), NOW)).toBe(false);
+  });
+
+  it('a google session never satisfies a password-only or entra-only policy', () => {
+    // inv. 9. Each policy lists the session's hd as verified and holds a proven tenant: only the method refuses.
+    const passwordOnly = policy({ ...empty, googleEnabled: false });
+    expect(passwordOnly.effective.passwordMode.value).toBe('allowed');
+    expect(passwordOnly.effective.googleEnabled.value).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, passwordOnly, NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), passwordUser, passwordOnly, NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, allowedPolicy, NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, ssoOnlyEntra, NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, entraAndPassword, NOW)).toBe(false);
+    // ...and neither a password nor an entra session satisfies a google-only sso_only policy.
+    const googleSsoOnly = googleCap(12);
+    expect(isBrowserSessionAllowed(gsession(), googleUser, googleSsoOnly, NOW)).toBe(true);
+    expect(isBrowserSessionAllowed(pw(), passwordUser, googleSsoOnly, NOW)).toBe(false);
+    expect(isBrowserSessionAllowed(entra(), entraUser, googleSsoOnly, NOW)).toBe(false);
+    // An entra session carrying a stray hd is not thereby a google session.
+    expect(isBrowserSessionAllowed({ ...entra(), googleHostedDomain: HD }, entraUser, googleSsoOnly, NOW)).toBe(false);
   });
 
   it('fails closed for a method it does not know', () => {
@@ -210,7 +334,7 @@ describe('mintPortalBrowserSession (in-memory backend)', () => {
     expect(cookies[1]!.startsWith(`${PORTAL_CSRF_COOKIE_NAME}=`)).toBe(true);
 
     // What was stored reads back as the session that was minted.
-    expect(parseStoredPortalSession(stored)).toEqual({ ...base, method: 'password', createdAtMs: stored.createdAt.getTime(), entraTenantId: null });
+    expect(parseStoredPortalSession(stored)).toEqual({ ...base, method: 'password', createdAtMs: stored.createdAt.getTime(), entraTenantId: null, googleHostedDomain: null });
   });
 
   it('an entra mint stores its tenant and reads back as a capped, pinned entra session', async () => {
@@ -219,7 +343,7 @@ describe('mintPortalBrowserSession (in-memory backend)', () => {
     const stored = portalSessions.get(token)!;
     expect(stored).toMatchObject({ method: 'entra', entraTenantId: TENANT });
     const parsed = parseStoredPortalSession(stored)!;
-    expect(parsed).toEqual({ ...base, method: 'entra', createdAtMs: stored.createdAt.getTime(), entraTenantId: TENANT });
+    expect(parsed).toEqual({ ...base, method: 'entra', createdAtMs: stored.createdAt.getTime(), entraTenantId: TENANT, googleHostedDomain: null });
     expect(isBrowserSessionAllowed(parsed, entraUser, ssoOnlyEntra, Date.now())).toBe(true);
   });
 
@@ -230,6 +354,59 @@ describe('mintPortalBrowserSession (in-memory backend)', () => {
       { ...base, method: 'password' as const, entraTenantId: TENANT },
     ]) {
       const res = await mint(input);
+      expect(res.status).toBe(500);
+      expect(res.headers.getSetCookie()).toEqual([]);
+    }
+    expect(portalSessions.size).toBe(0);
+  });
+});
+
+// W7 (#11384) plan D7. The Redis byte layout is pinned in auth.sessionMint.test.ts.
+describe('mintPortalBrowserSession: google (in-memory backend)', () => {
+  type MintInput = Parameters<typeof mintPortalBrowserSession>[1];
+  const mint = (input: MintInput) => {
+    const app = new Hono();
+    app.post('/mint', async (c) => c.json(await mintPortalBrowserSession(c, input)));
+    return app.request('/mint', { method: 'POST' });
+  };
+
+  beforeEach(() => portalSessions.clear());
+
+  it('a google mint stores its hd and reads back as a capped, pinned google session', async () => {
+    const res = await mint({ ...base, method: 'google', googleHostedDomain: 'Contoso.Example.com' } as MintInput);
+    expect(res.status).toBe(200);
+    const { token } = await res.json() as { token: string };
+    const stored = portalSessions.get(token)!;
+    expect(stored).toEqual({
+      token, ...base, method: 'google', googleHostedDomain: HD, createdAt: expect.any(Date), expiresAt: expect.any(Date),
+    });
+    expect('entraTenantId' in stored).toBe(false);
+    const parsed = parseStoredPortalSession(stored)!;
+    expect(parsed).toEqual({ ...base, method: 'google', createdAtMs: stored.createdAt.getTime(), entraTenantId: null, googleHostedDomain: HD });
+    expect(isBrowserSessionAllowed(parsed, { authMethod: 'google', browserAccess: 'granted' }, googleOnly, Date.now())).toBe(true);
+
+    // Password and entra mints carry no hd key at all.
+    const pwToken = (await (await mint({ ...base, method: 'password' })).json() as { token: string }).token;
+    const entraToken = (await (await mint({ ...base, method: 'entra', entraTenantId: TENANT })).json() as { token: string }).token;
+    expect('googleHostedDomain' in portalSessions.get(pwToken)!).toBe(false);
+    expect('googleHostedDomain' in portalSessions.get(entraToken)!).toBe(false);
+  });
+
+  it('mint refuses googleHostedDomain on a non-google session and requires it on a google one', async () => {
+    for (const input of [
+      { ...base, method: 'google' },
+      // A runtime null or non-string (an untyped caller) never mints an unpinned google session.
+      { ...base, method: 'google', googleHostedDomain: null },
+      { ...base, method: 'google', googleHostedDomain: 42 },
+      { ...base, method: 'google', googleHostedDomain: '' },
+      { ...base, method: 'google', googleHostedDomain: 'not a domain' },
+      { ...base, method: 'google', googleHostedDomain: '*.example.com' },
+      { ...base, method: 'google', googleHostedDomain: ' contoso.example.com' },
+      { ...base, method: 'google', googleHostedDomain: HD, entraTenantId: TENANT },
+      { ...base, method: 'password', googleHostedDomain: HD },
+      { ...base, method: 'entra', entraTenantId: TENANT, googleHostedDomain: HD },
+    ]) {
+      const res = await mint(input as MintInput);
       expect(res.status).toBe(500);
       expect(res.headers.getSetCookie()).toEqual([]);
     }

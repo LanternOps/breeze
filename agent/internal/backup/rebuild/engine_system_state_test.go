@@ -157,7 +157,7 @@ func TestRun_StateAppliedSurvivesResume(t *testing.T) {
 	resetBmrCalls()
 	dir := t.TempDir()
 	sys := newFakeSystem(dir, 100*GiB)
-	sys.fail["chroot"] = errors.New("boom") // first run dies in boot
+	sys.arch = "arm64" // first run dies in boot: the ESP has no arm64 fallback loader
 	p := seedSnapshot(t, "snap-1", testLayout())
 	opts := stateOpts(dir, p, sys, true)
 	res, err := Run(context.Background(), opts)

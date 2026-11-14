@@ -56,7 +56,7 @@ import {
 } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
-import { createOrganization, createPartner, createSite, createUser, userEpochs } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
 import { replayMigration } from './replayMigration';
 
@@ -1307,6 +1307,7 @@ async function issueKey(
     updatedBy: userId,
   }).returning();
   if (!principal) throw new Error('service principal seed failed');
+  await ensurePartnerServicePrincipalOwner(userId, partnerId);
   return (await issuePartnerServicePrincipalKey(admin as unknown as Database, {
     partnerServicePrincipalId: principal.id,
     partnerId,

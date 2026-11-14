@@ -6,7 +6,11 @@ const { dbSelectMock, dbUpdateMock, writeRouteAuditMock, orgConditionMock, authS
   dbUpdateMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   orgConditionMock: vi.fn(() => ({ __scope: 'caller-orgs' })),
-  authState: { permissions: [{ resource: '*', action: '*' }] as Array<{ resource: string; action: string }> },
+  authState: {
+    permissions: [{ resource: '*', action: '*' }] as Array<{ resource: string; action: string }>,
+    /** Set to make the caller an organization-scope user with this restriction. */
+    orgCeiling: null as null | { allowedSiteIds?: string[]; allowedDeviceIds?: string[] },
+  },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -21,6 +25,9 @@ vi.mock('../../middleware/auth', () => ({
       orgCondition: orgConditionMock,
       permissions: authState.permissions,
       user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
+      ...(authState.orgCeiling
+        ? { scope: 'organization', partnerId: null, orgId: '0c0c0c0c-1111-4222-8333-444455556666', ...authState.orgCeiling }
+        : {}),
     });
     return next();
   }),
@@ -69,7 +76,9 @@ const SESSION_ROW = {
   flagReason: null,
   createdAt: new Date('2026-06-10T09:00:00Z'),
   lastActivityAt: new Date('2026-06-10T09:20:00Z'),
+  transcriptPurgedAt: null as Date | null,
 };
+const PURGED_AT = new Date('2027-06-11T08:15:00Z');
 
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
@@ -128,7 +137,20 @@ describe('GET /client-ai/admin/sessions', () => {
       totalCostCents: 12.5,
     });
     expect(body.data[0].startedAt).toBeDefined();
+    expect(body.data[0].transcriptPurgedAt).toBeNull();
     expect(body.pagination).toMatchObject({ total: 1, limit: 50, offset: 0 });
+  });
+
+  it('projects transcriptPurgedAt (#4342 W4) and returns it as an ISO string for a stub', async () => {
+    let call = 0;
+    dbSelectMock.mockImplementation(() => {
+      call++;
+      return call === 1 ? chain([{ ...SESSION_ROW, transcriptPurgedAt: PURGED_AT }]) : chain([{ n: 1 }]);
+    });
+    const res = await buildApp().request('/client-ai/admin/sessions', { headers: AUTHED });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].transcriptPurgedAt).toBe('2027-06-11T08:15:00.000Z');
+    expect(dbSelectMock.mock.calls[0]![0]).toHaveProperty('transcriptPurgedAt');
   });
 
   it('scopes the unfiltered list to the caller at the app layer (defense-in-depth)', async () => {
@@ -209,6 +231,9 @@ describe('GET /client-ai/admin/sessions/:id', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.session.id).toBe(SESSION_ID);
+    expect(body.session.transcriptPurgedAt).toBeNull();
+    // The session read projects the retention stub marker (#4342 W4).
+    expect(dbSelectMock.mock.calls[0]![0]).toHaveProperty('transcriptPurgedAt');
     expect(body.messages[0].redactionCounts).toEqual({ creditCard: 2, ssn: 1 });
     expect(body.toolExecutions[0].toolName).toBe('write_range');
     expect(body.toolExecutions[0].toolInput.providerConfig.secretKey).toBe('[REDACTED]');
@@ -334,5 +359,38 @@ describe('countRedactions', () => {
       iban: 2,
       apiKey: 1,
     });
+  });
+});
+
+describe('flag / unflag and site-restricted users', () => {
+  beforeEach(() => { authState.orgCeiling = null; });
+
+  it.each([
+    [{ allowedSiteIds: ['11111111-1111-4111-8111-111111111111'] }],
+    [{ allowedSiteIds: [] }],
+    [{ allowedDeviceIds: ['22222222-2222-4222-8222-222222222222'] }],
+  ])('refuses flag and unflag from a restricted organization user %j', async (ceiling) => {
+    authState.orgCeiling = ceiling;
+    dbSelectMock.mockImplementation(() => chain([SESSION_ROW]));
+    for (const method of ['POST', 'DELETE']) {
+      const res = await buildApp().request(`/client-ai/admin/sessions/${SESSION_ID}/flag`, {
+        method, headers: AUTHED, body: method === 'POST' ? JSON.stringify({ reason: 'r' }) : undefined,
+      });
+      expect(res.status, method).toBe(403);
+    }
+    expect(dbUpdateMock).not.toHaveBeenCalled();
+    authState.orgCeiling = null;
+  });
+
+  it('allows flag and unflag from an unrestricted organization user', async () => {
+    authState.orgCeiling = {};
+    dbSelectMock.mockImplementation(() => chain([SESSION_ROW]));
+    for (const method of ['POST', 'DELETE']) {
+      const res = await buildApp().request(`/client-ai/admin/sessions/${SESSION_ID}/flag`, {
+        method, headers: AUTHED, body: method === 'POST' ? JSON.stringify({ reason: 'r' }) : undefined,
+      });
+      expect(res.status, method).toBe(200);
+    }
+    authState.orgCeiling = null;
   });
 });

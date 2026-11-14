@@ -28,7 +28,10 @@ vi.mock('./aiDispatch', () => ({
   aiQueueCommandForExecution: vi.fn(),
 }));
 
-vi.mock('./localVaultUpdate', () => ({
+// The site-locked update is stubbed; every other vault write runs through the
+// real service over the mocked db.
+vi.mock('./localVaultUpdate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./localVaultUpdate')>()),
   updateVaultWithinCurrentSite: vi.fn(),
 }));
 
@@ -472,5 +475,83 @@ describe('aiToolsVault handlers', () => {
     const parsed = JSON.parse(result);
 
     expect(parsed).toEqual({ error: 'Operation failed. Check server logs for details.' });
+  });
+});
+
+describe('configure_vault refuses network share vaults', () => {
+  let toolMap: Map<string, AiTool>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    setDefaultDbMocks();
+    toolMap = buildToolMap();
+    // The real site-locked update, so its own refusal is what is exercised.
+    const actual = await vi.importActual<typeof import('./localVaultUpdate')>('./localVaultUpdate');
+    vi.mocked(updateVaultWithinCurrentSite).mockImplementation(actual.updateVaultWithinCurrentSite);
+  });
+
+  const restrictedAuth = () => ({
+    ...makeAuth(), allowedSiteIds: ['site-1'], canAccessSite: (siteId: string | null) => siteId === 'site-1',
+  }) as unknown as AuthContext;
+
+  it.each([
+    [{ action: 'create', deviceId: DEVICE_ID, vaultPath: '/vaults/main', vaultType: 'smb' }],
+    [{ action: 'create', deviceId: DEVICE_ID, vaultPath: '\\\\nas\\vault', vaultType: 'local' }],
+    [{ action: 'update', vaultId: VAULT_ID, vaultType: 'smb' }],
+    [{ action: 'update', vaultId: VAULT_ID, vaultPath: '//nas/vault' }],
+  ])('the input schema refuses %j', (input) => {
+    const result = validateToolInput('configure_vault', input as Record<string, unknown>);
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result)).toMatch(/not supported/);
+  });
+
+  it.each([
+    ['an SMB share type', { vaultPath: '/vaults/main', vaultType: 'smb' }],
+    ['a UNC path', { vaultPath: '\\\\nas\\vault', vaultType: 'usb' }],
+    ['a device path', { vaultPath: '\\\\.\\E:\\vault', vaultType: 'usb' }],
+  ])('create with %s is refused before any write or device push', async (_label, target) => {
+    mockSelectSequence([[{ id: DEVICE_ID, orgId: ORG_ID, siteId: null }]]);
+    vi.mocked(db.insert).mockImplementation(() => createInsertChain([{ id: VAULT_ID }]) as any);
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'create', deviceId: DEVICE_ID, ...target }, makeAuth(),
+    ));
+
+    expect(result.error).toMatch(/not supported/);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an SMB share type', { vaultType: 'smb' }],
+    ['a UNC path', { vaultPath: '\\\\?\\UNC\\nas\\vault' }],
+  ])('update with %s is refused before any write or device push', async (_label, target) => {
+    prepareHandlerMocks('configure_vault');
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, ...target }, makeAuth(),
+    ));
+
+    expect(result.error).toMatch(/not supported/);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('a site-restricted update to an SMB share type is refused before any write', async () => {
+    prepareHandlerMocks('configure_vault');
+    mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID }], [{ siteId: 'site-1' }]]);
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, vaultType: 'smb' }, restrictedAuth(),
+    ));
+
+    expect(result.error).toMatch(/not supported/);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('no longer advertises the SMB share vault type', () => {
+    const def = toolMap.get('configure_vault')!.definition as any;
+    expect(def.input_schema.properties.vaultType.enum).toEqual(['local', 'usb']);
   });
 });

@@ -127,8 +127,8 @@ type restartScriptOptions struct {
 // buildRestartScript renders the PowerShell helper script. Extracted from
 // RestartWithHelper so it can be unit-tested for shell-injection safety and
 // for backward-compatible behavior when the user-helper paths are unset
-// (issue #816). Single-quote escaping doubles single quotes, matching the
-// established convention for the agent path.
+// (issue #816). Paths are escaped with psscript.EscapeSingleQuoted, which
+// doubles every PowerShell single-quote character.
 //
 // Error handling: PowerShell's Copy-Item is a non-terminating cmdlet by
 // default — a failed Copy (locked file, ACL denied, disk full) does NOT
@@ -149,8 +149,8 @@ type restartScriptOptions struct {
 //     we've tried and the failure log captures the cause),
 //   - keeps Remove-Item cleanups outside the try/catch so they always run.
 func buildRestartScript(opts restartScriptOptions) string {
-	safeAgent := strings.ReplaceAll(opts.Agent.Temp, "'", "''")
-	safeAgentTarget := strings.ReplaceAll(opts.Agent.Target, "'", "''")
+	safeAgent := psscript.EscapeSingleQuoted(opts.Agent.Temp)
+	safeAgentTarget := psscript.EscapeSingleQuoted(opts.Agent.Target)
 
 	// nil-as-absent: the type system now guarantees both helper paths come as
 	// a single unit, so we cannot land in the half-set state the pre-PR-B
@@ -158,15 +158,15 @@ func buildRestartScript(opts restartScriptOptions) string {
 	hasHelper := opts.UserHelper != nil
 	var safeHelper, safeHelperTarget string
 	if hasHelper {
-		safeHelper = strings.ReplaceAll(opts.UserHelper.Temp, "'", "''")
-		safeHelperTarget = strings.ReplaceAll(opts.UserHelper.Target, "'", "''")
+		safeHelper = psscript.EscapeSingleQuoted(opts.UserHelper.Temp)
+		safeHelperTarget = psscript.EscapeSingleQuoted(opts.UserHelper.Target)
 	}
 
 	hasBackup := opts.Backup != nil
 	var safeBackup, safeBackupTarget string
 	if hasBackup {
-		safeBackup = strings.ReplaceAll(opts.Backup.Temp, "'", "''")
-		safeBackupTarget = strings.ReplaceAll(opts.Backup.Target, "'", "''")
+		safeBackup = psscript.EscapeSingleQuoted(opts.Backup.Temp)
+		safeBackupTarget = psscript.EscapeSingleQuoted(opts.Backup.Target)
 	}
 
 	// The exe lock on a running breeze-backup.exe would otherwise block its

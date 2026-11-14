@@ -331,7 +331,7 @@ export type AiStreamEvent =
    * requester's phone; `waitingOn` says who must decide.
    * The thinking indicator shows the wait from these while the card is open.
    */
-  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary; standingInstructionConflict?: AiStandingInstructionConflict }
+  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary; standingInstructionConflict?: AiStandingInstructionConflict; ticketContext?: AiApprovalTicketContext }
   /**
    * W03 (#5612): a proposal outcome delivered into the author's chat session —
    * request-changes findings + note, or a verification result. The durable
@@ -428,6 +428,19 @@ export type AiStreamEvent =
  * the same text so every channel shows it.
  */
 export type AiStandingInstructionConflict = { text: string };
+
+/**
+ * #11674: the ticket a `manage_tickets` approval acts on, resolved server-side
+ * (org-pinned) so the chat card can name it by number and say who a public
+ * reply emails. The requester fields mirror `tickets.submitter_*`, which is
+ * where the notify worker sends customer-visible replies.
+ */
+export type AiApprovalTicketContext = {
+  ticketNumber: string;
+  subject: string;
+  requesterName?: string;
+  requesterEmail?: string;
+};
 
 export type AiPendingCardEvent = Extract<AiStreamEvent, { type: 'approval_required' | 'plan_approval_required' }>;
 

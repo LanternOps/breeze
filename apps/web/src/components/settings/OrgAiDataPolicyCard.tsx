@@ -5,9 +5,11 @@ import { ShieldCheck } from 'lucide-react';
 import { ActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth, handleSessionExpired } from '@/stores/auth';
 import { showToast } from '../shared/Toast';
+import TranscriptRetentionPreview, { previewDays } from '../ai/TranscriptRetentionPreview';
 
 /**
- * Org-level AI data policy (device file reads + tool output retention).
+ * Org-level AI data policy (device file reads, tool output retention, and the
+ * technician AI transcript window, #4342 W4).
  * Self-saving, outside the page's dirty/save cycle. Blank = inherit the partner
  * default; an org can only tighten, so options above the partner ceiling are
  * disabled. The partner default lives on Partner settings → AI Features.
@@ -19,9 +21,16 @@ type Source = 'org' | 'partner' | 'default';
 type Effective = {
   deviceFileReadLevel: Level;
   toolOutputRetentionDays: number | null;
-  source: { deviceFileReadLevel: Source; toolOutputRetentionDays: Source };
+  transcriptRetentionDays: number | null;
+  source: { deviceFileReadLevel: Source; toolOutputRetentionDays: Source; transcriptRetentionDays: Source };
 };
-type Dto = { deviceFileReadLevel: Level | null; toolOutputRetentionDays: number | null } | null;
+type Dto = {
+  deviceFileReadLevel: Level | null;
+  toolOutputRetentionDays: number | null;
+  transcriptRetentionDays?: number | null;
+} | null;
+type Patch = { deviceFileReadLevel?: Level | null; toolOutputRetentionDays?: number | null; transcriptRetentionDays?: number | null };
+type RetentionField = 'toolOutputRetentionDays' | 'transcriptRetentionDays';
 
 function levelText(t: TFunction): Record<Level, { label: string; help: string }> {
   return {
@@ -38,9 +47,11 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
   const [effective, setEffective] = useState<Effective | null>(null);
   const [ceiling, setCeiling] = useState<Effective | null>(null);
   const [saving, setSaving] = useState(false);
-  // Bumped after a failed save so the uncontrolled retention input remounts
-  // with the stored value instead of keeping the rejected number.
+  // Bumped after a failed save or a client-side refusal so both uncontrolled
+  // day inputs remount with the stored value instead of keeping the rejected one.
   const [reloadKey, setReloadKey] = useState(0);
+  // The transcript box as typed, so the preview follows the edit before it is saved.
+  const [transcriptText, setTranscriptText] = useState<string | null>(null);
 
   const load = async () => {
     try {
@@ -50,13 +61,14 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
       setPolicy(data.policy);
       setEffective(data.effective);
       setCeiling(data.ceiling);
+      setTranscriptText(null);
     } catch {
       // Informational card: stays hidden if the policy cannot be loaded.
     }
   };
   useEffect(() => { void load(); }, [orgId]);
 
-  const save = async (patch: { deviceFileReadLevel?: Level | null; toolOutputRetentionDays?: number | null }) => {
+  const save = async (patch: Patch) => {
     setSaving(true);
     try {
       await runAction({
@@ -70,9 +82,11 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
         friendly: (code, _message, body) => {
           if (code !== 'above_partner_ceiling') return undefined;
           const field = (body as { field?: string } | undefined)?.field;
-          return field === 'deviceFileReadLevel'
-            ? t('aiDataPolicy.aboveCeilingLevel')
-            : t('aiDataPolicy.retentionAboveCeiling', { days: ceiling?.toolOutputRetentionDays ?? '' });
+          if (field === 'deviceFileReadLevel') return t('aiDataPolicy.aboveCeilingLevel');
+          if (field === 'transcriptRetentionDays') {
+            return t('aiDataPolicy.transcriptAboveCeiling', { days: ceiling?.transcriptRetentionDays ?? '' });
+          }
+          return t('aiDataPolicy.retentionAboveCeiling', { days: ceiling?.toolOutputRetentionDays ?? '' });
         },
         successMessage: t('aiDataPolicy.saved'),
         onUnauthorized: handleSessionExpired,
@@ -82,6 +96,7 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiDataPolicy.failedToSave') });
       setReloadKey((k) => k + 1);
+      setTranscriptText(null);
       await load();
     } finally {
       setSaving(false);
@@ -92,6 +107,47 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
   const sourceLabel = (s: Source) =>
     s === 'org' ? t('aiDataPolicy.sourceOrg') : s === 'partner' ? t('aiDataPolicy.sourcePartner') : t('aiDataPolicy.sourceDefault');
   const current = policy?.deviceFileReadLevel ?? '';
+
+  /**
+   * Blur handler shared by both day fields: PUT the changed value. Refused
+   * client-side: an unparseable entry (a number input reports partial input
+   * such as "1e" as an empty value, which would otherwise clear the override)
+   * and a value above the ceiling.
+   */
+  const commitDays = (field: RetentionField, input: HTMLInputElement) => {
+    const refuse = (message: string) => {
+      showToast({ type: 'error', message });
+      setReloadKey((k) => k + 1);
+      if (field === 'transcriptRetentionDays') setTranscriptText(null);
+    };
+    if (input.validity?.badInput) {
+      refuse(t('aiDataPolicy.invalidDays'));
+      return;
+    }
+    const v = input.value.trim();
+    const next = v === '' ? null : Number(v);
+    if (next === (policy?.[field] ?? null)) return;
+    // `max` does not block typing: refuse client-side instead of PUTting a doomed value.
+    const max = ceiling[field];
+    if (next !== null && max !== null && next > max) {
+      refuse(field === 'transcriptRetentionDays'
+        ? t('aiDataPolicy.transcriptAboveCeiling', { days: max })
+        : t('aiDataPolicy.retentionAboveCeiling', { days: max }));
+      return;
+    }
+    void save({ [field]: next });
+  };
+
+  // Untouched: the window in force. Typed blank: the ceiling it inherits (the
+  // partner value, or the Breeze default when the partner has no row).
+  // Typed days: that window, unless it is above the ceiling (the save refuses it).
+  // Keep forever previews nothing.
+  const transcriptPreviewDays = (() => {
+    if (transcriptText === null) return previewDays(effective.transcriptRetentionDays);
+    if (transcriptText.trim() === '') return previewDays(ceiling.transcriptRetentionDays);
+    const typed = previewDays(transcriptText);
+    return typed !== null && ceiling.transcriptRetentionDays !== null && typed > ceiling.transcriptRetentionDays ? null : typed;
+  })();
 
   return (
     <section className="mt-4 rounded-lg border bg-card p-6 shadow-xs" data-testid="org-ai-data-policy-card">
@@ -141,21 +197,45 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
             value: effective.toolOutputRetentionDays ?? t('aiDataPolicy.keepForever'),
             source: sourceLabel(effective.source.toolOutputRetentionDays),
           })}
-          onBlur={(e) => {
-            const v = e.currentTarget.value.trim();
-            const next = v === '' ? null : Number(v);
-            if (next === (policy?.toolOutputRetentionDays ?? null)) return;
-            // `max` does not block typing: refuse client-side instead of PUTting a doomed value.
-            if (next !== null && ceiling.toolOutputRetentionDays !== null && next > ceiling.toolOutputRetentionDays) {
-              showToast({ type: 'error', message: t('aiDataPolicy.retentionAboveCeiling', { days: ceiling.toolOutputRetentionDays }) });
-              setReloadKey((k) => k + 1);
-              return;
-            }
-            void save({ toolOutputRetentionDays: next });
-          }}
+          onBlur={(e) => commitDays('toolOutputRetentionDays', e.currentTarget)}
           className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm" />
         <span className="mt-1 block text-xs text-muted-foreground">{t('aiDataPolicy.retentionHelp')}</span>
       </label>
+
+      <div className="mt-6 max-w-md">
+        <label className="block max-w-xs">
+          <span className="text-sm font-medium">{t('aiDataPolicy.transcriptLabel')}</span>
+          <input type="number" min={1} max={ceiling.transcriptRetentionDays ?? 3650} disabled={saving}
+            data-testid="org-ai-data-policy-transcript-retention"
+            key={`${policy?.transcriptRetentionDays ?? 'inherit'}-${reloadKey}`}
+            defaultValue={policy?.transcriptRetentionDays ?? ''}
+            placeholder={t('aiDataPolicy.retentionInherit', {
+              // Blank clears the org override, so it resolves to the ceiling (partner value or Breeze default).
+              value: ceiling.transcriptRetentionDays ?? t('aiDataPolicy.keepForever'),
+              source: sourceLabel(ceiling.source.transcriptRetentionDays),
+            })}
+            onChange={(e) => setTranscriptText(e.currentTarget.value)}
+            onBlur={(e) => commitDays('transcriptRetentionDays', e.currentTarget)}
+            className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm" />
+        </label>
+        <TranscriptRetentionPreview
+          url={transcriptPreviewDays === null
+            ? null
+            : `/ai/data-policy/transcript-retention-preview?orgId=${encodeURIComponent(orgId)}&days=${transcriptPreviewDays}`}
+          scope="org"
+          testId="org-ai-data-policy-transcript-preview" />
+        <span className="mt-1 block text-xs text-muted-foreground">{t('aiDataPolicy.transcriptHelp')}</span>
+        <span className="mt-1 block text-xs text-muted-foreground" data-testid="org-ai-data-policy-transcript-audit-note">
+          {t('aiDataPolicy.transcriptAuditNote')}
+        </span>
+        <span className="mt-1 block text-xs text-muted-foreground">
+          {t('aiDataPolicy.transcriptClientNote')}{' '}
+          <a href={`/ai-for-office#policy/${orgId}`} className="font-medium text-primary hover:underline"
+            data-testid="org-ai-data-policy-transcript-client-link">
+            {t('aiDataPolicy.transcriptClientLink')}
+          </a>
+        </span>
+      </div>
     </section>
   );
 }

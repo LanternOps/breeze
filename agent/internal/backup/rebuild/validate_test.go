@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup"
@@ -124,5 +125,73 @@ func TestValidate_SkipsFailedFileByRestoreKey(t *testing.T) {
 	}
 	if err := validate(context.Background(), r); err != nil {
 		t.Fatalf("validate() = %v, want nil (known-failed VSS file should be skipped by its RestoreSourceKey)", err)
+	}
+}
+
+// Validation reads restored files through the restored tree's root: a link
+// in the tree that leads outside it is not followed, so a sampled file or
+// fstab outside the tree is never read in its place.
+func TestValidateReadsInsideTree(t *testing.T) {
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "hostname"), []byte("kit-lab\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := backup.SHA256File(filepath.Join(other, "hostname"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "fstab"), []byte("UUID=0bad0bad-0000-0000-0000-000000000000 / ext4 defaults 0 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("sample", func(t *testing.T) {
+		dir := t.TempDir()
+		symlinkOrSkip(t, other, filepath.Join(dir, "etc"))
+		r := &run{
+			staging:  dir,
+			manifest: &backup.Snapshot{Files: []backup.SnapshotFile{{SourcePath: "/etc/hostname", Checksum: sum}}},
+			opts:     Options{SkipBoot: true},
+			sys:      &fakeSystem{},
+			result:   &Result{Plan: &Plan{}},
+		}
+		if err := validate(context.Background(), r); err == nil {
+			t.Fatal("expected a sample mismatch for a file outside the tree")
+		}
+	})
+	t.Run("fstab", func(t *testing.T) {
+		dir := t.TempDir()
+		symlinkOrSkip(t, other, filepath.Join(dir, "etc"))
+		r := &run{staging: dir, opts: Options{SkipBoot: true}, sys: &fakeSystem{}, result: &Result{Plan: &Plan{}}}
+		_ = validate(context.Background(), r)
+		for _, w := range r.warnings {
+			if strings.Contains(w, "0bad0bad") {
+				t.Fatalf("fstab read from outside the tree: %v", r.warnings)
+			}
+		}
+	})
+}
+
+func TestHashTreeFile(t *testing.T) {
+	root, other := t.TempDir(), t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "usr", "lib", "file"), "content")
+	mustWriteFile(t, filepath.Join(other, "file"), "content")
+	want, err := backup.SHA256File(filepath.Join(other, "file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := hashTreeFile(root, filepath.Join("usr", "lib", "file")); err != nil || got != want {
+		t.Fatalf("regular file: %q %v", got, err)
+	}
+	symlinkOrSkip(t, other, filepath.Join(root, "outside"))
+	if _, err := hashTreeFile(root, filepath.Join("outside", "file")); err == nil {
+		t.Fatal("hashed a file outside the tree")
+	}
+	if err := os.Symlink(filepath.Join("usr", "lib"), filepath.Join(root, "lib")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := hashTreeFile(root, filepath.Join("lib", "file")); err != nil || got != want {
+		t.Fatalf("file through a link inside the tree: %q %v", got, err)
+	}
+	if _, err := hashTreeFile(root, "usr"); err == nil {
+		t.Fatal("hashed a directory")
 	}
 }

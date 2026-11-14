@@ -16,6 +16,14 @@ import (
 // Non-Linux platforms lack the handle-relative implementation used on Linux.
 // This rejects observed symlinks/reparse points and uses an exclusive sibling
 // temporary file, but callers must retain runtime validation as a residual.
+func privateDirInfo(path string) (os.FileInfo, error) {
+	return nil, fmt.Errorf("private directory verification is unsupported on this platform")
+}
+
+func ensurePrivateDirInRoot(root *os.Root, relative string) error {
+	return fmt.Errorf("rooted private directory creation is unsupported on this platform")
+}
+
 func ensureDir(path string, mode os.FileMode, private bool) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("directory must be absolute: %q", path)
@@ -121,7 +129,7 @@ func rejectLinkedPath(base, relative string, create bool) error {
 	return nil
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32, sec *SecurityApplier) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner, _ uint32, sec *SecurityApplier, removeSource bool, input *os.File) ([]error, error) {
 	if err := rejectLinkedPath(base, filepath.Dir(relative), true); err != nil {
 		return nil, err
 	}
@@ -147,7 +155,7 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 			_ = os.Remove(tempPath)
 		}
 	}()
-	src, err := os.Open(source)
+	src, err := openInstallSource(source, input)
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +204,10 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		return nil, err
 	}
 	committed = true
-	if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
-		warnings = append(warnings, fmt.Errorf("remove staging file: %w", err))
+	if removeSource {
+		if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
+			warnings = append(warnings, fmt.Errorf("remove staging file: %w", err))
+		}
 	}
 	return warnings, nil
 }

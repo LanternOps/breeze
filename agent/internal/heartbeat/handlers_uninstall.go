@@ -509,41 +509,36 @@ func buildWindowsUninstallScript(opts windowsUninstallScriptOptions) string {
 	// stopped and disabled (#2796) while Breeze-owned filters may remain.
 	lines := []string{
 		"try {",
-		fmt.Sprintf("  & '%s' containment release-all --reason uninstall", psQuote(opts.AgentBinaryPath)),
+		fmt.Sprintf("  & '%s' containment release-all --reason uninstall", psscript.EscapeSingleQuoted(opts.AgentBinaryPath)),
 		"  $breezeReleaseExit = $LASTEXITCODE",
 		"} catch { $breezeReleaseExit = 1 }",
 		"if ($breezeReleaseExit -ne 0) {",
 	}
 	if opts.ConfigDir != "" {
-		lines = append(lines, fmt.Sprintf("  \"$(Get-Date -Format o) self-uninstall aborted: isolation release could not be confirmed (exit $breezeReleaseExit); agent service re-enabled\" | Out-File -LiteralPath '%s' -Append -Encoding utf8 -ErrorAction SilentlyContinue", psQuote(strings.TrimRight(opts.ConfigDir, `\`)+`\logs\uninstall-isolation-release-error.txt`)))
+		lines = append(lines, fmt.Sprintf("  \"$(Get-Date -Format o) self-uninstall aborted: isolation release could not be confirmed (exit $breezeReleaseExit); agent service re-enabled\" | Out-File -LiteralPath '%s' -Append -Encoding utf8 -ErrorAction SilentlyContinue", psscript.EscapeSingleQuoted(strings.TrimRight(opts.ConfigDir, `\`)+`\logs\uninstall-isolation-release-error.txt`)))
 	}
 	lines = append(lines,
-		fmt.Sprintf("  sc.exe config '%s' start= auto | Out-Null", psQuote(opts.ServiceName)),
-		fmt.Sprintf("  sc.exe failure '%s' reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null", psQuote(opts.ServiceName)),
+		fmt.Sprintf("  sc.exe config '%s' start= auto | Out-Null", psscript.EscapeSingleQuoted(opts.ServiceName)),
+		fmt.Sprintf("  sc.exe failure '%s' reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null", psscript.EscapeSingleQuoted(opts.ServiceName)),
 		"  exit 1",
 		"}",
 		fmt.Sprintf("Start-Sleep -Seconds %d", opts.DelaySeconds),
-		fmt.Sprintf("sc.exe stop '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
-		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
-		fmt.Sprintf("Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.ServiceName)),
-		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.ServiceName)),
+		fmt.Sprintf("sc.exe stop '%s' | Out-Null", psscript.EscapeSingleQuoted(opts.WatchdogServiceName)),
+		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psscript.EscapeSingleQuoted(opts.WatchdogServiceName)),
+		fmt.Sprintf("Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue", psscript.EscapeSingleQuoted(opts.ServiceName)),
+		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psscript.EscapeSingleQuoted(opts.ServiceName)),
 		"Get-Process -Name 'breeze-agent','breeze-user-helper','breeze-desktop-helper','breeze-watchdog' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
 		"Start-Sleep -Seconds 1",
-		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.WatchdogBinaryPath)),
-		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.AgentBinaryPath)),
+		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psscript.EscapeSingleQuoted(opts.WatchdogBinaryPath)),
+		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psscript.EscapeSingleQuoted(opts.AgentBinaryPath)),
 	)
 	if opts.RemoveConfig && opts.ConfigDir != "" {
 		lines = append(lines,
-			fmt.Sprintf("Remove-Item -LiteralPath '%s' -Recurse -Force -ErrorAction SilentlyContinue", psQuote(opts.ConfigDir)),
+			fmt.Sprintf("Remove-Item -LiteralPath '%s' -Recurse -Force -ErrorAction SilentlyContinue", psscript.EscapeSingleQuoted(opts.ConfigDir)),
 		)
 	}
 	lines = append(lines, "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue")
 	return strings.Join(lines, "\r\n")
-}
-
-// psQuote escapes s for inclusion inside a single-quoted PowerShell string.
-func psQuote(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
 }
 
 // prepareSelfUninstallWindows neutralizes the watchdog in-process, then hands

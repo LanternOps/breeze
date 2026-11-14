@@ -32,6 +32,14 @@ export interface RenderPartnerEmailArgs {
   ctaUrl?: string;
   /** Overrides the catalog default button label when custom.buttonLabel is empty. */
   ctaLabel?: string;
+  /**
+   * More primary buttons, rendered right after the main one in its slot (an
+   * invite with both SSO methods, W7 #11384). Server-built labels: a partner's
+   * custom button label never relabels them. Each is dropped unless its URL is
+   * a safe http(s) URL, and all are dropped when the main button is. Absent or
+   * empty renders exactly as before.
+   */
+  extraCtas?: ReadonlyArray<{ label: string; url: string }>;
   brandName?: string;
   footer?: string;
   preheader?: string;
@@ -129,18 +137,36 @@ function stripSentinelFromAttributes(html: string, sentinel: string): string {
       eq + quoted.replaceAll(sentinel, ''));
 }
 
+/** The extra buttons whose URLs are safe (see RenderPartnerEmailArgs.extraCtas). */
+function safeExtraCtas(extras: RenderPartnerEmailArgs['extraCtas']): Array<{ label: string; url: string }> {
+  return (extras ?? []).filter((e) => isSafeHttpUrl(e.url));
+}
+
+/**
+ * The main button alone (unchanged markup), or with extra buttons: each in an
+ * inline-block wrapper with a right and bottom gap, so they sit side by side
+ * and keep apart when a narrow screen wraps them.
+ */
+function renderButtons(label: string, url: string, extras: Array<{ label: string; url: string }>): string {
+  if (extras.length === 0) return renderButton(label, url);
+  return [{ label, url }, ...extras]
+    .map((b) => `<span style="display: inline-block; margin: 0 8px 8px 0;">${renderButton(b.label, b.url)}</span>`)
+    .join('');
+}
+
 function applyCta(
   inner: string,
   id: EmailTemplateId,
   ctaUrl: string | undefined,
   label: string,
   sentinel: string,
+  extras: Array<{ label: string; url: string }> = [],
 ): string {
   inner = stripSentinelFromAttributes(inner, sentinel);
   const slotted = inner.includes(sentinel);
   const safeUrl = ctaUrl && isSafeHttpUrl(ctaUrl) ? ctaUrl : null;
   if (emailTemplateHasCta(id) && safeUrl) {
-    const button = renderButton(label, safeUrl);
+    const button = renderButtons(label, safeUrl, extras);
     // R11: function replacers insert labels and names literally ($& in a label stays $&).
     if (slotted) return inner.replaceAll(sentinel, () => button);
     return `${inner}${button}`;
@@ -149,9 +175,18 @@ function applyCta(
 }
 
 /** The text-part twin of applyCta: the button is a "label: url" line where it sits. */
-function ctaAsText(inner: string, id: EmailTemplateId, ctaUrl: string | undefined, label: string, sentinel: string): string {
+function ctaAsText(
+  inner: string,
+  id: EmailTemplateId,
+  ctaUrl: string | undefined,
+  label: string,
+  sentinel: string,
+  extras: Array<{ label: string; url: string }> = [],
+): string {
   const safeUrl = ctaUrl && isSafeHttpUrl(ctaUrl) ? ctaUrl : null;
-  const line = emailTemplateHasCta(id) && safeUrl ? `<p>${escapeHtml(label)}: ${escapeHtml(safeUrl)}</p>` : '';
+  const line = emailTemplateHasCta(id) && safeUrl
+    ? [{ label, url: safeUrl }, ...extras].map((b) => `<p>${escapeHtml(b.label)}: ${escapeHtml(b.url)}</p>`).join('')
+    : '';
   if (inner.includes(sentinel)) return inner.replaceAll(sentinel, () => line);
   return `${inner}${line}`;
 }
@@ -219,8 +254,9 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): RenderedPartne
 
   inner = stripSentinelFromAttributes(inner, sentinel);
   inner = spliceBeforeCta(inner, args.bodyBeforeCta, sentinel);
-  const textInner = ctaAsText(inner, args.id, args.ctaUrl, buttonLabel, sentinel);
-  inner = applyCta(inner, args.id, args.ctaUrl, buttonLabel, sentinel);
+  const extras = safeExtraCtas(args.extraCtas);
+  const textInner = ctaAsText(inner, args.id, args.ctaUrl, buttonLabel, sentinel, extras);
+  inner = applyCta(inner, args.id, args.ctaUrl, buttonLabel, sentinel, extras);
   if (args.bodyAfterCta) inner = `${inner}${args.bodyAfterCta}`;
   const preheader = args.preheader ?? defaultPreheader(args.id);
 

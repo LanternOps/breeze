@@ -188,15 +188,15 @@ vi.mock('../services', () => ({
   // individual tests override.
   verifyPassword: vi.fn().mockResolvedValue(false),
   hashPassword: vi.fn().mockResolvedValue('$argon2id$dummy-hash'),
-  isAccountLocked: vi.fn().mockResolvedValue(false),
-  recordAccountFailure: vi.fn().mockResolvedValue({ newlyLocked: false, count: 1 }),
+  reserveAccountAttempt: vi.fn().mockResolvedValue({ allowed: true, count: 1, reachesLimit: false }),
+  releaseAccountAttempt: vi.fn().mockResolvedValue(undefined),
   clearAccountFailures: vi.fn().mockResolvedValue(undefined)
 }));
 
 // #4067: the confirm endpoint reuses login's full lockout-notify helper.
 vi.mock('./auth/login', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./auth/login')>()),
-  recordAccountFailureAndMaybeNotify: vi.fn(),
+  notifyAccountLocked: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -499,10 +499,11 @@ import {
   getUserEpochs,
   getRefreshFamily,
   verifyPassword,
-  isAccountLocked,
+  reserveAccountAttempt,
+  releaseAccountAttempt,
   clearAccountFailures,
 } from '../services';
-import { recordAccountFailureAndMaybeNotify } from './auth/login';
+import { notifyAccountLocked } from './auth/login';
 import { users as usersTable, organizationUsers as organizationUsersTable } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import {
@@ -568,7 +569,7 @@ describe('sso routes', () => {
     // #4067 confirm-ceremony defaults (clearAllMocks does NOT restore factory
     // implementations set via mockResolvedValue in earlier tests).
     vi.mocked(verifyPassword).mockResolvedValue(false);
-    vi.mocked(isAccountLocked).mockResolvedValue(false);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
     vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 } as any);
     const capability = {
       transitionId: '00000000-0000-4000-8000-0000000000b1',
@@ -5846,29 +5847,63 @@ describe('sso routes', () => {
         expect(createTokenPair).not.toHaveBeenCalled();
       });
 
-      it('rejects a wrong password with the generic 401, bumps the lockout counter, and keeps the record for a retry', async () => {
+      it('rejects a wrong password with the generic 401, counts it on the account first, and keeps the record for a retry', async () => {
         wireRecord();
-        vi.mocked(verifyPassword).mockResolvedValue(false);
+        const order: string[] = [];
+        vi.mocked(reserveAccountAttempt).mockImplementationOnce(async () => {
+          order.push('reserve');
+          return { allowed: true, count: 2, reachesLimit: false };
+        });
+        vi.mocked(verifyPassword).mockImplementation(async () => {
+          order.push('verify');
+          return false;
+        });
         vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
 
         const res = await confirm({ password: 'wrong' });
         expect(res.status).toBe(401);
-        expect(recordAccountFailureAndMaybeNotify).toHaveBeenCalled();
+        expect(order).toEqual(['reserve', 'verify']);
+        expect(reserveAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'pw@example.com');
+        expect(notifyAccountLocked).not.toHaveBeenCalled();
+        expect(releaseAccountAttempt).not.toHaveBeenCalled();
         expect(pendingLinkRedis.getdel).not.toHaveBeenCalled();
         expect(pendingLinkRedis.del).not.toHaveBeenCalled();
         expect(createTokenPair).not.toHaveBeenCalled();
       });
 
-      it('denies a locked account even with the correct password, without bumping the counter', async () => {
+      it('denies a locked account even with the correct password, after running the password check', async () => {
         wireRecord();
         vi.mocked(verifyPassword).mockResolvedValue(true);
-        vi.mocked(isAccountLocked).mockResolvedValue(true);
+        vi.mocked(reserveAccountAttempt).mockResolvedValueOnce({ allowed: false, count: 6, reachesLimit: false });
         vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
 
         const res = await confirm();
         expect(res.status).toBe(401);
-        expect(recordAccountFailureAndMaybeNotify).not.toHaveBeenCalled();
+        expect(verifyPassword).toHaveBeenCalled();
+        expect(notifyAccountLocked).not.toHaveBeenCalled();
+        expect(releaseAccountAttempt).not.toHaveBeenCalled();
         expect(createTokenPair).not.toHaveBeenCalled();
+      });
+
+      it('sends the lockout notice when a wrong password is the attempt that reaches the limit', async () => {
+        wireRecord();
+        vi.mocked(verifyPassword).mockResolvedValue(false);
+        vi.mocked(reserveAccountAttempt).mockResolvedValueOnce({ allowed: true, count: 5, reachesLimit: true });
+        vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
+
+        const res = await confirm({ password: 'wrong' });
+        expect(res.status).toBe(401);
+        expect(notifyAccountLocked).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ email: 'pw@example.com' }), 5);
+      });
+
+      it('gives the reserved attempt back after a correct password', async () => {
+        wireRecord();
+        ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(db.select).mockReturnValueOnce(sel([USER_ROW]));
+
+        await confirm();
+        expect(releaseAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'pw@example.com');
       });
 
       it('401s without a ceremony cookie', async () => {

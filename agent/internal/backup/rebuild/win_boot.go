@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 )
 
@@ -91,7 +92,7 @@ func ensureBootx64(espVolume string) error {
 	if _, err := os.Stat(dst); err == nil {
 		return nil
 	}
-	if err := copyFile(filepath.Join(espVolume, "EFI", "Microsoft", "Boot", "bootmgfw.efi"), dst); err != nil {
+	if err := copyFile(espVolume, filepath.Join(espVolume, "EFI", "Microsoft", "Boot", "bootmgfw.efi"), dst); err != nil {
 		return fmt.Errorf(`create EFI\Boot\bootx64.efi: %w`, err)
 	}
 	return nil
@@ -136,6 +137,12 @@ func winBoot(ctx context.Context, r *run) error {
 			return fmt.Errorf("release the ESP's previous drive letter: %w", err)
 		}
 		r.espLetterRelease = nil
+	}
+	// bcdboot loads the restored tree's BCD-Template hive by path; check it
+	// (and the files next to it) like every other hive load. An absent
+	// template is left for bcdboot to report.
+	if _, err := bmr.TreeHivePath(r.rootVolume, filepath.Join("Windows", "System32", "config", "BCD-Template")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("boot: %w", err)
 	}
 	letter, release, err := r.opts.WinSystem.AssignLetter(r.espVolume)
 	if err != nil {

@@ -701,6 +701,9 @@ enum Surface {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pending {
     action_id: String,
+    /// The prompt kind on screen when the person chose the action. A newer
+    /// show of the same id may change the kind before the result arrives.
+    kind: String,
     /// The `prompt_action` envelope; its result is the reply on this envelope.
     envelope_id: String,
     since_ms: i64,
@@ -988,7 +991,8 @@ impl PromptTracker {
         };
         let id = self.fresh_id();
         let t = self.prompts.get_mut(prompt_id).expect("checked above");
-        t.pending = Some(Pending { action_id: action_id.to_string(), envelope_id: id.clone(), since_ms: now_ms });
+        let kind = t.show.kind.clone();
+        t.pending = Some(Pending { action_id: action_id.to_string(), kind, envelope_id: id.clone(), since_ms: now_ms });
         t.last_outcome = None;
         t.last_error = None;
         Ok(Outbound { id, typ: TYPE_PROMPT_ACTION, payload: to_value(&msg) })
@@ -1019,7 +1023,7 @@ impl PromptTracker {
         {
             return false;
         }
-        t.pending = None;
+        let clicked_kind = t.pending.take().map(|p| p.kind).unwrap_or_default();
         t.last_outcome = Some(match result.result {
             ActionResultKind::Accepted => "accepted",
             ActionResultKind::RejectedStale => "rejected_stale",
@@ -1027,9 +1031,11 @@ impl PromptTracker {
         });
         // W06: the person's "Report a problem" on the session pill, accepted
         // by the agent, opens Request Support for that session. A rejected or
-        // unanswered click opens nothing.
+        // unanswered click opens nothing, and neither does a click on a prompt
+        // that was not a session pill when clicked, or is not one any more.
         if result.result == ActionResultKind::Accepted
             && result.action_id == REPORT_PROBLEM_ACTION
+            && clicked_kind == "remote.session"
             && t.show.kind == "remote.session"
         {
             if let Some(session_id) = result.prompt_id.strip_prefix(SESSION_PROMPT_PREFIX).filter(|s| !s.is_empty()) {
@@ -2589,6 +2595,37 @@ mod tests {
         assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "report_problem", 1, ActionResultKind::Accepted)));
         t.on_disconnect();
         assert_eq!(t.take_request_support(), None);
+    }
+
+    /// Request Support follows the prompt the person clicked: a newer show of
+    /// the same id that changes its kind while the click is in flight does
+    /// not turn that click into "Report a problem" on a session pill.
+    #[test]
+    fn report_a_problem_uses_the_kind_shown_when_the_person_clicked() {
+        let mut t = PromptTracker::default();
+        let mut n = with_id(notice(), &format!("session:{SESSION_ID}"));
+        n.actions.push(spec("report_problem", "Report a problem", ActionRole::Neutral));
+        assert!(rendered(&t.on_show(NOW, &n)));
+        let f = t.action(NOW, &n.prompt_id, "report_problem", ActionVia::Click).unwrap();
+
+        let mut swapped = session();
+        swapped.rev = n.rev + 1;
+        assert!(matches!(t.on_show(NOW, &swapped), ShowOutcome::Replace { .. }));
+        assert!(t.on_action_result(&f.id, &result(&n.prompt_id, "report_problem", swapped.rev, ActionResultKind::Accepted)));
+        assert_eq!(t.take_request_support(), None, "the click was on a notice");
+
+        // A click on the session pill that is then re-shown as another kind
+        // opens nothing either.
+        let mut t = PromptTracker::default();
+        let s = session();
+        assert!(rendered(&t.on_show(NOW, &s)));
+        let f = t.action(NOW, &s.prompt_id, "report_problem", ActionVia::Click).unwrap();
+        let mut renamed = with_id(notice(), &s.prompt_id);
+        renamed.rev = s.rev + 1;
+        renamed.actions.push(spec("report_problem", "Report a problem", ActionRole::Neutral));
+        assert!(matches!(t.on_show(NOW, &renamed), ShowOutcome::Replace { .. }));
+        assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "report_problem", renamed.rev, ActionResultKind::Accepted)));
+        assert_eq!(t.take_request_support(), None, "the prompt is no longer a session pill");
     }
 
     /// Contract amendment (W06): the agent closes the pill with

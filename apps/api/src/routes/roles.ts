@@ -28,6 +28,14 @@ import {
   resolveRoleActingScope,
 } from '../services/roleDirectory';
 
+import {
+  MAX_ROLE_INHERITANCE_DEPTH,
+  getRolePermissionGrants,
+  getRoleSubtreeHeight,
+  isPermittedParentRole,
+  resolveRoleLineage,
+} from '../services/roleInheritance';
+
 export const roleRoutes = new Hono();
 
 roleRoutes.use('*', authMiddleware);
@@ -240,6 +248,44 @@ function validateAssignablePermissions(
   return null;
 }
 
+// An edit that can lower what a role grants needs every grant the role carries
+// now (its own and inherited), so a caller can never strip a grant they do not
+// hold themselves. Unlike validateAssignablePermissions this does not refuse
+// wildcard or retired keys: a caller who holds them may still edit the role.
+function findRoleGrantNotHeld(
+  roleGrants: Array<{ resource: string; action: string }>,
+  callerPermissions: UserPermissions | null
+): string | null {
+  if (roleGrants.length === 0) {
+    return null;
+  }
+  if (!callerPermissions) {
+    return 'No permissions found';
+  }
+  for (const grant of roleGrants) {
+    if (!hasPermission(callerPermissions, grant.resource, grant.action)) {
+      return `Cannot edit a role with permission not held by caller: ${grant.resource}:${grant.action}`;
+    }
+  }
+  return null;
+}
+
+class RoleEditCeilingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoleEditCeilingError';
+  }
+}
+
+const OWN_ROLE_MFA_REQUIREMENT_ERROR = 'Another administrator must remove the MFA requirement from a role you hold.';
+
+class OwnRoleMfaRequirementError extends Error {
+  constructor() {
+    super(OWN_ROLE_MFA_REQUIREMENT_ERROR);
+    this.name = 'OwnRoleMfaRequirementError';
+  }
+}
+
 async function getAssignedUserIdsForRoles(roleIds: string[], scopeContext: ScopeContext): Promise<string[]> {
   if (roleIds.length === 0) return [];
 
@@ -313,6 +359,16 @@ async function wouldCreateCircularInheritance(roleId: string, newParentId: strin
   return descendants.has(newParentId);
 }
 
+// Refuse a parent link that would put this role, or any role that inherits
+// from it, more than MAX_ROLE_INHERITANCE_DEPTH ancestors deep. The runtime walk
+// stops at that bound, so a deeper link would silently grant less than the
+// editor shows. `roleId` is null for a role being created (no descendants).
+async function exceedsInheritanceDepth(roleId: string | null, parentRoleId: string): Promise<boolean> {
+  const parentLineage = await resolveRoleLineage(parentRoleId);
+  const subtreeHeight = roleId ? await getRoleSubtreeHeight(roleId) : 0;
+  return parentLineage.length + subtreeHeight > MAX_ROLE_INHERITANCE_DEPTH;
+}
+
 // Helper to validate parent role is accessible in the same scope
 async function validateParentRole(
   parentRoleId: string,
@@ -339,14 +395,16 @@ async function validateParentRole(
     return { valid: false, error: 'Parent role must be in the same scope' };
   }
 
-  // If parent is not a system role, it must belong to the same partner/org
-  if (!parentRole.isSystem) {
-    if (scopeContext.scope === 'partner' && parentRole.partnerId !== scopeContext.partnerId) {
-      return { valid: false, error: 'Parent role not accessible' };
-    }
-    if (scopeContext.scope === 'organization' && parentRole.orgId !== scopeContext.orgId) {
-      return { valid: false, error: 'Parent role not accessible' };
-    }
+  // The parent must be a global built-in template or a role of the child's own
+  // partner/org. The same predicate confines the runtime walk
+  // (services/roleInheritance.ts), so a parent refused there is refused here.
+  // An is_system row owned by another tenant is NOT a global template and is
+  // refused (it used to pass on is_system alone).
+  const child = scopeContext.scope === 'partner'
+    ? { scope: 'partner', partnerId: scopeContext.partnerId, orgId: null, isSystem: false }
+    : { scope: 'organization', partnerId: null, orgId: scopeContext.orgId, isSystem: false };
+  if (!isPermittedParentRole(child, parentRole)) {
+    return { valid: false, error: 'Parent role not accessible' };
   }
 
   return { valid: true };
@@ -432,6 +490,9 @@ roleRoutes.post(
       );
       if (parentPermissionError) {
         return c.json({ error: parentPermissionError }, 403);
+      }
+      if (await exceedsInheritanceDepth(null, body.parentRoleId)) {
+        return c.json({ error: `Role inheritance cannot be more than ${MAX_ROLE_INHERITANCE_DEPTH} levels deep` }, 400);
       }
     }
 
@@ -570,7 +631,8 @@ roleRoutes.patch(
         isSystem: roles.isSystem,
         scope: roles.scope,
         partnerId: roles.partnerId,
-        orgId: roles.orgId
+        orgId: roles.orgId,
+        forceMfa: roles.forceMfa
       })
       .from(roles)
       .where(eq(roles.id, roleId))
@@ -613,6 +675,9 @@ roleRoutes.patch(
       if (wouldBeCircular) {
         return c.json({ error: 'Cannot set parent role: would create circular inheritance' }, 400);
       }
+      if (await exceedsInheritanceDepth(roleId, body.parentRoleId)) {
+        return c.json({ error: `Role inheritance cannot be more than ${MAX_ROLE_INHERITANCE_DEPTH} levels deep` }, 400);
+      }
     }
 
     // force_mfa is deliberately NOT a reason to walk descendants: it is not
@@ -626,7 +691,49 @@ roleRoutes.patch(
     }
     const affectedUserIds = await getAssignedUserIdsForRoles([...affectedRoleIds], scopeContext);
 
+    // A role's MFA requirement applies to its direct members, so a member may
+    // turn it on but another administrator has to turn it off. Saving other
+    // edits with forceMfa:false stays allowed while the role does not
+    // require MFA; the locked re-read in the transaction covers a requirement
+    // switched on after this request read the role.
+    const callerHoldsRole = body.forceMfa === false && (
+      affectedRoleIds.size === 1
+        ? affectedUserIds
+        : await getAssignedUserIdsForRoles([roleId], scopeContext)
+    ).includes(auth.user.id);
+    if (callerHoldsRole && role.forceMfa) {
+      return c.json({ error: OWN_ROLE_MFA_REQUIREMENT_ERROR }, 403);
+    }
+
+    // Edits that can lower what the role grants: its permission list, its
+    // parent, or turning off its MFA requirement. These need every grant the
+    // role carries (own and inherited), checked below on the locked row so a
+    // grant or requirement added after this request's first read still counts.
+    const changesGrants = body.permissions !== undefined || body.parentRoleId !== undefined;
+    const mayLowerRole = changesGrants || body.forceMfa === false;
+
     const result = await db.transaction(async (tx) => {
+      if (callerHoldsRole || mayLowerRole) {
+        const [locked] = await tx
+          .select({ forceMfa: roles.forceMfa })
+          .from(roles)
+          .where(eq(roles.id, roleId))
+          .for('update')
+          .limit(1);
+        if (callerHoldsRole && locked?.forceMfa) {
+          throw new OwnRoleMfaRequirementError();
+        }
+        if (changesGrants || (body.forceMfa === false && locked?.forceMfa)) {
+          const ceilingError = findRoleGrantNotHeld(
+            await getRolePermissionGrants(roleId, tx),
+            callerPermissions
+          );
+          if (ceilingError) {
+            throw new RoleEditCeilingError(ceilingError);
+          }
+        }
+      }
+
       // Update role fields
       const updates: {
         name?: string;
@@ -688,7 +795,14 @@ roleRoutes.patch(
       }
 
       return updatedRole;
+    }).catch((error: unknown): { refused: string } => {
+      if (error instanceof OwnRoleMfaRequirementError) return { refused: OWN_ROLE_MFA_REQUIREMENT_ERROR };
+      if (error instanceof RoleEditCeilingError) return { refused: error.message };
+      throw error;
     });
+    if ('refused' in result) {
+      return c.json({ error: result.refused }, 403);
+    }
     await clearPermissionCachesForUsers(affectedUserIds);
 
     // Get updated permissions

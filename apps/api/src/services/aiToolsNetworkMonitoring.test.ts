@@ -49,10 +49,15 @@ const h = vi.hoisted(() => {
   };
 });
 
+const dbContext = vi.hoisted(() => ({ depth: 0 }));
 vi.mock('../db', () => ({
   db: h.db,
   runOutsideDbContext: (fn: () => unknown) => fn(),
-  withDbAccessContext: (_c: unknown, fn: () => unknown) => fn(),
+  hasDbAccessContext: () => dbContext.depth > 0,
+  withDbAccessContext: async (_c: unknown, fn: () => Promise<unknown>) => {
+    dbContext.depth += 1;
+    try { return await fn(); } finally { dbContext.depth -= 1; }
+  },
 }));
 vi.mock('../middleware/auth', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -572,6 +577,19 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
       { id: 'h3', name: 'Cloud key', model: 'CK', type: 'cloudkey', sites: [{ id: 's3', name: 'x' }] },
     ]);
     expect(out.omitted).toEqual({ hostsWithoutSites: 1, sitesWithoutHostId: 0 });
+  });
+
+  it('hosts reads in a short context and calls UniFi with none held', async () => {
+    expect(tools.get('get_unifi_status')!.selfManagedDbContext).toEqual(['hosts']);
+    const depths: Record<string, number> = {};
+    h.svc.getConnection.mockImplementation(async () => { depths.connection = dbContext.depth; return conn; });
+    h.svc.getDecryptedApiKey.mockImplementation(async () => { depths.key = dbContext.depth; return 'k'; });
+    h.svc.createUnifiClient.mockReturnValue({
+      listHosts: vi.fn(async () => { depths.hosts = dbContext.depth; return []; }),
+      listSites: vi.fn(async () => []),
+    });
+    await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
+    expect(depths).toEqual({ connection: 1, key: 1, hosts: 0 });
   });
 
   it('sync_runs projects the row shape (no partner or integration id)', async () => {

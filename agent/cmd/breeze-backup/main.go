@@ -329,9 +329,8 @@ func runBackupHelper() {
 	}
 
 	// Initialize vault if configured
-	vaultMgr := initVaultManager(cfg, mgr)
-	vaultState := &vaultManagerRef{}
-	vaultState.Set(vaultMgr)
+	vaultState := initVaultState(cfg, mgr)
+	vaultMgr := vaultState.Get()
 
 	// Report capabilities
 	caps := detectCapabilities()
@@ -501,6 +500,9 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 type vaultManagerRef struct {
 	mu  sync.RWMutex
 	mgr *backup.VaultManager
+	// initErr is why a configured vault could not start; nil when the vault
+	// is running or not configured.
+	initErr error
 }
 
 func (r *vaultManagerRef) Get() *backup.VaultManager {
@@ -512,7 +514,31 @@ func (r *vaultManagerRef) Get() *backup.VaultManager {
 func (r *vaultManagerRef) Set(mgr *backup.VaultManager) {
 	r.mu.Lock()
 	r.mgr = mgr
+	r.initErr = nil
 	r.mu.Unlock()
+}
+
+// SetStartupError records that the configured vault could not start.
+func (r *vaultManagerRef) SetStartupError(err error) {
+	r.mu.Lock()
+	r.mgr = nil
+	r.initErr = err
+	r.mu.Unlock()
+}
+
+// StartupError returns why the configured vault could not start, if it could not.
+func (r *vaultManagerRef) StartupError() error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.initErr
+}
+
+// unavailableMessage is the command error for a missing vault manager.
+func (r *vaultManagerRef) unavailableMessage() string {
+	if err := r.StartupError(); err != nil {
+		return "vault is configured but could not start: " + err.Error()
+	}
+	return "vault is not configured on this device"
 }
 
 func buildVaultManager(cfg *config.Config, mgr *backup.BackupManager) (*backup.VaultManager, error) {
@@ -551,18 +577,22 @@ func buildVaultManager(cfg *config.Config, mgr *backup.BackupManager) (*backup.V
 	}, primary)
 }
 
-func initVaultManager(cfg *config.Config, mgr *backup.BackupManager) *backup.VaultManager {
+// initVaultState builds the vault manager. A configured vault that cannot
+// start keeps its error, so vault commands report why instead of saying no
+// vault is configured.
+func initVaultState(cfg *config.Config, mgr *backup.BackupManager) *vaultManagerRef {
+	state := &vaultManagerRef{}
 	vm, err := buildVaultManager(cfg, mgr)
 	if err != nil {
 		slog.Warn("failed to init vault manager", "error", err.Error())
-		return nil
+		state.SetStartupError(err)
+		return state
 	}
-	if vm == nil {
-		return nil
+	state.Set(vm)
+	if vm != nil {
+		slog.Info("vault manager initialized", "path", cfg.VaultPath, "retention", cfg.VaultRetentionCount)
 	}
-
-	slog.Info("vault manager initialized", "path", cfg.VaultPath, "retention", cfg.VaultRetentionCount)
-	return vm
+	return state
 }
 
 func detectCapabilities() backupipc.BackupCapabilities {

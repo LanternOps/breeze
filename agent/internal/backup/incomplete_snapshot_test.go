@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // writeIncompleteSnapshot stores one good object plus a manifest that declares
@@ -26,7 +24,7 @@ func writeIncompleteSnapshot(t *testing.T, basePath, snapshotID string, incomple
 	if err := os.WriteFile(srcFile, []byte("hello world"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	backupPath := path.Join(prefix, "files", "small.txt.gz")
 	if err := provider.Upload(srcFile, backupPath); err != nil {
 		t.Fatal(err)
@@ -89,7 +87,7 @@ func TestVerifyIntegrity_IncompleteSnapshotNeverPasses(t *testing.T) {
 			snapshotID := "snapshot-incomplete"
 			writeIncompleteSnapshot(t, basePath, snapshotID, tc.incomplete, tc.incompletePaths)
 
-			result, err := VerifyIntegrity(providers.NewLocalProvider(basePath), snapshotID)
+			result, err := VerifyIntegrity(privateTestLocalProvider(t, basePath), snapshotID)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -126,7 +124,7 @@ func TestTestRestore_IncompleteSnapshotNeverPasses(t *testing.T) {
 	snapshotID := "snapshot-incomplete"
 	writeIncompleteSnapshot(t, basePath, snapshotID, 2, []string{"/srv/data/one.bin"})
 
-	result, err := TestRestore(providers.NewLocalProvider(basePath), snapshotID, t.TempDir(), nil)
+	result, err := TestRestore(privateTestLocalProvider(t, basePath), snapshotID, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

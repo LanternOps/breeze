@@ -50,7 +50,7 @@ func uploadFidelityObject(t *testing.T, provider *providers.LocalProvider, snaps
 // presence, never content).
 func TestVerifyIntegrity_ChecksumMismatchFails(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	snapshotID := "snap-cksum-mismatch"
 	backupPath := uploadFidelityObject(t, provider, snapshotID, "a.txt", "hello world")
 
@@ -81,7 +81,7 @@ func TestVerifyIntegrity_ChecksumMismatchFails(t *testing.T) {
 // 59-vs-39-byte corruption class even on old manifests with no checksum).
 func TestVerifyIntegrity_SizeMismatchFails(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	snapshotID := "snap-size-mismatch"
 	backupPath := uploadFidelityObject(t, provider, snapshotID, "b.txt", "hello world")
 
@@ -104,7 +104,7 @@ func TestVerifyIntegrity_SizeMismatchFails(t *testing.T) {
 // (pre-checksum snapshots must remain verifiable).
 func TestVerifyIntegrity_NoChecksumCorrectSizePasses(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	snapshotID := "snap-legacy-ok"
 	backupPath := uploadFidelityObject(t, provider, snapshotID, "c.txt", "hello world")
 
@@ -133,7 +133,7 @@ func TestVerifyIntegrity_NoChecksumCorrectSizePasses(t *testing.T) {
 // silent-data-loss reporting bug.
 func TestVerifyIntegrity_PartialOnMixedFiles(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	snapshotID := "snap-partial"
 	good := uploadFidelityObject(t, provider, snapshotID, "good.txt", "hello world")
 	bad := uploadFidelityObject(t, provider, snapshotID, "bad.txt", "hello world")
@@ -164,7 +164,7 @@ func TestVerifyIntegrity_PartialOnMixedFiles(t *testing.T) {
 // logic, so it must also fail on a checksum mismatch (correct size).
 func TestTestRestore_ChecksumMismatchFails(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	snapshotID := "snap-tr-cksum"
 	backupPath := uploadFidelityObject(t, provider, snapshotID, "a.txt", "hello world")
 
@@ -188,7 +188,7 @@ func TestTestRestore_ChecksumMismatchFails(t *testing.T) {
 // no-checksum manifests).
 func TestTestRestore_SizeMismatchFails(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	snapshotID := "snap-tr-size"
 	backupPath := uploadFidelityObject(t, provider, snapshotID, "b.txt", "hello world")
 
@@ -211,7 +211,7 @@ func TestTestRestore_SizeMismatchFails(t *testing.T) {
 // not silently report it "restored".
 func TestRestoreFromSnapshot_ChecksumMismatchFails(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 	snapshotID := "snap-restore-cksum"
 	backupPath := uploadFidelityObject(t, provider, snapshotID, "a.txt", "hello world")
 
@@ -242,7 +242,7 @@ func TestRestoreFromSnapshot_ChecksumMismatchFails(t *testing.T) {
 // must restore cleanly and NOT be chmod'd to 0000.
 func TestRestoreFromSnapshot_Mode0LeavesDefault(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 
 	srcDir := t.TempDir()
 	srcFile := filepath.Join(srcDir, "legacy.txt")
@@ -306,7 +306,7 @@ func TestCollectBackupFiles_CapturesMode(t *testing.T) {
 // passes against it (proves the write side and read side agree).
 func TestCreateSnapshot_RecordsChecksumAndMode_VerifyPasses(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 
 	srcDir := t.TempDir()
 	srcFile := filepath.Join(srcDir, "r.txt")
@@ -348,7 +348,7 @@ func TestCreateSnapshot_RecordsChecksumAndMode_VerifyPasses(t *testing.T) {
 // U9: restore reapplies the original Unix mode and mtime.
 func TestRestoreFromSnapshot_ReappliesModeAndMtime(t *testing.T) {
 	basePath := t.TempDir()
-	provider := providers.NewLocalProvider(basePath)
+	provider := privateTestLocalProvider(t, basePath)
 
 	srcDir := t.TempDir()
 	srcFile := filepath.Join(srcDir, "exec.sh")

@@ -18,6 +18,7 @@ const REPORT_SITE_A = '66666666-6666-4666-8666-666666666666';
 const REPORT_SITE_B = '77777777-7777-4777-8777-777777777777';
 
 const mockAuthState = vi.hoisted(() => ({
+  allowedSiteIds: undefined as string[] | undefined,
   scope: 'organization' as 'organization' | 'partner' | 'system',
   orgId: '11111111-1111-1111-1111-111111111111' as string | null,
   partnerId: null as string | null,
@@ -238,6 +239,7 @@ vi.mock('../../middleware/auth', () => ({
       partnerId: mockAuthState.partnerId,
       partnerOrgAccess: mockAuthState.partnerOrgAccess,
       accessibleOrgIds: mockAuthState.accessibleOrgIds,
+      allowedSiteIds: mockAuthState.allowedSiteIds,
       canAccessOrg,
       orgCondition: () => ({ op: 'orgCondition' })
     });
@@ -401,6 +403,7 @@ describe('patch routes', () => {
     mockAuthState.partnerOrgAccess = null;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
     mockAuthState.permissions = [{ resource: '*', action: '*' }];
+    mockAuthState.allowedSiteIds = undefined;
     const defaultScope = restrictedReportScope(ACCESSIBLE_ORG_ID, [REPORT_SITE_A]);
     reportAuthorityState.result = {
       ok: true,
@@ -578,7 +581,8 @@ describe('patch routes', () => {
     expect(body.data[0].installFailure).toBeNull();
   });
 
-  it('overlays the last failed install attempt and its reason on the list row (#4223)', async () => {
+  it.each([[undefined], [[REPORT_SITE_A]], [[]]])('passes the caller site restriction %j to the failure overlay (#4223)', async (allowedSiteIds) => {
+    mockAuthState.allowedSiteIds = allowedSiteIds;
     const failure = {
       deviceCount: 1,
       error: 'preflight check "battery" failed: running on battery power (battery: 76%)',
@@ -615,7 +619,7 @@ describe('patch routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data[0].installFailure).toEqual(failure);
-    expect(vi.mocked(loadPatchInstallFailures)).toHaveBeenCalledWith([PATCH_ID], { orgId: undefined });
+    expect(vi.mocked(loadPatchInstallFailures)).toHaveBeenCalledWith([PATCH_ID], { orgId: undefined, allowedSiteIds });
   });
 
   describe('outstanding device count (#8728)', () => {

@@ -100,7 +100,19 @@ describe('securitySweepCreateSchema', () => {
 describe('securityScanPathSchema', () => {
   it('is the single path element: non-empty, at most 1024 characters', () => {
     expect(securityScanPathSchema.safeParse('').success).toBe(false);
-    expect(securityScanPathSchema.safeParse('a'.repeat(1024)).success).toBe(true);
-    expect(securityScanPathSchema.safeParse('a'.repeat(1025)).success).toBe(false);
+    expect(securityScanPathSchema.safeParse('/' + 'a'.repeat(1023)).success).toBe(true);
+    expect(securityScanPathSchema.safeParse('/' + 'a'.repeat(1024)).success).toBe(false);
+  });
+});
+
+describe('securityScanPathSchema path form', () => {
+  it.each(['\\\\server\\share', '//server/share', '\\\\?\\C:\\Windows', '\\\\.\\C:\\Windows', '\\??\\UNC\\server\\share', 'C:folder', 'relative/folder'])(
+    'refuses %s',
+    (path) => {
+      expect(securityScanPathSchema.safeParse(path).success).toBe(false);
+    },
+  );
+  it.each(['/var/tmp', 'C:\\Users\\Public', 'D:/Data'])('accepts %s', (path) => {
+    expect(securityScanPathSchema.safeParse(path).success).toBe(true);
   });
 });

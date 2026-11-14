@@ -18,9 +18,10 @@ import { BlobNotFoundError } from '../services/artifacts/blobStorage';
  * precedence between the two depend on mount order in index.ts, invisible from
  * either router — the shape of #4189.
  *
- * RBAC is identical to `GET /ai/agents/runs/:runId`: the same scope set, the
- * same ai_agents:read permission, org scoping through `auth.orgCondition`, and
- * a BARE 404 on every miss. A handle is opaque, so "exists but not yours" must
+ * RBAC follows `GET /ai/agents/runs/:runId`: the same scope set, the same
+ * ai_agents:read permission, organization scoping through
+ * `auth.orgCondition`, the artifact site rule (`artifactSiteScopeCondition`
+ * in services/artifacts/artifactService.ts), and a BARE 404 on every miss. A handle is opaque, so "exists but not yours" must
  * be indistinguishable from "does not exist" — there is deliberately no 403
  * branch in this handler.
  *

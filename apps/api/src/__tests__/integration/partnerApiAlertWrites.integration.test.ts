@@ -10,7 +10,7 @@ import { partnerAlertWriteRoutes } from '../../routes/partnerApi/alertWrites';
 import { partnerAlertWriteResponseSchema } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
-import { createOrganization, createPartner, createSite, createUser, userEpochs } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -32,6 +32,7 @@ async function issueKey(partnerId: string, userId: string, scopes: PartnerServic
     sourceCidrs: [], expiresAt: null, createdBy: userId, updatedBy: userId,
   }).returning();
   if (!principal) throw new Error('principal seed failed');
+  await ensurePartnerServicePrincipalOwner(userId, partnerId);
   const { rawKey } = await issuePartnerServicePrincipalKey(admin as unknown as Database, {
     partnerServicePrincipalId: principal.id, partnerId, name: 'Alert write-back key',
     actorId: userId, actorSessionEpochs: await userEpochs(userId),

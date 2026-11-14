@@ -174,6 +174,11 @@ export const automationRuns = pgTable('automation_runs', {
   configPolicyOccurrenceUnique: uniqueIndex('automation_runs_config_policy_occurrence_uq')
     .on(table.configPolicyId, table.occurrenceKey)
     .where(sql`${table.automationId} IS NULL AND ${table.occurrenceKey} IS NOT NULL`),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): terminal-run
+  // age scan (jobs/historyRetention/runHistory.ts).
+  terminalCompletedIdx: index('automation_runs_terminal_completed_idx')
+    .on(table.completedAt)
+    .where(sql`${table.status} IN ('completed', 'failed', 'partial', 'cancelled')`),
 }));
 
 // Per-device execution result for a single automation run (#2023). A child of

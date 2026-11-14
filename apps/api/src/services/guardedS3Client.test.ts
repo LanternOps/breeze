@@ -14,6 +14,7 @@ import type { LookupFunction } from 'node:net';
 const s3CtorMock = vi.fn();
 vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: class {
+    middlewareStack = { addRelativeTo: vi.fn() };
     constructor(config: unknown) {
       s3CtorMock(config);
     }

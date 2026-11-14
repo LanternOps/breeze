@@ -14,7 +14,7 @@ import { resolveScopedOrgId } from './helpers';
 import { attachDeviceNames, restoreModeFromTargetConfig } from './deviceNames';
 import { restoreListSchema, restoreSchema } from './schemas';
 import { selectedSnapshotPathError } from '../../services/backupSelectedPaths';
-import { resolveSelectedSnapshotPathsInDb } from '../../services/backupSnapshotBrowse';
+import { IndexQueryTimeoutError, resolveSelectedSnapshotPathsInDb } from '../../services/backupSnapshotBrowse';
 import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
 import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
 import {
@@ -248,7 +248,20 @@ restoreRoutes.post(
       // The browse tree shows forward-slash paths; map each selection back to
       // the stored original the agent indexed (and matches against), and each
       // folder to its stored-form prefix. The index is read in pages (#11026).
-      const resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, payload.selectedPaths ?? []);
+      let resolution: Awaited<ReturnType<typeof resolveSelectedSnapshotPathsInDb>>;
+      try {
+        resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, payload.selectedPaths ?? []);
+      } catch (err) {
+        // The walk is bounded (SELECTION_WALK_DEADLINE_MS); past it the honest
+        // answer is "try again", and nothing has been created yet.
+        if (err instanceof IndexQueryTimeoutError) {
+          return c.json({
+            error: 'Resolving the selected files took too long. Try again in a moment, or select fewer folders.',
+            code: 'index_query_timeout',
+          }, 503);
+        }
+        throw err;
+      }
 
       if (!resolution.ok && resolution.reason === 'no_readable_index') {
         // #11026: a snapshot that has files but no index yet builds one, so

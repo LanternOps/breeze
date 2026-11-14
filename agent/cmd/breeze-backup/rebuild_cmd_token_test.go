@@ -31,9 +31,6 @@ type noopTestSystem struct{}
 func (noopTestSystem) Run(context.Context, string, ...string) ([]byte, error) {
 	panic("noopTestSystem: Run should not be called for a preflight refusal")
 }
-func (noopTestSystem) Chroot(string) func(context.Context, string, ...string) ([]byte, error) {
-	panic("noopTestSystem: Chroot should not be called for a preflight refusal")
-}
 func (noopTestSystem) BlockDeviceSize(string) (int64, error) {
 	panic("noopTestSystem: BlockDeviceSize should not be called for a preflight refusal")
 }
@@ -57,9 +54,6 @@ func (noopTestSystem) RootSources() ([]string, error) {
 }
 func (noopTestSystem) Mount(context.Context, string, string, string, ...string) error {
 	panic("noopTestSystem: Mount should not be called for a preflight refusal")
-}
-func (noopTestSystem) BindMount(context.Context, string, string) error {
-	panic("noopTestSystem: BindMount should not be called for a preflight refusal")
 }
 func (noopTestSystem) Unmount(context.Context, string) error {
 	panic("noopTestSystem: Unmount should not be called for a preflight refusal")

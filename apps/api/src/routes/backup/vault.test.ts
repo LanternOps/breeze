@@ -744,6 +744,61 @@ describe('vault routes', () => {
 
   // #8385 UI bug 3: the Device column showed a UUID prefix because the list
   // never carried a device name.
+  describe('network share vaults are not supported', () => {
+    it.each([
+      ['an SMB share type', { vaultType: 'smb', vaultPath: 'D:/Backups/Vault' }],
+      ['a UNC path', { vaultType: 'local', vaultPath: '\\\\nas\\vault' }],
+      ['an extended UNC path', { vaultType: 'usb', vaultPath: '\\\\?\\UNC\\nas\\vault' }],
+      ['a forward-slash UNC path', { vaultPath: '//nas/vault' }],
+      ['a GLOBALROOT device path', { vaultType: 'local', vaultPath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\Vault' }],
+      ['a relative path', { vaultType: 'usb', vaultPath: 'Vault' }],
+    ])('refuses to create a vault with %s', async (_label, target) => {
+      selectMock.mockReturnValue(chainMock([{ siteId: SITE_A }]));
+      insertMock.mockReturnValue(chainMock([makeVault(target)]));
+
+      const res = await app.request('/backup/vault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ deviceId: DEVICE_ID, retentionCount: 7, ...target }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toMatch(/not supported/);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['an SMB share type', { vaultType: 'smb' }],
+      ['a UNC path', { vaultPath: '\\\\nas\\vault' }],
+    ])('refuses to update a vault to %s', async (_label, target) => {
+      updateMock.mockReturnValue(chainMock([makeVault(target)]));
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify(target),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toMatch(/not supported/);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    });
+
+    it('still deactivates a saved SMB share vault', async () => {
+      updateMock.mockReturnValueOnce(chainMock([makeVault({ vaultType: 'smb', vaultPath: '\\\\nas\\vault', isActive: false })]));
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('returns each vault device name (display name, else hostname)', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       { ...makeVault(), deviceDisplayName: 'File Server', deviceHostname: 'fs01' },

@@ -12,7 +12,7 @@ import {
   pax8Integrations,
   pax8SubscriptionSnapshots,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, withAuthDbAccessContext, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
@@ -316,10 +316,11 @@ pax8Routes.post('/integration/test', partnerScopes, writePerm, requireMfa(), zVa
   const body = c.req.valid('json');
   const partner = resolvePartnerId(auth, body.partnerId ?? requestedPartnerId(c));
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const integration = await findActiveIntegration(partner.partnerId, body.integrationId);
+  const integration = await withAuthDbAccessContext(auth, () => findActiveIntegration(partner.partnerId, body.integrationId));
   if (!integration) return c.json({ error: 'Pax8 integration not found' }, 404);
   try {
-    const { client } = await createPax8ClientForIntegration(integration.id);
+    const { client } = await withAuthDbAccessContext(auth, () => createPax8ClientForIntegration(integration.id));
+    // Pax8 is called with no transaction held: this route owns its DB context.
     const result = await client.testConnection();
     return c.json({ success: true, data: result });
   } catch (err) {

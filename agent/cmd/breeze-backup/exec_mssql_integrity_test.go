@@ -208,7 +208,7 @@ func TestExecMSSQL_Integrity(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(cmd+"/"+tc.name, func(t *testing.T) {
 				storeDir := t.TempDir()
-				provider := providers.NewLocalProvider(storeDir)
+				provider := privateTestLocalProvider(t, storeDir)
 				obj := seedAppMSSQLSnapshot(t, provider, id, tc.withoutChecksum)
 				if tc.storedBak != nil {
 					replaceStoredObject(t, storeDir, path.Join("snapshots", id, "files", appMSSQLBakName), tc.storedBak)

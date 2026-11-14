@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer, bigint } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer, bigint, index } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 
 // Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
@@ -57,7 +57,8 @@ export const users = pgTable('users', {
   preferences: jsonb('preferences'),
   emailVerifiedAt: timestamp('email_verified_at'),
   // Platform-level admin flag — bootstrapped from BREEZE_PLATFORM_ADMINS env
-  // var at API startup, gates the cross-tenant /admin/* endpoints (e.g.
+  // var at API startup (eligible accounts only: active, verified, partner-level; see
+  // services/platformAdminBootstrap.ts), gates the cross-tenant /admin/* endpoints (e.g.
   // suspend-for-abuse). Intentionally lives outside the partner role system.
   isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
   // Durable authentication-state epochs (core-auth hardening PR 1). Advanced by
@@ -162,4 +163,8 @@ export const sessions = pgTable('sessions', {
   userAgent: text('user_agent'),
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (t) => ({
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): the auth
+  // session age scan (jobs/historyRetention/accessHistory.ts).
+  createdAtIdx: index('sessions_created_at_idx').on(t.createdAt),
+}));

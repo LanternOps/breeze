@@ -52,7 +52,7 @@ func newRecoveryFixture(t *testing.T, snapshotID string, files []fixtureFile) *r
 		targets:     map[string]string{},
 		backupPaths: map[string]string{},
 	}
-	fx.provider = providers.NewLocalProvider(fx.baseDir)
+	fx.provider = privateTestLocalProvider(t, fx.baseDir)
 	var entries []backup.SnapshotFile
 	for i, f := range files {
 		key := path.Join("snapshots", snapshotID, "files", fmt.Sprintf("f%d", i))
