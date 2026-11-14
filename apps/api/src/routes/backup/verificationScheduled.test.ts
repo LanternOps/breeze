@@ -531,6 +531,102 @@ describe('verification timeout handling', () => {
     }
   });
 
+  it('writes the reason code on the no-orgId path too, and fails the command with the derived reason', async () => {
+    const verificationId = 'verify-no-org';
+    const commandId = '99999999-9999-4999-8999-999999999999';
+    const startedAt = new Date(Date.now() - verificationTimeoutMs('test_restore') - 60 * 1000);
+    backupVerifications.push({
+      id: verificationId,
+      orgId: '',
+      deviceId: 'dev-no-org',
+      backupJobId: 'job-no-org',
+      snapshotId: 'snap-no-org',
+      verificationType: 'test_restore',
+      status: 'running',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId },
+      createdAt: startedAt.toISOString(),
+    });
+    const setMock = vi.fn(() => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: commandId }]) })),
+    }));
+    updateMock.mockReturnValue({ set: setMock });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      expect(await timeoutStaleVerifications()).toBe(1);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        result: expect.objectContaining({
+          status: 'timeout',
+          error: verificationTimeoutReason('test_restore'),
+          timedOutBy: 'verification-timeout-check',
+        }),
+      }));
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({
+        id: verificationId,
+        status: 'failed',
+        details: expect.objectContaining({
+          reason: verificationTimeoutReason('test_restore'),
+          reasonCode: VERIFICATION_TIMEOUT_REASON_CODE,
+        }),
+      }));
+    } finally {
+      warnSpy.mockRestore();
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+    }
+  });
+
+  it('clears the timeout code when a late agent result reports failure', async () => {
+    const orgId = 'org-late-failure';
+    const verificationId = 'verify-late-failure';
+    const commandId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const startedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId: 'dev-late-failure',
+      backupJobId: 'job-late-failure',
+      snapshotId: 'snap-late-failure',
+      verificationType: 'integrity',
+      status: 'failed',
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, reason: verificationTimeoutReason('integrity'), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+    selectMock.mockImplementation(() => { throw new Error('db down'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await processBackupVerificationResult(commandId, { status: 'failed', error: 'helper crashed' });
+
+      const persisted = (persistVerificationToDbMock.mock.calls.at(-1) as unknown[] | undefined)?.[0] as
+        | { id: string; details: Record<string, unknown> }
+        | undefined;
+      expect(persisted?.id).toBe(verificationId);
+      expect(persisted?.details.reason).toBe('helper crashed');
+      expect(persisted?.details.reasonCode).toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      selectMock.mockReset();
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
   it('does not treat a row failed for another reason as a timed-out one', async () => {
     const verificationId = 'verify-other-failure';
     const commandId = '88888888-8888-4888-8888-888888888888';

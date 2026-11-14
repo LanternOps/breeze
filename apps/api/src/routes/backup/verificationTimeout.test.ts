@@ -27,10 +27,13 @@ describe('verification timeout budget (#11813)', () => {
     }
   });
 
-  it('no longer cuts an integrity check off at 30 minutes', () => {
+  // getCommandTimeoutMs falls back to 30 minutes for an unclassified type, so
+  // pin the tier: dropping either command out of LONG_TIMEOUT_TYPES must fail
+  // here rather than quietly bring the bug back.
+  it.each(['integrity', 'test_restore'] as const)('no longer cuts a %s verification off at 30 minutes', (type) => {
     // The reported failure: a ~59 GB snapshot still verifying at 35 minutes.
-    expect(verificationTimeoutMs('integrity')).toBeGreaterThan(35 * 60 * 1000);
-    expect(verificationTimeoutMs('integrity')).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000);
+    expect(verificationTimeoutMs(type)).toBeGreaterThan(35 * 60 * 1000);
+    expect(verificationTimeoutMs(type)).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000);
   });
 
   it('exposes the shortest per-type timeout for the SQL pre-filter', () => {

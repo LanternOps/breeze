@@ -9,15 +9,22 @@ import type { BackupVerificationType } from './types';
  * It used to be a flat 30 minutes while `backup_verify` / `backup_test_restore`
  * carry a two-hour command budget (`LONG_TIMEOUT_TYPES`, commandTimeouts.ts).
  * Every large snapshot was cut off at 30 minutes: failing the command revokes
- * its brokered read session (`authenticateStorageSession` revokes with
- * `command_failed` once the command is no longer live), every later object
- * resolve returns 410, and the agent reports `partial`. The timeout is now
- * read from the command budget so the two cannot disagree again.
+ * its brokered read session (`authenticateStorageSession` revokes as
+ * `command_<status>` once the command is no longer live, so `command_failed`
+ * here), every later object resolve returns 410, and the agent reports
+ * `partial`. The timeout is now read from the command budget so the two
+ * cannot disagree again.
  *
- * The grace keeps this job behind the command's own deadline: the agent's
- * helper stops at `VerifyRunBudget` (2 h − 10 min) and reports its counts, the
- * generic stale-command reaper owns the command at 2 h, and this job only
- * cleans up a verification row nobody answered. The job runs every 5 minutes.
+ * Clocks: this one runs from the verification's `startedAt` (dispatch). The
+ * command's own budget runs from delivery (`executed_at`, stale-command
+ * reaper; the read session's deadline is its claim time + the same budget).
+ * Both verification commands are `live` (commandOfflinePolicy.ts): dispatch
+ * refuses them for an offline device and never queues them, so delivery
+ * follows dispatch within one send or poll. The grace absorbs that gap and
+ * keeps this job behind the command's deadline; the agent's helper also stops
+ * at `VerifyRunBudget` (2 h − 10 min after it starts) and reports its counts.
+ * This job only cleans up a verification nobody answered. It runs every
+ * 5 minutes.
  */
 export const VERIFICATION_TIMEOUT_GRACE_MS = 5 * 60 * 1000;
 
