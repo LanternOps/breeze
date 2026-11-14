@@ -45,7 +45,7 @@ vi.mock('../../services/email', async (importOriginal) => {
 
 import { getTestDb } from './setup';
 import { createOrganization, createPartner, createRole, createUser, setupTestEnvironment } from './db-utils';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   auditLogs,
   clientAiOrgPolicies,
@@ -76,7 +76,9 @@ import {
   resolvePortalOidcSignIn,
   type ResolvePortalOidcSignInInput,
 } from '../../services/portalOidc/accountResolution';
-import { PORTAL_GOOGLE_ISSUER, entraIssuer } from '../../services/portalUserIdentities';
+import { approvePortalAccessRequest, createPortalAccessRequest } from '../../services/portalAccessRequests';
+import { PORTAL_GOOGLE_ISSUER, entraIssuer, reconcilePortalUserIdentities } from '../../services/portalUserIdentities';
+import { processPortalIdentityReconcileJob } from '../../jobs/portalIdentityReconcile';
 import { ORG_CASCADE_DELETE_ORDER, cascadeDeleteOrg } from '../../services/tenantCascade';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
 import { entraChainKey } from '../../services/portalDirectory/chain';
@@ -261,8 +263,8 @@ interface GoogleOrg {
   people: Person[];
 }
 
-async function seedGoogleOrg(subjects: string[]): Promise<GoogleOrg> {
-  const base = await newOrg();
+async function seedGoogleOrg(subjects: string[], into?: { orgId: string; partnerId: string; actorUserId: string }): Promise<GoogleOrg> {
+  const base = into ?? await newOrg();
   const [conn] = await admin().insert(googleWorkspaceConnections).values({
     orgId: base.orgId, customerDomain: 'customer.example', adminEmail: 'admin@customer.example',
     serviceAccountEmail: 'svc@project.iam.example', serviceAccountKey: 'unused-the-reader-is-injected', status: 'active',
@@ -639,6 +641,108 @@ describe('portal directory deprovisioning, end to end (W8 Task 9)', () => {
     expect(await readIdentity(colleague.identityId)).toMatchObject({ disabledAt: null });
   });
 
+  it('a disabled identity cannot come back through SSO access-request approval, an invite, or the reconcile job', async () => { // RF5 (review)
+    const f = await seedEntraOrg(2);
+    const [leaver, colleague] = f.people as [Person, Person];
+    // Real add-in accounts carry the legacy entra_* columns; the drift report reads them.
+    for (const p of f.people) {
+      await admin().update(portalUsers).set({ entraTenantId: f.tid, entraOid: p.subject }).where(eq(portalUsers.id, p.portalUserId));
+    }
+    await deprovisionThroughPipeline(f, leaver);
+    const leaverAccount = await readAccount(leaver.portalUserId);
+    const leaverIdentity = await readIdentity(leaver.identityId);
+    expect(leaverAccount).toMatchObject({ status: 'disabled', disabledBy: 'directory', authEpoch: 6 });
+    const accountsOf = async () => (await admin().select({ id: portalUsers.id }).from(portalUsers).where(eq(portalUsers.orgId, f.orgId))).map((r) => r.id).sort();
+    const identitiesOfSubject = () => admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.subject, leaver.subject));
+
+    // (i) An SSO access request carrying the disabled (issuer, subject) under a
+    // fresh address: approval finds the identity reserved — no second account.
+    const created = await createPortalAccessRequest({
+      source: 'entra', orgId: f.orgId, email: `returning-${randomUUID()}@customer.test`, name: 'Pat Person', tid: f.tid, oid: leaver.subject,
+    });
+    expect(created.kind).toBe('created');
+    const requestId = (created as { requestId: string }).requestId;
+    const accountsBefore = await accountsOf();
+    const decider: DbAccessContext = {
+      scope: 'partner', orgId: null, accessibleOrgIds: [f.orgId], accessiblePartnerIds: [f.partnerId],
+      userId: f.actorUserId, currentPartnerId: f.partnerId,
+    };
+    await expect(withDbAccessContext(decider, () =>
+      approvePortalAccessRequest({ orgId: f.orgId, requestId, deciderUserId: f.actorUserId })))
+      .rejects.toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
+    expect(await accountsOf()).toEqual(accountsBefore);
+    const [request] = await admin().select().from(portalAccessRequests).where(eq(portalAccessRequests.id, requestId));
+    expect(request).toMatchObject({ status: 'pending' });
+
+    // (ii) The invite-bound flow: an invited password account, the disabled
+    // identity presented with its invite — denied, the invite never consumed.
+    const [invited] = await admin().insert(portalUsers).values({
+      orgId: f.orgId, email: `invitee-${randomUUID()}@customer.test`, authMethod: 'password', status: 'invited', browserAccess: 'granted', authEpoch: 2,
+    }).returning({ id: portalUsers.id });
+    const inviteConsumer = vi.fn(async () => ({ portalUserId: invited!.id, orgId: f.orgId, authEpoch: 2 }));
+    const viaInvite = await resolvePortalOidcSignIn({
+      purpose: { kind: 'invite', inviteTokenHash: 'a'.repeat(64) }, hostOrgId: null, inviteConsumer,
+      identity: entraSignInIdentity(f.tid, leaver.subject),
+    });
+    expect(viaInvite).toEqual({ kind: 'denied', reason: 'identity_disabled', orgId: f.orgId });
+    expect(inviteConsumer).not.toHaveBeenCalled();
+    expect(await readAccount(invited!.id)).toMatchObject({ status: 'invited', authEpoch: 2 });
+    expect(await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, invited!.id))).toEqual([]);
+
+    // (iii) The reconcile job: a disabled identity whose account still holds
+    // the legacy columns is not drift, and the job changes nothing.
+    await processPortalIdentityReconcileJob();
+    const report = await reconcilePortalUserIdentities({ orgId: f.orgId });
+    expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
+
+    // Through all three: one identity row, still disabled and bound to the leaver; nothing else moved.
+    expect(await identitiesOfSubject()).toEqual([leaverIdentity]);
+    expect(await readAccount(leaver.portalUserId)).toEqual(leaverAccount);
+    expect(await readIdentity(colleague.identityId)).toMatchObject({ disabledAt: null });
+  });
+
+  it('enforce: a suspended and an archived Google user are disabled through hold, MSP apply route and apply-run job', async () => { // review
+    enforce();
+    const { base, send } = await routeFixture();
+    const g = await seedGoogleOrg(['g-on1', 'g-on2', 'g-on3', 'g-on4', 'g-susp', 'g-arch'], base);
+    const susp = g.people[4]!;
+    const arch = g.people[5]!;
+    const reader = fakeReader([
+      { id: 'g-on1' }, { id: 'g-on2' }, { id: 'g-on3' }, { id: 'g-on4' },
+      { id: 'g-susp', suspended: true }, { id: 'g-arch', archived: true },
+    ]);
+    expect(await googleRun(g.orgId, '2027-02-01', reader)).toEqual({ outcome: 'evaluated' });
+    const run = await latestRun(g.orgId);
+    expect(run).toMatchObject({
+      source: 'google', mode: 'enforce', disposition: 'held', holdReason: 'first_enforcement', affectedCount: 2, usableCount: 6,
+    });
+    expect((await actionsOf(run.id)).map((a) => [a.identityId, a.reason, a.status]).sort())
+      .toEqual([[susp.identityId, 'suspended', 'held'], [arch.identityId, 'archived', 'held']].sort());
+    // Held: nobody disabled yet.
+    for (const p of g.people) expect(await readAccount(p.portalUserId)).toMatchObject({ status: 'active', authEpoch: 5 });
+
+    // MSP Apply through the real route: 202, decision committed, job enqueued.
+    const res = await send('POST', `/organizations/${g.orgId}/portal-directory/runs/${run.id}/apply`, { impactDigest: run.impactDigest });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ data: { runId: run.id, status: 'applying', actions: 2 } });
+    expect(enqueueApplyRun).toHaveBeenCalledWith(run.id, g.orgId);
+    expect(await readAccount(susp.portalUserId)).toMatchObject({ status: 'active', authEpoch: 5 });
+
+    // The apply-run job applies both.
+    expect(await runApplyJob(run.id, g.orgId)).toEqual({ status: 'applied', applied: 2, skipped: 0 });
+    expect(await readRun(run.id)).toMatchObject({ disposition: 'held_applied' });
+    for (const [person, reason] of [[susp, 'suspended'], [arch, 'archived']] as const) {
+      const identity = await readIdentity(person.identityId);
+      expect(identity).toMatchObject({ disabledBlockers: ['google_directory'], disabledReason: reason });
+      expect(identity.disabledAt).not.toBeNull();
+      // Identity-only account: disabled by the directory, epoch bumped (sessions end).
+      expect(await readAccount(person.portalUserId)).toMatchObject({ status: 'disabled', disabledBy: 'directory', authEpoch: 6 });
+    }
+    expect((await actionsOf(run.id)).every((a) => a.status === 'applied')).toBe(true);
+    expect(await auditsOf(g.orgId, 'portal.directory.identity.disable')).toHaveLength(2);
+    for (const p of g.people.slice(0, 4)) expect(await readAccount(p.portalUserId)).toMatchObject({ status: 'active', authEpoch: 5 });
+  });
+
   it('restore + reactivate lets the person sign in again; the next run reports but does not re-disable', async () => { // RF4
     const f = await seedEntraOrg(40);
     const leaver = f.people[0]!;
@@ -758,13 +862,19 @@ describe('portal directory deprovisioning, end to end (W8 Task 9)', () => {
     expect(await res.json()).toEqual({ data: { id: person.portalUserId, status: 'active' } });
     expect(await readAccount(person.portalUserId)).toMatchObject({ status: 'active', disabledBy: null, authEpoch: 7 });
 
-    // A directory-disabled account with no usable credential: the MSP reactivate lands on invited, disabled_by cleared.
+    // A directory-disabled, identity-managed account with no usable credential:
+    // the MSP reactivate is refused (invited would strand it) and nothing changes.
     await deprovisionThroughPipeline(f, leaver);
-    expect(await readAccount(leaver.portalUserId)).toMatchObject({ status: 'disabled', disabledBy: 'directory' });
+    expect(await readAccount(leaver.portalUserId)).toMatchObject({ status: 'disabled', disabledBy: 'directory', authEpoch: 6 });
     res = await send('PATCH', path(leaver), { status: 'active' });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST');
+    expect(await readAccount(leaver.portalUserId)).toMatchObject({ status: 'disabled', disabledBy: 'directory', authEpoch: 6 });
+    // Restore with "also re-enable the account" does both: identity cleared, account active.
+    res = await send('POST', `${path(leaver)}/identities/${leaver.identityId}/restore`, { reactivateAccount: true });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: { id: leaver.portalUserId, status: 'invited' } });
-    expect(await readAccount(leaver.portalUserId)).toMatchObject({ status: 'invited', disabledBy: null });
+    expect(await res.json()).toEqual({ data: { accountStatus: 'active', blockersCleared: ['entra_directory'] } });
+    expect(await readAccount(leaver.portalUserId)).toMatchObject({ status: 'active', disabledBy: null, authEpoch: 7 });
     // The MSP disabling it again overrides the provenance to msp.
     res = await send('PATCH', path(leaver), { status: 'disabled' });
     expect(res.status).toBe(200);
