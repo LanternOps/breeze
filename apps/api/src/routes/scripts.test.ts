@@ -122,7 +122,7 @@ vi.mock('../db/schema', () => ({
   scriptToTags: { scriptId: 'stt.scriptId', tagId: 'stt.tagId' },
   // Column sentinels the #5040 projection assertions key off; the rest of this
   // file only needs the object to exist.
-  scriptExecutions: { cancelState: 'se.cancelState' },
+  scriptExecutions: { cancelState: 'se.cancelState', outputPurgedAt: 'se.outputPurgedAt' },
   scriptExecutionBatches: {},
   // #9563 — sentinel for the deviceStatus projection on the execution reads.
   devices: { status: 'd.status' },
@@ -2072,6 +2072,8 @@ describe('scripts routes', () => {
       // #9563 — Execution Details needs the device's real status to tell a
       // queued run on an offline device from one awaiting agent pickup.
       expect(projection).toHaveProperty('deviceStatus', 'd.status');
+      // #4342 W2 — the UI says "output removed" only if the list carries it.
+      expect(projection).toHaveProperty('outputPurgedAt', 'se.outputPurgedAt');
       const body = await res.json();
       expect(body.data[0].cancelState).toBe('unconfirmed');
     });
@@ -2106,6 +2108,8 @@ describe('scripts routes', () => {
       const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
       expect(projection).toHaveProperty('cancelState', 'se.cancelState');
       expect(projection).toHaveProperty('deviceStatus', 'd.status');
+      // #4342 W2 — the detail view renders the retention note from this.
+      expect(projection).toHaveProperty('outputPurgedAt', 'se.outputPurgedAt');
       const body = await res.json();
       expect(body.cancelState).toBe('confirmed');
     });

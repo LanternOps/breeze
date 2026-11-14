@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -55,7 +54,7 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 	// SECURITY: reject any path that is not a plain relative path. A value like
 	// "@evil.com/x" or "//evil.com/x" would otherwise re-parse to a different
-	// host and bypass the IsBlocked/IsAllowed checks below (which validate
+	// host and bypass the destination checks below (which validate
 	// targetHost only). Defense-in-depth — tunnel.Fetch enforces this too.
 	if !strings.HasPrefix(path, "/") {
 		return tools.CommandResult{
@@ -82,34 +81,16 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 	// Parse forwarded request headers.
 	headers := parseProxyHeaderMap(cmd.Payload["headers"])
 
-	// Defense-in-depth guard 1: hardcoded block list (same as tunnel_open, isVNC=false).
-	if blocked, reason := tunnel.IsBlocked(targetHost, targetPort, false); blocked {
+	// Defense-in-depth: every address the target resolves to must pass the
+	// hardcoded deny list (same as tunnel_open) and the allowlist rules sent
+	// by the API. Empty rules = deny (API must always send rules for
+	// http_request). The fetch dials the checked address.
+	rules := parseTunnelAllowlistRules(cmd.Payload["allowlistRules"])
+	dialHost, err := resolveTunnelDestination(targetHost, targetPort, false, rules)
+	if err != nil {
 		return tools.CommandResult{
 			Status:     "failed",
-			Error:      fmt.Sprintf("target %s:%d is blocked: %s", targetHost, targetPort, reason),
-			DurationMs: time.Since(start).Milliseconds(),
-		}
-	}
-
-	// Defense-in-depth guard 2: allowlist rules sent by the API.
-	// Empty rules = deny (API must always send rules for http_request).
-	var rules []tunnel.AllowlistRule
-	if rawRules, ok := cmd.Payload["allowlistRules"].([]interface{}); ok {
-		for _, r := range rawRules {
-			if pattern, ok := r.(string); ok {
-				rule, err := tunnel.ParseAllowlistRule(pattern)
-				if err != nil {
-					log.Warn("invalid allowlist rule from API", "pattern", pattern, "error", err.Error())
-					continue
-				}
-				rules = append(rules, rule)
-			}
-		}
-	}
-	if !tunnel.IsAllowed(targetHost, targetPort, rules) {
-		return tools.CommandResult{
-			Status:     "failed",
-			Error:      fmt.Sprintf("target %s:%d not permitted by allowlist", targetHost, targetPort),
+			Error:      err.Error(),
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
@@ -120,6 +101,7 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return fetchAndEncodeHttp(ctx, tunnel.FetchRequest{
 		Scheme:        scheme,
 		Host:          targetHost,
+		DialIP:        dialHost,
 		Port:          targetPort,
 		Method:        method,
 		Path:          path,
@@ -130,12 +112,12 @@ func handleHttpRequest(_ *Heartbeat, cmd Command) tools.CommandResult {
 }
 
 // fetchAndEncodeHttp performs the proxied fetch and builds the command result.
-// It deliberately does NOT run the IsBlocked/IsAllowed guards — callers must
+// It deliberately does NOT run the destination guards — callers must
 // apply those first. Kept separate so the fetch→encode path can be tested
 // against a loopback httptest server in any environment (including CI
 // containers with only a loopback interface), without weakening the block guard.
 func fetchAndEncodeHttp(ctx context.Context, req tunnel.FetchRequest, start time.Time) tools.CommandResult {
-	resp, err := tunnel.Fetch(ctx, req, httpProxyTimeout, httpProxyMaxBody)
+	resp, err := fetchTunnelHTTP(ctx, req, httpProxyTimeout, httpProxyMaxBody)
 	if err != nil {
 		errStr := err.Error()
 		// Defensive guard: normalise the error to the stable API token.

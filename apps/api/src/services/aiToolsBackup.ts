@@ -33,16 +33,39 @@ import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
 import { selectedSnapshotPathError } from './backupSelectedPaths';
-import { resolveSelectedSnapshotPathsInDb } from './backupSnapshotBrowse';
+import { IndexQueryTimeoutError, resolveSelectedSnapshotPathsInDb } from './backupSnapshotBrowse';
 import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 import { sumStoredSnapshotBytes } from './backupStoredBytes';
+import { classifyBackupFailureDetail, splitReparseSkipNotice } from '@breeze/shared';
+import { redactAiToolOutputText } from './aiToolOutput';
 import {
   getProviderCoverageForDevices,
   listBackupHealthRows,
   summarizeBackupHealth,
 } from './backupHealthReadModel';
+
+const FAILURE_SUMMARY_MAX_CHARS = 200;
+
+// #11768: what an assistant needs to tell the user what to do about a failed
+// job. The raw errorLog is replaced by the category, the optional finer cause
+// and one redacted, truncated line (the terminal diagnostic, without the
+// reparse-skip note). The summary is untrusted agent text: it is fenced via
+// RAW_TEXT_FIELDS_BY_TOOL in aiToolOutput.ts.
+export function withFailureFields<T extends { status: string; errorLog?: string | null }>(
+  job: T,
+): Omit<T, 'errorLog'> & { failureCategory: string | null; failureCause: string | null; failureSummary: string | null } {
+  const { errorLog, ...rest } = job;
+  const { category, cause } = classifyBackupFailureDetail({ status: job.status, errorLog });
+  const lines = (splitReparseSkipNotice(errorLog).diagnostic ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const last = lines[lines.length - 1];
+  const summary = category && last
+    ? redactAiToolOutputText(last).slice(0, FAILURE_SUMMARY_MAX_CHARS)
+    : null;
+  return { ...rest, failureCategory: category, failureCause: cause, failureSummary: summary };
+}
+
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -296,6 +319,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           transferredSize: backupJobs.transferredSize,
           fileCount: backupJobs.fileCount,
           errorCount: backupJobs.errorCount,
+          errorLog: backupJobs.errorLog,
         }).from(backupJobs)
           .leftJoin(devices, eq(backupJobs.deviceId, devices.id))
           .leftJoin(backupConfigs, eq(backupJobs.configId, backupConfigs.id))
@@ -306,7 +330,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           .orderBy(...backupJobHistoryOrderBy)
           .limit(limit);
 
-        return JSON.stringify({ jobs: rows, showing: rows.length });
+        return JSON.stringify({ jobs: rows.map(withFailureFields), showing: rows.length });
       }
 
       if (action === 'list_policies') {
@@ -407,6 +431,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           completedAt: backupJobs.completedAt,
           totalSize: backupJobs.totalSize,
           errorCount: backupJobs.errorCount,
+          errorLog: backupJobs.errorLog,
         }).from(backupJobs)
           .where(and(eq(backupJobs.deviceId, deviceId), ...(jobOrgCond ? [jobOrgCond] : [])))
           // Same defect as the device Backup tab, mirrored: `desc(startedAt)` is
@@ -449,7 +474,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
         return JSON.stringify({
           deviceId,
-          latestJob: latestJob ?? null,
+          latestJob: latestJob ? withFailureFields(latestJob) : null,
           lastSuccessfulBackup: lastSuccess?.completedAt ?? null,
           snapshotCount: snapshotStats.count,
           totalBackupSize: snapshotStats.totalBytes,
@@ -772,7 +797,15 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         // Map each selection (possibly in the browse tree's forward-slash
         // form) back to the stored original the agent matches against, and
         // each folder to its stored-form prefix (#11026).
-        const resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, selectedPaths ?? []);
+        let resolution: Awaited<ReturnType<typeof resolveSelectedSnapshotPathsInDb>>;
+        try {
+          resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, selectedPaths ?? []);
+        } catch (err) {
+          if (err instanceof IndexQueryTimeoutError) {
+            return JSON.stringify({ error: 'Resolving the selected files took too long. Try again in a moment, or select fewer folders.', code: 'index_query_timeout' });
+          }
+          throw err;
+        }
         if (!resolution.ok && resolution.reason === 'no_readable_index') {
           return JSON.stringify({ error: 'Selective restore is unavailable for snapshots without indexed files' });
         }

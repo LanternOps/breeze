@@ -78,7 +78,7 @@ func statementFromResult(t *testing.T, stdout string, p providers.BackupProvider
 }
 
 func TestExecMSSQLBackup_DigestsTheBackupFileAndAttestsTheManifest(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	stagingDir := t.TempDir()
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider, StagingDir: stagingDir, AgentID: attestTestAgentID})
 	backupBytes := []byte("mssql-backup-bytes-for-digest")
@@ -128,7 +128,7 @@ func TestExecMSSQLBackup_DigestsTheBackupFileAndAttestsTheManifest(t *testing.T)
 }
 
 func TestExecMSSQLBackup_NoAttestationWithoutAJobID(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider, StagingDir: t.TempDir(), AgentID: attestTestAgentID})
 	orig := runMSSQLBackup
 	t.Cleanup(func() { runMSSQLBackup = orig })
@@ -146,7 +146,7 @@ func TestExecMSSQLBackup_NoAttestationWithoutAJobID(t *testing.T) {
 
 func TestExecHypervBackup_DigestsEveryExportFileAndAttestsTheManifest(t *testing.T) {
 	storeDir := t.TempDir()
-	provider := providers.NewLocalProvider(storeDir)
+	provider := privateTestLocalProvider(t, storeDir)
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider, StagingDir: t.TempDir(), AgentID: attestTestAgentID})
 	stubHypervSeams(t,
 		func(string) (int64, error) { return 1 * gib, nil },
@@ -208,7 +208,7 @@ func (p *immutableRecordingProvider) UploadWithDigest(ctx context.Context, l, r 
 // during the backup, so they are uploaded as unchanging sources (hashed in
 // one read, no part buffering).
 func TestProviderBackedBackupFilesAreUploadedAsUnchangingSources(t *testing.T) {
-	p := &immutableRecordingProvider{LocalProvider: providers.NewLocalProvider(t.TempDir()), marks: map[string]bool{}}
+	p := &immutableRecordingProvider{LocalProvider: privateTestLocalProvider(t, t.TempDir()), marks: map[string]bool{}}
 	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: p, StagingDir: t.TempDir(), AgentID: attestTestAgentID})
 	orig := runMSSQLBackup
 	t.Cleanup(func() { runMSSQLBackup = orig })

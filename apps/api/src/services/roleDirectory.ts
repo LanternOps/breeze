@@ -19,6 +19,11 @@ import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { getScopeContext, type ScopeContext } from './roleAssignment';
 import { isHiddenOrgType } from './unassignedPool/visibility';
 import {
+  getEffectiveRolePermissionSources,
+  resolveRoleLineage,
+  type EffectiveRolePermission,
+} from './roleInheritance';
+import {
   FULL_PARTNER_ACCESS_REQUIRED,
   PARTNER_CONTEXT_REQUIRED,
   SCOPE_CONTEXT_REQUIRED,
@@ -140,70 +145,15 @@ export async function resolveRoleActingScope(
   return null;
 }
 
-export type EffectivePermission = { resource: string; action: string; inherited: boolean; sourceRoleId: string; sourceRoleName: string };
+export type EffectivePermission = EffectiveRolePermission;
 
-// Helper to get effective permissions (own + inherited from parent chain)
-export async function getEffectivePermissions(
-  roleId: string,
-  visited: Set<string> = new Set()
-): Promise<EffectivePermission[]> {
-  if (visited.has(roleId)) {
-    return [];
-  }
-  visited.add(roleId);
-
-  // Get the role info
-  const [role] = await db
-    .select({
-      id: roles.id,
-      name: roles.name,
-      parentRoleId: roles.parentRoleId
-    })
-    .from(roles)
-    .where(eq(roles.id, roleId))
-    .limit(1);
-
-  if (!role) {
-    return [];
-  }
-
-  // Get direct permissions for this role
-  const directPerms = await db
-    .select({
-      resource: permissions.resource,
-      action: permissions.action
-    })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(eq(rolePermissions.roleId, roleId));
-
-  const result: EffectivePermission[] = directPerms.map((p) => ({
-    resource: p.resource,
-    action: p.action,
-    inherited: false,
-    sourceRoleId: role.id,
-    sourceRoleName: role.name
-  }));
-
-  // Get inherited permissions from parent
-  if (role.parentRoleId) {
-    const inheritedPerms = await getEffectivePermissions(role.parentRoleId, visited);
-
-    // Add inherited permissions that aren't already directly assigned
-    const directPermSet = new Set(directPerms.map((p) => `${p.resource}:${p.action}`));
-
-    for (const inherited of inheritedPerms) {
-      const key = `${inherited.resource}:${inherited.action}`;
-      if (!directPermSet.has(key)) {
-        result.push({
-          ...inherited,
-          inherited: true
-        });
-      }
-    }
-  }
-
-  return result;
+/**
+ * Effective permissions (own + inherited), from the same cycle-safe,
+ * depth-bounded, tenant-confined lineage walk the runtime resolver uses
+ * (#9600, services/roleInheritance.ts).
+ */
+export async function getEffectivePermissions(roleId: string): Promise<EffectivePermission[]> {
+  return getEffectiveRolePermissionSources(roleId);
 }
 
 /** `GET /roles` for an already-gated token scope (system + custom roles of the scope). */
@@ -525,31 +475,9 @@ export async function getRoleEffectivePermissions(auth: RoleAuth, roleId: string
   // Get effective permissions including inherited ones
   const effectivePerms = await getEffectivePermissions(roleId);
 
-  // Build inheritance chain for display. `seen` stops a corrupt parent cycle
-  // from looping forever (validateParentRole refuses one on write).
-  const inheritanceChain: { id: string; name: string }[] = [];
-  const seen = new Set<string>([role.id]);
-  let currentRoleId: string | null = role.parentRoleId;
-
-  while (currentRoleId && !seen.has(currentRoleId)) {
-    seen.add(currentRoleId);
-    const [parentRole] = await db
-      .select({
-        id: roles.id,
-        name: roles.name,
-        parentRoleId: roles.parentRoleId
-      })
-      .from(roles)
-      .where(eq(roles.id, currentRoleId))
-      .limit(1);
-
-    if (parentRole) {
-      inheritanceChain.push({ id: parentRole.id, name: parentRole.name });
-      currentRoleId = parentRole.parentRoleId;
-    } else {
-      break;
-    }
-  }
+  // The inheritance chain for display: the validated ancestors the runtime
+  // resolver actually honours (cycle-safe, depth-bounded, same tenant).
+  const inheritanceChain: { id: string; name: string }[] = (await resolveRoleLineage(roleId)).slice(1);
 
   return {
     roleId: role.id,

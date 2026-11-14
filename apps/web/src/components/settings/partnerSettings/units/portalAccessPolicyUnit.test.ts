@@ -125,6 +125,23 @@ describe('portal access policy save unit — sso_only confirmation', () => {
     expect(slice().baseline).toEqual({ view: saved, draft: {} });
   });
 
+  it('W7: the confirmation names the providers the saved default turns on (never Google without the capability)', async () => {
+    fetchWithAuth.mockResolvedValueOnce(confirmRequired('d1'));
+    store().setDraft<PortalAccessPolicyUnitValue>('portalAccessPolicy', v => ({ ...v, draft: { passwordMode: 'sso_only', entraEnabled: true } }));
+    const { result } = renderHook(() => usePortalAccessPolicyUnit());
+    void result.current.save();
+    await vi.waitFor(() => expect(pending()).not.toBeNull());
+    expect(pending()!.providers).toBe('microsoft');
+    act(() => useSsoOnlyConfirmRequests.getState().respond(false));
+
+    const googleView = makePolicyView({ kind: 'partner', capabilities: { entra: true, google: true }, inherited: { entraEnabled: true } });
+    fetchWithAuth.mockResolvedValueOnce(confirmRequired('d2'));
+    store().setDraft<PortalAccessPolicyUnitValue>('portalAccessPolicy', () => ({ view: googleView, draft: { passwordMode: 'sso_only', googleEnabled: true } }));
+    void result.current.save();
+    await vi.waitFor(() => expect(pending()?.impact.impactDigest).toBe('d2'));
+    expect(pending()!.providers).toBe('both');
+  });
+
   it('declining is a cancelled outcome: nothing re-sent, draft kept, no error toast', async () => {
     fetchWithAuth.mockResolvedValueOnce(confirmRequired('d1'));
     store().setDraft<PortalAccessPolicyUnitValue>('portalAccessPolicy', v => ({ ...v, draft: { passwordMode: 'sso_only' } }));

@@ -1,9 +1,16 @@
 import './setup';
 
-import { mkdtemp, mkdir, writeFile, utimes, readdir, chmod } from 'node:fs/promises';
+const sentryMocks = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../../services/sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/sentry')>()),
+  captureException: sentryMocks.captureException,
+}));
+
+import { mkdtemp, mkdir, writeFile, utimes, readdir, chmod, rm, symlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -45,11 +52,40 @@ async function listAll(root: string, prefix = ''): Promise<string[]> {
   return out;
 }
 
+// The API and worker read a local destination only from
+// <BACKUP_LOCAL_ROOT>/<org id>/<config id>. newDestinationDir() plans the org
+// and config ids for one seeded destination so that directory is also the
+// destination's stored path; a second seed on the same stored path gets its
+// own ids and its own directory (`seed.dir`).
+let operatorRoot = '';
+const plannedIds = new Map<string, { orgId: string; configId: string }>();
+
+beforeAll(async () => {
+  operatorRoot = await mkdtemp(join(tmpdir(), 'breeze-gc-operator-'));
+});
+beforeEach(() => {
+  vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
+
+async function newDestinationDir(): Promise<string> {
+  const ids = { orgId: randomUUID(), configId: randomUUID() };
+  const dir = join(operatorRoot, ids.orgId, ids.configId);
+  await mkdir(dir, { recursive: true });
+  plannedIds.set(dir, ids);
+  return dir;
+}
+
 async function seedOrgDeviceConfig(unique: string, rootPath: string, backupVersion = '0.112.0') {
+  const planned = plannedIds.get(rootPath);
+  plannedIds.delete(rootPath);
   const [partner] = await db.insert(partners).values({
     name: `GC Partner ${unique}`, slug: `gc-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active',
   }).returning({ id: partners.id });
   const [org] = await db.insert(organizations).values({
+    ...(planned ? { id: planned.orgId } : {}),
     currencyCode: 'USD', partnerId: partner!.id, name: `GC Org ${unique}`, slug: `gc-org-${unique}`, type: 'customer', status: 'active',
   }).returning({ id: organizations.id });
   const [site] = await db.insert(sites).values({ orgId: org!.id, name: `GC Site ${unique}` }).returning({ id: sites.id });
@@ -59,10 +95,13 @@ async function seedOrgDeviceConfig(unique: string, rootPath: string, backupVersi
     backupVersion, status: 'online',
   }).returning({ id: devices.id });
   const [config] = await db.insert(backupConfigs).values({
+    ...(planned ? { id: planned.configId } : {}),
     orgId: org!.id, name: `GC Config ${unique}`, type: 'file', provider: 'local', providerConfig: { path: rootPath },
   }).returning({ id: backupConfigs.id });
   const identity = `local::${rootPath}`;
-  return { orgId: org!.id, deviceId: device!.id, configId: config!.id, identity };
+  const dir = join(operatorRoot, org!.id, config!.id);
+  await mkdir(dir, { recursive: true });
+  return { orgId: org!.id, deviceId: device!.id, configId: config!.id, identity, dir };
 }
 
 async function insertSnapshotRow(params: {
@@ -81,7 +120,7 @@ async function insertSnapshotRow(params: {
 
 runDb('scenario 1: retiring a base with an incremental child reclaims ONLY the base-exclusive object, keeping every shared backupPath the incremental references', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
 
   const seed = await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
@@ -133,7 +172,7 @@ runDb('scenario 1: retiring a base with an incremental child reclaims ONLY the b
 
 runDb('scenario 2: a still-retained (non-expired) row is protected regardless of age — including one referenced by an in-progress base pin', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
 
   await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
@@ -166,7 +205,7 @@ runDb('scenario 2: a still-retained (non-expired) row is protected regardless of
 
 runDb('scenario 3: an orphan manifest past ORPHAN_WINDOW with no row and no retirement is reclaimed', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
   const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000;
 
   await withSystemDbAccessContext(async () => {
@@ -181,7 +220,7 @@ runDb('scenario 3: an orphan manifest past ORPHAN_WINDOW with no row and no reti
 
 runDb('scenario 3b: ORPHAN_WINDOW\'s lease-derived arm protects an orphan the 9-day default alone would already have swept', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
   const NINE_DAYS_PLUS_MS = 9 * 24 * 60 * 60 * 1000 + 60 * 60 * 1000;
 
   await withSystemDbAccessContext(async () => {
@@ -201,7 +240,7 @@ runDb('scenario 3b: ORPHAN_WINDOW\'s lease-derived arm protects an orphan the 9-
 
 runDb('scenario 4: a legacy helper on the identity defers to EXACTLY today\'s algorithm — the retired prefix is fully protected, not just its manifest', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
 
   await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root, '0.109.0'); // pre-server-base helper
@@ -222,7 +261,7 @@ runDb('scenario 4: a legacy helper on the identity defers to EXACTLY today\'s al
 
 runDb('scenario 5: an undeletable object blocks only that prefix\'s manifest, not other prefixes', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
   const blockedDir = join(root, 'snapshots/RETIREDBLOCKED/files');
 
   await withSystemDbAccessContext(async () => {
@@ -250,7 +289,7 @@ runDb('scenario 5: an undeletable object blocks only that prefix\'s manifest, no
 
 runDb('scenario 6a: a NULL-identity row whose manifest IS found resolves in this run and its identity reclaims normally (no longer deferred)', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
 
   const seed = await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
@@ -287,7 +326,7 @@ runDb('scenario 6a: a NULL-identity row whose manifest IS found resolves in this
 
 runDb('scenario 6b: a NULL-identity row whose manifest is NOT found defers the WHOLE identity to today\'s algorithm — nothing unrooted is deleted', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
 
   await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
@@ -322,7 +361,7 @@ runDb('scenario 6b: a NULL-identity row whose manifest is NOT found defers the W
 
 runDb('scenario 7: system_image, application (hyperv), and database (mssql) rows are roots exactly like file rows (no backupType filter)', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
 
   await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
@@ -348,7 +387,7 @@ runDb('scenario 7: system_image, application (hyperv), and database (mssql) rows
 
 runDb('scenario 8: a swept retirement row is pruned after 30 days past sweptAt', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
 
   const retirementId = await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
@@ -371,7 +410,7 @@ runDb('scenario 8: a swept retirement row is pruned after 30 days past sweptAt',
 
 runDb('scenario 8b: a retirement swept less than 30 days ago is NOT pruned', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+  const root = await newDestinationDir();
 
   const retirementId = await withSystemDbAccessContext(async () => {
     const seed = await seedOrgDeviceConfig(unique, root);
@@ -395,7 +434,7 @@ runDb('scenario 8b: a retirement swept less than 30 days ago is NOT pruned', asy
 runDb('scenario 9: a second org sharing the same physical storage identity can never defer another org\'s reclamation, and neither org\'s sweep ever deletes the other\'s live objects', async () => {
   const uniqueA = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-a`;
   const uniqueB = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-b`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-cross-org-'));
+  const root = await newDestinationDir();
 
   // Both orgs' configs resolve to the SAME physical path (`root`) -- the
   // exact shape a cross-org storage-identity collision describes: config create validates shape
@@ -427,10 +466,10 @@ runDb('scenario 9: a second org sharing the same physical storage identity can n
 
     // Org B: a live, retained snapshot -- must never be touched by org A's
     // (or anyone else's) sweep, however old.
-    await writeAged(root, 'snapshots/B-LIVE/manifest.json', 20 * 24 * 60 * 60 * 1000, JSON.stringify({ files: [
+    await writeAged(seedB.dir, 'snapshots/B-LIVE/manifest.json', 20 * 24 * 60 * 60 * 1000, JSON.stringify({ files: [
       { backupPath: 'snapshots/B-LIVE/files/b.dat' },
     ] }));
-    await writeAged(root, 'snapshots/B-LIVE/files/b.dat', 20 * 24 * 60 * 60 * 1000);
+    await writeAged(seedB.dir, 'snapshots/B-LIVE/files/b.dat', 20 * 24 * 60 * 60 * 1000);
     await insertSnapshotRow({ ...seedB, snapshotId: 'B-LIVE', identity: seedB.identity });
   });
 
@@ -439,6 +478,7 @@ runDb('scenario 9: a second org sharing the same physical storage identity can n
   await sweepUnreferencedBackupObjects();
 
   const remaining = await listAll(root);
+  const remainingB = await listAll(seedB.dir);
 
   // Org A's retirement was reclaimed -- proves org B's legacy-helper device
   // never deferred or blocked org A's OWN identity group. Pre-fix, one
@@ -451,8 +491,8 @@ runDb('scenario 9: a second org sharing the same physical storage identity can n
   // Org B's live snapshot is completely untouched -- proves org A's
   // independent sweep of the SAME physical bucket never treats another
   // org's objects as its own to reclaim.
-  expect(remaining).toContain('snapshots/B-LIVE/manifest.json');
-  expect(remaining).toContain('snapshots/B-LIVE/files/b.dat');
+  expect(remainingB).toContain('snapshots/B-LIVE/manifest.json');
+  expect(remainingB).toContain('snapshots/B-LIVE/files/b.dat');
 });
 
 // ---------------------------------------------------------------------------
@@ -499,8 +539,8 @@ runDb.each([
   ['with its storage identity still NULL (config maps to the identity)', 'null'],
 ] as const)('an identity holding a snapshot in an unsupported key layout %s is not swept at all', async (_name, identityShape) => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const rootX = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-x-'));
-  const rootY = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-y-'));
+  const rootX = await newDestinationDir();
+  const rootY = await newDestinationDir();
 
   const seedX = await seedLayoutIdentity(`${unique}-x`, rootX);
   await seedLayoutIdentity(`${unique}-y`, rootY, 'KEPT-Y');
@@ -529,7 +569,7 @@ runDb.each([
 
 runDb('an unsupported key layout in ANOTHER org sharing the physical identity stops the sweep for every org on it', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-layout-shared-'));
+  const root = await newDestinationDir();
 
   const seedA = await seedLayoutIdentity(`${unique}-a`, root);
   const seedB = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${unique}-b`, root));
@@ -568,11 +608,11 @@ async function reserveId(params: {
 }
 
 runDb('a reserved (in-progress) prefix survives the sweep, also when another org shares the storage; an unreserved one of the same age does not', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-reserved-'));
+  const root = await newDestinationDir();
   const seedA = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-ra`, root));
   const seedB = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-rb`, root));
   await writeAged(root, 'snapshots/RES-A/files/part.dat', 10 * DAY_MS);
-  await writeAged(root, 'snapshots/RES-B/files/part.dat', 10 * DAY_MS);
+  await writeAged(seedB.dir, 'snapshots/RES-B/files/part.dat', 10 * DAY_MS);
   await writeAged(root, 'snapshots/NOT-RESERVED/files/part.dat', 10 * DAY_MS);
   await withSystemDbAccessContext(async () => {
     await reserveId({ ...seedA, snapshotId: 'RES-A', state: 'reserved' });
@@ -583,12 +623,12 @@ runDb('a reserved (in-progress) prefix survives the sweep, also when another org
 
   const remaining = await listAll(root);
   expect(remaining).toContain('snapshots/RES-A/files/part.dat');
-  expect(remaining).toContain('snapshots/RES-B/files/part.dat');
+  expect(await listAll(seedB.dir)).toContain('snapshots/RES-B/files/part.dat');
   expect(remaining).not.toContain('snapshots/NOT-RESERVED/files/part.dat');
 });
 
 runDb('an abandoned prefix is reclaimed only after the orphan window, and its reservation is then tombstoned', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-abandoned-'));
+  const root = await newDestinationDir();
   const seed = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-ab`, root));
   await writeAged(root, 'snapshots/ABANDONED-OLD/files/part.dat', 40 * DAY_MS);
   await writeAged(root, 'snapshots/ABANDONED-NEW/files/part.dat', 40 * DAY_MS);
@@ -617,7 +657,7 @@ runDb('an abandoned prefix is reclaimed only after the orphan window, and its re
 });
 
 runDb('a retired snapshot\'s reservation is tombstoned once its prefix is confirmed gone', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-retired-res-'));
+  const root = await newDestinationDir();
   const seed = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-rt`, root));
   await withSystemDbAccessContext(async () => {
     await insertSnapshotRow({ ...seed, snapshotId: 'RETIRE-ME' });
@@ -634,4 +674,435 @@ runDb('a retired snapshot\'s reservation is tombstoned once its prefix is confir
            (SELECT reason FROM backup_snapshot_id_tombstones WHERE snapshot_id = 'RETIRE-ME') AS tombstone
   `));
   expect(rows[0]).toMatchObject({ reservation: 0, tombstone: 'retired' });
+});
+
+// ---------------------------------------------------------------------------
+// Local destinations: each (organization, configuration) has its own
+// directory under BACKUP_LOCAL_ROOT, even when destinations share one stored
+// path. The sweep lists and deletes in each directory on its own.
+// ---------------------------------------------------------------------------
+
+runDb('local destinations sharing a stored path are swept one directory at a time, each from its own listing', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const storedPath = await mkdtemp(join(tmpdir(), 'breeze-gc-stored-'));
+  const OLD = 20 * DAY_MS;
+
+  const seedA1 = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${unique}-a`, storedPath));
+  const seedB1 = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${unique}-b`, storedPath));
+  const seedA2 = await withSystemDbAccessContext(async () => {
+    const [config] = await db.insert(backupConfigs).values({
+      orgId: seedA1.orgId, name: `GC Config ${unique}-a2`, type: 'file', provider: 'local', providerConfig: { path: storedPath },
+    }).returning({ id: backupConfigs.id });
+    const dir = join(operatorRoot, seedA1.orgId, config!.id);
+    await mkdir(dir, { recursive: true });
+    return { ...seedA1, configId: config!.id, dir };
+  });
+  expect(new Set([seedA1.identity, seedA2.identity, seedB1.identity]).size).toBe(1);
+
+  const units = [['A1', seedA1], ['A2', seedA2], ['B1', seedB1]] as const;
+  await withSystemDbAccessContext(async () => {
+    for (const [label, seed] of units) {
+      await writeAged(seed.dir, `snapshots/${label}-LIVE/manifest.json`, OLD, JSON.stringify({ files: [
+        { backupPath: `snapshots/${label}-LIVE/files/live.dat` },
+      ] }));
+      await writeAged(seed.dir, `snapshots/${label}-LIVE/files/live.dat`, OLD);
+      await insertSnapshotRow({ ...seed, snapshotId: `${label}-LIVE` });
+
+      await writeAged(seed.dir, `snapshots/${label}-RETIRED/manifest.json`, OLD, JSON.stringify({ files: [
+        { backupPath: `snapshots/${label}-RETIRED/files/only.dat` },
+      ] }));
+      await writeAged(seed.dir, `snapshots/${label}-RETIRED/files/only.dat`, OLD);
+      await db.insert(backupSnapshotRetirements).values({
+        orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
+        snapshotId: `${label}-RETIRED`, storageIdentity: seed.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(),
+      });
+    }
+    // Recent objects under A1's retired id in the other directories belong
+    // to those destinations, not to A1's retirement.
+    await writeAged(seedA2.dir, 'snapshots/A1-RETIRED/files/only.dat', 1000);
+    await writeAged(seedB1.dir, 'snapshots/A1-RETIRED/files/only.dat', 1000);
+  });
+
+  await sweepUnreferencedBackupObjects();
+  await sweepUnreferencedBackupObjects();
+
+  expect((await listAll(seedA1.dir)).sort()).toEqual([
+    'snapshots/A1-LIVE/files/live.dat', 'snapshots/A1-LIVE/manifest.json',
+  ]);
+  expect((await listAll(seedA2.dir)).sort()).toEqual([
+    'snapshots/A1-RETIRED/files/only.dat', 'snapshots/A2-LIVE/files/live.dat', 'snapshots/A2-LIVE/manifest.json',
+  ]);
+  expect((await listAll(seedB1.dir)).sort()).toEqual([
+    'snapshots/A1-RETIRED/files/only.dat', 'snapshots/B1-LIVE/files/live.dat', 'snapshots/B1-LIVE/manifest.json',
+  ]);
+  expect(await listAll(storedPath)).toEqual([]);
+
+  const retirements = await withSystemDbAccessContext(() =>
+    db.select({ snapshotId: backupSnapshotRetirements.snapshotId, sweptAt: backupSnapshotRetirements.sweptAt })
+      .from(backupSnapshotRetirements)
+      .where(eq(backupSnapshotRetirements.storageIdentity, seedA1.identity)),
+  );
+  expect(retirements.map((r) => r.snapshotId).sort()).toEqual(['A1-RETIRED', 'A2-RETIRED', 'B1-RETIRED']);
+  for (const row of retirements) expect(row.sweptAt, row.snapshotId).not.toBeNull();
+});
+
+runDb('a retained snapshot recorded under the destination\'s previous stored path is kept', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-moved`;
+  const root = await newDestinationDir();
+  await withSystemDbAccessContext(async () => {
+    const seed = await seedOrgDeviceConfig(unique, root);
+    await writeAged(root, 'snapshots/OLD-PATH-LIVE/manifest.json', 20 * DAY_MS, JSON.stringify({ files: [
+      { backupPath: 'snapshots/OLD-PATH-LIVE/files/a.dat' },
+    ] }));
+    await writeAged(root, 'snapshots/OLD-PATH-LIVE/files/a.dat', 20 * DAY_MS);
+    // Recorded before the destination's Local Path was edited.
+    await insertSnapshotRow({ ...seed, snapshotId: 'OLD-PATH-LIVE', identity: 'local::/old/device/path' });
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  expect((await listAll(root)).sort()).toEqual([
+    'snapshots/OLD-PATH-LIVE/files/a.dat', 'snapshots/OLD-PATH-LIVE/manifest.json',
+  ]);
+});
+
+runDb('two destinations of one organization mounted on the same storage keep each other\'s retained snapshots', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-shared`;
+  const rootA = await newDestinationDir();
+  const otherStoredPath = await mkdtemp(join(tmpdir(), 'breeze-gc-stored-b-'));
+  let dirB = '';
+  await withSystemDbAccessContext(async () => {
+    const seedA = await seedOrgDeviceConfig(unique, rootA);
+    const [configB] = await db.insert(backupConfigs).values({
+      orgId: seedA.orgId, name: `GC Config ${unique}-b`, type: 'file', provider: 'local', providerConfig: { path: otherStoredPath },
+    }).returning({ id: backupConfigs.id });
+    dirB = join(operatorRoot, seedA.orgId, configB!.id);
+    // The same storage, mounted at both destination directories.
+    for (const dir of [rootA, dirB]) {
+      await writeAged(dir, 'snapshots/B-LIVE/manifest.json', 20 * DAY_MS, JSON.stringify({ files: [
+        { backupPath: 'snapshots/B-LIVE/files/b.dat' },
+      ] }));
+      await writeAged(dir, 'snapshots/B-LIVE/files/b.dat', 20 * DAY_MS);
+      // An old object the manifest does not reference: B's own sweep decides about it, never A's.
+      await writeAged(dir, 'snapshots/B-LIVE/files/stray.dat', 20 * DAY_MS);
+    }
+    await insertSnapshotRow({ ...seedA, configId: configB!.id, snapshotId: 'B-LIVE', identity: `local::${otherStoredPath}` });
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  expect((await listAll(rootA)).sort()).toEqual([
+    'snapshots/B-LIVE/files/b.dat', 'snapshots/B-LIVE/files/stray.dat', 'snapshots/B-LIVE/manifest.json',
+  ]);
+  expect(await listAll(dirB)).toEqual(expect.arrayContaining(['snapshots/B-LIVE/files/b.dat', 'snapshots/B-LIVE/manifest.json']));
+});
+
+runDb('a destination whose stored path does not exist on the API server is still swept from its own directory', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-device-path`;
+  const root = await newDestinationDir();
+  const devicePath = '/nonexistent/device/backups';
+  await withSystemDbAccessContext(async () => {
+    const seed = await seedOrgDeviceConfig(unique, root);
+    await db.update(backupConfigs).set({ providerConfig: { path: devicePath } }).where(eq(backupConfigs.id, seed.configId));
+    await writeAged(root, 'snapshots/RETIRED-DEV/manifest.json', 20 * DAY_MS, JSON.stringify({ files: [
+      { backupPath: 'snapshots/RETIRED-DEV/files/r.dat' },
+    ] }));
+    await writeAged(root, 'snapshots/RETIRED-DEV/files/r.dat', 20 * DAY_MS);
+    await db.insert(backupSnapshotRetirements).values({
+      orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
+      snapshotId: 'RETIRED-DEV', storageIdentity: `local::${devicePath}`, backupType: 'file', reason: 'expired',
+      retiredAt: new Date(Date.now() - 20 * DAY_MS),
+    });
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  expect(await listAll(root)).toEqual([]);
+});
+
+async function reservationCount(snapshotId: string): Promise<number> {
+  const rows = await withSystemDbAccessContext(() => db.execute(sql`
+    SELECT count(*)::int AS n FROM backup_snapshot_id_reservations WHERE snapshot_id = ${snapshotId}
+  `));
+  return (rows[0] as { n: number }).n;
+}
+
+runDb('an abandoned local reservation with no destination is never released', async () => {
+  const root = await newDestinationDir();
+  const seed = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-nocfg`, root));
+  await withSystemDbAccessContext(() => db.execute(sql`
+    INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, device_id, config_id, storage_identity, source, state, updated_at)
+    VALUES ('NO-CONFIG-ABANDONED', ${seed.orgId}, ${seed.deviceId}, NULL, ${seed.identity},
+            'server_minted', 'abandoned', ${new Date(Date.now() - 40 * DAY_MS).toISOString()}::timestamptz)
+  `));
+
+  await sweepUnreferencedBackupObjects();
+  await sweepUnreferencedBackupObjects();
+
+  expect(await reservationCount('NO-CONFIG-ABANDONED')).toBe(1);
+});
+
+runDb('an abandoned reservation is kept while its own destination directory cannot be listed', async () => {
+  const storedPath = await mkdtemp(join(tmpdir(), 'breeze-gc-stored-unlisted-'));
+  const seedA = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-listed`, storedPath));
+  const seedB = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${Date.now()}-unlisted`, storedPath));
+  expect(seedA.identity).toBe(seedB.identity);
+  // B's destination directory is not provisioned, so B's listing fails.
+  await rm(seedB.dir, { recursive: true, force: true });
+  await withSystemDbAccessContext(() => reserveId({
+    ...seedB, snapshotId: 'UNLISTED-ABANDONED', state: 'abandoned', updatedAt: new Date(Date.now() - 40 * DAY_MS),
+  }));
+
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await sweepUnreferencedBackupObjects();
+    await sweepUnreferencedBackupObjects();
+  } finally {
+    error.mockRestore();
+  }
+
+  expect(await reservationCount('UNLISTED-ABANDONED')).toBe(1);
+});
+
+// ---------------------------------------------------------------------------
+// Local destinations on shared storage: what another destination recorded
+// stays, whatever this destination's own records say.
+// ---------------------------------------------------------------------------
+
+async function writeSnapshotAged(dir: string, id: string, files: string[], ageDays = 20, extraRefs: string[] = []) {
+  await writeAged(dir, `snapshots/${id}/manifest.json`, ageDays * DAY_MS, JSON.stringify({ files: [
+    ...files.map((f) => ({ backupPath: `snapshots/${id}/files/${f}` })),
+    ...extraRefs.map((p) => ({ backupPath: p })),
+  ] }));
+  for (const f of files) await writeAged(dir, `snapshots/${id}/files/${f}`, ageDays * DAY_MS);
+}
+
+async function addLocalConfig(orgId: string, name: string): Promise<{ configId: string; dir: string; identity: string }> {
+  const other = await mkdtemp(join(tmpdir(), 'breeze-gc-stored-other-'));
+  const [config] = await db.insert(backupConfigs).values({
+    orgId, name, type: 'file', provider: 'local', providerConfig: { path: other },
+  }).returning({ id: backupConfigs.id });
+  const dir = join(operatorRoot, orgId, config!.id);
+  await mkdir(dir, { recursive: true });
+  return { configId: config!.id, dir, identity: `local::${other}` };
+}
+
+runDb('a destination moved to another organization keeps the earlier organization\'s recorded objects and still reclaims an unrecorded orphan', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-moved-org`;
+  const root1 = await newDestinationDir();
+  const root2 = await newDestinationDir();
+  let dirMoved = '';
+  const s1 = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${u}-1`, root1));
+  const s2 = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${u}-2`, root2));
+  await withSystemDbAccessContext(async () => {
+    await insertSnapshotRow({ ...s1, snapshotId: 'MOVED-LIVE', identity: s1.identity });
+    await db.insert(backupSnapshotRetirements).values({ orgId: s1.orgId, configId: s1.configId, deviceId: s1.deviceId,
+      snapshotId: 'MOVED-RET', storageIdentity: s1.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(Date.now() - 20 * DAY_MS) });
+    await db.update(backupConfigs).set({ orgId: s2.orgId }).where(eq(backupConfigs.id, s1.configId));
+    dirMoved = join(operatorRoot, s2.orgId, s1.configId);
+    await mkdir(dirMoved, { recursive: true });
+    await writeSnapshotAged(dirMoved, 'MOVED-LIVE', ['a.dat']);
+    await writeSnapshotAged(dirMoved, 'MOVED-RET', ['r.dat']);
+    await writeSnapshotAged(dirMoved, 'MOVED-ORPHAN', ['o.dat']);
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  expect((await listAll(dirMoved)).sort()).toEqual([
+    'snapshots/MOVED-LIVE/files/a.dat', 'snapshots/MOVED-LIVE/manifest.json',
+    'snapshots/MOVED-RET/files/r.dat', 'snapshots/MOVED-RET/manifest.json',
+  ]);
+});
+
+runDb('a snapshot recorded with no configuration is kept in a destination directory that lists it', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-no-config`;
+  const root = await newDestinationDir();
+  await withSystemDbAccessContext(async () => {
+    const s = await seedOrgDeviceConfig(u, root);
+    const [job] = await db.insert(backupJobs).values({ orgId: s.orgId, configId: s.configId, deviceId: s.deviceId, status: 'completed', snapshotId: 'NOCFG-LIVE' }).returning({ id: backupJobs.id });
+    await db.insert(backupSnapshots).values({ orgId: s.orgId, jobId: job!.id, deviceId: s.deviceId, configId: null,
+      snapshotId: 'NOCFG-LIVE', storageIdentity: 'local::/legacy/path', backupType: 'file' });
+    await writeSnapshotAged(root, 'NOCFG-LIVE', ['a.dat']);
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  expect((await listAll(root)).sort()).toEqual(['snapshots/NOCFG-LIVE/files/a.dat', 'snapshots/NOCFG-LIVE/manifest.json']);
+});
+
+runDb('another organization\'s retained, retired and reserved prefixes on the same storage are kept and an unrecorded orphan is reclaimed', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-two-orgs`;
+  const rootA = await newDestinationDir();
+  const rootB = await newDestinationDir();
+  await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${u}-a`, rootA));
+  const sB = await withSystemDbAccessContext(() => seedOrgDeviceConfig(`${u}-b`, rootB));
+  await withSystemDbAccessContext(async () => {
+    await insertSnapshotRow({ ...sB, snapshotId: 'ORG-B-LIVE', identity: sB.identity });
+    await db.insert(backupSnapshotRetirements).values({ orgId: sB.orgId, configId: sB.configId, deviceId: sB.deviceId,
+      snapshotId: 'ORG-B-RET', storageIdentity: sB.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(Date.now() - 20 * DAY_MS) });
+    await reserveId({ ...sB, snapshotId: 'ORG-B-ABANDONED', state: 'abandoned', updatedAt: new Date(Date.now() - 40 * DAY_MS) });
+    for (const id of ['ORG-B-LIVE', 'ORG-B-RET', 'ORG-B-ABANDONED', 'ORG-A-ORPHAN']) await writeSnapshotAged(rootA, id, ['f.dat']);
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  const remaining = (await listAll(rootA)).sort();
+  for (const id of ['ORG-B-LIVE', 'ORG-B-RET', 'ORG-B-ABANDONED']) expect(remaining, id).toContain(`snapshots/${id}/files/f.dat`);
+  expect(remaining.some((k) => k.startsWith('snapshots/ORG-A-ORPHAN/'))).toBe(false);
+});
+
+runDb('one retained snapshot present in two destination directories is kept in both', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-both-dirs`;
+  const rootA = await newDestinationDir();
+  let dirB = '';
+  await withSystemDbAccessContext(async () => {
+    const sA = await seedOrgDeviceConfig(u, rootA);
+    dirB = (await addLocalConfig(sA.orgId, `GC Config ${u}-b`)).dir;
+    await insertSnapshotRow({ ...sA, snapshotId: 'BOTH-LIVE', identity: sA.identity });
+    await writeSnapshotAged(rootA, 'BOTH-LIVE', ['a.dat']);
+    await writeSnapshotAged(dirB, 'BOTH-LIVE', ['a.dat']);
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  expect(await listAll(rootA)).toContain('snapshots/BOTH-LIVE/files/a.dat');
+  expect(await listAll(dirB)).toContain('snapshots/BOTH-LIVE/files/a.dat');
+});
+
+runDb('a snapshot id this destination retired but another destination still records as live is kept and its retirement stays open', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-retired-live`;
+  const rootA = await newDestinationDir();
+  let dirB = '';
+  let identityA = '';
+  await withSystemDbAccessContext(async () => {
+    const sA = await seedOrgDeviceConfig(u, rootA);
+    identityA = sA.identity;
+    const b = await addLocalConfig(sA.orgId, `GC Config ${u}-b`);
+    dirB = b.dir;
+    await db.insert(backupSnapshotRetirements).values({ orgId: sA.orgId, configId: sA.configId, deviceId: sA.deviceId,
+      snapshotId: 'SAME-ID', storageIdentity: sA.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(Date.now() - 20 * DAY_MS) });
+    await insertSnapshotRow({ ...sA, configId: b.configId, snapshotId: 'SAME-ID', identity: b.identity });
+    // Shared storage: both directories show it.
+    await writeSnapshotAged(rootA, 'SAME-ID', ['a.dat']);
+    await writeSnapshotAged(dirB, 'SAME-ID', ['a.dat']);
+  });
+
+  await sweepUnreferencedBackupObjects();
+  await sweepUnreferencedBackupObjects();
+
+  expect((await listAll(rootA)).sort()).toEqual(['snapshots/SAME-ID/files/a.dat', 'snapshots/SAME-ID/manifest.json']);
+  const [retirement] = await withSystemDbAccessContext(() =>
+    db.select({ sweptAt: backupSnapshotRetirements.sweptAt }).from(backupSnapshotRetirements)
+      .where(eq(backupSnapshotRetirements.storageIdentity, identityA)),
+  );
+  expect(retirement!.sweptAt).toBeNull();
+});
+
+runDb('an abandoned reservation with no configuration keeps its prefix in a directory that lists it', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-reserved-no-config`;
+  const root = await newDestinationDir();
+  await withSystemDbAccessContext(async () => {
+    const s = await seedOrgDeviceConfig(u, root);
+    await db.execute(sql`
+      INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, device_id, config_id, storage_identity, source, state, updated_at)
+      VALUES ('NOCFG-RESERVED', ${s.orgId}, ${s.deviceId}, NULL, ${s.identity}, 'server_minted', 'abandoned', ${new Date(Date.now() - 40 * DAY_MS).toISOString()}::timestamptz)`);
+    await writeSnapshotAged(root, 'NOCFG-RESERVED', ['p.dat']);
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  expect(await listAll(root)).toContain('snapshots/NOCFG-RESERVED/files/p.dat');
+});
+
+runDb('another destination\'s recorded manifest keeps the file it references inside this destination\'s retired prefix', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-cross-ref`;
+  const rootA = await newDestinationDir();
+  await withSystemDbAccessContext(async () => {
+    const sA = await seedOrgDeviceConfig(u, rootA);
+    const b = await addLocalConfig(sA.orgId, `GC Config ${u}-b`);
+    await db.insert(backupSnapshotRetirements).values({ orgId: sA.orgId, configId: sA.configId, deviceId: sA.deviceId,
+      snapshotId: 'OWN-RET', storageIdentity: sA.identity, backupType: 'file', reason: 'expired', retiredAt: new Date(Date.now() - 20 * DAY_MS) });
+    await writeSnapshotAged(rootA, 'OWN-RET', ['only.dat', 'shared.dat']);
+    await insertSnapshotRow({ ...sA, configId: b.configId, snapshotId: 'B-REFS', identity: b.identity });
+    await writeSnapshotAged(rootA, 'B-REFS', ['b.dat'], 20, ['snapshots/OWN-RET/files/shared.dat']);
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  const remaining = (await listAll(rootA)).sort();
+  expect(remaining).toContain('snapshots/OWN-RET/files/shared.dat');
+  expect(remaining).not.toContain('snapshots/OWN-RET/files/only.dat');
+  expect(remaining).toContain('snapshots/B-REFS/files/b.dat');
+});
+
+runDb('a listing that fails part-way deletes nothing and is reported as blocked', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-partial-listing`;
+  const root = await newDestinationDir();
+  await withSystemDbAccessContext(async () => { await seedOrgDeviceConfig(u, root); });
+  await writeSnapshotAged(root, 'PART-A-ORPHAN', ['o.dat']);
+  await writeSnapshotAged(root, 'PART-Z-LOCKED', ['z.dat']);
+  await chmod(join(root, 'snapshots', 'PART-Z-LOCKED'), 0o000);
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  let result;
+  try {
+    result = await sweepUnreferencedBackupObjects();
+  } finally {
+    error.mockRestore();
+    await chmod(join(root, 'snapshots', 'PART-Z-LOCKED'), 0o755);
+  }
+
+  expect(await listAll(root)).toContain('snapshots/PART-A-ORPHAN/files/o.dat');
+  expect(result!.blockedIdentities).toBeGreaterThan(0);
+});
+
+runDb('a destination directory that cannot be used is reported as blocked, not skipped as unprovisioned', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-refused-dir`;
+  const root = await newDestinationDir();
+  const elsewhere = await mkdtemp(join(tmpdir(), 'breeze-gc-elsewhere-'));
+  await withSystemDbAccessContext(async () => { await seedOrgDeviceConfig(u, root); });
+  await writeSnapshotAged(elsewhere, 'ELSEWHERE-ORPHAN', ['o.dat']);
+  await rm(root, { recursive: true, force: true });
+  await symlink(elsewhere, root);
+  sentryMocks.captureException.mockClear();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  let result;
+  let warnings: string[];
+  let errors: string[];
+  try {
+    result = await sweepUnreferencedBackupObjects();
+    warnings = warn.mock.calls.map((c) => String(c[0]));
+    errors = error.mock.calls.map((c) => String(c[0]));
+  } finally {
+    warn.mockRestore();
+    error.mockRestore();
+  }
+
+  expect(await listAll(elsewhere)).toContain('snapshots/ELSEWHERE-ORPHAN/files/o.dat');
+  expect(result.blockedIdentities).toBeGreaterThan(0);
+  expect(warnings.some((m) => m.includes('no API-side local storage directory'))).toBe(false);
+  expect(errors.some((m) => m.includes('listing failed'))).toBe(true);
+  expect(sentryMocks.captureException).toHaveBeenCalled();
+});
+
+runDb('a destination whose directory has not been created is skipped with a warning, not reported as blocked', async () => {
+  const u = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-missing-dir`;
+  const root = await newDestinationDir();
+  await withSystemDbAccessContext(async () => { await seedOrgDeviceConfig(u, root); });
+  await rm(root, { recursive: true, force: true });
+  sentryMocks.captureException.mockClear();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  let result;
+  let warnings: string[];
+  try {
+    result = await sweepUnreferencedBackupObjects();
+    warnings = warn.mock.calls.map((c) => String(c[0]));
+  } finally {
+    warn.mockRestore();
+  }
+
+  expect(result.blockedIdentities).toBe(0);
+  expect(result.skippedIdentities).toBeGreaterThan(0);
+  expect(warnings.some((m) => m.includes('no API-side local storage directory'))).toBe(true);
+  expect(sentryMocks.captureException).not.toHaveBeenCalled();
 });

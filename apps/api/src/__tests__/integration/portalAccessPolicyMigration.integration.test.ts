@@ -137,8 +137,9 @@ describe('2027-01-22-232800-portal-access-policies-requests.sql', () => {
       // The valid shapes insert.
       await tx`INSERT INTO portal_access_requests (org_id, email, source, issuer, subject, entra_tenant_id, expires_at)
                VALUES (${orgId}, 'e@x.test', 'entra', ${entraIssuer(tid)}, 'oid-1', ${tid}, ${FUTURE})`;
-      await tx`INSERT INTO portal_access_requests (org_id, email, source, issuer, subject, expires_at)
-               VALUES (${orgId}, 'f@x.test', 'google', 'https://accounts.google.com', 'sub-1', ${FUTURE})`;
+      // W7 (2027-01-24-170000) added portal_access_requests_google_hd_chk: a google row now also carries its hd.
+      await tx`INSERT INTO portal_access_requests (org_id, email, source, issuer, subject, google_hosted_domain, expires_at)
+               VALUES (${orgId}, 'f@x.test', 'google', 'https://accounts.google.com', 'sub-1', 'x.test', ${FUTURE})`;
       await tx`INSERT INTO portal_access_requests (org_id, email, source, expires_at) VALUES (${orgId}, 'g@x.test', 'self', ${FUTURE})`;
     });
   });

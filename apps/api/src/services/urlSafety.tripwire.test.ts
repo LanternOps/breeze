@@ -16,12 +16,13 @@ describe('safeFetch #1105 tripwire', () => {
     assertSpy.mockClear();
   });
 
-  it('calls assertOutsideHeldDbContext("safeFetch") before any network work', async () => {
+  it('calls assertOutsideHeldDbContext("safeFetch", outer transaction included) before any network work', async () => {
     // A literal private IP is rejected synchronously, before DNS/TCP — so if the
     // guard is reached at all, it must have fired ahead of the SSRF rejection.
     await expect(safeFetch('http://127.0.0.1/secret')).rejects.toBeInstanceOf(SsrfBlockedError);
     expect(assertSpy).toHaveBeenCalledTimes(1);
-    expect(assertSpy).toHaveBeenCalledWith('safeFetch');
+    // Including an outer transaction left open around runOutsideDbContext.
+    expect(assertSpy).toHaveBeenCalledWith('safeFetch', { includeOuterTransaction: true });
   });
 
   it('propagates a strict-mode throw from the guard (a new violation fails the call)', async () => {

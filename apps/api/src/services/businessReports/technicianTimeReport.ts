@@ -1,4 +1,4 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { and, eq, or, sql, type SQL } from 'drizzle-orm';
 import {
   emptyTechnicianTimeSummary,
   type CurrencyAmountRow,
@@ -7,6 +7,9 @@ import {
   type TechnicianTimeSummary,
 } from '@breeze/shared';
 import { db } from '../../db';
+import { partnerUsers, roles, users } from '../../db/schema';
+import { permissionGrantMatches } from '../permissionMatching';
+import { getRolesPermissionGrants } from '../roleInheritance';
 import { sqlTimestamp, sqlUuidArray } from '../../db/sqlValues';
 import { laborAmountSql, minorUnitScaleSql } from '../currencySql';
 import { technicianTimeConfigSchema, type TechnicianTimeConfig } from '../reportConfigSchemas';
@@ -97,28 +100,51 @@ function entryScopePredicate(scope: ReportScope): SQL {
 /**
  * Who counts as a technician.
  * - Partner: active users with a membership of this partner whose PARTNER role
- *   grants `time_entries:read` — the same grant shape as `roleGrantsReportAction`
- *   (services/siteScope.ts), `'*'` rows included or Partner Admin's wildcard
- *   grant is invisible.
+ *   grants `time_entries:read` at runtime — the same grant shape as
+ *   `roleGrantsReportAction` (services/siteScope.ts), `'*'` included or Partner
+ *   Admin's wildcard grant is invisible, and inherited grants included
+ *   (`roles.parent_role_id`, #9600/#11702). Resolved in TS by
+ *   `partnerTechnicianIds` and fed in as a uuid array.
  * - Org: there is no partner axis to enumerate from, so the users in the org's
  *   own entries.
  */
-function techsCte(scope: ReportScope): SQL {
+function techsCte(scope: ReportScope, partnerTechIds: readonly string[]): SQL {
   if (scope.kind === 'organization') {
     return sql`SELECT DISTINCT e.user_id FROM entries e`;
   }
-  return sql`
-    SELECT DISTINCT pu.user_id
-    FROM partner_users pu
-    JOIN users u ON u.id = pu.user_id AND u.status = 'active'
-    JOIN roles r ON r.id = pu.role_id
-    JOIN role_permissions rp ON rp.role_id = r.id
-    JOIN permissions p ON p.id = rp.permission_id
-    WHERE pu.partner_id = ${scope.partnerId}
-      AND r.scope = 'partner'
-      AND (r.is_system OR r.partner_id = ${scope.partnerId})
-      AND p.resource IN ('time_entries', '*')
-      AND p.action IN ('read', '*')`;
+  // unnest of an empty uuid[] yields zero rows.
+  return sql`SELECT DISTINCT t.user_id FROM unnest(${sqlUuidArray(partnerTechIds)}) AS t(user_id)`;
+}
+
+/**
+ * Active members of the partner whose base role is a partner-scope role that is
+ * built-in or owned by this partner (the base-role filter), and whose runtime
+ * grants (own + inherited) match `time_entries:read`. Runs inside the report's
+ * scoped block.
+ */
+async function partnerTechnicianIds(partnerId: string): Promise<string[]> {
+  const candidates = await db
+    .select({ userId: partnerUsers.userId, roleId: partnerUsers.roleId })
+    .from(partnerUsers)
+    .innerJoin(users, eq(users.id, partnerUsers.userId))
+    .innerJoin(roles, eq(roles.id, partnerUsers.roleId))
+    .where(
+      and(
+        eq(partnerUsers.partnerId, partnerId),
+        eq(users.status, 'active'),
+        eq(roles.scope, 'partner'),
+        or(eq(roles.isSystem, true), eq(roles.partnerId, partnerId)),
+      ),
+    );
+  if (candidates.length === 0) return [];
+  const grants = await getRolesPermissionGrants([...new Set(candidates.map((c) => c.roleId))]);
+  const ids = new Set<string>();
+  for (const c of candidates) {
+    if ((grants.get(c.roleId) ?? []).some((g) => permissionGrantMatches(g, 'time_entries', 'read'))) {
+      ids.add(c.userId);
+    }
+  }
+  return [...ids];
 }
 
 /**
@@ -127,7 +153,7 @@ function techsCte(scope: ReportScope): SQL {
  * who logged time must not vanish from the technician axis, or the axes would
  * stop reconciling to the overall total.
  */
-function baseCte(scope: ReportScope, period: ResolvedReportPeriod): SQL {
+function baseCte(scope: ReportScope, period: ResolvedReportPeriod, partnerTechIds: readonly string[]): SQL {
   return sql`
     WITH entries AS (
       SELECT te.id, te.user_id, te.org_id, te.work_type_id, te.started_at,
@@ -140,7 +166,7 @@ function baseCte(scope: ReportScope, period: ResolvedReportPeriod): SQL {
         AND te.ended_at IS NOT NULL
         AND te.started_at >= ${sqlTimestamp(period.start)} AND te.started_at < ${sqlTimestamp(period.end)}
     ),
-    techs AS (${techsCte(scope)}),
+    techs AS (${techsCte(scope, partnerTechIds)}),
     roster AS (
       SELECT user_id FROM techs
       UNION
@@ -405,7 +431,8 @@ export async function generateTechnicianTimeBillabilityReport(
       notes.push(ORG_SCOPE_NOTE, ORG_SCOPE_UTILIZATION_NOTE);
     }
 
-    const cte = baseCte(scope, period);
+    const partnerTechIds = scope.kind === 'partner' ? await partnerTechnicianIds(scope.partnerId) : [];
+    const cte = baseCte(scope, period, partnerTechIds);
     const groupRows = rowsOf<GroupRow>(await db.execute(groupedQuery(cte, groupBy)));
     const groupMoneyRows = rowsOf<GroupMoneyRow>(await db.execute(groupedMoneyQuery(cte, groupBy)));
     const [overallRow] = rowsOf<OverallRow>(await db.execute(overallQuery(cte, scope)));

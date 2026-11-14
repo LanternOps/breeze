@@ -75,3 +75,12 @@ describe('fileUploadBodySchema size caps (#2399)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('file browser local absolute paths', () => {
+  it.each(['\\\\server\\share\\file.txt', '\\\\?\\C:\\file.txt', '\\\\.\\C:\\file.txt', '//server/share/file.txt', '\\??\\UNC\\server\\share\\file.txt', '/??/C:/file.txt', 'C:relative.txt', 'relative.txt'])('refuses %s', (path) => {
+    expect(fileUploadBodySchema.safeParse({ path, content: 'text' }).success).toBe(false);
+  });
+  it.each(['/var/log/report.txt', 'C:\\Logs\\report.txt', 'D:/Logs/report.txt'])('accepts %s', (path) => {
+    expect(fileUploadBodySchema.safeParse({ path, content: 'text' }).success).toBe(true);
+  });
+});

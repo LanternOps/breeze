@@ -27,7 +27,7 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 
 type AuthCtx = {
-  scope: 'partner' | 'organization';
+  scope: 'partner' | 'organization' | 'system';
   partnerId: string | null;
   orgId: string | null;
   accessibleOrgIds: string[] | null;
@@ -275,6 +275,131 @@ describe('user re-invite → resurrect tombstone (#1367)', () => {
       .where(eq(partnerUsers.userId, target.id))
       .limit(1);
     expect(link).toBeDefined();
+  });
+
+  it('a re-invited removed account does not keep platform-admin or its verified address', async () => {
+    const partner = await createPartner();
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    const caller = await createUser({
+      partnerId: partner.id,
+      email: `caller-${Date.now()}@example.com`,
+      status: 'active',
+    });
+    await assignUserToPartner(caller.id, partner.id, role.id, 'all');
+    const email = `returning-${Date.now()}@example.com`;
+
+    // A removed account whose previous holder was a platform admin with a
+    // verified address.
+    const target = await createUser({ partnerId: partner.id, email, status: 'active' });
+    await withSystemDbAccessContext(async () =>
+      db
+        .update(users)
+        .set({
+          status: 'disabled',
+          disabledReason: 'removed',
+          passwordHash: null,
+          isPlatformAdmin: true,
+          emailVerifiedAt: new Date(),
+        })
+        .where(eq(users.id, target.id)),
+    );
+
+    activeAuthContext = {
+      scope: 'partner',
+      partnerId: partner.id,
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [partner.id],
+      userId: caller.id,
+    };
+
+    const app = await buildApp();
+    const res = await app.request('/users/invite', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, name: 'New Holder', roleId: role.id, orgAccess: 'none' }),
+    });
+    expect(res.status).toBe(201);
+
+    const row = await readUser(target.id);
+    expect(row.status).toBe('invited');
+    expect(row.isPlatformAdmin).toBe(false);
+    expect(row.emailVerifiedAt).toBeNull();
+  });
+});
+
+describe('user reactivation through PATCH /users/:id', () => {
+  async function seedFlaggedUser(opts: { removed: boolean }) {
+    const partner = await createPartner();
+    const email = `reactivated-${opts.removed ? 'removed' : 'disabled'}-${Date.now()}@example.com`;
+    const target = await createUser({ partnerId: partner.id, email, status: 'active' });
+    const verifiedAt = new Date();
+    await withSystemDbAccessContext(async () =>
+      db
+        .update(users)
+        .set(
+          opts.removed
+            ? { status: 'disabled', disabledReason: 'removed', passwordHash: null, isPlatformAdmin: true, emailVerifiedAt: verifiedAt }
+            : { status: 'disabled', disabledReason: null, isPlatformAdmin: true, emailVerifiedAt: verifiedAt },
+        )
+        .where(eq(users.id, target.id)),
+    );
+    activeAuthContext = {
+      scope: 'system',
+      partnerId: null,
+      orgId: null,
+      accessibleOrgIds: null,
+      accessiblePartnerIds: null,
+      userId: null,
+    };
+    return target;
+  }
+
+  async function reactivate(id: string) {
+    const app = await buildApp();
+    return app.request(`/users/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+  }
+
+  it('a reactivated removed account does not keep platform-admin or its verified address', async () => {
+    const target = await seedFlaggedUser({ removed: true });
+    const res = await reactivate(target.id);
+    expect(res.status).toBe(200);
+
+    const row = await readUser(target.id);
+    expect(row.status).toBe('active');
+    expect(row.isPlatformAdmin).toBe(false);
+    expect(row.emailVerifiedAt).toBeNull();
+  });
+
+  it('setting a removed account back to invited does not keep platform-admin or its verified address', async () => {
+    const target = await seedFlaggedUser({ removed: true });
+    const app = await buildApp();
+    const res = await app.request(`/users/${target.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'invited' }),
+    });
+    expect(res.status).toBe(200);
+
+    const row = await readUser(target.id);
+    expect(row.status).toBe('invited');
+    expect(row.isPlatformAdmin).toBe(false);
+    expect(row.emailVerifiedAt).toBeNull();
+  });
+
+  it('re-enabling a disabled account that still has its password keeps platform-admin and its verified address', async () => {
+    const target = await seedFlaggedUser({ removed: false });
+    const res = await reactivate(target.id);
+    expect(res.status).toBe(200);
+
+    const row = await readUser(target.id);
+    expect(row.status).toBe('active');
+    expect(row.isPlatformAdmin).toBe(true);
+    expect(row.emailVerifiedAt).not.toBeNull();
   });
 });
 

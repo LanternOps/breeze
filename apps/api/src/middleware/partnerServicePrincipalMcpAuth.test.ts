@@ -22,22 +22,13 @@ vi.mock('../services/rate-limit', () => ({
 }));
 vi.mock('../services/clientIp', () => ({ getTrustedClientIpOrUndefined: vi.fn(() => undefined) }));
 vi.mock('../services/permissions', () => ({
-  getUserPermissions: vi.fn(async () => ({ scope: 'partner', partnerId: 'partner-1', orgAccess: 'all', permissions: [] })),
   runWithUncachedPermissionsFor: vi.fn((_id: string, fn: () => unknown) => fn()),
 }));
-vi.mock('../services/apiKeyScopes', () => ({ validateApiKeyScopeDelegation: vi.fn(() => ({ ok: true })) }));
-vi.mock('../services/tenantStatus', () => ({
-  TenantInactiveError: class TenantInactiveError extends Error {},
-  assertActiveTenantContext: vi.fn(async () => undefined),
-}));
 vi.mock('./apiKeyAuth', () => ({ enforcePreLookupProbeRateLimit: vi.fn(async () => undefined) }));
-vi.mock('./bearerTokenAuth', () => ({
-  resolvePartnerAccess: vi.fn(async () => ({ isMember: true, orgIds: ['org-1'] })),
-}));
 vi.mock('../services/partnerServicePrincipalCredential', () => ({
   hashPartnerApiKey: vi.fn(() => 'hash'),
   isPartnerServicePrincipalKeyFormat: vi.fn(() => true),
-  loadPartnerServicePrincipalCredential: vi.fn(async () => ({
+  authenticatePartnerServicePrincipalKey: vi.fn(async () => ({
     credential: {
       keyId: 'psp-key-1',
       partnerId: 'partner-1',
@@ -47,10 +38,13 @@ vi.mock('../services/partnerServicePrincipalCredential', () => ({
       rateLimit: 100,
     },
     ownerUserId: 'owner-1',
-    keyIssuedBy: 'owner-1',
+    ownerOrgIds: ['org-1'],
+    mcpScopes: ['ai:read'],
   })),
 }));
 
+import { withDbAccessContext } from '../db';
+import { authenticatePartnerServicePrincipalKey } from '../services/partnerServicePrincipalCredential';
 import { partnerServicePrincipalMcpAuthMiddleware } from './partnerServicePrincipalMcpAuth';
 
 function createContext(): Context {
@@ -76,5 +70,22 @@ describe('partnerServicePrincipalMcpAuthMiddleware', () => {
     // Present and explicitly null — never undefined, which would fail closed to core-only.
     expect('mcpDomains' in ctx).toBe(true);
     expect(ctx.mcpDomains).toBeNull();
+  });
+
+  it('authenticates for the MCP surface and opens the partner context with the owner\'s org reach', async () => {
+    const c = createContext();
+    await partnerServicePrincipalMcpAuthMiddleware(c, vi.fn(async () => undefined));
+    expect(authenticatePartnerServicePrincipalKey).toHaveBeenCalledWith('hash', undefined, 'mcp');
+    expect(withDbAccessContext).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'partner', accessibleOrgIds: ['org-1'], accessiblePartnerIds: ['partner-1'], userId: null }),
+      expect.any(Function),
+    );
+  });
+
+  it('never reaches the handler when authentication refuses the key', async () => {
+    vi.mocked(authenticatePartnerServicePrincipalKey).mockRejectedValueOnce(new Error('owner no longer authorized'));
+    const next = vi.fn(async () => undefined);
+    await expect(partnerServicePrincipalMcpAuthMiddleware(createContext(), next)).rejects.toThrow('owner no longer authorized');
+    expect(next).not.toHaveBeenCalled();
   });
 });

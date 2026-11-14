@@ -15,7 +15,7 @@ import {
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import { mergeTickets } from '../../services/ticketMerge';
 import type { TicketActor } from '../../services/ticketService';
-import { createOrganization, createPartner, createUser, userEpochs } from './db-utils';
+import { createOrganization, createPartner, createUser, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -48,6 +48,7 @@ async function seed() {
     updatedBy: user.id,
   }).returning();
   if (!principal) throw new Error('service principal seed failed');
+  await ensurePartnerServicePrincipalOwner(user.id, partner.id);
   const { rawKey } = await issuePartnerServicePrincipalKey(admin as unknown as Database, {
     partnerServicePrincipalId: principal.id,
     partnerId: partner.id,

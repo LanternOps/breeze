@@ -28,6 +28,7 @@ import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
 import { takeGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
+import { presentRefusedToolCallNote } from './aiModels/gateway/openai/translateResponse';
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
@@ -988,6 +989,14 @@ export class StreamingSessionManager {
        * (spike D3) — silently: the user asked for it.
        */
       modelSwitch?: boolean;
+      /**
+       * #11395: the caller's `mcpServerFactory` registers the Breeze registry
+       * (`createBreezeMcpServer`, e.g. the helper's per-level factory), so the
+       * tool exposure narrows it like the default server. Unset for a factory
+       * that registers its own tools (client-declared helper tools, Office,
+       * the script builder).
+       */
+      registersBreezeServer?: boolean;
     },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
@@ -1201,7 +1210,7 @@ export class StreamingSessionManager {
       allowedTools,
       // Lambdas, not references: read only under a constrained profile.
       registryNames: () => listChatSurfaceToolNames(),
-      breezeServer: !mcpServerFactory,
+      breezeServer: !mcpServerFactory || options?.registersBreezeServer === true,
       domainOf: (name) => chatToolDomain(name),
       extraTools: [
         ...tenantDescriptors.map((d) => ({ name: d.qualifiedName, domain: 'integrations' as const })),
@@ -1363,6 +1372,8 @@ export class StreamingSessionManager {
     // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
     const child = await timePreStreamPhase('prepareSdkChild', () => prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
+      // #11395: a constrained profile on a gateway connection compacts the advertised schemas.
+      ...(sessionTools.exposure.compactSchemas ? { compactSchemas: true } : {}),
     }));
     const revokeEgressGrant = child.revoke;
     session.revokeEgressGrant = revokeEgressGrant;
@@ -1803,9 +1814,11 @@ export class StreamingSessionManager {
                 // gate at THIS publish point — never onto the bus/replay ring.
                 if (session.topologyInvestigation) session.topologyInvestigation.append(event.delta.text);
                 else {
-                  session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                  // W04 (#11397): a constrained profile shows its own note for a refused tool-call batch.
+                  const text = presentRefusedToolCallNote(event.delta.text, session.toolExposure?.promptMode);
+                  session.eventBus.publish({ type: 'content_delta', delta: text });
                   // #10427: only a Wisp turn has a record (W05), so ordinary chat buffers nothing.
-                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, event.delta.text);
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, text);
                 }
               }
             } else if (event.type === 'content_block_start') {
@@ -1959,9 +1972,12 @@ export class StreamingSessionManager {
                 { platformKey: session.turnBinding.connectionKind === 'platform' },
               )
               : null;
+            // W04 (#11397): persisted exactly as streamed, a constrained
+            // profile's refused-batch note included.
+            const promptMode = session.toolExposure?.promptMode;
             const assistantContent = syntheticErrorText ?? message.message.content
               .filter((b: { type: string }) => b.type === 'text')
-              .map((b: { type: string; text?: string }) => b.text ?? '')
+              .map((b: { type: string; text?: string }) => presentRefusedToolCallNote(b.text ?? '', promptMode))
               .join('\n\n');
 
             try {
@@ -1981,7 +1997,9 @@ export class StreamingSessionManager {
                       : message.message.content.map((b) =>
                         b.type === 'tool_use'
                           ? { ...b, input: redactSensitiveToolInput(b.input as Record<string, unknown>) }
-                          : b,
+                          : b.type === 'text'
+                            ? { ...b, text: presentRefusedToolCallNote(b.text, promptMode) }
+                            : b,
                       )) as unknown as Record<string, unknown>[],
                     inputTokens: message.message.usage?.input_tokens ?? 0,
                     outputTokens: message.message.usage?.output_tokens ?? 0,
@@ -2388,6 +2406,10 @@ export class StreamingSessionManager {
         // W11: the live query's prompt, not the claimed binding's profile (a
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
+        // #11395: the tool exposure this live query was created with.
+        toolExposure: session.toolExposure
+          ? { profile: session.toolExposure.profile, fingerprint: session.toolExposure.fingerprint }
+          : null,
         toolExecutionCount,
         // #10400: work round-trips only — a ToolSearch-only round-trip loads
         // tool definitions and is not charged to the session's turn budget.
@@ -2443,11 +2465,21 @@ export class StreamingSessionManager {
   /**
    * The gateway's reason for this turn's failure, removed as it is read. A
    * context-window refusal also marks the turn's observation, so that
-   * settlement records it by name (#10577).
+   * settlement records it by name (#10577). A refused tool-call batch
+   * (W04 #11397) is recorded by name the same way (the turn's stop reason)
+   * and its log-safe description (names only) is logged; it is never the technician-facing
+   * reason (the model's text already carries the note), so it returns null.
    */
   private takeTurnGatewayNote(session: ActiveSession): string | null {
     const failure = takeGatewayFailure(session.breezeSessionId);
     if (failure?.code === 'context_window_exceeded') session.refusalObservation.contextWindowExceeded = true;
+    if (failure?.code === 'refused_tool_batch') {
+      session.refusalObservation.refusedToolBatch = failure.message;
+      console.warn('[StreamingSessionManager] turn had a refused tool-call batch', {
+        breezeSessionId: session.breezeSessionId, toolProfile: session.toolExposure?.profile ?? null, detail: failure.message,
+      });
+      return null;
+    }
     return failure?.message ?? null;
   }
 

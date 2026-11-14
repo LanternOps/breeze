@@ -81,6 +81,16 @@ const GOVERNANCE_TABLE_NAMES = [
   // that attaches them (and may auto-quarantine there); no site axis.
   'yaraRuleSets',
   'yaraRules',
+  // A generic deployment has no site column: its target (all devices, a
+  // filter, groups or a device list) resolves against the whole organization
+  // at initialization, so creating or driving one is an org-wide change.
+  'deployments',
+  // AI for Office: the Entra tenant mapping and the policy both apply to the
+  // whole organization (sign-in, user access, providers, write mode).
+  'clientAiTenantMappings',
+  'clientAiOrgPolicies',
+  // AI for Office prompt templates are organization- or partner-scoped.
+  'clientAiPromptTemplates',
 ] as const;
 
 /**
@@ -88,6 +98,26 @@ const GOVERNANCE_TABLE_NAMES = [
  * site-ceiling gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
+  // Portal Entra tenant proof writes to the AI for Office tenant mapping table.
+  // recordEntraTenantProof, removePortalEntraTenant and
+  // proveEntraTenantFromM365Connection are reached only through
+  // routes/orgPortalEntraTenant.ts (requireScope('partner', 'system'); those
+  // scopes never carry a site ceiling) and the public portal tenant-proof
+  // callback (routes/portal/oidcTenantProof.ts), which re-authorizes the
+  // partner-scope link creator. The organization-scope writers of the same
+  // table (routes/clientAi/admin.ts) call canMutateOrgWideGovernance.
+  'services/portalEntraTenantProof.ts':
+    'reached only through partner/system-scope routes in routes/orgPortalEntraTenant.ts and the portal tenant-proof callback (routes/portal/oidcTenantProof.ts), neither of which a site-restricted caller reaches — verify both callers when editing this file',
+  // Generic deployment state transitions take a deployment id and no caller.
+  // Their only caller is routes/deployments.ts, whose initialize/pause/resume/
+  // cancel routes run requireUnrestrictedDeploymentAccess
+  // (canMutateOrgWideGovernance) before reading the deployment.
+  'services/deploymentEngine.ts':
+    'initialize/pause/resume/cancel are called only from routes/deployments.ts routes that run canMutateOrgWideGovernance first — verify every caller still gates when editing this file',
+  // Marks a deployment completed/failed once its last member device settles;
+  // runs in the reaper worker in system context with no caller identity.
+  'jobs/staleCommandReaper.ts':
+    'sets a deployment completed/failed after its last member device settles, from the reaper worker in system context — no caller-scoped auth object reaches this path',
   // #6263 W03a. Called only from the mutating routes in
   // routes/security/yara.ts, each of which runs writeDenial
   // (canMutateOrgWideGovernance) before reaching it.

@@ -14,7 +14,7 @@ import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePr
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
 import { seedAlertRefFixture } from './alertExternalRefsFixtures';
 import { getTestDb } from './setup';
-import { createDevice, createSite, userEpochs } from './db-utils';
+import { createDevice, createSite, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 
 const faults = vi.hoisted(() => ({ failAfterLink: false }));
 vi.mock('../../config/env', async (importOriginal) => ({
@@ -41,6 +41,7 @@ async function key(f: Fixture, scopes: PartnerServicePrincipalScope[]) {
     partnerId: f.partner.id, name: `External refs ${crypto.randomUUID()}`, scopes,
     createdBy: f.actor.id, updatedBy: f.actor.id,
   }).returning();
+  await ensurePartnerServicePrincipalOwner(f.actor.id, f.partner.id);
   const { rawKey } = await issuePartnerServicePrincipalKey(admin as unknown as Database, {
     partnerServicePrincipalId: principal!.id, partnerId: f.partner.id, name: 'External refs key',
     actorId: f.actor.id, actorSessionEpochs: await userEpochs(f.actor.id),

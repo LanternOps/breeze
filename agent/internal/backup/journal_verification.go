@@ -287,7 +287,10 @@ func (v *resumeVerifier) prepareReadBacks(provider providers.BackupProvider, fil
 // checked is false when a read the decision needed failed: the entry is not
 // reused, and the check did not complete. An entry a record let through without
 // a read did complete: an earlier pass did that work (#11014).
-func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry SnapshotFile) (reuse, checked bool) {
+//
+// endRun is set when the failed read ends the whole run (see endsRun): the
+// caller returns it instead of checking the next entry.
+func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry SnapshotFile) (reuse, checked bool, endRun error) {
 	key := journalLookupKey(file)
 	rec, standing := v.standingRecord(key, entry)
 	started := time.Now()
@@ -310,7 +313,7 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 				"error", err.Error(),
 			)
 			v.journal.clearVerification(key)
-			return false, false
+			return false, false, nil
 		}
 	}
 	if !match {
@@ -319,7 +322,7 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 			"snapshotId", v.snapshotID,
 		)
 		v.journal.clearVerification(key)
-		return false, true
+		return false, true, nil
 	}
 	if v.tainted[entry.BackupPath] {
 		// A pre-#5582 journal stored this file and a case twin at keys one
@@ -331,13 +334,13 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 			"snapshotId", v.snapshotID,
 		)
 		v.journal.clearVerification(key)
-		return false, true
+		return false, true, nil
 	}
 	if !v.verifyStored {
 		if !standing {
 			v.recordEvidence(file, entry, storedCheckNone, started)
 		}
-		return true, true
+		return true, true, nil
 	}
 	if !v.canVerifyStored || isReferenceEntry(entry, v.snapshotID) {
 		// Only a literal entry, through a provider that can read it back, can
@@ -348,14 +351,21 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 			"snapshotId", v.snapshotID,
 		)
 		v.journal.clearVerification(key)
-		return false, true
+		return false, true, nil
 	}
 	if standing && storedCheckFresh(rec, time.Now()) {
 		v.reliedOnCachedStored = true
-		return true, true
+		return true, true, nil
 	}
 	check, err := readBackStoredObject(ctx, v.digester, entry)
 	if err != nil {
+		if ctx.Err() == nil && endsRun(err) {
+			// The destination refused the run or its session died: no
+			// later read-back (or upload) can succeed, so the pass ends
+			// here rather than failing every journaled object (#11765).
+			// Nothing is recorded: the read says nothing about the object.
+			return false, false, err
+		}
 		// A stop cancels the read mid-flight; that says nothing about the
 		// object and is not worth a warning.
 		if ctx.Err() == nil {
@@ -363,11 +373,12 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 				"path", file.sourcePath,
 				"backupPath", entry.BackupPath,
 				"snapshotId", v.snapshotID,
+				"storeCode", providers.StoreErrorCode(err),
 				"error", err.Error(),
 			)
 		}
 		v.recordEvidence(file, entry, storedCheckNone, started)
-		return false, false
+		return false, false, nil
 	}
 	v.recordEvidence(file, entry, check, started)
 	if check != storedCheckOK {
@@ -377,9 +388,9 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 			"snapshotId", v.snapshotID,
 			"storedObjectCheck", string(check),
 		)
-		return false, true
+		return false, true, nil
 	}
-	return true, true
+	return true, true, nil
 }
 
 // recordEvidence journals what the pass just established about entry, unless

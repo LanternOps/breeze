@@ -99,7 +99,7 @@ const EXPECTED_NAMES = [
   'topologyTelemetryMaintenance',
   'topologyPresenceWorker',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention', 'aiTranscriptSweeper',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention', 'aiTranscriptRetention', 'aiTranscriptSweeper',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
@@ -149,6 +149,8 @@ const EXPECTED_NAMES = [
   'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
+  // High-volume table retention W5 (#4342, #11592) — report-only.
+  'historyRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.
   'aiChargebackWorker',
   'alertVerdictScheduler', 'aiAgentSweepScheduler',
@@ -159,11 +161,15 @@ const EXPECTED_NAMES = [
   'aiAgentGraduation',
   'scriptReviewWorker',
   'scriptVerifyWorker',
+  // High-volume table retention W2 (#4342, #11589) — report-only.
+  'scriptExecutionRetention',
   'aiBudgetReservationSweep',
   'mfaEnrollmentNoticeWorker',
   'monitorEpisodeRetention',
   // EDR provider framework W02 (#8164).
   'edrDetectionRetentionWorker',
+  // #4342 W3 — closed-alert retention (global, system-scope sweep).
+  'alertRetention',
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',

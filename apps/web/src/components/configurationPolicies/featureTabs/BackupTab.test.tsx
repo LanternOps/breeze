@@ -270,6 +270,42 @@ describe('BackupTab', () => {
     expect(providerOption.disabled).toBe(false);
   });
 
+  it('shows a local destination that this server does not test as not tested, not failed', async () => {
+    const unsupportedMessage = 'Local destinations are not tested from this server: BACKUP_LOCAL_ROOT is not set.';
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (String(input) === '/backup/configs/config-1/test' && method === 'POST') {
+        return makeJsonResponse({
+          id: 'config-1',
+          provider: 'local',
+          status: 'unsupported',
+          checkedAt: '2026-03-31T01:00:00Z',
+          error: unsupportedMessage,
+          providerCapabilities: {
+            objectLock: { supported: false, checkedAt: '2026-03-31T01:00:00Z', error: 'Object lock is only supported for S3 providers' },
+          },
+        });
+      }
+      return fallback(input, init);
+    });
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={baseLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText(/Primary S3/i);
+    fireEvent.click(screen.getByRole('button', { name: /^Test$/i }));
+
+    await screen.findByText(unsupportedMessage);
+    expect(screen.getByRole('button', { name: /Not tested here/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Failed$/i })).not.toBeInTheDocument();
+  });
+
   it('blocks raw save for invalid provider mode and allows downgrade save', async () => {
     render(
       <BackupTab

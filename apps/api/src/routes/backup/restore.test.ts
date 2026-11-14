@@ -27,6 +27,10 @@ const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 const deleteMock = vi.fn(() => chainMock([]));
+const transactionMock = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+  select: (...args: unknown[]) => selectMock(...(args as [])),
+  execute: async () => [{ prior_ms: 0 }],
+}));
 
 vi.mock('../../db', () => ({
   db: {
@@ -34,6 +38,9 @@ vi.mock('../../db', () => ({
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
+    // The selection walk reads each page in a savepoint with a lowered
+    // statement_timeout; the savepoint's executor is the same select mock.
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => transactionMock(fn),
   },
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => fn()),
@@ -509,6 +516,15 @@ describe('restore routes', () => {
       expect(enqueueHydrationMock).not.toHaveBeenCalled();
       for (const run of afterContextWork) await run();
       expect(enqueueHydrationMock).toHaveBeenCalledWith('snap-db-1', 'browse');
+    });
+
+    it('a selection walk that runs out of time answers 503 index_query_timeout and creates nothing', async () => {
+      selectMock.mockReturnValueOnce(chainMock([snapshot]));
+      transactionMock.mockRejectedValueOnce(Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }));
+      const res = await post();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'index_query_timeout' });
+      expect(insertMock).not.toHaveBeenCalled();
     });
 
     it('rows of a snapshot with a mismatched attestation are not readable: 409, and no hydration is requested', async () => {

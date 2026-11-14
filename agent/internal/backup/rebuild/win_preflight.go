@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
@@ -168,8 +168,8 @@ func (r *run) isDomainController() (dc winhive.DCStatus, err error) {
 	if r.stateStaging == "" {
 		return winhive.DCStatus{}, errors.New("domain-controller check: no system-state staging directory")
 	}
-	hivePath := filepath.Join(r.stateStaging, "registry", "SYSTEM")
-	if _, err := os.Stat(hivePath); err != nil {
+	hivePath, err := bmr.TreeHivePath(r.stateStaging, filepath.Join("registry", "SYSTEM"))
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			// 18b row 9e: genuinely cannot tell, never a silent "not a DC" —
 			// the offline state apply's own file-tree check (win_system_

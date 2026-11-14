@@ -6,13 +6,12 @@ import {
   organizations,
   partners,
   partnerUsers,
-  permissions,
   remoteSessions,
-  rolePermissions,
   tunnelSessions,
   users,
 } from '../db/schema';
 import { checkRemoteAccess } from './remoteAccessPolicy';
+import { getRolePermissionGrants } from './roleInheritance';
 import { checkVncConsentGate } from '../routes/remote/vncConsentGate';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { evaluateCapabilityContinuationForState } from './partnerTrust';
@@ -338,6 +337,8 @@ async function resolveRemoteWsLiveAuthority(
       .select({
         id: partners.id,
         status: partners.status,
+        trustState: partners.trustState,
+        probationEnrollments: partners.probationEnrollments,
         deletedAt: partners.deletedAt,
       })
       .from(partners)
@@ -370,9 +371,11 @@ async function resolveRemoteWsLiveAuthority(
       roleId = partnerMembership.roleId;
     } else return { denied: 'session_not_owned' as const };
 
-    const grants = await db.select({ resource: permissions.resource, action: permissions.action })
-      .from(rolePermissions).innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(eq(rolePermissions.roleId, roleId));
+    // #9600: the role's own grants plus its "Inherit From" ancestors', from
+    // the same walk getUserPermissions uses, so a member the HTTP
+    // requirePermission gate admits is not refused here. This runs in a
+    // system transaction, so every permitted ancestor is visible.
+    const grants = await getRolePermissionGrants(roleId);
     if (!requiredPermissions.every((required) => hasPermission(grants, required))) return { denied: 'permission_denied' as const };
 
     const capability = consumed.sessionType === 'terminal' ? 'remoteTools'
@@ -398,21 +401,28 @@ async function resolveRemoteWsLiveAuthority(
       }
     }
 
-    // Desktop/terminal continuation re-proves partner trust. Tunnel lifecycle
-    // is a separate transport boundary and remains with its existing route
-    // admission gates until its own live-continuation work is adopted.
-    if (bypassPolicyCache && consumed.sessionType !== 'tunnel' && partnerTrustMode() !== 'off') {
-      if (!('partner' in joined)) return { denied: 'partner_trust_denied' as const };
+    // Partner trust is re-proved from the live owning-partner row. Tunnel
+    // sessions re-prove it on every authorization (WebSocket admission, live
+    // revalidation, per-request HTTP proxy continuation, ticket and code
+    // mints, viewer polls), so a trust change ends an open tunnel on its next
+    // check without each caller opting in. Desktop/terminal sessions re-prove
+    // it on their live revalidation tick.
+    const reprovePartnerTrust = consumed.sessionType === 'tunnel' || bypassPolicyCache;
+    if (reprovePartnerTrust && partnerTrustMode() !== 'off') {
+      const trustPartner = consumed.sessionType === 'tunnel'
+        ? owningPartner
+        : ('partner' in joined ? joined.partner : null);
+      if (!trustPartner) return { denied: 'partner_trust_denied' as const };
       const trust = evaluateCapabilityContinuationForState(
         'remote_control',
         {
-          partnerId: joined.partner.id,
+          partnerId: trustPartner.id,
           deviceId: joined.device.id,
           orgId: joined.session.orgId,
           userId: user.id,
           detail: { stage: 'live', kind: consumed.sessionType },
         },
-        joined.partner,
+        trustPartner,
       );
       if (!trust.allow) return { denied: 'partner_trust_denied' as const };
     }

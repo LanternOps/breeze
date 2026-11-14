@@ -44,9 +44,13 @@ const TOKEN_FAILURE_MESSAGES: Record<TokenFailureReason, string> = {
 };
 
 const BIND_ERROR_MESSAGES: Record<string, string> = {
-  invalid_credentials: 'Incorrect email or password.',
+  // The same answer covers a wrong password, a locked account, an account that
+  // is not a technician and a suspended partner, as at Breeze sign-in.
+  invalid_credentials:
+    'Could not sign in with that email and password. Check them and try again; after several failed attempts, wait a few minutes before trying again.',
   invalid_mfa: 'Incorrect verification code. Try again.',
-  not_a_technician: 'This Breeze account is not a technician account.',
+  ip_not_allowed: "Signing in from this network isn't allowed for your organization.",
+  rate_limited: 'Too many attempts. Wait a few minutes, then try again.',
   mfa_enrollment_required: 'Multi-factor authentication is required for your account but is not set up yet. Enroll in MFA in Breeze first, then try again.',
   identity_already_bound: 'This Microsoft identity is already linked to a different Breeze technician.',
 };

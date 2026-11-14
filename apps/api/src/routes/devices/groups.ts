@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { PARTNER_GROUP_READ_ONLY_BODY } from '../../services/deviceGroupOwnership';
+import { acquireMembershipExportOrgLock, PARTNER_GROUP_READ_ONLY_BODY } from '../../services/deviceGroupOwnership';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, asc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
@@ -432,6 +432,9 @@ groupsRoutes.post(
     const validDeviceIds = validDevices.map(d => d.id);
 
     const orgId = group.orgId;
+    // Export admission before the first membership row, the order every membership
+    // writer uses (services/groupMembership.ts evaluateGroupMembership).
+    await acquireMembershipExportOrgLock(orgId);
     // Insert memberships (ignore duplicates)
     const insertedMemberships = await db
       .insert(deviceGroupMemberships)
@@ -526,6 +529,9 @@ groupsRoutes.delete(
       targetDeviceIds = uniqueDeviceIds;
     }
 
+    // Export admission before the first membership row, the order every membership
+    // writer uses (services/groupMembership.ts evaluateGroupMembership).
+    await acquireMembershipExportOrgLock(group.orgId);
     const removedMemberships = await db
       .delete(deviceGroupMemberships)
       .where(

@@ -113,6 +113,7 @@ export default function AiChatSidebar() {
     interruptResponse,
     isInterrupting,
     isFlagged,
+    transcriptPurgedAt,
     flagSession,
     unflagSession,
     m365Connections,
@@ -571,6 +572,7 @@ export default function AiChatSidebar() {
               onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
+              transcriptPurgedAt={transcriptPurgedAt}
               assistantLabel={wisp ? t("wisp.title") : undefined}
               emptyState={
                 wisp ? (

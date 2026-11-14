@@ -80,3 +80,39 @@ func TestBuildWindowsRollbackScript_StopsOwnedProcessesBeforeRecovery(t *testing
 		"Start-Service -Name 'BreezeAgent'",
 	)
 }
+
+func TestBuildWindowsRollbackScript_QuotesPathsAndJournal(t *testing.T) {
+	journal := rollbackSwapJournal{
+		SchemaVersion: 1,
+		DirectiveID:   "rollback\u2019id",
+		State:         "prepared",
+		Artifacts: []rollbackSwapJournalEntry{
+			{Component: RollbackComponentAgent, LivePath: "C:\\O\u2019Brien\\breeze-agent.exe", BackupPath: "C:\\O\u2019Brien\\.agent.old", NewPath: "C:\\O\u2019Brien\\.agent.new"},
+		},
+	}
+	for _, op := range []windowsRollbackOperation{windowsRollbackSwap, windowsRollbackRecover} {
+		script, err := buildWindowsRollbackScript(windowsRollbackScriptOptions{
+			JournalPath: "C:\\ProgramData\\\u2018Breeze\u2019\\agent-rollback-swap.json",
+			Journal:     journal,
+			Operation:   op,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{
+			"Move-WriteThrough $tempPath 'C:\\ProgramData\\\u2018\u2018Breeze\u2019\u2019\\agent-rollback-swap.json'",
+			"Remove-Item -LiteralPath 'C:\\O\u2019\u2019Brien\\.agent.old' -Force",
+		}
+		if op == windowsRollbackSwap {
+			want = append(want,
+				"Move-WriteThrough 'C:\\O\u2019\u2019Brien\\.agent.new' 'C:\\O\u2019\u2019Brien\\breeze-agent.exe'",
+				`"directiveId":"rollback`+"\u2019\u2019"+`id"`,
+			)
+		}
+		for _, w := range want {
+			if !strings.Contains(script, w) {
+				t.Errorf("%s script missing %q:\n%s", op, w, script)
+			}
+		}
+	}
+}

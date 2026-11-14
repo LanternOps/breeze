@@ -68,7 +68,7 @@ export const PATH_FIELDS: Record<string, Classification> = {
   },
   'configure_vault.vaultPath': {
     kind: 'exempt',
-    why: 'Backup vault destination (local/SMB/USB) the backup engine writes to; nothing is read back to the model.',
+    why: 'Backup vault destination (local disk or USB; network shares are refused) the backup engine writes to; nothing is read back to the model.',
   },
   'propose_script.verification.path': {
     kind: 'exempt',

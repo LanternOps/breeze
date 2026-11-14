@@ -53,6 +53,8 @@ const h = vi.hoisted(() => {
     readForDecision: vi.fn(),
     isDomainVerified: vi.fn(),
     listVerifiedDomains: vi.fn(),
+    // W7 D8: the google request's `hd` fact (W5 findOrgByVerifiedDomain).
+    findOrg: vi.fn(),
     outside: { current: false },
     w5CalledOutside: [] as boolean[],
   };
@@ -105,6 +107,7 @@ vi.mock('../db', () => ({
 vi.mock('../services/portalDomainVerification', () => ({
   isDomainVerifiedForOrg: (...args: unknown[]) => { h.w5CalledOutside.push(h.outside.current); return h.isDomainVerified(...args); },
   listVerifiedDomainsForOrg: (...args: unknown[]) => { h.w5CalledOutside.push(h.outside.current); return h.listVerifiedDomains(...args); },
+  findOrgByVerifiedDomain: (...args: unknown[]) => { h.w5CalledOutside.push(h.outside.current); return h.findOrg(...args); },
 }));
 
 vi.mock('../db/schema', () => ({
@@ -222,6 +225,7 @@ beforeEach(() => {
   h.readForDecision.mockReset().mockResolvedValue(null);
   h.isDomainVerified.mockReset().mockResolvedValue(false);
   h.listVerifiedDomains.mockReset().mockResolvedValue([]);
+  h.findOrg.mockReset().mockResolvedValue(null);
   h.outside.current = false;
   h.w5CalledOutside.length = 0;
 });
@@ -845,5 +849,150 @@ describe('GET /partners/me/portal-access-requests/summary', () => {
     h.authRef.current = { ...FULL_ADMIN, perms: [] };
     expect((await makeApp().request(SUMMARY)).status).toBe(403);
     expect(h.summarize).not.toHaveBeenCalled();
+  });
+});
+
+// W7 (#11384) D3, D8: a `google` request's approval re-checks its Workspace
+// domain (`hd`) and the contact rule. Both facts come from W5's read API,
+// outside the request transaction, and go into the approval; the service
+// fences the domain row and refuses with GOOGLE_DOMAIN_NOT_VERIFIED.
+describe('W7: google requests (approval re-check, contact rule, list)', () => {
+  const VERIFIED_AT = new Date('2026-11-01T10:00:00.000Z');
+  const fact = (domain: string, orgId = ORG_ID) => ({ domain, orgId, partnerId: 'p-1', method: 'dns_txt', verifiedAt: VERIFIED_AT });
+  const googleNotVerified = () => new PortalAccessRequestError(
+    'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED', 409,
+    "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.",
+  );
+  const googleApproved = (email: string) => approved('account_created', { source: 'google', email });
+
+  it("approve pre-checks a google request's hd and contact rule outside the request transaction and passes both in", async () => {
+    // The address is on the hd itself: the contact rule needs no second W5 read.
+    h.readForDecision.mockResolvedValueOnce({ source: 'google', email: 'ada@example.com', googleHostedDomain: 'example.com' });
+    h.findOrg.mockResolvedValueOnce(fact('example.com'));
+    h.approve.mockResolvedValueOnce(googleApproved('ada@example.com'));
+    expect((await post(`${BASE}/${REQ_1}/approve`)).status).toBe(200);
+    expect(h.readForDecision).toHaveBeenCalledWith(ORG_ID, REQ_1);
+    expect(h.findOrg).toHaveBeenCalledWith('example.com');
+    expect(h.isDomainVerified).not.toHaveBeenCalled();
+    expect(h.w5CalledOutside).toEqual([true]);
+    expect(h.approve).toHaveBeenLastCalledWith({
+      orgId: ORG_ID, requestId: REQ_1, deciderUserId: 'u-1', googleDomain: { verifiedAt: VERIFIED_AT }, googleContactAllowed: true,
+    });
+
+    // The address is on another domain (OD2): the contact link needs that domain verified for THIS org.
+    for (const verified of [true, false]) {
+      h.findOrg.mockClear();
+      h.isDomainVerified.mockReset().mockResolvedValueOnce(verified);
+      h.w5CalledOutside.length = 0;
+      h.readForDecision.mockResolvedValueOnce({ source: 'google', email: 'Bo@Other.Example.com', googleHostedDomain: 'example.com' });
+      h.findOrg.mockResolvedValueOnce(fact('example.com'));
+      h.approve.mockResolvedValueOnce(googleApproved('bo@other.example.com'));
+      expect((await post(`${BASE}/${REQ_2}/approve`)).status).toBe(200);
+      expect(h.findOrg).toHaveBeenCalledWith('example.com');
+      expect(h.isDomainVerified).toHaveBeenCalledWith('other.example.com', ORG_ID);
+      expect(h.w5CalledOutside).toEqual([true, true]);
+      expect(h.approve).toHaveBeenLastCalledWith({
+        orgId: ORG_ID, requestId: REQ_2, deciderUserId: 'u-1', googleDomain: { verifiedAt: VERIFIED_AT }, googleContactAllowed: verified,
+      });
+    }
+  });
+
+  it('approve refuses a google request whose hd is no longer verified (409), request stays pending', async () => {
+    // RF3. Lapsed (no fact) and displaced (the fact names another org) both
+    // reach the approval as `googleDomain: null`, with no contact link and no
+    // second W5 read; the service refuses before any write (its fence and the
+    // pending row are pinned in portalAccessRequests.integration.test.ts).
+    for (const answer of [null, fact('example.com', OTHER_ORG_ID)]) {
+      h.isDomainVerified.mockClear();
+      h.readForDecision.mockResolvedValueOnce({ source: 'google', email: 'ada@example.com', googleHostedDomain: 'example.com' });
+      h.findOrg.mockResolvedValueOnce(answer);
+      h.approve.mockImplementationOnce(async (input: { googleDomain?: unknown; googleContactAllowed?: unknown }) => {
+        expect(input.googleDomain).toBeNull();
+        expect(input.googleContactAllowed).toBe(false);
+        throw googleNotVerified();
+      });
+      const res = await post(`${BASE}/${REQ_1}/approve`);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.",
+        code: 'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED',
+      });
+      expect(h.isDomainVerified).not.toHaveBeenCalled();
+    }
+    expect(h.findOrg).toHaveBeenCalledTimes(2);
+    expect(h.w5CalledOutside).toEqual([true, true]);
+    expect(h.auditSpy).not.toHaveBeenCalled();
+    expect(h.sendApproved).not.toHaveBeenCalled();
+    expect(h.issueAndSendInvite).not.toHaveBeenCalled();
+  });
+
+  it('a W5 read that throws during the google pre-check is a 500 and the approval never runs', async () => {
+    h.readForDecision.mockResolvedValueOnce({ source: 'google', email: 'ada@example.com', googleHostedDomain: 'example.com' });
+    h.findOrg.mockRejectedValueOnce(new Error('evidence read failed'));
+    const app = makeApp();
+    app.onError((_err, c) => c.json({ error: 'Internal Server Error' }, 500));
+    const res = await app.request(`${BASE}/${REQ_1}/approve`, { method: 'POST' });
+    expect(res.status).toBe(500);
+    expect(h.findOrg).toHaveBeenCalledWith('example.com');
+    expect(h.approve).not.toHaveBeenCalled();
+    expect(h.auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('bulk approve reports domain_not_verified for such a google request and keeps deciding the rest', async () => {
+    const requests: Record<string, { source: string; email: string; googleHostedDomain: string | null }> = {
+      [REQ_1]: { source: 'google', email: 'ada@example.com', googleHostedDomain: 'example.com' },
+      [REQ_2]: { source: 'google', email: 'bo@lapsed.example.com', googleHostedDomain: 'lapsed.example.com' },
+      [REQ_3]: { source: 'entra', email: 'cy@example.com', googleHostedDomain: null },
+    };
+    h.readForDecision.mockImplementation(async (_orgId: string, requestId: string) => requests[requestId] ?? null);
+    h.findOrg.mockImplementation(async (domain: string) => (domain === 'example.com' ? fact(domain) : null));
+    h.approve.mockImplementation(async ({ requestId, googleDomain }: { requestId: string; googleDomain?: unknown }) => {
+      if (requests[requestId]!.source === 'google' && googleDomain === null) throw googleNotVerified();
+      return requestId === REQ_1 ? googleApproved('ada@example.com') : approved('account_created', { portalUserId: PU_3, email: 'cy@example.com' });
+    });
+
+    const res = await post(`${BASE}/decide`, { requestIds: [REQ_3, REQ_2, REQ_1], decision: 'approve' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [
+        { requestId: REQ_3, result: 'approved' },
+        { requestId: REQ_2, result: 'domain_not_verified' },
+        { requestId: REQ_1, result: 'approved' },
+      ],
+    });
+    expect(h.findOrg.mock.calls).toEqual([['example.com'], ['lapsed.example.com']]);
+    expect(h.isDomainVerified).not.toHaveBeenCalled();
+    expect(h.w5CalledOutside).toEqual([true, true]);
+    expect(h.approve.mock.calls.map((call) => call[0])).toEqual([
+      { orgId: ORG_ID, requestId: REQ_1, deciderUserId: 'u-1', googleDomain: { verifiedAt: VERIFIED_AT }, googleContactAllowed: true },
+      { orgId: ORG_ID, requestId: REQ_2, deciderUserId: 'u-1', googleDomain: null, googleContactAllowed: false },
+      { orgId: ORG_ID, requestId: REQ_3, deciderUserId: 'u-1' },
+    ]);
+    // A refusal, not an unexpected failure: no transaction check, no audit or email for it.
+    expect(h.db.execute).not.toHaveBeenCalled();
+    expect(h.auditSpy.mock.calls.map((call) => (call[1] as { resourceId: string }).resourceId)).toEqual([REQ_1, REQ_3]);
+    expect(h.sendApproved).toHaveBeenCalledTimes(2);
+  });
+
+  it('the list marks google rows domainVerified true/false and carries googleHostedDomain', async () => {
+    h.listVerifiedDomains.mockResolvedValue([fact('Example.com')]);
+    // The service maps each row (portalAccessRequests.test.ts); this stand-in
+    // answers from the set the route passes, by the row's hd.
+    h.list.mockImplementation(async (_orgId: string, opts: { verifiedDomains: ReadonlySet<string> }) => ({
+      items: [
+        { id: REQ_1, email: 'ada@other.example.com', source: 'google', googleHostedDomain: 'example.com', domainVerified: opts.verifiedDomains.has('example.com') },
+        { id: REQ_2, email: 'bo@example.com', source: 'google', googleHostedDomain: 'lapsed.example.com', domainVerified: opts.verifiedDomains.has('lapsed.example.com') },
+      ],
+      hasMore: false,
+    }));
+
+    const res = await makeApp().request(BASE);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.map((r: { googleHostedDomain: string; domainVerified: boolean }) => [r.googleHostedDomain, r.domainVerified]))
+      .toEqual([['example.com', true], ['lapsed.example.com', false]]);
+    expect(h.listVerifiedDomains).toHaveBeenCalledTimes(1);
+    expect(h.w5CalledOutside).toEqual([true]);
+    expect(h.findOrg).not.toHaveBeenCalled();
+    expect(h.list).toHaveBeenLastCalledWith(ORG_ID, { status: 'pending', verifiedDomains: new Set(['example.com']) });
   });
 });

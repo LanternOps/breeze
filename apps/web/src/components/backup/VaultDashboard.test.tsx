@@ -47,7 +47,8 @@ describe('VaultDashboard', () => {
     render(<VaultDashboard />);
 
     await screen.findByText('Local Vaults');
-    expect(screen.getByText(/Local vault \(SMB\/USB\) caching is in early access/i)).toBeTruthy();
+    expect(screen.getByText(/Local vault \(local disk\/USB\) caching is in early access/i)).toBeTruthy();
+    expect(screen.queryByText(/SMB/)).toBeNull();
   });
 
   it('renders last sync error details for failed vaults', async () => {

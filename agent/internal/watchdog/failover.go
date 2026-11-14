@@ -15,6 +15,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 // FailoverCommand is a command returned by the API during failover polling.
@@ -181,19 +182,15 @@ func newFailoverTransport(tlsConfig *tls.Config) *http.Transport {
 func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *FailoverClient {
 	// Dials go through the last-known-good DNS cache (#2288) so a pure DNS
 	// outage doesn't blind the watchdog; TLS hostname verification unchanged.
+	// Both clients send the watchdog credential on every request, so
+	// redirects follow the shared credentialed-request policy.
 	transport := newFailoverTransport(tlsConfig)
 	return &FailoverClient{
-		baseURL: baseURL,
-		agentID: agentID,
-		token:   token,
-		client: &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: transport,
-		},
-		pollClient: &http.Client{
-			Timeout:   90 * time.Second,
-			Transport: transport,
-		},
+		baseURL:           baseURL,
+		agentID:           agentID,
+		token:             token,
+		client:            httpguard.NewClient(transport, 30*time.Second),
+		pollClient:        httpguard.NewClient(transport, 90*time.Second),
 		auth:              NewFailoverAuthMonitor(),
 		resultResendDelay: failoverResultResendDelay,
 	}

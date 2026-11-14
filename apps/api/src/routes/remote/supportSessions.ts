@@ -15,6 +15,7 @@ import {
 import { getTrustedClientIp } from '../../services/clientIp';
 import { endSupportSession } from '../../services/quickSupportEnd';
 import { logSessionAudit } from './helpers';
+import { withAuthDbAccessContext } from '../../middleware/auth';
 import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
 import { trustDenyBody } from '../../services/partnerTrust';
 
@@ -207,16 +208,20 @@ supportSessionRoutes.get('/support-sessions', async (c) => {
  * No extra guard is needed to stop a lingering client being reconnected to:
  * endSupportSession decommissions the device, and POST /remote/sessions
  * already rejects any device whose status is not 'online'.
+ *
+ * The route owns its DB context (SELF_MANAGED_DB_CONTEXT_ROUTES): the teardown
+ * waits on the agent relay, so the session is read in a short caller-scoped
+ * context and nothing is held while endSupportSession runs.
  */
 supportSessionRoutes.post('/support-sessions/:id/end', async (c) => {
   const auth = c.get('auth');
   const id = c.req.param('id');
 
-  const [session] = await db
+  const [session] = await withAuthDbAccessContext(auth, async () => (await db
     .select()
     .from(supportSessions)
     .where(eq(supportSessions.id, id))
-    .limit(1) as SupportSessionRow[];
+    .limit(1)) as SupportSessionRow[]);
 
   if (!session) return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'Support session not found');
   if (session.status === 'ended' || session.status === 'expired') {

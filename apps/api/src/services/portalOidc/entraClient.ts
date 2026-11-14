@@ -35,12 +35,12 @@
  * token-endpoint body content (D14, the `logIdentityCheckFailure` pattern of
  * services/ticketMailbox/microsoftIdentity.ts).
  */
-import { createHash, timingSafeEqual } from 'crypto';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyOptions } from 'jose';
 import { PORTAL_ENTRA_CALLBACK_PATH, type PortalEntraConfig } from '../../config/portalEntra';
 import { buildMicrosoftIdentityAuthorizationUrl } from '../m365ControlPlane/microsoftAuthorization';
 import { entraIssuer } from '../portalUserIdentities';
-import type { PortalOidcVerifiedIdentity } from './types';
+import { addressClaim, errorDiagnostics, nonceMatches } from './tokenChecks';
+import type { PortalEntraVerifiedIdentity } from './types';
 
 export const PORTAL_ENTRA_SIGN_IN_SCOPE = 'openid profile email';
 /** OD2: the proof run's live Graph admin-role check needs a directory read. */
@@ -63,13 +63,6 @@ export class PortalEntraTokenError extends Error {
   constructor(readonly check: string) {
     super('Microsoft sign-in verification failed');
   }
-}
-
-/** The underlying error's name and code only: never its message, which can carry a URL, token or body. */
-function errorDiagnostics(error: unknown): { errorName: string; errorCode?: string } {
-  const name = error instanceof Error ? error.name : typeof error;
-  const code = (error as { code?: unknown } | null)?.code;
-  return { errorName: name, ...(typeof code === 'string' ? { errorCode: code } : {}) };
 }
 
 function fail(check: string, extra: { status?: number; errorName?: string; errorCode?: string } = {}): never {
@@ -182,17 +175,6 @@ export async function exchangePortalEntraCode(
   return { idToken, accessToken };
 }
 
-function nonceMatches(actual: unknown, expected: string): boolean {
-  if (typeof actual !== 'string' || actual.length === 0 || expected.length === 0) return false;
-  // Fixed-length digests: constant time regardless of either input's length.
-  const digest = (value: string) => createHash('sha256').update(value, 'utf8').digest();
-  return timingSafeEqual(digest(actual), digest(expected));
-}
-
-function addressClaim(value: unknown): string | null {
-  return typeof value === 'string' && value.includes('@') ? value.toLowerCase() : null;
-}
-
 /**
  * Verify a portal-app id_token. See the module header for every rule.
  * `allowGuest` is for the tenant-proof run only and requires a pinned
@@ -202,7 +184,7 @@ export async function verifyPortalEntraIdToken(
   idToken: string,
   expected: { clientId: string; nonce: string; expectedTenantId: string | null; allowGuest?: boolean; now?: Date },
   deps: { verificationKey?: CryptoKey } = {},
-): Promise<PortalOidcVerifiedIdentity & { entraTenantId: string }> {
+): Promise<PortalEntraVerifiedIdentity & { entraTenantId: string }> {
   // A guest is admitted only into a pinned tenant: refuse the misuse before reading the token.
   const allowGuest = expected.allowGuest === true;
   if (allowGuest && (expected.expectedTenantId === null || normalizeGuid(expected.expectedTenantId) === null)) {

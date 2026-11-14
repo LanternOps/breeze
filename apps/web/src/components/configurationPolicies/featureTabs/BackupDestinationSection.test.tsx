@@ -121,3 +121,36 @@ describe('BackupDestinationSection key prefix (#7081)', () => {
     expect(destinationPrefixError({ ...emptyConfigForm, provider: 's3', prefix: 'a//b' })).toMatch(/^Invalid key prefix/);
   });
 });
+
+// Network shares are not supported as local destinations; the local form no
+// longer suggests a UNC share or a NAS path.
+describe('BackupDestinationSection local destination copy', () => {
+  const baseProps = {
+    configs: [],
+    configsLoading: false,
+    selectedConfigId: '',
+    onSelect: vi.fn(),
+    mode: 'create' as const,
+    onStartCreate: vi.fn(),
+    onCancelForm: vi.fn(),
+    onBeginEdit: vi.fn(),
+    form: { ...emptyConfigForm, provider: 'local' as const },
+    onFormChange: vi.fn(),
+    fieldErrors: {},
+    testStatus: 'idle' as const,
+    onTest: vi.fn(),
+  };
+
+  it('does not suggest a UNC or NAS share for a local destination', () => {
+    const { container } = render(<BackupDestinationSection {...baseProps} />);
+    const text = container.textContent ?? '';
+    const placeholders = Array.from(container.querySelectorAll('input'))
+      .map((input) => input.getAttribute('placeholder') ?? '')
+      .join(' ');
+
+    expect(text).not.toMatch(/UNC/);
+    expect(text).not.toMatch(/mounted NAS/i);
+    expect(placeholders).not.toContain('\\\\');
+    expect(text).toMatch(/network shares[^.]*not supported/i);
+  });
+});

@@ -909,13 +909,23 @@ export default function BackupTab({
         );
       }
       const capability = data?.providerCapabilities?.objectLock;
+      // The server reports a destination it does not test (for example a
+      // local destination without API-side storage) as "unsupported": show
+      // its explanation, not a failure.
+      const notTested = response.ok && data.status === "unsupported";
       setTestMessage(
-        capability?.supported === true
-          ? "Connection succeeded and object lock support was verified."
-          : capability?.error || data?.error || "Connection test completed.",
+        notTested
+          ? data?.error || "This destination is not tested from the server."
+          : capability?.supported === true
+            ? "Connection succeeded and object lock support was verified."
+            : capability?.error || data?.error || "Connection test completed.",
       );
       setTestStatus(
-        response.ok && data.status === "success" ? "success" : "failed",
+        notTested
+          ? "unsupported"
+          : response.ok && data.status === "success"
+            ? "success"
+            : "failed",
       );
     } catch (err) {
       // Bind and log: this catch also swallows network faults, JSON parse

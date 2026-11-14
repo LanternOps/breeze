@@ -281,23 +281,25 @@ describe('manage_deployments — control actions carry the device axis', () => {
     mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
   }
 
-  it('denies start when the deployment includes a sibling device at the same site', async () => {
-    mockDeployment([{ deviceId: 'dev-1', siteId: 'site-1' }, { deviceId: 'dev-2', siteId: 'site-1' }]);
+  // Creating or driving a deployment is an organization-wide change, so a run
+  // carrying an exact-device ceiling is refused before the deployment is read,
+  // whatever its members are (same rule as routes/deployments.ts).
+  it.each([
+    [[{ deviceId: 'dev-1', siteId: 'site-1' }, { deviceId: 'dev-2', siteId: 'site-1' }]],
+    [[{ deviceId: 'dev-1', siteId: 'site-1' }]],
+  ])('refuses start for a device-bound run (members %j)', async (members) => {
+    mockDeployment(members);
     const r = await handlerFor('manage_deployments')({ action: 'start', deploymentId: 'dep-1' }, deviceBoundAuth());
-    expect(JSON.parse(r).error).toContain('access denied');
+    expect(JSON.parse(r).error).toMatch(/cannot modify organization-wide settings/);
+    expect(mockDb.select).not.toHaveBeenCalled();
     expect(mockDb.update).not.toHaveBeenCalled();
   });
 
-  it('still starts a deployment made only of the run device', async () => {
-    mockDeployment([{ deviceId: 'dev-1', siteId: 'site-1' }]);
-    const r = await handlerFor('manage_deployments')({ action: 'start', deploymentId: 'dep-1' }, deviceBoundAuth());
-    expect(JSON.parse(r).success).toBe(true);
-  });
-
-  it('denies cancel for a device-LESS run whose deployment reaches other devices', async () => {
+  it('refuses cancel for a device-LESS run', async () => {
     mockDeployment([{ deviceId: 'dev-2', siteId: 'site-9' }]);
     const r = await handlerFor('manage_deployments')({ action: 'cancel', deploymentId: 'dep-1' }, deviceLessRunAuth());
-    expect(JSON.parse(r).error).toContain('access denied');
+    expect(JSON.parse(r).error).toMatch(/cannot modify organization-wide settings/);
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 
   it('device_status narrows the per-device rows to the allowlist', async () => {

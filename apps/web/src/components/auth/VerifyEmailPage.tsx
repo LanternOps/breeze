@@ -18,7 +18,11 @@ type State =
   // detonation) that render JS and would otherwise auto-complete the pending
   // registration for a mailbox they merely scanned — verifying an address for
   // someone who never controlled it. A human clicks; a scanner does not.
-  | { phase: 'confirm'; token: string }
+  // A signup confirmation also asks for the password chosen at signup; the
+  // first click without it comes back as `password_required`. A wrong password
+  // and an account locked out after failed sign-ins get the same answer, as at
+  // sign-in, so the message covers both.
+  | { phase: 'confirm'; token: string; requirePassword?: boolean; passwordRejected?: boolean }
   | { phase: 'success'; autoActivated: boolean }
   // SR2-21 step 2: the token completed a PENDING REGISTRATION — the account was
   // just created and this browser is now logged in. We navigate to the dashboard;
@@ -41,6 +45,7 @@ export default function VerifyEmailPage() {
   const { t } = useTranslation('auth');
   const login = useAuthStore((s) => s.login);
   const [state, setState] = useState<State>({ phase: 'loading' });
+  const [signupPassword, setSignupPassword] = useState('');
   // Consume the single-use token at most once — guards a double-click of Confirm
   // and dev strict-mode double-invocation of the click handler.
   const submittedRef = useRef(false);
@@ -59,7 +64,12 @@ export default function VerifyEmailPage() {
     setState({ phase: 'loading' });
 
     {
-      const result = await apiVerifyEmail(token);
+      const result = signupPassword ? await apiVerifyEmail(token, signupPassword) : await apiVerifyEmail(token);
+      if (result.status === 'password_required') {
+        submittedRef.current = false;
+        setState({ phase: 'confirm', token, requirePassword: true, passwordRejected: !!signupPassword });
+        return;
+      }
       if (result.success) {
         // SR2-21: a registration-completion response carries the auto-login
         // session. This is the ONLY place partner signup logs a user in now —
@@ -130,8 +140,27 @@ export default function VerifyEmailPage() {
             })}
           </p>
         </div>
+        {state.requirePassword && (
+          <label className="block space-y-2 text-sm">
+            <span>{t('verifyEmail.password.label', { defaultValue: 'Signup password' })}</span>
+            <input type="password" autoComplete="current-password" value={signupPassword}
+              onChange={(event) => setSignupPassword(event.target.value)}
+              className="h-11 w-full rounded-md border bg-background px-3" />
+            <span className="block text-muted-foreground">
+              {t('verifyEmail.password.description', { defaultValue: 'Enter the password you chose when signing up to finish creating your account.' })}
+            </span>
+            {state.passwordRejected && (
+              <span role="alert" className="block text-destructive">
+                {t('verifyEmail.password.notAccepted', {
+                  defaultValue: 'That password was not accepted. Check it and try again. After several failed attempts, wait a few minutes before trying again.',
+                })}
+              </span>
+            )}
+          </label>
+        )}
         <button
           type="button"
+          disabled={state.requirePassword && !signupPassword}
           onClick={() => void verify(token)}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >

@@ -58,6 +58,7 @@ import type { AiBillingSource } from '../../services/aiCostTracker';
 import type { ResolvedModel } from '../../services/aiModels/resolveModel';
 import { chooseSessionModel, resolveSessionTurn, type SessionModelChoice } from '../../services/aiModels/sessionModel';
 import { readOrgPartnerId } from '../../services/aiModels/candidateLoader';
+import { toolExposureRefusal } from '../../services/aiModels/sessionToolExposure';
 import { LlmNotConfiguredError } from '../../services/llm/llmAvailability';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import {
@@ -801,6 +802,9 @@ clientAiSessionRoutes.post(
       if (err instanceof LlmUnavailableError) {
         return c.json({ error: 'ai_unavailable' }, 503);
       }
+      // #11396: same tool-exposure refusal mapping as the other getOrCreate callers.
+      const refusal = toolExposureRefusal(err);
+      if (refusal) return c.json(refusal, 409);
       throw err;
     }
     const { activeSession } = materialised;
@@ -931,6 +935,8 @@ clientAiSessionRoutes.get('/:id/events', async (c) => {
     if (err instanceof LlmUnavailableError) {
       return c.json({ error: 'ai_unavailable' }, 503);
     }
+    const refusal = toolExposureRefusal(err);
+    if (refusal) return c.json(refusal, 409);
     throw err;
   }
 

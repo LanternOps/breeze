@@ -4,10 +4,10 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { afterAll, expect, it } from 'vitest';
+import { afterAll, beforeEach, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { attestSnapshotForTest } from './restoreIntegrityFixture';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import {
@@ -51,7 +51,28 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 const tempDirs: string[] = [];
 
+// The API reads a local destination only from
+// <BACKUP_LOCAL_ROOT>/<org id>/<config id>; each fixture plans its config id
+// and uses that directory as its storage root.
+let operatorRoot: string | null = null;
+
+async function operatorDestinationDir(orgId: string, configId: string): Promise<string> {
+  if (!operatorRoot) {
+    operatorRoot = await mkdtemp(join(tmpdir(), 'bmr-recover-operator-'));
+    tempDirs.push(operatorRoot);
+  }
+  vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
+  const dir = join(operatorRoot, orgId, configId);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+beforeEach(() => {
+  if (operatorRoot) vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
+});
+
 afterAll(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -90,12 +111,13 @@ async function seedOrgWithLocalSnapshot(label: string) {
     .returning({ id: devices.id });
   if (!device) throw new Error('device fixture insert failed');
 
-  const storageRoot = await mkdtemp(join(tmpdir(), 'bmr-recover-rls-'));
-  tempDirs.push(storageRoot);
+  const plannedConfigId = randomUUID();
+  const storageRoot = await operatorDestinationDir(org.id, plannedConfigId);
 
   const [config] = await testDb
     .insert(backupConfigs)
     .values({
+      id: plannedConfigId,
       orgId: org.id,
       name: `${label} config ${suffix}`,
       type: 'file',
@@ -191,12 +213,12 @@ async function seedThreeGenerationChain() {
   }).returning({ id: devices.id });
   if (!device) throw new Error('device fixture insert failed');
 
-  const storageRoot = await mkdtemp(join(tmpdir(), 'bmr-w09-chain-'));
-  tempDirs.push(storageRoot);
+  const plannedConfigId = randomUUID();
+  const storageRoot = await operatorDestinationDir(org.id, plannedConfigId);
   const storageIdentity = `local::${storageRoot}`;
 
   const [config] = await testDb.insert(backupConfigs).values({
-    orgId: org.id, name: `w09 chain config ${suffix}`, type: 'file', provider: 'local', providerConfig: { path: storageRoot },
+    id: plannedConfigId, orgId: org.id, name: `w09 chain config ${suffix}`, type: 'file', provider: 'local', providerConfig: { path: storageRoot },
   }).returning({ id: backupConfigs.id });
   if (!config) throw new Error('config fixture insert failed');
   if (!device) throw new Error('device fixture missing');

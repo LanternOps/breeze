@@ -5,11 +5,15 @@
  * Offline and deterministic. What is real and what stands in:
  *
  *  - Real: the session manager's turn loop (the Wisp turn record, the reply
- *    text buffer, the turn-end hooks and `done`); the standing-state block
+ *    text buffer, the turn-end hooks and `done`); the system prompt, which is
+ *    the Wisp behaviour block every Wisp seed carries; the registry
+ *    descriptions of the Wisp concern and check-in tools; the standing-state block
  *    (`standingStateForTurn`: facts → render → the per-session send gate),
  *    put ahead of the user's text the way `POST /ai/sessions/:id/messages`
  *    does (the route's content sanitising and fired check-in block are not
- *    replayed); the promise linter and the correction message; the
+ *    replayed); the specialist-results block, outermost (#11671:
+ *    `specialistResultsForTurn` → the chat run bridge's renderer → the
+ *    per-session delivered set); the promise linter and the correction message; the
  *    instruction prefilter,
  *    the capture status and the extractor (parse, name resolution, blocks);
  *    the standing-instruction check (verb map, registry device args, matcher,
@@ -26,8 +30,9 @@
  *    tiers, approval cards and the ceiling gate are not replayed; their own
  *    suites pin them. The SDK stream carries the reply text and `result`.
  *
- * The scripted model reads what a real model would see: the turn content
- * (with any standing-state block) and this turn's tool results. A step can be
+ * The scripted model reads what a real model would see: the system prompt,
+ * the Wisp tool descriptions, the turn content (with any standing-state
+ * block) and this turn's tool results. A step can be
  * a function of that view, so a fixture says "answer from the standing state
  * when it is there, otherwise go and look" and a regression in what Wisp is
  * told shows up as extra tool calls, not as a silent pass.
@@ -38,19 +43,29 @@ import type { AuthContext } from '../../middleware/auth';
 import { buildOrgAccessClosures } from '../../middleware/auth';
 import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
 import { StreamingSessionManager, type ActiveSession } from '../../services/streamingSessionManager';
+import type { AiTool } from '../../services/aiTools';
+import { registerWispCheckInTools } from '../../services/wisp/checkInTools';
+import { registerWispConcernTools } from '../../services/wisp/concernTools';
 import { normaliseDispatchResult } from '../../services/wisp/dispatchEvidence';
 import type { GrantCeiling } from '../../services/wisp/grantAuthority';
 import { readInstructionCapture } from '../../services/wisp/instructionCaptureStatus';
 import { STANDING_STATE_TAG, type StandingStateFacts } from '../../services/wisp/standingLoop';
+import { markSpecialistResultsDelivered, specialistResultsForTurn } from '../../services/wisp/specialistResultsTurn';
 import { checkStandingInstructionsForCall } from '../../services/wisp/standingInstructionGate';
 import { clearStandingStateCache, markStandingStateSent, standingStateForTurn } from '../../services/wisp/standingStateTurn';
+import { WISP_BEHAVIOUR_BLOCK } from '../../services/wisp/threads';
 import { recordWispToolOutcome } from '../../services/wisp/turnRecord';
+import { drainPendingRunResults } from '../../services/workspace/chatRunBridge';
 import type { ReplayInventory, ReplayScore, ReplayToolCall, ReplayTrace, ReplayTurnTrace } from './score';
-import { replayWorld, resetReplayWorld } from './world';
+import { replayWorld, resetReplayWorld, type ReplayAgentRunRow } from './world';
 
 /** What the scripted model can see when it decides its next step. */
 export type ModelView = {
-  /** This turn's content as the model receives it (standing-state block first, the user's text last). */
+  /** The system prompt the session handed the SDK. */
+  systemPrompt: string;
+  /** The registry descriptions of the Wisp concern and check-in tools, by bare name. */
+  toolDescriptions: Readonly<Record<string, string>>;
+  /** This turn's content as the model receives it (specialist results, then the standing-state block, the user's text last). */
   turnContent: string;
   /** The newest `<wisp_standing_state>` block in the conversation so far, or null. */
   standingState: string | null;
@@ -66,7 +81,9 @@ export type ScriptedModelStep =
 /** Something the technician does between turns, outside chat. */
 export type ReplayAction =
   /** Taps Keep on the instruction chip: every unconfirmed standing instruction becomes confirmed. */
-  | 'keep_captured_instructions';
+  | 'keep_captured_instructions'
+  /** #11671: a specialist this session handed work to settles (its run row is written). */
+  | { specialistSettles: ReplayAgentRunRow };
 
 export type ReplayTurn = {
   user: string;
@@ -86,6 +103,8 @@ export type ReplayTurn = {
 
 export type ReplayTurnExpectation = {
   standingStateSent?: boolean;
+  /** #11671: exactly these specialist runs' results rode on the turn ([] = none). */
+  specialistResultsGiven?: string[];
   maxToolCalls?: number;
   /** Exactly these corrections, in order ([] = none). */
   corrections?: string[];
@@ -123,6 +142,14 @@ const THREAD_ID = 'b2b2b2b2-1111-4222-8333-444455556666';
 const TURN_TIMEOUT_MS = 10_000;
 const CAPTURE_TIMEOUT_MS = 10_000;
 const MAX_SCRIPT_STEPS = 50;
+
+/** The descriptions the model is shown for the Wisp follow-up tools: the real registrations, not a copy. */
+const WISP_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = (() => {
+  const registry = new Map<string, AiTool>();
+  registerWispConcernTools(registry);
+  registerWispCheckInTools(registry);
+  return Object.fromEntries([...registry].map(([name, tool]) => [name, tool.definition.description ?? '']));
+})();
 
 const STANDING_BLOCK_RE = new RegExp(`<${STANDING_STATE_TAG}\\b[\\s\\S]*?</${STANDING_STATE_TAG}>`, 'g');
 
@@ -229,9 +256,12 @@ async function* runScript(
   active: ActiveTurn,
   turnContent: string,
   seen: string[],
+  systemPrompt: string,
 ): AsyncGenerator<unknown> {
   const queue: ScriptedModelStep[] = [...active.turn.modelScript];
   const view = (): ModelView => ({
+    systemPrompt,
+    toolDescriptions: WISP_TOOL_DESCRIPTIONS,
     turnContent,
     standingState: newestStandingState(seen),
     toolResults: active.calls.map((c) => ({ tool: c.tool, output: c.output, isError: c.isError })),
@@ -283,6 +313,10 @@ async function settledCaptureStatus(captureId: string): Promise<string | null> {
 }
 
 function applyAction(action: ReplayAction): void {
+  if (typeof action === 'object') {
+    replayWorld.agentRuns.push(action.specialistSettles);
+    return;
+  }
   switch (action) {
     case 'keep_captured_instructions':
       for (const row of replayWorld.memoryRows) {
@@ -308,13 +342,15 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
   let active: ActiveTurn | null = null;
   let session: ActiveSession | null = null;
 
-  replayWorld.sdkQuery = ({ prompt }) => ({
+  replayWorld.sdkQuery = ({ prompt, options }) => ({
     async *[Symbol.asyncIterator]() {
+      const sent = (options as { systemPrompt?: unknown } | undefined)?.systemPrompt;
+      if (typeof sent !== 'string') throw new Error('replay: the session sent no system prompt');
       for await (const input of prompt) {
         const content = userContentText(input);
         seen.push(content);
         if (!active || !session) throw new Error('replay: a turn arrived with no scripted turn in flight');
-        yield* runScript(fixture, session, active, content, seen);
+        yield* runScript(fixture, session, active, content, seen, sent);
         yield SDK_RESULT;
       }
     },
@@ -326,7 +362,7 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
   const turns: ReplayTurnTrace[] = [];
   try {
     const dbSession = { orgId: [...fixture.ceiling.orgIds][0]!, sdkSessionId: null, maxTurns: 50, turnCount: 0, systemPrompt: null };
-    session = await manager.getOrCreate(SESSION_ID, dbSession, auth, undefined, 'PROMPT', undefined, makeResolvedModel('platform'));
+    session = await manager.getOrCreate(SESSION_ID, dbSession, auth, undefined, WISP_BEHAVIOUR_BLOCK, undefined, makeResolvedModel('platform'));
     if (!session.wispGrant) throw new Error('replay: the session did not resolve its Wisp grant');
     const live = session;
 
@@ -336,17 +372,23 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
         replayWorld.standingFacts = turn.standingFacts;
         clearStandingStateCache();
       }
-      // As POST /ai/sessions/:id/messages builds the turn: the standing state, then the user's text.
+      // As POST /ai/sessions/:id/messages builds the turn: settled specialist
+      // results (outermost), the standing state, then the user's text.
+      const specialist = await specialistResultsForTurn({
+        grantId: fixture.ceiling.grantId, revisionId: fixture.ceiling.revisionId, sessionId: SESSION_ID,
+      });
       const standing = await standingStateForTurn({
         grantId: fixture.ceiling.grantId, revisionId: fixture.ceiling.revisionId, sessionId: SESSION_ID, auth,
       });
-      const content = [standing?.block, turn.user].filter(Boolean).join('\n\n');
+      const results = drainPendingRunResults(live, specialist?.results ?? []);
+      const content = [results, standing?.block, turn.user].filter(Boolean).join('\n\n');
       if (!manager.tryTransitionToProcessing(live, undefined, { userMessage: turn.user })) {
         throw new Error(`replay fixture "${fixture.name}": turn ${index} could not start (session ${live.state})`);
       }
       active = { turn, calls: [] };
       const events = await nextTurnEvents(live, `replay-${index}`, () => live.inputController.pushMessage(content));
       if (standing) await markStandingStateSent(SESSION_ID, standing.hash);
+      if (specialist) await markSpecialistResultsDelivered(SESSION_ID, specialist.keys);
 
       const deltas = events.flatMap((e) => (e.type === 'content_delta' ? [e.delta] : []));
       const corrections = deltas.filter((d) => d.startsWith(CORRECTION_PREFIX)).flatMap((d) => d.split('\n'));
@@ -356,6 +398,7 @@ export async function replaySession(fixture: ReplayFixture): Promise<ReplayTrace
       turns.push({
         user: turn.user,
         standingStateSent: standing !== null,
+        specialistResultsGiven: specialist?.results.map((r) => r.runId) ?? [],
         toolCalls: active.calls,
         assistantText,
         corrections,

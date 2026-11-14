@@ -45,6 +45,8 @@ function gmailMsg(id: string, from: string, mailbox: string, subject: string): g
         { name: 'Subject', value: subject },
         { name: 'Message-ID', value: `<${id}@known.test>` },
         // Google-stamped, dmarc=pass → normalizer sets verified → clears the R4 gate.
+        // Gmail adds Return-Path at delivery.
+        { name: 'Return-Path', value: '<bounce@mail.example.net>' },
         { name: 'Authentication-Results', value: 'mx.google.com; spf=pass; dkim=pass; dmarc=pass' },
       ],
       body: { data: b64url('printer down') },

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
 // bootstrapAction describes what the SYSTEM-context bootstrapper should do
@@ -105,11 +107,11 @@ type cmdRunner func(name string, args []string, timeout time.Duration) (string, 
 // license and any dependency packages (e.g. VCLibs, UI.Xaml) required by
 // the DesktopAppInstaller (winget) package.
 func buildProvisionArgs(bundlePath, licensePath string, depPaths []string) []string {
-	ps := "Add-AppxProvisionedPackage -Online -PackagePath '" + bundlePath +
-		"' -LicensePath '" + licensePath + "' -DependencyPackagePath "
+	ps := "Add-AppxProvisionedPackage -Online -PackagePath " + psscript.Quote(bundlePath) +
+		" -LicensePath " + psscript.Quote(licensePath) + " -DependencyPackagePath "
 	quoted := make([]string, 0, len(depPaths))
 	for _, d := range depPaths {
-		quoted = append(quoted, "'"+d+"'")
+		quoted = append(quoted, psscript.Quote(d))
 	}
 	ps += strings.Join(quoted, ",")
 	return []string{"-NoProfile", "-NonInteractive", "-Command", ps}

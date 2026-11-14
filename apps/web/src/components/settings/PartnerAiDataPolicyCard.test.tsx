@@ -17,10 +17,15 @@ import { ActionError } from '@/lib/runAction';
 import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsDraftStore';
 import { useAiDataPolicyUnit } from './partnerSettings/units/aiDataPolicyUnit';
 
-const defaults = { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30 };
+const defaults = { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30, transcriptRetentionDays: 365 };
+const PREVIEW = '/partner/ai/data-policy/transcript-retention-preview';
 function respond(canManage: boolean, policy: Record<string, unknown> | null) {
-  fetchWithAuth.mockImplementation(async () => ({ ok: true, json: async () => ({ policy, canManage, defaults }) }));
+  fetchWithAuth.mockImplementation(async (url: string) => (String(url).startsWith(PREVIEW)
+    ? { ok: true, json: async () => ({ eligible: 7, capped: false, enforced: false }) }
+    : { ok: true, json: async () => ({ policy, canManage, defaults }) }));
 }
+const policyGets = () => fetchWithAuth.mock.calls.filter(([u]) => u === '/partner/ai/data-policy' );
+const previewUrls = () => fetchWithAuth.mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith(PREVIEW));
 const unit = () => renderHook(() => useAiDataPolicyUnit()).result.current;
 // W2: the card is a form card; the partner settings header Save runs this unit.
 const headerSave = async () => { const u = unit(); let out; await act(async () => { out = await u.save(); }); return out; };
@@ -127,6 +132,102 @@ describe('PartnerAiDataPolicyCard', () => {
     fireEvent.click(screen.getByTestId('partner-ai-data-policy-level-any_with_approval'));
     expect(unit().isDirty()).toBe(false);
     expect(runAction).not.toHaveBeenCalled();
-    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    // One policy read and never a PUT; the transcript preview is a read too.
+    expect(policyGets()).toHaveLength(1);
+    expect(putBodies()).toEqual([]);
+    expect((screen.getByTestId('partner-ai-data-policy-transcript-retention') as HTMLInputElement).disabled).toBe(true);
+  });
+
+  describe('technician transcript retention (#4342 W4)', () => {
+    it('shows the stored window in days mode, and the 365-day Breeze default when no row exists', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: 180 });
+      const { unmount } = render(<PartnerAiDataPolicyCard />);
+      const input = (await screen.findByTestId('partner-ai-data-policy-transcript-retention')) as HTMLInputElement;
+      expect(input.value).toBe('180');
+      expect((screen.getByTestId('partner-ai-data-policy-transcript-days-mode') as HTMLInputElement).checked).toBe(true);
+      unmount();
+      usePartnerSettingsDraftStore.getState().reset();
+      respond(true, null);
+      render(<PartnerAiDataPolicyCard />);
+      expect(((await screen.findByTestId('partner-ai-data-policy-transcript-retention')) as HTMLInputElement).value).toBe('365');
+    });
+
+    it('an API that omits the field loads the 365-day default, never Keep forever, and never sends it', async () => {
+      fetchWithAuth.mockImplementation(async (url: string) => (String(url).startsWith(PREVIEW)
+        ? { ok: true, json: async () => ({ eligible: 0, capped: false, enforced: false }) }
+        : { ok: true, json: async () => ({
+          policy: { deviceFileReadLevel: null, toolOutputRetentionDays: 14 }, canManage: true,
+          defaults: { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30 },
+        }) }));
+      render(<PartnerAiDataPolicyCard />);
+      const input = (await screen.findByTestId('partner-ai-data-policy-transcript-retention')) as HTMLInputElement;
+      expect(input.value).toBe('365');
+      expect((screen.getByTestId('partner-ai-data-policy-transcript-days-mode') as HTMLInputElement).checked).toBe(true);
+      fireEvent.click(screen.getByTestId('partner-ai-data-policy-level-off'));
+      await headerSave();
+      expect(putBodies()).toEqual([JSON.stringify({ deviceFileReadLevel: 'off' })]);
+    });
+
+    it('switching back from Keep forever refills the default window', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: null });
+      render(<PartnerAiDataPolicyCard />);
+      fireEvent.click(await screen.findByTestId('partner-ai-data-policy-transcript-days-mode'));
+      expect((screen.getByTestId('partner-ai-data-policy-transcript-retention') as HTMLInputElement).value).toBe('365');
+      expect(unit().validity().aiFeatures).toEqual({ isValid: true, invalidCount: 0, firstInvalidFieldId: null });
+    });
+
+    it('selects Keep forever when the row stores NULL', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: null });
+      render(<PartnerAiDataPolicyCard />);
+      expect(((await screen.findByTestId('partner-ai-data-policy-transcript-forever')) as HTMLInputElement).checked).toBe(true);
+      expect((screen.getByTestId('partner-ai-data-policy-transcript-retention') as HTMLInputElement).disabled).toBe(true);
+    });
+
+    it('the draft unit patches only the transcript field', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: 365 });
+      render(<PartnerAiDataPolicyCard />);
+      fireEvent.change(await screen.findByTestId('partner-ai-data-policy-transcript-retention'), { target: { value: '90' } });
+      expect(unit().isDirty()).toBe(true);
+      await headerSave();
+      expect(putBodies()).toEqual([JSON.stringify({ transcriptRetentionDays: 90 })]);
+    });
+
+    it('Keep forever sends null', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: 365 });
+      render(<PartnerAiDataPolicyCard />);
+      fireEvent.click(await screen.findByTestId('partner-ai-data-policy-transcript-forever'));
+      await headerSave();
+      expect(putBodies()).toEqual([JSON.stringify({ transcriptRetentionDays: null })]);
+    });
+
+    it('an invalid transcript window blocks the header Save on its own field', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: 365 });
+      render(<PartnerAiDataPolicyCard />);
+      const input = await screen.findByTestId('partner-ai-data-policy-transcript-retention');
+      fireEvent.change(input, { target: { value: '0' } });
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect(screen.getByTestId('partner-ai-data-policy-transcript-retention-error')).toBeInTheDocument();
+      expect(unit().validity().aiFeatures).toEqual({ isValid: false, invalidCount: 1, firstInvalidFieldId: 'partner-ai-data-policy-transcript-retention' });
+    });
+
+    it('counts both invalid windows', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: 365 });
+      render(<PartnerAiDataPolicyCard />);
+      fireEvent.change(await screen.findByTestId('partner-ai-data-policy-retention'), { target: { value: '0' } });
+      fireEvent.change(screen.getByTestId('partner-ai-data-policy-transcript-retention'), { target: { value: '0' } });
+      expect(unit().validity().aiFeatures).toEqual({ isValid: false, invalidCount: 2, firstInvalidFieldId: 'partner-ai-data-policy-retention' });
+    });
+
+    it('previews the drafted window with the "up to" partner copy, and not at all for Keep forever', async () => {
+      respond(true, { deviceFileReadLevel: null, toolOutputRetentionDays: 14, transcriptRetentionDays: 365 });
+      render(<PartnerAiDataPolicyCard />);
+      const preview = await screen.findByTestId('partner-ai-data-policy-transcript-preview');
+      await waitFor(() => expect(preview).toHaveTextContent('transcriptRetention.preview.partnerPending'));
+      expect(previewUrls()).toEqual([`${PREVIEW}?days=365`]);
+      fireEvent.change(screen.getByTestId('partner-ai-data-policy-transcript-retention'), { target: { value: '120' } });
+      await waitFor(() => expect(previewUrls()).toEqual([`${PREVIEW}?days=365`, `${PREVIEW}?days=120`]));
+      fireEvent.click(screen.getByTestId('partner-ai-data-policy-transcript-forever'));
+      expect(screen.queryByTestId('partner-ai-data-policy-transcript-preview')).toBeNull();
+    });
   });
 });

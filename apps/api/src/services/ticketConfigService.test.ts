@@ -202,6 +202,7 @@ import {
   TicketConfigServiceError, findStatusByName, listActiveStatusNames,
   listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
   createCustomerEmailDomain, updateCustomerEmailDomain, listCustomerEmailDomains,
+  extractFromName,
 } from './ticketConfigService';
 
 const PARTNER = 'p-1';
@@ -701,6 +702,44 @@ describe('convertEmailInbound', () => {
     expect(row.ticketId).toBe('t-9');
     expect(row.parseStatus).toBe('created');
   });
+  it('reads the From header of a converted row in linear time', async () => {
+    dbMocks.selectResults.push([{ id: 'r-2', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 's', toAddress: 'acme@tickets.example.com', raw: { 'stripped-text': 'help', from: `${' '.repeat(2000)}x` } }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]);
+    dbMocks.updateResult = [{ id: 'r-2', fromAddress: 'jane@x.com', toAddress: 'acme@tickets.example.com', subject: 's', parseStatus: 'created', error: null, ticketId: 't-9', createdAt: new Date() }];
+    createTicketMock.mockResolvedValue({ id: 't-9' });
+    const started = performance.now();
+    await convertEmailInbound('p-1', 'r-2', 'o-1', ACTOR);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(createTicketMock).toHaveBeenCalledWith(expect.objectContaining({ submitterName: undefined }), ACTOR);
+  });
+
+  it('extractFromName reads the display name exactly as the previous pattern did', () => {
+    const reference = (header: string) => {
+      const m = header.match(/^\s*"?([^"<]+?)"?\s*</);
+      return m ? (m[1] ?? '').trim() : '';
+    };
+    const fixed = ['"Jane Doe" <jane@x.com>', 'Jane Doe <jane@x.com>', 'jane@x.com', '<jane@x.com>', '  "<x>', '"" <x>', ' " a " <x>', 'a"b <x>', '"a" "b" <x>', '"a"  \t<x>', 'a\u00a0<x>', ''];
+    for (const header of fixed) expect([header, extractFromName(header)]).toEqual([header, reference(header)]);
+    const alphabet = ['"', '<', '>', ' ', '\t', 'a', 'b', '@', '\u00a0'];
+    const random = (seed: number) => () => {
+      // mulberry32: 32-bit integer steps (Math.imul), so the sequence does not
+      // collapse the way a float LCG does.
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (t ^ (t >>> 14)) >>> 0;
+    };
+    const next = random(0x1f2e3d);
+    const seen = new Set<string>();
+    for (let i = 0; i < 20_000; i += 1) {
+      let header = '';
+      for (let j = next() % 18; j > 0; j -= 1) header += alphabet[next() % alphabet.length];
+      seen.add(header);
+      expect([header, extractFromName(header)]).toEqual([header, reference(header)]);
+    }
+    expect(seen.size).toBeGreaterThan(15_000);
+  });
+
   it('converts a MICROSOFT 365 row with its body and sender name (#8299)', async () => {
     // Build `raw` with the real Graph normalizer, so the Convert path and the
     // normalizer cannot drift apart again: Convert must read what Graph writes.

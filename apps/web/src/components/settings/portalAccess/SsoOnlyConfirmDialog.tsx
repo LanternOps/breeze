@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
-import type { SsoOnlyImpact, StrandedPortalAccounts } from './types';
+import { SSO_COPY_KEYS } from './ssoProviderCopy';
+import type { SsoOnlyImpact, SsoProviderSet, StrandedPortalAccounts } from './types';
 
 /** How many stranded names the dialog lists before "and N more". */
 const STRANDED_NAMES_SHOWN = 10;
@@ -18,6 +19,11 @@ export interface SsoOnlyConfirmDialogProps {
   /** The server answered a confirmed save with a NEW impact: the numbers moved since the dialog opened. */
   changed?: boolean;
   busy?: boolean;
+  /**
+   * W7 (#11384): which SSO providers the copy names, the ones the save leaves
+   * on (`effectiveProviderSet`). Defaults to the W4 Microsoft wording.
+   */
+  providers?: SsoProviderSet;
   onConfirm: (opts: { sendInvites: boolean }) => void;
   onCancel: () => void;
 }
@@ -36,6 +42,7 @@ export function SsoOnlyConfirmDialog({
   strandedLoadFailed = false,
   changed = false,
   busy = false,
+  providers = 'microsoft',
   onConfirm,
   onCancel,
 }: SsoOnlyConfirmDialogProps) {
@@ -68,7 +75,7 @@ export function SsoOnlyConfirmDialog({
             {t('portalAccessPolicy.ssoOnlyConfirm.changed')}
           </p>
         )}
-        <p className="text-xs text-muted-foreground">{t('portalAccessPolicy.ssoOnlyConfirm.explain')}</p>
+        <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ SSO_COPY_KEYS.confirmExplain[providers])}</p>
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
@@ -118,7 +125,7 @@ export function SsoOnlyConfirmDialog({
               onChange={(e) => setSendInvites(e.target.checked)}
               className="mt-0.5"
             />
-            <span>{t('portalAccessPolicy.ssoOnlyConfirm.sendInvites')}</span>
+            <span>{t(/* i18n-dynamic */ SSO_COPY_KEYS.confirmSendInvites[providers])}</span>
           </label>
         )}
       </div>

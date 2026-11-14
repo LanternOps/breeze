@@ -262,7 +262,7 @@ func enrichInstance(inst *SQLInstance) {
 	inst.Edition = strings.TrimSpace(parseSqlcmdSingleValue(editionOut))
 
 	// Get databases
-	dbQuery := `SELECT d.name,
+	dbQuery := singleLine(`SELECT d.name,
 		CAST(SUM(mf.size) * 8 / 1024 AS BIGINT) AS size_mb,
 		d.recovery_model_desc,
 		CAST(CASE WHEN dek.encryption_state IS NOT NULL AND dek.encryption_state = 3 THEN 1 ELSE 0 END AS INT) AS tde_enabled,
@@ -271,7 +271,7 @@ func enrichInstance(inst *SQLInstance) {
 	LEFT JOIN sys.master_files mf ON d.database_id = mf.database_id
 	LEFT JOIN sys.dm_database_encryption_keys dek ON d.database_id = dek.database_id
 	WHERE d.name NOT IN ('master','tempdb','model','msdb')
-	GROUP BY d.name, d.recovery_model_desc, dek.encryption_state, d.compatibility_level`
+	GROUP BY d.name, d.recovery_model_desc, dek.encryption_state, d.compatibility_level`)
 
 	dbOut, err := runSqlcmd(serverName, dbQuery)
 	if err != nil {

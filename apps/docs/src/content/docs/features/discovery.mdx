@@ -399,6 +399,8 @@ Content-Type: application/json
 
 The discovery asset list also supports filtering by linked device (`linkedDeviceId`).
 
+Scan jobs and discovered assets show the details of the discovery profile that produced them (its name, and its schedule for reachability) only while that profile belongs to the same organization and site as the job or asset. The suggested bridge device on an asset's detail view must likewise be in the asset's site. If a profile or a scanning device is later moved to another site, older jobs and assets stop showing its details instead of showing details from the other site.
+
 ### Connecting to a discovered device's web UI
 
 Opening a LAN device's built-in web interface (router admin page, NAS panel, printer UI, switch management port, etc.) is done from the network device detail page: find the open web port and click **Open Web UI**. The proxied request rides an online agent on the same network — no VPN, firewall rules, or port forwarding required. See [Network Proxy](/features/remote-access/#network-proxy) in the Remote Access docs for the full workflow, allowlist configuration, session lifetime, and security model.

@@ -1,14 +1,21 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { aiDataPolicies, AI_DEVICE_FILE_READ_LEVELS } from '../db/schema';
+import { aiDataPolicies, AI_DEVICE_FILE_READ_LEVELS, organizations } from '../db/schema';
 import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { zValidator } from '../lib/validation';
 import { getUserPermissions, hasPermission, PERMISSIONS } from '../services/permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { createAuditLogAsync } from '../services/auditService';
-import { AI_DATA_POLICY_DEFAULTS } from '../services/aiDataPolicy';
+import { AI_DATA_POLICY_DEFAULTS, transcriptPreviewDaysSchema } from '../services/aiDataPolicy';
+import {
+  AI_TRANSCRIPT_RETENTION_ENFORCE,
+  countTranscriptPreview,
+  technicianStubPredicate,
+  transcriptCutoffIso,
+  TRANSCRIPT_PREVIEW_CAP,
+} from '../services/aiTranscriptRetentionPredicates';
 
 /**
  * AI data policy (#8852 W1): the PARTNER default half of `ai_data_policies`.
@@ -19,6 +26,8 @@ import { AI_DATA_POLICY_DEFAULTS } from '../services/aiDataPolicy';
 export const aiDataPolicyBodySchema = z.object({
   deviceFileReadLevel: z.enum(AI_DEVICE_FILE_READ_LEVELS).nullable().optional(),
   toolOutputRetentionDays: z.number().int().min(1).max(3650).nullable().optional(),
+  /** Technician-AI transcript window (#4342 W4); same semantics as `toolOutputRetentionDays`. */
+  transcriptRetentionDays: z.number().int().min(1).max(3650).nullable().optional(),
 }).strict();
 
 export function toAiDataPolicyDto(row: typeof aiDataPolicies.$inferSelect) {
@@ -28,6 +37,7 @@ export function toAiDataPolicyDto(row: typeof aiDataPolicies.$inferSelect) {
     partnerId: row.partnerId,
     deviceFileReadLevel: row.deviceFileReadLevel,
     toolOutputRetentionDays: row.toolOutputRetentionDays,
+    transcriptRetentionDays: row.transcriptRetentionDays,
     updatedAt: row.updatedAt,
   };
 }
@@ -69,6 +79,62 @@ partnerAiDataPolicyRoutes.get('/', async (c) => {
   });
 });
 
+/**
+ * Preview of the PARTNER transcript window (#4342 W4): how many technician
+ * sessions across the partner's orgs are past window N today. An org whose own
+ * row is tighter than N keeps its own window, so it is skipped; an org row
+ * that is NULL or >= N is governed by N (an org can only tighten). Request
+ * path only: the org list, the org rows and every count run under the
+ * caller's RLS context, never a system escape, so a restricted partner token
+ * counts only the orgs it can see. Sequential, never `Promise.all`: one
+ * request transaction. Summing stops at `TRANSCRIPT_PREVIEW_CAP` (`capped`;
+ * the card labels the figure "up to").
+ */
+partnerAiDataPolicyRoutes.get(
+  '/transcript-retention-preview',
+  // Unlike the policy GET (open to the partner scope), the preview counts AI
+  // sessions, so it needs the same read permission as the org preview.
+  requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PERMISSIONS.AI_AGENTS_READ.action),
+  zValidator('query', z.object({ days: transcriptPreviewDaysSchema })),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 400);
+    const { days } = c.req.valid('query');
+    const now = new Date();
+    const cutoffIso = transcriptCutoffIso(days, now);
+
+    const orgConditions: SQL[] = [eq(organizations.partnerId, auth.partnerId), isNull(organizations.deletedAt)];
+    const scoped = auth.orgCondition?.(organizations.id);
+    if (scoped) orgConditions.push(scoped);
+    const orgRows = await db.select({ id: organizations.id }).from(organizations).where(and(...orgConditions));
+    const orgIds = orgRows.map((row) => row.id);
+    if (orgIds.length === 0) return c.json({ eligible: 0, capped: false, enforced: AI_TRANSCRIPT_RETENTION_ENFORCE });
+
+    const orgPolicyRows = await db
+      .select({ orgId: aiDataPolicies.orgId, transcriptRetentionDays: aiDataPolicies.transcriptRetentionDays })
+      .from(aiDataPolicies)
+      .where(inArray(aiDataPolicies.orgId, orgIds));
+    const tighter = new Set(
+      orgPolicyRows
+        .filter((row) => row.orgId !== null && row.transcriptRetentionDays !== null && row.transcriptRetentionDays < days)
+        .map((row) => row.orgId as string),
+    );
+
+    let eligible = 0;
+    let capped = false;
+    for (const orgId of orgIds) {
+      if (tighter.has(orgId)) continue;
+      const result = await countTranscriptPreview(technicianStubPredicate(orgId, cutoffIso, now), TRANSCRIPT_PREVIEW_CAP - eligible);
+      eligible += result.eligible;
+      if (result.capped) {
+        capped = true;
+        break;
+      }
+    }
+    return c.json({ eligible, capped, enforced: AI_TRANSCRIPT_RETENTION_ENFORCE });
+  },
+);
+
 partnerAiDataPolicyRoutes.put(
   '/',
   requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action),
@@ -91,6 +157,7 @@ partnerAiDataPolicyRoutes.put(
         // An explicit null still stores NULL; the conflict `set` below leaves
         // an existing row's retention alone unless the body carries the key.
         ...('toolOutputRetentionDays' in body ? {} : { toolOutputRetentionDays: AI_DATA_POLICY_DEFAULTS.toolOutputRetentionDays }),
+        ...('transcriptRetentionDays' in body ? {} : { transcriptRetentionDays: AI_DATA_POLICY_DEFAULTS.transcriptRetentionDays }),
         ...body,
       })
       .onConflictDoUpdate({ target: aiDataPolicies.partnerId, set: { ...body, updatedAt: now } })

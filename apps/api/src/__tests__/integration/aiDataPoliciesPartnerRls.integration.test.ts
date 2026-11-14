@@ -306,13 +306,16 @@ describe('resolveAiDataPolicy under RLS', () => {
 
   it('an org-session context still applies its own tightening org row on top of the partner ceiling', async () => {
     await withSystemDbAccessContext(() =>
-      db.insert(aiDataPolicies).values({ partnerId: a.partnerId, deviceFileReadLevel: 'any_with_approval', toolOutputRetentionDays: 90 }));
-    await seedOrgRow(a.orgId, { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 14 });
+      db.insert(aiDataPolicies).values({
+        partnerId: a.partnerId, deviceFileReadLevel: 'any_with_approval', toolOutputRetentionDays: 90, transcriptRetentionDays: 200,
+      }));
+    await seedOrgRow(a.orgId, { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 14, transcriptRetentionDays: 60 });
     const effective = await withDbAccessContext(orgSessionCtx(a.orgId), () => resolveAiDataPolicy(a.orgId));
     expect(effective).toEqual({
       deviceFileReadLevel: 'no_user_profiles',
       toolOutputRetentionDays: 14,
-      source: { deviceFileReadLevel: 'org', toolOutputRetentionDays: 'org' },
+      transcriptRetentionDays: 60,
+      source: { deviceFileReadLevel: 'org', toolOutputRetentionDays: 'org', transcriptRetentionDays: 'org' },
     });
   });
 

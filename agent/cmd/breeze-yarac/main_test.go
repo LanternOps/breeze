@@ -327,3 +327,24 @@ func TestSandboxedEntryPointRefusesWithoutSandbox(t *testing.T) {
 		t.Fatalf("want exit 3 {ok:false, unavailable:sandbox} and no scan, got %d %s", code, out)
 	}
 }
+
+// A relative scan root is taken relative to the current directory, as a
+// command-line user expects; the agent's walk itself only accepts absolute
+// roots.
+func TestScanAcceptsRelativeRoot(t *testing.T) {
+	bundle, err := filepath.Abs(goldenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "corpus")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "hit.bin"), []byte("xx breeze_yara_fixture_marker_7f3a xx"), 0o600)
+	t.Chdir(parent)
+	code, out, errOut := runCLI([]string{"scan", "--bundle", bundle, "corpus"}, nil)
+	if code != exitOK || !strings.Contains(out, `"filesScanned":1`) {
+		t.Fatalf("scan of a relative root failed: %d %s %s", code, out, errOut)
+	}
+}

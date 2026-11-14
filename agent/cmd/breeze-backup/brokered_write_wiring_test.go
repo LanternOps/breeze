@@ -18,7 +18,6 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/mssql"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/storagesession"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
@@ -42,6 +41,8 @@ type writeEnv struct {
 	// busyResolves answers that many objects:resolve calls with
 	// previous_writer_active (Retry-After 1).
 	busyResolves int
+	// storageHook answers a storage request itself when it returns true.
+	storageHook func(w http.ResponseWriter, r *http.Request) bool
 }
 
 func newWriteEnv(t *testing.T) *writeEnv {
@@ -50,7 +51,11 @@ func newWriteEnv(t *testing.T) *writeEnv {
 	e.storage = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		e.mu.Lock()
 		e.storageHeaders = append(e.storageHeaders, r.Header.Clone())
+		hook := e.storageHook
 		e.mu.Unlock()
+		if hook != nil && hook(w, r) {
+			return
+		}
 		q := r.URL.Query()
 		key := q.Get("k")
 		switch r.Method {
@@ -233,7 +238,7 @@ func (e *writeEnv) assertOnlyIssuedKeys() {
 func decoyStore(t *testing.T) (*backup.BackupManager, string) {
 	t.Helper()
 	dir := t.TempDir()
-	return backup.NewBackupManager(backup.BackupConfig{Provider: providers.NewLocalProvider(dir), StagingDir: t.TempDir()}), dir
+	return backup.NewBackupManager(backup.BackupConfig{Provider: privateTestLocalProvider(t, dir), StagingDir: t.TempDir()}), dir
 }
 
 func assertDirEmpty(t *testing.T, dir string) {
@@ -417,7 +422,7 @@ func (r *recordingPrimary) used() []string {
 func TestBrokeredWrite_BackupRunNeverSyncsTheVault(t *testing.T) {
 	e := newWriteEnv(t)
 	primary := &recordingPrimary{}
-	vaultDir := t.TempDir()
+	vaultDir := privateStoreTempDir(t)
 	vault, err := backup.NewVaultManager(backup.VaultConfig{VaultPath: vaultDir}, primary)
 	if err != nil {
 		t.Fatal(err)

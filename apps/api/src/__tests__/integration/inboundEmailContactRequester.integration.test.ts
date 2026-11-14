@@ -85,7 +85,7 @@ function buildEmail(overrides: Partial<NormalizedInboundEmail> & { to: string; f
     providerMessageId: `<msg-${uniqueSuffix()}@customer.test>`,
     subject: 'Hello support',
     text: 'I need help with my printer.',
-    senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
+    senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: overrides.from.split('@')[1]!.toLowerCase() },
     attachments: [],
     raw: {},
     ...overrides,

@@ -1,6 +1,7 @@
 import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
 import { safeErrorMessage } from './aiModels/safeDbError';
-import { db, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
+import { db, runAfterDbContextCommit, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
+import { nudgeConnectionHealth } from './connectionHealth/nudge';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -919,7 +920,29 @@ export function snapshotIndexHydrationReason(params: {
   return null;
 }
 
-export async function applyBackupCommandResultToJob(params: {
+type ApplyBackupCommandResultParams = Parameters<typeof applyBackupCommandResult>[0];
+type ApplyBackupCommandResultOutcome = Awaited<ReturnType<typeof applyBackupCommandResult>>;
+
+/**
+ * Records a backup job's terminal result (see applyBackupCommandResult below).
+ *
+ * #11772: an applied result can change whether its destination is failing, so
+ * the connection-health `backup_destination` source is asked to look again
+ * once the write commits (a rollback drops the request). The nudge coalesces
+ * per kind and never throws, so it costs at most one reconcile of the kind per
+ * delay window whatever the result volume.
+ */
+export async function applyBackupCommandResultToJob(
+  params: ApplyBackupCommandResultParams,
+): Promise<ApplyBackupCommandResultOutcome> {
+  const outcome = await applyBackupCommandResult(params);
+  if (outcome.applied) {
+    runAfterDbContextCommit('backupDestinationHealth.nudge', () => nudgeConnectionHealth('backup_destination'));
+  }
+  return outcome;
+}
+
+async function applyBackupCommandResult(params: {
   jobId: string;
   orgId: string;
   deviceId: string;

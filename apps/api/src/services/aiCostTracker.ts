@@ -819,6 +819,8 @@ export async function getSessionHistory(
   flaggedBy: string | null;
   flagReason: string | null;
   createdAt: Date;
+  /** Set when transcript retention emptied the session (#4342 W4); the admin list labels it. */
+  transcriptPurgedAt: Date | null;
 }>> {
   const limit = Math.min(options.limit ?? 50, 100);
   const offset = options.offset ?? 0;
@@ -842,7 +844,8 @@ export async function getSessionHistory(
       flaggedAt: aiSessions.flaggedAt,
       flaggedBy: aiSessions.flaggedBy,
       flagReason: aiSessions.flagReason,
-      createdAt: aiSessions.createdAt
+      createdAt: aiSessions.createdAt,
+      transcriptPurgedAt: aiSessions.transcriptPurgedAt,
     })
     .from(aiSessions)
     .where(and(...conditions))

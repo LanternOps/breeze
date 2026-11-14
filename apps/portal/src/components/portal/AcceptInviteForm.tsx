@@ -9,8 +9,15 @@ import { cn } from '@/lib/utils';
 import { usePortalAuth } from '@/lib/auth';
 import { navigateTo } from '@/lib/navigation';
 import { safeNextPath } from '@/lib/nextPath';
-import { getInviteMethods, startMicrosoftSignIn, type InviteMethods } from '@/lib/oidc';
+import {
+  getInviteMethods,
+  startGoogleSignIn,
+  startMicrosoftSignIn,
+  type InviteMethods,
+  type StartResult
+} from '@/lib/oidc';
 import { MicrosoftSignInButton } from './MicrosoftSignInButton';
+import { GoogleSignInButton } from './GoogleSignInButton';
 import { BTN_PRIMARY, INPUT } from './ui';
 
 const acceptInviteSchema = z
@@ -57,22 +64,31 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   const [methods, setMethods] = useState<InviteMethods | null>(null);
   const [inviteInvalid, setInviteInvalid] = useState(false);
   const [msBusy, setMsBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const autoStarted = useRef(false);
 
-  const startMicrosoft = async () => {
-    setMsBusy(true);
+  const startSso = async (
+    start: typeof startMicrosoftSignIn,
+    setBusy: (busy: boolean) => void
+  ) => {
+    setBusy(true);
     setError(null);
     const next = safeNextPath(nextParam);
-    const result = await startMicrosoftSignIn({
+    const result: StartResult = await start({
       purpose: 'invite',
       inviteToken: token,
       ...(next ? { next } : {})
     });
-    if (!result.ok) {
-      setError(result.error);
-      setMsBusy(false);
-    }
+    if (result.ok) return;
+    // A 400 from an invite start means this invite can't be used for that
+    // sign-in (e.g. its account already holds that provider's identity): the
+    // same expired-invite state as a dead token, never a different message.
+    if (result.inviteInvalid) setInviteInvalid(true);
+    else setError(result.error);
+    setBusy(false);
   };
+  const startMicrosoft = () => startSso(startMicrosoftSignIn, setMsBusy);
+  const startGoogle = () => startSso(startGoogleSignIn, setGoogleBusy);
 
   useEffect(() => {
     if (!token) return;
@@ -81,18 +97,25 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
       if (cancelled) return;
       if (result.status === 'invalid') setInviteInvalid(true);
       // Any other failure: fall back to today's password form so nothing regresses.
-      else setMethods(result.status === 'ok' ? result.methods : { password: true, microsoft: false });
+      else setMethods(result.status === 'ok' ? result.methods : { password: true, microsoft: false, google: false });
     });
     return () => {
       cancelled = true;
     };
   }, [token]);
 
+  // The invite email's SSO buttons link here with ?method=microsoft|google:
+  // start that provider at once, only when this invite offers it.
   useEffect(() => {
-    if (!methods?.microsoft || autoStarted.current) return;
-    if (new URLSearchParams(window.location.search).get('method') !== 'microsoft') return;
-    autoStarted.current = true;
-    void startMicrosoft();
+    if (!methods || autoStarted.current) return;
+    const method = new URLSearchParams(window.location.search).get('method');
+    if (method === 'microsoft' && methods.microsoft) {
+      autoStarted.current = true;
+      void startMicrosoft();
+    } else if (method === 'google' && methods.google) {
+      autoStarted.current = true;
+      void startGoogle();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [methods]);
 
@@ -150,6 +173,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   // Until the API answers (and on SSR) show today's password form: the pre-hydration
   // safety net must exist in the server HTML, and a failed lookup must not regress.
   const showMicrosoft = methods?.microsoft === true;
+  const showGoogle = methods?.google === true;
   const showPassword = methods?.password !== false;
 
   if (!token || inviteInvalid) {
@@ -195,6 +219,15 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
         />
       )}
 
+      {showGoogle && (
+        <GoogleSignInButton
+          onClick={startGoogle}
+          busy={googleBusy}
+          label="Continue with Google"
+          testId="portal-accept-invite-google"
+        />
+      )}
+
       {!showPassword && error && (
         <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           <AlertCircle className="h-4 w-4" />
@@ -202,7 +235,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
         </div>
       )}
 
-      {showMicrosoft && showPassword && (
+      {(showMicrosoft || showGoogle) && showPassword && (
         <p className="text-center text-xs uppercase tracking-[0.08em] text-muted-foreground">or set a password</p>
       )}
 

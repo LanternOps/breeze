@@ -37,6 +37,13 @@ const RESULT_LABEL_KEYS: Record<string, string> = {
   // route reports the same refusal per id as `domain_not_verified`.
   PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED: 'portalAccessRequests.errors.domainNotVerified',
   domain_not_verified: 'portalAccessRequests.results.domainNotVerified',
+  // W7 (#11384): the same refusal for a google request names its Workspace
+  // domain. The bulk route's per-id code is shared, so the row's source picks
+  // the label (GOOGLE_RESULT_LABEL_KEYS).
+  PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED: 'portalAccessRequests.errors.googleDomainNotVerified',
+};
+const GOOGLE_RESULT_LABEL_KEYS: Record<string, string> = {
+  domain_not_verified: 'portalAccessRequests.results.googleDomainNotVerified',
 };
 const RESULT_FAILED_KEY = 'portalAccessRequests.results.failed';
 
@@ -148,11 +155,15 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
       }
       const done = decision === 'approve' ? 'approved' : 'denied';
       const errors: Record<string, string> = {};
+      const sourceOf = new Map((requests ?? []).map((r) => [r.id, r.source]));
       let succeeded = 0;
       for (const id of ids) {
-        const result = results.get(id);
+        const result = results.get(id) ?? '';
         if (result === done) succeeded += 1;
-        else errors[id] = RESULT_LABEL_KEYS[result ?? ''] ?? RESULT_FAILED_KEY;
+        else {
+          errors[id] = (sourceOf.get(id) === 'google' ? GOOGLE_RESULT_LABEL_KEYS[result] : undefined)
+            ?? RESULT_LABEL_KEYS[result] ?? RESULT_FAILED_KEY;
+        }
       }
       setRowErrors(errors);
       setSelected(new Set());
@@ -260,8 +271,8 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
           </thead>
           <tbody>
             {requests.map((r) => {
-              // W6 D11: approve would be refused, so it is off with the reason shown.
-              const domainUnverified = r.source === 'self' && r.domainVerified === false;
+              // W6 D11 / W7 D8: approve would be refused, so it is off with the reason shown.
+              const domainUnverified = (r.source === 'self' || r.source === 'google') && r.domainVerified === false;
               return (
                 <tr key={r.id} data-testid={`portal-access-request-row-${r.id}`} className="border-b last:border-0 align-top">
                   <td className="py-2">
@@ -301,7 +312,11 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
                       </span>
                     )}
                   </td>
-                  <td className="py-2">{t(/* i18n-dynamic */ SOURCE_LABEL_KEYS[r.source])}</td>
+                  <td className="py-2" data-testid={`portal-access-request-source-${r.id}`}>
+                    {r.source === 'google' && r.googleHostedDomain
+                      ? t('portalAccessRequests.sources.googleWithDomain', { domain: r.googleHostedDomain })
+                      : t(/* i18n-dynamic */ SOURCE_LABEL_KEYS[r.source])}
+                  </td>
                   <td className="py-2">{new Date(r.lastRequestedAt).toLocaleDateString()}</td>
                   <td className="py-2">
                     <div className="flex justify-end gap-2">

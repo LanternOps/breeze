@@ -5,16 +5,29 @@ import { db, withSystemDbAccessContext } from '../db';
 import { partners, partnerServicePrincipalKeys, partnerServicePrincipals, users } from '../db/schema';
 import { ipMatchesAny, isValidIpOrCidr } from './ipMatch';
 import {
+  authorizePartnerServicePrincipalOwner,
+  type PartnerServicePrincipalSurface,
+} from './partnerServicePrincipalOwnerAuthority';
+import {
+  PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR,
+  type PartnerServicePrincipalMcpScope,
   type PartnerServicePrincipalScope,
+  partnerServicePrincipalMcpScopes,
+  partnerServicePrincipalMcpScopesMissingRead,
   validatePartnerServicePrincipalScopes,
 } from './partnerServicePrincipalScopes';
+import { assertActiveTenantContext, TenantInactiveError } from './tenantStatus';
 
 /**
- * Partner service principal (`brz_sp_`) credential lookup, shared by the
+ * Partner service principal (`brz_sp_`) authentication, shared by the
  * Partner API (middleware/partnerApiAuth.ts) and the MCP endpoint
- * (middleware/partnerServicePrincipalMcpAuth.ts) so both surfaces enforce one
- * credential lifecycle. Kept free of the services barrel so the MCP route's
- * import graph stays small.
+ * (middleware/partnerServicePrincipalMcpAuth.ts, reached through
+ * routes/mcpServer.ts) so both surfaces enforce one credential lifecycle AND
+ * one owner check. The only exported way to accept a key is
+ * {@link authenticatePartnerServicePrincipalKey}, which always re-checks the
+ * owner's live authority; the bare lookup is module-private on purpose.
+ * Kept free of the services barrel so the MCP route's import graph stays
+ * small.
  */
 
 export interface PartnerServicePrincipalCredentialFields {
@@ -31,15 +44,29 @@ export interface PartnerServicePrincipalCredentialFields {
 /**
  * A validated credential plus the principal's owner
  * (`partner_service_principals.created_by`) and the user who issued this key
- * (`partner_service_principal_keys.created_by`). Neither is part of the
- * Partner API context. The MCP path uses the owner as the accountable human
- * whose live RBAC bounds the principal's per-tool authority there, and admits
- * only keys the owner issued.
+ * (`partner_service_principal_keys.created_by`).
  */
-export interface PartnerServicePrincipalCredential {
+interface LoadedPartnerServicePrincipalCredential {
   credential: PartnerServicePrincipalCredentialFields;
   ownerUserId: string;
   keyIssuedBy: string;
+}
+
+export type { PartnerServicePrincipalSurface };
+
+/**
+ * A key accepted for one surface. Neither the owner nor the owner's org list
+ * is part of the Partner API context. Over MCP the owner is the accountable
+ * human whose live RBAC bounds the principal's per-tool authority, and
+ * `ownerOrgIds` is the reach of the owner's partner membership.
+ */
+export interface AuthenticatedPartnerServicePrincipal {
+  credential: PartnerServicePrincipalCredentialFields;
+  ownerUserId: string;
+  /** Orgs the owner's partner membership reaches; [] for a platform-admin owner. */
+  ownerOrgIds: string[];
+  /** The principal's MCP (ai:*) scopes, in stored order. */
+  mcpScopes: PartnerServicePrincipalMcpScope[];
 }
 
 const PARTNER_SERVICE_PRINCIPAL_KEY_PATTERN = /^brz_sp_[A-Za-z0-9_-]{43}$/;
@@ -74,18 +101,22 @@ function isExpired(value: Date | string | null | undefined, now: number): boolea
 }
 
 /**
- * Look up and fully validate a key by its SHA-256 digest: key active and
+ * Look up and validate a key by its SHA-256 digest: key active and
  * unexpired, principal active and unexpired, owning partner active and not
  * deleted, the owner's credential and MFA epochs unchanged since the key was
  * issued, stored scopes valid, and the source-CIDR allowlist (when set)
  * matching the trusted client IP. Every failure throws the same generic 401,
  * so a caller cannot tell a revoked key from a disabled principal or an
  * unknown key. Nothing is cached.
+ *
+ * This does NOT check the owner's role, membership or org access, so it is
+ * never exported: {@link authenticatePartnerServicePrincipalKey} is the only
+ * caller.
  */
-export async function loadPartnerServicePrincipalCredential(
+async function loadPartnerServicePrincipalCredential(
   keyHash: string,
   trustedClientIp: string | undefined,
-): Promise<PartnerServicePrincipalCredential> {
+): Promise<LoadedPartnerServicePrincipalCredential> {
   return withSystemDbAccessContext(async () => {
     const [credential] = await db
       .select({
@@ -181,4 +212,67 @@ export async function loadPartnerServicePrincipalCredential(
       keyIssuedBy: credential.keyCreatedBy,
     };
   });
+}
+
+/**
+ * Accept a partner service principal key for one surface, or throw.
+ *
+ * Credential checks first (see the module-private lookup: every failure is
+ * the same generic 401). Over MCP the key must be one its owner issued, the
+ * principal must hold an MCP scope including ai:read, and the partner must
+ * pass the same strict tenant gate a partner-scope OAuth bearer passes. Then,
+ * on both surfaces, the owner's live authority. Nothing is
+ * cached: revocation, disable and an owner's demotion take effect on the next
+ * request. The owner check is services/partnerServicePrincipalOwnerAuthority.ts.
+ */
+export async function authenticatePartnerServicePrincipalKey(
+  keyHash: string,
+  trustedClientIp: string | undefined,
+  surface: PartnerServicePrincipalSurface,
+): Promise<AuthenticatedPartnerServicePrincipal> {
+  const { credential, ownerUserId, keyIssuedBy } = await loadPartnerServicePrincipalCredential(
+    keyHash,
+    trustedClientIp,
+  );
+  const mcpScopes = partnerServicePrincipalMcpScopes(credential.scopes);
+
+  if (surface === 'mcp') {
+    // Over MCP the key acts with its owner's role, so it must be one the owner
+    // issued. Keys another admin issued before issuance became owner-only keep
+    // working on the Partner API (where the principal acts as itself, still
+    // bounded by its owner below) but are refused here; the owner rotates them
+    // to restore MCP access.
+    if (keyIssuedBy !== ownerUserId) {
+      throw invalidCredentials();
+    }
+    if (mcpScopes.length === 0) {
+      throw new HTTPException(403, { message: 'Partner service principal is not granted MCP access' });
+    }
+    if (partnerServicePrincipalMcpScopesMissingRead(mcpScopes)) {
+      throw new HTTPException(403, { message: PARTNER_SERVICE_PRINCIPAL_MCP_READ_REQUIRED_ERROR });
+    }
+    try {
+      await assertActiveTenantContext(
+        { scope: 'partner', partnerId: credential.partnerId, orgId: null },
+        { strictForOauth: true },
+      );
+    } catch (err) {
+      if (err instanceof TenantInactiveError) {
+        throw new HTTPException(401, { message: 'tenant inactive' });
+      }
+      throw err;
+    }
+  }
+
+  const mcpScopeSet = new Set<string>(mcpScopes);
+  const { orgIds } = await authorizePartnerServicePrincipalOwner({
+    ownerUserId,
+    partnerId: credential.partnerId,
+    surface,
+    scopes: surface === 'mcp'
+      ? mcpScopes
+      : credential.scopes.filter((scope) => !mcpScopeSet.has(scope)),
+  });
+
+  return { credential, ownerUserId, ownerOrgIds: orgIds, mcpScopes };
 }

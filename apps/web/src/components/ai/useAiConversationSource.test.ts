@@ -88,6 +88,14 @@ describe('list', () => {
     expect(result.current.error).toBeNull();
   });
 
+  it('carries transcriptPurgedAt through when retention emptied the session (#4342 W4)', async () => {
+    listRows = [row(A, { title: null, transcriptPurgedAt: '2027-02-01T03:15:00.000Z' }), row(B, { transcriptPurgedAt: null })];
+    const { result } = renderHook(() => useAiConversationSource({ surface: 'panel' }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.items[0]).toMatchObject({ id: A, title: null, transcriptPurgedAt: '2027-02-01T03:15:00.000Z' });
+    expect(result.current.items[1]).not.toHaveProperty('transcriptPurgedAt');
+  });
+
   it('panel surface keeps topology rows; workspace surface drops them (D4)', async () => {
     const panel = renderHook(() => useAiConversationSource({ surface: 'panel' }));
     const workspace = renderHook(() => useAiConversationSource({ surface: 'workspace' }));

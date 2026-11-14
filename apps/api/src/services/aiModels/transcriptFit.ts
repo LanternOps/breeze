@@ -55,9 +55,20 @@ export const defaultTranscriptFitDeps: TranscriptFitDeps = {
   },
 };
 
+/**
+ * The transcript budget inside a window: the window minus headroom and an
+ * output allowance. #11396: the fixed 32k floors are each capped at a quarter
+ * of the window, so a small known window (a gateway model at 8k–64k) keeps
+ * half of it for the transcript instead of 0. Windows of 128k and more are
+ * unchanged (a quarter is then ≥ the 32k floors).
+ */
 export function fitLimit(maxInputTokens: number, maxOutputTokens: number | null): number {
-  const headroom = Math.max(TRANSCRIPT_FIT_MIN_HEADROOM_TOKENS, Math.ceil(maxInputTokens * TRANSCRIPT_FIT_HEADROOM_RATIO));
-  const output = Math.min(maxOutputTokens ?? TRANSCRIPT_FIT_OUTPUT_ALLOWANCE_CAP, TRANSCRIPT_FIT_OUTPUT_ALLOWANCE_CAP);
+  const quarter = Math.ceil(maxInputTokens / 4);
+  const headroom = Math.max(
+    Math.min(TRANSCRIPT_FIT_MIN_HEADROOM_TOKENS, quarter),
+    Math.ceil(maxInputTokens * TRANSCRIPT_FIT_HEADROOM_RATIO),
+  );
+  const output = Math.min(maxOutputTokens ?? TRANSCRIPT_FIT_OUTPUT_ALLOWANCE_CAP, TRANSCRIPT_FIT_OUTPUT_ALLOWANCE_CAP, quarter);
   return Math.max(0, maxInputTokens - headroom - output);
 }
 

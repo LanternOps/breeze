@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(vide)",
       "noOutput": "Aucune sortie",
+      "purged": "Sortie supprimée après la période de conservation ({{date}})",
       "title": "Sortie",
       "stdout": "Sortie standard (stdout)",
       "stderr": "Erreur standard (stderr)"

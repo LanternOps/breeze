@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { i18n } from '@/lib/i18n';
 import { showToast } from '../../shared/Toast';
 import { SsoOnlyConfirmDialog } from './SsoOnlyConfirmDialog';
-import type { SsoOnlyImpact } from './types';
+import type { SsoOnlyImpact, SsoProviderSet } from './types';
 
 /**
  * The partner header Save's `sso_only` confirmation (portal registration W4
@@ -18,6 +18,8 @@ interface PendingConfirm {
   impact: SsoOnlyImpact;
   /** A re-ask after a confirmed save met a newer impact. */
   changed: boolean;
+  /** W7 (#11384): the SSO providers the dialog's copy names. */
+  providers: SsoProviderSet;
   resolve: (confirmed: boolean) => void;
 }
 
@@ -51,7 +53,10 @@ export function registerSsoOnlyConfirmHost(): () => void {
 }
 
 /** Shows the impact and resolves true on Confirm, false on Cancel (or with no host). */
-export function requestSsoOnlyConfirm(impact: SsoOnlyImpact, opts: { changed?: boolean } = {}): Promise<boolean> {
+export function requestSsoOnlyConfirm(
+  impact: SsoOnlyImpact,
+  opts: { changed?: boolean; providers?: SsoProviderSet } = {},
+): Promise<boolean> {
   const state = useSsoOnlyConfirmRequests.getState();
   if (state.hosts === 0) {
     console.warn('[ssoOnlyConfirm] no confirmation dialog is mounted; declining the sso_only save');
@@ -61,7 +66,9 @@ export function requestSsoOnlyConfirm(impact: SsoOnlyImpact, opts: { changed?: b
   // A newer request supersedes an unanswered one (which is declined).
   state.respond(false);
   return new Promise<boolean>((resolve) => {
-    useSsoOnlyConfirmRequests.setState({ pending: { impact, changed: opts.changed ?? false, resolve } });
+    useSsoOnlyConfirmRequests.setState({
+      pending: { impact, changed: opts.changed ?? false, providers: opts.providers ?? 'microsoft', resolve },
+    });
   });
 }
 
@@ -83,6 +90,7 @@ export function SsoOnlyConfirmHost() {
       scope="partner"
       impact={pending?.impact ?? null}
       changed={pending?.changed ?? false}
+      providers={pending?.providers ?? 'microsoft'}
       onConfirm={() => respond(true)}
       onCancel={() => respond(false)}
     />

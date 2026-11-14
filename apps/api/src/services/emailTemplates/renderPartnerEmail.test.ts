@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { renderButton } from '../emailLayout';
 import { renderPartnerEmail, type RenderPartnerEmailArgs } from './renderPartnerEmail';
 
 const PORTAL_HREF = 'https://manage.example/portal/tickets/abc';
@@ -296,5 +297,37 @@ describe('replacement patterns in partner text are literal', () => {
       bodyBeforeCta: '<p>Fee: $& and $1</p>',
     }));
     expect(out.html).toContain('<p>Fee: $& and $1</p>');
+  });
+});
+
+// Portal registration W7 (#11384) D12: an invite with both SSO methods carries
+// two primary buttons. The extra buttons sit beside the main one, in its slot.
+describe('extra primary buttons (extraCtas)', () => {
+  const GOOGLE_HREF = 'https://manage.example/portal/accept-invite?token=a&method=google';
+
+  it('renders each extra button right after the main one, in the same slot, as the same button', () => {
+    const out = renderPartnerEmail(commentArgs({ extraCtas: [{ label: 'Sign in with Google', url: GOOGLE_HREF }] }));
+    const main = out.html.indexOf(`href="${PORTAL_HREF}"`);
+    const extra = out.html.indexOf(`href="${GOOGLE_HREF.replaceAll('&', '&amp;')}"`);
+    expect(main).toBeGreaterThan(-1);
+    expect(extra).toBeGreaterThan(main);
+    expect(out.html).toContain(renderButton('Sign in with Google', GOOGLE_HREF));
+    // Nothing of the partner body sits between the two buttons.
+    expect(out.html.slice(main, extra)).not.toMatch(/<p[ >]/);
+    expect(out.bodyText).toContain(`Sign in with Google: ${GOOGLE_HREF}`);
+  });
+
+  it('an unsafe extra URL is dropped, and with no main button there are no extra buttons', () => {
+    const unsafe = renderPartnerEmail(commentArgs({ extraCtas: [{ label: 'Bad', url: 'javascript:alert(1)' }] }));
+    expect(unsafe.html).not.toContain('>Bad</a>');
+    expect(unsafe.html).toBe(renderPartnerEmail(commentArgs()).html);
+    const none = renderPartnerEmail(commentArgs({ ctaUrl: 'javascript:alert(1)', extraCtas: [{ label: 'Sign in with Google', url: GOOGLE_HREF }] }));
+    expect(none.html).not.toContain('Sign in with Google');
+  });
+
+  it('an absent or empty list renders exactly as before', () => {
+    const before = renderPartnerEmail(commentArgs());
+    expect(renderPartnerEmail(commentArgs({ extraCtas: [] }))).toEqual(before);
+    expect(renderPartnerEmail(commentArgs({ extraCtas: undefined }))).toEqual(before);
   });
 });

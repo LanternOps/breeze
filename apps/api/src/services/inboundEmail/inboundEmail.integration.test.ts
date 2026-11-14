@@ -110,7 +110,7 @@ function buildEmail(overrides: Partial<NormalizedInboundEmail> & { to: string; f
     // Default to a sender-authenticated message (R4) so these cross-partner isolation
     // cases keep exercising the trusted match/create paths. An unverified sender is now
     // routed to quarantine before any identity/state action.
-    senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
+    senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: overrides.from.split('@')[1]!.toLowerCase() },
     attachments: [],
     raw: {},
     ...overrides

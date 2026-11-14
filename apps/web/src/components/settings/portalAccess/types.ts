@@ -39,10 +39,14 @@ export interface PortalAccessRequestListItem {
   /**
    * W6 D11 (#11383): for a `self` request, whether the address's domain is
    * still verified for this org (approve refuses with
-   * PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED when it is not). Null for every
-   * other source.
+   * PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED when it is not). W7 (#11384):
+   * for a `google` request, whether its Workspace domain (`googleHostedDomain`)
+   * is (approve refuses with PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED).
+   * Null for every other source.
    */
   domainVerified: boolean | null;
+  /** W7 D8: the Google Workspace domain (`hd`) a `google` request asserted; null for every other source. */
+  googleHostedDomain: string | null;
 }
 
 /** One row of `POST …/portal-access-requests/decide`: 'approved' | 'denied' | an error code. */
@@ -185,10 +189,53 @@ export function withDraftField<K extends PortalAccessPolicyField>(
  * the server's write check for `passwordMode: 'sso_only'`.
  */
 export function draftHasSsoMethod(view: PortalAccessPolicyView, draft: PortalAccessPolicyDraft): boolean {
+  const { microsoft, google } = effectiveSsoProviders(view, draft);
+  return microsoft || google;
+}
+
+/** Which SSO providers are on, or which the deployment can run. */
+export interface SsoProviders { microsoft: boolean; google: boolean }
+
+/**
+ * Which provider names a piece of SSO copy uses (W7 #11384). Copy never names
+ * Google unless Google is in the set, so a deployment without the Google
+ * capability (`capabilities.google`) never shows the word.
+ */
+export type SsoProviderSet = 'microsoft' | 'google' | 'both';
+
+/** Only Google → 'google', both → 'both', otherwise (including neither) the Microsoft wording. */
+export function ssoProviderSet({ microsoft, google }: SsoProviders): SsoProviderSet {
+  if (google) return microsoft ? 'both' : 'google';
+  return 'microsoft';
+}
+
+/** The wording for what the deployment can run (form labels, hints, the fallback notice). */
+export function capabilityProviderSet(capabilities: PortalAccessPolicyView['capabilities']): SsoProviderSet {
+  return ssoProviderSet({ microsoft: capabilities.entra, google: capabilities.google });
+}
+
+/**
+ * Which SSO methods the policy, with the draft applied, has on: the own value
+ * or the inherited one, masked by what the deployment can run and by the org's
+ * evidence. Mirrors the server's write check for `passwordMode: 'sso_only'`.
+ */
+export function effectiveSsoProviders(view: PortalAccessPolicyView, draft: PortalAccessPolicyDraft): SsoProviders {
   // W4 D2: Microsoft counts only where the org's tenant is proven. A partner
   // view carries `null` (the default applies wherever a tenant is proven).
-  const entra = (ownValue(view, draft, 'entraEnabled') ?? view.inherited.entraEnabled.value) && view.capabilities.entra
+  const microsoft = (ownValue(view, draft, 'entraEnabled') ?? view.inherited.entraEnabled.value) && view.capabilities.entra
     && view.entraTenantProven !== false;
-  const google = (ownValue(view, draft, 'googleEnabled') ?? view.inherited.googleEnabled.value) && view.capabilities.google;
-  return entra || google;
+  // W7 D6: Google counts only where the org has a verified domain. A partner
+  // view carries `null` (the default applies wherever a domain is verified).
+  const google = (ownValue(view, draft, 'googleEnabled') ?? view.inherited.googleEnabled.value) && view.capabilities.google
+    && view.verifiedDomainCount !== 0;
+  return { microsoft: !!microsoft, google: !!google };
+}
+
+/**
+ * The wording for the `sso_only` dialog, the stranded list and its invites:
+ * the providers that are on, or, with none on, what the deployment can run.
+ */
+export function effectiveProviderSet(view: PortalAccessPolicyView, draft: PortalAccessPolicyDraft): SsoProviderSet {
+  const providers = effectiveSsoProviders(view, draft);
+  return providers.microsoft || providers.google ? ssoProviderSet(providers) : capabilityProviderSet(view.capabilities);
 }

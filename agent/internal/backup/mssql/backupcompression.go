@@ -33,10 +33,15 @@ func looksLikeCompressionUnsupportedError(output string) bool {
 
 // buildBackupQuery constructs the T-SQL BACKUP statement. includeCompression
 // controls whether WITH COMPRESSION is added; every other clause (INIT,
-// STATS=10, DIFFERENTIAL for differential backups) is unconditional.
-func buildBackupQuery(database, backupFile, backupType string, includeCompression bool) string {
+// STATS=10, DIFFERENTIAL for differential backups) is unconditional. The
+// target file is bound to @backup_file (see bindBackupFile), never written
+// into the statement text.
+func buildBackupQuery(database, backupFile, backupType string, includeCompression bool) (string, error) {
 	escapedDB := strings.ReplaceAll(database, "]", "]]")
-	escapedFile := strings.ReplaceAll(backupFile, "'", "''")
+	fileBinding, err := bindBackupFile(backupFile)
+	if err != nil {
+		return "", err
+	}
 
 	var withClauses []string
 	switch backupType {
@@ -47,7 +52,7 @@ func buildBackupQuery(database, backupFile, backupType string, includeCompressio
 	case "log":
 		// no type-specific clause
 	default:
-		return ""
+		return "", fmt.Errorf("unsupported backup type %q", backupType)
 	}
 	if includeCompression {
 		withClauses = append(withClauses, "COMPRESSION")
@@ -60,9 +65,9 @@ func buildBackupQuery(database, backupFile, backupType string, includeCompressio
 	}
 
 	return fmt.Sprintf(
-		"BACKUP %s [%s] TO DISK='%s' WITH %s",
-		verb, escapedDB, escapedFile, strings.Join(withClauses, ", "),
-	)
+		"%s BACKUP %s [%s] TO DISK=%s WITH %s",
+		fileBinding, verb, escapedDB, backupFileVar, strings.Join(withClauses, ", "),
+	), nil
 }
 
 // executeBackupStatement issues a BACKUP DATABASE/LOG statement via
@@ -73,11 +78,17 @@ func buildBackupQuery(database, backupFile, backupType string, includeCompressio
 // be inspected for other errors, whether the statement that succeeded
 // included COMPRESSION, and any sqlcmd/exec error.
 func executeBackupStatement(serverName, database, backupFile, backupType string, includeCompression bool) (out string, compressed bool, err error) {
-	query := buildBackupQuery(database, backupFile, backupType, includeCompression)
+	query, err := buildBackupQuery(database, backupFile, backupType, includeCompression)
+	if err != nil {
+		return "", includeCompression, err
+	}
 	out, err = runSqlcmd(serverName, query)
 	if err == nil && includeCompression && looksLikeCompressionUnsupportedError(out) {
 		includeCompression = false
-		query = buildBackupQuery(database, backupFile, backupType, includeCompression)
+		query, err = buildBackupQuery(database, backupFile, backupType, includeCompression)
+		if err != nil {
+			return "", includeCompression, err
+		}
 		out, err = runSqlcmd(serverName, query)
 	}
 	return out, includeCompression, err

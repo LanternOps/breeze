@@ -190,4 +190,96 @@ test.describe('BYO OpenAI-compatible connection', () => {
     expect(requests.some((b) => b.messages?.some((m) => m.role === 'tool'))).toBe(true);
     expect(requests.every((b) => b.model === MOCK_MODEL_ID)).toBe(true);
   });
+
+  // --- #11398 W05: tool profile and context window in the drawer -------------
+
+  /** Saves the open drawer and waits for the PATCH; returns its status. */
+  async function saveDrawer(): Promise<number> {
+    const patched = page.waitForResponse((r) => r.request().method() === 'PATCH' && /\/ai\/models\/offerings\/[^/]+$/.test(new URL(r.url()).pathname));
+    await models.offeringSave().click();
+    return (await patched).status();
+  }
+
+  async function openDrawer() {
+    await models.goto();
+    await models.offeringEdit(offeringId).click();
+    await expect(models.offeringDrawer()).toBeVisible();
+    await expect(models.offeringToolsSection()).toBeVisible();
+  }
+
+  test('5. auto with no known window: capacity unknown, every feature Full; verify cost is stated', async () => {
+    await openDrawer();
+    await expect(models.offeringToolProfile()).toHaveValue('auto');
+    await expect(models.offeringContextFacts()).toContainText('Capacity unknown');
+    await expect(models.offeringToolSurface('chat')).toContainText('Full');
+    await expect(models.offeringVerifyCost()).toContainText('billed by your provider');
+    await expect(models.offeringReadiness('chat')).toBeVisible();
+    await models.offeringCancel().click();
+  });
+
+  test('6. set profile standard and override 32768: reload, values persist; back to auto resolves from the override', async () => {
+    await openDrawer();
+    await models.offeringToolProfile().selectOption('standard');
+    await models.offeringContextWindow().fill('32768');
+    expect(await saveDrawer()).toBe(200);
+    await expect(models.offeringDrawer()).toBeHidden({ timeout: 30_000 });
+
+    await page.reload();
+    await models.root().waitFor();
+    await models.offeringEdit(offeringId).click();
+    await expect(models.offeringToolProfile()).toHaveValue('standard');
+    await expect(models.offeringContextWindow()).toHaveValue('32768');
+    await expect(models.offeringToolSurface('chat')).toContainText('Standard');
+
+    // Auto at a 32,768-token window picks Standard for chat (the measured threshold table).
+    await models.offeringToolProfile().selectOption('auto');
+    expect(await saveDrawer()).toBe(200);
+    await openDrawer();
+    await expect(models.offeringContextFacts()).toContainText('32,768');
+    await expect(models.offeringToolSurface('chat')).toContainText('Standard');
+    await expect(models.offeringToolSurface('chat')).toContainText('auto, from the context window');
+
+    // Clearing the override puts Auto back on Full (the mock lists no window).
+    await models.offeringContextWindow().fill('');
+    expect(await saveDrawer()).toBe(200);
+    await openDrawer();
+    await expect(models.offeringContextFacts()).toContainText('Capacity unknown');
+    await expect(models.offeringToolSurface('chat')).toContainText('Full');
+    await models.offeringCancel().click();
+  });
+
+  test('7. a chat turn on a minimal model advertises exactly the curated minimal set (+ chat\'s kept tools)', async () => {
+    await openDrawer();
+    await models.offeringToolProfile().selectOption('minimal');
+    expect(await saveDrawer()).toBe(200);
+
+    const token = await readAccessToken(page);
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+    await mock.reset();
+    const created = await page.request.post('/api/v1/ai/sessions', { headers, data: { title: 'E2E BYO minimal profile' } });
+    expect(created.status()).toBe(201);
+    const { id: sessionId } = (await created.json()) as { id: string };
+    const sent = await page.request.post(`/api/v1/ai/sessions/${sessionId}/messages`, {
+      headers, data: { content: 'List my devices.' }, timeout: 150_000,
+    });
+    expect(sent.status()).toBe(200);
+
+    const bodies = (await mock.requests()).map((r) => r.body as { tools?: Array<{ function?: { name?: string } }> });
+    const withTools = bodies.filter((b) => (b.tools?.length ?? 0) > 0);
+    expect(withTools.length, 'the chat turn reached the mock with tools').toBeGreaterThan(0);
+    const bare = (name: string) => name.replace(/^mcp__.+?__/, '');
+    const advertised = new Set(withTools[0]!.tools!.map((t) => bare(t.function?.name ?? '')));
+    // CHAT_MINIMAL_TOOLS (apps/api/src/services/aiModels/toolProfiles.ts) plus
+    // set_device_context, chat's surface floor (kept under every profile).
+    // propose_action_plan is kept too, but only where the session registers it
+    // (a plan approval mode); the seeded org does not use one.
+    const expected = new Set([
+      'query_devices', 'get_device_details', 'get_device_health', 'get_device_hardware_health', 'get_fleet_health',
+      'get_alert_correlations', 'search_logs', 'analyze_metrics', 'query_audit_log', 'search_documentation',
+      'list_organizations', 'get_org_summary', 'set_device_context',
+    ]);
+    expect([...advertised].sort()).toEqual([...expected].sort());
+    // Every chat surface floor is present.
+    expect(advertised.has('set_device_context')).toBe(true);
+  });
 });

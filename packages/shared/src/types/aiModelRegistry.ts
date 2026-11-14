@@ -4,9 +4,9 @@
  * them unchanged. Never add key material, fingerprints or raw provider config.
  */
 import type { AiConnectionEnvFields, AiConnectionKind } from '../constants/aiConnectionKinds';
-import type { AiSurface } from '../constants/aiSurfaces';
+import type { AiSurface, TOOL_REQUIRING_SURFACES } from '../constants/aiSurfaces';
 import type { EffortLevel, ModelLifecycle, ModelRates, OfferingOptions, OptionSupport } from '../validators/aiModelOptions';
-import type { AiAssignmentWriteRole, AiUsageGroupBy } from '../validators/aiModelRegistryApi';
+import type { AiAssignmentWriteRole, AiToolAllowlist, AiToolProfile, AiUsageGroupBy } from '../validators/aiModelRegistryApi';
 
 export interface AiConnectionDto extends AiConnectionEnvFields {
   /** null for the implicit platform connection. */
@@ -77,15 +77,107 @@ export interface AiOfferingDto {
   updatedAt: string | null;
   /** Gateway-connection offerings only; null for platform / anthropic_byok / catalog. */
   verification: AiOfferingVerificationDto | null;
+  /**
+   * #11396: what is known about the model's context window, and what `auto`
+   * uses. Gateway-connection offerings only (the only ones a window can
+   * narrow); null for platform / anthropic_byok / catalog.
+   */
+  contextWindow: AiOfferingContextWindowDto | null;
+  /**
+   * #11398: the tool profile set on this model (partner level; organizations
+   * choose models, they cannot override it) and what each surface resolves
+   * to now. Every offering carries it; a synthesized platform row is `auto`.
+   */
+  toolProfile: AiOfferingToolProfileDto;
+}
+
+/** #11398: the surfaces a tool profile narrows. */
+export const AI_TOOL_PROFILED_SURFACES = ['chat', 'helper', 'script_builder', 'ai_agents', 'office_chat'] as const;
+export type AiToolProfiledSurface = (typeof AI_TOOL_PROFILED_SURFACES)[number];
+
+/**
+ * #11398: why a surface resolves to its profile.
+ *  - `explicit`: the partner chose a profile other than `auto`;
+ *  - `auto_window`: `auto` picked from the known context window (see `contextWindow.source`);
+ *  - `auto_unknown_window`: `auto` with no known window stays `full`;
+ *  - `auto_unmeasured`: `auto` on a surface whose prompt size is not measured stays `full`.
+ */
+export type AiToolProfileReason = 'explicit' | 'auto_window' | 'auto_unknown_window' | 'auto_unmeasured';
+
+export interface AiOfferingToolSurfaceDto {
+  surface: AiToolProfiledSurface;
+  /** The profile the surface applies now; `too_small` = no profile fits the window, so sessions refuse. */
+  resolved: 'full' | 'standard' | 'minimal' | 'custom' | 'too_small';
+  reason: AiToolProfileReason;
+  /** What `auto` would pick here at the known window (null = window unknown), so an explicit profile too large for the window shows. */
+  autoProfile: 'full' | 'standard' | 'minimal' | 'too_small' | null;
+  /**
+   * Tools the surface requires that the resolved profile drops; the surface
+   * refuses (`tool_profile_underpowered`) while this is non-empty. For
+   * `ai_agents` it is the device-troubleshooting run's floor (other runs keep
+   * their outcome tools under every profile).
+   */
+  missingRequired: string[];
+}
+
+export interface AiOfferingToolProfileDto {
+  profile: AiToolProfile;
+  allowlist: AiToolAllowlist | null;
+  surfaces: AiOfferingToolSurfaceDto[];
+  /** Stored `custom` tool names no surface declares any more (ignored at runtime). */
+  droppedCustomNames: string[];
+  /** A context window override applies to BYO OpenAI-compatible endpoint models only. */
+  windowOverrideSupported: boolean;
+}
+
+/**
+ * #11396: the evidence behind an offering's effective context window. The
+ * override is kept apart from what was discovered or observed, so clearing it
+ * restores the evidence underneath. A stale or re-versioned observation is
+ * still shown (`fresh: false`) but no longer constrains.
+ */
+export interface AiOfferingContextWindowDto {
+  /** The window `auto` and the gateway use; null = unknown (`auto` stays full). */
+  effective: number | null;
+  source: 'override' | 'discovered' | 'observed' | 'unknown';
+  override: number | null;
+  /** Stated by the endpoint's model listing on the last discovery sync that listed the model. */
+  discovered: number | null;
+  /** Stated by the endpoint in a context-length rejection. */
+  observed: { value: number; at: string; fresh: boolean } | null;
 }
 
 export type OfferingVerificationState = 'unverified' | 'verified' | 'failed' | 'stale';
+
+/** #11397: a surface that needs tools (and so can carry a verify `surface_turn` verdict). */
+export type AiToolSurface = (typeof TOOL_REQUIRING_SURFACES)[number];
+/**
+ * #11397: one surface's verify round trip, judged against the CURRENT endpoint
+ * and the tool profile the surface resolves to now. Only `failed` refuses the
+ * surface; `inconclusive` (the endpoint failed, not the model), `stale` and
+ * `absent` (never run, e.g. records from before W04, or Office) refuse nothing.
+ */
+export type AiSurfaceReadinessState = 'passed' | 'failed' | 'inconclusive' | 'stale' | 'absent';
+export interface AiSurfaceReadinessDto {
+  state: AiSurfaceReadinessState;
+  at: string | null;
+  /** The resolved profile the turn ran under. */
+  profile: 'full' | 'standard' | 'minimal' | 'custom' | null;
+  /** The turn's first-request prompt tokens (cache reads/writes included), as the endpoint reported them. */
+  promptTokens: number | null;
+  cachedTokens: number | null;
+  /** Short, scrubbed reason when not passed (≤ 200 chars). */
+  summary: string | null;
+}
+
 export interface AiOfferingVerificationDto {
   state: OfferingVerificationState;
   at: string | null;
   harnessVersion: string | null;
   /** Short, scrubbed reason for 'failed' (≤ 200 chars). */
   summary: string | null;
+  /** #11397: per tool surface; every surface `absent` until a verify runs a surface turn on it. */
+  surfaces: Record<AiToolSurface, AiSurfaceReadinessDto>;
 }
 
 export interface AiAssignmentRowDto {

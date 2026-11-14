@@ -52,6 +52,7 @@ vi.mock('../db/schema', () => ({
     totalCostCents: 'aiSessions.totalCostCents',
     lastActivityAt: 'aiSessions.lastActivityAt',
     createdAt: 'aiSessions.createdAt',
+    transcriptPurgedAt: 'aiSessions.transcriptPurgedAt',
   },
   aiMessages: { sessionId: 'aiMessages.sessionId', content: 'aiMessages.content', role: 'aiMessages.role', createdAt: 'aiMessages.createdAt' },
   aiToolExecutions: {},
@@ -119,6 +120,11 @@ describe('listSessions (#9427)', () => {
       title: 'aiSessions.title',
       status: 'aiSessions.status',
     });
+  });
+
+  it('projects transcriptPurgedAt so the list can label a retention stub (#4342 W4)', async () => {
+    await listSessions(auth, {});
+    expect(calls.selects[0]!.projection).toMatchObject({ transcriptPurgedAt: 'aiSessions.transcriptPurgedAt' });
   });
 });
 

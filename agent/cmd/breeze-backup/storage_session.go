@@ -14,6 +14,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
+	"github.com/breeze-rmm/agent/internal/backup/mssql"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/storagesession"
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -255,6 +256,11 @@ func isBrokeredProvider(provider providers.BackupProvider) bool {
 // expectation: then the file always comes from the snapshot and is checked
 // against its manifest entry before its path is returned).
 func resolveBrokeredMSSQLArtifact(instance string, provider providers.BackupProvider, snapshotID, backupFile string, expect *integrity.Expectation) (string, func(), []string, error) {
+	if backupFile != "" {
+		if err := mssql.ValidateBackupArtifactPath(backupFile); err != nil {
+			return "", nil, nil, err
+		}
+	}
 	if snapshotID == "" {
 		trimmed := strings.TrimSpace(backupFile)
 		if trimmed != "" && filepath.IsAbs(trimmed) && !expect.Present() {

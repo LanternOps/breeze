@@ -11,6 +11,8 @@ import net from 'net';
 import type { AddressInfo, LookupFunction } from 'net';
 import {
   safeFetch,
+  safeFetchFollowingRedirects,
+  ResponseDeadlineError,
   ResponseHeadersTimeoutError,
   __setLookupForTests
 } from './urlSafety';
@@ -131,3 +133,100 @@ describe('safeFetch — headersTimeoutMs covers connect + headers only', () => {
   }, 5000);
 });
 
+
+describe('safeFetch — deadlineMs bounds the whole exchange', () => {
+  let close: (() => void) | undefined;
+
+  beforeEach(() => {
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
+    dialLocally();
+  });
+
+  afterEach(() => {
+    close?.();
+    close = undefined;
+    __setLookupForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  /** Headers at once, then a body that keeps arriving and never completes. */
+  async function unfinishedBodyServer(everyMs: number) {
+    return rawServer((sock) => {
+      sock.write('HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n');
+      const timer = setInterval(() => {
+        if (sock.destroyed) { clearInterval(timer); return; }
+        sock.write('x');
+      }, everyMs);
+      sock.on('close', () => clearInterval(timer));
+    });
+  }
+
+  it('a body that is still arriving ends at the total deadline', async () => {
+    const s = await unfinishedBodyServer(40);
+    close = s.close;
+    const started = Date.now();
+    await expect(safeFetch(`http://upstream.example:${s.port}/x`, { timeoutMs: 200, deadlineMs: 300 }))
+      .rejects.toBeInstanceOf(ResponseDeadlineError);
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(250);
+    expect(elapsed).toBeLessThan(1000);
+  }, 3000);
+
+  it('a streamed body is failed at the deadline', async () => {
+    const s = await unfinishedBodyServer(40);
+    close = s.close;
+    const res = await safeFetch(`http://upstream.example:${s.port}/x`, { streamResponse: true, deadlineMs: 300 });
+    const started = Date.now();
+    await expect(res.text()).rejects.toBeInstanceOf(ResponseDeadlineError);
+    expect(Date.now() - started).toBeLessThan(1000);
+  }, 3000);
+
+  it('a stalled lookup ends at the deadline', async () => {
+    __setLookupForTests(() => new Promise<never>(() => {}));
+    const started = Date.now();
+    await expect(safeFetch('https://stalled.example/x', { deadlineMs: 100 }))
+      .rejects.toBeInstanceOf(ResponseDeadlineError);
+    expect(Date.now() - started).toBeLessThan(500);
+  }, 2000);
+
+  it('a response that completes before the deadline is unaffected', async () => {
+    const s = await rawServer('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok');
+    close = s.close;
+    const res = await safeFetch(`http://upstream.example:${s.port}/x`, { deadlineMs: 1000 });
+    expect(await res.text()).toBe('ok');
+  }, 3000);
+});
+
+describe('safeFetchFollowingRedirects — one deadline for the whole chain', () => {
+  const closers: Array<() => void> = [];
+
+  beforeEach(() => {
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
+    dialLocally();
+  });
+
+  afterEach(() => {
+    for (const close of closers.splice(0)) close();
+    __setLookupForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  it('reports the caller\'s deadline, and the chain as a whole ends at it', async () => {
+    const target = await rawServer(() => { /* never answers */ });
+    closers.push(target.close);
+    const redirect = await rawServer((sock) => {
+      setTimeout(() => sock.end(
+        `HTTP/1.1 302 Found\r\nLocation: http://upstream.example:${target.port}/next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+      ), 150);
+    });
+    closers.push(redirect.close);
+    const started = Date.now();
+    const failure = await safeFetchFollowingRedirects(`http://upstream.example:${redirect.port}/x`, { deadlineMs: 400 })
+      .catch((err: unknown) => err);
+    const elapsed = Date.now() - started;
+    expect(failure).toBeInstanceOf(ResponseDeadlineError);
+    expect((failure as ResponseDeadlineError).deadlineMs).toBe(400);
+    expect((failure as Error).message).toContain('400ms');
+    expect(elapsed).toBeLessThan(900);
+  }, 5000);
+});

@@ -543,6 +543,10 @@ export async function redeemShortCode(
       .select()
       .from(enrollmentKeys)
       .where(eq(enrollmentKeys.shortCode, shortCode))
+      // Row lock: a concurrent rotation of this link waits until the child
+      // below is recorded, so its cleanup sees the child (or this lookup sees
+      // the rotated link and its new short code).
+      .for('update')
       .limit(1);
 
     if (!parent) return null;
@@ -571,6 +575,10 @@ export async function redeemShortCode(
         expiresAt: freshChildExpiresAt(cappedTtlMinutes),
         createdBy: null,
         installerPlatform: parent.installerPlatform,
+        // Same lineage as the /s/ short-link child: rotating the invite link
+        // removes unused installer keys minted from its previous generation.
+        sourceLinkKeyId: parent.id,
+        sourceLinkKeyGeneration: parent.credentialGeneration,
       })
       .returning();
 
@@ -1875,9 +1883,10 @@ enrollmentKeyRoutes.post(
     // epochs; a concurrently claimed child is preserved by usage_count = 0.
     // Two independent lineages feed into this: bootstrap-token-derived
     // children (installer_bootstrap_tokens.parent_enrollment_key_id) and
-    // /s/:code short-link-derived children (enrollment_keys.source_link_key_id
-    // — stamped directly against this parent, with no bootstrap-token row in
-    // between). Rotation revokes unused children from both lineages.
+    // /s/:code and /i/:code short-link-derived children
+    // (enrollment_keys.source_link_key_id — stamped directly against this
+    // parent, with no bootstrap-token row in between). Rotation revokes unused
+    // children from both lineages.
     const revokedDerivedKeys = await db
       .delete(enrollmentKeys)
       .where(

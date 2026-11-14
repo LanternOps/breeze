@@ -1438,14 +1438,44 @@ export function shouldReportHeldContextSite(key: string): boolean {
   return true;
 }
 
-export function assertOutsideHeldDbContext(operation: string): void {
-  if (!hasDbAccessContext()) {
+/**
+ * True while this async scope's OUTERMOST context still holds its pooled
+ * connection, even inside `runOutsideDbContext`. That helper only re-routes
+ * new queries to the pool; the transaction that opened the context, and its
+ * connection, stay open until the context's callback returns. The permit store
+ * is the one runOutsideDbContext deliberately leaves in place, and a permit is
+ * released when its transaction settles, so work that outlives the context
+ * (deferred tasks, fire-and-forget promises) reads false here.
+ */
+export function isPooledConnectionHeld(): boolean {
+  if (hasDbAccessContext()) return true;
+  const slot = poolSlotStorage.getStore();
+  return slot !== undefined && !slot.released;
+}
+
+export interface AssertOutsideHeldDbContextOptions {
+  /**
+   * Also report when the caller sits inside `runOutsideDbContext` while an
+   * outer context still holds its connection. Use it for waits on another
+   * host, where runOutsideDbContext moves the queries but not the held
+   * connection.
+   */
+  includeOuterTransaction?: boolean;
+}
+
+export function assertOutsideHeldDbContext(operation: string, options: AssertOutsideHeldDbContextOptions = {}): void {
+  const inContext = hasDbAccessContext();
+  if (!inContext && !(options.includeOuterTransaction && isPooledConnectionHeld())) {
     return;
   }
-  const message =
-    `${operation} ran inside a held withDbAccessContext transaction — it pins a pooled `
-    + `connection idle-in-transaction across slow work (#1105). Move it after the context `
-    + `closes or wrap it in runOutsideDbContext().`;
+  const message = inContext
+    ? `${operation} ran inside a held withDbAccessContext transaction — it pins a pooled `
+      + `connection idle-in-transaction across slow work (#1105). Move it after the context `
+      + `closes or wrap it in runOutsideDbContext().`
+    : `${operation} ran inside runOutsideDbContext while an outer withDbAccessContext `
+      + `transaction still holds its pooled connection (#1105). runOutsideDbContext does not `
+      + `release that connection: run the work after the outer context closes, or let the `
+      + `route own its DB context (SELF_MANAGED_DB_CONTEXT_ROUTES).`;
   if (STRICT_TRIPWIRE_VALUES.has((process.env.DB_CONTEXT_TRIPWIRE_STRICT ?? '').trim().toLowerCase())) {
     throw new Error(message);
   }

@@ -1,0 +1,107 @@
+---
+title: Google Sign-in for the Customer Portal
+description: Turn on Sign in with Google for the browser portal using a customer's verified domains, choose a first-sign-in mode, and control which Google Workspace users can sign in.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Sign in with Google lets people in a customer organization reach the [Customer Portal](/features/portal/) with their Google Workspace (or Cloud Identity) account instead of a Breeze password. Google sign-in has no separate proof step. It relies on the customer's [verified domains](/features/portal-domain-verification/): a person can sign in only when the domain Google reports for their account is verified for that organization. This page covers the settings, what happens when a domain stops being verified, and what the customer's Google administrator can control.
+
+<Aside>
+  Google sign-in is only offered when the Breeze deployment has a portal Google OAuth client configured. Until then the Google row does not appear on the Sign-in & registration card at all. Self-hosters: see the `PORTAL_GOOGLE_*` variables in [Environment variables](/deploy/environment/#customer-portal-google-sign-in-optional).
+</Aside>
+
+<Aside type="caution">
+  Google sign-in is new. Some of the Google-side behaviour on this page, in particular which domain Google reports for people on secondary or alias domains, has not yet been confirmed against a live Google Workspace. This page will be updated as it is.
+</Aside>
+
+## For MSPs
+
+### Requirements
+
+- **A verified domain that matches the person's Workspace domain.** Google reports a hosted domain for every managed account (the `hd` claim in the sign-in token). Breeze places the person in the organization that has exactly that domain verified, and in no other. The domain of the email address and anything in the sign-in link never decide the organization. See [Customer domain verification](/features/portal-domain-verification/); any of its methods (DNS, Microsoft or Google Workspace directory) counts.
+- **Google sign-in configured on the deployment.** On hosted Breeze it is set up for you. Self-hosters set it up once; see [Environment variables](/deploy/environment/#customer-portal-google-sign-in-optional).
+
+For a person whose primary address is on a secondary or alias domain of the customer's Workspace, Google may report the Workspace's **primary** domain rather than the domain of the address. Verify every domain the customer's people sign in with, including the Workspace primary domain.
+
+**Personal Gmail and consumer Google accounts are never accepted.** They carry no hosted domain, so Breeze refuses them, even when a consumer Google account was created on a company address.
+
+### Turn Google on
+
+Google sign-in is a setting at two levels, like the rest of Sign-in & registration (**Google sign-in** on the card):
+
+- **Organization override** (**Settings → Organizations → [organization] → Customer Portal → Sign-in & registration**). Can be turned on only while the organization has at least one verified domain. Otherwise saving is refused and the Google row shows "Verify one of this organization's domains under Organization › Domains before turning on Google sign-in." Under the Google row the card lists the organization's verified domains, or links to **Domains** when there are none.
+- **Partner default** (**Settings → Partner → Customer portal**). Means "on wherever a domain is verified", and has no effect on organizations without one.
+
+<Aside>
+  The card's labels name the providers your deployment can run. With both, you see **Microsoft / Google** wording as quoted on this page; a deployment with only Google shows, for example, **First Google sign-in**, **Google session length (hours)** and **Off — Google only**.
+</Aside>
+
+### First sign-in
+
+When someone signs in with Google for the first time and has no portal account, **First Microsoft / Google sign-in** decides what happens. It is one setting for both providers.
+
+| Mode | Result |
+|---|---|
+| **Invited people only** | Only people you have already invited can sign in. Anyone else is turned away. |
+| **Needs approval** | The person lands in [Access requests](/features/portal/#access-requests), which shows the Workspace domain they signed in with. You approve or deny them. |
+| **Instant** | Anyone whose Workspace domain is verified for the organization gets an account straight away. |
+
+**We recommend Needs approval for organizations that use Google.** A verified domain proves who controlled the domain when it was checked, not that the same Google Workspace still owns it (see [When a customer leaves](#when-a-customer-leaves)). Approval puts your decision in front of every new person.
+
+Approving a Google request is refused if its Workspace domain is no longer verified for the organization. Verify the domain again, or deny the request.
+
+When the person's address is on a domain verified for the organization, the new account is linked to the matching contact. Otherwise it is created without a contact.
+
+### Existing accounts and invites
+
+Breeze matches a Google sign-in to an account by Google's account ID, **never by email address**.
+
+- Someone who already has a portal login with a password at the same address is told "You already have an account. Sign in with your password and connect Google, or ask your IT provider to re-invite you." They connect Google from their portal profile, and after that can sign in with Google.
+- Invite emails offer **Sign in with Google** when Google sign-in is on for the organization (next to Sign in with Microsoft when both are on). An invited person who signs in with Google is linked to their invitation.
+- If the person already has a pending access request made with a different sign-in (for example with Microsoft, or with another Google account at the same address), the sign-in tells them a request is already pending and creates nothing. Review the existing request (deny it if it is not theirs); they can then sign in again.
+
+### Session length and Google-only sign-in
+
+Google sessions use the same **Microsoft / Google session length (hours)** as Microsoft, from 1 to 168 hours. There is no separate Google setting. See [Session length](/features/portal-microsoft-sign-in/#session-length).
+
+**Password sign-in → Off — Microsoft/Google only** works with Google the same way as with Microsoft: the confirmation dialog lists people whose password will be removed (they are connected to Microsoft or Google) and people who can't sign in yet (connected to neither), and you can send them sign-in invites. See [Microsoft-only sign-in](/features/portal-microsoft-sign-in/#microsoft-only-sign-in).
+
+### Shared portal address only
+
+Google sign-in works on the shared portal address. It does not yet work on a [custom portal domain](/features/portal/): a sign-in started there can't complete. People whose organization uses a custom portal domain sign in with Google from the shared portal address.
+
+### When a domain stops being verified
+
+A domain stops being verified when you remove its verification, when it fails its re-checks or goes stale, or when another organization takes it over. Partner admins are emailed for the automatic cases; see [Keeping verification current](/features/portal-domain-verification/#keeping-verification-current).
+
+From the next portal request:
+
+- Google sessions that signed in with that domain end. Other domains that are still verified keep working.
+- If the organization has **no** verified domain left, Google sign-in turns off for it.
+- If password sign-in was **Off — Microsoft/Google only** and Google was its only SSO method, password sign-in comes back so nobody is locked out by the policy. The card shows "Password sign-in is on because no Microsoft or Google sign-in is enabled."
+
+Password sign-in coming back only helps accounts that still have a password. Accounts that only ever signed in with Google, and accounts whose password was removed when Google-only sign-in was saved, can't sign in until the domain is verified again or you re-invite them.
+
+### When a customer leaves
+
+When a customer stops working with you, **Remove verification** on each of their domains (**Settings → Organizations → [organization] → Domains**), and ask the customer to delete the `_breeze-verify` TXT record from their DNS.
+
+This matters because Breeze trusts the domain, not a particular Google Workspace. If the domain moves to a different Google Workspace while your old verification still passes (a TXT record left in place keeps passing its checks), that Workspace's users could reach your organization under its first-sign-in mode. Removing the verification closes this, and Needs approval mode means a person would land in your queue rather than get an account.
+
+## For the customer's Google admin
+
+Your MSP has turned on Sign in with Google for your organization's support portal. Your people sign in with their Google Workspace account, the same one they use for Gmail and Drive. Personal Google accounts can't be used.
+
+### What the app asks for
+
+The first time someone signs in, Google shows a consent screen for the portal app (named **Breeze Portal** on hosted Breeze; a self-hosting MSP chooses its own name). It asks only for `openid`, `email` and `profile`: who the person is, their email address and their name. This app does not read mail, files, calendars or your directory.
+
+### Control who can sign in
+
+You control access to third-party apps in the Google Admin console under **Security › Access and data control › API controls › App access control**. Google's naming may differ slightly in your console. Find the portal app by name or by its OAuth client ID (your MSP can give you both).
+
+- **If your MSP uses instant sign-in:** mark the portal app as **Trusted** for the organizational units whose people should have portal access. This keeps the decision about who gets in on your side, because anyone allowed by Google gets a portal account straight away.
+- **If your MSP uses approval:** leaving the app at your default access is enough. Every new person's request waits for your MSP to approve it.
+
+If you restrict access to third-party apps, make sure apps that only use Google sign-in are allowed, or mark the portal app as Trusted. Otherwise Google blocks the sign-in before it reaches Breeze. To limit sign-in to selected organizational units, the units without access must not allow third-party sign-in apps at all; check Google's documentation for how your settings combine.

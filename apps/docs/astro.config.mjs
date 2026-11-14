@@ -233,6 +233,7 @@ export default defineConfig({
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
                 { slug: 'features/portal-microsoft-sign-in' },
+                { slug: 'features/portal-google-sign-in' },
                 { slug: 'features/portal-domain-verification' },
                 { slug: 'features/portal-self-registration' },
                 { slug: 'features/setup-wizard' },

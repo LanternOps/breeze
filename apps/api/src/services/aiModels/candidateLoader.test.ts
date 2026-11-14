@@ -515,3 +515,29 @@ describe('platformCandidateFacts: synthesized platform rows match the loader (W0
     expect(synthesized).toMatchObject({ ownerPartnerId: 'p1', enabled: false, lifecycle: 'available', requiredPermission: null, catalog: null });
   });
 });
+
+describe('W02 activation scope: the Anthropic transport never learns a window (#11396)', () => {
+  // Every window column set, as if a future write landed on these rows: the
+  // platform and BYOK candidates must still answer an unknown window, so
+  // `auto` keeps every hosted / Anthropic-transport model on `full`.
+  const WINDOWED = {
+    contextWindowOverride: 16_384, contextWindowDiscovered: 8_192,
+    contextWindowObserved: 8_192, contextWindowObservedAt: new Date(), contextWindowObservedConfigVersion: 4,
+  };
+
+  it('platform offering: effectiveWindow null, no grant seed, limits from the platform row', async () => {
+    m.getOffering.mockResolvedValue({ ...BASE_OFFERING, ...WINDOWED });
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.toolProfileFacts).toMatchObject({ toolProfile: 'auto', effectiveWindow: null, transport: 'anthropic' });
+    expect(c.contextWindow ?? null).toBeNull();
+    expect(c.limits.maxInputTokens).toBe(200000);
+  });
+
+  it('BYOK offering: effectiveWindow null, no grant seed', async () => {
+    m.getOffering.mockResolvedValue({ ...BASE_OFFERING, connectionId: 'conn-1', source: 'discovered', modelId: 'claude-sonnet-5-5', ...WINDOWED });
+    m.getConnection.mockResolvedValue(BYOK_CONN);
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.toolProfileFacts).toMatchObject({ toolProfile: 'auto', effectiveWindow: null, transport: 'anthropic' });
+    expect(c.contextWindow ?? null).toBeNull();
+  });
+});

@@ -20,3 +20,23 @@ describe('manage_backup_configs provider', () => {
     expect(def.input_schema.properties.provider.enum).toEqual(['s3', 'local']);
   });
 });
+
+describe('manage_backup_configs local destination path', () => {
+  const schema = toolInputSchemas['manage_backup_configs']!;
+
+  it.each(['\\\\nas\\breeze', '//nas/breeze', '\\\\?\\UNC\\nas\\breeze'])('refuses a local destination on %s', (path) => {
+    const result = schema.safeParse({ action: 'create', name: 'd', type: 'file', provider: 'local', providerConfig: { path } });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error)).toMatch(/not supported/);
+  });
+
+  it.each([[{ Path: '\\\\nas\\breeze' }], [{ PATH: '\\\\nas\\breeze' }], [{}]])('refuses local settings %j', (providerConfig) => {
+    const result = schema.safeParse({ action: 'create', name: 'd', type: 'file', provider: 'local', providerConfig });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a local destination on an attached disk', () => {
+    const result = schema.safeParse({ action: 'create', name: 'd', type: 'file', provider: 'local', providerConfig: { path: 'D:\\BreezeBackups' } });
+    expect(result.success).toBe(true);
+  });
+});

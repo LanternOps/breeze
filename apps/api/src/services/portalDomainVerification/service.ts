@@ -927,6 +927,54 @@ export async function isDomainVerifiedForOrg(domain: string, orgId: string): Pro
   return fact?.orgId === orgId;
 }
 
+/** `db` or a transaction handle: the CALLER's transaction. */
+type DomainLockExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * The fence for a write that a {@link findOrgByVerifiedDomain} fact authorized
+ * (W7 plan D8 approval, D15 sign-in). The fact was read with no lock, outside
+ * the caller's transaction; this re-reads "the row W5 verified" INSIDE it:
+ * the org's active row for `domain` whose `verified_at` is the one the fact
+ * observed, `FOR SHARE`, held to the caller's commit. False when there is no
+ * such row: the verification lapsed, was removed, displaced or re-verified,
+ * the row was repointed, renamed or turned off. The caller refuses.
+ *
+ * Why this serializes: every W5 writer that ends a verification takes a row
+ * lock on that row first and never locks a portal row — the transfer
+ * (`commitVerification`: advisory lock, then `selectVerifiedIncumbent(…, true)`
+ * FOR UPDATE), the worker clear (`recheckCustomerDomain`: `selectRowById(…,
+ * true)`), `removeCustomerDomainVerification` (FOR UPDATE), and the CRUD
+ * `updateCustomerEmailDomain` / `deleteCustomerEmailDomain` (a plain UPDATE /
+ * DELETE row lock, which conflicts with FOR SHARE). So such a writer either
+ * waits for the caller to commit, or committed first, and READ COMMITTED's
+ * re-check of the WHERE on the new row version then finds no row.
+ *
+ * Not a currency check: the evidence re-check at use (D6) is the fact's job.
+ * `verified_at` is compared at millisecond precision: the fact came through a
+ * JS Date, and W5 writes `verified_at` from one, but a value with microseconds
+ * must not fence closed forever.
+ *
+ * Runs under the caller's context: a request (partner) context sees only its
+ * own partner's rows, a sign-in runs under system scope.
+ */
+export async function lockVerifiedDomainRow(
+  tx: DomainLockExecutor,
+  input: { orgId: string; domain: string; verifiedAt: Date },
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: customerEmailDomains.id })
+    .from(customerEmailDomains)
+    .where(and(
+      eq(customerEmailDomains.orgId, input.orgId),
+      sql`lower(${customerEmailDomains.domain}) = ${normalizeDomain(input.domain)}`,
+      sql`date_trunc('milliseconds', ${customerEmailDomains.verifiedAt}) = ${input.verifiedAt.toISOString()}::timestamptz`,
+      eq(customerEmailDomains.isActive, true),
+    ))
+    .limit(1)
+    .for('share');
+  return Boolean(row);
+}
+
 export async function listVerifiedDomainsForOrg(orgId: string): Promise<VerifiedDomainFact[]> {
   return inSystemContext('listVerifiedDomainsForOrg', async () => {
     const rows = await db

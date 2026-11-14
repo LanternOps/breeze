@@ -123,7 +123,15 @@
     "retentionKeepDays": "Aufbewahren für (Tage)",
     "retentionKeepForever": "Unbegrenzt aufbewahren",
     "retentionBreezeDefault": "Breeze-Standard: {{days}} Tage",
-    "partnerRetentionHelp": "Legen Sie fest, wie lange KI-Tool-Ausgaben aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt."
+    "partnerRetentionHelp": "Legen Sie fest, wie lange KI-Tool-Ausgaben aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt.",
+    "transcriptLabel": "Techniker-KI-Unterhaltungen aufbewahren für (Tage)",
+    "transcriptHelp": "Sobald die Durchsetzung der Aufbewahrung aktiv ist, verlieren ältere Unterhaltungen beim nächtlichen Lauf Nachrichten, Titel und Tool-Details; der Sitzungsdatensatz behält Kosten, Modell und Anzahl der Runden. Markierte Unterhaltungen bleiben erhalten. Leer übernimmt den geerbten Wert.",
+    "transcriptAuditNote": "Audit-Protokolleinträge zu einer Techniker-Sitzung, einschließlich Tool-Eingaben, folgen dem Aufbewahrungszeitraum des Audit-Protokolls, nicht diesem.",
+    "transcriptClientNote": "Client-KI-Unterhaltungen (AI for Office) haben einen eigenen Zeitraum.",
+    "transcriptClientLink": "Aufbewahrungseinstellungen für Client-KI",
+    "transcriptAboveCeiling": "Ihr Partner bewahrt Techniker-KI-Unterhaltungen höchstens {{days}} Tage auf.",
+    "partnerTranscriptHelp": "Legen Sie fest, wie lange Techniker-KI-Unterhaltungen aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Organisationen können den Zeitraum nur verkürzen. Sobald die Durchsetzung der Aufbewahrung aktiv ist, verlieren ältere Unterhaltungen beim nächtlichen Lauf Nachrichten, Titel und Tool-Details.",
+    "invalidDays": "Geben Sie eine ganze Zahl von Tagen ein."
   },
   "partnerServicePrincipals": {
     "title": "Dienstprinzipale",
@@ -592,7 +600,74 @@
       "removeTitle": "Dieses Modell entfernen?",
       "removeMessage": "„{{model}}“ wird aus dieser Verbindung gelöscht. Bisherige Nutzungs- und Kostendaten bleiben erhalten. Sie können es später erneut hinzufügen.",
       "removed": "Modell entfernt",
-      "removeFailed": "Das Modell konnte nicht entfernt werden. Versuchen Sie es erneut."
+      "removeFailed": "Das Modell konnte nicht entfernt werden. Versuchen Sie es erneut.",
+      "tools": {
+        "title": "Tools und Kontext",
+        "partnerOnly": "Wird vom Partner am Modell festgelegt. Organisationen wählen Modelle aus; sie können dies nicht überschreiben.",
+        "profileLabel": "Tool-Profil",
+        "profile": {
+          "auto": "Auto (passend zum Kontextfenster)",
+          "full": "Vollständig (alle Tools)",
+          "standard": "Standard",
+          "minimal": "Minimal (nur Lesen)",
+          "custom": "Benutzerdefiniert"
+        },
+        "profileHint": {
+          "auto": "Breeze wählt das größte Profil, das in das bekannte Kontextfenster des Modells passt. Solange das Fenster unbekannt ist, bleiben alle Tools verfügbar.",
+          "full": "Alle Tools, die jede Funktion heute anbietet.",
+          "standard": "Alltägliche Helpdesk-Tools und ein kürzerer Prompt (etwa 40 Tools im Chat, weniger im Helper, im Skript-Generator und in Office).",
+          "minimal": "Etwa ein Dutzend Nur-Lese-Tools und ein kurzer Prompt, für kleine lokale Modelle.",
+          "custom": "Nur die Tool-Bereiche und Tools, die Sie angeben, für jede Funktion, die dieses Modell verwendet."
+        },
+        "appliesWhen": "Wenn eine Änderung beeinflusst, was eine Funktion verwendet, starten offene Unterhaltungen mit diesem Modell ihre KI-Sitzung bei der nächsten Nachricht neu und fordern den Benutzer auf, sie erneut zu senden.",
+        "domainsLabel": "Tool-Bereiche",
+        "domainCore": "Kernkontext-Tools",
+        "toolsLabel": "Einzelne Tools",
+        "toolsHint": "Tool-Namen, getrennt durch Kommas oder Zeilenumbrüche. Breeze prüft beim Speichern jeden Namen.",
+        "droppedTools": "Diese Tools existieren nicht mehr und werden ignoriert: {{tools}}.",
+        "underpowered": "Diese Änderung würde Tools entfernen, die eine Funktion mit diesem Modell benötigt:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Kapazität unbekannt: Nichts wird eingeschränkt. „Auto“ behält alle Tools, bis der Endpunkt ein Kontextfenster auflistet oder meldet oder Sie unten eines festlegen.",
+        "windowNotLearned": "Breeze ermittelt Kontextfenster nur auf Ihren eigenen OpenAI-kompatiblen Endpunkten, daher behält Auto bei diesem Modell alle Tools.",
+        "windowKnown": "Kontextfenster: {{tokens}} Tokens ({{source}}).",
+        "windowSource": {
+          "override": "hier festgelegt",
+          "discovered": "vom Endpunkt aufgelistet"
+        },
+        "windowObserved": "Kontextfenster: {{tokens}} Tokens (vom Endpunkt gemeldet {{age}}).",
+        "observedStale": "Der Endpunkt hat zuletzt {{age}} {{tokens}} Tokens gemeldet. Diese Meldung ist über eine Stunde alt oder stammt aus einer früheren Endpunkt-Einrichtung und schränkt daher nichts mehr ein.",
+        "overrideLabel": "Überschreibung des Kontextfensters (Tokens)",
+        "overrideHint": "Nur für Modelle auf Ihrem eigenen OpenAI-kompatiblen Endpunkt. Leer lassen, um zu verwenden, was der Endpunkt auflistet oder meldet. Neue Unterhaltungen verwenden einen geänderten Wert; offene behalten ihr aktuelles Limit, außer das von ihnen verwendete Profil ändert sich.",
+        "surfacesTitle": "Was jede Funktion derzeit verwendet",
+        "reason": {
+          "explicit": "hier ausgewählt",
+          "auto_window": "automatisch, nach Kontextfenster",
+          "auto_unknown_window": "automatisch, Fenster unbekannt",
+          "auto_unmeasured": "automatisch; diese Funktion wird noch nicht eingeschränkt"
+        },
+        "missingRequired": "Lehnt dieses Modell ab: Es hätte nicht {{tools}}.",
+        "tooSmall": "Fenster zu klein",
+        "tooSmallHint": "Kein Profil passt in dieses Fenster, daher lehnt diese Funktion das Modell ab.",
+        "fitSuggestion": "Bei {{tokens}} Tokens würde Auto hier {{profile}} wählen; dieses Profil passt möglicherweise nicht.",
+        "readiness": {
+          "tokens": "{{tokens}} Prompt-Tokens",
+          "passed": "Tool-Round-Trip bestanden.",
+          "failed": "Tool-Round-Trip fehlgeschlagen, daher lehnt diese Funktion das Modell ab. {{summary}}",
+          "inconclusive": "Nicht eindeutig: Der Endpunkt ist ausgefallen, nicht das Modell. Nichts wird abgelehnt. {{summary}}",
+          "stale": "Veraltet: Der Endpunkt oder das Tool-Profil hat sich seitdem geändert. Prüfen Sie erneut, um es noch einmal zu testen.",
+          "absent": "Noch kein Tool-Round-Trip. Die Prüfung führt einen für jede Funktion aus, der dieses Modell zugewiesen ist.",
+          "absentVerified": "Geprüft (einfach). Prüfen Sie erneut, um einen echten Tool-Round-Trip für {{surface}} zu testen.",
+          "officeNotChecked": "Nicht geprüft: Die Prüfung führt keinen Office-Round-Trip aus."
+        },
+        "verifyCost": "Die Prüfung sendet echte Anfragen an Ihren Endpunkt, die Ihr Anbieter abrechnet: eine einfache Prüfung, dann ein Tool-Round-Trip für jede Funktion, der dieses Modell zugewiesen ist. Ein Round-Trip kann bis zu 4 Modellrunden umfassen, die jeweils den gesamten Prompt erneut senden: Im Chat mit dem Profil „Vollständig“ umfasst eine Anfrage etwa 128.000 Tokens, eine Chat-Prüfung kann also fast 500.000 erreichen.",
+        "invalidCustom": "Wählen Sie für ein benutzerdefiniertes Profil mindestens einen Tool-Bereich oder ein Tool aus.",
+        "invalidWindow": "Geben Sie eine ganze Zahl von Tokens von {{min}} bis {{max}} ein oder lassen Sie das Feld leer.",
+        "ageMinutes": "vor {{n}} Min.",
+        "ageHours": "vor {{n}} Std.",
+        "ageDays": "vor {{n}} T.",
+        "missingRequiredTroubleshooting": "Geräte-Fehlerbehebungsläufe lehnen dieses Modell ab: Ihnen würden {{tools}} fehlen. Andere Agentenläufe sind nicht betroffen.",
+        "underpoweredTooSmall": "{{surface}}: Kein Tool-Profil passt in dieses Kontextfenster"
+      }
     },
     "defaults": {
       "title": "Standards pro Funktion",
@@ -703,12 +778,14 @@
       "groupBy": {
         "model": "Modell",
         "surface": "Funktion",
-        "prompt_profile": "Modellfamilie"
+        "prompt_profile": "Modellfamilie",
+        "tool_profile": "Tool-Profil"
       },
       "columns": {
         "conversations": "Unterhaltungen",
         "costPerConversation": "Kosten / Unterhaltung",
         "refusalRate": "Ablehnungsrate",
+        "refusedToolBatches": "Unbrauchbare Tool-Aufrufe",
         "failoverRate": "Failover-Rate",
         "flagRate": "Markierungsrate",
         "leftRate": "Zu anderem Modell gewechselt",
@@ -719,6 +796,7 @@
         "conversations": "Chat-Sitzungen und Agent-Läufe, deren letzter Modellaufruf in diesem Zeitraum auf diese Zeile entfiel.",
         "costPerConversation": "Durchschnittliche Kosten in dieser Zeile je Unterhaltung, die sie genutzt hat.",
         "refusalRate": "Modellaufrufe, die das Modell abgelehnt hat, pro Aufruf.",
+        "refusedToolBatches": "Modellaufrufe in einem Turn, in dem das Modell ein Tool in einer Form ausführen wollte, die Breeze nicht verwenden konnte (ein nicht angebotenes Tool oder unpassende Eingaben), pro Aufruf. Es wurde nichts ausgeführt.",
         "failoverRate": "Aufrufe, die auf ein Ersatzmodell wechselten, weil dieses Modell ausfiel oder nicht verfügbar war.",
         "flagRate": "Von einer Person markierte Sitzungen. Automatische Markierungen nach einem Tool-Fehler werden separat gezählt.",
         "leftRate": "Unterhaltungen, die zu einem anderen Modell gewechselt haben oder in einer neuen Sitzung mit einem anderen Modell fortgesetzt wurden.",
@@ -730,6 +808,12 @@
         "claude-standard": "Claude Standard",
         "claude-small": "Claude Klein",
         "generic": "Andere Modelle"
+      },
+      "toolProfiles": {
+        "full": "Vollständig",
+        "standard": "Standardumfang",
+        "minimal": "Minimalumfang",
+        "custom": "Benutzerdefiniert"
       },
       "unrecorded": "Nicht erfasst",
       "unattributed": "Keinem Modell zugeordnet",
@@ -743,6 +827,8 @@
       "leftBreakdown": "{{switched}} gewechselt, {{continued}} fortgesetzt",
       "resolvedCount_one": "{{count}} gelöst",
       "resolvedCount_other": "{{count}} gelöst",
+      "refusedToolBatchCount_one": "{{count}} abgelehnt",
+      "refusedToolBatchCount_other": "{{count}} abgelehnt",
       "loading": "Qualität wird geladen…",
       "empty": "Keine Modellaufrufe in diesem Zeitraum.",
       "error": "Die Qualitätsansicht konnte nicht geladen werden.",
@@ -1880,7 +1966,8 @@
     },
     "issues": {
       "range": "Geben Sie eine ganze Zahl zwischen 1 und 3650 Tagen ein."
-    }
+    },
+    "aiStubsHelp": "KI-Unterhaltungen, die durch die Transkript-Aufbewahrung geleert wurden, behalten einen reduzierten Sitzungsdatensatz (Kosten, Modell, Anzahl der Runden), bis ihre letzte Aktivität älter als dieser Zeitraum ist. Eine Organisation ohne gespeicherte Audit-Aufbewahrungsrichtlinie behält diese Datensätze."
   },
   "orgBrandingEditor": {
     "title": "Branding",
@@ -7084,7 +7171,7 @@
   },
   "orgDomains": {
     "title": "Domänen",
-    "description": "E-Mail-Domänen, die zu diesem Kunden gehören. Eine deklarierte Domäne leitet eingehende E-Mails an diese Organisation weiter. Eine verifizierte Domäne ist der Nachweis, dass der Kunde sie besitzt; darauf stützen sich die Selbstregistrierung im Portal und die Google-Anmeldung.",
+    "description": "E-Mail-Domänen, die zu diesem Kunden gehören. Eine deklarierte Domäne leitet eingehende E-Mails an diese Organisation weiter. Eine verifizierte Domäne ist der Nachweis, dass der Kunde sie besitzt; darauf stützen sich Funktionen wie die Selbstregistrierung im Portal.",
     "forbidden": "Zum Verwalten von Kundendomänen ist eine Administratorrolle mit Zugriff auf alle Organisationen erforderlich.",
     "partnerOnly": "Kundendomänen werden von Ihrem Dienstleister verwaltet.",
     "checkingAccess": "Zugriff wird geprüft…",
@@ -7186,7 +7273,7 @@
       "resultUnavailable": "Die Prüfung konnte nicht abgeschlossen werden. {{reason}}",
       "removeVerification": "Verifizierung entfernen",
       "removeTitle": "Verifizierung für {{domain}} entfernen?",
-      "removeMessage": "Die Domäne bleibt für die E-Mail-Weiterleitung bei dieser Organisation. Selbstregistrierung und Google-Anmeldung vertrauen ihr erst wieder, wenn sie erneut verifiziert wurde."
+      "removeMessage": "Die Domäne bleibt für die E-Mail-Weiterleitung bei dieser Organisation. Funktionen, die verifizierte Domänen voraussetzen, etwa die Selbstregistrierung, vertrauen ihr erst wieder, wenn sie erneut verifiziert wurde."
     },
     "actions": {
       "verify": "Verifizieren",
@@ -8471,15 +8558,28 @@
       "label": "Microsoft-Anmeldung"
     },
     "google": {
-      "label": "Google-Anmeldung"
+      "label": "Google-Anmeldung",
+      "domainNotVerified": "Verifizieren Sie unter Organisation › Domänen eine Domäne dieser Organisation, bevor Sie die Google-Anmeldung aktivieren.",
+      "domains": {
+        "verified": "Verifizierte Domänen: {{domains}}",
+        "none": "Keine verifizierte Domäne —",
+        "verify": "verifizieren Sie eine unter Organisation › Domänen",
+        "partner": "Aktiv überall dort, wo eine Domäne verifiziert ist"
+      }
     },
     "password": {
       "label": "Anmeldung mit Passwort",
       "allowed": "Erlaubt",
       "ssoOnly": "Aus — nur Microsoft/Google",
-      "ssoOnlyNeedsSso": "Verfügbar, sobald die Microsoft- oder Google-Anmeldung aktiviert ist."
+      "ssoOnlyMicrosoft": "Aus — nur Microsoft",
+      "ssoOnlyGoogle": "Aus — nur Google",
+      "ssoOnlyNeedsSso": "Verfügbar, sobald die Microsoft- oder Google-Anmeldung aktiviert ist.",
+      "ssoOnlyNeedsSsoMicrosoft": "Verfügbar, sobald die Microsoft-Anmeldung aktiviert ist.",
+      "ssoOnlyNeedsSsoGoogle": "Verfügbar, sobald die Google-Anmeldung aktiviert ist."
     },
     "fallback": "Die Anmeldung mit Passwort ist aktiv, weil weder Microsoft- noch Google-Anmeldung aktiviert ist.",
+    "fallbackMicrosoft": "Die Anmeldung mit Passwort ist aktiv, weil die Microsoft-Anmeldung nicht aktiviert ist.",
+    "fallbackGoogle": "Die Anmeldung mit Passwort ist aktiv, weil die Google-Anmeldung nicht aktiviert ist.",
     "invites": {
       "label": "Einladungen vom MSP",
       "value": "Immer aktiv"
@@ -8494,6 +8594,8 @@
     },
     "ssoNewPerson": {
       "label": "Erste Microsoft-/Google-Anmeldung",
+      "labelMicrosoft": "Erste Microsoft-Anmeldung",
+      "labelGoogle": "Erste Google-Anmeldung",
       "invitedOnly": "Nur eingeladene Personen",
       "approval": "Genehmigung erforderlich",
       "instant": "Sofort"
@@ -8504,6 +8606,8 @@
       "save": "Anmeldeeinstellungen konnten nicht gespeichert werden.",
       "methodUnavailable": "Diese Anmeldemethode ist in dieser Breeze-Bereitstellung noch nicht verfügbar.",
       "ssoOnlyNeedsSso": "Aktivieren Sie die Microsoft- oder Google-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren.",
+      "ssoOnlyNeedsSsoMicrosoft": "Aktivieren Sie die Microsoft-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren.",
+      "ssoOnlyNeedsSsoGoogle": "Aktivieren Sie die Google-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren.",
       "tenantNotProven": "Weisen Sie den Microsoft-Mandanten dieser Organisation nach, bevor Sie die Microsoft-Anmeldung aktivieren.",
       "sessionHours": "Geben Sie eine ganze Zahl von Stunden zwischen 1 und 168 ein."
     },
@@ -8512,7 +8616,11 @@
     },
     "sessionHours": {
       "label": "Sitzungsdauer für Microsoft/Google (Stunden)",
-      "help": "Microsoft- und Google-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168."
+      "labelMicrosoft": "Sitzungsdauer für Microsoft (Stunden)",
+      "labelGoogle": "Sitzungsdauer für Google (Stunden)",
+      "help": "Microsoft- und Google-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168.",
+      "helpMicrosoft": "Microsoft-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168.",
+      "helpGoogle": "Google-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168."
     },
     "entraTenant": {
       "title": "Microsoft-Mandant",
@@ -8586,6 +8694,8 @@
       "intro": "Durch das Speichern wird die Anmeldung mit Passwort für die folgenden Organisationen deaktiviert.",
       "partnerIntro": "Durch das Speichern dieses Partner-Standards wird die Anmeldung mit Passwort für diese Organisationen deaktiviert. Auf der Seite jeder Organisation sind die Konten aufgeführt, die sich noch nicht anmelden können.",
       "explain": "Personen, die bereits mit Microsoft verbunden sind, verlieren ihr Passwort und werden abgemeldet. Personen ohne Microsoft-Verbindung können sich erst anmelden, wenn sie eine Einladung zur Microsoft-Anmeldung angenommen haben.",
+      "explainGoogle": "Personen, die bereits mit Google verbunden sind, verlieren ihr Passwort und werden abgemeldet. Personen ohne Google-Verbindung können sich erst anmelden, wenn sie eine Einladung zur Google-Anmeldung angenommen haben.",
+      "explainBoth": "Personen, die bereits mit Microsoft oder Google verbunden sind, verlieren ihr Passwort und werden abgemeldet. Personen ohne Microsoft- oder Google-Verbindung können sich erst anmelden, wenn sie eine Einladung zur Anmeldung angenommen haben.",
       "columns": {
         "org": "Organisation",
         "passwordsToClear": "Entfernte Passwörter",
@@ -8596,24 +8706,38 @@
       "strandedMore": "und {{count}} weitere",
       "strandedLoadError": "Die Namen dieser Konten konnten nicht geladen werden.",
       "sendInvites": "Nach dem Speichern Einladungen zur Microsoft-Anmeldung an diese Konten senden",
+      "sendInvitesGoogle": "Nach dem Speichern Einladungen zur Google-Anmeldung an diese Konten senden",
+      "sendInvitesBoth": "Nach dem Speichern Anmeldeeinladungen an diese Konten senden",
       "confirm": "Anmeldung mit Passwort deaktivieren",
       "changed": "Die Auswirkungen haben sich seit dem Öffnen geändert. Prüfen Sie die neuen Zahlen."
     },
     "stranded": {
       "title": "Können sich noch nicht anmelden ({{count}})",
       "description": "Diese Konten haben keine Microsoft-Verbindung und können sich daher nicht anmelden, solange die Anmeldung mit Passwort deaktiviert ist. Senden Sie jedem eine Einladung zur Microsoft-Anmeldung.",
+      "descriptionGoogle": "Diese Konten haben keine Google-Verbindung und können sich daher nicht anmelden, solange die Anmeldung mit Passwort deaktiviert ist. Senden Sie jedem eine Einladung zur Google-Anmeldung.",
+      "descriptionBoth": "Diese Konten haben keine Microsoft- oder Google-Verbindung und können sich daher nicht anmelden, solange die Anmeldung mit Passwort deaktiviert ist. Senden Sie jedem eine Anmeldeeinladung.",
       "loadError": "Die Konten, die sich nicht anmelden können, konnten nicht geladen werden.",
       "invite": "Einladung zur Microsoft-Anmeldung senden",
+      "inviteGoogle": "Einladung zur Google-Anmeldung senden",
+      "inviteBoth": "Anmeldeeinladung senden",
       "inviteAll": "Alle einladen",
       "more": "{{shown}} von {{count}} werden angezeigt.",
       "toasts": {
         "invited": "Einladungen zur Microsoft-Anmeldung gesendet: {{count}}.",
+        "invitedGoogle": "Einladungen zur Google-Anmeldung gesendet: {{count}}.",
+        "invitedBoth": "Anmeldeeinladungen gesendet: {{count}}.",
         "partial": "Einladungen zur Microsoft-Anmeldung gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden.",
+        "partialGoogle": "Einladungen zur Google-Anmeldung gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden.",
+        "partialBoth": "Anmeldeeinladungen gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden.",
         "emailFailed": "{{count}} Konto/Konten wurden auf eingeladen gesetzt, aber die Einladungs-E-Mail konnte nicht gesendet werden. Verwenden Sie „Erneut senden“ in der Liste der Portalbenutzer."
       },
       "errors": {
         "invite": "Einladungen zur Microsoft-Anmeldung konnten nicht gesendet werden.",
-        "unavailable": "Die Microsoft-Anmeldung ist für diese Organisation nicht verfügbar, daher gibt es nichts, womit eingeladen werden könnte."
+        "inviteGoogle": "Einladungen zur Google-Anmeldung konnten nicht gesendet werden.",
+        "inviteBoth": "Anmeldeeinladungen konnten nicht gesendet werden.",
+        "unavailable": "Die Microsoft-Anmeldung ist für diese Organisation nicht verfügbar, daher gibt es nichts, womit eingeladen werden könnte.",
+        "unavailableGoogle": "Die Google-Anmeldung ist für diese Organisation nicht verfügbar, daher gibt es nichts, womit eingeladen werden könnte.",
+        "unavailableBoth": "Für diese Organisation ist weder die Microsoft- noch die Google-Anmeldung aktiv, daher gibt es nichts, womit eingeladen werden könnte."
       }
     },
     "domains": {
@@ -8635,6 +8759,7 @@
       "self": "Selbstregistrierung",
       "entra": "Microsoft-Anmeldung",
       "google": "Google-Anmeldung",
+      "googleWithDomain": "Google · Domäne {{domain}}",
       "addin_user": "AI-for-Office-Add-in"
     },
     "selectAll": "Alle Anfragen auswählen",
@@ -8655,7 +8780,8 @@
       "identityLinked": "Anmeldung bereits mit einem anderen Konto verknüpft",
       "failed": "Diese Anfrage konnte nicht entschieden werden",
       "entraTenantNotProven": "Der Microsoft-Mandant dieser Organisation ist nicht mehr nachgewiesen",
-      "domainNotVerified": "E-Mail-Domäne nicht mehr verifiziert"
+      "domainNotVerified": "E-Mail-Domäne nicht mehr verifiziert",
+      "googleDomainNotVerified": "Google Workspace-Domäne nicht mehr verifiziert"
     },
     "denyDialog": {
       "title": "Zugriffsanfrage ablehnen",
@@ -8674,7 +8800,8 @@
       "load": "Zugriffsanfragen konnten nicht geladen werden.",
       "action": "Die Zugriffsanfrage konnte nicht aktualisiert werden.",
       "bulk": "Die ausgewählten Anfragen konnten nicht entschieden werden.",
-      "domainNotVerified": "Die E-Mail-Domäne dieser Person ist für diese Organisation nicht mehr verifiziert. Laden Sie sie direkt ein, wenn sie Zugriff erhalten soll."
+      "domainNotVerified": "Die E-Mail-Domäne dieser Person ist für diese Organisation nicht mehr verifiziert. Laden Sie sie direkt ein, wenn sie Zugriff erhalten soll.",
+      "googleDomainNotVerified": "Die Google Workspace-Domäne dieser Anfrage ist für diese Organisation nicht mehr verifiziert. Verifizieren Sie sie erneut oder laden Sie die Person direkt ein."
     },
     "summary": {
       "title": "Ausstehende Zugriffsanfragen",

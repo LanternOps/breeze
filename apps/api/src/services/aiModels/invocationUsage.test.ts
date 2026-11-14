@@ -416,6 +416,40 @@ describe('sdkTurnUsage — cumulative modelUsage is billed as per-key deltas aga
     });
   });
 
+  describe('a turn in which the gateway refused a tool-call batch (W04 #11397)', () => {
+    const refusedBatch = () => ({ ...newSdkTurnObservation(), refusedToolBatch: 'refused 1 tool call(s): foo (not offered)' });
+
+    it('a turn that completed is recorded as refused_tool_batch, its usage billed as usual', () => {
+      const out = sdkTurnUsage({ binding: B, observation: refusedBatch(), previousSnapshot: null,
+        result: success({ usage: ru(tok(5, 6)), modelUsage: { [SONNET]: mu(tok(5, 6)) } }) });
+      expect(out.outcome.stopReason).toBe('refused_tool_batch');
+      expect(out.usage).toEqual([std(SONNET, tok(5, 6))]);
+      expect(out.usageNote).toBe('first_result');
+    });
+
+    it('a turn that then failed is still recorded as refused_tool_batch', () => {
+      const out = sdkTurnUsage({ binding: B, observation: refusedBatch(), previousSnapshot: null,
+        result: { subtype: 'error_during_execution', is_error: true } });
+      expect(out.outcome.stopReason).toBe('refused_tool_batch');
+    });
+
+    it('a context-window refusal in the same turn wins: it is the more specific reason', () => {
+      const out = sdkTurnUsage({ binding: B, observation: { ...refusedBatch(), contextWindowExceeded: true }, previousSnapshot: null,
+        result: { subtype: 'success', is_error: true, modelUsage: {} } });
+      expect(out.outcome.stopReason).toBe('context_window_exceeded');
+    });
+
+    it('a model refusal wins over a refused batch', () => {
+      const out = sdkTurnUsage({ binding: B, observation: refusedBatch(), previousSnapshot: null,
+        result: success({ stop_reason: 'refusal', usage: ru(tok(5, 6)), modelUsage: { [SONNET]: mu(tok(5, 6)) } }) });
+      expect(out.outcome.stopReason).toBe('refusal');
+    });
+
+    it('a fresh observation records no refused batch', () => {
+      expect(newSdkTurnObservation().refusedToolBatch).toBeNull();
+    });
+  });
+
   it('a success turn that made no model call: nothing billed, snapshot kept', () => {
     const prev = snap({ [SONNET]: T });
     const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: prev,

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
@@ -17,7 +16,7 @@ type warningRestorer struct {
 func (w *warningRestorer) Warnings() []string { return w.warnings }
 
 func TestApplySystemState_SurfacesRestorerWarnings(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	content := []byte("vim\tinstall\n")
 	uploadSystemStateArtifact(t, provider, "snap-w", "packages/dpkg.txt", content)
 	uploadSystemStateManifest(t, provider, "snap-w", systemstate.SystemStateManifest{

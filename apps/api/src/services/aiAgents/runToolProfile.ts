@@ -10,7 +10,7 @@
  * an admin's model choice, so circuit-neutral like `model_unavailable`.
  */
 import type { AiToolDomain } from '@breeze/shared';
-import { bareToolName } from '../aiModels/sessionToolExposure';
+import { bareToolName, contextWindowTooSmallMessage } from '../aiModels/sessionToolExposure';
 import { SURFACE_UNDERPOWERED_MESSAGE, TOOL_PROFILE_UNDERPOWERED, checkSurfaceCoverage, type RunFloorRef } from '../aiModels/surfaceRequiredTools';
 import { resolveToolExposure, type ToolExposure, type ToolProfileFacts } from '../aiModels/toolExposure';
 import { AgentRunBlockedError, blockedOutcome } from './modelBlocked';
@@ -51,6 +51,17 @@ export function applyRunToolProfile(input: RunToolProfileInput): RunToolProfile 
       ...flowToolNames.map((name) => ({ name, domain: 'scripts' as const })),
     ],
   }, { domainOf: input.domainOf });
+  // #11396: `auto` found no profile that fits the known window. Blocked the
+  // same way as an underpowered profile (an admin's model choice), naming
+  // the window, before any provider call.
+  if (exposure.tooSmall && facts.effectiveWindow !== null) {
+    const message = contextWindowTooSmallMessage('AI agent', facts.effectiveWindow);
+    throw new AgentRunBlockedError(
+      TOOL_PROFILE_UNDERPOWERED,
+      { ...blockedOutcome(TOOL_PROFILE_UNDERPOWERED, { message, offeringId: input.offeringId }), contextWindow: facts.effectiveWindow },
+      message,
+    );
+  }
   if (exposure.names === null) {
     return { exposure, exposedNames: [...input.exposedNames], onlyTools: input.onlyTools, keepsFlowTool: () => true };
   }
