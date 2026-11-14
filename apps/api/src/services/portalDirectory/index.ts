@@ -9,6 +9,7 @@ export { directoryMode, isDirectoryDeprovisionEnforced } from './mode';
 export { PORTAL_DIRECTORY_QUEUE, enqueueApplyRun } from './queue';
 export {
   applyRun,
+  decideHeldRunApply,
   dismissHeldRun,
   impactDigestOf,
   type RunDisposition,

@@ -85,6 +85,7 @@ import { enqueueApplyRun } from './queue';
 import {
   afterRunCommitted,
   applyRun,
+  decideHeldRunApply,
   dismissHeldRun,
   impactDigestOf,
   pruneDirectoryRuns,
@@ -428,10 +429,10 @@ describe('applyRun and dismissHeldRun refusals', () => {
     snapshotAt: new Date(NOW.getTime() - 3600_000), createdAt: new Date(NOW.getTime() - 3600_000), decidedByUserId: null, ...over,
   });
   const mspApply = (over: Record<string, unknown> = {}) =>
-    applyRun({ orgId: ORG, runId: RUN, actor: { userId: ACTOR, impactDigest: 'digest' }, now: NOW, ...over });
+    decideHeldRunApply({ orgId: ORG, runId: RUN, actorUserId: ACTOR, impactDigest: 'digest', now: NOW, ...over });
 
   it('apply and dismiss refuse in report mode (PORTAL_DIRECTORY_ENFORCEMENT_OFF)', async () => { // D7
-    for (const p of [mspApply(), applyRun({ orgId: ORG, runId: RUN, actor: 'system', now: NOW }), dismissHeldRun({ orgId: ORG, runId: RUN, actorUserId: ACTOR, impactDigest: 'digest', now: NOW })]) {
+    for (const p of [mspApply(), applyRun({ orgId: ORG, runId: RUN, now: NOW }), dismissHeldRun({ orgId: ORG, runId: RUN, actorUserId: ACTOR, impactDigest: 'digest', now: NOW })]) {
       const err = await rejection(p);
       expect(err).toBeInstanceOf(PortalDirectoryIdentityError);
       expect(err).toMatchObject({ code: 'PORTAL_DIRECTORY_ENFORCEMENT_OFF', httpStatus: 409 });
@@ -460,7 +461,7 @@ describe('applyRun and dismissHeldRun refusals', () => {
     const cases: Array<[Record<string, unknown>, unknown[] | null, Record<string, unknown>]> = [
       [{}, [{ id: PREV_RUN }], {}],                                                                   // newer evaluated run
       [{ snapshotAt: new Date(NOW.getTime() - 73 * 3600_000) }, null, {}],                            // too old
-      [{}, null, { actor: { userId: ACTOR, impactDigest: 'other' } }],                                 // digest
+      [{}, null, { impactDigest: 'other' }],                                 // digest
       [{ chainKey: entraChainKey({ tenantId: TID, connectionId: CONN, consentGeneration: 1, orgId: OTHER_ORG }) }, null, {}], // merged
     ];
     for (const [run, newer, over] of cases) {
@@ -470,6 +471,7 @@ describe('applyRun and dismissHeldRun refusals', () => {
     }
     expect(updatesOf(portalDirectoryRuns)).toEqual([]);
     expect(disablePortalIdentity).not.toHaveBeenCalled();
+    expect(enqueueApplyRun).not.toHaveBeenCalled();
   });
 
   it('dismiss refuses a run that is not held, and a digest mismatch', async () => {
@@ -498,7 +500,7 @@ describe('applyRun', () => {
       [{ id: RUN, orgId: ORG, source: 'entra', chainKey: CHAIN, disposition: 'applying', impactDigest: 'd', snapshotAt: NOW, createdAt: NOW, decidedByUserId: null }],
       [action(1), action(2)],
     );
-    const out = await applyRun({ orgId: ORG, runId: RUN, actor: 'system', now: NOW });
+    const out = await applyRun({ orgId: ORG, runId: RUN, now: NOW });
     expect(out).toEqual({ applied: 2, skipped: 0 });
     expect(disablePortalIdentity).toHaveBeenCalledTimes(2);
     expect(vi.mocked(disablePortalIdentity).mock.calls[0]![0]).toMatchObject({
@@ -516,7 +518,7 @@ describe('applyRun', () => {
   it('system: a run no longer applying (superseded, finished) is a no-op', async () => {
     mode.enforce = true;
     h.results.push([{ source: 'entra' }], [], [{ id: RUN, orgId: ORG, source: 'entra', chainKey: CHAIN, disposition: 'superseded', impactDigest: 'd', snapshotAt: NOW, createdAt: NOW, decidedByUserId: null }]);
-    expect(await applyRun({ orgId: ORG, runId: RUN, actor: 'system', now: NOW })).toEqual({ applied: 0, skipped: 0 });
+    expect(await applyRun({ orgId: ORG, runId: RUN, now: NOW })).toEqual({ applied: 0, skipped: 0 });
     expect(disablePortalIdentity).not.toHaveBeenCalled();
     expect(updatesOf(portalDirectoryRuns)).toEqual([]);
   });
@@ -529,33 +531,53 @@ describe('applyRun', () => {
     ]) {
       h.calls.length = 0;
       h.results.push([{ source: 'entra' }], [], [{ id: RUN, orgId: ORG, source: 'entra', chainKey: CHAIN, disposition: 'applying', impactDigest: 'd', snapshotAt: NOW, createdAt: NOW, decidedByUserId: null, ...run }]);
-      expect(await applyRun({ orgId: ORG, runId: RUN, actor: 'system', now: NOW })).toEqual({ applied: 0, skipped: 0 });
+      expect(await applyRun({ orgId: ORG, runId: RUN, now: NOW })).toEqual({ applied: 0, skipped: 0 });
       expect(firstArg(updatesOf(portalDirectoryActions)[0], 'set')).toEqual({ status: 'superseded' });
       expect(firstArg(updatesOf(portalDirectoryRuns)[0], 'set')).toEqual({ disposition: 'superseded' });
     }
     expect(disablePortalIdentity).not.toHaveBeenCalled();
   });
 
-  it('MSP: a held run is decided (applying, decided_by, audit with the digest), applied, and ends held_applied', async () => {
+  it('MSP: a held run is decided (applying, decided_by, audit with the digest) and committed; nothing is applied in the request', async () => { // D8d, D10
     mode.enforce = true;
-    vi.mocked(disablePortalIdentity).mockResolvedValueOnce({ kind: 'disabled', portalUserId: userOf(1), accountDisabled: true, keepsPassword: false });
     h.results.push(
       [{ source: 'entra' }], [],
       [{ id: RUN, orgId: ORG, source: 'entra', chainKey: CHAIN, disposition: 'held', impactDigest: 'digest', snapshotAt: NOW, createdAt: NOW, decidedByUserId: null }],
       [],             // no newer evaluated run
       [], [],         // decide update, audit
-      [action(1)],
+      [{ actions: 3 }],
     );
-    const out = await applyRun({ orgId: ORG, runId: RUN, actor: { userId: ACTOR, impactDigest: 'digest' }, now: NOW });
-    expect(out).toEqual({ applied: 1, skipped: 0 });
-    const [decide, final] = updatesOf(portalDirectoryRuns);
+    const out = await decideHeldRunApply({ orgId: ORG, runId: RUN, actorUserId: ACTOR, impactDigest: 'digest', now: NOW });
+    expect(out).toEqual({ runId: RUN, actions: 3 });
+    const [decide, ...rest] = updatesOf(portalDirectoryRuns);
+    expect(rest).toEqual([]);
     expect(firstArg(decide, 'set')).toEqual({ disposition: 'applying', decidedByUserId: ACTOR, decidedAt: NOW });
     expect(decide!.depth).toBe(1);
     expect(firstArg(insertsOf(auditLogs)[0], 'values')).toMatchObject({
       actorType: 'user', actorId: ACTOR, action: 'organization.portal_directory.run.apply', resourceType: 'portal_directory_run',
       resourceId: RUN, details: expect.objectContaining({ impactDigest: 'digest', source: 'entra' }),
     });
-    expect(firstArg(final, 'set')).toEqual({ disposition: 'held_applied' });
+    // The count is of the actions still held, read in the decision's transaction.
+    const count = h.calls.find((c) => c.op === 'select' && stepsOf(c, 'from')[0]?.[0] === portalDirectoryActions);
+    expect(count!.depth).toBe(1);
+    expect(whereSql(count).params).toContain('held');
+    // The apply-run job applies; the request disables nobody and leaves the
+    // enqueue to its caller, after this commit.
+    expect(disablePortalIdentity).not.toHaveBeenCalled();
+    expect(enqueueApplyRun).not.toHaveBeenCalled();
+  });
+
+  it('system: an MSP-decided applying run finishes held_applied and writes no second decision audit', async () => {
+    mode.enforce = true;
+    vi.mocked(disablePortalIdentity).mockResolvedValueOnce({ kind: 'disabled', portalUserId: userOf(1), accountDisabled: true, keepsPassword: false });
+    h.results.push(
+      [{ source: 'entra' }], [],
+      [{ id: RUN, orgId: ORG, source: 'entra', chainKey: CHAIN, disposition: 'applying', impactDigest: 'digest', snapshotAt: NOW, createdAt: NOW, decidedByUserId: ACTOR }],
+      [action(1)],
+    );
+    expect(await applyRun({ orgId: ORG, runId: RUN, now: NOW })).toEqual({ applied: 1, skipped: 0 });
+    expect(updatesOf(portalDirectoryRuns).map((c) => firstArg(c, 'set'))).toEqual([{ disposition: 'held_applied' }]);
+    expect(insertsOf(auditLogs)).toEqual([]);
   });
 
   it('apply re-checks each action: proof gone, connection re-consented, identity restored or re-chained ⇒ skipped with a reason', async () => {
@@ -568,7 +590,7 @@ describe('applyRun', () => {
       [{ id: RUN, orgId: ORG, source: 'entra', chainKey: CHAIN, disposition: 'applying', impactDigest: 'd', snapshotAt: NOW, createdAt: NOW, decidedByUserId: ACTOR }],
       [action(1), action(2), action(3), action(4), action(5)],
     );
-    const out = await applyRun({ orgId: ORG, runId: RUN, actor: 'system', now: NOW });
+    const out = await applyRun({ orgId: ORG, runId: RUN, now: NOW });
     expect(out).toEqual({ applied: 0, skipped: 4 });
     const skips = updatesOf(portalDirectoryActions);
     expect(skips.map((c) => firstArg(c, 'set'))).toEqual(reasons.map((r) => ({ status: 'skipped', skipReason: r })));

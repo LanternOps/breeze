@@ -95,7 +95,7 @@ describe('processPortalDirectoryJob — apply-run', () => {
   it('applies the run as the system actor', async () => {
     h.enforced.value = true;
     const out = await processPortalDirectoryJob({ name: 'apply-run', data: { runId: RUN, orgId: ORG } }, NOW);
-    expect(h.applyRun).toHaveBeenCalledWith({ orgId: ORG, runId: RUN, actor: 'system' });
+    expect(h.applyRun).toHaveBeenCalledWith({ orgId: ORG, runId: RUN });
     expect(out).toEqual({ status: 'applied', applied: 2, skipped: 1 });
   });
 

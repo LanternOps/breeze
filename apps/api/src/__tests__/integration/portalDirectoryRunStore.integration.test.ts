@@ -4,8 +4,9 @@
  *
  * recordEvaluatedRun runs as breeze_app under forced RLS inside a system
  * transaction holding the `(org, source)` advisory lock, as the Entra hook and
- * the Google job call it. applyRun / dismissHeldRun / pruneDirectoryRuns run
- * with no context held, as the job and the routes call them. The apply-run
+ * the Google job call it. decideHeldRunApply / applyRun / dismissHeldRun /
+ * pruneDirectoryRuns run with no context held, as the routes and the job call
+ * them (an MSP Apply commits the decision; the apply-run job applies). The apply-run
  * enqueue and the held-run email are stubbed (no Redis queue, no mail);
  * everything else is real. Fixtures are seeded and read back over the
  * superuser connection.
@@ -42,6 +43,7 @@ import { notifyDirectoryRunHeld } from '../../services/portalDirectory/notify';
 import {
   afterRunCommitted,
   applyRun,
+  decideHeldRunApply,
   dismissHeldRun,
   pruneDirectoryRuns,
   recordEvaluatedRun,
@@ -203,7 +205,15 @@ describe('recordEvaluatedRun on real Postgres', () => {
 
     const actorUserId = f.actorUserId;
     const digest = (await readRun(held.runId)).impactDigest!;
-    const applied = await applyRun({ orgId: f.orgId, runId: held.runId, actor: { userId: actorUserId, impactDigest: digest } });
+    const decided = await decideHeldRunApply({ orgId: f.orgId, runId: held.runId, actorUserId, impactDigest: digest });
+    expect(decided).toEqual({ runId: held.runId, actions: 1 });
+    // The decision alone disables nobody: the run waits for its apply-run job.
+    expect(await readRun(held.runId)).toMatchObject({ disposition: 'applying', decidedByUserId: actorUserId });
+    expect(await readAccount(f.accounts[0]!.portalUserId)).toMatchObject({ status: 'active', authEpoch: 5 });
+    const applyAudits = await admin().select().from(auditLogs)
+      .where(and(eq(auditLogs.orgId, f.orgId), eq(auditLogs.action, 'organization.portal_directory.run.apply')));
+    expect(applyAudits).toHaveLength(1);
+    const applied = await applyRun({ orgId: f.orgId, runId: held.runId });
     expect(applied).toEqual({ applied: 1, skipped: 0 });
     expect(await readRun(held.runId)).toMatchObject({ disposition: 'held_applied', decidedByUserId: actorUserId });
     expect(await readAccount(f.accounts[0]!.portalUserId)).toMatchObject({ status: 'disabled', disabledBy: 'directory', authEpoch: 6 });
@@ -213,7 +223,7 @@ describe('recordEvaluatedRun on real Postgres', () => {
     expect(next).toMatchObject({ disposition: 'applying', holdReason: null });
     expect(enqueueApplyRun).toHaveBeenCalledWith(next.runId, f.orgId);
     expect((await actionsOf(next.runId)).map((a) => a.status)).toEqual(['pending']);
-    expect(await applyRun({ orgId: f.orgId, runId: next.runId, actor: 'system' })).toEqual({ applied: 1, skipped: 0 });
+    expect(await applyRun({ orgId: f.orgId, runId: next.runId })).toEqual({ applied: 1, skipped: 0 });
     expect(await readRun(next.runId)).toMatchObject({ disposition: 'applied' });
     expect((await actionsOf(next.runId)).map((a) => a.status)).toEqual(['applied']);
   });
@@ -225,8 +235,10 @@ describe('recordEvaluatedRun on real Postgres', () => {
     const held = await record(f, 1, t0, [f.accounts[0]!.oid]);
     await admin().update(m365Connections).set({ consentGeneration: 2 }).where(eq(m365Connections.id, f.connectionId));
     const digest = (await readRun(held.runId)).impactDigest!;
-    const out = await applyRun({ orgId: f.orgId, runId: held.runId, actor: { userId: f.actorUserId, impactDigest: digest } });
+    await decideHeldRunApply({ orgId: f.orgId, runId: held.runId, actorUserId: f.actorUserId, impactDigest: digest });
+    const out = await applyRun({ orgId: f.orgId, runId: held.runId });
     expect(out).toEqual({ applied: 0, skipped: 1 });
+    expect(await readRun(held.runId)).toMatchObject({ disposition: 'held_applied' });
     expect(await actionsOf(held.runId)).toEqual([expect.objectContaining({ status: 'skipped', skipReason: 'connection_changed' })]);
     expect(await readAccount(f.accounts[0]!.portalUserId)).toMatchObject({ status: 'active', authEpoch: 5 });
   });
@@ -261,14 +273,16 @@ describe('recordEvaluatedRun on real Postgres', () => {
     await record(f, 2, new Date(t0.getTime() + HOUR), []);
     expect(await readRun(first.runId)).toMatchObject({ disposition: 'superseded' });
     expect((await actionsOf(first.runId)).map((a) => a.status)).toEqual(['superseded', 'superseded']);
-    await expect(applyRun({ orgId: f.orgId, runId: first.runId, actor: { userId: f.actorUserId, impactDigest: digest } }))
+    await expect(decideHeldRunApply({ orgId: f.orgId, runId: first.runId, actorUserId: f.actorUserId, impactDigest: digest }))
       .rejects.toMatchObject({ code: 'PORTAL_DIRECTORY_RUN_NOT_HELD' });
   });
 
   it('apply and dismiss refuse in report mode', async () => {
     const f = await seedOrg(1);
     const out = await record(f, 1, new Date(Date.now() - HOUR), [f.accounts[0]!.oid]);
-    await expect(applyRun({ orgId: f.orgId, runId: out.runId, actor: 'system' })).rejects.toMatchObject({ code: 'PORTAL_DIRECTORY_ENFORCEMENT_OFF' });
+    await expect(applyRun({ orgId: f.orgId, runId: out.runId })).rejects.toMatchObject({ code: 'PORTAL_DIRECTORY_ENFORCEMENT_OFF' });
+    await expect(decideHeldRunApply({ orgId: f.orgId, runId: out.runId, actorUserId: f.actorUserId, impactDigest: 'x' }))
+      .rejects.toMatchObject({ code: 'PORTAL_DIRECTORY_ENFORCEMENT_OFF' });
     await expect(dismissHeldRun({ orgId: f.orgId, runId: out.runId, actorUserId: f.actorUserId, impactDigest: 'x' }))
       .rejects.toMatchObject({ code: 'PORTAL_DIRECTORY_ENFORCEMENT_OFF' });
     expect(await readAccount(f.accounts[0]!.portalUserId)).toMatchObject({ status: 'active', authEpoch: 5 });

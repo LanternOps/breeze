@@ -46,7 +46,7 @@ import { notifyDirectoryRunHeld } from './notify';
 import { enqueueApplyRun } from './queue';
 import type { DirectorySource } from './types';
 
-export { applyRun, dismissHeldRun, verifyDirectorySource, APPLY_MAX_AGE_MS } from './runDecisions';
+export { applyRun, decideHeldRunApply, dismissHeldRun, verifyDirectorySource, APPLY_MAX_AGE_MS } from './runDecisions';
 
 export type RunRefusalReason = PortalDirectoryRunReason;
 export type RunDisposition = PortalDirectoryRunDisposition;

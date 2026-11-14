@@ -6,8 +6,9 @@ import { requireMfa, requirePermission, requireScope, type AuthContext } from '.
 import { PERMISSIONS } from '../services/permissions';
 import {
   PortalDirectoryIdentityError,
-  applyRun,
+  decideHeldRunApply,
   dismissHeldRun,
+  enqueueApplyRun,
   getPortalDirectoryStatus,
   removeDisabledPortalIdentity,
   restorePortalIdentity,
@@ -78,9 +79,13 @@ export function registerOrgPortalDirectoryRoutes(orgRoutes: Hono): void {
     },
   );
 
-  // D8d: apply a held run. The service checks the run belongs to this org
-  // (404), is held, fresh and carries the digest the MSP saw (409), and
-  // refuses in report mode (409 PORTAL_DIRECTORY_ENFORCEMENT_OFF).
+  // D8d, D10: apply a held run. The service checks the run belongs to this
+  // org (404), is held, fresh and carries the digest the MSP saw (409), and
+  // refuses in report mode (409 PORTAL_DIRECTORY_ENFORCEMENT_OFF). It commits
+  // only the decision (run `applying`, decided_by, the apply audit); the
+  // `apply-run` job applies the actions after this enqueue and ends the run
+  // `held_applied`. The run row is the outbox: a failed enqueue leaves it
+  // `applying` for the hourly recover, so the answer is 202 either way.
   orgRoutes.post(
     '/organizations/:id/portal-directory/runs/:runId/apply',
     requireScope('partner', 'system'),
@@ -94,9 +99,15 @@ export function registerOrgPortalDirectoryRoutes(orgRoutes: Hono): void {
       const { impactDigest } = c.req.valid('json');
       const runId = c.req.param('runId');
       return mapRefusal(c, async () => {
-        const result = await runOutsideDbContext(() =>
-          applyRun({ orgId: org.id, runId, actor: { userId: auth.user.id, impactDigest } }));
-        return c.json({ data: result });
+        const decided = await runOutsideDbContext(() =>
+          decideHeldRunApply({ orgId: org.id, runId, actorUserId: auth.user.id, impactDigest }));
+        if (!(await enqueueApplyRun(decided.runId, org.id))) {
+          console.warn('[portal-directory] apply-run not enqueued; the hourly recover applies the run', {
+            orgId: org.id,
+            runId: decided.runId,
+          });
+        }
+        return c.json({ data: { runId: decided.runId, status: 'applying' as const, actions: decided.actions } }, 202);
       });
     },
   );

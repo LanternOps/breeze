@@ -80,7 +80,8 @@ vi.mock('../services/portalDirectory', () => {
   return {
     PortalDirectoryIdentityError,
     getPortalDirectoryStatus: h.record('getPortalDirectoryStatus'),
-    applyRun: h.record('applyRun'),
+    decideHeldRunApply: h.record('decideHeldRunApply'),
+    enqueueApplyRun: h.record('enqueueApplyRun'),
     dismissHeldRun: h.record('dismissHeldRun'),
     restorePortalIdentity: h.record('restorePortalIdentity'),
     removeDisabledPortalIdentity: h.record('removeDisabledPortalIdentity'),
@@ -168,7 +169,8 @@ beforeEach(() => {
   h.calls.length = 0;
   h.ctx.outsideDepth = 0;
   h.impls.getPortalDirectoryStatus = async () => STATUS;
-  h.impls.applyRun = async () => ({ applied: 2, skipped: 1 });
+  h.impls.decideHeldRunApply = async () => ({ runId: RUN_ID, actions: 2 });
+  h.impls.enqueueApplyRun = async () => true;
   h.impls.dismissHeldRun = async () => undefined;
   h.impls.restorePortalIdentity = async () => ({ accountStatus: 'active', blockersCleared: ['entra_directory'] });
   h.impls.removeDisabledPortalIdentity = async () => ({ identityId: IDN_ID, provider: 'entra', blockers: ['entra_directory'] });
@@ -197,10 +199,10 @@ describe('gates', () => {
 
     h.authRef.current = FULL_ADMIN;
     const applied = await app.request(APPLY, post({ impactDigest: DIGEST }));
-    expect(applied.status).toBe(200);
-    expect(await applied.json()).toEqual({ data: { applied: 2, skipped: 1 } });
-    expect(serviceCalls('applyRun')).toEqual([
-      { fn: 'applyRun', args: [{ orgId: ORG_ID, runId: RUN_ID, actor: { userId: USER_ID, impactDigest: DIGEST } }], outside: true },
+    expect(applied.status).toBe(202);
+    expect(await applied.json()).toEqual({ data: { runId: RUN_ID, status: 'applying', actions: 2 } });
+    expect(serviceCalls('decideHeldRunApply')).toEqual([
+      { fn: 'decideHeldRunApply', args: [{ orgId: ORG_ID, runId: RUN_ID, actorUserId: USER_ID, impactDigest: DIGEST }], outside: true },
     ]);
 
     const dismissed = await app.request(DISMISS, post({ impactDigest: DIGEST }));
@@ -239,13 +241,14 @@ describe('org access', () => {
     // The org is the caller's but the run is not this org's: the service
     // scopes the run by org and refuses with its typed 404.
     h.authRef.current = FULL_ADMIN;
-    h.impls.applyRun = async () => {
+    h.impls.decideHeldRunApply = async () => {
       throw new PortalDirectoryIdentityError('PORTAL_DIRECTORY_RUN_NOT_FOUND', 404, 'Directory run not found.');
     };
     const res = await makeApp().request(APPLY, post({ impactDigest: DIGEST }));
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Directory run not found.', code: 'PORTAL_DIRECTORY_RUN_NOT_FOUND' });
-    expect(serviceCalls('applyRun')[0]!.args[0]).toMatchObject({ orgId: ORG_ID });
+    expect(serviceCalls('decideHeldRunApply')[0]!.args[0]).toMatchObject({ orgId: ORG_ID });
+    expect(serviceCalls('enqueueApplyRun')).toEqual([]);
   });
 
   it('a missing org is 404 on every route', async () => {
@@ -267,9 +270,9 @@ describe('GET /organizations/:id/portal-directory', () => {
 describe('refusals', () => {
   it('system-scope readers run through runOutsideDbContext; refusals are caught outside withDbTransaction', async () => {
     const cases: Array<[string, PortalDirectoryIdentityErrorCode, 404 | 409, () => Response | Promise<Response>]> = [
-      ['applyRun', 'PORTAL_DIRECTORY_RUN_STALE', 409, () => makeApp().request(APPLY, post({ impactDigest: DIGEST }))],
-      ['applyRun', 'PORTAL_DIRECTORY_RUN_NOT_HELD', 409, () => makeApp().request(APPLY, post({ impactDigest: DIGEST }))],
-      ['applyRun', 'PORTAL_DIRECTORY_ENFORCEMENT_OFF', 409, () => makeApp().request(APPLY, post({ impactDigest: DIGEST }))],
+      ['decideHeldRunApply', 'PORTAL_DIRECTORY_RUN_STALE', 409, () => makeApp().request(APPLY, post({ impactDigest: DIGEST }))],
+      ['decideHeldRunApply', 'PORTAL_DIRECTORY_RUN_NOT_HELD', 409, () => makeApp().request(APPLY, post({ impactDigest: DIGEST }))],
+      ['decideHeldRunApply', 'PORTAL_DIRECTORY_ENFORCEMENT_OFF', 409, () => makeApp().request(APPLY, post({ impactDigest: DIGEST }))],
       ['dismissHeldRun', 'PORTAL_DIRECTORY_ENFORCEMENT_OFF', 409, () => makeApp().request(DISMISS, post({ impactDigest: DIGEST }))],
       ['dismissHeldRun', 'PORTAL_DIRECTORY_RUN_NOT_FOUND', 404, () => makeApp().request(DISMISS, post({ impactDigest: DIGEST }))],
       ['restorePortalIdentity', 'PORTAL_IDENTITY_NOT_FOUND', 404, () => makeApp().request(RESTORE, post({ reactivateAccount: true }))],
@@ -284,17 +287,40 @@ describe('refusals', () => {
       expect(res.status, code).toBe(httpStatus);
       expect(await res.json()).toEqual({ error: `refused: ${code}`, code });
     }
-    // Every service call ran on its own system-scope connection.
+    // Every service call ran on its own system-scope connection; a refused
+    // apply decision never enqueues the job.
+    expect(serviceCalls('enqueueApplyRun')).toEqual([]);
     expect(h.calls.length).toBe(cases.length);
     expect(h.calls.every((c) => c.outside)).toBe(true);
   });
 
   it('an unexpected error is not swallowed into a 4xx', async () => {
-    h.impls.applyRun = async () => {
+    h.impls.decideHeldRunApply = async () => {
       throw new Error('boom');
     };
     const res = await makeApp().request(APPLY, post({ impactDigest: DIGEST }));
     expect(res.status).toBe(500);
+  });
+});
+
+describe('POST …/runs/:runId/apply (D8d, D10)', () => {
+  it('commits the decision outside the request context, then enqueues apply-run, and answers 202 without applying', async () => {
+    const res = await makeApp().request(APPLY, post({ impactDigest: DIGEST }));
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ data: { runId: RUN_ID, status: 'applying', actions: 2 } });
+    // Decision first (its own committed transaction), then the enqueue.
+    expect(h.calls.map((c) => c.fn)).toEqual(['decideHeldRunApply', 'enqueueApplyRun']);
+    expect(serviceCalls('enqueueApplyRun')[0]!.args).toEqual([RUN_ID, ORG_ID]);
+  });
+
+  it('an enqueue failure still answers 202: the applying run is the outbox the hourly recover picks up', async () => {
+    h.impls.enqueueApplyRun = async () => false;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const res = await makeApp().request(APPLY, post({ impactDigest: DIGEST }));
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ data: { runId: RUN_ID, status: 'applying', actions: 2 } });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('recover'), expect.objectContaining({ orgId: ORG_ID, runId: RUN_ID }));
+    warn.mockRestore();
   });
 });
 

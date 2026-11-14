@@ -66,7 +66,7 @@ async function processApplyRun(data: unknown): Promise<Record<string, unknown>> 
     return { status: 'invalid' };
   }
   try {
-    const { applied, skipped } = await applyRun({ orgId, runId, actor: 'system' });
+    const { applied, skipped } = await applyRun({ orgId, runId });
     return { status: 'applied', applied, skipped };
   } catch (err) {
     if (err instanceof PortalDirectoryIdentityError) {

@@ -1010,7 +1010,7 @@ it('no subject, email or key reaches a log line');
   - `ActionRow = { id, runId, portalUserId, email, name, provider, reason, effect, keepsPassword, status, rearmed }`.
   - Open actions are those `reported` or `held` on the latest evaluated run per source, plus identities with `rearm_since` set (`rearmed: true`).
   - Only runs whose chain names this org are listed.
-- `POST /organizations/:id/portal-directory/runs/:runId/apply { impactDigest }` returns `{ applied, skipped }`. Refusals: 409 `PORTAL_DIRECTORY_RUN_STALE`, `PORTAL_DIRECTORY_RUN_NOT_HELD` or `PORTAL_DIRECTORY_ENFORCEMENT_OFF`.
+- `POST /organizations/:id/portal-directory/runs/:runId/apply { impactDigest }` commits only the decision (run `applying`, `decided_by`, the apply audit), enqueues `apply-run` after commit (D10) and returns `202 { runId, status: 'applying', actions }`; the job applies and ends the run `held_applied`. A failed enqueue still answers 202: the `applying` run is the outbox `recover` picks up. Refusals: 409 `PORTAL_DIRECTORY_RUN_STALE`, `PORTAL_DIRECTORY_RUN_NOT_HELD` or `PORTAL_DIRECTORY_ENFORCEMENT_OFF`.
 - `POST /organizations/:id/portal-directory/runs/:runId/dismiss { impactDigest }` returns 204.
 - `POST /organizations/:id/portal-users/:portalUserId/identities/:identityId/restore { reactivateAccount: boolean, confirmMspDisabled?: boolean }` returns `{ accountStatus, blockersCleared }`.
 - Portal-users list rows gain `disabledBy` and `identities: Array<{ id, provider, disabledAt, disabledBlockers, disabledReason, rearmSince }>`.

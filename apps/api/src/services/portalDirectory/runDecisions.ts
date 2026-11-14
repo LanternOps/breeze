@@ -4,8 +4,10 @@
  *
  * Action status lifecycle (one per run kind, migration comment of record):
  *  - report run (`reported`): actions `reported`, terminal — never applied.
- *  - held run (`held`): actions `held` → MSP Apply → `applied` | `skipped`
- *    (re-check reason) — or Dismiss → `skipped` (dismissed).
+ *  - held run (`held`): MSP Apply ({@link decideHeldRunApply}) commits the
+ *    decision (run `applying`, `decided_by`) and the `apply-run` job turns the
+ *    `held` actions into `applied` | `skipped` (re-check reason), ending the
+ *    run `held_applied` — or Dismiss → `skipped` (dismissed).
  *  - auto-apply run (`applying`): actions `pending` → `applied` | `skipped`.
  *  - a newer evaluated run of the chain turns `held` / `pending` into
  *    `superseded`; Restore turns `applied` into `restored`.
@@ -18,7 +20,7 @@
  * transaction, so a crash mid-batch leaves the applied actions applied and the
  * run `applying` for the recovery sweep.
  */
-import { and, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   auditLogs,
@@ -179,8 +181,6 @@ export async function verifyDirectorySource(
   return null;
 }
 
-type ApplyActor = { userId: string; impactDigest: string } | 'system';
-
 type Decision =
   | { proceed: false }
   | { proceed: true; run: LockedRun; chain: ParsedDirectoryChain; decided: boolean };
@@ -205,86 +205,119 @@ async function expireApplyingRun(run: LockedRun): Promise<void> {
     ));
 }
 
-async function decide(orgId: string, runId: string, actor: ApplyActor, now: Date): Promise<Decision> {
+/** The `apply-run` job's gate: an `applying` run whose evidence is still the org's and fresh. */
+async function decideSystemApply(orgId: string, runId: string, now: Date): Promise<Decision> {
   const run = await lockRun(orgId, runId);
-
-  if (actor === 'system') {
-    if (run.disposition !== 'applying') return { proceed: false };
-    const chain = freshChainOf(run, now);
-    if (!chain) {
-      await expireApplyingRun(run);
-      console.log('[portal-directory] applying run expired before apply', { orgId, runId, source: run.source });
-      return { proceed: false };
-    }
-    return { proceed: true, run, chain, decided: run.decidedByUserId !== null };
-  }
-
-  // D8d, the MSP Apply: held, same org, fresh, the digest the MSP saw, and no newer evidence.
-  if (run.disposition !== 'held') throw notHeld();
+  if (run.disposition !== 'applying') return { proceed: false };
   const chain = freshChainOf(run, now);
-  if (!chain || !run.impactDigest || actor.impactDigest !== run.impactDigest) throw stale();
-  const [newer] = await db
-    .select({ id: portalDirectoryRuns.id })
-    .from(portalDirectoryRuns)
-    .where(and(
-      eq(portalDirectoryRuns.orgId, run.orgId),
-      eq(portalDirectoryRuns.source, run.source),
-      eq(portalDirectoryRuns.chainKey, run.chainKey!),
-      eq(portalDirectoryRuns.outcome, 'evaluated'),
-      ne(portalDirectoryRuns.id, run.id),
-      gt(portalDirectoryRuns.createdAt, run.createdAt),
-    ))
-    .limit(1);
-  if (newer) throw stale();
-
-  await db
-    .update(portalDirectoryRuns)
-    .set({ disposition: 'applying', decidedByUserId: actor.userId, decidedAt: now })
-    .where(and(eq(portalDirectoryRuns.id, run.id), eq(portalDirectoryRuns.orgId, run.orgId)));
-  await insertAudit({
-    orgId: run.orgId,
-    actorType: 'user',
-    actorId: actor.userId,
-    action: AUDIT_RUN_APPLY,
-    resourceType: 'portal_directory_run',
-    resourceId: run.id,
-    details: { source: run.source, impactDigest: actor.impactDigest },
-    result: 'success',
-  });
-  return { proceed: true, run, chain, decided: true };
+  if (!chain) {
+    await expireApplyingRun(run);
+    console.log('[portal-directory] applying run expired before apply', { orgId, runId, source: run.source });
+    return { proceed: false };
+  }
+  return { proceed: true, run, chain, decided: run.decidedByUserId !== null };
 }
 
 /**
- * Apply a run's awaiting actions (D8b for `system`, D8d for an MSP).
+ * D8d, the MSP Apply decision. The run must be `held`, fresh (≤ 72 h), name
+ * its own org, carry the digest the MSP saw and have no newer evaluated run
+ * in its chain; otherwise 409 `PORTAL_DIRECTORY_RUN_STALE` / `_NOT_HELD`, and
+ * report mode refuses (409 `PORTAL_DIRECTORY_ENFORCEMENT_OFF`).
  *
- * MSP: the run must be `held`, fresh (≤ 72 h), name its own org, carry the
- * digest the MSP saw and have no newer evaluated run in its chain; otherwise
- * 409 `PORTAL_DIRECTORY_RUN_STALE` / `_NOT_HELD`. The decision (`applying`,
- * `decided_by`, audit) commits first, so a crash mid-batch is finished by the
- * recovery sweep's system apply and still ends `held_applied`.
+ * Commits only the decision: the run becomes `applying` with
+ * `decided_by` / `decided_at`, and `organization.portal_directory.run.apply`
+ * is audited in the same transaction. The caller then enqueues `apply-run`
+ * ({@link enqueueApplyRun}) after this commit; the job applies the actions
+ * and, because `decided_by` is set, ends the run `held_applied`. The run row
+ * is the outbox: a failed enqueue leaves it `applying` for the hourly
+ * `recover`.
  *
- * System (the `apply-run` job): an `applying` run; anything else is a no-op.
+ * Returns the number of actions the decision covers (those still `held`).
+ */
+export async function decideHeldRunApply(p: {
+  orgId: string;
+  runId: string;
+  actorUserId: string;
+  impactDigest: string;
+  now?: Date;
+}): Promise<{ runId: string; actions: number }> {
+  assertNoHeldContext('decideHeldRunApply');
+  if (!isDirectoryDeprovisionEnforced()) throw enforcementOff();
+  if (!UUID_RE.test(p.orgId) || !UUID_RE.test(p.runId)) throw runNotFound();
+  if (!UUID_RE.test(p.actorUserId)) throw new Error('decideHeldRunApply: invalid actor id');
+  const now = p.now ?? new Date();
+
+  const actions = await withSystemDbAccessContext(async () => {
+    const run = await lockRun(p.orgId, p.runId);
+    if (run.disposition !== 'held') throw notHeld();
+    const chain = freshChainOf(run, now);
+    if (!chain || !run.impactDigest || p.impactDigest !== run.impactDigest) throw stale();
+    const [newer] = await db
+      .select({ id: portalDirectoryRuns.id })
+      .from(portalDirectoryRuns)
+      .where(and(
+        eq(portalDirectoryRuns.orgId, run.orgId),
+        eq(portalDirectoryRuns.source, run.source),
+        eq(portalDirectoryRuns.chainKey, run.chainKey!),
+        eq(portalDirectoryRuns.outcome, 'evaluated'),
+        ne(portalDirectoryRuns.id, run.id),
+        gt(portalDirectoryRuns.createdAt, run.createdAt),
+      ))
+      .limit(1);
+    if (newer) throw stale();
+
+    await db
+      .update(portalDirectoryRuns)
+      .set({ disposition: 'applying', decidedByUserId: p.actorUserId, decidedAt: now })
+      .where(and(eq(portalDirectoryRuns.id, run.id), eq(portalDirectoryRuns.orgId, run.orgId)));
+    await insertAudit({
+      orgId: run.orgId,
+      actorType: 'user',
+      actorId: p.actorUserId,
+      action: AUDIT_RUN_APPLY,
+      resourceType: 'portal_directory_run',
+      resourceId: run.id,
+      details: { source: run.source, impactDigest: p.impactDigest },
+      result: 'success',
+    });
+    const [held] = await db
+      .select({ actions: count() })
+      .from(portalDirectoryActions)
+      .where(and(
+        eq(portalDirectoryActions.runId, run.id),
+        eq(portalDirectoryActions.orgId, run.orgId),
+        eq(portalDirectoryActions.status, 'held'),
+      ));
+    return Number(held?.actions ?? 0);
+  }, 'portalDirectory.decideApply');
+  markRequestAuditWritten();
+  return { runId: p.runId, actions };
+}
+
+/**
+ * The `apply-run` job (D8b, and an MSP Apply after {@link decideHeldRunApply}):
+ * apply an `applying` run's awaiting actions as the system actor. Anything
+ * not `applying` is a no-op; an `applying` run whose evidence is past 72 h or
+ * whose chain no longer names its org is superseded, never applied.
  *
  * Each action is one {@link disablePortalIdentity} transaction that re-checks
  * the chain, rearm, the observation and {@link verifyDirectorySource} under
  * the locks; a failed re-check marks the action `skipped` with its reason.
- * Report mode refuses (409 `PORTAL_DIRECTORY_ENFORCEMENT_OFF`), for the
- * system path too: with the switch off nothing disables anyone (D7).
+ * The run ends `applied`, or `held_applied` when an MSP decided it.
+ * Report mode refuses (409 `PORTAL_DIRECTORY_ENFORCEMENT_OFF`): with the
+ * switch off nothing disables anyone (D7).
  */
 export async function applyRun(p: {
   orgId: string;
   runId: string;
-  actor: ApplyActor;
   now?: Date;
 }): Promise<{ applied: number; skipped: number }> {
   assertNoHeldContext('applyRun');
   if (!isDirectoryDeprovisionEnforced()) throw enforcementOff();
   if (!UUID_RE.test(p.orgId) || !UUID_RE.test(p.runId)) throw runNotFound();
-  if (p.actor !== 'system' && !UUID_RE.test(p.actor.userId)) throw new Error('applyRun: invalid actor id');
   const now = p.now ?? new Date();
 
-  const decision = await withSystemDbAccessContext(() => decide(p.orgId, p.runId, p.actor, now), 'portalDirectory.decideApply');
-  if (p.actor !== 'system') markRequestAuditWritten();
+  const decision = await withSystemDbAccessContext(() => decideSystemApply(p.orgId, p.runId, now), 'portalDirectory.systemApply');
   if (!decision.proceed) return { applied: 0, skipped: 0 };
   const { run, chain } = decision;
 
