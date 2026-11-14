@@ -2,6 +2,7 @@ import { drExecutions, drPlanGroups } from '../db/schema';
 import { drPlanDefinitionDigest } from './drPlanDefinition';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DR_STEP_TYPES } from '@breeze/shared/constants';
 
 vi.mock('../db', () => ({
   db: {
@@ -1351,6 +1352,25 @@ describe('DR command steps and stored credentials', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.select).mockReset();
+  });
+
+  // #11856: the editor stored upper-case step types that the allow-list refused.
+  // A group with no devices passes the allow-list and halts on the next check,
+  // so the halt reason tells the two failures apart without any dispatch mocks.
+  describe.each(DR_STEP_TYPES)('step type %s', (stepType) => {
+    it.each([
+      ['canonical', stepType],
+      ['upper-case (stored by the editor)', stepType.toUpperCase()],
+      ['lower-case', stepType.toLowerCase()],
+    ])('is accepted by dispatch when stored %s', async (_label, stored) => {
+      const { results } = await dispatchGroup(
+        execution(),
+        { ...group(stored, {}), devices: [] },
+        initialResults(),
+      );
+      expect(results.haltReason).not.toMatch(/unsupported command type/);
+      expect(results.haltReason).toMatch(/has no assigned devices/);
+    });
   });
 
   it('dispatches a provider-backed restore step with a destination reference resolved from its snapshot', async () => {
