@@ -139,9 +139,9 @@ describe('manage_invoices currencyCode (#3776)', () => {
  * has to be refused here as well as deeper in.
  *
  * Deliberately asserts on `toolInputSchemas.run_script.parse(...).runAs` and
- * not merely on `validateToolInput(...).success`: a non-strict zod object
- * accepts an unrecognised key and reports success while STRIPPING it, so a
- * success-only assertion would pass even if the field had never been added.
+ * not merely on `validateToolInput(...).success`: the parse proves the schema
+ * declares the field and keeps its value, not only that it is not refused as
+ * an unknown argument (#11861).
  */
 describe('run_script run context (#4888)', () => {
   const base = { scriptId: TEST_UUID, deviceIds: [TEST_UUID] };
@@ -215,6 +215,18 @@ describe('unknown arguments are refused, naming the key and the accepted ones (#
     if (!result.success) {
       expect(result.error).toContain('unknown argument "bogus" (accepted: ');
       expect(result.error).not.toContain('Unrecognized key');
+    }
+  });
+
+  it('a nested strict object inside an array: one helpful line with the index path, no bare zod duplicate', () => {
+    const result = validateToolInput('request_diagnostic_access', {
+      deviceId: TEST_UUID, reason: 'investigate', paths: [{ path: 'C:\\logs', bogus: 1 }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain('paths[0]: unknown argument "bogus" (accepted: ');
+      expect(result.error).not.toContain('Unrecognized key');
+      expect(result.error.split('bogus').length - 1).toBe(1);
     }
   });
 

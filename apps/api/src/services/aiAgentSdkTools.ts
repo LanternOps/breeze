@@ -1059,7 +1059,7 @@ const TOPOLOGY_PROPOSAL_TOOL = 'diagnose_connectivity';
 
 /**
  * The SDK Zod shape IS the validated shape: derived from `toolInputSchemas`
- * so the model is never told a key `validateToolInput` strips (W01-D7,
+ * so the model is never told a key `validateToolInput` refuses (W01-D7,
  * spec 2026-09-23). Declarations themselves stay literal `tool(` calls with
  * a quoted name rather than a `.map()` loop: `aiAgentSdkTools.mcpCoverage.test.ts`
  * greps the source text for each quoted name, and a loop would silently empty
@@ -3168,9 +3168,8 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
 
     // Zod shapes below mirror `toolInputSchemas.get_fleet_findings` /
     // `.analyze_fleet_metrics` (aiToolSchemas.ts) key-for-key — the gate
-    // strips unknown keys silently, so a shape that drifts from the enforced
-    // schema makes the model's argument vanish and the tool answer with
-    // defaults.
+    // refuses unknown keys (#11861), so a shape that drifts from the enforced
+    // schema makes the model's call fail with an unknown-argument error.
     tool(
       'get_fleet_findings',
       registryDescription('get_fleet_findings'),
@@ -5491,7 +5490,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
     // the aiTools* modules keep the canonical copy served to external MCP.
     // Input shapes mirror toolInputSchemas (aiToolSchemas.ts) exactly — that is
     // the gate executeTool validates against, and a key the model is told to
-    // send but Zod does not know is stripped silently.
+    // send but Zod does not know is refused as an unknown argument (#11861).
 
     tool(
       'list_invoices',

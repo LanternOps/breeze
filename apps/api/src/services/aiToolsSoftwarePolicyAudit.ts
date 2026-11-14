@@ -23,14 +23,12 @@ import { recordSoftwarePolicyAudit } from './softwarePolicyService';
 
 /**
  * Contract-A D4 (#5505 W05): the AI agent may never arm
- * `remediationOptions.autoInstall`. Both AI invocation paths let a call reach a
- * handler with this key present and untouched — `aiToolSchemas.ts`'s
- * `remediationOptions` Zod schema is non-strict (unknown keys don't fail
- * `safeParse`, and `validateToolInput` discards the parsed/stripped value
- * anyway — see `executeTool` in `aiTools.ts`), and the SDK path
- * (`aiAgentSdkTools.ts`) types the whole object as an untyped `z.record`
- * before delegating to the same `executeTool()`. Schema typing cannot hold this
- * line, so the four handler write sites that can set `remediationOptions`
+ * `remediationOptions.autoInstall`. `aiToolSchemas.ts`'s `remediationOptions`
+ * declares no `autoInstall`, so since #11861 `validateToolInput` refuses it as
+ * an unknown argument on every path that reaches `executeTool`; the SDK path
+ * (`aiAgentSdkTools.ts`) types the whole object as an untyped `z.record`, so
+ * only that check stands between it and the handler. Schema typing alone is
+ * not this line's guarantee, so the four handler write sites that can set `remediationOptions`
  * (`aiToolsCompliance.ts` create/update, `aiToolsPolicyPrereqs.ts`
  * create/update) call `remediationOptionsArmsAutoInstall` before writing to the
  * database and refuse with this exact message rather than silently dropping

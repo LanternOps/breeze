@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { findUnknownInputKeys, formatUnknownKeyFinding } from './aiToolUnknownKeys';
+import { findUnknownInputKeys, formatUnknownKeyFinding, unknownKeysCovered } from './aiToolUnknownKeys';
 
 const keysOf = (schema: z.ZodType, input: unknown) => findUnknownInputKeys(schema, input).map((f) => ({ path: f.path, keys: f.keys }));
 
@@ -76,6 +76,29 @@ describe('findUnknownInputKeys (#11861)', () => {
       expect(() => findUnknownInputKeys(schema, input)).not.toThrow();
     }
     expect(findUnknownInputKeys(schema, { sub: 'not-object', list: 'not-array' })).toEqual([]);
+  });
+});
+
+describe('unknownKeysCovered (dedupe of a strict schema\'s own unrecognized_keys)', () => {
+  const findings = [{ path: ['items', 0], keys: ['z', 'y'], accepted: ['a'] }];
+
+  it('covers an issue at the same path whose keys the finding names', () => {
+    expect(unknownKeysCovered(findings, ['items', 0], ['z'])).toBe(true);
+    expect(unknownKeysCovered(findings, ['items', 0], ['y', 'z'])).toBe(true);
+  });
+
+  it('never hides an issue that names a key the finding does not, or sits at another path', () => {
+    expect(unknownKeysCovered(findings, ['items', 0], ['z', 'w'])).toBe(false);
+    expect(unknownKeysCovered(findings, ['items', 1], ['z'])).toBe(false);
+    expect(unknownKeysCovered(findings, ['items', '0'], ['z'])).toBe(false);
+    expect(unknownKeysCovered([], [], ['z'])).toBe(false);
+  });
+
+  it('matches the paths zod itself reports for a strict object nested in an array under optional', () => {
+    const schema = z.object({ items: z.array(z.strictObject({ a: z.string() })).optional() });
+    const input = { items: [{ a: 'x' }, { a: 'x', z: 1 }] };
+    const issue = schema.safeParse(input).error!.issues.find((i) => i.code === 'unrecognized_keys')!;
+    expect(unknownKeysCovered(findUnknownInputKeys(schema, input), issue.path, issue.keys)).toBe(true);
   });
 });
 

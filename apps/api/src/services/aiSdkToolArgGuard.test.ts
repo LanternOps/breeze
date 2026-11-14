@@ -2,9 +2,11 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import type { HookInput } from '@anthropic-ai/claude-agent-sdk';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { createArgCheckedSdkMcpServer, unknownToolArgsHooks, unknownToolArgsHooksForTools } from './aiSdkToolArgGuard';
+import { createBreezeMcpServer } from './aiAgentSdkTools';
+import { createScriptBuilderMcpServer } from './scriptBuilderTools';
 
 const noop = async () => ({ content: [{ type: 'text' as const, text: 'ok' }] });
 const findDevices = tool('find_devices', 'Find devices', { search: z.string().optional(), sub: z.object({ a: z.string() }).optional() }, noop);
@@ -70,6 +72,53 @@ describe('unknownToolArgsHooks (#11861)', () => {
     const out = await hooks.PreToolUse[0]!.hooks[0]!({ hook_event_name: 'PostToolUse' } as unknown as HookInput, 't1', { signal });
     expect(out).toEqual({});
   });
+
+  it('fails closed when the check itself throws (a throwing hook would let the stripped call run)', async () => {
+    const throwing = tool('boom', 'd', { sub: z.lazy(() => { throw new Error('getter broke'); }) }, noop);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const guarded = unknownToolArgsHooks({ breeze: createArgCheckedSdkMcpServer({ name: 'breeze', version: '1', tools: [throwing] }) });
+      const out = await decide(guarded, pre('mcp__breeze__boom', { sub: { a: 1 } }));
+      expect(out?.permissionDecision).toBe('deny');
+      expect(out?.permissionDecisionReason).toMatch(/^Invalid input: the arguments could not be checked/);
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('reports an in-process server it did not record instead of skipping it in silence', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      unknownToolArgsHooks({ breeze: { type: 'sdk', name: 'breeze', instance: {} } as never });
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('MCP server "breeze" was not built by createArgCheckedSdkMcpServer'));
+      errSpy.mockClear();
+      unknownToolArgsHooks({ breeze: server });
+      expect(errSpy).not.toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+});
+
+/** The production builders, not a fixture server: the server they return is the one the hook recognizes. */
+describe('production SDK servers are recognized by the hook (#11861)', () => {
+  const fakeAuth = (() => { throw new Error('handlers must not run in this test'); }) as never;
+
+  it('chat/agent server (createBreezeMcpServer): query_devices({ filter }) is denied, a known call is not', async () => {
+    const breeze = createBreezeMcpServer(fakeAuth);
+    const h = unknownToolArgsHooks({ breeze });
+    const denied = await decide(h, pre('mcp__breeze__query_devices', { filter: 'online' }));
+    expect(denied?.permissionDecision).toBe('deny');
+    expect(denied?.permissionDecisionReason).toMatch(/^Invalid input: unknown argument "filter" \(accepted: .*search/);
+    expect(await decide(h, pre('mcp__breeze__query_devices', { search: 'web' }))).toBeUndefined();
+  });
+
+  it('script builder server (createScriptBuilderMcpServer): an unknown key on a delegated tool is denied', async () => {
+    const sb = createScriptBuilderMcpServer(fakeAuth);
+    const h = unknownToolArgsHooks({ script_builder: sb });
+    expect((await decide(h, pre('mcp__script_builder__query_devices', { filter: 'x' })))?.permissionDecision).toBe('deny');
+  });
 });
 
 /**
@@ -105,10 +154,11 @@ describe('every production SDK server and query() is guarded (#11861)', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('every query() call site passes the unknown-argument hook', () => {
+  it('every query() call site passes the unknown-argument hook (counted per call site, not per file)', () => {
+    const count = (text: string, re: RegExp) => (text.match(re) ?? []).length;
     const offenders = files
       .filter((f) => /\bquery\(\{/.test(code(f)) && !UNGUARDED[rel(f)])
-      .filter((f) => !/hooks: unknownToolArgsHooks(ForTools)?\(/.test(code(f)))
+      .filter((f) => count(code(f), /hooks: unknownToolArgsHooks(ForTools)?\(/g) < count(code(f), /\bquery\(\{/g))
       .map(rel);
     expect(offenders).toEqual([]);
   });

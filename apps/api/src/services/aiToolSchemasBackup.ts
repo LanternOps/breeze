@@ -51,8 +51,9 @@ const restoreAsVmRebuildArm = z.object({
 /**
  * W03-D4 (#6757). Agent SDK shapes for tools whose `toolInputSchemas` entry is
  * not a plain `z.object` (so `inputShape()` cannot read `.shape`). The SDK's
- * `tool()` wraps a ZodRawShape in `z.object` and STRIPS keys absent from it,
- * so the shape must carry every key either arm accepts. Every key is optional
+ * `tool()` wraps a ZodRawShape in `z.object` and STRIPS keys absent from it
+ * (and the #11861 PreToolUse guard refuses them first), so the shape must
+ * carry every key either arm accepts. Every key is optional
  * here: `validateToolInput` runs the full pipe afterwards and enforces each
  * arm's required fields and its strictness.
  */

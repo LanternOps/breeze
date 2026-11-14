@@ -10,11 +10,13 @@
  *
  * Which objects are checked:
  *  - a plain object (strip) or strict object, at the top level or nested under
- *    optional/nullable/default/readonly/catch wrappers, arrays, the input side
- *    of a pipe (or the output side of a preprocess), and lazy schemas;
- *  - a discriminated union: the arm the discriminator selects, or, when the
- *    discriminator is absent or matches no arm, the union of every arm's keys
- *    (a key no arm defines can never be applied).
+ *    optional/nullable/default/prefault/nonoptional/readonly/catch wrappers,
+ *    arrays, the input side of a pipe (or the output side of a preprocess),
+ *    and lazy schemas;
+ *  - a discriminated union whose arms are all objects: the arm the
+ *    discriminator selects, or, when the discriminator is absent or matches no
+ *    arm and every arm is closed, the union of every arm's keys (a key no arm
+ *    defines can never be applied).
  * Deliberately NOT checked, because open keys are their contract: records,
  * passthrough/loose objects and objects with a catchall, plain unions,
  * intersections, `any`/`unknown`.
@@ -164,7 +166,20 @@ export function formatUnknownKeyFinding(finding: UnknownKeyFinding): string {
   return `${where}${noun} ${keys} (accepted: ${accepted})`;
 }
 
-/** Stable key for matching a finding's path against a Zod issue's path. */
-export function unknownKeyPathKey(path: ReadonlyArray<PropertyKey>): string {
-  return JSON.stringify(path.map((p) => (typeof p === 'symbol' ? String(p) : p)));
+function samePath(a: ReadonlyArray<PropertyKey>, b: ReadonlyArray<PropertyKey>): boolean {
+  return a.length === b.length && a.every((p, i) => p === b[i]);
+}
+
+/**
+ * True when a finding at `path` already names every one of `keys` — so a strict
+ * schema's own `unrecognized_keys` issue for that object is a duplicate. Exact
+ * on both path and keys, so a Zod issue naming anything more is never hidden.
+ */
+export function unknownKeysCovered(
+  findings: ReadonlyArray<UnknownKeyFinding>,
+  path: ReadonlyArray<PropertyKey>,
+  keys: ReadonlyArray<string>,
+): boolean {
+  const finding = findings.find((f) => samePath(f.path, path));
+  return !!finding && keys.every((k) => finding.keys.includes(k));
 }

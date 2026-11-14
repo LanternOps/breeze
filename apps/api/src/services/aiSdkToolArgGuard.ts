@@ -19,10 +19,19 @@
  *
  * A denied call never reaches the handler: it files no approval and runs
  * nothing, the same as a call the SDK's own schema check refuses today.
+ *
+ * Coverage (aiSdkToolArgGuard.test.ts): a source scan holds every production
+ * `createSdkMcpServer` and `query()` to this module; the surface_turn verify
+ * harness builds through an injected SDK and passes
+ * `unknownToolArgsHooksForTools`; two offline measurement harnesses (tool
+ * capture, provider fidelity) are exempt — they never run a production turn.
+ * A server handed to the hook that this module did not record, or a check that
+ * throws, is never silent: the first is reported, the second denies the call.
  */
 import { createSdkMcpServer, type HookCallbackMatcher, type HookInput, type HookJSONOutput, type McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { findUnknownInputKeys, formatUnknownKeyFinding } from './aiToolUnknownKeys';
+import { captureException, captureMessage } from './sentry';
 
 type SdkServerOptions = Parameters<typeof createSdkMcpServer>[0];
 type SdkServer = ReturnType<typeof createSdkMcpServer>;
@@ -51,8 +60,7 @@ function schemaMap(tools: ReadonlyArray<ToolDecl>): Map<string, z.ZodType> {
 
 /**
  * `createSdkMcpServer`, recording each tool's advertised input schema so
- * `unknownToolArgsHooks` can refuse unknown arguments for it. Every production
- * SDK server goes through here (aiSdkToolArgGuard.test.ts scans for it).
+ * `unknownToolArgsHooks` can refuse unknown arguments for it.
  */
 export function createArgCheckedSdkMcpServer(options: SdkServerOptions): SdkServer {
   const server = createSdkMcpServer(options);
@@ -82,7 +90,18 @@ function hooksFor(servers: Array<{ name: string; schemas: ReadonlyMap<string, z.
     const server = byPrefix.find((s) => input.tool_name.startsWith(s.prefix));
     const schema = server?.schemas.get(input.tool_name.slice(server.prefix.length));
     if (!schema) return {};
-    const refusal = unknownToolArgsRefusal(schema, input.tool_input);
+    let refusal: string | null;
+    try {
+      refusal = unknownToolArgsRefusal(schema, input.tool_input);
+    } catch (err) {
+      // A throwing hook is non-blocking to the SDK: the call would run with the
+      // keys stripped, the very failure this guards. Deny instead.
+      console.error(`[aiSdkToolArgGuard] argument check threw for ${input.tool_name}:`, err);
+      try {
+        captureException(err, undefined, { op: 'ai.tool_arg_guard', toolName: input.tool_name });
+      } catch { /* the console line above stands */ }
+      refusal = 'Invalid input: the arguments could not be checked; retry the call with only the documented arguments.';
+    }
     if (!refusal) return {};
     return {
       hookSpecificOutput: {
@@ -98,15 +117,25 @@ function hooksFor(servers: Array<{ name: string; schemas: ReadonlyMap<string, z.
 /**
  * The `query({ hooks })` value for a set of MCP servers: a `PreToolUse` hook
  * that denies a call to a recorded server's tool when it carries an argument
- * the tool does not define. Servers not built by `createArgCheckedSdkMcpServer`
- * (none in production) and every non-MCP tool pass through untouched.
+ * the tool does not define. Every non-MCP tool passes through untouched. An
+ * in-process (`type: 'sdk'`) server this module did not record — one not built
+ * by `createArgCheckedSdkMcpServer`, or a copy of one — cannot be checked; it
+ * is reported (error log + Sentry) rather than skipped in silence.
  */
 export function unknownToolArgsHooks(
   mcpServers: Readonly<Record<string, McpServerConfig>>,
 ): { PreToolUse: HookCallbackMatcher[] } {
   return hooksFor(Object.entries(mcpServers).flatMap(([name, config]) => {
-    const schemas = advertisedSchemas.get(config as object);
-    return schemas ? [{ name, schemas }] : [];
+    const schemas = config && typeof config === 'object' ? advertisedSchemas.get(config) : undefined;
+    if (schemas) return [{ name, schemas }];
+    if ((config as { type?: unknown } | undefined)?.type === 'sdk') {
+      console.error(`[aiSdkToolArgGuard] MCP server "${name}" was not built by createArgCheckedSdkMcpServer; its tools' unknown arguments are not refused`);
+      // Reporting must never fail the session it reports on.
+      try {
+        captureMessage('AI tool argument guard: unrecorded SDK MCP server', { eventCode: 'ai_tool_arg_guard_unrecorded_server', level: 'error' });
+      } catch { /* the console line above stands */ }
+    }
+    return [];
   }));
 }
 

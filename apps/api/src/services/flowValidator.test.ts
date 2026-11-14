@@ -94,9 +94,10 @@ describe('validateFlowDocument', () => {
     expect(r.valid).toBe(false);
   });
 
-  it('an unknown key next to a templated leaf keeps unrecognized_keys', async () => {
-    // Core tool schemas are non-strict (unknown keys strip), so use the strict
-    // built-in: the templated `minutes` is masked, the unknown key is not.
+  it('an unknown key next to a templated leaf is still reported (strict built-in, one issue)', async () => {
+    // The templated `minutes` is masked, the unknown key is not. `wait` is
+    // strict, so Zod's own unrecognized_keys for the same key is dropped as a
+    // duplicate of the unknown-argument issue.
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: '{{inputs.r}}', bogus: 1 } }]), ORG_OWNER);
     const inv = r.issues.filter((i) => i.code === 'input_invalid');
     expect(inv).toHaveLength(1);
