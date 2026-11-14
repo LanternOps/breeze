@@ -153,6 +153,11 @@ export const JOB_SCHEDULES = {
   // Hour 11 held only :03 in this lane; :23 keeps the daily = 3 (mod 5) lane.
   'portal-identity-reconcile': '23 11 * * *',
   'vulnerability-sofa-sync': '3 12 * * *',
+  // Portal registration W8 (#11385, plan D10) — daily Google Workspace
+  // directory pass: fans out one google-org job per org with an active Google
+  // connection and an enabled Google identity. Hour 12 held :03 and :08 in
+  // this lane; :23 keeps the daily = 3 (mod 5) lane.
+  'portal-directory-google': '23 12 * * *',
   'vulnerability-correlate': '3 13 * * *',
   'reliability-history-retention': '3 14 * * *',
   'playbook-execution-retention': '23 14 * * *',

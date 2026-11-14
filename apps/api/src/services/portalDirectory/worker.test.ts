@@ -9,6 +9,8 @@ const h = vi.hoisted(() => ({
   retryPendingPurges: vi.fn(),
   pruneDirectoryRuns: vi.fn(),
   enqueueApplyRun: vi.fn(),
+  runGoogleSweep: vi.fn(),
+  evaluateGoogleOrg: vi.fn(),
   enforced: { value: false },
   staleRows: [] as Array<{ id: string; orgId: string }>,
   staleWhere: [] as unknown[],
@@ -52,6 +54,7 @@ vi.mock('./identityDisable', () => ({
   retryPendingPurges: h.retryPendingPurges,
 }));
 vi.mock('./mode', () => ({ isDirectoryDeprovisionEnforced: () => h.enforced.value }));
+vi.mock('./googleSource', () => ({ runGoogleSweep: h.runGoogleSweep, evaluateGoogleOrg: h.evaluateGoogleOrg }));
 vi.mock('./queue', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./queue')>()),
   enqueueApplyRun: h.enqueueApplyRun,
@@ -162,6 +165,32 @@ describe('processPortalDirectoryJob — recover', () => {
   });
 });
 
+describe('processPortalDirectoryJob — Google', () => {
+  it('google-sweep fans out for the current UTC day', async () => {
+    h.runGoogleSweep.mockResolvedValueOnce({ enqueued: 3 });
+    expect(await processPortalDirectoryJob({ name: 'google-sweep', data: {} }, NOW)).toEqual({ enqueued: 3 });
+    expect(h.runGoogleSweep).toHaveBeenCalledWith(NOW);
+  });
+
+  it('google-org evaluates one org for its day; a malformed payload is dropped', async () => {
+    h.evaluateGoogleOrg.mockResolvedValueOnce({ outcome: 'evaluated' });
+    expect(await processPortalDirectoryJob({ name: 'google-org', data: { orgId: ORG, utcDate: '2026-11-14' } }, NOW))
+      .toEqual({ outcome: 'evaluated' });
+    expect(h.evaluateGoogleOrg).toHaveBeenCalledWith(ORG, '2026-11-14');
+
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(await processPortalDirectoryJob({ name: 'google-org', data: { orgId: ORG, utcDate: 'today' } }, NOW))
+      .toEqual({ status: 'invalid' });
+    expect(h.evaluateGoogleOrg).toHaveBeenCalledOnce();
+  });
+
+  it('a google-org failure propagates for the job retry', async () => {
+    h.evaluateGoogleOrg.mockRejectedValueOnce(new Error('portal directory google-org failed: Error'));
+    await expect(processPortalDirectoryJob({ name: 'google-org', data: { orgId: ORG, utcDate: '2026-11-14' } }, NOW))
+      .rejects.toThrow('google-org');
+  });
+});
+
 describe('the worker', () => {
   it('consumes portal-directory-deprovision at concurrency 2 and dispatches by job name', async () => {
     await initializePortalDirectoryWorker();
@@ -176,6 +205,12 @@ describe('the worker', () => {
     expect(h.applyRun).toHaveBeenCalledOnce();
     await w.processor({ name: 'recover', data: {} });
     expect(h.pruneDirectoryRuns).toHaveBeenCalledOnce();
+    h.runGoogleSweep.mockResolvedValueOnce({ enqueued: 0 });
+    await w.processor({ name: 'google-sweep', data: {} });
+    expect(h.runGoogleSweep).toHaveBeenCalledOnce();
+    h.evaluateGoogleOrg.mockResolvedValueOnce({ outcome: 'no_identities' });
+    await w.processor({ name: 'google-org', data: { orgId: ORG, utcDate: '2026-11-14' } });
+    expect(h.evaluateGoogleOrg).toHaveBeenCalledOnce();
     await shutdownPortalDirectoryWorker();
     expect(w.close).toHaveBeenCalled();
     expect(h.closeQueue).toHaveBeenCalled();
@@ -190,6 +225,18 @@ describe('the worker', () => {
       repeat: { pattern: jobSchedule('portal-directory-recover') },
     }));
     const opts = h.queue.add.mock.calls.find((c) => c[0] === 'recover')![2] as { jobId: string };
+    expect(opts.jobId).not.toContain(':');
+    await shutdownPortalDirectoryWorker();
+  });
+
+  it('registers the daily google-sweep repeatable on its registry slot, replacing a stale one', async () => {
+    h.repeatables = [{ name: 'google-sweep', key: 'old-sweep' }];
+    await initializePortalDirectoryWorker();
+    expect(h.queue.removeRepeatableByKey).toHaveBeenCalledWith('old-sweep');
+    expect(h.queue.add).toHaveBeenCalledWith('google-sweep', expect.anything(), expect.objectContaining({
+      repeat: { pattern: jobSchedule('portal-directory-google') },
+    }));
+    const opts = h.queue.add.mock.calls.find((c) => c[0] === 'google-sweep')![2] as { jobId: string };
     expect(opts.jobId).not.toContain(':');
     await shutdownPortalDirectoryWorker();
   });

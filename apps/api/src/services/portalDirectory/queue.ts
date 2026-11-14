@@ -13,6 +13,14 @@ import { bullmqJobId, enqueueOrReplaceStale } from '../bullmqUtils';
  */
 export const PORTAL_DIRECTORY_QUEUE = 'portal-directory-deprovision';
 export const PORTAL_DIRECTORY_APPLY_JOB = 'apply-run';
+export const PORTAL_DIRECTORY_GOOGLE_SWEEP_JOB = 'google-sweep';
+export const PORTAL_DIRECTORY_GOOGLE_ORG_JOB = 'google-org';
+
+export interface PortalDirectoryGoogleOrgJobData {
+  orgId: string;
+  /** The sweep's UTC day, `YYYY-MM-DD`: one Google snapshot per org per day. */
+  utcDate: string;
+}
 
 export interface PortalDirectoryApplyJobData {
   runId: string;

@@ -4,6 +4,9 @@
  *  - `apply-run` — apply one `applying` run as the system actor. In report
  *    mode `applyRun` refuses (`PORTAL_DIRECTORY_ENFORCEMENT_OFF`): that is
  *    TERMINAL here (the job completes and logs), never a retry;
+ *  - `google-sweep` (daily repeatable, slot `portal-directory-google`) — fan
+ *    out one `google-org` job per eligible org (googleSource.ts);
+ *  - `google-org` — one org's Google snapshot for one UTC day;
  *  - `recover` (hourly repeatable, slot `portal-directory-recover`) —
  *    re-enqueue `applying` runs untouched for 15 min (enforce mode only: in
  *    report mode they are counted, or every hour would re-enqueue a job that
@@ -25,8 +28,11 @@ import { getBullMQConnection } from '../redis';
 import { captureException } from '../sentry';
 import { PortalDirectoryIdentityError, retryPendingPurges } from './identityDisable';
 import { isDirectoryDeprovisionEnforced } from './mode';
+import { evaluateGoogleOrg, runGoogleSweep } from './googleSource';
 import {
   PORTAL_DIRECTORY_APPLY_JOB,
+  PORTAL_DIRECTORY_GOOGLE_ORG_JOB,
+  PORTAL_DIRECTORY_GOOGLE_SWEEP_JOB,
   PORTAL_DIRECTORY_QUEUE,
   closePortalDirectoryQueue,
   enqueueApplyRun,
@@ -43,6 +49,7 @@ export const APPLYING_STALE_AFTER_MS = 15 * 60_000;
 const RECOVER_BATCH = 500;
 const WORKER_CONCURRENCY = 2;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UTC_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 type PortalDirectoryJob = Pick<Job, 'name' | 'data'>;
 
@@ -129,6 +136,18 @@ export async function processPortalDirectoryJob(job: PortalDirectoryJob, now: Da
       return processApplyRun(job.data);
     case PORTAL_DIRECTORY_RECOVER_JOB:
       return runDirectoryRecovery(now);
+    case PORTAL_DIRECTORY_GOOGLE_SWEEP_JOB:
+      return runGoogleSweep(now);
+    case PORTAL_DIRECTORY_GOOGLE_ORG_JOB: {
+      const { orgId, utcDate } = (job.data ?? {}) as { orgId?: unknown; utcDate?: unknown };
+      if (typeof orgId !== 'string' || typeof utcDate !== 'string' || !UUID_RE.test(orgId) || !UTC_DATE_RE.test(utcDate)) {
+        console.warn(`${LOG} google-org dropped: malformed payload`);
+        return { status: 'invalid' };
+      }
+      // Listing failures are recorded runs, not throws; a throw here is
+      // already sanitized and earns the job retry.
+      return evaluateGoogleOrg(orgId, utcDate);
+    }
     default:
       console.warn(`${LOG} unknown job dropped`, { name: job.name });
       return { status: 'unknown_job' };
@@ -139,9 +158,18 @@ let worker: Worker | null = null;
 
 async function scheduleRepeatables(): Promise<void> {
   const queue = getPortalDirectoryQueue();
+  const owned = new Set([PORTAL_DIRECTORY_RECOVER_JOB, PORTAL_DIRECTORY_GOOGLE_SWEEP_JOB]);
   for (const repeatable of await queue.getRepeatableJobs()) {
-    if (repeatable.name === PORTAL_DIRECTORY_RECOVER_JOB) await queue.removeRepeatableByKey(repeatable.key);
+    if (owned.has(repeatable.name)) await queue.removeRepeatableByKey(repeatable.key);
   }
+  await queue.add(PORTAL_DIRECTORY_GOOGLE_SWEEP_JOB, {}, {
+    jobId: bullmqJobId('portal-dir-google-sweep'),
+    repeat: { pattern: jobSchedule('portal-directory-google') },
+    // Tomorrow's sweep is the retry; each org job retries on its own.
+    attempts: 1,
+    removeOnComplete: true,
+    removeOnFail: { count: 30 },
+  });
   await queue.add(PORTAL_DIRECTORY_RECOVER_JOB, {}, {
     jobId: bullmqJobId('portal-dir-recover'),
     repeat: { pattern: jobSchedule('portal-directory-recover') },
