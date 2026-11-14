@@ -726,7 +726,7 @@
       "dismissNote": "Descartar"
     },
     "settings": {
-      "title": "Presupuesto y revisión periódica",
+      "title": "Configuración de Wisp",
       "budget": "Presupuesto diario",
       "budgetHelp": "Incluye el chat. Cuando se agota, las comprobaciones en segundo plano se pausan hasta las 00:00 UTC y el chat sigue funcionando con una advertencia. El presupuesto de IA de la organización sigue aplicándose al chat.",
       "tick": "Revisión cada (minutos)",

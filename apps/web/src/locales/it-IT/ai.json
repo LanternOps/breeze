@@ -726,7 +726,7 @@
       "dismissNote": "Chiudi"
     },
     "settings": {
-      "title": "Budget e controllo periodico",
+      "title": "Impostazioni di Wisp",
       "budget": "Budget giornaliero",
       "budgetHelp": "Include la chat. Quando è esaurito, i controlli in background restano in pausa fino alle 00:00 UTC e la chat continua a funzionare con un avviso. Alla chat si applica ancora il budget IA dell’organizzazione.",
       "tick": "Controllo ogni (minuti)",

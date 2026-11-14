@@ -726,7 +726,7 @@
       "dismissNote": "Dismiss"
     },
     "settings": {
-      "title": "Budget and check-in",
+      "title": "Wisp settings",
       "budget": "Daily budget",
       "budgetHelp": "Includes chat. When it is spent, background checks pause until 00:00 UTC and chat keeps working with a warning. The org AI budget still applies to chat.",
       "tick": "Check-in every (minutes)",

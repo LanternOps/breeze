@@ -726,7 +726,7 @@
       "dismissNote": "Dispensar"
     },
     "settings": {
-      "title": "Orçamento e verificação periódica",
+      "title": "Configurações do Wisp",
       "budget": "Orçamento diário",
       "budgetHelp": "Inclui o chat. Quando acaba, as verificações em segundo plano ficam em pausa até as 00:00 UTC e o chat continua funcionando com um aviso. O orçamento de IA da organização continua valendo para o chat.",
       "tick": "Verificar a cada (minutos)",

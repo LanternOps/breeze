@@ -726,7 +726,7 @@
       "dismissNote": "Kapat"
     },
     "settings": {
-      "title": "Bütçe ve kontrol aralığı",
+      "title": "Wisp ayarları",
       "budget": "Günlük bütçe",
       "budgetHelp": "Sohbeti de içerir. Bütçe tükendiğinde arka plan kontrolleri 00:00 UTC'ye kadar duraklatılır ve sohbet bir uyarıyla çalışmaya devam eder. Kuruluşun yapay zeka bütçesi sohbet için geçerli olmaya devam eder.",
       "tick": "Kontrol aralığı (dakika)",

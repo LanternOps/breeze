@@ -726,7 +726,7 @@
       "dismissNote": "Fermer"
     },
     "settings": {
-      "title": "Budget et suivi",
+      "title": "Paramètres de Wisp",
       "budget": "Budget quotidien",
       "budgetHelp": "Comprend le clavardage. Une fois le budget épuisé, les vérifications en arrière-plan sont mises en pause jusqu’à 00:00 UTC et le clavardage continue de fonctionner avec un avertissement. Le budget d’IA de l’organisation s’applique toujours au clavardage.",
       "tick": "Suivi toutes les (minutes)",

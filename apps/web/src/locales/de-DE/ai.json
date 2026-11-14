@@ -726,7 +726,7 @@
       "dismissNote": "Schließen"
     },
     "settings": {
-      "title": "Budget und Check-in",
+      "title": "Wisp-Einstellungen",
       "budget": "Tagesbudget",
       "budgetHelp": "Enthält den Chat. Ist es aufgebraucht, pausieren die Hintergrundprüfungen bis 00:00 UTC, und der Chat funktioniert mit einer Warnung weiter. Für den Chat gilt weiterhin das KI-Budget der Organisation.",
       "tick": "Check-in alle (Minuten)",
