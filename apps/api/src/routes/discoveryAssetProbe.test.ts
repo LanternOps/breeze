@@ -244,6 +244,8 @@ describe('POST /discovery/assets/:id/probe', () => {
     // and answered with the "agent didn't answer in time" shape, not a 409.
     expect(res.status).toBe(202);
     expect(dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    // The asset address reaches selection so an on-subnet executor is preferred.
+    expect(selectNetworkExecutor).toHaveBeenCalledWith(expect.objectContaining({ targetIp: assetRow().ipAddress }));
   });
 
   it('returns 404 for an asset in another org', async () => {
