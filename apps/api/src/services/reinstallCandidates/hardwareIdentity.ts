@@ -12,8 +12,11 @@
  * trims spaces only, so the key does too.
  */
 
-/** Mirrors the switch in cleanHardwareIdentityValue (Go). Keep both in step. */
-const PLACEHOLDER_IDENTITY_VALUES: ReadonlySet<string> = new Set([
+/**
+ * Mirrors the switch in cleanHardwareIdentityValue (Go). Keep both in step:
+ * hardwareIdentity.test.ts reads the Go source and fails when they differ.
+ */
+export const PLACEHOLDER_IDENTITY_VALUES: ReadonlySet<string> = new Set([
   '0',
   '00000000',
   '000000000000000',

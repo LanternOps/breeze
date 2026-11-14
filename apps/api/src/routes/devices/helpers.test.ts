@@ -470,6 +470,28 @@ describe('reinstall link visibility (#8318 §7.3: a link may name another org\'s
     expect(out).toMatchObject({ possibleReplacementOfDeviceId: TARGET_A });
   });
 
+  it('without canAccessSite, the allowlist follows siteAccessCheck: null and [] deny, undefined allows (#6790)', async () => {
+    const allowlistOnly = (allowedSiteIds: unknown) => ({
+      scope: 'organization' as const, orgId: ORG_A, accessibleOrgIds: [ORG_A],
+      canAccessOrg: (id: string) => id === ORG_A,
+      allowedSiteIds: allowedSiteIds as string[] | undefined,
+    });
+    for (const malformed of [null, []]) {
+      mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A1 }]);
+      const [row] = await redactReplacementLinksForCaller([linked(TARGET_A)], allowlistOnly(malformed));
+      expect(row!.possibleReplacementOfDeviceId).toBeNull();
+    }
+    mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A1 }]);
+    const [listed] = await redactReplacementLinksForCaller([linked(TARGET_A)], allowlistOnly([SITE_A1]));
+    expect(listed!.possibleReplacementOfDeviceId).toBe(TARGET_A);
+    mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: null }]);
+    const [unsited] = await redactReplacementLinksForCaller([linked(TARGET_A)], allowlistOnly([SITE_A1]));
+    expect(unsited!.possibleReplacementOfDeviceId).toBeNull();
+    mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A2 }]);
+    const [open] = await redactReplacementLinksForCaller([linked(TARGET_A)], allowlistOnly(undefined));
+    expect(open!.possibleReplacementOfDeviceId).toBe(TARGET_A);
+  });
+
   it('a device-bound AI run sees the link only when the target is one of its devices', async () => {
     mockTargets([{ id: TARGET_A, orgId: ORG_A }]);
     const [hidden] = await redactReplacementLinksForCaller([linked(TARGET_A)], { ...auth([ORG_A]), allowedDeviceIds: ['src'] });
