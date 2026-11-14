@@ -323,6 +323,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // transactions each open their own system context.
   { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/switch\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/[^/]+\/expire-devices\/?$/ },
+  // Reinstall reattach (#8318 wave 2-2). The request reads Redis (target
+  // liveness) before any lock, then runs one system transaction that holds the
+  // holding-area lock and both device rows while it consumes the step-up grant
+  // (Redis GETDEL); the candidates read is a partner-wide system read. Under
+  // the ambient request transaction each would pin a second pooled connection
+  // while the request's sat idle (#1105).
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/reattach\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/reinstall-candidates\/?$/ },
   // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
   // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
   // against a TENANT-CONTROLLED issuer host). Held inside the request

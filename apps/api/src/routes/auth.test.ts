@@ -255,6 +255,8 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // would produce the wrong constant and fail the assertion below.
   moveOrgResourceDigest: vi.fn(() => 'sha256:m0ve0r9b0undd19e5700000000000000000000000000000000000000000000'),
   forceRebootResourceDigest: vi.fn(() => 'sha256:f0rcer3b00700000000000000000000000000000000000000000000000000000'),
+  // #8318: reinstall reattach, another distinct constant.
+  deviceReattachResourceDigest: vi.fn(() => 'sha256:7ea77ac4000000000000000000000000000000000000000000000000000000a1'),
   // Unattested restore step-up: another distinct constant, same reason.
   unattestedRestoreResourceDigest: vi.fn(() => 'sha256:b0c7a5c0e5700000000000000000000000000000000000000000000000000004'),
   // Parked-device assignment: two more distinct constants, same reason.
@@ -494,7 +496,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, deviceReattachResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
 import { checkPasskeyRemovalEligibility, verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -5308,6 +5310,45 @@ describe('auth routes', () => {
 				method: 'POST',
 				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
 				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'device_force_reboot', resource }),
+			});
+			expect(res.status).toBe(400);
+			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		// #8318 §8: the reattach grant is bound to the pair, the target's install,
+		// the evidence level and the restore choice.
+		it('mints a device_reattach grant bound to the reattach digest', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-reattach');
+			const resource = {
+				sourceDeviceId: '00000000-0000-4000-8000-000000000010',
+				targetDeviceId: '00000000-0000-4000-8000-000000000011',
+				targetVersion: 'v'.repeat(43),
+				evidenceLevel: 'hint',
+				restoreDecommissioned: false,
+			};
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'device_reattach', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(deviceReattachResourceDigest).toHaveBeenCalledWith(resource);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'device_reattach',
+				resourceDigest: 'sha256:7ea77ac4000000000000000000000000000000000000000000000000000000a1',
+			}));
+		});
+
+		it.each([
+			['no resource', undefined],
+			['a force-reboot-shaped resource', { deviceId: '00000000-0000-4000-8000-000000000010' }],
+		])('refuses a device_reattach step-up with %s, before verifying a factor', async (_label, resource) => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'device_reattach', resource }),
 			});
 			expect(res.status).toBe(400);
 			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();

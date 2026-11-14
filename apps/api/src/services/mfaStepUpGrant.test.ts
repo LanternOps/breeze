@@ -552,3 +552,45 @@ describe('wisp_grant step-up (Wisp design §4.2, W02)', () => {
     expect(parsed.resource).toEqual(resource);
   });
 });
+
+describe('deviceReattachResourceDigest (#8318 §8)', () => {
+  const base = {
+    sourceDeviceId: '00000000-0000-4000-8000-000000000001',
+    targetDeviceId: '00000000-0000-4000-8000-000000000002',
+    targetVersion: 'v'.repeat(43),
+    evidenceLevel: 'hint' as const,
+    restoreDecommissioned: false,
+  };
+
+  it('changes with every bound field', async () => {
+    const { deviceReattachResourceDigest } = await import('./mfaStepUpGrant');
+    const digest = deviceReattachResourceDigest(base);
+    expect(digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const variants = [
+      { ...base, sourceDeviceId: '00000000-0000-4000-8000-000000000003' },
+      { ...base, targetDeviceId: '00000000-0000-4000-8000-000000000003' },
+      // Swapping the roles is a different reattach.
+      { ...base, sourceDeviceId: base.targetDeviceId, targetDeviceId: base.sourceDeviceId },
+      { ...base, targetVersion: 'w'.repeat(43) },
+      { ...base, evidenceLevel: 'tpm_continuity' as const },
+      { ...base, restoreDecommissioned: true },
+    ];
+    for (const variant of variants) expect(deviceReattachResourceDigest(variant)).not.toBe(digest);
+  });
+
+  it('is never equal to another operation\'s digest over the same device ids', async () => {
+    const { deviceReattachResourceDigest, forceRebootResourceDigest } = await import('./mfaStepUpGrant');
+    expect(deviceReattachResourceDigest(base)).not.toBe(forceRebootResourceDigest({ deviceId: base.targetDeviceId }));
+  });
+
+  it('a grant minted for device_reattach is consumed only by the same binding, and only once', async () => {
+    const { deviceReattachResourceDigest } = await import('./mfaStepUpGrant');
+    const binding = { ...bind('device_reattach'), resourceDigest: deviceReattachResourceDigest(base) };
+    const id = await mintStepUpGrant(binding);
+    expect(id).toBeTruthy();
+    expect(await validateStepUpGrant(id!, { ...binding, resourceDigest: deviceReattachResourceDigest({ ...base, targetVersion: 'w'.repeat(43) }) })).toBe(false);
+    expect(await validateStepUpGrant(id!, { ...binding, operation: 'device_force_reboot' })).toBe(false);
+    expect(await consumeStepUpGrant(id!, binding)).toBe(true);
+    expect(await consumeStepUpGrant(id!, binding)).toBe(false);
+  });
+});

@@ -44,6 +44,9 @@ export const PUBLIC_DEVICE_FIELDS = [
   'helperInstallIssue', 'helperInstallIssueSince',
   'uninstallIntentAt', 'possibleReplacementOfDeviceId',
   'possibleReplacementReason', 'possibleReplacementDetectedAt', 'decommissionedAt',
+  // #8318: backs the "Reinstalled on <date>" badge. A timestamp only; the
+  // incarnation counter and the reattach ledger stay private.
+  'lastReattachedAt',
   'purchaseDate', 'purchaseDateSource',
   'createdAt', 'updatedAt', 'partnerExportUpdatedAt',
 ] as const satisfies readonly (keyof typeof devices.$inferSelect)[];

@@ -2701,6 +2701,116 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
       },
     },
+    '/devices/{id}/reinstall-candidates': {
+      get: {
+        operationId: 'getDeviceReinstallCandidates',
+        tags: ['Devices'],
+        summary: 'Reattach candidates of a newly enrolled device',
+        description: 'For a SOURCE device (a new install), the older, silent device records it is probably a reinstall of, ranked by evidence (SMBIOS system UUID, then serial + manufacturer, then hostname within the same org), each with the side-by-side comparison fields and the values a `device_reattach` step-up binds. Every identifier is reported by the device itself and is not verified. Candidates are listed only to partner users, and only in organizations and sites they can reach; any other viewer learns only `reviewPending: true`. A parked source (in the holding area) is visible only to full partner admins; anyone else gets 404, as for a device that does not exist. Requires partner or organization scope and devices:read.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'The source, the candidates the caller may see, and whether a review is pending',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    source: { type: 'object', description: 'deviceId, parked, rebindSupported, and the comparison fields (hostname, osType, osVersion, serialNumber, manufacturer, model, systemUuid, lastSeenAt, …)' },
+                    candidates: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          deviceId: { type: 'string', format: 'uuid' },
+                          orgId: { type: 'string', format: 'uuid' },
+                          siteId: { type: 'string', format: 'uuid' },
+                          evidence: { type: 'string', enum: ['system_uuid', 'serial', 'hostname'] },
+                          reason: { type: 'string', enum: ['hardware', 'hostname'] },
+                          evidenceLevel: { type: 'string', enum: ['hint'] },
+                          flagged: { type: 'boolean', description: 'The candidate the source is flagged as a possible replacement of' },
+                          osChanged: { type: 'boolean', description: 'The request needs acknowledgeOsChange' },
+                          requiresRestore: { type: 'boolean', description: 'The record is removed; the request needs restoreDecommissioned' },
+                          targetVersion: { type: 'string', description: 'Opaque version of the target\'s install; send it back with the reattach request and bind it in the device_reattach step-up' },
+                        },
+                      },
+                    },
+                    reviewPending: { type: 'boolean', description: 'A possible reinstall exists that this caller is not shown' },
+                    openIntent: { type: 'object', nullable: true, description: 'The source\'s open reattach, when its target is in an org the caller reaches' },
+                    evidenceNotice: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid device id' },
+          '403': { description: 'Scope or permission denied' },
+          '404': { description: 'Device not found, or not visible to the caller' },
+        },
+      },
+    },
+    '/devices/{id}/reattach': {
+      post: {
+        operationId: 'reattachReinstalledDevice',
+        tags: ['Devices'],
+        summary: 'Reattach a reinstalled machine to its existing device record',
+        description: 'Requests the reattach of SOURCE device {id} (a new install) onto `targetDeviceId` (the older record of the same machine). The answer is the `requested` intent; the source agent then stages its own new credentials and confirms (the bounded rebind), after which the target record carries the new install and the source record is retired. Only partner users reattach: full partner admins anywhere in the partner; technicians limited to selected orgs when both orgs are theirs (a parked source needs a full partner admin). Requires partner scope, an interactive user session (API keys, MCP grants and AI agents are refused), devices:write + devices:delete, an MFA-assured session, and, while two-factor authentication is enabled, a single-use step-up grant minted by POST /auth/mfa/step-up for operation `device_reattach` bound to { sourceDeviceId, targetDeviceId, targetVersion, evidenceLevel, restoreDecommissioned }, with targetVersion and evidenceLevel as GET /devices/{id}/reinstall-candidates returned them. A device that does not exist, is in another partner or is outside the caller\'s reach is one 404. The grant is consumed only once every check has passed, so a refusal leaves it spendable. Audited in both organizations.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['targetDeviceId', 'targetVersion', 'possessionConfirmed'],
+                properties: {
+                  targetDeviceId: { type: 'string', format: 'uuid' },
+                  targetVersion: { type: 'string', description: 'The candidate\'s targetVersion from GET /devices/{id}/reinstall-candidates' },
+                  possessionConfirmed: { type: 'boolean', enum: [true], description: 'The operator confirmed out of band that the new install runs on the machine the record describes' },
+                  confirmTargetName: { type: 'string', maxLength: 255, description: 'The target\'s hostname, typed. Required for hint evidence (every reattach until TPM evidence ships); compared trimmed and case-insensitively' },
+                  restoreDecommissioned: { type: 'boolean', default: false, description: 'Required to reattach onto a removed record' },
+                  acknowledgeOsChange: { type: 'boolean', default: false, description: 'Required when the two installs report different operating systems' },
+                  stepUpGrant: { type: 'string', format: 'uuid', description: 'Step-up grant id (operation device_reattach). Required when two-factor authentication is enabled.' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '202': {
+            description: 'The reattach intent was created (state `requested`, expires in 60 minutes unless the source agent stages it)',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    intent: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        state: { type: 'string', enum: ['requested'] },
+                        sourceDeviceId: { type: 'string', format: 'uuid' },
+                        targetDeviceId: { type: 'string', format: 'uuid' },
+                        evidenceLevel: { type: 'string', enum: ['hint', 'tpm_continuity'] },
+                        restoreDecommissioned: { type: 'boolean' },
+                        requestedAt: { type: 'string', format: 'date-time' },
+                        expiresAt: { type: 'string', format: 'date-time' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid body; `same_device`; `confirm_target_name_required` / `confirm_target_name_mismatch` (the typed name does not match the target)' },
+          '403': { description: 'Scope, interactive-session, permission or MFA gate; `STEP_UP_REQUIRED` (grant missing, stale, bound to another pair or install, or consumed); `not_partner_user`, `user_inactive`, `permission_denied`, `org_access_denied`, `full_admin_required` (a parked source needs a full partner admin)' },
+          '404': { description: '`device_not_found`: the device does not exist, or is not one the caller may reach (the same answer)' },
+          '409': { description: 'A refusal, each with a code: `target_changed` (the target re-enrolled since targetVersion was read), `target_alive`, `liveness_unknown`, `device_quarantined`, `device_suspended`, `target_ephemeral`, `target_retired` (the target was the source of a confirmed reattach), `target_decommissioned` (without restoreDecommissioned), `target_ineligible`, `source_decommissioned`, `source_ineligible`, `org_draining`, `os_changed` (without acknowledgeOsChange), `rebind_unsupported` (the source agent lacks the rebind protocol), `device_in_open_intent`, `partner_mismatch` (a device moved partner during the request)' },
+          '503': { description: 'Step-up binding could not be established (auth state or session id unavailable); retry' },
+        },
+      },
+    },
     '/devices/{id}/oem-updates/run': {
       post: {
         operationId: 'runDeviceVendorUpdates',

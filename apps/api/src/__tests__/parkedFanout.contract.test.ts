@@ -508,6 +508,8 @@ const EXEMPT: Record<string, string> = {
   'services/reinstallCandidates/clearLinks.ts': 'reinstall hints (#8318 §7.3): clears other devices\' links to ONE retired record (named by id) across its partner, parked sources included on purpose; selects no targets and dispatches nothing',
   'services/reinstallCandidates/ranking.ts': 'reinstall hints (#8318 §7.3): the pure target-qualification rule that leaves hidden-org targets out; selects and dispatches nothing',
   'services/deviceReattach/requestIntent.ts': 'reinstall reattach (#8318): eligibility of the ONE target a human named (a hidden-org target is refused); selects no targets and dispatches nothing',
+  'services/deviceReattach/reachability.ts': 'reinstall reattach (#8318 §8): reads where the TWO devices a human named are (by id) to decide reachability before any lock; selects no targets and dispatches nothing',
+  'services/reinstallCandidates/viewer.ts': 'reinstall hints (#8318 §7.3): the read-only candidates view for ONE source (by id), ranked by ranking.ts so hidden-org targets stay out; parked sources only to full partner admins; selects no targets for work and dispatches nothing',
   'services/unassignedPool/parkedDeviceReads.ts': 'the parked-device list itself, shown only to full partner admins through the pre-assignment routes; reads, never selects work',
   'services/flows/triggerScope.ts': "org-pinned: enriches a flow trigger with the one device its event payload names, only when that device is in the run's own org (#5219); selects no targets and dispatches nothing",
   'services/devicePolicySet.ts': 'derived: every candidate policy assignment of the one device a heartbeat already identified (loaded in its org-scoped context); selects no work',

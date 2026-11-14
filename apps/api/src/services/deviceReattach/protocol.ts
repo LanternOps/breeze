@@ -32,6 +32,9 @@ export const REATTACH_INTENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** The source's previous certificate is revoked 24 h after confirm (§6.4 "After commit"). */
 export const REATTACH_SOURCE_CERT_GRACE_MS = 24 * 60 * 60 * 1000;
 
+/** The opaque target version (targetVersion.ts): 43 base64url characters, an HMAC-SHA256. */
+export const REATTACH_TARGET_VERSION_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
 /** Prefix of the confirm-only token the agent generates (§6.3). */
 export const REBIND_CONFIRMATION_TOKEN_PREFIX = 'brz_rbc_';
 

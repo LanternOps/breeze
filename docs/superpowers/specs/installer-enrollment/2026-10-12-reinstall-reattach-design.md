@@ -933,6 +933,60 @@ enroll and in the hardware report.
 - **Conventions:** every mutation goes through `runAction`, and every element the E2E tests touch
   has a `data-testid`.
 
+### Decided in wave 2-2
+
+Choices the sections above leave open, made when the API half of the action shipped:
+
+- **The server decides the evidence level.** The body has no `evidenceLevel`; every request is
+  `hint` until wave T2, so `confirmTargetName` is always required. It is compared trimmed and
+  case-insensitively with the locked target row (400 `confirm_target_name_required` /
+  `confirm_target_name_mismatch`), after the access rule, so it is no hostname oracle.
+- **OS change.** `os_changed` (409) when the two rows' `os_type` differ and
+  `acknowledgeOsChange` is not set.
+- **Reachability before any lock.** Before its transaction the request reads the requester and
+  where both devices are. A device that does not exist, is in another partner, or is outside the
+  requester's reach answers one 404 `device_not_found`, the same body either way, and its row is
+  never locked. Reach is: any org of the partner for a full partner admin; the live reachable orgs
+  for a technician limited to selected orgs, except that a parked source still ends as 403
+  `full_admin_required`. The check runs again under the row locks, where it is authoritative.
+  `partner_mismatch` remains only for a device that moved partner during the request.
+- **The target's install travels as an opaque version.** The candidates read never returns the
+  target's `agent_id` or `install_incarnation`. It returns `targetVersion`, an HMAC-SHA256 over
+  `targetDeviceId:agentId:installIncarnation` keyed by a key derived from the deployment's
+  secret-encryption keyring (`getSecretDerivedKeyMaterials`, as the topology cursors are). The
+  request carries it back and the service recomputes it from the locked target row, compared in
+  constant time under every retained key, so key rotation does not strand an open dialog. A
+  target that re-enrolled or was reattached since answers 409 `target_changed`.
+- **The step-up binding.** `device_reattach` is bound to `{ sourceDeviceId, targetDeviceId,
+  targetVersion, evidenceLevel, restoreDecommissioned }`, so through `targetVersion` it still
+  covers the target's agent id and incarnation. After the refusals and the version check, the
+  service locks the actor's assurance and live session, validates the grant, and only then
+  consumes it (GETDEL). A grant bound to another pair or install answers 403 `STEP_UP_REQUIRED`
+  and stays unspent; a missing grant answers the same, after every other refusal.
+  - **Fail closed.** The step-up argument is required and explicit: `grant`, or `not_required`,
+    which the route passes only when the deployment has two-factor authentication off (as the
+    pre-assignment routes do). Anything else is refused. The only `step_up_grant_ref` ever
+    recorded is a verified, consumed grant id.
+  - **Lock order.** The `users` row (`lockActorAssurance`, FOR SHARE) and the session's refresh
+    family come after the holding-area lock and both device rows, not first as
+    `stepUpActorAssurance.ts` suggests. This is `assignParkedDevice`'s order. The grant can only be
+    judged once the locked rows have passed every refusal, and every path that writes an intent
+    takes the holding-area lock and device rows first (§6.4). Factor resets lock `users` alone and
+    never a device row, so there is no cycle.
+- **The answer is 202** with the `requested` intent; the rebind finishes asynchronously.
+- **The candidates read** is `GET /devices/:id/reinstall-candidates`. It returns the detection's
+  own ranking, every qualifying candidate instead of the best, with the comparison fields and the
+  opaque `targetVersion`. Candidates are listed only to partner users, in orgs and sites they
+  reach. An organization user, or a technician lacking a candidate's org, gets
+  `reviewPending: true` and nothing else; `reviewPending` is true only when visibility hid a
+  candidate. The source's open intent is shown only when its target is in an org the viewer
+  reaches. A parked source is a 404 to anyone but a full partner admin until wave H.
+- **The badge** reads `devices.last_reattached_at`, now a public device field. The audit actions
+  `device.reinstall_suspected` and `device.reinstall.*` have activity-feed labels; the web feed's
+  allow-list is wave 2-3.
+- **Restoring a removed record** is not admitted against capacity at request; confirm does it
+  (`device_limit_reached`, §6.4).
+
 ## 9. Holding-area triage by technicians limited to selected orgs
 
 Today the holding area is a full-partner-admin surface: listing, assigning, the deploy-key switch

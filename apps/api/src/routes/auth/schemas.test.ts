@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource, callerVerificationAdministrativeStepUpResource, forceRebootStepUpResource } from './schemas';
+import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource, callerVerificationAdministrativeStepUpResource, forceRebootStepUpResource, deviceReattachStepUpResource } from './schemas';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 
 // SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
@@ -219,6 +219,33 @@ describe('mfaStepUpSchema operation field', () => {
     const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation, resource });
     expect(parsed.operation).toBe(operation);
     expect(parsed.resource).toEqual(resource);
+  });
+
+  // #8318 §8: the reattach binding parses whole through the coarse union (it
+  // is first and strict, so no other member swallows or trims it).
+  const reattachResource = {
+    sourceDeviceId: '00000000-0000-4000-8000-000000000060',
+    targetDeviceId: '00000000-0000-4000-8000-000000000061',
+    targetVersion: 'a'.repeat(43),
+    evidenceLevel: 'hint',
+    restoreDecommissioned: true,
+  } as const;
+
+  it('accepts device_reattach with its resource binding, unchanged', () => {
+    const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'device_reattach', resource: reattachResource });
+    expect(parsed.operation).toBe('device_reattach');
+    expect(parsed.resource).toEqual(reattachResource);
+  });
+
+  it.each([
+    ['an extra key', { ...reattachResource, targetOrgId: '00000000-0000-4000-8000-000000000062' }],
+    ['a non-uuid source', { ...reattachResource, sourceDeviceId: 'nope' }],
+    ['a raw agent id instead of the opaque version', { ...reattachResource, targetVersion: undefined, targetAgentId: 'a'.repeat(64) }],
+    ['a version that is not a MAC', { ...reattachResource, targetVersion: 'short' }],
+    ['an unknown evidence level', { ...reattachResource, evidenceLevel: 'tpm' }],
+    ['no restore choice', { ...reattachResource, restoreDecommissioned: undefined }],
+  ])('rejects a device_reattach binding with %s', (_label, resource) => {
+    expect(deviceReattachStepUpResource.safeParse(resource).success).toBe(false);
   });
 
   // #9380 review: pin `.strict()` on the force-reboot binding directly. The

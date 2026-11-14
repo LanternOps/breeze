@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
-import { auditLogs, deviceReattachments, devices, organizations, partnerUsers } from '../../db/schema';
+import { auditLogs, deviceReattachIntents, deviceReattachments, devices, organizations, partnerUsers } from '../../db/schema';
 import { agentCredentialUseKey } from '../../services/agentCredentialUse';
 import { setAgentPresence } from '../../services/agentPresence';
 import { loadReattachActor } from '../../services/deviceReattach/access';
@@ -37,7 +37,9 @@ beforeEach(() => {
 });
 import {
   parkedSource,
+  readDevice,
   readIntent,
+  targetVersionOf,
   seedAgentDevice,
   seedReattachTenant,
   silentTarget,
@@ -46,12 +48,17 @@ import {
 import { getTestDb } from './setup';
 
 async function request(tenant: ReattachTenant, sourceDeviceId: string, targetDeviceId: string, overrides: Partial<Parameters<typeof requestDeviceReattach>[0]> = {}) {
+  // The typed confirmation of `hint` evidence (wave 2-2): the target's name.
+  const targetRow = await readDevice(targetDeviceId);
   return requestDeviceReattach({
     actor: { userId: tenant.admin.id },
     sourceDeviceId,
     targetDeviceId,
+    targetVersion: await targetVersionOf(targetDeviceId),
     evidenceLevel: 'hint',
     restoreDecommissioned: false,
+    confirmTargetName: targetRow?.hostname ?? null,
+    stepUp: { kind: 'not_required' },
     ...overrides,
   });
 }
@@ -69,7 +76,7 @@ describe('requestDeviceReattach (#8318 §8)', () => {
     const target = await silentTarget(tenant.orgA);
     const before = Date.now();
 
-    const result = await request(tenant, source.id, target.id, { stepUpGrantRef: 'grant-ref-1' });
+    const result = await request(tenant, source.id, target.id);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const intent = await readIntent(result.intent.id);
@@ -81,7 +88,8 @@ describe('requestDeviceReattach (#8318 §8)', () => {
       evidenceLevel: 'hint',
       restoreDecommissioned: false,
       requestedBy: tenant.admin.id,
-      stepUpGrantRef: 'grant-ref-1',
+      // Only a verified, consumed grant is ever recorded (none here: 2FA off).
+      stepUpGrantRef: null,
       sourceAgentId: source.agentId,
       sourceOrgId: tenant.pool.orgId,
       sourceParked: true,
@@ -206,14 +214,19 @@ describe('requestDeviceReattach (#8318 §8)', () => {
       .toMatchObject({ ok: false, status: 409, code: 'target_retired' });
   });
 
-  it('refuses a source and a target that are not both in the requester\'s partner (partner_mismatch)', async () => {
+  // Wave 2-2 review: a device of another partner is indistinguishable from one
+  // that does not exist (partner_mismatch is kept for a move during the request).
+  it('answers a device of another partner with the same 404 as an unknown device', async () => {
     const tenant = await seedReattachTenant();
     const otherPartner = await createPartner();
     const otherOrg = await createOrganization({ partnerId: otherPartner.id });
     const otherSite = await createSite({ orgId: otherOrg.id });
     const foreignTarget = await silentTarget({ orgId: otherOrg.id, siteId: otherSite.id });
-    expect(await request(tenant, (await parkedSource(tenant)).id, foreignTarget.id))
-      .toMatchObject({ ok: false, status: 409, code: 'partner_mismatch' });
+    const source = await parkedSource(tenant);
+    const foreign = await request(tenant, source.id, foreignTarget.id);
+    const unknown = await request(tenant, source.id, randomUUID());
+    expect(foreign).toMatchObject({ ok: false, status: 404, code: 'device_not_found' });
+    expect(foreign).toEqual(unknown);
   });
 
   it('refuses the same device as source and target, and an unknown device', async () => {
@@ -293,20 +306,49 @@ describe('requestDeviceReattach (#8318 §8)', () => {
       expect(result.ok).toBe(true);
     });
 
-    it('refuses the technician a real source in an org they lack (403 org_access_denied)', async () => {
+    it('answers the technician a real source in an org they lack with 404 device_not_found', async () => {
       const tenant = await seedReattachTenant();
       const source = await seedAgentDevice(tenant.orgB, { rebindProtocolVersion: 1 });
       const target = await silentTarget(tenant.orgA);
       expect(await request(tenant, source.id, target.id, { actor: { userId: tenant.techA.id } }))
-        .toMatchObject({ ok: false, status: 403, code: 'org_access_denied' });
+        .toMatchObject({ ok: false, status: 404, code: 'device_not_found' });
     });
 
-    it('refuses the technician a target in an org they lack (403 org_access_denied)', async () => {
+    it('answers the technician a target in an org they lack with 404 device_not_found', async () => {
       const tenant = await seedReattachTenant();
       const source = await seedAgentDevice(tenant.orgA, { rebindProtocolVersion: 1 });
       const target = await silentTarget(tenant.orgB);
       expect(await request(tenant, source.id, target.id, { actor: { userId: tenant.techA.id } }))
-        .toMatchObject({ ok: false, status: 403, code: 'org_access_denied' });
+        .toMatchObject({ ok: false, status: 404, code: 'device_not_found' });
+    });
+
+    it('answers the technician a parked target, a Quick Support target and a device in a suspended org with the same 404', async () => {
+      const tenant = await seedReattachTenant();
+      const source = await seedAgentDevice(tenant.orgA, { rebindProtocolVersion: 1 });
+      const unknown = await request(tenant, source.id, randomUUID(), { actor: { userId: tenant.techA.id } });
+      expect(unknown).toMatchObject({ ok: false, status: 404, code: 'device_not_found' });
+
+      const parkedTarget = await parkedSource(tenant);
+      expect(await request(tenant, source.id, parkedTarget.id, { actor: { userId: tenant.techA.id } })).toEqual(unknown);
+
+      const quickSupport = await createOrganization({ partnerId: tenant.partnerId, type: 'quick_support' });
+      const qsSite = await createSite({ orgId: quickSupport.id });
+      const qsTarget = await silentTarget({ orgId: quickSupport.id, siteId: qsSite.id });
+      expect(await request(tenant, source.id, qsTarget.id, { actor: { userId: tenant.techA.id } })).toEqual(unknown);
+
+      // A suspended org the technician does not reach (it is not in their
+      // live set, whatever org_ids says): no org_draining oracle.
+      const suspended = await createOrganization({ partnerId: tenant.partnerId, status: 'suspended' });
+      const suspendedSite = await createSite({ orgId: suspended.id });
+      await getTestDb().update(partnerUsers)
+        .set({ orgIds: [tenant.orgA.orgId, suspended.id] })
+        .where(eq(partnerUsers.userId, tenant.techA.id));
+      const inSuspended = await silentTarget({ orgId: suspended.id, siteId: suspendedSite.id });
+      expect(await request(tenant, source.id, inSuspended.id, { actor: { userId: tenant.techA.id } })).toEqual(unknown);
+
+      // Nothing was locked or written for any of them.
+      expect(await getTestDb().select({ id: deviceReattachIntents.id }).from(deviceReattachIntents)
+        .where(eq(deviceReattachIntents.sourceDeviceId, source.id))).toHaveLength(0);
     });
 
     it('a parked source needs a full partner admin until wave H (403 full_admin_required)', async () => {
@@ -324,11 +366,22 @@ describe('requestDeviceReattach (#8318 §8)', () => {
         .toMatchObject({ ok: false, status: 403, code: 'not_partner_user' });
     });
 
-    it('a user of another partner is refused (409 partner_mismatch)', async () => {
+    it('a user of another partner gets the same 404 as for an unknown device', async () => {
       const tenant = await seedReattachTenant();
       const other = await seedReattachTenant();
-      expect(await request(tenant, (await parkedSource(tenant)).id, (await silentTarget(tenant.orgA)).id, { actor: { userId: other.admin.id } }))
-        .toMatchObject({ ok: false, status: 409, code: 'partner_mismatch' });
+      const source = await parkedSource(tenant);
+      const foreign = await request(tenant, source.id, (await silentTarget(tenant.orgA)).id, { actor: { userId: other.admin.id } });
+      expect(foreign).toMatchObject({ ok: false, status: 404, code: 'device_not_found' });
+      expect(foreign).toEqual(await request(tenant, source.id, randomUUID(), { actor: { userId: other.admin.id } }));
+    });
+
+    it('a target that re-enrolled since its version was read is refused (409 target_changed)', async () => {
+      const tenant = await seedReattachTenant();
+      const target = await silentTarget(tenant.orgA);
+      const shown = await targetVersionOf(target.id);
+      await getTestDb().update(devices).set({ agentId: `${target.agentId.slice(0, 60)}beef` }).where(eq(devices.id, target.id));
+      expect(await request(tenant, (await parkedSource(tenant)).id, target.id, { targetVersion: shown }))
+        .toMatchObject({ ok: false, status: 409, code: 'target_changed' });
     });
   });
 });

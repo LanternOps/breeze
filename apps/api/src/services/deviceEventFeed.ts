@@ -453,6 +453,14 @@ const actionLabels: Record<string, string> = {
   'device.site_assignment_confirmed': 'Site assignment confirmed (suggestions off)',
   'device.site_assignment_unconfirmed': 'Site assignment confirmation cleared (suggestions on)',
   'device.decommission': 'Device decommissioned',
+  // #8318 reinstall reattach: written on the TARGET record (and the source's
+  // org) by services/deviceReattach/audit.ts and reinstallCandidates/notify.ts.
+  'device.reinstall_suspected': 'Possible reinstall detected',
+  'device.reinstall.requested': 'Reattach of a reinstalled machine requested',
+  'device.reinstall.staged': 'Reattach staged by the new install',
+  'device.reinstall.cancelled': 'Reattach cancelled',
+  'device.reinstall.expired': 'Reattach request expired',
+  'device.reinstall.reattached': 'Reinstalled machine reattached',
   'device.agent_token.rotate': 'Agent token rotated',
   'device.patch.install.queue': 'Patch installation queued',
   'device.patch.rollback.queue': 'Patch rollback queued',

@@ -103,6 +103,14 @@ describe('public device projection', () => {
     expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain('workloadInventoryProtocolVersion');
   });
 
+  // #8318 wave 2-2: the "Reinstalled on <date>" badge reads lastReattachedAt;
+  // the incarnation counter itself stays private.
+  it('exposes lastReattachedAt but not the install incarnation', () => {
+    expect(PUBLIC_DEVICE_FIELDS).toContain('lastReattachedAt');
+    expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain('installIncarnation');
+    expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain('incarnationStartedAt');
+  });
+
   it('drops unknown future columns by default', () => {
     expect(projectPublicDevice({ ...safe, futureCredential: 'private' }))
       .not.toHaveProperty('futureCredential');

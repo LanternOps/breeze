@@ -104,6 +104,7 @@ import {
   useDeploymentSigningKey,
   type ReattachTenant,
   type SeededAgentDevice,
+  targetVersionOf,
 } from './deviceReattachFixtures';
 import { getTestDb } from './setup';
 
@@ -175,6 +176,9 @@ async function requestIntent(tenant: ReattachTenant, source: SeededAgentDevice, 
     targetDeviceId: target.id,
     evidenceLevel: 'hint',
     restoreDecommissioned: false,
+    confirmTargetName: target.hostname,
+    targetVersion: await targetVersionOf(target.id),
+    stepUp: { kind: 'not_required' },
     ...extra,
   });
   if (!result.ok) throw new Error(`request refused: ${result.code}`);

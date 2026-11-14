@@ -866,6 +866,18 @@ describe('#10190 helper config', () => {
   });
 });
 
+// Reinstall reattach (#8318 wave 2-2): the request and the candidates read run
+// their own system contexts (and Redis work) with no request transaction.
+it('self-manages the reattach request and the candidates read, and nothing near them', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reattach')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reattach/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123/reinstall-candidates')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123/reattach')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reinstall-candidates')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reattach/extra')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123')).toBe(false);
+});
+
 describe('routes that wait on another host self-manage their DB context', () => {
   const ID = '3f2c1b9e-8a7d-4e6f-9c5b-1a2b3c4d5e6f';
   it.each([
