@@ -162,7 +162,8 @@ export function noteServedPrompt(key: ContextWindowKey, promptTokens: number, kn
   if (entry && entry.contextWindow < promptTokens) memo.delete(k);
   const previous = served.get(k);
   const fresh = previous !== undefined && Date.now() - previous.at <= CONTEXT_WINDOW_MEMO_TTL_MS;
-  if (!fresh || previous.promptTokens < promptTokens) boundedSet(served, k, { promptTokens, at: Date.now() });
+  // Every served prompt renews the evidence; it keeps the largest one seen.
+  boundedSet(served, k, { promptTokens: fresh ? Math.max(previous.promptTokens, promptTokens) : promptTokens, at: Date.now() });
   return known?.source === 'observed' && known.window < promptTokens;
 }
 

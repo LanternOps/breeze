@@ -1,8 +1,9 @@
 /**
  * Persists the context window an endpoint stated in its own rejection
  * (#11396 W02, spec §3.3) so that a fresh process, or another replica, knows
- * it too: `resolveEffectiveContextWindow` reads it back as a FRESH
- * observation for the memo TTL under the same connection config_version.
+ * it too: `resolveEffectiveContextWindow` reads it back under the same
+ * connection config_version, fresh for the memo TTL and, with nothing listed,
+ * as a floor after it (#11393).
  *
  * Best-effort and failure-isolated by contract:
  *  - fire-and-forget: `recordObservedContextWindow` returns void and never
@@ -14,8 +15,9 @@
  *    current config_version: an observation made under an older URL or key
  *    matches zero rows;
  *  - deduped per (offering, config_version, window) for the memo TTL, so a
- *    busy session does not write on every rejection. A failed write is not
- *    deduped.
+ *    busy session does not write on every rejection. Any other write for the
+ *    offering ends that dedupe (a window stated again after a different one is
+ *    written again). A failed write is not deduped.
  *
  * A served prompt larger than the stored window disproves it (#11393):
  * `clearDisprovenContextWindow` clears the observation under the same
@@ -61,12 +63,16 @@ type WriteKind = 'set' | 'clear';
 const keyOf = (kind: WriteKind, offeringId: string, configVersion: number, window: number): string =>
   JSON.stringify([kind, offeringId, configVersion, window]);
 
-/** A set and a clear of the same offering undo each other, so each forgets the other's dedupe. */
-function forgetOpposite(kind: WriteKind, offeringId: string): void {
-  const opposite: WriteKind = kind === 'set' ? 'clear' : 'set';
+/**
+ * A write replaces whatever the offering's row held, so every other dedupe
+ * entry for the offering is out of date: A, B, A must land A again, and a set
+ * after a clear (or a clear after a set) must not be skipped.
+ */
+function forgetOthers(offeringId: string, keep: string): void {
   for (const key of [...recent.keys()]) {
-    const [k, id] = JSON.parse(key) as [WriteKind, string];
-    if (k === opposite && id === offeringId) recent.delete(key);
+    if (key === keep) continue;
+    const [, id] = JSON.parse(key) as [WriteKind, string];
+    if (id === offeringId) recent.delete(key);
   }
 }
 
@@ -127,6 +133,7 @@ function remember(key: string, at: number): void {
 
 /** Runs one write fire-and-forget in the system context; a failure is logged and reported, never rethrown. */
 function runWrite(
+  operation: WriteKind,
   key: string,
   write: () => Promise<boolean>,
   what: string,
@@ -143,7 +150,7 @@ function runWrite(
       captureException(
         new Error(`context window observation write failed: ${safeErrorMessage(error)}`),
         undefined,
-        { service: 'contextWindowObservation', partner_id: partnerId },
+        { service: 'contextWindowObservation', partner_id: partnerId, operation },
         { fingerprint: ['aiModels', 'contextWindowObservation'] },
       );
     }
@@ -165,8 +172,8 @@ export function recordObservedContextWindow(o: ContextWindowObservation): void {
   const key = keyOf('set', o.offeringId, o.configVersion, o.contextWindow);
   const now = Date.now();
   if (!claim(key, now)) return;
-  forgetOpposite('set', o.offeringId);
-  runWrite(key, () => writeObservedContextWindow(o, new Date(now)), 'persist an observed context window', {
+  forgetOthers(o.offeringId, key);
+  runWrite('set', key, () => writeObservedContextWindow(o, new Date(now)), 'persist an observed context window', {
     offeringId: o.offeringId, configVersion: o.configVersion, contextWindow: o.contextWindow,
   }, o.partnerId);
 }
@@ -184,8 +191,8 @@ export function clearDisprovenContextWindow(d: ContextWindowDisproof): void {
   if (!Number.isSafeInteger(d.servedPromptTokens) || d.servedPromptTokens <= d.disprovenWindow) return;
   const key = keyOf('clear', d.offeringId, d.configVersion, d.disprovenWindow);
   if (!claim(key, Date.now())) return;
-  forgetOpposite('clear', d.offeringId);
-  runWrite(key, () => clearObservedContextWindow(d), 'clear a disproven context window', {
+  forgetOthers(d.offeringId, key);
+  runWrite('clear', key, () => clearObservedContextWindow(d), 'clear a disproven context window', {
     offeringId: d.offeringId, configVersion: d.configVersion, contextWindow: d.disprovenWindow, servedPromptTokens: d.servedPromptTokens,
   }, d.partnerId);
 }

@@ -183,8 +183,9 @@ export async function gatewayCandidate(input: { offering: Offering; conn: Partne
   // is nothing the gateway could bind or send, so it is unusable.
   const wireModel = offering.modelId?.trim() ? offering.modelId : '';
   const config = wireModel ? gatewayConfigFor(conn) : null;
-  // #11396: override → min(discovered, fresh observed) → unknown, against the
-  // connection version this candidate dispatches under.
+  // #11396/#11393: override → min(discovered, fresh observed) → discovered →
+  // stale observed (the floor) → unknown, against the connection version this
+  // candidate dispatches under.
   const window = resolveEffectiveContextWindow(offering, conn.configVersion);
   const toolProfileFacts = toolProfileFactsFrom(offering, 'gateway', window.value);
   return {

@@ -237,7 +237,10 @@ export async function* translateChatStream(
   }
   const stop = mapFinish(finish, (toolUses?.length ?? 0) > 0);
   // Billed output covers everything the model generated, including rejected tool-call arguments.
-  try { ctx.onUsage?.(usage); } catch { /* evidence must not change the stream */ }
+  try { ctx.onUsage?.(usage); } catch (error) {
+    // Evidence must not change the stream; the failure is still logged.
+    warn('could not note the served usage', error instanceof Error ? error.message : String(error));
+  }
   const u = resolveUsage(usage, { inputTokens: ctx.estimatedInputTokens, outputChars: emittedChars + argChars });
   yield encodeSse('message_delta', {
     type: 'message_delta',

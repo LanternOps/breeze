@@ -164,6 +164,29 @@ describe('clearDisprovenContextWindow (#11393 floor)', () => {
     expect(writes.map((w) => w.set.contextWindowObserved)).toEqual([8192, null, 8192]);
   });
 
+  it('a window stated again after a different one is written again: A, B, A lands A (review finding)', async () => {
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    recordObservedContextWindow({ ...OBS, contextWindow: 4096 });
+    await settledContextWindowObservations();
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    expect(writes.map((w) => w.set.contextWindowObserved)).toEqual([8192, 4096, 8192]);
+  });
+
+  it('a failed clear is tagged as a clear for Sentry, a failed set as a set', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    failNext.value = new Error('db down');
+    clearDisprovenContextWindow(DISPROOF);
+    await settledContextWindowObservations();
+    expect(vi.mocked(captureException).mock.calls[0]![2]).toMatchObject({ operation: 'clear' });
+    failNext.value = new Error('db down');
+    recordObservedContextWindow(OBS);
+    await settledContextWindowObservations();
+    expect(vi.mocked(captureException).mock.calls[1]![2]).toMatchObject({ operation: 'set' });
+    warn.mockRestore();
+  });
+
   it('after a new observation, a later disproof of the same window clears again', async () => {
     clearDisprovenContextWindow(DISPROOF);
     await settledContextWindowObservations();

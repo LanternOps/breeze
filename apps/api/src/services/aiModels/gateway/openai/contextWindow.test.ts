@@ -357,6 +357,23 @@ describe('noteServedPrompt: a served prompt larger than a known window disproves
     expect(planRequest(KEY, 32_000, 3_000, OBSERVED)).toEqual({ kind: 'send', maxTokens: 8_192 - 3_000 - contextSafetyMargin(8_192) });
   });
 
+  it('a disproved FRESH observation stops refusing up front', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fresh = { window: 8_192, source: 'observed' as const };
+    noteServedPrompt(KEY, 9_000, fresh);
+    expect(planRequest(KEY, 32_000, 8_192 * 2, fresh)).toEqual({ kind: 'send', maxTokens: 32_000 });
+  });
+
+  it('later served prompts keep the evidence alive past the first one\'s TTL', () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    noteServedPrompt(KEY, 9_000, OBSERVED);
+    vi.advanceTimersByTime(CONTEXT_WINDOW_MEMO_TTL_MS - 1_000);
+    noteServedPrompt(KEY, 8_500, OBSERVED);
+    vi.advanceTimersByTime(2_000);
+    expect(planRequest(KEY, 32_000, 3_000, OBSERVED)).toEqual({ kind: 'send', maxTokens: 32_000 });
+  });
+
   it('the evidence expires with the memo TTL', () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'warn').mockImplementation(() => {});

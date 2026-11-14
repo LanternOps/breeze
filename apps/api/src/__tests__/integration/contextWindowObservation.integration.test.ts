@@ -111,6 +111,14 @@ describe.skipIf(!RUN)('a persisted observation is a floor until disproved (#1139
     expect((await observedOf(s.offeringId)).context_window_observed).toBe(32_768);
   });
 
+  it('a later rejection stating a SMALLER window also replaces a stale one (any later statement wins)', async () => {
+    const s = await seed(4);
+    await observe(s, 4, 32_768, new Date(Date.now() - 3 * 3_600_000));
+    expect(await observe(s, 4, 8192)).toBe(true);
+    const w = resolveEffectiveContextWindow(fields(await observedOf(s.offeringId)), 4);
+    expect(w).toMatchObject({ value: 8192, source: 'observed', observedFresh: true });
+  });
+
   it('a config change clears it: the stored row no longer constrains under the new version', async () => {
     const s = await seed(4);
     await observe(s, 4, 8192, new Date(Date.now() - 3 * 3_600_000));

@@ -645,6 +645,16 @@ describe('a stale observed window is a floor until the endpoint serves more (#11
     expect(clearDisprovenMock).toHaveBeenCalledWith(expect.objectContaining({ disprovenWindow: WINDOW, servedPromptTokens: 9_000 }));
   });
 
+  it('a streamed answer without usage is no evidence', async () => {
+    reply = () => new Response(
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"OK"}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+    await client().messages.stream({ model: 'qwen', max_tokens: 32_000, messages: [{ role: 'user', content: 'x'.repeat(60_000) }] }).finalMessage();
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
   it('control: a served prompt within the window clears nothing', async () => {
     reply = () => ok(8_000);
     await ask(client());
