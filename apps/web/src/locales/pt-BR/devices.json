@@ -3786,6 +3786,7 @@
     "deleteTitle": "Excluir \"{{name}}\"",
     "empty": "Ainda não há visualizações salvas. Crie um filtro e salve-o como uma visualização.",
     "manageAll": "Gerenciar todas as visualizações",
+    "ownerOrgHint": "As visualizações pertencem a uma única organização. Escolha qual delas é a proprietária desta visualização.",
     "saveCurrent": "Salvar atual como visualização…",
     "saveCurrentTitle": "Salvar o filtro atual como uma visualização",
     "setDefaultTitle": "Definir como visualização padrão",

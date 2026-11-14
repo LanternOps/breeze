@@ -74,6 +74,8 @@ const TARGET_GLOBS = [
   'src/components/settings/BusinessHoursApplyDialog.tsx',
   // #8330: saved-filter create/edit/delete surface the API's error text.
   'src/components/filters/SavedFilterList.tsx',
+  // #11879: the Devices toolbar "Views" save/delete go through runAction.
+  'src/components/devices/SavedViewsMenu.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
   'src/lib/endpointMessages.ts',
   'src/components/endpointMessages/SendMessageDialog.tsx',

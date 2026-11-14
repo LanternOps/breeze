@@ -3786,6 +3786,7 @@
     "deleteTitle": "„{{name}}“ löschen",
     "empty": "Noch keine gespeicherten Ansichten. Erstellen Sie einen Filter und speichern Sie ihn dann als Ansicht.",
     "manageAll": "Alle Ansichten verwalten",
+    "ownerOrgHint": "Ansichten gehören zu genau einer Organisation. Wählen Sie, welcher Organisation diese Ansicht gehört.",
     "saveCurrent": "Aktuelle Ansicht speichern…",
     "saveCurrentTitle": "Speichern Sie den aktuellen Filter als Ansicht",
     "setDefaultTitle": "Als Standardansicht festlegen",

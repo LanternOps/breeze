@@ -3786,6 +3786,7 @@
     "deleteTitle": "Supprimer « {{name}} »",
     "empty": "Aucune vue enregistrée pour l’instant. Construis un filtre, puis enregistre-le en vue.",
     "manageAll": "Gérer toutes les vues",
+    "ownerOrgHint": "Les vues appartiennent à une seule organisation. Choisissez celle qui possède cette vue.",
     "saveCurrent": "Enregistrer le courant en vue...",
     "saveCurrentTitle": "Enregistrer le filtre courant en vue",
     "setDefaultTitle": "Définir comme vue par défaut",

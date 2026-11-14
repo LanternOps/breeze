@@ -4,7 +4,10 @@
 // ghost menu so they don't crowd the chip row (which is for BUILDING a filter).
 //
 // Persistence reuses the existing saved-filters backend (GET/POST/DELETE
-// /filters); the conditions column stores the FilterConditionGroup verbatim. The
+// /filters); the conditions column stores the FilterConditionGroup verbatim.
+// Saved filters are org-owned (saved_filters.org_id NOT NULL), so a save names
+// its org in the body: the selected org in a focused view, or an org picked in
+// the name row in the All-organizations view (#11879, same rule as #8330). The
 // device quick-search is deliberately NOT part of a view — it's a transient
 // lookup, not a reusable saved query.
 //
@@ -16,8 +19,9 @@ import { Bookmark, Plus, Star, Trash2, Loader2, Check, ExternalLink } from 'luci
 import { useTranslation } from 'react-i18next';
 import type { FilterConditionGroup, SavedFilter } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
-import { useOrgStore } from '../../stores/orgStore';
 import { useClickOutside } from '../../hooks/useClickOutside';
+import { useFleetOrgOwner } from '../../hooks/useFleetOrgOwner';
+import { ActionError, handleActionError, runAction } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 
 const DEFAULT_VIEW_KEY = 'breeze.devices.defaultView';
@@ -72,13 +76,16 @@ export interface SavedViewsMenuProps {
 
 export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
   const { t } = useTranslation('devices');
-  const currentOrgId = useOrgStore(s => s.currentOrgId);
+  const fleet = useFleetOrgOwner();
   const [open, setOpen] = useState(false);
   const [views, setViews] = useState<SavedFilter[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
+  // Shown when Save is pressed before the org scope has resolved (org list
+  // loading or failed, nothing selected): there is no owner org to send.
+  const [orgRequired, setOrgRequired] = useState(false);
   const [defaultId, setDefaultId] = useState<string | null>(() => readDefaultViewId());
   const rootRef = useRef<HTMLDivElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -145,48 +152,56 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
   const saveCurrent = async () => {
     const trimmed = name.trim();
     if (!trimmed || !value || saving) return;
+    if (fleet.needsOrgSelection) {
+      // All-organizations view: Save stays disabled until an org is picked, so
+      // this is the Enter key. Unresolved scope: say why nothing happened.
+      if (!fleet.isFleetScope) setOrgRequired(true);
+      return;
+    }
+    setOrgRequired(false);
     setSaving(true);
     try {
-      const res = await fetchWithAuth('/filters', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: trimmed,
-          conditions: value,
-          ...(currentOrgId ? { orgId: currentOrgId } : {}),
-        }),
+      await runAction({
+        request: () =>
+          fetchWithAuth('/filters', {
+            method: 'POST',
+            body: JSON.stringify({ name: trimmed, conditions: value, orgId: fleet.bodyOrgId }),
+          }),
+        errorFallback: t('savedViewsMenu.toasts.saveFailed'),
+        successMessage: t('savedViewsMenu.toasts.saved', { name: trimmed }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        showToast({ type: 'error', message: body.error ?? t('savedViewsMenu.toasts.saveFailed') });
-        return;
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      // runAction already toasted an ActionError. The name row stays open so
+      // the user can correct and retry.
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('savedViewsMenu.toasts.saveFailed') });
       }
-      showToast({ type: 'success', message: t('savedViewsMenu.toasts.saved', { name: trimmed }) });
-      setName('');
-      setNaming(false);
-      await fetchViews();
-    } catch {
-      showToast({ type: 'error', message: t('savedViewsMenu.toasts.saveFailed') });
+      return;
     } finally {
       setSaving(false);
     }
+    setName('');
+    setNaming(false);
+    await fetchViews();
   };
 
   const remove = async (view: SavedFilter) => {
     try {
-      const res = await fetchWithAuth(`/filters/${view.id}`, { method: 'DELETE' });
-      if (!res.ok) {
-        showToast({ type: 'error', message: t('savedViewsMenu.toasts.deleteFailed') });
-        return;
-      }
-      if (defaultId === view.id) {
-        writeDefaultViewId(null);
-        setDefaultId(null);
-      }
-      showToast({ type: 'success', message: t('savedViewsMenu.toasts.deleted', { name: view.name }) });
-      await fetchViews();
-    } catch {
-      showToast({ type: 'error', message: t('savedViewsMenu.toasts.deleteFailed') });
+      await runAction({
+        request: () => fetchWithAuth(`/filters/${view.id}`, { method: 'DELETE' }),
+        errorFallback: t('savedViewsMenu.toasts.deleteFailed'),
+        successMessage: t('savedViewsMenu.toasts.deleted', { name: view.name }),
+      });
+    } catch (err) {
+      handleActionError(err, t('savedViewsMenu.toasts.deleteFailed'));
+      return;
     }
+    if (defaultId === view.id) {
+      writeDefaultViewId(null);
+      setDefaultId(null);
+    }
+    await fetchViews();
   };
 
   const toggleDefault = (view: SavedFilter) => {
@@ -298,30 +313,63 @@ export function SavedViewsMenu({ value, onApply }: SavedViewsMenuProps) {
           <hr className="my-1" />
 
           {naming ? (
-            <div className="flex items-center gap-1.5 px-2 py-1.5">
-              <input
-                ref={nameInputRef}
-                type="text"
-                data-testid="saved-view-name-input"
-                placeholder={t('savedViewsMenu.viewNamePlaceholder')}
-                value={name}
-                maxLength={200}
-                onChange={e => setName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') void saveCurrent();
-                  if (e.key === 'Escape') { setNaming(false); setName(''); }
-                }}
-                className="h-8 w-full rounded border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
-              <button
-                type="button"
-                data-testid="saved-view-save-confirm"
-                onClick={() => void saveCurrent()}
-                disabled={!name.trim() || saving}
-                className="inline-flex h-8 shrink-0 items-center rounded bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t('common:actions.save')}
-              </button>
+            <div className="space-y-1.5 px-2 py-1.5">
+              {/* All-organizations view: a new view needs an owning org (#11879). */}
+              {fleet.isFleetScope && (
+                <div>
+                  <select
+                    data-testid="saved-view-org-picker"
+                    aria-label={t('common:labels.organization')}
+                    value={fleet.orgId}
+                    onChange={e => fleet.setOrgId(e.target.value)}
+                    className="h-8 w-full rounded border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="" disabled>
+                      {t('common:layout.org.noSelection')}
+                    </option>
+                    {fleet.organizations.map(org => (
+                      <option key={org.id} value={org.id}>
+                        {org.name}
+                      </option>
+                    ))}
+                  </select>
+                  {!fleet.orgId && (
+                    <p data-testid="saved-view-org-hint" className="mt-1 text-xs text-muted-foreground">
+                      {t('savedViewsMenu.ownerOrgHint')}
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className="flex items-center gap-1.5">
+                <input
+                  ref={nameInputRef}
+                  type="text"
+                  data-testid="saved-view-name-input"
+                  placeholder={t('savedViewsMenu.viewNamePlaceholder')}
+                  value={name}
+                  maxLength={200}
+                  onChange={e => setName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') void saveCurrent();
+                    if (e.key === 'Escape') { setNaming(false); setName(''); setOrgRequired(false); }
+                  }}
+                  className="h-8 w-full rounded border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                />
+                <button
+                  type="button"
+                  data-testid="saved-view-save-confirm"
+                  onClick={() => void saveCurrent()}
+                  disabled={!name.trim() || saving || (fleet.isFleetScope && !fleet.orgId)}
+                  className="inline-flex h-8 shrink-0 items-center rounded bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t('common:actions.save')}
+                </button>
+              </div>
+              {orgRequired && (
+                <p data-testid="saved-view-org-required" role="alert" className="text-xs text-destructive">
+                  {t('common:layout.orgRequired.title')}
+                </p>
+              )}
             </div>
           ) : (
             <button
