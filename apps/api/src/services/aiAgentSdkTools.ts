@@ -10,7 +10,8 @@ import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERI
 import { GENERATE_REPORT_TYPES } from './aiReportTypes';
 import { z } from 'zod';
 import { fixProblemSchema } from './fixMemory/problemSignature';
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { tool } from '@anthropic-ai/claude-agent-sdk';
+import { createArgCheckedSdkMcpServer } from './aiSdkToolArgGuard';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
@@ -6157,7 +6158,7 @@ export function attachRegistryMeta(def: SdkTool): SdkTool {
  * watching API logs, not a Sentry inbox, to catch it there.
  */
 export function createBreezeMcpServer(...args: Parameters<typeof breezeServerTools>) {
-  return createSdkMcpServer({
+  return createArgCheckedSdkMcpServer({
     name: 'breeze',
     version: '1.0.0',
     tools: breezeServerTools(...args),

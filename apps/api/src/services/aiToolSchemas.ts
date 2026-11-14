@@ -46,7 +46,7 @@ import {
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   wispCheckInTriggerSchema,
 } from '@breeze/shared';
-import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
+import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, assignPolicySchema, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
@@ -59,6 +59,7 @@ import {
   SYSTEM_CLEANUP_ACTION_IDS,
 } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { findUnknownInputKeys, formatUnknownKeyFinding, unknownKeyPathKey } from './aiToolUnknownKeys';
 import { SPECIALIST_KINDS, type SpecialistKind } from './wisp/specialistPolicy';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
@@ -1129,6 +1130,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     search: z.string().optional(),
     itemType: z.enum(['hardware', 'software', 'service']).optional(),
     isBundle: z.boolean().optional(),
+    // #11861: advertised and read by the handler (which trims and upper-cases
+    // it); previously a tolerated extra.
+    currencyCode: z.string().max(16).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
@@ -2275,6 +2279,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
     targetId: uuid,
     priority: z.number().int().min(0).max(1000).optional(),
+    // #11861: advertised by the registry and read by the handler, but only
+    // tolerated as stripped extras until unknown keys were refused. Same
+    // validators as the REST assignment route.
+    roleFilter: assignPolicySchema.shape.roleFilter,
+    osFilter: assignPolicySchema.shape.osFilter,
   }),
 
   remove_configuration_policy_assignment: z.object({
@@ -2452,6 +2461,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_monitors: z.object({
     action: z.enum(['get', 'create', 'update', 'delete']),
     monitorId: uuid.optional(),
+    // #11861: a retired create/update argument the registry still advertises
+    // (like name/target below); accepted so an older prompt gets the
+    // retirement guidance instead of an unknown-argument refusal.
+    assetId: uuid.optional(),
     name: z.string().max(255).optional(),
     monitorType: z.enum(['icmp_ping', 'tcp_port', 'http_check', 'dns_check']).optional(),
     target: z.string().max(500).optional(),
@@ -2835,20 +2848,33 @@ export function validateToolInput(
     return { success: false, error: `No input schema registered for tool "${toolName}"` };
   }
 
+  // #11861: a plain z.object STRIPS a key it does not define, so an invented
+  // argument used to pass here and be ignored by the handler. Refuse it, naming
+  // the key and the accepted ones (aiToolUnknownKeys.ts says which objects are
+  // checked: plain objects, not records/passthrough/unions by design).
+  const unknown = findUnknownInputKeys(schema, input);
   const result = schema.safeParse(input);
-  if (result.success) {
+  if (result.success && unknown.length === 0) {
     return { success: true };
   }
+
+  // A strict schema reports the same keys as `unrecognized_keys`; the finding
+  // above already names them (with the accepted list), so drop the duplicate.
+  const reported = new Set(unknown.map((f) => unknownKeyPathKey(f.path)));
+  const zodIssues = result.success
+    ? []
+    : result.error.issues.filter((i) => !(i.code === 'unrecognized_keys' && reported.has(unknownKeyPathKey(i.path))));
 
   // Object-level refinements (e.g. "install requires patchIds and deviceIds")
   // carry an empty `path`, so prefixing every message with `${path}: ` yields a
   // dangling `: message` and, once joined onto the banner, a doubled colon
   // ("Invalid input: : ..."). Only prefix the path when there is one.
-  const issues = result.error.issues
-    .map(i => {
+  const issues = [
+    ...unknown.map(formatUnknownKeyFinding),
+    ...zodIssues.map(i => {
       const path = i.path.join('.');
       return path ? `${path}: ${i.message}` : i.message;
-    })
-    .join('; ');
+    }),
+  ].join('; ');
   return { success: false, error: `Invalid input: ${issues}` };
 }

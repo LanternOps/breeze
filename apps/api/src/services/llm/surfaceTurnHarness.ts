@@ -37,6 +37,7 @@ import type { AiSurface } from '@breeze/shared';
 import type { SdkTool } from '../aiAgents/outcomeTools';
 import type { GatewayFailure } from '../aiModels/gateway/failureNotes';
 import { createIsolatedSdkCwd, type IsolatedSdkCwd } from '../aiModels/sdkChildEnv';
+import { unknownToolArgsHooksForTools } from '../aiSdkToolArgGuard';
 import type { ResolvedToolProfile } from '../aiModels/toolExposure';
 
 /** The stage version lives with the stored record (aiModels/surfaceReadiness.ts) so readers need not load the harness. */
@@ -210,10 +211,11 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
     // An untrusted endpoint: the child runs in an empty temp directory so the
     // environment block the CLI sends upstream names no host path.
     cwd = await (deps.isolatedCwd ?? createIsolatedSdkCwd)();
+    const tools = stubTools(plan, sentinel, (call) => calls.push(call));
     const server = sdk.createSdkMcpServer({
       name: plan.mcpServerName,
       version: '1.0.0',
-      tools: stubTools(plan, sentinel, (call) => calls.push(call)),
+      tools,
     });
     const session = sdk.query({
       prompt: surfaceTurnPrompt(plan),
@@ -225,6 +227,8 @@ export async function runSurfaceTurn(input: SurfaceTurnInput, deps: SurfaceTurnD
         tools: [],
         allowedTools: plan.allowedTools,
         mcpServers: { [plan.mcpServerName]: server },
+        // #11861: production refuses an argument the tool does not define, so the verify turn does too.
+        hooks: unknownToolArgsHooksForTools({ [plan.mcpServerName]: tools }),
         settingSources: [],
         persistSession: false,
         abortController,
