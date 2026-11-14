@@ -314,3 +314,240 @@ test('guided --upgrade refuses a downgrade unless --allow-downgrade is passed', 
   assert.equal(forced.status, 0, `forced downgrade failed:\n${forced.stdout}\n${forced.stderr}`);
   assert.equal(envValue(workDir, 'BREEZE_VERSION'), '1.2.3');
 });
+
+// #11870: the binaries image cannot carry release-artifact-manifest.json (the
+// signed manifest names that image's own digest), so BINARY_SOURCE=local had no
+// pair at the volume root. Setup already downloads and verifies the pair to pin
+// the images; it now keeps the verified copy in <work-dir>/release-manifest and
+// places it at the root of the binaries volume before the stack starts.
+const PAIR = ['release-artifact-manifest.json', 'release-artifact-manifest.json.ed25519'];
+
+// A fake `docker` whose `compose … run … binaries-init -c SCRIPT` executes
+// SCRIPT against a directory standing in for the binaries volume (/target) and
+// the -v source standing in for /release-manifest, so a test sees what
+// actually lands in the volume.
+function fakeDockerWithVolume(workDir) {
+  const bin = join(workDir, 'fake-bin');
+  mkdirSync(bin);
+  const log = join(workDir, 'docker.log');
+  const volume = join(workDir, 'fake-binaries-volume');
+  mkdirSync(volume);
+  executable(join(bin, 'docker'), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "${log}"
+if [[ "$1" == inspect ]]; then echo healthy; exit 0; fi
+if [[ "$1" == compose && " $* " == *" run "* ]]; then
+  src=""
+  args=("$@")
+  for ((i = 0; i < \${#args[@]}; i++)); do
+    if [[ "\${args[i]}" == -v ]]; then src="\${args[i+1]%%:*}"; fi
+  done
+  script="\${args[\${#args[@]}-1]}"
+  script="\${script//\\/release-manifest/\${src}}"
+  script="\${script//\\/target/${volume}}"
+  sh -c "\${script}"
+  exit $?
+fi
+exit 0
+`);
+  return { PATH: `${bin}:${process.env.PATH}`, log, volume };
+}
+
+function readPair(directory) {
+  return PAIR.map((name) => (existsSync(join(directory, name)) ? readFileSync(join(directory, name), 'utf8') : null));
+}
+
+function stagePair(directory, label) {
+  mkdirSync(directory, { recursive: true });
+  for (const name of PAIR) writeFileSync(join(directory, name), `${label} ${name}\n`);
+}
+
+test('guided --upgrade places the verified manifest pair in the binaries volume before starting', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir);
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `upgrade failed:\n${result.stdout}\n${result.stderr}`);
+
+  const signed = readPair(fixture.directory);
+  assert.deepEqual(readPair(join(workDir, 'release-manifest')), signed, 'setup keeps the verified pair');
+  assert.deepEqual(readPair(docker.volume), signed, 'the verified pair lands at the binaries volume root');
+  for (const name of PAIR) {
+    assert.equal(statSync(join(docker.volume, name)).mode & 0o777, 0o644, `${name} is readable by the API user`);
+  }
+  const calls = readFileSync(docker.log, 'utf8').split('\n');
+  const run = calls.findIndex((line) => / run --rm --no-deps -T .* binaries-init /u.test(line));
+  const up = calls.findIndex((line) => /^compose .* up -d$/u.test(line));
+  assert.ok(run !== -1 && up > run, `expected the pair to be placed before up -d, got:\n${calls.join('\n')}`);
+});
+
+test('guided --upgrade replaces the previous release pair in the volume', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir);
+  stagePair(join(workDir, 'release-manifest'), 'previous');
+  stagePair(docker.volume, 'previous');
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `upgrade failed:\n${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readPair(docker.volume), readPair(fixture.directory));
+  assert.deepEqual(readPair(join(workDir, 'release-manifest')), readPair(fixture.directory));
+  assert.deepEqual(
+    readdirSync(workDir).filter((name) => name.startsWith('release-manifest.')),
+    [],
+    'no staging copy is left next to the kept pair',
+  );
+  assert.deepEqual(readdirSync(docker.volume).sort(), [...PAIR].sort(), 'no temp file is left in the volume');
+});
+
+test('guided --upgrade never places a pair that failed verification', () => {
+  const fixture = signedFixture();
+  const manifestPath = join(fixture.directory, 'release-artifact-manifest.json');
+  writeFileSync(manifestPath, readFileSync(manifestPath, 'utf8').replace(digest('1'), digest('9')));
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir);
+  stagePair(join(workDir, 'release-manifest'), 'running');
+  stagePair(docker.volume, 'running');
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.notEqual(result.status, 0, 'a tampered inventory must fail the upgrade');
+  const running = PAIR.map((name) => `running ${name}\n`);
+  assert.deepEqual(readPair(docker.volume), running, 'the volume keeps the running release pair');
+  assert.deepEqual(readPair(join(workDir, 'release-manifest')), running);
+  assert.ok(!existsSync(docker.log) || !/ run /u.test(readFileSync(docker.log, 'utf8')), 'nothing is copied into the volume');
+});
+
+test('guided --upgrade --no-up keeps the verified pair and prints how to place it', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '--no-up', '-y']);
+  assert.equal(result.status, 0, `upgrade failed:\n${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readPair(join(workDir, 'release-manifest')), readPair(fixture.directory));
+  assert.match(result.stdout, /run --rm --no-deps -T .*binaries-init/u, 'prints the placement command');
+});
+
+// A server-only release carries a previous full release's binaries image, and
+// its own manifest lists no binaries. The pair that describes what is in the
+// volume is the carried release's, verified against the same key and bound to
+// the binaries digest the server-only manifest pinned.
+function serverOnlyFixture({ tamperBase = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'release-consumer-server-only-'));
+  scratch.push(root);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const images = REQUIRED_RELEASE_IMAGES.map((name, index) => ({
+    digest: digest(String((index + 1) % 10)),
+    name,
+    repository: `ghcr.io/lanternops/breeze/${name}`,
+  })).sort((left, right) => left.name.localeCompare(right.name));
+  const write = (release, body) => {
+    const directory = join(root, release);
+    mkdirSync(directory);
+    const manifest = `${JSON.stringify(body, null, 2)}\n`;
+    writeFileSync(join(directory, PAIR[0]), manifest);
+    writeFileSync(join(directory, PAIR[1]), `${sign(null, Buffer.from(manifest), privateKey).toString('base64')}\n`);
+    return directory;
+  };
+  const baseDirectory = write('v1.2.3', {
+    assets: [{ name: 'breeze-agent.msi', sha256: 'b'.repeat(64), size: 1 }],
+    images, release: 'v1.2.3', releaseKind: 'full', repository: 'LanternOps/breeze',
+    schemaVersion: 1, sourceCommit: 'b'.repeat(40),
+  });
+  const serverImages = images.map((image) => (image.name === 'binaries' ? image : { ...image, digest: digest('8') }));
+  const directory = write('v1.2.4', {
+    assets: [], binariesRelease: 'v1.2.3', binariesSourceCommit: 'b'.repeat(40),
+    images: serverImages, release: 'v1.2.4', releaseKind: 'server-only', repository: 'LanternOps/breeze',
+    schemaVersion: 1, sourceCommit: 'c'.repeat(40),
+  });
+  if (tamperBase) {
+    const path = join(baseDirectory, PAIR[0]);
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"v1.2.3"', '"v1.2.9"'));
+  }
+  return {
+    directory,
+    baseDirectory,
+    images: serverImages,
+    key: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64'),
+  };
+}
+
+test('guided --upgrade to a server-only release places the carried binaries release pair', () => {
+  const fixture = serverOnlyFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.3']);
+  const docker = fakeDockerWithVolume(workDir);
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.4', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `upgrade failed:\n${result.stdout}\n${result.stderr}`);
+  assert.equal(envValue(workDir, 'BREEZE_VERSION'), '1.2.4');
+  assert.deepEqual(readPair(docker.volume), readPair(fixture.baseDirectory), 'the carried release pair describes the volume');
+  assert.deepEqual(readPair(join(workDir, 'release-manifest')), readPair(fixture.baseDirectory));
+});
+
+test('guided --upgrade to a server-only release places nothing when the carried pair fails verification', () => {
+  const fixture = serverOnlyFixture({ tamperBase: true });
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.3']);
+  const docker = fakeDockerWithVolume(workDir);
+  stagePair(join(workDir, 'release-manifest'), 'stale');
+  stagePair(docker.volume, 'stale');
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.4', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `the server images still verified:\n${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /release manifest pair/iu);
+  assert.deepEqual(readPair(docker.volume), [null, null], 'a stale pair is removed rather than left to mismatch the new release');
+  assert.equal(existsSync(join(workDir, 'release-manifest')), false);
+});
+
+test('guided setup places the manifest pair before the first docker compose up', () => {
+  const text = readFileSync(join(repoRoot, 'scripts/guided-setup.sh'), 'utf8');
+  const body = text.slice(text.indexOf('start_stack() {'));
+  const place = body.indexOf('place_release_manifest_pair_in_binaries_volume');
+  const up = body.indexOf('if ! compose up -d; then');
+  assert.ok(place !== -1 && up !== -1 && place < up, 'start_stack places the pair before compose up -d');
+});
+
+function runFreshResolver(fixture, workDir) {
+  const program = `
+    export BREEZE_GUIDED_SETUP_LIBRARY_ONLY=true
+    source "${join(repoRoot, 'scripts/guided-setup.sh')}"
+    ENV_FILE="${join(workDir, '.env')}"
+    RELEASE_MANIFEST_PAIR_DIR="${join(workDir, 'release-manifest')}"
+    RELEASE_IMAGE_VERIFIER_FILE="${join(repoRoot, 'scripts/release/verify-release-images.sh')}"
+    BREEZE_SETUP_RELEASE_DOWNLOAD_BASE="file://${fixture.directory}"
+    SELECTED_BREEZE_VERSION=1.2.3
+    configure_release_image_refs
+  `;
+  const openssl = process.platform === 'darwin' ? '/opt/homebrew/opt/openssl@3/bin/openssl' : 'openssl';
+  return spawnSync('bash', ['-c', program], {
+    cwd: workDir,
+    encoding: 'utf8',
+    env: { ...process.env, BREEZE_OPENSSL_BIN: openssl, BREEZE_SETUP_GITHUB_REPO: 'LanternOps/breeze' },
+  });
+}
+
+function freshWorkDir(fixture) {
+  const workDir = mkdtempSync(join(tmpdir(), 'guided-fresh-'));
+  scratch.push(workDir);
+  writeFileSync(join(workDir, '.env'), `BREEZE_VERSION=1.2.3\nRELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=${fixture.key}\n`);
+  return workDir;
+}
+
+test('guided resolver keeps the verified pair on a fresh install', () => {
+  const fixture = signedFixture();
+  const workDir = freshWorkDir(fixture);
+
+  const result = runFreshResolver(fixture, workDir);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readPair(join(workDir, 'release-manifest')), readPair(fixture.directory));
+});
+
+test('guided resolver keeps no pair when the inventory fails verification', () => {
+  const fixture = signedFixture();
+  const manifestPath = join(fixture.directory, 'release-artifact-manifest.json');
+  writeFileSync(manifestPath, readFileSync(manifestPath, 'utf8').replace(digest('1'), digest('9')));
+  const workDir = freshWorkDir(fixture);
+
+  const result = runFreshResolver(fixture, workDir);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /verification failed/u);
+  assert.equal(existsSync(join(workDir, 'release-manifest')), false, 'an unverified pair is never kept');
+});

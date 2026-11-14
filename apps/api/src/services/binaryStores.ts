@@ -22,6 +22,15 @@ import { resolve } from 'node:path';
  */
 export type BinaryStore = 'agent' | 'viewer' | 'helper';
 
+/**
+ * Where a self-hoster is told how to stage release-artifact-manifest.json and
+ * its .ed25519 signature at the binaries volume root. The binaries image cannot
+ * carry the pair (the signed manifest names that image's own digest, #11870),
+ * so every "pair is missing" message points here.
+ */
+export const RELEASE_MANIFEST_PAIR_DOCS_URL =
+  'https://docs.breezermm.com/deploy/binaries/#release-manifest-pair';
+
 interface BinaryStoreDef {
   /**
    * Reads the directory env var. A literal `process.env.X` (not an indexed

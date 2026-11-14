@@ -30,7 +30,7 @@ import {
   isEncodedWindowsFilenameApiHost,
 } from './installerFilenameHost';
 import { getObjectStream, isS3Configured } from './s3Storage';
-import { binaryS3Key, binaryStoreDir } from './binaryStores';
+import { binaryS3Key, binaryStoreDir, RELEASE_MANIFEST_PAIR_DOCS_URL } from './binaryStores';
 
 // --- Enrollment key validation ---
 
@@ -444,12 +444,22 @@ async function loadLocalManifestPair(candidates: LocalManifestPairPaths[]): Prom
       return { manifestBytes, signatureBytes };
     } catch (err) {
       if (isEnoent(err)) {
-        throw new Error('Signed release manifest pair is incomplete: the signature is not staged');
+        throw new Error(
+          `Signed release manifest pair is incomplete: the signature is not staged (${paths.signaturePath} is missing). ` +
+            `See ${RELEASE_MANIFEST_PAIR_DOCS_URL}`,
+        );
       }
       throw err;
     }
   }
-  throw new Error('Signed release manifest pair is not staged for local installers');
+  // Name every place that was looked in: the Helper checks its own directory
+  // before the volume root, and the operator needs the path to stage into.
+  throw new Error(
+    `Signed release manifest pair is not staged for local installers: ` +
+      `${candidates.map((paths) => paths.manifestPath).join(' or ')} is missing. ` +
+      `Stage release-artifact-manifest.json and its .ed25519 signature for this release there; ` +
+      `see ${RELEASE_MANIFEST_PAIR_DOCS_URL}`,
+  );
 }
 
 async function fetchVerifiedLocalArtifact(args: {

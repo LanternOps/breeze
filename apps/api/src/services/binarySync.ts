@@ -8,7 +8,7 @@ import { db, withSystemDbAccessContext } from "../db";
 import { agentVersions } from "../db/schema";
 import { isReadOnlyProbeResult, isReadOnlySqlError, TRANSACTION_READ_ONLY_PROBE_SQL } from "../db/readOnlyDatabase";
 import { isS3Configured, syncDirectory } from "./s3Storage";
-import { binaryStoreDir, s3SyncTargets } from "./binaryStores";
+import { binaryStoreDir, RELEASE_MANIFEST_PAIR_DOCS_URL, s3SyncTargets } from "./binaryStores";
 import {
   getBinarySource,
   getAgentAutoPromote,
@@ -700,20 +700,37 @@ function officialManifestPairPaths(agentBinaryDir: string): {
   };
 }
 
-async function loadOfficialLocalManifestPair(
-  agentBinaryDir: string,
-): Promise<{ manifestBytes: Buffer; signatureBytes: Buffer } | null> {
-  const { manifestPath, signaturePath } = officialManifestPairPaths(agentBinaryDir);
+async function readFileIfPresent(path: string): Promise<Buffer | null> {
   try {
-    const [manifestBytes, signatureBytes] = await Promise.all([
-      readFile(manifestPath),
-      readFile(signaturePath),
-    ]);
-    return { manifestBytes, signatureBytes };
+    return await readFile(path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
+}
+
+// Absent (either file) is not an error: registration falls back to the
+// per-deployment key. It is logged, naming the missing file, because the
+// binaries image does not ship the pair (#11870) — without this line an
+// operator who expected the official manifest had no sign it was not used.
+async function loadOfficialLocalManifestPair(
+  agentBinaryDir: string,
+): Promise<{ manifestBytes: Buffer; signatureBytes: Buffer } | null> {
+  const { manifestPath, signaturePath } = officialManifestPairPaths(agentBinaryDir);
+  const [manifestBytes, signatureBytes] = await Promise.all([
+    readFileIfPresent(manifestPath),
+    readFileIfPresent(signaturePath),
+  ]);
+  if (manifestBytes && signatureBytes) return { manifestBytes, signatureBytes };
+  const missing = [
+    manifestBytes ? null : manifestPath,
+    signatureBytes ? null : signaturePath,
+  ].filter((path): path is string => path !== null);
+  console.warn(
+    `[binarySync] ${missing.join(" and ")} not found; registering local binaries with the per-deployment signing key instead of the official release manifest. ` +
+      `To use the official manifest, stage the release's manifest pair at ${dirname(manifestPath)}: see ${RELEASE_MANIFEST_PAIR_DOCS_URL}`,
+  );
+  return null;
 }
 
 // Per-(component, assetName) dedup for the "policy-refused / mismatched
