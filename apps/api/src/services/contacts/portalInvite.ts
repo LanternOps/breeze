@@ -41,6 +41,7 @@ import {
 import { portalUserHasIdentitySql } from '../portalUserIdentities';
 import { normalizeContactEmail, updateContact, type ContactActor, type ContactExecutor } from './crud';
 import { portalLoginEmailEquals } from '../portalLoginEmail';
+import { addLegacyDerivedContactRoles } from './responsibilities';
 
 /**
  * The ONE comparison every portal-invite path uses to find an existing login
@@ -351,12 +352,13 @@ export async function bindContactLoginForInvite(
     decision = { kind: 'invite', portalUserId: created!.id, email: normalizedEmail, authEpoch: created!.authEpoch, created: true, contactLink: 'direct' };
   }
 
-  // A UNION, never a replace, and only when missing: `updateContact` locks the
-  // organization row for an org-level contact (see loginLink.ts), so an
-  // idempotent re-invite must not write.
+  // A UNION, never a replace, and only when missing: an idempotent re-invite
+  // must not write. The additive adapter (as in loginLink.ts) never deletes or
+  // re-scopes, so a contact holding scoped responsibilities is not refused by
+  // the fail-closed roles-replace path.
   const roles = locked.roles ?? [];
   if (!roles.includes('portal')) {
-    await updateContact(exec, contact.id, orgId, { roles: [...roles, 'portal'] }, actor);
+    await addLegacyDerivedContactRoles(exec, { contactId: contact.id, orgId, roles: ['portal'] });
   }
   return decision;
 }

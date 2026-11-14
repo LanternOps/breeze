@@ -62,7 +62,7 @@ import {
   updateContact,
   type UpdateContactInput,
 } from './crud';
-import { syncLegacyContactRoles } from './responsibilities';
+import { ResponsibilityValidationError, syncLegacyContactRoles } from './responsibilities';
 import {
   CONTACT_ROLES,
   DEFAULT_CONTACT_IMPORT_SYSTEM,
@@ -812,7 +812,7 @@ export async function commitContactImport(
       // It is app-authored copy with no query text or column values in it, so
       // unlike a driver message it is safe to hand back verbatim — and far more
       // actionable than "check the server log".
-      const validation = err instanceof ContactValidationError ? err : null;
+      const validation = err instanceof ContactValidationError || err instanceof ResponsibilityValidationError ? err : null;
       const node = pgErrorNode(err);
       const constraint = typeof node?.constraint_name === 'string' ? node.constraint_name
         : typeof node?.constraint === 'string' ? node.constraint : undefined;

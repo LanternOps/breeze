@@ -11,11 +11,15 @@ import { PgDialect, QueryBuilder } from 'drizzle-orm/pg-core';
 import { portalUsers } from '../../db/schema/portal';
 import type { SQL } from 'drizzle-orm';
 
-const { updateContactMock } = vi.hoisted(() => ({ updateContactMock: vi.fn() }));
+const { updateContactMock, addRolesMock } = vi.hoisted(() => ({ updateContactMock: vi.fn(), addRolesMock: vi.fn() }));
 
 vi.mock('./crud', async () => {
   const actual = await vi.importActual<typeof import('./crud')>('./crud');
   return { ...actual, updateContact: updateContactMock };
+});
+vi.mock('./responsibilities', async () => {
+  const actual = await vi.importActual<typeof import('./responsibilities')>('./responsibilities');
+  return { ...actual, addLegacyDerivedContactRoles: addRolesMock };
 });
 
 import {
@@ -245,6 +249,7 @@ const contactRow = (over: Record<string, unknown> = {}) => ({ id: C, email: 'ada
 beforeEach(() => {
   vi.clearAllMocks();
   updateContactMock.mockResolvedValue({ id: C });
+  addRolesMock.mockResolvedValue(undefined);
 });
 
 describe('bindContactLoginForInvite', () => {
@@ -276,7 +281,7 @@ describe('bindContactLoginForInvite', () => {
     await expect(bindContactLoginForInvite(r.exec, bindInput())).rejects.toBeInstanceOf(ContactEmailChangedError);
     expect(r.inserts).toHaveLength(0);
     expect(r.updates).toHaveLength(0);
-    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addRolesMock).not.toHaveBeenCalled();
   });
 
   it('reads candidates in this org by contact OR lower-cased address', async () => {
@@ -346,7 +351,7 @@ describe('bindContactLoginForInvite', () => {
     const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'granted', hasExternalIdentity: false };
     const r = recorder([[contactRow()], [existing]], []);
     await expect(bindContactLoginForInvite(r.exec, bindInput())).rejects.toBeInstanceOf(PortalLoginChangedError);
-    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addRolesMock).not.toHaveBeenCalled();
   });
 
   it('an unknown stored browser_access fails closed (the state module refuses), writing nothing', async () => {
@@ -354,7 +359,7 @@ describe('bindContactLoginForInvite', () => {
     const r = recorder([[contactRow()], [existing]]);
     await expect(bindContactLoginForInvite(r.exec, bindInput())).rejects.toBeInstanceOf(PortalAccountTransitionError);
     expect(r.updates).toHaveLength(0);
-    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addRolesMock).not.toHaveBeenCalled();
   });
 
   it('reuse/kept leaves the existing binding as it is', async () => {
@@ -383,7 +388,7 @@ describe('bindContactLoginForInvite', () => {
     expect(decision).toEqual({ ...expected, portalUserId: 'pu-1' });
     expect(r.inserts).toHaveLength(0);
     expect(r.updates).toHaveLength(0);
-    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addRolesMock).not.toHaveBeenCalled();
   });
 
   // ---- W3 identities release B: the external-identity fact comes from
@@ -395,7 +400,7 @@ describe('bindContactLoginForInvite', () => {
     const decision = await bindContactLoginForInvite(r.exec, bindInput());
     expect(decision).toEqual({ kind: 'already_has_access', portalUserId: 'pu-1', reason: 'external_identity' });
     expect(r.updates).toHaveLength(0);
-    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addRolesMock).not.toHaveBeenCalled();
   });
 
   it('an identity on ANOTHER user does not make this user identity-managed', async () => {
@@ -414,23 +419,22 @@ describe('bindContactLoginForInvite', () => {
   it("unions the 'portal' role only when missing", async () => {
     const r1 = recorder([[contactRow({ roles: ['billing'] })], []]);
     await bindContactLoginForInvite(r1.exec, bindInput());
-    expect(updateContactMock).toHaveBeenCalledTimes(1);
-    const [, contactId, orgId, patch, actor] = updateContactMock.mock.calls[0]!;
-    expect(contactId).toBe(C);
-    expect(orgId).toBe(ORG);
-    expect((patch as { roles: string[] }).roles).toEqual(['billing', 'portal']);
-    expect(actor).toEqual({ userId: 'tech-1' });
+    expect(addRolesMock).toHaveBeenCalledTimes(1);
+    // Additive: grants only `portal`, never replaces the set, so a contact with
+    // scoped responsibilities is not refused by the fail-closed roles adapter.
+    expect(addRolesMock).toHaveBeenCalledWith(r1.exec, { contactId: C, orgId: ORG, roles: ['portal'] });
+    expect(updateContactMock).not.toHaveBeenCalled();
 
-    updateContactMock.mockClear();
+    addRolesMock.mockClear();
     const r2 = recorder([[contactRow({ roles: ['portal', 'technical'] })], []]);
     await bindContactLoginForInvite(r2.exec, bindInput());
-    expect(updateContactMock).not.toHaveBeenCalled();
+    expect(addRolesMock).not.toHaveBeenCalled();
   });
 
   it('treats a null roles column as empty', async () => {
     const r = recorder([[contactRow({ roles: null })], []]);
     await bindContactLoginForInvite(r.exec, bindInput());
-    expect((updateContactMock.mock.calls[0]![3] as { roles: string[] }).roles).toEqual(['portal']);
+    expect(addRolesMock).toHaveBeenCalledWith(r.exec, { contactId: C, orgId: ORG, roles: ['portal'] });
   });
 });
 
