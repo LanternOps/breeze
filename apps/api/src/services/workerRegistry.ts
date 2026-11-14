@@ -1622,6 +1622,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Portal registration W8 (#11385, plan D10): directory deprovisioning —
+    // apply-run, the daily Google pass and the hourly recovery sweep.
+    name: 'portalDirectoryWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('./portalDirectory/worker');
+      return { init: m.initializePortalDirectoryWorker, shutdown: m.shutdownPortalDirectoryWorker };
+    },
+  },
+  {
     // #9075 W4a (OD8 B): automatic agreement-request reminders (hourly sweep).
     name: 'agreementRequestAutoReminder',
     placement: 'global',

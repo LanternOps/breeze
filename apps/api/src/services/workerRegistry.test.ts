@@ -105,6 +105,8 @@ const EXPECTED_WORKER_NAMES = [
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper',
   // Portal registration W3 — daily portal identity drift report.
   'portalIdentityReconcile',
+  // Portal registration W8 — directory deprovisioning.
+  'portalDirectoryWorker',
   'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
