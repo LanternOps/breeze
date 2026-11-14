@@ -494,6 +494,7 @@ describe('identity readers return the identity id and its disabled state (W8 D3)
     const row = {
       id: 'i-1', orgId: ORG, portalUserId: USER, provider: 'entra', entraTenantId: TID,
       disabledAt: null, disabledReason: null, disabledBlockers: [], directoryChain: null, directoryRearmSince: null,
+      directoryLastRunId: null,
     };
     state.selectReturns.push([row]);
     await expect(lockIdentityForAccount(fakeExec(), 'i-1')).resolves.toEqual(row);

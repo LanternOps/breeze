@@ -158,6 +158,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON public.portal_directory_runs
 --    DEFERRABLE INITIALLY IMMEDIATE so org merge can re-tenant parent and child.
 --    Deleting an account, identity or run cascades its actions; the audit log keeps
 --    every applied disable.
+--    Status lifecycle: a report run's actions are `reported` (terminal); a held
+--    run's are `held`, an auto-apply (`applying`) run's are `pending`; both end
+--    `applied`, `skipped` (with skip_reason) or `superseded`; `applied` can become
+--    `restored`. A rearmed identity is listed as `skipped` (rearmed) at record time.
 CREATE TABLE IF NOT EXISTS public.portal_directory_actions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL,
@@ -190,7 +194,7 @@ CREATE TABLE IF NOT EXISTS public.portal_directory_actions (
     CHECK (reason IN ('account_disabled','absent','suspended','archived')),
   CONSTRAINT portal_directory_actions_effect_chk CHECK (effect IN ('identity','identity_and_account')),
   CONSTRAINT portal_directory_actions_status_chk
-    CHECK (status IN ('reported','held','applied','skipped','superseded','restored')),
+    CHECK (status IN ('reported','held','pending','applied','skipped','superseded','restored')),
   CONSTRAINT portal_directory_actions_applied_chk
     CHECK ((status IN ('applied','restored')) = (applied_at IS NOT NULL))
 );

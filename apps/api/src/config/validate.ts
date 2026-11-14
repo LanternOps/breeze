@@ -650,6 +650,14 @@ const envObjectSchema = z
     // the default on anything but a plain positive integer. Declared so
     // collectWarnings() reports such a value once at boot; not boot-refused,
     // like the other knobs of its family.
+    // Portal registration W8 (#11385, plan D7): read per run through
+    // retentionEnforceFromEnv (services/portalDirectory/mode.ts), where any
+    // value but true/1/false/0 runs report-only. Declared so collectWarnings()
+    // reports such a value once at boot; never boot-refused (it fails safe).
+    PORTAL_DIRECTORY_DEPROVISION_ENFORCE: z
+      .string()
+      .optional()
+      .describe('Set to true to let directory deprovisioning disable customer-portal sign-ins; unset = report only.'),
     TICKET_IMPORT_MAX_BYTES_PER_HOUR: z
       .string()
       .optional()
@@ -3186,6 +3194,19 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
       message:
         `"${importBytesRaw}" is not a plain positive integer number of bytes; ` +
         'the default of 2147483648 (2 GiB) per window per hour applies.',
+    });
+  }
+
+  // PORTAL_DIRECTORY_DEPROVISION_ENFORCE (services/portalDirectory/mode.ts):
+  // same parse as retentionEnforceFromEnv. An unrecognised value runs
+  // report-only (D7: fail toward report); say so once at boot.
+  const directoryEnforceRaw = (env.PORTAL_DIRECTORY_DEPROVISION_ENFORCE ?? '').trim().toLowerCase();
+  if (directoryEnforceRaw !== '' && !['true', '1', 'false', '0'].includes(directoryEnforceRaw)) {
+    warnings.push({
+      key: 'PORTAL_DIRECTORY_DEPROVISION_ENFORCE',
+      message:
+        `"${env.PORTAL_DIRECTORY_DEPROVISION_ENFORCE}" is not true/1 or false/0; directory deprovisioning ` +
+        'runs report-only (nothing is disabled).',
     });
   }
 

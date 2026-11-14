@@ -63,9 +63,14 @@ export type PortalDirectoryIdentityErrorCode =
   | 'PORTAL_IDENTITY_NOT_FOUND'
   | 'PORTAL_IDENTITY_NOT_DISABLED'
   | 'PORTAL_IDENTITY_NOT_DIRECTORY_DISABLED'
-  | 'PORTAL_ACCOUNT_MSP_DISABLED_CONFIRM';
+  | 'PORTAL_ACCOUNT_MSP_DISABLED_CONFIRM'
+  // The run store's Apply / Dismiss (runDecisions.ts, D7 / D8d / D8e).
+  | 'PORTAL_DIRECTORY_RUN_NOT_FOUND'
+  | 'PORTAL_DIRECTORY_RUN_NOT_HELD'
+  | 'PORTAL_DIRECTORY_RUN_STALE'
+  | 'PORTAL_DIRECTORY_ENFORCEMENT_OFF';
 
-/** A refusal of Restore / remove; a route maps `code` + `httpStatus` as is. */
+/** A refusal of Restore / remove / Apply / Dismiss; a route maps `code` + `httpStatus` as is. */
 export class PortalDirectoryIdentityError extends Error {
   constructor(
     readonly code: PortalDirectoryIdentityErrorCode,
@@ -112,7 +117,7 @@ export function previewAccountEffect(facts: { otherUsableIdentities: number; pas
   return { effect: 'identity_and_account', keepsPassword: false };
 }
 
-function assertNoHeldContext(operation: string): void {
+export function assertNoHeldContext(operation: string): void {
   if (hasDbAccessContext()) {
     throw new Error(
       `${operation} opens its own system-scope transaction and must not run inside a held DB context — `
@@ -203,7 +208,10 @@ type DisableCommitted = {
  *  2. the account `FOR UPDATE`, then the identity `FOR UPDATE`;
  *  3. skips that write nothing: `not_found`, `already_blocked` (this blocker is
  *     there), `chain_changed` (`expect.directoryChain` differs), `rearmed` (a
- *     directory blocker on an identity an MSP restored), `action_not_held`;
+ *     directory blocker on an identity an MSP restored), `action_not_pending`
+ *     (the action is no longer `held` / `pending`), `observation_changed` (a
+ *     newer run evaluated the identity since), and `expect.verifySource`'s
+ *     failure (D8d: connection, proof or org — run last, under the locks);
  *  4. append the blocker; `disabled_at` / `disabled_reason` keep the first;
  *  5–6. count the other enabled identities under the lock and apply the rule
  *     ({@link previewAccountEffect});
@@ -267,11 +275,21 @@ async function disableInTransaction(input: DisableIdentityInput, source: Directo
       .where(and(eq(portalDirectoryActions.id, input.actionId), eq(portalDirectoryActions.orgId, input.orgId)))
       .for('update')
       .limit(1);
-    if (!action || action.status !== 'held') return skipped('action_not_held');
+    // `held` (a held run, MSP-applied) or `pending` (an auto-apply run) await
+    // application; any other status was decided meanwhile.
+    if (!action || (action.status !== 'held' && action.status !== 'pending')) return skipped('action_not_pending');
     if (action.identityId !== identity.id) {
       throw new Error('disablePortalIdentity: the action belongs to another identity');
     }
+    // D8d: the observation the action was planned from is still the latest one.
+    if (identity.directoryLastRunId !== action.runId) return skipped('observation_changed');
     runId = action.runId;
+  }
+
+  // D8d: the directory itself (connection incarnation, proof or binding, org), under the locks above.
+  if (input.expect?.verifySource) {
+    const failure = await input.expect.verifySource();
+    if (failure) return skipped(failure);
   }
 
   // 4. The blocker. The first blocker's time and reason stay (D1).

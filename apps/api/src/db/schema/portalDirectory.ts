@@ -27,7 +27,12 @@ export type PortalDirectoryRunDisposition =
 export type PortalDirectoryHoldReason = 'threshold' | 'first_enforcement';
 export type PortalDirectoryActionReason = 'account_disabled' | 'absent' | 'suspended' | 'archived';
 export type PortalDirectoryActionEffect = 'identity' | 'identity_and_account';
-export type PortalDirectoryActionStatus = 'reported' | 'held' | 'applied' | 'skipped' | 'superseded' | 'restored';
+/**
+ * `reported` (report runs, terminal); `held` (held runs) and `pending` (auto-apply
+ * runs) await application and end `applied`, `skipped` or `superseded`;
+ * `applied` → `restored`.
+ */
+export type PortalDirectoryActionStatus = 'reported' | 'held' | 'pending' | 'applied' | 'skipped' | 'superseded' | 'restored';
 
 /**
  * One row per directory snapshot an org's source produced. `snapshot_key` is
@@ -116,7 +121,7 @@ export const portalDirectoryActions = pgTable('portal_directory_actions', {
   check('portal_directory_actions_reason_chk', sql`${t.reason} IN ('account_disabled','absent','suspended','archived')`),
   check('portal_directory_actions_effect_chk', sql`${t.effect} IN ('identity','identity_and_account')`),
   check('portal_directory_actions_status_chk',
-    sql`${t.status} IN ('reported','held','applied','skipped','superseded','restored')`),
+    sql`${t.status} IN ('reported','held','pending','applied','skipped','superseded','restored')`),
   check('portal_directory_actions_applied_chk',
     sql`(${t.status} IN ('applied','restored')) = (${t.appliedAt} IS NOT NULL)`),
   index('portal_directory_actions_identity_idx').on(t.identityId, t.createdAt.desc()),

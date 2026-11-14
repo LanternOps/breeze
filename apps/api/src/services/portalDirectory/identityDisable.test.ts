@@ -127,6 +127,7 @@ function identity(over: Record<string, unknown> = {}) {
   return {
     id: IDENT, orgId: ORG, portalUserId: PU, provider: 'entra', entraTenantId: TID,
     disabledAt: null, disabledReason: null, disabledBlockers: [], directoryChain: CHAIN, directoryRearmSince: null,
+    directoryLastRunId: RUN,
     ...over,
   };
 }
@@ -240,6 +241,21 @@ describe('disablePortalIdentity', () => {
     expect(stepsOf(ops[4], 'from')[0]![0]).toBe(portalDirectoryActions);
     expect(h.calls.filter((c) => c.op !== 'update' || c.args[0] !== portalDirectoryActions || !('sessionsPurgedAt' in firstArg(c, 'set')))
       .every((c) => c.depth === 1)).toBe(true);
+  });
+
+  it('an action of an auto-apply run (pending) is applied like a held one', async () => {
+    h.results.push([], [owner()], [account()], [identity()], [heldAction({ status: 'pending' })], [], [{ n: 0 }]);
+    const out = await disablePortalIdentity(directoryInput);
+    expect(out).toEqual({ kind: 'disabled', portalUserId: PU, accountDisabled: true, keepsPassword: false });
+    expect(firstArg(updatesOf(portalDirectoryActions)[0], 'set')).toEqual({ status: 'applied', appliedAt: NOW });
+  });
+
+  it('a passing source re-check applies the action', async () => {
+    const verifySource = vi.fn(async () => null);
+    scriptDisable({});
+    const out = await disablePortalIdentity({ ...directoryInput, expect: { directoryChain: CHAIN, verifySource } });
+    expect(out.kind).toBe('disabled');
+    expect(verifySource).toHaveBeenCalledTimes(1);
   });
 
   it('a google blocker locks the google source', async () => {
@@ -373,11 +389,37 @@ describe('disablePortalIdentity', () => {
       expect(purgePortalSessionsForUsers).not.toHaveBeenCalled();
     });
 
-    it('the action is no longer held (dismissed or superseded meanwhile)', async () => {
-      h.results.push([], [owner()], [account()], [identity()], [heldAction({ status: 'skipped' })]);
-      expect(await disablePortalIdentity(directoryInput)).toEqual({ kind: 'skipped', reason: 'action_not_held' });
+    it.each(['skipped', 'superseded', 'applied', 'reported', 'restored'])(
+      'the action is no longer awaiting application (%s meanwhile)',
+      async (status) => {
+        h.results.push([], [owner()], [account()], [identity()], [heldAction({ status })]);
+        expect(await disablePortalIdentity(directoryInput)).toEqual({ kind: 'skipped', reason: 'action_not_pending' });
+        expect(writes()).toEqual([]);
+      },
+    );
+
+    it('observation changed: a newer run evaluated the identity since the action was planned', async () => { // D8d
+      h.results.push([], [owner()], [account()], [identity({ directoryLastRunId: '00000000-0000-4000-8000-0000000000aa' })], [heldAction()]);
+      expect(await disablePortalIdentity(directoryInput)).toEqual({ kind: 'skipped', reason: 'observation_changed' });
       expect(writes()).toEqual([]);
     });
+
+    it.each(['connection_changed', 'tenant_not_proven', 'org_inactive'] as const)(
+      'the source re-check fails (%s): a skip that writes nothing, run under the D3 locks',
+      async (failure) => { // D8d
+        const verifySource = vi.fn(async () => {
+          // Under the account and identity locks, inside the action's transaction.
+          expect(h.txDepth.current).toBe(1);
+          expect(h.calls.filter((c) => c.op === 'select' && stepsOf(c, 'for').length > 0)).toHaveLength(3);
+          return failure;
+        });
+        h.results.push([], [owner()], [account()], [identity()], [heldAction()]);
+        expect(await disablePortalIdentity({ ...directoryInput, expect: { directoryChain: CHAIN, verifySource } }))
+          .toEqual({ kind: 'skipped', reason: failure });
+        expect(verifySource).toHaveBeenCalledTimes(1);
+        expect(writes()).toEqual([]);
+      },
+    );
   });
 
   it('a purge failure leaves sessions_purged_at null and does not throw', async () => {

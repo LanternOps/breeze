@@ -181,6 +181,8 @@ export interface LockedPortalIdentity {
   disabledBlockers: PortalIdentityBlocker[];
   directoryChain: string | null;
   directoryRearmSince: Date | null;
+  /** The last run that evaluated this identity (D8d: an action's evidence is still the latest). */
+  directoryLastRunId: string | null;
 }
 
 /**
@@ -208,6 +210,7 @@ export async function lockIdentityForAccount(
       disabledBlockers: portalUserIdentities.disabledBlockers,
       directoryChain: portalUserIdentities.directoryChain,
       directoryRearmSince: portalUserIdentities.directoryRearmSince,
+      directoryLastRunId: portalUserIdentities.directoryLastRunId,
     })
     .from(portalUserIdentities)
     .where(eq(portalUserIdentities.id, identityId))

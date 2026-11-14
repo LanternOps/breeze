@@ -134,8 +134,10 @@ async function seedHeldAction(orgId: string, identityId: string, portalUserId: s
   }).returning({ id: portalDirectoryRuns.id });
   const [action] = await admin().insert(portalDirectoryActions).values({
     orgId, runId: run!.id, identityId, portalUserId, provider: 'entra', reason: 'account_disabled',
-    effect: 'identity_and_account', status: 'held',
+    // An auto-apply (`applying`) run's actions are `pending`; the identity's latest observation is this run's (D8d).
+    effect: 'identity_and_account', status: 'pending',
   }).returning({ id: portalDirectoryActions.id });
+  await admin().update(portalUserIdentities).set({ directoryLastRunId: run!.id }).where(eq(portalUserIdentities.id, identityId));
   return { runId: run!.id, actionId: action!.id };
 }
 

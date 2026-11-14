@@ -293,6 +293,8 @@ x-api-env: &api-env
   PORTAL_GOOGLE_CALLBACK_BASE_URL: ${PORTAL_GOOGLE_CALLBACK_BASE_URL:-}
   # Customer-portal self-registration kill switch (portal registration W6); unset = on.
   PORTAL_SELF_REGISTRATION_ENABLED: ${PORTAL_SELF_REGISTRATION_ENABLED:-}
+  # Directory deprovisioning (portal registration W8); unset = report only.
+  PORTAL_DIRECTORY_DEPROVISION_ENFORCE: ${PORTAL_DIRECTORY_DEPROVISION_ENFORCE:-}
   # Optional customer Graph-read onboarding. The executor is intentionally
   # not part of this generic Compose stack: deploy it separately with a
   # workload identity, private ingress, and controlled HTTPS egress.
