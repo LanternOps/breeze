@@ -65,19 +65,34 @@ jobs:
       - name: Runner disk precheck
         run: |
           set -uo pipefail
-          free_gb() { df -Pk "${GITHUB_WORKSPACE:-.}" | awk 'NR==2 {print int($4 / 1048576)}'; }
+          if ! docker info >/dev/null 2>&1; then
+            echo "::error::runner docker daemon is not reachable; this is a runner problem, not a perf regression"
+            exit 1
+          fi
+          # Free GB on the smaller of the workspace disk and Docker's data root:
+          # the stack, volumes and build cache live on the latter.
+          free_gb() {
+            local root a b
+            root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)"
+            a="$(df -Pk "${GITHUB_WORKSPACE:-.}" | awk 'NR==2 {print int($4 / 1048576)}')"
+            b="$(df -Pk "${root:-/}" | awk 'NR==2 {print int($4 / 1048576)}')"
+            case "$a$b" in ''|*[!0-9]*) echo "::error::runner disk low: could not read free disk space (workspace='$a' docker='$b')" >&2; echo -1; return;; esac
+            [ "$a" -le "$b" ] && echo "$a" || echo "$b"
+          }
           free="$(free_gb)"
-          if [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
+          if [ "$free" -ge 0 ] && [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
             echo "::warning::${free} GB free, below ${PERF_MIN_FREE_GB} GB; reclaiming leftovers from previous runs"
             for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
-              docker compose -p "$p" down -v --remove-orphans || true
+              docker compose -p "$p" down -v --remove-orphans || echo "::warning::compose down failed for $p"
+              docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
             done
+            docker network prune -f || true
             docker volume prune -a -f || true
-            docker builder prune -f --keep-storage 2GB || true
+            docker builder prune -a -f --keep-storage 2GB || true
             free="$(free_gb)"
           fi
           if [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
-            echo "::error::runner disk low: ${free} GB free, need at least ${PERF_MIN_FREE_GB} GB. This is a runner problem, not a perf regression; free the disk (docker volumes, build cache, Go build cache under the runner home) and re-run."
+            echo "::error::runner disk low: ${free} GB free (-1 = unreadable), need at least ${PERF_MIN_FREE_GB} GB. This is a runner problem, not a perf regression; free the disk (docker volumes, build cache, Go build cache under the runner home) and re-run."
             exit 1
           fi
           echo "runner disk ok: ${free} GB free"
@@ -204,15 +219,19 @@ jobs:
       - name: Tear down the perf stack and bound the caches
         if: always()
         continue-on-error: true
+        timeout-minutes: 10
         run: |
           set -uo pipefail
           for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
-            docker compose -p "$p" down -v --remove-orphans || true
+            docker compose -p "$p" down -v --remove-orphans || echo "::warning::compose down failed for $p"
             docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
           done
+          # breeze-perf is a dedicated runner, so every unused volume is ours.
           docker network prune -f || true
           docker volume prune -a -f || true
-          docker builder prune -f --keep-storage 2GB || true
+          docker builder prune -a -f --keep-storage 2GB || true
+          left="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true)"
+          [ -z "$left" ] || echo "::warning::compose projects still present after teardown: $left"
           if command -v go >/dev/null 2>&1; then
             kb="$(du -sk "$(go env GOCACHE)" 2>/dev/null | cut -f1)"
             if [ "${kb:-0}" -gt 4194304 ]; then
@@ -255,19 +274,34 @@ jobs:
       - name: Runner disk precheck
         run: |
           set -uo pipefail
-          free_gb() { df -Pk "${GITHUB_WORKSPACE:-.}" | awk 'NR==2 {print int($4 / 1048576)}'; }
+          if ! docker info >/dev/null 2>&1; then
+            echo "::error::runner docker daemon is not reachable; this is a runner problem, not a perf regression"
+            exit 1
+          fi
+          # Free GB on the smaller of the workspace disk and Docker's data root:
+          # the stack, volumes and build cache live on the latter.
+          free_gb() {
+            local root a b
+            root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)"
+            a="$(df -Pk "${GITHUB_WORKSPACE:-.}" | awk 'NR==2 {print int($4 / 1048576)}')"
+            b="$(df -Pk "${root:-/}" | awk 'NR==2 {print int($4 / 1048576)}')"
+            case "$a$b" in ''|*[!0-9]*) echo "::error::runner disk low: could not read free disk space (workspace='$a' docker='$b')" >&2; echo -1; return;; esac
+            [ "$a" -le "$b" ] && echo "$a" || echo "$b"
+          }
           free="$(free_gb)"
-          if [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
+          if [ "$free" -ge 0 ] && [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
             echo "::warning::${free} GB free, below ${PERF_MIN_FREE_GB} GB; reclaiming leftovers from previous runs"
             for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
-              docker compose -p "$p" down -v --remove-orphans || true
+              docker compose -p "$p" down -v --remove-orphans || echo "::warning::compose down failed for $p"
+              docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
             done
+            docker network prune -f || true
             docker volume prune -a -f || true
-            docker builder prune -f --keep-storage 2GB || true
+            docker builder prune -a -f --keep-storage 2GB || true
             free="$(free_gb)"
           fi
           if [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
-            echo "::error::runner disk low: ${free} GB free, need at least ${PERF_MIN_FREE_GB} GB. This is a runner problem, not a perf regression; free the disk (docker volumes, build cache, Go build cache under the runner home) and re-run."
+            echo "::error::runner disk low: ${free} GB free (-1 = unreadable), need at least ${PERF_MIN_FREE_GB} GB. This is a runner problem, not a perf regression; free the disk (docker volumes, build cache, Go build cache under the runner home) and re-run."
             exit 1
           fi
           echo "runner disk ok: ${free} GB free"
@@ -354,15 +388,19 @@ jobs:
       - name: Tear down the perf stack and bound the caches
         if: always()
         continue-on-error: true
+        timeout-minutes: 10
         run: |
           set -uo pipefail
           for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
-            docker compose -p "$p" down -v --remove-orphans || true
+            docker compose -p "$p" down -v --remove-orphans || echo "::warning::compose down failed for $p"
             docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
           done
+          # breeze-perf is a dedicated runner, so every unused volume is ours.
           docker network prune -f || true
           docker volume prune -a -f || true
-          docker builder prune -f --keep-storage 2GB || true
+          docker builder prune -a -f --keep-storage 2GB || true
+          left="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true)"
+          [ -z "$left" ] || echo "::warning::compose projects still present after teardown: $left"
           if command -v go >/dev/null 2>&1; then
             kb="$(du -sk "$(go env GOCACHE)" 2>/dev/null | cut -f1)"
             if [ "${kb:-0}" -gt 4194304 ]; then

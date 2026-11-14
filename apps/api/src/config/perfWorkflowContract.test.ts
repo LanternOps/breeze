@@ -156,24 +156,39 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
   });
 
   it('fails fast on a low runner disk, as the first step of each self-hosted job (#11623)', () => {
+    const prechecks: string[] = [];
     for (const id of ['gate', 'storm']) {
       const first = steps(all[id]!)[0]!;
+      prechecks.push(first);
       expect(first, `${id} first step`).toMatch(/^name: Runner disk precheck$/m);
+      // Threshold direction, the self-heal sequence and the re-measure after it.
+      expect(first.match(/-lt "\$PERF_MIN_FREE_GB"/g)?.length, `${id} threshold compared twice`).toBe(2);
+      expect(first).toMatch(/compose -p "\$p" down -v --remove-orphans/);
+      expect(first).toContain('docker volume prune -a -f');
+      expect(first).toMatch(/docker builder prune -a -f --keep-storage \S+/);
+      expect(first.indexOf('docker builder prune'), `${id} re-measure after reclaim`).toBeLessThan(
+        first.lastIndexOf('free="$(free_gb)"'),
+      );
+      expect(first).not.toMatch(/docker (system|image) prune/);
       expect(first, `${id} first step`).toContain('PERF_MIN_FREE_GB');
       expect(first, `${id} first step`).toContain('runner disk low');
       expect(first, `${id} first step`).toMatch(/\bexit 1\b/);
       expect(first, `${id} first step`).not.toMatch(/uses:/);
     }
+    expect(prechecks[0]).toBe(prechecks[1]);
     expect(topBlock(text, 'env')).toMatch(/^ {2}PERF_MIN_FREE_GB: '10'$/m);
   });
 
   it("clears a previous run's leftover compose stacks before measuring (#11623)", () => {
+    const pres: string[] = [];
     for (const id of ['gate', 'storm']) {
       const list = steps(all[id]!);
       const names = list.map((s) => s.match(/^name: (.*)$/m)?.[1]);
       const pi = names.indexOf('Clear leftovers from a previous run');
       expect(pi, `${id} preclean step`).toBeGreaterThan(-1);
       const pre = list[pi]!;
+      // steps() leaves the next step's leading comment block on this step; drop it.
+      pres.push(pre.replace(/^\s*#.*$/gm, '').trim());
       expect(pre).toContain('com.docker.compose.project');
       expect(pre).toContain('breeze-wt-');
       expect(pre).toMatch(/compose -p "\$p" down -v --remove-orphans/);
@@ -185,6 +200,7 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
         names.findIndex((n) => /^(Measure|Run storm-suite|Inject A\/B — clean)/.test(n ?? '')),
       );
     }
+    expect(pres[0]).toBe(pres[1]);
   });
 
   it('tears the stack and caches down on always(), after the upload and before the ownership step (#11623)', () => {
@@ -199,11 +215,14 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
       expect(td).toMatch(/^ {8}continue-on-error: true$/m);
       expect(td).toMatch(/compose -p "\$p" down -v --remove-orphans/);
       expect(td).toContain('docker volume prune -a -f');
-      expect(td).toMatch(/docker builder prune -f --keep-storage \S+/);
+      expect(td).toMatch(/docker builder prune -a -f --keep-storage \S+/);
+      expect(td).toMatch(/^ {8}timeout-minutes: \d+$/m);
       expect(td).toContain('go clean -cache');
       expect(td).not.toMatch(/docker (system|image) prune/);
       expect(td).not.toMatch(/sudo/);
-      expect(ti, `${id} after upload`).toBeGreaterThan(names.findIndex((n) => /^Upload /.test(n ?? '')));
+      const ui = names.findIndex((n) => /^Upload /.test(n ?? ''));
+      expect(ui, `${id} upload step`).toBeGreaterThan(-1);
+      expect(ti, `${id} after upload`).toBeGreaterThan(ui);
       expect(ti, `${id} directly before ownership`).toBe(names.indexOf('Return workspace ownership to the runner') - 1);
       bodies.push(td.replace(/^name:.*$/m, ''));
     }
