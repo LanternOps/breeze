@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,28 +40,46 @@ import (
 //   - Confirmed on two consecutive checks with the same grant state, so a
 //     grant landing between the live check and the database read does not
 //     cost a restart the live process would not have needed.
-//   - Never while a remote desktop session runs or a consent or prompt
-//     window is open.
+//   - Never while a remote desktop session runs, a native prompt is on
+//     screen, or a tracked handler (consent, PAM or notification dialog,
+//     command, process launch, desktop start) is running; checked when
+//     deciding and again just before exiting.
 //   - Persistently rate-limited in the per-user state dir, because the new
-//     process forgets everything: one restart per grant state per
-//     tccSelfRestartGrantWindow, at least tccSelfRestartMinGap apart, at most
-//     tccSelfRestartMaxPerWindow in any window. A restart that cannot be
-//     recorded does not happen.
-//   - The respawned helper raises neither the Screen Recording consent
-//     dialog nor the Accessibility prompt for tccSelfRestartQuietPeriod: the
-//     database already holds the grant, and each helper start must not cost
-//     the user a dialog (#4327, #4194).
+//     process forgets everything: one restart per grant state, ever (a
+//     restart that did not cure a state will not cure it tomorrow; a
+//     re-grant or a new build is a new state), at least tccSelfRestartMinGap
+//     apart, at most tccSelfRestartMaxPerWindow per
+//     tccSelfRestartGrantWindow. A restart that cannot be recorded does not
+//     happen.
+//   - A helper that starts within tccSelfRestartQuietPeriod of a
+//     self-restart raises neither the Screen Recording consent dialog nor the
+//     Accessibility prompt for the rest of that process: the database already
+//     holds the grant, and a helper start must not cost the user a dialog
+//     (#4327, #4194).
 const (
 	tccSelfRestartConfirmations = 2
 	tccSelfRestartGrantWindow   = 24 * time.Hour
 	tccSelfRestartMinGap        = 30 * time.Minute
 	tccSelfRestartMaxPerWindow  = 3
 	tccSelfRestartQuietPeriod   = 15 * time.Minute
+	// tccSelfRestartBusyRecheck is how soon a restart held only by a session
+	// or dialog is retried: sooner than the hourly check, without probing
+	// every 2 minutes for a whole session.
+	tccSelfRestartBusyRecheck = 5 * time.Minute
 )
 
 // tccSelfRestartRecordName is the record's file name in the helper's per-user
-// state dir (~/Library/Application Support/Breeze).
+// state dir (~/Library/Application Support/Breeze, or the temp-dir fallback
+// tccMarkerFilePath uses when that is unavailable).
 const tccSelfRestartRecordName = "tcc-self-restart"
+
+// errTCCRestartHistoryCorrupt marks a record file that exists but does not
+// parse: its content cannot be trusted either way, so the gate replaces it.
+var errTCCRestartHistoryCorrupt = errors.New("TCC self-restart record is corrupt")
+
+// tccRestartHistoryResetFingerprint stamps the record that replaces a corrupt
+// one, so the min gap and the budget still count from the reset.
+const tccRestartHistoryResetFingerprint = "history-reset"
 
 // Reasons decideTCCSelfRestart gives; logged, and asserted by tests.
 const (
@@ -73,6 +92,9 @@ const (
 	tccRestartReasonAlreadyRestarted  = "already_restarted_for_grant_state"
 	tccRestartReasonTooSoon           = "restarted_recently"
 	tccRestartReasonBudgetSpent       = "restart_budget_spent"
+	// tccRestartReasonRecordUnwritable is the gate's, not the decision's:
+	// the decision said yes but the record could not be written.
+	tccRestartReasonRecordUnwritable = "record_unwritable"
 )
 
 // tccRestartRecord is one self-restart.
@@ -81,7 +103,9 @@ type tccRestartRecord struct {
 	Fingerprint string    `json:"fingerprint"`
 }
 
-// tccRestartHistory is the persisted record of recent self-restarts.
+// tccRestartHistory is the persisted record of self-restarts: those inside
+// tccSelfRestartGrantWindow, and always the latest one, whose grant state
+// stays blocked until a later restart for another state replaces it.
 type tccRestartHistory struct {
 	Restarts []tccRestartRecord `json:"restarts"`
 }
@@ -101,7 +125,8 @@ type tccRestartState struct {
 }
 
 // decideTCCSelfRestart reports whether the helper should exit so launchd
-// starts a fresh copy, and why (see the package comment above for the rules).
+// starts a fresh copy, and why (see the comment above the constants for the
+// rules).
 func decideTCCSelfRestart(s tccRestartState) (bool, string) {
 	if s.Verdict != tccdiag.VerdictUnexplained {
 		return false, tccRestartReasonNotUnexplained
@@ -120,6 +145,10 @@ func decideTCCSelfRestart(s tccRestartState) (bool, string) {
 	}
 	inWindow := 0
 	for _, r := range s.History.Restarts {
+		// Whatever its age: a state one restart did not cure stays blocked.
+		if r.Fingerprint == s.Fingerprint {
+			return false, tccRestartReasonAlreadyRestarted
+		}
 		// A record from the future (the clock moved back) counts as now, so
 		// a clock change cannot open the gate.
 		age := s.Now.Sub(r.At)
@@ -130,9 +159,6 @@ func decideTCCSelfRestart(s tccRestartState) (bool, string) {
 			continue
 		}
 		inWindow++
-		if r.Fingerprint == s.Fingerprint {
-			return false, tccRestartReasonAlreadyRestarted
-		}
 		if age < tccSelfRestartMinGap {
 			return false, tccRestartReasonTooSoon
 		}
@@ -162,11 +188,12 @@ func tccGrantFingerprint(d *tccdiag.Diagnosis) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// selfRestartedWithin reports whether the latest recorded self-restart is
-// less than d before now.
+// selfRestartedWithin reports whether any recorded self-restart is less than
+// d before now. A record from the future (the clock moved back) does not
+// count: it would otherwise silence the prompts for the length of the skew.
 func selfRestartedWithin(h tccRestartHistory, now time.Time, d time.Duration) bool {
 	for _, r := range h.Restarts {
-		if now.Sub(r.At) < d {
+		if age := now.Sub(r.At); age >= 0 && age < d {
 			return true
 		}
 	}
@@ -180,7 +207,11 @@ func selfRestartedWithin(h tccRestartHistory, now time.Time, d time.Duration) bo
 // limits (#4327).
 func applySelfRestartQuiet(policy tccLoopPolicy, store tccRestartStore, now time.Time) (tccLoopPolicy, bool) {
 	h, err := store.Load()
-	if err != nil || !selfRestartedWithin(h, now, tccSelfRestartQuietPeriod) {
+	if err != nil {
+		log.Warn("could not read the TCC self-restart record; keeping the usual consent prompts", "error", err.Error())
+		return policy, false
+	}
+	if !selfRestartedWithin(h, now, tccSelfRestartQuietPeriod) {
 		return policy, false
 	}
 	policy.requestScreenRecording = false
@@ -188,11 +219,41 @@ func applySelfRestartQuiet(policy tccLoopPolicy, store tccRestartStore, now time
 	return policy, true
 }
 
+// setupTCCSelfRestart is the loop-start half of the self-restart: the gate
+// for a helper allowed to restart itself (nil otherwise), and the policy with
+// the prompts off when this start is one a self-restart asked for. It runs
+// before the loop raises any prompt.
+func setupTCCSelfRestart(policy tccLoopPolicy, desktopContext string, store tccRestartStore, busy func() string, now func() time.Time) (tccLoopPolicy, *tccRestartGate, bool) {
+	if !selfRestartAllowedFor(policy, desktopContext) {
+		return policy, nil, false
+	}
+	policy, quiet := applySelfRestartQuiet(policy, store, now())
+	return policy, &tccRestartGate{now: now, store: store, busy: busy, restart: requestHelperSelfRestart}, quiet
+}
+
+// nextTCCCheckInterval picks the loop's next interval: fast while
+// permissions are missing inside the startup window, hourly otherwise, and
+// sooner while the self-restart gate awaits a confirming check or waits out
+// a session.
+func nextTCCCheckInterval(allGranted bool, sinceStart time.Duration, gate *tccRestartGate) time.Duration {
+	want := tccCheckInterval
+	if !allGranted && sinceStart < tccFastCheckDuration {
+		want = tccFastCheckInterval
+	}
+	if gate != nil {
+		if d, ok := gate.recheckIn(); ok && d < want {
+			want = d
+		}
+	}
+	return want
+}
+
 // selfRestartAllowedFor limits the self-restart to the console-user desktop
 // helper: its LaunchAgent respawns it, and it is the process whose grant
-// goes stale. The login-window helper runs as root under a different launchd
-// job and TCC client, and the legacy user helper does not diagnose denials.
-// The process must also have opted in (EnableSelfRestart).
+// goes stale. The process must have opted in (EnableSelfRestart, per binary);
+// the context check is what keeps out the same binary's login-window helper,
+// which runs as root under a different launchd job and TCC client; and the
+// legacy user helper does not diagnose denials.
 func selfRestartAllowedFor(policy tccLoopPolicy, desktopContext string) bool {
 	return selfRestartIsEnabled() && policy.diagnoseDenial &&
 		normalizedDesktopContext(desktopContext) == ipc.DesktopContextUserSession
@@ -228,7 +289,7 @@ func (s fileTCCRestartStore) Load() (tccRestartHistory, error) {
 		return h, err
 	}
 	if err := json.Unmarshal(data, &h); err != nil {
-		return tccRestartHistory{}, fmt.Errorf("parse %s: %w", s.path, err)
+		return tccRestartHistory{}, fmt.Errorf("%w: %s: %v", errTCCRestartHistoryCorrupt, s.path, err)
 	}
 	return h, nil
 }
@@ -299,12 +360,13 @@ func (g *tccRestartGate) observe(d *tccdiag.Diagnosis) bool {
 		Confirmations: g.confirmations,
 		Now:           g.now(),
 	}
-	if g.busy != nil {
-		s.Busy = g.busy()
-	}
+	s.Busy = g.busyNow()
 	// Read the history only once it can matter.
 	if s.Confirmations >= tccSelfRestartConfirmations && s.Busy == "" {
 		s.History, s.HistoryErr = g.store.Load()
+		if errors.Is(s.HistoryErr, errTCCRestartHistoryCorrupt) {
+			g.resetCorruptHistory(s)
+		}
 	}
 
 	restart, reason := decideTCCSelfRestart(s)
@@ -315,6 +377,7 @@ func (g *tccRestartGate) observe(d *tccdiag.Diagnosis) bool {
 
 	// Record first: the record is what keeps the respawned helper from
 	// doing this again, so a restart that cannot be recorded is skipped.
+	// Records outside the window are dropped; the new one is the latest.
 	next := tccRestartHistory{}
 	for _, r := range s.History.Restarts {
 		if s.Now.Sub(r.At) < tccSelfRestartGrantWindow {
@@ -323,7 +386,21 @@ func (g *tccRestartGate) observe(d *tccdiag.Diagnosis) bool {
 	}
 	next.Restarts = append(next.Restarts, tccRestartRecord{At: s.Now.UTC(), Fingerprint: fp})
 	if err := g.store.Save(next); err != nil {
-		g.logHold("record_unwritable", s, "error", err.Error())
+		g.logHold(tccRestartReasonRecordUnwritable, s, "error", err.Error())
+		return false
+	}
+
+	// Work that arrived while the record was written (a session start, a
+	// consent request) still wins: give the attempt back and retry later.
+	// A request arriving after this point races the shutdown itself; the
+	// window is the time to close one channel.
+	if busy := g.busyNow(); busy != "" {
+		if err := g.store.Save(s.History); err != nil {
+			log.Warn("could not roll back the TCC self-restart record; this grant state will not be retried",
+				"grantFingerprint", fp, "error", err.Error())
+		}
+		s.Busy = busy
+		g.logHold(tccRestartReasonBusy, s)
 		return false
 	}
 
@@ -334,16 +411,52 @@ func (g *tccRestartGate) observe(d *tccdiag.Diagnosis) bool {
 	return true
 }
 
-// pending reports whether an unexplained verdict awaits confirmation or is
-// held only by something transient, so the loop should re-check soon rather
-// than on the slow interval.
-func (g *tccRestartGate) pending() bool {
-	return !g.requested && g.confirmations > 0 &&
-		(g.lastReason == "" || g.lastReason == tccRestartReasonUnconfirmed || g.lastReason == tccRestartReasonBusy)
+func (g *tccRestartGate) busyNow() string {
+	if g.busy == nil {
+		return ""
+	}
+	return g.busy()
 }
 
-// logHold logs why the gate did not restart, once per reason, so the 2-minute
-// loop does not repeat the line.
+// resetCorruptHistory replaces a record that does not parse with one stamped
+// now. Keeping it would disable the self-restart for good; dropping it would
+// forget restarts that did happen. The fresh stamp keeps the min gap and the
+// budget counting from here. The decision still refuses this time.
+func (g *tccRestartGate) resetCorruptHistory(s tccRestartState) {
+	fresh := tccRestartHistory{Restarts: []tccRestartRecord{{At: s.Now.UTC(), Fingerprint: tccRestartHistoryResetFingerprint}}}
+	if err := g.store.Save(fresh); err != nil {
+		log.Warn("TCC self-restart record is corrupt and could not be replaced", "error", s.HistoryErr.Error(), "saveError", err.Error())
+		return
+	}
+	log.Warn("TCC self-restart record was corrupt; replaced it with a fresh one", "error", s.HistoryErr.Error())
+}
+
+// recheckIn reports how soon the loop should check again for the gate's
+// sake: tccFastCheckInterval while an unexplained verdict awaits its
+// confirming check, tccSelfRestartBusyRecheck while a session or dialog holds
+// it. ok is false when the gate needs nothing sooner than usual.
+func (g *tccRestartGate) recheckIn() (time.Duration, bool) {
+	if g.requested || g.confirmations == 0 {
+		return 0, false
+	}
+	switch g.lastReason {
+	case "", tccRestartReasonUnconfirmed:
+		return tccFastCheckInterval, true
+	case tccRestartReasonBusy:
+		return tccSelfRestartBusyRecheck, true
+	}
+	return 0, false
+}
+
+// pending reports whether the gate wants an earlier check than usual.
+func (g *tccRestartGate) pending() bool {
+	_, ok := g.recheckIn()
+	return ok
+}
+
+// logHold logs why the gate did not restart, once per reason, so the loop
+// does not repeat the line. A store problem is a Warn: it is the one hold
+// that needs someone to look.
 func (g *tccRestartGate) logHold(reason string, s tccRestartState, extra ...any) {
 	if reason == g.lastReason {
 		return
@@ -356,7 +469,12 @@ func (g *tccRestartGate) logHold(reason string, s tccRestartState, extra ...any)
 	if s.HistoryErr != nil {
 		attrs = append(attrs, "historyError", s.HistoryErr.Error())
 	}
-	log.Info("TCC grant is in the database but this helper still reads denied; not restarting the helper", attrs...)
+	const msg = "TCC grant is in the database but this helper still reads denied; not restarting the helper"
+	if reason == tccRestartReasonHistoryUnreadable || reason == tccRestartReasonRecordUnwritable {
+		log.Warn(msg, attrs...)
+		return
+	}
+	log.Info(msg, attrs...)
 }
 
 // Process-wide self-restart signal. The TCC loop raises it; the desktop
@@ -371,9 +489,11 @@ var (
 
 // EnableSelfRestart opts this process in to the stale-TCC self-restart
 // (#11292) and returns the channel closed when the TCC loop asks for one.
-// Only a process whose supervisor relaunches it after a clean exit may call
-// it: the macOS desktop helper binary, run by a KeepAlive LaunchAgent. In any
-// other process the TCC loop never records or requests a restart.
+// Only a binary whose supervisor relaunches it after a clean exit may call
+// it: breeze-desktop-helper, whose console-user LaunchAgent has an
+// unconditional KeepAlive. The opt-in is per binary; selfRestartAllowedFor
+// still limits the restart to the user-session context. In a process that
+// never opts in, the TCC loop never records or requests a restart.
 func EnableSelfRestart() <-chan struct{} {
 	selfRestartMu.Lock()
 	defer selfRestartMu.Unlock()

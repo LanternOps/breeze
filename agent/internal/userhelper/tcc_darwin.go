@@ -74,16 +74,6 @@ var (
 // Apple may move this in future macOS versions.
 const tccDBPath = "/Library/Application Support/com.apple.TCC/TCC.db"
 
-// tccCheckInterval is how often we re-check TCC permissions after all are granted.
-const tccCheckInterval = 60 * time.Minute
-
-// tccFastCheckInterval is how often we re-check when permissions are still missing.
-// Uses a shorter interval so the heartbeat picks up newly-granted permissions quickly.
-const tccFastCheckInterval = 2 * time.Minute
-
-// tccFastCheckDuration is how long to use the fast interval after startup.
-const tccFastCheckDuration = 30 * time.Minute
-
 const tccHelperCommandTimeout = 15 * time.Second
 
 // screenRecordingRequestInterval is the minimum gap between two macOS Screen
@@ -259,20 +249,8 @@ func probeFullDiskAccess() bool {
 // reads denied, the console-user desktop helper exits once so launchd starts
 // a copy that sees it (#11292, tcc_restart.go).
 func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, agentHandlesNotice bool, busy func() string) {
-	policy := tccLoopPolicyFor(binaryKind, agentHandlesNotice)
-	var restartGate *tccRestartGate
-	if selfRestartAllowedFor(policy, desktopContext) {
-		store := fileTCCRestartStore{path: tccMarkerFilePath(tccSelfRestartRecordName)}
-		var quiet bool
-		if policy, quiet = applySelfRestartQuiet(policy, store, time.Now()); quiet {
-			// This process is the fresh copy a self-restart asked for: the
-			// database already holds the grant, so neither prompt may fire
-			// from it (#4327).
-			markAccessibilityPrompted()
-			log.Info("desktop helper restarted itself for a stale TCC denial; skipping the consent prompts on this start")
-		}
-		restartGate = &tccRestartGate{now: time.Now, store: store, busy: busy, restart: requestHelperSelfRestart}
-	}
+	policy, restartGate := startTCCLoop(tccLoopPolicyFor(binaryKind, agentHandlesNotice), desktopContext,
+		fileTCCRestartStore{path: tccMarkerFilePath(tccSelfRestartRecordName)}, busy, screenRecordingMarkerPath(), time.Now)
 	startedAt := time.Now()
 	var seq uint64
 	var consecutiveFailures int
@@ -321,8 +299,6 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 		firstCheck = false
 	}
 
-	requestScreenRecordingAtLoopStart(policy, desktopContext, screenRecordingMarkerPath(), time.Now())
-
 	// Immediate first check (sends full TCC status to the service)
 	check()
 	if consecutiveFailures >= 3 {
@@ -348,22 +324,32 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 				return
 			}
 
-			// Adjust interval: use fast checks while permissions are missing
-			// or we're still within the fast-check startup window, and while
-			// a stale-denial restart awaits its confirming check.
-			wantInterval := tccCheckInterval
-			if !allGranted && time.Since(startedAt) < tccFastCheckDuration {
-				wantInterval = tccFastCheckInterval
-			}
-			if restartGate != nil && restartGate.pending() {
-				wantInterval = tccFastCheckInterval
-			}
+			// Adjust interval: fast while permissions are missing inside the
+			// startup window, sooner while a stale-denial restart awaits
+			// confirmation or a transient hold (nextTCCCheckInterval).
+			wantInterval := nextTCCCheckInterval(allGranted, time.Since(startedAt), restartGate)
 			if wantInterval != currentInterval {
 				currentInterval = wantInterval
 				ticker.Reset(currentInterval)
 			}
 		}
 	}
+}
+
+// startTCCLoop is the loop's start: the self-restart gate (nil unless this
+// helper may restart itself), the prompts off when this start is one a
+// self-restart asked for, and then the Screen Recording consent request under
+// the resulting policy. The order matters: the quiet policy must be in place
+// before anything can prompt (#4327).
+func startTCCLoop(policy tccLoopPolicy, desktopContext string, store tccRestartStore, busy func() string, markerPath string, now func() time.Time) (tccLoopPolicy, *tccRestartGate) {
+	policy, gate, quiet := setupTCCSelfRestart(policy, desktopContext, store, busy, now)
+	if quiet {
+		// The database already holds the grant: no prompt from this process.
+		markAccessibilityPrompted()
+		log.Info("desktop helper restarted itself for a stale TCC denial; skipping the consent prompts for this process")
+	}
+	requestScreenRecordingAtLoopStart(policy, desktopContext, markerPath, now())
+	return policy, gate
 }
 
 // collectTCCStatus is one loop check: the permission state, plus the denial

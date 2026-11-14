@@ -188,6 +188,61 @@ func TestRequestScreenRecordingAtLoopStart_OnlyDesktopHelper(t *testing.T) {
 	}
 }
 
+// #11292 / #4327: a desktop helper that just restarted itself must not raise
+// the Screen Recording consent dialog on its way back up, even with the
+// permission reading denied and no rate-limit marker; it must also treat the
+// Accessibility prompt as shown. An ordinary start keeps today's request.
+func TestStartTCCLoop_QuietAfterSelfRestart(t *testing.T) {
+	restoreSignal := resetSelfRestartSignalForTest()
+	t.Cleanup(restoreSignal)
+	EnableSelfRestart()
+	t.Cleanup(func() {
+		accessibilityPromptedMu.Lock()
+		accessibilityPrompted = false
+		accessibilityPromptedMu.Unlock()
+	})
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	desktop := tccLoopPolicyFor(ipc.HelperBinaryDesktopHelper, false)
+
+	for _, tc := range []struct {
+		name        string
+		history     tccRestartHistory
+		wantRequest bool
+	}{
+		{"just restarted itself", tccRestartHistory{Restarts: []tccRestartRecord{{At: now.Add(-time.Minute), Fingerprint: "fp"}}}, false},
+		{"ordinary start", tccRestartHistory{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accessibilityPromptedMu.Lock()
+			accessibilityPrompted = false
+			accessibilityPromptedMu.Unlock()
+			requested := false
+			restore := stubScreenRecordingFns(t, accessReport(false, false), func() bool { requested = true; return false })
+			defer restore()
+			markerPath := filepath.Join(t.TempDir(), "screen-recording-requested")
+			store := &fileTCCRestartStore{path: filepath.Join(t.TempDir(), tccSelfRestartRecordName)}
+			if err := store.Save(tc.history); err != nil {
+				t.Fatal(err)
+			}
+
+			policy, gate := startTCCLoop(desktop, ipc.DesktopContextUserSession, store, nil, markerPath, func() time.Time { return now })
+
+			if gate == nil {
+				t.Fatal("no self-restart gate for an opted-in user-session desktop helper")
+			}
+			if requested != tc.wantRequest {
+				t.Fatalf("consent dialog requested = %v, want %v", requested, tc.wantRequest)
+			}
+			accessibilityPromptedMu.Lock()
+			axMarked := accessibilityPrompted
+			accessibilityPromptedMu.Unlock()
+			if quiet := !tc.wantRequest; axMarked != quiet || policy.promptAccessibility == quiet {
+				t.Fatalf("accessibility prompted mark = %v, policy.promptAccessibility = %v; want quiet=%v", axMarked, policy.promptAccessibility, quiet)
+			}
+		})
+	}
+}
+
 // #10300: the loop step attaches the verdict only for the desktop helper's
 // policy; any other helper's status is dropped by the broker, so it must not
 // pay for a diagnosis.

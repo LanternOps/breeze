@@ -2,6 +2,7 @@ package userhelper
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -98,11 +99,13 @@ func TestDecideTCCSelfRestart(t *testing.T) {
 				History: history(tccRestartRecord{At: ago(23 * time.Hour), Fingerprint: fp})},
 			wantReason: tccRestartReasonAlreadyRestarted,
 		},
+		// A restart that did not cure this grant state will not cure it
+		// tomorrow either: no daily repeat until the rows or the build change.
 		{
-			name: "same grant state, last restart past the window: restarts again",
+			name: "same grant state, last restart days ago: still no repeat",
 			state: tccRestartState{Verdict: tccdiag.VerdictUnexplained, Fingerprint: fp, Confirmations: 2,
-				History: history(tccRestartRecord{At: ago(25 * time.Hour), Fingerprint: fp})},
-			wantRestart: true, wantReason: tccRestartReasonRestart,
+				History: history(tccRestartRecord{At: ago(72 * time.Hour), Fingerprint: fp})},
+			wantReason: tccRestartReasonAlreadyRestarted,
 		},
 		{
 			name: "new grant state, but a restart moments ago: waits out the gap",
@@ -232,6 +235,7 @@ func (m *memRestartStore) Save(h tccRestartHistory) error {
 	}
 	m.saves++
 	m.h = h
+	m.loadErr = nil // the file was rewritten
 	return nil
 }
 
@@ -240,15 +244,21 @@ type gateHarness struct {
 	store    *memRestartStore
 	now      time.Time
 	busy     string
+	busyFn   func() string // overrides busy when set
 	restarts int
 }
 
 func newGateHarness(store *memRestartStore) *gateHarness {
 	h := &gateHarness{store: store, now: restartNow}
 	h.gate = &tccRestartGate{
-		now:     func() time.Time { return h.now },
-		store:   store,
-		busy:    func() string { return h.busy },
+		now:   func() time.Time { return h.now },
+		store: store,
+		busy: func() string {
+			if h.busyFn != nil {
+				return h.busyFn()
+			}
+			return h.busy
+		},
 		restart: func() { h.restarts++ },
 	}
 	return h
@@ -335,6 +345,57 @@ func TestTCCRestartGateWaitsWhileBusy(t *testing.T) {
 	}
 }
 
+// Work that arrives while the record is being written (a technician's
+// session start, a consent request) still wins: the gate re-checks just
+// before it exits, rolls the record back, and tries again later.
+func TestTCCRestartGateRechecksBusyBeforeExit(t *testing.T) {
+	h := newGateHarness(&memRestartStore{})
+	h.gate.observe(unexplainedDiagnosis(100))
+	calls := 0
+	h.busyFn = func() string {
+		calls++
+		if calls == 1 {
+			return "" // idle when the decision is made
+		}
+		return "dialog or command in progress" // busy by the time it would exit
+	}
+	if h.gate.observe(unexplainedDiagnosis(100)) || h.restarts != 0 {
+		t.Fatal("exited although work arrived before the exit")
+	}
+	if got := h.store.h.Restarts; len(got) != 0 {
+		t.Fatalf("history not rolled back: %+v", got)
+	}
+	if d, ok := h.gate.recheckIn(); !ok || d != tccSelfRestartBusyRecheck {
+		t.Fatalf("recheckIn = (%v, %v), want the busy re-check", d, ok)
+	}
+	h.busyFn = nil
+	if !h.gate.observe(unexplainedDiagnosis(100)) || h.restarts != 1 {
+		t.Fatal("did not restart once the work finished")
+	}
+}
+
+// A corrupt record cannot be trusted either way: it is replaced by a fresh
+// one stamped now, so the min gap and the budget still apply and the feature
+// is not disabled for good.
+func TestTCCRestartGateResetsCorruptHistory(t *testing.T) {
+	store := &memRestartStore{loadErr: fmt.Errorf("%w: bad json", errTCCRestartHistoryCorrupt)}
+	h := newGateHarness(store)
+	h.gate.observe(unexplainedDiagnosis(100))
+	if h.gate.observe(unexplainedDiagnosis(100)) || h.restarts != 0 {
+		t.Fatal("restarted on a corrupt history")
+	}
+	if got := store.h.Restarts; len(got) != 1 || !got[0].At.Equal(restartNow) {
+		t.Fatalf("corrupt history not reset to a now-stamped record: %+v", got)
+	}
+
+	next := newGateHarness(store)
+	next.now = restartNow.Add(tccSelfRestartMinGap + time.Minute)
+	next.gate.observe(unexplainedDiagnosis(100))
+	if !next.gate.observe(unexplainedDiagnosis(100)) {
+		t.Fatal("feature stayed disabled after the corrupt history was reset")
+	}
+}
+
 // The record is what stops a loop, so a restart that cannot be recorded
 // does not happen.
 func TestTCCRestartGateFailsClosedOnStoreErrors(t *testing.T) {
@@ -347,6 +408,74 @@ func TestTCCRestartGateFailsClosedOnStoreErrors(t *testing.T) {
 		if h.gate.observe(unexplainedDiagnosis(100)) || h.restarts != 0 {
 			t.Fatalf("restarted with store load=%v save=%v", store.loadErr, store.saveErr)
 		}
+		// A store failure is not transient: back to the normal interval.
+		if _, ok := h.gate.recheckIn(); ok {
+			t.Fatalf("store failure kept the fast re-check (load=%v save=%v)", store.loadErr, store.saveErr)
+		}
+	}
+}
+
+func TestNextTCCCheckInterval(t *testing.T) {
+	unconfirmed := newGateHarness(&memRestartStore{})
+	unconfirmed.gate.observe(unexplainedDiagnosis(100))
+	busy := newGateHarness(&memRestartStore{})
+	busy.busy = "remote desktop session active"
+	busy.gate.observe(unexplainedDiagnosis(100))
+	busy.gate.observe(unexplainedDiagnosis(100))
+	idle := newGateHarness(&memRestartStore{})
+
+	cases := []struct {
+		name       string
+		allGranted bool
+		sinceStart time.Duration
+		gate       *tccRestartGate
+		want       time.Duration
+	}{
+		{"granted, no gate", true, time.Minute, nil, tccCheckInterval},
+		{"missing, inside the fast window", false, time.Minute, nil, tccFastCheckInterval},
+		{"missing, past the fast window", false, time.Hour, nil, tccCheckInterval},
+		{"past the fast window, confirmation pending", false, time.Hour, unconfirmed.gate, tccFastCheckInterval},
+		{"past the fast window, held by a session", false, time.Hour, busy.gate, tccSelfRestartBusyRecheck},
+		{"inside the fast window, held by a session: fast wins", false, time.Minute, busy.gate, tccFastCheckInterval},
+		{"idle gate changes nothing", false, time.Hour, idle.gate, tccCheckInterval},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextTCCCheckInterval(tc.allGranted, tc.sinceStart, tc.gate); got != tc.want {
+				t.Fatalf("nextTCCCheckInterval = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The loop-start half: a gate only for an opted-in user-session desktop
+// helper, and the quiet policy when it just restarted itself.
+func TestSetupTCCSelfRestart(t *testing.T) {
+	restore := resetSelfRestartSignalForTest()
+	t.Cleanup(restore)
+	desktop := tccLoopPolicyFor(ipc.HelperBinaryDesktopHelper, false)
+	recent := &memRestartStore{h: history(tccRestartRecord{At: ago(time.Minute)})}
+	now := func() time.Time { return restartNow }
+
+	if _, gate, _ := setupTCCSelfRestart(desktop, ipc.DesktopContextUserSession, recent, nil, now); gate != nil {
+		t.Fatal("gate created without the opt-in")
+	}
+	EnableSelfRestart()
+	if _, gate, _ := setupTCCSelfRestart(desktop, ipc.DesktopContextLoginWindow, recent, nil, now); gate != nil {
+		t.Fatal("gate created for the login-window helper")
+	}
+	other := tccLoopPolicyFor(ipc.HelperBinaryUserHelper, false)
+	if _, gate, _ := setupTCCSelfRestart(other, ipc.DesktopContextUserSession, recent, nil, now); gate != nil {
+		t.Fatal("gate created for the legacy user helper")
+	}
+
+	policy, gate, quiet := setupTCCSelfRestart(desktop, ipc.DesktopContextUserSession, recent, nil, now)
+	if gate == nil || !quiet || policy.requestScreenRecording || policy.promptAccessibility {
+		t.Fatalf("just-restarted helper: gate=%v quiet=%v policy=%+v, want a gate and both prompts off", gate != nil, quiet, policy)
+	}
+	policy, gate, quiet = setupTCCSelfRestart(desktop, ipc.DesktopContextUserSession, &memRestartStore{}, nil, now)
+	if gate == nil || quiet || !policy.requestScreenRecording || !policy.promptAccessibility {
+		t.Fatalf("ordinary start: gate=%v quiet=%v policy=%+v, want a gate and the prompts kept", gate != nil, quiet, policy)
 	}
 }
 
@@ -411,6 +540,9 @@ func TestSelfRestartedWithin(t *testing.T) {
 		{"restart a minute ago", history(tccRestartRecord{At: ago(time.Minute)}), true},
 		{"restart long ago", history(tccRestartRecord{At: ago(time.Hour)}), false},
 		{"latest of several is recent", history(tccRestartRecord{At: ago(3 * time.Hour)}, tccRestartRecord{At: ago(2 * time.Minute)}), true},
+		// A clock set back must not silence the prompts for the length of
+		// the skew; the prompts keep their own limits.
+		{"record from the future", history(tccRestartRecord{At: restartNow.Add(48 * time.Hour)}), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
