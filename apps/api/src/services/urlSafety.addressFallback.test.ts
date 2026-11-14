@@ -16,6 +16,8 @@ import type { AddressInfo, LookupFunction } from 'net';
 import type { LookupAddress } from 'dns';
 import {
   safeFetch,
+  ResponseDeadlineError,
+  ResponseHeadersTimeoutError,
   SsrfBlockedError,
   __setConnectAttemptTimeoutForTests,
   __setLookupForTests
@@ -88,14 +90,20 @@ function stalledRequest(): http.ClientRequest {
   const req = new EventEmitter() as EventEmitter & Record<string, unknown>;
   const socket = Object.assign(new EventEmitter(), { connecting: true });
   let destroyed = false;
+  let idleTimer: NodeJS.Timeout | undefined;
   req.write = vi.fn();
   req.end = vi.fn(() => {
     process.nextTick(() => req.emit('socket', socket));
   });
-  req.setTimeout = vi.fn();
+  // The idle timer runs while connecting, as Node's does.
+  req.setTimeout = vi.fn((ms: number, cb: () => void) => {
+    idleTimer = setTimeout(cb, ms);
+    return req;
+  });
   req.destroy = vi.fn((err?: Error) => {
     if (destroyed) return req;
     destroyed = true;
+    clearTimeout(idleTimer);
     process.nextTick(() => {
       if (err) req.emit('error', err);
       req.emit('close');
@@ -358,5 +366,115 @@ describe('safeFetch — falls back across the validated addresses (#11641)', () 
     await safeFetch('http://release.example.test/x', { onConnect });
 
     expect(onConnect.mock.calls).toEqual([['8.8.8.8'], ['8.8.4.4']]);
+  });
+
+  it('a slow response after the connection is established is waited for, never re-sent elsewhere', async () => {
+    __setConnectAttemptTimeoutForTests(50);
+    // Connects at once, answers well after the per-address connect timeout.
+    const slow = await httpServer((_req, res) => {
+      setTimeout(() => res.end('slow-ok'), 250);
+    });
+    const other = await httpServer();
+    const dialed = fakeDialer(
+      { '8.8.8.8': { kind: 'port', port: slow.port }, '8.8.4.4': { kind: 'port', port: other.port } },
+      await closedPort()
+    );
+    resolvesTo('8.8.8.8', '8.8.4.4');
+
+    const res = await safeFetch('http://release.example.test/x', { method: 'POST', body: 'payload' });
+
+    expect(await res.text()).toBe('slow-ok');
+    expect(dialed).toEqual(['8.8.8.8']);
+    expect(slow.requests()).toBe(1);
+    expect(other.requests()).toBe(0);
+  });
+
+  it('the last address gets no per-address connect timeout: a slow answer still succeeds', async () => {
+    __setConnectAttemptTimeoutForTests(50);
+    const slow = await httpServer((_req, res) => {
+      setTimeout(() => res.end('slow-ok'), 250);
+    });
+    const dialed = fakeDialer(
+      { '8.8.8.8': { kind: 'refused' }, '8.8.4.4': { kind: 'port', port: slow.port } },
+      await closedPort()
+    );
+    resolvesTo('8.8.8.8', '8.8.4.4');
+
+    const res = await safeFetch('http://release.example.test/x');
+
+    expect(await res.text()).toBe('slow-ok');
+    expect(dialed).toEqual(['8.8.8.8', '8.8.4.4']);
+  });
+
+  it('a last address that stalls fails on the caller\'s timeoutMs, as before', async () => {
+    __setConnectAttemptTimeoutForTests(50);
+    const dialed = fakeDialer(
+      { '8.8.8.8': { kind: 'refused' }, '8.8.4.4': { kind: 'stall' } },
+      await closedPort()
+    );
+    resolvesTo('8.8.8.8', '8.8.4.4');
+
+    await expect(safeFetch('http://release.example.test/x', { timeoutMs: 200 }))
+      .rejects.toThrow('request timed out after 200ms');
+    expect(dialed).toEqual(['8.8.8.8', '8.8.4.4']);
+  });
+
+  it('headersTimeoutMs expiring during a stalled attempt ends the request; no fallback', async () => {
+    __setConnectAttemptTimeoutForTests(10_000);
+    const dialed = fakeDialer(
+      { '8.8.8.8': { kind: 'stall' }, '8.8.4.4': { kind: 'refused' } },
+      await closedPort()
+    );
+    resolvesTo('8.8.8.8', '8.8.4.4');
+
+    await expect(safeFetch('http://release.example.test/x', { headersTimeoutMs: 100 }))
+      .rejects.toBeInstanceOf(ResponseHeadersTimeoutError);
+    expect(dialed).toEqual(['8.8.8.8']);
+  });
+
+  it('deadlineMs expiring during a stalled attempt ends the request; no fallback', async () => {
+    __setConnectAttemptTimeoutForTests(10_000);
+    const dialed = fakeDialer(
+      { '8.8.8.8': { kind: 'stall' }, '8.8.4.4': { kind: 'refused' } },
+      await closedPort()
+    );
+    resolvesTo('8.8.8.8', '8.8.4.4');
+
+    await expect(safeFetch('http://release.example.test/x', { deadlineMs: 100 }))
+      .rejects.toBeInstanceOf(ResponseDeadlineError);
+    expect(dialed).toEqual(['8.8.8.8']);
+  });
+
+  it('one deadlineMs spans every attempt: it still fires on the attempt after a fallback', async () => {
+    __setConnectAttemptTimeoutForTests(50);
+    // Both stall; the second has no connect timeout (last) and no timeoutMs,
+    // so only the caller's deadline can end it.
+    const dialed = fakeDialer(
+      { '8.8.8.8': { kind: 'stall' }, '8.8.4.4': { kind: 'stall' } },
+      await closedPort()
+    );
+    resolvesTo('8.8.8.8', '8.8.4.4');
+
+    await expect(safeFetch('http://release.example.test/x', { deadlineMs: 300 }))
+      .rejects.toBeInstanceOf(ResponseDeadlineError);
+    expect(dialed).toEqual(['8.8.8.8', '8.8.4.4']);
+  });
+
+  it('streamResponse: the body streams from the address the request fell back to', async () => {
+    __setConnectAttemptTimeoutForTests(50);
+    const srv = await httpServer((_req, res) => {
+      res.write('chunk-1;');
+      setTimeout(() => res.end('chunk-2'), 20);
+    });
+    const dialed = fakeDialer(
+      { '8.8.8.8': { kind: 'stall' }, '8.8.4.4': { kind: 'port', port: srv.port } },
+      await closedPort()
+    );
+    resolvesTo('8.8.8.8', '8.8.4.4');
+
+    const res = await safeFetch('http://release.example.test/x', { streamResponse: true, deadlineMs: 5_000 });
+
+    expect(await res.text()).toBe('chunk-1;chunk-2');
+    expect(dialed).toEqual(['8.8.8.8', '8.8.4.4']);
   });
 });

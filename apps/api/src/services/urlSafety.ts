@@ -760,8 +760,11 @@ async function safeFetchRequest(
       return await dialPinned(attempt, record, i === candidates.length - 1);
     } catch (err) {
       if (!(err instanceof ConnectAttemptFailed)) throw err;
+      // Logged here because only the LAST attempt's error reaches the caller.
+      const code = (err.attemptError as NodeJS.ErrnoException).code;
       console.warn(
-        `safeFetch: could not connect to ${hostname} at ${record.address} (${err.attemptError.message}); `
+        `safeFetch: could not connect to ${hostname} at ${record.address} `
+          + `(${code ? `${code}: ` : ''}${err.attemptError.message}); `
           + `trying the next resolved address (${i + 2}/${candidates.length})`
       );
     }

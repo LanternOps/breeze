@@ -9,8 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const net = vi.hoisted(() => ({
-  // One entry per expected GitHub API call: an Error to throw, or "ok".
-  script: [] as Array<Error | "ok">,
+  // One entry per expected GitHub API call: an Error to throw, "ok", or a
+  // function whose promise settles the call (to hold an attempt in flight).
+  script: [] as Array<Error | "ok" | (() => Promise<never>)>,
   calls: 0,
 }));
 
@@ -37,6 +38,7 @@ vi.mock("./urlSafety", async (importOriginal) => ({
     const step = net.script[net.calls++];
     if (step === undefined) throw new Error(`unexpected GitHub call #${net.calls}`);
     if (step instanceof Error) throw step;
+    if (typeof step === "function") return step();
     const checksums = "https://github.com/example/breeze/releases/download/v0.127.0/checksums.txt";
     return new Response(
       JSON.stringify({ tag_name: "v0.127.0", assets: [{ name: "checksums.txt", browser_download_url: checksums }] }),
@@ -76,6 +78,8 @@ let warnings: string[];
 let logs: string[];
 
 beforeEach(() => {
+  // Module mocks survive vi.resetModules(); clear their call history.
+  vi.clearAllMocks();
   vi.useFakeTimers();
   process.env.BINARY_SOURCE = "github";
   process.env.BINARY_VERSION = "0.127.0";
@@ -136,7 +140,7 @@ describe("boot-time GitHub sync retry (#11641)", { timeout: 30_000 }, () => {
     // Each network failure is reported as one, never as an unpublished release.
     expect(errors).toHaveLength(2);
     for (const e of errors) {
-      expect(e).toMatch(/pinned release v0\.127\.0 FAILED.*This is a network failure, not a missing release/s);
+      expect(e).toMatch(/pinned release v0\.127\.0 FAILED.*This looks transient \(a network error or a GitHub outage\), not a missing release/s);
       expect(e).not.toMatch(/PUBLISHED release/);
     }
   });
@@ -188,6 +192,49 @@ describe("boot-time GitHub sync retry (#11641)", { timeout: 30_000 }, () => {
     expect(binarySync.isGithubSyncRetryPending()).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
     expect(errors.some((e) => /not a network failure.*GitHub API error: 404/.test(e))).toBe(true);
+    // A retry chain that ends on a permanent failure is as actionable as one
+    // that ran out, so it reaches Sentry too.
+    const { captureException } = await import("./sentry");
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { area: "binary_sync_github_retry" });
+  });
+
+  it("retries a GitHub 5xx gateway error like a network failure", async () => {
+    net.script = [new Error("GitHub API error: 503"), new Error("GitHub API error: 502"), "ok"];
+    const binarySync = await import("./binarySync");
+    const delays = binarySync.GITHUB_SYNC_RETRY_DELAYS_MS;
+
+    expect(await bootSync(binarySync)).toBe(true);
+    await vi.advanceTimersByTimeAsync(delays[0]!);
+    await vi.advanceTimersByTimeAsync(delays[1]!);
+
+    expect(net.calls).toBe(3);
+    expect(binarySync.isGithubSyncRetryPending()).toBe(false);
+    expect(logs.some((l) => /succeeded on retry 2/.test(l))).toBe(true);
+  });
+
+  it("stopping while a retry is in flight schedules nothing further, even if that retry then fails", async () => {
+    let failInFlight: (err: Error) => void = () => {};
+    net.script = [
+      timedOut(),
+      () => new Promise<never>((_resolve, reject) => {
+        failInFlight = reject;
+      }),
+    ];
+    const binarySync = await import("./binarySync");
+
+    expect(await bootSync(binarySync)).toBe(true);
+    await vi.advanceTimersByTimeAsync(binarySync.GITHUB_SYNC_RETRY_DELAYS_MS[0]!);
+    expect(net.calls).toBe(2); // retry 1 is now in flight
+
+    binarySync.stopGithubSyncRetry(); // shutdown
+    failInFlight(timedOut());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(binarySync.isGithubSyncRetryPending()).toBe(false);
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    expect(net.calls).toBe(2);
   });
 
   it("only retries in BINARY_SOURCE=github mode", async () => {
@@ -208,11 +255,11 @@ describe("boot-time GitHub sync retry (#11641)", { timeout: 30_000 }, () => {
   });
 });
 
-describe("isTransientNetworkFailure", () => {
+describe("isTransientSyncFailure", () => {
   it("recognises timeouts, connection errors and wrapped causes; rejects policy and HTTP errors", async () => {
     const binarySync = await import("./binarySync");
     const urlSafety = await import("./urlSafety");
-    const is = binarySync.isTransientNetworkFailure;
+    const is = binarySync.isTransientSyncFailure;
 
     expect(is(timedOut())).toBe(true);
     expect(is(refused())).toBe(true);
@@ -222,7 +269,10 @@ describe("isTransientNetworkFailure", () => {
     expect(is(new Error("wrapped", { cause: refused() }))).toBe(true);
     expect(is(new AggregateError([refused()], "all failed"))).toBe(true);
 
+    expect(is(new Error("GitHub API error: 503"))).toBe(true);
     expect(is(new Error("GitHub API error: 404"))).toBe(false);
+    expect(is(new Error("GitHub API error: 403"))).toBe(false);
+    expect(is(new Error("GitHub API error: 500"))).toBe(false);
     expect(is(new urlSafety.SsrfBlockedError("blocked"))).toBe(false);
     expect(is(new urlSafety.ResponseTooLargeError(10))).toBe(false);
     expect(is("request timed out after 30000ms")).toBe(false);
