@@ -131,6 +131,45 @@ describe('GET /organizations/:id/portal-users', () => {
     expect(body.data.map((u: any) => u.effectiveStatus)).toEqual(['active', 'pending_setup']);
     expect(JSON.stringify(body)).not.toContain('passwordHash');
   });
+
+  it('the users list carries disabledBy and each identity\'s disabled state', async () => {
+    const disabledAt = new Date('2027-02-01T10:00:00.000Z');
+    const rearmSince = new Date('2027-02-02T10:00:00.000Z');
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }]) // org existence
+      .mockResolvedValueOnce([
+        { id: 'pu-1', email: 'a@acme.example', name: 'A', passwordHash: null, status: 'disabled', disabledBy: 'directory', receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'entra' },
+        { id: 'pu-2', email: 'b@acme.example', name: 'B', passwordHash: 'h', status: 'active', disabledBy: null, receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'password' },
+        { id: 'pu-3', email: 'c@acme.example', name: 'C', passwordHash: 'h', status: 'active', disabledBy: null, receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'password' },
+      ])
+      // ONE identity read for every listed user (no N+1).
+      .mockResolvedValueOnce([
+        { portalUserId: 'pu-1', id: 'idn-1', provider: 'entra', disabledAt, disabledBlockers: ['entra_directory', 'scim'], disabledReason: 'account_disabled', directoryRearmSince: null },
+        { portalUserId: 'pu-2', id: 'idn-2', provider: 'google', disabledAt: null, disabledBlockers: [], disabledReason: null, directoryRearmSince: rearmSince },
+        { portalUserId: 'pu-2', id: 'idn-3', provider: 'entra', disabledAt: null, disabledBlockers: [], disabledReason: null, directoryRearmSince: null },
+      ]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-users`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data[0]).toMatchObject({
+      id: 'pu-1',
+      disabledBy: 'directory',
+      identityProviders: ['entra'],
+      identities: [{ id: 'idn-1', provider: 'entra', disabledAt: disabledAt.toISOString(), disabledBlockers: ['entra_directory', 'scim'], disabledReason: 'account_disabled', rearmSince: null }],
+    });
+    expect(data[1]).toMatchObject({
+      id: 'pu-2',
+      disabledBy: null,
+      identityProviders: ['entra', 'google'],
+      identities: [
+        { id: 'idn-3', provider: 'entra', disabledAt: null, disabledBlockers: [], disabledReason: null, rearmSince: null },
+        { id: 'idn-2', provider: 'google', disabledAt: null, disabledBlockers: [], disabledReason: null, rearmSince: rearmSince.toISOString() },
+      ],
+    });
+    expect(data[2]).toMatchObject({ id: 'pu-3', disabledBy: null, identityProviders: [], identities: [] });
+    // Three reads: org, users, identities — never one identity read per user.
+    expect(selectWhereSpy).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('POST /organizations/:id/portal-users/invite', () => {

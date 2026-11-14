@@ -115,6 +115,7 @@ import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibi
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
 import { registerPortalEntraTenantRoutes } from './orgPortalEntraTenant';
+import { registerOrgPortalDirectoryRoutes } from './orgPortalDirectory';
 import { registerOrgCustomerDomainRoutes } from './orgCustomerDomains';
 import { registerOrgPortalPreviewRoutes } from './orgPortalPreview';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
@@ -3058,6 +3059,8 @@ registerOrgPortalSettingsRoutes(orgRoutes);
 registerPortalAccessPolicyRoutes(orgRoutes);
 // Customer-portal Entra tenant proof + proof-run links (client_ai_tenant_mappings) — see routes/orgPortalEntraTenant.ts
 registerPortalEntraTenantRoutes(orgRoutes);
+// Customer-portal directory deprovisioning: status, apply/dismiss held runs, restore/remove a disabled sign-in — see routes/orgPortalDirectory.ts
+registerOrgPortalDirectoryRoutes(orgRoutes);
 // Customer sender domains + ownership verification (customer_email_domains) — see routes/orgCustomerDomains.ts
 registerOrgCustomerDomainRoutes(orgRoutes);
 // Staff read-only "Customer view" of the portal read models (#9350)

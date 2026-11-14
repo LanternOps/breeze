@@ -243,6 +243,59 @@ export async function listIdentityProvidersByUser(
   return out;
 }
 
+/** One identity's directory state, as the MSP portal-users list shows it (W8 #11385, plan Task 8). */
+export interface PortalIdentityListState {
+  id: string;
+  provider: PortalIdentityProvider;
+  disabledAt: Date | null;
+  disabledBlockers: PortalIdentityBlocker[];
+  disabledReason: PortalIdentityDisabledReason | null;
+  /** An MSP exemption from directory deprovisioning (Restore / Dismiss, D9). */
+  rearmSince: Date | null;
+}
+
+/**
+ * Every identity of the given accounts with its disabled state, in ONE read
+ * (the list never reads per user), each account's identities sorted by
+ * provider. Disabled identities are included: they still reserve
+ * `(issuer, subject)` and the MSP restores them from this list.
+ */
+export async function listIdentityStatesByUser(
+  exec: IdentityExecutor,
+  portalUserIds: string[],
+): Promise<Map<string, PortalIdentityListState[]>> {
+  const out = new Map<string, PortalIdentityListState[]>();
+  if (portalUserIds.length === 0) return out;
+  const rows = await exec
+    .select({
+      portalUserId: portalUserIdentities.portalUserId,
+      id: portalUserIdentities.id,
+      provider: portalUserIdentities.provider,
+      disabledAt: portalUserIdentities.disabledAt,
+      disabledBlockers: portalUserIdentities.disabledBlockers,
+      disabledReason: portalUserIdentities.disabledReason,
+      directoryRearmSince: portalUserIdentities.directoryRearmSince,
+    })
+    .from(portalUserIdentities)
+    .where(inArray(portalUserIdentities.portalUserId, portalUserIds))
+    .orderBy(portalUserIdentities.portalUserId, portalUserIdentities.provider);
+  for (const row of rows) {
+    const state: PortalIdentityListState = {
+      id: row.id,
+      provider: row.provider,
+      disabledAt: row.disabledAt ?? null,
+      disabledBlockers: row.disabledBlockers ?? [],
+      disabledReason: row.disabledReason ?? null,
+      rearmSince: row.directoryRearmSince ?? null,
+    };
+    const list = out.get(row.portalUserId);
+    if (list) list.push(state);
+    else out.set(row.portalUserId, [state]);
+  }
+  for (const list of out.values()) list.sort((a, b) => a.provider.localeCompare(b.provider));
+  return out;
+}
+
 /**
  * Plain insert of an Entra identity that THROWS on conflict (23505 on either
  * unique key). For use only inside the JIT savepoint in clientAiExchange, so a

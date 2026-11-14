@@ -21,4 +21,10 @@ export {
   restorePortalIdentity,
   type PortalDirectoryIdentityErrorCode,
 } from './identityDisable';
+export {
+  getPortalDirectoryStatus,
+  type ActionRow,
+  type PortalDirectoryStatus,
+  type RunSummary,
+} from './status';
 export type { DirectorySource, IdentityBlocker, IdentityDisabledReason } from './types';
