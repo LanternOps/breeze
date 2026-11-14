@@ -7,7 +7,7 @@
  * side-by-side comparison fields, plus the opaque `targetVersion` the
  * request and its `device_reattach` step-up bind (an HMAC over the target's
  * agent id and install incarnation; the raw values never leave). The ranking
- * is the detection's own (`readRankedReinstallCandidates`): nothing re-ranks.
+ * is the detection's own (`rankReinstallCandidatesFor`): nothing re-ranks.
  *
  * Who sees what:
  *  - the SOURCE itself must be visible to the viewer, or the answer is a 404:
@@ -31,12 +31,12 @@
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceHardware, deviceReattachIntents, devices, organizations, sites } from '../../db/schema';
-import type { AuthContext } from '../../middleware/auth';
+import { siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { OPEN_REATTACH_INTENT_STATES } from '../deviceReattach/protocol';
 import { reattachTargetVersion } from '../deviceReattach/targetVersion';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
-import { readRankedReinstallCandidates } from './index';
+import { rankReinstallCandidatesFor, readReinstallSource } from './index';
 import type { RankedCandidate } from './ranking';
 
 export type CandidatesViewer = Pick<
@@ -105,9 +105,11 @@ export interface ReinstallCandidatesView {
   evidenceNotice: string;
 }
 
+/** The same site rule as `routes/devices/helpers.ts` (#11729): the auth
+ *  middleware's closure, else the shared allowlist check, which denies a
+ *  malformed (non-array) allowlist. */
 function siteVisible(viewer: CandidatesViewer, siteId: string | null): boolean {
-  if (viewer.canAccessSite) return viewer.canAccessSite(siteId);
-  return !viewer.allowedSiteIds || (siteId !== null && viewer.allowedSiteIds.includes(siteId));
+  return (viewer.canAccessSite ?? siteAccessCheck(viewer.allowedSiteIds))(siteId);
 }
 
 function deviceVisible(viewer: CandidatesViewer, deviceId: string): boolean {
@@ -233,12 +235,15 @@ export async function readReinstallCandidatesForViewer(input: {
 }): Promise<ReinstallCandidatesView | null> {
   const { viewer } = input;
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const ranked = await readRankedReinstallCandidates(input.sourceDeviceId);
-    if (!ranked) return null;
-    const { source } = ranked;
+    // Visibility first, then the partner-wide search: a caller who gets a 404
+    // never triggers it, and the not-visible path does the same work as the
+    // not-found path.
+    const source = await readReinstallSource(input.sourceDeviceId);
+    if (!source) return null;
     if (!canViewReattachSource(viewer, source)) return null;
+    const ranked = await rankReinstallCandidatesFor(source);
 
-    const visible = ranked.ranked.filter((candidate) => canViewReattachCandidate(viewer, candidate.target));
+    const visible = ranked.filter((candidate) => canViewReattachCandidate(viewer, candidate.target));
     const openIntentRow = await readOpenIntent(source.id);
     const rows = await readComparisonRows([source.id, ...visible.map((candidate) => candidate.target.id)]);
     const sourceRow = rows.get(source.id);
@@ -290,7 +295,7 @@ export async function readReinstallCandidatesForViewer(input: {
       candidates,
       // Only candidates HIDDEN by visibility make a review pending; a row
       // dropped for missing data is not something this viewer is kept from.
-      reviewPending: visible.length < ranked.ranked.length,
+      reviewPending: visible.length < ranked.length,
       openIntent,
       evidenceNotice: HINT_EVIDENCE_NOTICE,
     };
