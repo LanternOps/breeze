@@ -3844,7 +3844,11 @@
     "oldDeviceUnavailable": "Eski cihaz kaydı artık mevcut değil.",
     "title": "Olası mükerrer kayıt",
     "unknownDevice": "önceki cihaz",
-    "viewOldDevice": "Eski cihazı görüntüle"
+    "viewOldDevice": "Eski cihazı görüntüle",
+    "reattach": "Yeniden bağla",
+    "reattachPending": "Eski kayda bekleyen bir yeniden bağlama var: yeni kurulum, ajanı bağlandığında işlemi tamamlar. İstek {{expiresAt}} tarihinde sona erer.",
+    "reviewPending": "Olası bir yeniden kurulum iş ortağı incelemesini bekliyor.",
+    "reattachPendingOther": "Bu cihaz için bekleyen bir yeniden bağlama var. İstek {{expiresAt}} tarihinde sona erer."
   },
   "fleetPosture": {
     "securityUnavailable": "Bu görünüm için uzaktan erişim güvenliği bulguları yüklenemedi.",
@@ -4277,7 +4281,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Cihaz sınırına ulaşıldı",
       "STEP_UP_REQUIRED": "Doğrulama gerekli",
       "ASSIGNMENT_FAILED": "Başarısız"
-    }
+    },
+    "modeLegend": "Bu cihazla ne yapılacak",
+    "modeAssign": "Yeni cihaz olarak ata",
+    "modeReattach": "{{hostname}} kaydına yeniden bağla (mevcut bir kaydın yeniden kurulumu)",
+    "reattachPending": "Bu cihaz için bekleyen bir yeniden bağlama var: yeni kurulum, ajanı bağlandığında işlemi tamamlar. İstek {{expiresAt}} tarihinde sona erer.",
+    "cancelReattachConfirm": "Bu cihazı yeni olarak atamak bekleyen yeniden bağlamayı iptal eder. Anladım."
   },
   "timeFleet": {
     "title": "Saat eşitleme",
@@ -5052,5 +5061,86 @@
       "previousPage": "Önceki",
       "nextPage": "Sonraki"
     }
+  },
+  "reinstalledBadge": {
+    "label": "{{date}} tarihinde yeniden kuruldu",
+    "title": "Bu kayıt {{at}} tarihinde yeniden kurulan bir makineyi devraldı. Yeni kurulum envanterini yeniden oluşturdu."
+  },
+  "reattachDialog": {
+    "title": "{{target}} kaydına yeniden bağla",
+    "description": "Yeni kurulum {{source}} için mevcut {{target}} kaydını kullanın; geçmişi, ilkeleri ve yapılandırması korunur.",
+    "newInstall": "Yeni kurulum",
+    "existingRecord": "Mevcut kayıt",
+    "holdingArea": "Bekleme alanı",
+    "fields": {
+      "hostname": "Ana bilgisayar adı",
+      "os": "İşletim sistemi",
+      "model": "Üretici ve model",
+      "serial": "Seri numarası",
+      "systemUuid": "Sistem UUID’si",
+      "agentVersion": "Ajan sürümü",
+      "place": "Kuruluş / konum",
+      "enrolledAt": "Kaydedildi",
+      "lastSeenAt": "Son görülme"
+    },
+    "matchedOn": "Eşleşme: {{evidence}}",
+    "evidence": {
+      "systemUuid": "sistem UUID’si",
+      "serial": "seri numarası ve üretici",
+      "hostname": "yalnızca ana bilgisayar adı",
+      "other": "bildirilen tanımlayıcılar"
+    },
+    "evidenceNoticeHint": "Cihazın bildirdiği donanım tanımlayıcıları. Doğrulanmadı.",
+    "evidenceNoticeTpm": "Eski kurulumun sahip olduğunu kanıtladığı TPM onay anahtarının aynısı. Bu, aynı fiziksel TPM’yi değil anahtar sürekliliğini kanıtlar; klonlanmış sanal TPM’ler anahtarları paylaşır.",
+    "consequences": "Yeni kurulum {{target}} envanterini yeniden oluşturur. Eski kurulumun kuyruktaki işleri, yetkileri ve oturumları iptal edilir ve {{source}} kaydı kullanımdan kaldırılır.",
+    "possession": "Yeni kurulumun {{target}} kaydının tanımladığı makinede çalıştığını Breeze dışında doğruladım.",
+    "acknowledgeOsChange": "Yeni kurulum {{sourceOs}}, mevcut kayıt {{targetOs}} bildiriyor. İşletim sisteminin değiştiğini onaylıyorum.",
+    "restoreDecommissioned": "{{target}} kaldırılmıştı. Bu yeniden bağlamanın parçası olarak geri yükle.",
+    "confirmNameLabel": "Onaylamak için {{hostname}} yazın",
+    "stepUpHeading": "Siz olduğunuzu doğrulayın",
+    "stepUpIntro": "Yeniden bağlama bir cihaz kaydını kullanımdan kaldırır. Devam etmek için ikinci faktörünüzle doğrulayın.",
+    "stepUpPasskeyNote": "Devam ettiğinizde tarayıcınız geçiş anahtarınızı isteyecek.",
+    "stepUpCodeLabel": "Kimlik doğrulayıcı kodu",
+    "stepUpRetry": "Bu doğrulamanın süresi doldu veya artık eşleşmiyor. Yeni bir kod girin.",
+    "noStepUpFactor": "Yeniden bağlama için bir geçiş anahtarı veya kimlik doğrulama uygulaması gerekir. Profilinizde birini ayarlayıp tekrar deneyin.",
+    "genericError": "Yeniden bağlama istenemedi. Tekrar deneyin.",
+    "cancel": "İptal",
+    "close": "Kapat",
+    "submit": "{{hostname}} kaydına yeniden bağla",
+    "submitting": "İsteniyor…",
+    "submitStepUp": "Doğrula ve yeniden bağla",
+    "requestedToast": "{{hostname}} kaydına yeniden bağlama istendi",
+    "pendingTitle": "Yeniden bağlama istendi",
+    "pendingMessage": "{{source}}, ajanı bir sonraki bağlandığında {{target}} kaydını devralır; burada başka bir şey gerekmez. İstek {{expiresAt}} tarihinde sona erer.",
+    "refusals": {
+      "device_not_found": "Cihazlardan biri artık yok veya erişiminizin dışında.",
+      "not_partner_user": "Cihazları yalnızca iş ortağı kullanıcıları yeniden bağlayabilir.",
+      "user_inactive": "Hesabınız etkin değil.",
+      "permission_denied": "Her iki cihazın kuruluşlarında cihazları düzenleme ve kaldırma izniniz olmalıdır.",
+      "org_access_denied": "Her iki cihazın kuruluşlarına erişiminiz yok.",
+      "full_admin_required": "Bekleme alanındaki bir cihazı bildirilen tanımlayıcılara göre yeniden bağlamak için tam yetkili bir iş ortağı yöneticisi gerekir.",
+      "partner_mismatch": "Cihazlar artık iş ortağınızda değil.",
+      "MFA_REQUIRED": "Yeniden bağlama, iki faktörlü kimlik doğrulamayla açılmış bir oturum gerektirir. İkinci faktörünüzle yeniden oturum açın.",
+      "target_alive": "{{hostname}} hâlâ kullanımda: kurulumu yakın zamanda kimlik doğruladı. Yeniden bağlama için eski kurulumun sessiz olması gerekir.",
+      "liveness_unknown": "{{hostname}} cihazının hâlâ kullanımda olup olmadığı kontrol edilemedi. Birazdan tekrar deneyin.",
+      "os_changed": "İşletim sistemleri farklı. İşletim sistemi değişikliğini onaylayıp tekrar deneyin.",
+      "target_changed": "{{hostname}} gösterildiğinden beri değişti (yeniden kaydoldu veya yeniden bağlandı). Güncel durumunu görmek için yeniden bağlamayı tekrar açın.",
+      "rebind_unsupported": "Yeni kurulumun ajanı yeniden bağlama için çok eski. Önce ajanı yükseltin.",
+      "source_decommissioned": "Yeni kurulumun kaydı kaldırıldı.",
+      "source_ineligible": "Bu cihaz yeniden bağlanamaz: Hızlı Destek cihazları bağlanamaz.",
+      "target_ephemeral": "{{hostname}} geçici bir cihazdır ve yeniden bağlama hedefi olamaz.",
+      "target_decommissioned": "{{hostname}} kaldırılmıştı. Ona yeniden bağlamak için geri yüklemeyi seçin.",
+      "target_ineligible": "{{hostname}} yönetilen bir kayıt değil.",
+      "target_retired": "{{hostname}} daha önceki bir yeniden bağlamayla zaten kullanımdan kaldırıldı.",
+      "device_quarantined": "Cihazlardan biri karantinada.",
+      "device_suspended": "Cihazlardan birinin ajan kimlik bilgileri askıya alınmış.",
+      "org_draining": "Cihazlardan birinin kuruluşu etkin değil.",
+      "device_in_open_intent": "Cihazlardan biri zaten bekleyen bir yeniden bağlamada.",
+      "confirm_target_name_required": "Onaylamak için mevcut cihazın adını yazın.",
+      "confirm_target_name_mismatch": "Yazılan ad {{hostname}} ile eşleşmiyor.",
+      "same_device": "Bir cihaz kendisine yeniden bağlanamaz.",
+      "invalid_target_version": "Mevcut kaydın sürümü eksik. Yeniden bağlamayı tekrar açın."
+    },
+    "stepUpHeld": "Doğrulamanız bu yeniden bağlama için hâlâ geçerli."
   }
 }

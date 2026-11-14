@@ -3844,7 +3844,11 @@
     "oldDeviceUnavailable": "O registro do dispositivo antigo não está mais disponível.",
     "title": "Possível registro duplicado",
     "unknownDevice": "o dispositivo anterior",
-    "viewOldDevice": "Ver dispositivo antigo"
+    "viewOldDevice": "Ver dispositivo antigo",
+    "reattach": "Revincular",
+    "reattachPending": "Há uma revinculação pendente ao registro antigo: a nova instalação a concluirá quando o agente dela se comunicar. A solicitação expira em {{expiresAt}}.",
+    "reviewPending": "Uma possível reinstalação aguarda a revisão do parceiro.",
+    "reattachPendingOther": "Há uma revinculação pendente deste dispositivo. A solicitação expira em {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "Não foi possível carregar os achados de segurança de acesso remoto para esta visualização.",
@@ -4277,7 +4281,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Limite de dispositivos atingido",
       "STEP_UP_REQUIRED": "Confirmação necessária",
       "ASSIGNMENT_FAILED": "Falhou"
-    }
+    },
+    "modeLegend": "O que fazer com este dispositivo",
+    "modeAssign": "Atribuir como novo dispositivo",
+    "modeReattach": "Revincular a {{hostname}} (reinstalação de um registro existente)",
+    "reattachPending": "Há uma revinculação pendente deste dispositivo: a nova instalação a concluirá quando o agente dela se comunicar. A solicitação expira em {{expiresAt}}.",
+    "cancelReattachConfirm": "Atribuir este dispositivo como novo cancela a revinculação pendente. Estou ciente."
   },
   "timeFleet": {
     "title": "Sincronização de horário",
@@ -5052,5 +5061,86 @@
       "previousPage": "Anterior",
       "nextPage": "Próxima"
     }
+  },
+  "reinstalledBadge": {
+    "label": "Reinstalado em {{date}}",
+    "title": "Este registro assumiu uma máquina reinstalada em {{at}}. A nova instalação reconstruiu o inventário."
+  },
+  "reattachDialog": {
+    "title": "Revincular a {{target}}",
+    "description": "Use o registro existente {{target}} para a nova instalação {{source}}, mantendo histórico, políticas e configuração.",
+    "newInstall": "Nova instalação",
+    "existingRecord": "Registro existente",
+    "holdingArea": "Área de espera",
+    "fields": {
+      "hostname": "Nome do host",
+      "os": "Sistema operacional",
+      "model": "Fabricante e modelo",
+      "serial": "Número de série",
+      "systemUuid": "UUID do sistema",
+      "agentVersion": "Versão do agente",
+      "place": "Organização / local",
+      "enrolledAt": "Registrado em",
+      "lastSeenAt": "Visto por último"
+    },
+    "matchedOn": "Correspondência por: {{evidence}}",
+    "evidence": {
+      "systemUuid": "UUID do sistema",
+      "serial": "número de série e fabricante",
+      "hostname": "somente o nome do host",
+      "other": "identificadores informados"
+    },
+    "evidenceNoticeHint": "Identificadores de hardware informados pelo dispositivo. Não verificados.",
+    "evidenceNoticeTpm": "Mesma chave de endosso do TPM cuja posse a instalação antiga comprovou. Isso comprova a continuidade da chave, não o mesmo TPM físico; TPMs virtuais clonados compartilham chaves.",
+    "consequences": "A nova instalação reconstrói o inventário de {{target}}. Trabalhos na fila, concessões e sessões da instalação antiga são cancelados, e o registro {{source}} é desativado.",
+    "possession": "Confirmei, fora do Breeze, que a nova instalação roda na máquina que {{target}} descreve.",
+    "acknowledgeOsChange": "A nova instalação informa {{sourceOs}} e o registro existente {{targetOs}}. Confirmo que o sistema operacional mudou.",
+    "restoreDecommissioned": "{{target}} foi removido. Restaurar o registro como parte desta revinculação.",
+    "confirmNameLabel": "Digite {{hostname}} para confirmar",
+    "stepUpHeading": "Confirme que é você",
+    "stepUpIntro": "A revinculação desativa um registro de dispositivo. Verifique com seu segundo fator para continuar.",
+    "stepUpPasskeyNote": "Seu navegador pedirá sua chave de acesso quando você continuar.",
+    "stepUpCodeLabel": "Código do autenticador",
+    "stepUpRetry": "Essa verificação expirou ou não corresponde mais. Digite um novo código.",
+    "noStepUpFactor": "A revinculação exige uma chave de acesso ou um app autenticador. Configure um no seu perfil e tente novamente.",
+    "genericError": "Não foi possível solicitar a revinculação. Tente novamente.",
+    "cancel": "Cancelar",
+    "close": "Fechar",
+    "submit": "Revincular a {{hostname}}",
+    "submitting": "Solicitando…",
+    "submitStepUp": "Verificar e revincular",
+    "requestedToast": "Revinculação a {{hostname}} solicitada",
+    "pendingTitle": "Revinculação solicitada",
+    "pendingMessage": "{{source}} assumirá {{target}}: a nova instalação a concluirá quando o agente dela se comunicar; nada mais é necessário aqui. A solicitação expira em {{expiresAt}}.",
+    "refusals": {
+      "device_not_found": "Um dos dispositivos não existe mais ou está fora do seu acesso.",
+      "not_partner_user": "Somente usuários do parceiro podem revincular dispositivos.",
+      "user_inactive": "Sua conta não está ativa.",
+      "permission_denied": "Você precisa de permissão para editar e remover dispositivos nas organizações dos dois dispositivos.",
+      "org_access_denied": "Você não tem acesso às organizações dos dois dispositivos.",
+      "full_admin_required": "Revincular um dispositivo da área de espera com base em identificadores informados exige um administrador de parceiro completo.",
+      "partner_mismatch": "Os dispositivos não pertencem mais ao seu parceiro.",
+      "MFA_REQUIRED": "A revinculação exige uma sessão iniciada com autenticação de dois fatores. Entre novamente com seu segundo fator.",
+      "target_alive": "{{hostname}} ainda está em uso: a instalação se autenticou recentemente. A revinculação exige que a instalação antiga esteja inativa.",
+      "liveness_unknown": "Não foi possível verificar se {{hostname}} ainda está em uso. Tente novamente em instantes.",
+      "os_changed": "Os sistemas operacionais são diferentes. Confirme a mudança de sistema operacional e tente novamente.",
+      "target_changed": "{{hostname}} mudou desde que foi exibido (foi registrado novamente ou revinculado). Abra a revinculação de novo para ver o estado atual.",
+      "rebind_unsupported": "O agente da nova instalação é antigo demais para a revinculação. Atualize o agente primeiro.",
+      "source_decommissioned": "O registro da nova instalação foi removido.",
+      "source_ineligible": "Dispositivos do Suporte rápido não podem ser revinculados.",
+      "target_ephemeral": "{{hostname}} é um dispositivo temporário e não pode receber uma revinculação.",
+      "target_decommissioned": "{{hostname}} foi removido. Escolha restaurá-lo para revincular a ele.",
+      "target_ineligible": "{{hostname}} não é um registro gerenciado.",
+      "target_retired": "{{hostname}} já foi desativado por uma revinculação anterior.",
+      "device_quarantined": "Um dos dispositivos está em quarentena.",
+      "device_suspended": "Um dos dispositivos está com as credenciais do agente suspensas.",
+      "org_draining": "A organização de um dos dispositivos não está ativa.",
+      "device_in_open_intent": "Um dos dispositivos já está em uma revinculação pendente.",
+      "confirm_target_name_required": "Digite o nome do dispositivo existente para confirmar.",
+      "confirm_target_name_mismatch": "O nome digitado não corresponde a {{hostname}}.",
+      "same_device": "Um dispositivo não pode ser revinculado a si mesmo.",
+      "invalid_target_version": "A versão do registro existente está ausente. Abra a revinculação de novo."
+    },
+    "stepUpHeld": "Sua verificação ainda é válida para esta revinculação."
   }
 }

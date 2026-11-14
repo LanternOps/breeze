@@ -131,6 +131,8 @@ const TARGET_GLOBS = [
   // runAction from birth.
   'src/components/devices/AssignParkedDeviceDialog.tsx',
   'src/components/devices/UnassignedDevicesPage.tsx',
+  // #8318 wave 2-3: the reattach request (POST /devices/:id/reattach) goes through runAction from birth.
+  'src/components/devices/ReattachDeviceForm.tsx',
   'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',

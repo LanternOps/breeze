@@ -325,6 +325,12 @@ export type Device = {
    */
   possibleReplacementOfDeviceId?: string | null;
   /**
+   * When this record last took over a reinstalled machine (#8318,
+   * `devices.last_reattached_at`): drives the "Reinstalled on <date>" badge on
+   * the device page. Null/absent for a record never reattached.
+   */
+  lastReattachedAt?: string | null;
+  /**
    * What became of the agent-uninstall this device's Remove queued (#3987).
    *
    * Present ONLY on the `GET /devices/:id` detail payload, and only ever
