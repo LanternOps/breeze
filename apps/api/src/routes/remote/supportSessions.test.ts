@@ -827,3 +827,35 @@ describe('POST /support-sessions/:id/code — partner trust', () => {
     }
   });
 });
+
+// A response that can carry a live join code must never be cached (#11836).
+describe('code-bearing responses are Cache-Control: no-store', () => {
+  it('GET /support-sessions', async () => {
+    selectResults.push([liveRow()]);
+    selectResults.push([{ id: 'qs-org' }]);
+    const res = await buildApp().request('/support-sessions');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('GET /support-sessions/:id', async () => {
+    selectResults.push([liveRow()]);
+    selectResults.push([{ id: 'qs-org' }]);
+    const res = await buildApp().request(`/support-sessions/${LIVE_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('POST /support-sessions/:id/code', async () => {
+    selectResults.push([liveRow()]);
+    selectResults.push([{ id: 'qs-org' }]);
+    updateReturns.push([{
+      id: LIVE_ID,
+      codeExpiresAt: new Date(Date.now() + 15 * 60_000),
+      hardExpiresAt: new Date(Date.now() + 7 * 3_600_000),
+    }]);
+    const res = await buildApp().request(`/support-sessions/${LIVE_ID}/code`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+});

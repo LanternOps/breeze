@@ -294,6 +294,8 @@ supportSessionRoutes.get('/support-sessions', async (c) => {
 
   const access = await codeAccessFor(c, sessions);
 
+  // Rows may carry a live join code (#11836): never cache.
+  c.header('Cache-Control', 'no-store');
   return c.json({
     sessions: sessions.map((s) => toView(
       s,
@@ -363,6 +365,8 @@ supportSessionRoutes.get('/support-sessions/:id', async (c) => {
   if (!session) return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'Support session not found');
 
   const access = await codeAccessFor(c, [session]);
+  // The view may carry a live join code (#11836): never cache.
+  c.header('Cache-Control', 'no-store');
   if (!isProbeable(session)) return c.json(toView(session, false, false, access));
 
   const [device] = await db
@@ -485,6 +489,8 @@ supportSessionRoutes.post('/support-sessions/:id/code', async (c) => {
     getTrustedClientIp(c, 'unknown'),
   );
 
+  // The body carries a live join code: never cache.
+  c.header('Cache-Control', 'no-store');
   return c.json({
     id: updated.id,
     code: formatSupportCode(code),
