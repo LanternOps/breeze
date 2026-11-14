@@ -16,7 +16,8 @@
 
 import { z } from 'zod';
 import type { AuditResult } from '@breeze/shared';
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { tool } from '@anthropic-ai/claude-agent-sdk';
+import { createArgCheckedSdkMcpServer } from './aiSdkToolArgGuard';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import { aiMessages, aiToolExecutions } from '../db/schema';
 import type { ActiveSession } from './streamingSessionManager';
@@ -773,7 +774,7 @@ export function createClientWorkbookMcpServer(host: ClientHost, getSession: () =
   } catch {
     exposed = null;
   }
-  return createSdkMcpServer({
+  return createArgCheckedSdkMcpServer({
     name: clientMcpServerName(host),
     version: '1.0.0',
     tools: Object.entries(CLIENT_TOOL_REGISTRIES[host])

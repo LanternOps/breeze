@@ -303,6 +303,13 @@ export const SENTRY_EVENT_CODES = [
    */
   'ai_agent_onlytools_unknown_name',
   /**
+   * An in-process SDK MCP server handed to `unknownToolArgsHooks` was not built
+   * by `createArgCheckedSdkMcpServer` (or is a copy of one), so unknown tool
+   * arguments on it are stripped by the SDK instead of refused (#11861).
+   * Always a wiring bug; expected never to fire.
+   */
+  'ai_tool_arg_guard_unrecorded_server',
+  /**
    * An AI chat tool call reached our handler without the SDK's tool_use id
    * (`_meta['claudecode/toolUseId']`), so its result was paired by tool name
    * instead (#7931). Reported once per session. Expected never to fire; if it

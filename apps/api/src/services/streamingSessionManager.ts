@@ -13,6 +13,7 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { unknownToolArgsHooks } from './aiSdkToolArgGuard';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
@@ -1460,6 +1461,8 @@ export class StreamingSessionManager {
             tools: toolSearchPolicy.tools,
             allowedTools: sessionTools.allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
             mcpServers: { [mcpServerName]: mcpServer },
+            // #11861: refuse an argument the tool does not define (the SDK would strip it).
+            hooks: unknownToolArgsHooks({ [mcpServerName]: mcpServer }),
             includePartialMessages: true,
             abortController,
             env: { ...childEnv, ...toolSearchPolicy.env },

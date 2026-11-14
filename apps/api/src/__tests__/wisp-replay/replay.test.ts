@@ -213,6 +213,11 @@ vi.mock('../../services/aiAgentSdkTools', () => ({
   createBreezeMcpServer: () => ({ type: 'sdk' }),
   BREEZE_MCP_TOOL_NAMES: [],
 }));
+// The stub server above is not a recorded SDK server, so the real argument guard
+// would (correctly) report it; tool arguments are scripted here, nothing to refuse.
+vi.mock('../../services/aiSdkToolArgGuard', () => ({
+  unknownToolArgsHooks: () => ({ PreToolUse: [] }),
+}));
 vi.mock('../../services/aiAgentSdk', () => ({
   createSessionPreToolUse: () => async () => ({ allowed: true }),
   createSessionPostToolUse: () => async () => undefined,

@@ -7,7 +7,8 @@
 
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { tool } from '@anthropic-ai/claude-agent-sdk';
+import { createArgCheckedSdkMcpServer } from './aiSdkToolArgGuard';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { executeTool, shortenToolDescription } from './aiTools';
@@ -463,7 +464,7 @@ export function createScriptBuilderMcpServer(
    */
   getActiveSession?: () => ActiveSession | undefined,
 ) {
-  return createSdkMcpServer({
+  return createArgCheckedSdkMcpServer({
     name: SCRIPT_BUILDER_MCP_SERVER_NAME,
     tools: scriptBuilderServerTools(getAuth, onPreToolUse, onPostToolUse, getActiveSession),
   });

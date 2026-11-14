@@ -351,16 +351,19 @@ describe('prerequisite tool bounds match the columns behind them (#2814)', () =>
     // it and `get` strips it from responses. The tool definition must not
     // re-advertise it (the model would send values the DB rejects as 22P02,
     // which safeHandler reports as "Invalid ID format — expected a valid
-    // UUID"), and the Zod gate must not fail a legacy caller that still sends
-    // it — the unknown key is stripped, never forwarded.
+    // UUID"). A legacy caller that still sends it used to have the key
+    // silently stripped; since #11861 every tool refuses an argument it does
+    // not define, naming it, so the caller learns to drop it — it is still
+    // never forwarded to the handler.
     const def = aiTools.get('manage_update_rings')?.definition;
     expect(def).toBeDefined();
     const properties = (def!.input_schema as { properties: Record<string, unknown> }).properties;
     expect(properties).not.toHaveProperty('sources');
     expect(toolInputSchemas['manage_update_rings']).toBeDefined();
-    expect(validateToolInput('manage_update_rings', {
-      action: 'create', name: 'Ring', sources: ['os'],
-    }).success).toBe(true);
+    const legacy = validateToolInput('manage_update_rings', { action: 'create', name: 'Ring', sources: ['os'] });
+    expect(legacy.success).toBe(false);
+    expect(legacy.success ? '' : legacy.error).toMatch(/^Invalid input: unknown argument "sources" \(accepted: /);
+    expect(validateToolInput('manage_update_rings', { action: 'create', name: 'Ring' }).success).toBe(true);
   });
 
   it('manage_update_rings advertises and validates the Windows feature-update policy', () => {

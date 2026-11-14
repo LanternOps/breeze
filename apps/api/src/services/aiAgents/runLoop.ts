@@ -40,6 +40,7 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { unknownToolArgsHooks } from '../aiSdkToolArgGuard';
 import type {
   AgentRunVerdict,
   AiAgentKind,
@@ -2986,6 +2987,8 @@ async function driveSdkLoop(
               tools: [],
               allowedTools: [...new Set(exposedNames)],
               mcpServers: { breeze: mcpServer },
+              // #11861: refuse an argument the tool does not define (the SDK would strip it).
+              hooks: unknownToolArgsHooks({ breeze: mcpServer }),
               abortController,
               env: child.env,
               // Gateway connections only: an empty temp working directory, so
