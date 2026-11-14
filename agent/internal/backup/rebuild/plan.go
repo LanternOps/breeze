@@ -2,6 +2,7 @@ package rebuild
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 
@@ -46,6 +47,40 @@ func validateFSUUID(number int, fs, uuid string) (warning string, err error) {
 
 func alignUp(n, a int64) int64 { return (n + a - 1) / a * a }
 
+// mounted reports whether the Linux engine mounts this partition under the
+// staging root (mountTree's filter).
+func (p PlannedPartition) mounted() bool {
+	return p.MountPoint != "" && p.Filesystem != "swap" && p.Filesystem != ""
+}
+
+// validateMountPoints requires every mounted partition's mount point to be an
+// absolute, already-clean path with no "." or ".." element, and no two
+// partitions to share one. The mount points come from the snapshot's layout
+// and are joined under the staging root, so anything else could name a
+// directory outside it.
+func validateMountPoints(parts []PlannedPartition) error {
+	seen := map[string]int{}
+	for _, p := range parts {
+		if !p.mounted() {
+			continue
+		}
+		mp := p.MountPoint
+		if !strings.HasPrefix(mp, "/") || path.Clean(mp) != mp || strings.ContainsRune(mp, 0) {
+			return fmt.Errorf("partition %d mount point %q is not a clean absolute path", p.Number, mp)
+		}
+		for _, element := range strings.Split(strings.TrimPrefix(mp, "/"), "/") {
+			if element == "." || element == ".." {
+				return fmt.Errorf("partition %d mount point %q is not a clean absolute path", p.Number, mp)
+			}
+		}
+		if other, ok := seen[mp]; ok {
+			return fmt.Errorf("partitions %d and %d share mount point %q", other, p.Number, mp)
+		}
+		seen[mp] = p.Number
+	}
+	return nil
+}
+
 // PlanPartitions lays the source disk's partitions onto a target of
 // targetSizeBytes. Fixed partitions keep their recorded size; the last
 // root/data partition absorbs the remainder (or shrinks to used×1.1 on a
@@ -72,6 +107,13 @@ func PlanPartitions(src *layout.Disk, targetSizeBytes int64, sectorSize int) (*P
 		if p.Role == layout.RoleRoot || p.Role == layout.RoleData {
 			growIdx = i
 		}
+	}
+	planned := make([]PlannedPartition, 0, len(parts))
+	for _, p := range parts {
+		planned = append(planned, PlannedPartition{Number: p.Number, Filesystem: strings.ToLower(p.Filesystem), MountPoint: p.MountPoint})
+	}
+	if err := validateMountPoints(planned); err != nil {
+		return nil, &RefusalError{Reason: err.Error()}
 	}
 	var warnings []string
 	var fixed, growMin int64

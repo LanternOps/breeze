@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { HardDrive, Loader2, Server, Usb, X } from 'lucide-react';
+import { HardDrive, Loader2, Usb, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -11,7 +11,10 @@ import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
+// 'smb' can still be read back from a vault saved before SMB share vaults
+// were refused; it is no longer offered or saved.
 type VaultType = 'local' | 'smb' | 'usb';
+type SupportedVaultType = Exclude<VaultType, 'smb'>;
 
 type Vault = {
   id: string;
@@ -27,11 +30,14 @@ type VaultConfigDialogProps = {
   onClose: (saved?: boolean) => void;
 };
 
-const typeOptions: { value: VaultType; label: string; icon: typeof HardDrive; description: string }[] = [
+const typeOptions: { value: SupportedVaultType; label: string; icon: typeof HardDrive; description: string }[] = [
   { value: 'local', label: 'Local', icon: HardDrive, description: 'Local disk path' },
-  { value: 'smb', label: 'SMB', icon: Server, description: 'Network SMB share' },
   { value: 'usb', label: 'USB', icon: Usb, description: 'USB attached storage' },
 ];
+
+const SMB_VAULT_UNSUPPORTED =
+  'SMB share vaults are not supported. Move this vault to a dedicated directory on a disk attached to the device; '
+  + 'until then the device does not use it.';
 
 // ── Component ─────────────────────────────────────────────────────
 
@@ -41,7 +47,10 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
 
   const [deviceId, setDeviceId] = useState(vault?.deviceId ?? '');
   const [vaultPath, setVaultPath] = useState(vault?.vaultPath ?? '');
-  const [vaultType, setVaultType] = useState<VaultType>(vault?.type ?? 'local');
+  const savedOnShare = vault?.type === 'smb';
+  const [vaultType, setVaultType] = useState<SupportedVaultType>(
+    vault?.type === 'usb' ? 'usb' : 'local',
+  );
   const [retentionCount, setRetentionCount] = useState(vault?.retentionCount ?? 3);
   const [deviceSearch, setDeviceSearch] = useState('');
   const [saving, setSaving] = useState(false);
@@ -115,10 +124,9 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
     }
   }, [deviceId, deviceOptions.canSubmit, isEdit, onClose, retentionCount, t, vault?.id, vaultPath, vaultType]);
 
-  const placeholderExamples: Record<VaultType, string> = {
-    local: '/mnt/backup/vault or D:\\Backups\\Vault',
-    smb: '\\\\nas-01\\backups\\vault',
-    usb: 'E:\\BreeezeVault',
+  const placeholderExamples: Record<SupportedVaultType, string> = {
+    local: '/var/backups/breeze-vault or D:\\Backups\\Vault',
+    usb: 'E:\\BreezeVault',
   };
 
   return (
@@ -140,6 +148,12 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
         {error && (
           <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
+          </div>
+        )}
+
+        {savedOnShare && (
+          <div className="mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
+            {SMB_VAULT_UNSUPPORTED}
           </div>
         )}
 
@@ -185,7 +199,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
           {/* Vault Type */}
           <div>
             <label className="text-xs font-medium text-muted-foreground">{t('vaultConfigDialog.vaultType')}</label>
-            <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
               {typeOptions.map((opt) => {
                 const Icon = opt.icon;
                 return (

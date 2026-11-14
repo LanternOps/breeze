@@ -34,6 +34,7 @@ const QUALITY_GROUP_LABEL_KEYS: Record<QualityGroupBy, string> = {
   model: 'aiModels.quality.groupBy.model',
   surface: 'aiModels.quality.groupBy.surface',
   prompt_profile: 'aiModels.quality.groupBy.prompt_profile',
+  tool_profile: 'aiModels.quality.groupBy.tool_profile',
 };
 
 /**

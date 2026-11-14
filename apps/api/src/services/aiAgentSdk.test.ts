@@ -169,8 +169,13 @@ vi.mock('./aiAgentSdkTools', () => ({
     manage_tenant_variables: 1,
     manage_peripheral_policy: 3,
     s1_threat_action: 3,
+    // #11674: a public ticket reply's approval card names the ticket.
+    manage_tickets: 2,
   },
   BREEZE_MCP_TOOL_NAMES: [],
+  // #11395: read by the preflight only under a constrained chat tool profile.
+  listChatSurfaceToolNames: () => ['query_devices', 'get_device_details', 'set_device_context', 'execute_command'],
+  chatToolDomain: () => undefined,
 }));
 
 const mockGetUserPushTokens = vi.fn();
@@ -305,6 +310,17 @@ vi.mock('./scriptRunContextApproval', async (importOriginal) => {
   return {
     ...actual,
     resolveScriptRunContextForApproval: (...args: unknown[]) => mockResolveScriptRunContext(...args),
+  };
+});
+
+// #11674 — PARTIAL mock: only the ticket read is stubbed; the real
+// `nameApprovalCardTargets` rewrites the card headline this file asserts on.
+const mockResolveApprovalTicketContext = vi.fn();
+vi.mock('./actionIntents/approvalCardContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./actionIntents/approvalCardContext')>();
+  return {
+    ...actual,
+    resolveApprovalTicketContext: async (...args: unknown[]) => (await mockResolveApprovalTicketContext(...args)) ?? null,
   };
 });
 
@@ -593,6 +609,61 @@ describe('runPreFlightChecks', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  // --- #11395: the constrained chat prompt (Decision 7) ---
+
+  describe('tool profile prompt (#11395)', () => {
+    const minimal = { toolProfile: 'minimal', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' } as const;
+
+    it('an identity exposure keeps the stored prompt and never rebuilds it (byte-identical full path)', async () => {
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(result.ok && result.systemPrompt).toBe('existing system prompt');
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    });
+
+    it('production-shaped facts (auto, unknown window, gateway) keep the stored prompt: ships dark', async () => {
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', {
+        toolProfileFacts: { toolProfile: 'auto', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' },
+      }));
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(result.ok && result.systemPrompt).toBe('existing system prompt');
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+      // A failover to another identity offering reuses the same prompt (no rebuild).
+      if (result.ok) expect(await result.systemPromptFor!(makeResolvedModel('platform'))).toBe('existing system prompt');
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    });
+
+    it('a constrained chat exposure always rebuilds, even with a stored prompt and no page', async () => {
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { toolProfileFacts: minimal }));
+      mockBuildSystemPrompt.mockResolvedValue('compact prompt');
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(result.ok && result.systemPrompt).toBe('compact prompt');
+      const args = mockBuildSystemPrompt.mock.calls.at(-1)!;
+      expect(args[0]).toBe(auth);
+      expect(args[4]).toMatchObject({ promptMode: 'constrained', names: ['query_devices', 'get_device_details', 'set_device_context'] });
+    });
+
+    it('switching back to full restores the stored prompt (full → minimal → full)', async () => {
+      const first = await runPreFlightChecks('session-1', 'hello', auth);
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { toolProfileFacts: minimal }));
+      mockBuildSystemPrompt.mockResolvedValue('compact prompt');
+      const second = await runPreFlightChecks('session-1', 'hello', auth);
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('platform'));
+      const third = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(first.ok && second.ok && third.ok).toBe(true);
+      if (first.ok && second.ok && third.ok) {
+        expect(second.systemPrompt).not.toBe(first.systemPrompt);
+        expect(third.systemPrompt).toBe(first.systemPrompt);
+      }
+    });
+
+    it('a non-chat session (script builder) never gets the chat compact prompt', async () => {
+      mockGetSession.mockResolvedValue(makeSession({ type: 'script_builder' }));
+      mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { surface: 'script_builder', toolProfileFacts: minimal }));
+      await runPreFlightChecks('session-1', 'hello', auth);
+      expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    });
   });
 
   // --- Rate limits use session's org, not auth's org ---
@@ -1172,6 +1243,41 @@ describe('createSessionPreToolUse', () => {
         expect(input.toolName).toBe('execute_command');
         expect(input).not.toHaveProperty('externalTool');
       });
+    });
+  });
+
+  // #11674: the per-step (non-intent) Tier-2 card gets the same naming and
+  // ticket context as the intent-backed one.
+  describe('per-step Tier 2 approval card names the ticket (#11674)', () => {
+    afterEach(() => {
+      mockResolveRowTarget.mockReset();
+    });
+
+    it('publishes the ticket number and ticketContext, and files no intent', async () => {
+      const ticketId = '2aad0601-1111-4222-8333-444455556666';
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: true,
+        description: 'Post internal note on ticket #2aad0601...',
+      } as any);
+      const ticketContext = { ticketNumber: 'T-2026-0002', subject: 'Printer offline' };
+      mockResolveApprovalTicketContext.mockResolvedValue(ticketContext);
+      mockResolveRowTarget.mockResolvedValue({ orgId: 'org-1', partnerId: null });
+      mockInsertReturning({ id: 'exec-t2' });
+      mockGetUserPushTokens.mockResolvedValue([]);
+      vi.mocked(waitForApproval).mockResolvedValue(false);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      await createSessionPreToolUse(session)('manage_tickets', {
+        action: 'comment', ticketId, isPublic: false, content: 'Checked the spooler.',
+      });
+
+      const published = publishedApprovalRequired(session);
+      expect(published.description).toBe('Post internal note on ticket T-2026-0002');
+      expect(published.ticketContext).toEqual(ticketContext);
+      expect(published.intentBacked).toBeUndefined();
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
     });
   });
 
@@ -1772,6 +1878,85 @@ describe('createSessionPreToolUse', () => {
       // The old direct approval_requests bridge + push are gone — createActionIntent owns both now.
       expect(mockGetUserPushTokens).not.toHaveBeenCalled();
       expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
+    });
+
+    /**
+     * #11674 — the chat card names the ticket by its number and carries the
+     * ticket (number, subject, requester) for the card body. The intent's
+     * stored `reason` is untouched: the intent service does its own naming
+     * for the queue and the push.
+     */
+    it('names the ticket by number on the approval card and sends its context', async () => {
+      const ticketId = '2aad0601-1111-4222-8333-444455556666';
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Post PUBLIC comment on ticket #2aad0601... (customer-visible; emails the requester)',
+      } as any);
+      const ticketContext = { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow', requesterName: 'Dana', requesterEmail: 'dana@example.test' };
+      mockResolveApprovalTicketContext.mockResolvedValue(ticketContext);
+      // A ticket write names its row by id, so the row picks the intent org
+      // (#11222) — here an org in reach that is NOT the session org, so the
+      // assertion below can tell the intent org from `session.orgId`.
+      mockResolveRowTarget.mockResolvedValueOnce({ orgId: 'org-ticket', partnerId: null });
+      mockInsertReturning({ id: 'exec-t' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-t', approvalRequestIds: ['appr-t'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const reach = makeAuth({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: ['org-1', 'org-ticket'],
+        canAccessOrg: (orgId: string) => ['org-1', 'org-ticket'].includes(orgId),
+      });
+      const session = makeActiveSession({ approvalMode: 'auto_approve', auth: reach, toolAuth: reach });
+
+      await createSessionPreToolUse(session)('manage_tickets', {
+        action: 'comment', ticketId, isPublic: true, content: 'Hi Dana,\nsee you at 2pm.',
+      });
+
+      expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-ticket' });
+      // Pinned to the intent's org and cut to the call's own reach.
+      expect(mockResolveApprovalTicketContext).toHaveBeenCalledWith(ticketId, 'org-ticket', reach);
+      const published = publishedApprovalRequired(session);
+      expect(published.description).toBe('Post PUBLIC comment on ticket T-2026-0001 (customer-visible; emails the requester)');
+      expect(published.ticketContext).toEqual(ticketContext);
+      const intentArgs = mockCreateActionIntent.mock.calls[0]![1] as { reason: string };
+      expect(intentArgs.reason).toBe('Post PUBLIC comment on ticket #2aad0601... (customer-visible; emails the requester)');
+    });
+
+    it('names the device by its display name on the approval card', async () => {
+      const deviceId = '8f14580d-1111-4222-8333-444455556666';
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'List services on device 8f14580d...',
+      } as any);
+      const deviceChain: Record<string, unknown> = {
+        from: vi.fn(() => deviceChain),
+        where: vi.fn(() => deviceChain),
+        limit: vi.fn(async () => [{ hostname: 'nw-rec-01', displayName: 'NW-RECEPTION-PC', status: 'online', lastSeenAt: null }]),
+        then: (resolve: (rows: unknown[]) => unknown) => resolve([]),
+      };
+      vi.mocked(db.select).mockReturnValue(deviceChain as any);
+      mockInsertReturning({ id: 'exec-d' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-d', approvalRequestIds: ['appr-d'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId, commandType: 'list_services' });
+
+      const published = publishedApprovalRequired(session);
+      expect(published.description).toBe('List services on NW-RECEPTION-PC');
+      expect(published.ticketContext).toBeUndefined();
+      expect(mockResolveApprovalTicketContext).not.toHaveBeenCalled();
     });
 
     /**

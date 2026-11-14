@@ -29,6 +29,23 @@ describe('gateway failure notes', () => {
     expect(takeGatewayFailure('s2')).toEqual({ message: 'other', code: null });
   });
 
+  it('a refused tool batch is noted by code (W04 #11397)', () => {
+    noteGatewayFailure('s1', 'refused 1 tool call(s): foo', 'refused_tool_batch');
+    expect(takeGatewayFailure('s1')).toEqual({ message: 'refused 1 tool call(s): foo', code: 'refused_tool_batch' });
+  });
+
+  it('a refused tool batch never replaces a pending context-window refusal, which is the more specific reason', () => {
+    noteGatewayFailure('s1', 'too big', 'context_window_exceeded');
+    noteGatewayFailure('s1', 'refused 1 tool call(s): foo', 'refused_tool_batch');
+    expect(takeGatewayFailure('s1')).toEqual({ message: 'too big', code: 'context_window_exceeded' });
+  });
+
+  it('a later context-window refusal does replace a refused tool batch', () => {
+    noteGatewayFailure('s1', 'refused 1 tool call(s): foo', 'refused_tool_batch');
+    noteGatewayFailure('s1', 'too big', 'context_window_exceeded');
+    expect(takeGatewayFailure('s1')).toEqual({ message: 'too big', code: 'context_window_exceeded' });
+  });
+
   it('the latest note for a session wins', () => {
     noteGatewayFailure('s1', 'first');
     noteGatewayFailure('s1', 'second');

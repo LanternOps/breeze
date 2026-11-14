@@ -6,6 +6,7 @@ import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import { normalizeSystemUuid } from '../../services/reinstallCandidates/systemUuid';
+import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from '../../db/schema/backupConstants';
 
 // ============================================
 // Enrollment
@@ -809,6 +810,15 @@ export function parseRestorePointOutcome(raw: unknown): RestorePointOutcome | nu
   const classified = classifyRestorePointOutcome(raw);
   return classified.ok ? classified.outcome : null;
 }
+
+/**
+ * Longest command id an agent may send back. Ids the API issues are a short
+ * prefix plus a UUID; the longest agent-made id is `vault-auto-sync-` plus a
+ * snapshot id of up to BACKUP_SNAPSHOT_ID_MAX_LENGTH characters. The id becomes
+ * part of log lines, database lookups and cache keys, so a frame carrying a
+ * longer one is refused at the schema (and on the HTTP result route's path).
+ */
+export const MAX_AGENT_COMMAND_ID_LENGTH = Math.max(256, 'vault-auto-sync-'.length + BACKUP_SNAPSHOT_ID_MAX_LENGTH);
 
 export const commandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'timeout']),

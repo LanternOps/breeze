@@ -99,7 +99,7 @@ export const endpointMessageDeliveries = pgTable('endpoint_message_deliveries', 
   endpointMessageId: uuid('endpoint_message_id'),
   orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   deviceId: uuid('device_id').notNull(),
-  /** device_commands.id of the notify_user command; no FK (commands are system-scoped and pruned). */
+  /** device_commands.id of the notify_user command; no FK (commands are system-scoped and pruned by jobs/deviceCommandRetention.ts). */
   commandId: uuid('command_id'),
   status: text('status').$type<EndpointMessageDeliveryStatus>().notNull(),
   surface: text('surface'),

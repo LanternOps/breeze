@@ -44,6 +44,7 @@ import {
   s3EndpointOriginChanged,
 } from './backupProviderConfigSecrets';
 import { findCiphertextShapedValue } from './backupProviderConfigSealing';
+import { localDestinationTargetError } from './localStoreTargets';
 import {
   resolvePeripheralPolicyDeviceIds,
   schedulePeripheralPolicyDevices,
@@ -1085,6 +1086,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (!input.providerConfig) return JSON.stringify({ error: 'providerConfig is required (provider-specific settings)' });
 
         let providerConfig = input.providerConfig as Record<string, unknown>;
+        const createTargetError = localDestinationTargetError(input.provider, providerConfig);
+        if (createTargetError) return JSON.stringify({ error: createTargetError });
         if (input.provider === 's3') {
           const resolved = resolveS3ProviderConfig(providerConfig);
           if ('error' in resolved) return JSON.stringify({ error: resolved.error });
@@ -1199,6 +1202,13 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
 
         const destinationChanged = updates.provider !== undefined || updates.providerConfig !== undefined;
+        if (destinationChanged) {
+          const updateTargetError = localDestinationTargetError(
+            (updates.provider as string | undefined) ?? existing.provider,
+            updates.providerConfig ?? existing.providerConfig,
+          );
+          if (updateTargetError) return JSON.stringify({ error: updateTargetError });
+        }
         const { recordCredentialChange } = destinationChanged
           ? await import('./backupStorageCredentialHistory')
           : { recordCredentialChange: null };

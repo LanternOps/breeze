@@ -6,6 +6,7 @@ import { db } from '../../db';
 import { devices, devicePatches, organizations, patches, thirdPartyPackageCatalog } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import { normalizeSiteAllowlist } from '../../services/siteAllowlist';
 import { APP_RULE_SOURCES, canonicalAppRuleKey, linuxPackageName } from '@breeze/shared';
 
 // The patch sources an app rule can target (#9370 added 'linux').
@@ -61,11 +62,21 @@ appOptionsRoutes.get(
       sql`${patches.packageId} IS NOT NULL`,
     ];
 
+    // Organization RLS does not cover sites: a site-restricted user sees only
+    // packages observed on devices currently in one of their sites (none when
+    // the allowlist is empty). Partner and system scope carry no site limit.
+    const allowedSites = auth.scope === 'organization'
+      ? normalizeSiteAllowlist(auth.allowedSiteIds)
+      : undefined;
+    const observedSiteCondition = allowedSites === undefined
+      ? sql`true`
+      : allowedSites.length === 0 ? sql`false` : inArray(sql`d.site_id`, [...allowedSites]);
+
     if (orgId) {
       observedConditions.push(sql`EXISTS (
         SELECT 1 FROM ${devicePatches} dp
         INNER JOIN ${devices} d ON d.id = dp.device_id
-        WHERE dp.patch_id = ${patches.id} AND d.org_id = ${orgId}
+        WHERE dp.patch_id = ${patches.id} AND d.org_id = ${orgId} AND ${observedSiteCondition}
       )`);
     } else if (auth.scope === 'organization') {
       if (!auth.orgId) {
@@ -74,7 +85,7 @@ appOptionsRoutes.get(
       observedConditions.push(sql`EXISTS (
         SELECT 1 FROM ${devicePatches} dp
         INNER JOIN ${devices} d ON d.id = dp.device_id
-        WHERE dp.patch_id = ${patches.id} AND d.org_id = ${auth.orgId}
+        WHERE dp.patch_id = ${patches.id} AND d.org_id = ${auth.orgId} AND ${observedSiteCondition}
       )`);
     } else if (auth.scope === 'partner') {
       if (!auth.partnerId) {

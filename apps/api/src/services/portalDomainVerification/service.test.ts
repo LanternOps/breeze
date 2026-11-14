@@ -13,7 +13,11 @@ vi.mock('../email', () => ({ getEmailService: () => null }));
 vi.mock('./checkers/entraTenant', () => ({ entraTenantChecker: { method: 'entra_tenant', check: vi.fn() } }));
 vi.mock('./checkers/googleDirectory', () => ({ googleDirectoryChecker: { method: 'google_directory', check: vi.fn() } }));
 
-import { isVerificationCurrent, toCustomerDomainView, type CustomerDomainRow } from './service';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { customerEmailDomains } from '../../db/schema';
+import { isVerificationCurrent, lockVerifiedDomainRow, toCustomerDomainView, type CustomerDomainRow } from './service';
+import * as publicApi from './index';
 import { googleConnectionBinding } from './checkers/googleBinding';
 
 /**
@@ -120,6 +124,49 @@ describe('toCustomerDomainView', () => {
     expect(Object.keys(v)).not.toContain('checkFailures');
     expect(JSON.stringify(v)).not.toContain(CONN);
     expect(JSON.stringify(v)).not.toContain(BINDING);
+  });
+});
+
+describe('lockVerifiedDomainRow (W7 D8 / D15 fence)', () => {
+  const VERIFIED_AT = new Date('2027-01-02T00:00:00Z');
+
+  /** A Drizzle-shaped executor that records one select chain and answers with `rows`. */
+  function fakeTx(rows: unknown[]) {
+    const seen = { from: undefined as unknown, where: undefined as unknown, lockStrength: undefined as unknown, limit: undefined as unknown };
+    const chain: Record<string, unknown> = {
+      from: (t: unknown) => { seen.from = t; return chain; },
+      where: (w: unknown) => { seen.where = w; return chain; },
+      limit: (n: unknown) => { seen.limit = n; return chain; },
+      for: (strength: unknown) => { seen.lockStrength = strength; return chain; },
+      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => Promise.resolve(rows).then(resolve, reject),
+    };
+    return { tx: { select: () => chain } as never, seen };
+  }
+
+  it('FOR SHARE on the org\'s active row for the domain with exactly the verified_at the caller observed', async () => {
+    const { tx, seen } = fakeTx([{ id: 'row-1' }]);
+    await expect(lockVerifiedDomainRow(tx, { orgId: 'o-1', domain: ' Contoso.COM ', verifiedAt: VERIFIED_AT })).resolves.toBe(true);
+    expect(seen.from).toBe(customerEmailDomains);
+    expect(seen.lockStrength).toBe('share');
+    expect(seen.limit).toBe(1);
+    const where = new PgDialect().sqlToQuery(seen.where as SQL);
+    expect(where.sql).toContain('"customer_email_domains"."org_id" = $');
+    expect(where.sql).toMatch(/lower\("customer_email_domains"\."domain"\) = \$\d/);
+    // Millisecond precision: the fact's verifiedAt came through a JS Date.
+    expect(where.sql).toMatch(/date_trunc\('milliseconds', "customer_email_domains"\."verified_at"\) = \$\d+::timestamptz/);
+    expect(where.sql).toContain('"customer_email_domains"."is_active" = $');
+    expect(where.params).toEqual(expect.arrayContaining(['o-1', 'contoso.com', true]));
+    expect(where.params).toContainEqual(VERIFIED_AT.toISOString());
+  });
+
+  it('false when no such row (lapsed, removed, displaced, repointed, deactivated, re-verified since)', async () => {
+    const { tx } = fakeTx([]);
+    await expect(lockVerifiedDomainRow(tx, { orgId: 'o-1', domain: 'contoso.com', verifiedAt: VERIFIED_AT })).resolves.toBe(false);
+  });
+
+  it('is part of the module\'s public API', () => {
+    expect(typeof lockVerifiedDomainRow).toBe('function');
+    expect(publicApi.lockVerifiedDomainRow).toBe(lockVerifiedDomainRow);
   });
 });
 

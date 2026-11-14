@@ -44,6 +44,7 @@ import { setResidencyRequired } from '../../services/aiModels/residency';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
 import { disconnectAnthropicConnection } from '../../services/aiModels/connectionRemap';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
+import { breezeToolProfileCatalog } from '../../services/aiModels/toolProfileCatalog';
 import { queryAiUsageBreakdown } from '../../services/aiModels/usageQueries';
 import { assignUserToOrganization, assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
 import {
@@ -574,7 +575,7 @@ describe.skipIf(!RUN)('partner snapshot sees org-level rows (#7602 W04)', () => 
     // Partner B's org override must not be counted.
     await seedOrgOverride(w.orgB, w.pB, 'extension_content', w.offB);
 
-    const snap = await asPartner(w.pA, [w.orgA, orgA2], () => buildPartnerModelsSnapshot(w.pA));
+    const snap = await asPartner(w.pA, [w.orgA, orgA2], () => buildPartnerModelsSnapshot(w.pA, breezeToolProfileCatalog()));
     const ext = snap.defaults.find((d) => d.surface === 'extension_content')!;
     expect(ext.partner?.defaultOfferingId).toBe(w.offA);
     expect(ext.orgOverrideCount).toBe(2);
@@ -749,7 +750,7 @@ describe.skipIf(!RUN)('a W03 soft-disconnected connection (#7602 W04 × #7601)',
 
   it('the snapshot lists neither the connection nor its offerings (platform offerings still listed)', async () => {
     const w = await seedDisconnected();
-    const snap = await asPartner(w.pA, [w.orgA], () => buildPartnerModelsSnapshot(w.pA));
+    const snap = await asPartner(w.pA, [w.orgA], () => buildPartnerModelsSnapshot(w.pA, breezeToolProfileCatalog()));
     expect(snap.connections.map((c) => c.id)).not.toContain(w.conn);
     expect(snap.offerings.filter((o) => o.id === w.offConn || o.connectionId === w.conn)).toEqual([]);
     expect(snap.offerings.map((o) => o.id)).toEqual(expect.arrayContaining([w.offA, w.offA2]));

@@ -15,11 +15,37 @@ vi.mock('../db/schema', () => ({
   organizations: { id: 'id', partnerId: 'partner_id' },
   organizationUsers: { userId: 'user_id', orgId: 'org_id', roleId: 'role_id' },
   partnerUsers: { userId: 'user_id', partnerId: 'partner_id', roleId: 'role_id', orgAccess: 'org_access', orgIds: 'org_ids' },
+  roles: { id: 'id', parentRoleId: 'parent_role_id' },
   rolePermissions: { roleId: 'role_id', permissionId: 'permission_id' },
   permissions: { id: 'id', resource: 'resource', action: 'action' },
   users: { id: 'id', status: 'status' },
 }));
 
+// getRoleIdsHoldingPermission is the resolver's direct-grantor read (the
+// queued select below, so its compiled WHERE stays asserted) followed by
+// expandToInheritingRoleIds, mocked here to control the inheriting roles.
+vi.mock('./roleInheritance', async () => {
+  const { db: mockedDb } = await import('../db');
+  const { and, eq, inArray } = await import('drizzle-orm');
+  const schema = await import('../db/schema');
+  const expandToInheritingRoleIds = vi.fn(async (ids: string[]) => ids);
+  return {
+    expandToInheritingRoleIds,
+    getRoleIdsHoldingPermission: async (permission: { resource: string; action: string }) => {
+      const rows = (await mockedDb
+        .select({ roleId: schema.rolePermissions.roleId })
+        .from(schema.rolePermissions)
+        .innerJoin(schema.permissions, eq(schema.rolePermissions.permissionId, schema.permissions.id))
+        .where(and(
+          inArray(schema.permissions.resource, [permission.resource, '*']),
+          inArray(schema.permissions.action, [permission.action, '*']),
+        ))) as Array<{ roleId: string }>;
+      return expandToInheritingRoleIds([...new Set(rows.map((r) => r.roleId))]);
+    },
+  };
+});
+
+import { expandToInheritingRoleIds } from './roleInheritance';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolvePartnerUsersWithPermission, resolveUsersWithPermissionForOrg } from './usersWithPermission';
 
@@ -52,10 +78,16 @@ function mockOrg(row: { partnerId: string | null }) {
   } as any);
 }
 
+let orgMemberWhereArgs: unknown[] = [];
+
 function mockOrgMembers(rows: Array<{ userId: string }>) {
+  const where = vi.fn().mockImplementation((arg: unknown) => {
+    orgMemberWhereArgs.push(arg);
+    return Promise.resolve(rows);
+  });
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+      innerJoin: vi.fn().mockReturnValue({ where }),
     }),
   } as any);
 }
@@ -89,6 +121,32 @@ describe('resolveUsersWithPermissionForOrg', () => {
     vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
     roleWhereArgs = [];
     partnerWhereArgs = [];
+    orgMemberWhereArgs = [];
+    vi.mocked(expandToInheritingRoleIds).mockImplementation(async (ids: string[]) => ids);
+  });
+
+  // #11702: a member whose role grants the permission only by inheriting it
+  // from a parent is a holder too. The direct-grantor seed is expanded to the
+  // inheriting roles before the membership reads.
+  it('lists a member whose role holds the grant only through inheritance (#11702)', async () => {
+    mockGrantingRoles([{ roleId: 'r-parent' }]);
+    vi.mocked(expandToInheritingRoleIds).mockResolvedValueOnce(['r-parent', 'r-child']);
+    mockOrg({ partnerId: null });
+    mockOrgMembers([{ userId: 'u-child' }]);
+    await expect(resolveUsersWithPermissionForOrg('org1', PERMISSIONS.BILLING_MANAGE)).resolves.toEqual(['u-child']);
+    expect(expandToInheritingRoleIds).toHaveBeenCalledWith(['r-parent']);
+    const { params } = dialect.sqlToQuery(orgMemberWhereArgs[0] as never);
+    expect(params).toContain('r-child');
+  });
+
+  it('does not widen the membership read when no role inherits the grant', async () => {
+    mockGrantingRoles([{ roleId: 'r-parent' }]);
+    mockOrg({ partnerId: null });
+    mockOrgMembers([]);
+    await expect(resolveUsersWithPermissionForOrg('org1', PERMISSIONS.BILLING_MANAGE)).resolves.toEqual([]);
+    const { params } = dialect.sqlToQuery(orgMemberWhereArgs[0] as never);
+    expect(params).toContain('r-parent');
+    expect(params).not.toContain('r-child');
   });
 
   it('matches wildcard grants (*:*) for billing:manage', async () => {
@@ -159,6 +217,16 @@ describe('resolvePartnerUsersWithPermission', () => {
     vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
     roleWhereArgs = [];
     partnerWhereArgs = [];
+    vi.mocked(expandToInheritingRoleIds).mockImplementation(async (ids: string[]) => ids);
+  });
+
+  it('partner users with an inherited-only role are listed (#11702)', async () => {
+    mockGrantingRoles([{ roleId: 'r-parent' }]);
+    vi.mocked(expandToInheritingRoleIds).mockResolvedValueOnce(['r-parent', 'r-child']);
+    mockPartnerMembers([{ userId: 'u-child', orgAccess: 'all', orgIds: null }]);
+    await expect(resolvePartnerUsersWithPermission('P', PERM)).resolves.toEqual(['u-child']);
+    const { params } = dialect.sqlToQuery(partnerWhereArgs[0] as never);
+    expect(params).toContain('r-child');
   });
 
   it('partner-wide: only orgAccess=all partner users', async () => {

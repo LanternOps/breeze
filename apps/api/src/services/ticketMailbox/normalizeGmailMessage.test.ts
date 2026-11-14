@@ -63,7 +63,16 @@ function b64url(s: string): string {
 const SUB = '104729382910';
 const MAILBOX = 'help@example.com';
 
-function baseMessage(headers: gmail_v1.Schema$MessagePartHeader[], parts?: gmail_v1.Schema$MessagePart[]): gmail_v1.Schema$Message {
+// Gmail adds Return-Path at delivery; the fixture does too unless a test sets its own
+// or asks for none.
+function baseMessage(
+  headers: gmail_v1.Schema$MessagePartHeader[],
+  parts?: gmail_v1.Schema$MessagePart[],
+  opts: { noReturnPath?: boolean } = {},
+): gmail_v1.Schema$Message {
+  if (!opts.noReturnPath && !headers.some((h) => (h.name ?? '').toLowerCase() === 'return-path')) {
+    headers = [{ name: 'Return-Path', value: '<cust@x.com>' }, ...headers];
+  }
   return {
     id: 'gmsg-1',
     threadId: 'gthread-1',
@@ -160,7 +169,102 @@ describe('normalizeGmailMessage', () => {
       { name: 'Authentication-Results', value: GOOGLE_AR },
     ]);
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
-    expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true });
+    expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: 'x.com' });
+  });
+
+  it('records no authenticated domain when Google\'s DMARC pass names another header.from', () => {
+    const msg = baseMessage([
+      { name: 'From', value: 'cust@x.com' },
+      { name: 'Authentication-Results', value: 'mx.google.com; dmarc=pass (p=REJECT) header.from=other.example' },
+    ]);
+    expect(normalizeGmailMessage(msg, 'p', MAILBOX, SUB).senderAuth?.authenticatedDomain).toBeNull();
+  });
+
+  it('reads no stamp when the Return-Path cannot be read unambiguously', () => {
+    const msg = baseMessage([
+      { name: 'Return-Path', value: '<"a)b"@x.com>' },
+      { name: 'From', value: 'cust@x.com' },
+      { name: 'Authentication-Results', value: 'mx.google.com; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=x.com' },
+    ]);
+    const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
+    expect(n.senderAuth?.verified).toBe(false);
+    expect(n.senderAuthConsulted).toBe('envelope sender cannot be read unambiguously');
+  });
+
+  it('reads no stamp when Gmail added no Return-Path', () => {
+    const msg = baseMessage([
+      { name: 'From', value: 'cust@x.com' },
+      { name: 'Authentication-Results', value: 'mx.google.com; dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=x.com' },
+    ], undefined, { noReturnPath: true });
+    const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
+    expect(n.senderAuth?.verified).toBe(false);
+    expect(n.senderAuthConsulted).toBe('envelope sender cannot be read unambiguously');
+  });
+
+  it('V1: reads no stamp when a DKIM-Signature identity cannot be read unambiguously', () => {
+    const msg = baseMessage([
+      { name: 'From', value: 'ceo@customer.example' },
+      { name: 'Authentication-Results', value: 'mx.google.com; dkim=pass header.i=a;dmarc=pass header.from=customer.example;x=y p.q=r@other.example header.s=s1 header.b=AbC; '
+        + 'spf=pass (google.com: domain of b@other.example designates 192.0.2.1 as permitted sender) smtp.mailfrom=b@other.example' },
+      { name: 'DKIM-Signature', value: 'v=1; a=rsa-sha256; d=other.example; s=s1; i=a=3Bdmarc=3Dpass=20header.from=3Dcustomer.example=3Bx=3Dy=20p.q=3Dr@other.example; bh=x; b=y' },
+    ]);
+    const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
+    expect(n.senderAuth?.verified).toBe(false);
+    expect(n.senderAuthConsulted).toBe('signature identity cannot be read unambiguously');
+  });
+
+  it('verifies a stamp in Google\'s usual format', () => {
+    const msg = baseMessage([
+      { name: 'From', value: 'Cust <cust@x.com>' },
+      { name: 'Authentication-Results', value: 'mx.google.com; dkim=pass header.i=@x.com header.s=20230601 header.b=AbC; '
+        + 'spf=pass (google.com: domain of cust@x.com designates 209.85.220.41 as permitted sender) smtp.mailfrom=cust@x.com; '
+        + 'dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=x.com' },
+    ]);
+    expect(normalizeGmailMessage(msg, 'p', MAILBOX, SUB).senderAuth).toMatchObject({ verified: true, authenticatedDomain: 'x.com' });
+  });
+
+  it('is not verified when the envelope sender in Google\'s spf comment holds ) ; ( " and dmarc=pass', () => {
+    const local = '"a)smtp.mailfrom=b; dmarc=pass header.from=x.com; (c"';
+    const msg = baseMessage([
+      { name: 'From', value: 'cust@x.com' },
+      { name: 'Authentication-Results', value: `mx.google.com; spf=pass (google.com: domain of ${local}@other.test designates 192.0.2.7 as permitted sender) `
+        + `smtp.mailfrom=${local}@other.test; dmarc=fail (p=REJECT sp=REJECT dis=REJECT) header.from=x.com` },
+    ]);
+    expect(normalizeGmailMessage(msg, 'p', MAILBOX, SUB).senderAuth?.verified).toBe(false);
+  });
+
+  it('does not read a dmarc=pass clause opened inside a quoted smtp.mailfrom', () => {
+    const msg = baseMessage([
+      { name: 'From', value: 'cust@x.com' },
+      { name: 'Authentication-Results', value: 'mx.google.com; spf=pass smtp.mailfrom="a; dmarc=pass header.from=x.com; ("@other.test; dmarc=fail (p=REJECT) header.from=x.com' },
+    ]);
+    expect(normalizeGmailMessage(msg, 'p', MAILBOX, SUB).senderAuth?.verified).toBe(false);
+  });
+
+  it('records no authenticated domain for two From headers on the same domain', () => {
+    const msg = baseMessage([
+      { name: 'From', value: 'cust@x.com' },
+      { name: 'From', value: 'Cust <cust@x.com>' },
+      { name: 'Authentication-Results', value: GOOGLE_AR },
+    ]);
+    expect(normalizeGmailMessage(msg, 'p', MAILBOX, SUB).senderAuth?.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain when the message has two From headers', () => {
+    const msg = baseMessage([
+      { name: 'From', value: 'cust@x.com' },
+      { name: 'From', value: 'other@y.example' },
+      { name: 'Authentication-Results', value: GOOGLE_AR },
+    ]);
+    expect(normalizeGmailMessage(msg, 'p', MAILBOX, SUB).senderAuth?.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain when From holds more than one mailbox', () => {
+    const msg = baseMessage([
+      { name: 'From', value: 'cust@x.com, other@y.example' },
+      { name: 'Authentication-Results', value: GOOGLE_AR },
+    ]);
+    expect(normalizeGmailMessage(msg, 'p', MAILBOX, SUB).senderAuth?.authenticatedDomain).toBeNull();
   });
 
   it('IGNORES a sender-injected Authentication-Results with a foreign authserv-id (fail closed)', () => {
@@ -262,7 +366,7 @@ describe('normalizeGmailMessage', () => {
       { name: 'Authentication-Results', value: 'mx.google.com; spf=fail (explanation; dmarc=pass); dmarc=fail' },
     ]);
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
-    expect(n.senderAuth?.dmarc).toBe('fail');
+    expect(n.senderAuth?.dmarc).not.toBe('pass');
     expect(n.senderAuth?.verified).toBe(false);
   });
 
@@ -274,7 +378,7 @@ describe('normalizeGmailMessage', () => {
       { name: 'Authentication-Results', value: 'mx.google.com; spf=fail (explanation \\); dmarc=pass); dmarc=fail' },
     ]);
     const n = normalizeGmailMessage(msg, 'p', MAILBOX, SUB);
-    expect(n.senderAuth?.dmarc).toBe('fail');
+    expect(n.senderAuth?.dmarc).not.toBe('pass');
     expect(n.senderAuth?.verified).toBe(false);
   });
 

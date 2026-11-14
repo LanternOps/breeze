@@ -31,6 +31,8 @@ export type ToolSearchReason =
   | 'first_party_host'
   | 'operator_forced'
   | 'surface_static'
+  /** #11393: a constrained tool profile registers a small static set; nothing to defer. */
+  | 'profile_static'
   | 'operator_off'
   | 'low_turn_budget'
   | 'non_first_party_host';
@@ -77,9 +79,12 @@ export function resolveToolSearchPolicy(input: {
   /** SDK `maxTurns` this query() will run with. */
   remainingTurns: number;
   override?: ToolSearchOverride;
+  /** #11393: the tool exposure's `toolSearchAllowed`; false under a constrained profile. Absent = allowed. */
+  profileSearch?: boolean;
 }): ToolSearchPolicy {
   const override = input.override ?? toolSearchOverride();
   if (!input.surfaceSearch) return policy(false, 'surface_static');
+  if (input.profileSearch === false) return policy(false, 'profile_static');
   if (override === 'off') return policy(false, 'operator_off');
   if (input.remainingTurns < TOOL_SEARCH_MIN_REMAINING_TURNS) return policy(false, 'low_turn_budget');
   if (isFirstPartyHost(input.childEnv)) return policy(true, 'first_party_host');

@@ -64,7 +64,7 @@ func validateOSState(_ context.Context, r *run) error {
 			return fmt.Errorf("check ESP file %s: %w", rel, err)
 		}
 	}
-	h, err := r.opts.WinSystem.LoadHiveReadOnly(filepath.Join(r.espVolume, "EFI", "Microsoft", "Boot", "BCD"), hiveMountName(r, "BCD"))
+	h, err := r.loadTreeHive(r.opts.WinSystem.LoadHiveReadOnly, r.espVolume, filepath.Join("EFI", "Microsoft", "Boot", "BCD"), hiveMountName(r, "BCD"))
 	if err != nil {
 		return fmt.Errorf("load BCD store: %w", err)
 	}

@@ -87,6 +87,7 @@ import { extractRowCount } from '../db/rowCount';
 import { aiDataPolicies, organizations, type AiDataPolicyRow } from '../db/schema';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { mergeAiDataPolicies } from '../services/aiDataPolicy';
+import { LIVE_SESSION_MAX_DEFER_MS, LIVE_SESSION_QUIET_MS } from '../services/aiTranscriptRetentionPredicates';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureMessage } from '../services/sentry';
@@ -104,10 +105,8 @@ export function tombstone(at: Date): AiToolOutputTombstone {
   return { _retention: AI_TOOL_OUTPUT_SCRUBBED, at: at.toISOString() };
 }
 
-/** Longer than the 2 h in-memory idle eviction, with margin for the eviction tick. See the header. */
-export const LIVE_SESSION_QUIET_MS = 3 * 60 * 60 * 1000;
-/** How far past the window a live session's rows may be deferred before they are scrubbed regardless. */
-export const LIVE_SESSION_MAX_DEFER_MS = 24 * 60 * 60 * 1000;
+// The live-session rule is shared with transcript retention (#4342 W4); see the header.
+export { LIVE_SESSION_MAX_DEFER_MS, LIVE_SESSION_QUIET_MS };
 
 const DEFAULT_BATCH_SIZE = 1000;
 const DEFAULT_MAX_BATCHES = 50;

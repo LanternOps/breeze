@@ -400,13 +400,18 @@ quoteLifecycleRoutes.delete('/:id/schedule-send', scopes, sendPerm, zValidator('
 
 // POST /:id/images — multipart file upload OR JSON {url} to copy a remote image
 // (magic-byte sniff + 5 MB cap either way). quotes:write.
+//
+// The route owns its DB context (SELF_MANAGED_DB_CONTEXT_ROUTES): the access
+// read and the image write each run in a short caller-scoped context, and a
+// URL copy downloads between them with no transaction held.
 quoteLifecycleRoutes.post('/:id/images',
   scopes, writePerm, zValidator('param', idParam),
   bodyLimit({ maxSize: MAX_QUOTE_IMAGE_SIZE_BYTES + 64 * 1024, onError: (c) => c.json({ error: 'Image too large (max 5 MB)' }, 413) }),
   async (c) => {
     const id = c.req.valid('param').id;
+    const auth = c.get('auth') as AuthContext;
     try {
-      const { quote } = await getQuote(id, quoteActorFrom(c)); // org-access 404
+      const { quote } = await withAuthDbAccessContext(auth, () => getQuote(id, quoteActorFrom(c))); // org-access 404
 
       // JSON body → copy the image from a URL (server-side, not a hotlink).
       // Multipart (below) is unchanged.
@@ -422,7 +427,7 @@ quoteLifecycleRoutes.post('/:id/images',
           if (err instanceof RemoteImageError) return c.json({ error: err.message }, remoteImageStatus(err.reason));
           throw err;
         }
-        const written = await writeQuoteImage(id, quote.orgId, fetched.mime, fetched.buffer);
+        const written = await withAuthDbAccessContext(auth, () => writeQuoteImage(id, quote.orgId, fetched.mime, fetched.buffer));
         return c.json({ data: { imageId: written.id, mime: fetched.mime, byteSize: written.byteSize } });
       }
 
@@ -436,7 +441,7 @@ quoteLifecycleRoutes.post('/:id/images',
       const mime = sniffImageMime(buffer);
       if (!mime) return c.json({ error: 'Unsupported image format. Allowed: PNG, JPEG.' }, 415);
       if (mime === 'image/webp') return c.json({ error: QUOTE_IMAGE_WEBP_REJECTED_MESSAGE }, 415);
-      const written = await writeQuoteImage(id, quote.orgId, mime, buffer);
+      const written = await withAuthDbAccessContext(auth, () => writeQuoteImage(id, quote.orgId, mime, buffer));
       return c.json({ data: { imageId: written.id, mime, byteSize: written.byteSize } });
     } catch (err) { return handleServiceError(c, err); }
   });

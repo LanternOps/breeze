@@ -293,6 +293,14 @@ export async function loadSnapshotIdClaims(
 
 // ── Storage reclaim (jobs/backupRetention.ts, system context) ──────────────
 
+export type ReclaimableReservation = {
+  snapshotId: string;
+  orgId: string;
+  configId: string | null;
+  storageIdentity: string;
+  root: SnapshotKeyRoot | null;
+};
+
 /**
  * What storage reclaim must leave alone this run, across EVERY organization
  * (the id is the owner key, not the destination): server-issued ids still
@@ -313,11 +321,13 @@ export async function loadReservationGcState(
    * `root` is the key root the id's objects were written under (#7081), null
    * when unreadable — storage reclaim then never proves the prefix gone.
    */
-  reclaimable: Array<{ snapshotId: string; storageIdentity: string; root: SnapshotKeyRoot | null }>;
+  reclaimable: Array<ReclaimableReservation>;
 }> {
   const rows = await db
     .select({
       snapshotId: backupSnapshotIdReservations.snapshotId,
+      orgId: backupSnapshotIdReservations.orgId,
+      configId: backupSnapshotIdReservations.configId,
       state: backupSnapshotIdReservations.state,
       storageIdentity: backupSnapshotIdReservations.storageIdentity,
       updatedAt: backupSnapshotIdReservations.updatedAt,
@@ -330,13 +340,15 @@ export async function loadReservationGcState(
       inArray(backupSnapshotIdReservations.state, ['reserved', 'sealing', 'abandoned']),
     ));
   const protectedIds = new Set<string>();
-  const reclaimable: Array<{ snapshotId: string; storageIdentity: string; root: SnapshotKeyRoot | null }> = [];
+  const reclaimable: Array<ReclaimableReservation> = [];
   for (const row of rows) {
     if (row.state !== 'abandoned' || nowMs - row.updatedAt.getTime() < abandonedGraceMs) {
       protectedIds.add(row.snapshotId);
     } else if (row.storageIdentity) {
       reclaimable.push({
         snapshotId: row.snapshotId,
+        orgId: row.orgId,
+        configId: row.configId,
         storageIdentity: row.storageIdentity,
         root: snapshotKeyRootOf({ keyLayout: row.keyLayout, keyPrefix: row.keyPrefix }),
       });

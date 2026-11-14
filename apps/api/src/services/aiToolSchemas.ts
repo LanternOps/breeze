@@ -63,6 +63,7 @@ import { SPECIALIST_KINDS, type SpecialistKind } from './wisp/specialistPolicy';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
+import { localDestinationTargetError } from './localStoreTargets';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
 import { messagingToolSchemas } from './aiToolSchemasMessaging';
@@ -2639,6 +2640,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     isActive: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
     orgId: uuid.optional(),
+  }).superRefine((data, ctx) => {
+    // Network share local destinations are not supported; the handler
+    // repeats this against the merged settings on update.
+    // providerConfig is optional here (an update may change only other
+    // fields); the handler checks the merged settings.
+    const targetError = data.providerConfig === undefined
+      ? null
+      : localDestinationTargetError(data.provider, data.providerConfig);
+    if (targetError) ctx.addIssue({ code: 'custom', message: targetError, path: ['providerConfig', 'path'] });
   }),
 
   manage_scheduled_tasks: z.object({

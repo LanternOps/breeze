@@ -150,31 +150,23 @@ describe('pickers', () => {
     });
   });
 
-  it('never requests Photo Library permission on iOS — the picker (PHPickerViewController) needs none', async () => {
-    launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: null });
+  it.each(['ios', 'android'] as const)(
+    'never requests a media-library permission on %s — the system photo picker needs none',
+    async (os) => {
+      // iOS: PHPickerViewController runs out of process. Android:
+      // expo-image-picker launches PickVisualMedia (the system Photo Picker,
+      // backported to API 19+ via Play services) with no permission check, and
+      // the Play build blocks READ_EXTERNAL_STORAGE — so a request there would
+      // come back denied on API 24-32 and the picker would never open.
+      platform.OS = os;
+      launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: null });
 
-    await pickFromLibrary(5);
+      await pickFromLibrary(5);
 
-    expect(requestMediaLibraryPermissionsAsync).not.toHaveBeenCalled();
-    expect(launchImageLibraryAsync).toHaveBeenCalled();
-  });
-
-  it('still requests Photo Library permission on Android', async () => {
-    platform.OS = 'android';
-    launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: null });
-
-    await pickFromLibrary(5);
-
-    expect(requestMediaLibraryPermissionsAsync).toHaveBeenCalled();
-  });
-
-  it('reports a denied Android library permission distinctly from a cancel, without ever opening the picker', async () => {
-    platform.OS = 'android';
-    requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: false });
-
-    await expect(pickFromLibrary(5)).resolves.toEqual({ ok: false, reason: 'permission-denied' });
-    expect(launchImageLibraryAsync).not.toHaveBeenCalled();
-  });
+      expect(requestMediaLibraryPermissionsAsync).not.toHaveBeenCalled();
+      expect(launchImageLibraryAsync).toHaveBeenCalled();
+    }
+  );
 
   it('reports a denied camera permission distinctly from a cancel', async () => {
     requestCameraPermissionsAsync.mockResolvedValue({ granted: false });

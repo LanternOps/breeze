@@ -10,6 +10,7 @@ const {
   writeRouteAuditMock,
   getOrgPolicyMock,
   txEvents,
+  testAuth,
 } = vi.hoisted(() => ({
   dbSelectMock: vi.fn(),
   dbInsertMock: vi.fn(),
@@ -19,6 +20,8 @@ const {
   getOrgPolicyMock: vi.fn(),
   /** Savepoint boundaries, recorded beside the statements a test cares about. */
   txEvents: [] as string[],
+  /** Org-scope caller overrides; `null` keeps the default partner-scope caller. */
+  testAuth: { ceiling: null as null | { allowedSiteIds?: string[]; allowedDeviceIds?: string[] } },
 }));
 
 // Accessible org for the partner-scoped test auth context. Literal because
@@ -28,17 +31,29 @@ vi.mock('../../middleware/auth', () => ({
     if (!c.req.header('authorization')) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
-    c.set('auth', {
-      scope: 'partner',
-      partnerId: 'f0f0f0f0-1111-4222-8333-444455556666',
-      orgId: null,
-      accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
-      user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
-    });
+    c.set('auth', testAuth.ceiling === null
+      ? {
+        scope: 'partner',
+        partnerId: 'f0f0f0f0-1111-4222-8333-444455556666',
+        orgId: null,
+        accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
+        user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
+      }
+      : {
+        scope: 'organization',
+        partnerId: 'f0f0f0f0-1111-4222-8333-444455556666',
+        orgId: '0c0c0c0c-1111-4222-8333-444455556666',
+        accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
+        user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
+        ...testAuth.ceiling,
+      });
     return next();
   }),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
-  requireMfa: vi.fn(() => (c: any, next: any) => next()),
+  // A request carrying `x-test-mfa: missing` stands in for a session without MFA.
+  requireMfa: vi.fn(() => (c: any, next: any) => (
+    c.req.header('x-test-mfa') === 'missing' ? c.json({ error: 'MFA required' }, 403) : next()
+  )),
 }));
 
 vi.mock('../../config/env', () => ({
@@ -98,6 +113,7 @@ const AUTHED = { Authorization: 'Bearer token', 'Content-Type': 'application/jso
 beforeEach(() => {
   vi.clearAllMocks();
   txEvents.length = 0;
+  testAuth.ceiling = null;
   dbExecuteMock.mockImplementation(async () => []);
   dbSelectMock.mockImplementation(() => selectChain([MAPPING_ROW]));
   dbInsertMock.mockImplementation(() => ({
@@ -392,5 +408,93 @@ describe('client-ai admin — policy', () => {
       headers: AUTHED,
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('client-ai admin — transcript retention preview (#4342 W4)', () => {
+  const dialect = new PgDialect();
+  const previewUrl = (orgId: string, qs: string) =>
+    `/client-ai/admin/orgs/${orgId}/policy/transcript-retention-preview${qs}`;
+
+  it.each([
+    ['days=0', '?days=0'],
+    ['days=abc', '?days=abc'],
+    ['missing days', ''],
+    ['days above 3650', '?days=3651'],
+    ['fractional days', '?days=1.5'],
+  ])('400s %s and counts nothing', async (_n, qs) => {
+    const res = await buildApp().request(previewUrl(ORG_ID, qs), { headers: AUTHED });
+    expect(res.status).toBe(400);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it("counts the org's client sessions at window N, with enforced:false", async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ n: 4 }]);
+    const res = await buildApp().request(previewUrl(ORG_ID, '?days=30'), { headers: AUTHED });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: 4, capped: false, enforced: false });
+    expect(dbExecuteMock).toHaveBeenCalledTimes(1);
+    const q = dialect.sqlToQuery(dbExecuteMock.mock.calls[0]![0]);
+    // The CLIENT predicate (type IN the client types), not the technician one.
+    expect(q.sql).toContain('ai_sessions.type IN (');
+    expect(q.sql).not.toContain('NOT IN');
+    expect(q.params).toContain(ORG_ID);
+  });
+
+  it('404s an org outside the caller scope and counts nothing (no existence oracle)', async () => {
+    const res = await buildApp().request(previewUrl(OTHER_ORG_ID, '?days=30'), { headers: AUTHED });
+    expect(res.status).toBe(404);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects unauthenticated requests', async () => {
+    const res = await buildApp().request(previewUrl(ORG_ID, '?days=30'));
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('client-ai admin organization-wide settings', () => {
+  const WRITES = [
+    ['PUT', 'tenant-mapping', { entraTenantId: TID }],
+    ['DELETE', 'tenant-mapping', undefined],
+    ['PUT', 'policy', { enabled: true }],
+  ] as const;
+
+  it.each([
+    [{ allowedSiteIds: ['11111111-1111-4111-8111-111111111111'] }],
+    [{ allowedSiteIds: [] }],
+    [{ allowedDeviceIds: ['22222222-2222-4222-8222-222222222222'] }],
+  ])('refuses mapping and policy writes from a restricted organization user %j', async (ceiling) => {
+    testAuth.ceiling = ceiling;
+    for (const [method, path, body] of WRITES) {
+      dbInsertMock.mockClear();
+      dbDeleteMock.mockClear();
+      const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/${path}`, {
+        method, headers: AUTHED, body: body ? JSON.stringify(body) : undefined,
+      });
+      expect(res.status, `${method} ${path}`).toBe(403);
+      expect(dbInsertMock).not.toHaveBeenCalled();
+      expect(dbDeleteMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it('allows mapping and policy writes from an unrestricted organization user', async () => {
+    testAuth.ceiling = {};
+    getOrgPolicyMock.mockResolvedValue({ enabled: true });
+    for (const [method, path, body] of WRITES) {
+      const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/${path}`, {
+        method, headers: AUTHED, body: body ? JSON.stringify(body) : undefined,
+      });
+      expect(res.status, `${method} ${path}`).toBe(200);
+    }
+  });
+
+  it.each(WRITES)('requires MFA for %s %s', async (method, path, body) => {
+    const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/${path}`, {
+      method, headers: { ...AUTHED, 'x-test-mfa': 'missing' }, body: body ? JSON.stringify(body) : undefined,
+    });
+    expect(res.status).toBe(403);
+    expect(dbInsertMock).not.toHaveBeenCalled();
+    expect(dbDeleteMock).not.toHaveBeenCalled();
   });
 });

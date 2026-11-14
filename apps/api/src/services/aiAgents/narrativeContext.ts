@@ -1054,9 +1054,9 @@ function meanBucket(points: Array<Record<string, string | number>>, key: string)
  * Patching: the posture score movement plus the raw outstanding/installed
  * counters.
  *
- * The score comes from `getSecurityPostureTrend`'s day buckets and NOT from
- * `patch_compliance_snapshots`, which has no writer at all. The call MUST
- * carry `{ orgId, days: 14 }`: with neither org filter that service returns
+ * The score comes from `getSecurityPostureTrend`'s day buckets (the
+ * writer-less `patch_compliance_snapshots` table was dropped, #11593). The
+ * call MUST carry `{ orgId, days: 14 }`: with neither org filter that service returns
  * FLEET-WIDE data (securityPosture.ts), which would put another tenant's
  * numbers into a customer-facing narrative. 14 days is exactly the two
  * windows this compares.

@@ -6,6 +6,8 @@ import { writeAuditEventAsync, type AuthContext, type RouteAuditInput } from './
 import { captureException } from './sentry';
 import {
   getPortalSignInCapabilities,
+  listOrgVerifiedDomains,
+  pickedGoogleEnabled,
   pickEffectivePortalAccessPolicy,
   readPortalAccessPolicyRows,
   type PortalAccessPolicyOwnerRows,
@@ -71,14 +73,21 @@ export interface PortalPasswordFallbackNotice {
  * Pure: whether losing the proof changes anything for the org. Microsoft must be
  * effectively on WITH a proof (picked on, and a capability of this deployment),
  * else there was no Microsoft sign-in to fall back from → null.
+ *
+ * W7 (#11384, plan D6): both picks carry the org's real Google fact, so only
+ * the Entra proof differs between them. A fallback the Google domain mask
+ * causes on its own (Microsoft off) is null here: it is never reported as a
+ * lost Microsoft tenant.
  */
 export function passwordFallbackImpactFrom(
   rows: PortalAccessPolicyOwnerRows,
   caps: PortalSignInCapabilities,
+  facts: { googleDomainVerified: boolean },
 ): PortalPasswordFallbackImpact | null {
-  const withProof = pickEffectivePortalAccessPolicy(rows.org, rows.partner, caps, { entraTenantProven: true });
+  const { googleDomainVerified } = facts;
+  const withProof = pickEffectivePortalAccessPolicy(rows.org, rows.partner, caps, { entraTenantProven: true, googleDomainVerified });
   if (!withProof.effective.entraEnabled.value) return null;
-  const withoutProof = pickEffectivePortalAccessPolicy(rows.org, rows.partner, caps, { entraTenantProven: false });
+  const withoutProof = pickEffectivePortalAccessPolicy(rows.org, rows.partner, caps, { entraTenantProven: false, googleDomainVerified });
   return { passwordModeFallback: withoutProof.passwordModeFallback };
 }
 
@@ -86,6 +95,11 @@ export function passwordFallbackImpactFrom(
  * {@link passwordFallbackImpactFrom} for one org, read under the held DB context
  * (RLS lets an org-reaching context read both policy rows, W3 D7), else under a
  * fresh system context. An org that cannot be read → null.
+ *
+ * W7 D6: the org's Google fact comes from W5's read API, under the resolver's
+ * guard (picked Google on and the deployment can run it) and context rule
+ * (listOrgVerifiedDomains: direct with none or a system context held, else
+ * through runOutsideDbContext). A W5 failure propagates.
  */
 export async function getPortalPasswordFallbackImpact(orgId: string): Promise<PortalPasswordFallbackImpact | null> {
   const read = async () => {
@@ -97,7 +111,12 @@ export async function getPortalPasswordFallbackImpact(orgId: string): Promise<Po
     return readPortalAccessPolicyRows({ orgId, partnerId: org.partnerId });
   };
   const rows = hasDbAccessContext() ? await read() : await withSystemDbAccessContext(read, 'portalPasswordFallback.impact');
-  return rows ? passwordFallbackImpactFrom(rows, getPortalSignInCapabilities()) : null;
+  if (!rows) return null;
+  const caps = getPortalSignInCapabilities();
+  const googleDomainVerified = caps.google && pickedGoogleEnabled(rows.org, rows.partner)
+    ? (await listOrgVerifiedDomains(orgId)).length > 0
+    : false;
+  return passwordFallbackImpactFrom(rows, caps, { googleDomainVerified });
 }
 
 /** The fallback audit row's fields (the caller adds the actor). */

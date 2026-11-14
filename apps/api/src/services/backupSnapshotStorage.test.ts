@@ -54,6 +54,7 @@ import {
   fetchBackupObjectText,
   iterateBackupObjectsUnderPrefix,
   listBackupObjectsUnderPrefix,
+  openBackupObjectStream,
 } from './backupSnapshotStorage';
 
 describe('backupLayoutManifestKey', () => {
@@ -98,7 +99,7 @@ describe('backup snapshot storage', () => {
 
   it('returns an explicit unsupported capability result for non-S3 providers', async () => {
     const result = await checkBackupProviderCapabilities({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: '/backups' },
     });
 
@@ -743,9 +744,12 @@ describe('backup snapshot storage', () => {
 // key-scoped deletion.
 describe('local-provider GC I/O (real filesystem)', () => {
   let root: string;
+  let operatorRoot: string;
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'breeze-gc-local-'));
+    operatorRoot = await mkdtemp(join(tmpdir(), 'breeze-gc-local-'));
+    vi.stubEnv('BACKUP_LOCAL_ROOT', operatorRoot);
+    root = join(operatorRoot, 'org-1', 'destination');
     await mkdir(join(root, 'snapshots', 'snapA', 'files'), { recursive: true });
     await writeFile(join(root, 'snapshots', 'snapA', 'manifest.json'), '{"files":[]}');
     await writeFile(join(root, 'snapshots', 'snapA', 'files', 'a.dat'), 'aaa');
@@ -756,12 +760,13 @@ describe('local-provider GC I/O (real filesystem)', () => {
   });
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true });
+    await rm(operatorRoot, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   it('deletes a local snapshot under the agent layout, ignoring the configured destination prefix (#6398)', async () => {
     await deleteBackupSnapshotArtifacts({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root, prefix: 'w05' },
       snapshotId: 'snapA',
       keyLayout: 'legacy_flat',
@@ -775,7 +780,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
 
   it('walks the snapshot root and reports every file key with a real mtime', async () => {
     const listing = await listBackupObjectsUnderPrefix({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       prefix: 'snapshots',
     });
@@ -803,7 +808,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
     const pageSizes: number[] = [];
     const keys: string[] = [];
     for await (const page of iterateBackupObjectsUnderPrefix({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       prefix: 'snapshots/snapB',
     })) {
@@ -822,7 +827,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
     opendirSpy.mockClear();
 
     const listing = await listBackupObjectsUnderPrefix({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       prefix: 'snapshots',
     });
@@ -832,9 +837,28 @@ describe('local-provider GC I/O (real filesystem)', () => {
     expect(opendirSpy).toHaveBeenCalled();
   });
 
+  it('uses only the owning organization directory, whatever the stored path or owner fields name', async () => {
+    const otherOrgDir = join(operatorRoot, 'org-2', 'destination');
+    await mkdir(otherOrgDir, { recursive: true });
+    await writeFile(join(otherOrgDir, 'kept'), 'org-2 bytes');
+    const providerConfig = { path: otherOrgDir, orgId: 'org-2' };
+    await expect(fetchBackupObjectText({ provider: 'local', orgId: 'org-1', configId: 'destination', providerConfig, key: 'kept' })).rejects.toThrow('ENOENT');
+    const deletion = await deleteBackupObjectKeys({ provider: 'local', orgId: 'org-1', configId: 'destination', providerConfig, keys: ['kept'] });
+    expect(deletion.failedKeys).toEqual([]);
+    // The supplied path never selects org-2; the delete is an idempotent no-op in org-1.
+    expect(await fetchBackupObjectText({ provider: 'local', orgId: 'org-2', configId: 'destination', providerConfig, key: 'kept' })).toBe('org-2 bytes');
+  });
+
+  it('refuses stored local destinations when the API capability is disabled', async () => {
+    vi.stubEnv('BACKUP_LOCAL_ROOT', '');
+    await expect(fetchBackupObjectText({ provider: 'local', orgId: 'org-1', configId: 'destination', providerConfig: { path: root }, key: 'snapshots/snapA/manifest.json' })).rejects.toThrow('unavailable');
+    await expect(deleteBackupSnapshotArtifacts({ provider: 'local', orgId: 'org-1', configId: 'destination', providerConfig: { path: root }, snapshotId: 'snapA', keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} })).rejects.toThrow('unavailable');
+    expect(await readdir(join(root, 'snapshots', 'snapA', 'files'))).toEqual(['a.dat', 'b.dat']);
+  });
+
   it('fetches a local object as text', async () => {
     const text = await fetchBackupObjectText({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       key: 'snapshots/snapA/manifest.json',
     });
@@ -843,7 +867,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
 
   it('reads a local object with no text encoding (raw bytes)', async () => {
     const result = await fetchBackupObjectBytes({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       key: 'snapshots/snapA/manifest.json',
     });
@@ -853,7 +877,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
   it('rejects a local object over maxBytes via a stat check, without reading its content', async () => {
     await expect(
       fetchBackupObjectBytes({
-        provider: 'local',
+        provider: 'local', orgId: 'org-1', configId: 'destination',
         providerConfig: { path: root },
         key: 'snapshots/snapA/manifest.json',
         maxBytes: 1,
@@ -863,7 +887,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
 
   it('allows a local object at or under maxBytes', async () => {
     const result = await fetchBackupObjectBytes({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       key: 'snapshots/snapA/manifest.json',
       maxBytes: '{"files":[]}'.length,
@@ -874,7 +898,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
   it('rejects a local text object over maxBytes via a stat check, without reading its content', async () => {
     await expect(
       fetchBackupObjectText({
-        provider: 'local',
+        provider: 'local', orgId: 'org-1', configId: 'destination',
         providerConfig: { path: root },
         key: 'snapshots/snapA/manifest.json',
         maxBytes: 1,
@@ -884,7 +908,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
 
   it('allows a local text object at or under maxBytes', async () => {
     const result = await fetchBackupObjectText({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       key: 'snapshots/snapA/manifest.json',
       maxBytes: '{"files":[]}'.length,
@@ -894,7 +918,7 @@ describe('local-provider GC I/O (real filesystem)', () => {
 
   it('deletes only the intended keys, leaving siblings intact', async () => {
     const result = await deleteBackupObjectKeys({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       keys: ['snapshots/snapA/files/a.dat'],
     });
@@ -909,23 +933,99 @@ describe('local-provider GC I/O (real filesystem)', () => {
   it('enforces the containment guard against path-traversal keys (fetch)', async () => {
     await expect(
       fetchBackupObjectText({
-        provider: 'local',
+        provider: 'local', orgId: 'org-1', configId: 'destination',
         providerConfig: { path: root },
         key: '../../etc/passwd',
       }),
-    ).rejects.toThrow('path traversal detected');
+    ).rejects.toThrow('API local backup storage is unavailable');
+  });
+
+  describe('openBackupObjectStream (local)', () => {
+    async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream as AsyncIterable<Uint8Array>) chunks.push(Buffer.from(chunk));
+      return Buffer.concat(chunks).toString('utf8');
+    }
+
+    it('streams an object from the destination under the operator root', async () => {
+      const stream = await openBackupObjectStream({
+        provider: 'local', orgId: 'org-1', configId: 'destination',
+        providerConfig: { path: root },
+        key: 'snapshots/snapA/manifest.json',
+        maxBytes: 1024,
+      });
+      expect(await readAll(stream)).toBe('{"files":[]}');
+    });
+
+    it('resolves the destination from orgId and configId, not from the stored path', async () => {
+      const otherOrgDir = join(operatorRoot, 'org-2', 'destination');
+      await mkdir(otherOrgDir, { recursive: true });
+      await writeFile(join(otherOrgDir, 'kept'), 'org-2 bytes');
+      await expect(openBackupObjectStream({
+        provider: 'local', orgId: 'org-1', configId: 'destination',
+        providerConfig: { path: otherOrgDir },
+        key: 'kept',
+        maxBytes: 1024,
+      })).rejects.toThrow('ENOENT');
+      await expect(openBackupObjectStream({
+        provider: 'local', orgId: 'org-1', configId: 'destination',
+        providerConfig: { path: '/' },
+        key: 'etc/hosts',
+        maxBytes: 1024,
+      })).rejects.toThrow('ENOENT');
+    });
+
+    it('refuses a key that leaves the destination', async () => {
+      await expect(openBackupObjectStream({
+        provider: 'local', orgId: 'org-1', configId: 'destination',
+        providerConfig: { path: root },
+        key: '../../../etc/hosts',
+        maxBytes: 1024,
+      })).rejects.toThrow('API local backup storage is unavailable');
+    });
+
+    it('refuses without destination lineage or an operator root', async () => {
+      await expect(openBackupObjectStream({
+        provider: 'local', orgId: 'org-1',
+        providerConfig: { path: root },
+        key: 'snapshots/snapA/manifest.json',
+        maxBytes: 1024,
+      })).rejects.toThrow('API local backup storage is unavailable');
+      await expect(openBackupObjectStream({
+        provider: 'local', configId: 'destination',
+        providerConfig: { path: root },
+        key: 'snapshots/snapA/manifest.json',
+        maxBytes: 1024,
+      })).rejects.toThrow('API local backup storage is unavailable');
+      vi.stubEnv('BACKUP_LOCAL_ROOT', '');
+      await expect(openBackupObjectStream({
+        provider: 'local', orgId: 'org-1', configId: 'destination',
+        providerConfig: { path: root },
+        key: 'snapshots/snapA/manifest.json',
+        maxBytes: 1024,
+      })).rejects.toThrow('API local backup storage is unavailable');
+    });
+
+    it('rejects an object over maxBytes before streaming it', async () => {
+      await expect(openBackupObjectStream({
+        provider: 'local', orgId: 'org-1', configId: 'destination',
+        providerConfig: { path: root },
+        key: 'snapshots/snapA/manifest.json',
+        maxBytes: 1,
+      })).rejects.toMatchObject({ name: 'BackupObjectTooLargeError' });
+    });
   });
 
   it('enforces the containment guard against path-traversal keys (delete)', async () => {
     const result = await deleteBackupObjectKeys({
-      provider: 'local',
+      provider: 'local', orgId: 'org-1', configId: 'destination',
       providerConfig: { path: root },
       keys: ['../../../etc/passwd'],
     });
     // Never throws — the traversal attempt is classified as a failed key.
     expect(result.deletedKeys).toEqual([]);
     expect(result.failedKeys).toHaveLength(1);
-    expect(result.failedKeys[0]!.error).toContain('path traversal detected');
+    expect(result.failedKeys[0]!.error).toContain('API local backup storage is unavailable');
   });
 });
 

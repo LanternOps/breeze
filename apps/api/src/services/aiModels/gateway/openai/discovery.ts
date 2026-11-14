@@ -19,6 +19,7 @@ import { forwardUpstream, readUpstreamErrorText } from '../forward';
 import { DISCOVERY_MAX_MODELS, DISCOVERY_MAX_RESPONSE_BYTES, DISCOVERY_TOTAL_TIMEOUT_MS } from '../limits';
 import { containsSecretMaterial, scrubSecrets } from '../scrub';
 import type { DiscoveredConnectionModel, GatewayConnectionConfig, GatewayCredential } from '../types';
+import { MAX_PLAUSIBLE_TOKENS, MIN_PLAUSIBLE_WINDOW } from './contextWindow';
 
 const DISPLAY_NAME_MAX = 120;
 /** C0/C1 controls, DEL, and bidi embedding/override/isolate characters (display spoofing). */
@@ -57,6 +58,25 @@ function displayNameOf(item: object, secret: string | null): string | null {
   return name.length > 0 ? name : null;
 }
 
+const plausibleWindow = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isSafeInteger(v) && v >= MIN_PLAUSIBLE_WINDOW && v <= MAX_PLAUSIBLE_TOKENS ? v : null;
+
+/**
+ * The model's context window as its listing states it (#11396), or null.
+ * Numbers only, plausibility-bounded like a stated rejection window. Fields,
+ * in order: `context_length` (OpenRouter-style), `max_model_len` (vLLM), then
+ * LM Studio's `max_context_length` / `loaded_context_length`, where the
+ * smaller wins (a model that supports 262k but is loaded at 8k serves 8k).
+ */
+function contextLengthOf(item: object): number | null {
+  const f = item as { context_length?: unknown; max_model_len?: unknown; max_context_length?: unknown; loaded_context_length?: unknown };
+  const direct = plausibleWindow(f.context_length) ?? plausibleWindow(f.max_model_len);
+  if (direct !== null) return direct;
+  const lmStudio = [plausibleWindow(f.max_context_length), plausibleWindow(f.loaded_context_length)]
+    .filter((n): n is number => n !== null);
+  return lmStudio.length > 0 ? Math.min(...lmStudio) : null;
+}
+
 /**
  * The OpenAI `{ data: [{ id }] }` shape or a bare array. Invalid ids are
  * dropped, duplicates collapse to the first; anything that is not a list
@@ -78,7 +98,8 @@ export function sanitizeDiscoveredModels(payload: unknown, secret: string | null
     const id = (item as { id?: unknown }).id;
     if (typeof id !== 'string' || !BYO_MODEL_ID_PATTERN.test(id) || seen.has(id)) continue;
     seen.add(id);
-    out.push({ modelId: id, displayName: displayNameOf(item, secret) });
+    const contextLength = contextLengthOf(item);
+    out.push({ modelId: id, displayName: displayNameOf(item, secret), ...(contextLength !== null ? { contextLength } : {}) });
   }
   return out;
 }

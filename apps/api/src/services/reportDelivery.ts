@@ -24,6 +24,7 @@ import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 import type { ReportResult } from './reportGenerationService';
 
 import type { ReportDeliveryStatus } from '../db/schema/reports';
+import { imageBytesFromDataUrl, withPngDecodeSlot } from './pngDecodeLimits';
 
 export type { ReportDeliveryStatus } from '../db/schema/reports';
 
@@ -149,20 +150,24 @@ export async function emailReportRun(opts: {
       const generatedAt = new Intl.DateTimeFormat('en-US', {
         timeZone: opts.timezone, dateStyle: 'medium', timeStyle: 'short',
       }).format(new Date());
-      const doc = buildReportPdf(opts.rows, {
-        reportType: opts.reportType,
-        generatedAt,
-        timezone: opts.timezone,
-        summary: opts.summary as PostureSummary | ExecutiveSummary | undefined,
-        previous: opts.previous,
-        branding: opts.branding,
-        // A designed type degrading to the generic table loses its body and
-        // notes; the recipient still gets a PDF, so this is the only signal.
-        onRendererFallback: ({ reportType, reason }) => {
-          captureException(new Error(`Report PDF fell back to the generic renderer: ${reportType} (${reason})`));
-        },
+      // The logo is decoded while the PDF is built and written; a large one
+      // holds the process-wide large-decode slot (pngDecodeLimits.ts).
+      const content = await withPngDecodeSlot(imageBytesFromDataUrl(opts.branding?.logoDataUrl), () => {
+        const doc = buildReportPdf(opts.rows, {
+          reportType: opts.reportType,
+          generatedAt,
+          timezone: opts.timezone,
+          summary: opts.summary as PostureSummary | ExecutiveSummary | undefined,
+          previous: opts.previous,
+          branding: opts.branding,
+          // A designed type degrading to the generic table loses its body and
+          // notes; the recipient still gets a PDF, so this is the only signal.
+          onRendererFallback: ({ reportType, reason }) => {
+            captureException(new Error(`Report PDF fell back to the generic renderer: ${reportType} (${reason})`));
+          },
+        });
+        return Buffer.from(doc.output('arraybuffer'));
       });
-      const content = Buffer.from(doc.output('arraybuffer'));
       if (content.byteLength <= MAX_ATTACHMENT_BYTES) {
         attachments.push({ filename: `${opts.reportType}-report-${dateStr}.pdf`, content, contentType: 'application/pdf' });
       } else {

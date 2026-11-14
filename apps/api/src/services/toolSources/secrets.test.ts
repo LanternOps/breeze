@@ -30,8 +30,8 @@ import {
   encryptToolSourceAuth,
   redactSecrets,
   secretValuesOf,
-  type ToolSourceAuthConfig,
-} from './secrets';
+  type ToolSourceAuthConfig, GENERIC_SECRET_PATTERNS } from './secrets';
+import { LONG_TOKEN_RUNS, matchSpans, mulberry32, tokenShapedText } from '../../testUtils/generatedText';
 
 const ROW_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ROW_ID = '22222222-2222-4222-8222-222222222222';
@@ -182,5 +182,34 @@ describe('redactSecrets', () => {
   it('leaves ordinary text untouched', () => {
     const text = 'The device rebooted successfully at 03:00 UTC.';
     expect(redactSecrets(text, ['some-unrelated-secret'])).toBe(text);
+  });
+});
+
+describe('generic JWT shape', () => {
+  // The pattern before it was made linear, kept as the reference.
+  const reference = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
+  const shape = GENERIC_SECRET_PATTERNS.find((p) => p.source.includes('eyJ'))!;
+
+  it('matches the same input as the previous pattern', () => {
+    const next = mulberry32(0x70015);
+    const seen = new Set<string>();
+    let withToken = 0;
+    for (let i = 0; i < 20_000; i += 1) {
+      const text = tokenShapedText(next);
+      seen.add(text);
+      const want = matchSpans(reference, text);
+      if (want.length > 0) withToken += 1;
+      expect([text, matchSpans(shape, text)]).toEqual([text, want]);
+    }
+    expect(seen.size).toBeGreaterThan(15_000);
+    expect(withToken).toBeGreaterThan(7_000);
+  });
+
+  it('scans long token runs in linear time', () => {
+    for (const text of LONG_TOKEN_RUNS) {
+      const started = performance.now();
+      matchSpans(shape, text);
+      expect(performance.now() - started).toBeLessThan(150);
+    }
   });
 });

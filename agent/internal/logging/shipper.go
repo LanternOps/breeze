@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 // TokenRevealer is implemented by secmem.SecureString. Using an interface
@@ -148,10 +150,20 @@ type ShipperConfig struct {
 }
 
 // NewShipper creates a new log shipper.
+//
+// Every flush carries the agent credential, so the client the shipper uses
+// always has a redirect policy: the default client and a caller-supplied
+// client without one get httpguard.RefuseUntrustedRedirect (a supplied
+// client is copied, not changed). A supplied client that sets its own
+// policy is used as given.
 func NewShipper(cfg ShipperConfig) *Shipper {
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = httpguard.NewClient(nil, 30*time.Second)
+	} else if client.CheckRedirect == nil {
+		guarded := *client
+		guarded.CheckRedirect = httpguard.RefuseUntrustedRedirect
+		client = &guarded
 	}
 	return &Shipper{
 		serverURL:    cfg.ServerURL,

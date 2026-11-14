@@ -1,0 +1,22 @@
+{
+  "id": "public-reply-card-shows-message",
+  "title": "A customer-visible reply's approval card shows the ticket number and the message",
+  "issue": 11674,
+  "expect": "pass",
+  "door": "wisp",
+  "steps": [
+    { "name": "reply", "type": "say", "approve": "deny", "maxSec": 120,
+      "text": "Reply to Dana on the x-ray ticket: tell her a technician will look at the workstation at 2pm today and ask her to save her work before then. Keep it short and friendly." }
+  ],
+  "checks": [
+    { "kind": "card_matches", "step": "reply", "flags": "i", "pattern": "(public|customer-visible)", "precondition": true,
+      "note": "a public-reply approval card appeared" },
+    { "kind": "card_matches", "step": "reply", "pattern": "T-\\d{4}-\\d{4}",
+      "note": "the card names the ticket by its internal number (it showed a UUID fragment, #11674)" },
+    { "kind": "card_matches", "step": "reply", "flags": "i", "pattern": "save (her|your) work|2 ?pm",
+      "note": "the message is visible on the card (it was only under the collapsed 'Show parameters', #11674)" },
+    { "kind": "sql_equals", "equals": "0",
+      "sql": "select count(*) from ticket_comments c join tickets t on t.id = c.ticket_id where t.subject = 'X-ray workstation is really slow' and c.is_public and c.created_at > {{since}}",
+      "note": "Deny means nothing reached the customer" }
+  ]
+}

@@ -7,14 +7,16 @@ import {
   isSsoOnlyImpact,
   isStrandedPortalAccounts,
   type SsoOnlyImpact,
+  type SsoProviderSet,
   type StrandedPortalAccounts,
 } from './types';
+import { SSO_COPY_KEYS } from './ssoProviderCopy';
 
 /**
  * Requests behind the `sso_only` save flow (portal registration W4 #11381,
  * D12, spec §5.11): the 409 that carries the impact, the stranded list, and the
- * bulk "Send Microsoft sign-in invite" (`POST …/portal-users/sso-invite`,
- * at most 100 ids per call).
+ * bulk "Send sign-in invite" (`POST …/portal-users/sso-invite`, at most 100 ids
+ * per call; it works when either Microsoft or Google is effective, W7).
  */
 
 export const SSO_INVITE_BATCH_SIZE = 100;
@@ -54,13 +56,15 @@ export async function loadStrandedAccounts(orgId: string): Promise<StrandedPorta
  * Invites the given accounts in batches of {@link SSO_INVITE_BATCH_SIZE}, one
  * request at a time, then shows one summary toast. A failed batch stops the
  * run: runAction has toasted it, and the ActionError is rethrown after a
- * partial-count toast when earlier batches went through.
+ * partial-count toast when earlier batches went through. `providers` picks the
+ * wording (W7): the providers effective for the org.
  */
 export async function sendSsoInvites(
   orgId: string,
   portalUserIds: string[],
   t: TFunction,
   onUnauthorized: () => void,
+  providers: SsoProviderSet = 'microsoft',
 ): Promise<{ invited: number; total: number; emailFailed: number }> {
   const ids = [...new Set(portalUserIds)];
   /** Invited AND emailed. */
@@ -77,19 +81,19 @@ export async function sendSsoInvites(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ portalUserIds: batch }),
         }),
-        errorFallback: t('settings:portalAccessPolicy.stranded.errors.invite'),
+        errorFallback: t(/* i18n-dynamic */ SSO_COPY_KEYS.inviteError[providers]),
         parseSuccess: (data) => {
           const rows = (data as { data?: unknown } | null)?.data;
           if (!Array.isArray(rows)) throw new Error('unexpected sso-invite body');
           return { data: rows as SsoInviteRow[] };
         },
-        friendly: (code) => (code === PORTAL_SSO_INVITE_UNAVAILABLE ? t('settings:portalAccessPolicy.stranded.errors.unavailable') : undefined),
+        friendly: (code) => (code === PORTAL_SSO_INVITE_UNAVAILABLE ? t(/* i18n-dynamic */ SSO_COPY_KEYS.unavailable[providers]) : undefined),
         onUnauthorized,
       });
       results = body.data;
     } catch (err) {
       if (invited > 0) {
-        showToast({ type: 'warning', message: t('settings:portalAccessPolicy.stranded.toasts.partial', { invited, total: ids.length }) });
+        showToast({ type: 'warning', message: t(/* i18n-dynamic */ SSO_COPY_KEYS.partial[providers], { invited, total: ids.length }) });
       }
       throw err;
     }
@@ -103,9 +107,9 @@ export async function sendSsoInvites(
     // The accounts are now `invited` (so they leave the stranded list) but nobody was emailed.
     showToast({ type: 'warning', message: t('settings:portalAccessPolicy.stranded.toasts.emailFailed', { count: emailFailed }) });
   } else if (invited === ids.length) {
-    showToast({ type: 'success', message: t('settings:portalAccessPolicy.stranded.toasts.invited', { count: invited }) });
+    showToast({ type: 'success', message: t(/* i18n-dynamic */ SSO_COPY_KEYS.invited[providers], { count: invited }) });
   } else {
-    showToast({ type: 'warning', message: t('settings:portalAccessPolicy.stranded.toasts.partial', { invited, total: ids.length }) });
+    showToast({ type: 'warning', message: t(/* i18n-dynamic */ SSO_COPY_KEYS.partial[providers], { invited, total: ids.length }) });
   }
   return { invited, total: ids.length, emailFailed };
 }

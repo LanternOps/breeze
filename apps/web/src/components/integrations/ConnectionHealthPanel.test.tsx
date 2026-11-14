@@ -109,6 +109,20 @@ describe("ConnectionHealthPanel", () => {
     for (const r of rows) expect(r.querySelector("a")).toBeNull();
   });
 
+  it("labels a backup destination incident (#11772) and links to where destinations are edited", async () => {
+    mockBoth([incident({
+      sourceKind: "backup_destination",
+      condition: "destination_access_denied",
+      displayName: "Backup destination Primary S3",
+      fixHref: "/backup#profiles",
+    })]);
+    render(<ConnectionHealthPanel />);
+    const row = await screen.findByTestId("connection-health-open-row");
+    expect(row.textContent).toContain("Destination refused access");
+    expect(row.textContent).toContain("Backup destination Primary S3");
+    expect(row.querySelector("a")?.getAttribute("href")).toBe("/backup#profiles");
+  });
+
   it("falls back to the unknown condition label", async () => {
     mockBoth([incident({ condition: "brand_new_code" })]);
     render(<ConnectionHealthPanel />);
@@ -189,7 +203,7 @@ describe("ConnectionHealthPanel", () => {
     for (const code of [...KNOWN_CONDITIONS, "unknown"]) {
       expect(typeof en.connectionHealthPanel.condition[code]).toBe("string");
     }
-    expect(KNOWN_CONDITIONS).toHaveLength(20);
+    expect(KNOWN_CONDITIONS).toHaveLength(23);
   });
 });
 

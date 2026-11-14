@@ -8,6 +8,7 @@ import {
   effectDigestResolverKey,
   hasPinnedDigest,
 } from './effectDigest';
+import { drPlanDefinitionDigest } from '../drPlanDefinition';
 
 /**
  * The ONE seam this suite needs (#3409 PR4c-1).
@@ -711,6 +712,52 @@ describe('computeEffectDigestOutcome', () => {
       );
       expect(before).toMatch(/^[0-9a-f]{64}$/);
       expect(before).not.toBe(after);
+    });
+
+    const drPlan = { orgId: 'org-1', updatedAt: new Date('2026-08-01T00:00:00Z'), status: 'active' };
+    const drGroup = {
+      id: 'group-1', planId: 'plan-1', orgId: 'org-1', name: 'Group', sequence: 0, dependsOnGroupId: null,
+      devices: ['device-1'], restoreConfig: { commandType: 'vm_restore_from_backup', payload: { vmName: 'approved' } },
+      estimatedDurationMinutes: 5,
+    };
+    const drArgs = { planId: 'plan-1', executionType: 'failover' };
+
+    it.each([
+      { devices: ['device-2'] }, { restoreConfig: { commandType: 'vm_restore_from_backup', payload: { vmName: 'other' } } },
+      { sequence: 2 }, { dependsOnGroupId: 'group-2' }, { orgId: 'org-2' },
+      { name: 'Renamed group' }, { estimatedDurationMinutes: 60 },
+    ])('pins every group field that decides what runs: %j', async (change) => {
+      const before = await digestFor('execute_dr_plan', drArgs, makeFakeDb([[drPlan], [drGroup]]).database);
+      const after = await digestFor('execute_dr_plan', drArgs, makeFakeDb([[drPlan], [{ ...drGroup, ...change }]]).database);
+      expect(before).toMatch(/^[0-9a-f]{64}$/);
+      expect(before).not.toBe(after);
+    });
+
+    it('pins group addition, removal and order, but not nested key order', async () => {
+      const digest = (groups: unknown[]) => digestFor('execute_dr_plan', drArgs, makeFakeDb([[drPlan], groups]).database);
+      const second = { ...drGroup, id: 'group-2', sequence: 1 };
+      expect(await digest([])).not.toBe(await digest([drGroup]));
+      expect(await digest([drGroup])).not.toBe(await digest([drGroup, second]));
+      expect(await digest([drGroup, second])).not.toBe(await digest([second, drGroup]));
+      expect(await digest([{ ...drGroup, restoreConfig: { a: 1, b: 2 } }]))
+        .toBe(await digest([{ ...drGroup, restoreConfig: { b: 2, a: 1 } }]));
+    });
+
+    it('hands the release the exact definition it hashed, with that digest', async () => {
+      const groups = [structuredClone(drGroup)];
+      const released = await computeEffectDigestForRelease('execute_dr_plan', drArgs, makeFakeDb([[drPlan], groups]).database);
+      groups[0]!.restoreConfig.payload.vmName = 'changed-after-read';
+      expect(released.digest).toMatch(/^[0-9a-f]{64}$/);
+      expect(released.context?.verifiedDrPlan?.digest).toBe(released.digest);
+      expect(released.context?.verifiedDrPlan?.definition).toMatchObject({
+        planId: 'plan-1', orgId: 'org-1', status: 'active',
+        groups: [{ id: 'group-1', devices: ['device-1'], restoreConfig: { payload: { vmName: 'approved' } } }],
+      });
+    });
+
+    it('produces the digest the execution service recomputes under the plan lock', async () => {
+      const released = await computeEffectDigestForRelease('execute_dr_plan', drArgs, makeFakeDb([[drPlan], [drGroup]]).database);
+      expect(drPlanDefinitionDigest(released.context!.verifiedDrPlan!.definition)).toBe(released.digest);
     });
 
     it('reports target_absent for a deleted plan', async () => {

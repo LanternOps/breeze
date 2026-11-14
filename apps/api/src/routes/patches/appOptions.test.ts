@@ -111,6 +111,33 @@ describe('GET /app-options', () => {
     grantedPermission = 'devices:read';
   });
 
+  it.each([[['site-a']], [[]]])('limits observed packages to devices in the caller sites %j', async (allowedSiteIds) => {
+    currentAuth = { scope: 'organization', orgId: CALLER_ORG_ID, allowedSiteIds, canAccessOrg: () => true };
+    selectMock.mockReturnValue(selectRows([{ source: 'chocolatey', packageId: 'curated', vendor: 'Public', friendlyName: 'Curated' }]));
+    selectDistinctMock.mockReturnValue(selectDistinctRows([]));
+    const res = await appOptionsRoutes.request('/app-options');
+    expect(res.status).toBe(200);
+    const clauses = JSON.stringify(observedWhereMock().mock.calls[0][0]);
+    expect(clauses).toContain('d.org_id');
+    if (allowedSiteIds.length) {
+      expect(clauses).toContain('d.site_id');
+      expect(clauses).toContain('site-a');
+    } else {
+      expect(clauses).toContain('false');
+    }
+    // Curated catalog entries stay visible even when no device is in scope.
+    expect(JSON.stringify(await res.json())).toContain('curated');
+  });
+
+  it('applies no site filter for an unrestricted organization user', async () => {
+    currentAuth = { scope: 'organization', orgId: CALLER_ORG_ID, canAccessOrg: () => true };
+    selectMock.mockReturnValue(selectRows([]));
+    selectDistinctMock.mockReturnValue(selectDistinctRows([]));
+    const res = await appOptionsRoutes.request('/app-options');
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(observedWhereMock().mock.calls[0][0])).not.toContain('d.site_id');
+  });
+
   it('rejects a caller without devices:read', async () => {
     grantedPermission = null;
 

@@ -11,6 +11,7 @@ const { dbSelectMock, dbInsertMock, dbUpdateMock, dbDeleteMock, writeRouteAuditM
     authState: {
       scope: 'partner' as string,
       partnerId: 'f0f0f0f0-1111-4222-8333-444455556666' as string | null,
+      ceiling: {} as { allowedSiteIds?: string[]; allowedDeviceIds?: string[] },
     },
   }));
 
@@ -24,6 +25,7 @@ vi.mock('../../middleware/auth', () => ({
       orgId: authState.scope === 'organization' ? '0c0c0c0c-1111-4222-8333-444455556666' : null,
       accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
       user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },
+      ...authState.ceiling,
     });
     return next();
   }),
@@ -85,6 +87,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   authState.scope = 'partner';
   authState.partnerId = PARTNER_ID;
+  authState.ceiling = {};
   dbSelectMock.mockImplementation(() => chain([PARTNER_ROW]));
   dbInsertMock.mockImplementation(() => ({
     values: vi.fn((v: Record<string, unknown>) => ({
@@ -261,5 +264,42 @@ describe('DELETE /client-ai/admin/templates/:id', () => {
       headers: AUTHED,
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('organization-scoped templates and site-restricted users', () => {
+  const ORG_ROW = { ...PARTNER_ROW, orgId: ORG_ID, partnerId: null, orgName: 'Org' };
+  const WRITES = [
+    ['POST', '/client-ai/admin/templates', { name: 'X', promptBody: 'Y', orgId: ORG_ID }],
+    ['PUT', `/client-ai/admin/templates/${TEMPLATE_ID}`, { name: 'Renamed' }],
+    ['DELETE', `/client-ai/admin/templates/${TEMPLATE_ID}`, undefined],
+  ] as const;
+
+  it.each([
+    [{ allowedSiteIds: ['11111111-1111-4111-8111-111111111111'] }],
+    [{ allowedSiteIds: [] }],
+    [{ allowedDeviceIds: ['22222222-2222-4222-8222-222222222222'] }],
+  ])('refuses template writes from a restricted organization user %j', async (ceiling) => {
+    authState.scope = 'organization';
+    authState.partnerId = null;
+    authState.ceiling = ceiling;
+    dbSelectMock.mockImplementation(() => chain([ORG_ROW]));
+    for (const [method, path, body] of WRITES) {
+      const res = await buildApp().request(path, { method, headers: AUTHED, body: body ? JSON.stringify(body) : undefined });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+    expect(dbInsertMock).not.toHaveBeenCalled();
+    expect(dbUpdateMock).not.toHaveBeenCalled();
+    expect(dbDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('allows template writes from an unrestricted organization user', async () => {
+    authState.scope = 'organization';
+    authState.partnerId = null;
+    dbSelectMock.mockImplementation(() => chain([ORG_ROW]));
+    for (const [method, path, body] of WRITES) {
+      const res = await buildApp().request(path, { method, headers: AUTHED, body: body ? JSON.stringify(body) : undefined });
+      expect(res.status, `${method} ${path}`).toBeLessThan(300);
+    }
   });
 });

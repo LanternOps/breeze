@@ -13,7 +13,17 @@ import {
   type PortalAccessPolicyField,
   type PortalAccessPolicyView,
 } from '@breeze/shared';
-import { isPortalAccessPolicyView, type PortalAccessPolicyDraft, type SsoOnlyImpact, type StrandedPortalAccounts } from './types';
+import {
+  capabilityProviderSet,
+  effectiveProviderSet,
+  isPortalAccessPolicyView,
+  type PortalAccessPolicyDraft,
+  type SsoOnlyImpact,
+  type SsoProviderSet,
+  type StrandedPortalAccounts,
+} from './types';
+import { SSO_COPY_KEYS } from './ssoProviderCopy';
+import { GoogleDomainsStatus } from './GoogleDomainsStatus';
 import { EntraTenantPanel } from './EntraTenantPanel';
 import { SsoOnlyConfirmDialog } from './SsoOnlyConfirmDialog';
 import { StrandedAccountsList } from './StrandedAccountsList';
@@ -44,10 +54,11 @@ const policyUrl = (orgId: string) => `/orgs/organizations/${orgId}/portal-access
 const pendingUrl = (orgId: string) => `/orgs/organizations/${orgId}/portal-access-requests?status=pending`;
 const toLogin = () => void navigateTo('/login', { replace: true });
 
-function policyErrorMessage(code: string, t: TFunction): string | undefined {
-  if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.SSO_ONLY_NEEDS_SSO) return t('portalAccessPolicy.errors.ssoOnlyNeedsSso');
+function policyErrorMessage(code: string, t: TFunction, providers: SsoProviderSet): string | undefined {
+  if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.SSO_ONLY_NEEDS_SSO) return t(/* i18n-dynamic */ SSO_COPY_KEYS.needsSsoError[providers]);
   if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.METHOD_UNAVAILABLE) return t('portalAccessPolicy.errors.methodUnavailable');
   if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.TENANT_NOT_PROVEN) return t('portalAccessPolicy.errors.tenantNotProven');
+  if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.GOOGLE_DOMAIN_NOT_VERIFIED) return t('portalAccessPolicy.google.domainNotVerified');
   return undefined;
 }
 
@@ -177,14 +188,14 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
   };
 
   /** After a confirmed save: invite every account still stranded (fresh list, batched). */
-  const inviteStranded = async () => {
+  const inviteStranded = async (invitedWith: SsoProviderSet) => {
     try {
       const { items } = await loadStrandedAccounts(orgId);
-      if (items.length > 0) await sendSsoInvites(orgId, items.map((a) => a.portalUserId), t, toLogin);
+      if (items.length > 0) await sendSsoInvites(orgId, items.map((a) => a.portalUserId), t, toLogin, invitedWith);
     } catch (err) {
       if (!(err instanceof ActionError)) {
-        console.error('[OrgSignInRegistrationCard] Microsoft sign-in invites failed', err);
-        showToast({ type: 'error', message: t('portalAccessPolicy.stranded.errors.invite') });
+        console.error('[OrgSignInRegistrationCard] sign-in invites failed', err);
+        showToast({ type: 'error', message: t(/* i18n-dynamic */ SSO_COPY_KEYS.inviteError[invitedWith]) });
       }
     } finally {
       setStrandedReload((n) => n + 1);
@@ -200,6 +211,8 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
   const save = async (acknowledge: string | null = null, sendInvites = false) => {
     if (!view || saving || formInvalid || Object.keys(draft).length === 0) return;
     const visible = new Set(visiblePolicyFields(view.capabilities));
+    // The needs-SSO copy names only what this deployment can run (Google needs `capabilities.google`).
+    const providers = capabilityProviderSet(view.capabilities);
     setSaving(true);
     try {
       const body = await runAction<{ data: PortalAccessPolicyView }>({
@@ -215,12 +228,12 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
           if (!isPortalAccessPolicyView(saved)) throw new Error('unexpected portal access policy body');
           return { data: saved };
         },
-        friendly: (code) => policyErrorMessage(code, t),
+        friendly: (code) => policyErrorMessage(code, t, providers),
         // A policy refusal on a row the form shows becomes that row's error instead of a toast.
         suppressErrorToast: (status, code, errBody) => {
           if (isConfirmRequiredStatus(status, code)) return true; // the dialog is the answer
           const field = errorField(errBody);
-          return status === 400 && !!code && !!policyErrorMessage(code, t) && field !== null && visible.has(field);
+          return status === 400 && !!code && !!policyErrorMessage(code, t, providers) && field !== null && visible.has(field);
         },
         onUnauthorized: toLogin,
       });
@@ -229,7 +242,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
       setDraft({});
       setFieldErrors({});
       onSave();
-      if (sendInvites) void inviteStranded();
+      if (sendInvites) void inviteStranded(effectiveProviderSet(body.data, {}));
       else setStrandedReload((n) => n + 1);
     } catch (err) {
       if (!(err instanceof ActionError)) {
@@ -250,7 +263,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
       }
       setConfirm(null);
       const field = errorField(err.body);
-      const message = err.code ? policyErrorMessage(err.code, t) : undefined;
+      const message = err.code ? policyErrorMessage(err.code, t, providers) : undefined;
       if (err.status === 400 && field && message && visible.has(field)) setFieldErrors({ [field]: message });
     } finally {
       setSaving(false);
@@ -293,10 +306,11 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
         /* Remounts (and re-reads the tenant) when the view reports a different proof state,
            e.g. the customer admin finished a proof link while this page was open. */
         entraSlot={<EntraTenantPanel key={String(view.entraTenantProven)} orgId={orgId} onChanged={() => void refreshView()} />}
+        googleSlot={<GoogleDomainsStatus view={view} draft={draft} />}
       />
       {/* Spec §4 Domains row (portal registration W5): read-only, managed under Organization › Domains. */}
       <OrgDomainsSummaryRow orgId={orgId} />
-      {ssoOnlyEffective && <StrandedAccountsList orgId={orgId} reloadKey={strandedReload} />}
+      {ssoOnlyEffective && <StrandedAccountsList orgId={orgId} reloadKey={strandedReload} providers={effectiveProviderSet(view, {})} />}
       <SsoOnlyConfirmDialog
         open={confirm !== null}
         scope="org"
@@ -305,6 +319,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
         strandedLoadFailed={confirm?.strandedLoadFailed ?? false}
         changed={confirm?.changed ?? false}
         busy={saving}
+        providers={effectiveProviderSet(view, draft)}
         onConfirm={({ sendInvites }) => { if (confirm) void save(confirm.impact.impactDigest, sendInvites); }}
         onCancel={() => { if (!saving) setConfirm(null); }}
       />

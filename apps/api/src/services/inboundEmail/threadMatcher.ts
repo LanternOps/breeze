@@ -3,6 +3,7 @@ import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { ticketEmailInbound, tickets, users } from '../../db/schema';
 import { findTicketIdsByMessageIds } from '../ticketEmailLinks';
+import { parseMailboxes, parseSingleMailbox } from './addressParse';
 
 // Per-partner ticket display number, e.g. T-2026-0001.
 export const TICKET_TOKEN_RE = /\bT-(\d{4})-(\d{4,})\b/;
@@ -155,7 +156,14 @@ export async function senderIsBoundToTicket(
 // Header identifiers also reach CC'd colleagues, forwarded participants, and
 // technicians using mail clients. Only previously accepted mail on THIS ticket
 // establishes participation; quarantined/failed mail cannot authorize its sender.
-async function senderIsThreadParticipant(from: string, ticket: MatchedTicket): Promise<boolean> {
+//
+// A Mailgun row written before inbound mail was attributed to the From address
+// recorded the SMTP envelope sender as fromAddress. Such a row is recognisable:
+// its stored form (raw.from) is the From header, and its first mailbox differs
+// from fromAddress (rows written since record that mailbox). Neither its From
+// header nor its Cc list was the authenticated identity, so a sender named only
+// there must also be on a domain mapped to the ticket's organization.
+async function senderIsThreadParticipant(from: string, ticket: MatchedTicket, sender: SenderResolver): Promise<boolean> {
   const normalizedFrom = from.trim().toLowerCase();
   if (!normalizedFrom || !ticket.partnerId) return false;
   // #8972: the retained inbound history of tombstones merged into this ticket
@@ -169,18 +177,23 @@ async function senderIsThreadParticipant(from: string, ticket: MatchedTicket): P
     eq(ticketEmailInbound.partnerId, ticket.partnerId),
     inArray(ticketEmailInbound.parseStatus, ['matched', 'created'])
   ));
+  const senderInTicketOrg = async () => (await sender.domainOrg())?.orgId === ticket.orgId;
   for (const message of priorMessages) {
-    if (message.fromAddress?.trim().toLowerCase() === normalizedFrom) return true;
+    const recorded = message.fromAddress?.trim().toLowerCase();
+    if (recorded === normalizedFrom) return true;
     const raw = message.raw as Record<string, unknown> | null;
+    const headerFrom = typeof raw?.from === 'string' ? raw.from : null;
+    const envelopeAttributed = headerFrom !== null && parseMailboxes(headerFrom)[0]?.address !== recorded;
+    const namedByFromHeader = envelopeAttributed && parseSingleMailbox(headerFrom)?.address === normalizedFrom;
     // Mailgun retains the original form fields; Graph retains structured CCs.
-    for (const cc of [raw?.Cc, raw?.cc]) {
-      if (typeof cc === 'string' && addressparser(cc, { flatten: true })
-        .some(({ address }) => address?.trim().toLowerCase() === normalizedFrom)) return true;
-    }
-    if (Array.isArray(raw?.ccRecipients) && raw.ccRecipients.some((recipient: unknown) => {
-      const address = (recipient as { emailAddress?: { address?: unknown } } | null)?.emailAddress?.address;
-      return typeof address === 'string' && address.trim().toLowerCase() === normalizedFrom;
-    })) return true;
+    const namedByCc = [raw?.Cc, raw?.cc].some((cc) => typeof cc === 'string' && addressparser(cc, { flatten: true })
+      .some(({ address }) => address?.trim().toLowerCase() === normalizedFrom))
+      || (Array.isArray(raw?.ccRecipients) && raw.ccRecipients.some((recipient: unknown) => {
+        const address = (recipient as { emailAddress?: { address?: unknown } } | null)?.emailAddress?.address;
+        return typeof address === 'string' && address.trim().toLowerCase() === normalizedFrom;
+      }));
+    if (!envelopeAttributed && namedByCc) return true;
+    if (envelopeAttributed && (namedByFromHeader || namedByCc) && await senderInTicketOrg()) return true;
   }
   if (!ticket.assignedTo) return false;
   const [tech] = await db.select({ id: users.id }).from(users).where(and(
@@ -245,7 +258,7 @@ export async function findTicketInPartner(
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
       if (sender && !(await senderIsBoundToTicketOrMerged(input.from ?? '', row, sender))
-        && !(await senderIsThreadParticipant(input.from ?? '', row))) return null;
+        && !(await senderIsThreadParticipant(input.from ?? '', row, sender))) return null;
       return row;
     }
   }
@@ -327,7 +340,7 @@ export async function findClosedTicketInPartner(
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
       if (sender && !(await senderIsBoundToTicketOrMerged(input.from ?? '', row, sender))
-        && !(await senderIsThreadParticipant(input.from ?? '', row))) return null;
+        && !(await senderIsThreadParticipant(input.from ?? '', row, sender))) return null;
       return row;
     }
   }

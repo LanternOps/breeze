@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 
@@ -677,6 +678,28 @@ describe('reapStaleBackupJobs', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     queueBackupStopCommandMock.mockResolvedValue({ command: {} });
+  });
+
+  // #11772: reaped jobs can change a destination's verdict; one nudge per cycle, not per job.
+  it('nudges the backup destination health source once per cycle that reaped, never when nothing was reaped', async () => {
+    const stalled = (id: string) => ({
+      id, deviceId: `device-${id}`, lastProgressAt: minutesAgo(20), startedAt: minutesAgo(40), errorLog: null,
+      deviceStatus: 'offline', deviceLastSeenAt: minutesAgo(20),
+    });
+    selectMock
+      .mockReturnValueOnce(selectChain([stalled('a'), stalled('b')]))
+      .mockReturnValueOnce(selectChain([]));
+    const returning = vi.fn().mockResolvedValueOnce([{ id: 'a' }]).mockResolvedValueOnce([{ id: 'b' }]);
+    updateMock.mockImplementation(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning })) })) }));
+
+    expect(await reapStaleBackupJobs()).toBe(2);
+    expect(nudgeConnectionHealth).toHaveBeenCalledTimes(1);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('backup_destination');
+
+    vi.mocked(nudgeConnectionHealth).mockClear();
+    selectMock.mockReturnValueOnce(selectChain([])).mockReturnValueOnce(selectChain([]));
+    expect(await reapStaleBackupJobs()).toBe(0);
+    expect(nudgeConnectionHealth).not.toHaveBeenCalled();
   });
 
   it('reaps a stalled running job (rule A) on an online device and queues a stop command', async () => {

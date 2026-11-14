@@ -42,6 +42,17 @@ vi.mock('../db', () => ({
 
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
+// #11702: the permission reads go through the role-inheritance resolver. By
+// default the mock delegates to the queued db rows (so the pre-existing tests
+// keep feeding grant rows through the same queue); inheritance tests override
+// it per call.
+vi.mock('./roleInheritance', async () => {
+  const { db: mockedDb } = await import('../db');
+  return {
+    getRoleGrantRows: vi.fn(async () => (mockedDb.select as any)()),
+  };
+});
+
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -77,6 +88,7 @@ import {
 } from './siteScope';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { captureException } from './sentry';
+import { getRoleGrantRows } from './roleInheritance';
 
 const ORG_A = '11111111-1111-1111-1111-111111111111';
 const ORG_B = '22222222-2222-2222-2222-222222222222';
@@ -1427,11 +1439,9 @@ describe('live report authority resolution', () => {
 
     await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'delete'))
       .resolves.toEqual({ ok: false, reason: 'permission_removed' });
-    const renderedPermissionWhere = renderSql(
-      liveDbState.whereConditions.at(-1) as SQL,
-    );
-    expect(renderedPermissionWhere.params).toContain('delete');
-    expect(renderedPermissionWhere.params).not.toContain('read');
+    // The only grant row is reports:read, so the delete check is refused on
+    // the JS match (the SQL pre-filter moved into the resolver, #11702).
+    expect(getRoleGrantRows).toHaveBeenCalledWith([ROLE_PARTNER]);
   });
 
   it('fails closed when duplicate partner memberships exist', async () => {
@@ -1463,11 +1473,7 @@ describe('live report authority resolution', () => {
       const result = await resolveLiveReportAuthority(USER_ID, ORG_A, action);
 
       expect(result.ok).toBe(true);
-      const renderedPermissionWhere = renderSql(
-        liveDbState.whereConditions.at(-1) as SQL,
-      );
-      expect(renderedPermissionWhere.params).toContain('reports');
-      expect(renderedPermissionWhere.params).toContain(action);
+      expect(getRoleGrantRows).toHaveBeenCalledWith([ROLE_ORG]);
     },
   );
 
@@ -1502,16 +1508,9 @@ describe('live report authority resolution', () => {
         ok: true,
         authority: { scope: unrestricted() },
       });
-      // The SQL filter must let wildcard rows through — a JS-only match would
-      // pass this mock but never see the row against a real database.
-      const renderedPermissionWhere = renderSql(
-        liveDbState.whereConditions.at(-1) as SQL,
-      );
-      expect(renderedPermissionWhere.params).toContain('reports');
-      expect(renderedPermissionWhere.params).toContain('read');
-      expect(
-        renderedPermissionWhere.params.filter((param) => param === '*'),
-      ).toHaveLength(2);
+      // The resolver returns every grant row (no SQL pre-filter), so wildcard
+      // rows reach the JS permissionGrantMatches check.
+      expect(getRoleGrantRows).toHaveBeenCalledWith([ROLE_PARTNER]);
     },
   );
 
@@ -2008,14 +2007,7 @@ describe('live report authority resolution', () => {
     // run and the last captured WHERE is the org-branch permission query —
     // the one whose SQL filter must let the two '*' params through.
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
-    const renderedPermissionWhere = renderSql(
-      liveDbState.whereConditions.at(-1) as SQL,
-    );
-    expect(renderedPermissionWhere.params).toContain('reports');
-    expect(renderedPermissionWhere.params).toContain('read');
-    expect(
-      renderedPermissionWhere.params.filter((param) => param === '*'),
-    ).toHaveLength(2);
+    expect(getRoleGrantRows).toHaveBeenCalledWith([ROLE_ORG]);
   });
 
   it('honors a *|* grant in the batched partner fallback', async () => {
@@ -2056,12 +2048,7 @@ describe('live report authority resolution', () => {
       ok: true,
       authority: { scope: unrestricted() },
     });
-    const renderedPermissionWhere = renderSql(
-      liveDbState.whereConditions.at(-1) as SQL,
-    );
-    expect(
-      renderedPermissionWhere.params.filter((param) => param === '*'),
-    ).toHaveLength(2);
+    expect(getRoleGrantRows).toHaveBeenCalledWith([ROLE_PARTNER]);
   });
 
   it('still denies an unrelated wildcard-action grant in the batched fallback', async () => {
@@ -2360,13 +2347,21 @@ describe('live report authority resolution', () => {
           [permission('read')],
         );
 
-        await resolveLiveReportAuthority(USER_ID, ORG_A, 'read_history');
+        // reports:read satisfies read_history (it maps to the read grant)...
+        await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read_history'))
+          .resolves.toMatchObject({ ok: true });
+      });
 
-        const rendered = liveDbState.whereConditions
-          .map((condition) => new PgDialect().sqlToQuery(condition as SQL).params)
-          .flat();
-        expect(rendered).toContain('read');
-        expect(rendered).not.toContain('read_history');
+      it('does not treat a reports:read_history grant row as the read_history permission', async () => {
+        queueRows(
+          [activeUser()],
+          [organization(ORG_A, PARTNER_A, { status: 'suspended' })],
+          [orgMembership(null)],
+          [{ ...permission('read'), action: 'read_history' }],
+        );
+
+        await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read_history'))
+          .resolves.toEqual({ ok: false, reason: 'permission_removed' });
       });
     });
   });
@@ -3165,5 +3160,123 @@ describe('resolver DB failures are logged, not swallowed (#3198 W02 B4)', () => 
       .resolves.toEqual({ ok: false, reason: 'unverifiable_scope' });
     expect(errorSpy).not.toHaveBeenCalled();
     expect(vi.mocked(captureException)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #11702 — report authority honours grants a role holds ONLY through
+ * `parent_role_id` inheritance (resolved by services/roleInheritance.ts), while
+ * still checking the BASE role's ownership.
+ */
+describe('report authority with inherited role grants (#11702)', () => {
+  const PARTNER_A = '44444444-4444-4444-8444-444444444444';
+  const PARTNER_B = '55555555-5555-4555-8555-555555555555';
+  const ROLE_ORG = '66666666-6666-4666-8666-666666666666';
+  const ROLE_PARTNER = '77777777-7777-4777-8777-777777777777';
+  const activeUser = { id: USER_ID, status: 'active', isPlatformAdmin: false, partnerId: PARTNER_A };
+  const org = {
+    id: ORG_A, partnerId: PARTNER_A, status: 'active', deletedAt: null,
+    partnerStatus: 'active', partnerDeletedAt: null,
+  };
+  const inheritedOrgRow = (overrides: Record<string, unknown> = {}) => ({
+    roleId: ROLE_ORG, resource: 'reports', action: 'read',
+    roleScope: 'organization', roleIsSystem: false, roleOrgId: ORG_A, rolePartnerId: PARTNER_A,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    liveDbState.rows.length = 0;
+    liveDbState.projections.length = 0;
+    liveDbState.fromTables.length = 0;
+    liveDbState.whereConditions.length = 0;
+  });
+
+  it('roleGrantsReportAction: honours a reports:read grant held only via inheritance', async () => {
+    // No grant row is queued for the db: only the resolver knows the grant.
+    liveDbState.rows.push([activeUser], [org], [{ roleId: ROLE_ORG, siteIds: null }]);
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([inheritedOrgRow()]);
+
+    await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read')).resolves.toMatchObject({ ok: true });
+    expect(getRoleGrantRows).toHaveBeenCalledWith([ROLE_ORG]);
+  });
+
+  it('roleGrantsReportAction: still refuses when the resolved grants lack reports:read', async () => {
+    liveDbState.rows.push([activeUser], [org], [{ roleId: ROLE_ORG, siteIds: null }]);
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([inheritedOrgRow({ resource: 'tickets' })]);
+
+    await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'permission_removed' });
+  });
+
+  it('roleGrantsReportAction: still refuses a base role owned by another organization', async () => {
+    liveDbState.rows.push([activeUser], [org], [{ roleId: ROLE_ORG, siteIds: null }]);
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([inheritedOrgRow({ roleOrgId: ORG_B })]);
+
+    await expect(resolveLiveReportAuthority(USER_ID, ORG_A, 'read'))
+      .resolves.toEqual({ ok: false, reason: 'permission_removed' });
+  });
+
+  it('roleGrantsAllPermissions: honours required grants held only via inheritance', async () => {
+    liveDbState.rows.push([activeUser], [{ roleId: ROLE_PARTNER }]);
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([
+      { roleId: ROLE_PARTNER, resource: 'invoices', action: 'read', roleScope: 'partner', roleIsSystem: false, roleOrgId: null, rolePartnerId: PARTNER_A },
+    ]);
+
+    await expect(resolveLiveReportTypePermissions(
+      USER_ID, { partnerId: PARTNER_A }, [{ resource: 'invoices', action: 'read' }],
+    )).resolves.toBe(true);
+  });
+
+  it('roleGrantsAllPermissions: refuses when the base role belongs to another partner', async () => {
+    liveDbState.rows.push([activeUser], [{ roleId: ROLE_PARTNER }]);
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([
+      { roleId: ROLE_PARTNER, resource: 'invoices', action: 'read', roleScope: 'partner', roleIsSystem: false, roleOrgId: null, rolePartnerId: PARTNER_B },
+    ]);
+
+    await expect(resolveLiveReportTypePermissions(
+      USER_ID, { partnerId: PARTNER_A }, [{ resource: 'invoices', action: 'read' }],
+    )).resolves.toBe(false);
+  });
+
+  it('batch resolver: honours organization and partner roles that hold reports:read only via inheritance', async () => {
+    liveDbState.rows.push(
+      [activeUser],
+      [org, { ...org, id: ORG_B }],
+      [{ orgId: ORG_B, roleId: ROLE_ORG, siteIds: null }],
+      [{ partnerId: PARTNER_A, roleId: ROLE_PARTNER, orgAccess: 'all', orgIds: null }],
+    );
+    vi.mocked(getRoleGrantRows)
+      .mockResolvedValueOnce([inheritedOrgRow({ roleOrgId: ORG_B })])
+      .mockResolvedValueOnce([
+        { roleId: ROLE_PARTNER, resource: 'reports', action: 'read', roleScope: 'partner', roleIsSystem: false, roleOrgId: null, rolePartnerId: PARTNER_A },
+      ]);
+    const auth = {
+      user: { id: USER_ID, email: 'x@example.com', name: 'X', isPlatformAdmin: false },
+      token: {}, partnerId: PARTNER_A, orgId: null, scope: 'partner',
+      accessibleOrgIds: [ORG_A, ORG_B], orgCondition: vi.fn(), canAccessOrg: () => true,
+    } as any;
+
+    const result = await resolveRequestReportAuthorityMap(auth, [ORG_A, ORG_B], 'read');
+
+    expect(result.get(ORG_A)).toMatchObject({ ok: true });
+    expect(result.get(ORG_B)).toMatchObject({ ok: true });
+  });
+
+  it('batch resolver: refuses an organization role whose resolved rows are owned by another org', async () => {
+    liveDbState.rows.push(
+      [activeUser],
+      [org],
+      [{ orgId: ORG_A, roleId: ROLE_ORG, siteIds: null }],
+    );
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([inheritedOrgRow({ roleOrgId: ORG_B })]);
+    const auth = {
+      user: { id: USER_ID, email: 'x@example.com', name: 'X', isPlatformAdmin: false },
+      token: {}, partnerId: PARTNER_A, orgId: ORG_A, scope: 'organization',
+      accessibleOrgIds: [ORG_A], orgCondition: vi.fn(), canAccessOrg: () => true,
+    } as any;
+
+    const result = await resolveRequestReportAuthorityMap(auth, [ORG_A], 'read');
+    expect(result.get(ORG_A)).toEqual({ ok: false, reason: 'permission_removed' });
   });
 });

@@ -18,11 +18,19 @@
  * un-verify a model the admin just fixed).
  *
  * Writes capabilities + updated_at only: never enabled, prices or anything else.
+ *
+ * #11397: the run's per-surface `surface_turn` entries are merged into the
+ * stored `breeze_surface_readiness` map under the same lock (other surfaces'
+ * entries are kept). An entry whose surface now resolves to another tool
+ * profile than the run used (the profile, allow-list or effective window
+ * changed under the run) is dropped: superseded per surface, never written.
  */
-import { and, eq } from 'drizzle-orm';
-import { isGatewayConnectionKind } from '@breeze/shared';
+import { and, eq, or, sql } from 'drizzle-orm';
+import { TOOL_REQUIRING_SURFACES, isGatewayConnectionKind, type AiSurface } from '@breeze/shared';
 import { db } from '../../db';
-import { partnerAiConnections, partnerAiModels } from '../../db/schema';
+import { aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
+import { SURFACE_READINESS_KEY, currentReadinessEntries, invalidReadinessSurfaces, mergeSurfaceReadiness, type SurfaceReadinessMap } from './surfaceReadiness';
+import { captureException } from '../sentry';
 import { endpointFingerprint, readVerification } from './gatewayCapabilities';
 import { inPartnerRegistryWrite } from './offeringWrites';
 import { RegistryWriteError } from './registryWriteErrors';
@@ -40,6 +48,8 @@ export interface OfferingVerificationWrite {
   startedAt: Date;
   /** verifiedCapabilitiesTree(record, …). */
   capabilities: Record<string, unknown>;
+  /** #11397: this run's surface_turn entries (merged into the stored map). */
+  surfaceReadiness?: SurfaceReadinessMap;
 }
 
 /**
@@ -74,7 +84,16 @@ async function writeLocked(input: OfferingVerificationWrite): Promise<OfferingVe
   }
 
   const [offering] = await db
-    .select({ capabilities: partnerAiModels.capabilities })
+    .select({
+      capabilities: partnerAiModels.capabilities,
+      toolProfile: partnerAiModels.toolProfile,
+      toolAllowlist: partnerAiModels.toolAllowlist,
+      contextWindowOverride: partnerAiModels.contextWindowOverride,
+      contextWindowDiscovered: partnerAiModels.contextWindowDiscovered,
+      contextWindowObserved: partnerAiModels.contextWindowObserved,
+      contextWindowObservedAt: partnerAiModels.contextWindowObservedAt,
+      contextWindowObservedConfigVersion: partnerAiModels.contextWindowObservedConfigVersion,
+    })
     .from(partnerAiModels)
     .where(and(
       eq(partnerAiModels.id, input.offeringId),
@@ -87,9 +106,25 @@ async function writeLocked(input: OfferingVerificationWrite): Promise<OfferingVe
   const existing = readVerification(offering.capabilities);
   if (existing && Date.parse(existing.at) >= input.startedAt.getTime()) return 'superseded';
 
+  // A record the reader would drop as malformed would silently turn its
+  // surface's refusal off: report the drift here, where it is written.
+  const invalid = invalidReadinessSurfaces(input.surfaceReadiness ?? {});
+  if (invalid.length > 0) {
+    captureException(new Error(`Surface readiness record(s) fail the stored schema: ${invalid.join(', ')}`), undefined, { service: 'aiModels', stage: 'offering_surface_turn' });
+  }
+  const valid = Object.fromEntries(Object.entries(input.surfaceReadiness ?? {}).filter(([s]) => !invalid.includes(s as never)));
+  const { kept, dropped } = currentReadinessEntries(valid, offering, conn.configVersion);
+  if (dropped.length > 0) {
+    console.info(`[aiModels] offering ${input.offeringId}: surface turn(s) superseded by a tool profile change: ${dropped.join(', ')}`);
+  }
+  const readiness = mergeSurfaceReadiness(offering.capabilities, kept);
+  const capabilities = Object.keys(readiness).length > 0
+    ? { ...input.capabilities, [SURFACE_READINESS_KEY]: readiness }
+    : input.capabilities;
+
   await db
     .update(partnerAiModels)
-    .set({ capabilities: input.capabilities, updatedAt: new Date() })
+    .set({ capabilities, updatedAt: new Date() })
     .where(and(eq(partnerAiModels.id, input.offeringId), eq(partnerAiModels.partnerId, input.partnerId)));
   return 'written';
 }
@@ -115,4 +150,27 @@ export async function writeOfferingVerification(
       throw error;
     }
   }
+}
+
+/**
+ * #11397: the tool surfaces an offering is explicitly assigned to on any of
+ * its partner's assignment rows (partner or org level): as the default, in a
+ * permitted list or in a fallback list. A row that permits every model
+ * (permitted list NULL) does not name it, so it does not count: verification
+ * runs a surface turn only where the offering was deliberately put.
+ */
+export async function listOfferingToolSurfaces(partnerId: string, offeringId: string): Promise<AiSurface[]> {
+  const rows = await db
+    .selectDistinct({ surface: aiModelAssignments.surface })
+    .from(aiModelAssignments)
+    .where(and(
+      eq(aiModelAssignments.offeringPartnerId, partnerId),
+      or(
+        eq(aiModelAssignments.defaultOfferingId, offeringId),
+        sql`${offeringId}::uuid = ANY(${aiModelAssignments.permittedOfferingIds})`,
+        sql`${offeringId}::uuid = ANY(${aiModelAssignments.fallbackOfferingIds})`,
+      ),
+    ));
+  const found = new Set(rows.map((r) => r.surface));
+  return (TOOL_REQUIRING_SURFACES as readonly AiSurface[]).filter((s) => found.has(s));
 }

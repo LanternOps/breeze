@@ -118,6 +118,8 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../db', () => ({
   db: h.db,
   hasDbAccessContext: () => true,
+  // W7: the held context is a request (partner) context, so W5 reads go through runOutsideDbContext.
+  getCurrentDbAccessContext: () => ({ scope: 'partner' }),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   withDbTransaction: (fn: () => unknown) => fn(),
   withDbTransactionIfHeld: (fn: () => unknown) => fn(),
@@ -553,7 +555,7 @@ describe('sso_only save flow (D12)', () => {
       code: 'PORTAL_ACCESS_POLICY_SSO_ONLY_CONFIRM_REQUIRED',
       impact: { flips: [FLIP], impactDigest: DIGEST },
     });
-    expect(h.lockImpact).toHaveBeenCalledWith({ kind: 'org', orgId: ORG_ID, partnerId: 'p-1' }, { passwordMode: 'sso_only' });
+    expect(h.lockImpact).toHaveBeenCalledWith({ kind: 'org', orgId: ORG_ID, partnerId: 'p-1' }, { passwordMode: 'sso_only' }, new Set());
     expect(h.db.insert).not.toHaveBeenCalled();
     expect(h.clearPasswords).not.toHaveBeenCalled();
     expect(h.auditSpy).not.toHaveBeenCalled();
@@ -615,7 +617,7 @@ describe('sso_only save flow (D12)', () => {
     expect(refused.status).toBe(409);
     const { impact } = await refused.json();
     expect(impact.flips).toEqual([FLIP, FLIP_2]);
-    expect(h.lockImpact).toHaveBeenCalledWith({ kind: 'partner', partnerId: 'p-1' }, { entraEnabled: true, passwordMode: 'sso_only' });
+    expect(h.lockImpact).toHaveBeenCalledWith({ kind: 'partner', partnerId: 'p-1' }, { entraEnabled: true, passwordMode: 'sso_only' }, new Set());
     expect(h.db.insert).not.toHaveBeenCalled();
 
     h.clearPasswords.mockResolvedValue({ clearedUserIds: ['pu-7'] });

@@ -142,17 +142,18 @@ func seedSnapshot(t *testing.T, id string, lay *layout.Manifest) *memProvider {
 	t.Helper()
 	p := &memProvider{files: map[string][]byte{}}
 	content := map[string][]byte{
-		"/etc/hostname":                    []byte("srv-1\n"),
-		"/etc/fstab":                       []byte("UUID=" + testRootFSUUID + " / ext4 defaults 0 1\nUUID=ABCD-1234 /boot/efi vfat umask=0077 0 1\n"),
-		"/etc/machine-id":                  []byte("0123456789abcdef0123456789abcdef\n"),
-		"/etc/breeze/agent.yaml":           []byte("server_url: https://example.invalid\nagent_id: a1\ndevice_id: d1\nauth_token: t\n"),
-		"/etc/breeze/secrets.yaml":         []byte("auth_token: t\n"),
-		"/usr/sbin/update-grub":            []byte("#!/bin/sh\n"),
-		"/usr/bin/tool":                    []byte("#!/bin/sh\n"),
-		"/boot/efi/EFI/ubuntu/shimx64.efi": []byte("shim"),
-		"/boot/efi/EFI/ubuntu/grubx64.efi": []byte("grub"),
-		"/boot/efi/EFI/BOOT/BOOTX64.EFI":   []byte("shim"),
-		"/boot/grub/grub.cfg":              []byte("set default=0\n"),
+		"/etc/hostname":                       []byte("srv-1\n"),
+		"/etc/fstab":                          []byte("UUID=" + testRootFSUUID + " / ext4 defaults 0 1\nUUID=ABCD-1234 /boot/efi vfat umask=0077 0 1\n"),
+		"/etc/machine-id":                     []byte("0123456789abcdef0123456789abcdef\n"),
+		"/etc/breeze/agent.yaml":              []byte("server_url: https://example.invalid\nagent_id: a1\ndevice_id: d1\nauth_token: t\n"),
+		"/etc/breeze/secrets.yaml":            []byte("auth_token: t\n"),
+		"/usr/sbin/update-grub":               []byte("#!/bin/sh\n"),
+		"/usr/lib/systemd/system/ssh.service": []byte("[Service]\n"),
+		"/usr/bin/tool":                       []byte("#!/bin/sh\n"),
+		"/boot/efi/EFI/ubuntu/shimx64.efi":    []byte("shim"),
+		"/boot/efi/EFI/ubuntu/grubx64.efi":    []byte("grub"),
+		"/boot/efi/EFI/BOOT/BOOTX64.EFI":      []byte("shim"),
+		"/boot/grub/grub.cfg":                 []byte("set default=0\n"),
 	}
 	var files []backup.SnapshotFile
 	for src, b := range content {
@@ -334,7 +335,6 @@ func TestRun_FullLinuxFlowOnFakeSystem(t *testing.T) {
 	res, err := Run(context.Background(), Options{
 		SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetImage, Path: filepath.Join(dir, "t.img"), ImageSizeBytes: 100 * GiB},
 		Identity: IdentityOriginal, Marker: &Marker{RecoveryID: "rec-1", Nonce: "n-1"}, StateDir: dir, StagingRoot: staging, System: sys,
-		RegenerateInitramfs: true,
 		Progress: func(ph Phase, _ string, _, _ int64) {
 			if len(phases) == 0 || phases[len(phases)-1] != ph {
 				phases = append(phases, ph)
@@ -377,21 +377,15 @@ func TestRun_FullLinuxFlowOnFakeSystem(t *testing.T) {
 	}
 	// System state applied offline, through bmr's own exec seam (not
 	// visible to fakeSystem — see bmrCall's doc comment above).
-	if !hasBmrCall(bmrCallsSnapshot(), "systemctl --root="+staging+" enable ssh.service") {
+	if !hasBmrCall(bmrCallsSnapshot(), "systemctl --root="+staging+" enable -- ssh.service") {
 		t.Errorf("services not enabled offline via bmr seam: %+v", bmrCallsSnapshot())
 	}
-	// Boot: bind mounts, grub-install in chroot with the EFI target, config regen, initramfs.
-	for _, want := range []string{
-		"mount --bind /dev " + filepath.Join(staging, "dev"),
-		"mount --bind /proc " + filepath.Join(staging, "proc"),
-		"mount --bind /sys " + filepath.Join(staging, "sys"),
-		"chroot " + staging + " grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --no-nvram --force-extra-removable",
-		"chroot " + staging + " update-grub",
-		"chroot " + staging + " update-initramfs -u -k all",
-	} {
-		if !sys.has(want) {
-			t.Errorf("missing %q\n%s", want, sys.dump())
-		}
+	// Boot: nothing from the restored tree runs and the host's device and
+	// kernel interfaces are never bound into it; the restored fallback
+	// loader is kept.
+	assertNoRestoredTool(t, sys)
+	if b, err := os.ReadFile(filepath.Join(staging, "boot", "efi", "EFI", "BOOT", "BOOTX64.EFI")); err != nil || string(b) != "shim" {
+		t.Errorf("fallback loader = %q err=%v", b, err)
 	}
 	// Identity original: marker written, machine-id untouched.
 	var marker map[string]string
@@ -419,16 +413,13 @@ func TestRun_FullLinuxFlowOnFakeSystem(t *testing.T) {
 // a snapshot taken before the backup-side fix (collectBackupFilesFromPaths
 // force-recording an excluded directory's own manifest entry) never
 // contains them at all — restore alone leaves the staging root without
-// them. boot()'s pseudoMounts/BindMount calls normally paper over this on a
-// real system (a bind mount creates its target), but a SkipBoot run (or any
-// run where boot() is skipped/fails before reaching them) must not depend on
-// that: restoreTree's ensureMountpoints call is the belt-and-braces fix.
+// them. restoreTree's ensureMountpoints call creates them for every run,
+// SkipBoot runs included.
 //
-// This proves it in isolation: SkipBoot means boot() never executes (and
-// fakeSystem's own BindMount, which happens to os.MkdirAll its target, never
-// fires either), and the seeded snapshot's content map (seedSnapshot) has no
-// proc/sys/dev/run/tmp entries — so these directories can only exist
-// afterward because ensureMountpoints created them.
+// This proves it in isolation: SkipBoot means boot() never executes, and the
+// seeded snapshot's content map (seedSnapshot) has no proc/sys/dev/run/tmp
+// entries — so these directories can only exist afterward because
+// ensureMountpoints created them.
 func TestRun_EnsureMountpointsSurvivesSkipBoot(t *testing.T) {
 	skipUnlessLinuxSystemState(t)
 	resetBmrCalls()
@@ -447,7 +438,7 @@ func TestRun_EnsureMountpointsSurvivesSkipBoot(t *testing.T) {
 		t.Fatalf("res = %+v\n%s", res, sys.dump())
 	}
 	if sys.has("mount --bind") {
-		t.Fatalf("SkipBoot run must never bind-mount (that would mask the defect this test checks): %s", sys.dump())
+		t.Fatalf("a rebuild never bind-mounts host directories into the restored tree: %s", sys.dump())
 	}
 	for _, name := range []string{"proc", "sys", "dev", "run"} {
 		fi, statErr := os.Stat(filepath.Join(staging, name))
@@ -469,7 +460,7 @@ func TestRun_ResumeSkipsProvisionAndReusesPlan(t *testing.T) {
 	resetBmrCalls()
 	dir := t.TempDir()
 	sys := newFakeSystem(dir, 100*GiB)
-	sys.fail["chroot"] = os.ErrPermission // first run dies in boot
+	sys.arch = "arm64" // first run dies in boot: the ESP has no arm64 fallback loader
 	p := seedSnapshot(t, "snap-1", testLayout())
 	opts := Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys}
 	res, err := Run(context.Background(), opts)
@@ -504,7 +495,7 @@ func TestRun_ResumeImageTargetReattachesLoop(t *testing.T) {
 	resetBmrCalls()
 	dir := t.TempDir()
 	sys := newFakeSystem(dir, 100*GiB)
-	sys.fail["chroot"] = os.ErrPermission // first run dies in boot
+	sys.arch = "arm64" // first run dies in boot: the ESP has no arm64 fallback loader
 	p := seedSnapshot(t, "snap-1", testLayout())
 	img := filepath.Join(dir, "t.img")
 	opts := Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetImage, Path: img, ImageSizeBytes: 100 * GiB}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys}
@@ -549,7 +540,7 @@ func TestRun_ResumeDiskTargetNeverCallsLosetup(t *testing.T) {
 	resetBmrCalls()
 	dir := t.TempDir()
 	sys := newFakeSystem(dir, 100*GiB)
-	sys.fail["chroot"] = os.ErrPermission
+	sys.arch = "arm64" // first run dies in boot: the ESP has no arm64 fallback loader
 	p := seedSnapshot(t, "snap-1", testLayout())
 	opts := Options{SnapshotID: "snap-1", Provider: p, Target: Target{Kind: TargetDisk, Path: "/dev/sdb"}, Identity: IdentityNew, StateDir: dir, StagingRoot: filepath.Join(dir, "mnt"), System: sys}
 	if _, err := Run(context.Background(), opts); err == nil {

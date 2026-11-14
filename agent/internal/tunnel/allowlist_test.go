@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -78,7 +79,8 @@ func TestParseAllowlistRule(t *testing.T) {
 	}
 }
 
-func TestIsBlocked(t *testing.T) {
+func TestResolveDestinationDenyList(t *testing.T) {
+	allowAll := []AllowlistRule{mustParseRule(t, "0.0.0.0/0:*"), mustParseRule(t, "::/0:*")}
 	tests := []struct {
 		name    string
 		host    string
@@ -101,16 +103,17 @@ func TestIsBlocked(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			blocked, reason := IsBlocked(tt.host, tt.port, tt.isVNC)
-			if blocked != tt.blocked {
-				t.Fatalf("IsBlocked(%q, %d, %v) = %v (%s), want %v",
-					tt.host, tt.port, tt.isVNC, blocked, reason, tt.blocked)
+			_, err := ResolveDestination(tt.host, tt.port, tt.isVNC, allowAll)
+			blocked := err != nil && strings.Contains(err.Error(), "blocked")
+			if blocked != tt.blocked || (!tt.blocked && err != nil) {
+				t.Fatalf("ResolveDestination(%q, %d, %v) err = %v, want blocked=%v",
+					tt.host, tt.port, tt.isVNC, err, tt.blocked)
 			}
 		})
 	}
 }
 
-func TestIsAllowed(t *testing.T) {
+func TestResolveDestinationRules(t *testing.T) {
 	rules := []AllowlistRule{
 		mustParseRule(t, "192.168.0.0/16:80-443"),
 		mustParseRule(t, "10.0.0.0/8:*"),
@@ -132,20 +135,20 @@ func TestIsAllowed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			allowed := IsAllowed(tt.host, tt.port, rules)
-			if allowed != tt.allowed {
-				t.Fatalf("IsAllowed(%q, %d) = %v, want %v",
-					tt.host, tt.port, allowed, tt.allowed)
+			_, err := ResolveDestination(tt.host, tt.port, false, rules)
+			if (err == nil) != tt.allowed {
+				t.Fatalf("ResolveDestination(%q, %d) err = %v, want allowed=%v",
+					tt.host, tt.port, err, tt.allowed)
 			}
 		})
 	}
 }
 
-func TestIsAllowed_EmptyRules(t *testing.T) {
-	if IsAllowed("192.168.1.1", 80, nil) {
+func TestResolveDestinationEmptyRulesDeny(t *testing.T) {
+	if _, err := ResolveDestination("192.168.1.1", 80, false, nil); err == nil {
 		t.Fatal("empty rules should deny all")
 	}
-	if IsAllowed("192.168.1.1", 80, []AllowlistRule{}) {
+	if _, err := ResolveDestination("192.168.1.1", 80, false, []AllowlistRule{}); err == nil {
 		t.Fatal("empty rules should deny all")
 	}
 }

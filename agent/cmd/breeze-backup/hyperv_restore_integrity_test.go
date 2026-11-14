@@ -239,7 +239,7 @@ func (r *stagingRecorder) Download(key, local string) error {
 func TestRestoreHypervSnapshotFiles_StageHashPublish(t *testing.T) {
 	const id = "hyperv-accounting-2-abcd"
 	storeDir := t.TempDir()
-	base := providers.NewLocalProvider(storeDir)
+	base := privateTestLocalProvider(t, storeDir)
 	manifest, obj := seedAppHypervSnapshot(t, base, id, false)
 	e, err := integrity.Parse(sessionPayloadJSON(t, appAttestedBlock(id, obj)))
 	if err != nil {

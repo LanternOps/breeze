@@ -41,7 +41,7 @@ func TestVMRestoreCommands_PassIntegrityExpectation(t *testing.T) {
 		got = append(got, cfg.Integrity)
 		return &hyperv.InstantBootResult{Status: "completed"}, nil
 	}
-	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: providers.NewLocalProvider(t.TempDir())})
+	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: privateTestLocalProvider(t, t.TempDir())})
 	run := map[string]func(p map[string]any) backupipc.BackupCommandResult{
 		"vm_restore_from_backup": func(p map[string]any) backupipc.BackupCommandResult {
 			return execVMRestoreFromBackup(context.Background(), sessionPayloadJSON(t, p), mgr)

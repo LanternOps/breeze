@@ -5,16 +5,23 @@ import { navigateTo } from '@/lib/navigation';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { loadStrandedAccounts, sendSsoInvites } from './ssoOnlyActions';
-import type { StrandedPortalAccounts } from './types';
+import { SSO_COPY_KEYS } from './ssoProviderCopy';
+import type { SsoProviderSet, StrandedPortalAccounts } from './types';
 
 const toLogin = () => void navigateTo('/login', { replace: true });
 
 /**
- * Accounts that effective `sso_only` leaves unable to sign in: no Microsoft
- * identity, so they need a Microsoft sign-in invite (portal registration W4
- * #11381, spec §5.11). Hidden when there are none. `reloadKey` changes reload it.
+ * Accounts that effective `sso_only` leaves unable to sign in: no SSO
+ * identity, so they need a sign-in invite (portal registration W4 #11381, spec
+ * §5.11). Hidden when there are none. `reloadKey` changes reload it.
+ * `providers` (W7 #11384) is the org's effective SSO providers, which the copy
+ * names; the invite route is the same for Microsoft and Google.
  */
-export function StrandedAccountsList({ orgId, reloadKey = 0 }: { orgId: string; reloadKey?: number }) {
+export function StrandedAccountsList({
+  orgId,
+  reloadKey = 0,
+  providers = 'microsoft',
+}: { orgId: string; reloadKey?: number; providers?: SsoProviderSet }) {
   const { t } = useTranslation('settings');
   const [state, setState] = useState<{ status: 'loading' } | { status: 'error' } | { status: 'ready'; data: StrandedPortalAccounts }>({ status: 'loading' });
   const [busy, setBusy] = useState<string | null>(null);
@@ -40,11 +47,11 @@ export function StrandedAccountsList({ orgId, reloadKey = 0 }: { orgId: string; 
   const invite = async (ids: string[], key: string) => {
     setBusy(key);
     try {
-      await sendSsoInvites(orgId, ids, t, toLogin);
+      await sendSsoInvites(orgId, ids, t, toLogin, providers);
     } catch (err) {
       if (!(err instanceof ActionError)) {
         console.error('[StrandedAccountsList] invite failed', err);
-        showToast({ type: 'error', message: t('portalAccessPolicy.stranded.errors.invite') });
+        showToast({ type: 'error', message: t(/* i18n-dynamic */ SSO_COPY_KEYS.inviteError[providers]) });
       }
     } finally {
       setBusy(null);
@@ -78,7 +85,7 @@ export function StrandedAccountsList({ orgId, reloadKey = 0 }: { orgId: string; 
           {t('portalAccessPolicy.stranded.inviteAll')}
         </button>
       </div>
-      <p className="text-xs text-muted-foreground">{t('portalAccessPolicy.stranded.description')}</p>
+      <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ SSO_COPY_KEYS.strandedDescription[providers])}</p>
       <ul className="divide-y rounded-md border bg-card">
         {items.map((a) => (
           <li key={a.portalUserId} data-testid={`portal-access-stranded-row-${a.portalUserId}`} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
@@ -90,7 +97,7 @@ export function StrandedAccountsList({ orgId, reloadKey = 0 }: { orgId: string; 
               onClick={() => void invite([a.portalUserId], a.portalUserId)}
               className="shrink-0 rounded-md border px-2 py-1 font-medium hover:bg-muted/50 disabled:opacity-50"
             >
-              {t('portalAccessPolicy.stranded.invite')}
+              {t(/* i18n-dynamic */ SSO_COPY_KEYS.strandedInvite[providers])}
             </button>
           </li>
         ))}

@@ -11,31 +11,22 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
 // psRunner executes a PowerShell script and returns its stdout.
 type psRunner func(script string) (string, error)
 
 // escapePSString escapes a value for use inside a PowerShell single-quoted
-// string literal. PowerShell treats the typographic single quotes
-// (U+2018..U+201B) as quote characters too, so every one of them is doubled,
-// not just the ASCII apostrophe.
+// string literal (see psscript.EscapeSingleQuoted).
 func escapePSString(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		b.WriteRune(r)
-		switch r {
-		case '\'', '‘', '’', '‚', '‛':
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	return psscript.EscapeSingleQuoted(s)
 }
 
 // psQuote returns s as a complete PowerShell single-quoted string literal.
 func psQuote(s string) string {
-	return "'" + escapePSString(s) + "'"
+	return psscript.Quote(s)
 }
 
 var vmIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)

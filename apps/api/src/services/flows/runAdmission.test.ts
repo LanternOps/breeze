@@ -144,19 +144,20 @@ describe('claimRunSlot', () => {
 describe('assertActiveCapacity / assertFlowRunAdmission', () => {
   it('active cap 1,000 counts parked runs (the count covers every active status)', async () => {
     h.store.countActiveRunsForOwner.mockResolvedValueOnce(999);
-    await expect(assertActiveCapacity(OWNER)).resolves.toEqual({ ok: true });
+    await expect(assertActiveCapacity(OWNER, RUN.orgId)).resolves.toEqual({ ok: true });
     h.store.countActiveRunsForOwner.mockResolvedValueOnce(1000);
-    await expect(assertActiveCapacity(OWNER)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
+    await expect(assertActiveCapacity(OWNER, RUN.orgId)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
   });
 
   it('assertFlowRunAdmission checks the active cap first', async () => {
     h.store.countActiveRunsForOwner.mockResolvedValueOnce(1000);
-    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC(), at: AT })).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
+    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC(), at: AT, runOrgId: RUN.orgId })).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
     expect(readFlowUsage).not.toHaveBeenCalled();
     h.store.countActiveRunsForOwner.mockResolvedValueOnce(3);
-    await expect(assertFlowRunAdmission(PARTNER_OWNER, RUN.flowId, { doc: DOC(), at: AT }))
+    await expect(assertFlowRunAdmission(PARTNER_OWNER, RUN.flowId, { doc: DOC(), at: AT, runOrgId: RUN.orgId }))
       .resolves.toEqual({ ok: true, caps: { flowCap: 10, ownerCap: 100 } });
-    expect(h.store.countActiveRunsForOwner).toHaveBeenLastCalledWith(PARTNER_OWNER);
+    // A partner-wide flow's active runs are counted in the run's own org.
+    expect(h.store.countActiveRunsForOwner).toHaveBeenLastCalledWith(PARTNER_OWNER, RUN.orgId);
     expect(resolveFlowLimits).toHaveBeenLastCalledWith(PARTNER_OWNER);
     expect(readFlowUsage).toHaveBeenLastCalledWith(RUN.flowId, PARTNER_OWNER, AT);
   });
@@ -164,19 +165,19 @@ describe('assertActiveCapacity / assertFlowRunAdmission', () => {
   it('refuses early when this month is already at the flow cap or the owner cap (W5)', async () => {
     h.store.countActiveRunsForOwner.mockResolvedValue(0);
     vi.mocked(readFlowUsage).mockResolvedValueOnce({ flowRuns: 10, ownerRuns: 10 });
-    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC(), at: AT })).resolves.toEqual({ ok: false, error: 'flow_monthly_cap_reached' });
+    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC(), at: AT, runOrgId: RUN.orgId })).resolves.toEqual({ ok: false, error: 'flow_monthly_cap_reached' });
     vi.mocked(readFlowUsage).mockResolvedValueOnce({ flowRuns: 9, ownerRuns: 100 });
-    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC(), at: AT })).resolves.toEqual({ ok: false, error: 'owner_monthly_cap_reached' });
+    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC(), at: AT, runOrgId: RUN.orgId })).resolves.toEqual({ ok: false, error: 'owner_monthly_cap_reached' });
     vi.mocked(readFlowUsage).mockResolvedValueOnce({ flowRuns: 9, ownerRuns: 99 });
-    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC(), at: AT })).resolves.toMatchObject({ ok: true });
+    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC(), at: AT, runOrgId: RUN.orgId })).resolves.toMatchObject({ ok: true });
   });
 
   it("the document's limits.monthlyRuns lowers the flow cap it returns", async () => {
     h.store.countActiveRunsForOwner.mockResolvedValue(0);
-    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC({ monthlyRuns: 3 }), at: AT }))
+    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC({ monthlyRuns: 3 }), at: AT, runOrgId: RUN.orgId }))
       .resolves.toEqual({ ok: true, caps: { flowCap: 3, ownerCap: 100 } });
     vi.mocked(readFlowUsage).mockResolvedValueOnce({ flowRuns: 3, ownerRuns: 3 });
-    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC({ monthlyRuns: 3 }), at: AT }))
+    await expect(assertFlowRunAdmission(OWNER, RUN.flowId, { doc: DOC({ monthlyRuns: 3 }), at: AT, runOrgId: RUN.orgId }))
       .resolves.toEqual({ ok: false, error: 'flow_monthly_cap_reached' });
   });
 });

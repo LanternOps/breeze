@@ -39,6 +39,7 @@ import { readTaskSpentCents } from './taskLimitsLoader';
 import { OPERATOR_TASK_ACTOR, type HumanWorkDbHandle } from './humanWorkService';
 import { assertTicketNotMerged } from '../ticketMerge/errors';
 import { lockTicketForWrite } from '../ticketRowLock';
+import { JWT_FIRST_IN_RUN } from '../redactionPatterns';
 
 export const COMPLETION_RECORD_MAX_CHARS = 12_000;
 const NARRATIVE_MAX_CHARS = 2_000;
@@ -139,8 +140,16 @@ const SECRET_CAMEL = /[a-z](Secret|Password|Passwd|Token|ApiKey|PrivateKey)s?(?!
  * Value shapes, keyword or not: a JWT, cloud key prefixes, or a long
  * high-entropy run. The run excludes `-`, so a GUID (hyphenated groups of at
  * most 12) never matches — group and object ids are ordinary record content.
+ *
+ * Linear time: the JWT shape tries only the first `eyJ` of a run
+ * (JWT_FIRST_IN_RUN), and the long-run shape is tried only where a run of its
+ * characters starts. Both give the same yes/no answer as trying every
+ * position, because a later start in the same run sees a shorter run with no
+ * new characters.
  */
-const SECRET_SHAPES = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b(AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|(?=[A-Za-z0-9+/_-]*\d)(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}/;
+export const SECRET_SHAPES = new RegExp(
+  String.raw`${JWT_FIRST_IN_RUN}eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b(AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|(?<![A-Za-z0-9+/_-])(?=[A-Za-z0-9+/_-]*\d)(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}`,
+);
 /** GUIDs are removed before the shape test, so ids stay readable and `-` can stay in the long-run shape. */
 const GUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const SECRETISH = { test: (s: string) => SECRET_WORDS.test(s) || SECRET_CAMEL.test(s) || SECRET_SHAPES.test(s.replace(GUID, ' ')) };

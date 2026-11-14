@@ -326,7 +326,10 @@ export const patchJobResults = pgTable('patch_job_results', {
   // #4223: latest attempt per (device, patch) for the patch list / device
   // patches install-failure overlay (services/patchInstallFailures.ts).
   devicePatchCreatedIdx: index('idx_patch_job_results_device_patch_created')
-    .on(table.deviceId, table.patchId, table.createdAt)
+    .on(table.deviceId, table.patchId, table.createdAt),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): the age scan
+  // over every status (jobs/historyRetention/patchAndPosture.ts).
+  createdIdx: index('patch_job_results_created_idx').on(table.createdAt)
 }));
 
 export const patchRollbacks = pgTable('patch_rollbacks', {
@@ -341,23 +344,6 @@ export const patchRollbacks = pgTable('patch_rollbacks', {
   output: text('output'),
   errorMessage: text('error_message'),
   initiatedBy: uuid('initiated_by').references(() => users.id, { onDelete: 'set null' }),
-  createdAt: timestamp('created_at').defaultNow().notNull()
-});
-
-export const patchComplianceSnapshots = pgTable('patch_compliance_snapshots', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
-  ringId: uuid('ring_id').references(() => patchPolicies.id),
-  snapshotDate: date('snapshot_date').notNull(),
-  totalDevices: integer('total_devices').notNull().default(0),
-  compliantDevices: integer('compliant_devices').notNull().default(0),
-  nonCompliantDevices: integer('non_compliant_devices').notNull().default(0),
-  criticalMissing: integer('critical_missing').notNull().default(0),
-  importantMissing: integer('important_missing').notNull().default(0),
-  patchesPendingApproval: integer('patches_pending_approval').notNull().default(0),
-  patchesInstalled24h: integer('patches_installed_24h').notNull().default(0),
-  failedInstalls24h: integer('failed_installs_24h').notNull().default(0),
-  detailsByCategory: jsonb('details_by_category').notNull().default({}),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 

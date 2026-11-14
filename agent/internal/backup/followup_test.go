@@ -185,7 +185,7 @@ func TestRunBackupContext_ResumeSweepsStaleUploadTempFiles(t *testing.T) {
 	createTempFile(t, src, "a.txt", "alpha")
 	staging := t.TempDir()
 	store := t.TempDir()
-	provider := providers.NewLocalProvider(store)
+	provider := privateTestLocalProvider(t, store)
 	base := ""
 	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{src}, StagingDir: staging, AgentID: testAgentID,
 		JobID: testJobID, BaseSnapshotID: &base, PublishLeaseExpiresAt: time.Now().Add(4 * time.Hour)})

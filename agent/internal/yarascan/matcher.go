@@ -1,6 +1,7 @@
 package yarascan
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -54,7 +55,12 @@ type Match struct {
 
 // Worker scans files on one goroutine. Not safe for concurrent use.
 type Worker interface {
-	ScanFile(path string) ([]Match, error)
+	// ScanFile scans the first size bytes of the open file f. path names it
+	// for the rules' filename globals and for messages only: the file is read
+	// through f, never reopened by path, so what is scanned (and quoted as
+	// matched-string evidence) is the file the caller opened, checked and
+	// measured, and never more than size bytes of it.
+	ScanFile(f *os.File, size int64, path string) ([]Match, error)
 	Close()
 }
 
@@ -86,6 +92,7 @@ func (m *yaraMatcher) NewWorker() (Worker, error) {
 type yaraWorker struct {
 	s     *yx.Scanner
 	entry *CacheEntry
+	buf   []byte // the file's content, read once per scan and reused
 }
 
 func (w *yaraWorker) ensureScanner() (err error) {
@@ -120,14 +127,27 @@ func (w *yaraWorker) dropScanner() {
 
 func (w *yaraWorker) Close() { w.dropScanner() }
 
-func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
+func (w *yaraWorker) ScanFile(f *os.File, size int64, path string) (out []Match, err error) {
 	if err := w.ensureScanner(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrWorkerUnavailable, err)
 	}
-	var size int64
-	if st, statErr := os.Stat(path); statErr == nil {
-		size = st.Size()
+	if f == nil {
+		return nil, nil // nothing to read: the caller did not open this file
 	}
+	if size < 0 {
+		size = 0
+	}
+	// Read the file once, in one read of at most size bytes (even if it
+	// grows), and scan and quote evidence from that copy: no second read of
+	// the file, and few read calls even for a large file.
+	if int64(cap(w.buf)) < size {
+		w.buf = make([]byte, size)
+	}
+	n, rerr := io.ReadFull(io.NewSectionReader(f, 0, size), w.buf[:size])
+	if rerr != nil && !errors.Is(rerr, io.ErrUnexpectedEOF) && !errors.Is(rerr, io.EOF) {
+		return nil, rerr
+	}
+	data := w.buf[:n]
 	defer func() {
 		if r := recover(); r != nil {
 			// The guest may be in an unknown state: discard this scanner.
@@ -137,6 +157,7 @@ func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 		}
 		if size > recycleAfterBytes {
 			w.dropScanner()
+			w.buf = nil
 		}
 	}()
 	base := filepath.Base(path)
@@ -149,7 +170,7 @@ func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 			return nil, fmt.Errorf("set YARA global %s: %w", name, gerr)
 		}
 	}
-	res, err := w.s.ScanFile(path)
+	res, err := w.s.Scan(data)
 	if err != nil {
 		return nil, err
 	}
@@ -157,14 +178,8 @@ func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 	if len(rules) == 0 {
 		return nil, nil
 	}
-	var evidence io.ReaderAt
-	if f, oerr := os.Open(path); oerr != nil {
-		log.Warn("could not re-read a matched file for evidence; reporting the match without matched strings", "path", path, "error", oerr.Error())
-	} else {
-		defer func() { _ = f.Close() }()
-		evidence = f
-	}
-	return buildMatches(w.entry, rules, evidence), nil
+	// Evidence is quoted from the same content that was scanned.
+	return buildMatches(w.entry, rules, bytes.NewReader(data)), nil
 }
 
 // buildMatches turns the engine's matching rules into Matches (rule index

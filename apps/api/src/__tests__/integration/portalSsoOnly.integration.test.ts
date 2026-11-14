@@ -35,10 +35,12 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 
 // A switch that makes the clear fail AFTER it ran, inside the save's savepoint;
 // a gate that pauses the save just before it clears; and the ids each clear wrote.
-const { forceClearFailure, clearGate, clearCalls } = vi.hoisted(() => ({
+const { forceClearFailure, clearGate, clearCalls, sentInvites } = vi.hoisted(() => ({
   forceClearFailure: { current: false },
   clearGate: { current: null as null | (() => Promise<void>) },
   clearCalls: [] as string[][],
+  // W7: what each invite email offered (the W4 cases never read it).
+  sentInvites: [] as Array<Record<string, unknown>>,
 }));
 vi.mock('../../services/portalSsoOnly', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/portalSsoOnly')>();
@@ -55,10 +57,13 @@ vi.mock('../../services/portalSsoOnly', async (importOriginal) => {
 });
 vi.mock('../../services/email', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/email')>()),
-  getEmailService: () => ({ sendPortalInvite: async () => undefined, sendPasswordReset: async () => undefined }),
+  getEmailService: () => ({
+    sendPortalInvite: async (m: Record<string, unknown>) => { sentInvites.push(m); },
+    sendPasswordReset: async () => undefined,
+  }),
 }));
 
-import { clientAiTenantMappings, portalAccessPolicies, portalUserIdentities, portalUsers } from '../../db/schema';
+import { clientAiTenantMappings, customerEmailDomains, portalAccessPolicies, portalUserIdentities, portalUsers } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 import { registerPortalAccessPolicyRoutes } from '../../routes/orgPortalAccessPolicy';
 import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
@@ -68,7 +73,7 @@ import { createAccessToken } from '../../services/jwt';
 import { __testOnly } from '../../services/portalAccessPolicy';
 import { recordEntraTenantProof } from '../../services/portalEntraTenantProof';
 import { ssoOnlyImpactDigest } from '../../services/portalSsoOnly';
-import { entraIssuer, linkPortalUserIdentity, type IdentityExecutor } from '../../services/portalUserIdentities';
+import { PORTAL_GOOGLE_ISSUER, entraIssuer, linkPortalUserIdentity, type IdentityExecutor } from '../../services/portalUserIdentities';
 import { hashPassword } from '../../services/password';
 import { createOrganization, createPartner, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -525,5 +530,86 @@ describe('races with a concurrent self-link', () => {
     expect((await res.json()).data).toEqual([{ portalUserId: s.strandedActive.id, result: 'not_stranded' }]);
     // Not moved to `invited` (normal SSO would refuse it, invite acceptance its identity).
     expect(await readState(s.strandedActive.id)).toEqual({ status: 'active', passwordHash, authEpoch: s.strandedActive.authEpoch, identities: 1 });
+  });
+});
+
+// ── W7 (#11384) D12: Google-only orgs (inv. 11) ─────────────────────────────
+
+describe('sso_only with only Google on (W7 D12, inv. 11)', () => {
+  beforeEach(() => {
+    __testOnly.setCapabilities({ entra: false, google: true, selfRegistration: false });
+    sentInvites.length = 0;
+  });
+
+  /** A Workspace domain verified for the org the way W5 records one (dns_txt, a pass within the stale window). */
+  async function seedVerifiedDomain(org: { id: string; partnerId: string }): Promise<string> {
+    const domain = `ws-${randomUUID().slice(0, 8)}.example.com`;
+    const at = new Date(Date.now() - 60_000);
+    await getTestDb().insert(customerEmailDomains).values({
+      partnerId: org.partnerId, orgId: org.id, domain, isActive: true, verificationToken: `tok-${randomUUID()}`,
+      verifiedAt: at, verifiedMethod: 'dns_txt', verifiedEvidence: { via: 'dns_txt', recordName: `_breeze-verify.${domain}` },
+      lastCheckedAt: at, lastPassedAt: at, lastCheckStatus: 'pass',
+    });
+    return domain;
+  }
+
+  async function linkGoogle(orgId: string, portalUserId: string): Promise<void> {
+    await getTestDb().insert(portalUserIdentities).values({
+      orgId, portalUserId, provider: 'google', issuer: PORTAL_GOOGLE_ISSUER, subject: `g-${randomUUID()}`, linkedVia: 'jit',
+    });
+  }
+
+  it('sso_only with only Google on: stranded accounts are those with no identity; Google-linked accounts lose their hash', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const token = await mfaTokenFor(env);
+    const org = env.organization;
+    const domain = await seedVerifiedDomain(org);
+    // Google on, Microsoft never (no capability, no tenant): Google is the only SSO method.
+    await seedPolicy({ orgId: org.id, googleEnabled: true });
+    const googleLinked = await seedAccount(org.id, `a-google@${domain}`);
+    await linkGoogle(org.id, googleLinked.id);
+    const stranded = await seedAccount(org.id, `b-stranded@${domain}`);
+
+    const preview = await previewOrg(token, org.id, { passwordMode: 'sso_only' });
+    expect(preview.flips).toEqual([{ orgId: org.id, orgName: org.name, passwordsToClear: 1, strandedTotal: 1 }]);
+    expect(preview.stranded.items.map((i) => i.portalUserId)).toEqual([stranded.id]);
+
+    const saved = await call(token, 'PATCH', `${orgPolicy(org.id)}?acknowledge=${preview.impactDigest}`, { passwordMode: 'sso_only' });
+    expect(saved.status, await saved.clone().text()).toBe(200);
+    expect((await saved.json()).data.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
+
+    // The Google-linked account sheds its hash and its epoch moves; the stranded one is untouched.
+    expect(await readAccount(googleLinked.id)).toEqual({ passwordHash: null, authEpoch: googleLinked.authEpoch + 1 });
+    expect(await readAccount(stranded.id)).toEqual({ passwordHash, authEpoch: stranded.authEpoch });
+    const list = await call(token, 'GET', `${orgPolicy(org.id)}/stranded`);
+    expect((await list.json()).data).toEqual({
+      items: [{ portalUserId: stranded.id, email: `b-stranded@${domain}`, name: null, status: 'active' }],
+      total: 1,
+    });
+    expect((await login(`b-stranded@${domain}`, PASSWORD, org.id)).status).toBe(401);
+
+    // The bulk SSO invite works with Google as the only SSO method, and the email offers Google only.
+    const invited = await call(token, 'POST', `/organizations/${org.id}/portal-users/sso-invite`, { portalUserIds: [stranded.id, googleLinked.id] });
+    expect(invited.status, await invited.clone().text()).toBe(200);
+    expect((await invited.json()).data).toEqual([
+      { portalUserId: stranded.id, result: 'invited', emailSent: true },
+      { portalUserId: googleLinked.id, result: 'not_stranded' },
+    ]);
+    expect(sentInvites).toHaveLength(1);
+    expect(sentInvites[0]).toMatchObject({ to: `b-stranded@${domain}`, googleUrl: expect.stringContaining('&method=google'), passwordAllowed: false });
+    expect(sentInvites[0]!.microsoftUrl).toBeUndefined();
+  });
+
+  it('sso-invite refuses 409 when the only SSO method is Google and the org has no verified domain', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const token = await mfaTokenFor(env);
+    const org = env.organization;
+    await seedPolicy({ orgId: org.id, googleEnabled: true }); // masked off: no verified domain (D6)
+    const stranded = await seedAccount(org.id, 'c-stranded@acme.example', { status: 'invited', passwordHash: null });
+
+    const res = await call(token, 'POST', `/organizations/${org.id}/portal-users/sso-invite`, { portalUserIds: [stranded.id] });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('PORTAL_SSO_INVITE_UNAVAILABLE');
+    expect(sentInvites).toEqual([]);
   });
 });

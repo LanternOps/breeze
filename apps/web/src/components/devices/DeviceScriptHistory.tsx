@@ -47,6 +47,8 @@ type ScriptExecution = {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
+  // #4342 W2 — set once the retention job removed stdout/stderr (ISO).
+  outputPurgedAt?: string | null;
   errorMessage?: string;
   startedAt?: string;
   completedAt?: string;
@@ -162,13 +164,15 @@ function OutputSection({
   content,
   icon: Icon,
   defaultOpen = true,
-  variant = 'default'
+  variant = 'default',
+  purgedNote
 }: {
   title: string;
   content?: string;
   icon: typeof Terminal;
   defaultOpen?: boolean;
   variant?: 'default' | 'error';
+  purgedNote?: string;
 }) {
   const { t } = useTranslation('devices');
   const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -247,7 +251,7 @@ function OutputSection({
       {isOpen && (
         <div className="p-4">
           {isEmpty ? (
-            <p className="text-sm text-muted-foreground italic">{t('deviceScriptHistory.noOutput')}</p>
+            <p className="text-sm text-muted-foreground italic">{purgedNote ?? t('deviceScriptHistory.noOutput')}</p>
           ) : (
             <pre className={cn(
               'max-h-80 overflow-auto rounded-md p-4 text-sm font-mono whitespace-pre-wrap wrap-break-word',
@@ -793,6 +797,9 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
       {/* Execution Details Modal */}
       {selectedExecution && (() => {
         const selectedStatus = toExecutionStatus(selectedExecution.status) ?? 'pending';
+        const purgedNote = selectedExecution.outputPurgedAt
+          ? tScripts('executionDetails.output.purged', { date: formatDateTime(selectedExecution.outputPurgedAt, effectiveTimezone) })
+          : undefined;
         const config = executionDetailStatusConfig[selectedStatus];
         const StatusIcon = config.icon;
         const showStop = canCancel && !!selectedExecution.id
@@ -914,6 +921,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
                   content={selectedExecution.stdout}
                   icon={Terminal}
                   defaultOpen={true}
+                  purgedNote={purgedNote}
                 />
                 <OutputSection
                   title={t('deviceScriptHistory.stderr')}
@@ -921,6 +929,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
                   icon={AlertOctagon}
                   defaultOpen={!!selectedExecution.stderr}
                   variant="error"
+                  purgedNote={purgedNote}
                 />
               </div>
             </div>
