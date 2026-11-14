@@ -229,7 +229,8 @@ tunnelHostRoutes.all('*', async (c) => {
       recordTunnelHttpOutcome('host', 'client_aborted');
       return c.body(null, CLIENT_CLOSED_REQUEST);
     }
-    recordTunnelHttpOutcome('host', 'rate_limited');
+    recordTunnelHttpOutcome('host',
+      slot.reason === 'queue_full' ? 'queue_full' : slot.reason === 'timeout' ? 'queue_timeout' : 'rate_limited');
     c.header('retry-after', '1');
     return c.text('Too many concurrent requests', 429);
   }

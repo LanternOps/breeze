@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, eq, getTableColumns } from 'drizzle-orm';
@@ -246,6 +246,23 @@ commandsRoutes.get('/:id/commands', async (c) => {
   return c.json({ commands: deliverableCommands });
 });
 
+// Results for ids with no device_commands row (non-UUID: WebSocket-direct
+// commands such as Network Proxy `http-req-…`, which older agents also POST
+// here once per proxied request, #11464) are answered from the id alone,
+// BEFORE the body validator, so a no-op never pays for parsing a result body
+// of up to the route's size limit. A draining agent is refused for them (it may
+// only report persisted, allowlist-checkable commands; #2774 / #3986). No
+// database access happens on this path, which agentAuthMiddleware relies on
+// when it skips the request-long transaction for `http-req-…` results.
+const answerRowlessCommandResult: MiddlewareHandler = async (c, next) => {
+  const commandId = c.req.param('commandId') ?? '';
+  if (uuidRegex.test(commandId)) return next();
+  const agent = c.get('agent') as AgentAuthContext | undefined;
+  if (!agent?.deviceId) return c.json({ error: 'Agent context not found' }, 401);
+  if (agent.claimTypeAllowlist) return c.json({ error: 'drain_restricted' }, 403);
+  return c.json({ success: true });
+};
+
 // #2774 / #3986 — drain narrowing for the result endpoint below. This prose
 // lives ABOVE the route declaration on purpose: the site-scope route scanner
 // (apps/api/src/__tests__/helpers/routeScan.ts) reads a fixed
@@ -262,6 +279,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
+  answerRowlessCommandResult,
   zValidator('json', commandResultSchema),
   async (c) => {
     const { id: agentId, commandId } = c.req.valid('param');
@@ -274,16 +292,8 @@ commandsRoutes.post(
 
     const deviceId = agent.deviceId;
 
+    // Non-UUID (rowless) ids were answered by answerRowlessCommandResult.
     const drainClaimAllowlist = agent.claimTypeAllowlist;
-    if (drainClaimAllowlist && !uuidRegex.test(commandId)) {
-      return c.json({ error: 'drain_restricted' }, 403);
-    }
-
-    // Commands dispatched directly over WebSocket can use non-UUID IDs and
-    // intentionally have no device_commands row.
-    if (!uuidRegex.test(commandId)) {
-      return c.json({ success: true });
-    }
 
     // Query device_commands OUTSIDE the agentAuth transaction.
     // device_commands has no RLS; querying via the pool (auto-commit)

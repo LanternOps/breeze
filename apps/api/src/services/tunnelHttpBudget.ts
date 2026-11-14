@@ -2,7 +2,9 @@
  * Network Proxy request budgets (spec 2026-10-06 §9): per-tunnel, per-user and
  * per-agent request rate (Redis sliding window via `rateLimiter`, which fails
  * closed without Redis, like ticket storage) and in-flight concurrency
- * (process-local, like the agentCommandAwait correlation map it protects).
+ * (process-local, like the agentCommandAwait correlation map it protects),
+ * with a short bounded wait queue per tunnel (TUNNEL_HTTP_QUEUE_LIMITS).
+ * Applied by host mode (routes/tunnelHost.ts); path mode does not use them.
  *
  * These sit behind the per-IP `tunnelhost` global bucket (G7): that one bounds
  * a client address, these bound one user, one tunnel and one bridging agent
@@ -53,30 +55,31 @@ export async function checkTunnelHttpRate(keys: TunnelBudgetKeys): Promise<Tunne
 }
 
 /**
- * A request that finds its TUNNEL at the concurrency cap waits for one of that
- * tunnel's slots instead of being refused (#11464): a device UI's first paint
- * (a NAS admin page loads ~90 assets at once) is a burst far wider than the
- * tunnel cap, and browsers do not retry a 429 on a script or stylesheet.
+ * A request that finds its TUNNEL at the concurrency cap waits for a slot
+ * instead of being refused (#11464): a device UI's first paint can load many
+ * dozens of assets at once, far wider than the tunnel cap, and browsers do not
+ * retry a 429 on a script or stylesheet.
  *
  * Both bounds are hard: at most `depth` waiters per tunnel (one more is
  * refused at once with `queue_full`), and each waits at most `maxWaitMs`
- * before it is refused with `timeout`. At 12 in flight and a few hundred ms
- * per device round trip, a full queue drains in a few seconds.
+ * before it is refused with `timeout`. A full queue is `depth /
+ * TUNNEL_HTTP_CONCURRENCY_LIMITS.tunnel` device round trips deep.
  *
- * The user and agent ceilings are NOT queued on: a request refused by one of
- * those is refused at once, as before. Waiters never raise any in-flight count
- * (a waiter is admitted only when every scope has room), so one busy tunnel can
- * hold at most its own 12 slots and never starve the user's or the agent's
- * other tunnels.
+ * A request whose tunnel has room and no waiters, but whose user or agent
+ * ceiling is full, is refused at once (`busy`), as before. A queued request is
+ * admitted only when every scope has room, so it also waits for user and agent
+ * room. Waiters hold no slot while they wait, so a busy tunnel holds at most
+ * its own concurrency cap and the user's and agent's remaining room stays
+ * available to their other tunnels.
  */
 export const TUNNEL_HTTP_QUEUE_LIMITS = { depth: 96, maxWaitMs: 5_000 } as const;
 
 export type TunnelSlotRefusal =
-  /** A user or agent ceiling is full: refused at once, never queued. */
+  /** A user or agent ceiling is full while the tunnel has room and no waiters: refused at once. */
   | 'busy'
   /** The tunnel is full and its wait queue is at `TUNNEL_HTTP_QUEUE_LIMITS.depth`. */
   | 'queue_full'
-  /** Waited `TUNNEL_HTTP_QUEUE_LIMITS.maxWaitMs` without a slot freeing. */
+  /** Waited `TUNNEL_HTTP_QUEUE_LIMITS.maxWaitMs` without every scope having room. */
   | 'timeout'
   /** The client went away (request signal aborted) before a slot was granted. */
   | 'aborted';
@@ -98,6 +101,8 @@ const queues = new Map<string, Waiter[]>();
 
 const entriesFor = (keys: TunnelBudgetKeys): SlotEntries =>
   SCOPES.map((scope) => [scope, `${scope}:${idFor(keys, scope)}`] as const);
+/** The tunnel scope's key (`tunnel:<id>`), which also keys the wait queue. */
+const tunnelKeyOf = (entries: SlotEntries): string => entries.find(([scope]) => scope === 'tunnel')![1];
 
 function firstFullScope(entries: SlotEntries): TunnelBudgetScope | null {
   for (const [scope, key] of entries) {
@@ -120,12 +125,12 @@ function take(entries: SlotEntries): TunnelSlotResult {
         if (next <= 0) inFlight.delete(key);
         else inFlight.set(key, next);
       }
-      admitWaiters(entries[0]![1]);
+      admitWaiters(tunnelKeyOf(entries));
     },
   };
 }
 
-/** Admit waiters from the head of one tunnel's queue while every scope has room. */
+/** Admit waiters from the head of one tunnel's queue while every scope has room (strict FIFO per tunnel). */
 function pump(tunnelKey: string): void {
   const queue = queues.get(tunnelKey);
   while (queue && queue.length > 0 && firstFullScope(queue[0]!.entries) === null) {
@@ -139,7 +144,7 @@ function pump(tunnelKey: string): void {
  * Called on every release. The releasing tunnel's own queue goes first (the
  * freed tunnel slot is only usable by it); then any other queue, whose head may
  * have been waiting on the user or agent slot this release also freed. Only
- * saturated tunnels on this process have a queue, so the walk is short.
+ * tunnels with waiters on this process have a queue, so the walk is short.
  */
 function admitWaiters(releasedTunnelKey: string): void {
   pump(releasedTunnelKey);
@@ -155,7 +160,7 @@ const refused = (scope: TunnelBudgetScope, reason: TunnelSlotRefusal): TunnelSlo
  * every scope has room, or with a `busy` refusal when a user or agent ceiling
  * is full; when the tunnel itself is full (or already has waiters) it queues
  * and resolves when a slot is handed over, the wait times out, the queue is
- * full, or `signal` aborts. Waiters are admitted in arrival order.
+ * full, or `signal` aborts. Waiters are admitted in arrival order within a tunnel.
  *
  * On `ok: true` the caller MUST call `release()` exactly once when the request
  * finishes (it is idempotent, so a `finally` plus an early release is safe).
@@ -168,7 +173,7 @@ export function acquireTunnelHttpSlot(
   const { signal } = options;
   if (signal?.aborted) return Promise.resolve(refused('tunnel', 'aborted'));
   const entries = entriesFor(keys);
-  const tunnelKey = entries[0]![1];
+  const tunnelKey = tunnelKeyOf(entries);
   const queue = queues.get(tunnelKey);
   if (!queue) {
     const full = firstFullScope(entries);

@@ -556,25 +556,47 @@ describe('budgets and metrics', () => {
     );
   });
 
-  it.each(['timeout', 'queue_full'] as const)('429s with Retry-After when the tunnel queue gives up (%s)', async (reason) => {
+  it.each([
+    ['timeout', 'queue_timeout'],
+    ['queue_full', 'queue_full'],
+  ] as const)('429s with Retry-After when the tunnel queue gives up (%s), counted apart from rate limiting', async (reason, outcome) => {
     const cookie = await enter();
+    metricMock.mockClear();
     slotMock.mockResolvedValueOnce({ ok: false, scope: 'tunnel', reason });
     const res = await req('/', sameOrigin(cookie));
     expect(res.status).toBe(429);
     expect(await res.text()).toBe('Too many concurrent requests');
     expect(res.headers.get('retry-after')).toBe('1');
     expect(sendCommandMock).not.toHaveBeenCalled();
-    expect(metricMock).toHaveBeenCalledWith('host', 'rate_limited');
+    expect(metricMock).toHaveBeenCalledWith('host', outcome);
+    expect(metricMock).not.toHaveBeenCalledWith('host', 'rate_limited');
   });
 
   it('a request whose client left while queued is not dispatched and not counted as rate limited', async () => {
     const cookie = await enter();
     metricMock.mockClear();
     slotMock.mockResolvedValueOnce({ ok: false, scope: 'tunnel', reason: 'aborted' });
-    await req('/', sameOrigin(cookie));
+    const res = await req('/', sameOrigin(cookie));
+    expect(res.status).toBe(499);
     expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(releaseMock).not.toHaveBeenCalled();
     expect(metricMock).toHaveBeenCalledWith('host', 'client_aborted');
     expect(metricMock).not.toHaveBeenCalledWith('host', 'rate_limited');
+  });
+
+  it('a slot granted just as the client left is released at once and nothing is dispatched', async () => {
+    const cookie = await enter();
+    metricMock.mockClear();
+    const controller = new AbortController();
+    slotMock.mockImplementationOnce(async () => {
+      controller.abort(); // the client goes away while the request waited
+      return { ok: true, release: releaseMock };
+    });
+    const res = await req('/', { ...sameOrigin(cookie), signal: controller.signal });
+    expect(res.status).toBe(499);
+    expect(releaseMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(metricMock).toHaveBeenCalledWith('host', 'client_aborted');
   });
 
   it('releases the slot when dispatch fails', async () => {

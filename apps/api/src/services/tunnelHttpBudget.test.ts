@@ -202,6 +202,44 @@ describe('tunnel http concurrency queue (a full tunnel waits for a slot instead 
     void waiters;
   });
 
+  it('releasing the same slot twice after it was handed to a waiter admits only one waiter', async () => {
+    const slots = await fill(TUNNEL_HTTP_CONCURRENCY_LIMITS.tunnel);
+    const first = acquireTunnelHttpSlot(keys);
+    let second: TunnelSlotResult | undefined;
+    void acquireTunnelHttpSlot(keys).then((r) => { second = r; });
+    await flush();
+    slots[0]!.release();
+    slots[0]!.release();
+    expect((await first).ok).toBe(true);
+    await flush();
+    expect(second).toBeUndefined();
+    expect(__tunnelHttpBudgetStateForTests()).toEqual({
+      inFlight: { 'tunnel:t1': 12, 'user:u1': 12, 'agent:a1': 12 },
+      queued: { 'tunnel:t1': 1 },
+    });
+  });
+
+  it('when a blocked head waiter leaves, the next waiter that fits is admitted at once', async () => {
+    // t1 is full with u1's requests; u2 is at its own ceiling on other tunnels.
+    const t1 = await fill(TUNNEL_HTTP_CONCURRENCY_LIMITS.tunnel, { userId: 'u1', tunnelId: 't1', agentId: 'a1' });
+    await fill(TUNNEL_HTTP_CONCURRENCY_LIMITS.tunnel, { userId: 'u2', tunnelId: 's1', agentId: 'a2' });
+    await fill(TUNNEL_HTTP_CONCURRENCY_LIMITS.user - TUNNEL_HTTP_CONCURRENCY_LIMITS.tunnel,
+      { userId: 'u2', tunnelId: 's2', agentId: 'a3' });
+    const headAbort = new AbortController();
+    const head = acquireTunnelHttpSlot({ userId: 'u2', tunnelId: 't1', agentId: 'a1' }, { signal: headAbort.signal });
+    let next: TunnelSlotResult | undefined;
+    void acquireTunnelHttpSlot({ userId: 'u3', tunnelId: 't1', agentId: 'a1' }).then((r) => { next = r; });
+    await flush();
+    t1[0]!.release(); // t1 has room, but the head (u2) cannot use it and u3 is behind it
+    await flush();
+    expect(next).toBeUndefined();
+    headAbort.abort(); // no further release: leaving alone must hand the room on
+    expect(await head).toEqual({ ok: false, scope: 'tunnel', reason: 'aborted' });
+    await flush();
+    expect(next?.ok).toBe(true);
+    expect(__tunnelHttpBudgetStateForTests().queued).toEqual({});
+  });
+
   it('a waiter blocked only by its own user ceiling is admitted when that user frees a slot on another tunnel', async () => {
     // Two users on one tunnel. t1 is full with u1's requests; u2 is at its own ceiling elsewhere.
     const t1 = await fill(TUNNEL_HTTP_CONCURRENCY_LIMITS.tunnel, { userId: 'u1', tunnelId: 't1', agentId: 'a1' });

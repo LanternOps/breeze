@@ -3,33 +3,35 @@ import { rateLimiter } from './rate-limit';
 import { TUNNEL_HTTP_RATE_LIMITS } from './tunnelHttpBudget';
 
 /**
- * Request-rate gate for an agent's HTTP acknowledgement of a Network Proxy
+ * Request-rate gate for an agent's REST acknowledgement of a Network Proxy
  * `http_request` command (`POST /api/v1/agents/<id>/commands/http-req-…/result`),
  * applied by agentAuthMiddleware IN PLACE OF the general agent buckets
- * (per-(agent, source-IP), per-agent and per-org). #11464.
+ * (per-(agent, source-IP), per-agent and per-org). This is the canonical note
+ * for #11464's agent-side half; the other sites point here.
  *
- * Why separate: each proxied request is an `http_request` command sent over
- * the agent WebSocket, and its response comes back on the same socket. Agents
- * released before #11464 ALSO POST every such result to the REST result
- * route, which answers it as a no-op (the id is not a device_commands UUID).
- * Charged to the general buckets, one device web UI page load (~90 assets)
- * exhausted the 30/min per-(agent, source-IP) bucket, and the agent's own
- * heartbeats were refused with it. Current agents no longer send this POST
- * (agent/internal/heartbeat isEphemeralCommand); this gate is for the agents
- * still in the field.
+ * Why separate: a proxied request's result comes back over the agent
+ * WebSocket. Agents released before #11464 ALSO POST it to the REST result
+ * route, once per proxied request, and the route answers it as a no-op from the
+ * id alone (routes/agents/commands.ts answerRowlessCommandResult). Charged to
+ * the general buckets, one asset-heavy device page load exhausted the
+ * per-(agent, source-IP) bucket and the agent's own heartbeats were refused.
+ * Current agents send no such POST (agent/internal/heartbeat isEphemeralCommand),
+ * so this gate only matters while older agents remain.
  *
  * Still bounded, never unmetered. Two sliding 60 s windows:
- *   - per device: AGENT_TUNNEL_RESULT_DEVICE_RATE_LIMIT = the per-agent proxy
- *     request rate (TUNNEL_HTTP_RATE_LIMITS.agent, 2400/min). An agent can be
- *     sent at most that many `http_request` commands a minute, so a legitimate
- *     agent never acknowledges more; anything past it is refused.
- *   - per org, across all its devices: AGENT_TUNNEL_RESULT_ORG_RATE_LIMIT
- *     (20,000/min), the platform ceiling of the general per-org agent bucket,
- *     as for brokered storage sessions.
+ *   - per device: AGENT_TUNNEL_RESULT_DEVICE_RATE_LIMIT, sized to the per-agent
+ *     host-mode proxy request rate (TUNNEL_HTTP_RATE_LIMITS.agent), so host-mode
+ *     traffic never outruns it. Path-mode proxy traffic (routes/tunnelHttp.ts)
+ *     is not under that budget and can exceed it; the excess acknowledgements are
+ *     refused, which costs nothing because they are no-ops.
+ *   - per org, across all its devices: AGENT_TUNNEL_RESULT_ORG_RATE_LIMIT, the
+ *     platform ceiling of the general per-org agent bucket, as for brokered
+ *     storage sessions.
  *
- * Refusals are free (refundOnReject), so an old agent that retries a refused
- * acknowledgement does not keep itself throttled. Fails closed without Redis.
- * The agent credential is verified before this gate, unchanged.
+ * Refusals are free (refundOnReject), so an older agent that retries a refused
+ * acknowledgement does not keep itself throttled. Fails closed without Redis,
+ * like the general agent limiters (429 with a full-window Retry-After). The
+ * agent credential is verified before this gate, unchanged.
  */
 export const AGENT_TUNNEL_RESULT_RATE_WINDOW_SECONDS = 60;
 export const AGENT_TUNNEL_RESULT_DEVICE_RATE_LIMIT = TUNNEL_HTTP_RATE_LIMITS.agent;

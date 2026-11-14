@@ -1746,6 +1746,25 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     expect(updateMock).not.toHaveBeenCalled();
   });
 
+  it('answers a rowless (non-UUID) result from its id alone, without parsing the body (#11464)', async () => {
+    // Older agents POST every Network Proxy http_request result here; the
+    // route must not spend a JSON parse + schema validation on a no-op.
+    const proxyId = `http-req-${deploymentUuid}-${deviceUuid}`;
+    const notJson = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{not json' };
+    const ok = await buildApp({ drain: 'none', deviceId: deviceUuid })
+      .request(`/agents/${agentId}/commands/${proxyId}/result`, notJson);
+    expect(ok.status).toBe(200);
+    await expect(ok.json()).resolves.toEqual({ success: true });
+    const drained = await buildApp({ drain: 'device', deviceId: deviceUuid })
+      .request(`/agents/${agentId}/commands/${proxyId}/result`, notJson);
+    expect(drained.status).toBe(403);
+    await expect(drained.json()).resolves.toEqual({ error: 'drain_restricted' });
+    // A persisted (UUID) command id still gets its body validated.
+    const persisted = await buildApp({ drain: 'none', deviceId: deviceUuid })
+      .request(`/agents/${agentId}/commands/${deploymentUuid}/result`, notJson);
+    expect(persisted.status).toBe(400);
+  });
+
   it('ignores retired software-install command IDs when not draining', async () => {
     const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
     const updateChain = chainMock([]);

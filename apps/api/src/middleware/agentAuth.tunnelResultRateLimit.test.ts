@@ -133,8 +133,12 @@ describe('agentAuthMiddleware — Network Proxy result acknowledgements (#11464)
     }
     expect((await heartbeat(app)).status).toBe(200);
     const general = fake.keys().filter((k) => k.startsWith('agent_rate') || k.startsWith('agent_org_rate'));
-    // Only the interleaved heartbeats were charged there.
+    // The heartbeats did reach the general buckets (so the loop below is not vacuous)…
+    expect(general.length).toBeGreaterThan(0);
+    // …and only those 8 heartbeats were charged there.
     for (const key of general) expect(await fake.zcard(key)).toBeLessThanOrEqual(8);
+    // The 300 acknowledgements went to their own window.
+    expect(await fake.zcard('agent_tunnel_result_rate:device:device-1')).toBe(300);
   });
 
   it('stays bounded: past its own per-device ceiling it is refused with a real Retry-After, and heartbeats are unaffected', async () => {
@@ -150,7 +154,7 @@ describe('agentAuthMiddleware — Network Proxy result acknowledgements (#11464)
     expect(statuses.get(429)).toBe(25);
     expect(Number(retryAfter)).toBeGreaterThan(1);
     expect((await heartbeat(app)).status).toBe(200);
-  });
+  }, 60_000); // ~2,400 sequential requests through the real middleware
 
   it('fails closed for a full window when Redis is unavailable', async () => {
     redisHolder.current = null;

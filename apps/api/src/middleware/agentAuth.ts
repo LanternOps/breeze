@@ -844,15 +844,12 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     }
   }
 
-  // #11464 — an agent's REST acknowledgement of a Network Proxy `http_request`
-  // command (`commands/http-req-…/result`). Agents released before #11464 send
-  // one per proxied request although the result already came back over the
-  // WebSocket, and the route answers it as a no-op (non-UUID id). Charged to
-  // the general buckets below, one device web UI page load spent them and the
-  // agent's heartbeats were refused. These are metered by their own per-device
-  // and per-org windows instead (services/agentTunnelResultRateLimit.ts), still
-  // bounded, and never draw on the general buckets. Anchored like the storage
-  // path: exact core shape, POST only, proxy command id prefix only.
+  // #11464 — an older agent's REST acknowledgement of a Network Proxy
+  // `http_request` (`commands/http-req-…/result`, a no-op on the route) is
+  // metered by its own bounded windows INSTEAD of the general buckets below,
+  // so a proxied page load cannot get the agent's heartbeats refused. Why and
+  // the bounds: services/agentTunnelResultRateLimit.ts. Anchored like the
+  // storage path: exact core shape, POST only, proxy command id prefix only.
   const isTunnelResultPath =
     c.req.method === 'POST'
     && isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 3)
@@ -1219,9 +1216,10 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // handlers open one short org-scoped context per database phase
   // (routes/agents/storageSessions.ts).
   // Proxy result acknowledgements (isTunnelResultPath, above): the result route
-  // answers an `http-req-…` id before any database access (it is not a
-  // device_commands id), so it needs no request-long transaction — which would
-  // otherwise be one BEGIN/COMMIT per proxied request from an older agent.
+  // answers a non-UUID id from the id alone, before the body is parsed and with
+  // no database access (routes/agents/commands.ts answerRowlessCommandResult),
+  // so it needs no request-long transaction — otherwise one BEGIN/COMMIT per
+  // proxied request from an older agent.
   if (
     (
       isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
