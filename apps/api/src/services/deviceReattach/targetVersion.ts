@@ -44,9 +44,11 @@ export function reattachTargetVersionMatches(supplied: string, install: Reattach
   if (!REATTACH_TARGET_VERSION_PATTERN.test(supplied)) return false;
   const given = Buffer.from(supplied, 'base64url');
   if (given.length !== 32) return false;
-  const { active, retained } = getSecretDerivedKeyMaterials(DOMAIN);
+  // `retained` always includes the active key (secretCrypto adds it when the
+  // keyring lacks it), so it alone is the set to check.
+  const { retained } = getSecretDerivedKeyMaterials(DOMAIN);
   let matched = false;
-  for (const { key } of [active, ...retained]) {
+  for (const { key } of retained) {
     // Evaluate every key, so the time does not tell which one matched.
     if (timingSafeEqual(given, mac(key, install))) matched = true;
   }

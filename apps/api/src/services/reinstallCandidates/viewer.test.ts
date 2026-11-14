@@ -20,7 +20,11 @@ vi.mock('../../db', () => {
   };
 });
 
-vi.mock('./index', () => ({ readRankedReinstallCandidates: vi.fn(async () => seam.ranked) }));
+const ranking = vi.hoisted(() => ({
+  readReinstallSource: vi.fn(async () => (seam.ranked as { source: unknown } | null)?.source ?? null),
+  rankReinstallCandidatesFor: vi.fn(async () => (seam.ranked as { ranked: unknown[] } | null)?.ranked ?? []),
+}));
+vi.mock('./index', () => ranking);
 vi.mock('../deviceReattach/targetVersion', () => ({ reattachTargetVersion: vi.fn(() => 'v'.repeat(43)) }));
 
 import { canViewReattachCandidate, canViewReattachSource, readReinstallCandidatesForViewer, type CandidatesViewer } from './viewer';
@@ -64,6 +68,12 @@ describe('canViewReattachSource', () => {
     expect(canViewReattachSource(viewer({ allowedSiteIds: ['site-a'] }), realSource)).toBe(true);
     expect(canViewReattachSource(viewer({ canAccessSite: (s) => s === 'site-x' }), realSource)).toBe(false);
     expect(canViewReattachSource(viewer({ allowedDeviceIds: ['dev-other'] }), realSource)).toBe(false);
+  });
+
+  // #11762 review: the same site rule as routes/devices/helpers.ts (#11729).
+  it('denies every site for a malformed (non-array) allowlist when no closure is set', () => {
+    expect(canViewReattachSource(viewer({ allowedSiteIds: null as unknown as string[] }), realSource)).toBe(false);
+    expect(canViewReattachCandidate(viewer({ allowedSiteIds: null as unknown as string[] }), target)).toBe(false);
   });
 });
 
@@ -112,6 +122,21 @@ describe('readReinstallCandidatesForViewer — reviewPending', () => {
     const view = await readReinstallCandidatesForViewer({ sourceDeviceId: 'dev-src', viewer: viewer() });
     expect(view!.candidates).toEqual([]);
     expect(view!.reviewPending).toBe(false);
+  });
+
+  // #11762 review: the partner-wide search runs only for a caller who may see
+  // the source, so the not-visible path does the same work as the not-found one.
+  it('does not rank for a viewer who may not see the source (a 404 either way)', async () => {
+    seam.rows = [row('dev-src'), row('dev-old')];
+    ranking.rankReinstallCandidatesFor.mockClear();
+    const hidden = await readReinstallCandidatesForViewer({ sourceDeviceId: 'dev-src', viewer: viewer({ orgs: ['org-b'] }) });
+    expect(hidden).toBeNull();
+    expect(ranking.rankReinstallCandidatesFor).not.toHaveBeenCalled();
+
+    seam.ranked = null;
+    const missing = await readReinstallCandidatesForViewer({ sourceDeviceId: 'dev-src', viewer: viewer() });
+    expect(missing).toBeNull();
+    expect(ranking.rankReinstallCandidatesFor).not.toHaveBeenCalled();
   });
 
   it('never emits the raw agent id or incarnation, only the opaque version', async () => {

@@ -279,15 +279,21 @@ export type RankedCandidatesSource = Pick<
  * search is partner-wide and reads the ledger). Null when the source does not
  * exist; an empty list for a source the search never runs for.
  */
-export async function readRankedReinstallCandidates(
-  sourceDeviceId: string,
-): Promise<{ source: RankedCandidatesSource; ranked: RankedCandidate[] } | null> {
-  const source = await readSource(sourceDeviceId);
-  if (!source) return null;
-  if (isUnsearchableSource(source)) return { source, ranked: [] };
-  const { ranked } = await rankForSource(source);
-  return { source, ranked };
+/** The full source snapshot ranking needs; callers read only its `RankedCandidatesSource` fields. */
+export type ReinstallSource = SourceSnapshot;
+
+/** The source as candidates are ranked for it, or null when it does not exist. */
+export async function readReinstallSource(sourceDeviceId: string): Promise<ReinstallSource | null> {
+  return readSource(sourceDeviceId);
 }
+
+/** The ranked candidates of a source read by `readReinstallSource` (none for an unsearchable one). */
+export async function rankReinstallCandidatesFor(source: ReinstallSource): Promise<RankedCandidate[]> {
+  if (isUnsearchableSource(source)) return [];
+  const { ranked } = await rankForSource(source);
+  return ranked;
+}
+
 
 async function plan(sourceDeviceId: string): Promise<Plan | { skip: string }> {
   const source = await readSource(sourceDeviceId);
