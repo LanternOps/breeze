@@ -86,6 +86,14 @@ Exit codes: `0` pass, `1` regression (with `--confirm`, only if the confirm run 
 4. Exit 2 is not a regression: read the `invalid run:` line in the log (restart, hardware mismatch, failed acceptance).
 5. For a real regression, bisect the commits since the last green run. The `perf-regression` issue collects the nightly failures.
 
+### Runner disk low (not a regression)
+
+If the first step, `Runner disk precheck`, fails with `runner disk low: N GB free, need at least 10 GB`, the runner's disk is nearly full and nothing was measured. The cause is on the runner, not in the code; do not bisect. A full disk used to surface as "run was invalid" with no comparator summary (#11623).
+
+- Each job clears leftovers of a previous cancelled or timed-out run (wt-stack compose projects named `breeze-wt-*`, their volumes and networks) and, on low disk, reclaims once more before failing. Docker images are kept because runs reuse them.
+- Each job ends with an `if: always()` teardown (so also on cancel and timeout): compose down with volumes, `docker volume prune -a`, `docker builder prune -a --keep-storage 2GB`, and `go clean -cache` once the Go build cache passes 4 GB. This runs after the measurement, never inside it. The `breeze-perf` runner is dedicated to this gate, which is why unused volumes and networks are pruned host-wide. The precheck measures the smaller of the workspace disk and Docker's data root, and fails closed if free space cannot be read. A green teardown step does not prove the cleanup worked; it emits a `::warning::` if a `breeze-wt-*` project is still present.
+- If the precheck still fails, free the disk by hand: `docker system df`, then remove old volumes and build cache, and check the Go build cache and `_work` under the runner home. The threshold is `PERF_MIN_FREE_GB` in `perf.yml`.
+
 ## Regenerate the slowdown patch
 
 If the inject step reports that the patch no longer applies:
