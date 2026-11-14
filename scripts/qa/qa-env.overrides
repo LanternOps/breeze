@@ -1,0 +1,17 @@
+# Env overrides applied to the scheduled QA stack's .env on every run (after the
+# infra image sync). Purpose: turn on flag-gated features shipped on main so the
+# sweep can exercise them instead of marking their PRs BLOCKED.
+# Local, machine-only additions go in ~/.breeze-qa/env.overrides (applied after
+# this file, so they win). Keep secrets out of this file — it is public.
+
+# Vendor (OEM) updates: Patches/Device "Vendor updates" tab. API-only flag,
+# surfaced to web via GET /config; already mapped in docker-compose.yml.
+BREEZE_OEM_UPDATES_ENABLED=true
+
+# Wisp is deliberately NOT enabled: it requires IS_HOSTED=true, which turns the
+# whole QA stack into hosted-SaaS mode (billing redirects, self-host checks
+# skipped) and would change what every other check exercises. Opt in locally via
+# ~/.breeze-qa/env.overrides if wanted:
+#   IS_HOSTED=true
+#   BREEZE_AI_AGENTS_ENABLED=true
+#   BREEZE_WISP_ENABLED=true
