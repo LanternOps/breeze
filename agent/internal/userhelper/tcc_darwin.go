@@ -60,6 +60,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/tccdiag"
 )
 
 // accessibilityPrompted tracks whether we have already triggered the
@@ -73,22 +74,20 @@ var (
 // Apple may move this in future macOS versions.
 const tccDBPath = "/Library/Application Support/com.apple.TCC/TCC.db"
 
-// tccCheckInterval is how often we re-check TCC permissions after all are granted.
-const tccCheckInterval = 60 * time.Minute
-
-// tccFastCheckInterval is how often we re-check when permissions are still missing.
-// Uses a shorter interval so the heartbeat picks up newly-granted permissions quickly.
-const tccFastCheckInterval = 2 * time.Minute
-
-// tccFastCheckDuration is how long to use the fast interval after startup.
-const tccFastCheckDuration = 30 * time.Minute
-
 const tccHelperCommandTimeout = 15 * time.Second
 
 // screenRecordingRequestInterval is the minimum gap between two macOS Screen
 // Recording consent dialogs raised by this helper for the same user, applied
 // only while the permission is actually missing.
 const screenRecordingRequestInterval = 24 * time.Hour
+
+// markAccessibilityPrompted makes this process treat the Accessibility
+// prompt as already shown, so no later check in it raises one.
+func markAccessibilityPrompted() {
+	accessibilityPromptedMu.Lock()
+	accessibilityPrompted = true
+	accessibilityPromptedMu.Unlock()
+}
 
 // CheckTCCPermissions probes macOS TCC permissions. On the first call,
 // triggers the accessibility system prompt; subsequent calls check silently.
@@ -244,63 +243,28 @@ func probeFullDiskAccess() bool {
 // the screen (#8058, #8390). agentHandlesNotice (AuthResponse
 // .AgentHandlesTCCNotice, #10190 W04) silences the helper's own Full Disk
 // Access guidance: the agent shows the permission notice from these reports.
-func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, agentHandlesNotice bool) {
-	policy := tccLoopPolicyFor(binaryKind, agentHandlesNotice)
+//
+// guard is the helper's side of the self-restart (nil: nothing to wait
+// for): when the TCC database says the grant is present but this live
+// process still reads denied, the console-user desktop helper exits once so
+// launchd starts a copy that sees it (#11292, tcc_restart.go).
+func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, agentHandlesNotice bool, guard selfRestartGuard) {
+	store := primaryDirTCCRestartStore{resolve: func() (string, error) { return tccStateFilePath(tccSelfRestartRecordName) }}
+	policy, restartGate := startTCCLoop(tccLoopPolicyFor(binaryKind, agentHandlesNotice), desktopContext,
+		store, guard, screenRecordingMarkerPath(), time.Now)
 	startedAt := time.Now()
-	var seq uint64
-	var consecutiveFailures int
-	allGranted := false
-	wasAllGranted := false
-	firstCheck := true
-	promptFile := tccPromptFilePath()
-	var denials denialLog
-
-	check := func() {
-		status := collectTCCStatus(policy, desktopContext, &denials)
-		allGranted = len(missingPermissions(status)) == 0
-		if err := sendTCCStatus(conn, status, &seq); err != nil {
-			consecutiveFailures++
-			if consecutiveFailures >= 3 {
-				log.Warn("TCC check loop exiting after repeated IPC failures",
-					"failures", consecutiveFailures)
-				return
-			}
-		} else {
-			consecutiveFailures = 0
-		}
-
-		// General osascript nagging was removed in favor of the web UI banner.
-		// But Full Disk Access is special: macOS provides NO API to prompt for it
-		// (unlike Screen Recording / Accessibility, whose system dialogs fire via
-		// RequestScreenRecording() and CheckTCCPermissions()). Without an
-		// on-machine dialog the user gets no signal that the one required manual
-		// grant is missing — exactly the "no third popup" report. Surface it here,
-		// unless the agent shows the permission notice itself (#10190 W04).
-		if policy.remindPermissions {
-			handleFullDiskAccessGuidance(status, promptFile)
-		}
-
-		// Tell the user when setup finishes. Skip the first check so a machine
-		// that was already fully granted doesn't get a spurious notification.
-		if allGranted && !wasAllGranted && !firstCheck {
-			showTCCCompleteNotification()
-		}
-		wasAllGranted = allGranted
-		firstCheck = false
-	}
-
-	requestScreenRecordingAtLoopStart(policy, desktopContext, screenRecordingMarkerPath(), time.Now())
+	loop := newTCCCheckLoop(conn, policy, desktopContext, restartGate, tccPromptFilePath())
 
 	// Immediate first check (sends full TCC status to the service)
-	check()
-	if consecutiveFailures >= 3 {
+	loop.check()
+	if loop.consecutiveFailures >= 3 {
 		return
 	}
 
 	// Choose interval: fast while permissions are missing or within the fast
 	// check window, slow once everything is granted.
 	currentInterval := tccFastCheckInterval
-	if allGranted {
+	if loop.allGranted {
 		currentInterval = tccCheckInterval
 	}
 	ticker := time.NewTicker(currentInterval)
@@ -311,17 +275,15 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 		case <-stopChan:
 			return
 		case <-ticker.C:
-			check()
-			if consecutiveFailures >= 3 {
+			loop.check()
+			if loop.consecutiveFailures >= 3 {
 				return
 			}
 
-			// Adjust interval: use fast checks while permissions are missing
-			// or we're still within the fast-check startup window.
-			wantInterval := tccCheckInterval
-			if !allGranted && time.Since(startedAt) < tccFastCheckDuration {
-				wantInterval = tccFastCheckInterval
-			}
+			// Adjust interval: fast while permissions are missing inside the
+			// startup window, sooner while a stale-denial restart awaits
+			// confirmation or a transient hold (nextTCCCheckInterval).
+			wantInterval := nextTCCCheckInterval(loop.allGranted, time.Since(startedAt), restartGate)
 			if wantInterval != currentInterval {
 				currentInterval = wantInterval
 				ticker.Reset(currentInterval)
@@ -330,14 +292,102 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 	}
 }
 
-// collectTCCStatus is one loop check: the permission state, plus the denial
-// verdict (#10300) when the policy allows it.
-func collectTCCStatus(policy tccLoopPolicy, desktopContext string, denials *denialLog) *ipc.TCCStatus {
-	status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
-	if policy.diagnoseDenial {
-		denials.observe(attachDenialVerdict(status))
+// tccCheckLoop is one TCC loop's state between checks.
+type tccCheckLoop struct {
+	conn           *ipc.Conn
+	policy         tccLoopPolicy
+	desktopContext string
+	restartGate    *tccRestartGate // nil unless this helper may restart itself
+	promptFile     string
+
+	seq                 uint64
+	consecutiveFailures int
+	allGranted          bool
+	wasAllGranted       bool
+	firstCheck          bool
+	denials             denialLog
+}
+
+func newTCCCheckLoop(conn *ipc.Conn, policy tccLoopPolicy, desktopContext string, restartGate *tccRestartGate, promptFile string) *tccCheckLoop {
+	return &tccCheckLoop{
+		conn:           conn,
+		policy:         policy,
+		desktopContext: desktopContext,
+		restartGate:    restartGate,
+		promptFile:     promptFile,
+		firstCheck:     true,
 	}
-	return status
+}
+
+// check is one loop tick: collect and send the status, let the self-restart
+// gate see the diagnosis, then the Full Disk Access guidance and the
+// setup-finished notice.
+func (l *tccCheckLoop) check() {
+	status, diagnosis := collectTCCStatus(l.policy, l.desktopContext, &l.denials)
+	l.allGranted = len(missingPermissions(status)) == 0
+	if err := sendTCCStatus(l.conn, status, &l.seq); err != nil {
+		l.consecutiveFailures++
+		if l.consecutiveFailures >= 3 {
+			log.Warn("TCC check loop exiting after repeated IPC failures",
+				"failures", l.consecutiveFailures)
+			return
+		}
+	} else {
+		l.consecutiveFailures = 0
+	}
+
+	// After the status is out, so the agent has logged this verdict.
+	if l.restartGate != nil && l.restartGate.observe(diagnosis) {
+		return
+	}
+
+	// General osascript nagging was removed in favor of the web UI banner.
+	// But Full Disk Access is special: macOS provides NO API to prompt for it
+	// (unlike Screen Recording / Accessibility, whose system dialogs fire via
+	// RequestScreenRecording() and CheckTCCPermissions()). Without an
+	// on-machine dialog the user gets no signal that the one required manual
+	// grant is missing — exactly the "no third popup" report. Surface it here,
+	// unless the agent shows the permission notice itself (#10190 W04).
+	if l.policy.remindPermissions {
+		handleFullDiskAccessGuidance(status, l.promptFile)
+	}
+
+	// Tell the user when setup finishes. Skip the first check so a machine
+	// that was already fully granted doesn't get a spurious notification.
+	if l.allGranted && !l.wasAllGranted && !l.firstCheck {
+		showTCCCompleteNotification()
+	}
+	l.wasAllGranted = l.allGranted
+	l.firstCheck = false
+}
+
+// startTCCLoop is the loop's start: the self-restart gate (nil unless this
+// helper may restart itself), the prompts off when this start is one a
+// self-restart asked for, and then the Screen Recording consent request under
+// the resulting policy. The order matters: the quiet policy must be in place
+// before anything can prompt (#4327).
+func startTCCLoop(policy tccLoopPolicy, desktopContext string, store tccRestartStore, guard selfRestartGuard, markerPath string, now func() time.Time) (tccLoopPolicy, *tccRestartGate) {
+	policy, gate, quiet := setupTCCSelfRestart(policy, desktopContext, store, guard, now)
+	if quiet {
+		// The database already holds the grant: no prompt from this process.
+		markAccessibilityPrompted()
+		log.Info("desktop helper restarted itself for a stale TCC denial; skipping the consent prompts for this process")
+	}
+	requestScreenRecordingAtLoopStart(policy, desktopContext, markerPath, now())
+	return policy, gate
+}
+
+// collectTCCStatus is one loop check: the permission state, plus the denial
+// verdict (#10300) when the policy allows it. The diagnosis is returned for
+// the self-restart gate; nil when nothing was denied or none was run.
+func collectTCCStatus(policy tccLoopPolicy, desktopContext string, denials *denialLog) (*ipc.TCCStatus, *tccdiag.Diagnosis) {
+	status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
+	var diagnosis *tccdiag.Diagnosis
+	if policy.diagnoseDenial {
+		diagnosis = attachDenialVerdict(status)
+		denials.observe(diagnosis)
+	}
+	return status, diagnosis
 }
 
 // requestScreenRecordingAtLoopStart raises the Screen Recording consent
@@ -408,13 +458,6 @@ func missingPermissions(status *ipc.TCCStatus) []string {
 	return missing
 }
 
-func normalizedDesktopContext(desktopContext string) string {
-	if desktopContext == ipc.DesktopContextLoginWindow {
-		return ipc.DesktopContextLoginWindow
-	}
-	return ipc.DesktopContextUserSession
-}
-
 func boolPtr(v bool) *bool {
 	return &v
 }
@@ -434,7 +477,9 @@ func screenRecordingMarkerPath() string {
 
 // tccMarkerFilePath returns the path to a per-user TCC marker file. Uses the
 // user's Application Support directory to prevent other processes from
-// tampering, falling back to the temp dir when that is unavailable.
+// tampering, falling back to the temp dir when that is unavailable. The
+// self-restart record does not use it: it must not fall back (#11292,
+// tccStateFilePath).
 func tccMarkerFilePath(name string) string {
 	cu, err := user.Current()
 	if err != nil {
@@ -442,13 +487,23 @@ func tccMarkerFilePath(name string) string {
 			"marker", name, "error", err.Error())
 		return filepath.Join(os.TempDir(), "breeze-"+name)
 	}
-	dir := filepath.Join(cu.HomeDir, "Library", "Application Support", "Breeze")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	path, err := tccStateFileIn(cu.HomeDir, name)
+	if err != nil {
 		log.Warn("could not create Breeze app support dir, falling back to tmp",
-			"dir", dir, "error", err.Error())
+			"marker", name, "error", err.Error())
 		return filepath.Join(os.TempDir(), fmt.Sprintf("breeze-%s-%s", name, cu.Uid))
 	}
-	return filepath.Join(dir, name)
+	return path
+}
+
+// tccStateFilePath is name's path in the current user's state dir, with no
+// fallback location.
+func tccStateFilePath(name string) (string, error) {
+	cu, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("current user: %w", err)
+	}
+	return tccStateFileIn(cu.HomeDir, name)
 }
 
 // showTCCDialog shows an osascript dialog listing missing permissions with an

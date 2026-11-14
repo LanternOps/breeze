@@ -73,6 +73,17 @@ type Client struct {
 	// (#10370).
 	pamDialogs pamDialogRegistry
 
+	// inFlight counts the dialog and command handlers running now (see
+	// goTracked), so the helper never restarts itself under one (#11292).
+	inFlight atomic.Int32
+
+	// intakeMu is held by the command loop while it dispatches one message,
+	// and by holdForSelfRestart to set intakeHold; intakeHold, non-nil while
+	// a self-restart is about to exit, makes the loop wait before the next
+	// message (#11292). Closed when the hold lifts.
+	intakeMu   sync.Mutex
+	intakeHold chan struct{}
+
 	// agentHandlesTCCNotice is this connection's
 	// AuthResponse.AgentHandlesTCCNotice (#10190 W04), set at authentication.
 	agentHandlesTCCNotice bool
@@ -249,7 +260,7 @@ func (c *Client) Run() error {
 	// a live session's capturer.
 	agentHandlesTCC := c.agentHandlesTCCNotice
 	safeGo("tcc_check", func() {
-		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, agentHandlesTCC)
+		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, agentHandlesTCC, c)
 	})
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
@@ -510,103 +521,121 @@ func (c *Client) commandLoop() error {
 			return fmt.Errorf("recv: %w", err)
 		}
 
-		switch env.Type {
-		case ipc.TypePing:
-			if err := c.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
-				return fmt.Errorf("pong send failed: %w", err)
-			}
-
-		case ipc.TypePong:
-			// Response to our keepalive ping — no action needed
-
-		case ipc.TypeCommand:
-			safeGo("command", func() { c.handleCommand(env) })
-
-		case ipc.TypeNotify:
-			safeGo("notify", func() { c.handleNotify(env) })
-
-		case ipc.TypePamRequestDialog:
-			safeGo("pam_dialog", func() { c.handlePamDialog(env) })
-
-		case ipc.TypePamDismissConsent:
-			safeGo("pam_dismiss_consent", func() { c.handlePamDismissConsent(env) })
-
-		case ipc.TypePamCloseDialog:
-			safeGo("pam_close_dialog", func() { c.handlePamCloseDialog(env) })
-
-		case ipc.TypeConsentRequest:
-			safeGo("consent_request", func() { c.handleConsentRequest(env) })
-
-		case ipc.TypeConsentCancel:
-			c.handleConsentCancel(env)
-
-		case ipc.TypeBannerShow:
-			safeGo("banner_show", func() { c.handleBannerShowEnvelope(env) })
-
-		case ipc.TypeBannerHide:
-			safeGo("banner_hide", func() { c.handleBannerHideEnvelope(env) })
-
-		case ipc.TypeTrayUpdate:
-			safeGo("tray_update", func() { c.handleTrayUpdate(env) })
-
-		case ipc.TypeDesktopFenceSync:
-			// Applied INLINE, not on a goroutine: the service waits for this
-			// reply before it sends any generation-bearing start, so the reply
-			// is the readiness barrier. Dispatching it concurrently with the
-			// start that follows would defeat that.
-			c.handleDesktopFenceSync(env)
-
-		case ipc.TypeDesktopStart:
-			safeGo("desktop_start", func() { c.handleDesktopStart(env) })
-
-		case ipc.TypeDesktopStop:
-			safeGo("desktop_stop", func() { c.handleDesktopStop(env) })
-
-		case ipc.TypeDesktopLeaseUpdate:
-			safeGo("desktop_lease_update", func() { c.handleDesktopLeaseUpdate(env) })
-
-		case ipc.TypeDesktopICETrickleBegin:
-			safeGo("desktop_ice_trickle_begin", func() { c.handleDesktopICETrickleBegin(env) })
-
-		case ipc.TypeDesktopRemoteICECandidate:
-			safeGo("desktop_remote_ice_candidate", func() { c.handleDesktopRemoteICECandidate(env) })
-
-		case ipc.TypeDesktopInput:
-			safeGo("desktop_input", func() { c.handleDesktopInput(env) })
-
-		case ipc.TypeConsoleUserChanged:
-			safeGo("console_user_changed", func() { c.handleConsoleUserChanged(env) })
-
-		case ipc.TypeClipboardGet:
-			safeGo("clipboard_get", func() { c.handleClipboardGet(env) })
-
-		case ipc.TypeClipboardSet:
-			safeGo("clipboard_set", func() { c.handleClipboardSet(env) })
-
-		case ipc.TypeLaunchProcess:
-			safeGo("launch_process", func() { c.handleLaunchProcess(env) })
-
-		case ipc.TypeSASResponse:
-			if !c.resolvePendingResponse(env) {
-				log.Warn("unsolicited sas_response from daemon", "id", env.ID)
-			}
-
-		case ipc.TypeDesktopClipboardReadResult:
-			c.handleDesktopClipboardReadResult(env)
-
-		case ipc.TypePromptShow, ipc.TypePromptUpdate, ipc.TypePromptClose, ipc.TypePromptActionResult, ipc.TypePromptBrandingSync:
-			if c.prompts != nil {
-				c.prompts.handle(env)
-			}
-
-		case ipc.TypeDisconnect:
-			log.Info("disconnect received from daemon")
+		// A self-restart about to exit holds intake (#11292): wait for it to
+		// lift, or stop.
+		if !c.admitIntake() {
 			return nil
-
-		default:
-			log.Warn("unknown message type", "type", env.Type)
+		}
+		done, err := func() (bool, error) {
+			defer c.intakeMu.Unlock()
+			return c.dispatch(env)
+		}()
+		if done {
+			return err
 		}
 	}
+}
+
+// dispatch handles one message from the daemon. done reports that the
+// command loop should return err.
+func (c *Client) dispatch(env *ipc.Envelope) (done bool, err error) {
+	switch env.Type {
+	case ipc.TypePing:
+		if err := c.conn.SendTyped(env.ID, ipc.TypePong, nil); err != nil {
+			return true, fmt.Errorf("pong send failed: %w", err)
+		}
+
+	case ipc.TypePong:
+		// Response to our keepalive ping — no action needed
+
+	case ipc.TypeCommand:
+		c.goTracked("command", func() { c.handleCommand(env) })
+
+	case ipc.TypeNotify:
+		c.goTracked("notify", func() { c.handleNotify(env) })
+
+	case ipc.TypePamRequestDialog:
+		c.goTracked("pam_dialog", func() { c.handlePamDialog(env) })
+
+	case ipc.TypePamDismissConsent:
+		safeGo("pam_dismiss_consent", func() { c.handlePamDismissConsent(env) })
+
+	case ipc.TypePamCloseDialog:
+		safeGo("pam_close_dialog", func() { c.handlePamCloseDialog(env) })
+
+	case ipc.TypeConsentRequest:
+		c.goTracked("consent_request", func() { c.handleConsentRequest(env) })
+
+	case ipc.TypeConsentCancel:
+		c.handleConsentCancel(env)
+
+	case ipc.TypeBannerShow:
+		safeGo("banner_show", func() { c.handleBannerShowEnvelope(env) })
+
+	case ipc.TypeBannerHide:
+		safeGo("banner_hide", func() { c.handleBannerHideEnvelope(env) })
+
+	case ipc.TypeTrayUpdate:
+		safeGo("tray_update", func() { c.handleTrayUpdate(env) })
+
+	case ipc.TypeDesktopFenceSync:
+		// Applied INLINE, not on a goroutine: the service waits for this
+		// reply before it sends any generation-bearing start, so the reply
+		// is the readiness barrier. Dispatching it concurrently with the
+		// start that follows would defeat that.
+		c.handleDesktopFenceSync(env)
+
+	case ipc.TypeDesktopStart:
+		c.goTracked("desktop_start", func() { c.handleDesktopStart(env) })
+
+	case ipc.TypeDesktopStop:
+		safeGo("desktop_stop", func() { c.handleDesktopStop(env) })
+
+	case ipc.TypeDesktopLeaseUpdate:
+		safeGo("desktop_lease_update", func() { c.handleDesktopLeaseUpdate(env) })
+
+	case ipc.TypeDesktopICETrickleBegin:
+		safeGo("desktop_ice_trickle_begin", func() { c.handleDesktopICETrickleBegin(env) })
+
+	case ipc.TypeDesktopRemoteICECandidate:
+		safeGo("desktop_remote_ice_candidate", func() { c.handleDesktopRemoteICECandidate(env) })
+
+	case ipc.TypeDesktopInput:
+		safeGo("desktop_input", func() { c.handleDesktopInput(env) })
+
+	case ipc.TypeConsoleUserChanged:
+		safeGo("console_user_changed", func() { c.handleConsoleUserChanged(env) })
+
+	case ipc.TypeClipboardGet:
+		safeGo("clipboard_get", func() { c.handleClipboardGet(env) })
+
+	case ipc.TypeClipboardSet:
+		safeGo("clipboard_set", func() { c.handleClipboardSet(env) })
+
+	case ipc.TypeLaunchProcess:
+		c.goTracked("launch_process", func() { c.handleLaunchProcess(env) })
+
+	case ipc.TypeSASResponse:
+		if !c.resolvePendingResponse(env) {
+			log.Warn("unsolicited sas_response from daemon", "id", env.ID)
+		}
+
+	case ipc.TypeDesktopClipboardReadResult:
+		c.handleDesktopClipboardReadResult(env)
+
+	case ipc.TypePromptShow, ipc.TypePromptUpdate, ipc.TypePromptClose, ipc.TypePromptActionResult, ipc.TypePromptBrandingSync:
+		if c.prompts != nil {
+			c.prompts.handle(env)
+		}
+
+	case ipc.TypeDisconnect:
+		log.Info("disconnect received from daemon")
+		return true, nil
+
+	default:
+		log.Warn("unknown message type", "type", env.Type)
+	}
+	return false, nil
 }
 
 func (c *Client) registerPendingResponse(id string) chan *ipc.Envelope {
@@ -659,6 +688,94 @@ func (c *Client) closePendingResponses() {
 	for _, ch := range chans {
 		close(ch)
 	}
+}
+
+// goTracked is safeGo for a handler the helper must not restart itself under
+// (#11292): a consent, PAM or notification dialog, a command or process
+// launch, or a desktop session still starting. The count drops when fn
+// returns or panics.
+func (c *Client) goTracked(name string, fn func()) {
+	c.inFlight.Add(1)
+	safeGo(name, func() {
+		defer c.inFlight.Add(-1)
+		fn()
+	})
+}
+
+// selfRestartIntakeHoldLimit bounds how long a self-restart holds intake:
+// the exit takes milliseconds, so a hold still in place after this means the
+// exit did not happen, and the helper takes work again.
+var selfRestartIntakeHoldLimit = 30 * time.Second
+
+// admitIntake returns with intakeMu held once no self-restart hold is in
+// place, or false (without the lock) when the client stopped while held.
+func (c *Client) admitIntake() bool {
+	for {
+		c.intakeMu.Lock()
+		hold := c.intakeHold
+		if hold == nil {
+			return true
+		}
+		c.intakeMu.Unlock()
+		select {
+		case <-hold:
+		case <-c.stopChan:
+			return false
+		}
+	}
+}
+
+// holdForSelfRestart stops the command loop taking new messages, then
+// reports what is still in progress (selfRestartGuard). Taking intakeMu
+// waits out the message being dispatched now, so anything it started is
+// counted. When something is busy the hold lifts at once; otherwise it stays
+// until the process exits, or selfRestartIntakeHoldLimit passes.
+func (c *Client) holdForSelfRestart() string {
+	hold := make(chan struct{})
+	c.intakeMu.Lock()
+	c.intakeHold = hold
+	c.intakeMu.Unlock()
+	if busy := c.selfRestartBusy(); busy != "" {
+		c.liftIntakeHold(hold)
+		return busy
+	}
+	limit := selfRestartIntakeHoldLimit
+	time.AfterFunc(limit, func() {
+		if c.liftIntakeHold(hold) {
+			log.Warn("helper did not exit after asking for a self-restart; taking work again",
+				"heldFor", limit.String())
+		}
+	})
+	return ""
+}
+
+// liftIntakeHold lifts hold if it is still the one in place and reports
+// whether it did.
+func (c *Client) liftIntakeHold(hold chan struct{}) bool {
+	c.intakeMu.Lock()
+	defer c.intakeMu.Unlock()
+	if c.intakeHold != hold {
+		return false
+	}
+	c.intakeHold = nil
+	close(hold)
+	return true
+}
+
+// selfRestartBusy names what the helper is in the middle of, or "" when a
+// self-restart would interrupt nothing: no remote desktop session, no native
+// prompt on screen, no tracked handler running.
+func (c *Client) selfRestartBusy() string {
+	if c.desktopMgr != nil && c.desktopMgr.hasActiveSessions() {
+		return "remote desktop session active"
+	}
+	if c.prompts != nil && c.prompts.activeCount() > 0 {
+		return "prompt window open"
+	}
+	if c.inFlight.Load() > 0 {
+		return "dialog or command in progress"
+	}
+	return ""
 }
 
 // safeGo runs fn in a goroutine with panic recovery. If fn panics, the panic

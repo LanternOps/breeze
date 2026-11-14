@@ -99,7 +99,7 @@ func TestRunTearsDownPerRunGoroutinesWhenTheConnectionDrops(t *testing.T) {
 	restore := runTCCCheckLoop
 	t.Cleanup(func() { runTCCCheckLoop = restore })
 	gotKind := make(chan string, 1)
-	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, binaryKind string, _ bool) {
+	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, binaryKind string, _ bool, _ selfRestartGuard) {
 		gotKind <- binaryKind
 		<-stop
 		close(loopReturned)
@@ -171,7 +171,7 @@ func TestRunPassesTheAgentsTCCNoticeFlagToTheLoop(t *testing.T) {
 
 		restore := runTCCCheckLoop
 		got := make(chan bool, 1)
-		runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string, agentHandlesNotice bool) {
+		runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string, agentHandlesNotice bool, _ selfRestartGuard) {
 			got <- agentHandlesNotice
 			<-stop
 		}
