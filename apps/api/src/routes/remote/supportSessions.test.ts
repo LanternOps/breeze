@@ -66,6 +66,7 @@ vi.mock('../../middleware/auth', () => ({
 const insertedValues: unknown[] = [];
 const insertReturns: unknown[][] = [];
 const updateSets: unknown[] = [];
+const updateWheres: unknown[] = [];
 const updateReturns: unknown[][] = [];
 
 vi.mock('../../db', () => {
@@ -94,7 +95,12 @@ vi.mock('../../db', () => {
     set: vi.fn((values: unknown) => {
       updateSets.push(values);
       const rows = updateReturns.shift() ?? [];
-      return { where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve(rows)) })) };
+      return {
+        where: vi.fn((whereArg: unknown) => {
+          updateWheres.push(whereArg);
+          return { returning: vi.fn(() => Promise.resolve(rows)) };
+        }),
+      };
     }),
   }));
 
@@ -136,6 +142,29 @@ type AuthOverrides = {
 };
 
 const REMOTE_ACCESS = { resource: 'remote', action: 'access' };
+
+/**
+ * The identifiers a drizzle `.where(...)` was built with. The mocked schema
+ * columns are plain strings, so they land in the SQL AST's queryChunks as-is
+ * (same walk as supportPublic.test.ts).
+ */
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+  }
+  return acc;
+}
 
 function buildApp(overrides: AuthOverrides = {}) {
   const app = new Hono();
@@ -181,6 +210,7 @@ beforeEach(() => {
   insertedValues.length = 0;
   insertReturns.length = 0;
   updateSets.length = 0;
+  updateWheres.length = 0;
   updateReturns.length = 0;
   vi.clearAllMocks();
   getOrCreateQuickSupportOrg.mockResolvedValue({ orgId: 'qs-org', siteId: 'qs-site' });
@@ -676,6 +706,29 @@ describe('POST /support-sessions/:id/code — New code', () => {
       { sessionId: LIVE_ID, previousStatus: 'pending' },
       '203.0.113.7',
     );
+  });
+
+  // The pre-read can go stale (a redeem may claim the session in between);
+  // the UPDATE's own WHERE is what keeps a fresh code off a claimed session.
+  it('re-checks unclaimed, no device, inside the hard cap and pending-or-code-expired in the UPDATE itself', async () => {
+    selectResults.push([liveRow()]);
+    selectResults.push([{ id: 'qs-org' }]);
+    updateReturns.push([{ id: LIVE_ID, codeExpiresAt: new Date(), hardExpiresAt: new Date() }]);
+    expect((await newCode()).status).toBe(200);
+
+    const leaves = collectSqlLeafStrings(updateWheres[0]);
+    for (const column of [
+      'supportSessions.id',
+      'supportSessions.claimedAt',
+      'supportSessions.deviceId',
+      'supportSessions.hardExpiresAt',
+      'supportSessions.status',
+      'supportSessions.endedReason',
+    ]) {
+      expect(leaves, column).toContain(column);
+    }
+    expect(leaves).toContain('pending');
+    expect(leaves).toContain('expired');
   });
 
   it('caps the new code expiry at the session hard cap', async () => {

@@ -33,8 +33,10 @@ export function generateSupportCode(): string {
 }
 
 /**
- * SHA-256 hex of a normalized code. Only the hash is stored, so a database
- * disclosure never yields a usable code.
+ * SHA-256 hex of a normalized code — the redeem lookup key. The only other
+ * copy is the sealed, display-only `code_encrypted`, which exists only while
+ * the session is pending (#11836), so a database-only disclosure yields no
+ * usable code without the secret-encryption key.
  *
  * Plain SHA-256 (not a slow KDF) is deliberate: the code carries ~27 bits of
  * fresh entropy, lives 15 minutes, and lookups happen on the request path. The
@@ -58,8 +60,11 @@ const CODE_ENCRYPTED_SPEC: EncryptedColumnSpec = (() => {
 /**
  * Seal a code for `support_sessions.code_encrypted` (#11836), bound to the
  * session's row id: pasted onto another session (another partner's, say) the
- * value does not open. The hash stays the redeem lookup key; this copy exists
- * only so the technician can read the code back while it is still pending.
+ * value does not open. The row binding needs an active encryption key id
+ * (APP_ENCRYPTION_KEY_ID, the production default); without one encryptSecret
+ * falls back to v1, which is still encrypted but carries no AAD — the same as
+ * every other row-bound column. The hash stays the redeem lookup key; this
+ * copy exists only so the technician can read the code back while pending.
  */
 export function sealSupportCode(sessionId: string, code: string): string {
   const sealed = encryptSecret(code, { aad: columnAad(CODE_ENCRYPTED_SPEC, sessionId) });

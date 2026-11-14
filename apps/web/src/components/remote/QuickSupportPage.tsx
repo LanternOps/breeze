@@ -48,8 +48,8 @@ export interface SupportSessionView {
   createdByUserId: string | null;
   /**
    * Present only while the session is pending and its code is inside its
-   * TTL, and only for a caller allowed to create Quick Support sessions
-   * (#11836). Absent otherwise — never null-with-a-meaning.
+   * TTL, only for a caller allowed to create Quick Support sessions, and only
+   * for the caller's own partner's sessions (#11836). Absent otherwise — never null-with-a-meaning.
    */
   code?: string;
   landingUrl?: string;

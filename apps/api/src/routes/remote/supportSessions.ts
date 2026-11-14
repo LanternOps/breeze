@@ -138,8 +138,8 @@ async function codeAccessFor(c: Context, sessions: SupportSessionRow[]): Promise
  * remote-session create/end paths just to keep a duplicate status in sync.
  *
  * `code` and `landingUrl` are present ONLY for a pending session whose code is
- * still inside its TTL (whether or not the reaper has run), and only for a
- * caller who could have minted it (`codeAccessFor`). Everyone else, and every
+ * still inside its TTL and the hard cap (whether or not the reaper has run),
+ * and only for a caller who could have minted it (`codeAccessFor`). Everyone else, and every
  * other session, gets no code field at all. `canIssueNewCode` follows the same
  * caller rule.
  */
