@@ -112,6 +112,10 @@ function scheduleDecommissionEviction(deviceId: string, agentId: string): void {
       if (outcome?.status === 'unavailable' || outcome?.status === 'close_failed') {
         const detail = outcome.status === 'unavailable' ? outcome.reason : outcome.via;
         report('agent disconnect', deviceId, new Error(`agent socket eviction ${outcome.status}:${detail}`));
+      } else if (outcome?.status === 'indeterminate') {
+        // The enqueue's result is unknown: the job may well run. Logged, not
+        // reported, as in tenantLifecycle's sever.
+        console.warn(`${LOG_PREFIX} agent socket eviction unconfirmed for ${deviceId}`);
       }
     } catch (err) {
       // evictAgentSockets never rejects; this is a contract violation.

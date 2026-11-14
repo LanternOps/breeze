@@ -398,10 +398,12 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
       },
       // #4142 W3 process-local check: both purge jobs unlink the purged
       // device's screenshot files (services/screenshotFiles.ts). SCREENSHOT_DIR
-      // defaults to /tmp/breeze-screenshots, and every container mounts its own
-      // /tmp tmpfs (deploy/docker-compose.prod.yml), so a worker-side unlink
-      // would miss the api container's file. Drop both once screenshots move
-      // to shared storage.
+      // defaults to /tmp/breeze-screenshots, and the api and worker containers
+      // each mount their own /tmp tmpfs (deploy/docker-compose.prod.yml), so a
+      // worker-side unlink would miss the api container's file. Drop both once
+      // screenshots move to shared storage. Known gap: the global
+      // helperScreenshotRetentionWorker sweeps the same directory from the
+      // worker container (docs/deploy/worker-split.md).
       {
         name: 'deviceBulkPurge',
         reason:

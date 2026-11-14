@@ -27,8 +27,9 @@
  * `routes/agentWs.ts` or `services/agentCommandAwait.ts`:
  *
  *   - `'global'`       — safe to run on a process with no agent sockets.
- *   - `'socket-owner'` — reaches socket-local dispatch and must stay on a
- *                        process that can own agent WebSocket connections
+ *   - `'socket-owner'` — reaches socket-local dispatch, or has a process-local
+ *                        reason recorded in `KEEP_SOCKET_OWNER`, and must stay
+ *                        on a process that can own agent WebSocket connections
  *                        (today, every `BREEZE_ROLE=all`/`api` process).
  *
  * This first-pass classification was produced mechanically (a transitive

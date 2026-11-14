@@ -134,6 +134,17 @@ describe('parkedExpiry decommission eviction (#4142 W3)', () => {
     } finally { error.mockRestore(); }
   });
 
+  it('an unconfirmed (indeterminate) eviction is logged, not reported', async () => {
+    h.evict.mockResolvedValue(new Map([['agent-1', { status: 'indeterminate' }]]));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expireParkedDevice(input);
+      await runDeferred();
+      expect(warn).toHaveBeenCalledWith(`[parkedExpiry] agent socket eviction unconfirmed for ${deviceId}`);
+      expect(h.capture).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
   it.each([
     [{ status: 'queued' }],
     [{ status: 'closed', via: 'local' }],
