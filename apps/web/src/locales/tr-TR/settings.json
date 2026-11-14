@@ -595,7 +595,7 @@
       "verify": "Doğrula",
       "verifyQueued": "Model denetimi sıraya alındı",
       "verifyFailed": "Model denetimi sıraya alınamadı.",
-      "verifyGatewayHint": "Uç noktanıza kısa bir araç çağırma testi uygular (birkaç bin token kullanır).",
+      "verifyGatewayHint": "Uç noktanıza bir araç çağırma testi uygular. Yukarıdaki maliyet notuna bakın.",
       "remove": "Modeli kaldır",
       "removeTitle": "Bu model kaldırılsın mı?",
       "removeMessage": "“{{model}}” bu bağlantıdan silinecek. Geçmiş kullanım ve maliyet kayıtları korunur. Daha sonra yeniden ekleyebilirsiniz.",
