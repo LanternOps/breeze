@@ -18,6 +18,8 @@ export const TUNNEL_HTTP_OUTCOMES = [
   'gate_denied',
   'rate_limited',
   'budget_unavailable',
+  // The client disconnected while the request waited for a tunnel slot (#11464).
+  'client_aborted',
   'dispatch_failed',
   'host_rejected',
   'internal_error',

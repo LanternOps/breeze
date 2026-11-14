@@ -47,7 +47,7 @@ const { rateMock, slotMock, releaseMock } = vi.hoisted(() => {
   return {
     releaseMock,
     rateMock: vi.fn(async (): Promise<unknown> => ({ ok: true })),
-    slotMock: vi.fn((): unknown => ({ ok: true, release: releaseMock })),
+    slotMock: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ ok: true, release: releaseMock })),
   };
 });
 vi.mock('../services/tunnelHttpBudget', () => ({ checkTunnelHttpRate: rateMock, acquireTunnelHttpSlot: slotMock }));
@@ -108,7 +108,7 @@ beforeEach(() => {
   sendCommandMock.mockResolvedValue(agentOk());
   optInMock.mockResolvedValue(true);
   rateMock.mockResolvedValue({ ok: true });
-  slotMock.mockReturnValue({ ok: true, release: releaseMock });
+  slotMock.mockResolvedValue({ ok: true, release: releaseMock });
 });
 afterEach(() => {
   delete process.env.TUNNEL_ORIGIN_TEMPLATE;
@@ -538,13 +538,43 @@ describe('budgets and metrics', () => {
 
   it('429s when the concurrency budget is full and releases the slot after dispatch', async () => {
     const cookie = await enter();
-    slotMock.mockReturnValueOnce({ ok: false, scope: 'agent' });
+    slotMock.mockResolvedValueOnce({ ok: false, scope: 'agent', reason: 'busy' });
     const full = await req('/', sameOrigin(cookie));
     expect(full.status).toBe(429);
     expect(full.headers.get('retry-after')).toBe('1');
     expect(sendCommandMock).not.toHaveBeenCalled();
     await req('/', sameOrigin(cookie));
     expect(releaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a tunnel slot on the request signal, so a client that leaves gives up its place', async () => {
+    const cookie = await enter();
+    await req('/', sameOrigin(cookie));
+    expect(slotMock).toHaveBeenCalledWith(
+      { userId: USER_ID, tunnelId: TUNNEL_ID, agentId: AGENT_ID },
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it.each(['timeout', 'queue_full'] as const)('429s with Retry-After when the tunnel queue gives up (%s)', async (reason) => {
+    const cookie = await enter();
+    slotMock.mockResolvedValueOnce({ ok: false, scope: 'tunnel', reason });
+    const res = await req('/', sameOrigin(cookie));
+    expect(res.status).toBe(429);
+    expect(await res.text()).toBe('Too many concurrent requests');
+    expect(res.headers.get('retry-after')).toBe('1');
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(metricMock).toHaveBeenCalledWith('host', 'rate_limited');
+  });
+
+  it('a request whose client left while queued is not dispatched and not counted as rate limited', async () => {
+    const cookie = await enter();
+    metricMock.mockClear();
+    slotMock.mockResolvedValueOnce({ ok: false, scope: 'tunnel', reason: 'aborted' });
+    await req('/', sameOrigin(cookie));
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(metricMock).toHaveBeenCalledWith('host', 'client_aborted');
+    expect(metricMock).not.toHaveBeenCalledWith('host', 'rate_limited');
   });
 
   it('releases the slot when dispatch fails', async () => {

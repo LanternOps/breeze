@@ -7914,12 +7914,24 @@ func isWSDirectOnlyCommand(cmdType string) bool {
 	return cmdType == tools.CmdBackupRun
 }
 
+// isEphemeralCommand reports whether a command is a session-bound interactive
+// frame whose result travels only on the WebSocket: HandleCommand sends no
+// REST result for it, it gets the short watchdog tier, and it is never
+// journaled.
+//
+// http_request (#11464) is a Network Proxy request: one per asset a proxied
+// device web UI loads, its result consumed by the server's in-memory awaiter
+// (agentCommandAwait) from the WebSocket reply. The server keeps no
+// device_commands row for it (id http-req-<tunnelId>-<uuid>) and answers the
+// REST result as a no-op, so POSTing it only spent the agent's general rate
+// budget — a ~90-asset page load got the agent's own heartbeats refused.
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {
 	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
 		tools.CmdStartDesktop, tools.CmdStopDesktop,
 		tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig,
-		tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose:
+		tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
+		tools.CmdHttpRequest:
 		return true
 	}
 	return false

@@ -61,6 +61,10 @@ func TestHandleCommandHTTPResultSubmission(t *testing.T) {
 	}{
 		{"backup_run skips the doomed HTTP submission", tools.CmdBackupRun, false},
 		{"mssql_backup still submits its HTTP result", tools.CmdMSSQLBackup, true},
+		// #11464: the Network Proxy result already went back over the
+		// WebSocket and the server no-ops the POST; sending it spent the
+		// agent's general rate budget and got its heartbeats refused.
+		{"http_request skips the no-op HTTP submission", tools.CmdHttpRequest, false},
 	}
 
 	for _, tt := range tests {
@@ -112,5 +116,30 @@ func TestHandleCommandHTTPResultSubmission(t *testing.T) {
 				t.Fatalf("HTTP result submitted = %v (count %d), want %v", got, submissions.Load(), tt.wantSubmit)
 			}
 		})
+	}
+}
+
+// TestHTTPRequestIsEphemeral pins the Network Proxy classification (#11464).
+// An http_request is a per-request tunnel frame like tunnel_data: its result
+// goes back on the WebSocket to the server's in-memory awaiter
+// (agentCommandAwait), the server never creates a device_commands row for it
+// (the id is http-req-<tunnelId>-<uuid>), and the REST result route answers it
+// as a no-op. Being ephemeral is what stops HandleCommand from POSTing that
+// no-op once per proxied request, which drained the agent's general rate
+// budget during a device web UI page load. Its handler is bounded well inside
+// the short watchdog tier (httpProxyTimeout), and its ids were never
+// journalable (not UUIDs), so nothing else about it changes.
+func TestHTTPRequestIsEphemeral(t *testing.T) {
+	t.Parallel()
+
+	if !isEphemeralCommand(tools.CmdHttpRequest) {
+		t.Fatalf("isEphemeralCommand(%q) = false, want true", tools.CmdHttpRequest)
+	}
+	if httpProxyTimeout >= defaultEphemeralCommandInFlightWarnAfter {
+		t.Fatalf("http_request handler timeout %v must stay inside the ephemeral watchdog tier %v",
+			httpProxyTimeout, defaultEphemeralCommandInFlightWarnAfter)
+	}
+	if journalable(Command{ID: "http-req-0b6f0c7e-3d2a-4f5b-9e1c-8a7d6c5b4a39-1c7a1d8f-4e3b-4a6c-8f2d-9b8e7d6c5b4a", Type: tools.CmdHttpRequest}) {
+		t.Fatal("an http_request must not be journaled")
 	}
 }
