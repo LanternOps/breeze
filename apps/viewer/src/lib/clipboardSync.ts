@@ -6,13 +6,23 @@
  * docs/superpowers/specs/remote-desktop/2026-10-07-viewer-input-clipboard-convenience-design.md §5.
  *
  * Agent → viewer:
- *   {type:"status", hostToViewer, viewerToHost, chunked, suppressesBaseline, maxTextBytes, maxImageBytes}
+ *   {type:"status", hostToViewer, viewerToHost, chunked, suppressesBaseline, changeNotices?, maxTextBytes, maxImageBytes}
  *   {type:"text", text} | {type:"image", image:<b64>, image_format} | {type:"rtf", ...}
  *   {type:"chunk", id, seq, total, data}  — any of the above, split (after hello)
  *   {type:"ack", hash, id?}               — sent after a viewer write was APPLIED
+ *   {type:"unsupported", seq, empty?}     — the remote clipboard changed to content the agent
+ *                                           does not send (a file, say), or was emptied;
+ *                                           only after hello asked for changeNotices (#11310)
  * Viewer → agent:
- *   {type:"hello", chunked:true}          — only in reply to a chunk-capable status
+ *   {type:"hello", chunked:true, changeNotices?:true} — only in reply to a chunk-capable status
  *   {type:"text", text} | {type:"image", image, image_format:"png"}, chunked when large
+ *
+ * Which clipboard wins a paste (#11310): the one that changed last. A remote
+ * change the viewer did not write locally is "held"; the viewer remembers what
+ * the local clipboard held when it arrived. At paste, a local clipboard that
+ * still holds that is older than the remote's, so the paste keystroke goes
+ * through without a push and pastes the remote's own clipboard; one that
+ * holds something else changed afterwards, and is pushed first.
  *
  * Why hello waits for status: an agent that predates W4a hands every non-ack
  * message to its clipboard write path, and the Windows provider empties the
@@ -44,6 +54,11 @@ const DEFAULT_TIMINGS = {
   legacyAckMs: 300,
   /** How long an ack-capable agent gets, once the channel buffer has drained. */
   ackMs: 3_000,
+  /**
+   * After a copy chord, how long a paste waits for a changeNotices agent to
+   * report the copy: it reads within ~400 ms of the chord (#11310 row 4).
+   */
+  copySettleMs: 600,
   /** Per-frame bound on waiting for the SCTP buffer, matching the agent's chunk timeout. */
   bufferWaitMs: 30_000,
   pollMs: 10,
@@ -77,6 +92,8 @@ export interface ClipboardAgentStatus {
   viewerToHost: boolean;
   chunked: boolean;
   suppressesBaseline: boolean;
+  /** The agent reports every remote change, including ones it cannot carry, and reads promptly after a copy chord. */
+  changeNotices: boolean;
   maxTextBytes: number;
   maxImageBytes: number;
 }
@@ -95,9 +112,20 @@ export interface ClipboardSyncState {
   lastTransfer: ClipboardTransfer | null;
   /** A remote item is held for "Copy remote clipboard". */
   remoteItemAvailable: boolean;
+  /**
+   * The remote clipboard changed and the change was not written locally:
+   * 'item' can be pulled, 'unsupported' cannot (a file, an image the agent
+   * cannot read). null once the two clipboards agree again.
+   */
+  remoteHeld: 'item' | 'unsupported' | null;
 }
 
-export type PushFailure = 'too-large' | 'send-failed' | 'no-ack' | 'closed' | 'disabled';
+/**
+ * 'unreadable': the local clipboard held nothing the viewer can send — empty,
+ * or a format the clipboard plugin cannot read (a file). The Tauri plugin
+ * rejects both alike, so they cannot be told apart.
+ */
+export type PushFailure = 'too-large' | 'send-failed' | 'no-ack' | 'closed' | 'disabled' | 'unreadable';
 export type PasteOutcome = { result: 'pasted' } | { result: 'failed'; reason: PushFailure };
 export type SendOutcome =
   | { result: 'sent'; bytes: number }
@@ -108,6 +136,8 @@ export interface ClipboardSyncOptions {
   channel: ClipboardChannelLike;
   io: LocalClipboardIO;
   hasFocus: () => boolean;
+  /** When the operator last sent a key or click to the remote in this window. */
+  lastInputAt: () => number | null;
   lastCopyIntentAt: () => number | null;
   now?: () => number;
   onChange?: (state: ClipboardSyncState) => void;
@@ -148,6 +178,7 @@ function parseStatus(msg: Record<string, unknown>): ClipboardAgentStatus {
     viewerToHost: msg.viewerToHost === true,
     chunked: msg.chunked === true,
     suppressesBaseline: msg.suppressesBaseline === true,
+    changeNotices: msg.changeNotices === true,
     maxTextBytes: cap(msg.maxTextBytes, MAX_TEXT_BYTES),
     maxImageBytes: cap(msg.maxImageBytes, MAX_IMAGE_BYTES),
   };
@@ -197,6 +228,23 @@ export class ClipboardSync {
    */
   private synced = new Set<string>();
   private remoteItem: { item: ClipItem; fp: string } | null = null;
+  /**
+   * The latest remote change that was not written locally, with the
+   * fingerprints the local clipboard held when it arrived (empty when it held
+   * nothing readable). null while both clipboards agree.
+   */
+  private held: { kind: 'item' | 'unsupported'; localAtChange: Set<string> } | null = null;
+  /** When the latest remote change (content or notice) arrived. */
+  private lastRemoteChangeAt: number | null = null;
+  /** Numbers remote changes in arrival order. */
+  private remoteChangeSeq = 0;
+  /**
+   * Remote changes up to this number are older than a push the agent has
+   * since acked (the channel is ordered), so the remote holds our write and
+   * they must not be held or applied when their bookkeeping finishes late.
+   */
+  private supersededThrough = 0;
+  private readonly remoteChangeWaiters = new Set<() => void>();
   private lastTransfer: ClipboardTransfer | null = null;
   private readonly ackWaiters = new Map<string, Array<(o: AckOutcome) => void>>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -223,6 +271,7 @@ export class ClipboardSync {
       status: this.status,
       lastTransfer: this.lastTransfer,
       remoteItemAvailable: this.remoteItem !== null,
+      remoteHeld: this.held?.kind ?? null,
     };
   }
 
@@ -238,6 +287,7 @@ export class ClipboardSync {
     this.channel.removeEventListener('close', this.onClose);
     for (const waiters of this.ackWaiters.values()) for (const w of waiters) w('closed');
     this.ackWaiters.clear();
+    this.wakeRemoteChangeWaiters();
     this.emit();
   }
 
@@ -260,7 +310,9 @@ export class ClipboardSync {
         if (this.status.chunked && !this.helloSent) {
           this.helloSent = true;
           try {
-            this.channel.send(JSON.stringify({ type: 'hello', chunked: true }));
+            this.channel.send(JSON.stringify(this.status.changeNotices
+              ? { type: 'hello', chunked: true, changeNotices: true }
+              : { type: 'hello', chunked: true }));
           } catch (err) {
             console.warn('[clipboard] hello failed:', err);
           }
@@ -269,6 +321,9 @@ export class ClipboardSync {
         return;
       case 'ack':
         if (typeof msg.hash === 'string') this.resolveAck(msg.hash);
+        return;
+      case 'unsupported':
+        if (this.status?.changeNotices) this.handleChangeNotice(msg.empty === true);
         return;
       case 'chunk': {
         let inner: Uint8Array | null;
@@ -299,34 +354,113 @@ export class ClipboardSync {
     // empty baseline must not make the next real copy look like the baseline.
     const pushesSeen = this.pushesSeen++;
     const item = parseRemoteItem(msg);
-    if (!item) return;
-    // Decided on arrival: focus may move while the content is hashed.
+    // Decided on arrival: focus and input recency move while the content is hashed.
     const decision = remoteClipboardDecision({
       now: this.now(),
       hasFocus: this.opts.hasFocus(),
+      lastInputAt: this.opts.lastInputAt(),
       lastCopyIntentAt: this.opts.lastCopyIntentAt(),
       channelOpenedAt: this.openedAt,
       pushesSeen,
       suppressesBaseline: this.status?.suppressesBaseline ?? false,
     });
+    const gen = decision === 'skip-baseline' ? 0 : this.noteRemoteChange();
     this.inbound = this.inbound.then(async () => {
+      if (gen !== 0 && gen <= this.supersededThrough) return;
+      if (!item) {
+        // A format this viewer cannot hold (RTF, an unknown image format,
+        // over the cap): nothing to write, but the remote is now newer.
+        if (decision === 'skip-baseline') return;
+        this.remoteItem = null;
+        await this.holdRemoteChange(gen, 'unsupported');
+        return;
+      }
       const fp = await fingerprintItem(item);
       this.remoteItem = { item, fp };
-      this.markSynced(fp);
-      if (decision === 'apply') {
-        await this.writeLocal(item, fp);
-      } else {
-        console.debug('[clipboard] remote clipboard not applied:', decision);
+      if (decision === 'skip-baseline') {
+        // What the end user had before the session: on offer, never pasted
+        // over the operator's clipboard and never a reason to hold a paste.
+        this.held = null;
+        this.markSynced(fp);
         this.emit();
+        return;
       }
+      if (decision === 'apply') {
+        this.markSynced(fp);
+        if (await this.writeLocal(item, fp)) return;
+      } else {
+        console.debug('[clipboard] remote clipboard held:', decision);
+      }
+      await this.holdRemoteChange(gen, 'item', fp);
     });
+  }
+
+  /** {type:"unsupported"}: the remote clipboard changed to something the agent does not send, or was emptied. */
+  private handleChangeNotice(empty: boolean): void {
+    this.pushesSeen++;
+    const gen = this.noteRemoteChange();
+    this.inbound = this.inbound.then(async () => {
+      if (gen <= this.supersededThrough) return;
+      this.remoteItem = null;
+      if (empty) {
+        // Nothing on the remote to protect: the next paste sends the local clipboard.
+        this.held = null;
+        this.synced = new Set();
+        this.emit();
+        return;
+      }
+      await this.holdRemoteChange(gen, 'unsupported');
+    });
+  }
+
+  private noteRemoteChange(): number {
+    this.lastRemoteChangeAt = this.now();
+    this.wakeRemoteChangeWaiters();
+    return ++this.remoteChangeSeq;
+  }
+
+  /** Our push is on the remote now, after every remote change received so far. */
+  private notePushApplied(fp: string): void {
+    this.markSynced(fp);
+    this.held = null;
+    this.supersededThrough = this.remoteChangeSeq;
+  }
+
+  private wakeRemoteChangeWaiters(): void {
+    const waiters = [...this.remoteChangeWaiters];
+    this.remoteChangeWaiters.clear();
+    for (const w of waiters) w();
+  }
+
+  /**
+   * Records a remote change that was not written locally, and what the local
+   * clipboard held when it arrived. A remote item the local clipboard already
+   * holds is no change at all for the operator: nothing is held.
+   *
+   * A local read that fails here leaves the set empty, so any readable local
+   * clipboard at paste time counts as newer. That is right for the common case
+   * (a file on the local clipboard, then a copy) and wrong only for a
+   * transient read failure.
+   */
+  private async holdRemoteChange(gen: number, kind: 'item' | 'unsupported', remoteFp?: string): Promise<void> {
+    const local = await this.readLocal();
+    const localFp = local ? await fingerprintItem(local) : null;
+    // A push acked while the local clipboard was being read is newer.
+    if (gen <= this.supersededThrough) return;
+    if (remoteFp !== undefined && localFp === remoteFp) {
+      this.held = null;
+      this.markSynced(remoteFp);
+    } else {
+      this.held = { kind, localAtChange: localFp ? new Set([localFp]) : new Set() };
+    }
+    this.emit();
   }
 
   private markSynced(fp: string): void {
     this.synced = new Set([fp]);
   }
 
-  /** Writes a remote item to the local clipboard. Only the focus rule or an explicit action calls this. */
+  /** Writes a remote item to the local clipboard. Only the input-recency rule or an explicit action calls this. */
   private async writeLocal(item: ClipItem, fp: string): Promise<boolean> {
     try {
       if (item.type === 'text') await this.io.writeText(item.text);
@@ -334,6 +468,13 @@ export class ClipboardSync {
     } catch (err) {
       console.warn('[clipboard] failed to write remote→local:', err);
       return false;
+    }
+    // Both clipboards hold this item now, unless a newer remote change came in
+    // meanwhile (the inbound chain runs one change at a time, so only an
+    // explicit pull can race one).
+    if (this.remoteItem?.fp === fp) {
+      this.held = null;
+      this.markSynced(fp);
     }
     // The local clipboard re-encodes an image, so a paste would read back
     // different bytes and upload the same picture again. Record the read-back
@@ -353,7 +494,7 @@ export class ClipboardSync {
     return true;
   }
 
-  /** "Copy remote clipboard": applies the latest remote item, e.g. one a background window skipped. */
+  /** "Copy remote clipboard" / the held badge: applies the latest remote item, e.g. one that was held. */
   async copyRemoteClipboard(): Promise<boolean> {
     await this.inbound;
     if (!this.remoteItem) return false;
@@ -476,7 +617,7 @@ export class ClipboardSync {
     if (!status) {
       // Agents that predate the ack exist: cache on send and go ahead after a
       // short wait whatever happens (W1 behaviour).
-      this.markSynced(fp);
+      this.notePushApplied(fp);
       this.lastTransfer = { direction: 'to-remote', type: item.type, bytes, at: this.now() };
       this.emit();
       await ack.wait(this.timings.legacyAckMs);
@@ -492,7 +633,7 @@ export class ClipboardSync {
     }
     const outcome = await ack.wait(this.timings.ackMs);
     if (outcome !== 'ack' || this.closed) return outcome === 'timeout' ? 'no-ack' : 'closed';
-    this.markSynced(fp);
+    this.notePushApplied(fp);
     this.lastTransfer = { direction: 'to-remote', type: item.type, bytes, at: this.now() };
     this.emit();
     return 'ok';
@@ -505,6 +646,13 @@ export class ClipboardSync {
    * keystroke instead of pasting stale content. Pastes run one at a time, and
    * a controller closed mid-paste never dispatches, so a paste cannot land in
    * a session the operator moved on to.
+   *
+   * Push or not is decided by change order (#11310): the local clipboard is
+   * pushed only when it changed after the last remote change, so a newer
+   * remote clipboard (held, or one the viewer cannot hold, such as a file) is
+   * pasted as it is. A local clipboard with nothing readable cancels the
+   * keystroke: dispatching it would silently paste the remote's clipboard
+   * instead of what the operator copied.
    */
   pasteTransaction(dispatch: () => void): Promise<PasteOutcome> {
     return this.enqueue(async () => {
@@ -523,15 +671,25 @@ export class ClipboardSync {
         dispatch();
         return { result: 'pasted' } as const;
       }
+      await this.awaitCopySettle();
+      // Every remote change that has arrived is accounted for before deciding.
+      await this.inbound;
+      if (status && this.closed) return { result: 'failed', reason: 'closed' } as const;
       const item = await this.readLocal();
       if (!item) {
-        dispatch();
-        return { result: 'pasted' } as const;
+        // Nothing readable here. If the remote changed while the local
+        // clipboard was already unreadable, the remote's is the newer one
+        // (a file on both sides, say): paste it. Otherwise the remote holds
+        // older content than what the operator copied, so refuse. A change
+        // from one unreadable item to another cannot be seen.
+        if (this.held && this.held.localAtChange.size === 0) {
+          dispatch();
+          return { result: 'pasted' } as const;
+        }
+        return { result: 'failed', reason: 'unreadable' } as const;
       }
       const fp = await fingerprintItem(item);
-      // Skip what the remote already holds — but only while host→viewer is on.
-      // With it off, a remote copy since the last sync is invisible here.
-      if (this.synced.has(fp) && (!status || status.hostToViewer)) {
+      if (!this.localIsNewer(fp, status)) {
         dispatch();
         return { result: 'pasted' } as const;
       }
@@ -543,6 +701,38 @@ export class ClipboardSync {
       }
       dispatch();
       return { result: 'pasted' } as const;
+    });
+  }
+
+  /** Whether the local clipboard (fingerprint fp) changed after the remote's last change, so a paste must push it. */
+  private localIsNewer(fp: string, status: ClipboardAgentStatus | null): boolean {
+    if (this.held) return !this.held.localAtChange.has(fp);
+    // With host→viewer off, a remote copy since the last sync is invisible here.
+    if (status && !status.hostToViewer) return true;
+    return !this.synced.has(fp);
+  }
+
+  /**
+   * Right after a copy chord, waits (briefly) for a changeNotices agent to
+   * report the copy, so a quick Ctrl+C, Ctrl+V on the remote does not push the
+   * older local clipboard over the fresh copy (#11310 row 4). Agents without
+   * change notices poll at 500 ms and are not waited for, as before.
+   */
+  private async awaitCopySettle(): Promise<void> {
+    if (!this.status?.changeNotices) return;
+    const copyAt = this.opts.lastCopyIntentAt();
+    if (copyAt === null) return;
+    if (this.lastRemoteChangeAt !== null && this.lastRemoteChangeAt >= copyAt) return;
+    const remaining = copyAt + this.timings.copySettleMs - this.now();
+    if (remaining <= 0) return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.remoteChangeWaiters.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, remaining);
+      this.remoteChangeWaiters.add(done);
     });
   }
 

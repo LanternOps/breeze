@@ -21,6 +21,7 @@ var (
 	procGetClipboardData         = user32.NewProc("GetClipboardData")
 	procSetClipboardData         = user32.NewProc("SetClipboardData")
 	procRegisterClipboardFormatW = user32.NewProc("RegisterClipboardFormatW")
+	procGetClipboardSequenceNum  = user32.NewProc("GetClipboardSequenceNumber")
 	procGlobalAlloc              = kernel32.NewProc("GlobalAlloc")
 	procGlobalLock               = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock             = kernel32.NewProc("GlobalUnlock")
@@ -43,6 +44,20 @@ var (
 
 func NewSystemClipboard() *SystemClipboard {
 	return &SystemClipboard{}
+}
+
+var _ ChangeCounter = (*SystemClipboard)(nil)
+
+// ChangeCount is the window station's clipboard sequence number. Windows
+// bumps it on every change, a copy of identical content included, and reading
+// it does not open the clipboard. It is 0 when this process may not access
+// the clipboard; the watcher then compares content hashes instead.
+func (s *SystemClipboard) ChangeCount() (uint64, bool) {
+	r, _, _ := procGetClipboardSequenceNum.Call()
+	if r == 0 {
+		return 0, false
+	}
+	return uint64(uint32(r)), true
 }
 
 func openClipboard() error {
@@ -164,6 +179,14 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 		return Content{Type: ContentTypeText, Text: text}, nil
 	}
 
+	// No format the agent can carry. This is reported as unsupported content,
+	// never as an empty clipboard: the watcher runs in the SYSTEM helper, and
+	// there a file copy (Explorer, SetFileDropList) shows no formats at all, so
+	// CountClipboardFormats cannot tell it from a cleared clipboard (#11325
+	// lab, row 6). Taking a file copy for "empty" let the viewer paste its own
+	// clipboard over the file; a genuine clear held as unsupported only costs
+	// one paste that keeps the remote's (empty) clipboard, and the next local
+	// copy wins again.
 	return Content{}, noContentError(failure)
 }
 

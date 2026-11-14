@@ -44,8 +44,9 @@ function setup(opts: { policy?: typeof ON | null; local?: string | null; focused
 
 describe('attachVncClipboard remote → local', () => {
   it('writes a server cut to the focused window after the baseline window', async () => {
-    const { rfb, deps, handle, advance } = setup();
+    const { rfb, deps, handle, advance, press } = setup();
     advance(REMOTE_CLIPBOARD_BASELINE_WINDOW_MS + 1);
+    press({ code: 'KeyA', key: 'a' });
     rfb.serverCut('from mac');
     await flush();
     expect(deps.writeLocalText).toHaveBeenCalledWith('from mac');
@@ -60,6 +61,32 @@ describe('attachVncClipboard remote → local', () => {
     expect(handle.state.remoteItemAvailable).toBe(true);
     expect(await handle.copyRemoteClipboard()).toBe(true);
     expect(deps.writeLocalText).toHaveBeenCalledWith('end user clipboard');
+  });
+
+  it('holds a focused window\'s server cut when the operator has not used the session (#11310)', async () => {
+    const { rfb, deps, handle, advance } = setup();
+    advance(REMOTE_CLIPBOARD_BASELINE_WINDOW_MS + 1);
+    rfb.serverCut('changed on its own');
+    await flush();
+    expect(deps.writeLocalText).not.toHaveBeenCalled();
+    expect(handle.state.remoteHeld).toBe(true);
+    expect(await handle.copyRemoteClipboard()).toBe(true);
+    expect(deps.writeLocalText).toHaveBeenCalledWith('changed on its own');
+    expect(handle.state.remoteHeld).toBe(false);
+  });
+
+  it('applies a server cut within 2 s of a click in the session, not after', async () => {
+    const { rfb, deps, container, advance } = setup();
+    advance(REMOTE_CLIPBOARD_BASELINE_WINDOW_MS + 1);
+    container.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    advance(500);
+    rfb.serverCut('after click');
+    await flush();
+    expect(deps.writeLocalText).toHaveBeenCalledWith('after click');
+    advance(2_001);
+    rfb.serverCut('much later');
+    await flush();
+    expect(deps.writeLocalText).toHaveBeenCalledTimes(1);
   });
 
   it('buffers a background window\'s server cut instead of writing it', async () => {
