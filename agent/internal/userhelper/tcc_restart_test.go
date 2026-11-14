@@ -241,25 +241,48 @@ func (m *memRestartStore) Save(h tccRestartHistory) error {
 
 type gateHarness struct {
 	gate     *tccRestartGate
-	store    *memRestartStore
+	store    tccRestartStore
 	now      time.Time
 	busy     string
 	busyFn   func() string // overrides busy when set
+	holds    int           // holdForSelfRestart calls
 	restarts int
+	// heldAtRestart records, per restart, whether intake was held then.
+	heldAtRestart []bool
+	held          bool
 }
 
-func newGateHarness(store *memRestartStore) *gateHarness {
+func (h *gateHarness) selfRestartBusy() string {
+	if h.busyFn != nil {
+		return h.busyFn()
+	}
+	return h.busy
+}
+
+// holdForSelfRestart behaves like the client's: hold, then report busy,
+// releasing the hold when something is still running.
+func (h *gateHarness) holdForSelfRestart() string {
+	h.holds++
+	h.held = true
+	busy := h.selfRestartBusy()
+	if busy != "" {
+		h.held = false
+	}
+	return busy
+}
+
+func (h *gateHarness) mem() *memRestartStore { return h.store.(*memRestartStore) }
+
+func newGateHarness(store tccRestartStore) *gateHarness {
 	h := &gateHarness{store: store, now: restartNow}
 	h.gate = &tccRestartGate{
 		now:   func() time.Time { return h.now },
 		store: store,
-		busy: func() string {
-			if h.busyFn != nil {
-				return h.busyFn()
-			}
-			return h.busy
+		guard: h,
+		restart: func() {
+			h.restarts++
+			h.heldAtRestart = append(h.heldAtRestart, h.held)
 		},
-		restart: func() { h.restarts++ },
 	}
 	return h
 }
@@ -279,10 +302,10 @@ func TestTCCRestartGateRestartsOnceAfterConfirmation(t *testing.T) {
 	if !h.gate.observe(unexplainedDiagnosis(100)) {
 		t.Fatal("did not restart on the confirming unexplained check")
 	}
-	if h.restarts != 1 || h.store.saves != 1 {
-		t.Fatalf("restarts=%d saves=%d, want 1 and 1", h.restarts, h.store.saves)
+	if h.restarts != 1 || h.mem().saves != 1 {
+		t.Fatalf("restarts=%d saves=%d, want 1 and 1", h.restarts, h.mem().saves)
 	}
-	if got := h.store.h.Restarts; len(got) != 1 || !got[0].At.Equal(h.now) || got[0].Fingerprint != tccGrantFingerprint(unexplainedDiagnosis(100)) {
+	if got := h.mem().h.Restarts; len(got) != 1 || !got[0].At.Equal(h.now) || got[0].Fingerprint != tccGrantFingerprint(unexplainedDiagnosis(100)) {
 		t.Fatalf("recorded history = %+v", got)
 	}
 
@@ -333,7 +356,7 @@ func TestTCCRestartGateWaitsWhileBusy(t *testing.T) {
 	h := newGateHarness(&memRestartStore{})
 	h.busy = "remote desktop session active"
 	h.gate.observe(unexplainedDiagnosis(100))
-	if h.gate.observe(unexplainedDiagnosis(100)) || h.restarts != 0 || h.store.saves != 0 {
+	if h.gate.observe(unexplainedDiagnosis(100)) || h.restarts != 0 || h.mem().saves != 0 {
 		t.Fatal("restarted (or spent the budget) during a remote desktop session")
 	}
 	if !h.gate.pending() {
@@ -362,7 +385,7 @@ func TestTCCRestartGateRechecksBusyBeforeExit(t *testing.T) {
 	if h.gate.observe(unexplainedDiagnosis(100)) || h.restarts != 0 {
 		t.Fatal("exited although work arrived before the exit")
 	}
-	if got := h.store.h.Restarts; len(got) != 0 {
+	if got := h.mem().h.Restarts; len(got) != 0 {
 		t.Fatalf("history not rolled back: %+v", got)
 	}
 	if d, ok := h.gate.recheckIn(); !ok || d != tccSelfRestartBusyRecheck {
@@ -657,6 +680,15 @@ func TestClientSelfRestartBusy(t *testing.T) {
 	delete(c.prompts.active, "p1")
 	c.prompts.mu.Unlock()
 
+	c.desktopMgr.mgr.SetSessionActiveForTest("s1", true)
+	if got := c.selfRestartBusy(); got == "" {
+		t.Fatal("an active remote desktop session did not count as busy")
+	}
+	c.desktopMgr.mgr.SetSessionActiveForTest("s1", false)
+	if got := c.selfRestartBusy(); got != "" {
+		t.Fatalf("busy = %q after the session ended, want empty", got)
+	}
+
 	release := make(chan struct{})
 	c.goTracked("consent_request", func() { <-release })
 	waitFor(t, func() bool { return c.selfRestartBusy() != "" })
@@ -676,5 +708,180 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not reached")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// "One restart per grant state, ever" must survive the 24 h rate window:
+// state A restarts, state B restarts 25 h later, and A seen again must not
+// restart a second time (#11292 review). Saving B's restart used to prune
+// every record older than the window, A's fingerprint with it.
+func TestTCCRestartGateRestartedStateOutlivesTheRateWindow(t *testing.T) {
+	store := &memRestartStore{}
+	restartFor := func(at time.Time, lastModified int64) bool {
+		h := newGateHarness(store)
+		h.now = at
+		h.gate.observe(unexplainedDiagnosis(lastModified))
+		h.now = at.Add(2 * time.Minute)
+		return h.gate.observe(unexplainedDiagnosis(lastModified))
+	}
+	if !restartFor(restartNow, 100) {
+		t.Fatal("state A did not restart the first time")
+	}
+	if !restartFor(restartNow.Add(25*time.Hour), 200) {
+		t.Fatal("state B did not restart 25 h later")
+	}
+	if restartFor(restartNow.Add(50*time.Hour), 100) {
+		t.Fatal("state A restarted a second time once its record left the 24 h window")
+	}
+}
+
+// The restarted-states list is bounded: the oldest state is evicted once it
+// is full, a repeated state is not stored twice, and the rate window still
+// keeps only the restarts inside it.
+func TestTCCRestartHistoryWithRestart(t *testing.T) {
+	var h tccRestartHistory
+	for i := 0; i < tccSelfRestartMaxStates; i++ {
+		h.RestartedStates = append(h.RestartedStates, tccRestartRecord{At: ago(time.Duration(100-i) * time.Hour), Fingerprint: fmt.Sprintf("fp-%d", i)})
+	}
+	h.Restarts = []tccRestartRecord{
+		{At: ago(48 * time.Hour), Fingerprint: "fp-0"},
+		{At: ago(time.Hour), Fingerprint: fmt.Sprintf("fp-%d", tccSelfRestartMaxStates-1)},
+	}
+
+	next := h.withRestart(restartNow, "fp-new")
+	if got := len(next.RestartedStates); got != tccSelfRestartMaxStates {
+		t.Fatalf("restarted states = %d, want the cap %d", got, tccSelfRestartMaxStates)
+	}
+	if next.RestartedStates[0].Fingerprint != "fp-1" {
+		t.Fatalf("oldest kept state = %q, want fp-0 evicted", next.RestartedStates[0].Fingerprint)
+	}
+	if last := next.RestartedStates[len(next.RestartedStates)-1]; last.Fingerprint != "fp-new" || !last.At.Equal(restartNow) {
+		t.Fatalf("newest state = %+v, want fp-new at now", last)
+	}
+	if len(next.Restarts) != 2 || next.Restarts[1].Fingerprint != "fp-new" {
+		t.Fatalf("rate window = %+v, want the in-window restart plus the new one", next.Restarts)
+	}
+	if len(h.RestartedStates) != tccSelfRestartMaxStates || h.RestartedStates[0].Fingerprint != "fp-0" {
+		t.Fatal("withRestart modified the history it was called on")
+	}
+
+	again := next.withRestart(restartNow.Add(time.Hour), "fp-5")
+	seen := 0
+	for _, r := range again.RestartedStates {
+		if r.Fingerprint == "fp-5" {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("fp-5 stored %d times, want once", seen)
+	}
+
+	// An evicted state is no longer blocked: the cap bounds the file, and
+	// the rate window still bounds how often any restart happens.
+	if ok, reason := decideTCCSelfRestart(tccRestartState{
+		Verdict: tccdiag.VerdictUnexplained, Fingerprint: "fp-0", Confirmations: 2,
+		History: next, Now: restartNow.Add(time.Hour),
+	}); !ok {
+		t.Fatalf("evicted state refused: %s", reason)
+	}
+	if ok, reason := decideTCCSelfRestart(tccRestartState{
+		Verdict: tccdiag.VerdictUnexplained, Fingerprint: "fp-1", Confirmations: 2,
+		History: next, Now: restartNow.Add(time.Hour),
+	}); ok || reason != tccRestartReasonAlreadyRestarted {
+		t.Fatalf("kept state = (%v, %s), want already restarted", ok, reason)
+	}
+}
+
+// The record lives only in the per-user state dir. When that dir cannot be
+// made, there is no second location: a fallback would start an empty
+// history and reset the limits (#11292 review).
+func TestTCCStateFileIn(t *testing.T) {
+	home := t.TempDir()
+	path, err := tccStateFileIn(home, tccSelfRestartRecordName)
+	if err != nil {
+		t.Fatalf("tccStateFileIn: %v", err)
+	}
+	wantDir := filepath.Join(home, "Library", "Application Support", "Breeze")
+	if path != filepath.Join(wantDir, tccSelfRestartRecordName) {
+		t.Fatalf("path = %q, want it in %q", path, wantDir)
+	}
+	if info, err := os.Stat(wantDir); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("state dir = %v, %v; want a 0700 dir", info, err)
+	}
+
+	blocked := t.TempDir()
+	if err := os.WriteFile(filepath.Join(blocked, "Library"), []byte("not a dir"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if path, err := tccStateFileIn(blocked, tccSelfRestartRecordName); err == nil {
+		t.Fatalf("state dir uncreatable, got path %q and no error", path)
+	}
+	if path, err := tccStateFileIn("", tccSelfRestartRecordName); err == nil {
+		t.Fatalf("no home dir, got path %q and no error", path)
+	}
+}
+
+// With the state dir unavailable the helper does not restart (and does not
+// write a record anywhere), and a start is never treated as quiet.
+func TestPrimaryDirTCCRestartStoreFailsClosed(t *testing.T) {
+	resolves := 0
+	store := primaryDirTCCRestartStore{resolve: func() (string, error) {
+		resolves++
+		return "", errors.New("mkdir: permission denied")
+	}}
+	if _, err := store.Load(); err == nil {
+		t.Fatal("Load succeeded without a state dir")
+	}
+	if err := store.Save(history(tccRestartRecord{At: restartNow, Fingerprint: "fp"})); err == nil {
+		t.Fatal("Save succeeded without a state dir")
+	}
+
+	h := newGateHarness(store)
+	h.gate.observe(unexplainedDiagnosis(100))
+	if h.gate.observe(unexplainedDiagnosis(100)) || h.restarts != 0 {
+		t.Fatal("restarted although the state dir is unavailable")
+	}
+	if h.gate.lastReason != tccRestartReasonHistoryUnreadable {
+		t.Fatalf("hold reason = %q, want %q", h.gate.lastReason, tccRestartReasonHistoryUnreadable)
+	}
+	if _, quiet := applySelfRestartQuiet(tccLoopPolicyFor(ipc.HelperBinaryDesktopHelper, false), store, restartNow); quiet {
+		t.Fatal("a start with no readable record was treated as a self-restart")
+	}
+
+	// The path is resolved on each use, so a dir that comes back is used.
+	dir := t.TempDir()
+	recovered := primaryDirTCCRestartStore{resolve: func() (string, error) { return filepath.Join(dir, tccSelfRestartRecordName), nil }}
+	want := history(tccRestartRecord{At: restartNow, Fingerprint: "fp"})
+	if err := recovered.Save(want); err != nil {
+		t.Fatalf("Save with the dir back: %v", err)
+	}
+	if got, err := recovered.Load(); err != nil || len(got.Restarts) != 1 {
+		t.Fatalf("Load with the dir back = %+v, %v", got, err)
+	}
+	if resolves < 3 {
+		t.Fatalf("resolve called %d times, want once per use", resolves)
+	}
+}
+
+// The final check before exiting first stops the helper taking new work, so
+// nothing can start between that check and the shutdown; a decision that
+// says no never holds intake.
+func TestTCCRestartGateHoldsIntakeBeforeExit(t *testing.T) {
+	h := newGateHarness(&memRestartStore{})
+	h.gate.observe(unexplainedDiagnosis(100))
+	if h.holds != 0 {
+		t.Fatal("held intake on an unconfirmed check")
+	}
+	h.busy = "remote desktop session active"
+	h.gate.observe(unexplainedDiagnosis(100))
+	if h.holds != 0 {
+		t.Fatal("held intake although the decision already said busy")
+	}
+	h.busy = ""
+	if !h.gate.observe(unexplainedDiagnosis(100)) {
+		t.Fatal("did not restart")
+	}
+	if h.holds != 1 || len(h.heldAtRestart) != 1 || !h.heldAtRestart[0] {
+		t.Fatalf("holds=%d heldAtRestart=%v, want one hold in place when the restart was asked for", h.holds, h.heldAtRestart)
 	}
 }

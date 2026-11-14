@@ -3,6 +3,7 @@
 package userhelper
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -273,5 +274,52 @@ func TestCollectTCCStatusDiagnosesOnlyUnderPolicy(t *testing.T) {
 	}
 	if st, d := collectTCCStatus(tccLoopPolicy{}, "", &dl); st.DenialVerdict != "" || calls != 1 || d != nil {
 		t.Fatalf("other helper: verdict %q, diagnosis %+v after %d diagnoses, want none", st.DenialVerdict, d, calls)
+	}
+}
+
+// #11292 review: the loop's check feeds each diagnosis to the self-restart
+// gate. Two unexplained checks in a row, through the loop's own check step,
+// must ask for exactly one restart.
+func TestTCCCheckLoopFeedsTheRestartGate(t *testing.T) {
+	saveAccess, saveDiag := captureAccessFn, tccDiagnoseFn
+	t.Cleanup(func() { captureAccessFn, tccDiagnoseFn = saveAccess, saveDiag })
+	captureAccessFn = func(string) desktop.CaptureAccessReport {
+		return desktop.CaptureAccessReport{State: desktop.CaptureAccessDenied, Reason: "preflight"}
+	}
+	tccDiagnoseFn = func([]tccdiag.Service) tccdiag.Diagnosis { return *unexplainedDiagnosis(100) }
+
+	helperEnd, agentEnd := net.Pipe()
+	t.Cleanup(func() { _ = helperEnd.Close(); _ = agentEnd.Close() })
+	agent := ipc.NewConn(agentEnd)
+	statuses := make(chan struct{}, 8)
+	go func() {
+		for {
+			if _, err := agent.Recv(); err != nil {
+				return
+			}
+			statuses <- struct{}{}
+		}
+	}()
+
+	h := newGateHarness(&memRestartStore{})
+	// Diagnose, but raise no prompt or dialog of any kind.
+	policy := tccLoopPolicy{diagnoseDenial: true}
+	loop := newTCCCheckLoop(ipc.NewConn(helperEnd), policy, ipc.DesktopContextUserSession, h.gate, filepath.Join(t.TempDir(), "tcc-prompted"))
+
+	loop.check()
+	if h.restarts != 0 {
+		t.Fatal("restarted on the first unexplained check")
+	}
+	h.now = h.now.Add(2 * time.Minute)
+	loop.check()
+	if h.restarts != 1 {
+		t.Fatalf("restarts = %d after two unexplained checks through the loop, want 1", h.restarts)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-statuses:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the loop did not send its TCC status")
+		}
 	}
 }
