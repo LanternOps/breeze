@@ -53,6 +53,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['get', '/api/v1/portal/network/overview'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/assets'],
     ['GET', '/api/v1/portal/network/assets/'],
+    ['GET', '/api/v1/portal/network/sites'],
+    ['GET', '/api/v1/portal/network/sites/'],
+    ['GET', '/api/v1/portal/network/sites/health'],
+    ['GET', '/api/v1/portal/network/sites/health/'],
+    ['get', '/api/v1/portal/network/sites/health'], // method is case-insensitive
     // Portal logout commits its durable signed-out record in its own system
     // transaction; no portal request transaction may be held around it.
     ['POST', '/api/v1/portal/auth/logout'],
@@ -341,10 +346,14 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/portal/quotes/def-456/decline', 'accept/decline are DB-only and keep the ambient org tx'],
     ['POST', '/api/v1/portal/quotes//pay', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/network/overview', 'network overview is GET-only'],
-    ['GET', '/api/v1/portal/network', 'only the overview endpoint is self-managed'],
+    ['GET', '/api/v1/portal/network', 'only the overview, assets, sites and sites/health endpoints are self-managed'],
     ['GET', '/api/v1/portal/network/overview/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/portal/network/assets', 'network assets is GET-only'],
     ['GET', '/api/v1/portal/network/assets/extra', 'extra path segment must not match'],
+    ['POST', '/api/v1/portal/network/sites', 'network sites is GET-only'],
+    ['POST', '/api/v1/portal/network/sites/health', 'network site health is GET-only'],
+    ['GET', '/api/v1/portal/network/sites/extra', 'extra path segment must not match'],
+    ['GET', '/api/v1/portal/network/sites/health/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
     ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
