@@ -282,6 +282,25 @@ describe('parseImportedTicket — the whole ticket is checked before anything is
   });
 
   // #8313 W1 (spec 2026-10-19 §5.3 item 1): a comment's files.
+  it('accepts a createContact requester (W4b), with or without a name, and refuses one without an email or a key', () => {
+    const request = { name: 'Maya', email: 'maya@customer.example', sourceUserKey: '812' };
+    expect(parseImportedTicket(ticket({ requester: { createContact: request } }), at(400)).requester).toEqual({ createContact: request });
+    expect(parseImportedTicket(ticket({ requester: { createContact: { email: request.email, sourceUserKey: '812' } } }), at(400)).requester)
+      .toEqual({ createContact: { email: request.email, sourceUserKey: '812' } });
+    const bad = [
+      { createContact: { name: 'Maya', sourceUserKey: '812' } },
+      { createContact: { email: 'not an address', sourceUserKey: '812' } },
+      { createContact: { email: request.email } },
+      { createContact: { email: request.email, sourceUserKey: ' ' } },
+      { createContact: { email: request.email, sourceUserKey: 'a\u0000b' } },
+      { createContact: { ...request, roles: ['portal'] } },
+      { createContact: request, contactId: ORG },
+    ];
+    for (const requester of bad) {
+      expect(() => parseImportedTicket(ticket({ requester } as never), at(400)), JSON.stringify(requester)).toThrow();
+    }
+  });
+
   describe('attachments', () => {
     const withFiles = (files: unknown[]) => ticket({
       comments: [{ sourceId: 'a1', createdAt: at(5), isPublic: true, author: { kind: 'staff', name: 'Tess' }, content: 'Hi', attachments: files as never }],

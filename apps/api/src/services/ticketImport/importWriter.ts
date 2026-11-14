@@ -34,7 +34,8 @@ import {
   type ImportAttachmentSkip,
 } from './importAttachments';
 import { readInIdSlices } from './idSlices';
-import { parseImportedTicket, type ImportedComment, type ImportedTicket } from './importedTicket';
+import { parseImportedTicket, requestsContact, type ImportedComment, type ImportedTicket } from './importedTicket';
+import { resolveImportRequester, type ImportRequesterResolution } from './importPeople';
 import {
   importedCommentsOf,
   noSourceChanges,
@@ -143,6 +144,17 @@ export type ImportTicketResult = {
   attachmentsSkipped: ImportAttachmentSkip[];
   /** Bytes of the files claimed (`attachmentsWritten`). */
   attachmentBytes: number;
+  /**
+   * Contacts this call created for a `{ createContact }` requester (W4b,
+   * spec 2026-10-19 §5.13): 0 or 1, and only on a first import.
+   */
+  contactsCreated: number;
+  /**
+   * How a `{ createContact }` requester was resolved on a first import
+   * (`ImportRequesterResolution`'s kind); null for the other variants, and on
+   * a resume, which never re-applies the requester (§5.9).
+   */
+  requesterResolution: ImportRequesterResolution['kind'] | null;
 } & SourceChanges;
 
 /**
@@ -209,6 +221,14 @@ export type ImportTicketOptions = {
    * Required when a comment to write carries attachments.
    */
   fetchAttachment?: FetchImportAttachment;
+  /**
+   * Names the ledger of created contacts (W4b, spec 2026-10-19 §5.3 item 6,
+   * §5.13): a `{ createContact }` requester is resolved, and its contact
+   * linked, under system `ticket-import:<sourceId>`. Required when the ticket
+   * sends that variant. `runId` names the run that creates them; the link
+   * table has no run column (no table is added), so it is not stored.
+   */
+  people?: { sourceId: string; runId: string };
 };
 
 type WriteScope = {
@@ -297,14 +317,27 @@ function normalizedDescription(t: ImportedTicket): string {
 }
 
 /**
- * The createTicket input for a first import (requester: a contact, or a
- * display-only name with an optional email; with none, submitter_email stays
- * NULL).
+ * The requester createTicket gets on a first import: a contact, or a
+ * display-only name with an optional email (with none, submitter_email stays
+ * NULL). A `{ createContact }` requester arrives here resolved (`resolved`):
+ * its contact, with the source's name and email as the submitter snapshot
+ * (F37: removing the contact later falls the ticket back to it), or, when it
+ * stayed display-only, the snapshot alone. A nameless display-only requester
+ * is named by its email, as the display variant requires a name.
  */
-function toCreateInput(t: ImportedTicket): CreateTicketInput {
-  const requester = 'contactId' in t.requester
-    ? { requesterContactId: t.requester.contactId }
-    : { submitterName: t.requester.name, ...(t.requester.email ? { submitterEmail: t.requester.email } : {}) };
+function requesterInput(t: ImportedTicket, resolved: ImportRequesterResolution | null): Partial<CreateTicketInput> {
+  if ('contactId' in t.requester) return { requesterContactId: t.requester.contactId };
+  if (requestsContact(t.requester)) {
+    const { name, email } = t.requester.createContact;
+    const snapshot = { submitterName: name ?? email, submitterEmail: email };
+    return resolved && resolved.kind !== 'display_only' ? { requesterContactId: resolved.contactId, ...snapshot } : snapshot;
+  }
+  return { submitterName: t.requester.name, ...(t.requester.email ? { submitterEmail: t.requester.email } : {}) };
+}
+
+/** The createTicket input for a first import (`requesterInput` has the requester). */
+function toCreateInput(t: ImportedTicket, resolved: ImportRequesterResolution | null): CreateTicketInput {
+  const requester = requesterInput(t, resolved);
   // A 'portal' ticket from another desk has no Breeze portal login, so it
   // carries no submittedBy; createTicket accepts that at run time.
   return {
@@ -775,6 +808,8 @@ function mergedInBreeze(
     skip: { reason: 'merged_in_breeze', mergedIntoTicketId },
     ...counts,
     statusSkipped: false,
+    contactsCreated: 0,
+    requesterResolution: null,
     ...noSourceChanges(),
   };
 }
@@ -820,6 +855,11 @@ export async function importTicket(
   const chunkSize = Math.min(IMPORT_COMMENT_CHUNK_SIZE, Math.max(1, Math.floor(options.chunkSize ?? IMPORT_COMMENT_CHUNK_SIZE)));
   const chunkBytes = Math.min(IMPORT_COMMENT_CHUNK_BYTES, Math.max(1, Math.floor(options.chunkBytes ?? IMPORT_COMMENT_CHUNK_BYTES)));
   const t = parseImportedTicket(input);
+  // W4b: a requester to resolve names its ledger; refused before anything is read.
+  const people = options.people ?? null;
+  if (requestsContact(t.requester) && !people) {
+    throw new MigrationWindowError('MIGRATION_IMPORT_INVALID', 'A createContact requester needs options.people', 400, { sourceId: t.sourceId });
+  }
   const descriptor = await readWindowDescriptor(windowId, options.partnerId);
   const context = windowWriteContext(descriptor);
   const principalId = descriptor.principalId;
@@ -951,10 +991,20 @@ export async function importTicket(
     // fields. The final status rides on the last transaction.
     const headerRuns = plan.kind === 'create' || plan.headerCost > 0;
     const lastIsHeader = headerRuns && chunks.length === 0;
+    let requesterResolution: ImportRequesterResolution | null = null;
     if (plan.kind === 'create') {
-      const cost = 2 + (t.assigneeUserId ? 1 : 0) + (lastIsHeader ? statusCost : 0);
-      ticketId = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
-        const created = await createTicket(toCreateInput(t), scope.actor, scope.at(t.createdAt));
+      // A `{ createContact }` requester is charged its one unit up front, as
+      // the status steps are: whether a contact is created is decided under
+      // the lock, and only units already charged may be written (§5.3 item 6).
+      const contactCost = requestsContact(t.requester) ? 1 : 0;
+      const cost = 2 + contactCost + (t.assigneeUserId ? 1 : 0) + (lastIsHeader ? statusCost : 0);
+      const header = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
+        // Resolved in this transaction, so a contact exists only for a ticket
+        // that is written: a later failure in it rolls the contact back too.
+        const resolution = requestsContact(t.requester)
+          ? await resolveImportRequester({ orgId, sourceId: people!.sourceId, request: t.requester.createContact })
+          : null;
+        const created = await createTicket(toCreateInput(t, resolution), scope.actor, scope.at(t.createdAt));
         try {
           await upsertTicketExternalRef({
             principalId,
@@ -972,8 +1022,10 @@ export async function importTicket(
         }
         if (t.assigneeUserId) await assignTicket(created.id, t.assigneeUserId, scope.actor, scope.at(t.createdAt));
         if (lastIsHeader) await finalStatus(scope, created.id);
-        return created.id;
+        return { id: created.id, resolution };
       });
+      ticketId = header.id;
+      requesterResolution = header.resolution;
     } else if (headerRuns) {
       const cost = plan.headerCost + (lastIsHeader ? plan.statusCost : 0);
       const header = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
@@ -1074,10 +1126,13 @@ export async function importTicket(
       if (merged) return mergedInBreeze(ticketId, merged.mergedIntoTicketId, counts);
     }
 
+    const resolution: ImportRequesterResolution | null = requesterResolution;
     return {
       ticketId,
       outcome: plan.kind === 'create' ? 'created' : 'resumed',
       ...counts,
+      contactsCreated: resolution?.kind === 'created' ? 1 : 0,
+      requesterResolution: resolution?.kind ?? null,
       statusSkipped: statusSkip !== null,
       ...(statusSkip ? { statusSkip } : {}),
       ...(plan.kind === 'resume' ? plan.sourceChanges : noSourceChanges()),

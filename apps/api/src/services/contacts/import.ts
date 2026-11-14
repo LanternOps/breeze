@@ -45,6 +45,7 @@
 
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { assertContactLinkSystemAllowed, isReservedContactLinkSystem } from './externalLinkSystems';
 import { m365Connections } from '../../db/schema/m365';
 import { callerVerificationSubjectBindings } from '../../db/schema/callerVerification';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
@@ -456,6 +457,12 @@ function resolveRow(
   }
   const badRole = normalized.roles?.find((role) => !ROLE_SET.has(role));
   if (badRole) return rowConflict(`Unknown contact role "${badRole}"`);
+  // #8313 W4b: `ticket-import:*` marks the contacts a ticket import created;
+  // a file naming it could match or adopt them, so it is refused before the
+  // link lookup below.
+  if (isReservedContactLinkSystem(normalized.system)) {
+    return rowConflict(`External system "${normalized.system.slice(0, 64)}" is reserved for ticket imports`);
+  }
 
   // 3. Optional site pin. An unresolvable pin is a conflict, never a silent
   //    demotion to an org-level contact — that would file the contact under the
@@ -955,6 +962,9 @@ async function attachLink(
   actor: ContactImportActor,
 ): Promise<boolean> {
   if (!r.externalId) return false;
+  // Never reached for a reserved system (resolveRow refuses the row); kept as
+  // the write-side guard in case a caller skips the preview.
+  assertContactLinkSystemAllowed(r.system);
   await db.insert(contactExternalLinks).values({
     contactId,
     orgId,

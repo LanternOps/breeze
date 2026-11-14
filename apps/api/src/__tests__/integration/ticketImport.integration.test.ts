@@ -189,7 +189,11 @@ function source(fx: Fx, overrides: Partial<ImportedTicket> = {}): ImportedTicket
 /** A resume's report-only fields when the source changed nothing (and a first import's). */
 const NOTHING_CHANGED = { requesterChanged: false, orgChanged: false, commentsChangedInSource: [], commentsMissingInSource: [] };
 /** The attachment fields of a ticket with no files (#8313 W1; files: ticketImportAttachments.integration.test.ts). */
-const NO_FILES = { attachmentsWritten: 0, attachmentsSkipped: [], attachmentBytes: 0 };
+const NO_FILES = {
+  attachmentsWritten: 0, attachmentsSkipped: [], attachmentBytes: 0,
+  // #8313 W4b: no `{ createContact }` requester, so no contact and no resolution.
+  contactsCreated: 0, requesterResolution: null,
+};
 
 async function bucketSize(windowId: string): Promise<number> {
   return Number(await getRedis()!.zcard(migrationWindowRateKey(windowId)));

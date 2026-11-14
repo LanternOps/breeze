@@ -17,7 +17,19 @@
  *   `Retry-After` waits included; at SOURCE_FAILURE_LIMIT the run stops
  *   (`source_unavailable`).
  * - `clockSkewMs` is measured once per run, at its first slice's connect.
+ * - `predictedContacts` (W4b, a dry run only): the (org, email) keys the run
+ *   already predicted a contact for, as short digests keyed by the run id
+ *   (`predictedContactKey`), so a requester on many
+ *   tickets is predicted once (§5.10 `predicted.contactsToCreate`). A dry run
+ *   commits only at a slice's end, and it is bounded by
+ *   PREDICTED_CONTACT_KEYS_MAX (5,000 distinct addresses, about 100 KB);
+ *   past the bound, a new address is counted every time it is seen, so the
+ *   prediction over-counts, and `predicted.contactsToCreateOverCap` says how
+ *   many predictions were counted past the bound (`contactsToCreate` is then a
+ *   ceiling).
  */
+
+export const PREDICTED_CONTACT_KEYS_MAX = 5_000;
 
 export const SOURCE_FAILURE_LIMIT = 20;
 
@@ -27,6 +39,8 @@ export type RunCursor = {
   deletions: { after: string | null };
   sourceFailures: number;
   clockSkewMs: number | null | undefined;
+  /** Absent unless a dry run predicted a contact (the cursor of every other run is unchanged). */
+  predictedContacts?: string[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,5 +66,8 @@ export function normalizeCursor(raw: unknown): RunCursor {
     deletions: { after: keyOrNull(deletions.after) },
     sourceFailures: nonNegativeInt(c.sourceFailures),
     clockSkewMs: typeof c.clockSkewMs === 'number' ? c.clockSkewMs : c.clockSkewMs === null ? null : undefined,
+    ...(Array.isArray(c.predictedContacts) && c.predictedContacts.length > 0
+      ? { predictedContacts: c.predictedContacts.filter((k): k is string => typeof k === 'string').slice(0, PREDICTED_CONTACT_KEYS_MAX) }
+      : {}),
   };
 }

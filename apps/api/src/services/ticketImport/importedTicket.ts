@@ -80,10 +80,22 @@ export const importedTicketSchema = z.object({
   source: z.enum(IMPORTED_TICKET_SOURCES),
   // A contact of the ticket's org, or a display-only name with an optional
   // email: a source customer may have no address (Zammad, Z15), and
-  // tickets.submitter_email is nullable (spec 2026-10-19 §5.3 item 2).
+  // tickets.submitter_email is nullable (spec 2026-10-19 §5.3 item 2). The
+  // third variant (W4b, §5.3 item 6, §5.13) asks the writer to resolve the
+  // requester to a contact in the header transaction, creating it when the org
+  // has none with that email; a module sends it only when its "create missing
+  // requester contacts" option is on. `sourceUserKey` is the source person's
+  // stable key, the external id of the contact's import link.
   requester: z.union([
     z.object({ contactId: z.string().uuid() }).strict(),
     z.object({ name: text(255).trim().min(1), email: z.string().email().max(255).optional() }).strict(),
+    z.object({
+      createContact: z.object({
+        name: text(255).trim().min(1).optional(),
+        email: z.string().email().max(255),
+        sourceUserKey: z.string().trim().min(1).max(255).regex(CONTROL_CHARS, 'control characters are not allowed'),
+      }).strict(),
+    }).strict(),
   ]),
   assigneeUserId: z.string().uuid().nullable().optional(),
   finalStatus: z.enum(IMPORTED_TICKET_FINAL_STATUSES),
@@ -101,6 +113,13 @@ export const importedTicketSchema = z.object({
 export type ImportedTicket = z.infer<typeof importedTicketSchema>;
 export type ImportedComment = ImportedTicket['comments'][number];
 export type ImportedAttachment = NonNullable<ImportedComment['attachments']>[number];
+export type ImportedRequester = ImportedTicket['requester'];
+/** The third requester variant (W4b): resolve to a contact, creating it when none matches. */
+export type ImportedContactRequest = Extract<ImportedRequester, { createContact: unknown }>['createContact'];
+
+export function requestsContact(requester: ImportedRequester): requester is { createContact: ImportedContactRequest } {
+  return 'createContact' in requester;
+}
 
 function invalid(message: string, details?: Record<string, unknown>): MigrationWindowError {
   return new MigrationWindowError('MIGRATION_IMPORT_INVALID', message, 400, details);

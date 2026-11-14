@@ -39,6 +39,7 @@ vi.mock('../../services/ticketEvents', async (orig) => {
 });
 
 import {
+  contactExternalLinks,
   contacts,
   migrationWindows,
   ticketAttachments,
@@ -48,6 +49,7 @@ import {
   ticketImportItems,
   ticketImportRunIssues,
   tickets,
+  users,
 } from '../../db/schema';
 import { createSourceClient } from '../../services/ticketImport/sourceFetch';
 import { ticketImportLimits } from '../../services/ticketImport/importLimits';
@@ -455,5 +457,69 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(items.get('113')).toMatchObject({ state: 'imported', importedVersion: '2026-09-03T10:00:00.000Z' });
     // No file was downloaded again.
     expect(requested('/api/v1/ticket_attachment/')).toEqual([]);
+  }, CASE_TIMEOUT);
+
+  // W4b (spec 2026-10-19 §5.13, §6.4): "create missing requester contacts" on.
+  runDb('with created contacts on: one contact per requester and org across the bulk and delta passes; shared and empty addresses stay display-only; no owner becomes a user', async () => {
+    const fx = await seedZammad();
+    // Dana has no contact this time; Frank's address is still shared by two Globex contacts.
+    await getTestDb().delete(contacts).where(eq(contacts.id, fx.dana));
+    const options = { ...ZAMMAD_OPTIONS, createRequesterContacts: true };
+    await setMappings(fx, {
+      orgs: [
+        { sourceOrgKey: '2', sourceOrgName: 'Acme Ltd', orgId: fx.orgA.id },
+        { sourceOrgKey: '3', sourceOrgName: 'Globex Inc', orgId: fx.orgB.id },
+        { sourceOrgKey: null, sourceOrgName: null, orgId: fx.orgA.id },
+      ],
+      categories: [{ sourceGroupKey: '2', sourceGroupName: 'Support', categoryId: fx.categoryId }],
+    }, options);
+    const usersBefore = await getTestDb().select({ id: users.id }).from(users).where(eq(users.partnerId, fx.partner.id));
+
+    // The dry run predicts Dana, Grace (110, the fallback) and Ivan (116, the fallback), once each, in Acme.
+    const dry = await startImportRun(fx, 'dry_run');
+    await drive(fx, dry.id, { deps });
+    expect(normalizeCounters((await runRow(dry.id)).counters).predicted.contactsToCreate).toEqual({ [fx.orgA.id]: 3 });
+
+    const window = await openWindow(fx);
+    const bulk = await startImportRun(fx, 'import', window.id);
+    await drive(fx, bulk.id, { deps });
+    const c1 = normalizeCounters((await runRow(bulk.id)).counters);
+    expect(c1.tickets).toMatchObject({ created: 19, failed: 0 });
+    expect(c1.contactsCreated).toBe(3);
+
+    const created = await getTestDb()
+      .select({ id: contacts.id, orgId: contacts.orgId, name: contacts.name, email: contacts.email, roles: contacts.roles, key: contactExternalLinks.externalId })
+      .from(contactExternalLinks)
+      .innerJoin(contacts, eq(contacts.id, contactExternalLinks.contactId))
+      .where(eq(contactExternalLinks.system, `ticket-import:${fx.sourceId}`));
+    expect(created.map((c) => [c.key, c.orgId, c.name, c.email, c.roles]).sort()).toEqual([
+      ['10', fx.orgA.id, 'Dana Customer', 'dana@acme.example.test', []],
+      ['13', fx.orgA.id, 'Grace Solo', 'grace@solo.example.org', []],
+      ['14', fx.orgA.id, 'Ivan Foundation', 'ivan@foundation.example.test', []],
+    ]);
+    const dana = created.find((c) => c.key === '10')!;
+    const t = await importedTickets(fx);
+    for (const key of ['101', '102', '104', '107', '108', '109', '112', '113', '114', '115', '117', '118', '119']) {
+      expect(t.get(key)!.requesterContactId, key).toBe(dana.id);
+    }
+    // Frank: two contacts share the address, so display-only; Eve has no address.
+    expect(t.get('103')).toMatchObject({ requesterContactId: null, submitterEmail: 'frank@globex.example.test', assignedTo: null });
+    expect(t.get('111')).toMatchObject({ requesterContactId: null, submitterEmail: null, submitterName: 'Eve Nomail' });
+    expect(await getTestDb().select().from(contacts).where(eq(contacts.email, 'frank@globex.example.test'))).toHaveLength(2);
+    // Carol, 103's owner, matches no user: the ticket is unassigned with the note, and no user is created.
+    const c103 = await commentsOf(t.get('103')!.id);
+    expect(c103.find((c) => c.sourceId === 'note:103:owner:5')!.content).toBe('Owner in Zammad: Carol Gone <carol.gone@former.example.test>');
+    expect(await getTestDb().select({ id: users.id }).from(users).where(eq(users.partnerId, fx.partner.id))).toEqual(usersBefore);
+    expect(await getTestDb().select().from(contacts).where(eq(contacts.email, 'carol.gone@former.example.test'))).toEqual([]);
+
+    // The delta pass resumes the changed tickets and creates nothing.
+    fake.use('delta');
+    const delta = await startImportRun(fx, 'import', window.id);
+    await drive(fx, delta.id, { deps });
+    const c2 = normalizeCounters((await runRow(delta.id)).counters);
+    expect(c2.tickets).toMatchObject({ resumed: 8, created: 0, failed: 0 });
+    expect(c2.contactsCreated).toBe(0);
+    expect(await getTestDb().select().from(contactExternalLinks).where(eq(contactExternalLinks.system, `ticket-import:${fx.sourceId}`))).toHaveLength(3);
+    expect(await getTestDb().select().from(contacts).where(eq(contacts.email, 'dana@acme.example.test'))).toHaveLength(1);
   }, CASE_TIMEOUT);
 });

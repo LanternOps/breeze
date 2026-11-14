@@ -61,7 +61,11 @@ export type RunCounters = {
   /** Distinct source owners matched to no user. */
   ownersUnmatched: number;
   requestersWithoutContact: number;
-  /** Contacts the import created (W4b; 0 until then). */
+  /**
+   * Contacts the import created for requesters (W4b, §5.13). Also in the
+   * partner-level `ticket_import.run_finished` audit row, which carries the
+   * counters. The contacts themselves are listed from their links, not here.
+   */
   contactsCreated: number;
   commentsChangedInSource: number;
   commentsMissingInSource: number;
@@ -86,8 +90,14 @@ export type RunCounters = {
     attachmentsSkipped: number;
     /** Tickets that would fail validation. */
     invalid: number;
-    /** Contacts an import would create, per org (W4b; empty until then). */
+    /** Contacts an import would create, per org (W4b): once per (org, email) across the run. */
     contactsToCreate: Record<string, number>;
+    /**
+     * Predictions counted past the run's dedupe bound (PREDICTED_CONTACT_KEYS_MAX):
+     * when non-zero, `contactsToCreate` is a ceiling, as such an address may be
+     * counted more than once.
+     */
+    contactsToCreateOverCap: number;
   };
 };
 
@@ -125,6 +135,7 @@ export function emptyCounters(): RunCounters {
       attachmentsSkipped: 0,
       invalid: 0,
       contactsToCreate: {},
+      contactsToCreateOverCap: 0,
     },
   };
 }

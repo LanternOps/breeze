@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { MigrationWindowError } from '../migrationWindows';
 import { TicketServiceError } from '../ticketService';
 import { IMPORT_ATTACHMENT_MAX_BYTES } from './importAttachments';
@@ -122,6 +122,10 @@ export function recordImportResult(
   counters.comments.skipped += result.commentsSkipped;
   counters.attachments.written += result.attachmentsWritten;
   counters.attachments.bytes += result.attachmentBytes;
+  // W4b (§5.13): a created contact, or a `{ createContact }` requester the
+  // writer left display-only (several contacts share the email).
+  counters.contactsCreated += result.contactsCreated;
+  if (result.requesterResolution === 'display_only') counters.requestersWithoutContact += 1;
   const base = { sourceTicketKey: target.key, sourceTicketNumber: target.number };
 
   if (result.statusSkipped) {
@@ -169,6 +173,44 @@ export function predictTicket(ticket: ImportedTicket, counters: RunCounters, res
     counters.predicted.attachments += 1;
     counters.predicted.attachmentBytes += declared ?? 0;
   }
+}
+
+/**
+ * The dry run's dedupe key of a contact to create: an HMAC-SHA256 of (org,
+ * lower(email)) keyed by the run id, never the address. Keyed per run, so a
+ * digest stored in one run's cursor cannot be checked against a guessed
+ * address by computing it once and looking for it across runs.
+ */
+export function predictedContactKey(runId: string, orgId: string, email: string): string {
+  return createHmac('sha256', runId).update(`${orgId}:${email.trim().toLowerCase()}`).digest('hex').slice(0, 16);
+}
+
+/**
+ * A dry run's prediction for a `{ createContact }` requester (§5.10, §5.13):
+ * `create` counts once per (org, email) across the run (`seen`, the cursor's
+ * keys, bounded by `maxKeys`; past it, counted without dedupe), `display_only`
+ * counts a requester without contact. A linked or matched requester counts
+ * nothing.
+ */
+export function predictRequesterContact(
+  prediction: 'linked' | 'matched' | 'create' | 'display_only',
+  runId: string,
+  orgId: string,
+  email: string,
+  counters: RunCounters,
+  seen: Set<string>,
+  maxKeys: number,
+): void {
+  if (prediction === 'display_only') {
+    counters.requestersWithoutContact += 1;
+    return;
+  }
+  if (prediction !== 'create') return;
+  const key = predictedContactKey(runId, orgId, email);
+  if (seen.has(key)) return;
+  if (seen.size < maxKeys) seen.add(key);
+  else counters.predicted.contactsToCreateOverCap += 1;
+  counters.predicted.contactsToCreate[orgId] = (counters.predicted.contactsToCreate[orgId] ?? 0) + 1;
 }
 
 /** What an `importTicket` failure means for the run (§5.8). */

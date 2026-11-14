@@ -3,13 +3,14 @@ import type { PendingLink, TicketImportRunPhase } from '../../db/schema';
 import { createAuditLogAsync } from '../auditService';
 import { captureException } from '../sentry';
 import { MigrationWindowError } from '../migrationWindows';
-import { parseImportedTicket, type ImportedTicket } from './importedTicket';
+import { parseImportedTicket, requestsContact, type ImportedTicket } from './importedTicket';
+import { predictImportRequester } from './importPeople';
 import { ticketImportLimits, type TicketImportLimits } from './importLimits';
 import { ImportAttachmentFetchError, importErrorTicketId, importTicket, type FetchImportAttachment } from './importWriter';
 import { contactLookupContext, eligibleUsersByEmail, keysWithRef, singleContactsByEmail } from './conversionLookups';
 import type { AnyTicketImportModule, ConversionContext, ImportedLink, LoadedTicket, SourceHandle, SourceRow } from './moduleContract';
 import { getTicketImportModule } from './moduleRegistry';
-import { normalizeCursor, SOURCE_FAILURE_LIMIT, type RunCursor } from './runCursor';
+import { normalizeCursor, PREDICTED_CONTACT_KEYS_MAX, SOURCE_FAILURE_LIMIT, type RunCursor } from './runCursor';
 import {
   claimSlice,
   commitSlice,
@@ -33,6 +34,7 @@ import {
   conversionIdentityViolation,
   importedTicketBytes,
   isInfrastructureError,
+  predictRequesterContact,
   predictTicket,
   recordImportResult,
   SOURCE_SHAPE_INVALID,
@@ -173,6 +175,8 @@ class SliceRunner {
   private window: WindowDescriptor | null = null;
   private principalId!: string;
   private contactOrgIds: string[] = [];
+  /** A dry run's (org, email) digests already predicted (W4b), saved in the cursor at each commit. */
+  private readonly predictedContacts: Set<string>;
 
   constructor(
     private readonly input: SliceInput,
@@ -185,6 +189,7 @@ class SliceRunner {
     this.limits = deps.limits ?? ticketImportLimits();
     this.startedAt = this.now().getTime();
     this.cursor = normalizeCursor(run.cursor);
+    this.predictedContacts = new Set(this.cursor.predictedContacts ?? []);
     this.counters = normalizeCounters(run.counters);
     this.issues = new IssueBuffer(this.counters, this.limits.maxIssuesPerRun);
     this.dryRun = run.kind === 'dry_run';
@@ -277,6 +282,7 @@ class SliceRunner {
     this.pending = [];
     const ownerIssues = this.ownerIssues;
     this.ownerIssues = [];
+    if (this.predictedContacts.size > 0) this.cursor.predictedContacts = [...this.predictedContacts];
     const result = await withDbAccessContext(runContext(this.input.partnerId), () => commitSlice(this.input.partnerId, this.input.runId, this.input.seq, this.claimToken, {
       sourceId: this.run.sourceId,
       phase: this.phase,
@@ -552,6 +558,7 @@ class SliceRunner {
         partnerId: this.input.partnerId,
         isSourceArticleId: (id) => this.module.isSourceArticleId(id, loaded),
         fetchAttachment: this.attachmentFetcher(row.key),
+        people: { sourceId: this.run.sourceId, runId: this.input.runId },
       });
     } catch (error) {
       // The ticket the writer had when it failed, if any (review #2).
@@ -623,6 +630,16 @@ class SliceRunner {
     }
     const resumes = (refs ?? await keysWithRef(this.principalId, [row.key])).has(row.key);
     predictTicket(ticket, this.counters, resumes);
+    // W4b: the contact an import would create, once per (org, email). A
+    // resume never re-applies the requester (§5.9), so it predicts none.
+    if (!resumes && requestsContact(ticket.requester)) {
+      const request = ticket.requester.createContact;
+      const prediction = await predictImportRequester(
+        contactLookupContext(this.input.partnerId, this.contactOrgIds),
+        { orgId: ticket.orgId, sourceId: this.run.sourceId, request },
+      );
+      predictRequesterContact(prediction, this.input.runId, ticket.orgId, request.email, this.counters, this.predictedContacts, PREDICTED_CONTACT_KEYS_MAX);
+    }
     this.counters.linksAsNotes += links;
     return { kind: 'done', slow: true };
   }
