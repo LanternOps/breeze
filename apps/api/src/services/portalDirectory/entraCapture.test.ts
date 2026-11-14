@@ -158,6 +158,18 @@ describe('captureEntraDirectoryRun (plan D4)', () => {
     expect(deps.afterRunCommitted).not.toHaveBeenCalled();
   });
 
+  it('a "complete" run with an empty directory records incomplete (sync_incomplete) and is never evaluated', async () => {
+    // An empty listing is not evidence that every identity was removed.
+    const { deps } = makeDeps({ countDirectory: vi.fn(async () => 0) });
+    const out = await captureEntraDirectoryRun(ctx(), deps);
+    expect(out).toEqual({ recorded: true, outcome: 'incomplete', reason: 'sync_incomplete' });
+    expect(deps.recordRefusedRun).toHaveBeenCalledWith(expect.anything(), {
+      orgId: ORG, source: 'entra', snapshotKey: `${CONN}:4:7`, snapshotAt: NOW, outcome: 'incomplete', reason: 'sync_incomplete',
+    });
+    expect(deps.recordEvaluatedRun).not.toHaveBeenCalled();
+    expect(deps.afterRunCommitted).not.toHaveBeenCalled();
+  });
+
   it('above the item cap records directory_too_large', async () => {
     const { deps } = makeDeps({
       readSyncState: vi.fn(async () => ({

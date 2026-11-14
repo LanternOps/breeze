@@ -304,6 +304,9 @@ export async function captureEntraDirectoryRun(
       // 6. Only what the evaluation needs: the identities' rows and the directory size.
       const rows = await deps.readDirectoryRows(ctx.orgId, identities.map((i) => i.subject));
       const directoryUserCount = await deps.countDirectory(ctx.orgId);
+      // A "complete" run that lists nobody is not evidence that anyone left:
+      // refuse it, so it can never count an identity absent or confirm a shrink.
+      if (directoryUserCount === 0) return refuse('incomplete', 'sync_incomplete');
 
       // 7. Evaluate and record, in this transaction.
       const recorded = await deps.recordEvaluatedRun(tx, {

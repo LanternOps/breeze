@@ -396,6 +396,24 @@ describe('recordEvaluatedRun', () => {
     expect(firstArg(runUpdates[0], 'set')).toMatchObject({ outcome: 'suspect_shrink', disposition: 'none' });
   });
 
+  it('an empty directory: the run is recorded incomplete (sync_incomplete), off the chain, and nothing else moves', async () => {
+    mode.enforce = true;
+    // A previous zero suspect count would otherwise "confirm" this empty listing.
+    h.results.push([{ id: RUN }], [{ directoryUserCount: 100 }], [{ outcome: 'suspect_shrink', directoryUserCount: 0 }], []);
+    const absentOnce = ident(1, { directoryAbsentRuns: 1, directoryAbsentSince: new Date(NOW.getTime() - 9 * 3600_000) });
+    const out = await recordEvaluatedRun(db, recordInput([absentOnce], () => ({ present: false }), { directoryUserCount: 0 }));
+    expect(out).toMatchObject({ disposition: 'none', holdReason: null, affected: 0 });
+    expect(h.calls.filter((c) => c.op === 'execute')).toEqual([]);
+    expect(insertsOf(portalDirectoryActions)).toEqual([]);
+    expect(updatesOf(portalDirectoryActions)).toEqual([]);
+    expect(insertsOf(auditLogs)).toEqual([]);
+    const runUpdates = updatesOf(portalDirectoryRuns);
+    expect(runUpdates).toHaveLength(1);
+    expect(firstArg(runUpdates[0], 'set')).toMatchObject({
+      outcome: 'incomplete', reason: 'sync_incomplete', chainKey: null, disposition: 'none',
+    });
+  });
+
   it('dismiss sets rearm and the next run proposes nothing', async () => { // RF4, D8e
     mode.enforce = true;
     // The dismiss.

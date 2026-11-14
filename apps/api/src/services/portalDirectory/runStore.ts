@@ -333,6 +333,18 @@ export async function recordEvaluatedRun(tx: RunStoreExecutor, p: {
     identities: p.identities,
     observe: p.observe,
   });
+  if (result.outcome === 'incomplete') {
+    // An empty listing: recorded like a refused run (off the chain, so it is
+    // never a count baseline), and nothing else moves.
+    await tx
+      .update(portalDirectoryRuns)
+      .set({ outcome: 'incomplete', reason: 'sync_incomplete', chainKey: null, disposition: 'none' })
+      .where(runWhere);
+    logRun({
+      orgId: p.orgId, runId, source: p.source, outcome: 'incomplete', reason: 'sync_incomplete', mode, usable: 0, affected: 0, disposition: 'none',
+    });
+    return { runId, orgId: p.orgId, source: p.source, disposition: 'none', holdReason: null, affected: 0, usable: 0, created: true };
+  }
   if (result.outcome === 'suspect_shrink') {
     await tx.update(portalDirectoryRuns).set({ outcome: 'suspect_shrink', disposition: 'none' }).where(runWhere);
     logRun({

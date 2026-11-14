@@ -184,6 +184,22 @@ describe('evaluateDirectorySnapshot', () => {
     expect(run([ident()], {}, { ...base, directoryUserCount: 60 }).outcome).toBe('suspect_shrink');
   });
 
+  it('a zero-count listing is incomplete: it never moves an observation, never shrinks, never confirms', () => {
+    // Seen, absent once 9 h ago: one more absent snapshot would plan a disable.
+    const seen = ident({
+      directorySeenAt: new Date(T0.getTime() - 20 * HOUR),
+      directoryAbsentRuns: 1,
+      directoryAbsentSince: new Date(T0.getTime() - 9 * HOUR),
+    });
+    const zero = (previous: EvaluateInput['previous']) => run([seen], {}, { directoryUserCount: 0, previous });
+    expect(zero({ evaluatedCount: null, suspectCount: null })).toEqual({ outcome: 'incomplete' });
+    // Not a suspect shrink either (that would make it the next run's confirmation baseline) …
+    expect(zero({ evaluatedCount: 100, suspectCount: null })).toEqual({ outcome: 'incomplete' });
+    // … and an earlier zero suspect count can never confirm a second empty listing.
+    expect(zero({ evaluatedCount: 100, suspectCount: 0 })).toEqual({ outcome: 'incomplete' });
+    expect(zero({ evaluatedCount: 0, suspectCount: null })).toEqual({ outcome: 'incomplete' });
+  });
+
   it('a snapshot back at normal size after a suspect one is evaluated normally', () => {
     expect(run([ident()], {}, { directoryUserCount: 98, previous: { evaluatedCount: 100, suspectCount: 70 } }).outcome).toBe('evaluated');
   });
@@ -207,6 +223,11 @@ describe('holdReasonFor', () => {
     expect(h(2, 2, true)).toBe('threshold');
     expect(h(0, 0, true)).toBeNull();
     expect(h(0, 10, false)).toBeNull();
+  });
+
+  it('any affected account against zero usable identities is a threshold hold', () => {
+    expect(h(1, 0)).toBe('threshold');
+    expect(h(1, 0, true)).toBe('threshold');
   });
 
   it('is never held when not enforcing', () => {

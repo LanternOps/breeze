@@ -283,6 +283,24 @@ describe('captureEntraDirectoryRun on real Postgres', () => {
     expect(runs.map((r) => r.snapshotKey).sort()).toEqual([`${f.connectionId}:1:1`, `${f.connectionId}:2:2`].sort());
   });
 
+  it('a "complete" but empty listing records incomplete and never counts an identity absent', async () => {
+    const f = await seedOrg(2);
+    const seen = await completeRun(f, { generation: 1, now: new Date(Date.now() - 10 * HOUR), listed: everyone(f) });
+    expect(await captureEntraDirectoryRun(seen)).toMatchObject({ recorded: true, outcome: 'evaluated' });
+
+    // Two empty listings, 4 h+ apart: absence evidence would plan a disable.
+    for (const [generation, hoursAgo] of [[2, 6], [3, 1]] as const) {
+      const empty = await completeRun(f, { generation, now: new Date(Date.now() - hoursAgo * HOUR), listed: [], extra: 0 });
+      expect(await captureEntraDirectoryRun(empty)).toEqual({ recorded: true, outcome: 'incomplete', reason: 'sync_incomplete' });
+    }
+    const runs = await runsOf(f.orgId);
+    expect(runs.map((r) => r.outcome).sort()).toEqual(['evaluated', 'incomplete', 'incomplete']);
+    for (const run of runs) expect(await actionsOf(run.id)).toEqual([]);
+    for (const a of f.accounts) {
+      expect(await readIdentity(a.identityId)).toMatchObject({ directoryAbsentRuns: 0, directoryAbsentSince: null, disabledAt: null });
+    }
+  });
+
   it('no in-scope identities writes no run', async () => {
     const f = await seedOrg(0);
     const ctx = await completeRun(f, { generation: 1, now: new Date(), listed: [] });

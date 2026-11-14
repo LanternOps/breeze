@@ -31,6 +31,8 @@ export interface PlannedAction {
 }
 
 export type EvaluateResult =
+  /** an empty listing: not evidence about anyone */
+  | { outcome: 'incomplete' }
   | { outcome: 'suspect_shrink' }
   | {
       outcome: 'evaluated';
@@ -56,6 +58,10 @@ function isSuspectShrink(input: EvaluateInput): boolean {
 }
 
 export function evaluateDirectorySnapshot(input: EvaluateInput): EvaluateResult {
+  // A "complete" listing of zero users is never evidence that identities were
+  // removed: it moves no observation, and it is not a suspect shrink either
+  // (a zero suspect count would confirm the next empty listing at ±5%).
+  if (input.directoryUserCount <= 0) return { outcome: 'incomplete' };
   if (isSuspectShrink(input)) return { outcome: 'suspect_shrink' };
 
   const updates: ObservationUpdate[] = [];
@@ -116,6 +122,8 @@ export function holdReasonFor(p: {
   if (!p.enforce) return null;
   const a = p.affectedAccounts;
   const u = p.usableIdentities;
+  // No usable denominator: any affected account is over every ratio.
+  if (a >= 1 && u <= 0) return 'threshold';
   if ((a >= 3 && a * 10 > u) || a > 25 || (a >= 2 && a * 2 >= u)) return 'threshold';
   if (p.firstInChain && a >= 1) return 'first_enforcement';
   return null;

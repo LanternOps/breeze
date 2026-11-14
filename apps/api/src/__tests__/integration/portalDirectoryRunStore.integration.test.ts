@@ -180,6 +180,23 @@ describe('recordEvaluatedRun on real Postgres', () => {
     }
   });
 
+  it('an empty directory is recorded incomplete, off the chain, and moves no observation or action', async () => {
+    const f = await seedOrg(2);
+    const first = await record(f, 1, new Date(Date.now() - 10 * HOUR), []);
+    const before = await readIdentity(f.accounts[0]!.identityId);
+    expect(before.directoryLastRunId).toBe(first.runId);
+
+    const out = await record(f, 2, new Date(Date.now() - HOUR), [f.accounts[0]!.oid], 0);
+    expect(out).toMatchObject({ disposition: 'none', affected: 0, created: true });
+    expect(await readRun(out.runId)).toMatchObject({
+      outcome: 'incomplete', reason: 'sync_incomplete', chainKey: null, disposition: 'none', affectedCount: 0,
+    });
+    expect(await actionsOf(out.runId)).toEqual([]);
+    expect(await readIdentity(f.accounts[0]!.identityId)).toMatchObject({
+      directoryLastRunId: first.runId, directoryAbsentRuns: before.directoryAbsentRuns, disabledAt: null,
+    });
+  });
+
   it('a duplicate snapshot key returns the existing run and writes nothing', async () => {
     const f = await seedOrg(2);
     const t0 = new Date(Date.now() - 2 * HOUR);
