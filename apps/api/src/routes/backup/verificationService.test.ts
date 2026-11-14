@@ -35,6 +35,7 @@ vi.mock('../../services/recoveryAuthorizationSubject', () => ({
 
 import { recomputeRecoveryReadinessForDevice, runBackupVerification, runScheduledBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary, toVerificationListItem } from './verificationService';
 import { backupJobs, backupSnapshots, backupVerifications, jobOrgById, verificationOrgById } from './store';
+import { VERIFICATION_TIMEOUT_REASON_CODE, verificationTimeoutMs, verificationTimeoutReason } from './verificationTimeout';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
@@ -760,9 +761,9 @@ describe('timeoutStaleVerifications', () => {
     publishEventMock.mockClear();
   });
 
-  it('times out a verification that has been pending for more than 30 minutes', async () => {
+  it('times out a verification that has been pending past its command budget (#11813)', async () => {
     const verificationId = `verify-timeout-stale-${Date.now()}`;
-    const staleStartedAt = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    const staleStartedAt = new Date(Date.now() - verificationTimeoutMs('integrity') - 60 * 1000).toISOString();
 
     backupVerifications.push({
       id: verificationId,
@@ -786,7 +787,8 @@ describe('timeoutStaleVerifications', () => {
 
     const updated = backupVerifications.find((v) => v.id === verificationId);
     expect(updated?.status).toBe('failed');
-    expect((updated?.details as Record<string, unknown>)?.reason).toBe('Verification timed out after 30 minutes');
+    expect((updated?.details as Record<string, unknown>)?.reason).toBe(verificationTimeoutReason('integrity'));
+    expect((updated?.details as Record<string, unknown>)?.reasonCode).toBe(VERIFICATION_TIMEOUT_REASON_CODE);
   });
 
   it('does not time out a verification that started only 5 minutes ago', async () => {
