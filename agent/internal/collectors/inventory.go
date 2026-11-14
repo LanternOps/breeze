@@ -3,6 +3,8 @@ package collectors
 import (
 	"log/slog"
 	"net"
+	"os"
+	"runtime"
 	"strings"
 
 	"github.com/shirou/gopsutil/v3/disk"
@@ -19,6 +21,7 @@ type DiskInfo struct {
 	FreeGB      float64 `json:"freeGb"`
 	UsedPercent float64 `json:"usedPercent"`
 	Health      string  `json:"health"`
+	IsOSVolume  *bool   `json:"isOsVolume,omitempty"`
 }
 
 // NetworkAdapterInfo represents a network interface
@@ -62,6 +65,10 @@ func (c *InventoryCollector) CollectDisks() ([]DiskInfo, error) {
 
 	var disks []DiskInfo
 	seen := make(map[string]bool)
+	var systemDrive string
+	if runtime.GOOS == "windows" {
+		systemDrive = os.Getenv("SystemDrive")
+	}
 
 	for _, partition := range partitions {
 		// Skip duplicates and special filesystems
@@ -96,10 +103,21 @@ func (c *InventoryCollector) CollectDisks() ([]DiskInfo, error) {
 			FreeGB:      float64(usage.Free) / 1024 / 1024 / 1024,
 			UsedPercent: usage.UsedPercent,
 			Health:      "healthy",
+			IsOSVolume:  windowsOSVolume(systemDrive, partition.Mountpoint),
 		})
 	}
 
 	return disks, nil
+}
+
+// windowsOSVolume leaves the identity unknown when the agent has no system drive.
+func windowsOSVolume(systemDrive, mountPoint string) *bool {
+	drive := strings.TrimRight(strings.TrimSpace(systemDrive), "/\\")
+	if drive == "" {
+		return nil
+	}
+	matches := strings.EqualFold(drive, strings.TrimRight(mountPoint, "/\\"))
+	return &matches
 }
 
 // CollectNetworkAdapters collects information about network interfaces

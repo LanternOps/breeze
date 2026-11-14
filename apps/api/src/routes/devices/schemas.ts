@@ -61,6 +61,8 @@ export const listDevicesSchema = z.object({
   includeTotal: boolStr,
   /** Opt in to the warranty projection/join for the list column. */
   includeWarranty: boolStr,
+  /** Opt in to per-volume disk usage for the list column. */
+  includeDisks: boolStr,
 
   // Single-value filters (compat).
   orgId: z.string().guid().optional(),

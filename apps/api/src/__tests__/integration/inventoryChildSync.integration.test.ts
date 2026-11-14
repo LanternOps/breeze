@@ -80,6 +80,21 @@ describe('inventory disk/network sync (#6698)', () => {
     expect(root).toMatchObject({ mountPoint: '/', usedGb: 25, freeGb: 75, usedPercent: 25 });
   });
 
+  runDb('stores the Windows OS volume marker and clears it on a legacy report', async () => {
+    const device = await seedDevice();
+    const legacy = disks(10).map((disk, index) => ({ ...disk, mountPoint: index === 0 ? 'C:' : 'D:' }));
+    const reported = legacy.map((disk) => ({ ...disk, isOsVolume: disk.mountPoint === 'D:' }));
+    const markers = () => getTestDb().select({ mountPoint: deviceDisks.mountPoint, isOsVolume: deviceDisks.isOsVolume })
+      .from(deviceDisks).where(eq(deviceDisks.deviceId, device.id)).orderBy(asc(deviceDisks.mountPoint));
+    await getTestDb().transaction((tx) => syncDeviceDisks(tx, device, reported, new Date()));
+    const initialIds = await diskIds(device.id);
+    expect(await markers()).toEqual([{ mountPoint: 'C:', isOsVolume: false }, { mountPoint: 'D:', isOsVolume: true }]);
+
+    await getTestDb().transaction((tx) => syncDeviceDisks(tx, device, legacy, new Date()));
+    expect(await markers()).toEqual([{ mountPoint: 'C:', isOsVolume: null }, { mountPoint: 'D:', isOsVolume: null }]);
+    expect(await diskIds(device.id)).toEqual(initialIds);
+  });
+
   runDb('added and removed disks advance the inventory watermark; survivors keep their ids', async () => {
     const device = await seedDevice();
     await getTestDb().transaction((tx) => syncDeviceDisks(tx, device, disks(10), new Date()));

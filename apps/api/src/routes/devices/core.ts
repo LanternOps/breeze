@@ -13,6 +13,7 @@ import { reliabilityProvisionalSql } from '../../services/reliabilityBaselineQue
 import {
   devices,
   deviceHardware,
+  deviceDisks,
   deviceHardwareHealth,
   deviceReliability,
   deviceWarranty,
@@ -1307,6 +1308,7 @@ coreRoutes.get(
     const offset = isCursorMode ? 0 : Math.max(0, ((Number.parseInt(query.page ?? '1', 10) || 1) - 1) * limit);
 
     const includeWarranty = query.includeWarranty === 'true';
+    const includeDisks = query.includeDisks === 'true';
     const listQuery = db
       .select({
         id: devices.id,
@@ -1457,6 +1459,15 @@ coreRoutes.get(
     // Best current LAN address per device for the opt-in list column (#2503);
     // populated by the batched lateral below. Absent => the column dashes.
     const lanIpByDevice = new Map<string, string>();
+    const disksByDevice = new Map<string, Array<{
+      id: string;
+      mountPoint: string;
+      isOsVolume: boolean | null;
+      totalGb: number;
+      usedGb: number;
+      freeGb: number;
+      usedPercent: number;
+    }>>();
 
     if (deviceIds.length > 0) {
       // Per-device latest-row lookup via LATERAL + LIMIT 1 against the
@@ -1547,6 +1558,41 @@ coreRoutes.get(
       for (const row of lanIpRows) {
         lanIpByDevice.set(row.device_id, row.ip_address);
       }
+
+      if (includeDisks) {
+        // Restrict inventory to the authorized page, after trimming the cursor
+        // peek row. A separate batched lookup avoids a 1:N join duplicating
+        // device rows and changing pagination. device_disks also enforces RLS.
+        const diskRows = await db.execute<{
+          device_id: string;
+          id: string;
+          mount_point: string;
+          is_os_volume: boolean | null;
+          total_gb: number;
+          used_gb: number;
+          free_gb: number;
+          used_percent: number;
+        }>(sql`
+          SELECT disk.device_id, disk.id, disk.mount_point, disk.is_os_volume,
+                 disk.total_gb, disk.used_gb, disk.free_gb, disk.used_percent
+          FROM (VALUES ${idTuples}) AS d(device_id)
+          INNER JOIN ${deviceDisks} AS disk ON disk.device_id = d.device_id
+          ORDER BY disk.device_id, disk.mount_point, disk.id
+        `);
+        for (const row of diskRows) {
+          const disks = disksByDevice.get(row.device_id) ?? [];
+          disks.push({
+            id: row.id,
+            mountPoint: row.mount_point,
+            isOsVolume: row.is_os_volume,
+            totalGb: row.total_gb,
+            usedGb: row.used_gb,
+            freeGb: row.free_gb,
+            usedPercent: row.used_percent,
+          });
+          disksByDevice.set(row.device_id, disks);
+        }
+      }
     }
 
     // Transform to include hardware and latest metrics as nested objects
@@ -1613,6 +1659,7 @@ coreRoutes.get(
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
         ramPercent: latestMetrics?.ramPercent ?? 0,
+        ...(includeDisks ? { disks: disksByDevice.get(d.id) ?? [] } : {}),
         hardware: {
           cpuModel: d.cpuModel,
           cpuCores: d.cpuCores,

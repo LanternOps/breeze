@@ -1150,7 +1150,8 @@ export const updateDisksSchema = z.object({
     usedGb: z.number(),
     freeGb: z.number(),
     usedPercent: z.number(),
-    health: z.string().optional()
+    health: z.string().optional(),
+    isOsVolume: z.boolean().optional()
   })).max(100)
 });
 

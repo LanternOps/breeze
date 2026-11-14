@@ -129,16 +129,18 @@ export function ColumnChooser({
   // Everything else: not chosen, or chosen but gated off by the class segment.
   const rest = listed.filter((id) => !shown.includes(id));
 
-  const shownMatches = shown.filter((id) => matches(COLUMN_LABELS[id]));
+  const columnLabel = (id: ColumnId) => id === 'diskUsage' ? t('devices:deviceList.diskUsage') : COLUMN_LABELS[id];
+
+  const shownMatches = shown.filter((id) => matches(columnLabel(id)));
   const groups = COLUMN_GROUP_ORDER.map((group) => ({
     group,
-    ids: rest.filter((id) => COLUMN_GROUPS[id] === group && matches(COLUMN_LABELS[id])),
+    ids: rest.filter((id) => COLUMN_GROUPS[id] === group && matches(columnLabel(id))),
   })).filter((g) => g.ids.length > 0);
   const customMatches = customFieldDefinitions.filter((def) => matches(def.name));
   const nothingMatches = shownMatches.length === 0 && groups.length === 0 && customMatches.length === 0;
 
   const renderShown = (id: ColumnId) => {
-    const label = COLUMN_LABELS[id];
+    const label = columnLabel(id);
     const locked = isColumnLocked(id);
     const idx = shown.indexOf(id);
     return (
@@ -188,7 +190,7 @@ export function ColumnChooser({
   };
 
   const renderRest = (id: ColumnId) => {
-    const label = COLUMN_LABELS[id];
+    const label = columnLabel(id);
     const reason = gateReason(id);
     return (
       <label

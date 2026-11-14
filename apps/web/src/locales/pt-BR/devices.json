@@ -1661,6 +1661,12 @@
     "online": "Online"
   },
   "deviceList": {
+    "diskUsage": "Uso dos discos",
+    "diskUsageScope": "Discos a exibir",
+    "allDisks": "Todos os discos",
+    "osDiskOnly": "Somente o disco do sistema",
+    "sortByDiskUsage": "Ordenar por uso dos discos (maior uso exibido)",
+    "osDiskUsageUnavailable": "O agente ainda não identificou o disco do sistema.",
     "selectedComposition": "{{agent}} com agente, {{network}} de rede",
     "agentOnlyBulkAction": "Aplica-se apenas a dispositivos com agente",
     "eligibleOfSelected": "{{count}} de {{total}}",
