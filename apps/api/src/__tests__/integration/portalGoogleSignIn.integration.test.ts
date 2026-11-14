@@ -513,7 +513,10 @@ describe('portal Google account resolution (real DB, verified hd)', () => {
     await withSystemDbAccessContext(async () => {
       expect(await findPortalUserIdByIdentity(db, { provider: 'google', sub: oid })).toBeNull();
       expect(await findPortalUserIdByIdentity(db, { provider: 'entra', tid, oid: sub })).toBeNull();
-      expect(await findPortalUserIdByIdentity(db, { provider: 'google', sub })).toEqual({ portalUserId: account.id, orgId: org.id });
+      // W8: the owner lookup also carries the identity row and its disabled state.
+      expect(await findPortalUserIdByIdentity(db, { provider: 'google', sub })).toEqual({
+        portalUserId: account.id, orgId: org.id, identityId: expect.any(String), disabledAt: null,
+      });
     });
     // A google sign-in carrying the entra oid as its sub is a NEW person: refused at the address, never linked.
     expect(await signIn({ identity: googleIdentity(hd, oid, account.email) })).toEqual({ kind: 'account_exists', orgId: org.id });

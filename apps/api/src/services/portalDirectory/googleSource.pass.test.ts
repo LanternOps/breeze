@@ -205,6 +205,17 @@ describe('evaluateGoogleOrg (plan Task 7, D11)', () => {
     expect(deps.transaction).not.toHaveBeenCalled();
   });
 
+  it('a partial deps override keeps the default legs for everything it does not name (the integration seam)', async () => {
+    // Only the "has identities" leg is replaced; the connection load is the
+    // default one (googleHelpers.loadGoogleConnection, mocked above).
+    const { loadGoogleConnection } = await import('../googleHelpers');
+    vi.mocked(loadGoogleConnection).mockResolvedValueOnce({ ...CONNECTION } as never);
+    const hasIdentities = vi.fn(async () => false);
+    expect(await evaluateGoogleOrg(ORG, DATE, { hasIdentities })).toEqual({ outcome: 'no_identities' });
+    expect(loadGoogleConnection).toHaveBeenCalledWith(ORG);
+    expect(hasIdentities).toHaveBeenCalledWith(ORG);
+  });
+
   it('identities gone by the time of the transaction: no run row', async () => {
     const { deps } = makeDeps({ loadIdentities: vi.fn(async () => []) });
     expect(await evaluateGoogleOrg(ORG, DATE, deps)).toEqual({ outcome: 'no_identities' });

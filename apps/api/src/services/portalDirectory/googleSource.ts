@@ -242,7 +242,12 @@ interface GoogleConnectionFacts {
   serviceAccountEmail: string;
 }
 
-/** The I/O seam (the run.ts `deps` precedent): unit tests drive the decisions, the integration suite the SQL. */
+/**
+ * The I/O seam (the run.ts `deps` precedent): unit tests drive the decisions,
+ * the integration suite the SQL. `evaluateGoogleOrg` takes a partial override
+ * merged over the defaults, so the integration suite injects only the Google
+ * reader (`decryptKey`, `makeReader`) and keeps every SQL leg real.
+ */
 export interface GoogleOrgDeps {
   loadConnection(orgId: string): Promise<(GoogleConnectionFacts & { serviceAccountKey?: string }) | null>;
   decryptKey(conn: GoogleConnectionFacts & { serviceAccountKey?: string }): string;
@@ -345,9 +350,10 @@ type InTransaction =
 export async function evaluateGoogleOrg(
   orgId: string,
   utcDate: string,
-  deps: GoogleOrgDeps = defaultOrgDeps,
+  overrides: Partial<GoogleOrgDeps> = {},
 ): Promise<GoogleOrgOutcome> {
   if (!UUID_RE.test(orgId) || !UTC_DATE_RE.test(utcDate)) throw new Error('evaluateGoogleOrg: invalid org id or date');
+  const deps: GoogleOrgDeps = { ...defaultOrgDeps, ...overrides };
   const log = (r: GoogleOrgOutcome & { usable?: number; users?: number; runId?: string; disposition?: string }) =>
     console.log(`${LOG} google run`, { orgId, utcDate, source: 'google', reason: null, ...r });
 
