@@ -73,6 +73,10 @@ type Client struct {
 	// (#10370).
 	pamDialogs pamDialogRegistry
 
+	// inFlight counts the dialog and command handlers running now (see
+	// goTracked), so the helper never restarts itself under one (#11292).
+	inFlight atomic.Int32
+
 	// agentHandlesTCCNotice is this connection's
 	// AuthResponse.AgentHandlesTCCNotice (#10190 W04), set at authentication.
 	agentHandlesTCCNotice bool
@@ -249,7 +253,7 @@ func (c *Client) Run() error {
 	// a live session's capturer.
 	agentHandlesTCC := c.agentHandlesTCCNotice
 	safeGo("tcc_check", func() {
-		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, agentHandlesTCC)
+		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, agentHandlesTCC, c.selfRestartBusy)
 	})
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
@@ -520,13 +524,13 @@ func (c *Client) commandLoop() error {
 			// Response to our keepalive ping — no action needed
 
 		case ipc.TypeCommand:
-			safeGo("command", func() { c.handleCommand(env) })
+			c.goTracked("command", func() { c.handleCommand(env) })
 
 		case ipc.TypeNotify:
-			safeGo("notify", func() { c.handleNotify(env) })
+			c.goTracked("notify", func() { c.handleNotify(env) })
 
 		case ipc.TypePamRequestDialog:
-			safeGo("pam_dialog", func() { c.handlePamDialog(env) })
+			c.goTracked("pam_dialog", func() { c.handlePamDialog(env) })
 
 		case ipc.TypePamDismissConsent:
 			safeGo("pam_dismiss_consent", func() { c.handlePamDismissConsent(env) })
@@ -535,7 +539,7 @@ func (c *Client) commandLoop() error {
 			safeGo("pam_close_dialog", func() { c.handlePamCloseDialog(env) })
 
 		case ipc.TypeConsentRequest:
-			safeGo("consent_request", func() { c.handleConsentRequest(env) })
+			c.goTracked("consent_request", func() { c.handleConsentRequest(env) })
 
 		case ipc.TypeConsentCancel:
 			c.handleConsentCancel(env)
@@ -557,7 +561,7 @@ func (c *Client) commandLoop() error {
 			c.handleDesktopFenceSync(env)
 
 		case ipc.TypeDesktopStart:
-			safeGo("desktop_start", func() { c.handleDesktopStart(env) })
+			c.goTracked("desktop_start", func() { c.handleDesktopStart(env) })
 
 		case ipc.TypeDesktopStop:
 			safeGo("desktop_stop", func() { c.handleDesktopStop(env) })
@@ -584,7 +588,7 @@ func (c *Client) commandLoop() error {
 			safeGo("clipboard_set", func() { c.handleClipboardSet(env) })
 
 		case ipc.TypeLaunchProcess:
-			safeGo("launch_process", func() { c.handleLaunchProcess(env) })
+			c.goTracked("launch_process", func() { c.handleLaunchProcess(env) })
 
 		case ipc.TypeSASResponse:
 			if !c.resolvePendingResponse(env) {
@@ -659,6 +663,34 @@ func (c *Client) closePendingResponses() {
 	for _, ch := range chans {
 		close(ch)
 	}
+}
+
+// goTracked is safeGo for a handler the helper must not restart itself under
+// (#11292): a consent, PAM or notification dialog, a command or process
+// launch, or a desktop session still starting. The count drops when fn
+// returns or panics.
+func (c *Client) goTracked(name string, fn func()) {
+	c.inFlight.Add(1)
+	safeGo(name, func() {
+		defer c.inFlight.Add(-1)
+		fn()
+	})
+}
+
+// selfRestartBusy names what the helper is in the middle of, or "" when a
+// self-restart would interrupt nothing: no remote desktop session, no native
+// prompt on screen, no tracked handler running.
+func (c *Client) selfRestartBusy() string {
+	if c.desktopMgr != nil && c.desktopMgr.hasActiveSessions() {
+		return "remote desktop session active"
+	}
+	if c.prompts != nil && c.prompts.activeCount() > 0 {
+		return "prompt window open"
+	}
+	if c.inFlight.Load() > 0 {
+		return "dialog or command in progress"
+	}
+	return ""
 }
 
 // safeGo runs fn in a goroutine with panic recovery. If fn panics, the panic

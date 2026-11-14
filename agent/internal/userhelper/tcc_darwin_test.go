@@ -205,13 +205,18 @@ func TestCollectTCCStatusDiagnosesOnlyUnderPolicy(t *testing.T) {
 
 	// promptAccessibility stays false: no consent prompt from a test.
 	var dl denialLog
-	if st := collectTCCStatus(tccLoopPolicy{diagnoseDenial: true}, "", &dl); st.DenialVerdict != "requirement_mismatch" || calls != 1 {
+	st, d := collectTCCStatus(tccLoopPolicy{diagnoseDenial: true}, "", &dl)
+	if st.DenialVerdict != "requirement_mismatch" || calls != 1 {
 		t.Fatalf("desktop policy: verdict %q after %d diagnoses, want requirement_mismatch once", st.DenialVerdict, calls)
+	}
+	// The self-restart gate (#11292) reads the same diagnosis.
+	if d == nil || d.Verdict != tccdiag.VerdictRequirementMismatch {
+		t.Fatalf("desktop policy returned diagnosis %+v, want the one attached", d)
 	}
 	if dl.last != tccdiag.VerdictRequirementMismatch {
 		t.Fatalf("denial log saw %q, want the diagnosis logged", dl.last)
 	}
-	if st := collectTCCStatus(tccLoopPolicy{}, "", &dl); st.DenialVerdict != "" || calls != 1 {
-		t.Fatalf("other helper: verdict %q after %d diagnoses, want none", st.DenialVerdict, calls)
+	if st, d := collectTCCStatus(tccLoopPolicy{}, "", &dl); st.DenialVerdict != "" || calls != 1 || d != nil {
+		t.Fatalf("other helper: verdict %q, diagnosis %+v after %d diagnoses, want none", st.DenialVerdict, d, calls)
 	}
 }

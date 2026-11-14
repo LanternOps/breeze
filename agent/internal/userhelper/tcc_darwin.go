@@ -60,6 +60,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/tccdiag"
 )
 
 // accessibilityPrompted tracks whether we have already triggered the
@@ -89,6 +90,14 @@ const tccHelperCommandTimeout = 15 * time.Second
 // Recording consent dialogs raised by this helper for the same user, applied
 // only while the permission is actually missing.
 const screenRecordingRequestInterval = 24 * time.Hour
+
+// markAccessibilityPrompted makes this process treat the Accessibility
+// prompt as already shown, so no later check in it raises one.
+func markAccessibilityPrompted() {
+	accessibilityPromptedMu.Lock()
+	accessibilityPrompted = true
+	accessibilityPromptedMu.Unlock()
+}
 
 // CheckTCCPermissions probes macOS TCC permissions. On the first call,
 // triggers the accessibility system prompt; subsequent calls check silently.
@@ -244,8 +253,26 @@ func probeFullDiskAccess() bool {
 // the screen (#8058, #8390). agentHandlesNotice (AuthResponse
 // .AgentHandlesTCCNotice, #10190 W04) silences the helper's own Full Disk
 // Access guidance: the agent shows the permission notice from these reports.
-func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, agentHandlesNotice bool) {
+//
+// busy names what a self-restart would interrupt ("" when nothing): when
+// the TCC database says the grant is present but this live process still
+// reads denied, the console-user desktop helper exits once so launchd starts
+// a copy that sees it (#11292, tcc_restart.go).
+func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, agentHandlesNotice bool, busy func() string) {
 	policy := tccLoopPolicyFor(binaryKind, agentHandlesNotice)
+	var restartGate *tccRestartGate
+	if selfRestartAllowedFor(policy, desktopContext) {
+		store := fileTCCRestartStore{path: tccMarkerFilePath(tccSelfRestartRecordName)}
+		var quiet bool
+		if policy, quiet = applySelfRestartQuiet(policy, store, time.Now()); quiet {
+			// This process is the fresh copy a self-restart asked for: the
+			// database already holds the grant, so neither prompt may fire
+			// from it (#4327).
+			markAccessibilityPrompted()
+			log.Info("desktop helper restarted itself for a stale TCC denial; skipping the consent prompts on this start")
+		}
+		restartGate = &tccRestartGate{now: time.Now, store: store, busy: busy, restart: requestHelperSelfRestart}
+	}
 	startedAt := time.Now()
 	var seq uint64
 	var consecutiveFailures int
@@ -256,7 +283,7 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 	var denials denialLog
 
 	check := func() {
-		status := collectTCCStatus(policy, desktopContext, &denials)
+		status, diagnosis := collectTCCStatus(policy, desktopContext, &denials)
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
 			consecutiveFailures++
@@ -267,6 +294,11 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 			}
 		} else {
 			consecutiveFailures = 0
+		}
+
+		// After the status is out, so the agent has logged this verdict.
+		if restartGate != nil && restartGate.observe(diagnosis) {
+			return
 		}
 
 		// General osascript nagging was removed in favor of the web UI banner.
@@ -317,9 +349,13 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 			}
 
 			// Adjust interval: use fast checks while permissions are missing
-			// or we're still within the fast-check startup window.
+			// or we're still within the fast-check startup window, and while
+			// a stale-denial restart awaits its confirming check.
 			wantInterval := tccCheckInterval
 			if !allGranted && time.Since(startedAt) < tccFastCheckDuration {
+				wantInterval = tccFastCheckInterval
+			}
+			if restartGate != nil && restartGate.pending() {
 				wantInterval = tccFastCheckInterval
 			}
 			if wantInterval != currentInterval {
@@ -331,13 +367,16 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 }
 
 // collectTCCStatus is one loop check: the permission state, plus the denial
-// verdict (#10300) when the policy allows it.
-func collectTCCStatus(policy tccLoopPolicy, desktopContext string, denials *denialLog) *ipc.TCCStatus {
+// verdict (#10300) when the policy allows it. The diagnosis is returned for
+// the self-restart gate; nil when nothing was denied or none was run.
+func collectTCCStatus(policy tccLoopPolicy, desktopContext string, denials *denialLog) (*ipc.TCCStatus, *tccdiag.Diagnosis) {
 	status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
+	var diagnosis *tccdiag.Diagnosis
 	if policy.diagnoseDenial {
-		denials.observe(attachDenialVerdict(status))
+		diagnosis = attachDenialVerdict(status)
+		denials.observe(diagnosis)
 	}
-	return status
+	return status, diagnosis
 }
 
 // requestScreenRecordingAtLoopStart raises the Screen Recording consent
@@ -406,13 +445,6 @@ func missingPermissions(status *ipc.TCCStatus) []string {
 		missing = append(missing, "Full Disk Access")
 	}
 	return missing
-}
-
-func normalizedDesktopContext(desktopContext string) string {
-	if desktopContext == ipc.DesktopContextLoginWindow {
-		return ipc.DesktopContextLoginWindow
-	}
-	return ipc.DesktopContextUserSession
 }
 
 func boolPtr(v bool) *bool {
