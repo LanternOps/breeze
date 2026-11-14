@@ -32,10 +32,20 @@ interface FakeDelegationRow {
   activatedAt: Date | null;
 }
 
-const dbState: { rows: FakeRow[]; delegations: FakeDelegationRow[]; contextsOpened: number } = {
+const dbState: {
+  rows: FakeRow[];
+  delegations: FakeDelegationRow[];
+  contextsOpened: number;
+  /** Scope of the context the caller already holds; undefined = none (#11812). */
+  ambientScope: 'system' | 'partner' | 'organization' | undefined;
+  /** runOutsideDbContext calls, i.e. reads that left the ambient context. */
+  escapes: number;
+} = {
   rows: [],
   delegations: [],
   contextsOpened: 0,
+  ambientScope: undefined,
+  escapes: 0,
 };
 
 vi.mock('../db', () => {
@@ -51,6 +61,12 @@ vi.mock('../db', () => {
     },
     // The #8053 cached readers consult these (no ambient context in tests).
     hasDbAccessContext: () => false,
+    getCurrentDbAccessContext: () =>
+      dbState.ambientScope ? { scope: dbState.ambientScope } : undefined,
+    runOutsideDbContext: <T>(fn: () => T): T => {
+      dbState.escapes += 1;
+      return fn();
+    },
     runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
     runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
     db: {
@@ -456,6 +472,62 @@ describe('getActiveManifestKeyDelegations', () => {
     const [record] = await getActiveManifestKeyDelegations();
     expect(typeof record!.epoch).toBe('number');
     expect(JSON.parse(JSON.stringify(record)).epoch).toBe(42);
+  });
+});
+
+// #11812: the key tables are readable only under system scope, and a bare
+// withSystemDbAccessContext joins whatever context the caller holds. Real
+// RLS is proven end to end in agentVersionsPromoteDeployKey.integration.test.ts;
+// this pins which reads leave the ambient context and which do not.
+describe('key reads run under a real system scope (#11812)', () => {
+  beforeEach(() => {
+    dbState.rows = [];
+    dbState.delegations = [];
+    dbState.ambientScope = undefined;
+    dbState.escapes = 0;
+    __resetHotPathCachesForTests();
+  });
+
+  afterEach(() => {
+    dbState.ambientScope = undefined;
+  });
+
+  const readers: Array<[string, () => Promise<unknown>]> = [
+    ['getActiveTrustKeyset', () => getActiveTrustKeyset()],
+    ['getActivePublicKeys', () => getActivePublicKeys()],
+    ['getActiveTrustKeysetCached', () => getActiveTrustKeysetCached()],
+    ['getActiveManifestKeyDelegations', () => getActiveManifestKeyDelegations()],
+    ['getActiveManifestKeyDelegationsCached', () => getActiveManifestKeyDelegationsCached()],
+    ['signManifest', () => signManifest('{"v":1}')],
+  ];
+
+  for (const [name, read] of readers) {
+    for (const scope of ['partner', 'organization'] as const) {
+      it(`${name} leaves a held ${scope}-scoped context`, async () => {
+        await ensureActiveSigningKey();
+        __resetHotPathCachesForTests();
+        dbState.ambientScope = scope;
+        dbState.escapes = 0;
+        await read();
+        expect(dbState.escapes).toBe(1);
+      });
+    }
+
+    it(`${name} reads in place inside a held system context`, async () => {
+      await ensureActiveSigningKey();
+      __resetHotPathCachesForTests();
+      dbState.ambientScope = 'system';
+      dbState.escapes = 0;
+      await read();
+      expect(dbState.escapes).toBe(0);
+    });
+  }
+
+  it('the key insert itself never leaves the caller context', async () => {
+    dbState.ambientScope = 'partner';
+    await ensureActiveSigningKey();
+    // One escape for the loadActive read; the insert joined the caller.
+    expect(dbState.escapes).toBe(1);
   });
 });
 

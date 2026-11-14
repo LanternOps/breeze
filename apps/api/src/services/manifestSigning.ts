@@ -20,7 +20,12 @@ import {
   randomBytes,
 } from 'node:crypto';
 import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+} from '../db';
 import {
   manifestSigningKeys,
   manifestSigningKeyDelegations,
@@ -80,8 +85,37 @@ interface ActiveRow {
   createdAt: Date;
 }
 
+/**
+ * Run a read of the system-only key tables (`manifest_signing_keys`,
+ * `manifest_signing_key_delegations`) under a real system scope (#11812).
+ *
+ * Both tables have forced RLS that admits only `breeze.scope = 'system'`. A
+ * bare `withSystemDbAccessContext` JOINS whatever context is already open, so
+ * a caller inside a request's partner- or org-scoped context (POST
+ * /agent-versions/promote, device provisioning, a signed directive built in a
+ * user request) got zero rows and every check built on them failed closed.
+ *
+ * - A held system context already sees the rows: read in place, on the
+ *   caller's connection. No second connection, and a caller writing in that
+ *   transaction keeps reading its own writes.
+ * - Any other held context: leave it and open a short system context of its
+ *   own. That is a second pooled connection (pool admission reserves nested
+ *   slots for this, see `db/poolAdmission.ts`), so keep `fn` to these reads.
+ * - No context: `runOutsideDbContext` is a no-op and this is a plain system
+ *   context, as before.
+ *
+ * READS ONLY. The key insert in ensureActiveSigningKey keeps joining the
+ * caller's context, so a user request is never what introduces a deployment key.
+ */
+async function readSystemKeyTables<T>(fn: () => Promise<T>): Promise<T> {
+  if (getCurrentDbAccessContext()?.scope === 'system') {
+    return withSystemDbAccessContext(fn);
+  }
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
 async function loadActive(): Promise<ActiveRow | null> {
-  return withSystemDbAccessContext(async () => {
+  return readSystemKeyTables(async () => {
     const rows = await db
       .select({
         keyId: manifestSigningKeys.keyId,
@@ -97,7 +131,7 @@ async function loadActive(): Promise<ActiveRow | null> {
 }
 
 async function loadAllActive(): Promise<ActiveRow[]> {
-  return withSystemDbAccessContext(async () => {
+  return readSystemKeyTables(async () => {
     return db
       .select({
         keyId: manifestSigningKeys.keyId,
@@ -483,7 +517,7 @@ export function verifyManifestKeyDelegation(
 export async function getActiveManifestKeyDelegations(
   now: Date = new Date(),
 ): Promise<ManifestKeyDelegation[]> {
-  const rows = await withSystemDbAccessContext(async () => {
+  const rows = await readSystemKeyTables(async () => {
     return db
       .select(delegationColumns())
       .from(manifestSigningKeyDelegations)
@@ -552,7 +586,7 @@ export async function getActiveManifestKeyDelegationsCached(
 ): Promise<ManifestKeyDelegation[]> {
   const rows = await delegationRowsCache.getOrLoad('unexpired', () => {
     const loadedAt = new Date();
-    return withSystemDbAccessContext(() =>
+    return readSystemKeyTables(() =>
       db
         .select(delegationColumns())
         .from(manifestSigningKeyDelegations)
