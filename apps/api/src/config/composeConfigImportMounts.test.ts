@@ -189,6 +189,16 @@ function resolveWorkspaceImport(spec: string, packages: Map<string, string>): st
   return resolveFile(path.join(REPO_ROOT, dir, target));
 }
 
+/**
+ * A `../`-relative path literal the import/URL scan did not pick up — e.g. one
+ * handed to `path.resolve`, `require` or `createRequire` — reaches outside the
+ * file's own directory by some route this test cannot follow. Fail closed on it
+ * rather than let the closure silently miss a file. Globs are not file paths.
+ */
+function unfollowedPathLiterals(src: string, followed: string[]): string[] {
+  return [...src.matchAll(/['"`]((?:\.\.\/)+[^'"`\s*{}$]+)['"`]/g)].map((m) => m[1]!).filter((lit) => !followed.includes(lit));
+}
+
 /** Repo-relative paths of every workspace file the config loads, transitively. */
 function configClosure(configRel: string, packages: Map<string, string>): { files: string[]; unresolved: string[] } {
   const seen = new Set<string>();
@@ -207,6 +217,9 @@ function configClosure(configRel: string, packages: Map<string, string>): { file
       ...src.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g),
     ].map((m) => m[1]!);
     const urls = [...src.matchAll(/new URL\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*,\s*import\.meta\.url\s*\)/g)].map((m) => m[1]!);
+    for (const lit of unfollowedPathLiterals(src, [...specs, ...urls])) {
+      unresolved.push(`${rel}: path literal ${lit} is loaded some way this scanner does not follow`);
+    }
     for (const spec of [...specs, ...urls]) {
       if (spec.startsWith('node:')) continue;
       let next: string | null | undefined;
@@ -266,7 +279,30 @@ describe('dev web/portal containers see every file their astro/vite config loads
         });
       }
     }
+
+    // A whole-package bind hides the image's node_modules under it unless a
+    // volume shields that path; on the host it holds the host's own install
+    // (macOS binaries, host symlinks), so the container would crash-loop again.
+    for (const [stack, composeFiles] of Object.entries(STACKS)) {
+      if (!definesService(composeFiles, service)) continue;
+      it(`${stack} stack: ${service} keeps the image's node_modules under every whole-package bind`, () => {
+        const volumes = effectiveVolumes(composeFiles, service);
+        const unshielded = [...volumes.values()]
+          .filter((b): b is Bind => b !== null && existsSync(path.join(REPO_ROOT, b.source, 'package.json')))
+          .filter((b) => !(volumes.has(`${b.target}/node_modules`) && volumes.get(`${b.target}/node_modules`) === null))
+          .map((b) => `${b.source} -> ${b.target} (add a "- ${b.target}/node_modules" volume)`);
+        expect(unshielded).toEqual([]);
+      });
+    }
   }
+
+  it("the wt-stack composition matches scripts/dev/wt-stack/compose.ts composeArgs()", () => {
+    const src = readFileSync(path.join(REPO_ROOT, 'scripts/dev/wt-stack/compose.ts'), 'utf8');
+    const body = src.match(/export function composeArgs\([^)]*\)[^{]*\{([\s\S]*?)\n\}/)?.[1];
+    expect(body, 'composeArgs() in compose.ts').toBeDefined();
+    const files = [...body!.matchAll(/'-f',\s*'([^']+)'/g)].map((m) => m[1]);
+    expect(files).toEqual(STACKS['wt-stack']);
+  });
 });
 
 describe('composeConfigImportMounts helpers', () => {
@@ -288,6 +324,15 @@ describe('composeConfigImportMounts helpers', () => {
   it('follows the real zod alias from the web config into packages/shared/src', () => {
     const { files } = configClosure('apps/web/astro.config.mjs', packages);
     expect(files).toEqual(expect.arrayContaining(['packages/shared/zodJitlessAlias.mjs', 'packages/shared/src/zodJitlessShim.ts']));
+  });
+
+  it('fails closed on a ../ path literal the import scan did not follow', () => {
+    const src = [
+      "import { a } from '../../packages/shared/a.mjs';",
+      "const b = path.resolve(here, '../../packages/foo/b.mjs');",
+      "const glob = '../src/**/*.ts';",
+    ].join('\n');
+    expect(unfollowedPathLiterals(src, ['../../packages/shared/a.mjs'])).toEqual(['../../packages/foo/b.mjs']);
   });
 
   it('honours !reset when merging volumes', () => {

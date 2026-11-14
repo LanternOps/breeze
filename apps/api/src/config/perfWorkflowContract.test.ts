@@ -123,20 +123,26 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
   it('storm warn-only covers a measured gate miss only; a harness failure fails the job (#11623)', () => {
     // On 2026-11-10 the stack never started, run-perf.sh exited 1, and a
     // step-level continue-on-error turned that into a green 3.5-minute job.
-    const storm = steps(all.storm!).find((s) => /run-perf\.sh --storm /.test(s));
+    const job = all.storm!;
+    expect(job, 'no job-level warn-only switch').not.toMatch(/^ {4}continue-on-error:/m);
+    const storm = steps(job).find((s) => /run-perf\.sh --storm /.test(s));
     expect(storm, 'storm-suite step').toBeDefined();
     expect(storm, 'no step-level warn-only switch').not.toMatch(/^ {8}continue-on-error:/m);
     const run = storm!.slice(storm!.search(/^ {8}run: \|$/m));
-    // The only path that downgrades a non-zero exit: exit 3 (storm.sh: a gate
-    // failed, i.e. it measured), a storm report on disk, and enforcement off.
+    expect(run, 'the storm exit code is captured, not swallowed').toMatch(/^ {12}--gate-pool-recovery .* \|\| rc=\$\?$/m);
+    expect(run, 'no other way to swallow it').not.toMatch(/\|\| true|set \+e/);
+    // The only path that downgrades a non-zero exit: exit 3 (storm.sh: pass is
+    // false), enforcement off, AND storm-measured.sh confirming the report is a
+    // measured miss — pass is also false when a fault step failed, an event never
+    // ran, or a gate saw no data, and those are harness failures.
+    expect(run.match(/\bexit 0\b/g)?.length, 'exactly one exit 0').toBe(1);
     const downgrades = [...run.matchAll(/^ {10}if (.*); then\n((?: {12}.*\n)*?) {10}fi$/gm)].filter(([, , body]) =>
       /^ {12}exit 0$/m.test(body!),
     );
     expect(downgrades.length, 'exactly one warn-only branch').toBe(1);
-    const cond = downgrades[0]![1]!;
-    expect(cond).toContain('[ "$rc" -eq 3 ]');
-    expect(cond).toContain(`[ "$PERF_GATES_ENFORCE" != 'true' ]`);
-    expect(cond).toContain('[ -s "$OUT/storm/storm.json" ]');
+    expect(downgrades[0]![1]).toBe(
+      `[ "$rc" -eq 3 ] && [ "$PERF_GATES_ENFORCE" != 'true' ] && load-tests/perf/storm-measured.sh "$OUT/storm/storm.json"`,
+    );
     expect(downgrades[0]![2]).toContain('::warning::');
     expect(run.trimEnd().split('\n').at(-1)!.trim(), 'everything else keeps its exit code').toBe('exit "$rc"');
   });

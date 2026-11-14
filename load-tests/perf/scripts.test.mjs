@@ -513,3 +513,104 @@ test('run-perf.sh rebuilds the dev images for the checked-out commit before anyt
   assert.match(s.log, /^pnpm wt-stack up --rebuild$/m);
   assert.ok(s.log.indexOf('pnpm wt-stack up') < s.log.indexOf('storm.sh '), 'storm mode builds first too');
 });
+
+// ---- storm-measured.sh (#11623): is an exit-3 storm report a measured gate miss?
+// storm.sh exits 3 whenever .storm.pass is false, and pass is also false when the
+// harness broke (a fault step failed, an event never ran or was cut short, a gate
+// had no data). Only a measured miss may stay warn-only in the workflow.
+function stormReport(overrides = {}) {
+  const ev = (name, extra = {}) => ({
+    name,
+    heartbeat: { storm: { count: 120 }, recovery: { count: 300 } },
+    pool: { samples: 6, okSamples: 6, recoveryS: null },
+    ...extra,
+  });
+  return {
+    storm: {
+      scenario: 'storm-suite',
+      eventsPlanned: 2,
+      stepsFailed: 0,
+      events: [ev('api-kill'), ev('socket-drop')],
+      gates: [
+        { gate: 'heartbeat-p95', event: 'api-kill', threshold: 1, value: 2.4, pass: false },
+        // Pool seen but never recovered in the window: a real miss with no value.
+        { gate: 'pool-recovery', event: 'api-kill', threshold: 30, value: null, pass: false },
+        { gate: 'pool-min-ratio', event: 'socket-drop', threshold: 0.8, value: 0.9, pass: true },
+      ],
+      pass: false,
+      ...overrides,
+    },
+  };
+}
+
+function measured(report) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'storm-measured-'));
+  const file = path.join(dir, 'storm.json');
+  if (report !== undefined) writeFileSync(file, typeof report === 'string' ? report : JSON.stringify(report));
+  const r = spawnSync('bash', [path.join(HERE, 'storm-measured.sh'), file], { encoding: 'utf8' });
+  return { code: r.status, err: r.stderr };
+}
+
+test('storm-measured.sh: every fault fired and every failing gate has data → measured miss (0)', () => {
+  const r = measured(stormReport());
+  assert.equal(r.code, 0, r.err);
+});
+
+test('storm-measured.sh: harness failures are not a measured miss (1), each named', () => {
+  const base = stormReport().storm;
+  const cases = [
+    [{ stepsFailed: 1 }, /1 fault step\(s\) failed/],
+    [{ events: [base.events[0]] }, /1 of 2 planned events ran/],
+    [{ eventsPlanned: 0, events: [] }, /0 of 0 planned events ran/],
+    [{ events: [base.events[0], { ...base.events[1], truncated: true }] }, /socket-drop: cut short/],
+    [
+      { events: [base.events[0], { ...base.events[1], heartbeat: { storm: { count: 0 }, recovery: { count: 0 } } }] },
+      /socket-drop: no heartbeats/,
+    ],
+    [
+      { gates: [...base.gates, { gate: 'pool-min-ratio', event: 'api-kill', threshold: 0.8, value: null, pass: false }] },
+      /pool-min-ratio on api-kill: no data/,
+    ],
+    [
+      { events: [{ ...base.events[0], pool: { samples: 6, okSamples: 0, recoveryS: null } }, base.events[1]] },
+      /pool-recovery on api-kill: no data/,
+    ],
+  ];
+  for (const [storm, why] of cases) {
+    const r = measured({ storm: { ...base, ...storm } });
+    assert.equal(r.code, 1, `${JSON.stringify(storm)}: ${r.err}`);
+    assert.match(r.err, why);
+  }
+});
+
+test('storm-measured.sh: a missing, unreadable or storm-less report is not a measured miss (1); no argument is usage (64)', () => {
+  assert.equal(measured(undefined).code, 1);
+  assert.equal(measured('{not json').code, 1);
+  assert.equal(measured({ agents: {} }).code, 1);
+  const r = spawnSync('bash', [path.join(HERE, 'storm-measured.sh')], { encoding: 'utf8' });
+  assert.equal(r.status, 64);
+});
+
+test('run-perf.sh: a failed wt-stack down after a storm gate miss is a harness failure (1), not 3 (#11623)', () => {
+  const fx = makeFixture();
+  const agentsim = path.join(fx.repo, 'load-tests', 'agentsim');
+  script(
+    path.join(agentsim, 'storm.sh'),
+    '#!/usr/bin/env bash\n' +
+      'mkdir -p "$(dirname "$0")/reports"; echo "{}" > "$(dirname "$0")/reports/storm-$1-stub.json"\nexit 3\n',
+  );
+  const r = run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--out-dir', path.join(fx.root, 'storm')], { STUB_DOWN_FAIL: '1' });
+  assert.equal(r.code, 1, r.err);
+  assert.match(r.err, /wt-stack down failed/);
+});
+
+test('run-perf.sh --storm never leaves an earlier storm.json in place when no new report is written (#11623)', () => {
+  const fx = makeFixture();
+  const agentsim = path.join(fx.repo, 'load-tests', 'agentsim');
+  script(path.join(agentsim, 'storm.sh'), '#!/usr/bin/env bash\nmkdir -p "$(dirname "$0")/reports"\nexit 3\n');
+  const out = path.join(fx.root, 'storm');
+  mkdirSync(out, { recursive: true });
+  writeFileSync(path.join(out, 'storm.json'), '{"storm":{"pass":false}}');
+  run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--out-dir', out]);
+  assert.equal(existsSync(path.join(out, 'storm.json')), false, 'stale storm.json removed');
+});

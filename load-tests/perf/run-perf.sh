@@ -109,8 +109,9 @@ cleanup() {
   if ! ( cd "$REPO" && pnpm wt-stack down ); then
     echo "run-perf: pnpm wt-stack down failed; a stack may still be running on this host" >&2
     # A run that leaves a stack behind must not look green: the next run on a
-    # persistent runner would collide with it.
-    [ "$rc" -eq 0 ] && rc=1
+    # persistent runner would collide with it. That includes a storm gate miss
+    # (3), which the workflow may keep warn-only; a harness failure may not (#11623).
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; then rc=1; fi
   fi
   rm -rf "$SIM/.state"
   rm -f "$ENV_FILE"
@@ -171,7 +172,8 @@ echo "$LABEL" >"$OUT/label.txt"
 # come from the build cache, so only a real source change costs build time.
 ( cd "$REPO" && pnpm wt-stack up --rebuild )
 docker image inspect --format '{{index .RepoTags 0}} {{.Id}} created {{.Created}}' \
-  breeze-api:dev breeze-web:dev breeze-portal:dev >&2 || true
+  breeze-api:dev breeze-web:dev breeze-portal:dev >&2 \
+  || echo "run-perf: could not inspect the dev images; the log has no record of what was measured" >&2
 
 # --- 3. Lab setup (W06's scripts, unchanged).
 mkdir -p "$SIM/.state"
@@ -182,6 +184,8 @@ chmod 700 "$SIM/.state"
 if [ -n "$STORM" ]; then
   ulimit -n 16384 2>/dev/null || true
   storm_rc=0
+  # Never let an earlier run's report stand in for this one (#11623).
+  rm -f "$OUT/storm.json"
   mark="$(mktemp)"
   "$SIM/storm.sh" "$STORM" ${STORM_ARGS[@]+"${STORM_ARGS[@]}"} &
   SIM_PID=$!
