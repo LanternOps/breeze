@@ -405,6 +405,61 @@ describe('PATCH /organizations/:id/portal-users/:userId', () => {
     expect(res.status).toBe(200);
     expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ authEpoch: expect.anything() }));
   });
+
+  // W8 (#11385, plan D2/D3): disabled_by follows status (CHECK
+  // portal_users_disabled_by_status_chk), and reactivation needs a USABLE credential.
+  const disabledRow = (over: Record<string, unknown> = {}) => ({
+    id: 'pu-1', orgId: ORG_ID, email: 'a@acme.example', name: null, passwordHash: 'h', authMethod: 'password',
+    status: 'disabled', disabledBy: 'msp', authEpoch: 3, browserAccess: 'granted', hasExternalIdentity: false, hasUsableExternalIdentity: false, ...over,
+  });
+
+  it('msp_disable writes disabled_by msp; reactivate clears it (W8 D2)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]);
+    expect((await patch('pu-1', { status: 'disabled' })).status).toBe(200);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'disabled', disabledBy: 'msp' }));
+
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ disabledBy: 'directory' })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'active' }]);
+    expect((await patch('pu-1', { status: 'active' })).status).toBe(200);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'active', disabledBy: null }));
+  });
+
+  it('a profile-only PATCH writes neither status nor disabled_by', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'active' }]);
+    expect((await patch('pu-1', { name: 'New' })).status).toBe(200);
+    const set = setSpy.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(set).not.toHaveProperty('status');
+    expect(set).not.toHaveProperty('disabledBy');
+  });
+
+  it('reactivating an account whose only identity is disabled lands on invited (W8 D3, spec §5.1)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({
+      authMethod: 'entra', passwordHash: null, browserAccess: 'none', disabledBy: 'directory',
+      hasExternalIdentity: true, hasUsableExternalIdentity: false,
+    })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'invited' }]);
+    expect((await patch('pu-1', { status: 'active' })).status).toBe(200);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'invited', disabledBy: null, authEpoch: expect.anything() }));
+  });
+
+  it('reactivating an account with a hash while password sign-in is off (sso_only) and no usable identity lands on invited', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, google: false, password: false });
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow()]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'invited' }]);
+    expect((await patch('pu-1', { status: 'active' })).status).toBe(200);
+    expect(resolveMethods).toHaveBeenCalledWith(ORG_ID);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'invited', disabledBy: null }));
+  });
+
+  it('the target read selects both identity facts: any (identity-managed) and usable (a credential)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]);
+    await patch('pu-1', { status: 'disabled' });
+    const columns = vi.mocked(db.select).mock.calls.map((call) => Object.keys(((call as unknown[])[0] ?? {}) as Record<string, unknown>));
+    expect(columns[1]).toEqual(expect.arrayContaining(['hasExternalIdentity', 'hasUsableExternalIdentity', 'disabledBy']));
+  });
 });
 
 describe('POST /organizations/:id/portal-users/:userId/resend-invite', () => {

@@ -159,6 +159,8 @@ async function seedAccount(orgId: string, seed: AccountSeed = {}) {
     email: seed.email ?? `pu-${randomUUID()}@customer.example.com`,
     authMethod: seed.authMethod ?? 'password',
     status: seed.status ?? 'active',
+    // W8: CHECK portal_users_disabled_by_status_chk (an MSP disable).
+    disabledBy: seed.status === 'disabled' ? 'msp' : null,
     browserAccess: seed.browserAccess ?? 'granted',
     passwordHash: seed.passwordHash === undefined ? 'argon2-hash' : seed.passwordHash,
     authEpoch: seed.authEpoch ?? 5,

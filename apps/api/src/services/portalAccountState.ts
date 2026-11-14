@@ -13,7 +13,7 @@
  * Refusal messages are the ones each route returned before W2; only the
  * machine-readable `code` is new.
  */
-import type { PortalAccountStatus, PortalBrowserAccess } from '../db/schema/portal';
+import type { PortalAccountDisabledBy, PortalAccountStatus, PortalBrowserAccess } from '../db/schema/portal';
 
 export const PORTAL_ACCOUNT_TRANSITION_REFUSED = 'PORTAL_ACCOUNT_TRANSITION_REFUSED';
 export const PORTAL_USER_IDENTITY_MANAGED = 'PORTAL_USER_IDENTITY_MANAGED';
@@ -45,21 +45,50 @@ export type PortalAccountWriter =
   // in, and only an invitation can bind a Microsoft identity to the account
   // (§5.6 step 2, never by email). The hash is kept (a fallback to `allowed`
   // must not strand the person); a Microsoft accept under sso_only clears it.
-  | 'msp_sso_invite';
+  | 'msp_sso_invite'
+  // W8 (#11385, plan D2): the account rule of disablePortalIdentity — a
+  // directory (or, in W9, SCIM) disable left the account with no other usable
+  // credential. active|invited → disabled by 'directory'; on a disabled
+  // account a no-op that keeps its disabled_by (an MSP disable stays the MSP's).
+  | 'directory_deprovision';
 
 export interface PortalAccountFacts {
   status: string;
   browserAccess: string;
   authMethod: string;
   hasPasswordHash: boolean;
-  /** W3: EXISTS portal_user_identities (portalUserHasIdentitySql). */
+  /**
+   * W3: EXISTS portal_user_identities (portalUserHasIdentitySql) — ANY row,
+   * disabled or not. "Identity-managed": invites never target such an account.
+   */
   hasExternalIdentity: boolean;
+  /**
+   * W8 (D3): EXISTS an identity with `disabled_at IS NULL`
+   * (portalUserHasUsableIdentitySql). Required by `msp_reactivate`.
+   */
+  hasUsableExternalIdentity?: boolean;
+  /**
+   * W8 (D3): the password can sign in — a hash, password-eligible, and the
+   * org's effective `password_mode = 'allowed'` ({@link passwordUsableFor}).
+   * Required by `msp_reactivate`.
+   */
+  passwordUsable?: boolean;
+  /** W8 (D2): the stored `disabled_by`. Required by `directory_deprovision` on a disabled account. */
+  disabledBy?: PortalAccountDisabledBy | null;
 }
 
 export interface PortalAccountTarget {
   status: PortalAccountStatus;
   browserAccess: PortalBrowserAccess;
   bumpEpoch: boolean;
+  /**
+   * W8 (D2): who disabled the account; non-null exactly when `status` is
+   * `disabled` (SQL CHECK portal_users_disabled_by_status_chk). A writer whose
+   * plan can move the row into or out of `disabled` (msp_disable,
+   * msp_reactivate, directory_deprovision) MUST write it; the writer census
+   * (__tests__/portalAccountWriters.contract.test.ts) enforces that.
+   */
+  disabledBy: PortalAccountDisabledBy | null;
 }
 
 type RefusalCode = typeof PORTAL_ACCOUNT_TRANSITION_REFUSED | typeof PORTAL_USER_IDENTITY_MANAGED;
@@ -78,6 +107,7 @@ export class PortalAccountTransitionError extends Error {
 }
 
 const STATUSES: ReadonlySet<string> = new Set<PortalAccountStatus>(['invited', 'active', 'disabled']);
+const DISABLED_BY: ReadonlySet<string> = new Set<PortalAccountDisabledBy>(['msp', 'directory', 'scim']);
 const BROWSER_ACCESS: ReadonlySet<string> = new Set<PortalBrowserAccess>(['granted', 'none']);
 
 const MSG_IDENTITY_MANAGED = 'This identity is managed by an external sign-in provider.';
@@ -87,6 +117,18 @@ const MSG_INVALID_INVITE = 'Invalid or expired invite';
 /** "Password-eligible": the row may hold and use a password credential. */
 export function isPasswordEligible(f: Pick<PortalAccountFacts, 'authMethod'>): boolean {
   return f.authMethod === 'password';
+}
+
+/**
+ * W8 (D3): whether the account's password can sign in: a hash, a
+ * password-eligible row, and an effective `password_mode` of `allowed`. A
+ * hash under `sso_only` is not a credential (it cannot sign in).
+ */
+export function passwordUsableFor(
+  facts: Pick<PortalAccountFacts, 'hasPasswordHash' | 'authMethod'>,
+  passwordMode: 'allowed' | 'sso_only',
+): boolean {
+  return facts.hasPasswordHash && isPasswordEligible(facts) && passwordMode === 'allowed';
 }
 
 /**
@@ -142,6 +184,31 @@ export function isBulkInviteEligible(facts: PortalAccountFacts): boolean {
  * known values (fail closed — never guess).
  */
 export function planPortalAccountTransition(facts: PortalAccountFacts, writer: PortalAccountWriter): PortalAccountTarget {
+  const target = planStatus(facts, writer);
+  return { ...target, disabledBy: disabledByFor(facts, writer, target.status) };
+}
+
+/**
+ * W8 (D2): `disabled_by` of the planned row. Leaving `disabled` always clears
+ * it; msp_disable always sets `msp`; directory_deprovision sets `directory`
+ * on an account it disables and keeps the stored value on one already
+ * disabled. No other writer plans `disabled` (the table refuses or keeps a
+ * non-disabled status), so any other `disabled` target fails closed.
+ */
+function disabledByFor(facts: PortalAccountFacts, writer: PortalAccountWriter, status: PortalAccountStatus): PortalAccountDisabledBy | null {
+  if (status !== 'disabled') return null;
+  if (writer === 'msp_disable') return 'msp';
+  if (writer === 'directory_deprovision') {
+    if (facts.status !== 'disabled') return 'directory';
+    // Validated in planStatus: a stored, known value.
+    return facts.disabledBy as PortalAccountDisabledBy;
+  }
+  throw new PortalAccountTransitionError(
+    PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, writer, 'unexpected_disabled_target', 'Unsupported portal account transition.',
+  );
+}
+
+function planStatus(facts: PortalAccountFacts, writer: PortalAccountWriter): Omit<PortalAccountTarget, 'disabledBy'> {
   const refuse = (code: RefusalCode, httpStatus: 409 | 400 | 403, rule: string, message: string): never => {
     throw new PortalAccountTransitionError(code, httpStatus, writer, rule, message);
   };
@@ -208,11 +275,29 @@ export function planPortalAccountTransition(facts: PortalAccountFacts, writer: P
           'This user has not accepted their invite yet. Resend the invite instead.',
         );
       }
-      // disabled: back to active only with a credential; otherwise to invited,
-      // so an account can never be active with no way to sign in (W2 plan D4).
-      // The MSP then resends the invite.
-      const hasCredential = facts.hasPasswordHash || facts.hasExternalIdentity;
+      // disabled: back to active only with a USABLE credential; otherwise to
+      // invited, so an account can never be active with no way to sign in (W2
+      // plan D4, spec §5.1). The MSP then resends the invite. W8 (D3): a
+      // disabled identity, or a hash under sso_only, is not a credential; the
+      // caller must say which it has (fail closed when it did not).
+      if (facts.passwordUsable === undefined || facts.hasUsableExternalIdentity === undefined) {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'credential_facts_missing', 'This portal user is in an unknown state.');
+      }
+      const hasCredential = facts.passwordUsable || facts.hasUsableExternalIdentity;
       return { status: hasCredential ? 'active' : 'invited', browserAccess, bumpEpoch: true };
+    }
+
+    case 'directory_deprovision': {
+      // spec §5.11 "Effect": the identity's account had no other usable
+      // credential. Browser access is left as it is (Restore reactivates it).
+      if (status !== 'disabled') return { status: 'disabled', browserAccess, bumpEpoch: true };
+      // Already disabled: a no-op that keeps who disabled it (inv. 12: never
+      // reverses or re-attributes an MSP disable). An unknown stored value
+      // fails closed rather than being guessed.
+      if (facts.disabledBy === undefined || facts.disabledBy === null || !DISABLED_BY.has(facts.disabledBy)) {
+        return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'unknown_disabled_by', 'This portal user is in an unknown state.');
+      }
+      return { status: 'disabled', browserAccess, bumpEpoch: false };
     }
 
     case 'accept_invite': {

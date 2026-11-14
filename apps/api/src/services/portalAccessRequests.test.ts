@@ -498,6 +498,22 @@ describe('approvePortalAccessRequest', () => {
     expect(updates()).toHaveLength(0);
   });
 
+  it("approval with a disabled identity's subject is identity_conflict", async () => {
+    // W8 (#11385, plan D1/D3, RF5): a disabled identity keeps its row, so its
+    // (issuer, subject) stays reserved. The identity insert's ON CONFLICT has
+    // no target and no predicate: ANY existing row — disabled or not — is a
+    // conflict, so approving a request with that subject never creates a
+    // second account for the leaver (IDENTITY_LINKED, nothing kept).
+    const entra = pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-disabled', entraTenantId: TID });
+    h.results.push([entra], [{ tenantId: TID }], [], [{ id: 'pu-new', authEpoch: 1 }], []);
+    expect(await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW })))
+      .toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
+    const identity = inserts().find((c) => c.args[0] === portalUserIdentities);
+    expect(identity).toBeDefined();
+    expect(firstArg(identity, 'values')).toMatchObject({ issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-disabled' });
+    expect(stepsOf(identity, 'onConflictDoNothing')).toEqual([[]]);
+  });
+
   it("entra: reads the org's PROVEN mapping FOR SHARE, inside the transaction, before any write", async () => {
     h.results.push(
       [pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID })],

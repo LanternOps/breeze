@@ -19,10 +19,22 @@
  * (2027-01-22-232800-portal-access-policies-requests.sql §4) re-ran the
  * backfill; the daily job (jobs/portalIdentityReconcile.ts) REPORTS drift and
  * never repairs it (plan D10). Release C drops the columns.
+ *
+ * W8 (#11385, plan D1/D3): an identity can be DISABLED (blockers), never
+ * deleted, so its `(issuer, subject)` stays reserved. The readers return its
+ * `disabled_at`; `portalUserHasUsableIdentitySql` is the "has a working
+ * credential" twin of the any-row fact; `lockIdentityForAccount` re-reads one
+ * identity under the account lock (lock order: account, then identity).
  */
-import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
-import { portalUserIdentities, portalUsers, type PortalIdentityProvider } from '../db/schema/portal';
+import {
+  portalUserIdentities,
+  portalUsers,
+  type PortalIdentityBlocker,
+  type PortalIdentityDisabledReason,
+  type PortalIdentityProvider,
+} from '../db/schema/portal';
 import { PORTAL_GOOGLE_ISSUER } from './portalOidc/validators';
 
 /** `db` or a transaction handle (same shape as `ContactExecutor`, services/contacts/compat.ts). */
@@ -76,6 +88,35 @@ export function portalUserHasIdentitySql(): SQL<boolean> {
 }
 
 /**
+ * W8 (#11385, plan D3): `EXISTS` an ENABLED identity (`disabled_at IS NULL`)
+ * for the OUTER `portal_users` row — "the account can sign in through a
+ * directory". Distinct from {@link portalUserHasIdentitySql} on purpose:
+ *  - the ANY fact means "identity-managed / the (issuer, subject) is
+ *    reserved": invites and bulk invite never target such an account, disabled
+ *    identity or not;
+ *  - this USABLE fact means "has a working credential": the account rule,
+ *    `msp_reactivate`, the `sso_only` stranded list and the hash clear.
+ * Every call site of either is classified in
+ * `__tests__/portalIdentityFacts.contract.test.ts`. Same #9692 spelling rules
+ * as {@link portalUserHasIdentitySql}. A fresh object per call.
+ */
+export function portalUserHasUsableIdentitySql(): SQL<boolean> {
+  return sql<boolean>`exists (select 1 from "portal_user_identities" "pui_usable" where "pui_usable"."portal_user_id" = "portal_users"."id" and "pui_usable"."disabled_at" is null)`;
+}
+
+/**
+ * The owner of an identity found by its key (W8 D3): the account and org, plus
+ * the identity's own id and `disabled_at`. A disabled identity is still FOUND
+ * (its `(issuer, subject)` stays reserved, D1); a sign-in reader refuses it.
+ */
+export interface PortalIdentityOwner {
+  portalUserId: string;
+  orgId: string;
+  identityId: string;
+  disabledAt: Date | null;
+}
+
+/**
  * The Entra identity key — provider, issuer derived from the tenant, subject =
  * oid — as a `WHERE` over `portal_user_identities`. Shared by
  * {@link findPortalUserIdByEntraIdentity} and the add-in exchange, which joins
@@ -101,10 +142,15 @@ export function entraIdentityMatch(input: { tid: string; oid: string }): SQL {
 export async function findPortalUserIdByIdentity(
   exec: IdentityExecutor,
   key: PortalIdentityKey,
-): Promise<{ portalUserId: string; orgId: string } | null> {
+): Promise<PortalIdentityOwner | null> {
   const { issuer, subject } = identityIssuerSubject(key);
   const [row] = await exec
-    .select({ portalUserId: portalUserIdentities.portalUserId, orgId: portalUserIdentities.orgId })
+    .select({
+      portalUserId: portalUserIdentities.portalUserId,
+      orgId: portalUserIdentities.orgId,
+      identityId: portalUserIdentities.id,
+      disabledAt: portalUserIdentities.disabledAt,
+    })
     .from(portalUserIdentities)
     .where(and(
       eq(portalUserIdentities.provider, key.provider),
@@ -119,8 +165,55 @@ export async function findPortalUserIdByIdentity(
 export async function findPortalUserIdByEntraIdentity(
   exec: IdentityExecutor,
   input: { tid: string; oid: string },
-): Promise<{ portalUserId: string; orgId: string } | null> {
+): Promise<PortalIdentityOwner | null> {
   return findPortalUserIdByIdentity(exec, { provider: 'entra', tid: input.tid, oid: input.oid });
+}
+
+/** One identity row as {@link lockIdentityForAccount} reads it. */
+export interface LockedPortalIdentity {
+  id: string;
+  orgId: string;
+  portalUserId: string;
+  provider: PortalIdentityProvider;
+  entraTenantId: string | null;
+  disabledAt: Date | null;
+  disabledReason: PortalIdentityDisabledReason | null;
+  disabledBlockers: PortalIdentityBlocker[];
+  directoryChain: string | null;
+  directoryRearmSince: Date | null;
+}
+
+/**
+ * W8 (plan D3): one identity row, locked `FOR UPDATE` on the caller's
+ * transaction, or null. LOCK ORDER: the caller must ALREADY hold its account
+ * row (`portal_users … FOR UPDATE` / `FOR SHARE`) — account, then identity,
+ * everywhere a decision depends on both (sign-in, the add-in exchange, link,
+ * invite consume, disablePortalIdentity, Restore). A separate statement after
+ * the account lock, so under READ COMMITTED it sees every disable that
+ * committed while the account lock waited.
+ */
+export async function lockIdentityForAccount(
+  exec: IdentityExecutor,
+  identityId: string,
+): Promise<LockedPortalIdentity | null> {
+  const [row] = await exec
+    .select({
+      id: portalUserIdentities.id,
+      orgId: portalUserIdentities.orgId,
+      portalUserId: portalUserIdentities.portalUserId,
+      provider: portalUserIdentities.provider,
+      entraTenantId: portalUserIdentities.entraTenantId,
+      disabledAt: portalUserIdentities.disabledAt,
+      disabledReason: portalUserIdentities.disabledReason,
+      disabledBlockers: portalUserIdentities.disabledBlockers,
+      directoryChain: portalUserIdentities.directoryChain,
+      directoryRearmSince: portalUserIdentities.directoryRearmSince,
+    })
+    .from(portalUserIdentities)
+    .where(eq(portalUserIdentities.id, identityId))
+    .for('update')
+    .limit(1);
+  return row ?? null;
 }
 
 /**
@@ -168,7 +261,7 @@ export async function insertEntraIdentity(
   });
 }
 
-export type EnsureIdentityOutcome = 'inserted' | 'present' | 'conflict';
+export type EnsureIdentityOutcome = 'inserted' | 'present' | 'conflict' | 'disabled';
 
 /**
  * Make sure an existing Entra login has its identity row, and record its use.
@@ -183,13 +276,30 @@ export type EnsureIdentityOutcome = 'inserted' | 'present' | 'conflict';
  *   - `conflict` — the `(issuer, subject)` belongs to another user, or this
  *     user already holds a different Entra subject. Drift: the caller reports
  *     it. Since release B the exchange finds the login THROUGH this identity,
- *     so on that path `conflict` only means the identity moved mid-exchange.
+ *     so on that path `conflict` only means the identity moved mid-exchange;
+ *   - `disabled` — W8 (plan D3): this user's identity row is disabled. Nothing
+ *     is written (not even `last_used_at`); the caller refuses the sign-in.
+ *     The exchange calls this while it holds the account row (its
+ *     `last_login_at` update), so no disable can commit between this read and
+ *     the guarded touch below (disablers lock the account first).
  */
 export async function ensureEntraIdentity(
   exec: IdentityExecutor,
   input: { orgId: string; portalUserId: string; tid: string; oid: string; usedAt: Date },
 ): Promise<EnsureIdentityOutcome> {
   const issuer = entraIssuer(input.tid);
+  const owned = and(
+    eq(portalUserIdentities.issuer, issuer),
+    eq(portalUserIdentities.subject, input.oid),
+    eq(portalUserIdentities.portalUserId, input.portalUserId),
+  );
+  const [disabled] = await exec
+    .select({ id: portalUserIdentities.id })
+    .from(portalUserIdentities)
+    .where(and(owned, isNotNull(portalUserIdentities.disabledAt)))
+    .limit(1);
+  if (disabled) return 'disabled';
+
   const inserted = await exec
     .insert(portalUserIdentities)
     .values({
@@ -209,11 +319,7 @@ export async function ensureEntraIdentity(
   const touched = await exec
     .update(portalUserIdentities)
     .set({ lastUsedAt: input.usedAt })
-    .where(and(
-      eq(portalUserIdentities.issuer, issuer),
-      eq(portalUserIdentities.subject, input.oid),
-      eq(portalUserIdentities.portalUserId, input.portalUserId),
-    ))
+    .where(and(owned, isNull(portalUserIdentities.disabledAt)))
     .returning({ id: portalUserIdentities.id });
   return touched.length > 0 ? 'present' : 'conflict';
 }

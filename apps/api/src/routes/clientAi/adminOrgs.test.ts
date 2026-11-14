@@ -283,6 +283,40 @@ describe('identities release B (W3): Entra users come from portal_user_identitie
   });
 });
 
+describe('W8 (D3): disabled identities are counted and shown apart', () => {
+  it('add-in admin counts exclude disabled identities and report them separately', async () => {
+    setupOrgListDb({ 4: [{ orgId: ORG_ID, n: 3, disabled: 1 }] });
+    const res = await buildApp().request('/client-ai/admin/orgs', { headers: AUTHED });
+    expect(res.status).toBe(200);
+    const row = (await res.json()).data[0];
+    expect(row.entraUsers).toEqual({ enabled: 2, disabled: 1 });
+    // Consent was granted whether or not those people were later disabled.
+    expect(row.consentStatus).toBe('granted');
+    const count = built[3]!;
+    expect(count.from).toBe(portalUserIdentities);
+    expect(render(count.where).sql).toBe('"portal_user_identities"."provider" = $1');
+
+    // Every identity disabled: still granted, zero enabled.
+    setupOrgListDb({ 4: [{ orgId: ORG_ID, n: 2, disabled: 2 }] });
+    const all = (await (await buildApp().request('/client-ai/admin/orgs', { headers: AUTHED })).json()).data[0];
+    expect(all).toMatchObject({ consentStatus: 'granted', entraUsers: { enabled: 0, disabled: 2 } });
+  });
+
+  it('the picker flags users whose entra identity is disabled', async () => {
+    dbSelectMock.mockImplementation(() => chain([
+      { id: 'a', email: 'a@contoso.com', name: 'A', lastLoginAt: null, identityDisabled: false },
+      { id: 'b', email: 'b@contoso.com', name: 'B', lastLoginAt: null, identityDisabled: true },
+    ]));
+    const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/users`, { headers: AUTHED });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.map((u: { email: string; identityDisabled: boolean }) => [u.email, u.identityDisabled]))
+      .toEqual([['a@contoso.com', false], ['b@contoso.com', true]]);
+    const cols = dbSelectMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(cols).toHaveProperty('identityDisabled');
+    expect(render(cols.identityDisabled).sql).toContain('"portal_user_identities"."disabled_at" is not null');
+  });
+});
+
 describe('GET /client-ai/consent/callback (public)', () => {
   function callbackApp() {
     const app = new Hono();
