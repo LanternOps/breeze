@@ -1382,7 +1382,7 @@ export function buildPortalSelfRegistrationLinkTemplate(params: PortalSelfRegist
 export function buildPortalSelfRegistrationExistingAccountTemplate(params: PortalSelfRegistrationExistingAccountEmailParams): EmailTemplate {
   const orgName = params.orgName.trim();
   const subject = `You already have an account for ${orgName}'s portal`;
-  const lead = `You already have an account for ${orgName}'s customer portal. Sign in with your password or with Microsoft. If you can't sign in, contact your IT provider.`;
+  const lead = `You already have an account for ${orgName}'s customer portal. Sign in, or reset your password if you have forgotten it. If you can't sign in, contact your IT provider.`;
   const html = renderLayout({
     title: subject,
     preheader: lead,
