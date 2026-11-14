@@ -223,9 +223,14 @@ describe('executeGraphSyncAction — m365.sync.users', () => {
     expect(result.items.map((item) => item.id)).toEqual([ADA, GRACE]);
   });
 
-  it('reports malformedItems 0 for a clean listing', async () => {
+  // Version skew: an API that predates `malformedItems` parses this result
+  // with a .strict() schema, so the field must be absent unless it is > 0, or
+  // a new executor in front of an old API fails every org's users sync.
+  it('omits malformedItems for a clean listing (an older strict API still parses it)', async () => {
     const { client } = stubClient(HAPPY);
     const result = await executeGraphSyncAction({ type: 'm365.sync.users' }, context(client));
-    expect(result).toMatchObject({ success: true, malformedItems: 0 });
+    expect(result).toMatchObject({ success: true });
+    expect('malformedItems' in result).toBe(false);
+    expect(Object.keys(result).sort()).toEqual(['fetchedAt', 'items', 'kind', 'sources', 'success', 'truncated']);
   });
 });

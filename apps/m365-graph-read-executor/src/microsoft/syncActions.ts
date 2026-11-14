@@ -306,7 +306,10 @@ async function syncUsers(
 
   return succeed(action, items, {
     truncated: primary.stopReason !== 'complete',
-    malformedItems,
+    // Only when > 0: an API that predates the field parses results with a
+    // .strict() schema, and absent means 0 to a current API. A clean listing
+    // therefore stays parseable by an older API (deploy skew / rollback).
+    ...(malformedItems > 0 ? { malformedItems } : {}),
     fetchedAt,
     sources: { users: 'ok', mfaRegistration: registration.state, roleAssignments: roles.state },
   });
