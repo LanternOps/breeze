@@ -17,6 +17,12 @@ import type { PortalAccountDisabledBy, PortalAccountStatus, PortalBrowserAccess 
 
 export const PORTAL_ACCOUNT_TRANSITION_REFUSED = 'PORTAL_ACCOUNT_TRANSITION_REFUSED';
 export const PORTAL_USER_IDENTITY_MANAGED = 'PORTAL_USER_IDENTITY_MANAGED';
+/**
+ * W8 review fix: msp_reactivate of an identity-managed account with no usable
+ * credential. `invited` would strand it (invites refuse identity-managed
+ * accounts), so the MSP restores the sign-in method first.
+ */
+export const PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST = 'PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST';
 
 export type PortalAccountWriter =
   | 'msp_invite'
@@ -91,7 +97,10 @@ export interface PortalAccountTarget {
   disabledBy: PortalAccountDisabledBy | null;
 }
 
-type RefusalCode = typeof PORTAL_ACCOUNT_TRANSITION_REFUSED | typeof PORTAL_USER_IDENTITY_MANAGED;
+type RefusalCode =
+  | typeof PORTAL_ACCOUNT_TRANSITION_REFUSED
+  | typeof PORTAL_USER_IDENTITY_MANAGED
+  | typeof PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST;
 
 export class PortalAccountTransitionError extends Error {
   constructor(
@@ -284,7 +293,21 @@ function planStatus(facts: PortalAccountFacts, writer: PortalAccountWriter): Omi
         return refuse(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'credential_facts_missing', 'This portal user is in an unknown state.');
       }
       const hasCredential = facts.passwordUsable || facts.hasUsableExternalIdentity;
-      return { status: hasCredential ? 'active' : 'invited', browserAccess, bumpEpoch: true };
+      if (hasCredential) return { status: 'active', browserAccess, bumpEpoch: true };
+      // An identity-managed account (any identity row) with none usable:
+      // `invited` would be a dead end — invites refuse identity-managed
+      // accounts, sign-in refuses a non-active one, and Restore reactivates
+      // only `disabled`. The MSP restores the sign-in method first (Restore
+      // with "also re-enable the account" does both).
+      if (facts.hasExternalIdentity) {
+        return refuse(
+          PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST,
+          409,
+          'no_usable_identity',
+          'This user has no working sign-in method. Restore the account\'s sign-in method first; Restore with "also re-enable the account" does both.',
+        );
+      }
+      return { status: 'invited', browserAccess, bumpEpoch: true };
     }
 
     case 'directory_deprovision': {

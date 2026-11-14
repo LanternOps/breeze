@@ -24,7 +24,7 @@
  * the FIRST blocker whatever the account transition says (D2) — and the
  * writer census reads each writer's own `disabledBy` write.
  */
-import { and, desc, eq, gte, isNull, ne, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNull, lt, ne, sql } from 'drizzle-orm';
 import { db, hasDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { auditLogs, portalDirectoryActions, portalUserIdentities, portalUsers } from '../../db/schema';
 import type { PortalAccountDisabledBy } from '../../db/schema/portal';
@@ -426,6 +426,23 @@ export async function retryPendingPurges(now: Date): Promise<number> {
       .limit(PURGE_RETRY_BATCH),
     'portalDirectory.pendingPurges',
   );
+  // Applied actions that left the window unpurged are no longer retried (the
+  // epoch bump already ended their sessions). A count only: no ids, no people.
+  const [aged] = await withSystemDbAccessContext(
+    () => db
+      .select({ agedOut: count() })
+      .from(portalDirectoryActions)
+      .where(and(
+        eq(portalDirectoryActions.status, 'applied'),
+        isNull(portalDirectoryActions.sessionsPurgedAt),
+        lt(portalDirectoryActions.appliedAt, since),
+      )),
+    'portalDirectory.agedOutPurges',
+  );
+  const agedOut = Number(aged?.agedOut ?? 0);
+  if (agedOut > 0) {
+    console.warn('[portal-directory] applied actions aged out of the purge retry window unpurged', { agedOut });
+  }
   let finished = 0;
   for (const action of pending) {
     try {

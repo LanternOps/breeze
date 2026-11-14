@@ -94,6 +94,15 @@ function mapError(err: unknown): GoogleIncompleteReason {
   return 'unavailable';
 }
 
+/** An error's class name and a short token-like `code` (string or HTTP number) only — never its message. */
+function errorClass(err: unknown): { error: string; code: string | number | null } {
+  const raw = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
+  const code = typeof raw === 'number' && Number.isInteger(raw)
+    ? raw
+    : typeof raw === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(raw) ? raw : null;
+  return { error: err instanceof Error ? err.name : 'unknown', code };
+}
+
 class Incomplete extends Error {
   constructor(readonly reason: GoogleIncompleteReason) {
     super(reason);
@@ -371,13 +380,28 @@ export async function evaluateGoogleOrg(
     }
 
     // 2. The listing — network I/O, so OUTSIDE any transaction.
-    let listing: GoogleListing;
+    // A failure is logged by class and code only (never the message: it can
+    // quote the key or an address), so a transient error is not silently
+    // mislabelled.
+    const logReaderFailure = (stage: 'key' | 'list', err: unknown) =>
+      console.warn(`${LOG} google reader failed`, { orgId, stage, ...errorClass(err) });
+    // Until a reader exists: a key that does not decrypt or parse.
+    let listing: GoogleListing = { kind: 'incomplete', reason: 'connection_invalid' };
+    let reader: DirectoryUsersReader | null = null;
     try {
-      const reader = deps.makeReader(deps.decryptKey(conn), conn.adminEmail);
-      listing = await deps.list(reader, conn.adminEmail);
-    } catch {
-      // A key that does not decrypt or parse. Never log the error: it can quote the key.
-      listing = { kind: 'incomplete', reason: 'connection_invalid' };
+      reader = deps.makeReader(deps.decryptKey(conn), conn.adminEmail);
+    } catch (err) {
+      logReaderFailure('key', err);
+    }
+    if (reader) {
+      try {
+        listing = await deps.list(reader, conn.adminEmail);
+      } catch (err) {
+        // The default lister maps its own failures; a throw here is a
+        // network / API error, so it gets the same Google error mapping.
+        logReaderFailure('list', err);
+        listing = { kind: 'incomplete', reason: mapError(err) };
+      }
     }
     const binding = googleConnectionBinding(conn);
     const snapshotKey = `${conn.id}:${utcDate}`;

@@ -64,6 +64,16 @@ export async function notifyDirectoryRunHeld(p: {
   } catch (err) {
     // The error's name only: a transport message can carry a recipient address.
     console.error(`[portal-directory] held-run email failed for run ${p.runId} (org ${p.orgId}):`, err instanceof Error ? err.name : 'unknown');
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    // Sentry gets a sanitized error too: the raw one's message (and its
+    // extra fields) can carry recipient addresses.
+    captureException(sanitizedNoticeError(err));
   }
+}
+
+/** `portal directory held-run email failed: <name> (<code>)` — the error's class and a short token-like code only. */
+function sanitizedNoticeError(err: unknown): Error {
+  const name = err instanceof Error ? err.name : 'unknown';
+  const raw = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
+  const code = typeof raw === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(raw) ? raw : null;
+  return new Error(`portal directory held-run email failed: ${name}${code ? ` (${code})` : ''}`);
 }

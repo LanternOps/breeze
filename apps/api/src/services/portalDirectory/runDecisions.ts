@@ -295,6 +295,14 @@ export async function decideHeldRunApply(p: {
 }
 
 /**
+ * `halted`: enforcement was turned off mid-batch; `remaining` actions were
+ * left un-applied and the run `applying`.
+ */
+export type ApplyRunResult =
+  | { applied: number; skipped: number; halted?: undefined }
+  | { applied: number; skipped: number; halted: 'enforcement_off'; remaining: number };
+
+/**
  * The `apply-run` job (D8b, and an MSP Apply after {@link decideHeldRunApply}):
  * apply an `applying` run's awaiting actions as the system actor. Anything
  * not `applying` is a no-op; an `applying` run whose evidence is past 72 h or
@@ -311,7 +319,7 @@ export async function applyRun(p: {
   orgId: string;
   runId: string;
   now?: Date;
-}): Promise<{ applied: number; skipped: number }> {
+}): Promise<ApplyRunResult> {
   assertNoHeldContext('applyRun');
   if (!isDirectoryDeprovisionEnforced()) throw enforcementOff();
   if (!UUID_RE.test(p.orgId) || !UUID_RE.test(p.runId)) throw runNotFound();
@@ -338,7 +346,18 @@ export async function applyRun(p: {
 
   let applied = 0;
   let skipped = 0;
-  for (const action of actions) {
+  for (const [index, action] of actions.entries()) {
+    // The kill switch is re-read before EACH action (review fix): turning
+    // enforcement off mid-batch stops here. The remaining actions stay
+    // un-applied and the run `applying`; `recover` re-enqueues it only once
+    // enforcement is back on (worker.ts), when each action is re-checked anew.
+    if (!isDirectoryDeprovisionEnforced()) {
+      const remaining = actions.length - index;
+      console.log('[portal-directory] run apply halted: enforcement turned off', {
+        orgId: run.orgId, runId: run.id, source: run.source, halted: 'enforcement_off', applied, skipped, remaining,
+      });
+      return { applied, skipped, halted: 'enforcement_off', remaining };
+    }
     const result = await disablePortalIdentity({
       orgId: run.orgId,
       identityId: action.identityId,

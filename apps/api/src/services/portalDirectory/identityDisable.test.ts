@@ -457,6 +457,26 @@ describe('retryPendingPurges', () => {
     expect(firstArg(stamp, 'set')).toEqual({ sessionsPurgedAt: NOW });
   });
 
+  it('logs how many applied actions aged out of the 24 h window unpurged (a count only)', async () => { // review fix
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.results.push([], [{ agedOut: 3 }]);
+    expect(await retryPendingPurges(NOW)).toBe(0);
+    const countQuery = h.calls.filter((c) => c.op === 'select').at(1);
+    const where = new PgDialect().sqlToQuery(stepsOf(countQuery, 'where')[0]![0] as SQL);
+    expect(where.sql).toMatch(/"sessions_purged_at" is null/i);
+    expect(where.sql).toMatch(/"applied_at" </);
+    expect(where.params).toEqual(expect.arrayContaining(['applied', new Date(NOW.getTime() - 24 * 3600_000).toISOString()]));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).toMatch(/aged out/);
+    expect(warn.mock.calls[0]![1]).toEqual({ agedOut: 3 });
+    // None aged out: no line.
+    warn.mockClear();
+    h.results.push([], [{ agedOut: 0 }]);
+    await retryPendingPurges(NOW);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('leaves a still-failing purge for the next sweep', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.mocked(purgeClientAiSessionsForUsers).mockRejectedValueOnce(new Error('redis down'));

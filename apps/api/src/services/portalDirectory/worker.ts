@@ -66,8 +66,11 @@ async function processApplyRun(data: unknown): Promise<Record<string, unknown>> 
     return { status: 'invalid' };
   }
   try {
-    const { applied, skipped } = await applyRun({ orgId, runId });
-    return { status: 'applied', applied, skipped };
+    const out = await applyRun({ orgId, runId });
+    // Enforcement turned off mid-batch (applyRun logged the counts): terminal
+    // like report mode; the run stays `applying` for an enforced `recover`.
+    if (out.halted) return { status: 'enforcement_off', applied: out.applied, skipped: out.skipped, remaining: out.remaining };
+    return { status: 'applied', applied: out.applied, skipped: out.skipped };
   } catch (err) {
     if (err instanceof PortalDirectoryIdentityError) {
       if (err.code === 'PORTAL_DIRECTORY_ENFORCEMENT_OFF') {

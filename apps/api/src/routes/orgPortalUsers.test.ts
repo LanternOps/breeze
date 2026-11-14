@@ -473,14 +473,18 @@ describe('PATCH /organizations/:id/portal-users/:userId', () => {
     expect(set).not.toHaveProperty('disabledBy');
   });
 
-  it('reactivating an account whose only identity is disabled lands on invited (W8 D3, spec §5.1)', async () => {
+  it('reactivating an account whose only identity is disabled → 409 PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST, no update (review fix)', async () => {
     selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({
       authMethod: 'entra', passwordHash: null, browserAccess: 'none', disabledBy: 'directory',
       hasExternalIdentity: true, hasUsableExternalIdentity: false,
     })]);
-    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'invited' }]);
-    expect((await patch('pu-1', { status: 'active' })).status).toBe(200);
-    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'invited', disabledBy: null, authEpoch: expect.anything() }));
+    const setCalls = setSpy.mock.calls.length;
+    const res = await patch('pu-1', { status: 'active' });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST');
+    expect(body.error).toMatch(/restore .*sign-in method first/i);
+    expect(setSpy.mock.calls.length).toBe(setCalls);
   });
 
   it('reactivating an account with a hash while password sign-in is off (sso_only) and no usable identity lands on invited', async () => {

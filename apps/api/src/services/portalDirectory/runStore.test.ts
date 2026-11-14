@@ -289,6 +289,23 @@ describe('recordEvaluatedRun', () => {
     expect(enqueueApplyRun).not.toHaveBeenCalled();
   });
 
+  it('the hold denominator counts only members of this chain: identities never seen in the directory do not dilute it', async () => { // review fix
+    mode.enforce = true;
+    // 2 members (seen before, now disabled) + 8 in-scope identities this
+    // directory never listed (e.g. another Google workspace's people).
+    const members = [ident(1), ident(2)];
+    const strangers = Array.from({ length: 8 }, (_, i) => ident(i + 3, { directorySeenAt: null }));
+    const listed: Record<string, DirectoryObservation> = {
+      'oid-1': { present: true, state: 'disabled', reason: 'suspended' },
+      'oid-2': { present: true, state: 'disabled', reason: 'suspended' },
+    };
+    scriptRecord({ updates: 10, chainApplied: true, accounts: [account(1), account(2)], usable: [] });
+    const out = await recordEvaluatedRun(db, recordInput([...members, ...strangers], (s) => listed[s] ?? { present: false }));
+    // 2 of 2 members affected ⇒ the ≥2 && ≥50 % threshold holds (2 of 10 would not).
+    expect(out).toMatchObject({ disposition: 'held', holdReason: 'threshold', affected: 2, usable: 2 });
+    expect(firstArg(updatesOf(portalDirectoryRuns).at(-1), 'set')).toMatchObject({ usableCount: 2, affectedCount: 2 });
+  });
+
   it('enforce: the first run with actions in a chain is held even under the threshold', async () => { // D8c
     mode.enforce = true;
     const ids = Array.from({ length: 40 }, (_, i) => ident(i + 1));
@@ -598,6 +615,30 @@ describe('applyRun', () => {
     expect(whereSql(skips[0]).params).toEqual(expect.arrayContaining(['held', 'pending']));
     // MSP-approved run finished by the system path: held_applied.
     expect(firstArg(updatesOf(portalDirectoryRuns).at(-1), 'set')).toEqual({ disposition: 'held_applied' });
+  });
+
+  it('the kill switch is re-checked before each action: off mid-batch stops, leaves the rest un-applied and the run applying', async () => { // review fix
+    mode.enforce = true;
+    const log = vi.mocked(console.log);
+    vi.mocked(disablePortalIdentity).mockImplementationOnce(async () => {
+      // The operator turns enforcement off while the batch runs.
+      mode.enforce = false;
+      return { kind: 'disabled', portalUserId: userOf(1), accountDisabled: true, keepsPassword: false };
+    });
+    h.results.push(
+      [{ source: 'entra' }], [],
+      [{ id: RUN, orgId: ORG, source: 'entra', chainKey: CHAIN, disposition: 'applying', impactDigest: 'd', snapshotAt: NOW, createdAt: NOW, decidedByUserId: ACTOR }],
+      [action(1), action(2), action(3)],
+    );
+    const out = await applyRun({ orgId: ORG, runId: RUN, now: NOW });
+    expect(out).toEqual({ applied: 1, skipped: 0, halted: 'enforcement_off', remaining: 2 });
+    expect(disablePortalIdentity).toHaveBeenCalledTimes(1);
+    // Nothing marked skipped, and the run is left `applying` (no finishing update).
+    expect(updatesOf(portalDirectoryActions)).toEqual([]);
+    expect(updatesOf(portalDirectoryRuns)).toEqual([]);
+    const line = JSON.stringify(log.mock.calls);
+    expect(line).toContain('halted');
+    expect(line).toMatch(/"remaining":2/);
   });
 });
 

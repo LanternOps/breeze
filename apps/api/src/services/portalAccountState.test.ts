@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST,
   PORTAL_ACCOUNT_TRANSITION_REFUSED,
   PORTAL_USER_IDENTITY_MANAGED,
   PortalAccountTransitionError,
@@ -288,14 +289,33 @@ describe('W8 — directory_deprovision and disabled_by', () => {
 });
 
 describe('W8 — usable credentials (D3)', () => {
-  it('msp_reactivate of an account whose only identity is disabled returns it to invited', () => {
-    // spec §5.1: no usable credential → invited, never active.
+  it('msp_reactivate of an account whose only identity is disabled refuses: restore the sign-in method first', () => {
+    // Review fix (#11884): `invited` would be a dead end for an
+    // identity-managed account — invites refuse it, sign-in refuses a
+    // non-active account, and Restore only reactivates `disabled`.
     const onlyDisabledIdentity = f({
       status: 'disabled', disabledBy: 'directory', authMethod: 'entra', browserAccess: 'none',
       hasExternalIdentity: true, hasUsableExternalIdentity: false,
     });
-    expect(planPortalAccountTransition(onlyDisabledIdentity, 'msp_reactivate'))
-      .toEqual({ status: 'invited', browserAccess: 'none', bumpEpoch: true, disabledBy: null });
+    expect(() => planPortalAccountTransition(onlyDisabledIdentity, 'msp_reactivate')).toThrow(expect.objectContaining({
+      code: PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST,
+      httpStatus: 409,
+      writer: 'msp_reactivate',
+      message: expect.stringMatching(/restore .*sign-in method first/i),
+    }));
+    // The same for a password row whose hash cannot sign in (sso_only) and whose only identity is disabled.
+    const ssoOnlyHashDisabledIdentity = f({
+      status: 'disabled', disabledBy: 'directory', hasPasswordHash: true, passwordUsable: false,
+      hasExternalIdentity: true, hasUsableExternalIdentity: false,
+    });
+    expect(() => planPortalAccountTransition(ssoOnlyHashDisabledIdentity, 'msp_reactivate'))
+      .toThrow(expect.objectContaining({ code: PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST }));
+  });
+
+  it('msp_reactivate of an account with no identity rows and no password still returns it to invited (spec §5.1)', () => {
+    const noIdentityNoPassword = f({ status: 'disabled', disabledBy: 'msp', hasPasswordHash: false, hasExternalIdentity: false });
+    expect(planPortalAccountTransition(noIdentityNoPassword, 'msp_reactivate'))
+      .toEqual({ status: 'invited', browserAccess: 'granted', bumpEpoch: true, disabledBy: null });
   });
 
   it('msp_reactivate of an account with a hash under sso_only and no usable identity returns it to invited', () => {

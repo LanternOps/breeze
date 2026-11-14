@@ -109,6 +109,13 @@ describe('processPortalDirectoryJob — apply-run', () => {
     expect(JSON.stringify(log.mock.calls)).toContain(RUN);
   });
 
+  it('enforcement turned off mid-batch is terminal too: the job completes with the counts, the run stays applying', async () => { // review fix
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    h.applyRun.mockResolvedValueOnce({ applied: 1, skipped: 0, halted: 'enforcement_off', remaining: 2 });
+    const out = await processPortalDirectoryJob({ name: 'apply-run', data: { runId: RUN, orgId: ORG } }, NOW);
+    expect(out).toEqual({ status: 'enforcement_off', applied: 1, skipped: 0, remaining: 2 });
+  });
+
   it('a run that no longer exists is terminal too', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     h.applyRun.mockRejectedValueOnce(new PortalDirectoryIdentityError('PORTAL_DIRECTORY_RUN_NOT_FOUND', 404, 'gone'));

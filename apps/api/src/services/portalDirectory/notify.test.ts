@@ -97,6 +97,18 @@ describe('notifyDirectoryRunHeld (D12, OD7)', () => {
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 
+  it('Sentry gets a sanitized error (name/code only), never the raw transport error or its message', async () => { // review fix
+    const raw = Object.assign(new TypeError('550 rejected for admin1@msp.test at Contoso'), { code: 'EENVELOPE' });
+    h.send.mockRejectedValueOnce(raw);
+    await notifyDirectoryRunHeld(held);
+    expect(captureException).toHaveBeenCalledTimes(1);
+    const captured = vi.mocked(captureException).mock.calls[0]![0] as Error;
+    expect(captured).not.toBe(raw);
+    expect(captured).toBeInstanceOf(Error);
+    expect(captured.message).toBe('portal directory held-run email failed: TypeError (EENVELOPE)');
+    expect(JSON.stringify(vi.mocked(captureException).mock.calls)).not.toMatch(/@|Contoso|550/);
+  });
+
   it('logs ids and counts only: no address, org or partner name', async () => {
     h.admins = [];
     await notifyDirectoryRunHeld(held);

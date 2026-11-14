@@ -158,6 +158,25 @@ describe('evaluateGoogleOrg (plan Task 7, D11)', () => {
     expect(await evaluateGoogleOrg(ORG, DATE, bad.deps)).toEqual({ outcome: 'incomplete', reason: 'connection_invalid' });
   });
 
+  it('a key failure is logged with the error class and org id only, never its message', async () => { // review fix
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { deps } = makeDeps({ decryptKey: vi.fn(() => { throw Object.assign(new SyntaxError(`bad ${KEY}`), { code: 'ERR_KEY' }); }) });
+    expect(await evaluateGoogleOrg(ORG, DATE, deps)).toEqual({ outcome: 'incomplete', reason: 'connection_invalid' });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/google reader/), { orgId: ORG, stage: 'key', error: 'SyntaxError', code: 'ERR_KEY' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRETKEYMATERIAL');
+  });
+
+  it('a listing that throws (network) is mapped by the Google error mapper, not mislabelled connection_invalid', async () => { // review fix
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const net = makeDeps({ list: vi.fn(async () => { throw Object.assign(new Error(`socket hang up ${ADMIN}`), { code: 'ECONNRESET' }); }) });
+    expect(await evaluateGoogleOrg(ORG, DATE, net.deps)).toEqual({ outcome: 'incomplete', reason: 'unavailable' });
+    expect(net.deps.recordRefusedRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ outcome: 'incomplete', reason: 'unavailable' }));
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/google reader/), { orgId: ORG, stage: 'list', error: 'Error', code: 'ECONNRESET' });
+    const denied = makeDeps({ list: vi.fn(async () => { throw Object.assign(new Error('forbidden'), { code: 403 }); }) });
+    expect(await evaluateGoogleOrg(ORG, DATE, denied.deps)).toEqual({ outcome: 'incomplete', reason: 'access_denied' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(ADMIN);
+  });
+
   it('a re-bound connection (new admin or service account) starts a new chain', async () => {
     const rebound = { ...CONNECTION, adminEmail: 'other-admin@customer.example.com' };
     const { deps } = makeDeps({

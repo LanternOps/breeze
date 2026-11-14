@@ -31,7 +31,7 @@ const CALL_SITES: Record<string, { fact: Fact; reason: string }> = {
     fact: 'any', reason: 'hasExternalIdentity: identity-managed refusal of every invite writer (msp_invite / resend / sso invite)',
   },
   'apps/api/src/routes/orgPortalUsers.ts#getOrgScopedPortalUser#2': {
-    fact: 'usable', reason: 'hasUsableExternalIdentity: msp_reactivate needs a usable credential, else invited (spec §5.1)',
+    fact: 'usable', reason: 'hasUsableExternalIdentity: msp_reactivate needs a usable credential, else invited (spec §5.1) or, identity-managed, refused',
   },
   'apps/api/src/routes/orgPortalUsers.ts#POST /organizations/:id/portal-users/invite': {
     fact: 'any', reason: 'invite to an existing address: an identity-managed account is never invited',

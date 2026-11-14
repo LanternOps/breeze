@@ -247,7 +247,9 @@ export async function recordEvaluatedRun(tx: RunStoreExecutor, p: {
   forceReport?: boolean;
 }): Promise<RecordedRun> {
   const mode = directoryMode(p.forceReport);
-  const usableCount = p.identities.length;
+  // Provisional: the in-scope identities. An evaluated run replaces it with
+  // the chain's members (see `usableCount` below).
+  const inScopeCount = p.identities.length;
 
   // 1. The run, deduplicated on (org, source, snapshot_key).
   const [inserted] = await tx
@@ -261,7 +263,7 @@ export async function recordEvaluatedRun(tx: RunStoreExecutor, p: {
       outcome: 'evaluated',
       mode,
       directoryUserCount: p.directoryUserCount,
-      usableCount,
+      usableCount: inScopeCount,
       disposition: 'none',
     })
     .onConflictDoNothing({ target: [portalDirectoryRuns.orgId, portalDirectoryRuns.source, portalDirectoryRuns.snapshotKey] })
@@ -333,10 +335,16 @@ export async function recordEvaluatedRun(tx: RunStoreExecutor, p: {
   if (result.outcome === 'suspect_shrink') {
     await tx.update(portalDirectoryRuns).set({ outcome: 'suspect_shrink', disposition: 'none' }).where(runWhere);
     logRun({
-      orgId: p.orgId, runId, source: p.source, outcome: 'suspect_shrink', reason: null, mode, usable: usableCount, affected: 0, disposition: 'none',
+      orgId: p.orgId, runId, source: p.source, outcome: 'suspect_shrink', reason: null, mode, usable: inScopeCount, affected: 0, disposition: 'none',
     });
-    return { runId, orgId: p.orgId, source: p.source, disposition: 'none', holdReason: null, affected: 0, usable: usableCount, created: true };
+    return { runId, orgId: p.orgId, source: p.source, disposition: 'none', holdReason: null, affected: 0, usable: inScopeCount, created: true };
   }
+
+  // The hold denominator (`usable_count`, D6): only identities that are
+  // members of this chain after evaluation (seen in this directory). An
+  // in-scope identity this directory never listed — e.g. a Google identity
+  // of another workspace — would dilute the thresholds. Smaller ⇒ holds more.
+  const usableCount = result.updates.filter((u) => u.directorySeenAt !== null).length;
 
   // 4. Observations.
   await writeObservations(tx, p.orgId, result.updates);
