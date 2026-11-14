@@ -49,6 +49,14 @@
  * `socket-owner` entry must flip to `global` or carry a `KEEP_SOCKET_OWNER`
  * reason in `workerEntrypointClosure.contract.test.ts`.
  *
+ * End state after the dispatch facade pass (#4142): every entry is `global`
+ * unless its closure pins it or `KEEP_SOCKET_OWNER` names a process-local
+ * reason (files on the api container's own disk). Services reach agent
+ * sockets only through the role-safe facades (`services/agentCommandRelay.ts`,
+ * `services/agentCommandRelayEvict.ts`, `services/remoteSessionSocketLocal.ts`),
+ * so no entry's closure pins it today. New code that needs an agent socket
+ * goes through a facade, never `routes/agentWs.ts` directly.
+ *
  * DO NOT relitigate placement values by guessing — see CLAUDE.md and the plan
  * doc: run the closure tool (`pnpm --filter @breeze/api worker:closure`),
  * don't reason about it from memory.
@@ -849,8 +857,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Global since #4142 W3: its closure no longer reaches agentWs
+    // (workerEntrypointClosure.contract.test.ts). Session end evicts the agent
+    // socket through the relay facade (services/quickSupportEnd.ts).
     name: 'quickSupportReaper',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/quickSupportReaper');
       return { init: m.initializeQuickSupportReaper, shutdown: m.shutdownQuickSupportReaper };
@@ -937,11 +948,12 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // #2787: async bulk permanent delete of removed devices.
     //
-    // socket-owner because the closure contract test says so, not by judgement:
-    // deviceBulkPurge -> services/deviceLifecycle -> services/deviceDeletion
-    // reaches routes/agentWs.ts and services/agentCommandAwait.ts. Do NOT flip this to 'global' without re-running
-    // workerEntrypointClosure.contract.test.ts — it is the mechanical authority
-    // and it fails the build on a wrong placement.
+    // socket-owner for a recorded process-local reason, not the closure (clean
+    // since #4142 W3): it unlinks each purged device's screenshot files under
+    // SCREENSHOT_DIR, which defaults to the api container's own /tmp tmpfs and
+    // is not shared with the worker container. KEEP_SOCKET_OWNER in
+    // workerEntrypointClosure.contract.test.ts records the reason; drop both
+    // once screenshots live on shared storage.
     name: 'deviceBulkPurge',
     placement: 'socket-owner',
     load: async () => {
@@ -953,11 +965,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // #2787 item 4: daily purge of removed devices past their org's
     // device_lifecycle retention window.
     //
-    // socket-owner because the closure contract test says so, not by judgement:
-    // removedDevicePurge -> services/deviceLifecycle -> services/deviceDeletion
-    // reaches routes/agentWs.ts and services/agentCommandAwait.ts — the same
-    // chain that puts deviceBulkPurge above in this class. Do NOT flip this to
-    // 'global' without re-running workerEntrypointClosure.contract.test.ts.
+    // socket-owner for the same recorded process-local reason as
+    // deviceBulkPurge above (screenshot files on the api container's /tmp);
+    // its closure is clean since #4142 W3.
     name: 'removedDevicePurge',
     placement: 'socket-owner',
     load: async () => {
@@ -967,10 +977,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // Pre-assignment holding area: hourly expiry of devices parked past the
-    // window. socket-owner: it disconnects the expired agent's socket
-    // (routes/agentWs.ts), so it must run where the sockets live.
+    // window. Global since #4142 W3: it evicts the expired agent's socket
+    // through the relay facade, which reaches the owning instance from any role.
     name: 'parkedDeviceExpiry',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/parkedDeviceExpiry');
       return { init: m.initializeParkedDeviceExpiry, shutdown: m.shutdownParkedDeviceExpiry };
@@ -978,11 +988,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // Pre-assignment holding area: daily hard purge of expired parked
-    // devices. socket-owner for the same reason as removedDevicePurge above:
-    // services/deviceLifecycle -> services/deviceDeletion reaches
-    // routes/agentWs.ts.
+    // devices. Global since #4142 W3: services/deviceLifecycle ->
+    // services/deviceDeletion no longer reaches routes/ (the device cascade
+    // lists moved to services/deviceCascadeTables.ts).
     name: 'parkedDevicePurge',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/parkedDevicePurge');
       return { init: m.initializeParkedDevicePurge, shutdown: m.shutdownParkedDevicePurge };
