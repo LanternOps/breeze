@@ -57,7 +57,7 @@ describe('evaluateDirectorySnapshot', () => {
   it('present and disabled acts on the first snapshot', () => {
     const r = evaluated(run([ident()], { s1: { present: true, state: 'disabled', reason: 'suspended' } }));
     expect(r.actions).toEqual([{ identityId: 'i1', portalUserId: 'u1', reason: 'suspended' }]);
-    expect(r.updates[0].directorySeenAt).toEqual(T0);
+    expect(r.updates[0]!.directorySeenAt).toEqual(T0);
   });
 
   it('an unknown present observation resets absence and does not act', () => {
@@ -91,7 +91,7 @@ describe('evaluateDirectorySnapshot', () => {
       {},
     ));
     expect(apart.actions).toEqual([{ identityId: 'i1', portalUserId: 'u1', reason: 'absent' }]);
-    expect(apart.updates[0].directoryAbsentRuns).toBe(2);
+    expect(apart.updates[0]!.directoryAbsentRuns).toBe(2);
     const close = evaluated(run(
       [ident({ directorySeenAt: seen, directoryAbsentRuns: 1, directoryAbsentSince: new Date(T0.getTime() - HOUR) })],
       {},
@@ -135,7 +135,7 @@ describe('evaluateDirectorySnapshot', () => {
       [ident({ directoryChain: 'other', directoryRearmSince: rearm })],
       { s1: { present: true, state: 'disabled', reason: 'account_disabled' } },
     ));
-    expect(r.updates[0].directoryRearmSince).toEqual(rearm);
+    expect(r.updates[0]!.directoryRearmSince).toEqual(rearm);
     expect(r.actions).toEqual([]);
     expect(r.reportedOnly).toHaveLength(1);
   });
@@ -148,7 +148,7 @@ describe('evaluateDirectorySnapshot', () => {
     ));
     expect(dis.actions).toEqual([]);
     expect(dis.reportedOnly).toEqual([{ identityId: 'i1', portalUserId: 'u1', reason: 'account_disabled' }]);
-    expect(dis.updates[0].directoryRearmSince).toEqual(rearm);
+    expect(dis.updates[0]!.directoryRearmSince).toEqual(rearm);
     const abs = evaluated(run(
       [ident({ directoryRearmSince: rearm, directorySeenAt: rearm, directoryAbsentRuns: 1, directoryAbsentSince: new Date(T0.getTime() - 9 * HOUR) })],
       {},
@@ -156,14 +156,14 @@ describe('evaluateDirectorySnapshot', () => {
     expect(abs.actions).toEqual([]);
     expect(abs.reportedOnly).toEqual([{ identityId: 'i1', portalUserId: 'u1', reason: 'absent' }]);
     const clear = evaluated(run([ident({ directoryRearmSince: rearm })], { s1: { present: true, state: 'enabled' } }));
-    expect(clear.updates[0].directoryRearmSince).toBeNull();
+    expect(clear.updates[0]!.directoryRearmSince).toBeNull();
     const later = new Date(T0.getTime() + HOUR);
     const older = evaluated(run([ident({ directoryRearmSince: later })], { s1: { present: true, state: 'enabled' } }));
-    expect(older.updates[0].directoryRearmSince).toEqual(later);
+    expect(older.updates[0]!.directoryRearmSince).toEqual(later);
     const equal = evaluated(run([ident({ directoryRearmSince: T0 })], { s1: { present: true, state: 'enabled' } }));
-    expect(equal.updates[0].directoryRearmSince).toEqual(T0);
+    expect(equal.updates[0]!.directoryRearmSince).toEqual(T0);
     const unk = evaluated(run([ident({ directoryRearmSince: rearm })], { s1: { present: true, state: 'unknown' } }));
-    expect(unk.updates[0].directoryRearmSince).toEqual(rearm);
+    expect(unk.updates[0]!.directoryRearmSince).toEqual(rearm);
   });
 
   it('suspect shrink changes nothing until a second snapshot agrees', () => {
