@@ -52,6 +52,8 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { createActionIntent } from '../actionIntents/intentService';
 import { checkGuardrails } from '../aiGuardrails';
 import { AGENT_COORDINATOR_CARRIER_TOOLS, HUMAN_ONLY_TOOLS } from '../aiToolExposure';
+import { toolInputSchemas } from '../aiToolSchemas';
+import { findUnknownInputKeys } from '../aiToolUnknownKeys';
 import { captureException } from '../sentry';
 import { assessableOrgIds } from '../wisp/assessableOrgs';
 import { rollupPartnerPicture } from '../wisp/assessment';
@@ -289,6 +291,15 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
       // approval carrier, which only the coordinator mints (W07).
       if (tier >= 4 || HUMAN_ONLY_TOOLS.has(proposal.toolName) || AGENT_COORDINATOR_CARRIER_TOOLS.has(proposal.toolName)) {
         ap.skipped.push('propose_tool_blocked');
+        return;
+      }
+      // #11861: release refuses an argument the tool does not define, so a
+      // proposal carrying one would only fail after a human approved it.
+      // Refuse it here instead. Only the unknown-key class: the full schema
+      // check stays at release, as before.
+      const schema = Object.hasOwn(toolInputSchemas, proposal.toolName) ? toolInputSchemas[proposal.toolName] : undefined;
+      if (schema && findUnknownInputKeys(schema, proposal.input).length > 0) {
+        ap.skipped.push('propose_input_unknown_args');
         return;
       }
       // Tool-level ceiling term up front (never-delegable / outside the
