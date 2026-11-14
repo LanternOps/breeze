@@ -955,7 +955,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // code_hash is the verifier for the one-time Quick Support code — credential
   // material, never exported. claimed_from_ip is the end user's IP, which is
   // ordinary tenant record data (mirrors devices.enrollment_ip / last_seen_ip).
-  "support_sessions": tablePolicy("org_id", {"included":["id","org_id","created_by_user_id","code_expires_at","status","hard_expires_at","device_id","attributed_org_id","attribution_label","claimed_at","claimed_from_ip","ended_at","ended_reason","created_at"],"reviewedIncluded":[],"excludedSensitive":["code_hash"],"excludedOpen":[]}),
+  "support_sessions": tablePolicy("org_id", {"included":["id","org_id","created_by_user_id","code_expires_at","status","hard_expires_at","device_id","attributed_org_id","attribution_label","claimed_at","claimed_from_ip","ended_at","ended_reason","created_at"],"reviewedIncluded":[],"excludedSensitive":["code_hash","code_encrypted"],"excludedOpen":[]}),
   // tenant_variables (#3409): `value` is always ciphertext and may hold vendor
   // API tokens, so it is excludedSensitive for every row — not just the
   // is_secret ones. `key`/`description` are MSP-authored labels, not secrets.

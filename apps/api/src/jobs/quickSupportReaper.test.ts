@@ -170,7 +170,7 @@ afterEach(() => {
 });
 
 describe('reapOnce — pass (a) expired codes', () => {
-  it('expires pending sessions whose code lapsed, with no teardown', async () => {
+  it('expires pending sessions whose code lapsed, with no teardown, clearing the sealed code in the same statement', async () => {
     noResults();
 
     await reapOnce();
@@ -179,6 +179,8 @@ describe('reapOnce — pass (a) expired codes', () => {
       status: 'expired',
       endedAt: NOW,
       endedReason: 'expired',
+      // #11836: leaving pending clears the technician-readable copy too.
+      codeEncrypted: null,
     });
     expect(hasLeaf(updateWheres[0], { op: 'eq', a: 'supportSessions.status', b: 'pending' })).toBe(true);
     expect(leafFor(updateWheres[0], 'lt', 'supportSessions.codeExpiresAt')?.b).toEqual(NOW);

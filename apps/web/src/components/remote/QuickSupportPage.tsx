@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Copy, Headphones, Link2, Plus, X } from 'lucide-react';
+import { AlertTriangle, Copy, Headphones, Link2, Plus, RefreshCw, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { useOrgStore } from '@/stores/orgStore';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -46,15 +46,32 @@ export interface SupportSessionView {
   endedAt: string | null;
   endedReason: string | null;
   createdByUserId: string | null;
+  /**
+   * Present only while the session is pending and its code is inside its
+   * TTL, and only for a caller allowed to create Quick Support sessions
+   * (#11836). Absent otherwise — never null-with-a-meaning.
+   */
+  code?: string;
+  landingUrl?: string;
+  /** The caller may replace this session's code ("New code"). */
+  canIssueNewCode?: boolean;
 }
 
-/** The create response — `code` is returned exactly once and is never retrievable again. */
+/** The create and "New code" responses. */
 interface CreatedSupportSession {
   id: string;
   code: string;
   codeExpiresAt: string;
   hardExpiresAt: string;
   landingUrl: string;
+}
+
+/** mm:ss for the code countdown; never negative. */
+function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<SupportSessionStatus> = new Set<SupportSessionStatus>([
@@ -72,19 +89,16 @@ const POLL_INTERVAL_MS = 3000;
  * The selected session lives in `window.location.hash` (repo convention for
  * transient selection state), so a tech who navigates away and comes back —
  * or reloads — lands back on the same session. Selection drives ONE detail
- * panel: the one-time code block is layered on top only while the selected
- * session is the one minted in this page load (`created.code` is held in
- * memory and is never retrievable from the API again); the
- * status/connect/end block below it is shared by both cases.
+ * panel: the one-time code block is layered on top while the selected session
+ * is pending and its code is live; the status/connect/end block below it is
+ * shared by every state.
  *
- * Note the exact scope of that guarantee: `created` survives re-selection
- * within this page load, so a tech who clicks away to another history row and
- * back DOES see the same code again. That is deliberate — it is the same
- * operator in the same tab who was already shown the code, and it saves a
- * session from being burned by a stray click. What is genuinely unrecoverable
- * is the code after a reload or a new page load, because the server only ever
- * stored a hash. The `quickSupport.code.shownOnce` copy states that constraint
- * (not "never shown again", which this re-selection path contradicts).
+ * Where the code comes from (#11836): the list and detail responses carry
+ * `code` + `landingUrl` for as long as the session is pending and the code is
+ * inside its TTL, so a reload no longer loses it. The create / "New code"
+ * response is held in `created` only to show the code before the first poll
+ * lands. Once the countdown reaches zero the code is hidden and "New code"
+ * is offered (when the server says `canIssueNewCode`).
  *
  * Polling uses a recursive `setTimeout` held in a ref (same shape as
  * ConnectDesktopButton) rather than setInterval: it self-terminates on a
@@ -105,7 +119,13 @@ export default function QuickSupportPage() {
   const [attributionLabel, setAttributionLabel] = useState('');
   const [creating, setCreating] = useState(false);
   const [ending, setEnding] = useState(false);
+  const [reissuing, setReissuing] = useState(false);
+  // Bumped by "New code": a reaper-expired session is pending again, and its
+  // poller had stopped on the terminal status, so it must start over.
+  const [pollNonce, setPollNonce] = useState(0);
   const [created, setCreated] = useState<CreatedSupportSession | null>(null);
+  // Wall clock for the code countdown; only ticks while a code is on screen.
+  const [now, setNow] = useState(() => Date.now());
   // Freshest server view of the selected session, refreshed by the poller.
   const [selectedDetail, setSelectedDetail] = useState<SupportSessionView | null>(null);
   // Selected session id, adopted from the hash post-mount (#2421 — never in a
@@ -200,7 +220,7 @@ export default function QuickSupportPage() {
       cancelled = true;
       stopTimer();
     };
-  }, [selectedId, loadSessions, closeDetail, stableT]);
+  }, [selectedId, loadSessions, closeDetail, stableT, pollNonce]);
 
   const openSession = useCallback(
     (session: SupportSessionView) => {
@@ -298,6 +318,58 @@ export default function QuickSupportPage() {
     [loadSessions, t],
   );
 
+  const handleNewCode = useCallback(
+    async (sessionId: string) => {
+      setReissuing(true);
+      try {
+        const fresh = await runAction<CreatedSupportSession>({
+          request: () =>
+            fetchWithAuth(`/remote/support-sessions/${sessionId}/code`, { method: 'POST' }),
+          errorFallback: t('quickSupport.code.newCodeError'),
+          successMessage: t('quickSupport.code.newCodeSuccess'),
+          parseSuccess: (data) => {
+            const parsed = data as CreatedSupportSession | null;
+            if (!parsed?.id || !parsed?.code) throw new Error('malformed_new_code_response');
+            return parsed;
+          },
+        });
+        setCreated(fresh);
+        setNow(Date.now());
+        setPollNonce((n) => n + 1);
+        // A reaper-expired session is pending again; reflect it before the
+        // next poll so the panel does not flash the old state.
+        setSelectedDetail((current) =>
+          current && current.id === sessionId
+            ? {
+                ...current,
+                status: 'pending' as const,
+                code: fresh.code,
+                landingUrl: fresh.landingUrl,
+                codeExpiresAt: fresh.codeExpiresAt,
+                endedAt: null,
+                endedReason: null,
+                canIssueNewCode: true,
+              }
+            : current,
+        );
+        loadSessions();
+      } catch (err) {
+        if (err instanceof ActionError && err.status === 401) return;
+        if (err instanceof ActionError && err.status === 409) {
+          // Claimed or ended in the meantime: refresh so the panel shows why.
+          loadSessions();
+          return;
+        }
+        if (!(err instanceof ActionError)) {
+          showToast({ message: t('quickSupport.code.newCodeError'), type: 'error' });
+        }
+      } finally {
+        setReissuing(false);
+      }
+    },
+    [loadSessions, t],
+  );
+
   const statusLabel = (status: SupportSessionStatus): string => {
     switch (status) {
       case 'pending':
@@ -330,14 +402,51 @@ export default function QuickSupportPage() {
       ? selectedDetail
       : (sessions.find((session) => session.id === selectedId) ?? null);
 
-  // The one-time code exists only in memory, only for the session minted in
-  // this page load. A session from an earlier page load can never show one;
-  // re-selecting THIS page load's session does show it again (see the header
-  // comment for why that is intended).
-  const createdCode = created && created.id === selectedId ? created : null;
+  // The code on screen: the server's copy (survives reloads) or the one just
+  // minted in this page load, whichever expires later — so a poll that left
+  // before a "New code" landed cannot put the replaced code back up.
+  const createdForSelected = created && created.id === selectedId ? created : null;
+  const serverCode =
+    selectedSession?.code && selectedSession.landingUrl
+      ? {
+          code: selectedSession.code,
+          landingUrl: selectedSession.landingUrl,
+          codeExpiresAt: selectedSession.codeExpiresAt,
+        }
+      : null;
+  const createdStillPending =
+    createdForSelected && (selectedSession?.status ?? 'pending') === 'pending' ? createdForSelected : null;
+  const codeSource =
+    serverCode && createdStillPending
+      ? Date.parse(createdStillPending.codeExpiresAt) > Date.parse(serverCode.codeExpiresAt)
+        ? createdStillPending
+        : serverCode
+      : (serverCode ?? createdStillPending);
+  const codeMsLeft = codeSource ? Date.parse(codeSource.codeExpiresAt) - now : 0;
+  const shownCode = codeSource && codeMsLeft > 0 ? codeSource : null;
 
   const currentStatus: SupportSessionStatus = selectedSession?.status ?? 'pending';
   const isTerminal = TERMINAL_STATUSES.has(currentStatus);
+  const canIssueNewCode = selectedSession?.canIssueNewCode ?? Boolean(createdForSelected);
+  // The session is waiting on a code that has run out (whether or not the
+  // server has expired the session yet), as opposed to one that never had a
+  // readable code here (created before codes were kept, or not ours to read).
+  const codeLapsed =
+    !shownCode
+    && (currentStatus === 'pending' || canIssueNewCode)
+    && (codeSource !== null
+      || (selectedSession ? Date.parse(selectedSession.codeExpiresAt) <= now : false));
+
+  // Tick the countdown (and the lapse check) only while it can change.
+  const clockRunning =
+    (Boolean(selectedId) && (currentStatus === 'pending' || canIssueNewCode))
+    || sessions.some((session) => Boolean(session.code));
+  useEffect(() => {
+    if (!clockRunning) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [clockRunning]);
   const canConnect = Boolean(
     selectedSession?.deviceId && selectedSession.deviceOnline && !isTerminal,
   );
@@ -449,7 +558,7 @@ export default function QuickSupportPage() {
         <div data-testid="quick-support-detail" className="rounded-lg border bg-card p-6">
           <div className="flex items-start justify-between gap-4">
             <h2 className="text-lg font-semibold">
-              {createdCode ? t('quickSupport.code.heading') : t('quickSupport.detail.heading')}
+              {shownCode ? t('quickSupport.code.heading') : t('quickSupport.detail.heading')}
             </h2>
             <button
               type="button"
@@ -461,33 +570,43 @@ export default function QuickSupportPage() {
             </button>
           </div>
 
-          {createdCode ? (
+          {shownCode ? (
             <>
               <div
                 data-testid="quick-support-code"
                 className="mt-4 font-mono text-4xl font-bold tracking-[0.2em] sm:text-5xl"
               >
-                {createdCode.code}
-              </div>
-
-              <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>{t('quickSupport.code.shownOnce')}</span>
+                {shownCode.code}
               </div>
 
               <p className="mt-3 text-sm text-muted-foreground">
+                {t('quickSupport.code.visibleWhilePending')}
+              </p>
+
+              <p className="mt-3 text-sm text-muted-foreground">
+                <span data-testid="quick-support-code-countdown" className="font-medium text-foreground">
+                  {t('quickSupport.code.expiresIn', { time: formatCountdown(codeMsLeft) })}
+                </span>
+                {' · '}
                 {t('quickSupport.code.expires', {
-                  time: formatDateTime(createdCode.codeExpiresAt),
+                  time: formatDateTime(shownCode.codeExpiresAt),
                 })}
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {t('quickSupport.code.instructions')}
               </p>
+              <p
+                data-testid="quick-support-landing-link"
+                className="mt-2 break-all font-mono text-xs text-muted-foreground"
+              >
+                {toAbsoluteUrl(shownCode.landingUrl)}
+              </p>
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => copy(createdCode.code, t('quickSupport.code.copiedCode'))}
+                  data-testid="quick-support-copy-code"
+                  onClick={() => copy(shownCode.code, t('quickSupport.code.copiedCode'))}
                   className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition hover:bg-muted"
                 >
                   <Copy className="h-4 w-4" />
@@ -496,17 +615,55 @@ export default function QuickSupportPage() {
                 <button
                   type="button"
                   data-testid="quick-support-copy-link"
-                  onClick={() => copy(toAbsoluteUrl(createdCode.landingUrl), t('quickSupport.code.copiedLink'))}
+                  onClick={() => copy(toAbsoluteUrl(shownCode.landingUrl), t('quickSupport.code.copiedLink'))}
                   className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition hover:bg-muted"
                 >
                   <Link2 className="h-4 w-4" />
                   {t('quickSupport.code.copyLink')}
                 </button>
+                {canIssueNewCode && selectedId && (
+                  <button
+                    type="button"
+                    data-testid="quick-support-new-code"
+                    disabled={reissuing}
+                    onClick={() => handleNewCode(selectedId)}
+                    className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition hover:bg-muted disabled:opacity-50"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    {reissuing ? t('quickSupport.code.newCodeSubmitting') : t('quickSupport.code.newCode')}
+                  </button>
+                )}
               </div>
             </>
-          ) : (
-            <p className="mt-2 text-sm text-muted-foreground">{t('quickSupport.detail.noCode')}</p>
-          )}
+          ) : codeLapsed || currentStatus === 'pending' ? (
+            <div className="mt-2 space-y-3">
+              {codeLapsed ? (
+                <div
+                  data-testid="quick-support-code-expired"
+                  className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                >
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{t('quickSupport.code.expired')}</span>
+                </div>
+              ) : (
+                <p data-testid="quick-support-no-code" className="text-sm text-muted-foreground">
+                  {t('quickSupport.detail.noCode')}
+                </p>
+              )}
+              {canIssueNewCode && selectedId && (
+                <button
+                  type="button"
+                  data-testid="quick-support-new-code"
+                  disabled={reissuing}
+                  onClick={() => handleNewCode(selectedId)}
+                  className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  {reissuing ? t('quickSupport.code.newCodeSubmitting') : t('quickSupport.code.newCode')}
+                </button>
+              )}
+            </div>
+          ) : null}
 
           {selectedSession && (
             <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
@@ -610,8 +767,18 @@ export default function QuickSupportPage() {
                     : ''}
                 </span>
               </span>
-              <span className={`shrink-0 text-xs font-medium ${statusClass(session.status)}`}>
-                {statusLabel(session.status)}
+              <span className="flex shrink-0 items-center gap-3">
+                {session.code && Date.parse(session.codeExpiresAt) > now && (
+                  <span
+                    data-testid="quick-support-row-code"
+                    className="font-mono text-sm font-semibold tracking-wider"
+                  >
+                    {session.code}
+                  </span>
+                )}
+                <span className={`text-xs font-medium ${statusClass(session.status)}`}>
+                  {statusLabel(session.status)}
+                </span>
               </span>
             </button>
           ))}

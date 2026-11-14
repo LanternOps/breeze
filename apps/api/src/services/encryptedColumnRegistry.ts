@@ -119,6 +119,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'edr_connections', column: 'webhook_secret_encrypted', kind: 'text', aadBinding: 'row', description: 'EDR push/webhook shared secret Breeze generates (#8164 W03) — AAD bound to the row id' },
   { table: 'edr_tenants', column: 'installer_secret_encrypted', kind: 'text', aadBinding: 'row', description: 'per-vendor-tenant installer token / link (#8164 W06) — AAD bound to the row id' },
   { table: 'ticket_import_sources', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'ticket import source credential JSON (#8313 W4, spec 2026-10-19 §5.6) — AAD bound to the row id, so a blob pasted into another partner\'s source does not decrypt' },
+  { table: 'support_sessions', column: 'code_encrypted', kind: 'text', aadBinding: 'row', description: 'Quick Support one-time code (#11836), readable to the technician only while the session is pending and cleared on every transition out of it — AAD bound to the session id' },
   { table: 'trust_signing_keys', column: 'private_key_enc', kind: 'text', description: 'Trust attestation ES256 private JWK (W3b)' },
   // Sealed/opened by the column type itself (db/schema/backup.ts); listed here
   // so key rotation re-seals it.
