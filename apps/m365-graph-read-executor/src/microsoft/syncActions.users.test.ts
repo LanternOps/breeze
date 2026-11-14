@@ -209,4 +209,23 @@ describe('executeGraphSyncAction — m365.sync.users', () => {
     expect(calls.filter((call) => call.path.startsWith('/groups/'))).toHaveLength(50);
     expect(result.sources).toMatchObject({ roleAssignments: 'error' }); // incomplete expansion is not 'ok'
   });
+
+  it('a user without a string id or a duplicated id is counted in malformedItems', async () => {
+    const [ada, grace] = USERS_PAGE as unknown as [Record<string, unknown>, Record<string, unknown>];
+    const { client } = stubClient({
+      ...HAPPY,
+      '/users': page([ada, { ...ada }, { ...grace, id: 42 }, { ...grace, id: '' }, grace]),
+    });
+    const result = await executeGraphSyncAction({ type: 'm365.sync.users' }, context(client));
+    expect(result).toMatchObject({ success: true, malformedItems: 3 });
+    if (!('items' in result)) throw new Error('expected success');
+    // Malformed items are still dropped; the first copy of a duplicate is kept.
+    expect(result.items.map((item) => item.id)).toEqual([ADA, GRACE]);
+  });
+
+  it('reports malformedItems 0 for a clean listing', async () => {
+    const { client } = stubClient(HAPPY);
+    const result = await executeGraphSyncAction({ type: 'm365.sync.users' }, context(client));
+    expect(result).toMatchObject({ success: true, malformedItems: 0 });
+  });
 });
