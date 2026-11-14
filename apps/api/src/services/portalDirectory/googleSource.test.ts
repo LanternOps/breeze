@@ -174,7 +174,7 @@ describe('listGoogleDirectoryUsers', () => {
       let seen: AbortSignal | undefined;
       const r: DirectoryUsersReader = {
         getUser: vi.fn(async () => ({ id: 'admin-id', customerId: CUST, isAdmin: true })),
-        listUsersPage: vi.fn((_t, signal) => new Promise((_res, rej) => {
+        listUsersPage: vi.fn((_t, signal) => new Promise<{ users?: unknown[] }>((_res, rej) => {
           seen = signal;
           signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })));
         })),
