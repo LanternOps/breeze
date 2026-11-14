@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CONTEXT_WINDOW_MEMO_TTL_MS, MAX_PLAUSIBLE_TOKENS, MIN_PLAUSIBLE_WINDOW } from './gateway/openai/contextWindow';
-import { knownContextWindow, resolveEffectiveContextWindow, type ContextWindowFields } from './contextWindowFacts';
+import { isStaleObservedWindow, knownContextWindow, resolveEffectiveContextWindow, type ContextWindowFields } from './contextWindowFacts';
 
 const NOW = Date.parse('2026-11-11T12:00:00Z');
 const minutesAgo = (m: number): Date => new Date(NOW - m * 60_000);
@@ -112,6 +112,14 @@ describe('knownContextWindow (#11393 floor)', () => {
     expect(knownContextWindow(w)).toEqual({ window: 8_192, source: 'observed', stale: true });
   });
 
+  it('an observed window carries its observed_at, so a clear compares the row it was read from', () => {
+    const fields = { ...NONE, ...observed(8_192, minutesAgo(61)) };
+    const w = resolveEffectiveContextWindow(fields, 4, NOW);
+    expect(knownContextWindow(w, fields.contextWindowObservedAt)).toEqual({ window: 8_192, source: 'observed', stale: true, observedAt: minutesAgo(61).getTime() });
+    const listed = { ...NONE, contextWindowDiscovered: 131_072, ...observed(8_192, minutesAgo(61)) };
+    expect(knownContextWindow(resolveEffectiveContextWindow(listed, 4, NOW), listed.contextWindowObservedAt)).toEqual({ window: 131_072, source: 'discovered' });
+  });
+
   it('a fresh observation is not marked stale (control)', () => {
     const w = resolveEffectiveContextWindow({ ...NONE, ...observed(8_192, minutesAgo(5)) }, 4, NOW);
     expect(knownContextWindow(w)).toEqual({ window: 8_192, source: 'observed' });
@@ -119,5 +127,16 @@ describe('knownContextWindow (#11393 floor)', () => {
 
   it('unknown is null', () => {
     expect(knownContextWindow(resolveEffectiveContextWindow(NONE, 4, NOW))).toBeNull();
+  });
+});
+
+describe('isStaleObservedWindow (#11393: a stale floor narrows tools but never refuses up front)', () => {
+  it('true only when the resolved window IS a stale observation', () => {
+    const at = (fields: Partial<ContextWindowFields>) => isStaleObservedWindow(resolveEffectiveContextWindow({ ...NONE, ...fields }, 4, NOW));
+    expect(at(observed(8_192, minutesAgo(61)))).toBe(true);
+    expect(at(observed(8_192, minutesAgo(5)))).toBe(false);
+    expect(at({ contextWindowOverride: 32_768, ...observed(8_192, minutesAgo(61)) })).toBe(false);
+    expect(at({ contextWindowDiscovered: 131_072, ...observed(8_192, minutesAgo(61)) })).toBe(false);
+    expect(at({})).toBe(false);
   });
 });

@@ -42,7 +42,7 @@ import {
   platformModelView,
   type LoadedCandidate,
 } from './candidateLoader';
-import { resolveEffectiveContextWindow } from './contextWindowFacts';
+import { isStaleObservedWindow, resolveEffectiveContextWindow } from './contextWindowFacts';
 import { readSurfaceReadiness, readinessProfileKey, surfaceReadinessState, type ToolSurface } from './surfaceReadiness';
 import { toolProfileFactsFrom } from './toolProfileFacts';
 import { buildToolProfileDto, type StoredToolSettings, type ToolProfileCatalog } from './toolSettingsWrite';
@@ -97,7 +97,8 @@ function verificationDto(o: Offering, conn: PartnerAiConnection | undefined): Ai
  */
 function surfaceReadinessDto(o: Offering, conn: PartnerAiConnection, fingerprint: string): AiOfferingVerificationDto['surfaces'] {
   const readiness = readSurfaceReadiness(o.capabilities);
-  const facts = toolProfileFactsFrom(o, 'gateway', resolveEffectiveContextWindow(o, conn.configVersion).value);
+  const window = resolveEffectiveContextWindow(o, conn.configVersion);
+  const facts = toolProfileFactsFrom(o, 'gateway', window.value, isStaleObservedWindow(window));
   const out = {} as AiOfferingVerificationDto['surfaces'];
   for (const surface of TOOL_REQUIRING_SURFACES as readonly ToolSurface[]) {
     const entry = readiness[surface];
@@ -141,8 +142,14 @@ function contextWindowDto(o: Offering, conn: PartnerAiConnection | undefined): A
  */
 function toolProfileDto(o: StoredToolSettings, conn: PartnerAiConnection | undefined, toolCatalog: ToolProfileCatalog): AiOfferingDto['toolProfile'] {
   const gateway = Boolean(conn && isGatewayConnectionKind(conn.kind));
-  const effectiveWindow = gateway ? resolveEffectiveContextWindow(o, conn!.configVersion).value : null;
-  return buildToolProfileDto(o, { effectiveWindow, gateway, catalog: toolCatalog, troubleshootingRuns: true });
+  const window = gateway ? resolveEffectiveContextWindow(o, conn!.configVersion) : null;
+  return buildToolProfileDto(o, {
+    effectiveWindow: window?.value ?? null,
+    windowStale: window !== null && isStaleObservedWindow(window),
+    gateway,
+    catalog: toolCatalog,
+    troubleshootingRuns: true,
+  });
 }
 
 /** A model with no stored row (a synthesized platform offering): `auto`, nothing set. */

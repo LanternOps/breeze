@@ -269,6 +269,14 @@ describe('buildToolProfileDto', () => {
     expect(unknown.surfaces.every((s) => s.autoProfile === null)).toBe(true);
   });
 
+  it('#11393: a STALE 4,096 floor shows what sessions start on, never too_small or a missing required tool', () => {
+    const dto = buildToolProfileDto(stored(), { effectiveWindow: 4096, windowStale: true, gateway: true, catalog, troubleshootingRuns: true });
+    const by = Object.fromEntries(dto.surfaces.map((s) => [s.surface, s]));
+    expect(by.chat).toMatchObject({ resolved: 'minimal', autoProfile: 'minimal', missingRequired: [] });
+    expect(by.script_builder).toMatchObject({ resolved: 'standard', missingRequired: [] });
+    expect(by.ai_agents).toMatchObject({ resolved: 'standard', missingRequired: [] });
+  });
+
   it('auto with a 4,096 window: too_small', () => {
     const dto = buildToolProfileDto(stored(), { effectiveWindow: 4096, gateway: true, catalog, troubleshootingRuns: false });
     expect(dto.surfaces.find((s) => s.surface === 'chat')).toMatchObject({ resolved: 'too_small', reason: 'auto_window' });

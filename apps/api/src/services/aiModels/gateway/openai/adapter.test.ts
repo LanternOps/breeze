@@ -575,7 +575,8 @@ describe('known windows and persisted observations on the grant (#11396)', () =>
 
 describe('a stale observed window is a floor until the endpoint serves more (#11393)', () => {
   const WINDOW = 8_192;
-  const STALE = { window: WINDOW, source: 'observed' as const, stale: true as const };
+  const OBSERVED_AT = Date.parse('2026-11-11T09:00:00Z');
+  const STALE = { window: WINDOW, source: 'observed' as const, stale: true as const, observedAt: OBSERVED_AT };
   const OBSERVERS = new Map([['qwen', { offeringId: 'off-primary', partnerId: 'p' }]]);
   const ok = (promptTokens: number | null) => Response.json({
     choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }],
@@ -596,7 +597,7 @@ describe('a stale observed window is a floor until the endpoint serves more (#11
   });
   afterEach(() => { warn.mockRestore(); });
 
-  function client(known: { window: number; source: 'override' | 'discovered' | 'observed'; stale?: true } = STALE, purpose: 'dispatch' | 'verification' = 'dispatch') {
+  function client(known: { window: number; source: 'override' | 'discovered' | 'observed'; stale?: true; observedAt?: number } = STALE, purpose: 'dispatch' | 'verification' = 'dispatch') {
     const base = {
       config: { source: 'gateway' as const, kind: 'openai_compatible' as const, partnerId: 'p', connectionId: 'c-floor', configVersion: 9, baseUrl: 'https://llm.example.com/v1' },
       credential: { secret: 'sk-upstream-secret-1' }, wireModels: ['qwen'], aiSessionId: null,
@@ -632,7 +633,7 @@ describe('a stale observed window is a floor until the endpoint serves more (#11
     await ask(c);
     expect(clearDisprovenMock).toHaveBeenCalledOnce();
     expect(clearDisprovenMock).toHaveBeenCalledWith({
-      offeringId: 'off-primary', partnerId: 'p', configVersion: 9, disprovenWindow: WINDOW, servedPromptTokens: 9_000,
+      offeringId: 'off-primary', partnerId: 'p', configVersion: 9, disprovenWindow: WINDOW, observedAt: OBSERVED_AT, servedPromptTokens: 9_000,
     });
     sent = [];
     await ask(c);
@@ -652,6 +653,13 @@ describe('a stale observed window is a floor until the endpoint serves more (#11
       { headers: { 'content-type': 'text/event-stream' } },
     );
     await client().messages.stream({ model: 'qwen', max_tokens: 32_000, messages: [{ role: 'user', content: 'x'.repeat(60_000) }] }).finalMessage();
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
+  it('an observed window without its observed_at clears nothing (the clear could not tell it from a newer row of the same value)', async () => {
+    reply = () => ok(9_000);
+    const { observedAt: _drop, ...noStamp } = STALE;
+    await ask(client(noStamp));
     expect(clearDisprovenMock).not.toHaveBeenCalled();
   });
 

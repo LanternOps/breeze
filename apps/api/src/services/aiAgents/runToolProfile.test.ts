@@ -56,6 +56,20 @@ describe('applyRunToolProfile (#11394)', () => {
     });
   });
 
+  it('#11393: the same 4,096 window as a STALE observed floor is not blocked', () => {
+    const analysis = input({
+      run: { profile: 'analysis' } as never, facts: facts({ effectiveWindow: 4_096, windowStale: true }),
+      exposedNames: ['mcp__breeze__get_device_details'], onlyTools: new Set(['get_device_details']),
+    });
+    expect(applyRunToolProfile(analysis).exposure).toMatchObject({ tooSmall: false });
+  });
+
+  it('#11393: a troubleshoot run on a STALE floor in minimal\'s range is not blocked underpowered; a fresh one is (control)', () => {
+    const stale = applyRunToolProfile(input({ facts: facts({ effectiveWindow: 8_192, windowStale: true }) }));
+    expect(stale.exposure.profile).toBe('standard');
+    expect(() => applyRunToolProfile(input({ facts: facts({ effectiveWindow: 8_192 }) }))).toThrow(AgentRunBlockedError);
+  });
+
   it('control: the same run at a 131,072 window is not blocked', () => {
     const analysis = input({
       run: { profile: 'analysis' } as never, facts: facts({ effectiveWindow: 131_072 }),

@@ -139,10 +139,12 @@ function observeServedPrompt(grant: GatewayGrantRecord, model: string, windowKey
     const known = grant.knownWindows.get(model) ?? null;
     if (!noteServedPrompt(windowKey, promptTokens, known) || !known) return;
     const observer = grant.observers.get(model);
-    if (!observer) return;
+    // Without its observed_at the clear could not tell the row it read from a
+    // newer one stating the same value; the in-process disproof still applies.
+    if (!observer || known.observedAt === undefined) return;
     clearDisprovenContextWindow({
       offeringId: observer.offeringId, partnerId: observer.partnerId, configVersion: grant.config.configVersion,
-      disprovenWindow: known.window, servedPromptTokens: promptTokens,
+      disprovenWindow: known.window, observedAt: known.observedAt, servedPromptTokens: promptTokens,
     });
   } catch (error) {
     console.warn(`[modelGateway] could not note a served prompt (grant ${grant.id}): ${error instanceof Error ? error.message : 'unknown error'}`);

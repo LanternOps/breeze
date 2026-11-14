@@ -21,7 +21,8 @@
  *
  * A served prompt larger than the stored window disproves it (#11393):
  * `clearDisprovenContextWindow` clears the observation under the same
- * contract, and only while the stored value is still the disproven one.
+ * contract, and only while the row still holds the disproven observation
+ * (same value and observed_at).
  *
  * It never touches `updated_at`: that is the offering's write version
  * (`expectedUpdatedAt`), and a background observation must not make an
@@ -51,6 +52,8 @@ export interface ContextWindowDisproof {
   configVersion: number;
   /** The observed window the grant carried. */
   disprovenWindow: number;
+  /** That observation's `observed_at` (epoch ms): the clear matches only the row it was read from. */
+  observedAt: number;
   /** The prompt the endpoint itself counted and served, larger than the window. */
   servedPromptTokens: number;
 }
@@ -60,8 +63,8 @@ const recent = new Map<string, number>();
 const pending = new Set<Promise<void>>();
 
 type WriteKind = 'set' | 'clear';
-const keyOf = (kind: WriteKind, offeringId: string, configVersion: number, window: number): string =>
-  JSON.stringify([kind, offeringId, configVersion, window]);
+const keyOf = (kind: WriteKind, offeringId: string, configVersion: number, window: number, observedAt?: number): string =>
+  JSON.stringify(observedAt === undefined ? [kind, offeringId, configVersion, window] : [kind, offeringId, configVersion, window, observedAt]);
 
 /**
  * A write replaces whatever the offering's row held, so every other dedupe
@@ -96,10 +99,12 @@ export async function writeObservedContextWindow(o: ContextWindowObservation, at
 
 /**
  * The atomic compare-and-clear (#11393). It matches only while the row still
- * holds the disproven observation under the connection's current
- * config_version, so a newer observation written meanwhile is never erased,
- * and a foreign partner or a stale version matches zero rows. Resolves true
- * when the row was cleared. Exported for the integration test.
+ * holds the disproven observation (its value AND its observed_at) under the
+ * connection's current config_version, so a newer observation written
+ * meanwhile is never erased, even one stating the same value, and a foreign
+ * partner or a stale version matches zero rows. observed_at is compared at
+ * millisecond precision (what the write stores and the read hands back).
+ * Resolves true when the row was cleared. Exported for the integration test.
  */
 export async function clearObservedContextWindow(d: ContextWindowDisproof): Promise<boolean> {
   const rows = await db.update(partnerAiModels)
@@ -113,6 +118,7 @@ export async function clearObservedContextWindow(d: ContextWindowDisproof): Prom
       eq(partnerAiModels.partnerId, d.partnerId),
       eq(partnerAiModels.contextWindowObserved, d.disprovenWindow),
       eq(partnerAiModels.contextWindowObservedConfigVersion, d.configVersion),
+      sql`date_trunc('milliseconds', ${partnerAiModels.contextWindowObservedAt}) = ${new Date(d.observedAt).toISOString()}::timestamptz`,
       sql`${partnerAiModels.contextWindowObserved} < ${d.servedPromptTokens}`,
       sql`EXISTS (SELECT 1 FROM partner_ai_connections c
                   WHERE c.id = ${partnerAiModels.connectionId} AND c.config_version = ${d.configVersion})`,
@@ -183,13 +189,14 @@ export function recordObservedContextWindow(o: ContextWindowObservation): void {
  * so the endpoint now serves a larger window; clear the observation so the
  * effective window falls back to what is listed, or unknown until the next
  * rejection states the new one. Same contract as the record: fire-and-forget,
- * system context, deduped per (offering, config_version, window), never
- * rethrown.
+ * system context, deduped per (offering, config_version, window, observed_at),
+ * never rethrown.
  */
 export function clearDisprovenContextWindow(d: ContextWindowDisproof): void {
   if (!isPlausibleContextWindow(d.disprovenWindow)) return;
   if (!Number.isSafeInteger(d.servedPromptTokens) || d.servedPromptTokens <= d.disprovenWindow) return;
-  const key = keyOf('clear', d.offeringId, d.configVersion, d.disprovenWindow);
+  if (!Number.isSafeInteger(d.observedAt)) return;
+  const key = keyOf('clear', d.offeringId, d.configVersion, d.disprovenWindow, d.observedAt);
   if (!claim(key, Date.now())) return;
   forgetOthers(d.offeringId, key);
   runWrite('clear', key, () => clearObservedContextWindow(d), 'clear a disproven context window', {

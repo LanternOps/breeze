@@ -86,10 +86,12 @@ describe.skipIf(!RUN)('context window observation write (#11396)', () => {
 });
 
 describe.skipIf(!RUN)('a persisted observation is a floor until disproved (#11393)', () => {
-  const observe = (s: { offeringId: string; partnerId: string }, configVersion: number, contextWindow: number, at = new Date()) =>
+  // The observed_at a disproof carries by default: the grant read the row written at AT.
+  const AT = new Date(Date.now() - 5 * 60_000);
+  const observe = (s: { offeringId: string; partnerId: string }, configVersion: number, contextWindow: number, at = AT) =>
     withSystemDbAccessContext(() => writeObservedContextWindow({ offeringId: s.offeringId, partnerId: s.partnerId, configVersion, contextWindow }, at));
-  const disproof = (s: { offeringId: string; partnerId: string }, over: Partial<{ partnerId: string; configVersion: number; disprovenWindow: number; servedPromptTokens: number }> = {}) => ({
-    offeringId: s.offeringId, partnerId: s.partnerId, configVersion: 4, disprovenWindow: 8192, servedPromptTokens: 9000, ...over,
+  const disproof = (s: { offeringId: string; partnerId: string }, over: Partial<{ partnerId: string; configVersion: number; disprovenWindow: number; observedAt: number; servedPromptTokens: number }> = {}) => ({
+    offeringId: s.offeringId, partnerId: s.partnerId, configVersion: 4, disprovenWindow: 8192, observedAt: AT.getTime(), servedPromptTokens: 9000, ...over,
   });
   const fields = (row: Record<string, unknown>) => ({
     contextWindowObserved: row.context_window_observed as number | null,
@@ -158,6 +160,16 @@ describe.skipIf(!RUN)('a persisted observation is a floor until disproved (#1139
     await observe(s, 4, 4096);
     expect(await withSystemDbAccessContext(() => clearObservedContextWindow(disproof(s)))).toBe(false);
     expect((await observedOf(s.offeringId)).context_window_observed).toBe(4096);
+  });
+
+  it('a late clear never erases a NEWER row holding the same value (it compares observed_at)', async () => {
+    const s = await seed(4);
+    const newer = new Date(AT.getTime() + 60_000);
+    await observe(s, 4, 8192, newer);
+    expect(await withSystemDbAccessContext(() => clearObservedContextWindow(disproof(s)))).toBe(false);
+    const row = await observedOf(s.offeringId);
+    expect(row.context_window_observed).toBe(8192);
+    expect(new Date(row.context_window_observed_at as Date).toISOString()).toBe(newer.toISOString());
   });
 
   it('a served prompt that does not exceed the stored window matches zero rows', async () => {

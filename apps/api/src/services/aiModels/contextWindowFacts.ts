@@ -21,8 +21,11 @@
  * it, it is replaced by a listed window, an operator override, a later
  * rejection (any window, larger or smaller), or a served prompt larger than it
  * (`clearDisprovenContextWindow`). A stale observation caps `max_tokens` and
- * narrows `auto`, but never refuses a prompt before the endpoint sees it
- * (`KnownWindow.stale`). Every number is plausibility-bounded the same way the
+ * narrows `auto`, but never refuses before the endpoint sees the request:
+ * neither a prompt at the gateway (`KnownWindow.stale`) nor a session as
+ * `too_small` or underpowered (`ToolProfileFacts.windowStale`; `auto` stops
+ * at the surface's `STALE_WINDOW_AUTO_FLOOR`), since a refusal that makes no
+ * provider call can never disprove it. Every number is plausibility-bounded the same way the
  * gateway bounds a stated window.
  */
 import { CONTEXT_WINDOW_MEMO_TTL_MS, MAX_PLAUSIBLE_TOKENS, MIN_PLAUSIBLE_WINDOW, type KnownWindow } from './gateway/openai/contextWindow';
@@ -86,10 +89,27 @@ export function resolveEffectiveContextWindow(
   return { value: null, source: 'unknown', ...facts };
 }
 
-/** The window as a `KnownContextWindow`, or null when unknown. A stale observation is marked so the gateway only caps from it. */
-export function knownContextWindow(w: EffectiveContextWindow): KnownContextWindow | null {
+/**
+ * The resolved window is a STALE observation (#11393): past the memo TTL,
+ * kept only as a floor. It caps `max_tokens` and narrows `auto`, but never
+ * refuses up front — not a prompt at the gateway (`KnownWindow.stale`), not a
+ * session as `too_small` or underpowered (`ToolProfileFacts.windowStale`).
+ */
+export function isStaleObservedWindow(w: EffectiveContextWindow): boolean {
+  return w.value !== null && w.source === 'observed' && !w.observedFresh;
+}
+
+/**
+ * The window as a `KnownContextWindow`, or null when unknown. A stale
+ * observation is marked so the gateway only caps from it. `observedAt` is the
+ * row's `contextWindowObservedAt`: an observed window carries it, so a clear
+ * compares the row it was read from (#11393).
+ */
+export function knownContextWindow(w: EffectiveContextWindow, observedAt?: Date | null): KnownContextWindow | null {
   if (w.value === null || w.source === 'unknown') return null;
-  return w.source === 'observed' && !w.observedFresh
+  const known: KnownContextWindow = isStaleObservedWindow(w)
     ? { window: w.value, source: w.source, stale: true }
     : { window: w.value, source: w.source };
+  if (w.source === 'observed' && observedAt) known.observedAt = observedAt.getTime();
+  return known;
 }

@@ -117,7 +117,7 @@ describe('recordObservedContextWindow (#11396 T6)', () => {
 });
 
 describe('clearDisprovenContextWindow (#11393 floor)', () => {
-  const DISPROOF = { offeringId: 'o1', partnerId: 'p1', configVersion: 4, disprovenWindow: 8192, servedPromptTokens: 9000 };
+  const DISPROOF = { offeringId: 'o1', partnerId: 'p1', configVersion: 4, disprovenWindow: 8192, observedAt: Date.parse('2026-11-11T09:00:00Z'), servedPromptTokens: 9000 };
 
   it('clears observed, observed_at and observed_config_version in the system context, outside any request context', async () => {
     clearDisprovenContextWindow(DISPROOF);
@@ -146,6 +146,13 @@ describe('clearDisprovenContextWindow (#11393 floor)', () => {
     clearDisprovenContextWindow({ ...DISPROOF, servedPromptTokens: 9500 });
     await settledContextWindowObservations();
     expect(writes).toHaveLength(1);
+  });
+
+  it('a disproof of a NEWER row holding the same value is not deduped against the older one', async () => {
+    clearDisprovenContextWindow(DISPROOF);
+    clearDisprovenContextWindow({ ...DISPROOF, observedAt: DISPROOF.observedAt + 60_000 });
+    await settledContextWindowObservations();
+    expect(writes).toHaveLength(2);
   });
 
   it('a served prompt that does not exceed the window clears nothing', async () => {

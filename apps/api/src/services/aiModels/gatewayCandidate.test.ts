@@ -134,6 +134,9 @@ describe('gatewayCandidate', () => {
   });
 
   describe('the effective context window (#11396 T7)', () => {
+    const OBSERVED_AT = Date.now() - 5 * 60_000;
+    const STALE_AT = Date.now() - 2 * 60 * 60_000;
+
     it('a discovered window fills limits.maxInputTokens, the facts and the grant seed', async () => {
       const c = await gatewayCandidate({ offering: offering({ contextWindowDiscovered: 131_072 }), conn: conn() });
       expect(c.limits).toEqual({ maxInputTokens: 131_072, maxOutputTokens: null });
@@ -145,12 +148,37 @@ describe('gatewayCandidate', () => {
       const c = await gatewayCandidate({
         offering: offering({
           contextWindowDiscovered: 262_144,
-          contextWindowObserved: 8_192, contextWindowObservedAt: new Date(), contextWindowObservedConfigVersion: CONN.configVersion,
+          contextWindowObserved: 8_192, contextWindowObservedAt: new Date(OBSERVED_AT), contextWindowObservedConfigVersion: CONN.configVersion,
         }),
         conn: conn(),
       });
       expect(c.limits.maxInputTokens).toBe(8_192);
-      expect(c.contextWindow).toEqual({ window: 8_192, source: 'observed' });
+      // It carries its observed_at, so a served prompt's clear matches only this row (#11393).
+      expect(c.contextWindow).toEqual({ window: 8_192, source: 'observed', observedAt: OBSERVED_AT });
+    });
+
+    it('#11393: a STALE observed floor too small for minimal marks the facts stale, so chat narrows to minimal instead of refusing', async () => {
+      const c = await gatewayCandidate({
+        offering: offering({
+          contextWindowObserved: 4_096, contextWindowObservedAt: new Date(STALE_AT),
+          contextWindowObservedConfigVersion: CONN.configVersion,
+        }),
+        conn: conn(),
+      });
+      expect(c.contextWindow).toEqual({ window: 4_096, source: 'observed', stale: true, observedAt: STALE_AT });
+      expect(c.toolProfileFacts).toMatchObject({ effectiveWindow: 4_096, windowStale: true });
+      expect(effectiveToolProfile(c.toolProfileFacts!, 'chat')).toEqual({ profile: 'minimal', tooSmall: false });
+    });
+
+    it('#11393 control: the same 4,096 observed FRESH is too_small for chat and is not marked stale', async () => {
+      const c = await gatewayCandidate({
+        offering: offering({
+          contextWindowObserved: 4_096, contextWindowObservedAt: new Date(), contextWindowObservedConfigVersion: CONN.configVersion,
+        }),
+        conn: conn(),
+      });
+      expect(c.toolProfileFacts).not.toHaveProperty('windowStale');
+      expect(effectiveToolProfile(c.toolProfileFacts!, 'chat')).toEqual({ profile: 'minimal', tooSmall: true });
     });
 
     it('an observation from an older config_version does not constrain', async () => {

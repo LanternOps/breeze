@@ -52,7 +52,7 @@ import type { KnownWindow } from './gateway/openai/contextWindow';
 import type { SurfaceTurnInput, SurfaceTurnPlan, SurfaceTurnResult } from '../llm/surfaceTurnHarness';
 import { effectiveToolProfile } from './toolExposure';
 import type { SurfaceTurnPlanResult } from '../llm/surfaceTurnStubs';
-import { knownContextWindow, resolveEffectiveContextWindow } from './contextWindowFacts';
+import { isStaleObservedWindow, knownContextWindow, resolveEffectiveContextWindow } from './contextWindowFacts';
 import {
   SURFACE_TURN_VERSION,
   failedToolSurfaces,
@@ -207,8 +207,8 @@ async function runSurfaceStage(ctx: SurfaceStageContext): Promise<{
     // The offering's facts as the resolver reads them (gatewayCandidate): its
     // profile, allow-list and effective window under this connection version.
     const window = resolveEffectiveContextWindow(ctx.offering, ctx.configVersion);
-    known = knownContextWindow(window);
-    facts = toolProfileFactsFrom(ctx.offering, 'gateway', window.value);
+    known = knownContextWindow(window, ctx.offering.contextWindowObservedAt);
+    facts = toolProfileFactsFrom(ctx.offering, 'gateway', window.value, isStaleObservedWindow(window));
   } catch (error) {
     capture('surface turns skipped (could not list its tool surfaces or read its tool profile)', error);
     return { entries, turns };

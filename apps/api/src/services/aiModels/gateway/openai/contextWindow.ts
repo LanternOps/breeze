@@ -202,6 +202,12 @@ export interface KnownWindow {
    * serves can show itself (`noteServedPrompt`).
    */
   stale?: true;
+  /**
+   * #11393: an observed window's `observed_at` (epoch ms), so the clear on a
+   * served prompt compares the row it was read from and never erases a newer
+   * observation that states the same value.
+   */
+  observedAt?: number;
 }
 
 function logKnownCapOnce(k: string, window: number): boolean {
