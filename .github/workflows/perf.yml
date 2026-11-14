@@ -211,10 +211,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # continue-on-error is the warn-only switch: unset PERF_GATES_ENFORCE keeps
-      # the job green, and the step still reports the red gate below.
+      # Warn-only covers a measured gate miss and nothing else: while
+      # PERF_GATES_ENFORCE is not 'true', exit 3 (storm.sh: the run completed and
+      # a gate failed) with a storm report on disk becomes a ::warning:: and a
+      # green step. Any other non-zero exit is the harness failing (the stack did
+      # not start, the simulator never ran its window) and fails the job, which
+      # files the nightly issue (#11623: a dead stack was a green 3.5-min job).
       - name: Run storm-suite with gates
-        continue-on-error: ${{ vars.PERF_GATES_ENFORCE != 'true' }}
         env:
           PERF_GATES_ENFORCE: ${{ vars.PERF_GATES_ENFORCE }}
         run: |
@@ -225,8 +228,12 @@ jobs:
             --gate-heartbeat-p95 "$STORM_GATE_HEARTBEAT_P95" \
             --gate-pool-min-ratio "$STORM_GATE_POOL_MIN_RATIO" \
             --gate-pool-recovery "$STORM_GATE_POOL_RECOVERY" || rc=$?
-          if [ "$rc" -ne 0 ] && [ "$PERF_GATES_ENFORCE" != 'true' ]; then
-            echo "::warning::storm-suite exited $rc (3 = a gate failed); warn-only until PERF_GATES_ENFORCE=true"
+          if [ "$rc" -eq 3 ] && [ "$PERF_GATES_ENFORCE" != 'true' ] && [ -s "$OUT/storm/storm.json" ]; then
+            echo "::warning::storm-suite: a gate failed (exit 3); warn-only until PERF_GATES_ENFORCE=true"
+            exit 0
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::storm-suite exited $rc (3 = a gate failed; anything else, or 3 without a storm report, = the harness did not complete a measured run)"
           fi
           exit "$rc"
 

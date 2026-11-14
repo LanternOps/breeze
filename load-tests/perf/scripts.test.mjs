@@ -489,3 +489,27 @@ test('run-perf.sh refuses --storm together with --profile', () => {
   const r = run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--profile', 'smoke', '--out-dir', path.join(fx.root, 'o')]);
   assert.equal(r.code, 64);
 });
+
+test('run-perf.sh rebuilds the dev images for the checked-out commit before anything is measured (#11623)', () => {
+  // wt-stack up without --rebuild reuses whatever breeze-{api,web,portal}:dev
+  // images the persistent runner already has; on 2026-11-10 those were five days
+  // old and lacked a file the astro configs import, so web/portal crash-looped.
+  const fx = makeFixture();
+  const r = run(fx, 'run-perf.sh', ['--profile', 'nightly-200', '--out-dir', path.join(fx.root, 'kpi')]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.log, /^pnpm wt-stack up --rebuild$/m);
+  const up = r.log.indexOf('pnpm wt-stack up');
+  assert.ok(up >= 0 && up < r.log.indexOf('run.sh '), 'the build happens before the measured simulator run');
+
+  const agentsim = path.join(fx.repo, 'load-tests', 'agentsim');
+  script(
+    path.join(agentsim, 'storm.sh'),
+    '#!/usr/bin/env bash\n' +
+      'echo "storm.sh $*" >> "$STUB_LOG"\n' +
+      'mkdir -p "$(dirname "$0")/reports"; echo "{}" > "$(dirname "$0")/reports/storm-$1-stub.json"\n',
+  );
+  const s = run(fx, 'run-perf.sh', ['--storm', 'storm-suite', '--out-dir', path.join(fx.root, 'storm')]);
+  assert.equal(s.code, 0, s.err);
+  assert.match(s.log, /^pnpm wt-stack up --rebuild$/m);
+  assert.ok(s.log.indexOf('pnpm wt-stack up') < s.log.indexOf('storm.sh '), 'storm mode builds first too');
+});

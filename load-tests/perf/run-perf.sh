@@ -163,7 +163,15 @@ if [ -n "$STORM" ]; then
 fi
 echo "run-perf: profile=$PROFILE label=$LABEL duration=$DURATION out=$OUT" >&2
 echo "$LABEL" >"$OUT/label.txt"
-( cd "$REPO" && pnpm wt-stack up )
+# --rebuild: build the dev images from THIS checkout. Without it compose reuses
+# whatever breeze-{api,web,portal}:dev the persistent runner already has; from
+# 2026-11-05 to 11-14 that was one build, and once a file reached the containers
+# only through the image (#11544) web/portal crash-looped (#11623). The build
+# runs here, before the idle sample and the measured window; unchanged layers
+# come from the build cache, so only a real source change costs build time.
+( cd "$REPO" && pnpm wt-stack up --rebuild )
+docker image inspect --format '{{index .RepoTags 0}} {{.Id}} created {{.Created}}' \
+  breeze-api:dev breeze-web:dev breeze-portal:dev >&2 || true
 
 # --- 3. Lab setup (W06's scripts, unchanged).
 mkdir -p "$SIM/.state"
