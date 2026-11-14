@@ -3677,8 +3677,10 @@ ssoRoutes.get('/callback', async (c) => {
     // phishing-resistant (`phr`, #6137) authentication, propagate
     // mfa:true so the tenant can satisfy Breeze's MFA-gated routes via their
     // IdP. Fail-safe: any provider that hasn't opted in, or an assertion
-    // without an `mfa`/`phr` amr, yields mfa:false. This claim never satisfies the
-    // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
+    // without an `mfa`/`phr` amr, earns NO IdP credit (`idpMfa` false); the
+    // session can still be policy-admitted (#11889, below). This claim never
+    // satisfies the L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held
+    // TOTP).
     //
     // BUT: trusting an IdP's MFA assertion is NOT the same as the user holding
     // a factor under OUR policy (the adjudicated rule the CF-Access mint sites
@@ -3686,9 +3688,10 @@ ssoRoutes.get('/callback', async (c) => {
     // must not get mfa:true, however loudly the IdP asserts `amr:mfa` — that
     // would walk them straight past authMiddleware's forced-enrollment gate and
     // every hasSatisfiedMfa() route, permanently, through refresh rotation.
-    // `trustsIdpMfa` still satisfies MFA for a user who actually HAS a factor,
-    // and still does so for an unenrolled user under a policy that does not
-    // require one. The callback is unauthenticated (no ambient DB context), so
+    // `trustsIdpMfa` satisfies MFA for a user who actually HAS a factor. An
+    // unenrolled user under a policy that does not require one is
+    // policy-admitted whether or not the assertion is present (mfa_src 'idp'
+    // only when it is). The callback is unauthenticated (no ambient DB context), so
     // getEffectiveMfaPolicy's own runOutsideDbContext+withSystemDbAccessContext
     // read resolves live policy for existing users. Newly provisioned users
     // conservatively receive mfa:false until their membership commits.

@@ -128,6 +128,7 @@ import { beginAuthIssuanceForStoredTransition, cancelAuthIssuance, finishAuthIss
 import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { isDomainVerifiedForOrg, isSsoProvisioningBlocked } from '../../services/ssoDomainVerification';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { auditLogin } from './helpers';
 
 const USER_ID = '00000000-0000-4000-8000-0000000000aa';
 const PROVIDER_ID = '00000000-0000-4000-8000-0000000000bb';
@@ -458,6 +459,53 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     );
   });
 
+  // An IdP assertion never substitutes for a factor the user does not have
+  // when policy REQUIRES one, on this path as on the callback.
+  it('mints mfa:false for an UNENROLLED user under a required policy despite a trusted IdP assertion (#11889)', async () => {
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
+      required: true,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+    } as never);
+    wire({
+      record: { ...RECORD, idpMfaAsserted: true },
+      provider: { ...PROVIDER_ROW, trustsIdpMfa: true },
+    });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
+  });
+
+  it('assures an ENROLLED user from a trusted IdP assertion (mfaSrc idp) without a ceremony factor (#11889)', async () => {
+    wire({
+      record: { ...RECORD, idpMfaAsserted: true },
+      provider: { ...PROVIDER_ROW, trustsIdpMfa: true },
+      user: { ...USER_ROW, mfaEnabled: true },
+    });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'idp' }),
+      expect.anything(),
+    );
+  });
+
+  it('sources an ENROLLED user\'s ceremony-verified factor as factor, ahead of a trusted IdP assertion', async () => {
+    wire({
+      record: { ...RECORD, idpMfaAsserted: true },
+      provider: { ...PROVIDER_ROW, trustsIdpMfa: true },
+      user: { ...USER_ROW, mfaEnabled: true },
+    });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: USER_ID });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'factor' }),
+      expect.anything(),
+    );
+  });
+
   it('mints mfa:true when the ceremony verified a Breeze-held factor, regardless of IdP amr', async () => {
     wire();
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: USER_ID });
@@ -483,6 +531,33 @@ describe('finalizeSsoPendingLink — audit tenancy (#9377)', () => {
     wire({ record: PARTNER_RECORD, provider: PARTNER_PROVIDER_ROW, identity: opts.identity });
     tableRows.set(partnerUsers, [[{ roleId: 'role-p', roleScope: 'partner' }]]);
   };
+
+  // #11889: the partner login audit's `mfa` records a presented factor or a
+  // trusted IdP assertion, as the password login audit does — never policy
+  // admission.
+  it('audits a policy-admitted partner completion with mfa:false (#11889)', async () => {
+    wirePartner();
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'policy' }),
+      expect.anything(),
+    );
+    expect(auditLogin).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ method: 'sso-partner', mfa: false }),
+    );
+  });
+
+  it('audits a factor-verified partner completion with mfa:true (#11889)', async () => {
+    wirePartner();
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: USER_ID });
+    expect(outcome.ok).toBe(true);
+    expect(auditLogin).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ method: 'sso-partner', mfa: true }),
+    );
+  });
 
   it('attributes sso.identity.linked to the partner for a partner-level provider', async () => {
     wirePartner();

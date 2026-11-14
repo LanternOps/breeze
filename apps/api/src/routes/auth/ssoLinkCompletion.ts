@@ -154,7 +154,8 @@ export async function completeSsoLogin(
   // When the provider opts in via `trustsIdpMfa` AND the verified id_token's
   // `amr` attested multi-factor (`mfa`) or phishing-resistant (`phr`) auth, propagate mfa:true so the tenant can satisfy
   // Breeze's MFA-gated routes via their IdP. Fail-safe: any provider that
-  // hasn't opted in, or an assertion without an `mfa`/`phr` amr, yields mfa:false.
+  // hasn't opted in, or an assertion without an `mfa`/`phr` amr, earns NO IdP
+  // credit (`idpMfa` false); the session can still be policy-admitted (#11889).
   // This claim never satisfies the L4 step-up (requireFreshMfaStepUp
   // re-verifies a Breeze-held TOTP).
   //
@@ -164,9 +165,10 @@ export async function completeSsoLogin(
   // must not get mfa:true, however loudly the IdP asserts `amr:mfa` — that
   // would walk them straight past authMiddleware's forced-enrollment gate and
   // every hasSatisfiedMfa() route, permanently, through refresh rotation.
-  // `trustsIdpMfa` still satisfies MFA for a user who actually HAS a factor,
-  // and still does so for an unenrolled user under a policy that does not
-  // require one. Callers are unauthenticated (no ambient DB context), so
+  // `trustsIdpMfa` satisfies MFA for a user who actually HAS a factor. An
+  // unenrolled user under a policy that does not require one is
+  // policy-admitted whether or not the assertion is present (mfa_src 'idp'
+  // only when it is). Callers are unauthenticated (no ambient DB context), so
   // getEffectiveMfaPolicy's own runOutsideDbContext+withSystemDbAccessContext
   // read is correct here: `user` is COMMITTED, so this resolves against real
   // rows.

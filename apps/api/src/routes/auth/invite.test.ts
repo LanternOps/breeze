@@ -130,8 +130,8 @@ vi.mock('../../services', () => ({
   }),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
   getUserEpochs: vi.fn(async () => ({ authEpoch: routeState.user.authEpoch, mfaEpoch: routeState.user.mfaEpoch })),
-  getEffectiveMfaPolicy: vi.fn(async (input: unknown) => {
-    routeState.policyCalls.push(input);
+  getEffectiveMfaPolicy: vi.fn(async (input: unknown, opts?: unknown) => {
+    routeState.policyCalls.push({ input, opts });
     return {
       required: routeState.policyRequired,
       allowedMethods: { totp: true, sms: true, passkey: true },
@@ -240,7 +240,7 @@ vi.mock('./helpers', async () => {
 
 import { inviteRoutes } from './invite';
 import { advanceUserEpochs } from '../../services/authLifecycle';
-import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, writeAuthAudit } from './helpers';
+import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, resolveCurrentUserTokenContext, writeAuthAudit } from './helpers';
 
 const token = 'invite-token';
 const tokenKey = inviteRedisKey(hashInviteToken(token));
@@ -385,9 +385,11 @@ describe('POST /accept-invite session MFA claim (#11854)', () => {
 
     expect(response.status).toBe(200);
     expect(routeState.minted).toEqual([{ mfa: true, mfaSrc: 'policy' }]);
-    // Resolved against the invitee's own session scope, exactly like /login.
+    // Resolved against the invitee's own session scope, exactly like /login,
+    // and fail-closed on a settings-read error (an unassured session at worst).
     expect(routeState.policyCalls).toEqual([{
-      scope: 'organization', userId: routeState.user.id, orgId: 'org-1', partnerId: 'partner-1',
+      input: { scope: 'organization', userId: routeState.user.id, orgId: 'org-1', partnerId: 'partner-1' },
+      opts: { failClosed: true },
     }]);
     const body = await response.json() as { mfaEnrollmentRequired?: boolean };
     expect(body.mfaEnrollmentRequired).toBe(false);
@@ -414,5 +416,23 @@ describe('POST /accept-invite session MFA claim (#11854)', () => {
 
     expect(response.status).toBe(200);
     expect(routeState.minted).toEqual([{ mfa: false, mfaSrc: undefined }]);
+    const body = await response.json() as { user: { mfaEnabled: boolean }; mfaEnrollmentRequired: boolean };
+    expect(body.user.mfaEnabled).toBe(true);
+    expect(body.mfaEnrollmentRequired).toBe(false);
+  });
+
+  it('resolves the policy on the partner axis for a partner-staff invitee', async () => {
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValueOnce({
+      roleId: 'role-p', orgId: null, partnerId: 'partner-1', scope: 'partner',
+    } as never);
+
+    const response = await accept();
+
+    expect(response.status).toBe(200);
+    expect(routeState.policyCalls).toEqual([{
+      input: { scope: 'partner', userId: routeState.user.id, orgId: null, partnerId: 'partner-1' },
+      opts: { failClosed: true },
+    }]);
+    expect(routeState.minted).toEqual([{ mfa: true, mfaSrc: 'policy' }]);
   });
 });

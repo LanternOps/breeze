@@ -407,8 +407,8 @@ The forgot-password and reset-password flows honor SSO enforcement. A partner-sc
 
 Breeze's MFA-gated routes (mutating SSO provider config, PAM checkouts, saving settings, and similar sensitive actions) follow the MFA policy that applies to the user, for SSO and password sign-ins alike:
 
-- **Policy does not require MFA, and the user has no Breeze factor enrolled:** an SSO sign-in satisfies those routes, the same as a password sign-in.
-- **Policy requires MFA, or the user has a Breeze factor enrolled:** an SSO sign-in does not satisfy those routes on its own. A user under a requiring policy who has no factor is sent to enroll one.
+- **Policy does not require MFA, and the user has no Breeze factor enrolled:** an SSO sign-in satisfies those routes, the same as a password sign-in. The one exception is a user created by that sign-in (just-in-time provisioning): their first session does not satisfy those routes, and signing in again fixes it.
+- **Policy requires MFA, or the user has a Breeze factor enrolled:** an SSO sign-in does not satisfy those routes on its own. A user under a requiring policy who has no factor is held to the enrollment flow until they enroll one.
 
 By default, Breeze never accepts an IdP's own multi-factor authentication in place of a Breeze factor. Set `trustsIdpMfa: true` on a provider (organization or partner-owned) to change that for users who have a Breeze factor enrolled: when the id_token from that provider's login includes either of these [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176) Authentication Method Reference values, Breeze treats MFA as satisfied for that sign-in:
 
@@ -420,7 +420,7 @@ No other `amr` value is accepted. Single-factor references such as `hwk`, `swk`,
 Two things to know before turning this on:
 
 - **Your IdP must actually send the claim.** Most identity providers only include `amr` in the id_token when explicitly configured to (an app-registration or claims-mapping setting on the IdP side, not a Breeze setting). Consult your IdP's documentation. If the claim is absent, `trustsIdpMfa` has no effect and Breeze continues to require its own MFA step.
-- **This is fail-safe, not fail-open.** `trustsIdpMfa` defaults to `false` on every provider, and a missing or unrecognized `amr` value is treated as "MFA not satisfied" rather than being assumed. Enabling it is always an explicit, reviewable opt-in per provider.
+- **This is fail-safe, not fail-open.** `trustsIdpMfa` defaults to `false` on every provider, and a missing or unrecognized `amr` value earns no IdP credit rather than being assumed. A user with a Breeze factor enrolled then still needs the IdP assertion to satisfy those routes. Enabling it is always an explicit, reviewable opt-in per provider.
 
 ---
 

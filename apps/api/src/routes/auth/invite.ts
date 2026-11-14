@@ -188,12 +188,17 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
   // does not require MFA, locked to enrollment (mfa:false) when it does, and
   // never assured for an account that already holds a factor it did not prove
   // here (a re-invited account can keep its factors).
+  //
+  // Fail closed on a settings-read error, as registration auto-login does:
+  // this one-time mint used to be unconditionally mfa:false, so a read blip
+  // costs at most an unassured session (the old outcome), never an assured
+  // session the tenant's policy would refuse.
   const policy = await getEffectiveMfaPolicy({
     scope: context.scope,
     userId: user.id,
     orgId: context.orgId,
     partnerId: context.partnerId,
-  });
+  }, { failClosed: true });
   const sessionMfa = resolveNoFactorSessionMfa({
     twoFactorEnabled: ENABLE_2FA,
     userMfaEnabled: user.mfaEnabled === true,

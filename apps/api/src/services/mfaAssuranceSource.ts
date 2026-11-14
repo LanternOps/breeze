@@ -8,8 +8,8 @@
  *   idp    — `mfa: true` rests on a TRUSTED EXTERNAL assertion (CF Access
  *            `trustsMfa`, SSO `trustsIdpMfa` + amr).
  *   policy — `mfa: true` because the effective MFA policy did not require a
- *            factor (password login, registration auto-login, the
- *            no-factor/policy-not-required arm of CF Access).
+ *            factor (password login, registration auto-login, accept-invite,
+ *            and the no-factor/policy-not-required arm of CF Access and SSO).
  *
  * SSO produces `policy` for a user who holds NO Breeze factor under a policy
  * that does not require one (#11889), the same arm the password login takes.

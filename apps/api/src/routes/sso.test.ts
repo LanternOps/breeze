@@ -4036,7 +4036,18 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', mfa: true }),
+        expect.objectContaining({ scope: 'partner', mfa: true, mfaSrc: 'idp' }),
+        expect.any(Object)
+      );
+    });
+
+    // Enrolled tech: only the trusted assertion can assure them (#11889).
+    it('assures an ENROLLED tech from a trusted amr:mfa assertion with mfaSrc idp', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], userMfaEnabled: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: true, mfaSrc: 'idp' }),
         expect.any(Object)
       );
     });
