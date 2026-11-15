@@ -833,18 +833,24 @@
     },
     "code": {
       "heading": "Lesen Sie diesen Code der Person vor, der Sie helfen",
-      "shownOnce": "Kopieren Sie diesen Code jetzt. Breeze speichert nur einen Hash davon; sobald Sie diese Seite verlassen oder neu laden, lässt er sich nicht mehr wiederherstellen — Sie müssten eine neue Sitzung starten.",
+      "visibleWhilePending": "Der Code bleibt hier, bis die Person ihn verwendet oder er abläuft. Er funktioniert nur einmal.",
       "expires": "Läuft ab um {{time}}",
+      "expiresIn": "Läuft ab in {{time}}",
+      "expired": "Dieser Code ist abgelaufen. Erstellen Sie einen neuen Code, um diese Sitzung weiter zu nutzen.",
       "instructions": "Senden Sie den Link, lassen Sie den heruntergeladenen Client ausführen und den Code eingeben.",
       "copyCode": "Code kopieren",
       "copyLink": "Download-Link kopieren",
       "copiedCode": "Code in die Zwischenablage kopiert",
       "copiedLink": "Download-Link in die Zwischenablage kopiert",
-      "copyFailed": "Kopieren in die Zwischenablage nicht möglich"
+      "copyFailed": "Kopieren in die Zwischenablage nicht möglich",
+      "newCode": "Neuer Code",
+      "newCodeSubmitting": "Code wird erstellt…",
+      "newCodeSuccess": "Neuer Code erstellt. Der vorherige Code funktioniert nicht mehr.",
+      "newCodeError": "Neuer Code konnte nicht erstellt werden"
     },
     "detail": {
       "heading": "Sitzungsdetails",
-      "noCode": "Der Einmalcode wurde nur beim Erstellen dieser Sitzung angezeigt und kann nicht erneut abgerufen werden. Starten Sie eine neue Sitzung, wenn die Person einen weiteren Code braucht.",
+      "noCode": "Für diese Sitzung wird kein Code angezeigt. Erstellen Sie einen neuen Code, wenn die Person noch einen braucht.",
       "attribution": "Referenz",
       "close": "Sitzungsdetails schließen"
     },

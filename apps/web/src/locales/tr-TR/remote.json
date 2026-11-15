@@ -833,18 +833,24 @@
     },
     "code": {
       "heading": "Bu kodu yardım ettiğiniz kişiye okuyun",
-      "shownOnce": "Bu kodu şimdi kopyalayın. Breeze yalnızca kodun bir özetini (hash) saklar; bu sayfadan ayrıldığınızda veya sayfayı yenilediğinizde kod kurtarılamaz — yeni bir oturum başlatmanız gerekir.",
+      "visibleWhilePending": "Kod, kişi kullanana veya süresi dolana kadar burada kalır. Yalnızca bir kez çalışır.",
       "expires": "Süresi {{time}} tarihinde doluyor",
+      "expiresIn": "Süresi {{time}} içinde doluyor",
+      "expired": "Bu kodun süresi doldu. Bu oturumu kullanmaya devam etmek için yeni bir kod oluşturun.",
       "instructions": "Onlara bağlantıyı gönderin, ardından indirilen istemciyi çalıştırıp kodu yazmalarını sağlayın.",
       "copyCode": "Kodu kopyala",
       "copyLink": "İndirme bağlantısını kopyala",
       "copiedCode": "Kod panoya kopyalandı",
       "copiedLink": "İndirme bağlantısı panoya kopyalandı",
-      "copyFailed": "Panoya kopyalanamadı"
+      "copyFailed": "Panoya kopyalanamadı",
+      "newCode": "Yeni kod",
+      "newCodeSubmitting": "Kod oluşturuluyor…",
+      "newCodeSuccess": "Yeni kod oluşturuldu. Önceki kod artık çalışmıyor.",
+      "newCodeError": "Yeni kod oluşturulamadı"
     },
     "detail": {
       "heading": "Oturum ayrıntısı",
-      "noCode": "Tek kullanımlık kod yalnızca bu oturum oluşturulduğunda gösterildi ve geri alınamıyor. Kişinin başka bir koda ihtiyacı varsa yeni bir oturum başlatın.",
+      "noCode": "Bu oturum için kod gösterilmiyor. Kişinin hâlâ koda ihtiyacı varsa yeni bir kod oluşturun.",
       "attribution": "Referans",
       "close": "Oturum ayrıntısını kapat"
     },

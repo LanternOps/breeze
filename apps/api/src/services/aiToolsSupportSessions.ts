@@ -74,7 +74,10 @@ async function loadSessions(auth: AuthContext, where: SQL | undefined, limit: nu
   return rows.map((r) => r.session);
 }
 
-/** Same derivation as the route's toView, as an explicit projection (no code hash, no claiming IP). */
+/**
+ * Same status/online derivation as the route's toView, as an explicit projection: no code hash, no
+ * sealed code, no `code`/`landingUrl` (a live join code must not reach model context), no claiming IP.
+ */
 async function views(auth: AuthContext, sessions: SessionRow[]) {
   const probeable = sessions.filter((s) => s.deviceId && (s.status === 'ready' || s.status === 'claimed'));
   const deviceIds = [...new Set(probeable.map((s) => s.deviceId!))];
