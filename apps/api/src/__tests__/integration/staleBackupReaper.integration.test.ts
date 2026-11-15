@@ -1,6 +1,7 @@
 import './setup';
 
-import { beforeEach, expect, it } from 'vitest';
+import net from 'node:net';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -337,3 +338,167 @@ runDb('a read-only database reaps nothing, and the first cycle after it does not
   expect(reaped.status).toBe('failed');
   expect(reaped.errorLog ?? '').toContain(`no agent signal since ${outageStart.toISOString()}`);
 });
+
+/**
+ * A TCP forwarder to the test Postgres that can be taken down (every proxied
+ * connection dropped, new ones refused) and brought back on the same port:
+ * the database becoming unreachable from the API process, and recovering.
+ */
+async function startOutageSwitch(target: { host: string; port: number }) {
+  const sockets = new Set<net.Socket>();
+  let server: net.Server | null = null;
+  let port = 0;
+  const up = () => new Promise<void>((resolve, reject) => {
+    const next = net.createServer((client) => {
+      const upstream = net.connect(target.port, target.host);
+      sockets.add(client);
+      sockets.add(upstream);
+      client.pipe(upstream);
+      upstream.pipe(client);
+      const teardown = () => {
+        client.destroy();
+        upstream.destroy();
+        sockets.delete(client);
+        sockets.delete(upstream);
+      };
+      client.on('close', teardown);
+      upstream.on('close', teardown);
+      client.on('error', () => {});
+      upstream.on('error', () => {});
+    });
+    next.once('error', reject);
+    next.listen(port, '127.0.0.1', () => {
+      port = (next.address() as net.AddressInfo).port;
+      server = next;
+      resolve();
+    });
+  });
+  const down = async () => {
+    for (const socket of sockets) socket.destroy();
+    sockets.clear();
+    const closing = server;
+    server = null;
+    if (closing) await new Promise<void>((resolve) => closing.close(() => resolve()));
+  };
+  await up();
+  return {
+    urlFor(url: string): string {
+      const parsed = new URL(url);
+      parsed.hostname = '127.0.0.1';
+      parsed.port = String(port);
+      return parsed.toString();
+    },
+    up,
+    down,
+  };
+}
+
+// #11766 review: with the database unreachable, the reaper's system context
+// (pool slot, BEGIN, RLS setup queries) fails before reapStaleBackupJobs runs,
+// so the pass's own catch never closes the window. The cycle must. Drives the
+// whole reaper cycle through a fresh db module whose pool reaches Postgres
+// through a switch this test can turn off.
+runDb('database unreachable: a cycle whose transaction setup fails closes the window, and the cycle after recovery spares a job silent since before the outage', async () => {
+  const appUrl = process.env.DATABASE_URL_APP;
+  expect(appUrl, 'DATABASE_URL_APP').toBeTruthy();
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // Silent for 20 minutes: past the 15-minute stall limit and the 10-minute
+  // offline grace, so only the outage discount keeps it alive.
+  const lastSignal = new Date(Date.now() - 20 * 60 * 1000);
+
+  const jobId = await withSystemDbAccessContext(async () => {
+    const [partner] = await db
+      .insert(partners)
+      .values({ name: `Unreach Partner ${unique}`, slug: `unreach-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active' })
+      .returning({ id: partners.id });
+    const [org] = await db
+      .insert(organizations)
+      .values({ currencyCode: 'USD', partnerId: partner!.id, name: `Unreach Org ${unique}`, slug: `unreach-org-${unique}`, type: 'customer', status: 'active' })
+      .returning({ id: organizations.id });
+    const [site] = await db.insert(sites).values({ orgId: org!.id, name: `Unreach Site ${unique}` }).returning({ id: sites.id });
+    const [device] = await db
+      .insert(devices)
+      .values({
+        orgId: org!.id,
+        siteId: site!.id,
+        agentId: `unreach-agent-${unique}`,
+        hostname: `unreach-host-${unique}`,
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+        status: 'offline',
+      })
+      .returning({ id: devices.id });
+    const [config] = await db
+      .insert(backupConfigs)
+      .values({ orgId: org!.id, name: `Unreach Config ${unique}`, type: 'file', provider: 'local', providerConfig: {} })
+      .returning({ id: backupConfigs.id });
+    const [job] = await db
+      .insert(backupJobs)
+      .values({
+        orgId: org!.id,
+        configId: config!.id,
+        deviceId: device!.id,
+        status: 'running',
+        startedAt: new Date(lastSignal.getTime() - 30 * 60 * 1000),
+        lastProgressAt: lastSignal,
+        lastKeepaliveAt: lastSignal,
+      })
+      .returning({ id: backupJobs.id });
+    return job!.id;
+  });
+
+  // Read through this file's own pool, which never goes through the switch.
+  const status = async () => withSystemDbAccessContext(async () => {
+    const [row] = await db.select().from(backupJobs).where(eq(backupJobs.id, jobId));
+    return row!;
+  });
+
+  const target = new URL(appUrl!);
+  const outage = await startOutageSwitch({ host: target.hostname, port: Number(target.port || 5432) });
+  const savedAppUrl = process.env.DATABASE_URL_APP;
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  let fresh: typeof import('../../db') | null = null;
+  try {
+    vi.resetModules();
+    process.env.DATABASE_URL_APP = outage.urlFor(appUrl!);
+    fresh = await import('../../db');
+    const reaper = await import('../../jobs/staleCommandReaper');
+    const recording = await import('../../jobs/backupSignalRecording');
+    // Recording since the epoch: without the outage handling nothing would
+    // discount the 20 minutes of silence.
+    recording.resetSignalRecordingWindowForTests(0);
+    // The pool holds a live connection when the database drops away.
+    await fresh.withSystemDbAccessContext(() => fresh!.db.execute(sql`select 1`));
+
+    await outage.down();
+    await expect(reaper.runStaleCommandReaperCycle()).rejects.toThrow('All reaper domains failed');
+    // The backup domain failed before its pass ran (in the transaction setup).
+    const backupFailure = errorSpy.mock.calls.find(([m]) => String(m).includes('Error reaping backupJobs'));
+    expect(backupFailure, 'backupJobs domain error').toBeDefined();
+    expect(recording.signalRecordingWindowStart()).toBeNull();
+    expect((await status()).status).toBe('running');
+
+    // First cycle after recovery: the window opens now.
+    await outage.up();
+    const recovered = await reaper.runStaleCommandReaperCycle();
+    expect(recovered.backupJobs).toBeGreaterThanOrEqual(0);
+    expect(recording.signalRecordingWindowStart()).not.toBeNull();
+    expect((await status()).status).toBe('running');
+
+    // Control: once a full stall window has been recorded, the same cycle path
+    // does fail the job, so the spare above was the outage discount at work.
+    recording.resetSignalRecordingWindowForTests(Date.now() - 16 * 60 * 1000);
+    await reaper.runStaleCommandReaperCycle();
+    expect((await status()).status).toBe('failed');
+  } finally {
+    errorSpy.mockRestore();
+    vi.restoreAllMocks();
+    if (fresh) await Promise.race([fresh.closeDb(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
+    await outage.down();
+    process.env.DATABASE_URL_APP = savedAppUrl;
+    vi.resetModules();
+  }
+}, 60_000);

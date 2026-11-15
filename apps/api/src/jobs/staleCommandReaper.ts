@@ -41,11 +41,10 @@ import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
 import { catchUpExpiryReason } from './backupCatchUp';
 import {
-  isSignalRecordingFailure,
   noteDatabaseReadOnly,
   noteReadOnlyProbeUnreadable,
+  noteSignalRecordingFailure,
   noteSignalRecordingHealthy,
-  noteSignalRecordingImpaired,
 } from './backupSignalRecording';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
@@ -1654,8 +1653,10 @@ export async function reapStaleBackupJobs(): Promise<number> {
     // disk) means keepalive writes were failing too, so silence up to here is
     // not counted. Any other error is a reaper bug: it still fails the domain
     // (logged and reported by runStaleCommandReaperCycle) but must not hold
-    // every backup reap behind a window that never ages.
-    if (isSignalRecordingFailure(err)) noteSignalRecordingImpaired();
+    // every backup reap behind a window that never ages. When the database
+    // context cannot even be opened, this catch never runs: the cycle notes
+    // that case (runStaleCommandReaperCycle).
+    noteSignalRecordingFailure(err);
     throw err;
   }
 }
@@ -1959,9 +1960,9 @@ export const REAPER_DOMAINS = [
 /**
  * One reaper pass over every domain. Shared by the BullMQ worker and the
  * Redis-less fallback below, so the two can never reap different things.
- * Throws only when EVERY domain failed.
+ * Throws only when EVERY domain failed. Exported for tests.
  */
-async function runStaleCommandReaperCycle(): Promise<Record<string, number>> {
+export async function runStaleCommandReaperCycle(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
   const domains = REAPER_DOMAINS;
@@ -1972,6 +1973,13 @@ async function runStaleCommandReaperCycle(): Promise<Record<string, number>> {
     try {
       results[name] = await runWithSystemDbAccess(fn);
     } catch (err) {
+      // #11766: when the database is unreachable, the system context (pool
+      // slot, BEGIN, RLS setup queries) fails before reapStaleBackupJobs runs,
+      // so its own catch never sees the error. Close the signal-recording
+      // window here, or the first cycle after a long outage fails every
+      // running backup for silence the server could not record. An error the
+      // backup pass already noted is counted once.
+      if (name === 'backupJobs') noteSignalRecordingFailure(err);
       console.error(`[StaleCommandReaper] Error reaping ${name}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
       results[name] = -1;
