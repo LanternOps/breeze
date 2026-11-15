@@ -181,16 +181,18 @@ it starts the stack, copies it to the root of the `binaries` volume, replacing
 the previous release's. `guided-setup.sh --upgrade` does the same for the target
 release. It only copies files that passed verification. Each file goes into the
 volume over the standard input of a one-shot `binaries-init` container, so the
-copy mounts nothing from the host. It works on SELinux hosts, with snap Docker,
-from a folder Docker Desktop does not share, and against a remote
-`DOCKER_HOST`.
+copy adds no host mount of its own. With the default named `binaries` volume it
+works on SELinux hosts, with snap Docker, from a folder Docker Desktop does not
+share, and against a remote `DOCKER_HOST`. With the local `./data` storage
+layout, Docker must still be able to mount `./data/binaries`, as it must for
+every start of the stack.
 
 If setup cannot verify a pair for the release, or the copy fails, it removes any
 older pair from the volume, because an older release's manifest next to newer
 binaries makes local registration refuse them. Setup logs each pair it removes
-or replaces in the volume. It warns when that pair is not one it staged, for
-example a pair copied in by hand. When the copy fails, setup prints the commands
-to run.
+from or replaces in the volume, unless it is already this release's pair. It
+warns when that pair is not one it staged, for example a pair copied in by hand.
+When the copy fails, setup prints the commands to run.
 
 For a server-only release (one that reuses an earlier release's binaries image),
 setup places the pair of the release whose binaries it carries. It verifies that
@@ -233,10 +235,10 @@ grep -E '"(releaseKind|binariesRelease)"' release-manifest/release-artifact-mani
 # Copy both files to the volume root through the binaries-init service. Each
 # file goes over standard input, so nothing on the host is mounted.
 docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
-  -c 'set -eu; f=/target/release-artifact-manifest.json.ed25519; t=/target/.release-artifact-manifest.json.ed25519.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; chmod 0644 "$t"; if [ -e "$f" ]; then echo "breeze-replaced $(sha256sum "$f" | cut -d" " -f1)"; fi; mv -f "$t" "$f"' \
+  -c 'set -eu; f=/target/release-artifact-manifest.json.ed25519; t=/target/.release-artifact-manifest.json.ed25519.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; [ ! -d "$f" ]; chmod 0644 "$t"; if [ -e "$f" ]; then h=$(sha256sum < "$f") || h=unreadable; echo "breeze-replaced ${h%% *}"; fi; mv -f "$t" "$f"' \
   < release-manifest/release-artifact-manifest.json.ed25519
 docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
-  -c 'set -eu; f=/target/release-artifact-manifest.json; t=/target/.release-artifact-manifest.json.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; chmod 0644 "$t"; if [ -e "$f" ]; then echo "breeze-replaced $(sha256sum "$f" | cut -d" " -f1)"; fi; mv -f "$t" "$f"' \
+  -c 'set -eu; f=/target/release-artifact-manifest.json; t=/target/.release-artifact-manifest.json.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; [ ! -d "$f" ]; chmod 0644 "$t"; if [ -e "$f" ]; then h=$(sha256sum < "$f") || h=unreadable; echo "breeze-replaced ${h%% *}"; fi; mv -f "$t" "$f"' \
   < release-manifest/release-artifact-manifest.json
 
 # The API reads the pair at startup.
@@ -251,11 +253,12 @@ describes the volume.
 
 If either copy command fails, remove the pair from the volume so the new
 binaries do not sit beside an older release's manifest, then fix the cause and
-copy again:
+copy again. The command prints a `breeze-removed …` line when it removed
+something; that is expected output, not an error.
 
 ```bash
 docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
-  -c 'set -eu; m=/target/release-artifact-manifest.json; s=$m.ed25519; if [ -e "$m" ]; then echo "breeze-removed $(sha256sum "$m" | cut -d" " -f1)"; elif [ -e "$s" ]; then echo breeze-removed-signature; fi; rm -f "$m" "$s" /target/.release-artifact-manifest.json.tmp /target/.release-artifact-manifest.json.ed25519.tmp'
+  -c 'set -eu; m=/target/release-artifact-manifest.json; s=$m.ed25519; if [ -e "$m" ]; then h=$(sha256sum < "$m") || h=unreadable; echo "breeze-removed ${h%% *}"; elif [ -e "$s" ]; then echo breeze-removed-signature; fi; rm -f "$m" "$s" /target/.release-artifact-manifest.json.tmp /target/.release-artifact-manifest.json.ed25519.tmp'
 ```
 
 If the volume is not managed by Compose, copy both files into the directory that

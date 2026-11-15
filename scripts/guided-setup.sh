@@ -45,8 +45,8 @@ RELEASE_VERIFY_TMP=""
 # A verified release manifest pair waiting for .env to pin its release (#11870).
 PENDING_MANIFEST_PAIR_DIR=""
 # SHA-256 of the manifest this script kept before this run replaced or removed
-# it, so a pair found in the binaries volume can be told apart from one this
-# script did not stage.
+# it ("unreadable" when it could not be hashed), so a pair found in the binaries
+# volume can be told apart from one this script did not stage.
 PREVIOUS_KEPT_MANIFEST_SHA256=""
 REVERSE_PROXY_MODE="caddy"
 REVERSE_PROXY_LABEL="Packaged Caddy"
@@ -3799,6 +3799,7 @@ commit_release_manifest_pair() {
 
   if [[ -z "${PREVIOUS_KEPT_MANIFEST_SHA256}" && -f "${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json" ]]; then
     PREVIOUS_KEPT_MANIFEST_SHA256="$(file_sha256 "${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json")"
+    PREVIOUS_KEPT_MANIFEST_SHA256="${PREVIOUS_KEPT_MANIFEST_SHA256:-unreadable}"
   fi
   if [[ -z "${PENDING_MANIFEST_PAIR_DIR}" ]]; then
     if [[ -e "${RELEASE_MANIFEST_PAIR_DIR}" ]]; then
@@ -3808,8 +3809,8 @@ commit_release_manifest_pair() {
     return 0
   fi
 
-  # Public, signed files: world-readable, so the copy step can read them under
-  # a user-namespace-remapped Docker daemon as well.
+  # Public, signed files: world-readable in a 0755 directory, so any operator
+  # account can run the printed copy commands.
   staged="$(mktemp -d "${RELEASE_MANIFEST_PAIR_DIR}.tmp.XXXXXX")" \
     || fail "Failed to create a staging directory next to ${RELEASE_MANIFEST_PAIR_DIR}."
   if ! cp "${PENDING_MANIFEST_PAIR_DIR}/release-artifact-manifest.json" \
@@ -3826,35 +3827,44 @@ commit_release_manifest_pair() {
   log "Kept the verified release manifest pair in ${RELEASE_MANIFEST_PAIR_DIR}."
 }
 
-# Release manifest pair files in copy order. Each file goes in by rename, so
-# during the copy the API sees at worst a new signature beside the old manifest,
-# which fails its signature check (refused, never trusted).
+# Release manifest pair files in copy order: signature first, so an interrupted
+# copy never leaves a new manifest beside an old signature. Each file goes in by
+# rename. The API reads the pair only at boot; one booting mid-copy sees either
+# a missing manifest (it falls back to the per-deployment key) or a new
+# signature beside the old manifest, which fails its signature check. Neither is
+# trusted as the official pair.
 RELEASE_MANIFEST_PAIR_FILES=(release-artifact-manifest.json.ed25519 release-artifact-manifest.json)
 RELEASE_MANIFEST_PAIR_DOCS_URL="https://docs.breezermm.com/deploy/binaries/#release-manifest-pair"
 
 # The scripts below run inside the binaries image (alpine sh) in a one-shot
-# binaries-init container, whose /target is the binaries volume. No host path
-# is mounted: each file arrives on stdin, so the copy also works where Docker
-# cannot bind-mount a host path (SELinux labels, snap Docker, a folder Docker
-# Desktop does not share, a remote DOCKER_HOST). None contains a single quote,
-# so each can be printed inside one for an operator to run.
+# binaries-init container, whose /target is the binaries volume as the compose
+# file mounts it. The copy adds no host mount of its own: each file arrives on
+# stdin, so with the named binaries volume it works where Docker cannot
+# bind-mount a host path (SELinux labels, snap Docker, a folder Docker Desktop
+# does not share, a remote DOCKER_HOST). The ./data/binaries layout still needs
+# Docker to mount that directory, as every binaries-init run does. None of the
+# scripts contains a single quote, so each can be printed inside one for an
+# operator to run.
 
 # Prints the script that copies stdin to /target/NAME: written to a temp file in
-# the volume, refused when empty, made readable by the API user, then renamed
-# into place, so the API never reads a half-written file. Before the rename it
-# prints "breeze-replaced <sha256>" when it replaces a file.
+# the volume, refused when empty or when a directory sits at /target/NAME, made
+# readable by the API user, then renamed into place, so the API never reads a
+# half-written file. Before the rename it prints "breeze-replaced <sha256>" (or
+# "breeze-replaced unreadable") when it replaces a file.
 release_manifest_pair_file_place_script() {
   local name="$1"
   # shellcheck disable=SC2016 # expands inside the container, not here
-  printf 'set -eu; f=/target/%s; t=/target/.%s.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; chmod 0644 "$t"; if [ -e "$f" ]; then echo "breeze-replaced $(sha256sum "$f" | cut -d" " -f1)"; fi; mv -f "$t" "$f"' \
+  printf 'set -eu; f=/target/%s; t=/target/.%s.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; [ ! -d "$f" ]; chmod 0644 "$t"; if [ -e "$f" ]; then h=$(sha256sum < "$f") || h=unreadable; echo "breeze-replaced ${h%%%% *}"; fi; mv -f "$t" "$f"' \
     "${name}" "${name}"
 }
 
 # Removes any pair (and any temp file an interrupted copy left) from the volume.
-# Prints "breeze-removed <sha256 of the manifest>", or
-# "breeze-removed-signature" when only a signature was there.
+# Prints "breeze-removed <sha256 of the manifest>" ("breeze-removed unreadable"
+# when it cannot be hashed), or "breeze-removed-signature" when only a
+# signature was there. A failed removal exits non-zero, and the host then
+# ignores what it printed.
 # shellcheck disable=SC2016 # expands inside the container, not here
-RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT='set -eu; m=/target/release-artifact-manifest.json; s=$m.ed25519; if [ -e "$m" ]; then echo "breeze-removed $(sha256sum "$m" | cut -d" " -f1)"; elif [ -e "$s" ]; then echo breeze-removed-signature; fi; rm -f "$m" "$s" /target/.release-artifact-manifest.json.tmp /target/.release-artifact-manifest.json.ed25519.tmp'
+RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT='set -eu; m=/target/release-artifact-manifest.json; s=$m.ed25519; if [ -e "$m" ]; then h=$(sha256sum < "$m") || h=unreadable; echo "breeze-removed ${h%% *}"; elif [ -e "$s" ]; then echo breeze-removed-signature; fi; rm -f "$m" "$s" /target/.release-artifact-manifest.json.tmp /target/.release-artifact-manifest.json.ed25519.tmp'
 
 release_manifest_pair_kept() {
   [[ -f "${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json" \
@@ -3878,7 +3888,8 @@ run_in_binaries_volume() {
   BINARIES_VOLUME_REPORT=""
   if dry_run_enabled; then
     compose run --rm --no-deps -T --entrypoint sh binaries-init -c "${script}"
-    return
+    [[ "${input}" == /dev/null ]] || dry_run_log "  (with stdin from ${input})"
+    return 0
   fi
   if ! output="$(compose run --rm --no-deps -T --entrypoint sh binaries-init -c "${script}" < "${input}")"; then
     status=1
@@ -3888,15 +3899,24 @@ run_in_binaries_volume() {
   return "${status}"
 }
 
-# Prints "current" when a manifest with SHA-256 HASH is the one kept for this
-# release, "previous" when it is the one this script kept before this run, and
-# "foreign" otherwise (placed by hand or by another tool).
+# Classifies a manifest found in the volume by its SHA-256 HASH. "Staged" means
+# byte-identical to a manifest this script kept: "current" is the one kept for
+# this release, "previous" the one it kept before this run. "unknown" means a
+# hash needed for the comparison could not be computed. "foreign" is anything
+# else (placed by hand or by another tool).
 release_manifest_pair_origin() {
-  local hash="$1" kept="${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json"
-  if [[ -n "${hash}" && -f "${kept}" && "${hash}" == "$(file_sha256 "${kept}")" ]]; then
+  local hash="$1" kept="${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json" kept_hash=""
+  if [[ -z "${hash}" || "${hash}" == "unreadable" ]]; then
+    printf 'unknown'
+    return
+  fi
+  [[ -f "${kept}" ]] && kept_hash="$(file_sha256 "${kept}")"
+  if [[ -n "${kept_hash}" && "${hash}" == "${kept_hash}" ]]; then
     printf 'current'
-  elif [[ -n "${hash}" && "${hash}" == "${PREVIOUS_KEPT_MANIFEST_SHA256}" ]]; then
+  elif [[ "${hash}" == "${PREVIOUS_KEPT_MANIFEST_SHA256}" ]]; then
     printf 'previous'
+  elif [[ ( -f "${kept}" && -z "${kept_hash}" ) || "${PREVIOUS_KEPT_MANIFEST_SHA256}" == "unreadable" ]]; then
+    printf 'unknown'
   else
     printf 'foreign'
   fi
@@ -3917,7 +3937,8 @@ place_kept_release_manifest_pair() {
   case "$(release_manifest_pair_origin "${replaced}")" in
     current) ;;
     previous) log "Replaced the release manifest pair this script placed for the previous release in the binaries volume." ;;
-    *) warn "Replaced a release manifest pair in the binaries volume that this script did not stage (it matches no pair kept in ${RELEASE_MANIFEST_PAIR_DIR}); it did not describe these binaries." ;;
+    unknown) warn "Replaced a release manifest pair in the binaries volume that this script could not tell apart from the pairs it kept (a manifest could not be hashed)." ;;
+    *) warn "Replaced a release manifest pair in the binaries volume that this script did not stage (it matches neither this release's pair nor the one this script kept before)." ;;
   esac
   return 0
 }
@@ -3936,16 +3957,18 @@ remove_release_manifest_pair_from_binaries_volume() {
       case "$(release_manifest_pair_origin "${removed#breeze-removed }")" in
         current) log "Removed the release manifest pair this script placed for this release from the binaries volume." ;;
         previous) log "Removed the release manifest pair this script placed for the previous release from the binaries volume; it does not describe these binaries." ;;
-        *) warn "Removed a release manifest pair from the binaries volume that this script did not stage (it matches no pair kept in ${RELEASE_MANIFEST_PAIR_DIR}); it does not describe these binaries. To use BINARY_SOURCE=local, place this release's pair: see ${RELEASE_MANIFEST_PAIR_DOCS_URL}" ;;
+        unknown) warn "Removed a release manifest pair from the binaries volume that this script could not tell apart from the pairs it kept (a manifest could not be hashed). To use BINARY_SOURCE=local, place this release's pair: see ${RELEASE_MANIFEST_PAIR_DOCS_URL}" ;;
+        *) warn "Removed a release manifest pair from the binaries volume that this script did not stage (it matches neither this release's pair nor the one this script kept before). To use BINARY_SOURCE=local, place this release's pair: see ${RELEASE_MANIFEST_PAIR_DOCS_URL}" ;;
       esac
       ;;
   esac
   return 0
 }
 
-# Copies the kept pair to the root of the binaries volume, replacing the
-# previous release's, through the binaries-init service so the named volume and
-# the ./data/binaries bind mount are both handled. With no kept pair, or when
+# Copies the kept pair to the root of the binaries volume over stdin, replacing
+# the previous release's, through the binaries-init service, so whichever
+# binaries mount the compose file declares (named volume or ./data/binaries) is
+# the one written. With no kept pair, or when
 # the copy fails, removes any pair there: an old release's manifest next to new
 # binaries makes local registration refuse them. A failure only warns: the
 # default BINARY_SOURCE=github never reads the volume.

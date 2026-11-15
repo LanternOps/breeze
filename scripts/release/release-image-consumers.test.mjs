@@ -325,10 +325,12 @@ const PAIR = ['release-artifact-manifest.json', 'release-artifact-manifest.json.
 // A fake `docker` whose `compose … run … binaries-init -c SCRIPT` executes
 // SCRIPT against a directory standing in for the binaries volume (/target),
 // with the run's stdin passed through, so a test sees what actually lands in
-// the volume. Like an SELinux host, snap Docker, an unshared Docker Desktop
-// folder or a remote DOCKER_HOST, it cannot bind-mount a host path: a run with
-// -v fails. failRun: 'all' fails every run, 'copy' every run that copies a file
-// in from stdin, 'manifest' only the run that copies the manifest itself.
+// the volume. It models a named binaries volume on a host where Docker cannot
+// bind-mount an extra host path (SELinux labels, snap Docker, an unshared
+// Docker Desktop folder, a remote DOCKER_HOST): a run with -v fails. failRun: 'all' fails every run, 'copy' every run that copies a file
+// in from stdin, 'manifest' only the run that copies the manifest itself (told
+// apart from the signature's by the ".ed25519" in its script). Scripts run under
+// umask 077, so a file the script does not chmod is not world-readable.
 function fakeDockerWithVolume(workDir, { failRun = '' } = {}) {
   const bin = join(workDir, 'fake-bin');
   mkdirSync(bin);
@@ -353,6 +355,7 @@ if [[ "$1" == compose && " $* " == *" run "* ]]; then
     manifest) [[ "$script" == *"cat >"* && "$script" != *ed25519* ]] && exit 1 ;;
   esac
   script="\${script//\\/target/${volume}}"
+  umask 077
   sh -c "\${script}"
   exit $?
 fi
@@ -470,7 +473,7 @@ test('guided --upgrade --no-up keeps the verified pair and prints how to place i
 // its own manifest lists no binaries. The pair that describes what is in the
 // volume is the carried release's, verified against the same key and bound to
 // the binaries digest the server-only manifest pinned.
-function serverOnlyFixture({ tamperBase = false, baseBinariesDigest, baseServerOnly = false } = {}) {
+function serverOnlyFixture({ tamperBase = false, baseBinariesDigest, baseServerOnly = false, baseOmitsReleaseKind = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'release-consumer-server-only-'));
   scratch.push(root);
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -498,8 +501,8 @@ function serverOnlyFixture({ tamperBase = false, baseBinariesDigest, baseServerO
     }
     : {
       assets: [{ name: 'breeze-agent.msi', sha256: 'b'.repeat(64), size: 1 }],
-      images: baseImages, release: 'v1.2.3', releaseKind: 'full', repository: 'LanternOps/breeze',
-      schemaVersion: 1, sourceCommit: 'b'.repeat(40),
+      images: baseImages, release: 'v1.2.3', ...(baseOmitsReleaseKind ? {} : { releaseKind: 'full' }),
+      repository: 'LanternOps/breeze', schemaVersion: 1, sourceCommit: 'b'.repeat(40),
     });
   const serverImages = images.map((image) => (image.name === 'binaries' ? image : { ...image, digest: digest('8') }));
   const directory = write('v1.2.4', {
@@ -809,4 +812,84 @@ test('the manual docs run the same stdin copy and remove steps guided setup runs
     assert.ok(docs.includes(`-c '${script}'`), `binaries.mdx runs: ${script}`);
   }
   assert.doesNotMatch(docs, /\/release-manifest:ro/u, 'the documented copy needs no host bind mount');
+});
+
+test('guided --upgrade logs nothing extra when the volume already holds this release pair', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir);
+  mkdirSync(join(workDir, 'release-manifest'));
+  for (const name of PAIR) {
+    writeFileSync(join(workDir, 'release-manifest', name), readFileSync(join(fixture.directory, name)));
+    writeFileSync(join(docker.volume, name), readFileSync(join(fixture.directory, name)));
+  }
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readPair(docker.volume), readPair(fixture.directory));
+  assert.doesNotMatch(result.stdout + result.stderr, /Replaced|Removed|did not stage|could not tell/u);
+});
+
+test('guided --upgrade warns when it replaces a manifest it cannot read', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir);
+  stagePair(docker.volume, 'unreadable');
+  chmodSync(join(docker.volume, PAIR[0]), 0o000);
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readPair(docker.volume), readPair(fixture.directory), 'the unreadable manifest is still replaced');
+  assert.match(result.stderr, /Replaced a release manifest pair in the binaries volume that this script could not tell/u);
+});
+
+test('guided --upgrade fails the copy loudly when a directory sits where the manifest goes', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir);
+  mkdirSync(join(docker.volume, PAIR[0]));
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.doesNotMatch(result.stdout, /Placed the verified release manifest pair/u);
+  assert.match(result.stderr, /Could not copy the release manifest pair/u);
+  assert.match(result.stderr, /Could not remove the release manifest pair from the binaries volume either/u);
+  assert.equal(existsSync(join(docker.volume, PAIR[0], `.${PAIR[0]}.tmp`)), false, 'nothing was moved into the directory');
+});
+
+test('the remove step also clears temp files an interrupted copy left in the volume', () => {
+  const fixture = serverOnlyFixture({ tamperBase: true });
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.3']);
+  const docker = fakeDockerWithVolume(workDir);
+  for (const name of PAIR) writeFileSync(join(docker.volume, `.${name}.tmp`), 'partial\n');
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.4', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readdirSync(docker.volume), []);
+});
+
+test('guided --upgrade to a server-only release places a carried pair whose manifest has no releaseKind', () => {
+  // Manifests written before releaseKind existed are full releases.
+  const fixture = serverOnlyFixture({ baseOmitsReleaseKind: true });
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.3']);
+  const docker = fakeDockerWithVolume(workDir);
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.4', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readPair(docker.volume), readPair(fixture.baseDirectory));
+});
+
+test('the pull-failure message chains the stdin copy commands into one runnable line', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDocker(workDir, { failPull: true });
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.notEqual(result.status, 0);
+  const line = result.stderr.split('\n').find((l) => l.includes('Fix registry access, then run:'));
+  assert.ok(line, result.stderr);
+  assert.match(
+    line,
+    / pull && \S.* binaries-init -c '[^']+' < \S+\/release-artifact-manifest\.json\.ed25519 && \S.* binaries-init -c '[^']+' < \S+\/release-artifact-manifest\.json && \S.* up -d$/u,
+  );
 });
