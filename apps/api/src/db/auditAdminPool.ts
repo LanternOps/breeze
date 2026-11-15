@@ -73,6 +73,36 @@ export function getAuditAdminDb(): AuditAdminDb {
   return cachedDb;
 }
 
+export type AuditAdminTx = Parameters<Parameters<AuditAdminDb['transaction']>[0]>[0];
+
+/**
+ * Run `fn` in one transaction on the dedicated audit-admin connection, armed
+ * the way every caller needs it: system scope (the pool sits outside the
+ * request db-context, and breeze_audit_admin has no BYPASSRLS, so without it
+ * the forced RLS policies would filter every row out and a DELETE would
+ * silently match nothing) plus the `breeze.allow_audit_retention` trigger
+ * bypass. No SET ROLE: the connection already logs in as the role.
+ *
+ * It commits on its own, independently of any transaction the caller holds.
+ * Callers that run it from inside one must not wait on a lock that
+ * transaction holds.
+ *
+ * Callers gate on `hasDedicatedAuditAdminPool()` first.
+ */
+export async function withAuditAdminTransaction<T>(
+  fn: (tx: AuditAdminTx) => Promise<T>,
+): Promise<T> {
+  return getAuditAdminDb().transaction(async (tx) => {
+    await tx.execute(sql`select set_config('breeze.scope', 'system', true)`);
+    await tx.execute(sql`select set_config('breeze.org_id', '', true)`);
+    await tx.execute(sql`select set_config('breeze.accessible_org_ids', '*', true)`);
+    await tx.execute(sql`select set_config('breeze.accessible_partner_ids', '*', true)`);
+    await tx.execute(sql`select set_config('breeze.user_id', '', true)`);
+    await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
+    return fn(tx);
+  });
+}
+
 /**
  * One-time startup diagnostic, called from the worker initializer. Logs a
  * loud warning when running in the insecure legacy shared-credential mode

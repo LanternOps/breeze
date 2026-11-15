@@ -298,6 +298,15 @@ describe('device commands routes', () => {
     it.each(cases)(
       'queues %s only through the execute gate and dispatcher',
       async (type, payload) => {
+        const command = { id: 'cmd-1', deviceId, type, status: 'pending', createdAt: new Date() };
+        const deliver = vi.fn(async () => ({ ok: true as const, command, delivery: 'delivered', deliverBy: new Date() }));
+        dispatchDeviceCommandMock.mockImplementationOnce(async () => ({
+          ok: true,
+          command,
+          delivery: 'queued_live',
+          deliverBy: new Date(),
+          deliver,
+        }));
         vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
           id: deviceId,
           orgId: 'org-123',
@@ -314,7 +323,9 @@ describe('device commands routes', () => {
           type,
           payload,
           userId: 'user-123',
+          deferDelivery: true,
         });
+        expect(deliver).toHaveBeenCalledOnce();
         const { writeRouteAudit } = await import('../../services/auditEvents');
         expect(writeRouteAudit).toHaveBeenCalledWith(
           expect.anything(),
@@ -325,6 +336,59 @@ describe('device commands routes', () => {
         );
       },
     );
+    it.each(['delivered', 'cancelled', 'queued_live', 'indeterminate'] as const)(
+      'returns and audits the real %s outcome after the transaction commits',
+      async (delivery) => {
+        const events: string[] = [];
+        const command = { id: 'cmd-1', deviceId, type: 'time_resync', status: 'pending', createdAt: new Date() };
+        const deliverBy = new Date();
+        const cancelReason = delivery === 'cancelled' ? 'requester_inactive' : undefined;
+        const deliver = vi.fn(async () => {
+          events.push('deliver');
+          return { ok: true as const, command, delivery, deliverBy, ...(cancelReason ? { cancelReason } : {}) };
+        });
+        vi.mocked(withDbAccessContext).mockImplementationOnce(async (_ctx, fn) => {
+          events.push('begin');
+          const result = await fn();
+          events.push('commit');
+          return result;
+        });
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
+        dispatchDeviceCommandMock.mockImplementationOnce(async () => {
+          events.push('prepare');
+          return { ok: true, command, delivery: 'queued_live', deliverBy, deliver };
+        });
+        vi.mocked(writeRouteAudit).mockImplementationOnce(() => { events.push('audit'); });
+
+        const response = await request('time_resync', {});
+        expect(response.status).toBe(201);
+        expect(await response.json()).toMatchObject({
+          id: command.id, delivery, deliverBy: deliverBy.toISOString(), ...(cancelReason ? { cancelReason } : {}),
+        });
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          details: expect.objectContaining({ delivery, ...(cancelReason ? { cancelReason } : {}) }),
+        }));
+        expect(events).toEqual(['begin', 'prepare', 'commit', 'deliver', 'audit']);
+        expect(deliver).toHaveBeenCalledOnce();
+      },
+    );
+    it('does not deliver or audit when the transaction fails to commit', async () => {
+      const deliver = vi.fn();
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
+      dispatchDeviceCommandMock.mockImplementationOnce(async () => ({
+        ok: true,
+        command: { id: 'cmd-1', deviceId, type: 'time_resync', status: 'pending', createdAt: new Date() },
+        delivery: 'queued_live', deliverBy: new Date(), deliver,
+      }));
+      vi.mocked(withDbAccessContext).mockImplementationOnce(async (_ctx, fn) => {
+        await fn();
+        throw new Error('commit failed');
+      });
+      const response = await request('time_resync', {});
+      expect(response.status).toBe(500);
+      expect(deliver).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
     it.each(cases)(
       'denies a foreign-org device for %s',
       async (type, payload) => {
@@ -365,6 +429,115 @@ describe('device commands routes', () => {
   });
 
   describe('POST /devices/bulk/commands', () => {
+    const bulkIds = ['11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'];
+    const sendBulk = (deviceIds = bulkIds) => app.request('/devices/bulk/commands', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceIds, type: 'reboot' }),
+    });
+
+    it.each(['delivered', 'indeterminate', 'queued_live'] as const)(
+      'commits the entire batch before delivery and preserves the %s outcome', async (delivery) => {
+        const events: string[] = [];
+        const command = (deviceId: string) => ({ id: `cmd-${deviceId}`, deviceId, type: 'reboot', status: 'pending', createdAt: new Date() });
+        const deliver = vi.fn(async () => {
+          events.push('deliver');
+          return { ok: true as const, command: command(bulkIds[0]!), delivery, deliverBy: new Date() };
+        });
+        vi.mocked(getDeviceWithOrgCheck).mockImplementation(async (id) => ({ id, orgId: 'org-123', status: 'online' }) as never);
+        dispatchDeviceCommandMock
+          .mockImplementationOnce(async ({ deviceId }) => {
+            events.push('prepare-online');
+            return { ok: true, command: command(deviceId), delivery: 'queued_live', deliverBy: new Date(), deliver };
+          })
+          .mockImplementationOnce(async ({ deviceId }) => {
+            events.push('prepare-offline');
+            return { ok: true, command: command(deviceId), delivery: 'queued_offline', deliverBy: new Date() };
+          });
+        vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => {
+          events.push('begin');
+          const result = await fn();
+          events.push('commit');
+          return result;
+        });
+        vi.mocked(writeRouteAudit).mockImplementation(() => { events.push('audit'); });
+        try {
+          const response = await sendBulk();
+          expect(response.status).toBe(201);
+          expect(await response.json()).toMatchObject({ commands: bulkIds.map(deviceId => ({ deviceId })), failed: [], skipped: [], queuedOffline: [bulkIds[1]] });
+          expect(events).toEqual(['begin', 'prepare-online', 'prepare-offline', 'commit', 'deliver', 'audit', 'audit']);
+          expect(deliver).toHaveBeenCalledOnce();
+          for (const deviceId of bulkIds) {
+            expect(dispatchDeviceCommandMock).toHaveBeenCalledWith({ deviceId, type: 'reboot', payload: {}, userId: 'user-123', deferDelivery: true });
+          }
+        } finally {
+          vi.mocked(withDbAccessContext).mockReset().mockImplementation(async (_ctx, fn) => fn());
+          vi.mocked(writeRouteAudit).mockReset();
+        }
+      },
+    );
+
+    it('reports post-commit cancellation before a later admission failure in selection order', async () => {
+      const deliver = vi.fn(async () => ({
+        ok: true as const,
+        command: { id: 'cmd-cancelled', deviceId: bulkIds[0]!, type: 'reboot', status: 'cancelled', createdAt: new Date() },
+        delivery: 'cancelled' as const, deliverBy: new Date(), cancelReason: 'requester_inactive',
+      }));
+      vi.mocked(getDeviceWithOrgCheck)
+        .mockResolvedValueOnce({ id: bulkIds[0], orgId: 'org-123', status: 'online' } as never)
+        .mockResolvedValueOnce(null);
+      dispatchDeviceCommandMock.mockImplementationOnce(async () => ({
+        ok: true,
+        command: { id: 'cmd-cancelled', deviceId: bulkIds[0]!, type: 'reboot', status: 'pending', createdAt: new Date() },
+        delivery: 'queued_live', deliverBy: new Date(), deliver,
+      }));
+      const response = await sendBulk();
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({ commands: [], skipped: [], queuedOffline: [], failed: [
+        { deviceId: bulkIds[0], code: 'CANCELLED', message: expect.stringContaining('requester_inactive') },
+        { deviceId: bulkIds[1], code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' },
+      ] });
+      expect(deliver).toHaveBeenCalledOnce();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('does not deliver or audit any prepared command if the batch commit fails', async () => {
+      const deliver = vi.fn();
+      vi.mocked(getDeviceWithOrgCheck).mockImplementation(async (id) => ({ id, orgId: 'org-123', status: 'online' }) as never);
+      dispatchDeviceCommandMock.mockImplementation(async ({ deviceId, type }) => ({
+        ok: true, command: { id: `cmd-${deviceId}`, deviceId, type, status: 'pending', createdAt: new Date() },
+        delivery: 'queued_live', deliverBy: new Date(), deliver,
+      }));
+      vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => {
+        await fn();
+        throw new Error('commit failed');
+      });
+      try {
+        expect((await sendBulk()).status).toBe(500);
+        expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(2);
+        expect(deliver).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(withDbAccessContext).mockReset().mockImplementation(async (_ctx, fn) => fn());
+      }
+    });
+
+    it('keeps a delivery exception local to that committed device', async () => {
+      const deliver = vi.fn(async () => { throw new Error('delivery failed'); });
+      vi.mocked(getDeviceWithOrgCheck).mockImplementation(async (id) => ({ id, orgId: 'org-123', status: 'online' }) as never);
+      dispatchDeviceCommandMock.mockImplementationOnce(async ({ deviceId, type }) => ({
+        ok: true, command: { id: 'cmd-first', deviceId, type, status: 'pending', createdAt: new Date() },
+        delivery: 'queued_live', deliverBy: new Date(), deliver,
+      }));
+      const response = await sendBulk();
+      expect(response.status).toBe(201);
+      expect(await response.json()).toMatchObject({
+        commands: [{ deviceId: bulkIds[1] }],
+        failed: [{ deviceId: bulkIds[0], code: 'INSERT_FAILED', message: 'delivery failed' }],
+      });
+      expect(writeRouteAudit).toHaveBeenCalledOnce();
+    });
+
     it('queues commands for accessible, non-decommissioned devices', async () => {
       vi.mocked(getDeviceWithOrgCheck)
         .mockResolvedValueOnce({ id: 'device-a', orgId: 'org-123', status: 'online', hostname: 'host-a' } as never)
@@ -2457,6 +2630,81 @@ describe('device commands routes', () => {
   });
 
   describe('POST /devices/:id/auto-update', () => {
+    const deviceId = '11111111-1111-4111-8111-111111111111';
+    const send = (enabled = true) => app.request(`/devices/${deviceId}/auto-update`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+
+    it.each(['delivered', 'cancelled', 'indeterminate'] as const)(
+      'commits before delivering and returns the real %s outcome', async (delivery) => {
+        const events: string[] = [];
+        const command = { id: 'cmd-auto-update', deviceId, type: 'set_auto_update', status: 'pending', createdAt: new Date() };
+        const deliverBy = new Date();
+        const cancelReason = delivery === 'cancelled' ? 'requester_inactive' : undefined;
+        const deliver = vi.fn(async () => {
+          events.push('deliver');
+          return { ok: true as const, command, delivery, deliverBy, ...(cancelReason ? { cancelReason } : {}) };
+        });
+        vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => {
+          events.push('begin');
+          const result = await fn();
+          events.push('commit');
+          return result;
+        });
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
+        dispatchDeviceCommandMock.mockImplementationOnce(async () => {
+          events.push('prepare');
+          return { ok: true, command, delivery: 'queued_live', deliverBy, deliver };
+        });
+        vi.mocked(writeRouteAudit).mockImplementationOnce(() => { events.push('audit'); });
+        try {
+          const response = await send();
+          expect(response.status).toBe(201);
+          expect(await response.json()).toMatchObject({ id: command.id, delivery, ...(cancelReason ? { cancelReason } : {}) });
+          expect(dispatchDeviceCommandMock).toHaveBeenCalledWith({
+            deviceId, type: 'set_auto_update', payload: { enabled: true }, userId: 'user-123', deferDelivery: true,
+          });
+          expect(events).toEqual(['begin', 'prepare', 'commit', 'deliver', 'audit']);
+          expect(deliver).toHaveBeenCalledOnce();
+        } finally {
+          vi.mocked(withDbAccessContext).mockReset().mockImplementation(async (_ctx, fn) => fn());
+        }
+      },
+    );
+
+    it.each(['queued_offline', 'queued_live'] as const)('preserves %s without a delivery continuation', async (delivery) => {
+      const command = { id: 'cmd-auto-update', deviceId, type: 'set_auto_update', status: 'pending', createdAt: new Date() };
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'offline' } as never);
+      dispatchDeviceCommandMock.mockImplementationOnce(async () => ({ ok: true, command, delivery, deliverBy: new Date() }));
+      const response = await send(false);
+      expect(response.status).toBe(201);
+      expect(await response.json()).toMatchObject({ id: command.id, delivery });
+      expect(dispatchDeviceCommandMock).toHaveBeenCalledWith(expect.objectContaining({ payload: { enabled: false }, deferDelivery: true }));
+    });
+
+    it('never delivers or audits when the command transaction fails to commit', async () => {
+      const deliver = vi.fn();
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
+      dispatchDeviceCommandMock.mockImplementationOnce(async () => ({
+        ok: true,
+        command: { id: 'cmd-auto-update', deviceId, type: 'set_auto_update', status: 'pending', createdAt: new Date() },
+        delivery: 'queued_live', deliverBy: new Date(), deliver,
+      }));
+      vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => {
+        await fn();
+        throw new Error('commit failed');
+      });
+      try {
+        expect((await send()).status).toBe(500);
+        expect(deliver).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(withDbAccessContext).mockReset().mockImplementation(async (_ctx, fn) => fn());
+      }
+    });
+
     it('returns a trust denial without inserting an auto-update command', async () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
         id: 'device-a', orgId: 'org-123', hostname: 'test-host', status: 'online',

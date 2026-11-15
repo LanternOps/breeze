@@ -542,6 +542,22 @@ All in `services/ticketImport/`, so the confinement rules of F4 hold.
 
    A known-impossible link is final for that ticket version, so the merged ticket is not reloaded
    on every pass (§6.6).
+
+   **Decided in W2, where this item was open:**
+   - **The link row is stamped too.** `ticket_links.created_at` is `mode.at`, like its feed rows,
+     so the links panel shows when the source linked them.
+   - **Each side is resolved by its ref, read in system scope** by principal and key, as the runner
+     reads refs. Under the window's RLS a survivor in an org the window does not cover would look
+     not imported and be retried on every pass; its ref's org makes it `org_outside_window`,
+     final. The ticket itself is read in the window's context.
+   - **Other answers.** A side not imported yet is `not_imported` with a retry (§6.6). A side
+     merged in Breeze is `merged_in_breeze`, deleted is `deleted`, a time before either creation
+     is `import_time_invalid`; these and `LINK_CYCLE`, `SELF_LINK` and `NOT_FOUND` are final.
+     Codes are reported in lower case.
+   - **A closed window or a throughput limit** reaches the runner, which stops or defers the run
+     as for a ticket. An item's links are counted once all of them answered, so a deferred item
+     is not counted twice when its retry finds the first link `already` written.
+   - **A dry run** writes no link and still counts each as a note.
 5. **The eight low findings of the #8884 review:**
    1. `statusSkipped` keeps its name and gains `statusSkip?: { statusOwner: { kind, principalId },
       sourceStatus, currentStatus }`, as the review proposed. The run report lists it (§5.10).

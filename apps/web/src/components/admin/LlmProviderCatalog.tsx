@@ -63,7 +63,7 @@ interface CatalogEntry {
 }
 
 const statusStyles: Record<CatalogStatus, string> = {
-  draft: 'bg-gray-100 text-gray-700',
+  draft: 'bg-muted text-foreground',
   listed: 'bg-green-100 text-green-800',
   delisted: 'bg-red-100 text-red-800',
 };
@@ -412,7 +412,7 @@ export default function LlmProviderCatalog() {
           <h1 className="text-2xl font-semibold flex items-center gap-2">
             <Cpu className="w-6 h-6" /> {t('admin.llmProviderCatalog.title')}
           </h1>
-          <p className="text-sm text-gray-600 mt-1">
+          <p className="text-sm text-muted-foreground mt-1">
             {t('admin.llmProviderCatalog.description')}{' '}
             {t('admin.llmProviderCatalog.totalEntries')}{' '}
             <span data-testid="llm-catalog-total">{entries.length}</span>
@@ -422,7 +422,7 @@ export default function LlmProviderCatalog() {
           <button
             data-testid="llm-catalog-refresh"
             onClick={fetchCatalog}
-            className="px-3 py-2 text-sm border rounded hover:bg-gray-50 flex items-center gap-1"
+            className="px-3 py-2 text-sm border rounded hover:bg-muted/50 flex items-center gap-1"
           >
             <RefreshCw className="w-4 h-4" /> {t('admin.llmProviderCatalog.refresh')}
           </button>
@@ -441,7 +441,7 @@ export default function LlmProviderCatalog() {
       )}
 
       {showEntryForm && (
-        <div data-testid="llm-catalog-entry-form" className="border rounded p-4 mb-4 space-y-3 bg-gray-50">
+        <div data-testid="llm-catalog-entry-form" className="border rounded p-4 mb-4 space-y-3 bg-muted/50">
           <h2 className="font-medium">{t('admin.llmProviderCatalog.entryForm.title')}</h2>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -452,7 +452,7 @@ export default function LlmProviderCatalog() {
                 value={entrySlug}
                 onChange={(e) => setEntrySlug(e.target.value)}
                 placeholder={t('admin.llmProviderCatalog.entryForm.placeholders.slug')}
-                className="w-full border rounded px-3 py-2 text-sm font-mono"
+                className="w-full border rounded px-3 py-2 text-sm font-mono bg-background text-foreground dark:[color-scheme:dark]"
               />
             </div>
             <div>
@@ -463,7 +463,7 @@ export default function LlmProviderCatalog() {
                 value={entryName}
                 onChange={(e) => setEntryName(e.target.value)}
                 placeholder={t('admin.llmProviderCatalog.entryForm.placeholders.name')}
-                className="w-full border rounded px-3 py-2 text-sm"
+                className="w-full border rounded px-3 py-2 text-sm bg-background text-foreground dark:[color-scheme:dark]"
               />
             </div>
           </div>
@@ -475,14 +475,14 @@ export default function LlmProviderCatalog() {
               onChange={(e) => setEntryNotes(e.target.value)}
               placeholder={t('admin.llmProviderCatalog.entryForm.placeholders.notes')}
               rows={2}
-              className="w-full border rounded px-3 py-2 text-sm"
+              className="w-full border rounded px-3 py-2 text-sm bg-background text-foreground dark:[color-scheme:dark]"
             />
           </div>
           <div className="flex justify-end gap-2">
             <button
               data-testid="llm-catalog-entry-cancel"
               onClick={resetEntryForm}
-              className="px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded"
+              className="px-3 py-2 text-sm text-foreground hover:bg-muted rounded"
             >
               {t('admin.llmProviderCatalog.entryForm.cancel')}
             </button>
@@ -500,15 +500,15 @@ export default function LlmProviderCatalog() {
       )}
 
       {loading ? (
-        <div className="text-center py-12 text-gray-500">{t('admin.llmProviderCatalog.loading')}</div>
+        <div className="text-center py-12 text-muted-foreground">{t('admin.llmProviderCatalog.loading')}</div>
       ) : entries.length === 0 ? (
-        <div className="text-center py-12 text-gray-500" data-testid="llm-catalog-empty">
+        <div className="text-center py-12 text-muted-foreground" data-testid="llm-catalog-empty">
           {t('admin.llmProviderCatalog.empty')}
         </div>
       ) : (
         <div className="overflow-x-auto border rounded">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b">
+            <thead className="bg-muted/50 border-b">
               <tr className="text-left">
                 <th className="px-4 py-2 font-medium" />
                 <th className="px-4 py-2 font-medium">{t('admin.llmProviderCatalog.table.slug')}</th>
@@ -529,7 +529,7 @@ export default function LlmProviderCatalog() {
                 const canList = activeRevision !== undefined && isFullyVerified(activeRevision);
                 return (
                   <Fragment key={entry.entryId}>
-                    <tr data-testid={`llm-catalog-row-${entry.entryId}`} className="border-b hover:bg-gray-50">
+                    <tr data-testid={`llm-catalog-row-${entry.entryId}`} className="border-b hover:bg-muted/50">
                       <td className="px-4 py-2">
                         <button
                           data-testid={`llm-catalog-row-${entry.entryId}-toggle`}
@@ -537,12 +537,12 @@ export default function LlmProviderCatalog() {
                           aria-label={expanded
                             ? t('admin.llmProviderCatalog.actions.collapse')
                             : t('admin.llmProviderCatalog.actions.expand')}
-                          className="p-1 rounded hover:bg-gray-200"
+                          className="p-1 rounded hover:bg-muted"
                         >
                           {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                         </button>
                       </td>
-                      <td className="px-4 py-2 font-mono text-xs text-gray-600">{entry.slug}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-muted-foreground">{entry.slug}</td>
                       <td className="px-4 py-2">{entry.name}</td>
                       <td className="px-4 py-2">
                         <span
@@ -552,13 +552,13 @@ export default function LlmProviderCatalog() {
                           {t(/* i18n-dynamic */ `admin.llmProviderCatalog.status.${entry.status}`)}
                         </span>
                       </td>
-                      <td className="px-4 py-2 text-gray-600">{entry.revisions.length}</td>
+                      <td className="px-4 py-2 text-muted-foreground">{entry.revisions.length}</td>
                       <td className="px-4 py-2 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <button
                             data-testid={`llm-catalog-row-${entry.entryId}-add-revision`}
                             onClick={() => openRevisionForm(entry.entryId)}
-                            className="px-2 py-1 text-xs border rounded hover:bg-gray-100"
+                            className="px-2 py-1 text-xs border rounded hover:bg-muted"
                           >
                             {t('admin.llmProviderCatalog.actions.addRevision')}
                           </button>
@@ -568,7 +568,7 @@ export default function LlmProviderCatalog() {
                               onClick={() => handleSetStatus(entry, 'listed')}
                               disabled={!canList || statusChangingEntryId === entry.entryId}
                               title={canList ? undefined : t('admin.llmProviderCatalog.revision.listBlocked')}
-                              className="px-2 py-1 text-xs border rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="px-2 py-1 text-xs border rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {t('admin.llmProviderCatalog.actions.list')}
                             </button>
@@ -578,7 +578,7 @@ export default function LlmProviderCatalog() {
                               data-testid={`llm-catalog-row-${entry.entryId}-delist`}
                               onClick={() => handleSetStatus(entry, 'delisted')}
                               disabled={statusChangingEntryId === entry.entryId}
-                              className="px-2 py-1 text-xs border rounded hover:bg-gray-100 disabled:opacity-50"
+                              className="px-2 py-1 text-xs border rounded hover:bg-muted disabled:opacity-50"
                             >
                               {t('admin.llmProviderCatalog.actions.delist')}
                             </button>
@@ -588,10 +588,10 @@ export default function LlmProviderCatalog() {
                     </tr>
                     {expanded && (
                       <tr>
-                        <td colSpan={6} className="px-4 py-3 bg-gray-50 border-b">
+                        <td colSpan={6} className="px-4 py-3 bg-muted/50 border-b">
                           <div data-testid={`llm-catalog-revisions-${entry.entryId}`} className="space-y-3">
                             {entry.revisions.length === 0 ? (
-                              <div className="text-xs text-gray-500">{t('admin.llmProviderCatalog.noRevisions')}</div>
+                              <div className="text-xs text-muted-foreground">{t('admin.llmProviderCatalog.noRevisions')}</div>
                             ) : (
                               entry.revisions.map((revision) => {
                                 const modelIds = Object.keys(revision.modelMap);
@@ -601,7 +601,7 @@ export default function LlmProviderCatalog() {
                                   <div
                                     key={revision.revisionId}
                                     data-testid={`llm-catalog-revision-${revision.revisionId}`}
-                                    className="border rounded p-3 bg-white space-y-2"
+                                    className="border rounded p-3 bg-card text-card-foreground space-y-2"
                                   >
                                     <div className="flex items-center justify-between">
                                       <div className="text-sm">
@@ -628,7 +628,7 @@ export default function LlmProviderCatalog() {
                                         {t('admin.llmProviderCatalog.actions.activate')}
                                       </button>
                                     </div>
-                                    <div className="text-xs text-gray-500">
+                                    <div className="text-xs text-muted-foreground">
                                       {t('admin.llmProviderCatalog.revision.authMode')}: {t(/* i18n-dynamic */ `admin.llmProviderCatalog.authModeOptions.${revision.authMode}`)}
                                     </div>
                                     <table className="w-full text-xs">
@@ -647,7 +647,7 @@ export default function LlmProviderCatalog() {
                                                     <ShieldCheck className="w-3 h-3" /> {t('admin.llmProviderCatalog.revision.verified')}
                                                   </span>
                                                 ) : (
-                                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+                                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
                                                     <ShieldQuestion className="w-3 h-3" /> {t('admin.llmProviderCatalog.revision.notVerified')}
                                                   </span>
                                                 )}
@@ -656,7 +656,7 @@ export default function LlmProviderCatalog() {
                                                 <button
                                                   data-testid={`llm-catalog-revision-${revision.revisionId}-${modelId}-verify`}
                                                   onClick={() => openVerifyForm(revision.revisionId, modelId)}
-                                                  className="p-1 rounded hover:bg-gray-200"
+                                                  className="p-1 rounded hover:bg-muted"
                                                   aria-label={t('admin.llmProviderCatalog.actions.verify')}
                                                 >
                                                   <Play className="w-3 h-3 text-blue-600" />
@@ -691,7 +691,7 @@ export default function LlmProviderCatalog() {
             data-testid="llm-catalog-revision-form-modal"
             className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
           >
-            <div className="bg-white rounded-lg shadow-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="bg-card text-card-foreground rounded-lg shadow-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
               <div className="px-6 py-4 border-b">
                 <h2 className="text-lg font-medium">
                   {t('admin.llmProviderCatalog.revisionForm.title', { name: entry.name })}
@@ -709,7 +709,7 @@ export default function LlmProviderCatalog() {
                     value={revisionBaseUrl}
                     onChange={(e) => setRevisionBaseUrl(e.target.value)}
                     placeholder={t('admin.llmProviderCatalog.revisionForm.placeholders.baseUrl')}
-                    className="w-full border rounded px-3 py-2 text-sm font-mono"
+                    className="w-full border rounded px-3 py-2 text-sm font-mono bg-background text-foreground dark:[color-scheme:dark]"
                   />
                 </div>
                 <div>
@@ -718,7 +718,7 @@ export default function LlmProviderCatalog() {
                     data-testid="llm-catalog-revision-authmode"
                     value={revisionAuthMode}
                     onChange={(e) => setRevisionAuthMode(e.target.value as AuthMode)}
-                    className="w-full border rounded px-3 py-2 text-sm"
+                    className="w-full border rounded px-3 py-2 text-sm bg-background text-foreground dark:[color-scheme:dark]"
                   >
                     <option value="x-api-key">{t('admin.llmProviderCatalog.authModeOptions.x-api-key')}</option>
                     <option value="bearer">{t('admin.llmProviderCatalog.authModeOptions.bearer')}</option>
@@ -726,7 +726,7 @@ export default function LlmProviderCatalog() {
                 </div>
                 <div>
                   <div className="font-medium text-sm mb-1">{t('admin.llmProviderCatalog.revisionForm.modelMap.title')}</div>
-                  <p className="text-xs text-gray-500 mb-2">{t('admin.llmProviderCatalog.revisionForm.modelMap.description')}</p>
+                  <p className="text-xs text-muted-foreground mb-2">{t('admin.llmProviderCatalog.revisionForm.modelMap.description')}</p>
                   <div className="space-y-2">
                     {mappableModelIds.map((modelId) => {
                       const row = modelMapDraft[modelId] ?? emptyModelMapDraft([modelId])[modelId]!;
@@ -749,7 +749,7 @@ export default function LlmProviderCatalog() {
                                 value={row.providerModel}
                                 onChange={(e) => updateModelMapRow(modelId, { providerModel: e.target.value })}
                                 placeholder={t('admin.llmProviderCatalog.revisionForm.modelMap.providerModel')}
-                                className="col-span-2 border rounded px-2 py-1 text-xs font-mono"
+                                className="col-span-2 border rounded px-2 py-1 text-xs font-mono bg-background text-foreground dark:[color-scheme:dark]"
                               />
                               <input
                                 data-testid={`llm-catalog-modelmap-${modelId}-input`}
@@ -758,7 +758,7 @@ export default function LlmProviderCatalog() {
                                 value={row.inputCentsPerM}
                                 onChange={(e) => updateModelMapRow(modelId, { inputCentsPerM: e.target.value })}
                                 placeholder={t('admin.llmProviderCatalog.revisionForm.modelMap.inputPrice')}
-                                className="border rounded px-2 py-1 text-xs"
+                                className="border rounded px-2 py-1 text-xs bg-background text-foreground dark:[color-scheme:dark]"
                               />
                               <input
                                 data-testid={`llm-catalog-modelmap-${modelId}-output`}
@@ -767,7 +767,7 @@ export default function LlmProviderCatalog() {
                                 value={row.outputCentsPerM}
                                 onChange={(e) => updateModelMapRow(modelId, { outputCentsPerM: e.target.value })}
                                 placeholder={t('admin.llmProviderCatalog.revisionForm.modelMap.outputPrice')}
-                                className="border rounded px-2 py-1 text-xs"
+                                className="border rounded px-2 py-1 text-xs bg-background text-foreground dark:[color-scheme:dark]"
                               />
                               <input
                                 data-testid={`llm-catalog-modelmap-${modelId}-cacheread`}
@@ -776,7 +776,7 @@ export default function LlmProviderCatalog() {
                                 value={row.cacheReadCentsPerM}
                                 onChange={(e) => updateModelMapRow(modelId, { cacheReadCentsPerM: e.target.value })}
                                 placeholder={t('admin.llmProviderCatalog.revisionForm.modelMap.cacheReadPrice')}
-                                className="border rounded px-2 py-1 text-xs"
+                                className="border rounded px-2 py-1 text-xs bg-background text-foreground dark:[color-scheme:dark]"
                               />
                               <input
                                 data-testid={`llm-catalog-modelmap-${modelId}-cachewrite`}
@@ -785,7 +785,7 @@ export default function LlmProviderCatalog() {
                                 value={row.cacheWriteCentsPerM}
                                 onChange={(e) => updateModelMapRow(modelId, { cacheWriteCentsPerM: e.target.value })}
                                 placeholder={t('admin.llmProviderCatalog.revisionForm.modelMap.cacheWritePrice')}
-                                className="border rounded px-2 py-1 text-xs"
+                                className="border rounded px-2 py-1 text-xs bg-background text-foreground dark:[color-scheme:dark]"
                               />
                             </div>
                           )}
@@ -802,7 +802,7 @@ export default function LlmProviderCatalog() {
                     onChange={(e) => setRevisionDataNote(e.target.value)}
                     placeholder={t('admin.llmProviderCatalog.revisionForm.placeholders.dataNote')}
                     rows={2}
-                    className="w-full border rounded px-3 py-2 text-sm"
+                    className="w-full border rounded px-3 py-2 text-sm bg-background text-foreground dark:[color-scheme:dark]"
                   />
                 </div>
               </div>
@@ -810,7 +810,7 @@ export default function LlmProviderCatalog() {
                 <button
                   data-testid="llm-catalog-revision-cancel"
                   onClick={closeRevisionForm}
-                  className="px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded"
+                  className="px-3 py-2 text-sm text-foreground hover:bg-muted/50 rounded"
                 >
                   {t('admin.llmProviderCatalog.revisionForm.cancel')}
                 </button>
@@ -834,14 +834,14 @@ export default function LlmProviderCatalog() {
           data-testid="llm-catalog-verify-modal"
           className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
         >
-          <div className="bg-white rounded-lg shadow-lg w-full max-w-md">
+          <div className="bg-card text-card-foreground rounded-lg shadow-lg w-full max-w-md">
             <div className="px-6 py-4 border-b">
               <h2 className="text-lg font-medium">
                 {t('admin.llmProviderCatalog.verifyForm.title', { model: verifyTarget.modelId })}
               </h2>
             </div>
             <div className="px-6 py-4 space-y-3">
-              <p className="text-xs text-gray-500">{t('admin.llmProviderCatalog.verifyForm.description')}</p>
+              <p className="text-xs text-muted-foreground">{t('admin.llmProviderCatalog.verifyForm.description')}</p>
               <div>
                 <label className="block text-sm font-medium mb-1">{t('admin.llmProviderCatalog.verifyForm.apiKeyLabel')}</label>
                 <input
@@ -850,7 +850,7 @@ export default function LlmProviderCatalog() {
                   value={verifyApiKey}
                   onChange={(e) => setVerifyApiKey(e.target.value)}
                   placeholder={t('admin.llmProviderCatalog.verifyForm.apiKeyPlaceholder')}
-                  className="w-full border rounded px-3 py-2 text-sm font-mono"
+                  className="w-full border rounded px-3 py-2 text-sm font-mono bg-background text-foreground dark:[color-scheme:dark]"
                   autoComplete="off"
                 />
               </div>
@@ -881,7 +881,7 @@ export default function LlmProviderCatalog() {
                       <span className="min-w-0 flex-1">
                         <span className="block font-medium">{step.name}</span>
                         {step.detail && (
-                          <span className="block text-xs font-mono text-gray-600 break-words">{step.detail}</span>
+                          <span className="block text-xs font-mono text-muted-foreground break-words">{step.detail}</span>
                         )}
                       </span>
                     </li>
@@ -893,7 +893,7 @@ export default function LlmProviderCatalog() {
               <button
                 data-testid="llm-catalog-verify-cancel"
                 onClick={closeVerifyForm}
-                className="px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded"
+                className="px-3 py-2 text-sm text-foreground hover:bg-muted/50 rounded"
               >
                 {t('admin.llmProviderCatalog.verifyForm.cancel')}
               </button>

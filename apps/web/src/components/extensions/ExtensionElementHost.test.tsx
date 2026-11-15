@@ -13,6 +13,9 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: (...a: unknown[]) => navigateTo
 const showToast = vi.fn();
 vi.mock('@/components/shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 
+const fetchWithAuth = vi.fn();
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+
 const MODULE_URL = '/api/v1/extensions/assets/demo/abc123/index.js';
 
 function defineElement(tag: string, captureContext?: (ctx: unknown) => void) {
@@ -35,6 +38,7 @@ beforeEach(() => {
   loadExtensionModule.mockReset();
   navigateTo.mockReset();
   showToast.mockReset();
+  fetchWithAuth.mockReset();
 });
 
 describe('ExtensionElementHost', () => {
@@ -67,6 +71,88 @@ describe('ExtensionElementHost', () => {
       organizationId: 'org-1',
     });
     expect(Object.isFrozen(captured)).toBe(true);
+  });
+
+  describe('host API (#11922: extension requests must carry the session)', () => {
+    type Captured = { order: string[]; hostApi?: unknown };
+
+    function defineRecordingElement(tag: string, captured: Captured) {
+      if (customElements.get(tag)) return;
+      class RecordingElement extends HTMLElement {
+        set hostApi(value: unknown) {
+          captured.order.push('hostApi');
+          captured.hostApi = value;
+        }
+        set context(_value: unknown) {
+          captured.order.push('context');
+        }
+      }
+      customElements.define(tag, RecordingElement);
+    }
+
+    async function mountWithHostApi(tag: string, extensionName = 'demo') {
+      const captured: Captured = { order: [] };
+      defineRecordingElement(tag, captured);
+      loadExtensionModule.mockResolvedValue({});
+      render(
+        <ExtensionElementHost
+          extensionName={extensionName}
+          moduleUrl={MODULE_URL}
+          elementName={tag}
+          context={{ contractVersion: 1, extensionName, path: '/dashboard', organizationId: 'org-1' }}
+        />,
+      );
+      await waitFor(() => expect(captured.order).toContain('context'));
+      return captured;
+    }
+
+    it('assigns a frozen host API scoped to the extension BEFORE context', async () => {
+      const captured = await mountWithHostApi('ext-demo-hostapi-order');
+      // Elements start fetching from their context setter, so the capability must already be there.
+      expect(captured.order).toEqual(['hostApi', 'context']);
+      const hostApi = captured.hostApi as { contractVersion: number; extensionName: string; apiBase: string };
+      expect(Object.isFrozen(hostApi)).toBe(true);
+      expect(hostApi.contractVersion).toBe(1);
+      expect(hostApi.extensionName).toBe('demo');
+      expect(hostApi.apiBase).toBe('/api/v1/ext/demo/');
+    });
+
+    it('sends an in-namespace request through the authenticated app fetch', async () => {
+      const captured = await mountWithHostApi('ext-demo-hostapi-fetch');
+      fetchWithAuth.mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+      const hostApi = captured.hostApi as { fetch: (p: string, i?: RequestInit) => Promise<Response> };
+
+      const response = await hostApi.fetch('/api/v1/ext/demo/items?orgId=org-1', {
+        method: 'POST',
+        body: '{}',
+        headers: { authorization: 'Bearer forged' },
+      });
+
+      expect(response.status).toBe(200);
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+      const [path, init] = fetchWithAuth.mock.calls[0]!;
+      expect(path).toBe('/api/v1/ext/demo/items?orgId=org-1');
+      expect(init.method).toBe('POST');
+      expect(init.body).toBe('{}');
+      // The host's fetchWithAuth owns the Authorization header; a forged one never survives.
+      expect((init.headers as Headers).has('authorization')).toBe(false);
+    });
+
+    it('refuses another extension\'s namespace, core API routes and absolute URLs without sending anything', async () => {
+      const captured = await mountWithHostApi('ext-demo-hostapi-refuse');
+      const hostApi = captured.hostApi as { fetch: (p: string) => Promise<Response> };
+
+      for (const path of [
+        '/api/v1/ext/other/items',
+        '/api/v1/devices',
+        'https://evil.example/api/v1/ext/demo/items',
+        '//evil.example/api/v1/ext/demo/items',
+        '/api/v1/ext/demo/../../devices',
+      ]) {
+        await expect(hostApi.fetch(path), path).rejects.toThrow(/refused/);
+      }
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
   });
 
   it('renders the unavailable state when the declared element never registers', async () => {

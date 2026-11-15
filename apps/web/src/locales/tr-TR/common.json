@@ -2472,6 +2472,7 @@
           "invalidTimeRange": "Başlangıç zamanı, bitiş zamanından önce olmalıdır.",
           "searchFailed": "Günlüklerde arama yapılamadı",
           "saveFailed": "Sorgu kaydedilemedi",
+          "savedQueriesFailed": "Kaydedilen sorgular yüklenemedi.",
           "noRowsExport": "Dışa aktarılacak satır yok."
         },
         "savePrompt": "Bu kaydedilen sorguya ad verin:",
@@ -2491,10 +2492,14 @@
         },
         "searchFleetLogs": "Filo Kayıtlarını Ara",
         "saveQuery": "Sorguyu Kaydet",
+        "usingSavedFilters": "Bu arama kayıtlı filtreleri kullanır.",
+        "customSearch": "Özel arama",
+        "savedQueries": "Kayıtlı sorgular",
         "exportCsv": "CSV'yi dışa aktar",
         "resultsTitle": "Arama Sonuçları",
         "loading": "Yükleniyor...",
         "resultsCount": "{{shown}} toplam {{total}} içinden gösteriliyor",
+        "resultsCountWithoutTotal": "{{shown}} gösteriliyor",
         "table": {
           "timestamp": "Zaman Damgası",
           "level": "Seviye",
@@ -2504,6 +2509,7 @@
         "unknownSite": "Bilinmeyen site",
         "empty": "Mevcut filtrelerle eşleşen günlük yok.",
         "pageCount": "Sayfa {{page}} / {{totalPages}}",
+        "currentPage": "Sayfa {{page}}",
         "previous": "Önceki"
       }
     },

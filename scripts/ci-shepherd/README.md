@@ -112,6 +112,7 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
 | `ci-shepherd:probe` | Marks a throwaway PR for the probe leg. |
 | `flaky-test` | An issue the shepherd keeps for one flaky test, with its evidence. |
 | `flaky-fix-required` | A flaky test that used its 60 quarantine days. It is never renewed; fix it. |
+| `ci-metrics` | The one issue, `CI throughput — weekly metrics`, that carries the weekly metrics comments. |
 
 ### Decision kinds
 
@@ -134,6 +135,8 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
   In shadow each is logged once a day per test or proposal.
 - `ledger_protected` (`source: flake`, any mode): a protected test the
   proposals would otherwise have added or renewed. Once a day per test.
+- `metrics_post` (`source: metrics`, act mode): the weekly metrics comment,
+  with its rows; `status: skipped` when the week was already posted.
 - `flake_issue_cap` (`source: flake`): the daily cap on new flaky-test issues
   was reached; `carried` lists the tests held for the next day. Once a day.
 
@@ -227,6 +230,47 @@ After each tick's sightings ingest, the shepherd keeps the flaky ledger fed
   newer than the close can open a successor. To stop all quarantines, set the
   mode to `off` (or anything but `act`). Entries expire on their own within 14
   days.
+
+### Weekly metrics (W06d)
+
+On the first act-mode tick at or after Monday 13:00Z the shepherd posts the
+previous ISO week (Monday 00:00Z to Sunday 24:00Z) as one comment on the
+issue `CI throughput — weekly metrics` (label `ci-metrics`, opened once, by
+the operator). Shadow posts nothing and spends nothing on it. The comment
+carries `<!-- ci-metrics:v1 week=<YYYY-Www> -->`; a week whose marker is
+already in an operator comment is never posted again, so a lost `state.json`
+cannot repeat it. Only the issue the operator opened with that exact title
+counts, and only the operator's comments count.
+
+The rows are the spec's table, with its baselines and targets:
+
+| Row | Measured as |
+|---|---|
+| Queue run time-to-green p50 / p90 | green `CI` merge_group runs: `updated_at − run_started_at` |
+| Queue latency p50 / p90 | per PR merged that week: the merged head's first add to the queue → its `merged` removal. The head's arrival is its first non-queue CI run. |
+| PR run time-to-green p50 / p90 | green `CI` pull_request runs, every k-th past 300 |
+| Queue failures that were flake/infra/external | `failed_checks` removals by class from `decisions.jsonl`; a removal with no logged class is classified now. infra, known_flake, suspected_flake and timeout count. |
+| Queue runner-hours / week | Σ job durations (every attempt) over all merge_group CI runs |
+| Linux jobs waiting > 5 min | `ubuntu-*` jobs of those runs (skipped ones aside) with `started_at − created_at > 300 s` |
+| Real interactions caught | removals held `real`, by PR, unadjudicated |
+| Re-enqueues needing a human | re-adds after a `failed_checks` removal of the same head with no act-mode shepherd `requeue` or `record` within 15 min, plus applied `resume` releases. Unavailable unless every removal of the week was decided in act mode (a week act mode started part-way through is unavailable). |
+
+Each row states its coverage: `exact`; `sampled 1/k` (every k-th read to fit
+the budget, ≈ on a value scaled up from it); or `unavailable` (the data could
+not be read in full, so no value). The metrics take what is left of the
+tick's budget (they wait for a tick with at least 300 calls left), so on a
+busy tick the job rows are sampled; a value scaled up from a sample is
+scaled by population over sample size. A week gets one comment, so it is
+not spent on a transient failure: when any read failed, the attempt is
+retried an hour later, and only the 6th attempt posts with those rows
+`unavailable`. Each failed read is in the tick summary's errors.
+
+To see a week without posting it (read-only; up to 4000 calls of the
+operator's 5,000/h):
+
+```bash
+node scripts/ci-shepherd/shepherd.mjs metrics --week 2026-W45 --dry-run [--json]
+```
 
 ### Reading the logs
 

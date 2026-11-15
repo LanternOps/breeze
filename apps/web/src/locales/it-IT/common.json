@@ -2472,6 +2472,7 @@
           "invalidTimeRange": "L'ora di inizio deve essere precedente all'ora di fine.",
           "searchFailed": "Impossibile cercare nei log",
           "saveFailed": "Impossibile salvare la query",
+          "savedQueriesFailed": "Impossibile caricare le query salvate.",
           "noRowsExport": "Nessuna riga da esportare."
         },
         "savePrompt": "Dai un nome a questa query salvata:",
@@ -2491,10 +2492,14 @@
         },
         "searchFleetLogs": "Cerca i registri della flotta",
         "saveQuery": "Salva query",
+        "usingSavedFilters": "Questa ricerca usa i filtri salvati.",
+        "customSearch": "Ricerca personalizzata",
+        "savedQueries": "Query salvate",
         "exportCsv": "Esporta CSV",
         "resultsTitle": "Risultati della ricerca",
         "loading": "Caricamento...",
         "resultsCount": "{{shown}} visualizzati su {{total}} totali",
+        "resultsCountWithoutTotal": "{{shown}} visualizzati",
         "table": {
           "timestamp": "Timestamp",
           "level": "Livello",
@@ -2504,6 +2509,7 @@
         "unknownSite": "Sito sconosciuto",
         "empty": "Nessun log corrispondeva ai filtri correnti.",
         "pageCount": "Pagina {{page}} di {{totalPages}}",
+        "currentPage": "Pagina {{page}}",
         "previous": "Precedente"
       }
     },

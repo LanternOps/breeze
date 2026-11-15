@@ -29,6 +29,11 @@ export const ticketLinks = pgTable('ticket_links', {
   linkType: ticketLinkTypeEnum('link_type').notNull(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  /**
+   * The migration window that wrote this link in import mode (#8313 W2), or
+   * null for a live link. FK-less, like tickets.migration_window_id.
+   */
+  migrationWindowId: uuid('migration_window_id'),
 }, (t) => [
   uniqueIndex('ticket_links_pair_type_uq').on(t.sourceTicketId, t.targetTicketId, t.linkType),
   uniqueIndex('ticket_links_one_canonical_uq').on(t.sourceTicketId).where(sql`link_type = 'duplicate_of'`),

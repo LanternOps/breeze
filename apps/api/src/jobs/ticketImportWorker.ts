@@ -42,6 +42,7 @@ import {
   TICKET_IMPORT_SLICE_JOB,
   TICKET_IMPORT_SWEEP_JOB,
 } from '../services/ticketImport/importQueue';
+import { importLinkWriter } from '../services/ticketImport/importLinks';
 import { runSlice, type SliceDeps, type SliceOutcome } from '../services/ticketImport/importRunner';
 import { failRun, runContext, sweepStalledRuns, touchRun } from '../services/ticketImport/runLedger';
 import { ticketImportSliceJobDataSchema, type TicketImportSliceJobData } from './queueSchemas';
@@ -136,6 +137,8 @@ export async function processTicketImportSlice(job: Job, token?: string, deps: P
   let outcome: SliceOutcome;
   try {
     outcome = await (deps.runSlice ?? runSlice)(data, {
+      // Links in import mode (W2); a test passes null to keep them as notes.
+      linkWriter: importLinkWriter,
       ...deps.sliceDeps,
       shouldYield: () => stopping || !lease.held() || (deps.sliceDeps?.shouldYield?.() ?? false),
     });

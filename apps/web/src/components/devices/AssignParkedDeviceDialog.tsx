@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Inbox } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
-import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
+import { useReauthTier } from '../../lib/reauthTier';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '@/lib/fetchAllSites';
@@ -101,7 +101,6 @@ export default function AssignParkedDeviceDialog({
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [discoveredTier, setDiscoveredTier] = useState<ReauthTier | null>(null);
   const [results, setResults] = useState<BulkItemResult[] | null>(null);
   // A grant the server has not consumed yet: an identity-collision refusal
   // comes BEFORE the grant is spent, and the grant binds only the device and
@@ -118,6 +117,8 @@ export default function AssignParkedDeviceDialog({
   const canReattach = useCanReattachDevice();
   const reattach = useReinstallCandidates(open && offerReattach && !bulk && single ? single.id : null);
 
+  const { tier, ensureTier, resetTier } = useReauthTier(passkeyCount, mfaMethod);
+
   useEffect(() => {
     if (!open) return;
     setTargetOrgId('');
@@ -130,14 +131,14 @@ export default function AssignParkedDeviceDialog({
     setCode('');
     setError(null);
     setSubmitting(false);
-    setDiscoveredTier(null);
+    resetTier();
     setResults(null);
     setHeldGrant(null);
     setMode('assign');
     setReattachRequested(false);
     setReattachBusy(false);
     setCancelReattachConfirmed(false);
-  }, [open]);
+  }, [open, resetTier]);
 
   useEffect(() => {
     if (open && organizations.length === 0) void fetchOrganizations();
@@ -161,28 +162,13 @@ export default function AssignParkedDeviceDialog({
     return () => { cancelled = true; };
   }, [open, targetOrgId, stableT]);
 
-  const tier: ReauthTier | null = useMemo(
-    () => (passkeyCount === undefined || mfaMethod === undefined ? discoveredTier : pickReauthTier(passkeyCount, mfaMethod)),
-    [passkeyCount, mfaMethod, discoveredTier],
-  );
   const noUsableFactor = phase === 'stepUp' && tier === 'password';
 
   const discoverTier = useCallback(async (): Promise<boolean> => {
-    if (tier !== null) return true;
-    try {
-      const [userResponse, passkeyResponse] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
-      if (!userResponse.ok || !passkeyResponse.ok) throw new Error();
-      const user = await userResponse.json();
-      const passkeyData = await passkeyResponse.json();
-      const passkeys = Array.isArray(passkeyData) ? passkeyData : passkeyData?.passkeys;
-      if (!user || typeof user !== 'object' || !('mfaMethod' in user) || !Array.isArray(passkeys)) throw new Error();
-      setDiscoveredTier(pickReauthTier(passkeys.length, user.mfaMethod));
-      return true;
-    } catch {
-      setError(t('assignParkedDialog.genericError'));
-      return false;
-    }
-  }, [tier, t]);
+    if (await ensureTier()) return true;
+    setError(t('assignParkedDialog.genericError'));
+    return false;
+  }, [ensureTier, t]);
 
   const submit = useCallback(async () => {
     // ONE canonical object per device for both the mint and the body.

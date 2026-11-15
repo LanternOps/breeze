@@ -1,5 +1,6 @@
 import { isReadOnlySqlError } from './readOnlyDatabase';
 import {
+  auditAdminAccessProblem,
   formatUnsafeDbRoleOptOutBanner,
   formatUnsafeRequestDatabaseRoleMessage,
   isUnsafeDbRoleOptOutEnabled,
@@ -34,6 +35,8 @@ export interface DatabaseStartupOptions {
    * suppressed alongside, a role that is merely known-unsafe.
    */
   readRequestRole?: () => Promise<RequestDatabaseRole>;
+  /** Connects through AUDIT_ADMIN_DATABASE_URL once (only when it is set). */
+  probeAuditAdminConnection?: () => Promise<void>;
   env?: NodeJS.ProcessEnv;
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
 }
@@ -140,6 +143,7 @@ export async function initializeDatabaseForStartup(
   }
 
   const role = await readRequestRole();
+  await reportAuditAdminAccess(role, env, logger, options.probeAuditAdminConnection);
   const unsafeCapabilities = unsafeRequestDatabaseRoleCapabilities(role);
 
   if (unsafeCapabilities.length === 0) {
@@ -166,4 +170,43 @@ export async function initializeDatabaseForStartup(
   }
 
   logger.error(formatUnsafeDbRoleOptOutBanner(role, unsafeCapabilities));
+}
+
+/**
+ * #11929: say at boot, not at the first permanent delete, when the path that
+ * deletes append-only evidence cannot work. Report-only; never fails boot.
+ */
+async function reportAuditAdminAccess(
+  role: RequestDatabaseRole,
+  env: NodeJS.ProcessEnv,
+  logger: Pick<Console, 'log' | 'warn' | 'error'>,
+  probe: (() => Promise<void>) | undefined,
+): Promise<void> {
+  const problem = auditAdminAccessProblem(role, env);
+  if (problem) logger[problem.level](problem.message);
+
+  const url = env.AUDIT_ADMIN_DATABASE_URL;
+  if (typeof url !== 'string' || url.trim().length === 0) return;
+  const runProbe = probe ?? (async () => {
+    const { auditAdminPoolPing } = await import('./auditAdminPool');
+    await auditAdminPoolPing();
+  });
+  try {
+    await runProbe();
+  } catch (err) {
+    // Drizzle wraps the driver error ("Failed query: SELECT 1"); the reason
+    // (authentication, refused connection, DNS) is on `cause`.
+    const cause = err instanceof Error && err.cause !== undefined ? err.cause : err;
+    const code = (cause as { code?: unknown } | null)?.code;
+    const authFailure = code === '28P01' || code === '28000';
+    logger.error(
+      `[database] AUDIT_ADMIN_DATABASE_URL is set but connecting through it failed: ${describeError(cause)}`
+        + `${typeof code === 'string' ? ` (${code})` : ''}. `
+        + 'Audit-log retention and organization erasure will fail until it works.'
+        + (authFailure
+          ? ' After a database-only restore into a new Postgres cluster the breeze_audit_admin login and its '
+            + "password are gone (they belong to the cluster): ALTER ROLE breeze_audit_admin LOGIN PASSWORD '...'."
+          : ''),
+    );
+  }
 }

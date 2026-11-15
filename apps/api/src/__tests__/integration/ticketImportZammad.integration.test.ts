@@ -48,6 +48,7 @@ import {
   ticketExternalRefs,
   ticketImportItems,
   ticketImportRunIssues,
+  ticketLinks,
   tickets,
   users,
 } from '../../db/schema';
@@ -67,6 +68,11 @@ import {
 import { createUser } from './db-utils';
 import { drive, ledger, openWindow, runRow, seedImportBase, setMappings, startImportRun, type ImportBase } from './ticketImportFixtures';
 import { getTestDb } from './setup';
+
+/** The links a window wrote in import mode (#8313 W2). */
+async function importedLinks(windowId: string) {
+  return getTestDb().select().from(ticketLinks).where(eq(ticketLinks.migrationWindowId, windowId));
+}
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const CASE_TIMEOUT = 240_000;
@@ -201,7 +207,8 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(counters.customAttributes).toEqual({ cf_billable: 1, cf_customer_reference: 1 });
     // Raised: 1011 and 1012 on 106, 1018 and 1019 on 109 (moved in, older than their survivor).
     expect(counters.moduleCounts).toEqual({ article_time_raised: 4, body_rendering_error: 1, state_removed: 1 });
-    // The merged pair and the chain: three links, notes until W2 writes links.
+    // The merged pair and the chain: three links. A dry run writes nothing, so
+    // it counts them as notes; the import writes them (W2, below).
     expect(counters.linksAsNotes).toBe(3);
     expect(counters.ownersUnmatched).toBe(1);
     expect(await issuesOf(run.id)).toEqual(['owner_unmatched:103:5', 'skipped_no_org:110:', 'skipped_no_org:116:']);
@@ -367,10 +374,16 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(c1.tickets).toMatchObject({ seen: 19, created: 19, failed: 0, skipped: 0 });
     expect(c1.attachments).toMatchObject({ written: 4, skipped: 2, bytes: 70 + 53 + 70 + 70, alternativesIgnored: 1 });
     expect(c1.comments.systemSkipped).toBe(4);
-    expect(c1.linksAsNotes).toBe(3);
+    // The merged pair and the chain: three links, written in import mode (W2).
+    expect(c1).toMatchObject({ linksWritten: 3, linksAsNotes: 0 });
 
     const t = await importedTickets(fx);
     expect([...t.keys()].sort()).toEqual(Array.from({ length: 19 }, (_, i) => String(101 + i)));
+    // 105 was merged into 106: linked as its duplicate, at the source's time, by the window (§6.6).
+    const links = await importedLinks(window.id);
+    expect(links).toHaveLength(3);
+    expect(links.every((l) => l.linkType === 'duplicate_of')).toBe(true);
+    expect(links.map((l) => [l.sourceTicketId, l.targetTicketId])).toContainEqual([t.get('105')!.id, t.get('106')!.id]);
     const status = Object.fromEntries([...t].map(([k, v]) => [k, v.status]));
     expect(status).toEqual({
       101: 'open', 102: 'closed', 103: 'pending', 104: 'resolved', 105: 'closed', 106: 'open', 107: 'closed',
@@ -436,7 +449,8 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     // 112 is deleted and 115 hidden: the list shows 17; eight of them changed.
     expect(c2.tickets).toMatchObject({ seen: 17, unchanged: 9, resumed: 8, created: 0, failed: 0 });
     expect(c2).toMatchObject({ deletedInSource: 1, hiddenInSource: 1, commentsMissingInSource: 0, commentsChangedInSource: 2 });
-    expect(c2.linksAsNotes).toBe(2);
+    // The two merges between the passes (113 into 106, 118 into 119) are linked too.
+    expect(c2).toMatchObject({ linksWritten: 2, linksAsNotes: 0 });
     // Only the changed tickets were loaded; the rest cost their list row.
     expect(requested('/api/v1/ticket_articles/by_ticket/').sort()).toEqual([
       '/api/v1/ticket_articles/by_ticket/101', '/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_articles/by_ticket/103', '/api/v1/ticket_articles/by_ticket/104',
@@ -494,6 +508,10 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(c119.map((c) => c.sourceId).sort()).toEqual(['article:1043', 'article:1046']);
     expect(c119.find((c) => c.sourceId === 'article:1046')!.content).toBe(c119Before.find((c) => c.sourceId === 'article:1046')!.content);
     expect(t2.get('118')).toMatchObject({ status: 'closed', description: '' });
+    // Both merges between the passes are links now (W2), beside the bulk pass's three.
+    const deltaLinks = (await importedLinks(window.id)).map((l) => [l.sourceTicketId, l.targetTicketId]);
+    expect(deltaLinks).toHaveLength(5);
+    expect(deltaLinks).toEqual(expect.arrayContaining([[t2.get('113')!.id, t2.get('106')!.id], [t2.get('118')!.id, t2.get('119')!.id]]));
     expect((await commentsOf(t2.get('118')!.id)).map((c) => c.sourceId).sort()).toEqual(['article:1044', 'note:118:merged:119']);
     const once = await getTestDb().select({ sourceId: ticketComments.importSourceId }).from(ticketComments)
       .where(inArray(ticketComments.importSourceId, ['article:1043', 'article:1044', 'article:1045', 'article:1046']));
