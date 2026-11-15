@@ -13,7 +13,8 @@
  *     wrote for the technician at scheduling. The body says what happened and
  *     that a reply picks it up; Wisp's own answer comes on that next turn.
  *
- * The subject name (a device's display name or hostname, a script's name) and
+ * The subject name (a device's display name or hostname, `<script> on
+ * <device>`, `the run on <device>`; checkInTriggers.ts) and
  * the label are display text from outside this module (agent- or
  * model-written), so each is flattened to one line, stripped of control and
  * format characters, and capped before it is shown.
@@ -70,6 +71,11 @@ function labelPhrase(label: string | null): string | null {
   return bare === '' ? null : bare;
 }
 
+/** A sentence that starts with the subject: "the run on FS01 …" → "The run on FS01 …". A name is left as written. */
+function sentenceStart(subject: string): string {
+  return subject.startsWith('the ') ? `The ${subject.slice(4)}` : subject;
+}
+
 /** `HH:MM UTC`; a deadline post is written at (or just after) that time, so the date is not needed. */
 function utcClock(at: Date): string {
   return `${at.toISOString().slice(11, 16)} UTC`;
@@ -78,7 +84,8 @@ function utcClock(at: Date): string {
 /**
  * The technician-facing title and notice of a fire. `subjectName` is the
  * event subject's display name, read at fire time (null when unknown); the
- * fallback is the label, then the kind ("the device"). The notice has no
+ * fallback is the kind ("the device"), never the label: a label says what the
+ * check-in is about, not what the subject is called. The notice has no
  * closing ask: a notify post adds CHECK_IN_REPLY_LINE (`checkInNotifyPost`),
  * a run check-in's degraded post asks to run it now.
  */
@@ -91,7 +98,7 @@ export function checkInPost(row: PostRow, reason: WispCheckInFireReason, subject
     };
   }
   const kind = row.triggerKind;
-  const subject = displayText(subjectName) ?? label ?? GENERIC_SUBJECT[kind];
+  const subject = displayText(subjectName) ?? GENERIC_SUBJECT[kind];
   if (reason === 'deadline') {
     return {
       title: `${DEADLINE_TITLE[kind]} at ${utcClock(row.dueAt)}: ${subject}`,
@@ -100,7 +107,7 @@ export function checkInPost(row: PostRow, reason: WispCheckInFireReason, subject
   }
   return {
     title: `${EVENT_TITLE[kind]}: ${subject}`,
-    notice: kind === 'device_online' ? `${subject} is back online.` : `${subject} has finished.`,
+    notice: kind === 'device_online' ? `${sentenceStart(subject)} is back online.` : `${sentenceStart(subject)} has finished.`,
   };
 }
 
@@ -110,7 +117,7 @@ export function checkInNotifyPost(row: PostRow, reason: WispCheckInFireReason, s
   return { title, body: `${notice} ${CHECK_IN_REPLY_LINE}` };
 }
 
-/** The title of a run check-in's answer: the label, else the event's subject, never the instruction. */
+/** The title of a run check-in's answer: the label, else the event's kind ("the device"), never the instruction. */
 export function checkInResultTitle(row: Pick<WispCheckInRow, 'label' | 'triggerKind'>): string {
   const label = labelPhrase(row.label);
   if (label) return `Checked: ${label}`;

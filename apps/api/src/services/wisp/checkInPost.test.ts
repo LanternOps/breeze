@@ -49,11 +49,16 @@ describe('checkInNotifyPost (#11675)', () => {
     expect(post.body).not.toMatch(NOTE_TO_SELF);
   });
 
-  it('with no subject name, an event post falls back to the label, then to the kind', () => {
-    expect(checkInNotifyPost(row({ triggerKind: 'device_online', label: 'Partner MacBook' }), 'event', null).title)
-      .toBe('Back online: Partner MacBook');
-    expect(checkInNotifyPost(row({ triggerKind: 'device_online' }), 'event', null).title).toBe('Back online: the device');
+  it('with no subject name, an event post falls back to the kind, never to the label (a label is not a name)', () => {
+    const labelled = checkInNotifyPost(row({ triggerKind: 'device_online', label: 'FS01 disk space re-check' }), 'event', null);
+    expect(labelled.title).toBe('Back online: the device');
+    expect(labelled.body).toBe(`The device is back online. ${CHECK_IN_REPLY_LINE}`);
     expect(checkInNotifyPost(row({ triggerKind: 'script_finished' }), 'event', '   ').title).toBe('Script finished: the script');
+  });
+
+  it('a subject that starts with "the" opens the sentence capitalised; a name is left as written', () => {
+    expect(checkInPost(row({ triggerKind: 'run_settled' }), 'event', 'the run on FS01').notice).toBe('The run on FS01 has finished.');
+    expect(checkInPost(row({ triggerKind: 'device_online' }), 'event', 'fs01').notice).toBe('fs01 is back online.');
   });
 
   it('a time check-in posts its label, never the instruction', () => {
@@ -84,6 +89,7 @@ describe('checkInPost (run check-ins)', () => {
   it('a result title names the label or the subject, never the instruction', () => {
     expect(checkInResultTitle(row({ label: 'FS01 disk space' }))).toBe('Checked: FS01 disk space');
     expect(checkInResultTitle(row({ triggerKind: 'device_online' }))).toBe('Checked: the device');
+    expect(checkInResultTitle(row({ triggerKind: 'device_online', label: 'FS01 back online' }))).toBe('Checked: FS01 back online');
     expect(checkInResultTitle(row())).toBe('Wisp checked in');
   });
 });

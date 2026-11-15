@@ -591,3 +591,51 @@ describe('posting the settled run', () => {
     expect((await rowOf(b.row.id)).status).toBe('running');
   });
 });
+
+describe('#11675: an event run check-in posts in the technician\'s words; the run still gets the instruction', () => {
+  const hostnameOf = (id: string) => withSystemDbAccessContext(async () =>
+    (await db.select({ hostname: devices.hostname }).from(devices).where(eq(devices.id, id)))[0]!.hostname);
+  const clockOf = (at: Date) => `${at.toISOString().slice(11, 16)} UTC`;
+
+  runDb('a degraded device_online fire names the device and the event, never the instruction', async () => {
+    const fx = await seed();
+    const host = await hostnameOf(fx.device.id);
+    await withSystemDbAccessContext(() => db.update(devices).set({ status: 'online', lastSeenAt: new Date() }).where(eq(devices.id, fx.device.id)));
+    h.enqueueAssessment.mockResolvedValue({ skipped: 'budget_exhausted' });
+    // The event already happened: scheduling fires it, and the admission degrades.
+    const row = await scheduleRun(fx, new Date(), { trigger: { kind: 'device_online', subjectId: fx.device.id } });
+    expect(row.status).toBe('fired');
+    const [post] = await postsFor(fx.thread.id);
+    expect(post).toMatchObject({
+      title: `Back online: ${host}`,
+      body: `${host} is back online. I couldn't check on my own: today's budget is spent. Run it now?`,
+    });
+    expect(post!.body).not.toContain(INSTRUCTION);
+  });
+
+  runDb('a deadline fire hands the run "Did not happen by …" plus the instruction; its unfinished post says so without it', async () => {
+    const fx = await seed();
+    admitting(fx);
+    const now = new Date();
+    const row = await scheduleRun(fx, now, { trigger: { kind: 'device_online', subjectId: fx.device.id } });
+    expect(row.status).toBe('scheduled');
+    await makeDue(row.id, now);
+    const due = (await rowOf(row.id)).dueAt;
+    expect(await fireCheckIn(row.id, now)).toBe('running');
+    expect(await rowOf(row.id)).toMatchObject({ status: 'running', fireReason: 'deadline' });
+
+    const call = h.enqueueAssessment.mock.calls[0]![0] as { reason: { instruction: string } };
+    expect(call.reason.instruction).toBe(`Did not happen by ${clockOf(due)}: the device is still offline. ${INSTRUCTION}`);
+
+    const { runId } = await rowOf(row.id);
+    await setRun(runId!, { status: 'failed', errorCode: 'wall_clock_exceeded', finishedAt: new Date() });
+    expect(await postCheckInRunResult(runId!)).toBe('posted');
+    const [post] = await postsFor(fx.thread.id);
+    // The result path reads no subject, so the device is "the device" here.
+    expect(post).toMatchObject({
+      title: `Still offline at ${clockOf(due)}: the device`,
+      body: `Did not happen by ${clockOf(due)}: the device is still offline. My check didn't finish (failed). Run it now?`,
+    });
+    expect(post!.body).not.toContain(INSTRUCTION);
+  });
+});

@@ -99,10 +99,13 @@ export type TriggerSubject = {
   output: string | null;
   lastSeenAt: Date | null;
   /**
-   * What the technician calls it, for the fired post's title (#11675): the
-   * device's display name or hostname, `<script> on <device>`, `<command type>
-   * on <device>`, or the run's device. Raw, agent- or admin-written text: the
-   * post sanitises and caps it (checkInPost.ts). null when unknown.
+   * What the technician calls it, for the fired post (#11675): the device's
+   * display name or hostname, `<script> on <device>` (`the script on
+   * <device>` when the script has no name), `<command type> on <device>`, or
+   * `the run on <device>`. Never the bare device for a script, command or run,
+   * so "… has finished" never reads as the device finishing. Raw, agent- or
+   * admin-written text: the post sanitises and caps it (checkInPost.ts).
+   * null when unknown.
    */
   name: string | null;
 };
@@ -114,11 +117,12 @@ function deviceName(d: { displayName: string | null; hostname: string | null } |
   return display ? display : (d.hostname?.trim() || null);
 }
 
-/** `<what> on <device>`, or whichever half is known. */
-function onDevice(what: string | null, device: string | null): string | null {
+/** `<what> on <device>`; `what` alone without a device; `<fallback> on <device>` without a name; null with neither. */
+function onDevice(what: string | null, device: string | null, fallback: string): string | null {
   const w = what?.trim() || null;
   if (w && device) return `${w} on ${device}`;
-  return w ?? device;
+  if (w) return w;
+  return device ? `${fallback} on ${device}` : null;
 }
 
 function sys<T>(fn: () => Promise<T>, label: string): Promise<T> {
@@ -187,7 +191,7 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
         return {
           kind, orgId: s.orgId, partnerId: s.partnerId, siteId: s.siteId ?? null, status: s.status, at: s.completedAt,
           exitCode: s.exitCode, output: output ? output.slice(0, OUTPUT_READ_MAX) : null, lastSeenAt: null,
-          name: onDevice(s.scriptName, deviceName(s)),
+          name: onDevice(s.scriptName, deviceName(s), 'the script'),
         };
       }
       case 'command_finished': {
@@ -211,7 +215,7 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
         if (!c) return null;
         return {
           kind, orgId: c.orgId, partnerId: c.partnerId, siteId: c.siteId, status: c.status, at: c.completedAt,
-          exitCode: exitCodeOf(c.result), output: null, lastSeenAt: null, name: onDevice(c.type, deviceName(c)),
+          exitCode: exitCodeOf(c.result), output: null, lastSeenAt: null, name: onDevice(c.type, deviceName(c), 'the command'),
         };
       }
       case 'run_settled': {
@@ -233,7 +237,7 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
         if (!r) return null;
         return {
           kind, orgId: r.orgId, partnerId: r.partnerId, siteId: r.siteId ?? null, status: r.status, at: r.finishedAt,
-          exitCode: null, output: null, lastSeenAt: null, name: deviceName(r),
+          exitCode: null, output: null, lastSeenAt: null, name: onDevice(null, deviceName(r), 'the run'),
         };
       }
     }

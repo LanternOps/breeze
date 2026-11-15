@@ -10,13 +10,15 @@
  *                           recover an admitted run → enqueueAssessment →
  *                           compare-and-set scheduled → running (run_id set).
  *                           Anything that cannot run degrades to the Phase 1
- *                           post ("I couldn't check on my own: …. Run it now?")
+ *                           post ("<notice> I couldn't check on my own: ….
+ *                           Run it now?"; the notice is checkInPost.ts, never
+ *                           the instruction, #11675)
  *                           and the row becomes `fired`, so the instruction
  *                           returns with the grantor's next message.
  *   postCheckInRunResult    the settled run's post: the run's summary
  *                           (sanitised, capped) → `consumed`; a run that did
- *                           not finish → "My check didn't finish (<status>).
- *                           Run it now? …" → `fired`. Called from the run
+ *                           not finish → "<notice> My check didn't finish
+ *                           (<status>). Run it now?" → `fired`. Called from the run
  *                           loop's finishRun and by the tick's reconcile.
  *   reconcileRunningCheckIns  the 5-minute tick's sweep for `running` rows
  *                           whose run settled without a post (a skipped or
@@ -386,8 +388,14 @@ export async function postCheckInRunResult(runId: string, now: Date = new Date()
   const answered = read.runStatus !== null && RESULT_STATUSES.has(read.runStatus);
   // #11675: titles and notices in the technician's words, never the
   // instruction. No subject name here (the subject is not re-read against the
-  // ceiling on this path): the label, else the kind, names it.
-  const unfinished = answered ? null : checkInPost(row, row.fireReason ?? 'due', null);
+  // ceiling on this path), so an event row says "the device" where its
+  // fire-time post may have named it.
+  if (!answered && row.fireReason == null) {
+    // The claim (fireCheckIn) precedes the run, so a running row always has a
+    // reason; without one the notice cannot say whether the event happened.
+    report('missing_fire_reason', new Error(`running check-in ${row.id} has no fire_reason`), { checkInId: row.id, runId });
+  }
+  const unfinished = answered ? null : checkInPost(row, row.fireReason ?? (row.triggerKind === 'time' ? 'due' : 'event'), null);
   const delivered = unfinished === null
     ? await postForCheckIn(row, checkInResultTitle(row), checkInRunResultBody({ status: runStatus, summary: read.runSummary }), specialistRunLink(runId))
     : await postForCheckIn(row, unfinished.title, checkInRunUnfinishedBody(runStatus, unfinished.notice), read.runStatus === null ? undefined : specialistRunLink(runId));

@@ -235,13 +235,17 @@ describe('loadTriggerSubject — the name the fired post shows (#11675)', () => 
     expect((await loadTriggerSubject('device_online', SUBJECT))!.name).toBe('Partner MacBook');
   });
 
-  it('a script is "<script> on <device>"; a command "<type> on <device>"; a run its device; missing halves drop out', async () => {
+  it('a script is "<script> on <device>"; a command "<type> on <device>"; a run "the run on <device>"; never the bare device', async () => {
     h.rows = [{ orgId: ORG, partnerId: PARTNER, siteId: SITE, status: 'completed', completedAt: null, exitCode: 0, stdout: null, stderr: null, scriptName: 'Clear temp', displayName: null, hostname: 'FS01' }];
     expect((await loadTriggerSubject('script_finished', SUBJECT))!.name).toBe('Clear temp on FS01');
+    h.rows = [{ orgId: ORG, partnerId: PARTNER, siteId: SITE, status: 'completed', completedAt: null, exitCode: 0, stdout: null, stderr: null, scriptName: null, displayName: null, hostname: 'FS01' }];
+    expect((await loadTriggerSubject('script_finished', SUBJECT))!.name).toBe('the script on FS01');
     h.rows = [{ orgId: ORG, partnerId: PARTNER, siteId: SITE, status: 'completed', completedAt: null, exitCode: 0, stdout: null, stderr: null, scriptName: null, displayName: null, hostname: null }];
     expect((await loadTriggerSubject('script_finished', SUBJECT))!.name).toBeNull();
     h.rows = [{ orgId: ORG, partnerId: PARTNER, siteId: SITE, status: 'completed', completedAt: null, result: null, type: 'reboot', displayName: null, hostname: 'FS01' }];
     expect((await loadTriggerSubject('command_finished', SUBJECT))!.name).toBe('reboot on FS01');
+    h.rows = [{ orgId: ORG, partnerId: PARTNER, siteId: SITE, status: 'completed', finishedAt: null, displayName: null, hostname: 'FS01' }];
+    expect((await loadTriggerSubject('run_settled', SUBJECT))!.name).toBe('the run on FS01');
     h.rows = [{ orgId: ORG, partnerId: PARTNER, siteId: null, status: 'completed', finishedAt: null, displayName: null, hostname: null }];
     expect((await loadTriggerSubject('run_settled', SUBJECT))!.name).toBeNull();
   });
