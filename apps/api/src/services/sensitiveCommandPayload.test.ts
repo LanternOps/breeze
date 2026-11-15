@@ -304,6 +304,10 @@ describe('storage destination credentials at rest', () => {
     expect(typeof sealed.providerConfigEnvelope).toBe('string');
     expect(JSON.stringify(sealed)).not.toContain('synthetic-secret-value');
     expect(hasSensitivePayload('vault_sync')).toBe(true);
+
+    // What the route actually stores: a reference, which is never sealed.
+    const refOnly = { snapshotId: 's', provider: 'local', providerConfigRef: { configId: 'c', orgId: 'o' } };
+    expect(sealStorageCredentialsForPersistence('vault_sync', refOnly, ctx)).toBe(refOnly);
   });
 
   it('leaves other command types and payloads without a destination untouched', () => {

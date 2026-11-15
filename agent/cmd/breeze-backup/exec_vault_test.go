@@ -284,6 +284,37 @@ func TestExecVaultSyncRefusesAnUnusableDestination(t *testing.T) {
 	}
 }
 
+// A payload that names a provider but not a usable destination is refused: it
+// must never be read as "no destination" and synced from the default store.
+func TestExecVaultSyncRefusesAProviderWithoutADestination(t *testing.T) {
+	for name, extra := range map[string]map[string]any{
+		"no providerConfig": {"provider": "local"},
+		"empty local path":  {"provider": "local", "providerConfig": map[string]any{"path": ""}},
+		"no path field":     {"provider": "local", "providerConfig": map[string]any{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			vaultPath, vaultState := configuredVault(t)
+			writeStoreSnapshot(t, defaultStorePath(t), "snap-y")
+
+			body := map[string]any{"vaultId": "v1", "vaultPath": vaultPath, "snapshotId": "snap-y"}
+			for k, v := range extra {
+				body[k] = v
+			}
+			payload, _ := json.Marshal(body)
+			result := execVaultSync(payload, vaultState)
+			if result.Success {
+				t.Fatal("expected a provider without a destination to be refused")
+			}
+			if !strings.Contains(result.Stderr, "but no usable destination") {
+				t.Fatalf("unexpected stderr: %q", result.Stderr)
+			}
+			if vaultHasSnapshot(vaultPath, "snap-y") {
+				t.Fatal("a provider without a destination fell back to the default store")
+			}
+		})
+	}
+}
+
 func loadTempConfig(t *testing.T, cfgPath string) {
 	t.Helper()
 	viper.Reset()
