@@ -35,6 +35,8 @@ const routeState = vi.hoisted(() => ({
   },
   // Effective MFA policy the route resolves for the invitee's session scope.
   policyRequired: false,
+  // Simulates the effective-settings read throwing inside getEffectiveMfaPolicy.
+  policySettingsReadFails: false,
   policyCalls: [] as unknown[],
   minted: [] as Array<{ mfa: boolean; mfaSrc?: string }>,
   redis: new Map<string, string>(),
@@ -116,7 +118,9 @@ const redis = {
   }),
 };
 
-vi.mock('../../services', () => ({
+vi.mock('../../services', async () => {
+  const { combineMfaPolicyFacts } = await vi.importActual<typeof import('../../services/mfaPolicy')>('../../services/mfaPolicy');
+  return {
   hashPassword: vi.fn(async () => 'new-password-hash'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
   getRedis: vi.fn(() => redis),
@@ -130,8 +134,19 @@ vi.mock('../../services', () => ({
   }),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
   getUserEpochs: vi.fn(async () => ({ authEpoch: routeState.user.authEpoch, mfaEpoch: routeState.user.mfaEpoch })),
-  getEffectiveMfaPolicy: vi.fn(async (input: unknown, opts?: unknown) => {
+  getEffectiveMfaPolicy: vi.fn(async (input: unknown, opts?: { failClosed?: boolean; failClosedMethods?: boolean }) => {
     routeState.policyCalls.push({ input, opts });
+    if (routeState.policySettingsReadFails) {
+      // The verdict the real resolver reaches when its settings read fails,
+      // honouring whatever failClosed option the route passed.
+      return combineMfaPolicyFacts({
+        roleForceMfa: false,
+        security: undefined,
+        settingsUnavailable: true,
+        failClosed: opts?.failClosed === true,
+        failClosedMethods: opts?.failClosedMethods === true,
+      });
+    }
     return {
       required: routeState.policyRequired,
       allowedMethods: { totp: true, sms: true, passkey: true },
@@ -139,7 +154,8 @@ vi.mock('../../services', () => ({
       source: { roleForceMfa: false, settingsRequireMfa: routeState.policyRequired, killSwitchOff: false, graceWindow: 'none' },
     };
   }),
-}));
+  };
+});
 
 vi.mock('../../services/authBrowserTransition', () => ({
   AuthBindingRotationRequiredError: transitionState.AuthBindingRotationRequiredError,
@@ -266,6 +282,7 @@ describe('POST /accept-invite guarded issuance', () => {
       status: 'invited', passwordHash: null, authEpoch: 3, mfaEpoch: 2, mfaEnabled: false,
     });
     routeState.policyRequired = false;
+    routeState.policySettingsReadFails = false;
     routeState.policyCalls = [];
     routeState.minted = [];
     routeState.redis = new Map([[tokenKey, routeState.user.id], [userKey, hashInviteToken(token)]]);
@@ -376,6 +393,7 @@ describe('POST /accept-invite session MFA claim (#11854)', () => {
     });
     routeState.redis = new Map([[tokenKey, routeState.user.id], [userKey, hashInviteToken(token)]]);
     routeState.policyRequired = false;
+    routeState.policySettingsReadFails = false;
     routeState.policyCalls = [];
     routeState.minted = [];
   });
@@ -397,6 +415,18 @@ describe('POST /accept-invite session MFA claim (#11854)', () => {
 
   it('mints mfa:false with no source and flags enrollment when the effective policy requires MFA', async () => {
     routeState.policyRequired = true;
+
+    const response = await accept();
+
+    expect(response.status).toBe(200);
+    expect(routeState.minted).toEqual([{ mfa: false, mfaSrc: undefined }]);
+    const body = await response.json() as { mfaEnrollmentRequired?: boolean; enrollUrl?: string };
+    expect(body.mfaEnrollmentRequired).toBe(true);
+    expect(body.enrollUrl).toBe('/auth/mfa/setup');
+  });
+
+  it('mints mfa:false and flags enrollment when the MFA policy settings cannot be read', async () => {
+    routeState.policySettingsReadFails = true;
 
     const response = await accept();
 

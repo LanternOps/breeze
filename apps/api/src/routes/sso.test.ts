@@ -399,16 +399,35 @@ vi.mock('../services/ssoDomainVerification', () => ({
 // under OUR policy: an unenrolled user whose policy REQUIRES MFA must not get
 // mfa:true no matter what `amr` says. Default: policy does not require MFA, so
 // the historical trustsIdpMfa×amr matrix below is unaffected.
-const mfaPolicyState = vi.hoisted(() => ({ required: false }));
+//
+// `settingsReadFails` simulates the effective-settings read throwing inside
+// getEffectiveMfaPolicy: the verdict then comes from the real
+// combineMfaPolicyFacts with `settingsUnavailable`, so it honours whatever
+// failClosed option the mint site passed.
+const mfaPolicyState = vi.hoisted(() => ({ required: false, settingsReadFails: false }));
 
-vi.mock('../services/mfaPolicy', () => ({
-  getEffectiveMfaPolicy: vi.fn(async () => ({
-    required: mfaPolicyState.required,
-    allowedMethods: { totp: true, sms: true, passkey: true },
-    pendingEnrollment: null,
-    source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
-  })),
-}));
+vi.mock('../services/mfaPolicy', async () => {
+  const { combineMfaPolicyFacts } = await vi.importActual<typeof import('../services/mfaPolicy')>('../services/mfaPolicy');
+  return {
+    getEffectiveMfaPolicy: vi.fn(async (_input: unknown, opts?: { failClosed?: boolean; failClosedMethods?: boolean }) => {
+      if (mfaPolicyState.settingsReadFails) {
+        return combineMfaPolicyFacts({
+          roleForceMfa: false,
+          security: undefined,
+          settingsUnavailable: true,
+          failClosed: opts?.failClosed === true,
+          failClosedMethods: opts?.failClosedMethods === true,
+        });
+      }
+      return {
+        required: mfaPolicyState.required,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
+      };
+    }),
+  };
+});
 
 const ipAllowlistState = vi.hoisted(() => ({
   decision: { decision: 'allow' as 'allow' | 'deny', reason: 'matched' },
@@ -518,6 +537,7 @@ import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess
 import { getUserPermissions } from '../services/permissions';
 import { derivePartnerAttribution, writeRouteAudit } from '../services/auditEvents';
 import { auditLogin } from './auth/helpers';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -558,6 +578,7 @@ describe('sso routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mfaPolicyState.required = false;
+    mfaPolicyState.settingsReadFails = false;
     ipAllowlistState.decision = { decision: 'allow', reason: 'matched' };
     ipAllowlistState.error = null;
     ipAllowlistState.calls = [];
@@ -2518,9 +2539,11 @@ describe('sso routes', () => {
       amr?: string[];
       policyRequiresMfa?: boolean;
       userMfaEnabled?: boolean;
+      policySettingsReadFails?: boolean;
     }) => {
       primeCallback();
       mfaPolicyState.required = opts.policyRequiresMfa === true;
+      mfaPolicyState.settingsReadFails = opts.policySettingsReadFails === true;
       vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', amr: opts.amr } as any);
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([{ ...PROVIDER_ROW[0], trustsIdpMfa: opts.trustsIdpMfa }]))
@@ -2626,6 +2649,32 @@ describe('sso routes', () => {
       const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfa?: boolean; mfaSrc?: string };
       expect(identity.mfa).toBe(false);
       expect(identity.mfaSrc).toBeUndefined();
+    });
+
+    // The policy arm admits a no-factor user only on a policy it could READ.
+    // A failed settings read must not resolve to "not required" here: the
+    // mint resolves the policy fail-closed (as accept-invite does), so the
+    // session is minted unassured and the user is held to enrollment.
+    it('mints mfa:false for an UNENROLLED user when the MFA policy settings cannot be read', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, userMfaEnabled: false, policySettingsReadFails: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfa?: boolean; mfaSrc?: string };
+      expect(identity.mfa).toBe(false);
+      expect(identity.mfaSrc).toBeUndefined();
+      expect(vi.mocked(getEffectiveMfaPolicy)).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'organization', userId: USER_UUID }),
+        { failClosed: true },
+      );
+    });
+
+    // An enrolled user's trusted IdP assertion does not depend on the policy
+    // read, so a read failure leaves that arm intact.
+    it('still assures an ENROLLED user from a trusted IdP assertion when the MFA policy settings cannot be read', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], userMfaEnabled: true, policySettingsReadFails: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true, mfaSrc: 'idp' }), expect.any(Object));
     });
 
     // A user who HOLDS a Breeze factor proved none of it in an SSO callback
@@ -4019,9 +4068,11 @@ describe('sso routes', () => {
       amr?: string[];
       policyRequiresMfa?: boolean;
       userMfaEnabled?: boolean;
+      policySettingsReadFails?: boolean;
     }) => {
       prime();
       mfaPolicyState.required = opts.policyRequiresMfa === true;
+      mfaPolicyState.settingsReadFails = opts.policySettingsReadFails === true;
       vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', amr: opts.amr } as any);
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([{ ...PARTNER_PROVIDER, trustsIdpMfa: opts.trustsIdpMfa }]))
@@ -4077,6 +4128,22 @@ describe('sso routes', () => {
     // #11889, partner axis: a tech with no factor under a not-required policy
     // is policy-admitted, exactly like a password login; the audit row does
     // not record that as MFA (no factor or IdP assertion was presented).
+    it('mints mfa:false for an UNENROLLED tech when the MFA policy settings cannot be read', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], userMfaEnabled: false, policySettingsReadFails: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: false }),
+        expect.any(Object)
+      );
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { mfaSrc?: string };
+      expect(identity.mfaSrc).toBeUndefined();
+      expect(vi.mocked(getEffectiveMfaPolicy)).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', userId: USER_UUID }),
+        { failClosed: true },
+      );
+    });
+
     it('policy-admits an UNENROLLED tech when policy does not require MFA and the provider does not trust IdP MFA (#11889)', async () => {
       wireMfa({ trustsIdpMfa: false });
       const res = await doCallback();

@@ -459,6 +459,34 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     );
   });
 
+  // The policy arm admits a no-factor user only on a policy it could READ.
+  // Simulate the effective-settings read throwing inside getEffectiveMfaPolicy:
+  // the verdict comes from the real combineMfaPolicyFacts with
+  // `settingsUnavailable`, so it honours the failClosed option this mint
+  // passes. Fail-closed (as accept-invite resolves it) mints an unassured
+  // session instead of a policy-admitted one.
+  it('mints mfa:false for an UNENROLLED user when the MFA policy settings cannot be read', async () => {
+    const { combineMfaPolicyFacts } = await vi.importActual<typeof import('../../services/mfaPolicy')>('../../services/mfaPolicy');
+    vi.mocked(getEffectiveMfaPolicy).mockImplementationOnce(async (_input, opts) => combineMfaPolicyFacts({
+      roleForceMfa: false,
+      security: undefined,
+      settingsUnavailable: true,
+      failClosed: opts?.failClosed === true,
+      failClosedMethods: opts?.failClosedMethods === true,
+    }));
+    wire();
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
+    expect(getEffectiveMfaPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER_ROW.id }),
+      { failClosed: true },
+    );
+  });
+
   // An IdP assertion never substitutes for a factor the user does not have
   // when policy REQUIRES one, on this path as on the callback.
   it('mints mfa:false for an UNENROLLED user under a required policy despite a trusted IdP assertion (#11889)', async () => {

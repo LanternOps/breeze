@@ -181,13 +181,17 @@ export async function completeSsoLogin(
   // require one is policy-admitted without any IdP assertion, exactly like
   // the password login and the SSO callback. An enrolled user who proved
   // nothing in the ceremony still needs the trusted assertion.
+  //
+  // Fail-closed read, as at accept-invite and the SSO callback: if the
+  // settings read fails, `required` resolves true and a no-factor user gets
+  // mfa:false (held to enrollment) instead of a policy-admitted session.
   const idpMfa = provider.trustsIdpMfa === true && idpMfaAsserted;
   const ssoPolicy = await getEffectiveMfaPolicy({
     scope: provider.partnerId ? 'partner' : 'organization',
     userId: user.id,
     orgId: provider.partnerId ? null : provider.orgId,
     partnerId: provider.partnerId ?? null,
-  });
+  }, { failClosed: true });
   const ssoPolicyAdmitted = user.mfaEnabled !== true && !ssoPolicy.required;
   const ssoMfa = breezeMfaVerified === true
     || (idpMfa && user.mfaEnabled === true)
