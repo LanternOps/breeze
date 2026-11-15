@@ -30,6 +30,7 @@ const REPARSE_FRAGMENT =
 const BINDING_CORPUS: Row[] = [
   ['failed', `${REAPER} Device went offline during backup`, 'device_offline'],
   ['failed', `${REAPER} Backup stalled: no progress reported for 15 minutes`, 'timeout'],
+  ['failed', `${REAPER} Backup stalled: no agent signal since 2026-11-11T09:44:00.000Z (limit 15m)`, 'timeout'],
   ['failed', `${REAPER} Backup stalled: no data transferred for 24h while the agent was still responding (limit 24h)`, 'timeout'],
   ['failed', `${REAPER} Backup timed out (no completion after 24h)`, 'timeout'],
   ['failed', `${REAPER} Backup dispatch never completed`, 'timeout'],
@@ -274,6 +275,9 @@ const CAUSE_CORPUS: CauseRow[] = [
   ['context canceled', 'unknown', 'run_cancelled_on_device'],
   ['[stale-backup-reaper] Backup dispatch never completed', 'timeout', 'never_started'],
   ['[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes', 'timeout', 'no_agent_signal'],
+  // #11766 wording: names the missing signal and when it was last recorded.
+  ['[stale-backup-reaper] Backup stalled: no agent signal since 2026-11-11T09:44:00.000Z (limit 15m)', 'timeout', 'no_agent_signal'],
+  ['[stale-backup-reaper] Backup stalled: no agent signal since 2026-11-11T09:44:00.000Z, and none in the 15m since the server could record signals again (limit 15m)', 'timeout', 'no_agent_signal'],
   // No cause: category-only rows stay as they were.
   ['[stale-backup-reaper] Device went offline during backup', 'device_offline', null],
   ['Agent not connected', 'device_offline', null],

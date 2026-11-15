@@ -24,7 +24,7 @@
  * `limit + 1` past the cursor; the union is merged, sorted and sliced.
  */
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
-import { WISP_ACTIVITY_KINDS, type ActivityItem, type CurrentActivity, type WispActivityKind } from '@breeze/shared';
+import { WISP_ACTIVITY_KINDS, memoryBlockSubjectText, type ActivityItem, type CurrentActivity, type WispActivityKind } from '@breeze/shared';
 import { db } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
@@ -310,7 +310,8 @@ async function approvalRows({ ceiling, readable, cursor, take }: SourceArgs): Pr
 }
 
 async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
-  // Content may be private: only the block type, subject key and status leave.
+  // Content may be private: only the block type, status and the readable subject leave (the subject
+  // key, or a standing instruction's own text; the rest of `content` stays server-side).
   const owners: SQL[] = [
     and(eq(aiMemoryBlocks.ownerKind, 'user'), eq(aiMemoryBlocks.ownerUserId, ceiling.grantorUserId))!,
     eq(aiMemoryBlocks.ownerKind, 'partner'),
@@ -320,7 +321,8 @@ async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Prom
   const rows = await db
     .select({
       id: aiMemoryBlocks.id, ownerKind: aiMemoryBlocks.ownerKind, ownerOrgId: aiMemoryBlocks.ownerOrgId, blockType: aiMemoryBlocks.blockType,
-      subjectKey: aiMemoryBlocks.subjectKey, status: aiMemoryBlocks.status, createdAt: aiMemoryBlocks.createdAt,
+      subjectKey: aiMemoryBlocks.subjectKey, content: aiMemoryBlocks.content, status: aiMemoryBlocks.status,
+      createdAt: aiMemoryBlocks.createdAt,
     })
     .from(aiMemoryBlocks)
     .where(and(
@@ -331,13 +333,18 @@ async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Prom
     ))
     .orderBy(desc(at), desc(aiMemoryBlocks.id))
     .limit(take);
-  return rows.map((r) => row('memory', r.id, r.createdAt, {
-    orgId: r.ownerKind === 'org' ? r.ownerOrgId : null,
-    title: `Remembered ${humanize(r.blockType)}: ${truncate(r.subjectKey, 100)}`,
-    detail: humanize(r.status),
-    href: null,
-    costCents: null,
-  }));
+  return rows.map((r) => {
+    // #11612: a standing instruction's key is an internal clause id; its own text is the readable subject.
+    const subject = memoryBlockSubjectText(r);
+    const label = `Remembered ${humanize(r.blockType)}`;
+    return row('memory', r.id, r.createdAt, {
+      orgId: r.ownerKind === 'org' ? r.ownerOrgId : null,
+      title: subject === null ? label : `${label}: ${truncate(subject, 100)}`,
+      detail: humanize(r.status),
+      href: null,
+      costCents: null,
+    });
+  });
 }
 
 async function notificationRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
