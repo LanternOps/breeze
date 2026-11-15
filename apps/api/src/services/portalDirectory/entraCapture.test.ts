@@ -270,6 +270,73 @@ describe('captureEntraDirectoryRun (plan D4)', () => {
     expect(await captureEntraDirectoryRun(ctx(), deps)).toEqual({ recorded: false, reason: 'lock_timeout' });
   });
 
+  // W08a review follow-up: under REPEATABLE READ a concurrent update of a row
+  // this transaction writes (a sign-in touching an identity) aborts it with
+  // 40001. That is contention, not a fault: retry once (the fence is re-read),
+  // then skip like a lock timeout.
+  it('a serialization failure (40001) is retried once and then evaluates', async () => {
+    let calls = 0;
+    const { deps } = makeDeps({
+      recordEvaluatedRun: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error('could not serialize access'), { code: '40001' });
+        return {
+          runId: RUN_ID, orgId: ORG, source: 'entra' as const, disposition: 'reported' as const, holdReason: null,
+          affected: 1, usable: 2, created: true,
+        };
+      }),
+    });
+    await expect(captureEntraDirectoryRun(ctx(), deps)).resolves.toMatchObject({ recorded: true, outcome: 'evaluated' });
+    expect(deps.transaction).toHaveBeenCalledTimes(2);
+    expect(deps.readSyncState).toHaveBeenCalledTimes(2);
+    expect(deps.afterRunCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  it('the retry re-reads the fence: a newer claim between attempts records nothing', async () => {
+    let reads = 0;
+    const { deps } = makeDeps({
+      readSyncState: vi.fn(async () => {
+        reads += 1;
+        return { connectionId: CONN, runGeneration: reads === 1 ? 7 : 8, lastCompleteSnapshotAt: NOW, lastItemCount: 120 };
+      }),
+      recordEvaluatedRun: vi.fn(async () => { throw Object.assign(new Error('could not serialize access'), { code: '40001' }); }),
+    });
+    expect(await captureEntraDirectoryRun(ctx(), deps)).toEqual({ recorded: false, reason: 'fenced' });
+    expect(deps.recordEvaluatedRun).toHaveBeenCalledTimes(1);
+    expect(deps.afterRunCommitted).not.toHaveBeenCalled();
+  });
+
+  it('a serialization failure on the retry too records nothing, warns and does not throw', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { deps } = makeDeps({
+      readDirectoryRows: vi.fn(async () => { throw Object.assign(new Error('Failed query'), { cause: Object.assign(new Error('x'), { code: '40001' }) }); }),
+    });
+    expect(await captureEntraDirectoryRun(ctx(), deps)).toEqual({ recorded: false, reason: 'serialization_failure' });
+    expect(deps.transaction).toHaveBeenCalledTimes(2);
+    expect(deps.afterRunCommitted).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('a deadlock (40P01) is treated like a serialization failure', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { deps } = makeDeps({
+      lockSource: vi.fn(async () => { throw Object.assign(new Error('deadlock detected'), { code: '40P01' }); }),
+    });
+    expect(await captureEntraDirectoryRun(ctx(), deps)).toEqual({ recorded: false, reason: 'serialization_failure' });
+    expect(deps.transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('a lock timeout is not retried', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { deps } = makeDeps({
+      lockSource: vi.fn(async () => { throw Object.assign(new Error('lock timeout'), { code: '55P03' }); }),
+    });
+    await captureEntraDirectoryRun(ctx(), deps);
+    expect(deps.transaction).toHaveBeenCalledTimes(1);
+  });
+
   it('any other failure is logged without PII and swallowed', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const { deps } = makeDeps({

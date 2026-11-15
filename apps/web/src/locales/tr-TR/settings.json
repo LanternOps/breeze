@@ -8815,5 +8815,128 @@
     },
     "refreshFailed": "Erişim istekleri yenilenemedi; bu liste güncel olmayabilir.",
     "more": "İlk {{count}} istek gösteriliyor. Kalanları görmek için bunlar hakkında karar verin."
+  },
+  "portalDirectory": {
+    "title": "Dizin üzerinden hesap kaldırma",
+    "descriptionMicrosoft": "Müşteriniz Microsoft Entra'da birini devre dışı bıraktığında veya sildiğinde, o kişinin Microsoft ile oturum açması burada kapatılır. Yalnızca eksiksiz dizin okumaları dikkate alınır.",
+    "descriptionGoogle": "Müşteriniz Google Workspace'te birini askıya aldığında veya sildiğinde, o kişinin Google ile oturum açması burada kapatılır. Yalnızca eksiksiz dizin okumaları dikkate alınır.",
+    "descriptionBoth": "Müşteriniz Microsoft Entra veya Google Workspace'te birini devre dışı bıraktığında, askıya aldığında veya sildiğinde, o kişinin dizin üzerinden oturum açması burada kapatılır. Yalnızca eksiksiz dizin okumaları dikkate alınır.",
+    "loading": "Dizin üzerinden hesap kaldırma yükleniyor…",
+    "empty": "Dizin tarafından işaretlenen kimse yok.",
+    "mode": {
+      "report": "Yalnızca rapor: henüz kimse otomatik olarak devre dışı bırakılmıyor. Aşağıdaki liste, neyin olacağını gösterir.",
+      "enforce": "Açık: dizinin devre dışı bıraktığı veya kaldırdığı kişiler dizin üzerinden oturum açma yetkisini kaybeder. Her dizinin ilk toplu işlemi kararınızı bekler."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "Henüz dizin okunmadı.",
+      "lastRead": "Son okuma {{when}}",
+      "evaluated_one": "Eksiksiz okundu: dizinde {{count}} kişi.",
+      "evaluated_other": "Eksiksiz okundu: dizinde {{count}} kişi.",
+      "suspectShrink": "Dizin önceki okumadan bu yana keskin biçimde küçüldü, bu nedenle hiçbir şey değiştirilmedi. Önce ikinci bir okumanın bunu doğrulaması gerekir.",
+      "nothingChanged": "Hiçbir şey değişmedi.",
+      "tenantLink": "Microsoft kiracınızı doğrulayın"
+    },
+    "runReasons": {
+      "tenant_not_proven": "Bu organizasyonun Microsoft kiracısı doğrulanmadı.",
+      "tenant_mismatch": "Microsoft 365 bağlantısı, bu organizasyon için doğrulanandan farklı bir kiracıyı okuyor.",
+      "connection_inactive": "Dizin bağlantısı etkin değil.",
+      "org_inactive": "Bu organizasyon veya iş ortağı etkin değil.",
+      "sync_incomplete": "Son dizin okuması eksikti, bu nedenle hiçbir şey değiştirilmedi.",
+      "directory_too_large": "Bu dizin eşitleme sınırından büyük; hesap kaldırma kullanılamıyor. Kullanıma sunulduğunda bunun yerine SCIM sağlamayı kullanın.",
+      "scope_missing": "Google bağlantısının alan genelindeki yetki devrinde admin.directory.user kapsamı eksik.",
+      "access_denied": "Google dizine erişimi reddetti.",
+      "unavailable": "Dizine ulaşılamadı.",
+      "connection_invalid": "Google bağlantısının kimlik bilgileri kullanılamadı.",
+      "admin_not_admin": "Google bağlantısının yönetici hesabı artık etkin bir yönetici değil.",
+      "mixed_customer": "Google listesi başka bir Workspace'in kullanıcılarını karıştırdı.",
+      "malformed": "Dizin, okunamayan kullanıcılar döndürdü.",
+      "unknown": "Okuma kullanılmadı."
+    },
+    "holdReasons": {
+      "first_enforcement": "bu dizin için ilk kez",
+      "threshold": "her zamankinden fazla kişi"
+    },
+    "held": {
+      "summary_one": "{{source}}: {{count}} kişi kararınızı bekliyor.",
+      "summary_other": "{{source}}: {{count}} kişi kararınızı bekliyor.",
+      "because": "Bekletildi: {{reason}}.",
+      "apply": "Uygula",
+      "dismiss": "Yoksay"
+    },
+    "confirm": {
+      "applyTitle": "Bu oturum açma yetkileri kapatılsın mı?",
+      "applyMessage_one": "Bu işlem {{count}} kişinin dizin üzerinden oturum açmasını kapatır ve başka bir oturum açma yolu yoksa hesabını devre dışı bırakır. Bekletildi: {{reason}}. Her kişiyi kullanıcı listesinden geri yükleyebilirsiniz.",
+      "applyMessage_other": "Bu işlem {{count}} kişinin dizin üzerinden oturum açmasını kapatır ve başka bir oturum açma yolu olmayan her hesabı devre dışı bırakır. Bekletildi: {{reason}}. Her kişiyi kullanıcı listesinden geri yükleyebilirsiniz.",
+      "dismissTitle": "Bu toplu işlem yoksayılsın mı?",
+      "dismissMessage_one": "Hiç kimse değişmez. {{count}} kişi, daha yeni bir dizin okuması etkin olduğunu gösterene kadar muaf kalır. Bekletildi: {{reason}}.",
+      "dismissMessage_other": "Hiç kimse değişmez. {{count}} kişi, daha yeni bir dizin okuması etkin olduklarını gösterene kadar muaf kalır. Bekletildi: {{reason}}."
+    },
+    "columns": {
+      "person": "Kişi",
+      "provider": "Dizin",
+      "reason": "Dizinin bildirdiği",
+      "effect": "Etki"
+    },
+    "actionReasons": {
+      "account_disabled": "Dizinde devre dışı bırakıldı",
+      "absent": "Dizinden kaldırıldı",
+      "suspended": "Dizinde askıya alındı",
+      "archived": "Dizinde arşivlendi"
+    },
+    "effects": {
+      "identity_and_account": "Hesabı devre dışı bırakır",
+      "identityEntra": "Yalnızca Microsoft ile oturum açmayı kapatır",
+      "identityGoogle": "Yalnızca Google ile oturum açmayı kapatır"
+    },
+    "tags": {
+      "keepsPassword": "Şifreyle erişim korunur",
+      "rearmed": "Ekibiniz tarafından geri yüklendi veya yoksayıldı; dizin bu kişiyi hâlâ devre dışı olarak bildiriyor"
+    },
+    "blockers": {
+      "entra_directory": "Microsoft dizini",
+      "google_directory": "Google dizini",
+      "scim": "SCIM sağlama",
+      "msp": "ekibiniz",
+      "unknown": "başka bir kaynak"
+    },
+    "users": {
+      "disabledEntra": "Microsoft ile oturum açma şu tarafından devre dışı bırakıldı: {{blockers}}",
+      "disabledGoogle": "Google ile oturum açma şu tarafından devre dışı bırakıldı: {{blockers}}",
+      "restore": "Geri yükle",
+      "remove": "Oturum açmayı kaldır",
+      "disabledBy": {
+        "msp": "Ekibiniz tarafından devre dışı bırakıldı",
+        "directory": "Dizin tarafından devre dışı bırakıldı",
+        "scim": "SCIM sağlama tarafından devre dışı bırakıldı"
+      }
+    },
+    "restore": {
+      "title": "Bu oturum açma yöntemi geri yüklensin mi?",
+      "message": "{{email}} için {{provider}} ile oturum açmayı yeniden açar ve üzerindeki tüm engelleri kaldırır: {{blockers}}.",
+      "rearmNote": "Daha yeni bir dizin okuması bu kişinin etkin olduğunu gösterene kadar dizin bunu tekrar kapatmaz.",
+      "reactivate": "Hesabı da yeniden etkinleştir",
+      "confirmMsp": "Ekibiniz bu hesabı devre dışı bırakmıştı. Yeniden etkinleştirmek istiyorum."
+    },
+    "remove": {
+      "title": "Bu oturum açma yöntemi kaldırılsın mı?",
+      "message": "{{email}} için devre dışı bırakılmış {{provider}} ile oturum açmayı kaldırır. Kişi dizinde silinip yeniden oluşturulduysa bunu kullanın. Tek oturum açma yöntemiyse hesabı yeniden etkinleştirin ve davet gönderin."
+    },
+    "toasts": {
+      "applying": "Toplu işlem uygulanıyor. Değişiklikler birazdan burada görünecek.",
+      "dismissed": "Toplu işlem yoksayıldı",
+      "restored": "Oturum açma yöntemi geri yüklendi",
+      "removed": "Oturum açma yöntemi kaldırıldı"
+    },
+    "errors": {
+      "load": "Dizin üzerinden hesap kaldırma yüklenemedi.",
+      "decide": "Kararınız kaydedilemedi.",
+      "stale": "Bu toplu işlem siz açtıktan sonra değişti. Yenilenen listeyi inceleyip tekrar deneyin.",
+      "notHeld": "Bu toplu işlem artık bir karar beklemiyor.",
+      "enforcementOff": "Hesap kaldırma bu sunucuda yalnızca rapor modunda, bu yüzden uygulanacak bir şey yok."
+    }
   }
 }

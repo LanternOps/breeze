@@ -8815,5 +8815,128 @@
     },
     "refreshFailed": "Não foi possível atualizar as solicitações de acesso, então esta lista pode estar desatualizada.",
     "more": "Mostrando as primeiras {{count}} solicitações. Decida sobre elas para ver as demais."
+  },
+  "portalDirectory": {
+    "title": "Desprovisionamento pelo diretório",
+    "descriptionMicrosoft": "Quando seu cliente desativa ou exclui alguém no Microsoft Entra, o login com Microsoft dessa pessoa é desativado aqui. Só contam as leituras completas do diretório.",
+    "descriptionGoogle": "Quando seu cliente suspende ou exclui alguém no Google Workspace, o login com Google dessa pessoa é desativado aqui. Só contam as leituras completas do diretório.",
+    "descriptionBoth": "Quando seu cliente desativa, suspende ou exclui alguém no Microsoft Entra ou no Google Workspace, o login pelo diretório dessa pessoa é desativado aqui. Só contam as leituras completas do diretório.",
+    "loading": "Carregando o desprovisionamento pelo diretório…",
+    "empty": "O diretório não sinalizou ninguém.",
+    "mode": {
+      "report": "Somente relatório: ninguém é desativado automaticamente ainda. A lista abaixo mostra o que aconteceria.",
+      "enforce": "Ativado: as pessoas que o diretório desativa ou remove perdem o login pelo diretório. O primeiro lote de cada diretório aguarda a sua decisão."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "Nenhuma leitura do diretório ainda.",
+      "lastRead": "Última leitura {{when}}",
+      "evaluated_one": "Leitura completa: {{count}} pessoa no diretório.",
+      "evaluated_other": "Leitura completa: {{count}} pessoas no diretório.",
+      "suspectShrink": "O diretório diminuiu bruscamente desde a leitura anterior, então nada foi alterado. Uma segunda leitura precisa confirmar isso primeiro.",
+      "nothingChanged": "Nada mudou.",
+      "tenantLink": "Comprove seu tenant da Microsoft"
+    },
+    "runReasons": {
+      "tenant_not_proven": "O tenant da Microsoft desta organização não está comprovado.",
+      "tenant_mismatch": "A conexão do Microsoft 365 lê um tenant diferente do comprovado para esta organização.",
+      "connection_inactive": "A conexão com o diretório não está ativa.",
+      "org_inactive": "Esta organização ou o parceiro dela não está ativo.",
+      "sync_incomplete": "A última leitura do diretório estava incompleta, então nada foi alterado.",
+      "directory_too_large": "Este diretório é maior que o limite de sincronização; o desprovisionamento não está disponível. Use o provisionamento SCIM quando estiver disponível.",
+      "scope_missing": "A delegação em todo o domínio da conexão do Google não tem o escopo admin.directory.user.",
+      "access_denied": "O Google recusou o acesso ao diretório.",
+      "unavailable": "Não foi possível acessar o diretório.",
+      "connection_invalid": "Não foi possível usar as credenciais da conexão do Google.",
+      "admin_not_admin": "A conta de administrador da conexão do Google não é mais um administrador ativo.",
+      "mixed_customer": "A listagem do Google misturou usuários de outro Workspace.",
+      "malformed": "O diretório retornou usuários que não puderam ser lidos.",
+      "unknown": "A leitura não foi usada."
+    },
+    "holdReasons": {
+      "first_enforcement": "primeira vez neste diretório",
+      "threshold": "mais pessoas que o habitual"
+    },
+    "held": {
+      "summary_one": "{{source}}: {{count}} pessoa aguarda a sua decisão.",
+      "summary_other": "{{source}}: {{count}} pessoas aguardam a sua decisão.",
+      "because": "Retido: {{reason}}.",
+      "apply": "Aplicar",
+      "dismiss": "Descartar"
+    },
+    "confirm": {
+      "applyTitle": "Desativar estes logins?",
+      "applyMessage_one": "Isso desativa o login pelo diretório de {{count}} pessoa e desativa a conta dela se não tiver outra forma de fazer login. Retido: {{reason}}. Você pode restaurar cada uma pela lista de usuários.",
+      "applyMessage_other": "Isso desativa o login pelo diretório de {{count}} pessoas e desativa cada conta que não tenha outra forma de fazer login. Retido: {{reason}}. Você pode restaurar cada uma pela lista de usuários.",
+      "dismissTitle": "Descartar este lote?",
+      "dismissMessage_one": "Ninguém é alterado. {{count}} pessoa fica isenta até que uma leitura mais recente do diretório a mostre ativada. Retido: {{reason}}.",
+      "dismissMessage_other": "Ninguém é alterado. {{count}} pessoas ficam isentas até que uma leitura mais recente do diretório as mostre ativadas. Retido: {{reason}}."
+    },
+    "columns": {
+      "person": "Pessoa",
+      "provider": "Diretório",
+      "reason": "O que o diretório informa",
+      "effect": "Efeito"
+    },
+    "actionReasons": {
+      "account_disabled": "Desativada no diretório",
+      "absent": "Removida do diretório",
+      "suspended": "Suspensa no diretório",
+      "archived": "Arquivada no diretório"
+    },
+    "effects": {
+      "identity_and_account": "Desativa a conta",
+      "identityEntra": "Desativa apenas o login com Microsoft",
+      "identityGoogle": "Desativa apenas o login com Google"
+    },
+    "tags": {
+      "keepsPassword": "Mantém o acesso por senha",
+      "rearmed": "Restaurada ou descartada pela sua equipe; o diretório ainda informa esta pessoa como desativada"
+    },
+    "blockers": {
+      "entra_directory": "diretório da Microsoft",
+      "google_directory": "diretório do Google",
+      "scim": "provisionamento SCIM",
+      "msp": "sua equipe",
+      "unknown": "outra origem"
+    },
+    "users": {
+      "disabledEntra": "Login com Microsoft desativado por {{blockers}}",
+      "disabledGoogle": "Login com Google desativado por {{blockers}}",
+      "restore": "Restaurar",
+      "remove": "Remover login",
+      "disabledBy": {
+        "msp": "Desativado pela sua equipe",
+        "directory": "Desativado pelo diretório",
+        "scim": "Desativado pelo provisionamento SCIM"
+      }
+    },
+    "restore": {
+      "title": "Restaurar este método de login?",
+      "message": "Reativa o login com {{provider}} de {{email}} e remove todos os bloqueios: {{blockers}}.",
+      "rearmNote": "O diretório não o desativará de novo até que uma leitura mais recente do diretório mostre esta pessoa como ativada.",
+      "reactivate": "Reativar também a conta",
+      "confirmMsp": "Sua equipe desativou esta conta. Quero reativá-la."
+    },
+    "remove": {
+      "title": "Remover este método de login?",
+      "message": "Remove o login desativado de {{provider}} de {{email}}. Use quando a pessoa foi excluída e recriada no diretório. Se era o único método de login dela, reative a conta e envie um convite."
+    },
+    "toasts": {
+      "applying": "Aplicando o lote. As alterações aparecerão aqui em breve.",
+      "dismissed": "Lote descartado",
+      "restored": "Método de login restaurado",
+      "removed": "Método de login removido"
+    },
+    "errors": {
+      "load": "Não foi possível carregar o desprovisionamento pelo diretório.",
+      "decide": "Não foi possível salvar a sua decisão.",
+      "stale": "Este lote mudou desde que você o abriu. Revise a lista atualizada e tente novamente.",
+      "notHeld": "Este lote não está mais aguardando uma decisão.",
+      "enforcementOff": "O desprovisionamento está no modo somente relatório neste servidor, então não há nada a aplicar."
+    }
   }
 }

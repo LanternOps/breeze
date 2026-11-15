@@ -626,7 +626,10 @@ export interface RemoveDisabledPortalIdentityInput {
  * directory state in the panel before choosing this. Its directory actions
  * cascade with it (the audit log keeps every applied disable, D12). For Entra,
  * the W3 D4 fence clears the account's legacy `entra_*` columns when they
- * name the removed identity. Audits `organization.portal_user.identity.remove`.
+ * name the removed identity. When it was the account's last identity and the
+ * account is identity-method, the account becomes a credential-less
+ * password-method row so the MSP can re-invite it (see below). Audits
+ * `organization.portal_user.identity.remove` with `authMethodReset`.
  */
 export async function removeDisabledPortalIdentity(
   input: RemoveDisabledPortalIdentityInput,
@@ -661,6 +664,31 @@ export async function removeDisabledPortalIdentity(
       .delete(portalUserIdentities)
       .where(and(eq(portalUserIdentities.id, identity.id), eq(portalUserIdentities.orgId, input.orgId)));
 
+    // The account's LAST sign-in method gone: an identity-method account
+    // (auth_method 'entra' / 'google') would otherwise be a dead end — every
+    // invite writer refuses a non-password row (identity_managed), sign-in has
+    // no method left, and the person's new directory account cannot link. It
+    // becomes a credential-less password-method row, the shape the invite
+    // writers target: the MSP reactivates it (→ invited) and invites, and the
+    // invite-bound sign-in links the new identity (OD3). Any hash on the
+    // non-password row was never a credential and is cleared so the flip cannot
+    // make it one. The epoch is bumped because the credential model changed.
+    // Locked: the account row is held FOR UPDATE above (D3).
+    const [remaining] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(portalUserIdentities)
+      .where(and(eq(portalUserIdentities.portalUserId, account.id), eq(portalUserIdentities.orgId, input.orgId)));
+    // Never on an `active` row: a credential-less active password row is the
+    // legacy shape self-service reset accepts, so an (unreachable today)
+    // active identity-method account is left as it is rather than handed one.
+    const authMethodReset = (remaining?.n ?? 0) === 0 && !isPasswordEligible(account) && account.status !== 'active';
+    if (authMethodReset) {
+      await db
+        .update(portalUsers)
+        .set({ authMethod: 'password', passwordHash: null, authEpoch: sql`${portalUsers.authEpoch} + 1`, updatedAt: now })
+        .where(and(eq(portalUsers.id, account.id), eq(portalUsers.orgId, input.orgId)));
+    }
+
     await insertAudit({
       orgId: input.orgId,
       actorType: 'user',
@@ -668,7 +696,7 @@ export async function removeDisabledPortalIdentity(
       action: AUDIT_IDENTITY_REMOVE,
       resourceType: 'portal_user',
       resourceId: account.id,
-      details: { identityId: identity.id, provider: identity.provider, blockers },
+      details: { identityId: identity.id, provider: identity.provider, blockers, authMethodReset },
       result: 'success',
     });
     return { identityId: identity.id, provider: identity.provider, blockers };

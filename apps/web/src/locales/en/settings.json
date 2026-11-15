@@ -8815,5 +8815,128 @@
     },
     "refreshFailed": "Couldn't refresh the access requests, so this list may be out of date.",
     "more": "Showing the first {{count}} requests. Decide these to see the rest."
+  },
+  "portalDirectory": {
+    "title": "Directory deprovisioning",
+    "descriptionMicrosoft": "When your customer disables or deletes someone in Microsoft Entra, that person's Microsoft sign-in is turned off here. Only complete directory reads count.",
+    "descriptionGoogle": "When your customer suspends or deletes someone in Google Workspace, that person's Google sign-in is turned off here. Only complete directory reads count.",
+    "descriptionBoth": "When your customer disables, suspends or deletes someone in Microsoft Entra or Google Workspace, that person's directory sign-in is turned off here. Only complete directory reads count.",
+    "loading": "Loading directory deprovisioning…",
+    "empty": "No one is flagged by the directory.",
+    "mode": {
+      "report": "Report only: nobody is disabled automatically yet. The list below shows what would happen.",
+      "enforce": "On: people the directory disables or removes lose their directory sign-in. The first batch for each directory waits for your decision."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "No directory read yet.",
+      "lastRead": "Last read {{when}}",
+      "evaluated_one": "Read completely: {{count}} person in the directory.",
+      "evaluated_other": "Read completely: {{count}} people in the directory.",
+      "suspectShrink": "The directory shrank sharply since the previous read, so nothing changed. A second read has to confirm it first.",
+      "nothingChanged": "Nothing changed.",
+      "tenantLink": "Prove your Microsoft tenant"
+    },
+    "runReasons": {
+      "tenant_not_proven": "This organization's Microsoft tenant is not proven.",
+      "tenant_mismatch": "The Microsoft 365 connection reads a different tenant than the one proven for this organization.",
+      "connection_inactive": "The directory connection is not active.",
+      "org_inactive": "This organization or its partner is not active.",
+      "sync_incomplete": "The last directory read was incomplete, so nothing changed.",
+      "directory_too_large": "This directory is larger than the sync limit; deprovisioning is unavailable. Use SCIM provisioning instead when it is available.",
+      "scope_missing": "The Google connection's domain-wide delegation is missing the admin.directory.user scope.",
+      "access_denied": "Google refused access to the directory.",
+      "unavailable": "The directory could not be reached.",
+      "connection_invalid": "The Google connection's credentials could not be used.",
+      "admin_not_admin": "The Google connection's admin account is no longer an active admin.",
+      "mixed_customer": "The Google listing mixed users from another Workspace.",
+      "malformed": "The directory returned users it could not read.",
+      "unknown": "The read was not used."
+    },
+    "holdReasons": {
+      "first_enforcement": "first time for this directory",
+      "threshold": "more people than usual"
+    },
+    "held": {
+      "summary_one": "{{source}}: {{count}} person is waiting for your decision.",
+      "summary_other": "{{source}}: {{count}} people are waiting for your decision.",
+      "because": "Held: {{reason}}.",
+      "apply": "Apply",
+      "dismiss": "Dismiss"
+    },
+    "confirm": {
+      "applyTitle": "Turn off these sign-ins?",
+      "applyMessage_one": "This turns off the directory sign-in of {{count}} person, and disables their account when they have no other way to sign in. Held: {{reason}}. You can restore each one from the users list.",
+      "applyMessage_other": "This turns off the directory sign-in of {{count}} people, and disables each account that has no other way to sign in. Held: {{reason}}. You can restore each one from the users list.",
+      "dismissTitle": "Dismiss this batch?",
+      "dismissMessage_one": "Nobody changes. {{count}} person stays exempt until a newer directory read shows them enabled. Held: {{reason}}.",
+      "dismissMessage_other": "Nobody changes. {{count}} people stay exempt until a newer directory read shows them enabled. Held: {{reason}}."
+    },
+    "columns": {
+      "person": "Person",
+      "provider": "Directory",
+      "reason": "What the directory says",
+      "effect": "Effect"
+    },
+    "actionReasons": {
+      "account_disabled": "Disabled in the directory",
+      "absent": "Removed from the directory",
+      "suspended": "Suspended in the directory",
+      "archived": "Archived in the directory"
+    },
+    "effects": {
+      "identity_and_account": "Disables the account",
+      "identityEntra": "Turns off Microsoft sign-in only",
+      "identityGoogle": "Turns off Google sign-in only"
+    },
+    "tags": {
+      "keepsPassword": "Keeps password access",
+      "rearmed": "Restored or dismissed by your team; the directory still reports this person disabled"
+    },
+    "blockers": {
+      "entra_directory": "Microsoft directory",
+      "google_directory": "Google directory",
+      "scim": "SCIM provisioning",
+      "msp": "your team",
+      "unknown": "another source"
+    },
+    "users": {
+      "disabledEntra": "Microsoft sign-in disabled by {{blockers}}",
+      "disabledGoogle": "Google sign-in disabled by {{blockers}}",
+      "restore": "Restore",
+      "remove": "Remove sign-in",
+      "disabledBy": {
+        "msp": "Disabled by your team",
+        "directory": "Disabled by directory",
+        "scim": "Disabled by SCIM provisioning"
+      }
+    },
+    "restore": {
+      "title": "Restore this sign-in method?",
+      "message": "Turns {{provider}} sign-in back on for {{email}} and clears every block on it: {{blockers}}.",
+      "rearmNote": "The directory will not turn it off again until a newer directory read shows this person enabled.",
+      "reactivate": "Also re-enable the account",
+      "confirmMsp": "Your team disabled this account. I want to re-enable it."
+    },
+    "remove": {
+      "title": "Remove this sign-in method?",
+      "message": "Removes the disabled {{provider}} sign-in from {{email}}. Use this when the person was deleted and recreated in the directory. If it was their only sign-in method, reactivate the account and send an invite."
+    },
+    "toasts": {
+      "applying": "Applying the batch. Changes appear here shortly.",
+      "dismissed": "Batch dismissed",
+      "restored": "Sign-in method restored",
+      "removed": "Sign-in method removed"
+    },
+    "errors": {
+      "load": "Couldn't load directory deprovisioning.",
+      "decide": "Couldn't save your decision.",
+      "stale": "This batch changed since you opened it. Review the refreshed list and try again.",
+      "notHeld": "This batch is no longer waiting for a decision.",
+      "enforcementOff": "Deprovisioning is in report-only mode on this server, so there is nothing to apply."
+    }
   }
 }

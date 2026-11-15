@@ -1359,6 +1359,7 @@ See [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-
 | `PORTAL_GOOGLE_CLIENT_ID` | — | Client ID of the **Breeze Portal** Google OAuth web client (ends in `.apps.googleusercontent.com`). Sign in with Google for the customer portal stays off until both this and the secret are set. |
 | `PORTAL_GOOGLE_CLIENT_SECRET` | — | Client secret for that OAuth client. |
 | `PORTAL_GOOGLE_CALLBACK_BASE_URL` | origin of `PUBLIC_URL`, then `PUBLIC_APP_URL`, then `PUBLIC_API_URL` | Base URL used to build the redirect URI. Set it only when the portal is served from a different host than the API; use the portal host. |
+| `PORTAL_DIRECTORY_DEPROVISION_ENFORCE` | unset (report only) | `true` or `1` turns on enforcement of portal directory deprovisioning: Microsoft and Google sign-ins are disabled when the customer's directory disables or removes the person. `false`, `0` or unset records and reports only. Any other value is treated as report-only and logs a startup warning. Read [Directory deprovisioning](/features/portal-directory-deprovisioning/#turning-on-enforcement-self-hosted) before setting it. |
 
 To set up the Google OAuth client:
 

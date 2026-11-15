@@ -1,0 +1,105 @@
+---
+title: Directory Deprovisioning for the Customer Portal
+description: How Breeze turns off a person's Microsoft or Google portal sign-in when the customer's directory disables or removes them, what evidence it requires, how held batches work, and how to restore a sign-in.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Directory deprovisioning keeps the Customer Portal in step with the customer's directory. When a customer disables or deletes a person in Microsoft Entra, or suspends, archives or deletes them in Google Workspace, Breeze turns off that person's Microsoft or Google sign-in for the portal and the Office add-in. If the person has no other way to sign in, their portal account is disabled too. Sessions in the browser portal and the add-in end on their next request.
+
+This page covers what Breeze acts on, what it does not do, how enforcement is rolled out, and how to restore a sign-in.
+
+## What it does not do
+
+Deprovisioning is not offboarding.
+
+- A person who also has a portal password keeps password access while the organization's password mode is **Allowed**. The panel tags these people **Keeps password access**. To offboard such a person, disable their portal account by hand in **Organization › Customer Portal › Portal users**.
+- Under **Off — Microsoft/Google only** the password is not a credential, so the account is disabled.
+- Re-enabling the person in Entra or Google restores nothing in Breeze. Use [Restore](#restore-a-sign-in).
+- An account your team disabled is never re-enabled by the directory.
+- Nothing is deleted automatically. The sign-in method is kept, disabled, so the same directory person cannot come back as a "new person".
+
+## Where to see it
+
+**Organization › Customer Portal › Sign-in & registration**, below the domains row. This is a status panel, not a setting. There is no per-organization on/off switch.
+
+## What counts as evidence
+
+Breeze acts only on complete directory reads. A read that was incomplete, throttled, interrupted, paged short or odd changes nothing.
+
+| Directory says | What Breeze needs |
+|---|---|
+| Entra `accountEnabled` is false, or Google user is suspended or archived | One complete read |
+| Person is no longer in the directory | Two complete reads at least 4 hours apart |
+
+Absence counts only for a person an earlier complete read of the same directory listed. A person who signed in from another Microsoft tenant or another Google Workspace is never acted on for absence.
+
+A complete read where the directory shrank below 80% of the previous one is held as suspicious. It changes nothing until a second read within ±5% of it confirms the new size.
+
+### Microsoft
+
+Evidence comes from the Microsoft 365 users sync.
+
+- The organization's customer-graph-read connection must be active or degraded, and the users sync must be on.
+- The organization's proven Microsoft tenant must equal the connection's tenant. Otherwise the panel says the tenant is not proven or does not match.
+- A directory larger than the sync's user limit (default 25,000) shows **unavailable**. SCIM provisioning, planned for a later release, is the fallback.
+- Disconnecting Microsoft 365 never deprovisions anyone. Reconnecting starts the evidence over.
+
+### Google
+
+A daily pass reads the Workspace directory through the existing domain-wide delegation grant. It uses the `https://www.googleapis.com/auth/admin.directory.user` scope already in the grant, so no new consent is needed.
+
+The connection's admin must still be an active Workspace admin. Problems show on the panel as a reason: scope missing, access denied, admin no longer admin, or unavailable.
+
+## Report-only mode and enforcement
+
+By default Breeze runs in report-only mode. It records every evaluation and shows in the panel what would happen. It disables nobody and sends no email. **Apply** and **Dismiss** are not available. A person flagged by several reads in a row is listed once, for as long as each new read still flags them.
+
+Enforcement is turned on for the whole deployment with `PORTAL_DIRECTORY_DEPROVISION_ENFORCE`. Self-hosters: see [Turning on enforcement](#turning-on-enforcement-self-hosted).
+
+### Held batches
+
+With enforcement on, some batches wait for an MSP decision:
+
+- The first batch with changes for each directory is always held ("first time for this directory").
+- After that, a batch is held when it would affect at least 3 accounts and more than 10% of the organization's sign-ins that this directory lists, or more than 25 accounts, or at least 2 accounts and half or more of them ("more people than usual").
+
+A held batch sends one email to the partner's active admins. The email lists no people.
+
+**Apply** acts on the exact batch you saw. A batch older than 72 hours, or one a newer read has replaced, must be reviewed again. Each change is re-checked when it is applied.
+
+**Dismiss** changes nobody. Each person in the batch is exempt until a newer complete read shows them enabled in the directory. The panel shows "Restored or dismissed by your team; the directory still reports this person disabled".
+
+## Restore a sign-in
+
+In the **Portal users** list, a disabled sign-in method shows a red badge that names who disabled it. Click **Restore** beside it.
+
+- Restore turns the sign-in method back on and clears every block on it: Microsoft directory, Google directory, and later SCIM.
+- **Also re-enable the account** reactivates the account in the same step. It is pre-ticked only when the directory disabled the account.
+- An account your team disabled needs a second, explicit confirmation.
+
+After a Restore, the directory will not turn the method off again until a newer complete read shows the person enabled. While the directory still says disabled, this exemption can last indefinitely.
+
+## A person deleted and recreated in the directory
+
+A recreated person gets a new directory ID. The old, disabled sign-in method blocks linking the new one.
+
+1. Use **Remove sign-in** on the disabled method. It is offered only for methods the directory disabled.
+2. If that was the account's last sign-in method, the account becomes an ordinary account you can invite. Reactivate it (it moves to pending setup).
+3. Send an invite, or a Microsoft or Google sign-in invite. The person's new directory identity links when they accept.
+
+## Turning on enforcement (self-hosted)
+
+Set `PORTAL_DIRECTORY_DEPROVISION_ENFORCE=true` only after all of these:
+
+1. Every API instance runs this release.
+2. You have reviewed at least 14 days of report-mode results in the panel.
+3. You have tested with a lab user: disable them in the directory, wait for the next complete read, and check the panel.
+
+For Google, also confirm with a test user that the Google sign-in subject equals the Admin SDK user id before enforcing.
+
+<Aside>
+  The variable accepts `true` or `1` (enforce) and `false` or `0`. Unset is report-only. Any other value is treated as report-only and logs a warning at startup. See [Environment variables](/deploy/environment/#customer-portal-google-sign-in-optional).
+</Aside>
+
+Related: [Microsoft sign-in](/features/portal-microsoft-sign-in/), [Google sign-in](/features/portal-google-sign-in/), [Customer Portal](/features/portal/).

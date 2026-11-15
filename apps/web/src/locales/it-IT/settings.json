@@ -8815,5 +8815,128 @@
     },
     "refreshFailed": "Impossibile aggiornare le richieste di accesso: questo elenco potrebbe non essere aggiornato.",
     "more": "Vengono mostrate le prime {{count}} richieste. Decidi su queste per vedere le altre."
+  },
+  "portalDirectory": {
+    "title": "Deprovisioning dalla directory",
+    "descriptionMicrosoft": "Quando il cliente disabilita o elimina qualcuno in Microsoft Entra, l’accesso con Microsoft di quella persona viene disattivato qui. Contano solo le letture complete della directory.",
+    "descriptionGoogle": "Quando il cliente sospende o elimina qualcuno in Google Workspace, l’accesso con Google di quella persona viene disattivato qui. Contano solo le letture complete della directory.",
+    "descriptionBoth": "Quando il cliente disabilita, sospende o elimina qualcuno in Microsoft Entra o Google Workspace, l’accesso tramite directory di quella persona viene disattivato qui. Contano solo le letture complete della directory.",
+    "loading": "Caricamento del deprovisioning dalla directory…",
+    "empty": "La directory non segnala nessuno.",
+    "mode": {
+      "report": "Solo report: per ora nessuno viene disabilitato automaticamente. L’elenco qui sotto mostra cosa accadrebbe.",
+      "enforce": "Attivo: le persone che la directory disabilita o rimuove perdono l’accesso tramite directory. Il primo batch di ogni directory attende la tua decisione."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "Nessuna lettura della directory finora.",
+      "lastRead": "Ultima lettura {{when}}",
+      "evaluated_one": "Lettura completa: {{count}} persona nella directory.",
+      "evaluated_other": "Lettura completa: {{count}} persone nella directory.",
+      "suspectShrink": "La directory si è ridotta drasticamente dalla lettura precedente, quindi non è stato modificato nulla. Prima deve confermarlo una seconda lettura.",
+      "nothingChanged": "Nulla è cambiato.",
+      "tenantLink": "Verifica il tuo tenant Microsoft"
+    },
+    "runReasons": {
+      "tenant_not_proven": "Il tenant Microsoft di questa organizzazione non è verificato.",
+      "tenant_mismatch": "La connessione Microsoft 365 legge un tenant diverso da quello verificato per questa organizzazione.",
+      "connection_inactive": "La connessione alla directory non è attiva.",
+      "org_inactive": "Questa organizzazione o il suo partner non è attivo.",
+      "sync_incomplete": "L’ultima lettura della directory era incompleta, quindi non è stato modificato nulla.",
+      "directory_too_large": "Questa directory supera il limite di sincronizzazione; il deprovisioning non è disponibile. Usa invece il provisioning SCIM quando sarà disponibile.",
+      "scope_missing": "Alla delega a livello di dominio della connessione Google manca l’ambito admin.directory.user.",
+      "access_denied": "Google ha negato l’accesso alla directory.",
+      "unavailable": "Impossibile raggiungere la directory.",
+      "connection_invalid": "Non è stato possibile usare le credenziali della connessione Google.",
+      "admin_not_admin": "L’account amministratore della connessione Google non è più un amministratore attivo.",
+      "mixed_customer": "L’elenco di Google mescolava utenti di un altro Workspace.",
+      "malformed": "La directory ha restituito utenti che non è stato possibile leggere.",
+      "unknown": "La lettura non è stata utilizzata."
+    },
+    "holdReasons": {
+      "first_enforcement": "prima volta per questa directory",
+      "threshold": "più persone del solito"
+    },
+    "held": {
+      "summary_one": "{{source}}: {{count}} persona attende la tua decisione.",
+      "summary_other": "{{source}}: {{count}} persone attendono la tua decisione.",
+      "because": "In sospeso: {{reason}}.",
+      "apply": "Applica",
+      "dismiss": "Ignora"
+    },
+    "confirm": {
+      "applyTitle": "Disattivare questi accessi?",
+      "applyMessage_one": "Questa azione disattiva l’accesso tramite directory di {{count}} persona e disabilita il suo account se non ha altri modi per accedere. In sospeso: {{reason}}. Puoi ripristinare ciascuna persona dall’elenco utenti.",
+      "applyMessage_other": "Questa azione disattiva l’accesso tramite directory di {{count}} persone e disabilita ogni account che non ha altri modi per accedere. In sospeso: {{reason}}. Puoi ripristinare ciascuna persona dall’elenco utenti.",
+      "dismissTitle": "Ignorare questo batch?",
+      "dismissMessage_one": "Nessuno viene modificato. {{count}} persona resta esente finché una lettura più recente della directory non la mostra abilitata. In sospeso: {{reason}}.",
+      "dismissMessage_other": "Nessuno viene modificato. {{count}} persone restano esenti finché una lettura più recente della directory non le mostra abilitate. In sospeso: {{reason}}."
+    },
+    "columns": {
+      "person": "Persona",
+      "provider": "Directory utenti",
+      "reason": "Cosa dice la directory",
+      "effect": "Effetto"
+    },
+    "actionReasons": {
+      "account_disabled": "Disabilitata nella directory",
+      "absent": "Rimossa dalla directory",
+      "suspended": "Sospesa nella directory",
+      "archived": "Archiviata nella directory"
+    },
+    "effects": {
+      "identity_and_account": "Disabilita l’account",
+      "identityEntra": "Disattiva solo l’accesso con Microsoft",
+      "identityGoogle": "Disattiva solo l’accesso con Google"
+    },
+    "tags": {
+      "keepsPassword": "Mantiene l’accesso con password",
+      "rearmed": "Ripristinata o ignorata dal tuo team; la directory continua a segnalare questa persona come disabilitata"
+    },
+    "blockers": {
+      "entra_directory": "directory Microsoft",
+      "google_directory": "directory Google",
+      "scim": "provisioning SCIM",
+      "msp": "il tuo team",
+      "unknown": "un’altra fonte"
+    },
+    "users": {
+      "disabledEntra": "Accesso con Microsoft disattivato da {{blockers}}",
+      "disabledGoogle": "Accesso con Google disattivato da {{blockers}}",
+      "restore": "Ripristina",
+      "remove": "Rimuovi accesso",
+      "disabledBy": {
+        "msp": "Disattivato dal tuo team",
+        "directory": "Disattivato dalla directory",
+        "scim": "Disattivato dal provisioning SCIM"
+      }
+    },
+    "restore": {
+      "title": "Ripristinare questo metodo di accesso?",
+      "message": "Riattiva l’accesso con {{provider}} per {{email}} e rimuove ogni blocco: {{blockers}}.",
+      "rearmNote": "La directory non lo disattiverà di nuovo finché una lettura più recente della directory non mostra questa persona come abilitata.",
+      "reactivate": "Riabilita anche l’account",
+      "confirmMsp": "Il tuo team ha disabilitato questo account. Voglio riabilitarlo."
+    },
+    "remove": {
+      "title": "Rimuovere questo metodo di accesso?",
+      "message": "Rimuove l’accesso {{provider}} disattivato da {{email}}. Usalo quando la persona è stata eliminata e ricreata nella directory. Se era il suo unico metodo di accesso, riattiva l’account e invia un invito."
+    },
+    "toasts": {
+      "applying": "Applicazione del batch in corso. Le modifiche appariranno qui a breve.",
+      "dismissed": "Batch ignorato",
+      "restored": "Metodo di accesso ripristinato",
+      "removed": "Metodo di accesso rimosso"
+    },
+    "errors": {
+      "load": "Impossibile caricare il deprovisioning dalla directory.",
+      "decide": "Impossibile salvare la tua decisione.",
+      "stale": "Questo batch è cambiato da quando lo hai aperto. Controlla l’elenco aggiornato e riprova.",
+      "notHeld": "Questo batch non è più in attesa di una decisione.",
+      "enforcementOff": "Il deprovisioning è in modalità solo report su questo server, quindi non c’è nulla da applicare."
+    }
   }
 }

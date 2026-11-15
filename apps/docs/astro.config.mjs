@@ -236,6 +236,7 @@ export default defineConfig({
                 { slug: 'features/portal-google-sign-in' },
                 { slug: 'features/portal-domain-verification' },
                 { slug: 'features/portal-self-registration' },
+                { slug: 'features/portal-directory-deprovisioning' },
                 { slug: 'features/setup-wizard' },
                 { slug: 'features/mobile' },
               ],

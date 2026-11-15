@@ -8815,5 +8815,128 @@
     },
     "refreshFailed": "Die Zugriffsanfragen konnten nicht aktualisiert werden. Diese Liste ist möglicherweise veraltet.",
     "more": "Die ersten {{count}} Anfragen werden angezeigt. Entscheiden Sie über diese, um die übrigen zu sehen."
+  },
+  "portalDirectory": {
+    "title": "Deprovisionierung über das Verzeichnis",
+    "descriptionMicrosoft": "Wenn Ihr Kunde jemanden in Microsoft Entra deaktiviert oder löscht, wird die Microsoft-Anmeldung dieser Person hier ausgeschaltet. Nur vollständige Verzeichnisabfragen zählen.",
+    "descriptionGoogle": "Wenn Ihr Kunde jemanden in Google Workspace sperrt oder löscht, wird die Google-Anmeldung dieser Person hier ausgeschaltet. Nur vollständige Verzeichnisabfragen zählen.",
+    "descriptionBoth": "Wenn Ihr Kunde jemanden in Microsoft Entra oder Google Workspace deaktiviert, sperrt oder löscht, wird die Verzeichnisanmeldung dieser Person hier ausgeschaltet. Nur vollständige Verzeichnisabfragen zählen.",
+    "loading": "Deprovisionierung über das Verzeichnis wird geladen…",
+    "empty": "Das Verzeichnis meldet keine Personen.",
+    "mode": {
+      "report": "Nur Bericht: Bisher wird niemand automatisch deaktiviert. Die Liste unten zeigt, was passieren würde.",
+      "enforce": "Ein: Personen, die das Verzeichnis deaktiviert oder entfernt, verlieren ihre Verzeichnisanmeldung. Der erste Batch jedes Verzeichnisses wartet auf Ihre Entscheidung."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "Noch keine Verzeichnisabfrage.",
+      "lastRead": "Zuletzt abgefragt {{when}}",
+      "evaluated_one": "Vollständig abgefragt: {{count}} Person im Verzeichnis.",
+      "evaluated_other": "Vollständig abgefragt: {{count}} Personen im Verzeichnis.",
+      "suspectShrink": "Das Verzeichnis ist seit der letzten Abfrage stark geschrumpft, daher wurde nichts geändert. Zuerst muss eine zweite Abfrage es bestätigen.",
+      "nothingChanged": "Nichts geändert.",
+      "tenantLink": "Microsoft-Tenant verifizieren"
+    },
+    "runReasons": {
+      "tenant_not_proven": "Der Microsoft-Tenant dieser Organisation ist nicht verifiziert.",
+      "tenant_mismatch": "Die Verbindung zu Microsoft 365 liest einen anderen Tenant als den, der für diese Organisation verifiziert wurde.",
+      "connection_inactive": "Die Verzeichnisverbindung ist nicht aktiv.",
+      "org_inactive": "Diese Organisation oder ihr Partner ist nicht aktiv.",
+      "sync_incomplete": "Die letzte Verzeichnisabfrage war unvollständig, daher wurde nichts geändert.",
+      "directory_too_large": "Dieses Verzeichnis überschreitet das Synchronisierungslimit; die Deprovisionierung ist nicht verfügbar. Verwenden Sie stattdessen die SCIM-Bereitstellung, sobald sie verfügbar ist.",
+      "scope_missing": "Der domänenweiten Delegierung der Google-Verbindung fehlt der Scope admin.directory.user.",
+      "access_denied": "Google hat den Zugriff auf das Verzeichnis verweigert.",
+      "unavailable": "Das Verzeichnis war nicht erreichbar.",
+      "connection_invalid": "Die Zugangsdaten der Google-Verbindung konnten nicht verwendet werden.",
+      "admin_not_admin": "Das Administratorkonto der Google-Verbindung ist kein aktiver Administrator mehr.",
+      "mixed_customer": "Die Google-Liste enthielt Benutzer aus einem anderen Workspace.",
+      "malformed": "Das Verzeichnis hat Benutzer zurückgegeben, die nicht gelesen werden konnten.",
+      "unknown": "Die Abfrage wurde nicht verwendet."
+    },
+    "holdReasons": {
+      "first_enforcement": "erstmalig für dieses Verzeichnis",
+      "threshold": "mehr Personen als üblich"
+    },
+    "held": {
+      "summary_one": "{{source}}: {{count}} Person wartet auf Ihre Entscheidung.",
+      "summary_other": "{{source}}: {{count}} Personen warten auf Ihre Entscheidung.",
+      "because": "Zurückgehalten: {{reason}}.",
+      "apply": "Anwenden",
+      "dismiss": "Verwerfen"
+    },
+    "confirm": {
+      "applyTitle": "Diese Anmeldungen ausschalten?",
+      "applyMessage_one": "Dadurch wird die Verzeichnisanmeldung von {{count}} Person ausgeschaltet und ihr Konto deaktiviert, wenn sie keine andere Anmeldemöglichkeit hat. Zurückgehalten: {{reason}}. Sie können jede Person in der Benutzerliste wiederherstellen.",
+      "applyMessage_other": "Dadurch wird die Verzeichnisanmeldung von {{count}} Personen ausgeschaltet und jedes Konto deaktiviert, das keine andere Anmeldemöglichkeit hat. Zurückgehalten: {{reason}}. Sie können jede Person in der Benutzerliste wiederherstellen.",
+      "dismissTitle": "Diesen Batch verwerfen?",
+      "dismissMessage_one": "Niemand wird geändert. {{count}} Person bleibt ausgenommen, bis eine neuere Verzeichnisabfrage sie als aktiviert zeigt. Zurückgehalten: {{reason}}.",
+      "dismissMessage_other": "Niemand wird geändert. {{count}} Personen bleiben ausgenommen, bis eine neuere Verzeichnisabfrage sie als aktiviert zeigt. Zurückgehalten: {{reason}}."
+    },
+    "columns": {
+      "person": "Betroffene Person",
+      "provider": "Verzeichnis",
+      "reason": "Meldung des Verzeichnisses",
+      "effect": "Auswirkung"
+    },
+    "actionReasons": {
+      "account_disabled": "Im Verzeichnis deaktiviert",
+      "absent": "Aus dem Verzeichnis entfernt",
+      "suspended": "Im Verzeichnis gesperrt",
+      "archived": "Im Verzeichnis archiviert"
+    },
+    "effects": {
+      "identity_and_account": "Deaktiviert das Konto",
+      "identityEntra": "Schaltet nur die Microsoft-Anmeldung aus",
+      "identityGoogle": "Schaltet nur die Google-Anmeldung aus"
+    },
+    "tags": {
+      "keepsPassword": "Behält den Zugriff per Passwort",
+      "rearmed": "Von Ihrem Team wiederhergestellt oder verworfen; das Verzeichnis meldet diese Person weiterhin als deaktiviert"
+    },
+    "blockers": {
+      "entra_directory": "Microsoft-Verzeichnis",
+      "google_directory": "Google-Verzeichnis",
+      "scim": "SCIM-Bereitstellung",
+      "msp": "Ihr Team",
+      "unknown": "eine andere Quelle"
+    },
+    "users": {
+      "disabledEntra": "Microsoft-Anmeldung deaktiviert durch {{blockers}}",
+      "disabledGoogle": "Google-Anmeldung deaktiviert durch {{blockers}}",
+      "restore": "Wiederherstellen",
+      "remove": "Anmeldung entfernen",
+      "disabledBy": {
+        "msp": "Von Ihrem Team deaktiviert",
+        "directory": "Vom Verzeichnis deaktiviert",
+        "scim": "Von der SCIM-Bereitstellung deaktiviert"
+      }
+    },
+    "restore": {
+      "title": "Diese Anmeldemethode wiederherstellen?",
+      "message": "Schaltet die {{provider}}-Anmeldung für {{email}} wieder ein und hebt jede Sperre auf: {{blockers}}.",
+      "rearmNote": "Das Verzeichnis schaltet sie erst wieder aus, wenn eine neuere Verzeichnisabfrage diese Person als aktiviert zeigt.",
+      "reactivate": "Konto ebenfalls wieder aktivieren",
+      "confirmMsp": "Ihr Team hat dieses Konto deaktiviert. Ich möchte es wieder aktivieren."
+    },
+    "remove": {
+      "title": "Diese Anmeldemethode entfernen?",
+      "message": "Entfernt die deaktivierte {{provider}}-Anmeldung von {{email}}. Verwenden Sie dies, wenn die Person im Verzeichnis gelöscht und neu angelegt wurde. War es die einzige Anmeldemethode, reaktivieren Sie das Konto und senden Sie eine Einladung."
+    },
+    "toasts": {
+      "applying": "Der Batch wird angewendet. Änderungen erscheinen hier in Kürze.",
+      "dismissed": "Batch verworfen",
+      "restored": "Anmeldemethode wiederhergestellt",
+      "removed": "Anmeldemethode entfernt"
+    },
+    "errors": {
+      "load": "Die Deprovisionierung über das Verzeichnis konnte nicht geladen werden.",
+      "decide": "Ihre Entscheidung konnte nicht gespeichert werden.",
+      "stale": "Dieser Batch hat sich geändert, seit Sie ihn geöffnet haben. Prüfen Sie die aktualisierte Liste und versuchen Sie es erneut.",
+      "notHeld": "Dieser Batch wartet nicht mehr auf eine Entscheidung.",
+      "enforcementOff": "Die Deprovisionierung ist auf diesem Server im Modus „Nur Bericht“, daher gibt es nichts anzuwenden."
+    }
   }
 }

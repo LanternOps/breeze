@@ -8815,5 +8815,128 @@
     },
     "refreshFailed": "Impossible d’actualiser les demandes d’accès : cette liste n’est peut-être plus à jour.",
     "more": "Affichage des {{count}} premières demandes. Traitez-les pour voir les suivantes."
+  },
+  "portalDirectory": {
+    "title": "Déprovisionnement via l’annuaire",
+    "descriptionMicrosoft": "Lorsque votre client désactive ou supprime quelqu’un dans Microsoft Entra, la connexion Microsoft de cette personne est désactivée ici. Seules les lectures complètes de l’annuaire comptent.",
+    "descriptionGoogle": "Lorsque votre client suspend ou supprime quelqu’un dans Google Workspace, la connexion Google de cette personne est désactivée ici. Seules les lectures complètes de l’annuaire comptent.",
+    "descriptionBoth": "Lorsque votre client désactive, suspend ou supprime quelqu’un dans Microsoft Entra ou Google Workspace, la connexion via l’annuaire de cette personne est désactivée ici. Seules les lectures complètes de l’annuaire comptent.",
+    "loading": "Chargement du déprovisionnement via l’annuaire…",
+    "empty": "L’annuaire ne signale personne.",
+    "mode": {
+      "report": "Rapport uniquement : personne n’est encore désactivé automatiquement. La liste ci-dessous montre ce qui se produirait.",
+      "enforce": "Activé : les personnes que l’annuaire désactive ou supprime perdent leur connexion via l’annuaire. Le premier lot de chaque annuaire attend votre décision."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "Aucune lecture de l’annuaire pour l’instant.",
+      "lastRead": "Dernière lecture {{when}}",
+      "evaluated_one": "Lecture complète : {{count}} personne dans l’annuaire.",
+      "evaluated_other": "Lecture complète : {{count}} personnes dans l’annuaire.",
+      "suspectShrink": "L’annuaire a fortement diminué depuis la lecture précédente, donc rien n’a été modifié. Une seconde lecture doit d’abord le confirmer.",
+      "nothingChanged": "Rien n’a changé.",
+      "tenantLink": "Prouver votre tenant Microsoft"
+    },
+    "runReasons": {
+      "tenant_not_proven": "Le tenant Microsoft de cette organisation n’est pas prouvé.",
+      "tenant_mismatch": "La connexion Microsoft 365 lit un autre tenant que celui prouvé pour cette organisation.",
+      "connection_inactive": "La connexion à l’annuaire n’est pas active.",
+      "org_inactive": "Cette organisation ou son partenaire n’est pas actif.",
+      "sync_incomplete": "La dernière lecture de l’annuaire était incomplète, donc rien n’a été modifié.",
+      "directory_too_large": "Cet annuaire dépasse la limite de synchronisation ; le déprovisionnement n’est pas disponible. Utilisez plutôt le provisionnement SCIM lorsqu’il sera disponible.",
+      "scope_missing": "Il manque le périmètre admin.directory.user à la délégation à l’échelle du domaine de la connexion Google.",
+      "access_denied": "Google a refusé l’accès à l’annuaire.",
+      "unavailable": "L’annuaire est injoignable.",
+      "connection_invalid": "Les identifiants de la connexion Google n’ont pas pu être utilisés.",
+      "admin_not_admin": "Le compte administrateur de la connexion Google n’est plus un administrateur actif.",
+      "mixed_customer": "La liste Google mélangeait des utilisateurs d’un autre Workspace.",
+      "malformed": "L’annuaire a renvoyé des utilisateurs illisibles.",
+      "unknown": "La lecture n’a pas été utilisée."
+    },
+    "holdReasons": {
+      "first_enforcement": "première fois pour cet annuaire",
+      "threshold": "plus de personnes que d’habitude"
+    },
+    "held": {
+      "summary_one": "{{source}} : {{count}} personne attend votre décision.",
+      "summary_other": "{{source}} : {{count}} personnes attendent votre décision.",
+      "because": "Mis en attente : {{reason}}.",
+      "apply": "Appliquer",
+      "dismiss": "Ignorer"
+    },
+    "confirm": {
+      "applyTitle": "Désactiver ces connexions ?",
+      "applyMessage_one": "Cela désactive la connexion via l’annuaire de {{count}} personne et désactive son compte si elle n’a aucun autre moyen de se connecter. Mis en attente : {{reason}}. Vous pouvez restaurer chaque personne depuis la liste des utilisateurs.",
+      "applyMessage_other": "Cela désactive la connexion via l’annuaire de {{count}} personnes et désactive chaque compte qui n’a aucun autre moyen de se connecter. Mis en attente : {{reason}}. Vous pouvez restaurer chaque personne depuis la liste des utilisateurs.",
+      "dismissTitle": "Ignorer ce lot ?",
+      "dismissMessage_one": "Rien ne change. {{count}} personne reste exemptée jusqu’à ce qu’une lecture plus récente de l’annuaire la montre activée. Mis en attente : {{reason}}.",
+      "dismissMessage_other": "Rien ne change. {{count}} personnes restent exemptées jusqu’à ce qu’une lecture plus récente de l’annuaire les montre activées. Mis en attente : {{reason}}."
+    },
+    "columns": {
+      "person": "Personne",
+      "provider": "Annuaire",
+      "reason": "Ce que dit l’annuaire",
+      "effect": "Effet"
+    },
+    "actionReasons": {
+      "account_disabled": "Désactivée dans l’annuaire",
+      "absent": "Supprimée de l’annuaire",
+      "suspended": "Suspendue dans l’annuaire",
+      "archived": "Archivée dans l’annuaire"
+    },
+    "effects": {
+      "identity_and_account": "Désactive le compte",
+      "identityEntra": "Désactive uniquement la connexion Microsoft",
+      "identityGoogle": "Désactive uniquement la connexion Google"
+    },
+    "tags": {
+      "keepsPassword": "Conserve l’accès par mot de passe",
+      "rearmed": "Restaurée ou ignorée par votre équipe ; l’annuaire signale toujours cette personne comme désactivée"
+    },
+    "blockers": {
+      "entra_directory": "l’annuaire Microsoft",
+      "google_directory": "l’annuaire Google",
+      "scim": "le provisionnement SCIM",
+      "msp": "votre équipe",
+      "unknown": "une autre source"
+    },
+    "users": {
+      "disabledEntra": "Connexion Microsoft désactivée par {{blockers}}",
+      "disabledGoogle": "Connexion Google désactivée par {{blockers}}",
+      "restore": "Restaurer",
+      "remove": "Retirer la connexion",
+      "disabledBy": {
+        "msp": "Désactivée par votre équipe",
+        "directory": "Désactivée par l’annuaire",
+        "scim": "Désactivée par le provisionnement SCIM"
+      }
+    },
+    "restore": {
+      "title": "Restaurer cette méthode de connexion ?",
+      "message": "Réactive la connexion {{provider}} pour {{email}} et lève tous les blocages : {{blockers}}.",
+      "rearmNote": "L’annuaire ne la désactivera plus tant qu’une lecture plus récente de l’annuaire ne montre pas cette personne comme activée.",
+      "reactivate": "Réactiver aussi le compte",
+      "confirmMsp": "Votre équipe a désactivé ce compte. Je veux le réactiver."
+    },
+    "remove": {
+      "title": "Retirer cette méthode de connexion ?",
+      "message": "Retire la connexion {{provider}} désactivée de {{email}}. À utiliser lorsque la personne a été supprimée puis recréée dans l’annuaire. S’il s’agissait de sa seule méthode de connexion, réactivez le compte et envoyez une invitation."
+    },
+    "toasts": {
+      "applying": "Application du lot en cours. Les changements apparaîtront ici sous peu.",
+      "dismissed": "Lot ignoré",
+      "restored": "Méthode de connexion restaurée",
+      "removed": "Méthode de connexion retirée"
+    },
+    "errors": {
+      "load": "Impossible de charger le déprovisionnement via l’annuaire.",
+      "decide": "Impossible d’enregistrer votre décision.",
+      "stale": "Ce lot a changé depuis que vous l’avez ouvert. Consultez la liste actualisée et réessayez.",
+      "notHeld": "Ce lot n’attend plus de décision.",
+      "enforcementOff": "Le déprovisionnement est en mode rapport uniquement sur ce serveur, il n’y a donc rien à appliquer."
+    }
   }
 }
