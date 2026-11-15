@@ -1,6 +1,6 @@
 import '@/lib/i18n';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { fetchMock, mintMock, toastMock } = vi.hoisted(() => ({
@@ -59,6 +59,11 @@ async function fillGates(user: ReturnType<typeof userEvent.setup>, name = 'LAPTO
   await user.click(screen.getByTestId('reattach-possession'));
   await user.type(screen.getByTestId('reattach-confirm-name'), name);
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -280,6 +285,48 @@ describe('ReattachDeviceForm', () => {
     const grant = '33333333-3333-4333-8333-333333333333';
     expect(JSON.parse(fetchMock.mock.calls[1]![1].body).stepUpGrant).toBe(grant);
     expect(JSON.parse(fetchMock.mock.calls[2]![1].body).stepUpGrant).toBe(grant);
+  });
+
+  /** Up to the 409 that leaves a minted grant held, with the "verified" note shown. */
+  async function holdAGrant(user: ReturnType<typeof userEvent.setup>) {
+    await fillGates(user);
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
+    await user.type(screen.getByTestId('reattach-stepup-code'), '123456');
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-held')).toBeTruthy());
+  }
+
+  // #8318 2-3 review: the grant's age was only checked at render, so a dialog
+  // left idle past it kept saying "verified" and sent a lapsed grant.
+  it('an idle dialog drops the held grant when it lapses and asks for a code again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    fetchMock
+      .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
+      .mockResolvedValueOnce(json(409, { error: 'unknown', code: 'liveness_unknown' }));
+    renderForm();
+    await holdAGrant(user);
+    act(() => { vi.advanceTimersByTime(270_000); });
+    expect(screen.queryByTestId('reattach-stepup-held')).toBeNull();
+    expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy();
+    expect(submitButton().disabled).toBe(true);
+  });
+
+  it('a grant that lapsed before its timer ran is not sent: the submit asks for a code', async () => {
+    const user = userEvent.setup();
+    fetchMock
+      .mockResolvedValueOnce(json(403, { error: 'Step-up required', code: 'STEP_UP_REQUIRED' }))
+      .mockResolvedValueOnce(json(409, { error: 'unknown', code: 'liveness_unknown' }));
+    renderForm();
+    await holdAGrant(user);
+    // A throttled background tab: the clock moved on, the timer has not fired.
+    const later = Date.now() + 280_000;
+    vi.spyOn(Date, 'now').mockReturnValue(later);
+    await user.click(submitButton());
+    await waitFor(() => expect(screen.getByTestId('reattach-stepup-code')).toBeTruthy());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mintMock).toHaveBeenCalledTimes(1);
   });
 
   it('drops the held grant when the server refuses it and mints a new one', async () => {
