@@ -51,6 +51,12 @@ export type WispTimelinePost = {
   variant?: WispTimelinePostVariant;
   title: string;
   body: string | null;
+  /**
+   * `markdown` when `body` is a specialist run's report, written by the model
+   * in markdown (#11673): the web renders it with the run page's safe subset.
+   * Absent: `body` is literal text.
+   */
+  bodyFormat?: 'markdown';
   link: string | null;
   sections: BriefSection[] | null;
   concernId: string | null;

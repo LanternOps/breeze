@@ -175,11 +175,14 @@ const PROFILE_SPECIALIST_KIND: Readonly<Record<string, SpecialistKind>> = Object
   sweep: 'sweep',
 });
 
-/** "Device troubleshooting · FRONT-DESK-01" — the label without its article, then the device or the org. */
-function specialistTitle(profile: string, deviceHostname: string | null, orgName: string): string {
+/**
+ * "Device troubleshooting · FRONT-DESK-01" — the label without its article,
+ * then the device (its display name, else its hostname: #11673) or the org.
+ */
+function specialistTitle(profile: string, device: { displayName: string | null; hostname: string | null }, orgName: string): string {
   const kind = Object.hasOwn(PROFILE_SPECIALIST_KIND, profile) ? PROFILE_SPECIALIST_KIND[profile] : undefined;
   const label = kind ? SPECIALIST_KIND_LABELS[kind].replace(/^(a|an) /, '') : 'specialist';
-  const target = deviceHostname && deviceHostname.trim() ? deviceHostname : orgName;
+  const target = [device.displayName, device.hostname].find((name) => name && name.trim())?.trim() ?? orgName;
   return truncate(`${label.charAt(0).toUpperCase()}${label.slice(1)} · ${target}`, 140);
 }
 
@@ -217,6 +220,7 @@ async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise
       id: aiAgentRuns.id, orgId: aiAgentRuns.orgId, orgName: organizations.name, status: aiAgentRuns.status,
       summary: aiAgentRuns.summary, costCents: aiAgentRuns.costCents, queuedAt: aiAgentRuns.queuedAt, finishedAt: aiAgentRuns.finishedAt,
       profile: aiAgentRuns.profile, triggerSource, deviceHostname: devices.hostname,
+      deviceDisplayName: devices.displayName,
     })
     .from(aiAgentRuns)
     .innerJoin(organizations, and(eq(organizations.id, aiAgentRuns.orgId), eq(organizations.partnerId, ceiling.partnerId)))
@@ -236,7 +240,7 @@ async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise
     if (r.triggerSource === SPECIALIST_SOURCE && r.profile !== ASSESSMENT_PROFILE) {
       return row('specialist', r.id, at, {
         orgId: r.orgId,
-        title: specialistTitle(r.profile, r.deviceHostname ?? null, r.orgName),
+        title: specialistTitle(r.profile, { displayName: r.deviceDisplayName ?? null, hostname: r.deviceHostname ?? null }, r.orgName),
         detail: optionalText(r.summary, 200),
         href: `/ai-agents/runs/${r.id}`,
         costCents: r.costCents,

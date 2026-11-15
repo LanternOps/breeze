@@ -314,6 +314,15 @@ describe('listActivity — specialist runs (#11084)', () => {
     expect(render(h.wheres.ai_agent_runs![0]).params).not.toContain(O2);
   });
 
+  it('#11673: a specialist names the device by its display name, the hostname only as a fallback', async () => {
+    h.rows.ai_agent_runs = [
+      specialistRow(1, O1, t(2), { deviceHostname: 'nw-42eccf-00001', deviceDisplayName: 'NW-XRAY-WS' }),
+      specialistRow(2, O1, t(1), { deviceHostname: 'nw-42eccf-00002', deviceDisplayName: ' ' }),
+    ];
+    const { items } = await listActivity(ceiling());
+    expect(items.map((i) => i.title)).toEqual(['Device troubleshooting · NW-XRAY-WS', 'Device troubleshooting · nw-42eccf-00002']);
+  });
+
   it('a specialist without a device names the org instead', async () => {
     h.rows.ai_agent_runs = [specialistRow(1, O1, t(1), { profile: 'patch', deviceHostname: null })];
     const { items } = await listActivity(ceiling());

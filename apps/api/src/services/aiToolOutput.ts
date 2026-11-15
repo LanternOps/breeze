@@ -37,6 +37,21 @@ type CompactConfig = {
    * cut structured listings mid-JSON at ~2KB with no way to recover (#3093).
    */
   maxStdoutChars: number;
+  /**
+   * #11673: string leaves under these keys get the stdout budget too — set
+   * per tool from LONG_TEXT_KEYS_BY_TOOL, never on a tier itself.
+   */
+  longTextKeys?: ReadonlySet<string>;
+};
+
+/**
+ * #11673: per tool, the keys whose text the model reads to answer and that
+ * end with the conclusion, so the generic 1,500-char leaf cap cuts the part
+ * it needs. `get_ai_agent_run`'s `summary` is a run's report (up to 2,000
+ * chars, runLoop's RUN_SUMMARY_MAX_CHARS) with its next step last.
+ */
+const LONG_TEXT_KEYS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  get_ai_agent_run: new Set(['summary']),
 };
 
 const DEFAULT_CONFIG: CompactConfig = {
@@ -295,8 +310,10 @@ function compactValue(
 
   if (typeof value === 'string') {
     // stdout carries the command output the model asked for — give it the
-    // dedicated (larger) budget instead of the generic leaf cap (#3093).
-    const maxChars = keyHint === 'stdout' ? config.maxStdoutChars : config.maxStringChars;
+    // dedicated (larger) budget instead of the generic leaf cap (#3093), and
+    // so does a tool's registered long-text key (#11673).
+    const long = keyHint === 'stdout' || config.longTextKeys?.has(keyHint) === true;
+    const maxChars = long ? config.maxStdoutChars : config.maxStringChars;
     return truncateText(value, maxChars, stats);
   }
 
@@ -1517,8 +1534,10 @@ export function compactToolResultForChat(
   // gone) and leave `stdoutTruncation` stale. Recomputing from the sanitized
   // payload keeps the marker and counters accurate for whichever tier ships.
   const baseStats: CompactStats = { ...stats };
+  const longTextKeys = Object.hasOwn(LONG_TEXT_KEYS_BY_TOOL, toolName) ? LONG_TEXT_KEYS_BY_TOOL[toolName] : undefined;
   let serialized = '';
-  for (const tier of COMPACTION_TIERS) {
+  for (const baseTier of COMPACTION_TIERS) {
+    const tier: CompactConfig = longTextKeys ? { ...baseTier, longTextKeys } : baseTier;
     const tierStats: CompactStats = { ...baseStats };
     const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, tierStats, tier);
     const compacted = compactValue(toolSpecific, tierStats, tier);

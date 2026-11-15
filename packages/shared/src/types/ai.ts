@@ -146,7 +146,9 @@ export type AiPageContext =
   // tell that an open chat session belongs to a different tenant than the page
   // it is now sitting on (#5684). It is a client-side hint only: the API never
   // authorizes on it — the session org is derived from the device row (#5593).
-  | { type: 'device'; id: string; hostname: string; orgId?: string; os?: string; status?: string; ip?: string }
+  // `displayName` is the web badge's label only (#11673); aiPageContextSchema
+  // does not carry it, so it never reaches the API or a prompt.
+  | { type: 'device'; id: string; hostname: string; displayName?: string; orgId?: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
   | { type: 'custom'; label: string; data: Record<string, unknown> }

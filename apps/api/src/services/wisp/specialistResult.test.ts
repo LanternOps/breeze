@@ -75,6 +75,7 @@ const runRow = (o: Record<string, unknown> = {}) => ({
   grantRevisionId: 'rev1',
   triggerRef: { source: 'wisp_specialist', kind: 'device_troubleshooting' },
   hostname: 'WS-01',
+  displayName: null,
   ...o,
 });
 const ceiling = (o: { orgIds?: string[] } = {}) => ({
@@ -213,6 +214,43 @@ describe('postSpecialistResult', () => {
     expect(p.body).toContain('[filtered]');
     expect(p.body).not.toMatch(/ignore all previous instructions/i);
     expect(p.title).not.toContain('‮');
+  });
+
+  it('#11673: a whole run summary (up to its 2,000-char source cap) reaches the post, next step included', async () => {
+    const evidence = Array.from({ length: 6 }, (_, i) => `- **Check ${i + 1}:** ${'memory pressure on the spooler host '.repeat(8).trim()}`).join('\n');
+    const nextStep = '**Next step:** Collect a full memory dump on the next crash and compare driver versions.';
+    const summary = `**Verdict:** the spooler crashes on low memory.\n\n${evidence}\n\n${nextStep}`;
+    expect(Array.from(summary).length).toBeGreaterThan(1900);
+    expect(Array.from(summary).length).toBeLessThanOrEqual(2000);
+    queue([runRow({ summary })], []);
+    await postSpecialistResult(RUN);
+    const p = h.notifyUser.mock.calls[0]![0];
+    expect(p.body).toContain(nextStep);
+    expect(p.body).toBe(summary);
+  });
+
+  it('#11673: a summary over the cap is cut at a paragraph boundary, never mid-word', async () => {
+    const para = (n: number) => `Paragraph ${n} ${'word '.repeat(150).trim()}.`;
+    const summary = Array.from({ length: 12 }, (_, i) => para(i + 1)).join('\n\n');
+    expect(Array.from(summary).length).toBeGreaterThan(SPECIALIST_RESULT_BODY_MAX_CHARS);
+    queue([runRow({ summary })], []);
+    await postSpecialistResult(RUN);
+    const body = h.notifyUser.mock.calls[0]![0].body as string;
+    expect(Array.from(body).length).toBeLessThanOrEqual(SPECIALIST_RESULT_BODY_MAX_CHARS);
+    expect(body.endsWith('…')).toBe(true);
+    // Every kept paragraph is whole: the cut lands after a paragraph's full stop.
+    const kept = body.slice(0, -1).trimEnd().split('\n\n');
+    for (const [i, k] of kept.entries()) expect(k).toBe(para(i + 1));
+  });
+
+  it('#11673: the post names the device by its display name, the hostname only as a fallback', async () => {
+    queue([runRow({ hostname: 'nw-42eccf-00001', displayName: 'NW-XRAY-WS' })], []);
+    await postSpecialistResult(RUN);
+    expect(h.notifyUser.mock.calls[0]![0].title).toBe('Device troubleshooting on NW-XRAY-WS: finished');
+
+    queue([runRow({ hostname: 'nw-42eccf-00001', displayName: '  ' })], []);
+    await postSpecialistResult(RUN);
+    expect(h.notifyUser.mock.calls[1]![0].title).toBe('Device troubleshooting on nw-42eccf-00001: finished');
   });
 
   it('a run with no summary and no device row still posts a readable report', async () => {
