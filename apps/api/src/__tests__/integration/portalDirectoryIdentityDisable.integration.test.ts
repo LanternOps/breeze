@@ -392,6 +392,18 @@ describe('restore and remove (D9, OD3; Review Focus 4)', () => {
     expect(audit[0]!.details).toMatchObject({ provider: 'entra', authMethodReset: true });
   });
 
+  it('a google-method account gets the same reset when its last sign-in method goes', async () => {
+    const { partner, org } = await seedOrg();
+    const actor = await createUser({ partnerId: partner.id, email: `tech-${randomUUID()}@msp.test`, name: 'Tech One' });
+    const { account, identityIds } = await seedAccount(org.id, { authMethod: 'google' as never, google: { sub: randomUUID() } });
+    await disablePortalIdentity({ orgId: org.id, identityId: identityIds.google!, blocker: 'google_directory', reason: 'suspended' });
+    expect(await readAccount(account.id)).toMatchObject({ status: 'disabled', disabledBy: 'directory' });
+    await removeDisabledPortalIdentity({ orgId: org.id, portalUserId: account.id, identityId: identityIds.google!, actorUserId: actor.id });
+    const after = await readAccount(account.id);
+    expect(after).toMatchObject({ authMethod: 'password', passwordHash: null });
+    expect(planPortalAccountTransition(factsOf(after, 0), 'msp_reactivate').status).toBe('invited');
+  });
+
   it('removing one of two sign-in methods leaves the account as it is', async () => {
     const { partner, org, tid } = await seedOrg();
     const actor = await createUser({ partnerId: partner.id, email: `tech-${randomUUID()}@msp.test`, name: 'Tech One' });

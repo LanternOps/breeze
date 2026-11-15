@@ -292,6 +292,20 @@ describe('captureEntraDirectoryRun (plan D4)', () => {
     expect(deps.afterRunCommitted).toHaveBeenCalledTimes(1);
   });
 
+  it('the retry re-reads the fence: a newer claim between attempts records nothing', async () => {
+    let reads = 0;
+    const { deps } = makeDeps({
+      readSyncState: vi.fn(async () => {
+        reads += 1;
+        return { connectionId: CONN, runGeneration: reads === 1 ? 7 : 8, lastCompleteSnapshotAt: NOW, lastItemCount: 120 };
+      }),
+      recordEvaluatedRun: vi.fn(async () => { throw Object.assign(new Error('could not serialize access'), { code: '40001' }); }),
+    });
+    expect(await captureEntraDirectoryRun(ctx(), deps)).toEqual({ recorded: false, reason: 'fenced' });
+    expect(deps.recordEvaluatedRun).toHaveBeenCalledTimes(1);
+    expect(deps.afterRunCommitted).not.toHaveBeenCalled();
+  });
+
   it('a serialization failure on the retry too records nothing, warns and does not throw', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);

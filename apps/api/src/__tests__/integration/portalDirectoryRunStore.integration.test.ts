@@ -45,6 +45,7 @@ import {
   applyRun,
   decideHeldRunApply,
   dismissHeldRun,
+  impactDigestOf,
   pruneDirectoryRuns,
   recordEvaluatedRun,
 } from '../../services/portalDirectory/runStore';
@@ -333,6 +334,9 @@ describe('recordEvaluatedRun on real Postgres', () => {
     expect(await actionsOf(r1.runId)).toEqual([]);
     expect(await actionsOf(r2.runId)).toEqual([]);
     expect(r3).toMatchObject({ affected: 1, disposition: 'reported' });
+    // The newest run's digest is over the row it now holds (the carried id).
+    expect((await readRun(r3.runId)).impactDigest).toBe(impactDigestOf([all[0]!]));
+    expect((await readRun(r3.runId)).impactDigest).toBe((await readRun(r1.runId)).impactDigest);
   });
 
   it('a gap or a changed state opens a new row; the old one stays as history', async () => {

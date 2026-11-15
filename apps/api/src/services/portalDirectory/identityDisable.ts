@@ -678,7 +678,10 @@ export async function removeDisabledPortalIdentity(
       .select({ n: sql<number>`count(*)::int` })
       .from(portalUserIdentities)
       .where(and(eq(portalUserIdentities.portalUserId, account.id), eq(portalUserIdentities.orgId, input.orgId)));
-    const authMethodReset = (remaining?.n ?? 0) === 0 && !isPasswordEligible(account);
+    // Never on an `active` row: a credential-less active password row is the
+    // legacy shape self-service reset accepts, so an (unreachable today)
+    // active identity-method account is left as it is rather than handed one.
+    const authMethodReset = (remaining?.n ?? 0) === 0 && !isPasswordEligible(account) && account.status !== 'active';
     if (authMethodReset) {
       await db
         .update(portalUsers)

@@ -64,7 +64,7 @@ export async function afterDomainPersisted(
   // 3. LAST, for every terminal `users` run: the portal directory capture
   //    (W8 D4). It runs under this run's generation fence — the only moment
   //    m365_users is exactly one snapshot — and after the rollup, so a slow
-  //    capture (bounded by its 5 s lock timeout) can never cost the rollup.
+  //    capture (5 s lock timeout per attempt, at most two attempts) can never cost the rollup.
   //    It never throws by contract; the catch keeps that true here too.
   if (ctx.domain === 'users') {
     try {
