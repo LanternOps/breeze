@@ -1069,3 +1069,58 @@ func TestVaultRetention_NeverDeletesUnderAKeptSnapshotPrefix(t *testing.T) {
 		t.Fatalf("retention deleted %s, which lies under the kept snapshot's own prefix", keptState)
 	}
 }
+
+// failListProvider fails List for every prefix under one snapshot.
+type failListProvider struct {
+	*providers.LocalProvider
+	failPrefix string
+}
+
+func (p *failListProvider) List(prefix string) ([]string, error) {
+	if strings.HasPrefix(prefix, p.failPrefix) {
+		return nil, errors.New("injected list failure")
+	}
+	return p.LocalProvider.List(prefix)
+}
+
+// When the vault listing of a prefix fails, its objects are copied again; a
+// sync that then fails must not delete them, since they may already have
+// been in the vault for a complete snapshot.
+func TestVaultSync_FailedSyncNeverDeletesObjectsItCouldNotProveAbsent(t *testing.T) {
+	primary := privateTestLocalProvider(t, t.TempDir())
+	src := t.TempDir()
+	files := map[string]string{"alpha.txt": "alpha bytes", "beta.txt": "beta bytes"}
+	full := vaultTestRun(t, primary, src, files, nil)
+	incr := vaultTestRun(t, primary, src, files, full)
+	if len(referencedKeys(incr)) != 2 {
+		t.Fatalf("control: the second run must reference both files, got %v", referencedKeys(incr))
+	}
+	vm, vault := newVaultTestManager(t, primary, 5)
+	if _, err := vm.SyncSnapshot(full.ID); err != nil {
+		t.Fatal(err)
+	}
+	// beta is now gone from primary, so the sync of incr fails after it
+	// re-copies alpha (its prefix could not be listed).
+	var alphaKey, betaKey string
+	for _, f := range full.Files {
+		if strings.Contains(f.BackupPath, "alpha") {
+			alphaKey = f.BackupPath
+		} else {
+			betaKey = f.BackupPath
+		}
+	}
+	if err := primary.Delete(betaKey); err != nil {
+		t.Fatal(err)
+	}
+	vm.vault = &failListProvider{LocalProvider: vault, failPrefix: path.Join(snapshotRootDir, full.ID)}
+	if _, err := vm.SyncSnapshot(incr.ID); err == nil {
+		t.Fatal("control: the sync must fail on the missing beta")
+	}
+	vm.vault = vault
+	if !vaultHas(t, vault, alphaKey) {
+		t.Fatalf("the failed sync deleted %s, which the earlier vault snapshot holds", alphaKey)
+	}
+	if got := restoreVaultSnapshot(t, vault, full.ID); !reflect.DeepEqual(got, files) {
+		t.Fatalf("restore of the earlier vault snapshot = %v, want %v", got, files)
+	}
+}

@@ -160,8 +160,13 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 
 	// 3. Copy what the vault lacks. The vault is listed once per snapshot
 	// prefix the objects fall under.
-	vaultSet := v.vaultObjectsUnder(objects)
+	vaultSet, listed := v.vaultObjectsUnder(objects)
 	var errs []error
+	// copied holds only keys proven absent before this run (their prefix was
+	// listed and did not hold them). A key under a prefix whose listing
+	// failed is copied again but never counted here: it may already have
+	// been in the vault, referenced by a complete snapshot, and a failed sync
+	// must not delete it.
 	var copied []string
 	for _, file := range objects {
 		if _, exists := vaultSet[file]; exists {
@@ -172,7 +177,9 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 			slog.Warn("vault sync: object not copied", "snapshotId", snapshotID, "key", file, "error", err.Error())
 			continue
 		}
-		copied = append(copied, file)
+		if listed[snapshotIDOfKey(file)] {
+			copied = append(copied, file)
+		}
 	}
 	if len(errs) > 0 {
 		v.removeCopied(snapshotID, copied)
@@ -236,28 +243,31 @@ func (v *VaultManager) copyFromPrimary(primary providers.BackupProvider, key str
 }
 
 // vaultObjectsUnder returns the vault's objects under each snapshot prefix
-// that keys fall under. A prefix whose listing fails is treated as empty, so
-// its objects are copied again rather than assumed present.
-func (v *VaultManager) vaultObjectsUnder(keys []string) map[string]struct{} {
-	present := map[string]struct{}{}
-	listed := map[string]bool{}
+// that keys fall under, and which prefixes were listed successfully. A
+// prefix whose listing fails is treated as empty, so its objects are copied
+// again rather than assumed present, and is absent from listed.
+func (v *VaultManager) vaultObjectsUnder(keys []string) (present map[string]struct{}, listed map[string]bool) {
+	present = map[string]struct{}{}
+	listed = map[string]bool{}
+	tried := map[string]bool{}
 	for _, key := range keys {
 		id := snapshotIDOfKey(key)
-		if id == "" || listed[id] {
+		if id == "" || tried[id] {
 			continue
 		}
-		listed[id] = true
+		tried[id] = true
 		items, err := listSnapshotPrefixItems(v.vault, id)
 		if err != nil {
 			slog.Warn("vault: failed to list existing vault objects, will copy them again",
 				"snapshotId", id, "error", err.Error())
 			continue
 		}
+		listed[id] = true
 		for _, item := range items {
 			present[item] = struct{}{}
 		}
 	}
-	return present
+	return present, listed
 }
 
 // vaultSizeOf sums the stored sizes of keys in the vault, read in one walk
