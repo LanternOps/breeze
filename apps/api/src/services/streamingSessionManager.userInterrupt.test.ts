@@ -111,7 +111,7 @@ afterEach(() => {
 async function runTurn(
   sessionId: string,
   tail: unknown[] | Error,
-  opts: { stop?: boolean; interruptRejects?: boolean } = {},
+  opts: { stop?: boolean; interruptRejects?: boolean; beforeStop?: (session: ActiveSession) => void } = {},
 ): Promise<{ events: Ev[]; session: ActiveSession; interrupted: { interrupted: boolean; reason?: string } | null }> {
   const stop = opts.stop ?? true;
   let releaseStart!: () => void;
@@ -150,6 +150,7 @@ async function runTurn(
   m.capture.mockClear();
   errorLog.mockClear();
   let interrupted: { interrupted: boolean; reason?: string } | null = null;
+  opts.beforeStop?.(session);
   if (stop) {
     interrupted = await manager.interrupt(sessionId);
     if (opts.interruptRejects) releaseTail();
@@ -239,5 +240,53 @@ describe('#11676 controls: real failures still show their error', () => {
     session.userInterrupted = true; // e.g. a Stop that landed as the turn finished
     expect(manager.tryTransitionToProcessing(session)).toBe(true);
     expect(session.userInterrupted).toBe(false);
+  });
+
+  it('an iterator abort on a turn nobody stopped is still an error and is reported', async () => {
+    const abort = Object.assign(new Error('Operation aborted'), { name: 'AbortError' });
+    const { events } = await runTurn('s-abort-nostop', abort, { stop: false });
+    expect(errorsOf(events)).toEqual([GENERIC]);
+    expect(m.capture).toHaveBeenCalled();
+  });
+});
+
+describe('#11676 review: a Stop never relabels what the turn actually was', () => {
+  it('a turn that completed before the Stop landed is not marked stopped', async () => {
+    const { events } = await runTurn('s-race-success', [abortedAssistant, sdkResult()]);
+    expect(errorsOf(events)).toEqual([]);
+    expect(donesOf(events)[0]).not.toHaveProperty('stopped');
+  });
+
+  it.each([
+    ['error_max_budget_usd', 'AI budget limit reached for this query.'],
+    ['error_max_turns', undefined],
+  ] as const)('a coded limit (%s) after a Stop still says why and is not marked stopped', async (subtype, message) => {
+    const { events } = await runTurn(`s-limit-${subtype}`, [sdkResult({ subtype })]);
+    const errors = errorsOf(events);
+    expect(errors).toHaveLength(1);
+    if (message) expect(errors[0]).toBe(message);
+    expect(donesOf(events)[0]).not.toHaveProperty('stopped');
+  });
+
+  it('a work-turn-limit stop that coincides with a Stop still publishes the limit', async () => {
+    const { events } = await runTurn('s-worklimit', [interruptedResult], {
+      beforeStop: (session) => { session.workTurnLimitStopped = true; },
+    });
+    expect(errorsOf(events)).toHaveLength(1);
+    expect(errorsOf(events)[0]).not.toBe(GENERIC);
+    expect(donesOf(events)[0]).not.toHaveProperty('stopped');
+  });
+
+  it('a provider failure the turn reported as final is shown even when Stop was pressed', async () => {
+    const lowCredit = {
+      type: 'assistant',
+      error: 'billing_error',
+      message: { model: '<synthetic>', content: [{ type: 'text', text: 'Credit balance is too low' }], usage: { input_tokens: 0, output_tokens: 0 } },
+    };
+    const { events } = await runTurn('s-provider-final', [lowCredit, { ...sdkResult(), is_error: true, api_error_status: 400 }]);
+    const errors = errorsOf(events);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).not.toBe(GENERIC);
+    expect(donesOf(events)[0]).not.toHaveProperty('stopped');
   });
 });

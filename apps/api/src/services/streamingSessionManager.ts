@@ -2132,11 +2132,8 @@ export class StreamingSessionManager {
             }
 
             const resultMsg = message as SDKResultMessage;
-            // #11676: the technician stopped this turn. Its non-success result
-            // is the stop itself, so the generic failure paths below stay
-            // quiet. Coded limits (work/turn limit, budget) still say why, and
-            // a topology turn keeps its own fixed ending.
-            const stoppedByUser = session.userInterrupted === true && !topologyTurn;
+            // #11676: read (and cleared) before anything below awaits.
+            const userInterrupted = session.userInterrupted === true;
             session.userInterrupted = false;
             // #7794: the model gateway's reason for this turn's failure, if it
             // had one. Always taken here, so a note from a retry that later
@@ -2167,6 +2164,28 @@ export class StreamingSessionManager {
               ? providerFailureMessage(providerFailure.cause, sawOutput, { platformKey: turnBinding.connectionKind === 'platform' })
               : null;
             let isErrorSuccessMessage: string | null = null;
+            // #11676: the technician pressed Stop and the turn ended in the
+            // shape an interrupt produces (a non-success result, or a success
+            // flagged is_error). That result is the stop, not a failure: no
+            // error event, and `done` says stopped. Never a stop: a turn that
+            // completed before the Stop landed, a coded limit (work/turn limit,
+            // budget: they say why), a topology turn (its own fixed ending), or
+            // a provider/gateway failure the turn already reported as final.
+            const isErrorResult = (resultMsg as { is_error?: unknown }).is_error === true;
+            const stoppedByUser = userInterrupted
+              && !topologyTurn
+              && !session.workTurnLimitStopped
+              && (resultMsg.subtype !== 'success' || isErrorResult)
+              && resultMsg.subtype !== 'error_max_budget_usd'
+              && resultMsg.subtype !== 'error_max_turns'
+              && !gatewayNote
+              && !providerMessage;
+            if (stoppedByUser) {
+              // Diagnosable later without a Sentry event or an error banner.
+              console.info('[StreamingSessionManager] Turn stopped by the user:', {
+                breezeSessionId: session.breezeSessionId, subtype: resultMsg.subtype, isError: isErrorResult,
+              });
+            }
 
             if (session.workTurnLimitStopped) {
               // Whatever the interrupted query reported, the reason is the limit.
@@ -2186,14 +2205,14 @@ export class StreamingSessionManager {
                 // may have run partway, so never automatically).
                 session.eventBus.publish(TURN_LIMIT_ERROR);
               } else if (stoppedByUser) {
-                // #11676: the interrupted turn's result; `done` says stopped.
+                // #11676: the interrupted turn's result (see above); `done` says stopped.
               } else {
                 session.eventBus.publish({
                   type: 'error',
                   message: gatewayNote ?? providerMessage ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')),
                 });
               }
-            } else if (!topologyTurn && !stoppedByUser && (resultMsg as { is_error?: unknown }).is_error === true) {
+            } else if (!topologyTurn && !stoppedByUser && isErrorResult) {
               // The CLI gave up on the upstream after its own retries (529 /
               // 429 / 401) or got a non-retried failure (low-credit 400), and
               // reports that as a "success" flagged is_error. Without an error
@@ -2259,6 +2278,9 @@ export class StreamingSessionManager {
               ...wispDone,
               ...(stoppedByUser ? { stopped: true } : {}),
             });
+            // #11676: a Stop that landed while this turn settled (after the
+            // result was read) has nothing left to stop.
+            session.userInterrupted = false;
             session.state = 'idle';
             try {
               wispTurnEnd?.scheduleWispTurnEndAfterDone(session, wispDone);
