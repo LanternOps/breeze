@@ -1,5 +1,7 @@
 import { BACKUP_WRITE_GATED_COMMAND_TYPES } from './backupWriteHelperGate';
 import { deliverBackupWriteCommand } from './backupStorageWriteDelivery';
+import { materializeBackupStorageCredentials } from './backupCommandCredentials';
+import { CommandTypes } from './commandTypes';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { devices, scriptExecutions } from '../db/schema';
@@ -169,6 +171,10 @@ for (const type of RECOVERY_INTEGRITY_COMMAND_TYPES) {
 for (const type of BACKUP_WRITE_GATED_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBackupWriteCommand);
 }
+// A local-vault sync names the destination its snapshot was written to by
+// reference (#11858, services/vaultDeviceCommands.ts). Only a local
+// destination is resolved; a reference to anything else is refused.
+registerDeliveryRefresher(CommandTypes.VAULT_SYNC, materializeBackupStorageCredentials);
 
 /**
  * The refresher to run for one claimed command: the type's registered

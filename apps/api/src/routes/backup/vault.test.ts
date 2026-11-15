@@ -92,10 +92,10 @@ vi.mock('../../db/schema', () => ({
 }));
 
 const buildVaultConfigurePayloadMock = vi.fn();
-const resolveLatestVaultSyncSnapshotIdMock = vi.fn();
+const resolveVaultSyncSourceMock = vi.fn();
 vi.mock('../../services/vaultDeviceCommands', () => ({
   buildVaultConfigurePayload: (...args: unknown[]) => buildVaultConfigurePayloadMock(...(args as [])),
-  resolveLatestVaultSyncSnapshotId: (...args: unknown[]) => resolveLatestVaultSyncSnapshotIdMock(...(args as [])),
+  resolveVaultSyncSource: (...args: unknown[]) => resolveVaultSyncSourceMock(...(args as [])),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -165,7 +165,9 @@ describe('vault routes', () => {
     };
     permissionsState = undefined;
     buildVaultConfigurePayloadMock.mockResolvedValue({ vaultPath: 'D:/Backups/Vault', retentionCount: 7, enabled: true });
-    resolveLatestVaultSyncSnapshotIdMock.mockResolvedValue('snap-latest');
+    resolveVaultSyncSourceMock.mockImplementation(async (_deviceId: string, _orgId: string, snapshotId?: string) => ({
+      ok: true, snapshotId: snapshotId ?? 'snap-latest', destination: null,
+    }));
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'command-default' } });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
@@ -702,7 +704,7 @@ describe('vault routes', () => {
 
       expect(res.status).toBe(200);
       expect((await res.json()).snapshotId).toBe('snap-latest');
-      expect(resolveLatestVaultSyncSnapshotIdMock).toHaveBeenCalledWith(DEVICE_ID, ORG_ID);
+      expect(resolveVaultSyncSourceMock).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, undefined);
       expect(pendingChain.set).toHaveBeenCalledWith(expect.objectContaining({
         lastSyncStatus: 'pending',
         lastSyncSnapshotId: 'snap-latest',
@@ -713,7 +715,9 @@ describe('vault routes', () => {
       selectMock
         .mockReturnValueOnce(chainMock([makeVault()]))
         .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
-      resolveLatestVaultSyncSnapshotIdMock.mockResolvedValueOnce(null);
+      resolveVaultSyncSourceMock.mockResolvedValueOnce({
+        ok: false, status: 400, error: 'No backup snapshot to sync yet: run a file backup on this device first',
+      });
 
       const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
         method: 'POST',
@@ -726,7 +730,7 @@ describe('vault routes', () => {
       expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
     });
 
-    it('does not look up a default when the caller names a snapshot', async () => {
+    it('resolves the named snapshot on this device in this org', async () => {
       selectMock
         .mockReturnValueOnce(chainMock([makeVault()]))
         .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
@@ -738,7 +742,52 @@ describe('vault routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(resolveLatestVaultSyncSnapshotIdMock).not.toHaveBeenCalled();
+      expect(resolveVaultSyncSourceMock).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, 'snap-chosen');
+    });
+
+    // #11858: Sync now read the helper's default store, not the device's
+    // policy-linked local destination.
+    it('names the destination the snapshot was written to in the command', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([makeVault()]))
+        .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+      updateMock.mockReturnValueOnce(chainMock([]));
+      const ref = { configId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', orgId: ORG_ID };
+      resolveVaultSyncSourceMock.mockResolvedValueOnce({
+        ok: true, snapshotId: 'snap-dest', destination: { provider: 'local', providerConfigRef: ref },
+      });
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'VAULT_SYNC',
+        { vaultId: VAULT_ID, vaultPath: 'D:/Backups/Vault', snapshotId: 'snap-dest', provider: 'local', providerConfigRef: ref },
+        expect.objectContaining({ expectedOrgId: ORG_ID }),
+      );
+    });
+
+    it('refuses a sync whose snapshot destination no longer resolves, without marking the vault pending', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([makeVault()]))
+        .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+      resolveVaultSyncSourceMock.mockResolvedValueOnce({
+        ok: false, status: 422, error: 'Backup destination configuration not found for this snapshot',
+      });
+
+      const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toBe('Backup destination configuration not found for this snapshot');
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
     });
   });
 

@@ -21,7 +21,7 @@ vi.mock('./commandQueue', () => ({
 
 vi.mock('./vaultDeviceCommands', () => ({
   buildVaultConfigurePayload: vi.fn(),
-  resolveLatestVaultSyncSnapshotId: vi.fn(),
+  resolveVaultSyncSource: vi.fn(),
 }));
 
 vi.mock('./aiDispatch', () => ({
@@ -41,7 +41,7 @@ import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerVaultTools } from './aiToolsVault';
-import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from './vaultDeviceCommands';
+import { buildVaultConfigurePayload, resolveVaultSyncSource } from './vaultDeviceCommands';
 import { updateVaultWithinCurrentSite } from './localVaultUpdate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -137,7 +137,7 @@ function setDefaultDbMocks() {
     error: null,
   } as any);
   vi.mocked(buildVaultConfigurePayload).mockResolvedValue({ vaultPath: '/vaults/main', retentionCount: 7, enabled: true });
-  vi.mocked(resolveLatestVaultSyncSnapshotId).mockResolvedValue('snap-latest');
+  vi.mocked(resolveVaultSyncSource).mockResolvedValue({ ok: true, snapshotId: 'snap-latest', destination: null });
 }
 
 function mockSelectSequence(rowsList: any[][]) {
@@ -392,7 +392,7 @@ describe('aiToolsVault handlers', () => {
     prepareHandlerMocks('trigger_vault_sync');
     await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth());
 
-    expect(resolveLatestVaultSyncSnapshotId).toHaveBeenCalledWith(DEVICE_ID, ORG_ID);
+    expect(resolveVaultSyncSource).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, null);
     expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
       expect.anything(),
       'trigger_vault_sync',
@@ -405,11 +405,48 @@ describe('aiToolsVault handlers', () => {
 
   it('refuses an AI vault sync when the device has no snapshot to sync', async () => {
     prepareHandlerMocks('trigger_vault_sync');
-    vi.mocked(resolveLatestVaultSyncSnapshotId).mockResolvedValueOnce(null);
+    vi.mocked(resolveVaultSyncSource).mockResolvedValueOnce({
+      ok: false, status: 400, error: 'No backup snapshot to sync yet: run a file backup on this device first',
+    });
 
     const result = JSON.parse(await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth()));
 
     expect(result.error).toMatch(/no backup snapshot/i);
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  // #11858: the AI sync names the destination the snapshot was written to,
+  // like the route.
+  it('names the destination the snapshot was written to in an AI vault sync', async () => {
+    prepareHandlerMocks('trigger_vault_sync');
+    const ref = { configId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', orgId: ORG_ID };
+    vi.mocked(resolveVaultSyncSource).mockResolvedValueOnce({
+      ok: true, snapshotId: 'snap-chosen', destination: { provider: 'local', providerConfigRef: ref },
+    });
+
+    await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID, snapshotId: 'snap-chosen' }, makeAuth());
+
+    expect(resolveVaultSyncSource).toHaveBeenCalledWith(DEVICE_ID, ORG_ID, 'snap-chosen');
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'trigger_vault_sync',
+      DEVICE_ID,
+      'vault_sync',
+      { vaultId: VAULT_ID, vaultPath: '/vaults/main', snapshotId: 'snap-chosen', provider: 'local', providerConfigRef: ref },
+      expect.anything(),
+    );
+  });
+
+  it('refuses an AI vault sync whose snapshot destination no longer resolves', async () => {
+    prepareHandlerMocks('trigger_vault_sync');
+    vi.mocked(resolveVaultSyncSource).mockResolvedValueOnce({
+      ok: false, status: 422, error: 'Backup destination configuration not found for this snapshot',
+    });
+
+    const result = JSON.parse(await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth()));
+
+    expect(result.error).toBe('Backup destination configuration not found for this snapshot');
     expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
   });

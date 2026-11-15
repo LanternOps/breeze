@@ -82,6 +82,8 @@ const STORAGE_DESTINATION_COMMAND_TYPES: ReadonlySet<string> = new Set([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
   CommandTypes.VM_INSTANT_BOOT,
   CommandTypes.BMR_RECOVER,
+  // Reads the snapshot it copies from the payload's destination (#11858).
+  CommandTypes.VAULT_SYNC,
 ]);
 
 export function hasSensitivePayload(type: string): boolean {
