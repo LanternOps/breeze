@@ -239,3 +239,94 @@ export function effectiveProviderSet(view: PortalAccessPolicyView, draft: Portal
   const providers = effectiveSsoProviders(view, draft);
   return providers.microsoft || providers.google ? ssoProviderSet(providers) : capabilityProviderSet(view.capabilities);
 }
+
+// ---------------------------------------------------------------------------
+// Directory deprovisioning (portal registration W8, #11385). The API defines
+// these in `apps/api/src/services/portalDirectory/status.ts` and
+// `services/portalUserIdentities.ts`; they are not shared.
+// ---------------------------------------------------------------------------
+
+export type PortalDirectorySource = 'entra' | 'google';
+export type PortalDirectoryRunOutcome = 'evaluated' | 'incomplete' | 'suspect_shrink' | 'skipped';
+export type PortalDirectoryRunReason =
+  | 'tenant_not_proven' | 'tenant_mismatch' | 'connection_inactive' | 'org_inactive'
+  | 'sync_incomplete' | 'directory_too_large' | 'scope_missing' | 'access_denied' | 'unavailable'
+  | 'connection_invalid' | 'admin_not_admin' | 'mixed_customer' | 'malformed';
+export type PortalDirectoryRunDisposition =
+  | 'none' | 'reported' | 'applying' | 'applied' | 'held' | 'held_applied' | 'held_dismissed' | 'superseded';
+export type PortalDirectoryHoldReason = 'threshold' | 'first_enforcement';
+export type PortalDirectoryActionReason = 'account_disabled' | 'absent' | 'suspended' | 'archived';
+export type PortalDirectoryActionEffect = 'identity' | 'identity_and_account';
+export type PortalDirectoryActionStatus = 'reported' | 'held' | 'pending' | 'applied' | 'skipped' | 'superseded' | 'restored';
+export type PortalIdentityBlocker = 'entra_directory' | 'google_directory' | 'scim' | 'msp';
+export type PortalAccountDisabledBy = 'msp' | 'directory' | 'scim';
+
+export interface PortalDirectoryRunSummary {
+  id: string;
+  outcome: PortalDirectoryRunOutcome;
+  reason: PortalDirectoryRunReason | null;
+  disposition: PortalDirectoryRunDisposition;
+  holdReason: PortalDirectoryHoldReason | null;
+  directoryUserCount: number | null;
+  usableCount: number;
+  affectedCount: number;
+  impactDigest: string | null;
+  createdAt: string;
+}
+
+/** A row of the panel; a rearmed identity with no action on the latest run has null action fields. */
+export interface PortalDirectoryActionRow {
+  id: string | null;
+  runId: string | null;
+  identityId: string;
+  portalUserId: string;
+  email: string;
+  name: string | null;
+  provider: PortalDirectorySource;
+  reason: PortalDirectoryActionReason | null;
+  effect: PortalDirectoryActionEffect | null;
+  keepsPassword: boolean;
+  status: PortalDirectoryActionStatus | null;
+  rearmed: boolean;
+}
+
+export interface PortalDirectorySourceStatus {
+  source: PortalDirectorySource;
+  lastRun: PortalDirectoryRunSummary | null;
+  lastEvaluatedRun: PortalDirectoryRunSummary | null;
+}
+
+export interface PortalDirectoryStatusView {
+  mode: 'report' | 'enforce';
+  sources: PortalDirectorySourceStatus[];
+  openActions: PortalDirectoryActionRow[];
+}
+
+export function isPortalDirectoryStatusView(value: unknown): value is PortalDirectoryStatusView {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (v.mode === 'report' || v.mode === 'enforce')
+    && Array.isArray(v.sources)
+    && v.sources.every((s) => {
+      const source = s && typeof s === 'object' ? (s as { source?: unknown }).source : undefined;
+      return source === 'entra' || source === 'google';
+    })
+    && Array.isArray(v.openActions);
+}
+
+/** One identity of a portal-users list row with its directory state (`listIdentityStatesByUser`). */
+export interface PortalUserIdentityState {
+  id: string;
+  provider: PortalDirectorySource;
+  disabledAt: string | null;
+  disabledBlockers: PortalIdentityBlocker[];
+  disabledReason: string | null;
+  rearmSince: string | null;
+}
+
+const DIRECTORY_BLOCKERS: ReadonlySet<PortalIdentityBlocker> = new Set(['entra_directory', 'google_directory']);
+
+/** Whether the MSP may remove this sign-in method (OD3): disabled by the customer's directory. */
+export function isDirectoryDisabled(identity: Pick<PortalUserIdentityState, 'disabledAt' | 'disabledBlockers'>): boolean {
+  return identity.disabledAt !== null && identity.disabledBlockers.some((b) => DIRECTORY_BLOCKERS.has(b));
+}

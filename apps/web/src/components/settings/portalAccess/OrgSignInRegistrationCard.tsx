@@ -28,6 +28,7 @@ import { EntraTenantPanel } from './EntraTenantPanel';
 import { SsoOnlyConfirmDialog } from './SsoOnlyConfirmDialog';
 import { StrandedAccountsList } from './StrandedAccountsList';
 import { OrgDomainsSummaryRow } from './OrgDomainsSummaryRow';
+import { DirectoryDeprovisioningPanel } from './DirectoryDeprovisioningPanel';
 import {
   confirmRequiredImpact,
   isConfirmRequiredStatus,
@@ -310,6 +311,12 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
       />
       {/* Spec §4 Domains row (portal registration W5): read-only, managed under Organization › Domains. */}
       <OrgDomainsSummaryRow orgId={orgId} />
+      {/* Portal registration W8 (#11385): directory deprovisioning status, preview and held-run decisions. */}
+      <DirectoryDeprovisioningPanel
+        orgId={orgId}
+        canEdit={view.canEdit}
+        providers={{ microsoft: view.capabilities.entra, google: view.capabilities.google }}
+      />
       {ssoOnlyEffective && <StrandedAccountsList orgId={orgId} reloadKey={strandedReload} providers={effectiveProviderSet(view, {})} />}
       <SsoOnlyConfirmDialog
         open={confirm !== null}

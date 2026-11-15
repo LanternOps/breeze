@@ -220,7 +220,7 @@ export function EntraTenantPanel({ orgId, onChanged }: EntraTenantPanelProps) {
   if (state.status === 'not_configured') return null;
 
   const shell = (children: ReactNode) => (
-    <div data-testid={`${ID}-panel`} className="mt-2 space-y-3 rounded-md border bg-muted/20 p-3 text-sm">
+    <div id={ID} data-testid={`${ID}-panel`} className="mt-2 space-y-3 rounded-md border bg-muted/20 p-3 text-sm">
       <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('portalAccessPolicy.entraTenant.title')}</h4>
       {children}
     </div>
