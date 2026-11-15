@@ -34,6 +34,7 @@ import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
 import { releaseFilesystemScanGenerationForCommand } from '../services/filesystemScanGenerationRelease';
+import { failVaultSyncWithoutResult } from '../services/vaultSyncPersistence';
 import { finalizeContainmentAction } from '../services/incidentContainmentResults';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
@@ -343,6 +344,22 @@ export async function propagateTimedOutDeviceCommand(params: {
       );
     } catch (err) {
       console.error(`[StaleCommandReaper] Failed to release filesystem scan generation for timed-out command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // #11905 — a vault_sync that never answers leaves its vault `pending`
+  // forever otherwise: the Sync route marks it pending before queueing, and
+  // only an agent result moved it on. This covers both clocks and a delivery
+  // refusal (expired by the refresher, failed here on the delivery clock).
+  // Contained like the blocks above, in a savepoint for the manual
+  // mark-timed-out route's request transaction (see the containment block).
+  if (params.commandType === CommandTypes.VAULT_SYNC) {
+    const failVault = () => failVaultSyncWithoutResult({ commandId, payload, reason: errorMsg, completedAt });
+    try {
+      await (hasDbAccessContext() ? withDbTransaction(failVault) : failVault());
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to record the vault sync outcome for timed-out command ${commandId}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }

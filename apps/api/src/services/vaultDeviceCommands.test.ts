@@ -76,6 +76,12 @@ vi.mock('../db/schema', () => ({
     timestamp: 'backup_snapshots.timestamp',
     configId: 'backup_snapshots.config_id',
   },
+  backupConfigs: {
+    id: 'backup_configs.id',
+    orgId: 'backup_configs.org_id',
+    provider: 'backup_configs.provider',
+    providerConfig: 'backup_configs.provider_config',
+  },
 }));
 
 const resolveBackupProviderConfigMock = vi.fn();
@@ -153,14 +159,30 @@ describe('resolveVaultSyncSource', () => {
   // written to, by reference; delivery resolves it into the outgoing frame.
   it('names the local destination the snapshot was written to', async () => {
     selectMock.mockReturnValueOnce(chainMock([{ snapshotId: 'snap-dest', configId: CONFIG_ID }]));
-    resolveBackupProviderConfigMock.mockResolvedValueOnce({ provider: 'local', providerConfig: { path: 'C:\\LabBackups' } });
+    const configChain = chainMock([{ provider: 'local' }]);
+    selectMock.mockReturnValueOnce(configChain);
 
     expect(await resolveVaultSyncSource(DEVICE_ID, ORG_ID)).toEqual({
       ok: true,
       snapshotId: 'snap-dest',
       destination: { provider: 'local', providerConfigRef: { configId: CONFIG_ID, orgId: ORG_ID } },
     });
-    expect(resolveBackupProviderConfigMock).toHaveBeenCalledWith(CONFIG_ID, ORG_ID);
+    expect(renderSql(configChain.where.mock.calls[0]![0])).toBe(
+      `(backup_configs.id = ${CONFIG_ID} and backup_configs.org_id = ${ORG_ID})`,
+    );
+  });
+
+  // The request path needs only the provider: the destination itself is
+  // resolved at delivery. Reading the whole config would decrypt its secrets
+  // here for nothing.
+  it("reads only the destination's provider, never its config", async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ snapshotId: 'snap-dest', configId: CONFIG_ID }]));
+    selectMock.mockReturnValueOnce(chainMock([{ provider: 'local' }]));
+
+    await resolveVaultSyncSource(DEVICE_ID, ORG_ID);
+
+    expect(selectMock.mock.calls[1]).toEqual([{ provider: 'backup_configs.provider' }]);
+    expect(resolveBackupProviderConfigMock).not.toHaveBeenCalled();
   });
 
   it('names no destination for a snapshot written before destinations were recorded (the helper reads its own store)', async () => {
@@ -172,14 +194,14 @@ describe('resolveVaultSyncSource', () => {
 
   it('names no destination for a storage destination, which is never sent to a device for a read', async () => {
     selectMock.mockReturnValueOnce(chainMock([{ snapshotId: 'snap-s3', configId: CONFIG_ID }]));
-    resolveBackupProviderConfigMock.mockResolvedValueOnce({ provider: 's3', providerConfig: { bucket: 'b' } });
+    selectMock.mockReturnValueOnce(chainMock([{ provider: 's3' }]));
 
     expect(await resolveVaultSyncSource(DEVICE_ID, ORG_ID)).toEqual({ ok: true, snapshotId: 'snap-s3', destination: null });
   });
 
   it('refuses when the destination the snapshot was written to no longer resolves in this org', async () => {
     selectMock.mockReturnValueOnce(chainMock([{ snapshotId: 'snap-gone', configId: CONFIG_ID }]));
-    resolveBackupProviderConfigMock.mockResolvedValueOnce(null);
+    selectMock.mockReturnValueOnce(chainMock([]));
 
     expect(await resolveVaultSyncSource(DEVICE_ID, ORG_ID)).toEqual({
       ok: false, status: 422, error: 'Backup destination configuration not found for this snapshot',

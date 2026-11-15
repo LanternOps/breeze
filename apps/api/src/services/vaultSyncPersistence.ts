@@ -1,7 +1,9 @@
-import { and, desc, eq, gte } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, ne, notExists, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import { db } from '../db';
-import { backupSnapshots, localVaults, vaultSnapshotInventory } from '../db/schema';
+import { backupSnapshots, deviceCommands, localVaults, vaultSnapshotInventory } from '../db/schema';
+import { UUID_REGEX } from '../utils/uuid';
 import { vaultSyncStructuredResultSchema } from './agentCommandResultValidation';
 import { redactSecretsFromOutput } from './secretRedaction';
 
@@ -246,4 +248,97 @@ export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandRe
         updatedAt: completedAt,
       },
     });
+}
+
+/**
+ * Anything that can run the write: the ambient `db`, or a caller's open
+ * transaction handle (the cancel propagation passes its own).
+ */
+type VaultSyncExecutor = Pick<typeof db, 'select' | 'update'>;
+
+export interface FailVaultSyncWithoutResultInput {
+  commandId: string;
+  /** The command's payload as read BEFORE its terminal write. */
+  payload: Record<string, unknown> | null;
+  /** Why no result will come: the reaper's or the cancel's reason. */
+  reason: string;
+  completedAt: Date;
+  executor?: VaultSyncExecutor;
+}
+
+/**
+ * #11905 — the outcome of a `vault_sync` that will never produce an agent
+ * result: it expired undelivered, hit its execution timeout, was refused at
+ * delivery (which the stale reaper then fails on the delivery clock), or was
+ * cancelled. The Sync route marks the vault `pending` before it queues the
+ * command, and only a result used to move it on, so without this the vault
+ * stayed `pending` forever with no error.
+ *
+ * Writes the vault the payload names, and only while all of these hold:
+ *  - it belongs to the command row's device and to the org the command was
+ *    queued for (`submitted_org_id`, stamped at enqueue);
+ *  - it is still `pending`, so an outcome a result already recorded is kept;
+ *  - no NEWER `vault_sync` for the same vault is still pending or in flight.
+ *    The vault row records no command id, so the attempts are ordered on
+ *    `device_commands` itself: a later Sync press re-marked the vault
+ *    `pending` for its own command, and failing the vault now would report
+ *    that live attempt as failed.
+ *
+ * `last_sync_at` is left alone: no sync ran. Returns whether a vault was
+ * written.
+ */
+export async function failVaultSyncWithoutResult(input: FailVaultSyncWithoutResultInput): Promise<boolean> {
+  const executor = input.executor ?? db;
+  const vaultId = typeof input.payload?.vaultId === 'string' ? input.payload.vaultId : null;
+  if (!vaultId || !UUID_REGEX.test(vaultId)) {
+    console.warn(
+      `[VaultSyncPersistence] vault_sync ${input.commandId} names no valid vault; ` +
+      'no vault status to update',
+    );
+    return false;
+  }
+
+  const [command] = await executor
+    .select({
+      deviceId: deviceCommands.deviceId,
+      createdAt: deviceCommands.createdAt,
+      submittedOrgId: deviceCommands.submittedOrgId,
+    })
+    .from(deviceCommands)
+    .where(and(eq(deviceCommands.id, input.commandId), eq(deviceCommands.type, 'vault_sync')))
+    .limit(1);
+  if (!command) return false;
+
+  const newer = alias(deviceCommands, 'newer_vault_sync');
+  const newerAttemptInFlight = executor
+    .select({ one: sql`1` })
+    .from(newer)
+    .where(and(
+      eq(newer.deviceId, command.deviceId),
+      eq(newer.type, 'vault_sync'),
+      sql`${newer.payload}->>'vaultId' = ${vaultId}`,
+      ne(newer.id, input.commandId),
+      inArray(newer.status, ['pending', 'sent']),
+      gt(newer.createdAt, command.createdAt),
+    ));
+
+  const updated = await executor
+    .update(localVaults)
+    .set({
+      lastSyncStatus: 'failed',
+      lastSyncError: redactSecretsFromOutput(`Vault sync did not run: ${input.reason}`),
+      updatedAt: input.completedAt,
+    })
+    .where(and(
+      eq(localVaults.id, vaultId),
+      eq(localVaults.deviceId, command.deviceId),
+      // A row queued before submitted_org_id existed has none; the device
+      // match above still ties the vault to the device's own org through the
+      // (device_id, org_id) foreign key.
+      command.submittedOrgId ? eq(localVaults.orgId, command.submittedOrgId) : undefined,
+      eq(localVaults.lastSyncStatus, 'pending'),
+      notExists(newerAttemptInFlight),
+    ))
+    .returning({ id: localVaults.id });
+  return updated.length > 0;
 }

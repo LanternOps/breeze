@@ -19,9 +19,9 @@
 import { and, desc, eq, isNull, or, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
-import { backupSnapshots, localVaults } from '../db/schema';
+import { backupConfigs, backupSnapshots, localVaults } from '../db/schema';
 import { backupReadCredentialPayload, type BackupProviderConfigRef } from './backupCommandCredentials';
-import { BACKUP_DESTINATION_CONFIG_NOT_FOUND_MESSAGE, resolveBackupProviderConfig } from './backupProviderConfig';
+import { BACKUP_DESTINATION_CONFIG_NOT_FOUND_MESSAGE } from './backupProviderConfig';
 import { redactSecretsFromOutput } from './secretRedaction';
 
 export type VaultConfigurePayload =
@@ -75,6 +75,10 @@ export type VaultSyncSource =
  *   never sent to a device for a read, and `vault_sync` is not served through
  *   storage sessions, so the helper keeps reading its own store.
  * - Recorded destination that no longer resolves in this org: refused.
+ *
+ * Only the destination's `provider` is read here. The destination itself is
+ * resolved at delivery, so reading (and decrypting) its config in the request
+ * path would expose its secrets to this code for nothing.
  */
 export async function resolveVaultSyncSource(
   deviceId: string,
@@ -105,7 +109,11 @@ export async function resolveVaultSyncSource(
     return { ok: true, snapshotId: snapshot.snapshotId, destination: null };
   }
 
-  const config = await resolveBackupProviderConfig(snapshot.configId, orgId);
+  const [config] = await db
+    .select({ provider: backupConfigs.provider })
+    .from(backupConfigs)
+    .where(and(eq(backupConfigs.id, snapshot.configId), eq(backupConfigs.orgId, orgId)))
+    .limit(1);
   if (!config) {
     return { ok: false, status: 422, error: BACKUP_DESTINATION_CONFIG_NOT_FOUND_MESSAGE };
   }
