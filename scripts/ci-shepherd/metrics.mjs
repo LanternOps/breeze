@@ -33,10 +33,14 @@ export const WAIT_LIMIT_S = 300;
 export const COVER_WINDOW_MS = 15 * 60_000;
 // The tick posts at or after Monday 13:00Z.
 export const POST_AFTER_MS = 13 * 3600_000;
-// The tick leaves the metrics to a later tick when less than this is left.
-export const MIN_TICK_BUDGET = 150;
-// After a failed or deferred attempt, the next one waits this long.
+// The tick leaves the metrics to a later tick when less than this is left
+// (the listings and the queue event scan alone take some 60-100 calls).
+export const MIN_TICK_BUDGET = 300;
+// After a failed attempt, or one whose reads failed, the next waits this long.
 export const RETRY_MS = 3600_000;
+// A week whose reads keep failing is posted anyway (its rows unavailable)
+// after this many hourly attempts, rather than never.
+export const MAX_DEGRADED_TRIES = 6;
 // What one missing classification may cost: the PR, its group run, the run's
 // jobs, artifacts, reports, annotations and logs.
 export const CLASSIFY_COST = 25;
@@ -54,6 +58,8 @@ const JOB_PAGES = 5;
 const ISSUE_PAGES = 3;
 const COMMENT_PAGES = 10;
 const MAX_LISTED_PRS = 30;
+// Past this share of undetermined merged PRs, the latency row is unavailable.
+const MAX_UNDETERMINED_SHARE = 0.2;
 
 const ms = (s) => Date.parse(s);
 const iso = (t) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -190,6 +196,10 @@ async function sampleRuns(gh, m, { repo, start, end, event, status, max, budget,
   const runs = [];
   for (const day of days) {
     for (const page of pagesFor(day, k)) {
+      if (!m.can()) {
+        onError(`${event} run listing: the API budget ran out`);
+        return { runs: [], k: null };
+      }
       const res = await gh.rest('GET', runsPath(repo, dayQuery(event, status, day.d, day.to, page)));
       if (res.status !== 200) {
         onError(`${event} run listing: ${res.status}`);
@@ -343,19 +353,23 @@ const ttg = (runs) => runs.map((r) => ms(r.updated_at) - ms(r.run_started_at ?? 
 // Per PR merged in the week through the queue: its merged head's first add
 // to the queue → its `merged` removal (or mergedAt). The merged head's
 // arrival is its first non-queue CI run (headPushedAt): one call per PR.
-async function queueLatency(gh, m, { repo, prs, start, end, budget }) {
+async function queueLatency(gh, m, { repo, prs, start, end, budget, onError }) {
   const merged = prs.filter((p) => p.mergedAt && ms(p.mergedAt) >= start && ms(p.mergedAt) < end && p.events.some((e) => e.type === 'added'));
   const k = Math.max(1, Math.ceil(merged.length / Math.max(1, Math.min(budget, m.left()))));
   const values = [];
   let undetermined = 0;
   for (let i = 0; i < merged.length; i += k) {
     const p = merged[i];
-    if (!m.can()) return { k: null };
+    if (!m.can()) {
+      onError('queue latency: the API budget ran out');
+      return { k: null };
+    }
     let pushed = null;
     try {
       pushed = await headPushedAt(gh, { repo, headSha: p.headSha });
     } catch (e) {
       if (e.name === 'BudgetExceeded') throw e;
+      onError(`queue latency: PR ${p.pr} head arrival not read: ${e.message}`);
     }
     // Events before `eventsFrom` were not read: an earlier add may hide there.
     const unread = pushed && p.eventsFrom !== null && ms(pushed) < p.eventsFrom;
@@ -394,21 +408,33 @@ async function removalClasses(gh, m, { removals, log, budget, classifyRemoval, o
     return { list: out, k: null };
   }
   const affordable = Math.floor(Math.min(budget, m.left()) / CLASSIFY_COST);
-  if (affordable < 1) return { list: out, k: null };
+  if (affordable < 1) {
+    onError(`queue failures: no budget to classify ${missing.length} unlogged removals`);
+    return { list: out, k: null };
+  }
   const k = Math.ceil(missing.length / affordable);
-  for (let i = 0; i < missing.length; i += k) {
-    const r = missing[i];
-    if (!m.can(CLASSIFY_COST)) return { list: out, k: null };
-    let cls = 'unknown';
+  const picked = [];
+  for (let i = 0; i < missing.length; i += k) picked.push(missing[i]);
+  // Each sampled removal stands for missing/picked of them (not k: ceil
+  // leaves fewer than missing/k picks), so the weights sum to `missing`.
+  const weight = missing.length / picked.length;
+  let failed = 0;
+  for (const r of picked) {
+    if (!m.can(CLASSIFY_COST)) {
+      onError('queue failures: the API budget ran out while classifying');
+      return { list: out, k: null };
+    }
     try {
-      cls = (await classifyRemoval(gh, r)) ?? 'unknown';
+      const cls = (await classifyRemoval(gh, r)) ?? 'unknown';
+      out.push({ ...r, class: cls, real: cls === 'real', weight });
     } catch (e) {
       if (e.name === 'BudgetExceeded') throw e;
+      // Not a class: counted apart, never as unknown (which reads as a measurement).
+      failed++;
       onError(`queue failures: PR ${r.pr} removal not classified: ${e.message}`);
     }
-    out.push({ ...r, class: cls, real: cls === 'real', weight: k });
   }
-  return { list: out, k };
+  return { list: out, k, failed: failed * weight };
 }
 
 // A removal's class from its group run, as the tick would have classified it
@@ -438,7 +464,9 @@ async function jobStats(gh, m, { repo, runs, budget }) {
   let seconds = 0;
   let linux = 0;
   let waited = 0;
+  let sampled = 0;
   for (let i = 0; i < runs.length; i += k) {
+    sampled++;
     for (let page = 1; page <= JOB_PAGES; page++) {
       let res = i === 0 && page === 1 ? first : null;
       if (!res) {
@@ -461,7 +489,8 @@ async function jobStats(gh, m, { repo, runs, budget }) {
       if (page === JOB_PAGES) return { k: null, error: `jobs of run ${runs[i].id}: over ${JOB_PAGES * 100}` };
     }
   }
-  return { k, seconds: seconds * k, linux, waited };
+  // Scaled by runs/sampled, not k: ceil(runs/k) runs were read.
+  return { k, seconds: (seconds * runs.length) / sampled, linux, waited };
 }
 
 // Re-adds after a failed_checks removal of the same head that no act-mode
@@ -469,10 +498,15 @@ async function jobStats(gh, m, { repo, runs, budget }) {
 // releases. Same head: the PR's current head arrived (headPushedAt) before
 // the removal. Arrived between the removal and the re-add: the author pushed,
 // not counted. Arrived after the re-add: cannot tell, listed as undetermined.
-async function humanReadds(gh, m, { repo, removals, prs, log, start, end }) {
+// Available only when every same-repo removal of the week has an act-mode
+// decision: a removal decided in shadow (or not at all) has no shepherd
+// requeue to cover its re-add, which would then read as a human's.
+async function humanReadds(gh, m, { repo, removals, prs, log, start, end, onError }) {
   const inWeek = (at) => ms(at) >= start && ms(at) < end;
   const act = log.filter((e) => e && e.mode === 'act' && typeof e.at === 'string');
   if (!act.some((e) => inWeek(e.at))) return { available: false };
+  const decided = new Set(act.map((e) => e.removalId).filter(Boolean));
+  if (removals.some((r) => !r.isFork && !decided.has(r.id))) return { available: false };
   const byPr = new Map(prs.map((p) => [p.pr, p]));
   const pushedOf = new Map();
   const humans = new Set();
@@ -485,12 +519,16 @@ async function humanReadds(gh, m, { repo, removals, prs, log, start, end }) {
     const covered = act.some((e) => e.removalId === r.id && (e.kind === 'requeue' || e.kind === 'record') && e.status === 'applied' && ms(e.at) <= ms(r.at) + COVER_WINDOW_MS);
     if (covered) continue;
     if (!pushedOf.has(r.pr)) {
-      if (!m.can()) return { available: false };
+      if (!m.can()) {
+        onError('human re-adds: the API budget ran out');
+        return { available: false };
+      }
       let pushed = null;
       try {
         pushed = await headPushedAt(gh, { repo, headSha: byPr.get(r.pr).headSha });
       } catch (e) {
         if (e.name === 'BudgetExceeded') throw e;
+        onError(`human re-adds: PR ${r.pr} head arrival not read: ${e.message}`);
       }
       pushedOf.set(r.pr, pushed);
     }
@@ -538,11 +576,15 @@ export async function weekMetrics(gh, { repo, week, decisionsLog = [], apiBudget
     : [];
   // 2. Queue latency.
   if (scan.complete) {
-    const lat = await queueLatency(gh, m, { repo, prs: scan.prs, start, end, budget: Math.floor(m.left() * 0.25) });
-    if (lat.k !== null) {
+    const lat = await queueLatency(gh, m, { repo, prs: scan.prs, start, end, budget: Math.floor(m.left() * 0.25), onError });
+    const read = lat.k === null ? 0 : lat.values.length + lat.undetermined;
+    if (lat.k !== null && lat.undetermined > MAX_UNDETERMINED_SHARE * read) {
+      // Dropping that many would bias the percentiles.
+      onError(`queue latency: ${lat.undetermined} of ${read} merged PRs undetermined`);
+    } else if (lat.k !== null) {
       const tail = lat.undetermined ? `; ${lat.undetermined} undetermined` : '';
       const n = lat.values.length;
-      set('queue_latency', n ? `${pair(lat.values, 'min')} (${plural(n, 'merged PR')}${lat.k > 1 ? ' read' : ''}${tail})` : `no merged PRs${tail}`, coverageOf(lat.k));
+      set('queue_latency', n ? `${pair(lat.values, 'min')} (${plural(n, 'merged PR')}${lat.k > 1 ? ' read' : ''}${tail})` : 'no merged PRs', coverageOf(lat.k));
     }
   }
   // 4 and 7. Removal classes.
@@ -551,19 +593,23 @@ export async function weekMetrics(gh, { repo, week, decisionsLog = [], apiBudget
     if (cls.k !== null) {
       const by = {};
       for (const r of cls.list) by[r.class] = (by[r.class] ?? 0) + r.weight;
-      const flaky = FLAKE_CLASSES.reduce((n, c) => n + (by[c] ?? 0), 0);
       const approx = cls.k > 1 ? '≈' : '';
+      const num = (n) => `${approx}${Math.round(n)}`;
+      const flaky = FLAKE_CLASSES.reduce((n, c) => n + (by[c] ?? 0), 0);
       const parts = Object.entries(by)
         .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
-        .map(([c, n]) => `${c} ${approx}${n}`);
-      set('queue_flaky', removals.length ? `${approx}${flaky} of ${removals.length} (${parts.join(', ')})` : '0 of 0', coverageOf(cls.k));
+        .map(([c, n]) => `${c} ${num(n)}`);
+      if (cls.failed) parts.push(`${num(cls.failed)} not classified`);
+      set('queue_flaky', removals.length ? `${num(flaky)} of ${removals.length} (${parts.join(', ')})` : '0 of 0', coverageOf(cls.k));
+      // Sampled: the PRs read are a lower bound on the week's.
       const real = new Set(cls.list.filter((r) => r.real).map((r) => r.pr));
-      set('real_caught', real.size ? `${plural(real.size, 'PR')}: ${prList(real)} (unadjudicated)` : '0 PRs', coverageOf(cls.k));
+      const atLeast = cls.k > 1 ? 'at least ' : '';
+      set('real_caught', real.size ? `${atLeast}${plural(real.size, 'PR')}: ${prList(real)} (unadjudicated)` : cls.k > 1 ? 'none in the sample' : '0 PRs', coverageOf(cls.k));
     }
   }
   // 8. Human re-adds: act mode only. Before the jobs, which take what is left.
   if (scan.complete) {
-    const h = await humanReadds(gh, m, { repo, removals, prs: scan.prs, log, start, end });
+    const h = await humanReadds(gh, m, { repo, removals, prs: scan.prs, log, start, end, onError });
     if (h.available) {
       const detail = [h.prs.size ? prList(h.prs) : null, h.resumes ? `${plural(h.resumes, 'resume label')}` : null, h.undetermined ? `${h.undetermined} undetermined` : null].filter(Boolean);
       set('human_readds', `${h.count}${detail.length ? ` (${detail.join('; ')})` : ''}`, 'exact');
@@ -676,18 +722,30 @@ export async function postWeekly(gh, { repo, week, rows, writer = null, viewer, 
 export async function weeklyMetrics(t, { readLog = () => readJsonl(join(t.stateDir, 'decisions.jsonl')), compute = weekMetrics, post = postWeekly } = {}) {
   const week = dueWeek(t.now);
   if (!week) return { status: 'not_due' };
-  const s = (t.state.metrics = { postedWeek: null, issue: null, triedWeek: null, triedAt: null, ...(t.state.metrics ?? {}) });
+  const s = (t.state.metrics = { postedWeek: null, issue: null, triedWeek: null, triedAt: null, tries: 0, ...(t.state.metrics ?? {}) });
   if (s.postedWeek === week) return { status: 'posted', week };
   if (t.mode !== 'act') return { status: 'not_act', week };
   if (s.triedWeek === week && s.triedAt && t.now - ms(s.triedAt) < RETRY_MS) return { status: 'waiting', week };
   const left = t.gh.budget - t.gh.calls;
   if (left < MIN_TICK_BUDGET) return { status: 'deferred', week };
+  s.tries = s.triedWeek === week ? s.tries + 1 : 1;
   s.triedWeek = week;
   s.triedAt = iso(t.now);
   t.save();
   const errors = [];
-  const rows = await compute(t.gh, { repo: t.repo, week, decisionsLog: readLog(), apiBudget: left - Math.floor(MIN_TICK_BUDGET / 3), ciYml: t.ciYml, repoRoot: t.repoRoot, history: t.history, onError: (e) => errors.push(e) });
+  let rows;
+  try {
+    rows = await compute(t.gh, { repo: t.repo, week, decisionsLog: readLog(), apiBudget: left - 50, ciYml: t.ciYml, repoRoot: t.repoRoot, history: t.history, onError: (e) => errors.push(e) });
+  } catch (e) {
+    // The tick's own budget: the metrics wait an hour, the tick goes on.
+    if (e.name !== 'BudgetExceeded') throw e;
+    return { status: 'deferred', week };
+  }
   for (const e of errors.slice(0, 3)) t.error(`metrics ${week}: ${e}`);
+  if (errors.length > 3) t.error(`metrics ${week}: and ${errors.length - 3} more`);
+  // A read that failed may pass in an hour. A week gets one comment, so it is
+  // not spent on rows a transient error blanked, unless that keeps happening.
+  if (errors.length && s.tries < MAX_DEGRADED_TRIES) return { status: 'retry', week };
   // Mode is re-read before the write batch.
   if ((await t.modeNow()) !== 'act') return { status: 'left_act', week };
   const res = await post(t.gh, { repo: t.repo, week, rows, writer: t.writer, viewer: t.viewer, knownIssue: s.issue });

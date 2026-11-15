@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { METRICS_LABEL, METRICS_TITLE, MIN_TICK_BUDGET, dueWeek, isoWeek, marker, percentile, postWeekly, renderWeekly, weekBounds, weekMetrics, weeklyMetrics } from './metrics.mjs';
+import { MAX_DEGRADED_TRIES, METRICS_LABEL, METRICS_TITLE, MIN_TICK_BUDGET, RETRY_MS, dueWeek, isoWeek, marker, percentile, postWeekly, renderWeekly, weekBounds, weekMetrics, weeklyMetrics } from './metrics.mjs';
 
 // Weekly CI throughput metrics (W06d, #10750), against an in-memory fake of
 // the GitHub reads; writes go to a recording fake writer, never to GitHub.
@@ -286,8 +286,22 @@ test('a merged head that arrived before the events read has an undetermined late
   const w = syntheticWeek();
   w.prs[0] = { ...w.prs[0], events: [...churn(501, '2026-10-30T00:00:00Z', 40), ...w.prs[0].events] };
   w.pushes.a501 = '2026-10-29T00:00:00Z';
-  const rows = await weekMetrics(fakeGh(w), { repo: REPO, week: WEEK, decisionsLog: w.log });
-  assert.deepEqual([rows[1].value, rows[1].coverage], ['no merged PRs; 1 undetermined', 'exact']);
+  const errors = [];
+  const rows = await weekMetrics(fakeGh(w), { repo: REPO, week: WEEK, decisionsLog: w.log, onError: (e) => errors.push(e) });
+  // 1 of 1 undetermined is over the 20% share: the row would be biased.
+  assert.deepEqual([rows[1].value, rows[1].coverage], ['—', 'unavailable']);
+  assert.ok(errors.includes('queue latency: 1 of 1 merged PRs undetermined'), errors.join('\n'));
+});
+
+test('queue latency: a failed head read is reported, never silent', async () => {
+  const w = syntheticWeek();
+  const gh = fakeGh(w);
+  const rest = gh.rest;
+  gh.rest = async (method, path) => (/head_sha=a501/.test(path) ? (gh.calls++, { status: 500, body: { message: 'boom' } }) : rest(method, path));
+  const errors = [];
+  const rows = await weekMetrics(gh, { repo: REPO, week: WEEK, decisionsLog: w.log, onError: (e) => errors.push(e) });
+  assert.equal(rows[1].coverage, 'unavailable');
+  assert.ok(errors.some((e) => /queue latency: PR 501 head arrival not read/.test(e)), errors.join('\n'));
 });
 
 test('re-enqueues needing a human are unavailable before act mode', async () => {
@@ -304,11 +318,11 @@ test('over the API budget the job rows are sampled 1/k with the right k', async 
   const jobs = Object.fromEntries(runs.map((r) => [r.id, [job(['ubuntu-latest'], r.created_at, 0, 60)]]));
   // Fixed reads: 7 queue-run days, 7 PR-run days, 1 queue event scan = 15.
   // The first run's jobs (1 page; 1.5 pages a run with the margin) leave 30:
-  // k = ceil(50 runs × 1.5 / 30) = 3 → 17 runs read, 51 h scaled.
+  // k = ceil(50 runs × 1.5 / 30) = 3 → 17 runs read, scaled by 50/17.
   const gh = fakeGh({ runs, jobs });
   const rows = await weekMetrics(gh, { repo: REPO, week: WEEK, apiBudget: 45 });
   assert.equal(rows[4].coverage, 'sampled 1/3');
-  assert.equal(rows[4].value, '≈51 h (50 runs)');
+  assert.equal(rows[4].value, '≈50 h (50 runs)');
   assert.equal(rows[5].coverage, 'sampled 1/3');
   assert.equal(rows[5].value, '0.0% (0 of 17 jobs read)');
   assert.equal(rows[0].coverage, 'exact');
@@ -353,7 +367,8 @@ test('unlogged removals are classified now, every k-th within the budget', async
   const rows = await weekMetrics(fakeGh({ prs }), { repo: REPO, week: WEEK, apiBudget: 115, classifyRemoval });
   assert.deepEqual(seen, [601]);
   assert.deepEqual([rows[3].value, rows[3].coverage], ['≈0 of 3 (real ≈3)', 'sampled 1/3']);
-  assert.deepEqual([rows[6].value, rows[6].coverage], ['1 PR: PR 601 (unadjudicated)', 'sampled 1/3']);
+  // Sampled: the PRs read are a lower bound.
+  assert.deepEqual([rows[6].value, rows[6].coverage], ['at least 1 PR: PR 601 (unadjudicated)', 'sampled 1/3']);
 
   // With room for all three, every one is classified and the row is exact.
   seen.length = 0;
@@ -361,11 +376,54 @@ test('unlogged removals are classified now, every k-th within the budget', async
   assert.deepEqual(seen, [601, 602, 603]);
   assert.deepEqual([all[3].value, all[3].coverage], ['0 of 3 (real 3)', 'exact']);
 
-  // A classifier error counts as unknown (never a flake) and is reported.
+  // A classifier error is not a class: counted apart, and reported.
   const errors = [];
   const failing = await weekMetrics(fakeGh({ prs }), { repo: REPO, week: WEEK, onError: (e) => errors.push(e), classifyRemoval: async () => { throw new Error('log 404'); } });
-  assert.equal(failing[3].value, '0 of 3 (unknown 3)');
+  assert.equal(failing[3].value, '0 of 3 (3 not classified)');
   assert.equal(errors.length, 3);
+
+  // Ten unlogged, room for three: k = 4 picks 0, 4, 8. Each stands for 10/3,
+  // so the estimate is ≈10 of 10, never ≈12 of 10.
+  const ten = Array.from({ length: 10 }, (_, i) => ({ pr: 700 + i, head: `a${700 + i}`, events: [['removed', `R${700 + i}`, iso(ms('2026-11-04T00:00:00Z') + i * 3600_000), 'failed_checks']] }));
+  const picked = [];
+  const tenRows = await weekMetrics(fakeGh({ prs: ten }), { repo: REPO, week: WEEK, apiBudget: 15 + 190, classifyRemoval: async (_gh, r) => (picked.push(r.pr), 'infra') });
+  assert.deepEqual(picked, [700, 704, 708]);
+  assert.deepEqual([tenRows[3].value, tenRows[3].coverage], ['≈10 of 10 (infra ≈10)', 'sampled 1/4']);
+});
+
+// Re-enqueues needing a human: each branch of the same-head and cover rules.
+test('human re-adds: same head, a push in between, unknown order, and the 15-minute cover', async () => {
+  const at = (min) => iso(ms('2026-11-05T08:00:00Z') + min * 60_000);
+  const pr = (n, readdMin) => ({ pr: n, head: `a${n}`, events: [['removed', `R${n}`, at(0), 'failed_checks'], ['added', `A${n}`, at(readdMin)]] });
+  const prs = [pr(801, 60), pr(802, 60), pr(803, 60), pr(804, 20), pr(805, 20), pr(806, 20)];
+  const pushes = {
+    a801: at(-60), // before the removal: same head → a human re-add
+    a802: at(30), // between the removal and the re-add: the author pushed → not counted
+    a803: at(90), // after the re-add: cannot tell → undetermined
+    a804: at(-60),
+    a805: at(-60),
+    a806: at(-60),
+  };
+  const decision = (n, kind, min, extra = {}) => ({ removalId: `R${n}`, pr: n, kind, class: 'infra', mode: 'act', status: 'applied', at: at(min), ...extra });
+  const log = [
+    decision(801, 'hold', 1),
+    decision(802, 'hold', 1),
+    decision(803, 'hold', 1),
+    decision(804, 'requeue', 15), // covered: exactly at the 15-minute edge
+    decision(805, 'requeue', 15.02), // 15 min 1 s: not covered
+    decision(806, 'requeue', 1, { status: 'shadow' }), // a shadow requeue covers nothing
+  ];
+  const rows = await weekMetrics(fakeGh({ prs, pushes }), { repo: REPO, week: WEEK, decisionsLog: log });
+  assert.deepEqual([rows[7].value, rows[7].coverage], ['3 (PR 801, PR 805, PR 806; 1 undetermined)', 'exact']);
+});
+
+test('human re-adds: unavailable unless every removal of the week was decided in act mode', async () => {
+  const w = syntheticWeek();
+  // R505 decided in shadow (act started later in the week): its re-add has no
+  // shepherd requeue to cover it and would read as a human's.
+  const log = w.log.map((e) => (e.removalId === 'R505' ? { ...e, mode: 'shadow', status: 'shadow' } : e));
+  const rows = await weekMetrics(fakeGh(w), { repo: REPO, week: WEEK, decisionsLog: log });
+  assert.deepEqual([rows[7].value, rows[7].coverage], ['—', 'unavailable']);
 });
 
 function postEnv({ issues = [], comments = {} } = {}) {
@@ -484,7 +542,7 @@ test('the tick posts once, on the first act-mode tick after Monday 13:00Z', asyn
 });
 
 test('the tick writes nothing when act ends before the post', async () => {
-  const env = tickEnv({ now: '2026-11-10T09:00:00Z', modeNow: 'shadow' });
+  const env = tickEnv({ now: '2026-11-10T09:00:00Z', modeNow: 'shadow', log: syntheticWeek().log });
   assert.deepEqual(await weeklyMetrics(env.t), { status: 'left_act', week: WEEK });
   assert.deepEqual(env.writer.writes, []);
   assert.equal(env.t.state.metrics.postedWeek, null);
@@ -493,6 +551,59 @@ test('the tick writes nothing when act ends before the post', async () => {
   const calls = env.gh.calls;
   assert.deepEqual(await weeklyMetrics(env.t), { status: 'waiting', week: WEEK });
   assert.equal(env.gh.calls, calls);
+});
+
+test('a week whose reads failed is retried hourly, and posted after the last try', async () => {
+  // No decisions logged and no ci.yml: the class rows cannot be read.
+  const env = tickEnv({ now: '2026-11-09T14:00:00Z' });
+  assert.deepEqual(await weeklyMetrics(env.t), { status: 'retry', week: WEEK });
+  assert.deepEqual(env.writer.writes, []);
+  assert.ok(env.errors.some((e) => /no ci\.yml to classify/.test(e)), env.errors.join('\n'));
+  env.t.now += RETRY_MS - 60_000;
+  assert.deepEqual(await weeklyMetrics(env.t), { status: 'waiting', week: WEEK });
+  for (let i = 2; i < MAX_DEGRADED_TRIES; i++) {
+    env.t.now += RETRY_MS;
+    assert.deepEqual(await weeklyMetrics(env.t), { status: 'retry', week: WEEK });
+  }
+  env.t.now += RETRY_MS;
+  assert.deepEqual(await weeklyMetrics(env.t), { status: 'posted', week: WEEK });
+  assert.ok(env.writer.writes.at(-1).body.includes('| Queue failures that were flake/infra/external | — |'));
+});
+
+test('a post that throws leaves the week unposted, to try again in an hour', async () => {
+  const env = tickEnv({ now: '2026-11-09T14:00:00Z', log: syntheticWeek().log });
+  const boom = async () => {
+    throw new Error('metrics issue 900 comments: 502');
+  };
+  await assert.rejects(weeklyMetrics(env.t, { post: boom }), /502/);
+  assert.equal(env.t.state.metrics.postedWeek, null);
+  assert.equal(env.t.state.metrics.triedWeek, WEEK);
+  env.t.now += RETRY_MS;
+  assert.deepEqual(await weeklyMetrics(env.t), { status: 'posted', week: WEEK });
+});
+
+test('the tick budget running out inside the metrics defers them, it does not end the tick', async () => {
+  const env = tickEnv({ now: '2026-11-09T14:00:00Z', log: syntheticWeek().log });
+  const spent = async () => {
+    const e = new Error('GitHub API budget of 600 calls exhausted');
+    e.name = 'BudgetExceeded';
+    throw e;
+  };
+  assert.deepEqual(await weeklyMetrics(env.t, { compute: spent }), { status: 'deferred', week: WEEK });
+  assert.equal(env.t.state.metrics.postedWeek, null);
+});
+
+test('the marker is found on a later comment page; an unreadable page posts nothing', async () => {
+  const filler = Array.from({ length: 100 }, (_, i) => ({ user: { login: OP }, body: `comment ${i}` }));
+  const { gh, writer, rows } = postEnv({ issues: [opIssue(77)], comments: { 77: [...filler, { user: { login: OP }, body: marker(WEEK) }] } });
+  assert.equal((await postWeekly(gh, { repo: REPO, week: WEEK, rows, writer, viewer: OP })).status, 'noop');
+  assert.deepEqual(writer.writes, []);
+
+  const broken = postEnv({ issues: [opIssue(77)] });
+  const rest = broken.gh.rest;
+  broken.gh.rest = async (method, path) => (/comments/.test(path) ? { status: 502, body: {} } : rest(method, path));
+  await assert.rejects(postWeekly(broken.gh, { repo: REPO, week: WEEK, rows: broken.rows, writer: broken.writer, viewer: OP }), /comments: 502/);
+  assert.deepEqual(broken.writer.writes, []);
 });
 
 test('the tick leaves the metrics for later when its budget is nearly spent', async () => {

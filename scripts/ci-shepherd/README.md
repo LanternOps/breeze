@@ -253,13 +253,17 @@ The rows are the spec's table, with its baselines and targets:
 | Queue runner-hours / week | Σ job durations (every attempt) over all merge_group CI runs |
 | Linux jobs waiting > 5 min | `ubuntu-*` jobs of those runs (skipped ones aside) with `started_at − created_at > 300 s` |
 | Real interactions caught | removals held `real`, by PR, unadjudicated |
-| Re-enqueues needing a human | re-adds after a `failed_checks` removal of the same head with no act-mode shepherd `requeue` or `record` within 15 min, plus applied `resume` releases. Unavailable in a week with no act-mode decision. |
+| Re-enqueues needing a human | re-adds after a `failed_checks` removal of the same head with no act-mode shepherd `requeue` or `record` within 15 min, plus applied `resume` releases. Unavailable unless every removal of the week was decided in act mode (a week act mode started part-way through is unavailable). |
 
 Each row states its coverage: `exact`; `sampled 1/k` (every k-th read to fit
 the budget, ≈ on a value scaled up from it); or `unavailable` (the data could
 not be read in full, so no value). The metrics take what is left of the
-tick's budget (they wait for a tick with at least 150 calls left), so on a
-busy tick the job rows are sampled. A failed attempt waits an hour.
+tick's budget (they wait for a tick with at least 300 calls left), so on a
+busy tick the job rows are sampled; a value scaled up from a sample is
+scaled by population over sample size. A week gets one comment, so it is
+not spent on a transient failure: when any read failed, the attempt is
+retried an hour later, and only the 6th attempt posts with those rows
+`unavailable`. Each failed read is in the tick summary's errors.
 
 To see a week without posting it (read-only; up to 4000 calls of the
 operator's 5,000/h):
