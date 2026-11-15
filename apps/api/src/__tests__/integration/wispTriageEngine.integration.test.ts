@@ -42,6 +42,8 @@ import {
   aiAgents,
   alerts,
   connectionHealthIncidents,
+  metricAnomalyEpisodes,
+  metricAnomalyIncidents,
   organizationUsers,
   tickets,
   userNotifications,
@@ -81,6 +83,7 @@ import {
 } from './db-utils';
 import { getTestDb } from './setup';
 import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+import { insertEpisodeDevice, seedEpisode, seedIncident as seedAnomalyIncident } from './metricAnomalyEpisodeFixtures';
 
 // Admission resolves the triage agent's model; the platform default needs a key.
 usePlatformAiKeyPlaceholder();
@@ -664,6 +667,99 @@ describe('no-changes gate (#11423)', () => {
       .where(eq(wispConcerns.id, concern.id)));
     expect(await enqueueAssessment({ grantId: g1.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'g1-k2' }))
       .toHaveProperty('runId');
+  });
+
+  // #11513: the anomalies probe on real SQL, and the anchor a degraded
+  // anomaly read must not move. The grant reads devices (the anomalies
+  // section's permission) and nothing else the gate probes, so a change can
+  // only be an anomaly: in particular the `runs` probe is off, and the seeded
+  // runs themselves are never the change.
+  const ANOMALY_KEYS = ['ai_sessions:use', 'devices:read'];
+
+  async function anomalyFixture(lastRunQueuedAt: Date) {
+    const t = await seedTenant([{ resource: 'devices', action: 'read' }]);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: ANOMALY_KEYS });
+    await seedSpentRun(agentId, t.orgA, g, 5, lastRunQueuedAt);
+    const site = await createSite({ orgId: t.orgA });
+    const deviceId = await insertEpisodeDevice(t.orgA, site.id);
+    let n = 0;
+    const look = () => enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: `anomaly-look-${n++}` });
+    return { t, agentId, g, deviceId, look };
+  }
+
+  /** An incident of a new episode, announced (dispatched) at `dispatchedAt`, or never when null. */
+  async function seedAnomaly(orgId: string, deviceId: string, o: {
+    dispatchedAt: Date | null; status?: 'open' | 'resolved' | 'dismissed'; resolvedAt?: Date; episodeUpdatedAt?: Date; suppressed?: boolean;
+  }) {
+    const start = new Date(Date.now() - 4 * 60 * MIN);
+    const { episodeId } = await seedEpisode({
+      orgId, deviceId, memberCount: 1, start, status: o.status ?? 'open', resolvedAt: o.resolvedAt ?? null,
+      // A distinct episode key per call (episodeKey is source:type:family).
+      metricFamily: `fam-${randomUUID().slice(0, 8)}`,
+    });
+    if (o.episodeUpdatedAt) {
+      await asSystem(() => db.update(metricAnomalyEpisodes).set({ updatedAt: o.episodeUpdatedAt }).where(eq(metricAnomalyEpisodes.id, episodeId)));
+    }
+    const incidentId = await seedAnomalyIncident({ orgId, deviceId, episodeId, windowStart: start });
+    await asSystem(() => db.update(metricAnomalyIncidents)
+      .set({ dispatchedAt: o.dispatchedAt, suppressedByEpisode: o.suppressed ?? false })
+      .where(eq(metricAnomalyIncidents.id, incidentId)));
+    return { episodeId, incidentId };
+  }
+
+  it('anomalies on real Postgres: an incident announced before the last run, unannounced or suppressed is not a change; one announced since is', async () => {
+    const f = await anomalyFixture(new Date(Date.now() - 61 * MIN)); // last run finished 60 min ago
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 90 * MIN) });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: null });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(), suppressed: true });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date() });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('anomalies on real Postgres: a resolve whose resolved_at is backdated before the last run is a change (updated_at since)', async () => {
+    const f = await anomalyFixture(new Date(Date.now() - 61 * MIN));
+    const before = new Date(Date.now() - 90 * MIN);
+    // Resolved before the last run: not a change.
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 3 * 60 * MIN), status: 'resolved', resolvedAt: before, episodeUpdatedAt: before });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    // The automatic close: resolved_at backdated to the end of the data, updated_at stamped now.
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 3 * 60 * MIN), status: 'resolved', resolvedAt: before, episodeUpdatedAt: new Date() });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('a run that could not read the anomalies does not move the anchor: an anomaly announced before it still wakes the next tick', async () => {
+    // A completed assessment 30 min ago, after a clean one 120 min ago; an
+    // anomaly was announced between them (60 min ago).
+    async function withLaterRun(errorCode: string | null, status: 'completed' | 'awaiting_approval' = 'completed') {
+      const f = await anomalyFixture(new Date(Date.now() - 121 * MIN));
+      await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 60 * MIN) });
+      const startedAt = new Date(Date.now() - 31 * MIN);
+      await asSystem(() => db.insert(aiAgentRuns).values({
+        agentId: f.agentId, orgId: f.t.orgA, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
+        policySnapshot: {} as never, profile: 'assessment', status, costCents: 5, errorCode,
+        queuedAt: startedAt, startedAt, finishedAt: new Date(startedAt.getTime() + 60_000),
+        grantId: f.g.grantId, grantRevisionId: f.g.revisionId,
+      } as never));
+      return { ...f, startedAt };
+    }
+
+    // Control: the later run read the anomalies, so it saw that one: skip.
+    const clean = await withLaterRun(null);
+    expect(await clean.look()).toEqual({ skipped: 'no_changes' });
+
+    // The later run's anomaly read failed: the anchor stays at the clean run,
+    // so the anomaly announced after it is a change and the tick runs.
+    const degraded = await withLaterRun('assessment_anomalies_unread');
+    expect(await degraded.look()).toHaveProperty('runId');
+    // The digest watermark still advances to the degraded run's start: the
+    // anomalies are current state and are read again whatever the window.
+    expect(await lastAssessmentWatermark(degraded.g.grantId, degraded.t.orgA)).toEqual(degraded.startedAt);
+
+    // The same for a run that also left a pending intent (awaiting_approval).
+    const pending = await withLaterRun('assessment_anomalies_unread', 'awaiting_approval');
+    expect(await pending.look()).toHaveProperty('runId');
   });
 
   it('an event reason runs even when nothing changed', async () => {

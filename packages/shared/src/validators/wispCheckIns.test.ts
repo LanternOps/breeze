@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cancelCheckInSchema, listCheckInsToolSchema, scheduleCheckInSchema, wispCheckInTriggerSchema } from './wispCheckIns';
-import { WISP_CHECK_IN_INSTRUCTION_MAX, WISP_CHECK_IN_MAX_DELAY_MINUTES, WISP_CHECK_IN_TRIGGER_EVENTS } from '../types/wispCheckIns';
+import { WISP_CHECK_IN_INSTRUCTION_MAX, WISP_CHECK_IN_LABEL_MAX, WISP_CHECK_IN_MAX_DELAY_MINUTES, WISP_CHECK_IN_TRIGGER_EVENTS } from '../types/wispCheckIns';
 
 const id = '6f1c2b1e-4a7d-4c55-9a35-2d8f5f0e1a01';
 const instruction = 'Verify no msiexec processes remain on the device.';
@@ -47,6 +47,15 @@ describe('scheduleCheckInSchema (schedule_check_in)', () => {
     expect(issuePaths({ delayMinutes: 5 })).toEqual(['instruction']);
     const parsed = scheduleCheckInSchema.parse({ delayMinutes: 5, instruction: `  ${instruction}  ` });
     expect(parsed.instruction).toBe(instruction);
+  });
+
+  it('#11675: label is optional, 1..120 code points after trimming', () => {
+    expect(WISP_CHECK_IN_LABEL_MAX).toBe(120);
+    expect(scheduleCheckInSchema.parse({ delayMinutes: 5, instruction }).label).toBeUndefined();
+    expect(scheduleCheckInSchema.parse({ delayMinutes: 5, instruction, label: '  FS01 disk space  ' }).label).toBe('FS01 disk space');
+    expect(scheduleCheckInSchema.safeParse({ delayMinutes: 5, instruction, label: '😀'.repeat(120) }).success).toBe(true);
+    expect(issuePaths({ delayMinutes: 5, instruction, label: '😀'.repeat(121) })).toEqual(['label']);
+    expect(issuePaths({ delayMinutes: 5, instruction, label: '   ' })).toEqual(['label']);
   });
 
   it('subject is an optional { kind, id } with a known kind and a guid', () => {

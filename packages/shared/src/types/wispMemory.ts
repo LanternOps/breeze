@@ -29,6 +29,25 @@ export type MemoryConfidence = (typeof MEMORY_CONFIDENCES)[number];
 export const MEMORY_BLOCK_STATUSES = ['unconfirmed', 'confirmed', 'retracted'] as const;
 export type MemoryBlockStatus = (typeof MEMORY_BLOCK_STATUSES)[number];
 
+/**
+ * The human-readable subject of a memory block (#11612). A standing
+ * instruction's `subjectKey` is an internal clause key (`device:<uuid>:<verb>:<hash>`),
+ * so it is shown as the instruction's own text; null means "no readable text,
+ * the caller supplies a label" — never the key. Other block types keep the
+ * subject key their author chose, which is already readable (e.g. `reply-style`).
+ */
+export function memoryBlockSubjectText(block: {
+  blockType: string;
+  subjectKey: string;
+  content?: unknown;
+}): string | null {
+  if (block.blockType !== 'standing_instruction') return block.subjectKey;
+  const content = block.content;
+  const text =
+    content !== null && typeof content === 'object' ? (content as Record<string, unknown>).text : undefined;
+  return typeof text === 'string' && text.trim() !== '' ? text.trim() : null;
+}
+
 /** Wire shape of one memory block (timestamps ISO-8601). */
 export type MemoryBlockDto = {
   id: string;

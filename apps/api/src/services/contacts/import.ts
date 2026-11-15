@@ -54,7 +54,7 @@ import { reachableContact } from '../callerVerification/access';
 import type { BindingRow, CallerVerificationActor } from '../callerVerification/types';
 import { contacts, contactExternalLinks } from '../../db/schema/contacts';
 import { organizations, sites } from '../../db/schema/orgs';
-import { isPgUniqueViolation, pgErrorCode, pgErrorNode, retryOnTransientLockError } from '../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, isPgUniqueViolation, pgErrorCode, pgErrorNode, retryOnTransientLockError } from '../../utils/pgErrors';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import { BILLING_ROLE, lockOrganizationForProjection, projectBillingContact } from './compat';
 import {
@@ -692,10 +692,12 @@ function withCause(entry: ContactImportErrorEntry, cause: unknown): ContactImpor
  */
 const WRITE_FAILURE_COPY: Record<string, string> = {
   '23505': 'This contact conflicts with one that already exists',
-  '23503': 'The organization or site this contact refers to no longer exists',
   '23514': 'The contact is missing a name, email, phone, and mobile',
   '22001': 'A value on this row is too long for the field it targets',
 };
+// Keyed off isPgForeignKeyViolationCode, not a '23503' table entry: Postgres 18
+// reports a RESTRICT refusal as 23001 (#11624).
+const FOREIGN_KEY_WRITE_FAILURE = 'The organization or site this contact refers to no longer exists';
 const GENERIC_WRITE_FAILURE = 'Could not write this contact — check the server log for details';
 
 /**
@@ -712,6 +714,7 @@ export function writeFailureMessage(err: unknown): string {
     return 'This external id is already linked to another contact';
   }
   const code = pgErrorCode(err);
+  if (isPgForeignKeyViolationCode(code)) return FOREIGN_KEY_WRITE_FAILURE;
   return (code && WRITE_FAILURE_COPY[code]) ?? GENERIC_WRITE_FAILURE;
 }
 

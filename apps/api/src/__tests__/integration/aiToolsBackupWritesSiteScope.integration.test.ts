@@ -415,20 +415,20 @@ describe('W03 backup write tools — site axis + org axis (real Postgres, breeze
 
   describe('trigger_vault_sync', () => {
     runDb('out-of-site vault is not found and its sync state is untouched; in-site dispatches', async () => {
-      const denied = await run(f, 'restricted', 'trigger_vault_sync', { vaultId: f.vaultB, snapshotId: 'snap-1' });
+      const denied = await run(f, 'restricted', 'trigger_vault_sync', { vaultId: f.vaultB });
       expect(denied).toEqual({ error: VAULT_DENIED });
       expect((await loadVault(f.vaultB)).lastSyncStatus).toBeNull();
 
-      const ok = await run(f, 'restricted', 'trigger_vault_sync', { vaultId: f.vaultA, snapshotId: 'snap-1' });
+      const ok = await run(f, 'restricted', 'trigger_vault_sync', { vaultId: f.vaultA });
       expect(ok.error).toBeUndefined();
       expect(ok.success).toBe(true);
       expect((await loadVault(f.vaultA)).lastSyncStatus).toBe('pending');
     });
 
     runDb('cross-org caller gets not found; unrestricted caller syncs the site-B vault', async () => {
-      expect(await run(f, 'otherOrg', 'trigger_vault_sync', { vaultId: f.vaultA, snapshotId: 'snap-1' })).toEqual({ error: VAULT_DENIED });
+      expect(await run(f, 'otherOrg', 'trigger_vault_sync', { vaultId: f.vaultA })).toEqual({ error: VAULT_DENIED });
 
-      const wide = await run(f, 'unrestricted', 'trigger_vault_sync', { vaultId: f.vaultB, snapshotId: 'snap-1' });
+      const wide = await run(f, 'unrestricted', 'trigger_vault_sync', { vaultId: f.vaultB });
       expect(wide.error).toBeUndefined();
       expect(wide.success).toBe(true);
     });

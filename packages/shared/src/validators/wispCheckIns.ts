@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import {
   WISP_CHECK_IN_INSTRUCTION_MAX,
+  WISP_CHECK_IN_LABEL_MAX,
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   WISP_CHECK_IN_MIN_DELAY_MINUTES,
   WISP_CHECK_IN_MODES,
@@ -45,6 +46,8 @@ export const scheduleCheckInSchema = z
     delayMinutes: z.number().int().min(WISP_CHECK_IN_MIN_DELAY_MINUTES).max(WISP_CHECK_IN_MAX_DELAY_MINUTES).optional(),
     at: z.iso.datetime({ offset: true }).optional(),
     instruction: z.string().trim().min(1).max(WISP_CHECK_IN_INSTRUCTION_MAX),
+    /** #11675: the short line the technician reads (post title, chip). Optional; the post falls back to the trigger. */
+    label: z.string().trim().min(1).max(WISP_CHECK_IN_LABEL_MAX).optional(),
     subject: z.object({ kind: wispEntityKindSchema, id: z.guid() }).optional(),
     trigger: wispCheckInTriggerSchema.optional(),
     /** W07 (#11496, #10410): absent = `notify`. `run` checks on its own (read-only) when it fires. */

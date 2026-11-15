@@ -32,6 +32,7 @@
  * single-use. A peek returns the local copy when there is one and otherwise
  * reads Redis.
  */
+import { MAX_AGENT_COMMAND_ID_LENGTH } from '../routes/agents/schemas';
 import { getRedis } from './redis';
 
 export const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
@@ -62,6 +63,14 @@ export type OrphanedResultExpectation =
 
 export function orphanedResultExpectationKey(agentId: string, commandId: string): string {
   return `${KEY_PREFIX}${agentId}:${commandId}`;
+}
+
+/**
+ * Every id recorded here is issued by the API and is short. A longer id has no
+ * record, so it is answered without building a key or calling Redis.
+ */
+function hasStorableCommandId(commandId: string): boolean {
+  return commandId.length <= MAX_AGENT_COMMAND_ID_LENGTH;
 }
 
 type ReadyRedis = NonNullable<ReturnType<typeof getRedis>>;
@@ -184,6 +193,10 @@ export function recordOrphanedResultExpectation(
   commandId: string,
   expectation: OrphanedResultExpectation,
 ): Promise<void> {
+  if (!hasStorableCommandId(commandId)) {
+    console.error(`[OrphanedResultExpectations] not recording command id longer than ${MAX_AGENT_COMMAND_ID_LENGTH} characters`);
+    return Promise.resolve();
+  }
   const key = orphanedResultExpectationKey(expectation.agentId, commandId);
   const write = writeExpectation(key, expectation);
   pendingRecords.set(key, write);
@@ -253,6 +266,7 @@ export async function peekOrphanedResultExpectation(
   agentId: string,
   commandId: string,
 ): Promise<OrphanedResultExpectation | null> {
+  if (!hasStorableCommandId(commandId)) return null;
   const key = orphanedResultExpectationKey(agentId, commandId);
   await pendingRecords.get(key);
   const local = live(localExpectations.get(key));
@@ -269,6 +283,7 @@ export async function consumeOrphanedResultExpectation(
   agentId: string,
   commandId: string,
 ): Promise<OrphanedResultExpectation | null> {
+  if (!hasStorableCommandId(commandId)) return null;
   const key = orphanedResultExpectationKey(agentId, commandId);
   await pendingRecords.get(key);
   pruneLocal();

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ech"
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 // ErrHTTPStatus is returned by the api client when an HTTP request
@@ -267,39 +268,13 @@ type AgentConfig struct {
 
 // RefuseUntrustedRedirect is the shared http.Client.CheckRedirect policy for
 // credentialed agent requests, including pre-enrollment bootstrap. Every
-// request the normal API client makes carries the device token — Enroll
-// sends it as the custom x-agent-reenrollment-token header, the other calls send
-// it as Authorization: Bearer. Go follows redirects by default and, while it
-// drops Authorization/Cookie once a redirect leaves the original domain (it
-// still trusts subdomains), it forwards arbitrary custom headers — so a
-// compromised or MITM'd server could 30x a request to a host it controls and
-// harvest the token.
-//
-// Merely stripping the headers is not enough: following the redirect would still
-// hand the request body (during enroll: hostname, hardware serial, OS info) to
-// the attacker and let it forge the response the agent parses and persists
-// (e.g. authToken / mTLS cert). A legitimate Breeze server never redirects an
-// agent to a different host, so refuse the redirect outright and surface it to
-// the caller (which wraps the resulting error). Trusted redirects on the same
-// endpoint — a different path, or an http->https upgrade — are still followed.
-// An https->http downgrade is refused because it would expose the token over
-// cleartext. See #1043.
+// request the normal API client makes carries the device token: Enroll sends
+// it as the x-agent-reenrollment-token header, the other calls send it as
+// Authorization: Bearer. A redirect to another host or port, or from https to
+// http, is refused and surfaced to the caller; see
+// httpguard.RefuseUntrustedRedirect for the full rule. See #1043.
 func RefuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) == 0 {
-		return nil
-	}
-	prev := via[len(via)-1]
-	// The hostname is the trust boundary: the agent already trusts its
-	// configured server, so a same-host redirect (different path or port, or
-	// an http->https upgrade) is fine, but a redirect to any other host is not.
-	// Compared case-insensitively since hostnames are.
-	if !strings.EqualFold(req.URL.Hostname(), prev.URL.Hostname()) {
-		return fmt.Errorf("refusing redirect from host %s to untrusted host %s during credentialed request", prev.URL.Hostname(), req.URL.Hostname())
-	}
-	if prev.URL.Scheme == "https" && req.URL.Scheme != "https" {
-		return fmt.Errorf("refusing https->%s downgrade redirect to %s during credentialed request", req.URL.Scheme, req.URL.Hostname())
-	}
-	return nil
+	return httpguard.RefuseUntrustedRedirect(req, via)
 }
 
 func NewClient(baseURL, authToken, agentID string) *Client {
@@ -314,7 +289,7 @@ func NewClient(baseURL, authToken, agentID string) *Client {
 // newControlPlaneClient builds the control-plane HTTP client: ECH-capable
 // dialer, redirect policy applied. tlsCfg may be nil.
 func newControlPlaneClient(tlsCfg *tls.Config, timeout time.Duration) *http.Client {
-	return ech.NewClient(tlsCfg, timeout, RefuseUntrustedRedirect)
+	return httpguard.NewClient(ech.NewTransport(tlsCfg), timeout)
 }
 
 // NewClientWithTLS creates a client that presents a client certificate in TLS handshakes.

@@ -446,7 +446,7 @@ async function flakeReport(gh, repo, artifacts, label, ctx) {
 
 // ── Run facts ────────────────────────────────────────────────────────────
 
-const QUEUE_BRANCH_PR = /^gh-readonly-queue\/.+\/pr-(\d+)-[0-9a-f]+$/;
+const QUEUE_BRANCH_PR = /^gh-readonly-queue\/(.+)\/pr-(\d+)-([0-9a-f]+)$/;
 const failedStep = (steps = []) =>
   (steps.find((s) => s.conclusion === 'failure') ?? steps.find((s) => s.conclusion === 'cancelled') ?? steps.find((s) => s.status === 'in_progress'))?.name ?? null;
 
@@ -503,6 +503,62 @@ async function gateFor(gh, repo, headSha) {
   return { verdict: null, reason: 'gate_line_missing', run: run.id, selection: null };
 }
 
+// What the change a run tested touched: { files, queueBase }. `files` is a
+// Set of repo paths, or null when that cannot be told (the caller then treats
+// every failure as touched):
+//   pull_request: the PR's base...head;
+//   merge_group: <queue base branch>...head, i.e. from the merge base with
+//     main to the group commit: every entry of the group not yet on main,
+//     this one included. The queue branch name's sha is NOT the base: it is
+//     the commit the entry was stacked on, which for every entry but the
+//     first is the previous entry's group commit, so a compare from it covers
+//     this entry's own PR only. `queueBase` is that merge base. When the head
+//     is already on main (the group merged: `identical`/`behind`), the base
+//     the group was built on can no longer be read this way, so files is null;
+//   a run on main with no PR (push, schedule): the head commit's own files;
+//   anything else, a failed read, or a list the API may have cut (300 files
+//   per response): null.
+// An entry ahead that merged before the read is part of main by then (it
+// passed its own run), so its files are no longer counted against this one.
+export const CHANGED_FILES_LIMIT = 300;
+const SHA = /^[0-9a-f]{7,64}$/;
+const REF = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+
+function fileSet(body) {
+  if (!Array.isArray(body?.files) || body.files.length >= CHANGED_FILES_LIMIT) return null;
+  const files = new Set();
+  for (const f of body.files) {
+    if (typeof f?.filename !== 'string') return null;
+    files.add(f.filename);
+    if (typeof f.previous_filename === 'string') files.add(f.previous_filename);
+  }
+  return files;
+}
+
+export async function runChange(gh, { repo, run }) {
+  const none = { files: null, queueBase: null };
+  if (!SHA.test(run.headSha ?? '')) return none;
+  if (run.event === 'merge_group') {
+    if (!REF.test(run.queueBaseRef ?? '') || run.queueBaseRef.split('/').includes('..')) return none;
+    const res = await gh.rest('GET', `repos/${repo}/compare/${run.queueBaseRef}...${run.headSha}`);
+    const base = res.body?.merge_base_commit?.sha;
+    if (res.status !== 200 || !['ahead', 'diverged'].includes(res.body?.status) || !SHA.test(base ?? '')) return none;
+    const files = fileSet(res.body);
+    return files ? { files, queueBase: base } : none;
+  }
+  let path;
+  if (run.event === 'pull_request') {
+    if (!SHA.test(run.baseSha ?? '')) return none;
+    path = `repos/${repo}/compare/${run.baseSha}...${run.headSha}`;
+  } else if (run.pr === null && run.headBranch === 'main') {
+    path = `repos/${repo}/commits/${run.headSha}`;
+  } else {
+    return none;
+  }
+  const res = await gh.rest('GET', path);
+  return { files: res.status === 200 ? fileSet(res.body) : null, queueBase: null };
+}
+
 // RunFacts = { run, jobs: JobFact[], jobsComplete, ciSuccess: 'present'|'missing', gate }.
 // Only jobs that did not pass (never the CI Success aggregate) get their
 // annotations and log fetched; any retry-shard job's flake report is read when
@@ -524,7 +580,15 @@ export async function runFacts(gh, { repo, runId, ciYml, withGate = true, labell
     conclusion: r.conclusion,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    pr: queuePr ? Number(queuePr[1]) : (r.pull_requests?.[0]?.number ?? null),
+    pr: queuePr ? Number(queuePr[2]) : (r.pull_requests?.[0]?.number ?? null),
+    // A PR run's base commit. Null for a queue run: its base is read from
+    // the queue's base branch (runChange), not from its branch name.
+    baseSha: queuePr ? null : (r.pull_requests?.[0]?.base?.sha ?? null),
+    // A queue run: the branch the queue merges into, and the commit this
+    // entry was stacked on (the previous entry's group commit, or main's tip
+    // for the first entry), both from `gh-readonly-queue/<base>/pr-N-<sha>`.
+    queueBaseRef: queuePr ? queuePr[1] : null,
+    queueParent: queuePr ? queuePr[3] : null,
   };
   const { jobs: apiJobs, complete: jobsComplete } = await listJobs(gh, repo, runId);
   let artifacts = null;

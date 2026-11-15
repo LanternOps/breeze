@@ -18,7 +18,7 @@ vi.mock('../db', () => {
   return { db: { select: () => chain() } };
 });
 
-import { selectNetworkExecutor, loadAssetSiteId, selectMonitorExecutor } from './networkExecutorSelection';
+import { selectNetworkExecutor, loadAssetSiteId, selectMonitorExecutor, ipv4Slash24Prefix } from './networkExecutorSelection';
 
 const dialect = new PgDialect();
 const render = (v: unknown) => dialect.sqlToQuery(v as SQL);
@@ -133,5 +133,55 @@ describe('topology virtual-target monitor scope', () => {
     selectResults = [[{siteId:'site-b'}]];
     await expect(selectMonitorExecutor({orgId:'org-1',assetId:'asset-1',siteId:'site-a'})).resolves.toEqual({error:'no_agent_in_site'});
     expect(captured.wheres).toHaveLength(1);
+  });
+});
+
+describe('target-subnet executor preference', () => {
+  it.each([
+    ['10.10.178.1', '10.10.178.'],
+    [' 192.168.001.1 ', '192.168.1.'],
+    ['172.20.6.1', '172.20.6.'],
+    ['172.32.0.1', null],
+    ['8.8.8.8', null],
+    ['256.1.1.1', null],
+    ['10.10.178', null],
+    ['gateway.local', null],
+    ['fe80::1', null],
+    ['', null],
+    [null, null],
+  ])('ipv4Slash24Prefix(%j) = %j', (target, want) => {
+    expect(ipv4Slash24Prefix(target)).toBe(want);
+  });
+
+  it('prefers an on-subnet device for an IPv4 target, then falls back to any eligible device', async () => {
+    selectResults = [[{ siteId: 'site-a' }], [{ agentId: 'nuc-on-lan' }]];
+    await expect(selectMonitorExecutor({ orgId: 'org-1', assetId: 'asset-1', target: '10.10.178.1' }))
+      .resolves.toEqual({ agentId: 'nuc-on-lan' });
+    const preferred = render(captured.wheres[1]);
+    expect(preferred.sql).toContain('exists (select 1 from device_network dn where dn.device_id = "devices"."id" and dn.ip_address like');
+    expect(preferred.sql).toContain('"devices"."site_id" =');
+    expect(preferred.params).toContain('10.10.178.%');
+    expect(captured.wheres).toHaveLength(2);
+
+    captured.wheres = [];
+    selectResults = [[{ siteId: 'site-a' }], [], [{ agentId: 'roaming-laptop' }]];
+    await expect(selectMonitorExecutor({ orgId: 'org-1', assetId: 'asset-1', target: '10.10.178.1' }))
+      .resolves.toEqual({ agentId: 'roaming-laptop' });
+    expect(render(captured.wheres[2]).sql).not.toContain('device_network');
+    expect(render(captured.wheres[2]).sql).toContain('"devices"."site_id" =');
+
+    captured.wheres = [];
+    selectResults = [[{ siteId: 'site-a' }], [], []];
+    await expect(selectMonitorExecutor({ orgId: 'org-1', assetId: 'asset-1', target: '10.10.178.1' }))
+      .resolves.toEqual({ error: 'no_agent_in_site' });
+  });
+
+  it('adds no subnet query for a hostname target or a pinned revalidation', async () => {
+    selectResults = [[{ agentId: 'a' }]];
+    await selectNetworkExecutor({ orgId: 'org-1', siteId: 'site-1', targetIp: 'printer.local' });
+    selectResults = [[{ agentId: 'a' }]];
+    await selectNetworkExecutor({ orgId: 'org-1', siteId: 'site-1', targetIp: '10.10.178.1', agentId: 'a' });
+    expect(captured.wheres).toHaveLength(2);
+    for (const w of captured.wheres) expect(render(w).sql).not.toContain('device_network');
   });
 });

@@ -1212,7 +1212,6 @@ const REPOINT_TABLES: readonly string[] = [
   "partner_api_idempotency_keys",
   "partner_enrollment_key_idempotency",
   "patch_compliance_reports",
-  "patch_compliance_snapshots",
   "patch_jobs",
   "pax8_company_mappings",
   "pax8_contract_line_links",
@@ -1224,6 +1223,15 @@ const REPOINT_TABLES: readonly string[] = [
   "playbook_executions",
   "plugin_instances",
   "plugins",
+  // W8 (#11385, plan D12). Plain repoint, no dedupe: a run's only org-bearing
+  // unique key is (org_id, source, snapshot_key), and every snapshot_key starts
+  // with the org's own connection id, so the two orgs' runs cannot collide; an
+  // action's (run_id, identity_id) key has no org_id. The composite (x, org_id)
+  // FKs between actions, runs, identities and accounts are DEFERRABLE, covered by
+  // the merge's SET CONSTRAINTS ALL DEFERRED. chain_key keeps the absorbed org's
+  // id, so its held actions refuse at Apply (D8d) and observations reset (D5).
+  "portal_directory_actions",
+  "portal_directory_runs",
   // Plain repoint, no dedupe: both unique keys ((issuer, subject) and
   // (portal_user_id, provider)) are org-free, so a re-tenant can never collide,
   // and the composite (portal_user_id, org_id) FK is deferred by the merge.

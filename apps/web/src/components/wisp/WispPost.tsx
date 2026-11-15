@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { CheckCircle2, Clock } from 'lucide-react';
 import type { WispTimelinePost } from '@breeze/shared';
 import { formatRelativeTime } from '@/lib/utils';
+import RunSummaryMarkdown from '../aiAgents/RunSummaryMarkdown';
 import WispBriefPost from './WispBriefPost';
 import { safeActivityHref } from './wispActivity';
 import { checkInIdFromLink } from './wispThreadHash';
@@ -13,7 +14,10 @@ import { checkInIdFromLink } from './wispThreadHash';
  * is a plain prose block: eyebrow, title, optional body and an optional "Open"
  * link. Nudge actions live in the rail's concern row (that row component is
  * not exported from WispConcernsPanel), so a nudge links to it via `post.link`.
- * All server text renders as literal React text.
+ * All server text renders as literal React text, except a body the server
+ * marks `bodyFormat: 'markdown'` (a specialist run's report, #11673): that is
+ * the run's own summary, rendered with the run page's safe markdown subset
+ * (no raw HTML, http(s) links only). The "Open" link goes to the full run.
  *
  * A check-in post (W05 #10996) carries a clock icon and `data-check-in-id`
  * (read from its `#checkin=<id>` link) so the thread can scroll the bell's
@@ -102,7 +106,12 @@ export default function WispPost({
       <p data-testid="wisp-post-title" className="break-words text-sm font-medium text-foreground">
         {post.title}
       </p>
-      {post.body && (
+      {post.body && post.bodyFormat === 'markdown' && (
+        <div data-testid="wisp-post-body" className="break-words text-sm text-foreground">
+          <RunSummaryMarkdown markdown={post.body} />
+        </div>
+      )}
+      {post.body && post.bodyFormat !== 'markdown' && (
         <p data-testid="wisp-post-body" className="whitespace-pre-wrap break-words text-sm text-foreground">
           {post.body}
         </p>

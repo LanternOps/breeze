@@ -206,7 +206,10 @@ export function predictTicket(ticket: ImportedTicket, counters: RunCounters, res
  * The dry run's dedupe key of a contact to create: an HMAC-SHA256 of (org,
  * lower(email)) keyed by the run id, never the address. Keyed per run, so a
  * digest stored in one run's cursor cannot be checked against a guessed
- * address by computing it once and looking for it across runs.
+ * address by computing it once and looking for it across runs. Within one
+ * run it hides nothing (the run's own id is in the cursor next to it); that is
+ * fine, because the addresses it stands for are already in `contacts` or in
+ * the source the run reads.
  */
 export function predictedContactKey(runId: string, orgId: string, email: string): string {
   return createHmac('sha256', runId).update(`${orgId}:${email.trim().toLowerCase()}`).digest('hex').slice(0, 16);

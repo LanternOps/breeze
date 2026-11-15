@@ -96,7 +96,10 @@ export default function AiConversationList({
               }`}
             >
               <span className="block truncate text-xs font-medium text-foreground">
-                {row.title || t("aiChatSidebar.untitledConversation")}
+                {row.title ||
+                  (row.transcriptPurgedAt
+                    ? t("transcriptRetention.removedLabel")
+                    : t("aiChatSidebar.untitledConversation"))}
               </span>
               {row.matchedContent && (
                 <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{row.matchedContent}</span>

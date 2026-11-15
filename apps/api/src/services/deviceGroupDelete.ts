@@ -19,6 +19,7 @@
  */
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { pgErrorCode } from '../utils/pgErrors';
 import { configPolicyAssignments, contracts, contractLines, deviceGroups, deviceGroupMemberships, groupMembershipLog, organizations, quotes, quoteLines } from '../db/schema';
 
 export type DeviceGroupDeleteCode = 'NOT_FOUND' | 'HAS_CHILDREN' | 'BILLED_BY_CONTRACTS' | 'QUOTED_BY_QUOTES';
@@ -134,7 +135,20 @@ export async function deleteDeviceGroup(
 
     return { group, affectedDeviceIds: affected.map((a) => a.deviceId) };
   });
-  return 'partnerId' in owner
-    ? runOutsideDbContext(() => withSystemDbAccessContext(remove))
-    : remove();
+  if ('partnerId' in owner) return runOutsideDbContext(() => withSystemDbAccessContext(remove));
+  // An org-owned group's delete locks the group row before the membership
+  // rows, the reverse of the membership writers' order (export lock first),
+  // so it can be chosen as a deadlock victim. It runs in its own savepoint:
+  // rolling that back releases its locks. After a short pause, which lets the
+  // writer that won finish and commit, it retries once.
+  try {
+    return await remove();
+  } catch (err) {
+    if (pgErrorCode(err) !== '40P01') throw err;
+    await new Promise((resolve) => setTimeout(resolve, DELETE_RETRY_PAUSE_MS + Math.floor(Math.random() * DELETE_RETRY_PAUSE_MS)));
+    return remove();
+  }
 }
+
+/** Base pause before the one retry of an org-owned group delete (jittered up to 2x). */
+const DELETE_RETRY_PAUSE_MS = 100;

@@ -1,3 +1,4 @@
+import { crc32 } from 'node:zlib';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const selectMock = vi.fn();
@@ -35,6 +36,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { loadReportBrandingForOrg, loadReportBrandingForPartner, pngAspectFromDataUrl } from './reportBranding';
+import { asDataUrl, ordinaryPng, pngInflatingTo } from './__fixtures__/pngImageData';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
@@ -56,15 +58,30 @@ function stage(orgRows: unknown[], partnerRows: unknown[] = [], brandRows: unkno
     .mockReturnValueOnce(selectChain(partnerRows));
 }
 
-/** Build a minimal-but-valid PNG data URL with the given intrinsic dimensions
- * (8-byte PNG signature + a 13-byte IHDR chunk carrying width/height). */
+/** A PNG data URL with the given intrinsic dimensions. Up to 4096 pixels a
+ * side it is a real image (rows and all, as the report renderer decodes it);
+ * past that, only the signature, IHDR and IEND, which is enough for the
+ * header checks that refuse it. */
 function png(w: number, h: number): string {
-  const b = Buffer.alloc(24);
-  b.write('\x89PNG\r\n\x1a\n', 0, 'binary');
-  b.writeUInt32BE(13, 8);
-  b.write('IHDR', 12);
-  b.writeUInt32BE(w, 16);
-  b.writeUInt32BE(h, 20);
+  if (w > 0 && h > 0 && w <= 4096 && h <= 4096) return asDataUrl(ordinaryPng({ width: w, height: h }));
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // RGBA
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const b = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
   return 'data:image/png;base64,' + b.toString('base64');
 }
 
@@ -78,17 +95,35 @@ beforeEach(() => {
 });
 
 describe('pngAspectFromDataUrl', () => {
-  it('returns width/height for a valid PNG data URL', () => {
-    expect(pngAspectFromDataUrl(png(1, 2))).toBe(0.5);
+  it('returns width/height for a valid PNG data URL', async () => {
+    expect(await pngAspectFromDataUrl(png(1, 2))).toBe(0.5);
   });
 
-  it('returns null for non-PNG data URLs', () => {
-    expect(pngAspectFromDataUrl('data:image/jpeg;base64,abcd')).toBeNull();
-    expect(pngAspectFromDataUrl('https://example.com/logo.png')).toBeNull();
+  it('returns null for non-PNG data URLs', async () => {
+    expect(await pngAspectFromDataUrl('data:image/jpeg;base64,abcd')).toBeNull();
+    expect(await pngAspectFromDataUrl('https://example.com/logo.png')).toBeNull();
   });
 
-  it('returns null for malformed/truncated PNG data', () => {
-    expect(pngAspectFromDataUrl('data:image/png;base64,abcd')).toBeNull();
+  it('returns null for malformed/truncated PNG data', async () => {
+    expect(await pngAspectFromDataUrl('data:image/png;base64,abcd')).toBeNull();
+  });
+
+  it('returns null (no logo) for a PNG whose image data inflates past its declared size', async () => {
+    // A 10×10 header in front of 32 MB of image data: the report renderer
+    // would inflate all of it before comparing it with the declared rows.
+    const logo = asDataUrl(pngInflatingTo({ width: 10, height: 10 }, 32 * 1024 * 1024));
+    expect(logo.length).toBeLessThan(64 * 1024);
+    expect(await pngAspectFromDataUrl(logo)).toBeNull();
+  });
+
+  it('keeps an ordinary logo, interlaced or not', async () => {
+    expect(await pngAspectFromDataUrl(asDataUrl(ordinaryPng({ width: 300, height: 100 })))).toBe(3);
+    expect(await pngAspectFromDataUrl(asDataUrl(ordinaryPng({ width: 300, height: 100, interlaced: true })))).toBe(3);
+  });
+
+  it('returns null (no logo) for a PNG too large to embed', async () => {
+    expect(await pngAspectFromDataUrl(png(30_000, 30_000))).toBeNull();
+    expect(await pngAspectFromDataUrl(png(0, 10))).toBeNull();
   });
 });
 

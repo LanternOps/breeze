@@ -160,6 +160,11 @@ func extractWindowsBuild(v string) string {
 	return v
 }
 
+// cleanHardwareIdentityValue drops firmware placeholder serials, vendors and
+// models. The API refuses the same set as a reinstall match key
+// (PLACEHOLDER_IDENTITY_VALUES in
+// apps/api/src/services/reinstallCandidates/hardwareIdentity.ts); its test
+// parses this switch and fails when the two lists differ.
 func cleanHardwareIdentityValue(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -317,15 +322,18 @@ func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {
 		hw.RAMTotalMB = vmem.Total / 1024 / 1024
 	}
 
-	// Disk — use platform-appropriate root path
-	rootPath := "/"
+	// Disk — the OS volume: the system drive on Windows; elsewhere / or, on
+	// immutable Linux, the real storage under the read-only image root.
+	var diskUsage *disk.UsageStat
 	if runtime.GOOS == "windows" {
-		rootPath = os.Getenv("SystemDrive") + "\\"
+		rootPath := os.Getenv("SystemDrive") + "\\"
 		if rootPath == "\\" {
 			rootPath = "C:\\"
 		}
+		diskUsage, err = disk.Usage(rootPath)
+	} else {
+		diskUsage, err = osDiskUsage()
 	}
-	diskUsage, err := disk.Usage(rootPath)
 	if err == nil {
 		hw.DiskTotalGB = diskUsage.Total / 1024 / 1024 / 1024
 	}

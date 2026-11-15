@@ -21,6 +21,12 @@ vi.mock('../../db/schema/devices', () => ({
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
 }));
 
+// grantAuthority now resolves role grants through roleInheritance (#11702),
+// which pulls the whole db/schema barrel this file deliberately partial-mocks.
+vi.mock('../roleInheritance', () => ({
+  getRolesPermissionGrants: vi.fn(async () => new Map()),
+}));
+
 vi.mock('../permissions', () => ({
   getUserPermissions: shared.getUserPermissions,
   canAccessOrg: shared.canAccessOrg,

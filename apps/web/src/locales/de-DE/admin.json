@@ -1156,6 +1156,7 @@
       "policy": "Richtlinie",
       "portal_access_request": "Portal-Zugriffsanfrage",
       "portal_auth": "Portal-Anmeldung",
+      "portal_directory_run": "Portal-Verzeichnislauf",
       "portal_user": "Portalbenutzer",
       "psa_connection": "PSA-Verbindung",
       "psa_ticket_mapping": "PSA-Ticket-Zuordnung",

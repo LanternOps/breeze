@@ -149,6 +149,7 @@ func TestWinIdentity_LoadsHivesWhenRestoreWasSkipped(t *testing.T) {
 	seedFakeHives(sys)
 	r := newWinIdentityRun(t, sys)
 	r.hives, r.controlSets = nil, nil
+	seedWinTreeHives(t, r.rootVolume)
 	if err := winIdentity(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}

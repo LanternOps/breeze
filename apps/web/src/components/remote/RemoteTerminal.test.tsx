@@ -274,6 +274,51 @@ describe('RemoteTerminal auto-connect / disconnect (#2137)', () => {
     expect(await screen.findByRole('button', { name: /reconnect/i })).toBeInTheDocument();
   });
 
+  it('#11839: Disconnect ends the session BEFORE closing the socket, so the row records operator_ended', async () => {
+    // Closing first lets the server's onClose end the row as viewer_closed;
+    // the End that follows then finds a terminal row and answers 400.
+    let closeCallsAtEnd: number | null = null;
+    let endMethod: string | undefined;
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (/\/end$/.test(url)) {
+        closeCallsAtEnd = MockWebSocket.instances[0]!.closeCalls;
+        endMethod = opts?.method;
+      }
+      return base(url, opts);
+    });
+    renderTerminal();
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+    const ws = MockWebSocket.instances[0]!;
+    fireConnected(ws);
+    await userEvent.click(await screen.findByRole('button', { name: /disconnect/i }));
+
+    await waitFor(() => expect(ws.closeCalls).toBeGreaterThanOrEqual(1));
+    expect(endMethod).toBe('POST');
+    expect(closeCallsAtEnd).toBe(0);
+    expect(await screen.findByRole('button', { name: /reconnect/i })).toBeInTheDocument();
+  });
+
+  it('#11839: a failed End still closes the socket and leaves the terminal disconnected', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+      if (/\/end$/.test(url)) return makeResponse({ error: 'Session is not active' }, false);
+      return base(url, opts);
+    });
+    renderTerminal();
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+    const ws = MockWebSocket.instances[0]!;
+    fireConnected(ws);
+    await userEvent.click(await screen.findByRole('button', { name: /disconnect/i }));
+
+    await waitFor(() => expect(ws.closeCalls).toBeGreaterThanOrEqual(1));
+    expect(await screen.findByRole('button', { name: /reconnect/i })).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 700));
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
   it('reconnects only when the user clicks Reconnect', async () => {
     renderTerminal();
 

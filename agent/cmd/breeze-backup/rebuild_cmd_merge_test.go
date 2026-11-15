@@ -8,7 +8,6 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 )
 
@@ -16,7 +15,8 @@ import (
 // token mode; every other field comes from the server's bootstrap.
 var cliOwnedRebuildFields = map[string]bool{
 	"Target": true, "StateDir": true, "StagingRoot": true, "DryRun": true, "ForceReprovision": true,
-	"AllowPartialRestore": true, "RegenerateInitramfs": true, "SkipBoot": true, "System": true,
+	"AllowPartialRestore": true, "RestoredBootTools": true, "RegenerateInitramfs": true, "ConfirmRestoredBootTools": true,
+	"SkipBoot": true, "System": true,
 	"Progress": true, "WinSystem": true, "WorkRoot": true, "DriverDirs": true, "ForceDisk": true,
 	"AllowDomainController": true,
 }
@@ -32,13 +32,14 @@ func TestTokenModeRebuildOptions_KeepsEveryBootstrapField(t *testing.T) {
 		t.Fatal(err)
 	}
 	fromToken := rebuild.Options{
-		SnapshotID: "snap-1", Provider: providers.NewLocalProvider(t.TempDir()), Identity: rebuild.IdentityMode("new"),
+		SnapshotID: "snap-1", Provider: privateTestLocalProvider(t, t.TempDir()), Identity: rebuild.IdentityMode("new"),
 		Marker: &rebuild.Marker{RecoveryID: "r", Nonce: "n"}, Layout: &layout.Manifest{}, ExpectSystemState: true, Integrity: e,
 	}
 	cli := rebuild.Options{
 		SnapshotID: "ignored", Identity: rebuild.IdentityMode("original"),
 		Target: rebuild.Target{Kind: "image", Path: "/x.img"}, StateDir: "/state", StagingRoot: "/staging", DryRun: true,
-		ForceReprovision: true, AllowPartialRestore: true, RegenerateInitramfs: true, SkipBoot: true,
+		ForceReprovision: true, AllowPartialRestore: true, RestoredBootTools: true, RegenerateInitramfs: true,
+		ConfirmRestoredBootTools: true, SkipBoot: true,
 		WorkRoot: "/work", DriverDirs: []string{"/d"}, ForceDisk: true, AllowDomainController: true,
 		Progress: func(rebuild.Phase, string, int64, int64) {},
 	}

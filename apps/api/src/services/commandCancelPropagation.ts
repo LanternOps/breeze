@@ -339,6 +339,15 @@ export async function propagateCancelledDeviceCommand(params: {
       .where(and(eq(securityScans.commandId, commandId), inArray(securityScans.status, ['queued', 'running'])));
   }
 
+  // #11905 — a cancelled vault_sync leaves its vault `pending` forever
+  // otherwise: the Sync route marked it pending, and no result will come.
+  // DYNAMIC import to keep this module a leaf; in the caller's transaction and
+  // not try/caught, like every branch above.
+  if (type === 'vault_sync') {
+    const { failVaultSyncWithoutResult } = await import('./vaultSyncPersistence');
+    await failVaultSyncWithoutResult({ commandId, payload, reason: errorMessage, completedAt, executor });
+  }
+
   await executor
     .update(deploymentResults)
     .set({ status: 'cancelled', errorMessage, completedAt })

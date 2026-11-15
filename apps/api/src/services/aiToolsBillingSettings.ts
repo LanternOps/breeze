@@ -14,7 +14,10 @@
  *
  * Gates: partner or system scope (REST); MFA on writes; `update_partner` needs
  * `canManagePartnerWidePolicies`; org-wide config refuses device-bound sessions
- * (W14-D8). Re-made at release, because the handler runs then.
+ * (W14-D8). Re-made at release, because the handler runs then. An `update_org`
+ * patch that changes the billing contact also needs `billing:manage`, as on
+ * the route; that requirement is resolved in aiGuardrails.ts
+ * (inputConditionalExtraPermissions), so approvers and the release re-check see it.
  *
  * Not built (W14-D4): the agreement-reminder keys (`agreements:send`, edited on
  * Billing → Agreements), the org currency cut-over and `billingProfileId`

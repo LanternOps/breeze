@@ -281,6 +281,11 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // finished_at).
   orgProfileFinishedIdx: index('ai_agent_runs_org_profile_finished_idx')
     .on(table.orgId, table.profile, table.finishedAt).where(sql`${table.finishedAt} IS NOT NULL`),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): the global
+  // finished-run age scan (jobs/historyRetention/aiAgentRuns.ts), which the
+  // org-leading index above cannot serve.
+  finishedIdx: index('ai_agent_runs_finished_idx')
+    .on(table.finishedAt).where(sql`${table.finishedAt} IS NOT NULL`),
   // W03 (#5208): AI Operator admission identity — one reasoning run per task
   // step and attempt (spec §6.2). Partial so legacy rows never collide.
   taskAdmissionUq: uniqueIndex('ai_agent_runs_task_admission_uq')

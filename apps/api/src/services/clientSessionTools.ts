@@ -20,7 +20,8 @@
  */
 
 import { z } from 'zod';
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { tool } from '@anthropic-ai/claude-agent-sdk';
+import { createArgCheckedSdkMcpServer } from './aiSdkToolArgGuard';
 import type { ActiveSession } from './streamingSessionManager';
 import { claimToolUseId, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 
@@ -330,7 +331,7 @@ export function clientDeclaredToolMcpNames(decls: ClientToolDeclaration[]): stri
  * parameter (the clientAi/sessions.ts precedent).
  */
 export function createClientDeclaredMcpServer(decls: ClientToolDeclaration[], dispatch: ClientToolDispatch) {
-  return createSdkMcpServer({
+  return createArgCheckedSdkMcpServer({
     name: CLIENT_DECLARED_MCP_SERVER_NAME,
     version: '1.0.0',
     tools: decls.map((decl) =>

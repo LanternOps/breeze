@@ -7,12 +7,22 @@ import {
   SECURITY_SWEEP_TTL_HOURS_MAX,
 } from '../types/securityScanSweep';
 import { YARA_MAX_RULE_SETS_PER_POLICY } from '../types/yara';
+import { devicePathFloorRefusal } from './devicePathFloor';
 
 /**
  * One custom-scan path. The single definition: the single-device scan route
- * (`POST /security/scan/:deviceId`) and the sweep request both use it.
+ * (`POST /security/scan/:deviceId`) and the sweep request both use it. It
+ * validates request input only (stored sweep rows are read back as they are),
+ * and applies the device path rules (`devicePathFloorRefusal`).
  */
-export const securityScanPathSchema = z.string().min(1).max(SECURITY_SCAN_PATH_MAX_CHARS);
+export const securityScanPathSchema = z
+  .string()
+  .min(1)
+  .max(SECURITY_SCAN_PATH_MAX_CHARS)
+  .superRefine((value, ctx) => {
+    const refusal = devicePathFloorRefusal(value);
+    if (refusal) ctx.addIssue({ code: 'custom', message: refusal });
+  });
 
 const idList = (max: number) => z.array(z.string().guid()).min(1).max(max);
 

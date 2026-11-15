@@ -649,6 +649,20 @@ func setShortUploadRetryDelayForTest(d time.Duration) (restore func()) {
 	return func() { shortUploadRetryDelay = old }
 }
 
+// SetUploadRetryDelaysForTest sets both per-file retry backoffs to d and
+// returns a restore func. Exported (test-only by convention, never called from
+// non-test code, like SetVolumeNameForTest) so the helper's end-to-end tests
+// in cmd/breeze-backup can run a whole backup against a failing store
+// without waiting out the real 30s backoff per file.
+func SetUploadRetryDelaysForTest(d time.Duration) (restore func()) {
+	restoreDefault := setUploadRetryDelayForTest(d)
+	restoreShort := setShortUploadRetryDelayForTest(d)
+	return func() {
+		restoreShort()
+		restoreDefault()
+	}
+}
+
 // retryDelayFor maps a retry policy to the wall-clock the upload loop spends
 // before its single retry.
 func retryDelayFor(policy uploadRetryPolicy) time.Duration {
@@ -1122,7 +1136,15 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			if ctx.Err() != nil {
 				return nil, errBackupStopped
 			}
-			reuse, checked := verifier.reusable(ctx, file, entry)
+			reuse, checked, endRun := verifier.reusable(ctx, file, entry)
+			if endRun != nil {
+				log.Error("backup destination cannot serve this run; ending it before any upload",
+					"snapshotId", snapshot.ID,
+					"storeCode", providers.StoreErrorCode(endRun),
+					"error", endRun.Error(),
+				)
+				return nil, endRun
+			}
 			resumeChecked[key] = struct{}{}
 			// A completed check counts whether or not it matched: the read is
 			// the work (#11014), and an entry an earlier pass already proved
@@ -1238,13 +1260,19 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	var stagedBytes int64
 	next, head := 0, 0
 	// runEnding is set once a worker hands back an outcome that ends the run
-	// when its file reaches the head (writer still active, source gone,
-	// stopped). Nothing is admitted after that: the run ends at that file
-	// whatever the files before it do, so a new upload could only run
-	// against a fence that will not open or a dead snapshot and be
-	// discarded. The serial loop never started the file after its abort
-	// point either (#8490).
+	// (writer still active, source gone, end-run, stopped). Nothing is
+	// admitted after that: the run ends at that file whatever the files before
+	// it do (or earlier, for an end-run outcome: see runEndedBy), so a new
+	// upload could only run against a fence that will not open, a dead
+	// snapshot or a refusing destination and be discarded. The serial loop
+	// never started the file after its abort point either (#8490).
 	runEnding := false
+	// runEndedBy is the first endsRun outcome handed back (destination refused
+	// every request, storage session gone). Unlike the other run-ending
+	// outcomes it does not wait for its file to reach the head: the run ends
+	// at the first head still uploading, which may otherwise sit out a
+	// per-file retry backoff against the same dead destination (#11765).
+	var runEndedBy error
 	// drainUploads cancels every worker and waits until each has returned.
 	// Every exit runs it before anything else touches the snapshot's prefix:
 	// abortStopped's cleanup and abortSourceGone's partial publish call it
@@ -1275,9 +1303,29 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		done.done, done.outcome = true, d.outcome
 		stagedBytes -= done.charged
 		done.charged = 0
-		if o := d.outcome; o.writerStillActive != nil || o.sourceGone != nil || o.stopped {
+		if o := d.outcome; o.writerStillActive != nil || o.sourceGone != nil || o.endRun != nil || o.stopped {
 			runEnding = true
 		}
+		if d.outcome.endRun != nil && runEndedBy == nil {
+			runEndedBy = d.outcome.endRun
+		}
+	}
+
+	// endRunNow is the exit for an outcome that ends the run (endsRun): it is
+	// returned as is, one error for the whole run. Like writerStillActive it
+	// publishes nothing and deletes nothing: the destination can take
+	// neither, and with a journal the next job resumes from what is recorded.
+	endRunNow := func(cause error) (*Snapshot, error) {
+		drainUploads()
+		log.Error("backup destination cannot take this run's requests; ending the run",
+			"snapshotId", snapshot.ID,
+			"filesUploaded", len(snapshot.Files),
+			"filesFailed", len(errs),
+			"filesTotal", filesTotal,
+			"storeCode", providers.StoreErrorCode(cause),
+			"error", cause.Error(),
+		)
+		return nil, cause
 	}
 
 	// abortStopped is the single exit point for every errBackupStopped
@@ -1435,10 +1483,20 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if s == nil {
 			// Nothing admitted at the head: admission stops only on cancel.
 			// (It also stops on runEnding, but the slot that set it was
-			// admitted, so head reaches that slot and returns there first.)
+			// admitted, so head reaches that slot, or an earlier head still
+			// uploading ends the run through runEndedBy, and returns there
+			// first.)
 			return abortStopped()
 		}
 		if s.kind == slotUpload && !s.done {
+			if runEndedBy != nil && ctx.Err() == nil {
+				// A later file's upload already showed the run cannot go on.
+				// Do not wait for the head: it may be sitting out its
+				// per-file retry backoff against the same destination. A stop
+				// that came in meanwhile wins: it takes the select's stop
+				// exit below.
+				return endRunNow(runEndedBy)
+			}
 			select {
 			case d := <-doneCh:
 				receiveUpload(d)
@@ -1468,11 +1526,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		// like the serial loop, which checked for a stop before each file
 		// and never between a returned upload and its journal append, it is
 		// accounted (and journaled) first. Every other head, including an
-		// upload that failed, was refused or lost its source, takes the stop
-		// exit, as the serial loop's stop did.
+		// upload that failed, was refused, lost its source or ended the run,
+		// takes the stop exit, as the serial loop's stop did.
 		succeeded := s.kind == slotUpload && s.done &&
 			s.outcome.writerStillActive == nil && s.outcome.sourceGone == nil &&
-			!s.outcome.stopped && s.outcome.err == nil
+			s.outcome.endRun == nil && !s.outcome.stopped && s.outcome.err == nil
 		if err := ctx.Err(); err != nil && !succeeded {
 			return abortStopped()
 		}
@@ -1522,7 +1580,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 
 		out := s.outcome
-		if out.writerStillActive != nil || out.sourceGone != nil || out.stopped {
+		if out.writerStillActive != nil || out.sourceGone != nil || out.endRun != nil || out.stopped {
 			// The run ends here and this file is not counted.
 			inFlight.release(s.progress)
 		}
@@ -1531,6 +1589,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			// Not this file's fault: the snapshot cannot be written at all.
 			// The deferred drainUploads stops the other workers.
 			return nil, out.writerStillActive
+		case out.endRun != nil:
+			return endRunNow(out.endRun)
 		case out.sourceGone != nil:
 			return abortSourceGone(out.sourceGone)
 		case out.stopped:
@@ -1555,6 +1615,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				"bytes", out.uploadSize,
 				"elapsedMs", out.elapsed.Milliseconds(),
 				"failedSoFar", len(errs),
+				"storeCode", providers.StoreErrorCode(out.err),
 				"error", out.err.Error(),
 			)
 			continue
@@ -1778,7 +1839,7 @@ func refreshUploadLease(ctx context.Context, provider providers.BackupProvider, 
 	// clutter, not a correctness issue worth surfacing.
 	defer func() { _ = os.Remove(tempPath) }()
 	if err := uploadSnapshotFile(ctx, provider, tempPath, leaseKey); err != nil {
-		log.Warn("failed to refresh upload lease", "key", leaseKey, "error", err.Error())
+		log.Warn("failed to refresh upload lease", "key", leaseKey, "storeCode", providers.StoreErrorCode(err), "error", err.Error())
 	}
 }
 

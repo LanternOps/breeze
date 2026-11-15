@@ -822,7 +822,9 @@
         "wispHome": "Wisp öffnen",
         "wispHomeDescription": "Zu Ihrer Wisp-Startseite wechseln"
       },
-      "numberHint": "{{mod}}1–9 zum Öffnen"
+      "numberHint": "{{mod}}1–9 zum Öffnen",
+      "thisCustomerOnly": "Nur dieser Kunde",
+      "partnerWide": "Partnerweit"
     },
     "notifications": {
       "title": "Benachrichtigungen",
@@ -2470,6 +2472,7 @@
           "invalidTimeRange": "Die Startzeit muss vor der Endzeit liegen.",
           "searchFailed": "Protokolle konnten nicht durchsucht werden",
           "saveFailed": "Abfrage konnte nicht gespeichert werden",
+          "savedQueriesFailed": "Gespeicherte Abfragen konnten nicht geladen werden.",
           "noRowsExport": "Keine Zeilen zum Exportieren."
         },
         "savePrompt": "Benennen Sie diese gespeicherte Abfrage:",
@@ -2489,10 +2492,14 @@
         },
         "searchFleetLogs": "Flottenprotokolle durchsuchen",
         "saveQuery": "Abfrage speichern",
+        "usingSavedFilters": "Diese Suche verwendet die gespeicherten Filter.",
+        "customSearch": "Benutzerdefinierte Suche",
+        "savedQueries": "Gespeicherte Abfragen",
         "exportCsv": "CSV exportieren",
         "resultsTitle": "Suchergebnisse",
         "loading": "Laden...",
         "resultsCount": "{{shown}} angezeigt von {{total}} insgesamt",
+        "resultsCountWithoutTotal": "{{shown}} angezeigt",
         "table": {
           "timestamp": "Zeitstempel",
           "level": "Ebene",
@@ -2502,6 +2509,7 @@
         "unknownSite": "Unbekannte Seite",
         "empty": "Keine Protokolle stimmten mit den aktuellen Filtern überein.",
         "pageCount": "Seite {{page}} von {{totalPages}}",
+        "currentPage": "Seite {{page}}",
         "previous": "Zurück"
       }
     },

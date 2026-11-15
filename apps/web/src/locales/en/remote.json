@@ -488,6 +488,7 @@
       "connection": "Connection error",
       "createSession": "Failed to create session",
       "createTicket": "Failed to create connection ticket",
+      "endSession": "Failed to end the session",
       "failed": "Connection failed",
       "initialize": "Failed to initialize",
       "invalidTicket": "Invalid connection ticket response",
@@ -703,7 +704,6 @@
       "disconnected": "Disconnected",
       "failed": "Failed",
       "pending": "Pending",
-      "endedByUser": "Ended by the user",
       "teardownPending": "Ending (awaiting device)"
     },
     "subtitle": "Remote access audit log",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "View details",
-    "yesterdayAt": "Yesterday {{time}}"
+    "yesterdayAt": "Yesterday {{time}}",
+    "endReasons": {
+      "endedByUser": "Ended by the user",
+      "operatorEnded": "Ended by a technician",
+      "viewerClosed": "Viewer closed",
+      "connectionLost": "Connection to the viewer lost",
+      "peerDisconnected": "Connection closed",
+      "neverConnected": "Never connected",
+      "superseded": "Replaced by a newer session",
+      "captureFailed": "Screen capture stopped",
+      "startFailed": "Failed to start",
+      "consentDenied": "Consent declined",
+      "accessRevoked": "Access revoked",
+      "maxDuration": "Maximum session duration reached",
+      "deviceRemoved": "Device removed or reinstalled"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Details Title",
@@ -732,7 +747,8 @@
       "started": "Started",
       "userId": "User ID",
       "os": "OS",
-      "email": "Email"
+      "email": "Email",
+      "error": "Error"
     },
     "sections": {
       "recording": "Recording",
@@ -740,7 +756,6 @@
       "timeline": "Timeline"
     },
     "subtitle": "View and audit remote access sessions",
-    "endedByUser": "Ended by the user",
     "teardownPending": "Awaiting device confirmation",
     "title": "Session History",
     "viewDevice": "View Device",
@@ -833,18 +848,24 @@
     },
     "code": {
       "heading": "Read this code to the person you are helping",
-      "shownOnce": "Copy this code now. Breeze stores only a hash of it, so once you leave or reload this page it cannot be recovered — you would have to start a new session.",
+      "visibleWhilePending": "The code stays here until the person uses it or it expires. It works only once.",
       "expires": "Expires at {{time}}",
+      "expiresIn": "Expires in {{time}}",
+      "expired": "This code has expired. Generate a new code to keep using this session.",
       "instructions": "Send them the link, then have them run the downloaded client and type the code.",
       "copyCode": "Copy code",
       "copyLink": "Copy download link",
       "copiedCode": "Code copied to the clipboard",
       "copiedLink": "Download link copied to the clipboard",
-      "copyFailed": "Could not copy to the clipboard"
+      "copyFailed": "Could not copy to the clipboard",
+      "newCode": "New code",
+      "newCodeSubmitting": "Generating code…",
+      "newCodeSuccess": "New code generated. The previous code no longer works.",
+      "newCodeError": "Could not generate a new code"
     },
     "detail": {
       "heading": "Session detail",
-      "noCode": "The one-time code was shown only when this session was created and cannot be retrieved. Start a new session if the person needs another code.",
+      "noCode": "No code is shown for this session. Generate a new code if the person still needs one.",
       "attribution": "Reference",
       "close": "Close session detail"
     },

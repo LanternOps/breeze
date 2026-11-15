@@ -2,6 +2,7 @@ package sessionbroker
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"runtime"
 	"testing"
@@ -10,6 +11,30 @@ import (
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
+
+// backupDeathWait bounds every wait in this file. Each wait selects on the
+// condition itself (a channel the code under test closes or sends on), so a
+// passing run never sleeps for it; the bound only decides how long a genuinely
+// hung teardown takes to fail. It was 2 s, and on a loaded Windows runner the
+// teardown goroutine stalled for ~3.3 s inside a synchronous log write to the
+// test binary's stdout pipe before it reached the report (#11797). The same
+// value is the forward's command timeout, and every test that expects the
+// forward to fail asserts it failed because the session closed, not with
+// ErrCommandTimeout, so the longer bound cannot let a timeout pose as teardown.
+const backupDeathWait = 30 * time.Second
+
+// requireSessionClosedError fails unless err is the session-closed failure. A
+// command timeout also yields a non-nil error, but it proves nothing about the
+// teardown under test.
+func requireSessionClosedError(t *testing.T, err error, what string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected %s to fail when the session closed", what)
+	}
+	if errors.Is(err, ErrCommandTimeout) {
+		t.Fatalf("%s failed by timing out, not by the session closing: %v", what, err)
+	}
+}
 
 // backupDeathRig wires a Broker to a piped backup-helper session the way a live
 // agent does. Crucially the session is driven by the SAME goroutine shape as
@@ -142,7 +167,7 @@ func (r *backupDeathRig) serveAcks(n int, ackSuccess bool) {
 func (r *backupDeathRig) startAsyncRun(t *testing.T, commandID string, ackSuccess bool) {
 	t.Helper()
 	r.serveAcks(1, ackSuccess)
-	if _, err := r.broker.ForwardBackupCommand(commandID, "backup_run", nil, 5*time.Second, true); err != nil {
+	if _, err := r.broker.ForwardBackupCommand(commandID, "backup_run", nil, backupDeathWait, true); err != nil {
 		t.Fatalf("ForwardBackupCommand(%s): %v", commandID, err)
 	}
 }
@@ -154,7 +179,7 @@ func (r *backupDeathRig) killHelper(t *testing.T) {
 	_ = r.helper.Close()
 	select {
 	case <-r.disconnected:
-	case <-time.After(2 * time.Second):
+	case <-time.After(backupDeathWait):
 		t.Fatal("timed out waiting for the session teardown to complete")
 	}
 }
@@ -164,7 +189,7 @@ func (r *backupDeathRig) nextForwarded(t *testing.T) *ipc.Envelope {
 	select {
 	case env := <-r.forwarded:
 		return env
-	case <-time.After(2 * time.Second):
+	case <-time.After(backupDeathWait):
 		t.Fatal("timed out waiting for a forwarded envelope")
 		return nil
 	}
@@ -340,11 +365,14 @@ func TestBackupHelperDeath_AckThenImmediateDeath_ReportsExactlyOnce(t *testing.T
 			_ = rig.helper.Close()
 		}()
 
-		_, err := rig.broker.ForwardBackupCommand("cmd-race", "backup_run", nil, 5*time.Second, true)
+		_, err := rig.broker.ForwardBackupCommand("cmd-race", "backup_run", nil, backupDeathWait, true)
+		if errors.Is(err, ErrCommandTimeout) {
+			t.Fatalf("iteration %d: forward timed out instead of resolving on the ack or the session closing: %v", i, err)
+		}
 
 		select {
 		case <-rig.disconnected:
-		case <-time.After(2 * time.Second):
+		case <-time.After(backupDeathWait):
 			t.Fatal("timed out waiting for the session teardown to complete")
 		}
 
@@ -406,14 +434,14 @@ func TestBackupHelperDeath_TerminalResultThenDeathDuringForward_NoContradiction(
 			_ = rig.helper.Close()
 		}()
 
-		_, err := rig.broker.ForwardBackupCommand("cmd-finished", "backup_run", nil, 5*time.Second, true)
+		_, err := rig.broker.ForwardBackupCommand("cmd-finished", "backup_run", nil, backupDeathWait, true)
 		if err != nil {
 			t.Fatalf("iteration %d: forward failed a run that completed successfully: %v", i, err)
 		}
 
 		select {
 		case <-rig.disconnected:
-		case <-time.After(2 * time.Second):
+		case <-time.After(backupDeathWait):
 			t.Fatal("timed out waiting for the session teardown to complete")
 		}
 
@@ -438,7 +466,7 @@ func TestBackupHelperDeath_SyncCommandInFlight_ReportsNothing(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rig.broker.ForwardBackupCommand("cmd-sync-1", "backup_run", nil, 5*time.Second, false)
+		_, err := rig.broker.ForwardBackupCommand("cmd-sync-1", "backup_run", nil, backupDeathWait, false)
 		done <- err
 	}()
 
@@ -451,10 +479,8 @@ func TestBackupHelperDeath_SyncCommandInFlight_ReportsNothing(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("expected the synchronous forward to fail when the session closed")
-		}
-	case <-time.After(2 * time.Second):
+		requireSessionClosedError(t, err, "the synchronous forward")
+	case <-time.After(backupDeathWait):
 		t.Fatal("timed out waiting for the synchronous forward to fail")
 	}
 	rig.expectNoForwarded(t)
@@ -470,7 +496,7 @@ func TestBackupHelperDeath_DeathBeforeAck_ForwarderOwnsTheFailure(t *testing.T) 
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rig.broker.ForwardBackupCommand("cmd-unacked", "backup_run", nil, 5*time.Second, true)
+		_, err := rig.broker.ForwardBackupCommand("cmd-unacked", "backup_run", nil, backupDeathWait, true)
 		done <- err
 	}()
 
@@ -482,10 +508,8 @@ func TestBackupHelperDeath_DeathBeforeAck_ForwarderOwnsTheFailure(t *testing.T) 
 
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("expected the forward to fail when the session closed before the ack")
-		}
-	case <-time.After(2 * time.Second):
+		requireSessionClosedError(t, err, "the forward of an unacked run")
+	case <-time.After(backupDeathWait):
 		t.Fatal("timed out waiting for the forward to fail")
 	}
 
@@ -589,7 +613,7 @@ func TestNativeSynchronousHelperReplyDoesNotRemainActive(t *testing.T) {
 					CommandID: "legacy-native", Success: true, Stdout: `{"snapshotId":"snapshot"}`,
 				})
 			}()
-			if _, err := rig.broker.ForwardBackupCommand("legacy-native", command, nil, 5*time.Second, true, true); err != nil {
+			if _, err := rig.broker.ForwardBackupCommand("legacy-native", command, nil, backupDeathWait, true, true); err != nil {
 				t.Fatal(err)
 			}
 			rig.broker.backup.mu.Lock()

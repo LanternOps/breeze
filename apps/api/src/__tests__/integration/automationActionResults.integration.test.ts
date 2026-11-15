@@ -16,7 +16,8 @@ import {
   reconcileAutomationRun,
   seedAutomationActionResults,
 } from '../../services/automationActionResults';
-import { getDeviceCascadeDeleteTables, getDeviceOrgDenormalizedTables } from '../../routes/devices/core';
+import { getDeviceOrgDenormalizedTables } from '../../routes/devices/core';
+import { getDeviceCascadeDeleteTables } from '../../services/deviceCascadeTables';
 import { cascadeDeleteOrg, getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
 import { getTenantExportPolicyRegistry } from '../../services/tenantExportPolicyRegistry';
 import { createOrganization, createPartner, createSite } from './db-utils';

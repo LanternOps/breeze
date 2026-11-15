@@ -101,6 +101,11 @@ export const MAIL_PURPOSES = {
   // customer org's domain is no longer verified. Platform lane, like the entra
   // notice above. Send site: EmailService.sendPortalDomainVerificationLost.
   'partner.portal_domain_verification.lost': { lane: 'platform' },
+  // Portal registration W8 (#11385): Breeze tells a partner's admins that a
+  // customer org's directory deprovisioning run is held for their approval.
+  // Platform lane, like the W5 notice above. Send site:
+  // EmailService.sendPortalDirectoryHeld (services/portalDirectory/notify.ts).
+  'partner.portal_directory.held': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 

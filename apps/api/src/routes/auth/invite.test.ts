@@ -31,7 +31,14 @@ const routeState = vi.hoisted(() => ({
     passwordHash: null as string | null,
     authEpoch: 3,
     mfaEpoch: 2,
+    mfaEnabled: false,
   },
+  // Effective MFA policy the route resolves for the invitee's session scope.
+  policyRequired: false,
+  // Simulates the effective-settings read throwing inside getEffectiveMfaPolicy.
+  policySettingsReadFails: false,
+  policyCalls: [] as unknown[],
+  minted: [] as Array<{ mfa: boolean; mfaSrc?: string }>,
   redis: new Map<string, string>(),
   familyCount: 0,
   oldFamilyRevoked: false,
@@ -97,7 +104,7 @@ vi.mock('../../db', () => ({
 vi.mock('../../db/schema', () => ({
   users: {
     id: 'users.id', email: 'users.email', name: 'users.name', status: 'users.status',
-    authEpoch: 'users.authEpoch', mfaEpoch: 'users.mfaEpoch',
+    authEpoch: 'users.authEpoch', mfaEpoch: 'users.mfaEpoch', mfaEnabled: 'users.mfaEnabled',
   },
   partners: { id: 'partners.id', name: 'partners.name' },
   organizations: { id: 'organizations.id', name: 'organizations.name' },
@@ -111,7 +118,9 @@ const redis = {
   }),
 };
 
-vi.mock('../../services', () => ({
+vi.mock('../../services', async () => {
+  const { combineMfaPolicyFacts } = await vi.importActual<typeof import('../../services/mfaPolicy')>('../../services/mfaPolicy');
+  return {
   hashPassword: vi.fn(async () => 'new-password-hash'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
   getRedis: vi.fn(() => redis),
@@ -125,7 +134,28 @@ vi.mock('../../services', () => ({
   }),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
   getUserEpochs: vi.fn(async () => ({ authEpoch: routeState.user.authEpoch, mfaEpoch: routeState.user.mfaEpoch })),
-}));
+  getEffectiveMfaPolicy: vi.fn(async (input: unknown, opts?: { failClosed?: boolean; failClosedMethods?: boolean }) => {
+    routeState.policyCalls.push({ input, opts });
+    if (routeState.policySettingsReadFails) {
+      // The verdict the real resolver reaches when its settings read fails,
+      // honouring whatever failClosed option the route passed.
+      return combineMfaPolicyFacts({
+        roleForceMfa: false,
+        security: undefined,
+        settingsUnavailable: true,
+        failClosed: opts?.failClosed === true,
+        failClosedMethods: opts?.failClosedMethods === true,
+      });
+    }
+    return {
+      required: routeState.policyRequired,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: routeState.policyRequired, killSwitchOff: false, graceWindow: 'none' },
+    };
+  }),
+  };
+});
 
 vi.mock('../../services/authBrowserTransition', () => ({
   AuthBindingRotationRequiredError: transitionState.AuthBindingRotationRequiredError,
@@ -152,10 +182,7 @@ vi.mock('../../services/authBrowserTransition', () => ({
 vi.mock('../../services/userSession', () => ({
   authBrowserTransitionsEnforced: vi.fn(() => transitionState.enforcement),
   issueUserSession: vi.fn(async (identity: { mfa: boolean; mfaSrc?: string }, options: { expectedEpochs: { authEpoch: number; mfaEpoch: number } }) => {
-    // Accepting an invite proves no factor: the mint is `mfa: false` and
-    // therefore carries no assurance source at all (spec D6).
-    expect(identity.mfa).toBe(false);
-    expect(identity.mfaSrc).toBeUndefined();
+    routeState.minted.push({ mfa: identity.mfa, mfaSrc: identity.mfaSrc });
     expect(options.expectedEpochs).toEqual({
       authEpoch: routeState.user.authEpoch,
       mfaEpoch: routeState.user.mfaEpoch,
@@ -229,7 +256,7 @@ vi.mock('./helpers', async () => {
 
 import { inviteRoutes } from './invite';
 import { advanceUserEpochs } from '../../services/authLifecycle';
-import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, writeAuthAudit } from './helpers';
+import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, resolveCurrentUserTokenContext, writeAuthAudit } from './helpers';
 
 const token = 'invite-token';
 const tokenKey = inviteRedisKey(hashInviteToken(token));
@@ -252,8 +279,12 @@ describe('POST /accept-invite guarded issuance', () => {
     transitionState.cancelCalls = 0;
     transitionState.enforcement = false;
     Object.assign(routeState.user, {
-      status: 'invited', passwordHash: null, authEpoch: 3, mfaEpoch: 2,
+      status: 'invited', passwordHash: null, authEpoch: 3, mfaEpoch: 2, mfaEnabled: false,
     });
+    routeState.policyRequired = false;
+    routeState.policySettingsReadFails = false;
+    routeState.policyCalls = [];
+    routeState.minted = [];
     routeState.redis = new Map([[tokenKey, routeState.user.id], [userKey, hashInviteToken(token)]]);
     routeState.familyCount = 0;
     routeState.oldFamilyRevoked = false;
@@ -344,5 +375,94 @@ describe('POST /accept-invite guarded issuance', () => {
     expect(routeState.familyCount).toBe(1);
     expect(routeState.cookieKind).toBe('guarded');
     expect(routeState.legacyMetric).toEqual([]);
+  });
+});
+
+// #11854: the session minted by accept-invite must record the same MFA state
+// a fresh /auth/login would for the same user under the same policy. The
+// invitee has just set a password and proved no factor, so it is the login
+// route's no-factor arm: policy-admitted when MFA is not required, locked to
+// enrollment (mfa:false) when it is.
+describe('POST /accept-invite session MFA claim (#11854)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    transitionState.finishError = null;
+    transitionState.events = [];
+    Object.assign(routeState.user, {
+      status: 'invited', passwordHash: null, authEpoch: 3, mfaEpoch: 2, mfaEnabled: false,
+    });
+    routeState.redis = new Map([[tokenKey, routeState.user.id], [userKey, hashInviteToken(token)]]);
+    routeState.policyRequired = false;
+    routeState.policySettingsReadFails = false;
+    routeState.policyCalls = [];
+    routeState.minted = [];
+  });
+
+  it('mints a policy-admitted session (mfa:true, mfaSrc:policy) when the effective policy does not require MFA', async () => {
+    const response = await accept();
+
+    expect(response.status).toBe(200);
+    expect(routeState.minted).toEqual([{ mfa: true, mfaSrc: 'policy' }]);
+    // Resolved against the invitee's own session scope, exactly like /login,
+    // and fail-closed on a settings-read error (an unassured session at worst).
+    expect(routeState.policyCalls).toEqual([{
+      input: { scope: 'organization', userId: routeState.user.id, orgId: 'org-1', partnerId: 'partner-1' },
+      opts: { failClosed: true },
+    }]);
+    const body = await response.json() as { mfaEnrollmentRequired?: boolean };
+    expect(body.mfaEnrollmentRequired).toBe(false);
+  });
+
+  it('mints mfa:false with no source and flags enrollment when the effective policy requires MFA', async () => {
+    routeState.policyRequired = true;
+
+    const response = await accept();
+
+    expect(response.status).toBe(200);
+    expect(routeState.minted).toEqual([{ mfa: false, mfaSrc: undefined }]);
+    const body = await response.json() as { mfaEnrollmentRequired?: boolean; enrollUrl?: string };
+    expect(body.mfaEnrollmentRequired).toBe(true);
+    expect(body.enrollUrl).toBe('/auth/mfa/setup');
+  });
+
+  it('mints mfa:false and flags enrollment when the MFA policy settings cannot be read', async () => {
+    routeState.policySettingsReadFails = true;
+
+    const response = await accept();
+
+    expect(response.status).toBe(200);
+    expect(routeState.minted).toEqual([{ mfa: false, mfaSrc: undefined }]);
+    const body = await response.json() as { mfaEnrollmentRequired?: boolean; enrollUrl?: string };
+    expect(body.mfaEnrollmentRequired).toBe(true);
+    expect(body.enrollUrl).toBe('/auth/mfa/setup');
+  });
+
+  it('mints mfa:false for an account that already holds a factor it did not prove here', async () => {
+    // A user can be returned to `invited` with factors still enrolled; setting
+    // a password proves none of them, so the session is not assured.
+    routeState.user.mfaEnabled = true;
+
+    const response = await accept();
+
+    expect(response.status).toBe(200);
+    expect(routeState.minted).toEqual([{ mfa: false, mfaSrc: undefined }]);
+    const body = await response.json() as { user: { mfaEnabled: boolean }; mfaEnrollmentRequired: boolean };
+    expect(body.user.mfaEnabled).toBe(true);
+    expect(body.mfaEnrollmentRequired).toBe(false);
+  });
+
+  it('resolves the policy on the partner axis for a partner-staff invitee', async () => {
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValueOnce({
+      roleId: 'role-p', orgId: null, partnerId: 'partner-1', scope: 'partner',
+    } as never);
+
+    const response = await accept();
+
+    expect(response.status).toBe(200);
+    expect(routeState.policyCalls).toEqual([{
+      input: { scope: 'partner', userId: routeState.user.id, orgId: null, partnerId: 'partner-1' },
+      opts: { failClosed: true },
+    }]);
+    expect(routeState.minted).toEqual([{ mfa: true, mfaSrc: 'policy' }]);
   });
 });

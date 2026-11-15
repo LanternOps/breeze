@@ -12,10 +12,22 @@ import { getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } 
 const searchQuerySchema = z.object({
   q: z.string().trim().min(1).max(100),
   limit: z.coerce.number().int().min(1).max(50).optional(),
-  // The org selected in the web org switcher (fetchWithAuth sends it). Narrows
-  // results to that org; it can never widen past the caller's access (#9612).
-  orgId: z.string().uuid().optional()
+  // Hard narrowing to one org: the palette's "This customer only" toggle.
+  // It can never widen past the caller's access (#9612).
+  orgId: z.string().uuid().optional(),
+  // Ranking hint only (#11803): the org selected in the header. Its matches sort
+  // first inside each category; every other accessible org still appears.
+  preferOrgId: z.string().uuid().optional()
 });
+
+/**
+ * Leading ORDER BY term that sorts the preferred org's rows first, or no term
+ * at all without a preference (a bare constant would read as a column position).
+ */
+function preferFirst(preferOrgId: string | undefined, matches: (orgId: string) => SQL): SQL[] {
+  if (!preferOrgId) return [];
+  return [asc(sql`CASE WHEN ${matches(preferOrgId)} THEN 0 ELSE 1 END`)];
+}
 
 /**
  * Relevance rank for a case-insensitive match of `q`: 0 = some column equals
@@ -35,6 +47,7 @@ function matchRank(q: string, columns: PgColumn[]): SQL {
 
 type DeviceSearchRow = {
   id: string;
+  orgId: string;
   title: string | null;
   hostname: string | null;
   status: string | null;
@@ -54,6 +67,7 @@ function deviceSearchResult(row: DeviceSearchRow): Record<string, unknown> {
   return {
     id: row.id,
     type: 'devices',
+    orgId: row.orgId,
     title,
     description: descriptionParts.filter(Boolean).join(' · ') || undefined
   };
@@ -65,11 +79,15 @@ searchRoutes.use('*', authMiddleware);
 
 searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { q, limit = 20, orgId: selectedOrgId } = c.req.valid('query');
+  const { q, limit = 20, orgId: selectedOrgId, preferOrgId } = c.req.valid('query');
   // Validate before any query runs. canAccessOrg is the caller's own access
-  // list (system scope: any org), so narrowing can only ever shrink it.
-  if (selectedOrgId && !auth.canAccessOrg(selectedOrgId)) {
-    return c.json({ error: 'Access denied to this organization' }, 403);
+  // list (system scope: any org), so narrowing can only ever shrink it. The
+  // ranking hint is checked the same way: it filters nothing, but answering it
+  // for a foreign org would still confirm that org's id (#11803).
+  for (const requested of [selectedOrgId, preferOrgId]) {
+    if (requested && !auth.canAccessOrg(requested)) {
+      return c.json({ error: 'Access denied to this organization' }, 403);
+    }
   }
   const perCategoryLimit = Math.max(1, Math.min(8, Math.ceil(limit / 4)));
   const searchTerm = `%${q}%`;
@@ -161,15 +179,29 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
 
   // Deterministic order before LIMIT (#9612): an unordered LIMIT returned an
   // arbitrary subset, so an exact match could be cut and results reshuffled
-  // between runs. Relevance, then name, then id as the stable tiebreak.
+  // between runs. The preferred org first (#11803), then relevance, then name,
+  // then id as the stable tiebreak.
   const deviceOrder = [
+    ...preferFirst(preferOrgId, (orgId) => sql`${devices.orgId} = ${orgId}`),
     asc(matchRank(q, [devices.hostname, devices.displayName])),
     asc(sql`lower(coalesce(nullif(btrim(${devices.displayName}), ''), ${devices.hostname}))`),
     asc(devices.id),
   ];
-  const scriptOrder = [asc(matchRank(q, [scripts.name])), asc(sql`lower(${scripts.name})`), asc(scripts.id)];
+  // A partner-wide script runs in every org of its partner, so it counts as the
+  // preferred org's own; another partner's partner-wide script (system scope)
+  // does not.
+  const scriptOrder = [
+    ...preferFirst(preferOrgId, (orgId) => sql`(${scripts.orgId} = ${orgId} OR (${scripts.orgId} IS NULL AND ${scripts.partnerId} = (SELECT ${organizations.partnerId} FROM ${organizations} WHERE ${organizations.id} = ${orgId})))`),
+    asc(matchRank(q, [scripts.name])),
+    asc(sql`lower(${scripts.name})`),
+    asc(scripts.id),
+  ];
   // Alerts are events: newest first is the useful order.
-  const alertOrder = [desc(alerts.triggeredAt), asc(alerts.id)];
+  const alertOrder = [
+    ...preferFirst(preferOrgId, (orgId) => sql`${alerts.orgId} = ${orgId}`),
+    desc(alerts.triggeredAt),
+    asc(alerts.id),
+  ];
 
   const deviceWhereCondition = and(
     orgConditionFor(devices.orgId),
@@ -182,6 +214,7 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
       ? db
           .select({
             id: devices.id,
+            orgId: devices.orgId,
             title: devices.displayName,
             hostname: devices.hostname,
             status: devices.status,
@@ -196,6 +229,7 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
       ? db
           .select({
             id: scripts.id,
+            orgId: scripts.orgId,
             title: scripts.name,
             description: scripts.description
           })
@@ -209,6 +243,7 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
         ? db
           .select({
             id: alerts.id,
+            orgId: alerts.orgId,
             title: alerts.title,
             message: alerts.message,
             severity: alerts.severity
@@ -221,6 +256,7 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
         : db
           .select({
             id: alerts.id,
+            orgId: alerts.orgId,
             title: alerts.title,
             message: alerts.message,
             severity: alerts.severity
@@ -232,21 +268,39 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
       : Promise.resolve([])
   ]);
 
-  const results: Array<Record<string, unknown>> = [
-    ...deviceRows.map((row) => deviceSearchResult(row)),
+  const results: Array<Record<string, unknown> & { orgId: string | null }> = [
+    ...deviceRows.map((row) => deviceSearchResult(row) as Record<string, unknown> & { orgId: string }),
     ...scriptRows.map((row) => ({
       id: row.id,
       type: 'scripts',
+      // null = partner-wide: the script belongs to no single customer.
+      orgId: row.orgId ?? null,
       title: row.title,
       description: row.description || undefined
     })),
     ...alertRows.map((row) => ({
       id: row.id,
       type: 'alerts',
+      orgId: row.orgId,
       title: row.title,
       description: row.severity || row.message || undefined
     }))
-  ];
+  ].slice(0, limit);
 
-  return c.json({ results: results.slice(0, limit) });
+  // Label every result with its customer (#11803). One lookup for the few ids
+  // on this page, in the caller's own context, so RLS decides which names it
+  // may read; a name it cannot read stays null rather than failing the search.
+  const orgIds = [...new Set(results.map((r) => r.orgId).filter((id): id is string => typeof id === 'string'))];
+  const orgNames = new Map<string, string>();
+  if (orgIds.length > 0) {
+    const orgRows = await db
+      .select({ id: organizations.id, name: organizations.name })
+      .from(organizations)
+      .where(inArray(organizations.id, orgIds));
+    for (const row of orgRows) orgNames.set(row.id, row.name);
+  }
+
+  return c.json({
+    results: results.map((r) => ({ ...r, orgName: r.orgId ? orgNames.get(r.orgId) ?? null : null })),
+  });
 });

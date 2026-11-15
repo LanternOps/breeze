@@ -131,6 +131,45 @@ describe('GET /organizations/:id/portal-users', () => {
     expect(body.data.map((u: any) => u.effectiveStatus)).toEqual(['active', 'pending_setup']);
     expect(JSON.stringify(body)).not.toContain('passwordHash');
   });
+
+  it('the users list carries disabledBy and each identity\'s disabled state', async () => {
+    const disabledAt = new Date('2027-02-01T10:00:00.000Z');
+    const rearmSince = new Date('2027-02-02T10:00:00.000Z');
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }]) // org existence
+      .mockResolvedValueOnce([
+        { id: 'pu-1', email: 'a@acme.example', name: 'A', passwordHash: null, status: 'disabled', disabledBy: 'directory', receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'entra' },
+        { id: 'pu-2', email: 'b@acme.example', name: 'B', passwordHash: 'h', status: 'active', disabledBy: null, receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'password' },
+        { id: 'pu-3', email: 'c@acme.example', name: 'C', passwordHash: 'h', status: 'active', disabledBy: null, receiveNotifications: true, lastLoginAt: null, invitedAt: null, authMethod: 'password' },
+      ])
+      // ONE identity read for every listed user (no N+1).
+      .mockResolvedValueOnce([
+        { portalUserId: 'pu-1', id: 'idn-1', provider: 'entra', disabledAt, disabledBlockers: ['entra_directory', 'scim'], disabledReason: 'account_disabled', directoryRearmSince: null },
+        { portalUserId: 'pu-2', id: 'idn-2', provider: 'google', disabledAt: null, disabledBlockers: [], disabledReason: null, directoryRearmSince: rearmSince },
+        { portalUserId: 'pu-2', id: 'idn-3', provider: 'entra', disabledAt: null, disabledBlockers: [], disabledReason: null, directoryRearmSince: null },
+      ]);
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-users`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data[0]).toMatchObject({
+      id: 'pu-1',
+      disabledBy: 'directory',
+      identityProviders: ['entra'],
+      identities: [{ id: 'idn-1', provider: 'entra', disabledAt: disabledAt.toISOString(), disabledBlockers: ['entra_directory', 'scim'], disabledReason: 'account_disabled', rearmSince: null }],
+    });
+    expect(data[1]).toMatchObject({
+      id: 'pu-2',
+      disabledBy: null,
+      identityProviders: ['entra', 'google'],
+      identities: [
+        { id: 'idn-3', provider: 'entra', disabledAt: null, disabledBlockers: [], disabledReason: null, rearmSince: null },
+        { id: 'idn-2', provider: 'google', disabledAt: null, disabledBlockers: [], disabledReason: null, rearmSince: rearmSince.toISOString() },
+      ],
+    });
+    expect(data[2]).toMatchObject({ id: 'pu-3', disabledBy: null, identityProviders: [], identities: [] });
+    // Three reads: org, users, identities — never one identity read per user.
+    expect(selectWhereSpy).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('POST /organizations/:id/portal-users/invite', () => {
@@ -404,6 +443,65 @@ describe('PATCH /organizations/:id/portal-users/:userId', () => {
 
     expect(res.status).toBe(200);
     expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ authEpoch: expect.anything() }));
+  });
+
+  // W8 (#11385, plan D2/D3): disabled_by follows status (CHECK
+  // portal_users_disabled_by_status_chk), and reactivation needs a USABLE credential.
+  const disabledRow = (over: Record<string, unknown> = {}) => ({
+    id: 'pu-1', orgId: ORG_ID, email: 'a@acme.example', name: null, passwordHash: 'h', authMethod: 'password',
+    status: 'disabled', disabledBy: 'msp', authEpoch: 3, browserAccess: 'granted', hasExternalIdentity: false, hasUsableExternalIdentity: false, ...over,
+  });
+
+  it('msp_disable writes disabled_by msp; reactivate clears it (W8 D2)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]);
+    expect((await patch('pu-1', { status: 'disabled' })).status).toBe(200);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'disabled', disabledBy: 'msp' }));
+
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ disabledBy: 'directory' })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'active' }]);
+    expect((await patch('pu-1', { status: 'active' })).status).toBe(200);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'active', disabledBy: null }));
+  });
+
+  it('a profile-only PATCH writes neither status nor disabled_by', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'active' }]);
+    expect((await patch('pu-1', { name: 'New' })).status).toBe(200);
+    const set = setSpy.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(set).not.toHaveProperty('status');
+    expect(set).not.toHaveProperty('disabledBy');
+  });
+
+  it('reactivating an account whose only identity is disabled → 409 PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST, no update (review fix)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({
+      authMethod: 'entra', passwordHash: null, browserAccess: 'none', disabledBy: 'directory',
+      hasExternalIdentity: true, hasUsableExternalIdentity: false,
+    })]);
+    const setCalls = setSpy.mock.calls.length;
+    const res = await patch('pu-1', { status: 'active' });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST');
+    expect(body.error).toMatch(/restore .*sign-in method first/i);
+    expect(setSpy.mock.calls.length).toBe(setCalls);
+  });
+
+  it('reactivating an account with a hash while password sign-in is off (sso_only) and no usable identity lands on invited', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, google: false, password: false });
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow()]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'invited' }]);
+    expect((await patch('pu-1', { status: 'active' })).status).toBe(200);
+    expect(resolveMethods).toHaveBeenCalledWith(ORG_ID);
+    expect(setSpy).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'invited', disabledBy: null }));
+  });
+
+  it('the target read selects both identity facts: any (identity-managed) and usable (a credential)', async () => {
+    selectResult.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([disabledRow({ status: 'active', disabledBy: null })]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1', status: 'disabled' }]);
+    await patch('pu-1', { status: 'disabled' });
+    const columns = vi.mocked(db.select).mock.calls.map((call) => Object.keys(((call as unknown[])[0] ?? {}) as Record<string, unknown>));
+    expect(columns[1]).toEqual(expect.arrayContaining(['hasExternalIdentity', 'hasUsableExternalIdentity', 'disabledBy']));
   });
 });
 
@@ -1095,5 +1193,93 @@ describe('POST /organizations/:id/portal-users/:userId/browser-access (W4)', () 
     expect(raced.status).toBe(409);
     expect((await raced.json()).code).toBe('PORTAL_ACCOUNT_TRANSITION_REFUSED');
     expect(auditMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Portal registration W7 (#11384) D12: Google in the invite email and the
+// bulk SSO invite. The W4 cases above pin the Microsoft and password paths.
+// ---------------------------------------------------------------------------
+
+describe('W7: Google in invites and sso-invite (D12)', () => {
+  const INVITE_URL = 'https://x/portal/accept-invite?token=raw-token';
+  const newInvite = () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])          // org existence
+      .mockResolvedValueOnce([])                        // no existing portal user
+      .mockResolvedValueOnce([{ id: 'ct-1' }])          // the contact on the address
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);    // org name
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new', authEpoch: 1 }]);
+    return makeApp().request(`/organizations/${ORG_ID}/portal-users/invite`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'new@acme.example' }),
+    });
+  };
+  const sent = () => sendInvite.mock.calls[0]![0] as Record<string, unknown>;
+
+  it('invite email offers Google when only Google is effective, and both buttons when both are', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ inviteUrl: INVITE_URL, googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: true });
+    expect(sent().microsoftUrl).toBeUndefined();
+
+    sendInvite.mockClear();
+    resolveMethods.mockResolvedValue({ microsoft: true, google: true, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({
+      microsoftUrl: `${INVITE_URL}&method=microsoft`, googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: true,
+    });
+  });
+
+  it('invite email hides the password option under sso_only with only Google', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: false });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ googleUrl: `${INVITE_URL}&method=google`, passwordAllowed: false });
+    expect(sent().microsoftUrl).toBeUndefined();
+  });
+
+  it('invite email is unchanged when no SSO method is effective', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: false, google: false, password: true });
+    expect((await newInvite()).status).toBe(200);
+    expect(sent()).toMatchObject({ inviteUrl: INVITE_URL, passwordAllowed: true });
+    expect(sent().microsoftUrl).toBeUndefined();
+    expect(sent().googleUrl).toBeUndefined();
+  });
+
+  describe('sso-invite', () => {
+    const PU1 = '00000000-0000-4000-8000-000000000001';
+    const stranded = {
+      id: PU1, orgId: ORG_ID, email: '1@acme.example', name: null, passwordHash: null, authMethod: 'password',
+      status: 'invited', authEpoch: 5, browserAccess: 'granted', hasExternalIdentity: false,
+    };
+    const ssoInvite = () => makeApp().request(`/organizations/${ORG_ID}/portal-users/sso-invite`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portalUserIds: [PU1] }),
+    });
+
+    it('sso-invite works for a Google-only org and refuses 409 when neither SSO method is effective', async () => {
+      resolveMethods.mockResolvedValue({ microsoft: false, google: true, password: false });
+      txState.impl = (fn) => fn();
+      selectResult
+        .mockResolvedValueOnce([{ id: ORG_ID }])      // org existence
+        .mockResolvedValueOnce([{ name: 'Acme Co' }]) // org name
+        .mockResolvedValueOnce([{ id: PU1 }])         // row lock
+        .mockResolvedValueOnce([stranded])            // facts under the lock
+        .mockResolvedValueOnce([]);                   // invite branding
+      insertReturning.mockResolvedValueOnce([{ authEpoch: 6 }]);
+      const ok = await ssoInvite();
+      expect(ok.status).toBe(200);
+      expect((await ok.json()).data).toEqual([{ portalUserId: PU1, result: 'invited', emailSent: true }]);
+      expect(sent()).toMatchObject({ to: '1@acme.example', googleUrl: expect.stringContaining('&method=google'), passwordAllowed: false });
+      expect(sent().microsoftUrl).toBeUndefined();
+
+      vi.clearAllMocks();
+      selectResult.mockReset().mockResolvedValue([]);
+      resolveMethods.mockResolvedValue({ microsoft: false, google: false, password: true });
+      selectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      const refused = await ssoInvite();
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: expect.any(String), code: 'PORTAL_SSO_INVITE_UNAVAILABLE' });
+      expect(setSpy).not.toHaveBeenCalled();
+      expect(sendInvite).not.toHaveBeenCalled();
+    });
   });
 });

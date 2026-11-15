@@ -660,3 +660,58 @@ describe('resolveAndMintClientSession — identities release B (W3 read switch)'
     expect(redisMock.setex).not.toHaveBeenCalled();
   });
 });
+
+// ===========================================================================
+// W8 (#11385, plan D3, Review Focus 5): a disabled identity never gets an
+// add-in session. Appended; every case above is unchanged.
+// ===========================================================================
+describe('resolveAndMintClientSession — disabled identity (W8)', () => {
+  const DISABLED_AT = new Date('2027-01-31T00:00:00.000Z');
+  const refusedAs401 = (outcome: Awaited<ReturnType<typeof resolveAndMintClientSession>>) => {
+    // The same 401 body as an invalid token: nothing about the account leaks.
+    expect(outcome).toMatchObject({ kind: 'denied', status: 401, body: { error: 'invalid_token' } });
+    expect(outcome.kind === 'denied' && outcome.audit.details).toMatchObject({ reason: 'identity_disabled', contactLink: 'not-attempted' });
+    expect(redisMock.setex).not.toHaveBeenCalled();
+    expect(redisMock.sadd).not.toHaveBeenCalled();
+    expect(linkLoginToContactMock).not.toHaveBeenCalled();
+  };
+
+  it('the add-in exchange and its conflict recovery refuse a disabled identity with the unknown-user 401', async () => {
+    // 1. The lookup finds the login through a DISABLED identity: refused before any write.
+    seedSelects([activeUser({ contactId: 'ct-1', identityDisabledAt: DISABLED_AT })]);
+    refusedAs401(await resolveAndMintClientSession(claims(), redis));
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(ensureIdentityMock).not.toHaveBeenCalled();
+    // The lookup reads the identity's disabled_at in the same statement as the login and its epoch.
+    const lookup = vi.mocked(db.select).mock.calls[1]![0] as unknown as Record<string, unknown>;
+    expect(lookup).toHaveProperty('identityDisabledAt', portalUserIdentities.disabledAt);
+    expect(lookup).toHaveProperty('authEpoch', portalUsers.authEpoch);
+
+    // 2. Conflict recovery: the JIT insert collides with a disabled identity
+    //    (it holds the (issuer, subject)); the re-select must refuse, never mint.
+    vi.clearAllMocks();
+    selectResult
+      .mockResolvedValueOnce([{ orgId: ORG_ID, partnerId: PARTNER_ID, partnerEnabled: true }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([activeUser({ id: 'pu-old', identityDisabledAt: DISABLED_AT })]);
+    insertReturning.mockRejectedValueOnce(Object.assign(new Error('dup'), { cause: { code: '23505' } }));
+    refusedAs401(await resolveAndMintClientSession(claims(), redis));
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('a disable that lands between the lookup and the identity touch is refused too (ensureEntraIdentity → disabled)', async () => {
+    seedSelects([activeUser({ contactId: 'ct-1' })]);
+    ensureIdentityMock.mockResolvedValueOnce('disabled');
+    refusedAs401(await resolveAndMintClientSession(claims(), redis));
+  });
+
+  it('the minted session and the returned user never carry the disabled-at column', async () => {
+    seedSelects([activeUser({ contactId: 'ct-1', identityDisabledAt: null })]);
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+    expect(outcome.kind).toBe('resolved');
+    const payload = JSON.parse(redisMock.setex.mock.calls[0]![2] as string);
+    expect(payload).not.toHaveProperty('identityDisabledAt');
+    expect(outcome.kind === 'resolved' && outcome.body.user).toEqual({ id: 'pu-1', email: EMAIL, name: 'Jane' });
+  });
+});

@@ -12,6 +12,14 @@ import type { StepUpGrantBinding } from './mfaStepUpGrant';
  * write transaction (device maintenance, device move-org); take it as the
  * transaction's FIRST row lock so the lock order is `users` → everything else.
  *
+ * Exception, deliberate: the holding-area writers (`assignParkedDevice` and
+ * the reattach request, `deviceReattach/requestIntent.ts`) take the partner's
+ * holding-area advisory lock and the device rows first and this lock after,
+ * so every intent and assignment serializes on the holding area before any
+ * user row. That order cannot deadlock with a factor reset, which locks the
+ * `users` row alone and never a device row. Do not "fix" those two to lock
+ * `users` first.
+ *
  * True only when ALL hold: actor active; live epochs equal the grant binding;
  * token epochs equal the live row. Any other answer — including a missing
  * row — is a denial.

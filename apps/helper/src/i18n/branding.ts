@@ -61,6 +61,15 @@ export function sanitizeBranding(raw: unknown): HelperBranding {
   return out;
 }
 
+/**
+ * Windows that ask the device user for a security decision (remote-session
+ * consent, the session banner, Caller Verification). They never take tenant
+ * styling: the colours stay the Breeze palette whatever the branding says.
+ */
+export function isSecurityWindowHash(hash: string): boolean {
+  return hash === '#consent' || hash === '#banner' || hash.startsWith('#caller-verify/');
+}
+
 const VARS = ['--ws-accent', '--ws-accent-contrast', '--ws-accent-soft', '--ws-brand-accent'] as const;
 
 /**

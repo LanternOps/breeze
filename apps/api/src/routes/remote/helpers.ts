@@ -3,7 +3,7 @@ import { createHmac, randomBytes, randomUUID } from 'crypto';
 import { db, hasDbAccessContext, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { captureException } from '../../services/sentry';
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
-import { terminalIntentSet } from '../../services/remoteDesktopTerminalIntent';
+import { runTerminalWrite, terminalIntentSet } from '../../services/remoteDesktopTerminalIntent';
 import {
   remoteSessions,
   devices,
@@ -246,9 +246,9 @@ export async function expireStaleSessions(orgId: string) {
   // Kill viewer tokens for sessions we just force-ended so a still-valid token
   // can't resurrect them via /viewer/offer (#5). Revocation must ALWAYS run, so
   // capture the expired ids via `.returning()` directly — no duck-type guard.
-  const expired = await db
+  const expired = await runTerminalWrite(() => db
     .update(remoteSessions)
-    .set(terminalIntentSet({ status: 'disconnected', endedAt: now }, 'pending'))
+    .set(terminalIntentSet({ status: 'disconnected', endedAt: now, endReason: 'never_connected' }, 'pending'))
     .where(
       and(
         inArray(remoteSessions.deviceId,
@@ -257,7 +257,7 @@ export async function expireStaleSessions(orgId: string) {
         remoteSessionStaleCondition(now)
       )
     )
-    .returning({ id: remoteSessions.id });
+    .returning({ id: remoteSessions.id }));
   await Promise.all(expired.map((row) => revokeViewerSession(row.id)));
 }
 
@@ -267,16 +267,16 @@ export async function expireStaleSessionsForUser(userId: string) {
   // Kill viewer tokens for sessions we just force-ended so a still-valid token
   // can't resurrect them via /viewer/offer (#5). Revocation must ALWAYS run, so
   // capture the expired ids via `.returning()` directly — no duck-type guard.
-  const expired = await db
+  const expired = await runTerminalWrite(() => db
     .update(remoteSessions)
-    .set(terminalIntentSet({ status: 'disconnected', endedAt: now }, 'pending'))
+    .set(terminalIntentSet({ status: 'disconnected', endedAt: now, endReason: 'never_connected' }, 'pending'))
     .where(
       and(
         eq(remoteSessions.userId, userId),
         remoteSessionStaleCondition(now)
       )
     )
-    .returning({ id: remoteSessions.id });
+    .returning({ id: remoteSessions.id }));
   await Promise.all(expired.map((row) => revokeViewerSession(row.id)));
 }
 

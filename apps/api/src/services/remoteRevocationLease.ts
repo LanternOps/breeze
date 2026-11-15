@@ -543,6 +543,9 @@ export async function markSessionRevoked(
           status: 'disconnected',
           endedAt: new Date(),
           errorMessage: `revoked:${reason}`,
+          // #11839: the lease hard deadline is the policy's maximum session
+          // duration, not an access change; every other negative recheck is.
+          endReason: reason === 'hard_deadline' ? 'max_duration' : 'access_revoked',
         },
         phase: 'pending',
       }),

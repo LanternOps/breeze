@@ -190,6 +190,24 @@ export async function checkExtensionMigrationParity(
 }
 
 /**
+ * Rollback refusal: code older than the highest schema floor ever recorded for
+ * the extension means the live schema already moved past what this code
+ * supports. Reads only, so the read-only boot path (#11741) runs it too.
+ */
+export async function assertNotBelowSchemaFloor(
+  name: string,
+  version: string,
+  stateStore: ExtensionStateStore,
+): Promise<void> {
+  const highestFloor = await stateStore.highestSchemaFloor(name);
+  if (highestFloor && valid(version) && valid(highestFloor) && lt(version, highestFloor)) {
+    throw new Error(
+      `refusing to apply extension "${name}" ${version}: it is OLDER than the highest recorded schema floor ${highestFloor} — a code rollback below the live schema floor is not allowed`,
+    );
+  }
+}
+
+/**
  * Apply an extension's pending migrations transactionally, under a per-extension
  * advisory lock, enforcing the rollback and rolling-update gates first.
  *
@@ -224,12 +242,7 @@ export async function reconcileExtensionMigrations(
   // ── 2. Rollback refusal: incoming code older than the highest schema floor
   //       ever recorded means the live schema already moved past what this code
   //       supports. Refuse.
-  const highestFloor = await stateStore.highestSchemaFloor(name);
-  if (highestFloor && valid(version) && valid(highestFloor) && lt(version, highestFloor)) {
-    throw new Error(
-      `refusing to apply extension "${name}" ${version}: it is OLDER than the highest recorded schema floor ${highestFloor} — a code rollback below the live schema floor is not allowed`,
-    );
-  }
+  await assertNotBelowSchemaFloor(name, version, stateStore);
 
   // ── 3. Rolling-update gate: during a rolling deploy the previous version is
   //       still serving. If it is below the incoming schema floor, the new

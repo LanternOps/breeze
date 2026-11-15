@@ -523,6 +523,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/posture.ts': { tools: ['get_management_posture'] }, // W13 (#6783)
   'devices/processSamples.ts': { tools: ['get_process_samples'] }, // W13 (#6783): the at-or-before sample; range markers are chart data
   'devices/provision.ts': { exempt: 'identity' },
+  'devices/reattach.ts': { exempt: 'human_only_tenant_restructure', note: 'Reinstall reattach (#8318 §8): retires one device record and hands another\'s identity to a new install, across orgs of a partner; interactive session, MFA and a device_reattach step-up. The candidates read serves only the reattach dialog.' },
   'devices/removalConfig.ts': { exempt: 'internal_plumbing' },
   'devices/restorePoints.ts': { tools: ['list_device_restore_point_attempts'] },
   'devices/siteAssignmentConfirmation.ts': { exempt: 'internal_plumbing', note: 'Wrong-site suggestion dismissal ("Keep at <site>", site location W3, #7887). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP out of presence, and a suggestion is accepted or dismissed only by a technician in the topology UI.' },
@@ -621,6 +622,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
   'orgPortalAccessPolicy.ts': { exempt: 'identity', note: 'Portal sign-in policy, partner default and org override (#11380 W3): which sign-in methods an org\'s portal accepts is authentication configuration and stays human. The W3 plan gives it no AI tool, and manage_org_portal_settings does not gain it.' },
   'orgCustomerDomains.ts': { exempt: 'identity', note: 'Customer domain verification (#11382 W5): proving a customer owns an email domain feeds portal self-registration and Google sign-in trust, so it stays a human decision; the W5 plan gives it no AI tool. Domain CRUD stays reachable through manage_ticket_config.' },
+  'orgPortalDirectory.ts': { exempt: 'identity', note: 'Portal directory deprovisioning (#11385 W8): applying or dismissing a held batch of customer sign-in disables, and restoring or removing a disabled sign-in method, are identity decisions that stay human; the W8 plan gives them no AI tool. The portal-users list (list_portal_users) shows each sign-in method\'s disabled state.' },
   'orgPortalEntraTenant.ts': { exempt: 'identity', note: 'Portal Microsoft tenant proof (#11381 W4): proving, linking or removing the Entra tenant that Microsoft sign-in trusts is an identity decision that stays human; the W4 plan gives it no AI tool.' },
   'orgPortalAccessRequests.ts': { exempt: 'identity', note: 'Portal access-request queue (#11380 W3): approve/deny creates portal accounts or grants browser access, an identity decision that stays human like portal-user invites (orgPortalUsers.ts).' },
   'orgPortalPreview.ts': { exempt: 'staff_ui_render', note: 'Staff read-only Customer view of the portal read models (#9350). Permanently no AI action (#11129): it is a human-facing render that adds no capability over the per-domain read tools (it shows the customer-flag-filtered view of the same data); manage_org_portal_settings stays get/update/set_sensitive_access. Revisit if an agent workflow needs the customer-as-seen view.' },
@@ -682,6 +684,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/backups.ts': { exempt: 'portal' },
   'portal/branding.ts': { exempt: 'portal' },
   'portal/oidc.ts': { exempt: 'portal' },
+  'portal/oidcGoogle.ts': { exempt: 'portal' },
+  'portal/oidcShared.ts': { exempt: 'portal' },
   'portal/selfRegistration.ts': { exempt: 'portal' },
   'portal/dashboard.ts': { exempt: 'portal' },
   'portal/devices.ts': { exempt: 'portal' },

@@ -29,6 +29,11 @@ export const SEARCH_QUERY_MAX_LENGTH = 256;
 // holding a pooled connection.
 export const BROWSE_STATEMENT_TIMEOUT_MS = 15_000;
 export const SEARCH_STATEMENT_TIMEOUT_MS = 10_000;
+// A selective restore resolves its selections by walking the index in pages
+// before anything is created. Each page statement has the browse timeout, and
+// the walk as a whole stops here: a request never holds its pooled connection
+// for longer than this however large the index is.
+export const SELECTION_WALK_DEADLINE_MS = 30_000;
 
 /** A browse or search statement that ran past its timeout. */
 export class IndexQueryTimeoutError extends Error {
@@ -175,8 +180,8 @@ function afterSourcePath(after: string | null) {
  * once the table's statistics know the snapshot's rows (#11209). Exported,
  * unexecuted, so a test can EXPLAIN this exact statement.
  */
-export function readableSourcePathPageQuery(snapshotDbId: string, after: string | null) {
-  return db
+export function readableSourcePathPageQuery(snapshotDbId: string, after: string | null, executor: Executor = db) {
+  return executor
     .select({ sourcePath: backupSnapshotFiles.sourcePath, kind: backupSnapshotFiles.kind })
     .from(backupSnapshotFiles)
     .where(and(
@@ -190,10 +195,34 @@ export function readableSourcePathPageQuery(snapshotDbId: string, after: string 
 
 type ReadableSourcePath = { sourcePath: string; kind: SnapshotEntryKind | null };
 
-async function* readableSourcePaths(snapshotDbId: string): AsyncGenerator<ReadableSourcePath[]> {
+export type SelectionWalkOptions = {
+  /** The whole walk's budget; default SELECTION_WALK_DEADLINE_MS. */
+  deadlineMs?: number;
+  /** Test seam: each page statement's timeout instead of BROWSE_STATEMENT_TIMEOUT_MS. */
+  statementTimeoutMs?: number;
+};
+
+/**
+ * The readable rows in keyset pages. Each page is one statement under its own
+ * timeout (never more than what is left of the walk's deadline); a page that
+ * runs out of time, or a walk past its deadline, ends with
+ * IndexQueryTimeoutError.
+ */
+async function* readableSourcePaths(
+  snapshotDbId: string,
+  options: SelectionWalkOptions = {},
+): AsyncGenerator<ReadableSourcePath[]> {
+  const endsAt = Date.now() + (options.deadlineMs ?? SELECTION_WALK_DEADLINE_MS);
+  const pageTimeoutMs = options.statementTimeoutMs ?? BROWSE_STATEMENT_TIMEOUT_MS;
   let after: string | null = null;
   for (;;) {
-    const page: ReadableSourcePath[] = await readableSourcePathPageQuery(snapshotDbId, after);
+    const remaining = endsAt - Date.now();
+    if (remaining <= 0) throw new IndexQueryTimeoutError();
+    const cursor = after;
+    const page: ReadableSourcePath[] = await withStatementTimeout(
+      Math.max(1, Math.min(pageTimeoutMs, remaining)),
+      (tx) => readableSourcePathPageQuery(snapshotDbId, cursor, tx),
+    );
     if (page.length > 0) yield page;
     if (page.length < SELECTION_PAGE_SIZE) return;
     after = page[page.length - 1]!.sourcePath;
@@ -219,14 +248,17 @@ export type SnapshotSelectionResolution =
  * Resolves a selective restore's selections against a snapshot's readable
  * index (createSelectionResolver) without loading every path: the rows are
  * walked in keyset pages, and only the selections and their results are held.
+ * Throws IndexQueryTimeoutError when the walk runs out of time (see
+ * readableSourcePaths); the caller's transaction stays usable.
  */
 export async function resolveSelectedSnapshotPathsInDb(
   snapshotDbId: string,
   selected: readonly string[],
+  options: SelectionWalkOptions = {},
 ): Promise<SnapshotSelectionResolution> {
   const resolver = createSelectionResolver(selected);
   let anyRows = false;
-  for await (const page of readableSourcePaths(snapshotDbId)) {
+  for await (const page of readableSourcePaths(snapshotDbId, options)) {
     anyRows = true;
     for (const row of page) resolver.add(row.sourcePath, row.kind);
     // Nothing to match: the first page already answers whether rows exist.

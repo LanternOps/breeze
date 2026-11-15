@@ -25,6 +25,12 @@ export type PortalSession = {
    * session without it.
    */
   entraTenantId?: string;
+  /**
+   * The verified Workspace domain (`hd`, lowercase) the sign-in resolved the
+   * org from (W7, plan D7). Set for, and only for, a `google` session;
+   * `parseStoredPortalSession` refuses a google session without a valid one.
+   */
+  googleHostedDomain?: string;
   createdAt: Date;
   expiresAt: Date;
 };

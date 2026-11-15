@@ -13,14 +13,22 @@
 export const GATEWAY_FAILURE_NOTE_TTL_MS = 15 * 60_000;
 export const GATEWAY_FAILURE_NOTE_MAX_ENTRIES = 1_000;
 
-/** A failure the turn's settlement records by name, rather than only showing its text (#10577). */
-export type GatewayFailureCode = 'context_window_exceeded';
+/**
+ * A failure the turn's settlement records by name, rather than only showing its text (#10577).
+ * `refused_tool_batch` (W04 #11397): the gateway refused a tool-call batch it could not
+ * verify; its message is the log-safe description (names only, never arguments) and is
+ * recorded, not shown to the technician.
+ */
+export type GatewayFailureCode = 'context_window_exceeded' | 'refused_tool_batch';
 export interface GatewayFailure { message: string; code: GatewayFailureCode | null }
 
 const notes = new Map<string, GatewayFailure & { at: number }>();
 
 export function noteGatewayFailure(aiSessionId: string | null, message: string, code: GatewayFailureCode | null = null): void {
   if (!aiSessionId) return;
+  // A context-window refusal is terminal for the turn and the more specific
+  // reason; a refused tool batch noted after it never replaces it.
+  if (code === 'refused_tool_batch' && notes.get(aiSessionId)?.code === 'context_window_exceeded') return;
   notes.delete(aiSessionId); // re-insert so Map order stays oldest-first
   notes.set(aiSessionId, { message, code, at: Date.now() });
   while (notes.size > GATEWAY_FAILURE_NOTE_MAX_ENTRIES) {

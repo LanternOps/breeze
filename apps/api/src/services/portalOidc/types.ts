@@ -1,10 +1,12 @@
 /**
- * Provider-neutral portal OIDC types (portal registration W4). W7 adds
- * Google by widening `PortalOidcProvider`; nothing else here is Entra-shaped
- * except `entraTenantId`, which is null for a provider without tenants.
+ * Provider-neutral portal OIDC types (portal registration W4; W7 adds
+ * Google). Nothing here is Entra-shaped except `entraTenantId`, which is null
+ * for a provider without tenants, and nothing Google-shaped except
+ * `googleHostedDomain`.
  */
+import type { PORTAL_GOOGLE_ISSUER } from './validators';
 
-export type PortalOidcProvider = 'entra'; // W7 adds 'google'
+export type PortalOidcProvider = 'entra' | 'google';
 
 /**
  * Why a flow was started. The single public callback dispatches on it (D4).
@@ -31,14 +33,16 @@ export interface PortalOidcState {
   bindingHash: string;
   /** The org whose verified custom domain served the start request, or null on the shared host (D5). */
   hostOrgId: string | null;
-  /** `organizations` or a tenant GUID (Entra). */
+  /** Entra: `organizations` or a tenant GUID. Google: exactly `PORTAL_GOOGLE_ISSUER`. */
   authority: string;
   /** Epoch milliseconds. */
   createdAt: number;
 }
 
 /**
- * A verified identity from a provider's id_token.
+ * A verified identity from a provider's id_token: a union keyed on `provider`,
+ * so a consumer that narrows to one provider gets that provider's guarantees
+ * (a Google identity always carries its `hd`).
  *
  * Field names match ClientAiEntraClaims (services/clientAiEntraJwt.ts) so
  * resolveLinkableEntraAddress (services/clientAiEntraAddress.ts) can read it
@@ -46,11 +50,9 @@ export interface PortalOidcState {
  * `emailClaim` is the raw `email` claim, lowercased, trusted only together
  * with `emailDomainOwnerVerified` and NEVER a linking key (inv. 5).
  */
-export interface PortalOidcVerifiedIdentity {
+interface PortalOidcVerifiedIdentityBase {
   provider: PortalOidcProvider;
-  /** For Entra exactly `entraIssuer(tid)`. */
   issuer: string;
-  /** For Entra the `oid` claim, never `sub`. */
   subject: string;
   entraTenantId: string | null;
   upn: string | null;
@@ -58,3 +60,30 @@ export interface PortalOidcVerifiedIdentity {
   emailDomainOwnerVerified: boolean;
   name: string | null;
 }
+
+/** services/portalOidc/entraClient.ts. The W4 shape, unchanged. */
+export interface PortalEntraVerifiedIdentity extends PortalOidcVerifiedIdentityBase {
+  provider: 'entra';
+  /** Exactly `entraIssuer(tid)`. */
+  issuer: string;
+  /** The `oid` claim, never `sub`. */
+  subject: string;
+  /** Declared (never set) so code can read the field on the union. */
+  googleHostedDomain?: undefined;
+}
+
+/** services/portalOidc/googleClient.ts (W7, plan D1). */
+export interface PortalGoogleVerifiedIdentity extends PortalOidcVerifiedIdentityBase {
+  provider: 'google';
+  /** Exactly `PORTAL_GOOGLE_ISSUER`, whichever of Google's two `iss` forms the token carried. */
+  issuer: typeof PORTAL_GOOGLE_ISSUER;
+  /** The `sub` claim exactly as issued (case-sensitive, never normalized). */
+  subject: string;
+  entraTenantId: null;
+  /** Google has no `preferred_username`. */
+  upn: null;
+  /** The `hd` claim, lowercased: the only input that chooses an org (D2). Never the authorize hint. */
+  googleHostedDomain: string;
+}
+
+export type PortalOidcVerifiedIdentity = PortalEntraVerifiedIdentity | PortalGoogleVerifiedIdentity;

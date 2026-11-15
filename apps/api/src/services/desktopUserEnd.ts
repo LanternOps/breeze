@@ -34,9 +34,11 @@ export interface DesktopUserEndDeps {
   /**
    * Atomically sets end_reason = 'ended_by_user' on the session, and writes the
    * audit row in the same transaction, only for a desktop session that ran on
-   * `deviceId`, has no end reason yet, and is active or went disconnected less
-   * than `recentWindowMs` ago. Returns false when nothing matched (unknown or
-   * foreign session, ended long ago, failed/denied, or already recorded).
+   * `deviceId` and is either active with no end reason yet, or went
+   * disconnected less than `recentWindowMs` ago with no reason or the generic
+   * 'peer_disconnected' its own stop recorded first (#11839). Returns false
+   * when nothing matched (unknown or foreign session, ended long ago,
+   * failed/denied, ended for a specific reason, or already recorded).
    */
   markEndedByUser(input: { sessionId: string; deviceId: string; recentWindowMs: number }): Promise<boolean>;
 }
@@ -62,7 +64,8 @@ const defaultDeps: DesktopUserEndDeps = {
         db.transaction(async (tx) => {
           const cutoff = new Date(Date.now() - recentWindowMs);
           // Bound to the reporting device: an agent cannot label another
-          // device's sessions. `end_reason IS NULL` makes a resend a no-op.
+          // device's sessions. A resend is a no-op: the row already says
+          // 'ended_by_user', which neither branch below matches.
           const [row] = await tx
             .update(remoteSessions)
             .set({ endReason: 'ended_by_user' })
@@ -71,10 +74,20 @@ const defaultDeps: DesktopUserEndDeps = {
                 eq(remoteSessions.id, sessionId),
                 eq(remoteSessions.deviceId, deviceId),
                 eq(remoteSessions.type, 'desktop'),
-                isNull(remoteSessions.endReason),
                 or(
-                  eq(remoteSessions.status, 'active'),
-                  and(eq(remoteSessions.status, 'disconnected'), gt(remoteSessions.endedAt, cutoff)),
+                  and(eq(remoteSessions.status, 'active'), isNull(remoteSessions.endReason)),
+                  // #11839: every terminal write records a reason, so when the
+                  // agent's own stop (desk-disconnect, or the reconnect-hold
+                  // end) is handled before this report the row already says
+                  // 'peer_disconnected'. That is the generic reason for the
+                  // stop this report explains, so the user end replaces it —
+                  // and only it: a technician end, a revocation or a capture
+                  // failure keeps its own reason.
+                  and(
+                    eq(remoteSessions.status, 'disconnected'),
+                    gt(remoteSessions.endedAt, cutoff),
+                    or(isNull(remoteSessions.endReason), eq(remoteSessions.endReason, 'peer_disconnected')),
+                  ),
                 ),
               ),
             )

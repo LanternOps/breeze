@@ -88,13 +88,25 @@ beforeEach(() => {
   signIn();
   mocks.getSource.mockResolvedValue({ id: SOURCE, partnerId: PARTNER, principalId: PRINCIPAL });
   mocks.list.mockResolvedValue({ contacts: [{ contactId: CONTACT_A, keptBecause: [] }], next: null });
-  mocks.remove.mockImplementation(async (input: { transaction: (fn: () => Promise<unknown>) => Promise<unknown> }) => {
+  removeReturns(removal);
+});
+
+type RemoveInput = {
+  transaction: (fn: () => Promise<unknown>) => Promise<unknown>;
+  onRemoved?: (contact: (typeof removal.removed)[number]) => void;
+};
+
+/** The service as the route sees it: each removed contact is reported through
+ *  onRemoved as its transaction commits, then the call returns `result`. */
+function removeReturns(result: typeof removal | (Omit<typeof removal, 'stoppedBy'> & { stoppedBy: string | null })) {
+  mocks.remove.mockImplementation(async (input: RemoveInput) => {
     mocks.log.push('remove');
     // The service opens its transactions through the caller's auth context.
     await input.transaction(async () => mocks.log.push('in-tx'));
-    return removal;
+    for (const contact of result.removed) input.onRemoved?.(contact);
+    return result;
   });
-});
+}
 
 describe('GET /ticket-imports/sources/:id/created-contacts', () => {
   it('lists the source\'s created contacts for a partner-wide admin, with the page cursor', async () => {
@@ -146,11 +158,41 @@ describe('POST /ticket-imports/sources/:id/created-contacts/remove', () => {
   });
 
   it('reports a call a run stopped midway (stoppedBy) with what it removed so far', async () => {
-    mocks.remove.mockResolvedValue({ ...removal, removed: removal.removed.slice(0, 1), remaining: 4, stoppedBy: 'run_active' });
+    removeReturns({ ...removal, removed: removal.removed.slice(0, 1), remaining: 4, stoppedBy: 'run_active' });
     const res = await send('POST', `/sources/${SOURCE}/created-contacts/remove`);
     expect(res.status).toBe(200);
     expect((await res.json()).data).toMatchObject({ removed: 1, remaining: 4, stoppedBy: 'run_active' });
     expect(mocks.contactAudit).toHaveBeenCalledTimes(1);
+  });
+
+  // #11756 review: a contact's transaction throwing partway must not leave the
+  // contacts already removed in that call without their audit rows.
+  it('keeps the audit for contacts removed before a later one throws, and writes a failure summary', async () => {
+    mocks.remove.mockImplementation(async (input: RemoveInput) => {
+      input.onRemoved?.(removal.removed[0]!);
+      throw new Error('contact B transaction failed');
+    });
+    const res = await send('POST', `/sources/${SOURCE}/created-contacts/remove`);
+    expect(res.status).toBe(500);
+    expect(mocks.contactAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.contactAudit.mock.calls[0]![1]).toEqual(expect.objectContaining({
+      orgId: ORG, action: 'contact.delete', contactId: CONTACT_A,
+    }));
+    expect(mocks.routeAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.routeAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_import.created_contacts_removed',
+      resourceId: SOURCE,
+      result: 'failure',
+      details: { partnerId: PARTNER, removed: 1, stoppedBy: 'error' },
+    }));
+  });
+
+  it('writes no summary when the call throws before removing anything', async () => {
+    mocks.remove.mockRejectedValue(new Error('batch selection failed'));
+    const res = await send('POST', `/sources/${SOURCE}/created-contacts/remove`);
+    expect(res.status).toBe(500);
+    expect(mocks.contactAudit).not.toHaveBeenCalled();
+    expect(mocks.routeAudit).not.toHaveBeenCalled();
   });
 
   it('answers 409 TICKET_IMPORT_RUN_ACTIVE while a run is queued or running, and audits nothing', async () => {
@@ -180,7 +222,7 @@ describe('POST /ticket-imports/sources/:id/created-contacts/remove', () => {
   });
 
   it('writes no audit row when nothing was removed but still reports the skips', async () => {
-    mocks.remove.mockResolvedValue({ removed: [], skipped: 1, skippedBy: { portal_login: 0, role: 1, other_link: 0, edited: 0, in_use: 0 }, remaining: 0, stoppedBy: null });
+    removeReturns({ removed: [], skipped: 1, skippedBy: { portal_login: 0, role: 1, other_link: 0, edited: 0, in_use: 0 }, remaining: 0, stoppedBy: null });
     const res = await send('POST', `/sources/${SOURCE}/created-contacts/remove`);
     expect(res.status).toBe(200);
     expect((await res.json()).data).toMatchObject({ removed: 0, skipped: 1 });

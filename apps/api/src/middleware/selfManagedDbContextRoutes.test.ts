@@ -55,6 +55,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['get', '/api/v1/portal/network/overview'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/assets'],
     ['GET', '/api/v1/portal/network/assets/'],
+    ['GET', '/api/v1/portal/network/sites'],
+    ['GET', '/api/v1/portal/network/sites/'],
+    ['GET', '/api/v1/portal/network/sites/health'],
+    ['GET', '/api/v1/portal/network/sites/health/'],
+    ['get', '/api/v1/portal/network/sites/health'], // method is case-insensitive
     // Portal logout commits its durable signed-out record in its own system
     // transaction; no portal request transaction may be held around it.
     ['POST', '/api/v1/portal/auth/logout'],
@@ -344,10 +349,14 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/portal/quotes/def-456/decline', 'accept/decline are DB-only and keep the ambient org tx'],
     ['POST', '/api/v1/portal/quotes//pay', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/network/overview', 'network overview is GET-only'],
-    ['GET', '/api/v1/portal/network', 'only the overview endpoint is self-managed'],
+    ['GET', '/api/v1/portal/network', 'only the overview, assets, sites and sites/health endpoints are self-managed'],
     ['GET', '/api/v1/portal/network/overview/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/portal/network/assets', 'network assets is GET-only'],
     ['GET', '/api/v1/portal/network/assets/extra', 'extra path segment must not match'],
+    ['POST', '/api/v1/portal/network/sites', 'network sites is GET-only'],
+    ['POST', '/api/v1/portal/network/sites/health', 'network site health is GET-only'],
+    ['GET', '/api/v1/portal/network/sites/extra', 'extra path segment must not match'],
+    ['GET', '/api/v1/portal/network/sites/health/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
     ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
@@ -856,6 +865,56 @@ describe('#10190 helper config', () => {
     ['GET', '/api/v1/helper/device-info', 'sibling read keeps the ambient tx'],
     ['GET', '/api/v1/helper/configx', 'prefix must not match'],
   ])('keeps ambient tx: %s %s (%s)', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
+  });
+});
+
+// Reinstall reattach (#8318 wave 2-2): the request and the candidates read run
+// their own system contexts (and Redis work) with no request transaction.
+it('self-manages the reattach request and the candidates read, and nothing near them', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reattach')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reattach/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123/reinstall-candidates')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123/reattach')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reinstall-candidates')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/reattach/extra')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123')).toBe(false);
+});
+
+describe('routes that wait on another host self-manage their DB context', () => {
+  const ID = '3f2c1b9e-8a7d-4e6f-9c5b-1a2b3c4d5e6f';
+  it.each([
+    ['POST', '/api/v1/integrations/monitoring/test'],
+    ['POST', '/api/v1/integrations/monitoring/test/'],
+    ['POST', '/api/v1/google/connection'],
+    ['POST', '/api/v1/unifi/connect'],
+    ['POST', '/api/v1/unifi/test'],
+    ['GET', '/api/v1/unifi/hosts'],
+    ['POST', '/api/v1/pax8/integration/test'],
+    ['POST', `/api/v1/catalog/${ID}/image/from-url`],
+    ['POST', `/api/v1/remote/support-sessions/${ID}/end`],
+    ['POST', '/api/v1/billing/portal'],
+    ['POST', '/api/v1/support'],
+    ['POST', `/api/v1/quotes/${ID}/images`],
+    ['POST', `/api/v1/orgs/organizations/${ID}/customer-domains/${ID}/verification/check`],
+  ])('self-manages %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
+
+  it.each([
+    ['GET', '/api/v1/integrations/monitoring'],
+    ['POST', '/api/v1/integrations/monitoring'],
+    ['GET', '/api/v1/google/connection'],
+    ['DELETE', '/api/v1/google/connection'],
+    ['POST', '/api/v1/unifi/disconnect'],
+    ['POST', `/api/v1/catalog/${ID}/image`],
+    ['GET', `/api/v1/catalog/${ID}/image`],
+    ['GET', `/api/v1/remote/support-sessions/${ID}`],
+    ['POST', '/api/v1/remote/support-sessions'],
+    ['GET', '/api/v1/support/download/windows'],
+    ['GET', `/api/v1/quotes/${ID}/images/${ID}`],
+    ['POST', `/api/v1/orgs/organizations/${ID}/customer-domains/${ID}/verification/dns`],
+  ])('keeps the ambient transaction for %s %s', (method, path) => {
     expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
   });
 });

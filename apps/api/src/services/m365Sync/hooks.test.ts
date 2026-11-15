@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mocks } = vi.hoisted(() => ({
@@ -10,6 +12,8 @@ const { mocks } = vi.hoisted(() => ({
     rollup: vi.fn(),
     links: vi.fn(),
     ambiguous: vi.fn(),
+    capture: vi.fn(),
+    order: [] as string[],
   },
 }));
 
@@ -22,7 +26,12 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => { mocks.outside(); return fn(); },
 }));
 vi.mock('./rollup', () => ({
-  upsertPostureRollup: async (...args: unknown[]) => { mocks.depthAtRollup = mocks.depth; return mocks.rollup(...args); },
+  upsertPostureRollup: async (...args: unknown[]) => {
+    mocks.depthAtRollup = mocks.depth; mocks.order.push('rollup'); return mocks.rollup(...args);
+  },
+}));
+vi.mock('../portalDirectory/entraCapture', () => ({
+  captureEntraDirectoryRun: async (...args: unknown[]) => { mocks.order.push('capture'); return mocks.capture(...args); },
 }));
 vi.mock('./links', () => ({
   reconcileDeviceLinks: async (...args: unknown[]) => { mocks.depthAtLinks = mocks.depth; return mocks.links(...args); },
@@ -46,7 +55,8 @@ function hookCtx(over: Partial<{ domain: string; outcome: string }> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.depth = 0; mocks.depthAtRollup = -1; mocks.depthAtLinks = -1;
+  mocks.depth = 0; mocks.depthAtRollup = -1; mocks.depthAtLinks = -1; mocks.order = [];
+  mocks.capture.mockResolvedValue({ recorded: false, reason: 'no_identities' });
   mocks.rollup.mockResolvedValue(undefined);
   mocks.links.mockResolvedValue({ linkedBySerial: 0, linkedByHostname: 0, ambiguous: 0 });
 });
@@ -99,5 +109,66 @@ describe('afterDomainPersisted (spec §5.6, §5.9)', () => {
     mocks.links.mockRejectedValueOnce(new Error('links boom'));
     await expect(afterDomainPersisted(hookCtx({ domain: 'intune_devices' }))).rejects.toThrow('links boom');
     expect(mocks.rollup).toHaveBeenCalledOnce();
+  });
+});
+
+describe('afterDomainPersisted — Entra directory capture (portal W8 D4)', () => {
+  it('a users run calls the capture LAST, with the run\'s own fence facts', async () => {
+    const ctx = hookCtx({ domain: 'users' });
+    await afterDomainPersisted(ctx);
+    expect(mocks.order).toEqual(['rollup', 'capture']);
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    expect(mocks.capture).toHaveBeenCalledWith({
+      orgId: ORG, tenantId: TENANT, connectionId: 'c', generation: 3, now: ctx.now, persisted: PERSISTED,
+    });
+  });
+
+  it('captures on every terminal users outcome — an incomplete run records `incomplete`', async () => {
+    for (const outcome of ['partial', 'error', 'needs_consent']) {
+      await afterDomainPersisted(hookCtx({ domain: 'users', outcome }));
+    }
+    expect(mocks.capture).toHaveBeenCalledTimes(3);
+  });
+
+  it('a capture throw does not skip the posture rollup and does not throw', async () => {
+    mocks.capture.mockRejectedValueOnce(new Error('capture boom'));
+    await expect(afterDomainPersisted(hookCtx({ domain: 'users' }))).resolves.toBeUndefined();
+    expect(mocks.rollup).toHaveBeenCalledOnce();
+  });
+
+  it('a rollup failure still captures, then the rollup error surfaces', async () => {
+    mocks.rollup.mockRejectedValueOnce(new Error('rollup boom'));
+    await expect(afterDomainPersisted(hookCtx({ domain: 'users' }))).rejects.toThrow('rollup boom');
+    expect(mocks.capture).toHaveBeenCalledOnce();
+    expect(mocks.order).toEqual(['rollup', 'capture']);
+  });
+
+  it('other domains never capture', async () => {
+    for (const domain of ['intune_devices', 'signin_activity', 'secure_score', 'skus', 'ca_policies', 'signin_events']) {
+      await afterDomainPersisted(hookCtx({ domain }));
+    }
+    expect(mocks.capture).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The two facts the Entra capture's generation fence rests on (plan D4, Task 6
+ * step 0). If either stops holding, the capture can read a cache that a newer
+ * run is rewriting: stop and re-plan, never loosen these.
+ */
+describe('m365 sync generation fence facts (portal W8 D4)', () => {
+  const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+
+  it('claim increments run_generation, so a newer run never persists under the old generation', () => {
+    expect(read('./claim.ts')).toMatch(/"run_generation" = t\."run_generation" \+ 1/);
+  });
+
+  it('the single completion writer is guarded on run_generation and stamps last_complete_snapshot_at = now', () => {
+    const src = read('./run.ts');
+    const start = src.indexOf('async function writeCompletion(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n}\n', start));
+    expect(body).toContain('eq(m365SyncState.runGeneration, data.generation)');
+    expect(body).toMatch(/args\.persisted\.complete \? \{ lastCompleteSnapshotAt: now \}/);
   });
 });

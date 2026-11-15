@@ -8,6 +8,7 @@ import { requireMfa, requirePermission } from '../../middleware/auth';
 import { normalizeTemplateHosts } from '../../services/clientAiHosts';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
@@ -55,6 +56,8 @@ type TemplateAuth = {
   scope: 'system' | 'partner' | 'organization';
   partnerId: string | null;
   partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
+  allowedSiteIds?: string[];
+  allowedDeviceIds?: readonly string[];
   user?: { id: string };
 };
 
@@ -130,6 +133,11 @@ clientAiAdminTemplateRoutes.post(
   zValidator('json', templateBodySchema),
   async (c) => {
     const auth = c.get('auth') as TemplateAuth & Parameters<typeof resolveScopedOrgId>[0];
+    // Templates apply to a whole organization (or partner); a site- or
+    // device-restricted caller may use them but not change them.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const body = c.req.valid('json');
     const targetOrgId = body.orgId ?? null;
 
@@ -196,6 +204,9 @@ clientAiAdminTemplateRoutes.put(
   zValidator('json', templateUpdateSchema),
   async (c) => {
     const auth = c.get('auth') as TemplateAuth;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const id = c.req.param('id')!;
     const body = c.req.valid('json');
 
@@ -243,6 +254,9 @@ clientAiAdminTemplateRoutes.put(
 // ── DELETE /templates/:id ─────────────────────────────────────────────────────
 clientAiAdminTemplateRoutes.delete('/templates/:id', requireTemplatesWrite, requireTemplatesMfa, async (c) => {
   const auth = c.get('auth') as TemplateAuth;
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
   const id = c.req.param('id')!;
 
   // Read before deleting so the partner-wide capability gate can see the row's

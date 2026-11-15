@@ -12,6 +12,7 @@ import { deviceReattachIntents, devices, manifestSigningKeys, partnerUsers } fro
 import { sha256Hex } from '../../services/agentCredentialHashes';
 import { ensureActiveSigningKey, invalidateManifestTrustCaches } from '../../services/manifestSigning';
 import { declareParkedDeviceAdmission } from '../../services/unassignedPool/admission';
+import { reattachTargetVersion } from '../../services/deviceReattach/targetVersion';
 import { createOrganization, createPartner, createRole, createSite, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
 import { seedHoldingOrg } from './unassignedPoolFixtures';
@@ -63,7 +64,7 @@ async function partnerUser(
     orgAccess: access.orgAccess,
     orgIds: access.orgIds ?? null,
   });
-  return user;
+  return Object.assign(user, { roleId: role.id as string });
 }
 
 export async function seedReattachTenant() {
@@ -91,6 +92,7 @@ export interface SeededAgentDevice {
   agentId: string;
   orgId: string;
   siteId: string;
+  hostname: string;
   agentToken: string;
   watchdogToken: string;
   helperToken: string;
@@ -104,6 +106,7 @@ export interface SeedDeviceOptions {
   watchdogLastSeen?: Date | null;
   isEphemeral?: boolean;
   hostname?: string;
+  osType?: 'windows' | 'macos' | 'linux';
   /** Written alone, the way a writer from before wave 2-1 (#2764) does. */
   possibleReplacementOfDeviceId?: string;
 }
@@ -123,7 +126,7 @@ export async function seedAgentDevice(
     siteId: place.siteId,
     agentId,
     hostname: options.hostname ?? `reattach-${suffix}`,
-    osType: 'windows' as const,
+    osType: options.osType ?? ('windows' as const),
     osVersion: '11',
     architecture: 'amd64',
     agentVersion: '0.99.0',
@@ -148,7 +151,7 @@ export async function seedAgentDevice(
       return inserted!;
     })
     : (await getTestDb().insert(devices).values(values).returning({ id: devices.id }))[0]!;
-  return { id: row.id, agentId, orgId: place.orgId, siteId: place.siteId, agentToken, watchdogToken, helperToken };
+  return { id: row.id, agentId, orgId: place.orgId, siteId: place.siteId, hostname: values.hostname, agentToken, watchdogToken, helperToken };
 }
 
 /** A silent target: its newest credential use is two hours old. */
@@ -170,6 +173,17 @@ export async function readIntent(intentId: string) {
 export async function readDevice(deviceId: string) {
   const [row] = await getTestDb().select().from(devices).where(eq(devices.id, deviceId));
   return row;
+}
+
+/**
+ * The opaque version of a device's current install, as the candidates read
+ * hands it out (wave 2-2). A device that does not exist gets a well-formed
+ * version that matches nothing.
+ */
+export async function targetVersionOf(deviceId: string): Promise<string> {
+  const row = await readDevice(deviceId);
+  if (!row) return 'x'.repeat(43);
+  return reattachTargetVersion({ targetDeviceId: row.id, agentId: row.agentId, installIncarnation: row.installIncarnation });
 }
 
 /**

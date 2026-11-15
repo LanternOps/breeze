@@ -51,7 +51,7 @@ import {
   isCompatibleParent,
   PolicyHasChildrenError,
 } from './configPolicyOwnership';
-import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { captureException } from './sentry';
 import { z } from 'zod';
 import {
@@ -321,7 +321,7 @@ const INVALID_PARENT_CHECK_CONSTRAINTS: ReadonlySet<string> = new Set([
 function isInvalidParentDbError(err: unknown): boolean {
   const code = pgErrorCode(err);
   const constraint = pgErrorConstraint(err) ?? '';
-  if (code === '23503') return constraint === 'configuration_policies_parent_policy_id_fkey';
+  if (isPgForeignKeyViolationCode(code)) return constraint === 'configuration_policies_parent_policy_id_fkey';
   if (code === '23514') return INVALID_PARENT_CHECK_CONSTRAINTS.has(constraint);
   return false;
 }
@@ -878,7 +878,7 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
     // real guard; report the same 409 (without the names, which we no longer
     // have a consistent read of).
     if (
-      pgErrorCode(err) === '23503'
+      isPgForeignKeyViolationCode(pgErrorCode(err))
       && pgErrorConstraint(err) === 'configuration_policies_parent_policy_id_fkey'
     ) {
       throw new PolicyHasChildrenError([]);

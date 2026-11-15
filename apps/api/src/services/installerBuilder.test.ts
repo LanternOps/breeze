@@ -942,6 +942,30 @@ describe('fetchRegularMsi: local source verifies against the signed manifest', (
     await expect(fetchRegularMsi()).rejects.toThrow(/Signed release manifest pair is not staged/);
   });
 
+  // #11870: the binaries image does not carry the pair, so the operator has to
+  // stage it. The error is what they see in the API log; it must say which
+  // file is missing and where the staging steps are documented.
+  it('names the missing manifest path and the docs page when no pair is staged', async () => {
+    stage({ servedBytes: Buffer.from('unverifiable-msi') });
+
+    const err = await fetchRegularMsi().then(() => null, (e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain(join(root, 'release-artifact-manifest.json'));
+    expect(err!.message).toContain('https://docs.breezermm.com/deploy/binaries/#release-manifest-pair');
+  });
+
+  it('names the missing signature path and the docs page when only the manifest is staged', async () => {
+    const asset = Buffer.from('hosted-signed-msi');
+    stage({ servedBytes: asset, signed: signedReleaseManifest('breeze-agent.msi', asset, msiEntry) });
+    rmSync(join(root, 'release-artifact-manifest.json.ed25519'));
+
+    const err = await fetchRegularMsi().then(() => null, (e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/Signed release manifest pair is incomplete/);
+    expect(err!.message).toContain(join(root, 'release-artifact-manifest.json.ed25519'));
+    expect(err!.message).toContain('https://docs.breezermm.com/deploy/binaries/#release-manifest-pair');
+  });
+
   it('refuses to serve when no manifest public key is configured, outside production too', async () => {
     const asset = Buffer.from('hosted-signed-msi');
     stage({ servedBytes: asset, signed: signedReleaseManifest('breeze-agent.msi', asset, msiEntry) });

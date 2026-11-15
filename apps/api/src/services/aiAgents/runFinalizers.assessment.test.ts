@@ -122,6 +122,7 @@ function assessmentCtx(overrides: Partial<AssessmentRunContext> = {}): Assessmen
     threadSummary: '', openConcerns: [], changedSince: null,
     digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [], anomalies: [] },
     watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false, noEarlierAssessment: false,
+    anomaliesReadFailed: false,
     ...overrides,
   };
 }
@@ -410,6 +411,17 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { evidence: { ticketNumber: 'T-1', approvalIntentId: 'intent-1' } });
     });
 
+    it('an argument the tool does not define → propose_input_unknown_args at filing, no intent (#11861)', async () => {
+      // Release would refuse it after a human approved the card.
+      const result = makeResult(calls({
+        proposedActions: [{ toolName: 'run_script', input: { scriptId: 's-1', inventedKey: true }, reason: 'clear the spooler', concernId: C1 }],
+      }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(evaluateStandingInstructions).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_input_unknown_args']);
+    });
+
     it('Tier 1 → refused with propose_tier1_refused, no intent', async () => {
       const result = makeResult(calls({ proposedActions: [{ toolName: 'query_devices', input: {}, reason: 'look around' }] }));
       await finalizeAssessment(makeCtx(), result);
@@ -528,6 +540,29 @@ describe('finalizeAssessment (Wisp W05b)', () => {
     expect(await finalizeAssessment(makeCtx(), result)).toBe('assessment_partially_applied');
     expect(notifyUser).toHaveBeenCalledTimes(1);
     expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  // #11513: a failed anomaly read finished the run without seeing the
+  // anomalies, so the run must not move the no-changes gate's anchor.
+  describe('a failed metric anomaly read (#11513)', () => {
+    it('a clean apply returns assessment_anomalies_unread and still applies the model calls', async () => {
+      const result = makeResult(calls({ concernsRaised: [RAISE] }));
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: true })), result))
+        .toBe('assessment_anomalies_unread');
+      expect(concerns.upsertConcern).toHaveBeenCalledTimes(1);
+      expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+    });
+
+    it('dropped work still wins: assessment_partially_applied (excluded from the watermark too)', async () => {
+      concerns.upsertConcern.mockRejectedValue(new Error('db down'));
+      const result = makeResult(calls({ concernsRaised: [RAISE] }));
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: true })), result))
+        .toBe('assessment_partially_applied');
+    });
+
+    it('anomalies that were read (or not permitted) leave a clean apply null', async () => {
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: false })), makeResult(calls()))).toBeNull();
+    });
   });
 
   describe('the grant must still be usable for ANY write (model calls, readiness, touch)', () => {

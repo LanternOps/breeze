@@ -52,6 +52,31 @@ describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
     });
   });
 
+  // The same answer covers a wrong password and an account that is locked out
+  // after failed sign-ins (the API does not tell them apart, like sign-in).
+  it('says the password was not accepted and to wait after repeated failures', async () => {
+    authMocks.apiVerifyEmail
+      .mockResolvedValueOnce({ success: false, status: 'password_required' })
+      .mockResolvedValueOnce({ success: false, status: 'password_required' });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.change(await screen.findByLabelText(/Signup password/), { target: { value: 'not-it' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm my email' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'That password was not accepted. Check it and try again. After several failed attempts, wait a few minutes before trying again.',
+    );
+  });
+
+  it('asks for the signup password before completing a pending account', async () => {
+    authMocks.apiVerifyEmail.mockResolvedValueOnce({ success: false, status: 'password_required' });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    fireEvent.change(await screen.findByLabelText(/Signup password/), { target: { value: 'signup-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm my email' }));
+    await waitFor(() => expect(authMocks.apiVerifyEmail).toHaveBeenLastCalledWith('verify-token', 'signup-password'));
+  });
+
   it('does not double-consume the token on a double click', async () => {
     render(<VerifyEmailPage />);
     const button = await screen.findByRole('button', { name: 'Confirm my email' });

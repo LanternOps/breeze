@@ -20,12 +20,16 @@ import (
 func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
 	vaultMgr := vaultState.Get()
 	if vaultMgr == nil {
-		return fail("vault is not configured on this device")
+		return fail(vaultState.unavailableMessage())
 	}
 	var p struct {
-		VaultID    string `json:"vaultId"`
-		VaultPath  string `json:"vaultPath"`
-		SnapshotID string `json:"snapshotId"`
+		VaultID        string `json:"vaultId"`
+		VaultPath      string `json:"vaultPath"`
+		SnapshotID     string `json:"snapshotId"`
+		Provider       string `json:"provider"`
+		ProviderConfig *struct {
+			Path string `json:"path"`
+		} `json:"providerConfig"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid vault sync payload: " + err.Error())
@@ -42,7 +46,31 @@ func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupi
 			return fail(fmt.Sprintf("this device is configured for vault path %q, not %q; save the vault again to send its configuration to the device", configured, p.VaultPath))
 		}
 	}
-	syncResult, err := vaultMgr.SyncAfterBackup(p.SnapshotID)
+	// #11858: the server names the destination the snapshot was written to
+	// (provider + providerConfig, the same fields a restore carries). The
+	// vault's startup primary is only the helper's own store, which on a
+	// policy-managed device is not where its backups live. A payload with no
+	// destination (a snapshot written before destinations were recorded)
+	// still reads that store; a destination that cannot be built is refused
+	// rather than replaced by it. A provider named without its destination
+	// (restoreProviderFromPayload treats that as "none") and a local
+	// destination without a path are refused too.
+	if p.Provider == "local" && (p.ProviderConfig == nil || p.ProviderConfig.Path == "") {
+		return fail(fmt.Sprintf("vault sync failed: the command names backup provider %q but no usable destination", p.Provider))
+	}
+	source, err := restoreProviderFromPayload(payload)
+	if err != nil {
+		return fail("vault sync failed: " + err.Error())
+	}
+	if p.Provider != "" && source == nil {
+		return fail(fmt.Sprintf("vault sync failed: the command names backup provider %q but no usable destination", p.Provider))
+	}
+	var syncResult *backup.VaultSyncResult
+	if source != nil {
+		syncResult, err = vaultMgr.SyncAfterBackupFrom(source, p.SnapshotID)
+	} else {
+		syncResult, err = vaultMgr.SyncAfterBackup(p.SnapshotID)
+	}
 	if err != nil {
 		return fail("vault sync failed: " + err.Error())
 	}
@@ -70,7 +98,7 @@ func sameVaultPath(a, b string) bool {
 func execVaultStatus(vaultState *vaultManagerRef) backupipc.BackupCommandResult {
 	vaultMgr := vaultState.Get()
 	if vaultMgr == nil {
-		return fail("vault is not configured on this device")
+		return fail(vaultState.unavailableMessage())
 	}
 	status, err := vaultMgr.GetStatus()
 	return marshalResult(status, err)
@@ -114,6 +142,7 @@ func execVaultConfigure(payload json.RawMessage, mgr *backup.BackupManager, vaul
 
 	newVaultMgr, err := buildVaultManager(cfg, mgr)
 	if err != nil {
+		vaultState.SetStartupError(err)
 		return fail("failed to initialize vault manager: " + err.Error())
 	}
 	vaultState.Set(newVaultMgr)
@@ -183,6 +212,10 @@ func autoSyncToVault(backupResult string, vaultState *vaultManagerRef, conn *ipc
 	}
 	vaultMgr := vaultState.Get()
 	if vaultMgr == nil {
+		if err := vaultState.StartupError(); err != nil {
+			slog.Warn("vault auto-sync skipped: vault could not start", "snapshotId", result.Snapshot.ID, "error", err.Error())
+			emitVaultAutoSyncResult(conn, result.Snapshot.ID, nil, fmt.Errorf("vault could not start: %w", err))
+		}
 		return
 	}
 	slog.Info("vault auto-sync starting", "snapshotId", result.Snapshot.ID)

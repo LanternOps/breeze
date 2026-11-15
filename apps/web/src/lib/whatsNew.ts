@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.129.0',
+    date: '2026-11-14',
+    title: 'Ticket triage board, backup destination alerts and security hardening',
+    highlights: [
+      'Work tickets on a triage board and open one in a focus view without leaving the workspace.',
+      'Get notified when a backup destination keeps failing.',
+      'See background work at a glance on the new System Health tab.',
+      'Set a tool profile and context window for each AI model.',
+      'Security hardening across sign-in, backup and remote access. Local backup destinations must now be private to the agent, and network shares are no longer supported as local destinations: read the upgrade notes before updating agents.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.128.0',
     date: '2026-11-10',
     title: 'Customer portal sign-up options, Wisp check-ins and standing instructions',

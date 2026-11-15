@@ -290,6 +290,11 @@ import {
   stopDbPoolHealthMonitor,
 } from './db/dbPoolHealthMonitor';
 import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
+import {
+  startReadOnlySessionRecovery,
+  stopReadOnlySessionRecovery,
+} from './db/readOnlySessionRecovery';
+import { stopDeferredWrites } from './db/deferUntilWritable';
 import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuardWithExemptions } from './middleware/partnerGuard';
@@ -360,6 +365,8 @@ import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
 import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { observeReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
+import { installReadOnlyLogThrottle } from './db/readOnlyLogThrottle';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
@@ -370,7 +377,13 @@ import {
   attributeExtensionError,
   extensionRootsSnapshot,
 } from './extensions/faultAttribution';
-import { syncBinaries } from './services/binarySync';
+import {
+  isBinarySyncDeferred,
+  scheduleGithubSyncRetry,
+  stopDeferredBinarySyncRetry,
+  stopGithubSyncRetry,
+  syncBinaries
+} from './services/binarySync';
 import { syncBuiltinYaraPack } from './services/yaraBuiltinPack';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
@@ -457,6 +470,8 @@ let warnedWorkersNeverStarted = false;
 
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
+  checkDbReadOnly: () => checkDatabaseReadOnly(),
+  binarySyncPending: () => isBinarySyncDeferred(),
   checkRedis: () => checkRedisConnectivity(),
   workerRegistry: workerReadinessRegistry,
   workersInitialized: () => {
@@ -1433,6 +1448,20 @@ async function checkDatabaseConnectivity(): Promise<boolean> {
   }
 }
 
+/**
+ * #11731: reachable but read-only (a provider's `default_transaction_read_only
+ * = on`, or a standby). `select 1` still succeeds there, so readiness needs
+ * this to report `db-read-only` instead of claiming a healthy database.
+ * Throws on failure; the readiness evaluator reports it and treats the
+ * answer as unknown. A read-only answer also sets the pool flag that gates
+ * the read-only log throttle (#11741).
+ */
+async function checkDatabaseReadOnly(): Promise<boolean> {
+  return runWithSystemDbAccess(async () =>
+    observeReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
+  );
+}
+
 async function checkRedisConnectivity(): Promise<boolean> {
   try {
     const redis = getRedis();
@@ -1489,7 +1518,15 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // shutting down.
   stopDbPoolHealthMonitor();
   stopWedgedBackendMonitor();
+  stopReadOnlySessionRecovery();
+  // #11741: deferred startup writes (CIS catalog seed, patch-settings repair)
+  // must not retry against a pool that is draining.
+  stopDeferredWrites();
   stopRedisMemoryMonitor();
+  // #11731: a deferred binary registration must not start against a pool
+  // that is draining. Nor must a network retry of the boot sync (#11641).
+  stopDeferredBinarySyncRetry();
+  stopGithubSyncRetry();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1700,6 +1737,11 @@ async function bootstrap(): Promise<void> {
     process.exit(78); // EX_CONFIG
   }
 
+  // #11741: one line per source per minute for read-only database errors
+  // (SQLSTATE 25006) instead of a stack per failed write. First, so every
+  // later path that can log one goes through it.
+  installReadOnlyLogThrottle();
+
   console.log(`Breeze API starting on port ${port}...`);
   // #7024: BREEZE_VERSION edited without new image digests — say so at boot.
   warnOnVersionMismatch();
@@ -1816,6 +1858,11 @@ async function bootstrap(): Promise<void> {
     // record the running version after. Report-only; never blocks boot.
     upgradeChecks: true,
   });
+
+  // #11741: pooled sessions opened while the database was read-only keep that
+  // default after it becomes writable; recycle them instead of waiting out
+  // max_lifetime. One pooled `select` per interval while all is well.
+  startReadOnlySessionRecovery();
   // Migrations may have changed role_permissions (W02 seeded agreements:* and
   // back-filled it onto every role holding the equivalent contracts grant), and
   // the permission resolver caches UserPermissions for CACHE_TTL = 5 minutes
@@ -1984,6 +2031,10 @@ async function bootstrap(): Promise<void> {
       throw err;
     }
     console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
+    // #11641: a network failure is retried in the background with backoff
+    // (logged per attempt, explicit error when the retries run out). Not
+    // inline: the server only starts listening after this returns.
+    scheduleGithubSyncRetry(err);
   }
 
   // #6263 W03b: upsert the built-in YARA pack from this release's signed

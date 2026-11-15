@@ -449,6 +449,28 @@ describe('created contacts (W4b): requesters of imported tickets become contacts
     expect(await contactsWith(fx.orgA.id, 'b@customer.example')).toHaveLength(1);
   }, CASE_TIMEOUT);
 
+  // #11756 review: each contact commits on its own, so a failure on a later one
+  // must not lose the report (and the route's audit row) of one already removed.
+  runDb('reports each removal as it commits, before a later contact throws', async () => {
+    const fx = await seedImport();
+    const { contacts: c } = await importRequesters(fx, ['p', 'q']);
+    const reported: string[] = [];
+    let calls = 0;
+    await expect(remove(fx, {
+      onRemoved: (contact) => reported.push(contact.contactId),
+      beforeContact: async () => {
+        calls += 1;
+        if (calls === 2) throw new Error('second contact fails');
+      },
+    })).rejects.toThrow('second contact fails');
+    // The first was removed, committed and reported; the second is untouched.
+    expect(reported).toHaveLength(1);
+    const [first] = [...c.values()].map((x) => x.id).sort();
+    expect(reported).toEqual([first]);
+    const left = (await contactsWith(fx.orgA.id, 'p@customer.example')).length + (await contactsWith(fx.orgA.id, 'q@customer.example')).length;
+    expect(left).toBe(1);
+  }, CASE_TIMEOUT);
+
   runDb('a run queued meanwhile stops the call; one active at the start refuses it (409)', async () => {
     const fx = await seedImport();
     const { window, contacts: c } = await importRequesters(fx, ['x', 'y']);

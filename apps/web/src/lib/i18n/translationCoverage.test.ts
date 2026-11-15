@@ -188,7 +188,7 @@ const namespaceDuplicateBaselines = {
     // +1 Sites page (#9794): "Sites" (sites.page.title / siteDetailPage.breadcrumbs.sites) is the pt-BR loanword.
     // +1 Wisp memory: wispMemory.columns.status "Status" is spelled identically in pt-BR (main landed it without bumping this cap).
     // +4 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
-    'settings.json': 155, // +1 contactsCard.portal.column "Portal" (product name, identical in pt-BR); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); columns.status x2 "Status"
+    'settings.json': 158, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +1 contactsCard.portal.column "Portal" (product name, identical in pt-BR); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); columns.status x2 "Status"; +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -378,7 +378,7 @@ const namespaceDuplicateBaselines = {
     // +1: emailTemplates.variables.total — "Total" is spelled identically in es-419.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 150, // +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
+    'settings.json': 153, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -593,7 +593,7 @@ const namespaceDuplicateBaselines = {
     // +3 Wisp memory: wispMemory.tabs.org "Client", columns.type "Type", columns.actions "Actions" are identical in French.
     // +2 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
     // +2 Sites page (#9794): sites.page.title and siteDetailPage.breadcrumbs.sites "Sites" are the identical French word.
-    'settings.json': 203, // +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
+    'settings.json': 207, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation); +1 #11398 tools.profile.standard "Standard" (cognate profile name)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -806,7 +806,7 @@ const namespaceDuplicateBaselines = {
     // +3 Wisp memory: wispMemory.tabs.org "Client", columns.type "Type", columns.actions "Actions" are identical in French.
     // +2 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
     // +2 Sites page (#9794): sites.page.title and siteDetailPage.breadcrumbs.sites "Sites" are the identical French word.
-    'settings.json': 208, // +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
+    'settings.json': 212, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation); +1 #11398 tools.profile.standard "Standard" (cognate profile name)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1018,7 +1018,7 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) de-DE: aiModels.models.details "Details" and offering.speed.standard "Standard" are spelled identically (+2).
     // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical German term.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 221, // +ticketRouting loanwords (Portal/API/Normal/Status), +1 wispMemory.columns.status; +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); columns.status x2 "Status"
+    'settings.json': 225, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +ticketRouting loanwords (Portal/API/Normal/Status), +1 wispMemory.columns.status; +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); columns.status x2 "Status"; +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation); +1 #11398 tools.profile.standard "Standard" (cognate profile name)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1186,7 +1186,7 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) it-IT: aiModels.offering.prices.input/output ("Input"/"Output") and speed.standard "Standard" are spelled identically (+3).
     // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical Italian term.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 191, // +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
+    'settings.json': 195, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation); +1 #11398 tools.profile.standard "Standard" (cognate profile name)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1326,7 +1326,7 @@ const namespaceDuplicateBaselines = {
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // #7609 aiModels.quality.groupBy.model: "Model" is the identical word in Turkish.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 89, // +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain)
+    'settings.json': 92, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // #8313 W6 ticket import wizard: fully translated.

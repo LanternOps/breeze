@@ -119,7 +119,9 @@ export default function WispThreadHeader({
       // As the side panel's "New conversation": the old session's summary
       // lands on the thread, then the new one runs on the refreshed grant.
       if (chatSessionId) await closeSession();
-      await enterWispMode(fresh);
+      // A new conversation was asked for: never resume the thread's last
+      // session (#11672), which a failed close would leave live on old terms.
+      await enterWispMode({ ...fresh, lastSessionId: null });
     } catch (err) {
       console.error('[wisp] starting a new conversation after a refresh failed', err);
       showToast({ type: 'error', message: t('wisp.home.threadOpenFailed') });

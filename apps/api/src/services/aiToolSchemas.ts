@@ -43,10 +43,11 @@ import {
   scheduleCheckInSchema,
   snoozeConcernToolSchema,
   WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES,
+  WISP_CHECK_IN_LABEL_MAX,
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   wispCheckInTriggerSchema,
 } from '@breeze/shared';
-import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
+import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, assignPolicySchema, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
@@ -59,10 +60,12 @@ import {
   SYSTEM_CLEANUP_ACTION_IDS,
 } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { findUnknownInputKeys, formatUnknownKeyFinding, unknownKeysCovered } from './aiToolUnknownKeys';
 import { SPECIALIST_KINDS, type SpecialistKind } from './wisp/specialistPolicy';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
+import { localDestinationTargetError } from './localStoreTargets';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
 import { messagingToolSchemas } from './aiToolSchemasMessaging';
@@ -336,7 +339,7 @@ export const setDeviceContextShape = {
  * source of truth: the MCP `tool()` declarations, `toolInputSchemas` and the
  * registry `definition.input_schema` are all derived from them. There is no
  * `sourceSessionId` key on purpose — the handler stamps it from
- * `auth.wispGrant.sessionId` (w00 A23); a supplied one is stripped.
+ * `auth.wispGrant.sessionId` (w00 A23); a supplied one is refused as an unknown argument.
  */
 export const recallShape = {
   ownerKinds: z.array(z.enum(MEMORY_OWNER_KINDS)).min(1).max(3).optional()
@@ -471,7 +474,8 @@ const scit = wispCheckInTriggerSchema.shape;
 export const scheduleCheckInShape = {
   delayMinutes: sci.delayMinutes.describe(`Minutes from now until it is due (1 to ${WISP_CHECK_IN_MAX_DELAY_MINUTES}). Give exactly one of delayMinutes, at or trigger`),
   at: sci.at.describe('When it is due: ISO 8601 datetime with offset, 1 minute to 7 days ahead. Give exactly one of delayMinutes, at or trigger'),
-  instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars)'),
+  instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars). Only you see it'),
+  label: sci.label.describe(`What the user sees on the post and the chip: a short noun phrase, not an instruction (e.g. "FS01 disk space re-check"; max ${WISP_CHECK_IN_LABEL_MAX} chars)`),
   subject: sci.subject.describe('Optional: the Breeze object it is about (kind + UUID); its org is read from the object'),
   trigger: z.object({
     // The enum names itself; no description.
@@ -1044,7 +1048,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // `args.orgId !== intent.orgId`; the executor re-asserts the same equality
   // under the graduation lock before writing. See aiToolsAiAgentGovernance.ts.
   // Keys mirror the tool's advertised input_schema exactly; a key Zod does not
-  // know is STRIPPED silently rather than rejected (#2814).
+  // know is refused as an unknown argument (#11861; was stripped, #2814).
   manage_ai_agents: z.object({
     action: z.enum(['authorize_supervised_key']),
     kind: z.enum(AI_AGENT_ACTING_KINDS),
@@ -1128,6 +1132,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     search: z.string().optional(),
     itemType: z.enum(['hardware', 'software', 'service']).optional(),
     isBundle: z.boolean().optional(),
+    // Advertised by the registry and read by the handler (which trims and
+    // upper-cases it): declared, or it is refused as unknown (#11861).
+    currencyCode: z.string().max(16).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
@@ -2094,7 +2101,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   // Event log tools
   search_logs: z.object({
-    query: z.string().max(500).optional(),
+    query: z.string().max(500).nullish(),
     timeRange: z.object({
       start: z.string().datetime({ offset: true }),
       end: z.string().datetime({ offset: true }),
@@ -2106,8 +2113,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     siteIds: z.array(uuid).max(500).optional(),
     limit: z.number().int().min(1).max(500).optional(),
     offset: z.number().int().min(0).optional(),
-    cursor: z.string().max(1024).optional(),
-    countMode: z.enum(['exact', 'estimated', 'none']).optional(),
+    cursor: z.string().max(1024).nullish(),
+    countMode: z.enum(['exact', 'estimated', 'none', 'normal']).nullish(),
     sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
     sortOrder: z.enum(['asc', 'desc']).optional(),
     includeFullMessage: z.boolean().optional(),
@@ -2274,6 +2281,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
     targetId: uuid,
     priority: z.number().int().min(0).max(1000).optional(),
+    // Advertised by the registry and read by the handler: declared, or they
+    // are refused as unknown (#11861). Same validators as the REST route.
+    roleFilter: assignPolicySchema.shape.roleFilter,
+    osFilter: assignPolicySchema.shape.osFilter,
   }),
 
   remove_configuration_policy_assignment: z.object({
@@ -2451,6 +2462,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_monitors: z.object({
     action: z.enum(['get', 'create', 'update', 'delete']),
     monitorId: uuid.optional(),
+    // #11861: a retired create/update argument the registry still advertises
+    // (like name/target below); accepted so an older prompt gets the
+    // retirement guidance instead of an unknown-argument refusal.
+    assetId: uuid.optional(),
     name: z.string().max(255).optional(),
     monitorType: z.enum(['icmp_ping', 'tcp_port', 'http_check', 'dns_check']).optional(),
     target: z.string().max(500).optional(),
@@ -2639,6 +2654,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     isActive: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
     orgId: uuid.optional(),
+  }).superRefine((data, ctx) => {
+    // Network share local destinations are not supported; the handler
+    // repeats this against the merged settings on update.
+    // providerConfig is optional here (an update may change only other
+    // fields); the handler checks the merged settings.
+    const targetError = data.providerConfig === undefined
+      ? null
+      : localDestinationTargetError(data.provider, data.providerConfig);
+    if (targetError) ctx.addIssue({ code: 'custom', message: targetError, path: ['providerConfig', 'path'] });
   }),
 
   manage_scheduled_tasks: z.object({
@@ -2825,20 +2849,34 @@ export function validateToolInput(
     return { success: false, error: `No input schema registered for tool "${toolName}"` };
   }
 
+  // #11861: a plain z.object STRIPS a key it does not define, so an invented
+  // argument used to pass here and be ignored by the handler. Refuse it, naming
+  // the key and the accepted ones (aiToolUnknownKeys.ts says which objects are
+  // checked: plain and strict objects and discriminated unions; records,
+  // passthrough objects and plain unions stay open by design).
+  const unknown = findUnknownInputKeys(schema, input);
   const result = schema.safeParse(input);
-  if (result.success) {
+  if (result.success && unknown.length === 0) {
     return { success: true };
   }
+
+  // A strict schema reports the same keys as `unrecognized_keys`; the finding
+  // above already names them (with the accepted list), so drop that duplicate —
+  // only when the finding at the same path covers every key it names.
+  const zodIssues = result.success
+    ? []
+    : result.error.issues.filter((i) => !(i.code === 'unrecognized_keys' && unknownKeysCovered(unknown, i.path, i.keys)));
 
   // Object-level refinements (e.g. "install requires patchIds and deviceIds")
   // carry an empty `path`, so prefixing every message with `${path}: ` yields a
   // dangling `: message` and, once joined onto the banner, a doubled colon
   // ("Invalid input: : ..."). Only prefix the path when there is one.
-  const issues = result.error.issues
-    .map(i => {
+  const issues = [
+    ...unknown.map(formatUnknownKeyFinding),
+    ...zodIssues.map(i => {
       const path = i.path.join('.');
       return path ? `${path}: ${i.message}` : i.message;
-    })
-    .join('; ');
+    }),
+  ].join('; ');
   return { success: false, error: `Invalid input: ${issues}` };
 }

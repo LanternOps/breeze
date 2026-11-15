@@ -10,7 +10,10 @@ import (
 )
 
 // resolveForContainment resolves cleanPath through any symlinks, returning
-// false only when nothing along the path can be resolved at all.
+// false only when nothing along the path can be resolved at all. The
+// resolved part is given the spelling the filesystem stores
+// (canonicalExistingPath), so a case-folded or otherwise equivalent spelling
+// of a protected folder is compared as that folder.
 //
 // filepath.EvalSymlinks requires EVERY component including the leaf to exist,
 // which is never true for a write destination — so a naive
@@ -48,6 +51,7 @@ func resolveForContainment(cleanPath string) (string, bool) {
 			if err != nil {
 				return "", false
 			}
+			resolved = canonicalExistingPath(resolved)
 			if remainder != "" {
 				resolved = filepath.Join(resolved, remainder)
 			}

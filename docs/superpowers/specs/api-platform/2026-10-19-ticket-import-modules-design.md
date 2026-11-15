@@ -1093,6 +1093,15 @@ creates a user: owners (decision 24, declined) and comment authors stay display-
     skip condition again, and only then `deleteContact`. A contact that became ineligible is
     kept and counted under its reason. One aggregate query counts `skippedBy` and `remaining`.
     No lock is held across the batch.
+  - **Removal's audit holds on a failure partway.** Each contact's `contact.delete` row is written
+    as soon as its own transaction commits, not after the call, and the partner-level summary row
+    is written however the call ends (`result: failure`, `stoppedBy: 'error'` and the count removed
+    so far when it throws). A call that throws before removing anything writes no row.
+  - **A removed contact can come back.** Removal deletes the contact and, by cascade, its import
+    link. A resumed ticket keeps its display-only requester, but a later pass that imports a *new*
+    ticket from the same customer, with the option still on, creates the contact again. To keep
+    the set removed, turn the option off before the next pass (the wizard says so next to the
+    removal).
   - **Every FK to `contacts`, decided** (a contact with any of these is kept, `in_use` unless
     named otherwise):
     - `contact_external_links`: this source's link is the marker and cascades; another
