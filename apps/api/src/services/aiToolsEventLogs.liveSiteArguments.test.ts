@@ -56,6 +56,14 @@ const auth = {
 describe('AI event-log tools preserve the live site predicate after device resolution', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('maps the legacy normal count mode to the service default without changing site scope', async () => {
+    await tools().get('search_logs')!.handler({ query: null, cursor: null, countMode: 'normal' }, auth);
+    expect(mocks.searchFleetLogs).toHaveBeenCalledWith(auth, expect.objectContaining({
+      query: undefined, cursor: undefined, countMode: undefined,
+      allowedDeviceIds: ['device-before-move'], allowedSiteIds: ['site-visible'],
+    }));
+  });
+
   it('passes both the stale device snapshot and current site ceiling to every data service', async () => {
     const registry = tools();
     await registry.get('search_logs')!.handler({}, auth);

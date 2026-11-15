@@ -107,7 +107,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
       input_schema: {
         type: 'object' as const,
         properties: {
-          query: { type: 'string', description: 'Full-text query over source, event_id, and message' },
+          query: { type: ['string', 'null'], description: 'Full-text query over source, event_id, and message. Omit or use null for no text filter.' },
           timeRange: {
             type: 'object',
             properties: {
@@ -131,8 +131,8 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           siteIds: { type: 'array', items: { type: 'string' }, description: 'Filter by specific site IDs' },
           limit: { type: 'number', description: `Maximum rows to return (default ${SEARCH_LOGS_DEFAULT_LIMIT}, max ${SEARCH_LOGS_MAX_LIMIT})` },
           offset: { type: 'number', description: 'Pagination offset (default 0)' },
-          cursor: { type: 'string', description: 'Keyset pagination cursor from a previous search_logs response' },
-          countMode: { type: 'string', enum: ['exact', 'estimated', 'none'], description: 'Total-count mode (exact is slower on large ranges)' },
+          cursor: { type: ['string', 'null'], description: 'Keyset pagination cursor from a previous search_logs response' },
+          countMode: { type: ['string', 'null'], enum: ['exact', 'estimated', 'none', 'normal', null], description: 'Omit, use null, or use normal for the default exact count.' },
           sortBy: { type: 'string', enum: ['timestamp', 'level', 'device'] },
           sortOrder: { type: 'string', enum: ['asc', 'desc'] },
           includeFullMessage: { type: 'boolean', description: `Return whole messages (default false: messages over ${LOG_MESSAGE_PREVIEW_CHARS} chars are cut and messageChars gives the full length)` },
@@ -182,8 +182,8 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           limit: Math.min(Number(input.limit) || SEARCH_LOGS_DEFAULT_LIMIT, SEARCH_LOGS_MAX_LIMIT),
           offset: Math.max(0, Number(input.offset) || 0),
           cursor: typeof input.cursor === 'string' ? input.cursor : undefined,
-          countMode: typeof input.countMode === 'string'
-            ? input.countMode as 'exact' | 'estimated' | 'none'
+          countMode: input.countMode === 'exact' || input.countMode === 'estimated' || input.countMode === 'none'
+            ? input.countMode
             : undefined,
           sortBy: typeof input.sortBy === 'string' ? input.sortBy as 'timestamp' | 'level' | 'device' : undefined,
           sortOrder: typeof input.sortOrder === 'string' ? input.sortOrder as 'asc' | 'desc' : undefined,

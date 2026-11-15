@@ -3689,25 +3689,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
     tool(
       'search_logs',
       registryDescription('search_logs'),
-      {
-        query: z.string().max(500).optional(),
-        timeRange: z.object({
-          start: z.string().datetime({ offset: true }),
-          end: z.string().datetime({ offset: true }),
-        }).optional(),
-        level: z.array(z.enum(['info', 'warning', 'error', 'critical'])).max(4).optional(),
-        category: z.array(z.enum(['security', 'hardware', 'application', 'system'])).max(4).optional(),
-        source: z.string().max(255).optional(),
-        deviceIds: z.array(uuid).max(500).optional(),
-        siteIds: z.array(uuid).max(500).optional(),
-        limit: z.number().int().min(1).max(500).optional(),
-        offset: z.number().int().min(0).optional(),
-        cursor: z.string().max(1024).optional(),
-        countMode: z.enum(['exact', 'estimated', 'none']).optional(),
-        sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
-        sortOrder: z.enum(['asc', 'desc']).optional(),
-        includeFullMessage: z.boolean().optional(),
-      },
+      inputShape('search_logs'),
       makeHandler('search_logs')
     ),
 
