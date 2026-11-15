@@ -27,6 +27,7 @@ import { getBullMQConnection } from '../services/redis';
 import {
   getCommandTimeoutMs,
   BACKUP_JOB_ABSOLUTE_TIMEOUT_MS,
+  BACKUP_STALL_TIMEOUT_MS,
   EXCLUDED_COMMAND_TYPES,
   SCRIPT_GRACE_BUFFER_MS,
 } from '../services/commandTimeouts';
@@ -116,7 +117,6 @@ const REMOTE_SESSION_PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const REMOTE_SESSION_ACTIVE_TIMEOUT_MS = REMOTE_SESSION_ACTIVE_MAX_AGE_MS; // 24 hours (zombie safety net)
 
 // Backup job orphan/stall reconciliation thresholds.
-const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;      // progress-capable agent went silent
 const BACKUP_OFFLINE_GRACE_MS = 10 * 60 * 1000;      // device offline mid-job (covers reboot)
 const BACKUP_ABSOLUTE_TIMEOUT_MS = BACKUP_JOB_ABSOLUTE_TIMEOUT_MS; // legacy agents: no progress signal exists
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed

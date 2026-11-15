@@ -130,6 +130,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
 vi.mock('../services/automationActionResults', () => ({
@@ -1955,12 +1956,59 @@ describe('runStaleCommandReaperCycle — database unreachable before the backup 
       expect(resetWarnings()).toHaveLength(2);
       expect(String(resetWarnings()[1]![0])).toContain('reset 10 times in a row');
 
-      // Two healthy cycles: the window opens, then stays open across a cycle,
-      // which ends the run of resets.
-      await healthyCycleAt(tick(), []);
-      await healthyCycleAt(tick(), []);
+      // Healthy cycles that keep the window open for longer than the stall
+      // limit (15 min) end the run of resets: the window opens on the first
+      // and is 16 minutes old on the ninth.
+      for (let i = 1; i <= 9; i++) await healthyCycleAt(tick(), []);
       for (let i = 1; i <= 4; i++) await unreachableCycleAt(tick(), poolTimeout);
       expect(resetWarnings()).toHaveLength(2);
+      await unreachableCycleAt(tick(), poolTimeout);
+      expect(resetWarnings()).toHaveLength(3);
+      expect(String(resetWarnings()[2]![0])).toContain('reset 5 times in a row');
+    });
+
+    // A window shorter than the stall limit can never fail a job for silence,
+    // so a failure every 6 to 16 minutes is the same outage of rule A as a
+    // failure every cycle, and must warn the same way.
+    it('a failure every 8 minutes still warns: a window that never outlives the stall limit does not end the run', async () => {
+      resetSignalRecordingWindowForTests(0);
+      const poolTimeout = () => new DbPoolAcquireTimeoutError(expiry);
+      let now = OUTAGE_START;
+      const tick = () => (now += 2 * MIN);
+
+      for (let i = 1; i <= 5; i++) {
+        await unreachableCycleAt(tick(), poolTimeout);
+        for (let h = 1; h <= 3; h++) await healthyCycleAt(tick(), []);
+      }
+      expect(resetWarnings()).toHaveLength(1);
+      expect(String(resetWarnings()[0]![0])).toContain('reset 5 times in a row');
+    });
+
+    it('reports the repeated reset to Sentry too, at most once an hour', async () => {
+      const { captureMessage } = await import('../services/sentry');
+      const captureMessageMock = vi.mocked(captureMessage);
+      resetSignalRecordingWindowForTests(0);
+      const poolTimeout = () => new DbPoolAcquireTimeoutError(expiry);
+      let now = OUTAGE_START;
+      const tick = () => (now += 2 * MIN);
+
+      for (let i = 1; i <= 5; i++) await unreachableCycleAt(tick(), poolTimeout);
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
+      expect(captureMessageMock).toHaveBeenCalledWith(
+        expect.stringContaining('signal-recording window has been reset'),
+        expect.objectContaining({ eventCode: 'backup_signal_window_reset_repeatedly', level: 'warning' }),
+      );
+
+      // The next console warning (10 in a row) is inside the hour: no event.
+      for (let i = 6; i <= 10; i++) await unreachableCycleAt(tick(), poolTimeout);
+      expect(resetWarnings()).toHaveLength(2);
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
+
+      // An hour after the first event, the next warning reports again.
+      now = OUTAGE_START + 70 * MIN;
+      for (let i = 11; i <= 15; i++) await unreachableCycleAt(tick(), poolTimeout);
+      expect(resetWarnings()).toHaveLength(3);
+      expect(captureMessageMock).toHaveBeenCalledTimes(2);
     });
 
     it('a timeout on every other cycle still counts: a window that never survives a cycle is not "healthy"', async () => {
