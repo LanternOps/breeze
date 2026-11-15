@@ -980,3 +980,29 @@ describe('transcript removed by retention (#4342 W4)', () => {
     expect(queryByTestId('ai-chat-transcript-purged')).toBeNull();
   });
 });
+
+describe('a reply the technician stopped (#11676)', () => {
+  it('keeps the partial text and marks it stopped', () => {
+    const { getByTestId, getByText } = render(
+      <AiChatMessages
+        {...baseProps}
+        messages={[
+          { id: 'u1', role: 'user', content: 'Write me a checklist' },
+          { id: 'a1', role: 'assistant', content: 'Step 1: confirm the system', isStreaming: false, stopped: true },
+        ] as never}
+      />,
+    );
+    expect(getByText('Step 1: confirm the system')).toBeInTheDocument();
+    expect(getByTestId('ai-msg-stopped')).toHaveTextContent('Stopped');
+  });
+
+  it('shows no marker on a reply that finished on its own', () => {
+    const { queryByTestId } = render(
+      <AiChatMessages
+        {...baseProps}
+        messages={[{ id: 'a1', role: 'assistant', content: 'All done.', isStreaming: false }] as never}
+      />,
+    );
+    expect(queryByTestId('ai-msg-stopped')).toBeNull();
+  });
+});

@@ -376,6 +376,14 @@ function reportableError(err: unknown): unknown {
   return carriesQueryValues(err) ? new Error(safeErrorMessage(err)) : err;
 }
 
+/**
+ * The Agent SDK's abort (its `AbortError` class or a `DOMException` named AbortError), matched by name:
+ * the SDK class is not imported here so suites that mock the SDK module keep working.
+ */
+function isAbortError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError';
+}
+
 /** Immutable audit snapshot extracted from the HTTP request context */
 export interface AuditSnapshot {
   ip: string | undefined;
@@ -557,6 +565,13 @@ export interface ActiveSession {
   workTurnLimit?: number;
   /** Set when workTurnLimit stopped the turn; cleared at settlement. */
   workTurnLimitStopped?: boolean;
+  /**
+   * #11676: the technician pressed Stop on this turn (`interrupt()`). The CLI
+   * then ends it with a non-success result, which is the stop, not a failure:
+   * the turn ends with `done.stopped` and no `error`. Cleared when the turn
+   * ends and when the next turn claims the slot.
+   */
+  userInterrupted?: boolean;
   /** Synchronously reserved focal auto-link slots; shares the tool-count reset lifecycle. */
   pendingTurnAutoLinkCount: number;
   /**
@@ -894,6 +909,8 @@ export class StreamingSessionManager {
     // the caller that takes the slot binds its turn's runtime (or clears a
     // previous one) and resets the cap stop. A loser binds nothing, so the
     // running turn keeps streaming into its OWN gate and its cap stop holds.
+    // #11676: a Stop that landed as the previous turn finished never hides this turn's failure.
+    session.userInterrupted = false;
     if (turn) {
       session.topologyInvestigation = turn.topologyInvestigation;
       session.topologyStopped = false;
@@ -1572,9 +1589,13 @@ export class StreamingSessionManager {
       // conclude the turn (#3089). The tier-3 intents stay pending_approval
       // and are still executed by the durable release worker once decided.
       settleApprovalWaits(session);
+      // #11676: recorded before the SDK call, so the result that ends the
+      // turn (which can arrive before interrupt() resolves) reads as a stop.
+      session.userInterrupted = true;
       await session.query.interrupt();
       return { interrupted: true };
     } catch (err) {
+      session.userInterrupted = false;
       captureException(err);
       console.error('[StreamingSessionManager] Interrupt failed:', err);
       return { interrupted: false, reason: 'Failed to interrupt SDK query' };
@@ -2111,6 +2132,12 @@ export class StreamingSessionManager {
             }
 
             const resultMsg = message as SDKResultMessage;
+            // #11676: the technician stopped this turn. Its non-success result
+            // is the stop itself, so the generic failure paths below stay
+            // quiet. Coded limits (work/turn limit, budget) still say why, and
+            // a topology turn keeps its own fixed ending.
+            const stoppedByUser = session.userInterrupted === true && !topologyTurn;
+            session.userInterrupted = false;
             // #7794: the model gateway's reason for this turn's failure, if it
             // had one. Always taken here, so a note from a retry that later
             // recovered never surfaces on a later turn.
@@ -2158,13 +2185,15 @@ export class StreamingSessionManager {
                 // fresh session on this code; the user re-sends by hand (work
                 // may have run partway, so never automatically).
                 session.eventBus.publish(TURN_LIMIT_ERROR);
+              } else if (stoppedByUser) {
+                // #11676: the interrupted turn's result; `done` says stopped.
               } else {
                 session.eventBus.publish({
                   type: 'error',
                   message: gatewayNote ?? providerMessage ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')),
                 });
               }
-            } else if (!topologyTurn && (resultMsg as { is_error?: unknown }).is_error === true) {
+            } else if (!topologyTurn && !stoppedByUser && (resultMsg as { is_error?: unknown }).is_error === true) {
               // The CLI gave up on the upstream after its own retries (529 /
               // 429 / 401) or got a non-retried failure (low-credit 400), and
               // reports that as a "success" flagged is_error. Without an error
@@ -2228,6 +2257,7 @@ export class StreamingSessionManager {
                 costCents: turn.costCents,
               },
               ...wispDone,
+              ...(stoppedByUser ? { stopped: true } : {}),
             });
             session.state = 'idle';
             try {
@@ -2243,6 +2273,15 @@ export class StreamingSessionManager {
         }
       }
     } catch (err) {
+      // #11676: the SDK aborting the iterator after the technician pressed
+      // Stop is the stop, not a failure: no Sentry event, no error banner.
+      if (session.userInterrupted === true && !session.topologyInvestigation && !session.workTurnLimitStopped && isAbortError(err)) {
+        session.userInterrupted = false;
+        console.info('[StreamingSessionManager] Turn stopped by the user:', session.breezeSessionId);
+        this.stopThinking(session);
+        session.eventBus.publish({ type: 'done', stopped: true });
+        return;
+      }
       captureException(reportableError(err));
       console.error('[StreamingSessionManager] Query error:', safeErrorMessage(err));
       this.stopThinking(session);

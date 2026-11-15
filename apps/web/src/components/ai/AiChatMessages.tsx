@@ -463,6 +463,11 @@ export default function AiChatMessages({
               </p>
             )}
             <AssistantMarkdown content={unit.msg.content} isStreaming={unit.msg.isStreaming} />
+            {unit.msg.stopped && (
+              <p data-testid="ai-msg-stopped" className="mt-1 text-xs text-muted-foreground">
+                {t("aiChatMessages.stopped")}
+              </p>
+            )}
           </div>
         );
       case "tools":
