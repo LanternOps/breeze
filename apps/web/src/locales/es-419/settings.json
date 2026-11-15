@@ -8814,5 +8814,128 @@
     },
     "refreshFailed": "No se pudieron actualizar las solicitudes de acceso, por lo que esta lista puede estar desactualizada.",
     "more": "Se muestran las primeras {{count}} solicitudes. Decida sobre estas para ver el resto."
+  },
+  "portalDirectory": {
+    "title": "Desaprovisionamiento desde el directorio",
+    "descriptionMicrosoft": "Cuando su cliente deshabilita o elimina a alguien en Microsoft Entra, el inicio de sesión con Microsoft de esa persona se desactiva aquí. Solo cuentan las lecturas completas del directorio.",
+    "descriptionGoogle": "Cuando su cliente suspende o elimina a alguien en Google Workspace, el inicio de sesión con Google de esa persona se desactiva aquí. Solo cuentan las lecturas completas del directorio.",
+    "descriptionBoth": "Cuando su cliente deshabilita, suspende o elimina a alguien en Microsoft Entra o Google Workspace, el inicio de sesión del directorio de esa persona se desactiva aquí. Solo cuentan las lecturas completas del directorio.",
+    "loading": "Cargando el desaprovisionamiento desde el directorio…",
+    "empty": "El directorio no marca a nadie.",
+    "mode": {
+      "report": "Solo informe: todavía no se deshabilita a nadie automáticamente. La lista de abajo muestra lo que ocurriría.",
+      "enforce": "Activado: las personas que el directorio deshabilita o elimina pierden su inicio de sesión del directorio. El primer lote de cada directorio espera su decisión."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "Aún no se ha leído el directorio.",
+      "lastRead": "Última lectura {{when}}",
+      "evaluated_one": "Lectura completa: {{count}} persona en el directorio.",
+      "evaluated_other": "Lectura completa: {{count}} personas en el directorio.",
+      "suspectShrink": "El directorio se redujo bruscamente desde la lectura anterior, así que no se cambió nada. Primero debe confirmarlo una segunda lectura.",
+      "nothingChanged": "No cambió nada.",
+      "tenantLink": "Verificar su tenant de Microsoft"
+    },
+    "runReasons": {
+      "tenant_not_proven": "El tenant de Microsoft de esta organización no está verificado.",
+      "tenant_mismatch": "La conexión de Microsoft 365 lee un tenant distinto del verificado para esta organización.",
+      "connection_inactive": "La conexión del directorio no está activa.",
+      "org_inactive": "Esta organización o su partner no está activo.",
+      "sync_incomplete": "La última lectura del directorio estuvo incompleta, así que no se cambió nada.",
+      "directory_too_large": "Este directorio supera el límite de sincronización; el desaprovisionamiento no está disponible. Use el aprovisionamiento SCIM cuando esté disponible.",
+      "scope_missing": "A la delegación en todo el dominio de la conexión de Google le falta el alcance admin.directory.user.",
+      "access_denied": "Google rechazó el acceso al directorio.",
+      "unavailable": "No se pudo acceder al directorio.",
+      "connection_invalid": "No se pudieron usar las credenciales de la conexión de Google.",
+      "admin_not_admin": "La cuenta de administrador de la conexión de Google ya no es un administrador activo.",
+      "mixed_customer": "El listado de Google mezclaba usuarios de otro Workspace.",
+      "malformed": "El directorio devolvió usuarios que no se pudieron leer.",
+      "unknown": "No se usó la lectura."
+    },
+    "holdReasons": {
+      "first_enforcement": "primera vez para este directorio",
+      "threshold": "más personas de lo habitual"
+    },
+    "held": {
+      "summary_one": "{{source}}: {{count}} persona espera su decisión.",
+      "summary_other": "{{source}}: {{count}} personas esperan su decisión.",
+      "because": "En espera: {{reason}}.",
+      "apply": "Aplicar",
+      "dismiss": "Descartar"
+    },
+    "confirm": {
+      "applyTitle": "¿Desactivar estos inicios de sesión?",
+      "applyMessage_one": "Esto desactiva el inicio de sesión del directorio de {{count}} persona y deshabilita su cuenta si no tiene otra forma de iniciar sesión. En espera: {{reason}}. Puede restaurar a cada una desde la lista de usuarios.",
+      "applyMessage_other": "Esto desactiva el inicio de sesión del directorio de {{count}} personas y deshabilita cada cuenta que no tenga otra forma de iniciar sesión. En espera: {{reason}}. Puede restaurar a cada una desde la lista de usuarios.",
+      "dismissTitle": "¿Descartar este lote?",
+      "dismissMessage_one": "No cambia nadie. {{count}} persona queda exenta hasta que una lectura más reciente del directorio la muestre habilitada. En espera: {{reason}}.",
+      "dismissMessage_other": "No cambia nadie. {{count}} personas quedan exentas hasta que una lectura más reciente del directorio las muestre habilitadas. En espera: {{reason}}."
+    },
+    "columns": {
+      "person": "Persona",
+      "provider": "Directorio",
+      "reason": "Lo que indica el directorio",
+      "effect": "Efecto"
+    },
+    "actionReasons": {
+      "account_disabled": "Deshabilitada en el directorio",
+      "absent": "Eliminada del directorio",
+      "suspended": "Suspendida en el directorio",
+      "archived": "Archivada en el directorio"
+    },
+    "effects": {
+      "identity_and_account": "Deshabilita la cuenta",
+      "identityEntra": "Desactiva solo el inicio de sesión con Microsoft",
+      "identityGoogle": "Desactiva solo el inicio de sesión con Google"
+    },
+    "tags": {
+      "keepsPassword": "Conserva el acceso con contraseña",
+      "rearmed": "Restaurada o descartada por su equipo; el directorio sigue indicando que esta persona está deshabilitada"
+    },
+    "blockers": {
+      "entra_directory": "directorio de Microsoft",
+      "google_directory": "directorio de Google",
+      "scim": "aprovisionamiento SCIM",
+      "msp": "su equipo",
+      "unknown": "otro origen"
+    },
+    "users": {
+      "disabledEntra": "Inicio de sesión con Microsoft desactivado por {{blockers}}",
+      "disabledGoogle": "Inicio de sesión con Google desactivado por {{blockers}}",
+      "restore": "Restaurar",
+      "remove": "Quitar inicio de sesión",
+      "disabledBy": {
+        "msp": "Desactivado por su equipo",
+        "directory": "Desactivado por el directorio",
+        "scim": "Desactivado por el aprovisionamiento SCIM"
+      }
+    },
+    "restore": {
+      "title": "¿Restaurar este método de inicio de sesión?",
+      "message": "Vuelve a activar el inicio de sesión con {{provider}} de {{email}} y elimina todos los bloqueos: {{blockers}}.",
+      "rearmNote": "El directorio no lo volverá a desactivar hasta que una lectura más reciente del directorio muestre a esta persona habilitada.",
+      "reactivate": "Reactivar también la cuenta",
+      "confirmMsp": "Su equipo deshabilitó esta cuenta. Quiero volver a habilitarla."
+    },
+    "remove": {
+      "title": "¿Quitar este método de inicio de sesión?",
+      "message": "Quita el inicio de sesión de {{provider}} deshabilitado de {{email}}. Úselo cuando la persona se eliminó y se volvió a crear en el directorio. Si era su único método de inicio de sesión, reactive la cuenta y envíe una invitación."
+    },
+    "toasts": {
+      "applying": "Aplicando el lote. Los cambios aparecerán aquí en breve.",
+      "dismissed": "Lote descartado",
+      "restored": "Método de inicio de sesión restaurado",
+      "removed": "Método de inicio de sesión quitado"
+    },
+    "errors": {
+      "load": "No se pudo cargar el desaprovisionamiento desde el directorio.",
+      "decide": "No se pudo guardar su decisión.",
+      "stale": "Este lote cambió desde que lo abrió. Revise la lista actualizada e inténtelo de nuevo.",
+      "notHeld": "Este lote ya no está esperando una decisión.",
+      "enforcementOff": "El desaprovisionamiento está en modo solo informe en este servidor, así que no hay nada que aplicar."
+    }
   }
 }
