@@ -44,6 +44,7 @@ import {
   ResilienceAuthorizationError,
   type ResilienceResourceRef,
 } from './resilienceSiteAuthorization';
+import { DR_STEP_TYPES, normalizeDrStepType } from '@breeze/shared/constants';
 import {
   DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR,
   DR_STEP_BARE_METAL_REBUILD,
@@ -56,15 +57,10 @@ import {
   type DrBareMetalRebuildConfig,
 } from './drBareMetalRebuildStep';
 
-const DR_ALLOWED_COMMAND_TYPES = new Set<string>([
-  CommandTypes.VM_RESTORE_FROM_BACKUP,
-  CommandTypes.VM_INSTANT_BOOT,
-  CommandTypes.HYPERV_RESTORE,
-  CommandTypes.MSSQL_RESTORE,
-  CommandTypes.BMR_RECOVER,
-  // Not a device command for failover/failback — see dispatchBareMetalRebuildGroup.
-  DR_STEP_BARE_METAL_REBUILD,
-]);
+// Every DR step type the editor can save (shared with the web editor, #11856).
+// BARE_METAL_REBUILD is not a device command for failover/failback — see
+// dispatchBareMetalRebuildGroup.
+const DR_ALLOWED_COMMAND_TYPES = new Set<string>(DR_STEP_TYPES);
 
 export type DrPlanGroupRecord = typeof drPlanGroups.$inferSelect;
 type DrExecutionRecord = typeof drExecutions.$inferSelect;
@@ -1128,7 +1124,11 @@ export async function dispatchGroup(
   currentResults: DrExecutionResults,
 ): Promise<{ results: DrExecutionResults; pending: PendingDrDispatch[] }> {
   const restoreConfig = asRecord(group.restoreConfig);
-  const commandType = typeof restoreConfig.commandType === 'string' ? restoreConfig.commandType : null;
+  // Plans saved by an earlier editor hold upper-case step types (#11856), so
+  // normalise on read; an unrecognised value keeps its raw spelling so the
+  // refusal below still names it.
+  const rawCommandType = typeof restoreConfig.commandType === 'string' ? restoreConfig.commandType : null;
+  const commandType = rawCommandType === null ? null : (normalizeDrStepType(rawCommandType) ?? rawCommandType);
   // Credential-shaped keys never travel from the plan into a command, even for
   // a plan stored before plan writes started refusing them.
   const payload = withoutCredentialShapedKeys(

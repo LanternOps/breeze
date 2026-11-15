@@ -64,18 +64,18 @@ describe('DRPlanGroupCard step type', () => {
     const values = Array.from(select.options).map((option) => option.value);
     expect(values).toEqual(['', ...DR_STEP_TYPES]);
     expect(DR_STEP_TYPES).toEqual([
-      'VM_RESTORE_FROM_BACKUP',
-      'VM_INSTANT_BOOT',
-      'HYPERV_RESTORE',
-      'MSSQL_RESTORE',
-      'BMR_RECOVER',
+      'vm_restore_from_backup',
+      'vm_instant_boot',
+      'hyperv_restore',
+      'mssql_restore',
+      'bmr_recover',
       'BARE_METAL_REBUILD',
     ]);
   });
 
   it('defaults the select to the loaded group step type and hides rebuild fields for other types', () => {
-    renderCard(makeGroup({ stepType: 'HYPERV_RESTORE' }));
-    expect((screen.getByTestId('dr-group-step-type') as HTMLSelectElement).value).toBe('HYPERV_RESTORE');
+    renderCard(makeGroup({ stepType: 'hyperv_restore' }));
+    expect((screen.getByTestId('dr-group-step-type') as HTMLSelectElement).value).toBe('hyperv_restore');
     expect(screen.queryByTestId('dr-group-rebuild-options')).toBeNull();
   });
 
