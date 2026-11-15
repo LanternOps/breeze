@@ -1841,6 +1841,33 @@ describe('backup result persistence', () => {
       expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
     });
 
+    // #11743: filesBackedUp already includes the references, so a 140,000-entry
+    // incremental with 120,000 references is under the eager threshold.
+    it('queues hydration for a reference-heavy S3 incremental below the eager threshold', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 140_000, referencedFiles: 120_000 } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
+    });
+
+    it('leaves a reference-heavy S3 incremental above the eager threshold for its first use', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 250_001, referencedFiles: 200_000 } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
+    });
+
     it('does not queue hydration for a failed result', async () => {
       arrangeSuccess({ storageIdentity: 's3::::bucket' });
 
