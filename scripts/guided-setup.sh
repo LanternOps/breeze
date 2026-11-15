@@ -44,6 +44,10 @@ STACK_STARTED="false"
 RELEASE_VERIFY_TMP=""
 # A verified release manifest pair waiting for .env to pin its release (#11870).
 PENDING_MANIFEST_PAIR_DIR=""
+# SHA-256 of the manifest this script kept before this run replaced or removed
+# it, so a pair found in the binaries volume can be told apart from one this
+# script did not stage.
+PREVIOUS_KEPT_MANIFEST_SHA256=""
 REVERSE_PROXY_MODE="caddy"
 REVERSE_PROXY_LABEL="Packaged Caddy"
 REVERSE_PROXY_EXTERNAL_CIDRS=""
@@ -3757,11 +3761,13 @@ keep_verified_pair_pending() {
   PENDING_MANIFEST_PAIR_DIR="${pending}"
 }
 
-# True when DIR holds a pair signed by KEY for release TAG of REPO that lists
-# BINARIES_REF as its binaries image. The verifier's reason goes to stderr
+# True when DIR holds a pair signed by KEY for full release TAG of REPO that
+# lists BINARIES_REF as its binaries image. Only a full release's manifest lists
+# the binaries assets local registration checks: a server-only release's lists
+# none, even though it names the same binaries image. The reason goes to stderr
 # unless a sixth argument "quiet" is given (the kept-pair probe).
 verify_carried_release_manifest_pair() {
-  local dir="$1" repo="$2" key="$3" tag="$4" binaries_ref="$5" mode="${6:-}"
+  local dir="$1" repo="$2" key="$3" tag="$4" binaries_ref="$5" mode="${6:-}" kind
   [[ -f "${dir}/release-artifact-manifest.json" && -f "${dir}/release-artifact-manifest.json.ed25519" ]] || return 1
   if [[ "${mode}" == "quiet" ]]; then
     verify_carried_release_manifest_pair "$dir" "$repo" "$key" "$tag" "$binaries_ref" 2>/dev/null
@@ -3772,7 +3778,17 @@ verify_carried_release_manifest_pair() {
       --manifest "${dir}/release-artifact-manifest.json" \
       --signature "${dir}/release-artifact-manifest.json.ed25519" \
       --expected-repository "$repo" --expected-release "$tag" \
-      --require "binaries=${binaries_ref}" >/dev/null
+      --require "binaries=${binaries_ref}" >/dev/null || return 1
+  # Read only after the signature verified. An absent releaseKind is a full
+  # release (the manifest schema's default); one present but unreadable is not.
+  kind="$(manifest_top_level_string "${dir}/release-artifact-manifest.json" "releaseKind")"
+  if [[ -z "${kind}" ]] && ! grep -q '"releaseKind"' "${dir}/release-artifact-manifest.json"; then
+    kind="full"
+  fi
+  if [[ "${kind}" != "full" ]]; then
+    warn "The ${tag} release manifest has releaseKind '${kind:-unreadable}', not 'full', so it lists no binaries to register."
+    return 1
+  fi
 }
 
 # Makes RELEASE_MANIFEST_PAIR_DIR hold exactly the pending verified pair, or
@@ -3781,6 +3797,9 @@ verify_carried_release_manifest_pair() {
 commit_release_manifest_pair() {
   local staged
 
+  if [[ -z "${PREVIOUS_KEPT_MANIFEST_SHA256}" && -f "${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json" ]]; then
+    PREVIOUS_KEPT_MANIFEST_SHA256="$(file_sha256 "${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json")"
+  fi
   if [[ -z "${PENDING_MANIFEST_PAIR_DIR}" ]]; then
     if [[ -e "${RELEASE_MANIFEST_PAIR_DIR}" ]]; then
       rm -rf "${RELEASE_MANIFEST_PAIR_DIR}" || fail "Failed to remove ${RELEASE_MANIFEST_PAIR_DIR}."
@@ -3807,53 +3826,178 @@ commit_release_manifest_pair() {
   log "Kept the verified release manifest pair in ${RELEASE_MANIFEST_PAIR_DIR}."
 }
 
-# Runs inside the binaries image (alpine sh): /release-manifest is the kept
-# pair, /target the binaries volume. Each file goes in by rename, so the API
-# never reads a half-written file, and is made readable by the API user.
-RELEASE_MANIFEST_PAIR_PLACE_SCRIPT='set -eu; for f in release-artifact-manifest.json.ed25519 release-artifact-manifest.json; do cp "/release-manifest/$f" "/target/.$f.tmp"; chmod 0644 "/target/.$f.tmp"; mv -f "/target/.$f.tmp" "/target/$f"; done'
-RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT='rm -f /target/release-artifact-manifest.json /target/release-artifact-manifest.json.ed25519'
+# Release manifest pair files in copy order. Each file goes in by rename, so
+# during the copy the API sees at worst a new signature beside the old manifest,
+# which fails its signature check (refused, never trusted).
+RELEASE_MANIFEST_PAIR_FILES=(release-artifact-manifest.json.ed25519 release-artifact-manifest.json)
+RELEASE_MANIFEST_PAIR_DOCS_URL="https://docs.breezermm.com/deploy/binaries/#release-manifest-pair"
+
+# The scripts below run inside the binaries image (alpine sh) in a one-shot
+# binaries-init container, whose /target is the binaries volume. No host path
+# is mounted: each file arrives on stdin, so the copy also works where Docker
+# cannot bind-mount a host path (SELinux labels, snap Docker, a folder Docker
+# Desktop does not share, a remote DOCKER_HOST). None contains a single quote,
+# so each can be printed inside one for an operator to run.
+
+# Prints the script that copies stdin to /target/NAME: written to a temp file in
+# the volume, refused when empty, made readable by the API user, then renamed
+# into place, so the API never reads a half-written file. Before the rename it
+# prints "breeze-replaced <sha256>" when it replaces a file.
+release_manifest_pair_file_place_script() {
+  local name="$1"
+  # shellcheck disable=SC2016 # expands inside the container, not here
+  printf 'set -eu; f=/target/%s; t=/target/.%s.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; chmod 0644 "$t"; if [ -e "$f" ]; then echo "breeze-replaced $(sha256sum "$f" | cut -d" " -f1)"; fi; mv -f "$t" "$f"' \
+    "${name}" "${name}"
+}
+
+# Removes any pair (and any temp file an interrupted copy left) from the volume.
+# Prints "breeze-removed <sha256 of the manifest>", or
+# "breeze-removed-signature" when only a signature was there.
+# shellcheck disable=SC2016 # expands inside the container, not here
+RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT='set -eu; m=/target/release-artifact-manifest.json; s=$m.ed25519; if [ -e "$m" ]; then echo "breeze-removed $(sha256sum "$m" | cut -d" " -f1)"; elif [ -e "$s" ]; then echo breeze-removed-signature; fi; rm -f "$m" "$s" /target/.release-artifact-manifest.json.tmp /target/.release-artifact-manifest.json.ed25519.tmp'
 
 release_manifest_pair_kept() {
   [[ -f "${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json" \
     && -f "${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json.ed25519" ]]
 }
 
+# Prints the SHA-256 of FILE, or nothing when it cannot be read.
+file_sha256() {
+  local digest_line
+  digest_line="$(openssl dgst -sha256 -r "$1" 2>/dev/null)" || return 0
+  printf '%s' "${digest_line%% *}"
+}
+
+# Runs SCRIPT in a one-shot binaries-init container with stdin from FILE
+# (default /dev/null). Its "breeze-…" report lines land in
+# BINARIES_VOLUME_REPORT; any other output is passed on.
+BINARIES_VOLUME_REPORT=""
+run_in_binaries_volume() {
+  local script="$1" input="${2:-/dev/null}" output status=0
+
+  BINARIES_VOLUME_REPORT=""
+  if dry_run_enabled; then
+    compose run --rm --no-deps -T --entrypoint sh binaries-init -c "${script}"
+    return
+  fi
+  if ! output="$(compose run --rm --no-deps -T --entrypoint sh binaries-init -c "${script}" < "${input}")"; then
+    status=1
+  fi
+  BINARIES_VOLUME_REPORT="$(grep '^breeze-' <<<"${output}" || true)"
+  grep -v -e '^breeze-' -e '^$' <<<"${output}" || true
+  return "${status}"
+}
+
+# Prints "current" when a manifest with SHA-256 HASH is the one kept for this
+# release, "previous" when it is the one this script kept before this run, and
+# "foreign" otherwise (placed by hand or by another tool).
+release_manifest_pair_origin() {
+  local hash="$1" kept="${RELEASE_MANIFEST_PAIR_DIR}/release-artifact-manifest.json"
+  if [[ -n "${hash}" && -f "${kept}" && "${hash}" == "$(file_sha256 "${kept}")" ]]; then
+    printf 'current'
+  elif [[ -n "${hash}" && "${hash}" == "${PREVIOUS_KEPT_MANIFEST_SHA256}" ]]; then
+    printf 'previous'
+  else
+    printf 'foreign'
+  fi
+}
+
+# Copies the kept pair into the volume, one file per run, and says what it
+# replaced when the volume held a manifest other than this release's.
+place_kept_release_manifest_pair() {
+  local name replaced=""
+  for name in "${RELEASE_MANIFEST_PAIR_FILES[@]}"; do
+    run_in_binaries_volume "$(release_manifest_pair_file_place_script "${name}")" \
+      "${RELEASE_MANIFEST_PAIR_DIR}/${name}" || return 1
+    if [[ "${name}" == release-artifact-manifest.json ]]; then
+      replaced="$(sed -n 's/^breeze-replaced //p' <<<"${BINARIES_VOLUME_REPORT}")"
+    fi
+  done
+  [[ -n "${replaced}" ]] || return 0
+  case "$(release_manifest_pair_origin "${replaced}")" in
+    current) ;;
+    previous) log "Replaced the release manifest pair this script placed for the previous release in the binaries volume." ;;
+    *) warn "Replaced a release manifest pair in the binaries volume that this script did not stage (it matches no pair kept in ${RELEASE_MANIFEST_PAIR_DIR}); it did not describe these binaries." ;;
+  esac
+  return 0
+}
+
+# Removes any pair from the volume and logs what it removed, if anything.
+remove_release_manifest_pair_from_binaries_volume() {
+  local removed
+  run_in_binaries_volume "${RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT}" || return 1
+  removed="$(grep -m1 '^breeze-removed' <<<"${BINARIES_VOLUME_REPORT}" || true)"
+  case "${removed}" in
+    "") ;;
+    breeze-removed-signature)
+      log "Removed a release manifest signature with no manifest beside it from the binaries volume."
+      ;;
+    *)
+      case "$(release_manifest_pair_origin "${removed#breeze-removed }")" in
+        current) log "Removed the release manifest pair this script placed for this release from the binaries volume." ;;
+        previous) log "Removed the release manifest pair this script placed for the previous release from the binaries volume; it does not describe these binaries." ;;
+        *) warn "Removed a release manifest pair from the binaries volume that this script did not stage (it matches no pair kept in ${RELEASE_MANIFEST_PAIR_DIR}); it does not describe these binaries. To use BINARY_SOURCE=local, place this release's pair: see ${RELEASE_MANIFEST_PAIR_DOCS_URL}" ;;
+      esac
+      ;;
+  esac
+  return 0
+}
+
 # Copies the kept pair to the root of the binaries volume, replacing the
 # previous release's, through the binaries-init service so the named volume and
-# the ./data/binaries bind mount are both handled. With no kept pair, removes
-# any pair there: an old release's manifest next to new binaries makes local
-# registration refuse them. A failure only warns: the default
-# BINARY_SOURCE=github never reads the volume.
+# the ./data/binaries bind mount are both handled. With no kept pair, or when
+# the copy fails, removes any pair there: an old release's manifest next to new
+# binaries makes local registration refuse them. A failure only warns: the
+# default BINARY_SOURCE=github never reads the volume.
 place_release_manifest_pair_in_binaries_volume() {
   if release_manifest_pair_kept; then
-    if compose run --rm --no-deps -T --entrypoint sh \
-        -v "${RELEASE_MANIFEST_PAIR_DIR}:/release-manifest:ro" \
-        binaries-init -c "${RELEASE_MANIFEST_PAIR_PLACE_SCRIPT}"; then
+    if place_kept_release_manifest_pair; then
       dry_run_enabled || log "Placed the verified release manifest pair at the root of the binaries volume."
       return 0
     fi
-    warn "Could not copy the release manifest pair into the binaries volume. BINARY_SOURCE=local needs it; run:"
-    warn "  $(release_manifest_pair_place_command_for_display)"
+    warn "Could not copy the release manifest pair into the binaries volume."
+    if remove_release_manifest_pair_from_binaries_volume; then
+      warn "The binaries volume holds no release manifest pair now. BINARY_SOURCE=local needs it; run:"
+    else
+      warn "Could not remove the release manifest pair from the binaries volume either; if one is there it does not describe these binaries. Run:"
+    fi
+    warn_release_manifest_pair_place_commands
     return 0
   fi
-  if ! compose run --rm --no-deps -T --entrypoint sh binaries-init -c "${RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT}"; then
+  if ! remove_release_manifest_pair_from_binaries_volume; then
     warn "Could not remove an earlier release manifest pair from the binaries volume; if one is there it does not describe these binaries. Run:"
-    warn "  $(release_manifest_pair_place_command_for_display)"
+    warn_release_manifest_pair_place_commands
   fi
   return 0
 }
 
-# The copy command when a verified pair is kept, otherwise the remove command.
+# The commands that copy the kept pair into the binaries volume over stdin, one
+# per file, or with no kept pair the command that removes any pair there. One
+# command per line, or joined by SEPARATOR when one is given.
 release_manifest_pair_place_command_for_display() {
-  local dir
+  local separator="${1:-$'\n'}" run_cmd name path joined="" command
+  local commands=()
+
+  run_cmd="$(compose_command_for_display) run --rm --no-deps -T --entrypoint sh binaries-init"
   if release_manifest_pair_kept; then
-    printf -v dir '%q' "${RELEASE_MANIFEST_PAIR_DIR}"
-    printf "%s run --rm --no-deps -T --entrypoint sh -v %s:/release-manifest:ro binaries-init -c '%s'" \
-      "$(compose_command_for_display)" "${dir}" "${RELEASE_MANIFEST_PAIR_PLACE_SCRIPT}"
+    for name in "${RELEASE_MANIFEST_PAIR_FILES[@]}"; do
+      printf -v path '%q' "${RELEASE_MANIFEST_PAIR_DIR}/${name}"
+      commands+=("${run_cmd} -c '$(release_manifest_pair_file_place_script "${name}")' < ${path}")
+    done
   else
-    printf "%s run --rm --no-deps -T --entrypoint sh binaries-init -c '%s'" \
-      "$(compose_command_for_display)" "${RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT}"
+    commands+=("${run_cmd} -c '${RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT}'")
   fi
+  for command in "${commands[@]}"; do
+    joined+="${joined:+${separator}}${command}"
+  done
+  printf '%s' "${joined}"
+}
+
+warn_release_manifest_pair_place_commands() {
+  local line
+  while IFS= read -r line; do
+    warn "  ${line}"
+  done <<<"$(release_manifest_pair_place_command_for_display)"
 }
 
 github_repo_for_release_lookup() {
@@ -4554,7 +4698,10 @@ print_manual_start_commands() {
 # The copy (or, with no verified pair, the remove) step for BINARY_SOURCE=local,
 # shown wherever setup prints the commands it did not run itself (#11870).
 print_release_manifest_pair_place_command() {
-  log "  $(release_manifest_pair_place_command_for_display)"
+  local line
+  while IFS= read -r line; do
+    log "  ${line}"
+  done <<<"$(release_manifest_pair_place_command_for_display)"
 }
 
 # The images are pinned by digest, so `docker compose pull` re-fetches the
@@ -4993,7 +5140,7 @@ run_upgrade() {
     return
   fi
   compose pull \
-    || fail "docker compose pull failed; ${ENV_FILE} now pins ${target}. Fix registry access, then run: $(compose_command_for_display) pull && $(release_manifest_pair_place_command_for_display) && $(compose_command_for_display) up -d"
+    || fail "docker compose pull failed; ${ENV_FILE} now pins ${target}. Fix registry access, then run: $(compose_command_for_display) pull && $(release_manifest_pair_place_command_for_display " && ") && $(compose_command_for_display) up -d"
   place_release_manifest_pair_in_binaries_volume
   compose up -d \
     || fail "docker compose up -d failed. Inspect with: $(compose_command_for_display) logs api"

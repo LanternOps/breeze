@@ -323,10 +323,13 @@ test('guided --upgrade refuses a downgrade unless --allow-downgrade is passed', 
 const PAIR = ['release-artifact-manifest.json', 'release-artifact-manifest.json.ed25519'];
 
 // A fake `docker` whose `compose … run … binaries-init -c SCRIPT` executes
-// SCRIPT against a directory standing in for the binaries volume (/target) and
-// the -v source standing in for /release-manifest, so a test sees what
-// actually lands in the volume.
-function fakeDockerWithVolume(workDir, { failRun = false } = {}) {
+// SCRIPT against a directory standing in for the binaries volume (/target),
+// with the run's stdin passed through, so a test sees what actually lands in
+// the volume. Like an SELinux host, snap Docker, an unshared Docker Desktop
+// folder or a remote DOCKER_HOST, it cannot bind-mount a host path: a run with
+// -v fails. failRun: 'all' fails every run, 'copy' every run that copies a file
+// in from stdin, 'manifest' only the run that copies the manifest itself.
+function fakeDockerWithVolume(workDir, { failRun = '' } = {}) {
   const bin = join(workDir, 'fake-bin');
   mkdirSync(bin);
   const log = join(workDir, 'docker.log');
@@ -336,14 +339,19 @@ function fakeDockerWithVolume(workDir, { failRun = false } = {}) {
 printf '%s\\n' "$*" >> "${log}"
 if [[ "$1" == inspect ]]; then echo healthy; exit 0; fi
 if [[ "$1" == compose && " $* " == *" run "* ]]; then
-  ${failRun ? 'exit 1' : ''}
-  src=""
   args=("$@")
-  for ((i = 0; i < \${#args[@]}; i++)); do
-    if [[ "\${args[i]}" == -v ]]; then src="\${args[i+1]%%:*}"; fi
+  for arg in "\${args[@]}"; do
+    if [[ "$arg" == -v || "$arg" == --volume || "$arg" == --volume=* ]]; then
+      echo "fake docker: host bind mounts are not available on this host" >&2
+      exit 125
+    fi
   done
   script="\${args[\${#args[@]}-1]}"
-  script="\${script//\\/release-manifest/\${src}}"
+  case "${failRun}" in
+    all) exit 1 ;;
+    copy) [[ "$script" == *"cat >"* ]] && exit 1 ;;
+    manifest) [[ "$script" == *"cat >"* && "$script" != *ed25519* ]] && exit 1 ;;
+  esac
   script="\${script//\\/target/${volume}}"
   sh -c "\${script}"
   exit $?
@@ -382,6 +390,9 @@ test('guided --upgrade places the verified manifest pair in the binaries volume 
   const run = calls.findIndex((line) => / run --rm --no-deps -T .* binaries-init /u.test(line));
   const up = calls.findIndex((line) => /^compose .* up -d$/u.test(line));
   assert.ok(run !== -1 && up > run, `expected the pair to be placed before up -d, got:\n${calls.join('\n')}`);
+  assert.ok(calls.filter((line) => / run /u.test(line)).every((line) => !/ (-v|--volume)[ =]/u.test(line)), 'no host bind mount');
+  assert.match(result.stdout, /Placed the verified release manifest pair/u);
+  assert.doesNotMatch(result.stdout + result.stderr, /Removed|Replaced/u, 'an empty volume had no pair to remove');
 });
 
 test('guided --upgrade replaces the previous release pair in the volume', () => {
@@ -401,6 +412,21 @@ test('guided --upgrade replaces the previous release pair in the volume', () => 
     'no staging copy is left next to the kept pair',
   );
   assert.deepEqual(readdirSync(docker.volume).sort(), [...PAIR].sort(), 'no temp file is left in the volume');
+  assert.match(result.stdout, /Replaced the release manifest pair this script placed for the previous release/u);
+  assert.doesNotMatch(result.stderr, /did not stage/u);
+});
+
+test('guided --upgrade says so when it replaces a pair it did not stage', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir);
+  stagePair(join(workDir, 'release-manifest'), 'previous');
+  stagePair(docker.volume, 'placed by hand');
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `upgrade failed:\n${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readPair(docker.volume), readPair(fixture.directory));
+  assert.match(result.stderr, /Replaced a release manifest pair in the binaries volume that this script did not stage/u);
 });
 
 test('guided --upgrade never places a pair that failed verification', () => {
@@ -428,13 +454,23 @@ test('guided --upgrade --no-up keeps the verified pair and prints how to place i
   assert.equal(result.status, 0, `upgrade failed:\n${result.stdout}\n${result.stderr}`);
   assert.deepEqual(readPair(join(workDir, 'release-manifest')), readPair(fixture.directory));
   assert.match(result.stdout, /run --rm --no-deps -T .*binaries-init/u, 'prints the placement command');
+
+  // The printed commands work where a host path cannot be mounted.
+  const docker = fakeDockerWithVolume(workDir);
+  const printed = result.stdout.split('\n').filter((line) => / run --rm --no-deps -T .*binaries-init/u.test(line));
+  assert.equal(printed.length, 2, `one command per file:\n${printed.join('\n')}`);
+  for (const line of printed) {
+    const run = spawnSync('bash', ['-c', line.trim()], { cwd: workDir, encoding: 'utf8', env: { ...process.env, PATH: docker.PATH } });
+    assert.equal(run.status, 0, `${line}\n${run.stdout}\n${run.stderr}`);
+  }
+  assert.deepEqual(readPair(docker.volume), readPair(fixture.directory), 'the printed commands place the pair');
 });
 
 // A server-only release carries a previous full release's binaries image, and
 // its own manifest lists no binaries. The pair that describes what is in the
 // volume is the carried release's, verified against the same key and bound to
 // the binaries digest the server-only manifest pinned.
-function serverOnlyFixture({ tamperBase = false, baseBinariesDigest } = {}) {
+function serverOnlyFixture({ tamperBase = false, baseBinariesDigest, baseServerOnly = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'release-consumer-server-only-'));
   scratch.push(root);
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -454,11 +490,17 @@ function serverOnlyFixture({ tamperBase = false, baseBinariesDigest } = {}) {
   const baseImages = baseBinariesDigest
     ? images.map((image) => (image.name === 'binaries' ? { ...image, digest: baseBinariesDigest } : image))
     : images;
-  const baseDirectory = write('v1.2.3', {
-    assets: [{ name: 'breeze-agent.msi', sha256: 'b'.repeat(64), size: 1 }],
-    images: baseImages, release: 'v1.2.3', releaseKind: 'full', repository: 'LanternOps/breeze',
-    schemaVersion: 1, sourceCommit: 'b'.repeat(40),
-  });
+  const baseDirectory = write('v1.2.3', baseServerOnly
+    ? {
+      assets: [], binariesRelease: 'v1.2.2', binariesSourceCommit: 'a'.repeat(40),
+      images: baseImages, release: 'v1.2.3', releaseKind: 'server-only', repository: 'LanternOps/breeze',
+      schemaVersion: 1, sourceCommit: 'b'.repeat(40),
+    }
+    : {
+      assets: [{ name: 'breeze-agent.msi', sha256: 'b'.repeat(64), size: 1 }],
+      images: baseImages, release: 'v1.2.3', releaseKind: 'full', repository: 'LanternOps/breeze',
+      schemaVersion: 1, sourceCommit: 'b'.repeat(40),
+    });
   const serverImages = images.map((image) => (image.name === 'binaries' ? image : { ...image, digest: digest('8') }));
   const directory = write('v1.2.4', {
     assets: [], binariesRelease: 'v1.2.3', binariesSourceCommit: 'b'.repeat(40),
@@ -500,6 +542,51 @@ test('guided --upgrade to a server-only release places nothing when the carried 
   assert.equal(result.status, 0, `the server images still verified:\n${result.stdout}\n${result.stderr}`);
   assert.match(result.stderr, /release manifest pair/iu);
   assert.deepEqual(readPair(docker.volume), [null, null], 'a stale pair is removed rather than left to mismatch the new release');
+  assert.equal(existsSync(join(workDir, 'release-manifest')), false);
+  assert.match(result.stdout, /Removed the release manifest pair this script placed for the previous release from the binaries volume/u);
+  assert.doesNotMatch(result.stderr, /did not stage/u);
+});
+
+test('guided --upgrade says so when it removes a pair it did not stage', () => {
+  const fixture = serverOnlyFixture({ tamperBase: true });
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.3']);
+  const docker = fakeDockerWithVolume(workDir);
+  stagePair(join(workDir, 'release-manifest'), 'stale');
+  stagePair(docker.volume, 'placed by hand');
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.4', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.deepEqual(readPair(docker.volume), [null, null]);
+  assert.match(result.stderr, /Removed a release manifest pair from the binaries volume that this script did not stage/u);
+});
+
+test('guided --upgrade to a server-only release refuses a carried pair that is not a full release', () => {
+  // Validly signed, right tag, same binaries digest, but itself server-only: it
+  // lists no binaries, so local registration would refuse every one of them.
+  const fixture = serverOnlyFixture({ baseServerOnly: true });
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.3']);
+  const docker = fakeDockerWithVolume(workDir);
+  stagePair(join(workDir, 'release-manifest'), 'stale');
+  stagePair(docker.volume, 'stale');
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.4', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `the server images still verified:\n${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /releaseKind 'server-only', not 'full'/u);
+  assert.deepEqual(readPair(docker.volume), [null, null], 'no pair from a non-full release is placed');
+  assert.equal(existsSync(join(workDir, 'release-manifest')), false);
+});
+
+test('guided --upgrade to a server-only release does not reuse a kept carried pair that is not a full release', () => {
+  const fixture = serverOnlyFixture({ baseServerOnly: true });
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.3']);
+  const docker = fakeDockerWithVolume(workDir);
+  mkdirSync(join(workDir, 'release-manifest'));
+  for (const name of PAIR) writeFileSync(join(workDir, 'release-manifest', name), readFileSync(join(fixture.baseDirectory, name)));
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.4', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.doesNotMatch(result.stdout, /keeping it/u);
+  assert.deepEqual(readPair(docker.volume), [null, null]);
   assert.equal(existsSync(join(workDir, 'release-manifest')), false);
 });
 
@@ -627,15 +714,51 @@ test('guided --upgrade --dry-run copies nothing into the volume', () => {
   assert.ok(!existsSync(docker.log) || !/ run /u.test(readFileSync(docker.log, 'utf8')), 'docker compose run never executes');
 });
 
-test('guided --upgrade warns, prints the copy command, and still starts when the copy fails', () => {
+test('guided --upgrade removes the older pair, prints the copy commands, and still starts when the copy fails', () => {
   const fixture = signedFixture();
   const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
-  const docker = fakeDockerWithVolume(workDir, { failRun: true });
+  const docker = fakeDockerWithVolume(workDir, { failRun: 'copy' });
+  stagePair(join(workDir, 'release-manifest'), 'previous');
+  stagePair(docker.volume, 'previous');
 
   const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stderr, /Could not copy the release manifest pair/u);
-  assert.match(result.stderr, /run --rm --no-deps -T --entrypoint sh -v \S+release-manifest:\/release-manifest:ro binaries-init/u);
+  assert.deepEqual(readPair(docker.volume), [null, null], 'new binaries never sit beside the previous release pair');
+  assert.match(result.stdout, /Removed the release manifest pair this script placed for the previous release from the binaries volume/u);
+  for (const name of PAIR) {
+    assert.match(
+      result.stderr,
+      new RegExp(`run --rm --no-deps -T --entrypoint sh binaries-init -c '[^']+' < \\S+/release-manifest/${name.replaceAll('.', '\\.')}$`, 'mu'),
+      `prints a stdin copy command for ${name}`,
+    );
+  }
+  assert.doesNotMatch(result.stderr, /\/release-manifest:ro/u, 'the printed command needs no host mount');
+  assert.match(readFileSync(docker.log, 'utf8'), /up -d/u, 'the stack still starts');
+});
+
+test('guided --upgrade removes a half-copied pair when the manifest copy fails', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir, { failRun: 'manifest' });
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /Could not copy the release manifest pair/u);
+  assert.deepEqual(readdirSync(docker.volume), [], 'neither the new signature nor a temp file is left');
+  assert.match(result.stdout + result.stderr, /Removed a release manifest signature with no manifest beside it from the binaries volume/u);
+});
+
+test('guided --upgrade warns with the commands when neither the copy nor the removal runs', () => {
+  const fixture = signedFixture();
+  const workDir = upgradeWorkDir(fixture, ['BREEZE_VERSION=1.2.2']);
+  const docker = fakeDockerWithVolume(workDir, { failRun: 'all' });
+
+  const result = runUpgrade(fixture, workDir, ['--upgrade', '1.2.3', '-y'], { PATH: docker.PATH });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /Could not copy the release manifest pair/u);
+  assert.match(result.stderr, /Could not remove the release manifest pair from the binaries volume either/u);
+  assert.match(result.stderr, /binaries-init -c '[^']+' < \S+\/release-manifest\/release-artifact-manifest\.json$/mu);
   assert.match(readFileSync(docker.log, 'utf8'), /up -d/u, 'the stack still starts');
 });
 
@@ -656,7 +779,7 @@ test('an unverified release drops a kept pair so it is never placed', () => {
   const result = spawnSync('bash', ['-c', program], { cwd: workDir, encoding: 'utf8' });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(existsSync(join(workDir, 'release-manifest')), false);
-  assert.match(result.stdout, /binaries-init -c 'rm -f \/target\/release-artifact-manifest\.json /u, 'the printed step removes a pair');
+  assert.match(result.stdout, /binaries-init -c 'set -eu; m=\/target\/release-artifact-manifest\.json;[^']* rm -f "\$m" "\$s"/u, 'the printed step removes a pair');
 });
 
 test('every "pair is missing" message points at a docs heading that exists', () => {
@@ -666,4 +789,24 @@ test('every "pair is missing" message points at a docs heading that exists', () 
   assert.ok(readFileSync(join(repoRoot, 'scripts/guided-setup.sh'), 'utf8').includes(url), 'guided-setup.sh warning');
   const docs = readFileSync(join(repoRoot, 'apps/docs/src/content/docs/deploy/binaries.mdx'), 'utf8');
   assert.match(docs, /^## Release Manifest Pair$/mu, 'the heading Starlight slugs to #release-manifest-pair');
+});
+
+test('the manual docs run the same stdin copy and remove steps guided setup runs', () => {
+  const program = `
+    export BREEZE_GUIDED_SETUP_LIBRARY_ONLY=true
+    source "${join(repoRoot, 'scripts/guided-setup.sh')}"
+    release_manifest_pair_file_place_script release-artifact-manifest.json.ed25519; echo
+    release_manifest_pair_file_place_script release-artifact-manifest.json; echo
+    printf '%s\\n' "$RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT"
+  `;
+  const result = spawnSync('bash', ['-c', program], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const scripts = result.stdout.trim().split('\n');
+  assert.equal(scripts.length, 3);
+  const docs = readFileSync(join(repoRoot, 'apps/docs/src/content/docs/deploy/binaries.mdx'), 'utf8');
+  for (const script of scripts) {
+    assert.ok(!script.includes("'"), `a single-quotable script: ${script}`);
+    assert.ok(docs.includes(`-c '${script}'`), `binaries.mdx runs: ${script}`);
+  }
+  assert.doesNotMatch(docs, /\/release-manifest:ro/u, 'the documented copy needs no host bind mount');
 });
