@@ -364,14 +364,22 @@ const defaultRecordDeps: RecordSnapshotAttestationDeps = {
   },
 };
 
-// Plus every foreign-key refusal (isPgForeignKeyViolationCode): 23503, or
-// 23001 for a RESTRICT key on Postgres 18 (#11624).
 const GUARD_REFUSAL_CODES = new Set(['42501', '23514']);
 
 function pgErrorCode(err: unknown): string | undefined {
   const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
   const code = e?.cause?.code ?? e?.code;
   return typeof code === 'string' ? code : undefined;
+}
+
+/**
+ * True when the attestation insert was refused by a database guard (RLS
+ * 42501, a CHECK 23514, or any foreign-key refusal: 23503, or 23001 for a
+ * RESTRICT key on Postgres 18, #11624) rather than failing for another reason.
+ */
+export function isAttestationGuardRefusal(err: unknown): boolean {
+  const code = pgErrorCode(err);
+  return GUARD_REFUSAL_CODES.has(code ?? '') || isPgForeignKeyViolationCode(code);
 }
 
 async function projectIntegrityStatus(snapshotDbId: string, status: BackupSnapshotIntegrityStatus): Promise<void> {
@@ -463,8 +471,7 @@ export async function recordSnapshotAttestation(
           .returning({ id: backupSnapshotAttestations.id }),
       );
     } catch (err) {
-      const code = pgErrorCode(err);
-      if (!GUARD_REFUSAL_CODES.has(code ?? '') && !isPgForeignKeyViolationCode(code)) throw err;
+      if (!isAttestationGuardRefusal(err)) throw err;
       refusedByGuard = true;
     }
     if (refusedByGuard) {

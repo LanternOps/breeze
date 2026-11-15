@@ -26,6 +26,10 @@ function isSqlstate(node) {
 // restrict_violation for an ON DELETE/UPDATE RESTRICT key on Postgres 18+.
 // Comparing against either literal misses the other (#11624), however the code
 // was unwrapped, so every such comparison must go through the shared helper.
+// Limit: only comparisons and `case` labels are checked. A Set, array or
+// object-key table holding '23503' is not (the helper's own list is one, and
+// test fixtures use them), so route such a lookup through
+// isPgForeignKeyViolationCode by hand, as backupAttestation.ts does.
 function isForeignKeySqlstate(node) {
   node = unwrap(node);
   return node?.type === 'Literal' && (node.value === '23503' || node.value === '23001');

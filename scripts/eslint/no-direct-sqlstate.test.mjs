@@ -14,6 +14,9 @@ tester.run('no-direct-sqlstate', noDirectSqlstate, {
     "isPgForeignKeyViolationCode(pgErrorCode(error))",
     "isPgForeignKeyViolation(error, 'some_fk')",
     "switch (code) { case '23505': break; }",
+    // Documented limit: collection and key literals are not checked.
+    "new Set(['42501', '23503']).has(code)",
+    "const COPY = { '23503': 'gone' }",
   ],
   invalid: [
     "error.code === '23505'",
