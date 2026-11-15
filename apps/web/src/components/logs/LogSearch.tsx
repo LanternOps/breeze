@@ -91,7 +91,9 @@ export default function LogSearch() {
     const controller = new AbortController();
     void (async () => {
       try {
-        const response = await fetchWithAuth('/logs/queries', { signal: controller.signal });
+        const response = await fetchWithAuth('/logs/queries', {
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
+        });
         if (!response.ok) throw new Error();
         const { data }: { data?: SavedQuery[] } = await response.json();
         if (controller.signal.aborted) return;
@@ -143,7 +145,7 @@ export default function LogSearch() {
       const response = await fetchWithAuth('/logs/search', {
         method: 'POST',
         body: JSON.stringify(payload),
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
       });
 
       if (!response.ok) {

@@ -74,6 +74,39 @@ describe('LogSearch', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Search Fleet Logs' })).toBeEnabled());
   });
 
+  it.each(['/logs/queries', '/logs/search'])(
+    'bounds a stalled %s request without suppressing its timeout error', async (endpoint) => {
+      const timeouts: AbortController[] = [];
+      const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
+        const controller = new AbortController();
+        timeouts.push(controller);
+        return controller.signal;
+      });
+      let pendingSignal: AbortSignal | undefined;
+      fetchWithAuthMock.mockImplementation(async (url, options) => {
+        if (url !== endpoint) return makeResponse({ data: [], results: [], total: 0 });
+        pendingSignal = options?.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          pendingSignal!.addEventListener('abort', () => reject(pendingSignal!.reason), { once: true });
+        });
+      });
+      try {
+        render(<LogSearch />);
+        await waitFor(() => expect(pendingSignal).toBeDefined());
+        expect(timeout).toHaveBeenCalledWith(30_000);
+        await act(async () => {
+          for (const controller of timeouts) controller.abort(new DOMException('Request timed out', 'TimeoutError'));
+        });
+        expect(pendingSignal!.aborted).toBe(true);
+        expect(await screen.findByText(endpoint === '/logs/queries'
+          ? 'Could not load saved queries.' : 'Failed to search logs')).toBeInTheDocument();
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Search Fleet Logs' })).toBeEnabled());
+      } finally {
+        timeout.mockRestore();
+      }
+    },
+  );
+
   it('ignores a superseded search response after choosing a saved query', async () => {
     const savedQueryId = '75c55207-b3b4-462f-848b-fdd9e849e56d';
     let finishCustom!: (response: Response) => void;
