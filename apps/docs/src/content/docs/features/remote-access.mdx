@@ -550,6 +550,30 @@ When a session ends (`disconnected` or `failed`), the platform records `duration
 
 ---
 
+## Why a session ended
+
+Every remote session that ends records a reason, shown under its status in **Remote Access → Session History** and in the session's details panel (which also shows the recorded error text, when there is one). The reason is part of the CSV export (`End Reason`) and of `GET /remote/sessions/history` (`endReason`, `errorMessage`).
+
+| Reason | What happened |
+|--------|---------------|
+| Ended by the user | The person at the device ended it from the on-screen indicator. |
+| Ended by a technician | A technician ended it from the web console, for example with the terminal's **Disconnect** button. |
+| Viewer closed | The viewer's connection closed normally (WebSocket desktop or terminal). |
+| Connection to the viewer lost | The viewer's connection failed, stopped answering heartbeats, or the API server holding it went away. |
+| Connection closed | The device reported that the peer connection closed. This is how most desktop sessions end today: the desktop viewer closes the connection when you hang up, so a normal hang-up and a dropped network connection both show this reason. When the viewer was reconnecting, Breeze first waits a short grace period. |
+| Never connected | The session was still pending or connecting when it timed out. A device whose sessions keep ending this way is worth checking for a connection that cannot be established between viewer and device. |
+| Replaced by a newer session | A new session to the same device replaced it. |
+| Screen capture stopped | The device stopped producing video mid-session and ended it; the details panel shows the device's reason. |
+| Failed to start | The device or the API could not start the session; the details panel shows the error. |
+| Consent declined | The person at the device declined the consent prompt. |
+| Access revoked | The technician's access ended: a live access check failed (role, membership, MFA or the remote access policy changed), or their account was changed (password or MFA reset, deactivation). |
+| Maximum session duration reached | The session reached the policy's maximum duration, or the 24-hour server limit. |
+| Device removed or reinstalled | The device was decommissioned, reinstalled, or had its credentials revoked. |
+
+Sessions that ended before this was recorded show no reason. Some stops the device makes on its own (its idle timeout, lifetime limit or an expired revocation lease) are also reported today as **Connection closed**.
+
+---
+
 ## Session Recording
 
 Breeze does not record sessions itself. What it provides is a place to attach a link to a recording produced elsewhere — for example, a screen-recording pipeline your organization runs alongside remote sessions — and a way for technicians to open that link later from the session's history entry.

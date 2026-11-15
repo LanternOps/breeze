@@ -88,6 +88,8 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
   withDbTransaction: (fn: () => Promise<unknown>) => fn(),
+  // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+  withDbTransactionIfHeld: (fn: () => Promise<unknown>) => fn(),
   // remoteDesktopStartIntent.ts (real impl, not mocked in this file) throws
   // unless this reports an open db access context.
   hasDbAccessContext: vi.fn(() => true),

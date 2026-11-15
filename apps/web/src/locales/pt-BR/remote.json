@@ -488,6 +488,7 @@
       "connection": "Erro de conexão",
       "createSession": "Falha ao criar a sessão",
       "createTicket": "Falha ao criar o tíquete de conexão",
+      "endSession": "Falha ao encerrar a sessão",
       "failed": "Falha na conexão",
       "initialize": "Falha ao inicializar o terminal",
       "invalidTicket": "Resposta de tíquete de conexão inválida",
@@ -703,7 +704,6 @@
       "disconnected": "Desconectado",
       "failed": "Falhou",
       "pending": "Pendente",
-      "endedByUser": "Encerrada pelo usuário",
       "teardownPending": "Encerrando (aguardando o dispositivo)"
     },
     "subtitle": "Log de auditoria de acesso remoto",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Ver detalhes",
-    "yesterdayAt": "Ontem {{time}}"
+    "yesterdayAt": "Ontem {{time}}",
+    "endReasons": {
+      "endedByUser": "Encerrada pelo usuário",
+      "operatorEnded": "Encerrada por um técnico",
+      "viewerClosed": "Visualizador fechado",
+      "connectionLost": "Conexão com o visualizador perdida",
+      "peerDisconnected": "Conexão encerrada",
+      "neverConnected": "Nunca conectou",
+      "superseded": "Substituída por uma sessão mais recente",
+      "captureFailed": "Captura de tela interrompida",
+      "startFailed": "Falha ao iniciar",
+      "consentDenied": "Consentimento recusado",
+      "accessRevoked": "Acesso revogado",
+      "maxDuration": "Duração máxima da sessão atingida",
+      "deviceRemoved": "Dispositivo removido ou reinstalado"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Detalhes da sessão",
@@ -732,7 +747,8 @@
       "started": "Iniciada",
       "userId": "ID do usuário",
       "os": "SO",
-      "email": "E-mail"
+      "email": "E-mail",
+      "error": "Erro"
     },
     "sections": {
       "recording": "Gravação",
@@ -740,7 +756,6 @@
       "timeline": "Linha do tempo"
     },
     "subtitle": "Visualize e audite sessões de acesso remoto",
-    "endedByUser": "Encerrada pelo usuário",
     "teardownPending": "Aguardando confirmação do dispositivo",
     "title": "Histórico de Sessões",
     "viewDevice": "Ver dispositivo",

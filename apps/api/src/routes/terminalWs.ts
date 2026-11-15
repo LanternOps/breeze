@@ -41,6 +41,7 @@ import {
 } from '../services/remoteWsOwnership';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { evaluateCapability, partnerIdForDevice, unresolvedPartnerDecision } from '../services/partnerTrust';
+import type { RemoteSessionEndReason } from '@breeze/shared';
 
 // Zod validation for terminal user messages
 const terminalMessageSchema = z.discriminatedUnion('type', [
@@ -320,6 +321,8 @@ interface CloseExactTerminalOptions {
   closeCode: number;
   closeReason: string;
   terminalStatus: 'disconnected' | 'failed';
+  /** #11839: why this close ended the session (remote_sessions.end_reason). */
+  endReason: RemoteSessionEndReason;
   /** Write the E2 session-summary audit row (normal disconnects only). */
   writeSummary: boolean;
 }
@@ -422,7 +425,7 @@ async function closeExactTerminalConnection(
       await withSystemDbAccessContext(async () => {
         await commitDesktopTerminalIntent({
           sessionId,
-          write: { status: options.terminalStatus, endedAt, durationSeconds },
+          write: { status: options.terminalStatus, endedAt, durationSeconds, endReason: options.endReason },
           // A terminal (PTY) row has no endpoint acknowledgement flow; the
           // set clause writes 'confirmed' for non-desktop types regardless.
           phase: 'pending',
@@ -485,6 +488,7 @@ export async function closeTerminalSession(sessionId: string): Promise<boolean> 
     closeCode: 4003,
     closeReason: 'Session revoked',
     terminalStatus: 'disconnected',
+    endReason: 'access_revoked',
     writeSummary: false,
   });
 }
@@ -534,6 +538,7 @@ export async function failTerminalStartForExactCommand(
       closeCode: 4003,
       closeReason: 'Terminal start failed',
       terminalStatus: 'failed',
+      endReason: 'start_failed',
       writeSummary: false,
     });
     return 'delivered';
@@ -809,6 +814,7 @@ function createTerminalWsHandlers(
               closeCode: 4003,
               closeReason: 'Lease lost',
               terminalStatus: 'failed',
+              endReason: 'connection_lost',
               writeSummary: false,
             }).catch(() => undefined);
           });
@@ -834,6 +840,7 @@ function createTerminalWsHandlers(
             closeCode: 1011,
             closeReason: 'Terminal session setup failed',
             terminalStatus: 'failed',
+            endReason: 'start_failed',
             writeSummary: false,
           });
           return;
@@ -880,6 +887,7 @@ function createTerminalWsHandlers(
             closeCode: 4002,
             closeReason: 'Agent send failed',
             terminalStatus: 'failed',
+            endReason: 'start_failed',
             writeSummary: false,
           });
           return;
@@ -936,6 +944,7 @@ function createTerminalWsHandlers(
                   closeCode: 4003,
                   closeReason: 'Session revoked',
                   terminalStatus: 'disconnected',
+                  endReason: 'access_revoked',
                   writeSummary: false,
                 }).catch(() => undefined);
               }
@@ -958,6 +967,7 @@ function createTerminalWsHandlers(
                   closeCode: 4003,
                   closeReason: 'Session revoked',
                   terminalStatus: 'disconnected',
+                  endReason: 'access_revoked',
                   writeSummary: false,
                 }).catch(() => undefined);
               }
@@ -993,6 +1003,7 @@ function createTerminalWsHandlers(
             closeCode: 4001,
             closeReason: 'Session setup failed',
             terminalStatus: 'failed',
+            endReason: 'start_failed',
             writeSummary: false,
           }).catch((cleanupError) => {
             console.error(`[TerminalWs] setup cleanup failed for ${sessionId}:`, cleanupError);
@@ -1008,7 +1019,7 @@ function createTerminalWsHandlers(
               await withSystemDbAccessContext(async () => {
                 await commitDesktopTerminalIntent({
                   sessionId,
-                  write: { status: 'failed', endedAt: new Date() },
+                  write: { status: 'failed', endedAt: new Date(), endReason: 'start_failed' },
                   phase: 'pending',
                 });
               });
@@ -1160,6 +1171,7 @@ function createTerminalWsHandlers(
         closeCode: 1000,
         closeReason: 'disconnected',
         terminalStatus: 'disconnected',
+        endReason: 'viewer_closed',
         writeSummary: true,
       });
     },
@@ -1173,6 +1185,7 @@ function createTerminalWsHandlers(
         closeCode: 1011,
         closeReason: 'socket_error',
         terminalStatus: 'disconnected',
+        endReason: 'connection_lost',
         writeSummary: false,
       });
     }

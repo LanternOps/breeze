@@ -3,6 +3,7 @@ import { pgTable, uuid, text, timestamp, jsonb, pgEnum, integer, bigint, index, 
 import { devices } from './devices';
 import { users } from './users';
 import { organizations } from './orgs';
+import { REMOTE_SESSION_END_REASONS, type RemoteSessionEndReason } from '@breeze/shared';
 
 export const remoteSessionTypeEnum = pgEnum('remote_session_type', ['terminal', 'desktop', 'file_transfer']);
 export const remoteSessionStatusEnum = pgEnum('remote_session_status', ['pending', 'connecting', 'active', 'disconnected', 'failed', 'denied']);
@@ -72,11 +73,15 @@ export const remoteSessions = pgTable('remote_sessions', {
   // Redis holds only the lease TTL, so a renew after a Redis flush re-derives
   // the baseline from here. NULL on rows predating the revocation lease.
   permissionsEpochSnapshot: bigint('permissions_epoch_snapshot', { mode: 'number' }),
-  // #10190 W06: why the session ended when status / errorMessage do not say.
-  // 'ended_by_user' = the person at the keyboard ended it from the on-screen
-  // indicator (agent desk-userend result). NULL = not known / not a user end.
-  // CHECK-constrained (2027-01-09-120100-remote-sessions-end-reason.sql).
-  endReason: text('end_reason').$type<'ended_by_user'>(),
+  // Why the session ended (#11839; first value 'ended_by_user' from #10190 W06).
+  // Written by every terminal writer through terminalIntentSet as
+  // COALESCE(existing, new), so a reason recorded while the row was still live
+  // (the agent's desk-userend) is never overwritten. desktopUserEnd.ts is the
+  // one writer outside the contract: it sets 'ended_by_user' on a live row, or
+  // replaces the generic 'peer_disconnected' its own stop recorded first. NULL = not recorded (rows
+  // that predate #11839). Closed set REMOTE_SESSION_END_REASONS, CHECK-
+  // constrained (widened by 2027-01-24-220000-remote-sessions-end-reason-widen.sql).
+  endReason: text('end_reason').$type<RemoteSessionEndReason>(),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   // W06 (#3900): one user's ended sessions for a day window; partial so the
@@ -105,7 +110,7 @@ export const remoteSessions = pgTable('remote_sessions', {
   ),
   check(
     'remote_sessions_end_reason_check',
-    sql`${t.endReason} IS NULL OR ${t.endReason} IN ('ended_by_user')`,
+    sql`${t.endReason} IS NULL OR ${t.endReason} IN (${sql.raw(REMOTE_SESSION_END_REASONS.map((v) => `'${v}'`).join(', '))})`,
   ),
   check(
     'remote_sessions_termination_phase_check',

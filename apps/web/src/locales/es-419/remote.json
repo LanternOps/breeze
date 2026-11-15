@@ -488,6 +488,7 @@
       "connection": "Error de conexión",
       "createSession": "No se pudo crear la sesión",
       "createTicket": "No se pudo crear el ticket de conexión",
+      "endSession": "No se pudo finalizar la sesión",
       "failed": "Conexión fallida",
       "initialize": "No se pudo inicializar",
       "invalidTicket": "Respuesta de ticket de conexión no válida",
@@ -703,7 +704,6 @@
       "disconnected": "Desconectado",
       "failed": "Fallido",
       "pending": "Pendiente",
-      "endedByUser": "Finalizada por el usuario",
       "teardownPending": "Finalizando (esperando al dispositivo)"
     },
     "subtitle": "Registro de auditoría de acceso remoto",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Ver detalles",
-    "yesterdayAt": "Ayer {{time}}"
+    "yesterdayAt": "Ayer {{time}}",
+    "endReasons": {
+      "endedByUser": "Finalizada por el usuario",
+      "operatorEnded": "Finalizada por un técnico",
+      "viewerClosed": "Visor cerrado",
+      "connectionLost": "Se perdió la conexión con el visor",
+      "peerDisconnected": "Conexión cerrada",
+      "neverConnected": "Nunca se conectó",
+      "superseded": "Reemplazada por una sesión más reciente",
+      "captureFailed": "La captura de pantalla se detuvo",
+      "startFailed": "No se pudo iniciar",
+      "consentDenied": "Consentimiento rechazado",
+      "accessRevoked": "Acceso revocado",
+      "maxDuration": "Se alcanzó la duración máxima de la sesión",
+      "deviceRemoved": "Dispositivo eliminado o reinstalado"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Detalles Título",
@@ -732,7 +747,8 @@
       "started": "Iniciado",
       "userId": "Usuario ID",
       "os": "OS",
-      "email": "Correo electrónico"
+      "email": "Correo electrónico",
+      "error": "Detalle del error"
     },
     "sections": {
       "recording": "Grabación",
@@ -740,7 +756,6 @@
       "timeline": "Línea de tiempo"
     },
     "subtitle": "Ver y auditar sesiones de acceso remoto",
-    "endedByUser": "Finalizada por el usuario",
     "teardownPending": "Esperando confirmación del dispositivo",
     "title": "Historial de sesiones",
     "viewDevice": "Ver dispositivo",

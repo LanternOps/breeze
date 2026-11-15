@@ -488,6 +488,7 @@
       "connection": "Connection error",
       "createSession": "Failed to create session",
       "createTicket": "Failed to create connection ticket",
+      "endSession": "Failed to end the session",
       "failed": "Connection failed",
       "initialize": "Failed to initialize",
       "invalidTicket": "Invalid connection ticket response",
@@ -703,7 +704,6 @@
       "disconnected": "Disconnected",
       "failed": "Failed",
       "pending": "Pending",
-      "endedByUser": "Ended by the user",
       "teardownPending": "Ending (awaiting device)"
     },
     "subtitle": "Remote access audit log",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "View details",
-    "yesterdayAt": "Yesterday {{time}}"
+    "yesterdayAt": "Yesterday {{time}}",
+    "endReasons": {
+      "endedByUser": "Ended by the user",
+      "operatorEnded": "Ended by a technician",
+      "viewerClosed": "Viewer closed",
+      "connectionLost": "Connection to the viewer lost",
+      "peerDisconnected": "Connection closed",
+      "neverConnected": "Never connected",
+      "superseded": "Replaced by a newer session",
+      "captureFailed": "Screen capture stopped",
+      "startFailed": "Failed to start",
+      "consentDenied": "Consent declined",
+      "accessRevoked": "Access revoked",
+      "maxDuration": "Maximum session duration reached",
+      "deviceRemoved": "Device removed or reinstalled"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Details Title",
@@ -732,7 +747,8 @@
       "started": "Started",
       "userId": "User ID",
       "os": "OS",
-      "email": "Email"
+      "email": "Email",
+      "error": "Error"
     },
     "sections": {
       "recording": "Recording",
@@ -740,7 +756,6 @@
       "timeline": "Timeline"
     },
     "subtitle": "View and audit remote access sessions",
-    "endedByUser": "Ended by the user",
     "teardownPending": "Awaiting device confirmation",
     "title": "Session History",
     "viewDevice": "View Device",

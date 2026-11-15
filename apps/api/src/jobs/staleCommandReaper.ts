@@ -39,7 +39,7 @@ import { failVaultSyncWithoutResult } from '../services/vaultSyncPersistence';
 import { finalizeContainmentAction } from '../services/incidentContainmentResults';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
-import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
+import { runTerminalWrite, terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
 import { catchUpExpiryReason } from './backupCatchUp';
 import {
@@ -1462,12 +1462,13 @@ async function reapStaleRemoteSessions(): Promise<number> {
   // Pending/connecting sessions with no start attempt in 10 minutes. Not keyed on
   // created_at: a live session re-offering is `connecting` on its original row
   // (#11149).
-  const pendingResult = await db
+  const pendingResult = await runTerminalWrite(() => db
     .update(remoteSessions)
     .set(terminalIntentSet({
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: connection was never established',
+      endReason: 'never_connected',
     }, 'pending'))
     .where(
       and(
@@ -1475,15 +1476,16 @@ async function reapStaleRemoteSessions(): Promise<number> {
         lt(remoteSessions.lastStartAttemptAt, pendingCutoff),
       ),
     )
-    .returning({ id: remoteSessions.id });
+    .returning({ id: remoteSessions.id }));
 
   // Zombie active sessions older than 24 hours
-  const activeResult = await db
+  const activeResult = await runTerminalWrite(() => db
     .update(remoteSessions)
     .set(terminalIntentSet({
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: exceeded maximum session duration',
+      endReason: 'max_duration',
     }, 'pending'))
     .where(
       and(
@@ -1492,7 +1494,7 @@ async function reapStaleRemoteSessions(): Promise<number> {
         isNotNull(remoteSessions.startedAt),
       ),
     )
-    .returning({ id: remoteSessions.id });
+    .returning({ id: remoteSessions.id }));
 
   // Revoke viewer tokens for every session we just force-disconnected so a
   // lingering (up to 2h) viewer token can't resurrect it via /viewer/offer (#5).

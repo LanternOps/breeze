@@ -3913,6 +3913,11 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                       write: {
                         status: 'disconnected',
                         endedAt: new Date(),
+                        // #11839: only the agent's no-video watchdog sets a
+                        // stopReason on a peer drop (#5300); every other
+                        // agent-side stop (operator, lifetime, lease, ICE
+                        // failure) reports it empty today.
+                        endReason: stopReason ? 'capture_failed' : 'peer_disconnected',
                         // Only fills errorMessage when it's still empty — never
                         // overwrites a startup-probe failure text (#5284/#5295)
                         // that a `desk-start` failure already stored there.
@@ -4063,6 +4068,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     write: {
                       status: 'denied',
                       endedAt: new Date(),
+                      endReason: 'consent_denied',
                       errorMessage: consentDeniedMessage(
                         reason,
                         typeof fastResult.consentDetail === 'string' ? fastResult.consentDetail : undefined,
@@ -4364,7 +4370,8 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     write: {
                       status: 'failed',
                       errorMessage: errorMsg,
-                      endedAt: new Date()
+                      endedAt: new Date(),
+                      endReason: 'start_failed',
                     },
                     phase: 'confirmed',
                     where: [
@@ -5106,7 +5113,7 @@ async function failUnreadableDesktopStart(
     await runWithAgentDbAccess('agentWs.desktop.unreadableStart', async () => {
       const result = await commitDesktopTerminalIntent({
         sessionId: startCommand.sessionId,
-        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date() },
+        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date(), endReason: 'start_failed' },
         phase: 'confirmed',
         where: [
           eq(remoteSessions.deviceId, deviceId),

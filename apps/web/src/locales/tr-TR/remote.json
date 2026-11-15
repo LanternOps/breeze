@@ -488,6 +488,7 @@
       "connection": "Bağlantı hatası",
       "createSession": "Oturum oluşturulamadı",
       "createTicket": "Bağlantı bileti oluşturulamadı",
+      "endSession": "Oturum sonlandırılamadı",
       "failed": "Bağlantı başarısız oldu",
       "initialize": "Başlatılamadı",
       "invalidTicket": "Geçersiz bağlantı bileti yanıtı",
@@ -703,7 +704,6 @@
       "disconnected": "Bağlantı Kesildi",
       "failed": "Başarısız",
       "pending": "Beklemede",
-      "endedByUser": "Kullanıcı tarafından sonlandırıldı",
       "teardownPending": "Sonlandırılıyor (cihaz bekleniyor)"
     },
     "subtitle": "Uzaktan erişim denetim günlüğü",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Ayrıntıları Görüntüle",
-    "yesterdayAt": "Dün {{time}}"
+    "yesterdayAt": "Dün {{time}}",
+    "endReasons": {
+      "endedByUser": "Kullanıcı tarafından sonlandırıldı",
+      "operatorEnded": "Bir teknisyen tarafından sonlandırıldı",
+      "viewerClosed": "Görüntüleyici kapatıldı",
+      "connectionLost": "Görüntüleyiciyle bağlantı kesildi",
+      "peerDisconnected": "Bağlantı kapatıldı",
+      "neverConnected": "Hiç bağlanmadı",
+      "superseded": "Daha yeni bir oturumla değiştirildi",
+      "captureFailed": "Ekran yakalama durdu",
+      "startFailed": "Başlatılamadı",
+      "consentDenied": "Onay reddedildi",
+      "accessRevoked": "Erişim iptal edildi",
+      "maxDuration": "Maksimum oturum süresine ulaşıldı",
+      "deviceRemoved": "Cihaz kaldırıldı veya yeniden yüklendi"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Ayrıntılar Başlığı",
@@ -732,7 +747,8 @@
       "started": "Başlatıldı",
       "userId": "Kullanıcı Kimliği",
       "os": "İşletim Sistemi",
-      "email": "E-posta"
+      "email": "E-posta",
+      "error": "Hata"
     },
     "sections": {
       "recording": "Kaydediliyor",
@@ -740,7 +756,6 @@
       "timeline": "Zaman Çizelgesi"
     },
     "subtitle": "Uzaktan erişim oturumlarını görüntüleyin ve denetleyin",
-    "endedByUser": "Kullanıcı tarafından sonlandırıldı",
     "teardownPending": "Cihaz onayı bekleniyor",
     "title": "Oturum Geçmişi",
     "viewDevice": "Cihazı Görüntüle",
