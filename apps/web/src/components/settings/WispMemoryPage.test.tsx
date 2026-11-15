@@ -131,14 +131,31 @@ describe('WispMemoryPage', () => {
   it('#11630: an expired standing instruction is still listed, marked expired; a live one is not', async () => {
     mocks.fetchWithAuth.mockImplementation(async () =>
       response({ blocks: [
-        block({ id: 'lapsed', subjectKey: 'old', blockType: 'standing_instruction', status: 'confirmed', expired: true }),
-        block({ id: 'live', subjectKey: 'new', blockType: 'standing_instruction', status: 'confirmed', expired: false }),
+        block({ id: 'lapsed', subjectKey: 'old', content: { text: 'old rule' }, blockType: 'standing_instruction', status: 'confirmed', expired: true }),
+        block({ id: 'live', subjectKey: 'new', content: { text: 'new rule' }, blockType: 'standing_instruction', status: 'confirmed', expired: false }),
       ] }),
     );
     render(<WispMemoryPage />);
-    await screen.findByText('old');
+    await screen.findByText('old rule');
     expect(screen.getByTestId('wisp-memory-expired-lapsed').textContent).toBe('wispMemory.expired');
     expect(screen.queryByTestId('wisp-memory-expired-live')).toBeNull();
+  });
+
+  it('#11612: a standing instruction shows its text, not the raw subject key; the key stays behind details', async () => {
+    const RAW = 'device:11111111-1111-4111-8111-111111111111:reboot:0123456789abcdef';
+    mocks.fetchWithAuth.mockImplementation(async () =>
+      response({ blocks: [
+        block({ id: 'si', subjectKey: RAW, blockType: 'standing_instruction', content: { text: "Don't reboot PC-01" } }),
+        block({ id: 'si2', subjectKey: RAW + 'x', blockType: 'standing_instruction', content: {} }),
+      ] }),
+    );
+    render(<WispMemoryPage />);
+    expect(await screen.findByText("Don't reboot PC-01")).toBeTruthy();
+    expect(screen.getByTestId('wisp-memory-row-si2').textContent).toContain('wispMemory.subjectFallback');
+    expect(screen.getByTestId('wisp-memory-row-si').textContent).not.toContain('device:');
+    expect(screen.getByTestId('wisp-memory-row-si2').textContent).not.toContain('device:');
+    fireEvent.click(screen.getByTestId('wisp-memory-toggle-si'));
+    expect(screen.getByTestId('wisp-memory-key-si').textContent).toBe(RAW);
   });
 
   it('401 on load navigates to /login', async () => {

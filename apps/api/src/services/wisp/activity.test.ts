@@ -85,6 +85,10 @@ const intentRow = (n: number, orgId: string, at: Date) => ({
 const memoryRow = (n: number, ownerKind: string, ownerOrgId: string | null, at: Date) => ({
   id: uid(n), ownerKind, ownerOrgId, blockType: 'org_fact', subjectKey: 'backup:vendor', status: 'unconfirmed', createdAt: at,
 });
+const instructionRow = (n: number, at: Date, content: Record<string, unknown>) => ({
+  id: uid(n), ownerKind: 'user', ownerOrgId: null, blockType: 'standing_instruction',
+  subjectKey: 'device:11111111-1111-4111-8111-111111111111:reboot:0123456789abcdef', content, status: 'unconfirmed', createdAt: at,
+});
 const notifRow = (n: number, orgId: string | null, at: Date, isBrief = false) => ({
   id: uid(n), orgId, title: isBrief ? 'Good morning' : 'Wisp needs you', message: 'Backup failing', link: `/ai/wisp/thread/${T1}`, isBrief, createdAt: at,
 });
@@ -190,6 +194,19 @@ describe('listActivity — ceiling filter', () => {
     expect(byId.get(uid(6))).toMatchObject({ kind: 'brief', orgId: null });
     // newest first
     expect(items.map((i) => i.id)).toEqual([uid(6), uid(5), uid(4), uid(3), uid(2), uid(1)]);
+  });
+
+  it('a standing-instruction memory row shows the instruction text, never the raw subject key (#11612)', async () => {
+    h.rows.ai_memory_blocks = [
+      instructionRow(1, t(1), { text: "Don't reboot PC-01" }),
+      instructionRow(2, t(2), {}),
+    ];
+    const { items } = await listActivity(ceiling());
+    const byId = new Map(items.map((i) => [i.id, i]));
+    expect(byId.get(uid(1))!.title).toBe("Remembered standing instruction: Don't reboot PC-01");
+    const fallback = byId.get(uid(2))!.title;
+    expect(fallback).toBe('Remembered standing instruction');
+    for (const i of items) expect(i.title).not.toMatch(/device:|0123456789abcdef/);
   });
 
   it('concern href is null without a threadId', async () => {

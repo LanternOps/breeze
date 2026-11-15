@@ -8524,6 +8524,7 @@
     "pickUser": "Seleziona un tecnico",
     "pickPrompt": "Scegli un’opzione sopra per vedere la sua memoria.",
     "showContent": "Mostra contenuto",
+    "subjectFallback": "Istruzione permanente",
     "hideContent": "Nascondi contenuto",
     "conversationUnavailable": "Questa conversazione non è più disponibile.",
     "usersLoadFailed": "Impossibile caricare i tecnici."
