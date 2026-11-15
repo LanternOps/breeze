@@ -309,7 +309,10 @@ func vaultTestRun(t *testing.T, primary *providers.LocalProvider, srcDir string,
 	sort.Strings(names)
 	var walked []backupFile
 	for _, name := range names {
-		p := filepath.Join(srcDir, name)
+		p := filepath.Join(srcDir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(p, []byte(files[name]), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -1013,7 +1016,7 @@ func TestVaultRetention_WaitsForAnInFlightSync(t *testing.T) {
 	select {
 	case err := <-retentionDone:
 		release()
-		<-syncDone
+		t.Logf("sync after the early retention: %v", <-syncDone)
 		t.Fatalf("retention ran while a sync was copying (err=%v)", err)
 	case <-time.After(300 * time.Millisecond):
 	}

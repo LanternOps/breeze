@@ -31,6 +31,27 @@ type vaultManifest struct {
 // vault copy short of an object restore asks for.
 func readManifestReferences(localPath, snapshotID string) (*vaultManifest, error) {
 	m := &vaultManifest{id: snapshotID, refs: map[string]struct{}{}}
+	ts, err := scanManifestReferences(localPath, snapshotID, func(key string, parsed objectkey.Parsed) {
+		if _, seen := m.refs[key]; !seen {
+			m.refs[key] = struct{}{}
+			if parsed.SnapshotID != snapshotID {
+				m.externalRefs++
+			}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.timestamp = ts
+	return m, nil
+}
+
+// scanManifestReferences decodes the manifest at localPath, which must be
+// snapshotID's, validates every object key it references and passes each one
+// (repeats included) to visit, which may be nil. It retains no entry, so a
+// million-entry manifest costs only what visit keeps. It returns the
+// manifest's timestamp.
+func scanManifestReferences(localPath, snapshotID string, visit func(key string, parsed objectkey.Parsed)) (time.Time, error) {
 	var keyErr error
 	snap, err := decodeSnapshotManifestFile(localPath, func(f *SnapshotFile) bool {
 		if keyErr != nil || f.BackupPath == "" {
@@ -43,27 +64,41 @@ func readManifestReferences(localPath, snapshotID string) (*vaultManifest, error
 			keyErr = err
 			return false
 		}
-		if _, seen := m.refs[f.BackupPath]; !seen {
-			m.refs[f.BackupPath] = struct{}{}
-			if parsed.SnapshotID != snapshotID {
-				m.externalRefs++
-			}
+		if visit != nil {
+			visit(f.BackupPath, parsed)
 		}
 		// Retain no entry: only the keys are needed, and a manifest can list
 		// millions of files.
 		return false
 	})
 	if err != nil {
-		return nil, fmt.Errorf("decode manifest: %w", err)
+		return time.Time{}, fmt.Errorf("decode manifest: %w", err)
 	}
 	if keyErr != nil {
-		return nil, fmt.Errorf("manifest references an invalid object key: %w", keyErr)
+		return time.Time{}, fmt.Errorf("manifest references an invalid object key: %w", keyErr)
 	}
 	if snap.ID != snapshotID {
-		return nil, fmt.Errorf("manifest under %s names snapshot %q", snapshotID, snap.ID)
+		return time.Time{}, fmt.Errorf("manifest under %s names snapshot %q", snapshotID, snap.ID)
 	}
-	m.timestamp = snap.Timestamp
-	return m, nil
+	return snap.Timestamp, nil
+}
+
+// vaultKeyFold maps an object key to the form under which the vault's
+// filesystem may treat two keys as one object. The local vault can sit on a
+// case-insensitive or normalization-insensitive filesystem (APFS, NTFS,
+// exFAT, HFS+), where keys that differ only by case or Unicode normalization
+// (in any segment, directories included) address one file, and the vault
+// listing returns the spelling on disk, not the one a manifest records.
+//
+// It is foldObjectKey (full case folding plus NFC) with one more pass on top:
+// simple uppercase, folded again, which equates the pairs an NTFS or exFAT
+// upcase table does and case folding does not (dotless i with I and i).
+// Being a function of foldObjectKey's result, it equates every pair that
+// foldObjectKey does. It over-approximates on purpose: the vault uses it only
+// to decide that an object may NOT be deleted, where equating too much keeps
+// an orphan (space) and equating too little deletes a backup.
+func vaultKeyFold(key string) string {
+	return foldObjectKey(strings.ToUpper(foldObjectKey(key)))
 }
 
 // validateManifestObjectKey checks a key read from a manifest against the
@@ -123,22 +158,38 @@ func snapshotIDOfKey(key string) string {
 	return parts[1]
 }
 
+// vaultSnapshot identifies one snapshot in the vault: its id, the manifest's
+// key as the vault listing spells it, and the manifest's timestamp. It holds
+// none of the manifest's references, so every snapshot in the vault can be
+// held at once.
+type vaultSnapshot struct {
+	id          string
+	manifestKey string
+	timestamp   time.Time
+}
+
 // readVaultSnapshots reads every snapshot manifest in the vault (the objects
 // at exactly snapshots/<id>/manifest.json; a system-state manifest deeper in
 // a snapshot prefix is not a snapshot) and returns them oldest-first. It
 // fails when any manifest cannot be read, has an invalid id, names another
 // snapshot, or references an invalid key: retention cannot know what a
-// snapshot it cannot read references.
-func (v *VaultManager) readVaultSnapshots() ([]vaultManifest, error) {
+// snapshot it cannot read references. Each manifest is decoded in full and
+// validated, but only its identity and timestamp are kept.
+//
+// A manifest is recognized by its folded name (vaultKeyFold), not its exact
+// spelling: a manifest the listing spelled differently and retention skipped
+// would leave a snapshot whose references nothing protects.
+func (v *VaultManager) readVaultSnapshots() ([]vaultSnapshot, error) {
 	items, err := v.vault.List(snapshotRootDir)
 	if err != nil {
 		return nil, fmt.Errorf("list vault snapshots: %w", err)
 	}
-	var snapshots []vaultManifest
+	rootFold, manifestFold := vaultKeyFold(snapshotRootDir), vaultKeyFold(snapshotManifestKey)
+	var snapshots []vaultSnapshot
 	var errs []error
 	for _, item := range items {
 		parts := strings.Split(item, "/")
-		if len(parts) != 3 || parts[0] != snapshotRootDir || parts[2] != snapshotManifestKey {
+		if len(parts) != 3 || vaultKeyFold(parts[0]) != rootFold || vaultKeyFold(parts[2]) != manifestFold {
 			continue
 		}
 		id := parts[1]
@@ -146,12 +197,12 @@ func (v *VaultManager) readVaultSnapshots() ([]vaultManifest, error) {
 			errs = append(errs, fmt.Errorf("manifest %s: %q is not a valid snapshot ID", item, id))
 			continue
 		}
-		m, err := v.readVaultManifest(item, id)
+		ts, err := v.scanVaultManifest(item, id, nil)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("manifest %s could not be read: %w", item, err))
 			continue
 		}
-		snapshots = append(snapshots, *m)
+		snapshots = append(snapshots, vaultSnapshot{id: id, manifestKey: item, timestamp: ts})
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
@@ -165,18 +216,40 @@ func (v *VaultManager) readVaultSnapshots() ([]vaultManifest, error) {
 	return snapshots, nil
 }
 
+// readVaultManifest reads one vault manifest with its references.
 func (v *VaultManager) readVaultManifest(key, id string) (*vaultManifest, error) {
+	tmpPath, cleanup, err := v.downloadVaultManifest(key)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	return readManifestReferences(tmpPath, id)
+}
+
+// scanVaultManifest reads one vault manifest, passing each reference to visit
+// (see scanManifestReferences), and returns its timestamp.
+func (v *VaultManager) scanVaultManifest(key, id string, visit func(string, objectkey.Parsed)) (time.Time, error) {
+	tmpPath, cleanup, err := v.downloadVaultManifest(key)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer cleanup()
+	return scanManifestReferences(tmpPath, id, visit)
+}
+
+func (v *VaultManager) downloadVaultManifest(key string) (string, func(), error) {
 	tmp, err := os.CreateTemp("", "vault-retention-manifest-*.json")
 	if err != nil {
-		return nil, fmt.Errorf("temp file: %w", err)
+		return "", nil, fmt.Errorf("temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
-	defer os.Remove(tmpPath)
+	cleanup := func() { _ = os.Remove(tmpPath) }
 	if err := v.vault.Download(key, tmpPath); err != nil {
-		return nil, err
+		cleanup()
+		return "", nil, err
 	}
-	return readManifestReferences(tmpPath, id)
+	return tmpPath, cleanup, nil
 }
 
 func sortedKeys(set map[string]struct{}) []string {

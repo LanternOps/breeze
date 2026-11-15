@@ -7,9 +7,11 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/objectkey"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
@@ -111,10 +113,12 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) (*VaultSyncResult, error)
 //
 // Any object that cannot be copied fails the sync and the manifest is not
 // uploaded, so the vault never presents a snapshot it cannot restore. The
-// objects this run copied are then deleted again: no manifest would ever
+// objects this run created are then deleted again: no manifest would ever
 // reference them, so retention would never reclaim them. Deleting them is
-// safe because vaultMu is held and they were absent before this run, so no
-// complete vault snapshot references them.
+// safe because vaultMu is held and they were absent before this run under
+// every spelling (vaultKeyFold), so no complete vault snapshot references
+// them. Anything not proven absent is left: an orphan costs space, a wrong
+// delete costs a backup.
 func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapshotID string) (*VaultSyncResult, error) {
 	if primary == nil {
 		return nil, errors.New("primary provider is required")
@@ -160,16 +164,21 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 
 	// 3. Copy what the vault lacks. The vault is listed once per snapshot
 	// prefix the objects fall under.
-	vaultSet, listed := v.vaultObjectsUnder(objects)
+	inVault, listed := v.vaultObjectsUnder(objects)
 	var errs []error
-	// copied holds only keys proven absent before this run (their prefix was
-	// listed and did not hold them). A key under a prefix whose listing
-	// failed is copied again but never counted here: it may already have
-	// been in the vault, referenced by a complete snapshot, and a failed sync
-	// must not delete it.
+	// copied holds only keys proven absent before this run: their prefix was
+	// listed and held no object under ANY spelling of the key (vaultKeyFold).
+	// On a case- or normalization-insensitive vault the listing spells an
+	// object as it is on disk, so a key the manifest spells differently is
+	// copied again (rewriting the same object in place), but it was already
+	// there, possibly for a complete snapshot, and a failed sync must not
+	// delete it. A key under a prefix whose listing failed is likewise copied
+	// but never counted.
 	var copied []string
 	for _, file := range objects {
-		if _, exists := vaultSet[file]; exists {
+		// Skipping the copy needs the exact key: on a case-sensitive vault a
+		// differently-spelled object is a different object.
+		if _, exists := inVault.exact[file]; exists {
 			continue
 		}
 		if err := v.copyFromPrimary(primary, file); err != nil {
@@ -177,7 +186,7 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 			slog.Warn("vault sync: object not copied", "snapshotId", snapshotID, "key", file, "error", err.Error())
 			continue
 		}
-		if listed[snapshotIDOfKey(file)] {
+		if _, preexisting := inVault.folded[vaultKeyFold(file)]; listed[snapshotIDOfKey(file)] && !preexisting {
 			copied = append(copied, file)
 		}
 	}
@@ -193,7 +202,9 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 		return nil, fmt.Errorf("vault sync failed at manifest upload: %w", err)
 	}
 
-	held := append(objects, manifestKey)
+	// The result counts each object once: on a case-insensitive primary the
+	// listing and the manifest can spell one object two ways.
+	held := distinctByFold(append(objects, manifestKey))
 	syncResult := &VaultSyncResult{
 		SnapshotID:       snapshotID,
 		VaultPath:        v.config.VaultPath,
@@ -207,6 +218,23 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 	slog.Info("vault sync completed", "snapshotId", snapshotID,
 		"objects", len(held), "referencedObjects", manifest.externalRefs)
 	return syncResult, nil
+}
+
+// distinctByFold returns keys without the later ones whose vaultKeyFold
+// repeats an earlier one's. It is for counting only, never for deciding what
+// to copy or delete.
+func distinctByFold(keys []string) []string {
+	seen := make(map[string]struct{}, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		folded := vaultKeyFold(key)
+		if _, dup := seen[folded]; dup {
+			continue
+		}
+		seen[folded] = struct{}{}
+		out = append(out, key)
+	}
+	return out
 }
 
 // removeCopied deletes the objects a failed sync copied (see
@@ -231,7 +259,7 @@ func (v *VaultManager) copyFromPrimary(primary providers.BackupProvider, key str
 	}
 	tmpPath := tmpFile.Name()
 	_ = tmpFile.Close()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if err := primary.Download(key, tmpPath); err != nil {
 		return fmt.Errorf("download %s: %w", key, err)
@@ -242,36 +270,55 @@ func (v *VaultManager) copyFromPrimary(primary providers.BackupProvider, key str
 	return nil
 }
 
+// vaultHeld is what the vault listing showed before a sync copied anything:
+// each key exactly as listed, and each key's vaultKeyFold.
+type vaultHeld struct {
+	exact  map[string]struct{}
+	folded map[string]struct{}
+}
+
 // vaultObjectsUnder returns the vault's objects under each snapshot prefix
 // that keys fall under, and which prefixes were listed successfully. A
 // prefix whose listing fails is treated as empty, so its objects are copied
-// again rather than assumed present, and is absent from listed.
-func (v *VaultManager) vaultObjectsUnder(keys []string) (present map[string]struct{}, listed map[string]bool) {
-	present = map[string]struct{}{}
+// again rather than assumed present, and is absent from listed. An item is
+// taken as under the prefix when its snapshot segment folds to the prefix's
+// (a provider may spell the prefix as stored), so no object the vault holds
+// under another spelling is missed when proving a key absent.
+func (v *VaultManager) vaultObjectsUnder(keys []string) (held vaultHeld, listed map[string]bool) {
+	held = vaultHeld{exact: map[string]struct{}{}, folded: map[string]struct{}{}}
 	listed = map[string]bool{}
 	tried := map[string]bool{}
+	rootFold := vaultKeyFold(snapshotRootDir)
 	for _, key := range keys {
 		id := snapshotIDOfKey(key)
 		if id == "" || tried[id] {
 			continue
 		}
 		tried[id] = true
-		items, err := listSnapshotPrefixItems(v.vault, id)
+		items, err := v.vault.List(path.Join(snapshotRootDir, id) + "/")
 		if err != nil {
 			slog.Warn("vault: failed to list existing vault objects, will copy them again",
 				"snapshotId", id, "error", err.Error())
 			continue
 		}
 		listed[id] = true
+		idFold := vaultKeyFold(id)
 		for _, item := range items {
-			present[item] = struct{}{}
+			parts := strings.SplitN(path.Clean(item), "/", 3)
+			if len(parts) < 3 || vaultKeyFold(parts[0]) != rootFold || vaultKeyFold(parts[1]) != idFold {
+				continue
+			}
+			held.exact[item] = struct{}{}
+			held.folded[vaultKeyFold(item)] = struct{}{}
 		}
 	}
-	return present, listed
+	return held, listed
 }
 
 // vaultSizeOf sums the stored sizes of keys in the vault, read in one walk
-// per snapshot prefix.
+// per snapshot prefix. A key the size listing spells differently (the
+// spelling on disk of a case- or normalization-insensitive vault) is found by
+// its vaultKeyFold when exactly one listed object has that fold.
 func (v *VaultManager) vaultSizeOf(keys []string) (int64, bool) {
 	sizer, ok := v.vault.(interface {
 		ObjectSizes(string) (map[string]int64, error)
@@ -279,23 +326,38 @@ func (v *VaultManager) vaultSizeOf(keys []string) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	byPrefix := map[string]map[string]int64{}
+	type prefixSizes struct {
+		exact  map[string]int64
+		folded map[string]int64 // -1: more than one object has this fold
+	}
+	byPrefix := map[string]*prefixSizes{}
 	var total int64
 	for _, key := range keys {
 		id := snapshotIDOfKey(key)
 		sizes, seen := byPrefix[id]
 		if !seen {
-			var err error
-			sizes, err = sizer.ObjectSizes(path.Join(snapshotRootDir, id))
+			exact, err := sizer.ObjectSizes(path.Join(snapshotRootDir, id))
 			if err != nil {
 				slog.Warn("vault sync: could not read object sizes, reporting no size",
 					"snapshotId", id, "error", err.Error())
 				return 0, false
 			}
+			sizes = &prefixSizes{exact: exact, folded: make(map[string]int64, len(exact))}
+			for listedKey, size := range exact {
+				folded := vaultKeyFold(listedKey)
+				if _, dup := sizes.folded[folded]; dup {
+					sizes.folded[folded] = -1
+				} else {
+					sizes.folded[folded] = size
+				}
+			}
 			byPrefix[id] = sizes
 		}
-		size, found := sizes[key]
+		size, found := sizes.exact[key]
 		if !found {
+			size, found = sizes.folded[vaultKeyFold(key)]
+		}
+		if !found || size < 0 {
 			slog.Warn("vault sync: a copied object is missing from the size listing, reporting no size", "key", key)
 			return 0, false
 		}
@@ -320,9 +382,19 @@ func (v *VaultManager) EnforceRetention() error {
 // deletion for it succeeded, so a partly-deleted snapshot stays listed and
 // the next retention finishes it.
 //
+// Every keep decision compares folded keys (vaultKeyFold). The vault listing
+// returns keys as stored on disk, and on a case- or normalization-insensitive
+// vault filesystem that spelling can differ from the one a kept manifest
+// records (snapshot A's "Dir/b.txt" and "dir/c.txt" share one directory
+// "Dir", listed as "Dir/c.txt.gz" while a kept incremental references
+// "dir/c.txt.gz"): an exact comparison would delete the only copy. Folding
+// can only keep more, so it applies on every provider.
+//
 // Every manifest in the vault must be read first: an unreadable one could
 // be a kept snapshot whose references are unknown, so retention then deletes
-// nothing and returns why.
+// nothing and returns why. Only the kept snapshots' references are held
+// (folded) while retention runs; a dropped snapshot's manifest is read again
+// when its turn comes, one at a time.
 func (v *VaultManager) enforceRetention() error {
 	snapshots, err := v.readVaultSnapshots()
 	if err != nil {
@@ -335,66 +407,102 @@ func (v *VaultManager) enforceRetention() error {
 	// readVaultSnapshots sorts oldest-first.
 	cut := len(snapshots) - v.config.RetentionCount
 	dropped, kept := snapshots[:cut], snapshots[cut:]
-	keepKeys := map[string]struct{}{}
-	keptIDs := map[string]bool{}
+	keep := vaultKeepSet{keys: map[string]struct{}{}, ids: map[string]struct{}{}}
 	for _, snap := range kept {
-		keptIDs[snap.id] = true
-		for key := range snap.refs {
-			keepKeys[key] = struct{}{}
+		keep.ids[vaultKeyFold(snap.id)] = struct{}{}
+		ts, err := v.scanVaultManifest(snap.manifestKey, snap.id, func(key string, _ objectkey.Parsed) {
+			keep.keys[vaultKeyFold(key)] = struct{}{}
+		})
+		if err != nil {
+			return fmt.Errorf("vault retention deleted nothing: kept snapshot %s could not be read again: %w", snap.id, err)
+		}
+		if !ts.Equal(snap.timestamp) {
+			return fmt.Errorf("vault retention deleted nothing: kept snapshot %s changed while retention ran", snap.id)
 		}
 	}
 
 	var errs []error
 	for _, snap := range dropped {
-		manifestKey := path.Join(snapshotRootDir, snap.id, snapshotManifestKey)
-		items, listErr := listSnapshotPrefixItems(v.vault, snap.id)
-		if listErr != nil {
-			errs = append(errs, fmt.Errorf("list snapshot %s: %w", snap.id, listErr))
+		if _, shared := keep.ids[vaultKeyFold(snap.id)]; shared {
+			// Two snapshot IDs that fold together share one directory on a
+			// case-insensitive vault: deleting this one's manifest could delete
+			// the kept one's. Leave it.
+			slog.Warn("vault retention: not dropping a snapshot whose ID folds onto a kept snapshot's",
+				"snapshotId", snap.id)
 			continue
 		}
-		candidates := make(map[string]struct{}, len(items)+len(snap.refs))
-		for _, item := range items {
-			candidates[item] = struct{}{}
+		if err := v.dropVaultSnapshot(snap, keep); err != nil {
+			errs = append(errs, err)
 		}
-		for key := range snap.refs {
-			candidates[key] = struct{}{}
-		}
-		delete(candidates, manifestKey)
-
-		var snapErrs []error
-		keptForNewer := 0
-		for _, key := range sortedKeys(candidates) {
-			if _, referenced := keepKeys[key]; referenced {
-				keptForNewer++
-				continue
-			}
-			parsed, err := validateManifestObjectKey(key)
-			if err != nil {
-				snapErrs = append(snapErrs, fmt.Errorf("not deleting %q: %w", key, err))
-				continue
-			}
-			if keptIDs[parsed.SnapshotID] {
-				continue
-			}
-			if err := v.vault.Delete(key); err != nil && !errors.Is(err, providers.ErrObjectNotFound) {
-				snapErrs = append(snapErrs, fmt.Errorf("delete %s: %w", key, err))
-			}
-		}
-		if len(snapErrs) > 0 {
-			errs = append(errs, snapErrs...)
-			slog.Warn("vault retention: snapshot only partly deleted, its manifest is kept so the next retention retries",
-				"snapshotId", snap.id, "errors", len(snapErrs))
-			continue
-		}
-		if err := v.vault.Delete(manifestKey); err != nil && !errors.Is(err, providers.ErrObjectNotFound) {
-			errs = append(errs, fmt.Errorf("delete %s: %w", manifestKey, err))
-			continue
-		}
-		slog.Info("vault retention: deleted snapshot", "snapshotId", snap.id,
-			"keptForNewerSnapshots", keptForNewer)
 	}
 
 	return errors.Join(errs...)
+}
+
+// vaultKeepSet is what retention must not delete, folded with vaultKeyFold:
+// every key a kept manifest references, and every kept snapshot's ID (an
+// object under a kept snapshot's own prefix is never deleted).
+type vaultKeepSet struct {
+	keys map[string]struct{}
+	ids  map[string]struct{}
+}
+
+// dropVaultSnapshot deletes one dropped snapshot's objects that keep does not
+// hold, then its manifest (see enforceRetention).
+func (v *VaultManager) dropVaultSnapshot(snap vaultSnapshot, keep vaultKeepSet) error {
+	m, err := v.readVaultManifest(snap.manifestKey, snap.id)
+	if err != nil {
+		return fmt.Errorf("snapshot %s not deleted, its manifest could not be read again: %w", snap.id, err)
+	}
+	items, err := listSnapshotPrefixItems(v.vault, snap.id)
+	if err != nil {
+		return fmt.Errorf("list snapshot %s: %w", snap.id, err)
+	}
+	candidates := make(map[string]struct{}, len(items)+len(m.refs))
+	for _, item := range items {
+		candidates[item] = struct{}{}
+	}
+	for key := range m.refs {
+		candidates[key] = struct{}{}
+	}
+	m = nil
+
+	// The manifest, under any spelling, is deleted last.
+	manifestFold := vaultKeyFold(snap.manifestKey)
+	var errs []error
+	keptForNewer := map[string]struct{}{}
+	for _, key := range sortedKeys(candidates) {
+		folded := vaultKeyFold(key)
+		if folded == manifestFold {
+			continue
+		}
+		if _, referenced := keep.keys[folded]; referenced {
+			keptForNewer[folded] = struct{}{}
+			continue
+		}
+		parsed, err := validateManifestObjectKey(key)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("not deleting %q: %w", key, err))
+			continue
+		}
+		if _, underKept := keep.ids[vaultKeyFold(parsed.SnapshotID)]; underKept {
+			continue
+		}
+		if err := v.vault.Delete(key); err != nil && !errors.Is(err, providers.ErrObjectNotFound) {
+			errs = append(errs, fmt.Errorf("delete %s: %w", key, err))
+		}
+	}
+	if len(errs) > 0 {
+		slog.Warn("vault retention: snapshot only partly deleted, its manifest is kept so the next retention retries",
+			"snapshotId", snap.id, "errors", len(errs))
+		return errors.Join(errs...)
+	}
+	if err := v.vault.Delete(snap.manifestKey); err != nil && !errors.Is(err, providers.ErrObjectNotFound) {
+		return fmt.Errorf("delete %s: %w", snap.manifestKey, err)
+	}
+	slog.Info("vault retention: deleted snapshot", "snapshotId", snap.id,
+		"keptForNewerSnapshots", len(keptForNewer))
+	return nil
 }
 
 // SyncAfterBackup syncs a snapshot to vault and enforces retention.
