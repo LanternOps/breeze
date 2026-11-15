@@ -567,9 +567,9 @@ export default function AiModels() {
 
             {confirmingPrices && largePriceChanges.length > 0 && (
               <div role="alertdialog" aria-labelledby="ai-models-price-confirm-title" data-testid="ai-models-price-confirm"
-                className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3">
+                className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3 text-amber-950 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
                 <p id="ai-models-price-confirm-title" className="font-medium">{t('admin.aiModels.drawer.priceChangeTitle')}</p>
-                <p className="text-xs text-foreground">{t('admin.aiModels.drawer.priceChangeIntro')}</p>
+                <p className="text-xs">{t('admin.aiModels.drawer.priceChangeIntro')}</p>
                 <ul className="space-y-1 text-xs">
                   {largePriceChanges.map((change) => (
                     <li key={`${change.group}-${change.key}`} data-testid={`ai-models-price-confirm-${change.group}-${change.key}`}>

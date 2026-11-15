@@ -142,6 +142,7 @@ describe('AiModels admin page', () => {
       type('ai-models-rate-inputCentsPerM', '0.025'); // the #7692 slip: 2.5 cents is $0.025
       fireEvent.click(screen.getByTestId('ai-models-save'));
       const confirm = await screen.findByTestId('ai-models-price-confirm');
+      expect(confirm).toHaveClass('dark:bg-amber-950', 'dark:text-amber-100');
       expect(confirm.textContent).toContain('$4.00');
       expect(confirm.textContent).toContain('$0.025');
       expect(patched()).toBe(false);
