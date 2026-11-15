@@ -109,13 +109,20 @@ async function withClient<T>(url: string, fn: (client: postgres.Sql) => Promise<
 
 const prevAuditUrl = process.env.AUDIT_ADMIN_DATABASE_URL;
 
-afterEach(async () => {
-  // Never leave the shared test database without the membership other suites
-  // rely on, whatever a test did to it.
+// Never leave the shared test database without the membership other suites
+// rely on, whatever a test (or a killed earlier run) did to it.
+beforeAll(async () => {
   await adminExec('GRANT breeze_audit_admin TO breeze_app');
+});
+
+afterEach(async () => {
   if (prevAuditUrl === undefined) delete process.env.AUDIT_ADMIN_DATABASE_URL;
   else process.env.AUDIT_ADMIN_DATABASE_URL = prevAuditUrl;
-  await closeAuditAdminPool();
+  try {
+    await closeAuditAdminPool();
+  } finally {
+    await adminExec('GRANT breeze_audit_admin TO breeze_app');
+  }
 });
 
 describe('#11929 breeze_app membership lost by a database-only restore', () => {
@@ -173,12 +180,18 @@ describe('#11929 breeze_app membership lost by a database-only restore', () => {
 });
 
 describe('#11929 dedicated audit-admin connection with the membership revoked', () => {
+  let couldLogin = false;
   beforeAll(async () => {
+    const rows = (await getTestDb().execute(
+      sql`SELECT rolcanlogin FROM pg_roles WHERE rolname = 'breeze_audit_admin'`,
+    )) as unknown as Array<{ rolcanlogin: boolean }>;
+    couldLogin = Boolean(rows[0]?.rolcanlogin);
     await adminExec('ALTER ROLE breeze_audit_admin WITH LOGIN');
     await adminExec(`ALTER ROLE breeze_audit_admin PASSWORD '${AUDIT_ADMIN_PASSWORD}'`);
   });
   afterAll(async () => {
-    await adminExec('ALTER ROLE breeze_audit_admin WITH NOLOGIN PASSWORD NULL');
+    // Put the login attribute back the way this file found it.
+    if (!couldLogin) await adminExec('ALTER ROLE breeze_audit_admin WITH NOLOGIN PASSWORD NULL');
   });
 
   async function useDedicatedConnection({ revoke = true } = {}): Promise<void> {
@@ -221,17 +234,36 @@ describe('#11929 dedicated audit-admin connection with the membership revoked', 
     expect(await evidenceCount(deviceId)).toBe(2);
   });
 
-  it('org erasure removes the append-only evidence through it', async () => {
+  it('org erasure removes the append-only evidence and audit rows through it', async () => {
     const { orgId, deviceId } = await seedDeviceWithEvidence();
+    await getTestDb().execute(sql`
+      INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+      VALUES (${orgId}, 'system', gen_random_uuid(), 'test.action', 'test', 'success')
+    `);
     await useDedicatedConnection();
     await cascadeDeleteOrg(orgId, randomUUID());
     expect(await evidenceCount(deviceId)).toBe(0);
+    const audit = (await getTestDb().execute(
+      sql`SELECT count(*)::int AS n FROM audit_logs WHERE org_id = ${orgId}`,
+    )) as unknown as Array<{ n: number }>;
+    expect(audit[0]?.n).toBe(0);
   });
 
-  it('AI invocation retention runs through it', async () => {
+  it('AI invocation retention deletes expired rows through it', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const inserted = (await getTestDb().execute(sql`
+      INSERT INTO ai_invocations (org_id, surface, funding_source, requested_model, served_model, chargeable, created_at)
+      VALUES (${org.id}, 'chat', 'platform', 'm', 'm', false, now() - interval '400 days')
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
     await useDedicatedConnection();
     const result = await pruneAiInvocations({ retentionDays: 30 });
-    expect(result.batches).toBe(1);
+    expect(result.deleted).toBeGreaterThanOrEqual(1);
+    const left = (await getTestDb().execute(
+      sql`SELECT count(*)::int AS n FROM ai_invocations WHERE id = ${inserted[0]!.id}`,
+    )) as unknown as Array<{ n: number }>;
+    expect(left[0]?.n).toBe(0);
   });
 });
 
@@ -270,8 +302,23 @@ describe('#11929 object privileges a role-less restore drops', () => {
     await adminExec(`ALTER FUNCTION ${fn} OWNER TO CURRENT_USER`);
     await adminExec(`GRANT EXECUTE ON FUNCTION ${fn} TO PUBLIC`);
 
-    const report = await withClient(ADMIN_URL, (client) =>
-      ensureClusterRoles(client, { phase: 'post-migration', env: {}, logger: quiet }));
+    let report: Awaited<ReturnType<typeof ensureClusterRoles>>;
+    try {
+      report = await withClient(ADMIN_URL, (client) =>
+        ensureClusterRoles(client, { phase: 'post-migration', env: {}, logger: quiet }));
+    } finally {
+      // Repair directly, not through the code under test, so a regression here
+      // cannot leave the shared database broken for later suites.
+      await adminExec('GRANT SELECT, DELETE ON pam_actuation_results TO breeze_audit_admin');
+      await adminExec('GRANT EXECUTE ON FUNCTION public.breeze_merged_lineage_org_ids() TO breeze_audit_admin');
+      await adminExec('GRANT SELECT ON td_synnex_price_availability TO breeze_search');
+      await adminExec(`DO $$ BEGIN
+        CREATE POLICY td_synnex_pa_search_fn ON td_synnex_price_availability FOR SELECT TO breeze_search USING (true);
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await adminExec(`ALTER FUNCTION ${fn} OWNER TO breeze_search`);
+      await adminExec(`REVOKE ALL ON FUNCTION ${fn} FROM PUBLIC`);
+      await adminExec(`GRANT EXECUTE ON FUNCTION ${fn} TO breeze_app`);
+    }
     expect(report.warnings).toEqual([]);
 
     const rows = (await getTestDb().execute(sql`

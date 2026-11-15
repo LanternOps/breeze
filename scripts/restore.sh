@@ -205,17 +205,27 @@ SQL
   local exit_code=0
   local restore_log
   restore_log="$(mktemp)"
+  # The log holds restore output; remove it however this function exits.
+  trap 'rm -f "${restore_log:-}"; trap - RETURN' RETURN
   pg_restore --clean --if-exists -d "${PGDATABASE}" "${DB_FILE}" >"${restore_log}" 2>&1 || exit_code=$?
   cat "${restore_log}"
 
-  # A role the dump references but the cluster lacks means GRANTs and RLS
-  # policies were dropped. Never report that as success.
-  local missing_roles
-  missing_roles="$(grep -o 'role "[^"]*" does not exist' "${restore_log}" | sort -u | sed 's/ does not exist//' | tr '\n' ' ' || true)"
-  rm -f "${restore_log}"
-  if [ -n "${missing_roles}" ]; then
+  # The Breeze roles were created above, so this should never match; it is the
+  # backstop in case they were dropped mid-restore. A missing Breeze role means
+  # GRANTs and RLS policies the API depends on were dropped: never success.
+  # Other missing roles (an old owner from `ALTER ... OWNER TO`, an
+  # operator-made role) leave those objects owned by the restoring user, which
+  # is a warning, as before.
+  local missing_breeze missing_other
+  missing_breeze="$(grep -oE 'role "breeze_(app|audit_admin|search)" does not exist' "${restore_log}" | sort -u | sed 's/ does not exist//' | tr '\n' ' ' || true)"
+  missing_other="$(grep -oE 'role "[^"]*" does not exist' "${restore_log}" | grep -vE '"breeze_(app|audit_admin|search)"' | sort -u | sed 's/ does not exist//' | tr '\n' ' ' || true)"
+  if [ -n "${missing_other}" ]; then
+    log "WARNING: the dump references role(s) this cluster does not have: ${missing_other}"
+    log "         Objects they owned now belong to the restoring user, and grants to them were skipped."
+  fi
+  if [ -n "${missing_breeze}" ]; then
     pg_url_unset_env
-    log "ERROR: pg_restore could not apply grants or row-level security policies for missing role(s): ${missing_roles}"
+    log "ERROR: pg_restore could not apply grants or row-level security policies for: ${missing_breeze}"
     log "       The restored database is incomplete. Create those roles (or restore pg_dumpall --globals-only"
     log "       from the old cluster), then restore again into an empty database."
     return 1

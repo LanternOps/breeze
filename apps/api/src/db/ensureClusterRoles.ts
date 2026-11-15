@@ -20,9 +20,10 @@ import { pgErrorCode } from '../utils/pgErrors';
  *
  * `ensureAppRole()` already recreates `breeze_app`; this does the same for the
  * two roles created only by migrations, and puts back what boot can safely
- * re-assert. It runs from autoMigrate, before migrations (`pre-migration`:
- * roles only, so a newer migration that GRANTs to them can apply on a restored
- * database) and after (`post-migration`: also object privileges).
+ * re-assert. It runs from autoMigrate, before migrations (`pre-migration`: the
+ * roles and breeze_app's membership, so a newer migration that GRANTs to them
+ * can apply on a restored database) and after (`post-migration`: also the
+ * object privileges, breeze_search's objects and the lost-policy check).
  *
  * Every step is its own transaction with the catch OUTSIDE it, and no failure
  * is fatal: on managed Postgres the migration role is often not a superuser,
@@ -86,7 +87,8 @@ export const AUDIT_ADMIN_TABLE_PRIVILEGES: Readonly<Record<string, readonly stri
   ai_operator_task_events: ['SELECT', 'DELETE'],
   audit_chain_anchors: ['SELECT', 'DELETE'],
   audit_log_chain: ['SELECT', 'DELETE'],
-  // UPDATE: retention re-anchors the chain after a prefix cut (2026-05-25-j).
+  // UPDATE: granted by 2026-05-25-j (written for a chain re-anchor that
+  // retention no longer performs); kept so the manifest equals the migrations.
   audit_logs: ['SELECT', 'DELETE', 'UPDATE'],
   contract_documents: ['SELECT', 'DELETE'],
   elevation_audit: ['SELECT', 'DELETE'],
@@ -123,8 +125,15 @@ const SESSION_SQL = `DO $$ BEGIN
   END IF;
 END $$;`;
 
+/** insufficient_privilege, invalid_grant_operation: the migration role may not
+ *  do this here, and a superuser can. */
+const PRIVILEGE_ERRORS = new Set(['42501', '0LP01']);
+
 function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  // Drizzle wraps driver errors ("Failed query: ...") with the real one on
+  // `cause`; the raw postgres.js client used here does not, but be safe.
+  const cause = err instanceof Error && err.cause instanceof Error ? `: ${err.cause.message}` : '';
+  return err instanceof Error ? `${err.message}${cause}` : String(err);
 }
 
 export function hasDedicatedAuditAdminUrl(env: NodeJS.ProcessEnv): boolean {
@@ -155,13 +164,20 @@ export async function ensureClusterRoles(
       return true;
     } catch (err) {
       const code = pgErrorCode(err);
-      const reason = code === '42501'
-        ? 'the migration role lacks the privilege (SQLSTATE 42501)'
-        : `${describeError(err)}${code ? ` (SQLSTATE ${code})` : ''}`;
-      const warning = `${LOG} Could not ${label.charAt(0).toLowerCase()}${label.slice(1)}: ${reason}. `
-        + `Run as a database superuser:\n${statements.trim()}`;
-      report.warnings.push(warning);
-      logger.warn(warning);
+      const what = `${LOG} Could not ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+      if (code && PRIVILEGE_ERRORS.has(code)) {
+        // Expected on managed Postgres: say exactly what to run, and by whom.
+        const warning = `${what}: the migration role lacks the privilege (SQLSTATE ${code}). `
+          + `Run as a database superuser:\n${statements.trim()}`;
+        report.warnings.push(warning);
+        logger.warn(warning);
+      } else {
+        // Anything else (read-only database, timeout, a bug here) is not fixed
+        // by running the SQL as a superuser; report it as the error it is.
+        const warning = `${what}: ${describeError(err)}${code ? ` (SQLSTATE ${code})` : ''}. Statement:\n${statements.trim()}`;
+        report.warnings.push(warning);
+        logger.error(warning);
+      }
       return false;
     }
   };
@@ -211,7 +227,8 @@ export async function ensureClusterRoles(
       try {
         await fn();
       } catch (err) {
-        const warning = `${LOG} Skipped the ${label} check: ${describeError(err)}`;
+        const code = pgErrorCode(err);
+        const warning = `${LOG} Skipped the ${label} check: ${describeError(err)}${code ? ` (SQLSTATE ${code})` : ''}`;
         report.warnings.push(warning);
         logger.error(warning);
       }
@@ -238,9 +255,14 @@ async function existingRoles(client: postgres.Sql): Promise<Set<string>> {
   return new Set(rows.map((r) => r.rolname));
 }
 
+/** Whether `member` may `SET ROLE role`. On Postgres 16+ a membership can be
+ *  granted WITH SET FALSE, which 'MEMBER' would still report; 'SET' is the
+ *  real test there (and does not exist before 16). */
 async function isMember(client: postgres.Sql, member: string, role: string): Promise<boolean> {
   const [row] = await client<{ member: boolean }[]>`
-    SELECT pg_has_role(${member}, ${role}, 'MEMBER') AS member
+    SELECT CASE WHEN current_setting('server_version_num')::int >= 160000
+                THEN pg_has_role(${member}, ${role}, 'SET')
+                ELSE pg_has_role(${member}, ${role}, 'MEMBER') END AS member
   `;
   return Boolean(row?.member);
 }

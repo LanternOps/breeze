@@ -194,11 +194,19 @@ async function reportAuditAdminAccess(
   try {
     await runProbe();
   } catch (err) {
+    // Drizzle wraps the driver error ("Failed query: SELECT 1"); the reason
+    // (authentication, refused connection, DNS) is on `cause`.
+    const cause = err instanceof Error && err.cause !== undefined ? err.cause : err;
+    const code = (cause as { code?: unknown } | null)?.code;
+    const authFailure = code === '28P01' || code === '28000';
     logger.error(
-      `[database] AUDIT_ADMIN_DATABASE_URL is set but connecting through it failed: ${describeError(err)}. `
-        + 'Permanent device delete, organization erasure and audit-log retention will fail until it works. '
-        + 'After a database-only restore into a new Postgres cluster the breeze_audit_admin login and its '
-        + "password are gone (they belong to the cluster): ALTER ROLE breeze_audit_admin LOGIN PASSWORD '...'.",
+      `[database] AUDIT_ADMIN_DATABASE_URL is set but connecting through it failed: ${describeError(cause)}`
+        + `${typeof code === 'string' ? ` (${code})` : ''}. `
+        + 'Audit-log retention and organization erasure will fail until it works.'
+        + (authFailure
+          ? ' After a database-only restore into a new Postgres cluster the breeze_audit_admin login and its '
+            + "password are gone (they belong to the cluster): ALTER ROLE breeze_audit_admin LOGIN PASSWORD '...'."
+          : ''),
     );
   }
 }

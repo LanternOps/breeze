@@ -394,12 +394,25 @@ describe('initializeDatabaseForStartup upgrade preflight', () => {
     });
 
     it('reports a failing dedicated connection without failing boot', async () => {
-      const probe = vi.fn(async () => { throw new Error('password authentication failed'); });
+      // Shaped like drizzle's DrizzleQueryError: the driver error is the cause.
+      const driverError = Object.assign(new Error('password authentication failed for user "breeze_audit_admin"'), { code: '28P01' });
+      const probe = vi.fn(async () => { throw new Error('Failed query: SELECT 1', { cause: driverError }); });
       const { logger, run } = boot({ auditAdminMember: true }, { AUDIT_ADMIN_DATABASE_URL: 'postgresql://a@db/b' }, probe);
       await expect(run).resolves.toBeUndefined();
       const error = String(logger.error.mock.calls[0]?.[0]);
       expect(error).toContain('password authentication failed');
+      expect(error).toContain('28P01');
       expect(error).toContain('ALTER ROLE breeze_audit_admin LOGIN PASSWORD');
+    });
+
+    it('does not blame a restore for a dedicated connection that is simply unreachable', async () => {
+      const driverError = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+      const probe = vi.fn(async () => { throw new Error('Failed query: SELECT 1', { cause: driverError }); });
+      const { logger, run } = boot({ auditAdminMember: true }, { AUDIT_ADMIN_DATABASE_URL: 'postgresql://a@db/b' }, probe);
+      await run;
+      const error = String(logger.error.mock.calls[0]?.[0]);
+      expect(error).toContain('ECONNREFUSED');
+      expect(error).not.toContain('ALTER ROLE');
     });
   });
 });

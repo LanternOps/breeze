@@ -101,7 +101,11 @@ export async function getRequestDatabaseRole(): Promise<RequestDatabaseRole> {
       SELECT current_user AS "currentUser",
              rolsuper AS "isSuperuser",
              rolbypassrls AS "bypassesRls",
-             (SELECT pg_has_role(current_user, a.oid, 'MEMBER')
+             -- 'SET' on 16+: a membership granted WITH SET FALSE is still
+             -- 'MEMBER' but cannot SET ROLE (#11929).
+             (SELECT CASE WHEN current_setting('server_version_num')::int >= 160000
+                          THEN pg_has_role(current_user, a.oid, 'SET')
+                          ELSE pg_has_role(current_user, a.oid, 'MEMBER') END
                 FROM pg_roles a WHERE a.rolname = 'breeze_audit_admin') AS "auditAdminMember"
       FROM pg_roles
       WHERE rolname = current_user
