@@ -192,7 +192,8 @@
     "aiTasks": "Tareas de IA",
     "aiTask": "Tarea de IA",
     "settingsAi": "Configuración de IA",
-    "settingsFlowLimits": "Límites de flujos"
+    "settingsFlowLimits": "Límites de flujos",
+    "ticketsImport": "Importar tickets"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",

@@ -22,6 +22,7 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/ticket-imports/sources/abc-123/preflight'],
     ['POST', '/api/v1/ticket-imports/sources/abc-123/runs'],
     ['POST', '/api/v1/ticket-imports/sources/abc-123/created-contacts/remove'],
+    ['POST', '/api/v1/ticket-imports/sources/abc-123/source-users/resolve'],
     ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute/'],
     ['post', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
     ['POST', '/api/v1/invoices/abc-123/pay-link'],

@@ -56,7 +56,7 @@ function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus
 }
 
 /** A row's "deviates from the default" chips: priority unless Normal, type
- *  unless Incident, status unless Open, plus the merged and checklist marks.
+ *  unless Incident, status unless Open, plus the merged, imported and checklist marks.
  *  Defaults carry no information on a board of mostly-default rows. */
 function RowChips({ ticket, config, t }: { ticket: TicketSummary; config: TicketConfig | null; t: TFunction }) {
   const chip = 'inline-flex shrink-0 items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium';
@@ -83,6 +83,12 @@ function RowChips({ ticket, config, t }: { ticket: TicketSummary; config: Ticket
         // #8972: a merged tombstone, listed only under "Show merged".
         <span className={cn(chip, 'border-primary/30 bg-primary/10 text-primary-ink')} data-testid={`ticket-row-merged-${ticket.id}`}>
           {t('ticketQueueList.merged')}
+        </span>
+      )}
+      {ticket.migrationWindowId && (
+        // #8313: imported through a migration window (spec 2026-10-19 §5.11).
+        <span className={cn(chip, 'border-border bg-muted text-muted-foreground')} data-testid={`ticket-row-imported-${ticket.id}`}>
+          {t('ticketQueueList.imported')}
         </span>
       )}
       {ticket.checklist && ticket.checklist.total > 0 && (

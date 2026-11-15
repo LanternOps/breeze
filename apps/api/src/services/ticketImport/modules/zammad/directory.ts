@@ -41,7 +41,11 @@ export function clearZammadDirectoryCache(): void {
   CACHE.clear();
 }
 
-/** Drops a source's directory (`dispose`, when its run ends): its people do not outlive the run here. */
+/**
+ * Drops a source's directory (`dispose`, when its run ends): a run's people do
+ * not outlive it here. A lookup outside a run (the wizard's
+ * `source-users/resolve`) keeps them until the 30-minute TTL instead.
+ */
 export function disposeZammadDirectory(sourceId: string): void {
   for (const key of [...CACHE.keys()]) if (key.startsWith(`${sourceId}\n`)) CACHE.delete(key);
 }

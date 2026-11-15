@@ -43,20 +43,22 @@ export function tabQuery(tab: LiveTab): string {
 }
 
 // Hash layout (hash-based UI state per CLAUDE.md):
-// `#<focus>&sort=<sort>&type=<type>&merged=1`.
+// `#<focus>&sort=<sort>&type=<type>&merged=1&imported=1`.
 // The bare segment is the focused ticket key (internal number or id): with it
 // the page shows that ticket in focus, without it the triage board.
-// `merged=1` is the "Show merged" list toggle (#8972); absent = off. `sort=`
+// `merged=1` is the "Show merged" list toggle (#8972) and `imported=1` the
+// "Imported only" filter (#8313); absent = off. `sort=`
 // carries the queue sort and `type=` the ticket-type filter (#7900). All are
 // optional, and the default sort ('triage') is omitted so plain
 // `#T-2026-0001` hashes keep working. A `type=` segment is matched BEFORE the
 // focus fallback, so it can never be read as a ticket key; an unknown type
 // value is dropped, not turned into a focus key.
 // Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
-export function parseHash(hash: string): { selection: string | null; sort: TicketSort; type: TicketType | null; showMerged: boolean } {
+export function parseHash(hash: string): { selection: string | null; sort: TicketSort; type: TicketType | null; showMerged: boolean; importedOnly: boolean } {
   let selection: string | null = null;
   let sort: TicketSort = 'triage';
   let showMerged = false;
+  let importedOnly = false;
   for (const part of hash.split('&')) {
     if (!part) continue;
     if (part.startsWith('sort=')) {
@@ -64,32 +66,35 @@ export function parseHash(hash: string): { selection: string | null; sort: Ticke
       if (isTicketSort(value)) sort = value;
     } else if (part.startsWith('merged=')) {
       showMerged = part.slice('merged='.length) === '1';
+    } else if (part.startsWith('imported=')) {
+      importedOnly = part.slice('imported='.length) === '1';
     } else if (!part.startsWith('type=')) {
       selection = part;
     }
   }
   // Same helper as the sidebar, over the whole hash, so a repeated `type=`
   // segment resolves identically in the list filter and the nav highlight.
-  return { selection, sort, type: ticketTypeFromHash(hash), showMerged };
+  return { selection, sort, type: ticketTypeFromHash(hash), showMerged, importedOnly };
 }
 
 // The whole queue hash as ONE piece of state (#8682 sweep). Focus, sort and
 // type must move together: with one `useHashState` per field, each field had
 // its own hashchange listener, and an external change landed one field at a
 // time while a state-to-hash writer could clobber the half-applied URL.
-export type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | ''; showMerged: boolean };
-export const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '', showMerged: false };
+export type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | ''; showMerged: boolean; importedOnly: boolean };
+export const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '', showMerged: false, importedOnly: false };
 export function parseQueueHash(hash: string): QueueHash {
-  const { selection, sort, type, showMerged } = parseHash(hash);
-  return { selection, sort, type: type ?? '', showMerged };
+  const { selection, sort, type, showMerged, importedOnly } = parseHash(hash);
+  return { selection, sort, type: type ?? '', showMerged, importedOnly };
 }
 
-export function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null, showMerged = false): string {
+export function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null, showMerged = false, importedOnly = false): string {
   const parts: string[] = [];
   if (selection) parts.push(selection);
   if (sort !== 'triage') parts.push(`sort=${sort}`);
   if (type) parts.push(`type=${type}`);
   if (showMerged) parts.push('merged=1');
+  if (importedOnly) parts.push('imported=1');
   return parts.length > 0 ? `#${parts.join('&')}` : '';
 }
 

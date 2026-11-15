@@ -128,6 +128,10 @@ describe('ticket validators', () => {
       expect(r.data.sort).toBe('triage');
     }
     expect(listTicketsQuerySchema.safeParse({ statusGroup: 'weird' }).success).toBe(false);
+    // #8313: the imported filter is a strict boolean string.
+    expect(listTicketsQuerySchema.parse({ imported: 'true' }).imported).toBe(true);
+    expect(listTicketsQuerySchema.parse({ imported: 'false' }).imported).toBe(false);
+    expect(listTicketsQuerySchema.safeParse({ imported: '1' }).success).toBe(false);
   });
 
   it('list query accepts an optional deviceId uuid filter', () => {

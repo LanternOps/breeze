@@ -5,6 +5,7 @@ import { convertZammadTicket } from './conversion';
 import { isZammadSourceArticleId } from './ids';
 import { zammadOptionsSchema, type ZammadOptions } from './options';
 import { disposeZammadDirectory } from './directory';
+import { resolveZammadPeople } from './people';
 import { forgetFileLocations, loadZammad, scanZammad, zammadCursorAfterRow, type ZammadCursor } from './reading';
 
 /**
@@ -38,6 +39,7 @@ export const zammadTicketImportModule: TicketImportModule<ZammadOptions, ZammadC
   fetchAttachment: fetchZammadAttachment,
   probe: probeZammad,
   isSourceArticleId: isZammadSourceArticleId,
+  resolvePeople: resolveZammadPeople,
   dispose(sourceId) {
     disposeZammadDirectory(sourceId);
     forgetFileLocations(sourceId);
