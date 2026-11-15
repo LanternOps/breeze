@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { ingestRun } from './evidence.mjs';
-import { FLAKE_LABEL, MAX_BODY, accrueQuarantine, flakeKey, mergeSightings, parseFlakeIssue, refreshIndex, renderFlakeIssue, upsertFlakeIssues } from './flake-issues.mjs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { FLAKE_LABEL, MAX_BODY, accrueQuarantine, flakeKey, loadRecords, mergeSightings, neutralText, parseFlakeIssue, refreshIndex, renderFlakeIssue, upsertFlakeIssues } from './flake-issues.mjs';
 import { createWorld } from './fake-world.mjs';
 import { createGitHub } from './github.mjs';
 import { CLOSING_KEYWORD } from './markers.mjs';
@@ -274,4 +278,65 @@ test('issue writes per call are capped; the rest wait for the next tick', async 
   assert.equal(a.deferred, 2);
   await upsertFlakeIssues(env.gh, { repo: REPO, sightings: list, index: a.index, records: a.records, writer: env.writer, viewer: env.world.viewer, now: NOW, maxWrites: 3, onIntent: () => {} });
   assert.equal(env.world.issues.length, 5);
+});
+
+test("one test's failed write does not stop the others", async () => {
+  const env = setup();
+  const a = 'src/a.test.ts > a';
+  const b = 'src/b.test.ts > b';
+  const list = [1, 2].flatMap((run) => [sighting({ id: a, file: 'apps/web/src/a.test.ts', run }), sighting({ id: b, file: 'apps/web/src/b.test.ts', run })]);
+  env.world.failOnce('issue_create');
+  const res = await env.upsert(list);
+  assert.equal(res.failed.length, 1);
+  assert.equal(res.failed[0].op, 'issue_create');
+  assert.equal(res.failed[0].status, 502);
+  assert.deepEqual(res.created, [flakeKey('vitest-web', b)]);
+  assert.equal(env.world.issues.length, 1);
+  // Next call: the failed create happens, and the other test's issue is updated.
+  const more = [...list, sighting({ id: a, file: 'apps/web/src/a.test.ts', run: 3 }), sighting({ id: b, file: 'apps/web/src/b.test.ts', run: 3 })];
+  const again = await env.upsert(more, res);
+  assert.deepEqual(again.created, [flakeKey('vitest-web', a)]);
+  assert.deepEqual(again.updated, [flakeKey('vitest-web', b)]);
+});
+
+test('an open issue without a local record is never re-rendered from zero', async () => {
+  const env = setup();
+  const key = flakeKey('vitest-web', ID);
+  const res = await env.upsert([sighting({ run: 1 }), sighting({ run: 2 })], { index: { [key]: { issue: 5, open: true, closedAt: null, labels: [] } }, records: {} });
+  assert.deepEqual(env.world.writeCalls(), []);
+  assert.equal(res.failed[0].op, 'issue_edit');
+});
+
+test('allowCreate: false blocks creates', async () => {
+  const env = setup();
+  const res = await upsertFlakeIssues(env.gh, { repo: REPO, sightings: [sighting({ run: 1 }), sighting({ run: 2 })], index: {}, records: {}, writer: env.writer, viewer: env.world.viewer, now: NOW, allowCreate: false });
+  assert.deepEqual(res.blocked, [flakeKey('vitest-web', ID)]);
+  assert.equal(env.world.issues.length, 0);
+});
+
+test('refresh reports unreadable operator records and an over-cap listing', async () => {
+  const env = setup();
+  env.world.issues.push({ number: 70, title: 't', body: 'a human rewrote this body', labels: [FLAKE_LABEL], state: 'open', author: env.world.viewer });
+  env.world.issues.push({ number: 71, title: 't', body: 'not ours', labels: [FLAKE_LABEL], state: 'open', author: 'someone-else' });
+  const r = await refreshIndex(env.gh, { repo: REPO, viewer: env.world.viewer });
+  assert.deepEqual(r.unparsable, [70]);
+  assert.equal(r.truncated, false);
+  const full = Array.from({ length: 100 }, (_, i) => ({ number: i + 1, user: { login: 'x' }, body: '', labels: [] }));
+  const capped = await refreshIndex({ rest: async () => ({ status: 200, body: full }) }, { repo: REPO, viewer: 'operator' });
+  assert.equal(capped.truncated, true);
+});
+
+test('loadRecords drops entries that are not records', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ci-shepherd-records-'));
+  const good = { runner: 'vitest-web', id: ID, file: FILE, total: { fail_pass: 1, fail_fail: 0, fail_other: 0 }, quarantine_days: 0, quarantine_through: null, sightings: [] };
+  writeFileSync(join(dir, 'r.json'), JSON.stringify({ a: good, b: {}, c: { ...good, sightings: 'x' } }));
+  assert.deepEqual(Object.keys(loadRecords(join(dir, 'r.json'))), ['a']);
+  writeFileSync(join(dir, 'torn.json'), '{"a":');
+  assert.deepEqual(loadRecords(join(dir, 'torn.json')), {});
+  assert.deepEqual(loadRecords(join(dir, 'missing.json')), {});
+});
+
+test('other issue-reference forms are neutralised too', () => {
+  const text = neutralText('fixes GH-12 and resolves https://github.com/LanternOps/breeze/issues/42 and /pull/7');
+  assert.doesNotMatch(text, /GH-\d|\/issues\/\d|\/pull\/\d/);
 });

@@ -180,6 +180,97 @@ test('a lost flake-records.json is rebuilt from the issues before any proposal',
   assert.equal(Object.values(records)[0].quarantine_days, 50);
 });
 
+test('a main_broken breaker on the test blocks its quarantine through the real tick wiring', async () => {
+  for (const status of ['suspected', 'confirmed']) {
+    const env = setup();
+    const breaker = { kind: 'main_broken', key: ID, status, openedAt: iso(T0 - H), prs: [1, 2, 3], restore: [], ...(status === 'confirmed' ? { confirmedAt: iso(T0 - H) } : {}) };
+    writeFileSync(join(env.stateDir, 'state.json'), `${JSON.stringify({ breakers: { breakers: [breaker], observations: [] } })}\n`);
+    const s = await env.run();
+    assert.equal(env.world.issues.length, 1, 'the issue is still opened');
+    assert.deepEqual(env.ledgerBranches(), [], status);
+    assert.deepEqual(env.world.writes.filter((w) => w.op === 'pr_create'), [], status);
+    assert.equal(env.state().breakers.breakers.length, 1, `${status} breaker still open: ${JSON.stringify(s.errors)}`);
+  }
+});
+
+const issueBody = (over = {}) => `x\n<!-- ci-shepherd:flake v1 ${JSON.stringify({ runner: 'vitest-web', id: ID, file: FILE, total: { fail_pass: 1, fail_fail: 0, fail_other: 0 }, quarantine_days: 0, quarantine_through: null, sightings: [], ...over })} -->\n`;
+
+test('60 quarantine days: the issue gets flaky-fix-required once and no ledger PR opens', async () => {
+  const env = setup();
+  env.world.issues.push({ number: 900, title: 't', body: issueBody({ quarantine_days: 60, quarantine_through: '2026-11-01' }), labels: [FLAKE_LABEL], state: 'open', author: env.world.viewer });
+  await env.run();
+  assert.deepEqual(env.world.issues[0].labels, [FLAKE_LABEL, 'flaky-fix-required']);
+  assert.deepEqual(env.world.writes.filter((w) => w.op === 'label_create').map((w) => w.name), ['flaky-fix-required']);
+  assert.deepEqual(env.ledgerBranches(), []);
+  env.world.clock += 5 * 60_000;
+  await env.run();
+  assert.equal(env.world.writes.filter((w) => w.op === 'label_add').length, 1, 'labelled once');
+  // Shadow logs it once a day and writes nothing.
+  const sh = setup({ mode: 'shadow' });
+  sh.world.issues.push({ number: 900, title: 't', body: issueBody({ quarantine_days: 60, quarantine_through: '2026-11-01' }), labels: [FLAKE_LABEL], state: 'open', author: sh.world.viewer });
+  await sh.run();
+  await sh.run();
+  assert.equal(sh.decisions().filter((d) => d.kind === 'flake_fix_required').length, 1);
+  assert.deepEqual(sh.world.writeCalls(), []);
+});
+
+test('an auto-merge request that failed is made on a later tick, once', async () => {
+  const env = setup();
+  env.world.failOnce('enqueue');
+  const s1 = await env.run();
+  assert.equal(s1.status, 'degraded');
+  const pr = env.world.writes.find((w) => w.op === 'pr_create').pr;
+  assert.equal(env.state().flake.unenqueued, pr);
+  env.world.clock += 61 * 60_000;
+  const s2 = await env.run();
+  assert.equal(s2.sweeps.flake.ledger, 'waiting');
+  assert.equal(env.world.writes.filter((w) => w.op === 'enqueue' && w.pr === pr).length, 1);
+  assert.equal(env.state().flake.unenqueued, null);
+  env.world.clock += 61 * 60_000;
+  await env.run();
+  assert.equal(env.world.execs.filter((a) => a[1] === 'merge' && a[2] === String(pr)).length, 2, 'one failed try, one retry, no more');
+});
+
+test('an unreadable operator flaky-test issue blocks new issues and says so', async () => {
+  const env = setup();
+  env.world.issues.push({ number: 70, title: 't', body: 'a human rewrote this body', labels: [FLAKE_LABEL], state: 'open', author: env.world.viewer });
+  const s = await env.run();
+  assert.equal(env.world.issues.length, 1, 'no new issue');
+  assert.equal(s.status, 'degraded');
+  assert.match(s.errors.join('\n'), /listing is incomplete.*70/);
+});
+
+test('an issue closed since the last refresh stops the ledger PR that would cite it', async () => {
+  const env = setup();
+  const key = `vitest-web|${ID}`;
+  env.world.issues.push({ number: 900, title: 't', body: issueBody(), labels: [FLAKE_LABEL], state: 'closed', closed_at: iso(T0 - 30_000), author: env.world.viewer });
+  // The index, refreshed a minute ago, still has it open.
+  writeFileSync(join(env.stateDir, 'state.json'), `${JSON.stringify({ flake: { refreshedAt: iso(T0 - 60_000), viewer: env.world.viewer, index: { [key]: { issue: 900, open: true, closedAt: null, labels: [FLAKE_LABEL], since: null } }, pending: {}, logged: {} } })}\n`);
+  writeFileSync(join(env.stateDir, 'flake-records.json'), `${JSON.stringify({ [key]: parseFlakeIssue(issueBody()) })}\n`);
+  await env.run();
+  assert.deepEqual(env.ledgerBranches(), []);
+  assert.deepEqual(env.world.writes.filter((w) => w.op === 'pr_create'), []);
+  assert.equal(env.state().flake.index[key].open, false);
+  // Control: the same state with the issue open does open the PR.
+  const ok = setup();
+  ok.world.issues.push({ number: 900, title: 't', body: issueBody(), labels: [FLAKE_LABEL], state: 'open', author: ok.world.viewer });
+  writeFileSync(join(ok.stateDir, 'state.json'), `${JSON.stringify({ flake: { refreshedAt: iso(T0 - 60_000), viewer: ok.world.viewer, index: { [key]: { issue: 900, open: true, closedAt: null, labels: [FLAKE_LABEL], since: null } }, pending: {}, logged: {} } })}\n`);
+  writeFileSync(join(ok.stateDir, 'flake-records.json'), `${JSON.stringify({ [key]: parseFlakeIssue(issueBody()) })}\n`);
+  await ok.run();
+  assert.equal(ok.ledgerBranches().length, 1);
+});
+
+test('a create GitHub refused (4xx) leaves no intent; a 5xx keeps it', async () => {
+  const refused = setup({ sightings: CORROBORATED.slice(0, 2) });
+  refused.world.refuseOnce('issue_create');
+  await refused.run();
+  assert.deepEqual(refused.state().flake.pending, {});
+  const maybe = setup({ sightings: CORROBORATED.slice(0, 2) });
+  maybe.world.failOnce('issue_create');
+  await maybe.run();
+  assert.equal(Object.keys(maybe.state().flake.pending).length, 1);
+});
+
 test('nothing to do costs no API call', async () => {
   const env = setup({ sightings: [] });
   await env.run();

@@ -112,6 +112,15 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
   // The write lands, but its response is lost (a 502 after GitHub applied it).
   w.losing = new Map();
   w.loseResponseOnce = (op) => w.losing.set(op, (w.losing.get(op) ?? 0) + 1);
+  // The write is refused outright (422): it did not happen.
+  w.refusing = new Map();
+  w.refuseOnce = (op) => w.refusing.set(op, (w.refusing.get(op) ?? 0) + 1);
+  const shouldRefuse = (op) => {
+    const n = w.refusing.get(op) ?? 0;
+    if (!n) return false;
+    w.refusing.set(op, n - 1);
+    return true;
+  };
   const shouldLose = (op) => {
     const n = w.losing.get(op) ?? 0;
     if (!n) return false;
@@ -305,6 +314,7 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     }
     if (method === 'POST' && p === 'R/issues') {
       if (shouldFail('issue_create')) return json(502, { message: 'Bad Gateway' });
+      if (shouldRefuse('issue_create')) return json(422, { message: 'Validation Failed' });
       const issue = { number: id(), title: body.title, body: body.body, labels: body.labels ?? [], state: 'open', author: viewer };
       w.issues.push(issue);
       write('issue_create', { title: body.title, number: issue.number });
@@ -321,7 +331,9 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     }
     if (method === 'GET' && (m = /^R\/issues\/(\d+)$/.exec(p))) {
       const i = w.issues.find((x) => x.number === Number(m[1]));
-      return i ? json(200, i) : notFound();
+      if (!i) return notFound();
+      const { author, ...rest } = i;
+      return json(200, { ...rest, user: { login: author ?? viewer }, closed_at: i.closed_at ?? null, labels: i.labels.map((name) => ({ name })) });
     }
     if (method === 'GET' && (m = /^R\/labels\/(.+)$/.exec(p))) {
       const name = decodeURIComponent(m[1]);

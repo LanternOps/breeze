@@ -91,6 +91,21 @@ test('a proposal gives one commit with the exact expected JSON, a PR and auto-me
   assert.equal(git(env.checkout, 'rev-parse', 'HEAD'), git(env.origin, 'rev-parse', 'main'));
 });
 
+test('a mixed proposal writes exactly `next` (hand-written fields kept) and touches only the ledger', async () => {
+  const env = setup();
+  const kept = { id: 'src/z.test.ts > z', runner: 'vitest-api', file: 'apps/api/src/z.test.ts', issue: 5, added: '2026-11-10', expires: '2026-11-24', covers: ['apps/api/src/z'] };
+  const renewed = { id: 'src/y.test.ts > y', runner: 'vitest-api', file: 'apps/api/src/y.test.ts', issue: 6, added: TODAY, expires: '2026-11-28' };
+  const removed = { id: 'src/w.test.ts > w', runner: 'vitest-api', file: 'apps/api/src/w.test.ts', issue: 7, added: '2026-10-01', expires: '2026-10-15' };
+  const next = [kept, renewed, ENTRY].sort((a, b) => (a.runner === b.runner ? (a.id < b.id ? -1 : 1) : a.runner < b.runner ? -1 : 1));
+  const res = await env.run({ proposal: proposal({ next, add: [ENTRY], renew: [renewed], remove: [removed] }) });
+  assert.equal(res.status, 'opened');
+  assert.deepEqual(JSON.parse(git(env.origin, 'show', `${BRANCH}:${LEDGER_PATH}`)), next);
+  assert.equal(git(env.origin, 'diff', '--name-only', `main..${BRANCH}`), LEDGER_PATH);
+  assert.equal(git(env.origin, 'log', '-1', '--format=%s', BRANCH), 'ci(flaky-ledger): 1 add, 1 renew, 1 remove (shepherd)');
+  const body = env.world.writes.find((w) => w.op === 'pr_create').body;
+  for (const change of ['add', 'renew', 'remove']) assert.match(body, new RegExp(`\\| ${change} \\|`));
+});
+
 test('an open ledger PR gives waiting and no git write', async () => {
   const env = setup();
   env.world.addPr(500, { headRef: `${LEDGER_BRANCH_PREFIX}2026-11-13` });
@@ -186,6 +201,20 @@ test('a crash between the push and the PR is resumed by the next tick, with no s
   // A different proposal on the same day does not reuse that branch.
   env.world.prs.get(res.pr).state = 'CLOSED';
   assert.equal((await env.run({ proposal: proposal({ add: [], next: [], remove: [ENTRY] }) })).status, 'done_today');
+});
+
+test('a PR whose URL was lost is found by its head and gets its auto-merge', async () => {
+  const env = setup();
+  const exec = (args) => {
+    const out = env.world.exec(args);
+    return args[1] === 'create' ? 'something unexpected' : out;
+  };
+  const writer = createWriter({ gh: env.gh, exec, git: gitCli, repo: REPO });
+  const res = await env.run({ writer });
+  assert.equal(res.status, 'opened');
+  const created = env.world.writes.find((w) => w.op === 'pr_create');
+  assert.equal(res.pr, created.pr);
+  assert.ok(env.world.execs.some((a) => a[1] === 'merge' && a[2] === String(created.pr)));
 });
 
 test('an orphan branch with other content is reported, not reused', async () => {

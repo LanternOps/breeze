@@ -50,6 +50,8 @@ export const neutralText = (s) =>
   String(s)
     .replace(/@/g, '')
     .replace(/#(?=\d)/g, 'no. ')
+    .replace(/\bGH-(?=\d)/gi, 'GH ')
+    .replace(/\/(issues|pull)\/(?=\d)/gi, '/$1 /')
     .replace(/`/g, "'")
     .replace(/[\r\n|]+/g, ' ')
     .replace(/<!--/g, '<! --')
@@ -199,10 +201,17 @@ export function accrueQuarantine(record, entry, today) {
 // or else its most recently closed one. `since` (open issues): the latest
 // close among the test's earlier issues; evidence from before it was a human's
 // "fixed" and does not count again.
+// Also `unparsable` (operator-written flaky-test issues whose record does not
+// parse: a human edited it, or a newer schema) and `truncated` (more issues
+// than the pages read). Either means some test's issue may be missing from
+// the index, so the caller must not open new issues: one could duplicate it
+// and restart its quarantine days.
 export async function refreshIndex(gh, { repo, viewer }) {
   if (!viewer) throw new Error('refreshIndex: the operator login is required');
   const index = {};
   const records = {};
+  const unparsable = [];
+  let truncated = false;
   // Per test, the latest close among its issues: a successor's evidence starts after it.
   const lastClose = {};
   for (let page = 1; page <= ISSUE_PAGES; page++) {
@@ -211,7 +220,10 @@ export async function refreshIndex(gh, { repo, viewer }) {
     for (const issue of res.body) {
       if (issue.pull_request || issue.user?.login !== viewer) continue;
       const rec = parseFlakeIssue(issue.body);
-      if (!rec) continue;
+      if (!rec) {
+        unparsable.push(issue.number);
+        continue;
+      }
       const key = flakeKey(rec.runner, rec.id);
       const entry = { issue: issue.number, open: issue.state === 'open', closedAt: issue.closed_at ?? null, labels: (issue.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name)) };
       if (entry.closedAt && !(ms(lastClose[key] ?? 0) >= ms(entry.closedAt))) lastClose[key] = entry.closedAt;
@@ -223,9 +235,10 @@ export async function refreshIndex(gh, { repo, viewer }) {
       }
     }
     if (res.body.length < 100) break;
+    if (page === ISSUE_PAGES) truncated = true;
   }
   for (const [key, entry] of Object.entries(index)) entry.since = entry.open ? (lastClose[key] ?? null) : null;
-  return { index, records };
+  return { index, records, unparsable, truncated };
 }
 
 // sightings: every local sighting (any age; the create rule looks at 14 days).
@@ -233,11 +246,14 @@ export async function refreshIndex(gh, { repo, viewer }) {
 // index and records plus what was created, updated, would be created (no
 // writer) and deferred (over `maxWrites`). `onIntent(key)` runs before each
 // create, so the caller can save that it may have happened: after a crash, a
-// refresh finds the issue instead of opening a second one.
-export async function upsertFlakeIssues(gh, { repo, sightings, index, records, writer = null, viewer, now, ledger = [], today = new Date(now).toISOString().slice(0, 10), maxWrites = MAX_ISSUE_WRITES, onIntent = () => {} }) {
+// refresh finds the issue instead of opening a second one. One test's write
+// failing is collected in `failed` ({ key, op, error }) and the rest go on;
+// only the API budget stops the loop. `allowCreate: false` (the index may be
+// incomplete) skips creates and lists them in `blocked`.
+export async function upsertFlakeIssues(gh, { repo, sightings, index, records, writer = null, viewer, now, ledger = [], today = new Date(now).toISOString().slice(0, 10), maxWrites = MAX_ISSUE_WRITES, allowCreate = true, onIntent = () => {} }) {
   const nextIndex = { ...index };
   const nextRecords = { ...records };
-  const out = { index: nextIndex, records: nextRecords, created: [], updated: [], wouldCreate: [], wouldUpdate: [], deferred: 0 };
+  const out = { index: nextIndex, records: nextRecords, created: [], updated: [], wouldCreate: [], wouldUpdate: [], blocked: [], failed: [], deferred: 0 };
   const byKey = new Map();
   for (const s of sightings) {
     const k = flakeKey(s.runner, s.id);
@@ -254,6 +270,12 @@ export async function upsertFlakeIssues(gh, { repo, sightings, index, records, w
     const [runner, ...rest] = key.split('|');
     const base = { runner, id: rest.join('|'), file: list.find((s) => s.file)?.file ?? null };
     if (entry?.open) {
+      // An open issue with no record would be re-rendered from zero and lose
+      // its totals and quarantine days: leave it for the next refresh.
+      if (!nextRecords[key]) {
+        out.failed.push({ key, op: 'issue_edit', error: 'no local record for an open issue; waiting for the refresh' });
+        continue;
+      }
       const since = entry.since ? ms(entry.since) : -Infinity;
       const merged = mergeSightings(nextRecords[key] ?? null, list.filter((s) => ms(s.at) > since), base);
       const accrued = accrueQuarantine(merged.record, ledgerByKey.get(key), today);
@@ -268,7 +290,13 @@ export async function upsertFlakeIssues(gh, { repo, sightings, index, records, w
       }
       const rendered = renderFlakeIssue(accrued.record);
       writes++;
-      await writer.editIssue(entry.issue, { body: rendered.body });
+      try {
+        await writer.editIssue(entry.issue, { body: rendered.body });
+      } catch (e) {
+        if (e.name === 'BudgetExceeded') throw e;
+        out.failed.push({ key, op: 'issue_edit', error: e.message, status: e.status ?? null });
+        continue;
+      }
       nextRecords[key] = rendered.record;
       out.updated.push(key);
       continue;
@@ -282,6 +310,10 @@ export async function upsertFlakeIssues(gh, { repo, sightings, index, records, w
       out.wouldCreate.push(key);
       continue;
     }
+    if (!allowCreate) {
+      out.blocked.push(key);
+      continue;
+    }
     if (writes >= maxWrites) {
       out.deferred++;
       continue;
@@ -290,13 +322,20 @@ export async function upsertFlakeIssues(gh, { repo, sightings, index, records, w
     const seed = prior ? { ...emptyRecord(base), quarantine_days: prior.quarantine_days, quarantine_through: prior.quarantine_through } : null;
     const merged = mergeSightings(seed, fresh, base);
     const rendered = renderFlakeIssue(merged.record);
-    if (!labelReady) {
-      await writer.ensureLabel(FLAKE_LABEL, { color: 'fbca04', description: 'A test the CI shepherd saw fail intermittently' });
-      labelReady = true;
+    let number;
+    try {
+      if (!labelReady) {
+        await writer.ensureLabel(FLAKE_LABEL, { color: 'fbca04', description: 'A test the CI shepherd saw fail intermittently' });
+        labelReady = true;
+      }
+      onIntent(key);
+      writes++;
+      number = await writer.createIssue({ title: rendered.title, body: rendered.body, labels: [FLAKE_LABEL] });
+    } catch (e) {
+      if (e.name === 'BudgetExceeded') throw e;
+      out.failed.push({ key, op: 'issue_create', error: e.message, status: e.status ?? null });
+      continue;
     }
-    onIntent(key);
-    writes++;
-    const number = await writer.createIssue({ title: rendered.title, body: rendered.body, labels: [FLAKE_LABEL] });
     nextIndex[key] = { issue: number, open: true, closedAt: null, labels: [FLAKE_LABEL], since: entry?.closedAt ?? null };
     nextRecords[key] = rendered.record;
     out.created.push(key);
@@ -305,13 +344,19 @@ export async function upsertFlakeIssues(gh, { repo, sightings, index, records, w
 }
 
 // flake-records.json: the parsed issue records, beside state.json.
+// An entry that is not a valid record is dropped, so the caller's
+// missing-record rule refreshes it from its issue.
 export function loadRecords(path) {
+  let parsed;
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch {
+    parsed = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    if (e.code === 'ENOENT') return {};
+    // Unreadable or torn: rebuilt from the issues by the next refresh.
     return {};
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  return Object.fromEntries(Object.entries(parsed).filter(([, r]) => validRecord(r)));
 }
 
 export function saveRecords(path, records) {

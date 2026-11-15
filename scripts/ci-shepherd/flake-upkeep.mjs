@@ -28,7 +28,7 @@ const ms = (s) => Date.parse(s);
 const iso = (t) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const sightingKey = (s) => `${s.run}\0${s.attempt}\0${s.job}\0${s.runner}\0${s.id}`;
 
-const emptyFlake = () => ({ refreshedAt: null, viewer: null, index: {}, pending: {}, evidenceSince: null, ledgerCheckedAt: null, logged: {} });
+const emptyFlake = () => ({ refreshedAt: null, viewer: null, index: {}, pending: {}, incomplete: null, evidenceSince: null, ledgerCheckedAt: null, unenqueued: null, logged: {} });
 
 // main's ledger and file checks: origin/main of the shepherd's clone when the
 // tick has one (run.sh passes it), else the checkout the tick runs from.
@@ -113,7 +113,14 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
     records = r.records;
     fl.refreshedAt = iso(now);
     fl.pending = {};
+    // Until the next refresh says otherwise: an issue it could not read may
+    // be some test's, so no new issue may be opened (it could duplicate one
+    // and restart its quarantine days).
+    fl.incomplete = r.unparsable.length || r.truncated ? { unparsable: r.unparsable, truncated: r.truncated } : null;
     saveRecords(recordsPath, records);
+  }
+  if (fl.incomplete) {
+    t.error(`flaky tests: no new issues while the flaky-test listing is incomplete (${fl.incomplete.truncated ? 'over the page cap' : `unreadable record on issue(s) ${fl.incomplete.unparsable.join(', ')}`})`);
   }
 
   // 1. Issues.
@@ -129,6 +136,7 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
     now,
     today,
     ledger: main.ledger,
+    allowCreate: !fl.incomplete,
     onIntent: (key) => {
       fl.pending[key] = iso(now);
       t.save();
@@ -138,20 +146,28 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
   records = up.records;
   if (up.created.length || up.updated.length) saveRecords(recordsPath, records);
   for (const key of up.created) delete fl.pending[key];
+  for (const f of up.failed) {
+    // A create GitHub definitely refused (4xx) did not happen: no refresh is
+    // owed for it. A 5xx or network error might have landed; keep the intent.
+    if (f.op === 'issue_create' && f.status >= 400 && f.status < 500) delete fl.pending[f.key];
+    t.error(`flaky tests: ${f.op} for ${f.key.slice(0, 120)}: ${f.error}`);
+  }
   out.created = up.created.length;
   out.updated = up.updated.length;
   for (const key of up.wouldCreate) shadowLog('flake_issue_create', key, { mutations: [{ op: 'issue_create', args: { key } }] });
   for (const key of up.created) t.record({ actionId: `flake:flake_issue_create:${key}`, kind: 'flake_issue_create', pr: null, mutations: [{ op: 'issue_create', args: { key } }], reasons: [], mode: t.mode, status: 'applied', source: 'flake', issue: fl.index[key]?.issue, at: iso(now) });
 
   // 2. Proposals.
-  const proposal = proposeLedger({
-    ledger: main.ledger,
-    records: proposalRecords({ index: fl.index, records, sightings, ledger: main.ledger, today }),
-    breakers: t.state.breakers?.breakers ?? [],
-    today,
-    fileExists: main.fileExists,
-    evidenceSince: fl.evidenceSince,
-  });
+  const propose = () =>
+    proposeLedger({
+      ledger: main.ledger,
+      records: proposalRecords({ index: fl.index, records, sightings, ledger: main.ledger, today }),
+      breakers: t.state.breakers?.breakers ?? [],
+      today,
+      fileExists: main.fileExists,
+      evidenceSince: fl.evidenceSince,
+    });
+  let proposal = propose();
   // Shadow opens no issue, so its adds wait on one: say so, so a shadow review
   // sees what act would quarantine.
   if (!writer) for (const key of proposal.waitingIssue) shadowLog('ledger_add_waiting_issue', key, { mutations: [{ op: 'ledger_add', args: { key } }] });
@@ -169,7 +185,8 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
 
   // 3. The ledger PR, at most hourly while there is something to propose.
   if (isEmptyProposal(proposal)) return out;
-  const summary = { add: proposal.add.map((e) => e.id), renew: proposal.renew.map((e) => e.id), remove: proposal.remove.map((e) => e.id), next: proposal.next };
+  const summarize = (p) => ({ add: p.add.map((e) => e.id), renew: p.renew.map((e) => e.id), remove: p.remove.map((e) => e.id), next: p.next });
+  let summary = summarize(proposal);
   if (!writer) {
     const res = await ledgerPrTick({ proposal, today, mode: 'shadow' });
     shadowLog('ledger_pr', hash(summary), { mutations: [{ op: 'ledger_pr', args: { branch: res.branch, add: summary.add, renew: summary.renew, remove: summary.remove } }], title: res.title });
@@ -178,7 +195,41 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
   }
   if (fl.ledgerCheckedAt && now - ms(fl.ledgerCheckedAt) < LEDGER_CHECK_MS) return out;
   fl.ledgerCheckedAt = iso(now);
-  const res = await ledgerPrTick({ gh: t.gh, git, writer, checkoutDir: t.checkoutDir, repo: t.repo, proposal, today, mode: 'act', modeNow: t.modeNow });
+  // The index can be a day old. Before a PR that adds or renews a quarantine,
+  // check each issue it cites is still open and the operator's: a human
+  // closing it means "fixed" or "not flaky".
+  let recheck = false;
+  for (const e of [...proposal.add, ...proposal.renew]) {
+    const res = await t.gh.rest('GET', `repos/${t.repo}/issues/${e.issue}`);
+    if (res.status !== 200) throw new Error(`flaky tests: issue ${e.issue} read failed (${res.status}) before the ledger PR`);
+    if (res.body.state === 'open' && res.body.user?.login === viewer) continue;
+    const key = flakeKey(e.runner, e.id);
+    fl.index[key] = { ...(fl.index[key] ?? { issue: e.issue, labels: [] }), open: false, closedAt: res.body.closed_at ?? iso(now), since: null };
+    recheck = true;
+  }
+  if (recheck) {
+    proposal = propose();
+    if (isEmptyProposal(proposal)) return out;
+    summary = summarize(proposal);
+  }
+  const res = await ledgerPrTick({
+    gh: t.gh,
+    git,
+    writer,
+    checkoutDir: t.checkoutDir,
+    repo: t.repo,
+    proposal,
+    today,
+    mode: 'act',
+    modeNow: t.modeNow,
+    unenqueued: fl.unenqueued ?? null,
+    onCreated: (pr) => {
+      fl.unenqueued = pr;
+      t.save();
+    },
+  });
+  // Auto-merge landed (or the PR it was owed to is no longer the open one).
+  if (res.status === 'opened' || (res.status === 'waiting' && (res.enqueued || res.pr !== fl.unenqueued))) fl.unenqueued = null;
   out.ledger = res.status;
   if (res.status === 'opened') {
     t.record({ actionId: `flake:ledger_pr:${res.branch}`, kind: 'ledger_pr', pr: res.pr, mutations: [{ op: 'ledger_pr', args: { branch: res.branch, add: summary.add, renew: summary.renew, remove: summary.remove } }], reasons: [], mode: t.mode, status: 'applied', source: 'flake', at: iso(now) });

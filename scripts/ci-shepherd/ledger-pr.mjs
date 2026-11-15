@@ -83,7 +83,24 @@ async function openLedgerPr(gh, repo) {
 // { status: 'noop'|'shadow'|'waiting'|'done_today'|'partial'|'opened', … }.
 // `modeNow()` is read again right before the first write. Errors (a refused
 // push, a gh failure) propagate after the worktree is removed.
-export async function ledgerPrTick({ gh, git, writer, checkoutDir, repo, proposal, today, mode, modeNow }) {
+// `onCreated(pr)` runs between `gh pr create` and the auto-merge request, so
+// the caller can remember a PR whose auto-merge is still owed; passed back
+// as `unenqueued`, that PR gets its auto-merge on a later tick. Only that PR:
+// auto-merge a human turned off on a ledger PR stays off.
+// `gh pr create` that failed may still have opened the PR (a lost or
+// unparsable answer): look it up by head before giving up on the number.
+async function createLedgerPr(gh, writer, repo, { branch, title, body }) {
+  try {
+    return await writer.createPr({ head: branch, title, body });
+  } catch (e) {
+    const [owner] = repo.split('/');
+    const res = await gh.rest('GET', `repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=10`);
+    if (res.status === 200 && res.body.length) return res.body[0].number;
+    throw e;
+  }
+}
+
+export async function ledgerPrTick({ gh, git, writer, checkoutDir, repo, proposal, today, mode, modeNow, unenqueued = null, onCreated = () => {} }) {
   if (isEmptyProposal(proposal)) return { status: 'noop' };
   const branch = `${LEDGER_BRANCH_PREFIX}${today}`;
   const { title, body, commitMessage } = renderLedgerPr(proposal);
@@ -91,7 +108,12 @@ export async function ledgerPrTick({ gh, git, writer, checkoutDir, repo, proposa
   if (!checkoutDir) throw new Error('ledger PR: no checkout dir (run.sh passes the shepherd clone)');
 
   const open = await openLedgerPr(gh, repo);
-  if (open !== null) return { status: 'waiting', pr: open };
+  if (open !== null) {
+    if (open !== unenqueued) return { status: 'waiting', pr: open };
+    if ((await modeNow()) !== 'act') return { status: 'partial', reason: 'left act before the ledger auto-merge' };
+    await writer.enqueue(open);
+    return { status: 'waiting', pr: open, enqueued: true };
+  }
   const [owner] = repo.split('/');
   const res = await gh.rest('GET', `repos/${repo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=10`);
   if (res.status !== 200) throw new Error(`ledger PR lookup: ${res.status}`);
@@ -110,7 +132,8 @@ export async function ledgerPrTick({ gh, git, writer, checkoutDir, repo, proposa
       pushed = null;
     }
     if (pushed !== ledgerJson(proposal.next)) throw new Error(`ledger PR: ${branch} already exists with other content and no PR; a human should delete or open it`);
-    const pr = await writer.createPr({ head: branch, title, body });
+    const pr = await createLedgerPr(gh, writer, repo, { branch, title, body });
+    onCreated(pr);
     await writer.enqueue(pr);
     return { status: 'opened', pr, branch, resumed: true };
   }
@@ -144,7 +167,8 @@ export async function ledgerPrTick({ gh, git, writer, checkoutDir, repo, proposa
       // Nothing to prune.
     }
   }
-  const pr = await writer.createPr({ head: branch, title, body });
+  const pr = await createLedgerPr(gh, writer, repo, { branch, title, body });
+  onCreated(pr);
   await writer.enqueue(pr);
   return { status: 'opened', pr, branch };
 }
