@@ -17,7 +17,14 @@ const day = (d, h = 12) => `${d}T${String(h).padStart(2, '0')}:00:00Z`;
 const exists = () => true;
 
 let runN = 1;
-const s = (over = {}) => ({ runner: 'vitest-web', id: ID, file: FILE, kind: 'fail_pass', run: runN++, attempt: 1, job: 'Test Web (shard 3/4)', pr: 11312, event: 'pull_request', sha: 'a'.repeat(40), at: day('2026-11-13'), ...over });
+// Each run gets its own commit and queue base, so merge_group sightings of
+// different runs are separate queue chains unless a test says otherwise.
+const qb = (run) => `${String(run).padStart(8, '0')}${'b'.repeat(32)}`;
+const sha = (run) => `${String(run).padStart(8, '0')}${'a'.repeat(32)}`;
+const s = (over = {}) => {
+  const run = over.run ?? runN++;
+  return { runner: 'vitest-web', id: ID, file: FILE, kind: 'fail_pass', run, attempt: 1, job: 'Test Web (shard 3/4)', pr: 11312, event: 'pull_request', sha: sha(run), at: day('2026-11-13'), queueBase: qb(run), ...over };
+};
 const record = (sightings, over = {}) => ({ runner: 'vitest-web', id: ID, file: FILE, issue: 900, quarantine_days: 0, sightings, ...over });
 // Three sightings in 7 days, two PRs, one in the merge queue: an add.
 const addable = () => [s({ pr: 1 }), s({ pr: 2, kind: 'fail_other' }), s({ pr: 2, event: 'merge_group', at: day('2026-11-12') })];
@@ -211,4 +218,71 @@ test('a protected test is never added or renewed, under any evidence; it is repo
   assertValid(q);
   // The control: the same evidence on an ordinary test is an add.
   assert.equal(propose({ records: [record(strong({}))] }).add.length, 1);
+});
+
+// The new protected path words: each one alone makes a test protected.
+test('quarantineEligibility: permission, rbac, access, partner, org merge, export, audit, signing, enroll, token, session, mfa and sso paths are protected', () => {
+  const files = [
+    'apps/api/src/services/permissionCheck.test.ts',
+    'apps/api/src/lib/RBAC.test.ts',
+    'apps/web/src/components/AccessReview.test.tsx',
+    'apps/api/src/routes/partners/list.test.ts',
+    'apps/api/src/services/org-merge/run.test.ts',
+    'apps/api/src/services/orgMergeRegistry.test.ts',
+    'apps/api/src/services/org_merge.test.ts',
+    'apps/api/src/services/dataExport.test.ts',
+    'apps/api/src/services/AuditLog.test.ts',
+    'apps/api/src/services/codeSigning.test.ts',
+    'apps/api/src/routes/enrollment.test.ts',
+    'apps/api/src/lib/apiTokens.test.ts',
+    'apps/web/src/stores/Session.test.ts',
+    'apps/api/src/routes/mfa.test.ts',
+    'apps/api/src/services/SSOProvider.test.ts',
+  ];
+  for (const file of files) {
+    const id = `${file.replace(/^apps\/(api|web)\//, '')} > x > y`;
+    const e = quarantineEligibility({ runner: file.startsWith('apps/web') ? 'vitest-web' : 'vitest-api', id, file });
+    assert.equal(e.eligible, false, file);
+    assert.match(e.reasons.join(' '), /its path matches/, file);
+  }
+  // A Go package path is matched too.
+  assert.equal(quarantineEligibility({ runner: 'go', id: 'github.com/breeze-rmm/agent/internal/enroll.TestJoin', file: 'agent/internal/enroll' }).eligible, false);
+  // The control: the ordinary test stays eligible.
+  assert.equal(quarantineEligibility({ runner: 'vitest-web', id: ID, file: FILE }).eligible, true);
+});
+
+// Merge-queue entries stacked on one another test overlapping code: they are
+// one corroboration, never several PRs.
+const M = 'e'.repeat(40);
+const G1 = '1'.repeat(40);
+const G2 = '2'.repeat(40);
+const G3 = '3'.repeat(40);
+const stacked = (over = {}) => [
+  s({ pr: 1, event: 'merge_group', kind: 'fail_fail', sha: G1, queueBase: M, queueParent: M, ...over }),
+  s({ pr: 2, event: 'merge_group', kind: 'fail_other', sha: G2, queueBase: M, queueParent: G1, ...over }),
+  s({ pr: 3, event: 'merge_group', kind: 'fail_pass', sha: G3, queueBase: M, queueParent: G2, ...over }),
+];
+
+test('three stacked merge-queue entries count as one corroboration, not three PRs', () => {
+  const p = propose({ records: [record(stacked())] });
+  assert.deepEqual(p.add, []);
+  // Linked only by stacking (each read after the entry ahead merged, so each
+  // has a different base): still one chain.
+  const chained = stacked().map((x, i) => ({ ...x, queueBase: [M, G1, G2][i] }));
+  assert.deepEqual(propose({ records: [record(chained)] }).add, []);
+  // The control: two more independent runs from unrelated PRs make it an add,
+  // and the evidence counts the chain as one PR.
+  const plus = [...stacked(), s({ pr: 4, kind: 'fail_pass' }), s({ pr: 5, kind: 'fail_pass' })];
+  const q = propose({ records: [record(plus)] });
+  assert.equal(q.add.length, 1);
+  assert.equal(q.evidence[`vitest-web|${ID}`].prs, 3);
+  // One unrelated PR run beside the chain is 2 runs: short of 3.
+  assert.deepEqual(propose({ records: [record([...stacked(), s({ pr: 4, kind: 'fail_pass' })])] }).add, []);
+});
+
+test('a merge_group sighting stored without its group base (before the group check) never counts', () => {
+  const legacy = addable().map((x) => (x.event === 'merge_group' ? { ...x, queueBase: undefined } : x));
+  assert.deepEqual(propose({ records: [record(legacy)] }).add, []);
+  // The control: the same sighting with its base is an add.
+  assert.equal(propose({ records: [record(addable())] }).add.length, 1);
 });

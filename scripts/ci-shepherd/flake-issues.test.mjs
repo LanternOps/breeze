@@ -32,8 +32,10 @@ const sighting = (over = {}) => ({
   job: 'Test Web (shard 3/4)',
   pr: 11312,
   event: 'merge_group',
-  sha: 'a'.repeat(40),
+  // Its own commit and queue chain per run unless a test says otherwise.
+  sha: `${String(over.run ?? 1).padStart(8, '0')}${'a'.repeat(32)}`,
   at: iso(NOW - H),
+  queueBase: `${String(over.run ?? 1).padStart(8, '0')}${'b'.repeat(32)}`,
   ...over,
 });
 
@@ -198,6 +200,26 @@ test('a failure in a merge_group run opens one issue', async () => {
   const env = setup();
   await env.upsert([sighting({ run: 1, pr: 1, event: 'pull_request', kind: 'fail_fail' }), sighting({ run: 2, pr: 1, event: 'merge_group', kind: 'fail_fail' })]);
   assert.equal(env.world.issues.length, 1);
+});
+
+test('merge queue: a failure untouched by every PR in its group counts once; stacked entries are one run', async () => {
+  const { issueEvidence, issueWorthy } = await import('./flake-issues.mjs');
+  const M = 'e'.repeat(40);
+  const q = (run, pr, sha, parent) => sighting({ run, pr, event: 'merge_group', kind: 'fail_fail', sha, queueBase: M, queueParent: parent });
+  const chain = [q(11, 601, '1'.repeat(40), M), q(12, 602, '2'.repeat(40), '1'.repeat(40)), q(13, 603, '3'.repeat(40), '2'.repeat(40))];
+  // Three stacked entries alone: one run, one merge-queue corroboration.
+  assert.deepEqual(issueEvidence(chain), { runs: 1, prs: 0, mergeGroup: 1, retryPassed: 0 });
+  assert.equal(issueWorthy(chain), false);
+  // Plus one PR run: two runs, and the queue failure is the sign.
+  const withPr = [...chain, sighting({ run: 20, pr: 700, event: 'pull_request', kind: 'fail_fail' })];
+  assert.equal(issueWorthy(withPr), true);
+  const env = setup();
+  await env.upsert(withPr);
+  assert.equal(env.world.issues.length, 1);
+  assert.match(env.world.issues[0].body.split('<!-- ci-shepherd:flake')[0], /a merge queue run/);
+  // A merge_group sighting stored before the group check (no queueBase) is no sign.
+  const legacy = [sighting({ run: 1, pr: 1, event: 'pull_request', kind: 'fail_fail' }), sighting({ run: 2, pr: 1, event: 'merge_group', kind: 'fail_fail', queueBase: undefined })];
+  assert.equal(issueWorthy(legacy), false);
 });
 
 test('a fail-then-pass on the same commit opens one issue', async () => {

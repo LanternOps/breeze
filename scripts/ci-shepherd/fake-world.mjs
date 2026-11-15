@@ -22,6 +22,7 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     issues: [],
     repoLabels: new Set(), // repository labels that exist (GET/POST labels)
     // Changed files: `<base>...<head>` (compare) or `<sha>` (one commit). Unset → none.
+    // A compare value may also be { files, status, mergeBase } (see the route).
     changed: new Map(),
     calls: [],
     writes: [],
@@ -217,7 +218,13 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     }
     for (const [re, status] of w.failingGets) if (method === 'GET' && re.test(`${path}${q.size ? `?${q}` : ''}`)) return json(status, { message: 'injected' });
     if (method === 'GET' && (m = /^R\/pulls\/(\d+)\/files$/.exec(p))) return json(200, (w.prs.get(Number(m[1]))?.files ?? []).map((filename) => ({ filename })));
-    if (method === 'GET' && (m = /^R\/compare\/(.+)$/.exec(p))) return json(200, { files: (w.changed.get(decodeURIComponent(m[1])) ?? []).map((filename) => ({ filename })) });
+    if (method === 'GET' && (m = /^R\/compare\/(.+)$/.exec(p))) {
+      // A value is the file list (status `ahead`, no merge base given) or
+      // { files, status, mergeBase } for a compare against a branch.
+      const v = w.changed.get(decodeURIComponent(m[1])) ?? [];
+      const c = Array.isArray(v) ? { files: v } : v;
+      return json(200, { status: c.status ?? 'ahead', ...(c.mergeBase ? { merge_base_commit: { sha: c.mergeBase } } : {}), files: (c.files ?? []).map((filename) => ({ filename })) });
+    }
     if (method === 'GET' && (m = /^R\/commits\/([0-9a-f]+)$/.exec(p))) return json(200, { sha: m[1], files: (w.changed.get(m[1]) ?? []).map((filename) => ({ filename })) });
     if (method === 'GET' && p === 'R/pulls') {
       const st = q.get('state') ?? 'open';

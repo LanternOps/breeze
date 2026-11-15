@@ -716,19 +716,100 @@ test('ingest drops sightings of tests the change touched, from the files of the 
   webRun(orphan, { id: 9001, head, base, pr: null });
   await orphan.run();
   assert.deepEqual(sightingsOf(orphan), []);
-  // A merge_group run compares the group with the base it was built on; a
-  // push to main reads the commit's own files.
-  const queue = setup();
-  webRun(queue, { id: 9002, event: 'merge_group', pr: 501, head, base });
-  queue.world.changed.set(`${base}...${head}`, ['apps/web/src/x/widget.test.tsx']);
-  await queue.run();
-  assert.deepEqual(sightingsOf(queue), []);
+  // A push to main reads the commit's own files (merge_group runs: below).
   const push = setup();
   webRun(push, { id: 9003, event: 'push', pr: null, head, branch: 'main' });
   push.world.changed.set(head, ['docs/a.md']);
   await push.run();
   assert.deepEqual(sightingsOf(push).map((s) => s.event), ['push']);
   assert.ok(push.world.calls.some((c) => c.path === `/repos/${REPO}/commits/${head}`));
+});
+
+// Merge-queue runs. Entry A is first in the queue (built on main's tip M);
+// B is stacked on A's group commit and C on B's, so each queue branch name
+// carries the PREVIOUS entry's group commit, not main. A touched the widget's
+// sibling source and broke its test; B and C did not touch it, but their
+// groups contain A's change.
+const M = 'ee'.repeat(20);
+const QA = 'a1'.repeat(20);
+const QB = 'b2'.repeat(20);
+const QC = 'c3'.repeat(20);
+const A_FILES = ['apps/web/src/x/widget.tsx'];
+const B_FILES = ['docs/b.md'];
+const C_FILES = ['docs/c.md'];
+function stackedQueue(env) {
+  webRun(env, { id: 9101, event: 'merge_group', pr: 601, head: QA, base: M });
+  webRun(env, { id: 9102, event: 'merge_group', pr: 602, head: QB, base: QA });
+  webRun(env, { id: 9103, event: 'merge_group', pr: 603, head: QC, base: QB });
+  // Each entry's own change (what a compare from the branch-name sha sees)…
+  env.world.changed.set(`${M}...${QA}`, A_FILES);
+  env.world.changed.set(`${QA}...${QB}`, B_FILES);
+  env.world.changed.set(`${QB}...${QC}`, C_FILES);
+  // …and everything in the group ahead of main (main...head).
+  env.world.changed.set(`main...${QA}`, { files: A_FILES, status: 'ahead', mergeBase: M });
+  env.world.changed.set(`main...${QB}`, { files: [...A_FILES, ...B_FILES], status: 'ahead', mergeBase: M });
+  env.world.changed.set(`main...${QC}`, { files: [...A_FILES, ...B_FILES, ...C_FILES], status: 'ahead', mergeBase: M });
+}
+
+test('merge queue: a test the first entry broke is touched for every entry stacked on it (no issue, no ledger add)', async () => {
+  const env = setup();
+  stackedQueue(env);
+  await env.run();
+  const kept = readJsonl(join(env.stateDir, 'sightings.jsonl'));
+  assert.deepEqual(kept.map((s) => [s.pr, s.event]), [], 'B and C carry A\'s change: their failures are touched');
+  for (const pr of [601, 602, 603]) {
+    const head = { 601: QA, 602: QB, 603: QC }[pr];
+    assert.ok(env.world.calls.some((c) => c.path === `/repos/${REPO}/compare/main...${head}`), `PR ${pr}'s group compared with main`);
+  }
+  // What the upkeep would do with them: no issue, and no ledger add even with
+  // a third sighting (a fail-then-pass) from an unrelated PR.
+  const { issueWorthy } = await import('./flake-issues.mjs');
+  const { proposeLedger } = await import('./ledger-proposals.mjs');
+  assert.equal(issueWorthy(kept), false);
+  const other = { runner: 'vitest-web', id: WEB_TEST, file: 'apps/web/src/x/widget.test.tsx', kind: 'fail_pass', run: 9200, attempt: 1, job: 'Test Web (shard 3/4)', pr: 700, event: 'pull_request', sha: 'd4'.repeat(20), at: iso(T0 - 10 * MIN), untouched: true };
+  const p = proposeLedger({ ledger: [], records: [{ runner: 'vitest-web', id: WEB_TEST, file: other.file, issue: 900, quarantine_days: 0, sightings: [...kept, other] }], today: '2026-11-08', fileExists: () => true });
+  assert.deepEqual(p.add, []);
+});
+
+test('merge queue: a test untouched by every PR in the group is kept once, with the group base it was checked from', async () => {
+  const env = setup();
+  webRun(env, { id: 9104, event: 'merge_group', pr: 604, head: QB, base: QA });
+  env.world.changed.set(`main...${QB}`, { files: ['docs/a.md', 'docs/b.md'], status: 'ahead', mergeBase: M });
+  await env.run();
+  const kept = readJsonl(join(env.stateDir, 'sightings.jsonl'));
+  assert.deepEqual(kept.map((s) => [s.pr, s.event, s.kind, s.queueBase, s.queueParent]), [[604, 'merge_group', 'fail_fail', M, QA]]);
+  // A main that moved on without A (diverged) still measures from the merge base.
+  const env2 = setup();
+  webRun(env2, { id: 9105, event: 'merge_group', pr: 605, head: QB, base: QA });
+  env2.world.changed.set(`main...${QB}`, { files: ['docs/a.md'], status: 'diverged', mergeBase: M });
+  await env2.run();
+  assert.deepEqual(readJsonl(join(env2.stateDir, 'sightings.jsonl')).map((s) => s.queueBase), [M]);
+});
+
+test('merge queue: a group whose base on main cannot be told counts every failure as touched', async () => {
+  const cases = {
+    // The group already merged: main...head is empty, its base is gone.
+    merged: (env) => env.world.changed.set(`main...${QB}`, { files: [], status: 'identical', mergeBase: QB }),
+    behind: (env) => env.world.changed.set(`main...${QB}`, { files: [], status: 'behind', mergeBase: QB }),
+    noMergeBase: (env) => env.world.changed.set(`main...${QB}`, { files: ['docs/a.md'], status: 'ahead' }),
+    compareFails: (env) => env.world.failingGets.push([/\/compare\//, 500]),
+    tooMany: (env) => env.world.changed.set(`main...${QB}`, { files: Array.from({ length: 300 }, (_, i) => `docs/f${i}.md`), status: 'ahead', mergeBase: M }),
+  };
+  for (const [name, arrange] of Object.entries(cases)) {
+    const env = setup();
+    webRun(env, { id: 9106, event: 'merge_group', pr: 606, head: QB, base: QA });
+    // The entry's own change alone would leave the test untouched.
+    env.world.changed.set(`${QA}...${QB}`, ['docs/b.md']);
+    arrange(env);
+    await env.run();
+    assert.deepEqual(readJsonl(join(env.stateDir, 'sightings.jsonl')), [], name);
+  }
+  // A merge_group run on a branch that is not a queue branch: no base to read.
+  const odd = setup();
+  webRun(odd, { id: 9107, event: 'merge_group', pr: 607, head: QB, branch: 'feature-x' });
+  odd.world.changed.set(`main...${QB}`, { files: ['docs/a.md'], status: 'ahead', mergeBase: M });
+  await odd.run();
+  assert.deepEqual(readJsonl(join(odd.stateDir, 'sightings.jsonl')), []);
 });
 
 test('a failing sweep is reported and the others still run; a failing tick reports status=error as its last line', async () => {

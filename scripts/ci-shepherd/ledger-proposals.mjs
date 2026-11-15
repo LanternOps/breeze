@@ -6,11 +6,16 @@
 // unknown holds it closed:
 //
 //   add     the test is not in the ledger, has an open flaky-test issue, and
-//           in the last 7 days has ≥ 3 sightings, from ≥ 2 distinct PRs, at
-//           least one of them threatening the queue (fail_fail, or seen in a
-//           merge_group run) and at least one showing it can pass on the same
-//           code (fail_pass or fail_other: a test that only ever failed both
-//           attempts looks deterministic, not flaky); no main_broken breaker
+//           in the last 7 days has ≥ 3 independent runs, from ≥ 2 independent
+//           PRs (evidenceUnits: merge-queue entries of one queue chain count
+//           as one run and one PR), at least one of them threatening the
+//           queue (fail_fail, or seen in a merge_group run) and at least one
+//           showing it can pass on the same code (fail_pass or fail_other: a
+//           test that only ever failed both attempts looks deterministic, not
+//           flaky). That last one is the real flake signal: "untouched" only
+//           says no changed file is the test, its sibling source or its
+//           package, so a test broken through an import still looks
+//           untouched. No main_broken breaker
 //           (suspected or confirmed) names it; its file exists at main; and it
 //           has < 60 quarantine days. The entry runs 14 days, cut to what is
 //           left of the 60. `covers` is never added.
@@ -25,14 +30,17 @@
 //           cap: they get the `flaky-fix-required` label and are never
 //           renewed again.
 //   protected  tests quarantineEligibility refuses (integration, contract,
-//           src/__tests__/, and tenancy/RLS/auth/security/migration/billing/
-//           cascade paths): never added and never renewed, whatever the
+//           src/__tests__/, and tenancy, auth, access, data-integrity and
+//           signing paths, PROTECTED_PATH): never added and never renewed, whatever the
 //           evidence, because the ledger PR auto-merges with no human review.
 //           They keep their flaky-test issue; quarantining one is a human's
 //           ledger PR. An entry a human added stays as written until it
 //           expires or goes silent (removal only strengthens the gate).
 //
 // "In the last N days" counts UTC calendar days: today and the N − 1 before.
+// A merge_group sighting counts only when it carries `queueBase` (the ingest
+// checked it against every entry of its group); one stored before that check
+// is ignored by every count here.
 import { validateLedger } from '../../.github/scripts/flaky-ledger.mjs';
 
 // The key of one test across issues, records and the ledger (re-exported by
@@ -42,7 +50,7 @@ export const flakeKey = (runner, id) => `${runner}|${id}`;
 // Paths whose tests guard tenancy, auth and data integrity. Case-insensitive
 // substrings, matched against the test's repo path (or, without one, the path
 // part of its id); never against test names.
-export const PROTECTED_PATH = /rls|tenan|auth|security|migration|billing|cascade/i;
+export const PROTECTED_PATH = /rls|tenan|auth|security|migration|billing|cascade|permission|rbac|access|partner|org[-_]?merge|export|audit|signing|enroll|token|session|mfa|sso/i;
 const CONTRACT_TEST = /\.contract\.test\./i;
 const SUITE_DIR = /(^|\/)src\/__tests__\//;
 
@@ -60,6 +68,49 @@ export function quarantineEligibility({ runner, id, file }) {
   const hit = paths.map((p) => PROTECTED_PATH.exec(p)?.[0]).find(Boolean);
   if (hit) reasons.push(`its path matches "${hit.toLowerCase()}"`);
   return { eligible: reasons.length === 0, reasons };
+}
+
+const SHA = /^[0-9a-f]{7,64}$/;
+
+// A merge_group sighting the ingest checked against every entry of its group
+// (it compared the group with main and kept the merge base as `queueBase`).
+export const queueChecked = (s) => s?.event === 'merge_group' && SHA.test(s.queueBase ?? '');
+// Sightings the counts may use: any non-queue sighting, and checked queue ones.
+export const countable = (s) => s?.event !== 'merge_group' || queueChecked(s);
+
+// Union-find over list indexes: items sharing any key are one component.
+function componentsBy(list, keysOf) {
+  const parent = list.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const owner = new Map();
+  list.forEach((x, i) => {
+    for (const k of keysOf(x)) {
+      if (!owner.has(k)) owner.set(k, i);
+      else parent[find(i)] = find(owner.get(k));
+    }
+  });
+  return list.map((_, i) => find(i));
+}
+
+// Queue chain keys: entries of one chain share the base they were checked
+// from (main's tip the chain was built on), or one was stacked on the other
+// (its queueParent is the other's group commit). Over-joining is the safe
+// side: it only ever lowers the counts.
+const chainKeys = (s) => (queueChecked(s) ? [`b:${s.queueBase}`, ...[s.sha, s.queueParent].filter((c) => SHA.test(c ?? '')).map((c) => `c:${c}`)] : []);
+
+// How much independent evidence countable sightings hold:
+//   runs   distinct runs, where the merge_group runs of one queue chain are one;
+//   prs    distinct PRs, where sightings of one PR, and every PR of one queue
+//          chain, are one (runs naming no PR, such as pushes to main, add none);
+//   chains distinct queue chains among checked merge_group sightings.
+export function evidenceUnits(sightings) {
+  const list = sightings.filter(countable);
+  const runComp = componentsBy(list, (s) => [`r:${s.run}`, ...chainKeys(s)]);
+  const prList = list.filter((s) => Number.isInteger(s.pr) || queueChecked(s));
+  const prComp = componentsBy(prList, (s) => [...(Number.isInteger(s.pr) ? [`p:${s.pr}`] : []), ...chainKeys(s)]);
+  const queue = list.filter(queueChecked);
+  const chainComp = componentsBy(queue, chainKeys);
+  return { runs: new Set(runComp).size, prs: new Set(prComp).size, chains: new Set(chainComp).size };
 }
 
 export const ADD_MIN_SIGHTINGS = 3;
@@ -88,7 +139,7 @@ export function proposeLedger({ ledger, records, breakers = [], today, fileExist
   if (errors.length) throw new Error(`proposeLedger: the ledger at main is invalid: ${errors.join('; ')}`);
   const recordOf = new Map(records.map((r) => [flakeKey(r.runner, r.id), r]));
   const daysAgo = (s) => t - Math.floor(Date.parse(s.at) / DAY);
-  const within = (r, days) => (r?.sightings ?? []).filter((s) => daysAgo(s) >= 0 && daysAgo(s) < days);
+  const within = (r, days) => (r?.sightings ?? []).filter((s) => countable(s) && daysAgo(s) >= 0 && daysAgo(s) < days);
   const brokenOnMain = (id) => breakers.some((b) => b.kind === 'main_broken' && BLOCKING_BREAKER.has(b.status) && b.key === id);
   const silenceKnown = evidenceSince === null || Date.parse(evidenceSince) <= (t - SILENT_DAYS + 1) * DAY;
   const evidence = {};
@@ -96,7 +147,8 @@ export function proposeLedger({ ledger, records, breakers = [], today, fileExist
     const s7 = within(r, WINDOW_DAYS);
     const kinds = { fail_pass: 0, fail_fail: 0, fail_other: 0 };
     for (const s of s7) kinds[s.kind] = (kinds[s.kind] ?? 0) + 1;
-    evidence[key] = { sightings7: s7.length, kinds, prs: new Set(s7.map((s) => s.pr).filter((p) => p !== null && p !== undefined)).size };
+    const u = evidenceUnits(s7);
+    evidence[key] = { sightings7: s7.length, kinds, runs: u.runs, prs: u.prs };
   };
 
   const out = { next: [], add: [], renew: [], remove: [], fixRequired: [], waitingIssue: [], protected: [], evidence };
@@ -140,11 +192,11 @@ export function proposeLedger({ ledger, records, breakers = [], today, fileExist
     const key = flakeKey(r.runner, r.id);
     if (inLedger.has(key)) continue;
     const s7 = within(r, WINDOW_DAYS);
-    const prs = new Set(s7.map((s) => s.pr).filter((p) => p !== null && p !== undefined));
+    const u = evidenceUnits(s7);
     const corroborated =
-      s7.length >= ADD_MIN_SIGHTINGS &&
-      prs.size >= ADD_MIN_PRS &&
-      s7.some((s) => s.kind === 'fail_fail' || s.event === 'merge_group') &&
+      u.runs >= ADD_MIN_SIGHTINGS &&
+      u.prs >= ADD_MIN_PRS &&
+      s7.some((s) => s.kind === 'fail_fail' || queueChecked(s)) &&
       s7.some((s) => FLAKY_KINDS.has(s.kind));
     if (!corroborated || brokenOnMain(r.id) || refuse(key, r) || !r.file || !fileExists(r.file)) continue;
     if (r.quarantine_days >= CAP_DAYS) {

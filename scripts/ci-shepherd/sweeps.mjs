@@ -13,7 +13,7 @@
 import { breakerDecisions, setBreakerIssue, updateBreakers } from './breakers.mjs';
 import { LABELS, decide, newHeadDecision, restoreDecision, resumeDecision, stuckDecision, READD_GRACE_MS } from './decide.mjs';
 import { attemptsOf, candidateSightings, untouchedOnly } from './evidence.mjs';
-import { groupRunBySha, jobNames, mergeQueueEntries, runChangedFiles, runFacts } from './facts.mjs';
+import { groupRunBySha, jobNames, mergeQueueEntries, runChange, runFacts } from './facts.mjs';
 import { appendJsonl } from './state.mjs';
 
 const ms = (s) => Date.parse(s);
@@ -247,17 +247,22 @@ export async function ingestSightings(t, { callLimit = Infinity } = {}) {
     }
     if (facts) {
       // A failure the run's own change touched is the change's, not the
-      // test's: drop it. Unreadable change → every failure counts as touched.
+      // test's: drop it. For a queue run the change is every entry of its
+      // group not yet on main (runChange). Unreadable change → every failure
+      // counts as touched.
       let sightings = candidateSightings(facts, { repo: t.repo, repoRoot: t.repoRoot });
       if (sightings.length) {
-        let changed = null;
+        let change = { files: null, queueBase: null };
         try {
-          changed = await runChangedFiles(t.gh, { repo: t.repo, run: facts.run });
+          change = await runChange(t.gh, { repo: t.repo, run: facts.run });
         } catch (e) {
           if (e.name === 'BudgetExceeded') break;
-          changed = null;
         }
-        sightings = untouchedOnly(sightings, changed, t.repoRoot);
+        sightings = untouchedOnly(sightings, change.files, t.repoRoot);
+        // A queue sighting keeps the base its group was checked from and the
+        // commit it was stacked on: the counts tie stacked entries into one
+        // queue chain by them (ledger-proposals.mjs, evidenceUnits).
+        if (facts.run.event === 'merge_group') sightings = sightings.map((s) => ({ ...s, queueBase: change.queueBase, queueParent: facts.run.queueParent }));
       }
       for (const s of sightings) appendJsonl(t.sightingsPath, s);
       count += sightings.length;

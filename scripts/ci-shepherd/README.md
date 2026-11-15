@@ -146,15 +146,37 @@ After each tick's sightings ingest, the shepherd keeps the flaky ledger fed
   the run's own change did not touch the test: not the test file, not its
   sibling source, not its Go package, and for an integration test not a
   migration (`apps/api/migrations/`) or the schema (`apps/api/src/db/`). The
-  change is read for each run with failures: base...head for a PR or queue
-  run, the commit itself for a run on main. When it cannot be read (an error,
-  a run naming no PR, 300 files or more), the failure counts as touched and
-  is dropped.
+  change is read for each run with failures: base...head for a PR run, the
+  commit itself for a run on main, and for a merge queue run `main...head`,
+  i.e. every entry of its group not yet on main, this one included. (The sha
+  in a queue branch name `gh-readonly-queue/main/pr-N-<sha>` is the commit
+  the entry was stacked on: for every entry but the first, the previous
+  entry's group commit. A compare from it sees only the entry's own PR, so a
+  test the first entry broke would look untouched in every entry behind it.)
+  When the change cannot be read (an error, a run naming no PR, 300 files or
+  more, or a queue group that already merged, whose base on main is gone),
+  the failure counts as touched and is dropped. A queue sighting keeps the
+  merge base it was checked from (`queueBase`) and the commit it was stacked
+  on (`queueParent`); one stored before this check has no `queueBase` and is
+  not counted.
+- **What "untouched" can and cannot tell.** It is a file-path check, nothing
+  more. It catches a change to the test itself, its sibling source, its Go
+  package, and (integration) migrations or the schema. It does not see a
+  test broken indirectly: a change to a module the test imports, a shared
+  fixture, a config file, a dependency bump or another entry's change that
+  merged before the read. Such a failure still counts as untouched, so an
+  untouched failure is a lead, not proof of a flake. The flake signal the
+  ledger relies on is the fail-then-pass requirement below: at least one
+  sighting where the test failed and then passed on the same code (a retry
+  passed, or attempt 2 failed only on other tests). A deterministic break
+  fails both attempts every time and never meets it.
 - **Issues** (`flake-issues.mjs`). A test gets one `flaky-test` issue once,
   within 14 days, it failed in 2 distinct CI runs and the evidence points
   away from the change: runs of at least 2 different PRs, or a merge queue
   run, or a fail-then-pass on one commit (the retry passed). Two runs of one
-  PR never open an issue. At most 5 new issues per UTC day, counted in
+  PR never open an issue, and the merge queue runs of one queue chain
+  (entries stacked on one another, or built on the same tip of main) count
+  as one run. At most 5 new issues per UTC day, counted in
   `state.json` so a restart does not reset it; tests over the cap are queued
   with the evidence they qualified on and opened on a later day. The body
   holds a summary of that evidence (a suspicion, not proof) and a hidden
@@ -169,8 +191,12 @@ After each tick's sightings ingest, the shepherd keeps the flaky ledger fed
   the quarantine days.
 - **Proposals** (`ledger-proposals.mjs`). A test is added to
   `.github/flaky-tests.json` only when it has an open issue and, in the last 7
-  days, ≥ 3 sightings from ≥ 2 PRs, at least one in the merge queue or failing
-  both attempts, and at least one passing on a retry. No `main_broken` breaker
+  days, ≥ 3 independent runs from ≥ 2 independent PRs, at least one in the
+  merge queue or failing both attempts, and at least one passing on a retry
+  (fail-then-pass or fail-other: the real flake signal, see above). The
+  entries of one queue chain count as one run and one PR, together with any
+  PR run of those PRs; a queue failure counts only when the test was
+  untouched by every entry of its group. No `main_broken` breaker
   may name it, and its file must exist on main. Entries run 14 days and renew
   only on fresh flake evidence. Each test is quarantined for at most 60 days in
   total, then gets `flaky-fix-required`. Expired entries and entries with no
@@ -179,8 +205,11 @@ After each tick's sightings ingest, the shepherd keeps the flaky ledger fed
   The shepherd never adds or renews: any test run by the integration runner
   (`vitest-integration`), any `*.contract.test.*`, anything under
   `src/__tests__/`, and any test whose path matches `rls`, `tenan`, `auth`,
-  `security`, `migration`, `billing` or `cascade` (case-insensitive, so
-  `urls` and `author` match too: it errs towards protecting). They still get
+  `security`, `migration`, `billing`, `cascade`, `permission`, `rbac`,
+  `access`, `partner`, `org-merge`/`org_merge`/`orgMerge`, `export`, `audit`,
+  `signing`, `enroll`, `token`, `session`, `mfa` or `sso` (case-insensitive
+  substrings, so `urls`, `author` and `processor` match too: it errs towards
+  protecting). They still get
   their `flaky-test` issue, which says they are protected. Quarantining one is
   a ledger PR a human writes and reviews; an entry a human added is kept as
   written until it expires. The ledger PR refuses to open if a protected test

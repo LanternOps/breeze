@@ -13,8 +13,11 @@
 // An issue is opened only once a test has sightings from 2 distinct CI runs
 // within 14 days AND evidence the failure is not the change's fault: runs of
 // 2 distinct PRs, or a merge_group run, or a fail-then-pass on one commit
-// (issueEvidence). Two runs of one PR never suffice. Sightings of tests the
-// run's own change touched never get here (evidence.mjs). New issues are
+// (issueEvidence). Two runs of one PR never suffice, and the merge_group runs
+// of one queue chain (entries stacked on one another) are one run. Sightings
+// of tests the run's own change touched never get here (evidence.mjs; for a
+// queue run, the change of every entry of its group not yet on main), and a
+// merge_group sighting stored before that group check is not counted. New issues are
 // capped per UTC day (the caller passes `createsLeft`); a candidate over the
 // cap is queued and keeps the evidence it qualified on, so it is opened on a
 // later day rather than dropped.
@@ -26,7 +29,7 @@
 // caller learns what would have been created.
 import { renameSync, readFileSync, writeFileSync } from 'node:fs';
 import { RUNNERS } from '../../.github/scripts/flaky-ledger.mjs';
-import { flakeKey, quarantineEligibility } from './ledger-proposals.mjs';
+import { countable, evidenceUnits, flakeKey, quarantineEligibility } from './ledger-proposals.mjs';
 
 export const FLAKE_LABEL = 'flaky-test';
 export const FIX_REQUIRED_LABEL = 'flaky-fix-required';
@@ -96,16 +99,21 @@ const RULES =
   'A flaky test is quarantined only through `.github/flaky-tests.json`, by a ledger PR, for at most 14 days at a time and 60 days in total; a quarantine never excuses a failure in a PR that touches the test or its sibling source.';
 
 // Why the evidence points away from the change under test, from what the
-// record holds: { prs, mergeGroup, retryPassed, runs }. `prs` counts distinct
-// PRs among pull_request runs; a merge_group run or a fail_pass (failed, then
-// passed on the retry of the same commit) stand on their own.
+// record holds: { runs, prs, mergeGroup, retryPassed }. `runs` counts
+// distinct runs, the merge_group runs of one queue chain as one; `prs`
+// counts distinct PRs among pull_request runs; `mergeGroup` counts queue
+// chains among merge_group sightings checked against their whole group; a
+// merge_group run or a fail_pass (failed, then passed on the retry of the
+// same commit) stand on their own.
 export function issueEvidence(sightings) {
-  const prs = new Set(sightings.filter((s) => s.event === 'pull_request' && Number.isInteger(s.pr)).map((s) => s.pr));
+  const list = sightings.filter(countable);
+  const prs = new Set(list.filter((s) => s.event === 'pull_request' && Number.isInteger(s.pr)).map((s) => s.pr));
+  const u = evidenceUnits(list);
   return {
-    runs: new Set(sightings.map((s) => s.run)).size,
+    runs: u.runs,
     prs: prs.size,
-    mergeGroup: sightings.filter((s) => s.event === 'merge_group').length,
-    retryPassed: sightings.filter((s) => s.kind === 'fail_pass').length,
+    mergeGroup: u.chains,
+    retryPassed: list.filter((s) => s.kind === 'fail_pass').length,
   };
 }
 
@@ -121,7 +129,7 @@ function renderBody(record) {
   const ev = issueEvidence(record.sightings);
   const why = [];
   if (ev.prs >= CREATE_PRS) why.push(`- it failed in CI runs of ${ev.prs} different pull requests;`);
-  if (ev.mergeGroup) why.push(`- it failed in ${ev.mergeGroup === 1 ? 'a merge queue run' : `${ev.mergeGroup} merge queue runs`};`);
+  if (ev.mergeGroup) why.push(`- it failed in ${ev.mergeGroup === 1 ? 'a merge queue run' : `merge queue runs of ${ev.mergeGroup} separate queue chains`} whose changes did not touch it;`);
   if (t.fail_pass) why.push(`- it failed and then passed on the retry, on the same commit (${t.fail_pass} ${t.fail_pass === 1 ? 'time' : 'times'}).`);
   const eligibility = quarantineEligibility(record);
   const lines = [

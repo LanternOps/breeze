@@ -28,7 +28,7 @@ const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8',
 
 const sighting = (over = {}) => ({ runner: 'vitest-web', id: ID, file: FILE, kind: 'fail_pass', run: 1, attempt: 1, job: 'Test Web (shard 3/4)', pr: 11312, event: 'pull_request', sha: 'a'.repeat(40), at: iso(T0 - 2 * H), untouched: true, ...over });
 // Corroborated: 3 runs, 2 PRs, one in the queue, one fail_other.
-const CORROBORATED = [sighting({ run: 1 }), sighting({ run: 2, pr: 11338, kind: 'fail_other' }), sighting({ run: 3, pr: 11338, event: 'merge_group', kind: 'fail_fail' })];
+const CORROBORATED = [sighting({ run: 1 }), sighting({ run: 2, pr: 11338, kind: 'fail_other' }), sighting({ run: 3, pr: 11338, event: 'merge_group', kind: 'fail_fail', queueBase: 'b'.repeat(40) })];
 
 function clone(files = [FILE]) {
   const root = mkdtempSync(join(tmpdir(), 'ci-shepherd-upkeep-'));
@@ -319,7 +319,7 @@ test('a protected test gets its issue but never a ledger entry, even fully corro
   const IT_ID = 'src/services/devices.integration.test.ts > devices > lists';
   const IT_FILE = 'apps/api/src/services/devices.integration.test.ts';
   const it = (over) => sighting({ runner: 'vitest-integration', id: IT_ID, file: IT_FILE, job: 'Integration Tests (shard 1/16)', ...over });
-  const env = setup({ sightings: [it({ run: 1 }), it({ run: 2, pr: 11338, kind: 'fail_other' }), it({ run: 3, pr: 11338, event: 'merge_group', kind: 'fail_fail' })], files: [FILE, IT_FILE] });
+  const env = setup({ sightings: [it({ run: 1 }), it({ run: 2, pr: 11338, kind: 'fail_other' }), it({ run: 3, pr: 11338, event: 'merge_group', kind: 'fail_fail', queueBase: 'b'.repeat(40) })], files: [FILE, IT_FILE] });
   const s = await env.run();
   assert.equal(s.status, 'ok', JSON.stringify(s.errors));
   assert.equal(env.world.issues.length, 1, 'the issue is opened');
