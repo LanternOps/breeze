@@ -6,6 +6,7 @@ import {
   probeFreshSessionAt,
   recycleSessionsOpenedBeforeAt,
 } from '../../db/readOnlySessionRecovery';
+import { defaultIsDatabaseReadOnly } from '../../extensions/builtinExtensions';
 
 /**
  * #11741 item 3, against real Postgres: a session opened while the database
@@ -132,5 +133,15 @@ describe('read-only session recovery (#11741)', () => {
     const pass = await recycleSessionsOpenedBeforeAt(scratchUrl, applicationName, fresh.checkedAt);
     expect(pass).toEqual({ terminated: 0, remaining: 0 });
     expect(await readOnlySetting(other)).toBe('on');
+  });
+
+  it('the extension loader\'s default probe reads the read-only flag (#11741 item 4)', async () => {
+    await setReadOnly(true);
+    const readOnly = pool();
+    expect(await defaultIsDatabaseReadOnly(readOnly)).toBe(true);
+    await setReadOnly(false);
+    const writable = pool();
+    expect(await defaultIsDatabaseReadOnly(writable)).toBe(false);
+    expect(await defaultIsDatabaseReadOnly(null)).toBe(false);
   });
 });

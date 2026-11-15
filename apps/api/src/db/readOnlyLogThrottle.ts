@@ -14,11 +14,12 @@ import { isReadOnlySqlError } from './readOnlyDatabase';
  * already goes through, instead of in ~150 handlers. It touches ONLY a call
  * whose arguments carry a read-only error (an error object with SQLSTATE 25006,
  * also when wrapped on `cause`, or the driver's "cannot execute X in a
- * read-only transaction" text). Every other line passes through untouched, in
- * order, with its original arguments.
+ * read-only transaction" text) and no other error. Every other line passes
+ * through untouched, in order, with its original arguments.
  *
  * For a read-only error, the first call from a source in a window writes ONE
- * line without a stack: the source, the SQLSTATE and the driver message. Later
+ * line without a stack: the source, the SQLSTATE, the driver message and the
+ * call's own first message (shortened), so what failed stays visible. Later
  * calls from that source in the window are counted, and the next line (or the
  * periodic flush) carries the count. Sentry is not involved: events there are
  * already throttled by `throttleEvent` (services/sentry.ts).
@@ -66,17 +67,34 @@ export function readOnlyLogSource(args: readonly unknown[]): string {
   return normalized || NO_MESSAGE_SOURCE;
 }
 
-/** The read-only error's message when a call carries one, else null. */
+/**
+ * The read-only error's message when a call carries one, else null. A call
+ * that ALSO carries any other error (an Error, or an object with an error
+ * `code`) is never throttled: collapsing it would drop that error.
+ */
 function readOnlyDetail(args: readonly unknown[]): string | null {
+  let detail: string | null = null;
   for (const arg of args) {
     if (typeof arg === 'string') {
       const match = READ_ONLY_MESSAGE.exec(arg);
-      if (match) return match[0];
-    } else if (arg !== null && typeof arg === 'object' && isReadOnlySqlError(arg)) {
-      return readOnlyMessage(arg);
+      if (match && detail === null) detail = match[0];
+    } else if (arg !== null && typeof arg === 'object') {
+      if (isReadOnlySqlError(arg)) {
+        if (detail === null) detail = readOnlyMessage(arg);
+      } else if (arg instanceof Error || typeof (arg as { code?: unknown }).code === 'string') {
+        return null;
+      }
     }
   }
-  return null;
+  return detail;
+}
+
+const MAX_EXAMPLE_LENGTH = 200;
+
+/** The call's own first message, shortened, so the compact line keeps it. */
+function exampleMessage(args: readonly unknown[]): string {
+  const message = firstString(args)?.trim() ?? '';
+  return message.length > MAX_EXAMPLE_LENGTH ? `${message.slice(0, MAX_EXAMPLE_LENGTH)}…` : message;
 }
 
 /** The driver's own text, from the error or the first `cause` that has it. */
@@ -119,10 +137,17 @@ export function createReadOnlyLogThrottle(
   const suppressedNote = (count: number): string =>
     count > 0 ? ` (${count} more suppressed in the last ${windowSeconds}s)` : '';
 
-  const write = (level: Level, source: string, detail: string, suppressed: number): void => {
+  const write = (
+    level: Level,
+    source: string,
+    detail: string,
+    example: string,
+    suppressed: number,
+  ): void => {
+    const exampleNote = example && example !== source ? ` Latest: ${example}` : '';
     sink[level](
-      `${source} database is read-only (SQLSTATE 25006): ${detail}${suppressedNote(suppressed)}. ` +
-        `Further read-only errors from this source are summarized every ${windowSeconds}s.`,
+      `${source} database is read-only (SQLSTATE 25006): ${detail}${suppressedNote(suppressed)}.` +
+        `${exampleNote} Further read-only errors from this source are summarized every ${windowSeconds}s.`,
     );
   };
 
@@ -139,7 +164,7 @@ export function createReadOnlyLogThrottle(
       state.suppressed += 1;
       return true;
     }
-    write(level, source, detail, state?.suppressed ?? 0);
+    write(level, source, detail, exampleMessage(args), state?.suppressed ?? 0);
     sources.set(source, { windowStart: at, suppressed: 0, level });
     return true;
   };

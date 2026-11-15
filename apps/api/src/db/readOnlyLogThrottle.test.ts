@@ -79,6 +79,28 @@ describe('createReadOnlyLogThrottle', () => {
     expect(lines[2]!.args[0]).toEqual(expect.stringContaining('49 more suppressed'));
   });
 
+  it('keeps the call\'s own message in the compact line', () => {
+    const { sink, lines } = fakeConsole();
+    const throttle = createReadOnlyLogThrottle(sink, { now: () => 0 });
+    throttle.console.error('[MonitorWorker] Job 42 for monitor abc failed:', readOnlyError());
+    expect(lines[0]!.args[0]).toEqual(expect.stringContaining('Latest: [MonitorWorker] Job 42 for monitor abc failed:'));
+  });
+
+  it('never throttles a call that also carries a different error', () => {
+    const { sink, lines } = fakeConsole();
+    const throttle = createReadOnlyLogThrottle(sink, { now: () => 0 });
+    const other = new Error('lock timeout');
+    const coded = { code: '23505', detail: 'duplicate key' };
+    throttle.console.error('[X] failed:', readOnlyError(), other);
+    throttle.console.error('[X] failed:', readOnlyError(), other);
+    throttle.console.error('[X] cannot execute UPDATE in a read-only transaction', coded);
+    expect(lines).toEqual([
+      { level: 'error', args: ['[X] failed:', expect.any(Error), other] },
+      { level: 'error', args: ['[X] failed:', expect.any(Error), other] },
+      { level: 'error', args: ['[X] cannot execute UPDATE in a read-only transaction', coded] },
+    ]);
+  });
+
   it('recognizes the error when drizzle wraps the driver error on cause', () => {
     const { sink, lines } = fakeConsole();
     const throttle = createReadOnlyLogThrottle(sink, { now: () => 0 });

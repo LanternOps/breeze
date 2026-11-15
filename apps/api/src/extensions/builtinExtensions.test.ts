@@ -9,6 +9,7 @@ import {
 import {
   BUILTIN_EXTENSION_NAMES,
   builtinTenancyDeclarations,
+  ExtensionMigrationParityError,
   isBuiltinEnabled,
   loadBuiltinExtensions,
   type BuiltinExtension,
@@ -670,7 +671,7 @@ describe('loadBuiltinExtensions — read-only database (#11741)', () => {
       ports: {
         isDatabaseReadOnly: async () => true,
         checkMigrationParity: async () => {
-          throw new Error('missing from ledger: demo-builtin/0002-next.sql');
+          throw new ExtensionMigrationParityError('missing from ledger: demo-builtin/0002-next.sql');
         },
       },
     });
@@ -679,7 +680,18 @@ describe('loadBuiltinExtensions — read-only database (#11741)', () => {
     expect(error).toBeInstanceOf(ReadOnlyDatabaseError);
     expect((error as Error).message).toContain('read-only');
     expect((error as Error).message).toContain('missing from ledger: demo-builtin/0002-next.sql');
+    expect((error as Error).cause).toBeInstanceOf(ExtensionMigrationParityError);
     expect(h.registry.get(NAME)).toBeUndefined();
+  });
+
+  it('does not relabel a failure of the parity check itself as a read-only problem', async () => {
+    const { stateStore } = await recordedState();
+    const lost = Object.assign(new Error('Connection terminated unexpectedly'), { code: 'CONNECTION_CLOSED' });
+    const h = createHarness({
+      stateStore,
+      ports: { isDatabaseReadOnly: async () => true, checkMigrationParity: async () => { throw lost; } },
+    });
+    await expect(h.load()).rejects.toBe(lost);
   });
 
   it('fails with a read-only error on a first boot (no recorded state)', async () => {

@@ -1,9 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./index', () => ({ db: {}, withSystemDbAccessContext: vi.fn() }));
+const { execute } = vi.hoisted(() => ({ execute: vi.fn() }));
+vi.mock('./index', () => ({
+  db: { execute },
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('./requestDatabaseConfig', () => ({
+  resolveRequestDatabaseConfig: () => ({ url: 'postgres://example.invalid/db' }),
+}));
 
 import {
   createReadOnlySessionRecovery,
+  probeRequestPool,
+  READ_ONLY_SESSION_RECOVERY_INTERVAL_MS,
+  startReadOnlySessionRecovery,
+  stopReadOnlySessionRecovery,
   type ReadOnlySessionRecoveryDeps,
 } from './readOnlySessionRecovery';
 
@@ -16,7 +27,11 @@ function harness(overrides: Partial<ReadOnlySessionRecoveryDeps> = {}) {
     now: () => now,
     ...overrides,
   };
-  const recovery = createReadOnlySessionRecovery(deps, { maxRecoveryMs: 10_000 });
+  const recovery = createReadOnlySessionRecovery(deps, {
+    maxRecoveryMs: 10_000,
+    freshProbeBackoffAfterMs: 60_000,
+    freshProbeBackoffEvery: 3,
+  });
   return { deps, recovery, advance: (ms: number) => { now += ms; } };
 }
 
@@ -111,5 +126,73 @@ describe('createReadOnlySessionRecovery', () => {
     expect(probePool).toHaveBeenCalledTimes(2);
     release();
     await first;
+  });
+
+  it('ends the recovery window even when every recycle pass fails', async () => {
+    const { recovery, advance } = harness({
+      probePool: vi.fn(async () => ({ readOnly: true, applicationName: 'breeze-api' })),
+      probeFreshSession: vi.fn(async () => ({ readOnly: false, checkedAt: 't' })),
+      recycleSessionsOpenedBefore: vi.fn(async () => {
+        throw new Error('permission denied for function pg_terminate_backend');
+      }),
+    });
+    await recovery.tick();
+    await recovery.tick();
+    expect(recovery.state()).toBe('recovering');
+    advance(11_000);
+    await recovery.tick();
+    expect(recovery.state()).toBe('watching');
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('pg_terminate_backend'));
+  });
+
+  it('re-logs a persistent failure every 20 ticks, not every tick', async () => {
+    const { recovery } = harness({
+      probePool: vi.fn(async () => { throw new Error('connection refused'); }),
+    });
+    for (let i = 0; i < 40; i++) await recovery.tick();
+    const lines = vi.mocked(console.warn).mock.calls.filter((c) => String(c[0]).includes('connection refused'));
+    expect(lines).toHaveLength(3); // ticks 1, 20, 40
+  });
+
+  it('backs the fresh-session check off when the database stays read-only (a standby)', async () => {
+    const { deps, recovery, advance } = harness({
+      probePool: vi.fn(async () => ({ readOnly: true, applicationName: 'breeze-api' })),
+    });
+    await recovery.tick(); // -> read-only
+    for (let i = 0; i < 3; i++) await recovery.tick();
+    expect(deps.probeFreshSession).toHaveBeenCalledTimes(3);
+    advance(60_000);
+    for (let i = 0; i < 6; i++) await recovery.tick();
+    expect(deps.probeFreshSession).toHaveBeenCalledTimes(5); // every 3rd tick now
+  });
+});
+
+describe('probeRequestPool', () => {
+  it('reads both result shapes and names the pool\'s application_name', async () => {
+    execute.mockResolvedValueOnce([{ ro: 'on', app: 'breeze-api' }]);
+    await expect(probeRequestPool()).resolves.toEqual({ readOnly: true, applicationName: 'breeze-api' });
+    execute.mockResolvedValueOnce({ rows: [{ ro: 'off', app: 'breeze-api' }] });
+    await expect(probeRequestPool()).resolves.toEqual({ readOnly: false, applicationName: 'breeze-api' });
+  });
+
+  it('throws on an unexpected shape instead of reading it as writable', async () => {
+    execute.mockResolvedValueOnce([]);
+    await expect(probeRequestPool()).rejects.toThrow('unexpected result shape');
+  });
+});
+
+describe('startReadOnlySessionRecovery', () => {
+  afterEach(() => {
+    stopReadOnlySessionRecovery();
+    vi.useRealTimers();
+  });
+
+  it('starts one timer however often it is called, and stop clears it', () => {
+    vi.useFakeTimers();
+    expect(startReadOnlySessionRecovery()).toBe(READ_ONLY_SESSION_RECOVERY_INTERVAL_MS);
+    startReadOnlySessionRecovery();
+    expect(vi.getTimerCount()).toBe(1);
+    stopReadOnlySessionRecovery();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

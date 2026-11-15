@@ -16,8 +16,8 @@ import { pgErrorCode } from '@breeze/shared/pgErrors';
  * raw 25006 so the operator reads what is wrong and what to do about it.
  */
 export class ReadOnlyDatabaseError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'ReadOnlyDatabaseError';
   }
 }

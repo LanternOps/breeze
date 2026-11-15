@@ -64,6 +64,30 @@ describe('deferUntilDatabaseWritable', () => {
     expect(task).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps waiting through a connection fault (failover, restart) instead of giving up', async () => {
+    const refused = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    const terminated = Object.assign(new Error('terminating connection due to administrator command'), { code: '57P01' });
+    const task = vi.fn()
+      .mockRejectedValueOnce(refused)
+      .mockRejectedValueOnce(terminated)
+      .mockResolvedValueOnce(undefined);
+    deferUntilDatabaseWritable('failover', task, { intervalMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(task).toHaveBeenCalledTimes(3);
+    expect(isDeferredUntilWritable('failover')).toBe(false);
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('logs a reminder every 30 attempts while it waits', async () => {
+    const task = vi.fn().mockRejectedValue(readOnlyError());
+    deferUntilDatabaseWritable('long wait', task, { intervalMs: 1_000 });
+    vi.mocked(console.warn).mockClear();
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(console.warn).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('still deferred after 30 attempts'));
+  });
+
   it('keeps one retry per label', async () => {
     const first = vi.fn().mockResolvedValue(undefined);
     const second = vi.fn().mockResolvedValue(undefined);

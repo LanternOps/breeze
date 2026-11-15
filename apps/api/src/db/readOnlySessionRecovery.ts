@@ -22,7 +22,10 @@ import { resolveRequestDatabaseConfig } from './requestDatabaseConfig';
  *   2. read-only: a pooled session said yes. Each tick asks a FRESH session
  *      (one short-lived side connection, outside the pool) the same question.
  *      While it says read-only too, the database really is, and nothing
- *      happens.
+ *      happens. After `freshProbeBackoffAfterMs` (30 min) the fresh check
+ *      drops to every `freshProbeBackoffEvery`th tick (5 min), so a database
+ *      that is read-only on purpose (a standby) costs one side connection per
+ *      process every 5 minutes, not every 30 seconds.
  *   3. recovering: a fresh session says writable, so pooled sessions older than
  *      that moment may be stale. Each tick terminates the IDLE ones and
  *      re-counts. postgres.js reconnects a terminated idle connection on its
@@ -50,6 +53,10 @@ export const READ_ONLY_SESSION_RECOVERY_INTERVAL_MS = 30_000;
 /** Longer than the request pool's `max_lifetime` (30 min, db/index.ts). */
 export const READ_ONLY_SESSION_RECOVERY_MAX_MS = 35 * 60_000;
 export const READ_ONLY_SESSION_RECOVERY_APPLICATION_NAME = 'breeze-read-only-session-recovery';
+const FRESH_PROBE_BACKOFF_AFTER_MS = 30 * 60_000;
+const FRESH_PROBE_BACKOFF_EVERY = 10;
+/** A persistent failure is re-logged every this many consecutive failed ticks (10 min). */
+const FAILURE_REMINDER_EVERY = 20;
 
 export interface PoolProbeResult {
   readOnly: boolean;
@@ -86,16 +93,28 @@ export interface ReadOnlySessionRecovery {
 
 export function createReadOnlySessionRecovery(
   deps: ReadOnlySessionRecoveryDeps,
-  options: { maxRecoveryMs?: number } = {},
+  options: {
+    maxRecoveryMs?: number;
+    freshProbeBackoffAfterMs?: number;
+    freshProbeBackoffEvery?: number;
+  } = {},
 ): ReadOnlySessionRecovery {
   const maxRecoveryMs = options.maxRecoveryMs ?? READ_ONLY_SESSION_RECOVERY_MAX_MS;
+  const backoffAfterMs = options.freshProbeBackoffAfterMs ?? FRESH_PROBE_BACKOFF_AFTER_MS;
+  const backoffEvery = options.freshProbeBackoffEvery ?? FRESH_PROBE_BACKOFF_EVERY;
   let state: ReadOnlySessionRecoveryState = 'watching';
   let applicationName = '';
   let cutoff = '';
+  let readOnlySince = 0;
+  let readOnlyTicks = 0;
   let recoveryStartedAt = 0;
   let terminatedTotal = 0;
   let running = false;
   let lastFailure: string | null = null;
+  let consecutiveFailures = 0;
+
+  const recoveryExpired = (): boolean =>
+    state === 'recovering' && deps.now() - recoveryStartedAt >= maxRecoveryMs;
 
   const recyclePass = async (): Promise<void> => {
     const pass = await deps.recycleSessionsOpenedBefore(applicationName, cutoff);
@@ -106,7 +125,7 @@ export function createReadOnlySessionRecovery(
           `recycled (${terminatedTotal} terminated).`,
       );
       state = 'watching';
-    } else if (deps.now() - recoveryStartedAt >= maxRecoveryMs) {
+    } else if (recoveryExpired()) {
       console.warn(
         `[db-read-only-recovery] ${pass.remaining} session(s) opened before the database became ` +
           'writable are still busy; leaving them to the pool\'s max_lifetime.',
@@ -121,6 +140,8 @@ export function createReadOnlySessionRecovery(
       if (!pool.readOnly) return;
       applicationName = pool.applicationName;
       state = 'read-only';
+      readOnlySince = deps.now();
+      readOnlyTicks = 0;
       console.warn(
         '[db-read-only-recovery] a pooled database session is read-only; checking a fresh session ' +
           `every ${READ_ONLY_SESSION_RECOVERY_INTERVAL_MS / 1000}s to recycle the pool once the ` +
@@ -129,6 +150,8 @@ export function createReadOnlySessionRecovery(
       return;
     }
     if (state === 'read-only') {
+      readOnlyTicks += 1;
+      if (deps.now() - readOnlySince >= backoffAfterMs && readOnlyTicks % backoffEvery !== 0) return;
       const fresh = await deps.probeFreshSession();
       if (fresh.readOnly) return;
       cutoff = fresh.checkedAt;
@@ -150,14 +173,25 @@ export function createReadOnlySessionRecovery(
       try {
         await step();
         lastFailure = null;
+        consecutiveFailures = 0;
       } catch (error) {
+        consecutiveFailures += 1;
         const message = error instanceof Error ? error.message : String(error);
-        // One line per distinct failure, not one per tick: when the database
-        // is down this would otherwise repeat every 30 s next to the louder
-        // connection errors.
-        if (message !== lastFailure) {
-          console.warn(`[db-read-only-recovery] check failed (state ${state}): ${message}`);
+        // A new failure is logged at once; the same one again only every
+        // FAILURE_REMINDER_EVERY ticks. When the database is down this would
+        // otherwise repeat every 30 s next to the louder connection errors,
+        // and a permanent fault (a privilege the recycle query lacks) must
+        // still stay visible.
+        if (message !== lastFailure || consecutiveFailures % FAILURE_REMINDER_EVERY === 0) {
+          console.warn(
+            `[db-read-only-recovery] check failed (state ${state}, ${consecutiveFailures} in a row): ${message}`,
+          );
           lastFailure = message;
+        }
+        // The recovery window also ends when every pass fails.
+        if (recoveryExpired()) {
+          console.warn('[db-read-only-recovery] giving up on recycling; the pool\'s max_lifetime retires the rest.');
+          state = 'watching';
         }
       } finally {
         running = false;
@@ -176,7 +210,8 @@ function firstRow<T>(result: unknown): T | undefined {
   return Array.isArray(rows) ? (rows[0] as T | undefined) : undefined;
 }
 
-async function probePool(): Promise<PoolProbeResult> {
+/** Exported for tests. */
+export async function probeRequestPool(): Promise<PoolProbeResult> {
   const row = await withSystemDbAccessContext(async () =>
     firstRow<{ ro?: unknown; app?: unknown }>(
       await db.execute(sql`select current_setting('transaction_read_only') as ro, current_setting('application_name') as app`),
@@ -261,7 +296,7 @@ export function startReadOnlySessionRecovery(): number {
   if (timer) return READ_ONLY_SESSION_RECOVERY_INTERVAL_MS;
   const url = resolveRequestDatabaseConfig().url;
   const recovery = createReadOnlySessionRecovery({
-    probePool,
+    probePool: probeRequestPool,
     probeFreshSession: () => probeFreshSessionAt(url),
     recycleSessionsOpenedBefore: (applicationName, cutoff) =>
       recycleSessionsOpenedBeforeAt(url, applicationName, cutoff),

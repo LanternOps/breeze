@@ -1,4 +1,5 @@
 import { captureException } from '../services/sentry';
+import { pgErrorCode } from '@breeze/shared/pgErrors';
 import { isReadOnlySqlError } from './readOnlyDatabase';
 
 /**
@@ -17,16 +18,40 @@ import { isReadOnlySqlError } from './readOnlyDatabase';
  * write to this helper.
  *
  * The retry runs every `intervalMs` (60 s), one run at a time, until the task
- * succeeds (logged once) or fails with anything other than 25006 (logged and
- * reported, and the retry stops: that is a real bug, not the database state).
- * While the database stays read-only the retry is quiet.
+ * succeeds (logged once) or fails with an error that is neither 25006 nor a
+ * connection fault (logged and reported, and the retry stops: that is a real
+ * bug, not the database state). A read-only episode often comes with a
+ * failover or restart, so a refused, reset or terminated connection keeps
+ * waiting too. While waiting, one reminder is logged every
+ * `REMINDER_EVERY_ATTEMPTS` attempts (30 min at the default interval).
  */
 
 export const DEFERRED_WRITE_RETRY_MS = 60_000;
+const REMINDER_EVERY_ATTEMPTS = 30;
+
+/**
+ * Connection-class failures: SQLSTATE class 08 (connection exception), the
+ * 57P0x shutdown/startup codes, too many connections, and the socket and
+ * postgres.js connection codes. `pgErrorCode` reads `code` from the error or
+ * its `cause`, which is where both drivers and Node put these.
+ */
+const TRANSIENT_CODES = new Set([
+  '57P01', '57P02', '57P03', '53300',
+  'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN',
+  'CONNECTION_CLOSED', 'CONNECTION_ENDED', 'CONNECTION_DESTROYED', 'CONNECT_TIMEOUT',
+]);
+
+/** True for an error that says "try again later", not "this write is wrong". */
+export function isRetryableWhileDeferred(error: unknown): boolean {
+  if (isReadOnlySqlError(error)) return true;
+  const code = pgErrorCode(error);
+  return code !== undefined && (code.startsWith('08') || TRANSIENT_CODES.has(code));
+}
 
 interface Deferred {
   timer: NodeJS.Timeout;
   running: boolean;
+  attempts: number;
 }
 
 const deferred = new Map<string, Deferred>();
@@ -50,16 +75,27 @@ export function deferUntilDatabaseWritable(
 
   const entry: Deferred = {
     running: false,
+    attempts: 0,
     timer: setInterval(() => {
       if (entry.running) return;
       entry.running = true;
+      entry.attempts += 1;
       void task()
         .then(() => {
           stop(label, entry);
           console.log(`[db] ${label}: deferred write completed; the database accepts writes again.`);
         })
         .catch((error: unknown) => {
-          if (isReadOnlySqlError(error)) return; // still read-only (or a stale session); keep waiting
+          if (isRetryableWhileDeferred(error)) {
+            // Still read-only, a stale session, or the database is restarting.
+            if (entry.attempts % REMINDER_EVERY_ATTEMPTS === 0) {
+              const message = error instanceof Error ? error.message : String(error);
+              console.warn(
+                `[db] ${label}: still deferred after ${entry.attempts} attempts; last error: ${message}`,
+              );
+            }
+            return;
+          }
           stop(label, entry);
           console.error(`[db] ${label}: deferred write failed after the database became writable:`, error);
           captureException(error, undefined, { area: 'deferred_write_retry' });

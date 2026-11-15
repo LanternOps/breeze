@@ -62,6 +62,19 @@ import {
 } from '../db/readOnlyDatabase';
 
 export { BUILTIN_EXTENSION_NAMES, builtinTenancyDeclarations } from './builtinRegistry';
+
+/**
+ * A built-in's on-disk migrations are not all in the ledger (or a checksum
+ * differs). Typed so the read-only boot path (#11741) can tell "a migration is
+ * pending" apart from a failure of the check itself (a lost connection, a
+ * permission error), which it must not relabel as a read-only problem.
+ */
+export class ExtensionMigrationParityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ExtensionMigrationParityError';
+  }
+}
 export type { BuiltinExtension } from './builtinRegistry';
 
 /**
@@ -276,7 +289,8 @@ export interface BuiltinPorts {
   /**
    * The `mode: 'worker'` counterpart to `runMigrations`: verifies (never
    * applies) that this built-in's on-disk migrations are already fully
-   * reflected in the ledger. Throws if not — a worker-role process aborts
+   * reflected in the ledger. Throws an {@link ExtensionMigrationParityError}
+   * if not (any other error means the check itself failed) — a worker-role process aborts
    * boot rather than proceeding against a schema an api/all-role process
    * hasn't finished migrating yet.
    */
@@ -401,6 +415,12 @@ export async function defaultExistingDeclaredTables(
  * Exported for the same reason as {@link defaultExistingDeclaredTables}: an
  * integration test can drive this exact SQL against a real server.
  */
+/** Default {@link BuiltinPorts.isDatabaseReadOnly}: the readiness probe's query. */
+export async function defaultIsDatabaseReadOnly(sql: postgres.Sql | null): Promise<boolean> {
+  if (!sql) return false;
+  return isReadOnlyProbeResult(await sql.unsafe(TRANSACTION_READ_ONLY_PROBE_SQL));
+}
+
 export async function defaultBuiltinEverMigrated(extensionName: string): Promise<boolean> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -484,17 +504,14 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
         const parts: string[] = [];
         if (missing.length > 0) parts.push(`missing from ledger: ${missing.join(', ')}`);
         if (mismatched.length > 0) parts.push(`checksum mismatch: ${mismatched.join(', ')}`);
-        throw new Error(
+        throw new ExtensionMigrationParityError(
           `[extensions] built-in "${builtin.manifest.name}" is not at migration parity on a ` +
             `worker-role process (${parts.join('; ')}) — an api/all-role process must apply its ` +
             'migrations first',
         );
       }
     },
-    isDatabaseReadOnly: async (sql) => {
-      if (!sql) return false;
-      return isReadOnlyProbeResult(await sql.unsafe(TRANSACTION_READ_ONLY_PROBE_SQL));
-    },
+    isDatabaseReadOnly: defaultIsDatabaseReadOnly,
     publishTenancy: (manifest) => registerRuntimeExtensionTenancy(manifest.tenancy),
     builtinEverMigrated: defaultBuiltinEverMigrated,
     existingDeclaredTables: defaultExistingDeclaredTables,
@@ -765,12 +782,15 @@ async function verifyBuiltinReadOnly(
   try {
     await ports.checkMigrationParity(builtin, sql);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    // Only a real parity gap means "a migration needs a write". A failure of
+    // the check itself propagates as it is.
+    if (!(error instanceof ExtensionMigrationParityError)) throw error;
     throw new ReadOnlyDatabaseError(
       `[extensions] built-in "${name}" ${version} has migrations to apply, but the database is ` +
-        `read-only (default_transaction_read_only = on, or a standby). ${detail}. Make the ` +
+        `read-only (default_transaction_read_only = on, or a standby). ${error.message}. Make the ` +
         `database writable (a full disk is the usual cause), or unset ${builtin.enableEnvVar} to ` +
         'boot without this built-in.',
+      { cause: error },
     );
   }
   await assertNotBelowSchemaFloor(name, version, stateStore);
