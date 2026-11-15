@@ -468,7 +468,7 @@ describe('resolveAndMintClientSession reads portal_user_identities (release B)',
     // D4 writer fence: a release-A instance (reads the columns) still finds this login.
     expect(login).toMatchObject({ entraTenantId: tid, entraOid: oid, authMethod: 'entra' });
     expect(await withSystemDbAccessContext(() => findPortalUserIdByEntraIdentity(db, { tid, oid })))
-      .toEqual({ portalUserId: login.id, orgId: fx.orgId });
+      .toEqual({ portalUserId: login.id, orgId: fx.orgId, identityId: expect.any(String), disabledAt: null });
     expect((await reconcilePortalUserIdentities()).counts)
       .toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
 
@@ -781,7 +781,8 @@ describe('linkPortalUserIdentity google + findPortalUserIdByIdentity (W7)', () =
     await seedIdentity(fx.orgId, login.id, login.tid, login.oid);
     const sub = googleSub();
     await link({ orgId: fx.orgId, portalUserId: login.id, provider: 'google', sub, linkedVia: 'self_link', clearPasswordHash: false, now: new Date() });
-    const expected = { portalUserId: login.id, orgId: fx.orgId };
+    // W8: the owner lookup also carries the identity row and its disabled state.
+    const expected = { portalUserId: login.id, orgId: fx.orgId, identityId: expect.any(String), disabledAt: null };
 
     const found = await withSystemDbAccessContext(async () => ({
       google: await findPortalUserIdByIdentity(db, { provider: 'google', sub }),

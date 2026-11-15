@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({
   systemCalls: 0,
   inserts: [] as Array<{ table?: unknown; values: Record<string, unknown>; onConflict: boolean }>,
   updates: [] as Array<{ table?: unknown; set: Record<string, unknown>; where: unknown }>,
-  selects: [] as Array<{ cols: unknown; from?: unknown; where: unknown; limited: boolean }>,
+  selects: [] as Array<{ cols: unknown; from?: unknown; where: unknown; limited: boolean; lockedFor?: string }>,
   insertReturns: [] as unknown[][],
   updateReturns: [] as unknown[][],
   selectReturns: [] as unknown[][],
@@ -30,10 +30,13 @@ import {
   insertEntraIdentity,
   linkPortalUserIdentity,
   listIdentityProvidersByUser,
+  lockIdentityForAccount,
   portalUserHasIdentitySql,
+  portalUserHasUsableIdentitySql,
   reconcilePortalUserIdentities,
   type IdentityExecutor,
 } from './portalUserIdentities';
+import { db } from '../db';
 
 const TID = '11111111-1111-1111-1111-111111111111';
 const OID = '22222222-2222-2222-2222-222222222222';
@@ -66,13 +69,14 @@ function fakeExec(): IdentityExecutor {
       return chain;
     },
     select: (cols: unknown) => {
-      const rec = { cols, from: undefined as unknown, where: undefined as unknown, limited: false };
+      const rec = { cols, from: undefined as unknown, where: undefined as unknown, limited: false, lockedFor: undefined as string | undefined };
       state.selects.push(rec);
       const chain: Record<string, unknown> = {
         from: (table: unknown) => { rec.from = table; return chain; },
         where: (w: unknown) => { rec.where = w; return chain; },
         orderBy: () => chain,
         limit: () => { rec.limited = true; return chain; },
+        for: (mode: string) => { rec.lockedFor = mode; return chain; },
         then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
           Promise.resolve(state.selectReturns.shift() ?? []).then(resolve, reject),
       };
@@ -412,5 +416,93 @@ describe('reconcilePortalUserIdentities', () => {
     state.held = true;
     await expect(reconcilePortalUserIdentities()).rejects.toThrow(/held/);
     expect(state.systemCalls).toBe(0);
+  });
+
+  it('reconcile does not report a disabled identity as drift', async () => {
+    // W8 D1: disabling keeps the row AND the legacy entra_* columns, so a
+    // disabled identity is a present identity for every bucket. No bucket may
+    // filter on disabled_at (that would report it as missing / orphaned).
+    const executed: string[] = [];
+    db.execute = (async (query: never) => {
+      executed.push(new PgDialect().sqlToQuery(query).sql);
+      return [];
+    }) as never;
+    try {
+      const report = await reconcilePortalUserIdentities();
+      expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
+      expect(executed).toHaveLength(4);
+      for (const text of executed) expect(text).not.toMatch(/disabled/);
+      // The missing-identity bucket asks for ANY entra identity row.
+      expect(executed[0]).toMatch(/NOT EXISTS \(SELECT 1 FROM portal_user_identities i\s+WHERE i\.portal_user_id = pu\.id AND i\.provider = 'entra'\)/);
+    } finally {
+      delete (db as { execute?: unknown }).execute;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W8 (#11385, plan D3): the usable-identity fact and the disabled state
+// ---------------------------------------------------------------------------
+
+describe('portalUserHasUsableIdentitySql (W8 D3)', () => {
+  const singleTable = () => new QueryBuilder()
+    .select({ id: portalUsers.id, usable: portalUserHasUsableIdentitySql() })
+    .from(portalUsers)
+    .toSQL().sql;
+
+  it('correlates on the OUTER portal_users row and counts only enabled identities', () => {
+    const text = singleTable();
+    expect(text).toMatch(/exists \(select 1 from "portal_user_identities" "\w+" where "\w+"\."portal_user_id" = "portal_users"\."id" and "\w+"\."disabled_at" is null\)/);
+    expect(text).not.toMatch(/= "id"\)/);
+  });
+
+  it('is distinct from the any-identity fact, which ignores disabled_at', () => {
+    expect(new QueryBuilder().select({ has: portalUserHasIdentitySql() }).from(portalUsers).toSQL().sql).not.toMatch(/disabled_at/);
+    expect(portalUserHasUsableIdentitySql()).not.toBe(portalUserHasUsableIdentitySql());
+  });
+});
+
+describe('identity readers return the identity id and its disabled state (W8 D3)', () => {
+  it('findPortalUserIdByIdentity selects identityId and disabledAt with the owner', async () => {
+    const disabledAt = new Date('2027-02-01T00:00:00Z');
+    state.selectReturns.push([{ portalUserId: USER, orgId: ORG, identityId: 'i-1', disabledAt }]);
+    await expect(findPortalUserIdByIdentity(fakeExec(), { provider: 'google', sub: 'sub-1' }))
+      .resolves.toEqual({ portalUserId: USER, orgId: ORG, identityId: 'i-1', disabledAt });
+    expect(Object.keys(state.selects[0]!.cols as Record<string, unknown>).sort())
+      .toEqual(['disabledAt', 'identityId', 'orgId', 'portalUserId']);
+  });
+
+  it('ensureEntraIdentity on a disabled row returns disabled and writes nothing', async () => {
+    state.selectReturns.push([{ id: 'i-1' }]);
+    await expect(ensureEntraIdentity(fakeExec(), { orgId: ORG, portalUserId: USER, tid: TID, oid: OID, usedAt: NOW }))
+      .resolves.toBe('disabled');
+    expect(state.inserts).toHaveLength(0);
+    expect(state.updates).toHaveLength(0);
+    const where = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(where.sql).toContain('"portal_user_identities"."disabled_at" is not null');
+    expect(where.params).toEqual(expect.arrayContaining([entraIssuer(TID), OID, USER]));
+  });
+
+  it('ensureEntraIdentity never touches last_used_at of a disabled row (the touch is guarded)', async () => {
+    state.insertReturns.push([]);
+    state.updateReturns.push([{ id: 'i-1' }]);
+    await ensureEntraIdentity(fakeExec(), { orgId: ORG, portalUserId: USER, tid: TID, oid: OID, usedAt: NOW });
+    expect(new PgDialect().sqlToQuery(state.updates[0]!.where as never).sql).toContain('"portal_user_identities"."disabled_at" is null');
+  });
+
+  it('lockIdentityForAccount reads one identity FOR UPDATE with its disabled state, or null', async () => {
+    const row = {
+      id: 'i-1', orgId: ORG, portalUserId: USER, provider: 'entra', entraTenantId: TID,
+      disabledAt: null, disabledReason: null, disabledBlockers: [], directoryChain: null, directoryRearmSince: null,
+      directoryLastRunId: null,
+    };
+    state.selectReturns.push([row]);
+    await expect(lockIdentityForAccount(fakeExec(), 'i-1')).resolves.toEqual(row);
+    expect(state.selects[0]!.from).toBe(portalUserIdentities);
+    expect(state.selects[0]!.lockedFor).toBe('update');
+    expect(new PgDialect().sqlToQuery(state.selects[0]!.where as never).params).toEqual(['i-1']);
+
+    state.selectReturns.push([]);
+    await expect(lockIdentityForAccount(fakeExec(), 'i-2')).resolves.toBeNull();
   });
 });

@@ -225,6 +225,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('agreementRequestExpiryReaper'),
   // Portal registration W3: daily portal identity drift report (report only).
   consumers('portalIdentityReconcile'),
+  // Portal registration W8: directory deprovisioning (apply-run, Google pass, recover).
+  consumers('portalDirectoryWorker'),
   // #9075 W4a: automatic agreement-request reminders.
   consumers('agreementRequestAutoReminder'),
   consumers('suppressionExpiryReaper'),

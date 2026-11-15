@@ -143,6 +143,8 @@ const EXPECTED_NAMES = [
   'ticketAttachmentReaper', 'aiArtifactSweeper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper',
   // Portal registration W3 — daily portal identity drift report.
   'portalIdentityReconcile',
+  // Portal registration W8 — directory deprovisioning.
+  'portalDirectoryWorker',
   'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'callerVerificationPublisher',
   'callerVerificationReconciliation',

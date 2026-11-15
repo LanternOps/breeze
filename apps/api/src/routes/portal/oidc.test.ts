@@ -515,6 +515,14 @@ describe('link routes (mounted behind the portal session in index.ts)', () => {
     res = await portal().request('/auth/oidc/entra/link-status', { headers: { Authorization: 'Bearer good-session' } });
     expect((await res.json() as { available: boolean }).available).toBe(false);
   });
+
+  it('link status reports a disabled provider as disabled, not linked (W8 D3)', async () => {
+    h.resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'both'));
+    h.dbRows.current = [{ id: 'identity-1', disabledAt: new Date('2027-01-31T00:00:00.000Z') }];
+    const res = await portal().request('/auth/oidc/entra/link-status', { headers: { Authorization: 'Bearer good-session' } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ available: true, linked: false, disabled: true });
+  });
 });
 
 describe('GET /auth/oidc/entra/callback', () => {

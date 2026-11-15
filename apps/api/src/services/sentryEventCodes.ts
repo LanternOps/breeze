@@ -504,6 +504,12 @@ export const SENTRY_EVENT_CODES = [
    *  uuid): legacy admits it without a claim and a switched flow does not
    *  attempt it, so exactly one engine runs it. */
   'flow_conversion_event_key_unbuildable',
+
+  // --- portal directory deprovisioning (portal registration W8 #11385) ----
+  /** An enforced directory run was held whole for MSP approval (D8a/D8c): a
+   *  threshold or the chain's first enforcement. Leavers keep access until the
+   *  MSP applies or dismisses it in the org's Portal tab. Counts only. */
+  'portal_directory_held',
 ] as const;
 
 /**

@@ -261,7 +261,12 @@ export async function startLinkFlow(c: Context, startProviderFlow: StartProvider
  * `GET /auth/oidc/{provider}/link-status`, behind `portalAuthMiddleware`:
  * `{ available, linked }` for the signed-in account. `available` = the
  * provider's client is configured AND the org's effective policy allows it;
- * `linked` = the account has an identity of that provider.
+ * `linked` = the account has an ENABLED identity of that provider.
+ *
+ * W8 (#11385, plan D3): a disabled identity is not a usable sign-in method, so
+ * it reads `linked: false` with `disabled: true` (the key is present only then,
+ * keeping the W4 shape for every other account). It also cannot be re-linked:
+ * the row keeps the provider slot (`(portal_user_id, provider)`).
  */
 export async function linkStatus(c: Context, provider: PortalOidcProvider, configured: boolean): Promise<Response> {
   c.header('Cache-Control', 'no-store');
@@ -278,7 +283,7 @@ export async function linkStatus(c: Context, provider: PortalOidcProvider, confi
     allowed = false;
   }
   const [identity] = await db
-    .select({ id: portalUserIdentities.id })
+    .select({ id: portalUserIdentities.id, disabledAt: portalUserIdentities.disabledAt })
     .from(portalUserIdentities)
     .where(and(
       eq(portalUserIdentities.portalUserId, auth.user.id),
@@ -287,7 +292,12 @@ export async function linkStatus(c: Context, provider: PortalOidcProvider, confi
     ))
     .limit(1);
 
-  return c.json({ available: configured && allowed, linked: identity !== undefined });
+  const disabled = Boolean(identity?.disabledAt);
+  return c.json({
+    available: configured && allowed,
+    linked: identity !== undefined && !disabled,
+    ...(disabled ? { disabled: true } : {}),
+  });
 }
 
 // ============================================

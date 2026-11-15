@@ -1413,6 +1413,30 @@ describe('validateConfig', () => {
     },
   );
 
+  // Portal registration W8 (#11385, plan D7): an unrecognised value reports only; say so at boot.
+  it.each(['yes', 'on', 'enforce', '2'])(
+    'warns at boot, naming the variable, when PORTAL_DIRECTORY_DEPROVISION_ENFORCE=%j is not true/1/false/0',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({ ...validEnv, PORTAL_DIRECTORY_DEPROVISION_ENFORCE: value }, () => {
+        validateConfig();
+        const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('PORTAL_DIRECTORY_DEPROVISION_ENFORCE'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('report-only');
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
+  it.each(['true', '1', 'false', '0', '', ' TRUE '])('does not warn about PORTAL_DIRECTORY_DEPROVISION_ENFORCE=%j', (value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, PORTAL_DIRECTORY_DEPROVISION_ENFORCE: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('PORTAL_DIRECTORY_DEPROVISION_ENFORCE'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
+
   it.each(['2147483648', '52428800', ''])('does not warn about TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j', (value) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {

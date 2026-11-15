@@ -293,6 +293,19 @@ describe('lockSsoOnlyImpact (the write path: the impact comes from the locked ro
       .toEqual({ flips: [], clearableUserIds: [] });
     expect(h.queries).toHaveLength(0);
   });
+
+  it('an account whose only identity is disabled is stranded and keeps its hash under sso_only (W8 D3)', async () => {
+    // Both predicates of the facts read use the USABLE identity fact: a
+    // disabled identity is no credential, so its account is counted stranded
+    // and its hash is never cleared (clearing would lock the person out).
+    respondWith(['pu-1'], [['pu-1', ORG_A, false, true]]);
+    await save();
+    const facts = h.queries.filter((q) => q.sql.includes('from "portal_users"'))[1]!;
+    const usable = /exists \(select 1 from "portal_user_identities" "pui_usable" where "pui_usable"\."portal_user_id" = "portal_users"\."id" and "pui_usable"\."disabled_at" is null\)/g;
+    expect(facts.sql.match(usable)).toHaveLength(2); // clearable AND stranded
+    expect(facts.sql).not.toContain('"pui_has"');
+    expect(facts.sql).toMatch(/not exists \(select 1 from "portal_user_identities" "pui_usable"/);
+  });
 });
 
 // ---------------------------------------------------------------------------

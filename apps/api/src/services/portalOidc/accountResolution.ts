@@ -17,7 +17,12 @@
  *    names is refused, and the invite is not consumed (D11);
  *  - a Google write branch holds the verified domain row for its transaction
  *    (W7 D15), so a domain displaced after step 0 never gets an account,
- *    identity or grant written in the old org.
+ *    identity or grant written in the old org;
+ *  - W8 (#11385, plan D3): a DISABLED identity is refused (`identity_disabled`)
+ *    and never falls through to steps 2–4 (its `(issuer, subject)` stays
+ *    reserved). The step-1 lookup is the fast path; the authoritative check is
+ *    {@link assertIdentityUsable}, inside the transaction that holds the
+ *    account row and reads the epoch the session is minted at.
  *
  * Context rules: the callback holds no DB context. Reads open
  * `withSystemDbAccessContext` (the org is server-derived from the proven
@@ -46,6 +51,7 @@ import {
   linkPortalUserIdentity,
   portalUserHasIdentitySql,
   type PortalIdentityKey,
+  type PortalIdentityOwner,
 } from '../portalUserIdentities';
 import { getActiveOrgTenant } from '../tenantStatus';
 import { signInProviderFor, type PortalOidcResolvedOrg, type PortalOidcSignInProvider } from './signInProviders';
@@ -63,7 +69,10 @@ import type { PortalOidcPurpose, PortalOidcVerifiedIdentity } from './types';
  */
 export type PortalOidcDenyReason = 'org_unresolved' | 'host_mismatch' | 'org_unavailable' | 'method_off' | 'identity_other_org'
   | 'identity_conflict' | 'account_inactive' | 'invited_only' | 'invite_invalid' | 'link_invalid' | 'requests_capped'
-  | 'no_address' | 'request_conflict';
+  | 'no_address' | 'request_conflict'
+  // W8 (#11385, plan D3): the identity is disabled (a directory, SCIM or MSP
+  // blocker). The portal shows the generic message; the audit names it.
+  | 'identity_disabled';
 
 interface PortalOidcSessionBase {
   kind: 'session';
@@ -278,11 +287,40 @@ async function touchIdentity(r: Resolution, portalUserId: string): Promise<void>
 }
 
 /**
+ * W8 (plan D3): the AUTHORITATIVE disabled check, run inside a write branch
+ * after {@link lockAccount} took the account `FOR UPDATE` and as the last
+ * statement before a session is minted (or an add-in request is raised).
+ *
+ * Lock order is account, then identity: `disablePortalIdentity` locks the
+ * account `FOR UPDATE` before it disables the identity and bumps the epoch in
+ * one transaction. So either that disable committed before our account lock
+ * was granted — and this separate statement (a fresh READ COMMITTED snapshot,
+ * unlike a subquery in the locking SELECT, which keeps the pre-wait snapshot)
+ * sees it and refuses — or it waits for our commit and bumps the epoch, which
+ * kills the session minted here on its next request.
+ *
+ * Returns a row only when the identity is NOT usable for this account
+ * (disabled, gone, or no longer this account's), so it fails closed for every
+ * case but "enabled and still ours". The step-1 lookup is only a fast path.
+ */
+async function assertIdentityUsable(identityId: string, portalUserId: string): Promise<void> {
+  const refused = (await db.execute(sql`
+    select 1 as refused
+     where not exists (
+       select 1 from "portal_user_identities" "pui_live"
+        where "pui_live"."id" = ${identityId}
+          and "pui_live"."portal_user_id" = ${portalUserId}
+          and "pui_live"."disabled_at" is null)`)) as unknown as unknown[];
+  if (refused.length > 0) throw new ResolutionRefusal('identity_disabled');
+}
+
+/**
  * Step 1's reader: the account the identity key belongs to, matched on
  * provider, issuer and subject (each provider's lookup ignores the other's
  * identities). Entra keeps W4's wrapper, the reader the add-in exchange shares.
+ * W8: it also returns the identity's id and `disabled_at`.
  */
-function findIdentityOwner(key: PortalIdentityKey): Promise<{ portalUserId: string; orgId: string } | null> {
+function findIdentityOwner(key: PortalIdentityKey): Promise<PortalIdentityOwner | null> {
   if (key.provider === 'entra') return findPortalUserIdByEntraIdentity(db, { tid: key.tid, oid: key.oid });
   return findPortalUserIdByIdentity(db, key);
 }
@@ -297,6 +335,10 @@ async function resolveKnownIdentity(r: Resolution): Promise<PortalOidcSignInOutc
   // inv. 4: an identity's org is its account's org (composite FK); a token for
   // a tenant now proven elsewhere never signs in to the old org's account here.
   if (found.orgId !== r.orgId) return denied('identity_other_org', r.orgId);
+  // W8 (D3) fast path: a disabled identity is refused for every purpose — no
+  // invite is consumed, no link reported, no request or account created. The
+  // write branches below re-check under the account lock.
+  if (found.disabledAt) return denied('identity_disabled', r.orgId);
 
   const { purpose } = r;
   if (purpose.kind === 'invite') {
@@ -329,13 +371,18 @@ async function resolveKnownIdentity(r: Resolution): Promise<PortalOidcSignInOutc
           ...(r.ssoOnly ? { passwordHash: null } : {}),
         })
         .where(and(eq(portalUsers.id, account.id), eq(portalUsers.orgId, r.orgId)));
+      await assertIdentityUsable(found.identityId, account.id);
       return session(r, account.id, account.authEpoch, 'identity');
     }
     // Unknown stored value: fail closed.
     if (account.browserAccess !== 'none') throw new ResolutionRefusal('account_inactive');
 
     // Step 5: an add-in account is a new person for the browser portal.
-    if (r.mode !== 'instant') return { kind: 'addin', portalUserId: account.id, email: account.email, name: account.name };
+    if (r.mode !== 'instant') {
+      // The request raised outside this transaction must not be for a disabled identity either.
+      await assertIdentityUsable(found.identityId, account.id);
+      return { kind: 'addin', portalUserId: account.id, email: account.email, name: account.name };
+    }
 
     const target = planOrRefuse(account, 'sso_instant_grant', 'account_inactive');
     // D15: the grant is a write the step-0 proof authorized; hold that proof.
@@ -355,6 +402,7 @@ async function resolveKnownIdentity(r: Resolution): Promise<PortalOidcSignInOutc
       .returning({ authEpoch: portalUsers.authEpoch });
     if (!granted) throw new ResolutionRefusal('account_inactive');
     await touchIdentity(r, account.id);
+    await assertIdentityUsable(found.identityId, account.id);
     return session(r, account.id, granted.authEpoch, 'instant_grant');
   });
   if (step.kind !== 'addin') return step;

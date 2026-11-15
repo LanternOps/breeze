@@ -261,6 +261,22 @@ export interface PortalDomainVerificationLostEmailParams {
   reason: PortalDomainVerificationLostReason;
 }
 
+/**
+ * Portal registration W8 (#11385, plan D12): a directory deprovisioning run
+ * was held for the MSP's approval. Platform mail from Breeze to the partner's
+ * active admins. Counts only — it never names the people affected.
+ */
+export interface PortalDirectoryHeldEmailParams {
+  to: string | string[];
+  partnerName: string;
+  orgName: string;
+  source: 'entra' | 'google';
+  /** Distinct portal accounts the held run would act on. */
+  affected: number;
+  /** The org's Portal tab in the dashboard, or null when no dashboard URL is configured. */
+  portalTabUrl: string | null;
+}
+
 export interface VerificationEmailParams {
   to: string | string[];
   name?: string;
@@ -795,6 +811,17 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'partner.portal_domain_verification.lost',
+    });
+  }
+
+  async sendPortalDirectoryHeld(params: PortalDirectoryHeldEmailParams): Promise<void> {
+    const template = buildPortalDirectoryHeldTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'partner.portal_directory.held',
     });
   }
 }
@@ -1479,6 +1506,49 @@ export function buildPortalDomainVerificationLostTemplate(params: PortalDomainVe
     footer: supportFooter(undefined, 'Need help? Contact'),
   });
   const text = [lead, impact, why].join('\n');
+  return { subject, html, text };
+}
+
+const PORTAL_DIRECTORY_NAME: Record<PortalDirectoryHeldEmailParams['source'], string> = {
+  entra: 'Microsoft Entra',
+  google: 'Google Workspace',
+};
+
+/**
+ * Directory deprovisioning run held (portal registration W8 #11385, plan
+ * D8a/D12): sent once per held run, after commit, to the partner's active
+ * admins. Names the org, the directory and the count, and links to the org's
+ * Portal tab — never the people (the panel lists them to an authorized MSP
+ * user). Breeze-branded platform mail, same idiom as
+ * buildPortalDomainVerificationLostTemplate.
+ */
+export function buildPortalDirectoryHeldTemplate(params: PortalDirectoryHeldEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const directory = PORTAL_DIRECTORY_NAME[params.source];
+  const accounts = `${params.affected} portal account${params.affected === 1 ? '' : 's'}`;
+  const subject = `Portal sign-ins held for your review: ${orgName}`;
+  const lead = `${orgName}'s ${directory} directory reports ${accounts} whose people were disabled or removed there. Breeze has held these sign-in changes for your review instead of applying them.`;
+  const impact = 'Until your team applies or dismisses them, those people can still sign in to the customer portal.';
+  const where = params.portalTabUrl
+    ? 'Review them on the organization\'s Portal tab.'
+    : `Review them under Settings › Organizations › ${orgName} › Portal.`;
+  const why = `You're receiving this because you administer ${params.partnerName} in Breeze.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: `${accounts} held for your review in ${orgName}.`,
+    heading: 'Portal sign-ins held for your review',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(impact)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(where)}</p>
+      ${params.portalTabUrl ? renderButton('Review held changes', params.portalTabUrl) : ''}
+      <p style="${MUTED_PARA}">${escapeHtml(why)}</p>
+    `,
+    footer: supportFooter(undefined, 'Need help? Contact'),
+  });
+  const text = [lead, impact, where, params.portalTabUrl ? `Review held changes: ${params.portalTabUrl}` : null, why]
+    .filter((line): line is string => line !== null)
+    .join('\n');
   return { subject, html, text };
 }
 

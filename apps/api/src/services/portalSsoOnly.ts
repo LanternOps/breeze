@@ -16,7 +16,7 @@ import {
   resolvePortalAccessPolicy,
   toPortalAccessPolicyRowValues,
 } from './portalAccessPolicy';
-import { portalUserHasIdentitySql } from './portalUserIdentities';
+import { portalUserHasUsableIdentitySql } from './portalUserIdentities';
 
 /**
  * `password_mode = sso_only` as a complete save flow (portal registration W4
@@ -35,6 +35,15 @@ import { portalUserHasIdentitySql } from './portalUserIdentities';
  *   AND an identity when the impact was taken.
  * - {@link listSsoOnlyStranded}: the accounts with no identity, which keep their
  *   hash and cannot sign in until they link or are re-invited.
+ *
+ * W8 (#11385, plan D3): "an identity" here means a USABLE one
+ * (`portalUserHasUsableIdentitySql`, `disabled_at IS NULL`). An account whose
+ * only identity was disabled by a directory has no credential under sso_only:
+ * it is counted and listed as stranded, and its hash is NEVER cleared (that
+ * would leave it no way back once the identity is restored or password sign-in
+ * returns). The SSO-invite route's own target check ({@link isSsoOnlyStranded}
+ * over the ANY-identity fact) still refuses such an account: an invite cannot
+ * bind a second identity of a reserved provider.
  *
  * Why the lock: a self-link inserts an identity (its FK check takes `FOR KEY
  * SHARE` on the account row; accountResolution also locks the row first) and
@@ -141,7 +150,14 @@ export function selectSsoOnlyFlips(
   });
 }
 
-/** Password-eligible, browser-granted, not disabled, and no external identity. */
+/**
+ * Password-eligible, browser-granted, not disabled, and no external identity —
+ * the SSO-invite route's TARGET rule, over the caller's ANY-identity fact
+ * (`hasExternalIdentity`, portalUserHasIdentitySql): an identity-managed
+ * account, even one whose only identity is disabled, is never re-invited
+ * (msp_sso_invite refuses it as identity-managed). {@link strandedWhere} (the
+ * list and the counts) uses the usable fact instead (W8 D3).
+ */
 export function isSsoOnlyStranded(facts: {
   status: string;
   browserAccess: string;
@@ -154,19 +170,26 @@ export function isSsoOnlyStranded(facts: {
     && !facts.hasExternalIdentity;
 }
 
-/** SQL twin of {@link isSsoOnlyStranded} over the outer `portal_users` row. */
+/**
+ * The stranded accounts over the outer `portal_users` row: active or invited,
+ * browser-granted, password-eligible, and no USABLE identity (W8 D3: a
+ * disabled identity is no way to sign in).
+ */
 function strandedWhere(): SQL {
   return and(
     inArray(portalUsers.status, ['active', 'invited']),
     eq(portalUsers.browserAccess, 'granted'),
     eq(portalUsers.authMethod, 'password'),
-    sql`not ${portalUserHasIdentitySql()}`,
+    sql`not ${portalUserHasUsableIdentitySql()}`,
   )!;
 }
 
-/** The accounts a save clears: a hash to drop and an identity to sign in with instead. */
+/**
+ * The accounts a save clears: a hash to drop and a USABLE identity to sign in
+ * with instead. W8 D3: never an account whose only identity is disabled.
+ */
 function clearableWhere(): SQL {
-  return and(isNotNull(portalUsers.passwordHash), portalUserHasIdentitySql())!;
+  return and(isNotNull(portalUsers.passwordHash), portalUserHasUsableIdentitySql())!;
 }
 
 /**
@@ -408,7 +431,7 @@ function compareIds(a: string, b: string): number {
   return a < b ? -1 : 1;
 }
 
-/** status IN (active, invited), browser granted, password-eligible, no identity. */
+/** status IN (active, invited), browser granted, password-eligible, no usable identity (W8 D3). */
 export async function listSsoOnlyStranded(
   orgId: string,
   limit: number = STRANDED_LIST_LIMIT,

@@ -181,7 +181,7 @@ async function orgWithAccounts() {
   await linkIdentity(orgId, linked.id);
   const strandedActive = await seedAccount(orgId, 'b-stranded@acme.example'); // no identity → stranded, keeps hash
   const strandedInvited = await seedAccount(orgId, 'c-invited@acme.example', { status: 'invited', passwordHash: null });
-  const disabled = await seedAccount(orgId, 'd-disabled@acme.example', { status: 'disabled' }); // neither
+  const disabled = await seedAccount(orgId, 'd-disabled@acme.example', { status: 'disabled', disabledBy: 'msp' }); // neither
   const addin = await seedAccount(orgId, 'e-addin@acme.example', { authMethod: 'entra', browserAccess: 'none', passwordHash: null });
   await linkIdentity(orgId, addin.id);
   return { env, token, orgId, linked, strandedActive, strandedInvited, disabled, addin };

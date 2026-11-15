@@ -328,6 +328,12 @@ export interface M365SyncActionResult {
   kind: 'sync';
   items: Record<string, unknown>[];
   truncated: boolean;
+  /**
+   * m365.sync.users only: users dropped for a non-string/empty id or an id
+   * already seen in this call. Absent on executors that predate the field;
+   * consumers treat absent as 0.
+   */
+  malformedItems?: number;
   continuation?: string;
   fetchedAt: string;
   sources: Record<string, M365SyncSourceState>;
@@ -338,6 +344,7 @@ export const m365SyncActionResultSchema: z.ZodType<M365SyncActionResult> = z.obj
   kind: z.literal('sync'),
   items: z.array(readActionItemSchema),
   truncated: z.boolean(),
+  malformedItems: z.number().int().nonnegative().optional(),
   continuation: z.string().min(1).max(M365_SYNC_CONTINUATION_MAX_CHARS).optional(),
   fetchedAt: z.string().datetime(),
   sources: z.record(z.string(), m365SyncSourceStateSchema),

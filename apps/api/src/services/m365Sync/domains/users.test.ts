@@ -132,6 +132,23 @@ describe('persistUsers', () => {
     expect((await persistUsers(ctx(), okResult([user()], { sources: { users: 'error' } }))).complete).toBe(false);
   });
 
+  it('malformedItems > 0 makes the run not complete (no stale marking)', async () => {
+    const out = await persistUsers(
+      ctx([['gone', { coreHash: 'h', isStale: false }]]),
+      okResult([user()], { malformedItems: 1 }),
+    );
+    expect(out.complete).toBe(false);
+    expect(out.stale).toBe(0);
+    expect(dbMocks.updates).toEqual([]);
+  });
+
+  it('an executor without the field is treated as 0', async () => {
+    const result = okResult([user()]);
+    expect('malformedItems' in result).toBe(false);
+    expect((await persistUsers(ctx(), result)).complete).toBe(true);
+    expect((await persistUsers(ctx(), okResult([user()], { malformedItems: 0 }))).complete).toBe(true);
+  });
+
   it('does not mark stale on a truncated run, even though a row vanished', async () => {
     const out = await persistUsers(
       ctx([['gone', { coreHash: 'h', isStale: false }]]),

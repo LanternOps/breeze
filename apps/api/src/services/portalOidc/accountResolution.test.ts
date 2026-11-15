@@ -970,3 +970,111 @@ describe('W7 D9 — a conflicting pending request is refused, never overwritten'
     expect(await resolvePortalOidcSignIn(input())).toEqual(denied('request_conflict'));
   });
 });
+
+// ===========================================================================
+// W8 (#11385, plan D3, Review Focus 5): a disabled identity is refused — fast
+// path before any transaction, authoritative check under the account lock.
+// Appended; every case above is unchanged.
+// ===========================================================================
+
+describe('W8 — disabled identity', () => {
+  const IDENTITY = '77777777-7777-4777-8777-777777777777';
+  const DISABLED_AT = new Date('2027-01-31T00:00:00.000Z');
+  const enabledOwner = { portalUserId: USER, orgId: ORG, identityId: IDENTITY, disabledAt: null };
+  const disabledOwner = { ...enabledOwner, disabledAt: DISABLED_AT };
+  /** The authoritative re-read: a row means "this identity is not usable for this account". */
+  const identityChecks = () => h.calls.filter((c) => c.op === 'execute');
+
+  it('step 1 denies a disabled identity and never reaches step 4', async () => {
+    // RF5: instant mode would otherwise create an account; approval a request.
+    for (const mode of ['instant', 'approval', 'invited_only'] as const) {
+      h.calls.length = 0;
+      m.resolvePortalAccessPolicy.mockResolvedValue(policy({ mode }));
+      m.findPortalUserIdByEntraIdentity.mockResolvedValue(disabledOwner);
+      expect(await resolvePortalOidcSignIn(input())).toEqual(denied('identity_disabled'));
+      expect(h.calls).toHaveLength(0);
+    }
+    expect(m.createIdentityOnlyAccount).not.toHaveBeenCalled();
+    expect(m.createPortalAccessRequest).not.toHaveBeenCalled();
+    expect(m.resolveLinkableEntraAddress).not.toHaveBeenCalled();
+  });
+
+  it('a disabled identity with an invite state is denied and the invite is not consumed', async () => {
+    m.findPortalUserIdByEntraIdentity.mockResolvedValue(disabledOwner);
+    consumer.mockResolvedValue({ portalUserId: USER, orgId: ORG, authEpoch: 3 });
+    const out = await resolvePortalOidcSignIn(input({ purpose: { kind: 'invite', inviteTokenHash: HASH } }));
+    expect(out).toEqual(denied('identity_disabled'));
+    expect(consumer).not.toHaveBeenCalled();
+    expect(m.linkPortalUserIdentity).not.toHaveBeenCalled();
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('the idempotent link branch denies a disabled identity of the signed-in account', async () => {
+    m.findPortalUserIdByEntraIdentity.mockResolvedValue(disabledOwner);
+    const purpose = { kind: 'link' as const, portalUserId: USER, orgId: ORG, authEpoch: 3 };
+    expect(await resolvePortalOidcSignIn(input({ purpose }))).toEqual(denied('identity_disabled'));
+    expect(m.linkPortalUserIdentity).not.toHaveBeenCalled();
+  });
+
+  it('the identity is re-read under the account lock: a disable committed after the lookup is seen', async () => {
+    // quorum D1: lookup (enabled) → disable commits (epoch + 1) → the account
+    // lock returns the NEW epoch; without the re-read a session would be
+    // minted at the current epoch for a disabled identity.
+    m.findPortalUserIdByEntraIdentity.mockResolvedValue(enabledOwner);
+    h.results.push([account({ authEpoch: 4 })], [], [], [{ refused: 1 }]);
+    expect(await resolvePortalOidcSignIn(input())).toEqual(denied('identity_disabled'));
+    expect(h.state.rolledBack).toBe(1);
+    expect(h.state.committed).toBe(0);
+
+    const lockAt = h.calls.findIndex((c) => c.steps.some(([n, a]) => n === 'for' && a[0] === 'update'));
+    const [check] = identityChecks();
+    expect(lockAt).toBe(0);
+    expect(check!.inTx).toBe(true);
+    expect(h.calls.indexOf(check!)).toBeGreaterThan(lockAt);
+    const q = new PgDialect().sqlToQuery(check!.args[0] as SQL);
+    expect(q.sql).toMatch(/not exists \(\s*select 1 from "portal_user_identities"/i);
+    expect(q.sql).toMatch(/"disabled_at" is null/);
+    expect(q.params).toEqual(expect.arrayContaining([IDENTITY, USER]));
+  });
+
+  it('an enabled identity passes the re-read and gets its session (the check ran in the transaction)', async () => {
+    m.findPortalUserIdByEntraIdentity.mockResolvedValue(enabledOwner);
+    h.results.push([account()], [], [], []);
+    expect(await resolvePortalOidcSignIn(input())).toMatchObject({ kind: 'session', via: 'identity', authEpoch: 3 });
+    expect(identityChecks()).toHaveLength(1);
+    expect(identityChecks()[0]!.inTx).toBe(true);
+  });
+
+  it('the re-read also guards the instant grant and the add-in request', async () => {
+    m.findPortalUserIdByEntraIdentity.mockResolvedValue(enabledOwner);
+    const addin = () => account({ browserAccess: 'none', authMethod: 'entra', hasPasswordHash: false });
+
+    m.resolvePortalAccessPolicy.mockResolvedValue(policy({ mode: 'instant' }));
+    h.results.push([addin()], [{ authEpoch: 3 }], [], [{ refused: 1 }]);
+    expect(await resolvePortalOidcSignIn(input())).toEqual(denied('identity_disabled'));
+    expect(h.state.rolledBack).toBe(1);
+
+    m.resolvePortalAccessPolicy.mockResolvedValue(policy({ mode: 'approval' }));
+    h.results.push([addin()], [{ refused: 1 }]);
+    expect(await resolvePortalOidcSignIn(input())).toEqual(denied('identity_disabled'));
+    expect(m.createPortalAccessRequest).not.toHaveBeenCalled();
+  });
+
+  it('a google disabled identity is denied the same way', async () => {
+    m.resolvePortalAccessPolicy.mockResolvedValue({
+      ...policy({ entra: false, mode: 'instant' }),
+      effective: { ...policy({ entra: false, mode: 'instant' }).effective, googleEnabled: { value: true, source: 'org' as const } },
+      googleDomains: ['acme.example.com'],
+    });
+    gm.findOrgByVerifiedDomain.mockResolvedValue({ domain: 'acme.example.com', orgId: ORG, partnerId: PARTNER, method: 'dns_txt', verifiedAt: NOW });
+    const gIdentity = {
+      provider: 'google' as const, issuer: 'https://accounts.google.com' as const, subject: 'sub-1', entraTenantId: null,
+      upn: null, emailClaim: 'pat@acme.example.com', emailDomainOwnerVerified: true, name: 'Pat', googleHostedDomain: 'acme.example.com',
+    };
+    h.results.push([{ ...disabledOwner }]);
+    expect(await resolvePortalOidcSignIn(input({ identity: gIdentity }))).toEqual(denied('identity_disabled'));
+    expect(h.calls).toHaveLength(1); // the lookup only
+    expect(m.createIdentityOnlyAccount).not.toHaveBeenCalled();
+    expect(m.createPortalAccessRequest).not.toHaveBeenCalled();
+  });
+});
