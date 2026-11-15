@@ -132,7 +132,7 @@ export function registerEventLogTools(aiTools: Map<string, AiTool>): void {
           limit: { type: 'number', description: `Maximum rows to return (default ${SEARCH_LOGS_DEFAULT_LIMIT}, max ${SEARCH_LOGS_MAX_LIMIT})` },
           offset: { type: 'number', description: 'Pagination offset (default 0)' },
           cursor: { type: ['string', 'null'], description: 'Keyset pagination cursor from a previous search_logs response' },
-          countMode: { type: ['string', 'null'], enum: ['exact', 'estimated', 'none', 'normal', null], description: 'Omit, use null, or use normal for the default exact count.' },
+          countMode: { type: 'string', enum: ['exact', 'estimated', 'none'], description: 'Total-count mode (exact is slower on large ranges)' },
           sortBy: { type: 'string', enum: ['timestamp', 'level', 'device'] },
           sortOrder: { type: 'string', enum: ['asc', 'desc'] },
           includeFullMessage: { type: 'boolean', description: `Return whole messages (default false: messages over ${LOG_MESSAGE_PREVIEW_CHARS} chars are cut and messageChars gives the full length)` },
