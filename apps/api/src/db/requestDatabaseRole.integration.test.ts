@@ -69,6 +69,7 @@ describe('request database role startup enforcement', () => {
       currentUser: 'breeze_app',
       isSuperuser: false,
       bypassesRls: false,
+      auditAdminMember: true,
     });
   });
 
@@ -144,6 +145,7 @@ describe('request database role startup enforcement', () => {
       currentUser: BYPASS_ROLE,
       isSuperuser: false,
       bypassesRls: true,
+      auditAdminMember: false,
     });
 
     const { initializeDatabaseForStartup } = await import('./databaseStartup');
@@ -179,9 +181,12 @@ describe('request database role startup enforcement', () => {
       },
     });
 
-    expect(errors).toHaveLength(1);
-    expect(String(errors[0])).toContain('BYPASSRLS');
-    expect(String(errors[0])).toContain('BREEZE_ALLOW_UNSAFE_DB_ROLE');
+    // Two reports, in order: the audit-admin access problem (the bypass role is
+    // not a member of breeze_audit_admin, #11929), then the unsafe-role banner.
+    expect(errors).toHaveLength(2);
+    expect(String(errors[0])).toContain(`"${BYPASS_ROLE}" is not a member of breeze_audit_admin`);
+    expect(String(errors[1])).toContain('BYPASSRLS');
+    expect(String(errors[1])).toContain('BREEZE_ALLOW_UNSAFE_DB_ROLE');
   });
 
   it('ignores the opt-out in production', async () => {
