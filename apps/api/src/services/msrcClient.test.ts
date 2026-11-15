@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseCvrf } from './msrcClient';
+import { parseCvrf, severityFromCvss } from './msrcClient';
 import sample from './__fixtures__/msrc-sample.json';
 
 describe('parseCvrf', () => {
@@ -21,8 +21,12 @@ describe('parseCvrf', () => {
     const record = parseCvrf(sample).records.find((item) => item.cvssScore != null);
 
     if (record) {
-      expect(['Critical', 'High', 'Medium', 'Low']).toContain(record.severity);
+      expect(['critical', 'high', 'medium', 'low']).toContain(record.severity);
     }
+  });
+
+  it('severityFromCvss returns the lowercase buckets the API filters on (#11902)', () => {
+    expect([9.8, 7.5, 5, 2, 0, null].map(severityFromCvss)).toEqual(['critical', 'high', 'medium', 'low', null, null]);
   });
 
   describe('malformed CVE ids (#2261)', () => {

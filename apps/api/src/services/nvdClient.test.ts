@@ -21,7 +21,7 @@ describe('parseNvd', () => {
     expect(chrome.cvssVersion).toBe('3.1');
     expect(chrome.cvssScore).toBe(8.8);
     expect(chrome.cvssVector).toBe('CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H');
-    expect(chrome.severity).toBe('HIGH');
+    expect(chrome.severity).toBe('high'); // stored lowercase (#11902)
     expect(chrome.cpeMatches.length).toBeGreaterThan(0);
     expect(chromeMatch.cpePrefix).toMatch(/^cpe:2\.3:[aoh]:/);
     expect(chromeMatch.range).toEqual({
