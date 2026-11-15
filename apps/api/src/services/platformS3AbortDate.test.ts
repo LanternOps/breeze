@@ -37,11 +37,19 @@ function withTransport(client: S3Client, headers: Record<string, string>, body: 
   return client;
 }
 
-const ENV_KEYS = ['S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET'] as const;
+// The ARTIFACT_* keys take precedence in blobStorage.clientFor; clear them so a
+// developer/CI shell value cannot change which endpoint the client is built with.
+const ENV_KEYS = [
+  'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET',
+  'ARTIFACT_S3_ACCESS_KEY', 'ARTIFACT_S3_SECRET_KEY', 'ARTIFACT_S3_ENDPOINT_US', 'ARTIFACT_S3_REGION_US',
+] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
-  for (const k of ENV_KEYS) saved[k] = process.env[k];
+  for (const k of ENV_KEYS) {
+    saved[k] = process.env[k];
+    if (k.startsWith('ARTIFACT_')) delete process.env[k];
+  }
   process.env.S3_ACCESS_KEY = 'AKIDEXAMPLE';
   process.env.S3_SECRET_KEY = 'secret';
   process.env.S3_ENDPOINT = 'https://s3.storage.example.test';
