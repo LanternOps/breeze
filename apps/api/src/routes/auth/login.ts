@@ -43,7 +43,7 @@ import {
   type UserSessionIdentity,
 } from '../../services';
 import { advanceUserEpochs } from '../../services/authLifecycle';
-import { mfaSrcFor } from '../../services/mfaAssuranceSource';
+import { resolveNoFactorSessionMfa } from '../../services/mfaAssuranceSource';
 import { performOrdinaryTerminalLogout } from '../../services/terminalLogout';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -654,8 +654,14 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // middleware exempt paths (/auth/mfa/*, /users/me) still admit the enrollment
   // flow; every other route 428s until they enroll.
   const policy = await getEffectiveMfaPolicy({ scope, userId: user.id, orgId, partnerId });
-  const mfaEnrollmentRequired = ENABLE_2FA && !user.mfaEnabled && policy.required;
-  const mfaSatisfied = !ENABLE_2FA || (!user.mfaEnabled && !policy.required);
+  // Shared with accept-invite and registration auto-login (#11854), so every
+  // no-factor mint records the same state for the same user and policy.
+  const sessionMfa = resolveNoFactorSessionMfa({
+    twoFactorEnabled: ENABLE_2FA,
+    userMfaEnabled: user.mfaEnabled === true,
+    policyRequired: policy.required,
+  });
+  const mfaEnrollmentRequired = sessionMfa.mfaEnrollmentRequired;
 
   // Task 7: mint a fresh refresh-token family for this login. The family id
   // is embedded in the refresh token's `fam` claim and tracked in
@@ -675,10 +681,10 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     orgId,
     partnerId,
     scope,
-    mfa: mfaSatisfied,
+    mfa: sessionMfa.mfa,
     // The enrolled branch returned early above, so anyone minting here proved
     // no factor: `mfa: true` here is policy-admitted, never factor-earned.
-    mfaSrc: mfaSrcFor(mfaSatisfied, 'policy'),
+    mfaSrc: sessionMfa.mfaSrc,
     // SR-001: bind the token to the mobile install id when the client sends
     // it. Web/SSO clients don't send the header → mdid stays absent → no
     // behaviour change for them.
