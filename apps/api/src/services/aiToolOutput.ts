@@ -38,8 +38,9 @@ type CompactConfig = {
    */
   maxStdoutChars: number;
   /**
-   * #11673: string leaves under these keys get the stdout budget too — set
-   * per tool from LONG_TEXT_KEYS_BY_TOOL, never on a tier itself.
+   * #11673: string leaves under these keys get the stdout budget, never less
+   * than LONG_TEXT_MIN_CHARS — set per tool from LONG_TEXT_KEYS_BY_TOOL,
+   * never on a tier itself.
    */
   longTextKeys?: ReadonlySet<string>;
 };
@@ -53,6 +54,12 @@ type CompactConfig = {
 const LONG_TEXT_KEYS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
   get_ai_agent_run: new Set(['summary']),
 };
+/**
+ * A long-text key never drops below this, even in the tighter tiers (where
+ * stdout falls to 2,000 / 1,000): a whole run report is the point of reading
+ * the run, so the tiers shrink the trace around it instead.
+ */
+const LONG_TEXT_MIN_CHARS = 2_000;
 
 const DEFAULT_CONFIG: CompactConfig = {
   maxStringChars: 1_500,
@@ -312,8 +319,11 @@ function compactValue(
     // stdout carries the command output the model asked for — give it the
     // dedicated (larger) budget instead of the generic leaf cap (#3093), and
     // so does a tool's registered long-text key (#11673).
-    const long = keyHint === 'stdout' || config.longTextKeys?.has(keyHint) === true;
-    const maxChars = long ? config.maxStdoutChars : config.maxStringChars;
+    const maxChars = keyHint === 'stdout'
+      ? config.maxStdoutChars
+      : config.longTextKeys?.has(keyHint) === true
+        ? Math.max(config.maxStdoutChars, LONG_TEXT_MIN_CHARS)
+        : config.maxStringChars;
     return truncateText(value, maxChars, stats);
   }
 

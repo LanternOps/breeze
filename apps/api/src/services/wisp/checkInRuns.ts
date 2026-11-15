@@ -305,7 +305,7 @@ export type CheckInRunPostOutcome = 'posted' | 'already' | 'not_check_in' | 'not
 /** The status a did-not-finish post names when the run row is gone. */
 const RUN_UNAVAILABLE_STATUS = 'unavailable';
 
-/** The answer body: the run's summary, sanitised and capped, plus a pending-approval line. */
+/** The answer body: the run's summary, sanitised and capped at a paragraph boundary first, plus a pending-approval line. */
 export function checkInRunResultBody(run: { status: string; summary: string | null }): string {
   const waiting = run.status === 'awaiting_approval' ? ' A step I proposed is waiting for your approval.' : '';
   const room = SPECIALIST_RESULT_BODY_MAX_CHARS - Array.from(waiting).length;

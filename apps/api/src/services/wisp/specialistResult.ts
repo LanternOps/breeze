@@ -23,8 +23,9 @@
  * timeline's own rule), so an out-of-ceiling run never reaches the thread.
  *
  * Device text (the run summary, a step's result, the device's name) is untrusted.
- * A post is rendered to a person (as plain text; a run report's body as the
- * run page's safe markdown subset, #11673) and is never read back into a
+ * A post is rendered to a person (as plain text; the specialist run post's
+ * body as the run page's safe markdown subset, #11673; a step outcome and a
+ * check-in answer stay literal) and is never read back into a
  * prompt (no seed or tool reads wisp_thread_posts), so it is sanitized
  * (`sanitizeUntrustedToolText`: injection spans, dangerous Unicode, forged
  * fences) and capped rather than fenced; the fence is applied where the same
@@ -60,8 +61,8 @@ export { specialistResultDedupeKey };
  * Twice runLoop's `RUN_SUMMARY_MAX_CHARS` (2,000), so a whole report and its
  * closing next step always fit with room for the waiting line and sanitizer
  * markers (#11673: a 1,500 cap removed the next step, which a report puts
- * last). Anything longer is cut at a paragraph boundary (`cleanReport`); the
- * post links to the run page for the rest.
+ * last). Anything longer is cut at a boundary, a paragraph break first
+ * (`cleanReport`); the post links to the run page for the rest.
  */
 export const SPECIALIST_RESULT_BODY_MAX_CHARS = 4000;
 /** A released step's outcome post: device output, one short block. */
@@ -111,10 +112,10 @@ function capChars(text: string, max: number): string {
 }
 
 /**
- * Cap by code point at the last paragraph break in the back half of the
- * budget, else the last line break, else the last space, else hard; marked
- * with "…". A report cut this way loses whole paragraphs of evidence, never
- * half a word.
+ * Cap at `max` code points (never mid surrogate pair), cutting at the last
+ * paragraph break in the back half of the budget, else the last line break,
+ * else the last space, else hard (only for text with no whitespace there);
+ * marked with "…". A report normally loses whole paragraphs, not part of one.
  */
 function capAtBoundary(text: string, max: number): string {
   const chars = Array.from(text);
@@ -135,7 +136,7 @@ export function cleanText(value: string, max: number): string {
 
 /**
  * A run's report (its summary), made safe to show like `cleanText` but cut at
- * a paragraph boundary. The run post's body and the run check-in result's
+ * a boundary, a paragraph break first (`capAtBoundary`). The run post's body and the run check-in result's
  * body (checkInRuns.ts, W07).
  */
 export function cleanReport(value: string, max: number): string {

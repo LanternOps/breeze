@@ -181,6 +181,19 @@ describe('compactToolResultForChat', () => {
     expect(parsed.trace.summary).toBe(summary);
   });
 
+  it("keeps get_ai_agent_run's full summary when a large trace forces the tighter tiers", () => {
+    const nextStep = '**Next step:** collect a dump.';
+    const summary = `${'- **Evidence:** spooler crashed under memory pressure again.\n'.repeat(31)}\n${nextStep}`;
+    expect(summary.length).toBeLessThanOrEqual(2_000);
+    const entries = Array.from({ length: 80 }, (_, i) => ({ kind: 'tool_call', tool: `tool_${i}`, detail: 'd'.repeat(400) }));
+    const raw = JSON.stringify({ trace: { id: 'r1', status: 'completed', summary, entries } });
+    expect(raw.length).toBeGreaterThan(MAX_TOOL_RESULT_CHARS * 3);
+    const out = compactToolResultForChat('get_ai_agent_run', raw);
+    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_RESULT_CHARS);
+    const parsed = JSON.parse(out) as { trace: { summary: string } };
+    expect(parsed.trace.summary).toBe(summary);
+  });
+
   it('a summary field of any other tool keeps the generic string budget', () => {
     const summary = 'x'.repeat(2_000);
     const raw = JSON.stringify({ data: { summary } });
