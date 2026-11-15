@@ -1716,6 +1716,66 @@ describe('discovery routes', () => {
       expect(body.snmpCredentials.authPassphrase).toBe('********');
     });
 
+    describe('alertSettings (#11901)', () => {
+      const createWith = async (extra: Record<string, unknown>) => {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001' }]),
+            }),
+          }),
+        } as any);
+        const insertValues = vi.fn((v: any) => ({
+          returning: vi.fn(() => Promise.resolve([{
+            id: 'profile-001',
+            orgId: '00000000-0000-0000-0000-000000000000',
+            ...v,
+            createdAt: new Date('2026-05-01T00:00:00.000Z'),
+            updatedAt: new Date('2026-05-01T00:00:00.000Z'),
+          }]))
+        }));
+        vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+        const res = await app.request('/discovery/profiles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+            name: 'Alerts',
+            siteId: '00000000-0000-0000-0000-000000000001',
+            subnets: ['10.0.2.0/24'],
+            methods: ['ping'],
+            schedule: { type: 'interval', intervalMinutes: 30 },
+            ...extra
+          })
+        });
+        return { res, saved: (insertValues.mock.calls as any)[0]?.[0] };
+      };
+
+      it('stores alertSettings sent on create and returns them', async () => {
+        const alertSettings = {
+          enabled: true, alertOnNew: true, alertOnDisappeared: false, alertOnChanged: true, changeRetentionDays: 30
+        };
+        const { res, saved } = await createWith({ alertSettings });
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toEqual(alertSettings);
+        expect((await res.json()).alertSettings).toEqual(alertSettings);
+      });
+
+      it('stores an explicitly disabled configuration as sent', async () => {
+        const alertSettings = {
+          enabled: false, alertOnNew: false, alertOnDisappeared: false, alertOnChanged: false, changeRetentionDays: 7
+        };
+        const { res, saved } = await createWith({ alertSettings });
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toEqual(alertSettings);
+      });
+
+      it('stores null when alertSettings is omitted', async () => {
+        const { res, saved } = await createWith({});
+        expect(res.status).toBe(201);
+        expect(saved.alertSettings).toBeNull();
+      });
+    });
+
     it('rejects a profile site that does not belong to the resolved organization', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
