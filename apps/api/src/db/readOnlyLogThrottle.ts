@@ -72,8 +72,37 @@ function normalizeMessage(message: string): string {
   return message.replace(UUID, '<id>').replace(DIGITS, '#').trim().slice(0, 80);
 }
 
-// `    at fn (path:line:col)` or `    at path:line:col`, optionally `async`.
-const STACK_FRAME = /^\s*at\s+(?:async\s+)?(?:(.+?)\s+\()?(.+?):\d+:\d+\)?\s*$/;
+// Stack text can carry request-derived content, so frames are parsed with
+// indexOf and a fixed-shape suffix match, never an overlapping lazy pattern
+// (security review: quadratic backtracking on a crafted line). Only the first
+// MAX_STACK_LINES lines are read and any line over MAX_FRAME_LINE_LENGTH is skipped.
+const MAX_STACK_LINES = 20;
+const MAX_FRAME_LINE_LENGTH = 500;
+const LINE_COL_SUFFIX = /:\d+:\d+$/;
+
+/**
+ * `    at fn (path:line:col)` or `    at path:line:col`, optionally `async`.
+ * Returns the function name (if any) and the path, else null.
+ */
+function parseStackFrame(rawLine: string): { fn?: string; path: string } | null {
+  const line = rawLine.trim();
+  if (!line.startsWith('at ')) return null;
+  let rest = line.slice(3).trimStart();
+  if (rest.startsWith('async ')) rest = rest.slice(6).trimStart();
+  let fn: string | undefined;
+  let location = rest;
+  if (rest.endsWith(')')) {
+    const open = rest.indexOf(' (');
+    if (open > 0) {
+      fn = rest.slice(0, open).trim() || undefined;
+      location = rest.slice(open + 2, -1);
+    }
+  }
+  const suffix = LINE_COL_SUFFIX.exec(location);
+  if (!suffix || suffix.index === 0) return null;
+  const path = location.slice(0, suffix.index);
+  return fn ? { fn, path } : { path };
+}
 const LIBRARY_FRAME = /(?:^|[\\/])node_modules[\\/]|^node:|^internal[\\/]|^<anonymous>$|^native$/;
 const SOURCE_ROOT = /^.*[\\/](?:src|dist)[\\/]/;
 
@@ -83,11 +112,13 @@ const SOURCE_ROOT = /^.*[\\/](?:src|dist)[\\/]/;
  * basename), so no absolute path reaches the log.
  */
 function topApplicationFrame(stack: string): string | undefined {
-  for (const line of stack.split('\n')) {
-    const match = STACK_FRAME.exec(line);
-    if (!match) continue;
-    const fn = match[1];
-    const path = match[2]!.replace(/^file:\/\//, '');
+  const lines = stack.split('\n', MAX_STACK_LINES);
+  for (const line of lines) {
+    if (line.length > MAX_FRAME_LINE_LENGTH) continue;
+    const frame = parseStackFrame(line);
+    if (!frame) continue;
+    const fn = frame.fn;
+    const path = frame.path.replace(/^file:\/\//, '');
     if (LIBRARY_FRAME.test(path)) continue;
     const short = SOURCE_ROOT.test(path) ? path.replace(SOURCE_ROOT, '') : path.split(/[\\/]/).pop()!;
     if (!short) continue;

@@ -71,6 +71,53 @@ describe('readOnlyLogSource', () => {
     expect(readOnlyLogSource([err])).toBe('index.cjs:recordHeartbeat');
   });
 
+  // Security review: a request-derived stack line must not backtrack.
+  it('does not backtrack on a 200,000-character crafted frame line', () => {
+    const err = readOnlyError();
+    const crafted = `    at ${'a ( :'.repeat(40_000)}`;
+    err.stack = `Error: ${err.message}\n${crafted}`;
+    const started = performance.now();
+    const key = readOnlyLogSource([err]);
+    expect(performance.now() - started).toBeLessThan(50);
+    expect(key).toBe(readOnlyLogSource([Object.assign(new Error(err.message), { stack: undefined })]));
+    expect(key).toBe('cannot execute UPDATE in a read-only transaction'.replace(/\d+/g, '#').slice(0, 80));
+  });
+
+  it('only inspects the first 20 stack lines', () => {
+    const err = readOnlyError();
+    const filler = Array.from({ length: 10_000 }, () => '    at x (/app/node_modules/pkg/index.js:1:1)');
+    filler[30] = '    at lateCaller (/app/apps/api/src/late.ts:1:1)';
+    err.stack = ['Error: boom', ...filler].join('\n');
+    expect(readOnlyLogSource([err])).not.toContain('late.ts');
+    filler[5] = '    at earlyCaller (/app/apps/api/src/early.ts:1:1)';
+    err.stack = ['Error: boom', ...filler].join('\n');
+    expect(readOnlyLogSource([err])).toBe('early.ts:earlyCaller');
+  });
+
+  it('skips a frame line longer than 500 characters', () => {
+    const err = readOnlyError();
+    err.stack = [
+      'Error: boom',
+      `    at huge (/app/apps/api/src/${'d/'.repeat(300)}big.ts:1:1)`,
+      '    at ok (/app/apps/api/src/ok.ts:2:3)',
+    ].join('\n');
+    expect(readOnlyLogSource([err])).toBe('ok.ts:ok');
+  });
+
+  it('parses the usual V8 frame shapes', () => {
+    const key = (frame: string): string => {
+      const err = readOnlyError();
+      err.stack = `Error: x\n${frame}`;
+      return readOnlyLogSource([err]);
+    };
+    expect(key('    at fn (/app/apps/api/src/a/b.ts:1:2)')).toBe('a/b.ts:fn');
+    expect(key('    at /app/apps/api/src/a/b.ts:1:2')).toBe('a/b.ts');
+    expect(key('    at async new Svc (/app/apps/api/src/s.ts:1:2)')).toBe('s.ts:Svc');
+    expect(key('    at Object.<anonymous> (file:///app/apps/api/dist/index.js:9:9)')).toBe('index.js:Object.<anonymous>');
+    expect(key('    at winFn (C:\\Program Files (x86)\\app\\src\\w.ts:3:4)')).toBe('w.ts:winFn');
+    expect(key('    at C:\\app\\dist\\w.js:3:4')).toBe('w.js');
+  });
+
   it('falls back to the wrapper error\'s own message, normalized, when no application frame is known', () => {
     const wrapper = new Error('Failed query: update "devices" set "last_seen_at" = $1 where "id" = $2', {
       cause: readOnlyError(),
