@@ -3,9 +3,10 @@ import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 
-const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock, applyAutomationActionTerminalMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, executeMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock, applyAutomationActionTerminalMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
+  executeMock: vi.fn(),
   deviceCommandsTable: {
     id: 'device_commands.id',
     type: 'device_commands.type',
@@ -96,6 +97,7 @@ vi.mock('../db', async (importOriginal) => {
       ...actual.db,
       select: (...args: unknown[]) => selectMock(...(args as [])),
       update: (...args: unknown[]) => updateMock(...(args as [])),
+      execute: (...args: unknown[]) => executeMock(...(args as [])),
     },
   };
 });
@@ -150,6 +152,14 @@ import {
   BACKUP_NO_TRANSFER_MIN_WINDOW_MS,
   BACKUP_NO_TRANSFER_MAX_WINDOW_MS,
 } from './staleCommandReaper';
+import { resetSignalRecordingWindowForTests, signalRecordingWindowStart } from './backupSignalRecording';
+
+// #11766: the backup reaper discounts silence from before its signal-recording
+// window opened. Every suite below that is not about that window runs with one
+// open since the epoch, so nothing is discounted.
+beforeEach(() => {
+  resetSignalRecordingWindowForTests(0);
+});
 
 function selectChain(resolvedValue: unknown) {
   const chain: Record<string, any> = {};
@@ -733,7 +743,7 @@ describe('reapStaleBackupJobs', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'failed',
-        errorLog: '[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes',
+        errorLog: expect.stringMatching(/^\[stale-backup-reaper\] Backup stalled: no agent signal since \d{4}-\d\d-\d\dT[\d:.]+Z \(limit 15m\)$/),
       })
     );
     expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', { jobId: 'job-stall' });
@@ -1466,7 +1476,7 @@ describe('reapStaleBackupJobs — liveness vs progress (#2798)', () => {
       .mockReturnValueOnce(selectChain([]));
     expect(await reapStaleBackupJobs()).toBe(1);
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
-      errorLog: '[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes',
+      errorLog: '[stale-backup-reaper] Backup stalled: no agent signal since 2026-07-16T23:44:00.000Z (limit 15m)',
     }));
   });
 
@@ -1491,6 +1501,210 @@ describe('reapStaleBackupJobs — liveness vs progress (#2798)', () => {
       }]));
     expect(await reapStaleBackupJobs()).toBe(0);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('reapStaleBackupJobs — server-side outage (#11766)', () => {
+  const MIN = 60 * 1000;
+  const STALL_MS = 15 * MIN;
+  // Outage start (last keepalive the server could record) and recovery.
+  const OUTAGE_START = new Date('2026-11-11T09:44:00.000Z').getTime();
+  const RECOVERY = OUTAGE_START + 344 * MIN;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    queueBackupStopCommandMock.mockResolvedValue({ command: {} });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * A running job whose backup signal the server last recorded at
+   * `keepaliveMs`. Unless `extra` says otherwise, cycleAt makes the device's
+   * own heartbeat one second old: the device is heard, only the job is silent.
+   */
+  function runningJob(keepaliveMs: number, extra: Record<string, unknown> = {}) {
+    return {
+      id: 'job-o',
+      deviceId: 'device-o',
+      lastKeepaliveAt: new Date(keepaliveMs),
+      lastProgressAt: new Date(keepaliveMs),
+      totalSize: null as number | null,
+      transferredSize: null as number | null,
+      startedAt: new Date(OUTAGE_START - 30 * MIN),
+      createdAt: new Date(OUTAGE_START - 31 * MIN),
+      errorLog: null,
+      deviceStatus: 'online',
+      ...extra,
+    };
+  }
+
+  function writable() {
+    executeMock.mockResolvedValue([{ read_only: false }]);
+  }
+
+  function captureSet(id = 'job-o') {
+    const setMock = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id }]) })),
+    }));
+    updateMock.mockImplementation(() => ({ set: setMock }));
+    return setMock;
+  }
+
+  async function cycleAt(ms: number, running: unknown[], pending: unknown[] = []): Promise<number> {
+    vi.setSystemTime(ms);
+    const heard = running.map((row) => ({ deviceLastSeenAt: new Date(ms - 1000), ...(row as object) }));
+    selectMock.mockReturnValueOnce(selectChain(heard)).mockReturnValueOnce(selectChain(pending));
+    return reapStaleBackupJobs();
+  }
+
+  it('a read-only database closes the window and the cycle attempts no reap', async () => {
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    executeMock.mockResolvedValue([{ read_only: true }]);
+
+    expect(await reapStaleBackupJobs()).toBe(0);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(signalRecordingWindowStart()).toBeNull();
+  });
+
+  it('outage longer than the stall window, agent still running: not reaped after recovery', async () => {
+    const setMock = captureSet();
+    // During the outage the database refuses writes.
+    vi.setSystemTime(OUTAGE_START + 60 * MIN);
+    executeMock.mockResolvedValue([{ read_only: true }]);
+    await reapStaleBackupJobs();
+
+    // First cycles after recovery: the job's keepalive is 344 minutes old only
+    // because the server could not write it. It must not be failed.
+    writable();
+    expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(await cycleAt(RECOVERY + 10 * MIN, [runningJob(OUTAGE_START)])).toBe(0);
+    // The agent's keepalive lands once the server can record it again.
+    expect(await cycleAt(RECOVERY + 16 * MIN, [runningJob(RECOVERY + 15 * MIN)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('a reap pass that throws (writes failing) closes the window too', async () => {
+    writable();
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    selectMock.mockReturnValueOnce(selectChain([runningJob(OUTAGE_START)]));
+    updateMock.mockImplementation(() => {
+      throw new Error('cannot execute UPDATE in a read-only transaction');
+    });
+    await expect(reapStaleBackupJobs()).rejects.toThrow('read-only');
+    expect(signalRecordingWindowStart()).toBeNull();
+
+    const setMock = captureSet();
+    expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('a genuinely dead job is reaped once a full stall window of recording has passed, with a truthful reason', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+
+    expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(await cycleAt(RECOVERY + STALL_MS - 1, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+
+    expect(await cycleAt(RECOVERY + STALL_MS + 1, [runningJob(OUTAGE_START)])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      errorLog:
+        '[stale-backup-reaper] Backup stalled: no agent signal since 2026-11-11T09:44:00.000Z, ' +
+        'and none in the 15m since the server could record signals again (limit 15m)',
+    }));
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-o', { jobId: 'job-o' });
+  });
+
+  it('a dead job with no outage is reaped on the normal clock and names the missing signal', async () => {
+    writable();
+    const setMock = captureSet();
+    const now = OUTAGE_START + 20 * MIN;
+
+    expect(await cycleAt(now, [runningJob(OUTAGE_START, { deviceLastSeenAt: new Date(now - 1000) })])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      errorLog: '[stale-backup-reaper] Backup stalled: no agent signal since 2026-11-11T09:44:00.000Z (limit 15m)',
+    }));
+  });
+
+  it('API restart: a fresh process opens its window at its first cycle and discounts earlier silence', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+    const boot = OUTAGE_START + 25 * MIN;
+
+    // Silent for 25 minutes, but the process has only just started.
+    expect(await cycleAt(boot, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(signalRecordingWindowStart()).toBe(boot);
+    // The agent reconnects and its keepalive lands.
+    expect(await cycleAt(boot + 16 * MIN, [runningJob(boot + 2 * MIN)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('the offline-device rule counts only recordable time too', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+    const offline = { deviceStatus: 'offline' };
+
+    expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START, offline)])).toBe(0);
+    expect(await cycleAt(RECOVERY + 10 * MIN - 1, [runningJob(OUTAGE_START, offline)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + 10 * MIN + 1, [runningJob(OUTAGE_START, offline)])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      errorLog: '[stale-backup-reaper] Device went offline during backup',
+    }));
+  });
+
+  it('the no-transfer rule counts only recordable time: a live agent gets its full window after recovery', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+    // Keepalive fresh after recovery; last recorded byte advance before the outage.
+    const live = (now: number) => runningJob(now - 30 * 1000, { lastProgressAt: new Date(OUTAGE_START) });
+    const MIN_WINDOW = BACKUP_NO_TRANSFER_MIN_WINDOW_MS;
+
+    expect(await cycleAt(RECOVERY, [live(RECOVERY)])).toBe(0);
+    expect(await cycleAt(RECOVERY + 20 * MIN, [live(RECOVERY + 20 * MIN)])).toBe(0);
+    expect(await cycleAt(RECOVERY + MIN_WINDOW - 1, [live(RECOVERY + MIN_WINDOW - 1)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + MIN_WINDOW + 1, [live(RECOVERY + MIN_WINDOW + 1)])).toBe(1);
+    const errorLog = String(setMock.mock.calls[0]?.[0]?.errorLog);
+    expect(errorLog).toContain('no data transferred or verified for 7h 44m');
+    expect(errorLog).toContain('2h since the server could record signals again');
+  });
+
+  it('a pending job is not failed as "dispatch never completed" until a stall window of recording has passed', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet('job-p');
+    const pending = {
+      id: 'job-p',
+      deviceId: 'device-p',
+      errorLog: null,
+      createdAt: new Date(OUTAGE_START - 10 * MIN),
+      lastProgressAt: null,
+      lastKeepaliveAt: null,
+      startedAt: null,
+      catchUpUntil: null,
+      deviceStatus: 'online',
+      deviceLastSeenAt: new Date(RECOVERY - 1000),
+      deviceBackupVersion: null,
+    };
+
+    expect(await cycleAt(RECOVERY, [], [pending])).toBe(0);
+    expect(await cycleAt(RECOVERY + STALL_MS - 1, [], [pending])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + STALL_MS + 1, [], [pending])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      errorLog: '[stale-backup-reaper] Backup dispatch never completed',
+    }));
   });
 });
 

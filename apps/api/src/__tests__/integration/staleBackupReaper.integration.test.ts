@@ -1,7 +1,7 @@
 import './setup';
 
-import { expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { beforeEach, expect, it } from 'vitest';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   backupConfigs,
@@ -12,9 +12,17 @@ import {
   sites,
 } from '../../db/schema';
 import { reapStaleBackupJobs } from '../../jobs/staleCommandReaper';
+import { resetSignalRecordingWindowForTests, signalRecordingWindowStart } from '../../jobs/backupSignalRecording';
 import { applyBackupProgress } from '../../services/backupProgress';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+
+// #11766: a fresh process discounts silence before its first reaper cycle.
+// These cases are about the reap rules, so recording is open throughout unless
+// a case says otherwise.
+beforeEach(() => {
+  resetSignalRecordingWindowForTests(0);
+});
 
 // Real-Postgres proof that the reaper's WHERE guard is honoured — the chainable
 // Drizzle mock in the unit suite swallows `.where()`, so deleting the
@@ -247,4 +255,85 @@ runDb('a resume pass whose verified counters keep moving is spared past 24 h; on
     expect(frozenRow!.status).toBe('failed');
     expect(frozenRow!.errorLog ?? '').toContain('no data transferred or verified');
   });
+});
+
+// #11766: after a server-side outage the first reaper cycle used to fail every
+// running job, because keepalives the agents kept sending could not be written.
+// Real Postgres proves the read-only probe's SQL runs as the app role, that a
+// read-only transaction reaps nothing, and that the cycle after recovery waits
+// a full stall window before judging silence.
+runDb('a read-only database reaps nothing, and the first cycle after it does not fail a silent job', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const outageStart = new Date(Date.now() - 344 * 60 * 1000);
+
+  const jobId = await withSystemDbAccessContext(async () => {
+    const [partner] = await db
+      .insert(partners)
+      .values({ name: `Outage Partner ${unique}`, slug: `outage-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active' })
+      .returning({ id: partners.id });
+    const [org] = await db
+      .insert(organizations)
+      .values({ currencyCode: 'USD', partnerId: partner!.id, name: `Outage Org ${unique}`, slug: `outage-org-${unique}`, type: 'customer', status: 'active' })
+      .returning({ id: organizations.id });
+    const [site] = await db.insert(sites).values({ orgId: org!.id, name: `Outage Site ${unique}` }).returning({ id: sites.id });
+    const [device] = await db
+      .insert(devices)
+      .values({
+        orgId: org!.id,
+        siteId: site!.id,
+        agentId: `outage-agent-${unique}`,
+        hostname: `outage-host-${unique}`,
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'x86_64',
+        agentVersion: '0.0.0-test',
+        status: 'offline',
+      })
+      .returning({ id: devices.id });
+    const [config] = await db
+      .insert(backupConfigs)
+      .values({ orgId: org!.id, name: `Outage Config ${unique}`, type: 'file', provider: 'local', providerConfig: {} })
+      .returning({ id: backupConfigs.id });
+    const [job] = await db
+      .insert(backupJobs)
+      .values({
+        orgId: org!.id,
+        configId: config!.id,
+        deviceId: device!.id,
+        status: 'running',
+        startedAt: new Date(outageStart.getTime() - 30 * 60 * 1000),
+        lastProgressAt: outageStart,
+        lastKeepaliveAt: outageStart,
+      })
+      .returning({ id: backupJobs.id });
+    return job!.id;
+  });
+
+  const status = async () => withSystemDbAccessContext(async () => {
+    const [row] = await db.select().from(backupJobs).where(eq(backupJobs.id, jobId));
+    return row!;
+  });
+
+  // During the outage: the reaper's transaction cannot write.
+  const duringOutage = await withSystemDbAccessContext(async () => {
+    await db.execute(sql`SET TRANSACTION READ ONLY`);
+    return reapStaleBackupJobs();
+  });
+  expect(duringOutage).toBe(0);
+  expect(signalRecordingWindowStart()).toBeNull();
+  expect((await status()).status).toBe('running');
+
+  // First cycle after recovery: the window opens now, so 344 minutes of
+  // unrecordable silence do not count.
+  await withSystemDbAccessContext(() => reapStaleBackupJobs());
+  expect(signalRecordingWindowStart()).not.toBeNull();
+  expect((await status()).status).toBe('running');
+
+  // A full window of recording later with still no signal: the job is dead,
+  // and the reason names the signal that was missing.
+  resetSignalRecordingWindowForTests(Date.now() - 16 * 60 * 1000);
+  await withSystemDbAccessContext(() => reapStaleBackupJobs());
+  const reaped = await status();
+  expect(reaped.status).toBe('failed');
+  expect(reaped.errorLog ?? '').toContain(`no agent signal since ${outageStart.toISOString()}`);
 });
