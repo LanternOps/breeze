@@ -511,8 +511,8 @@ commandsRoutes.post(
     }
 
     // This route is registered in middleware/selfManagedDbContextRoutes.ts: wake
-    // must commit its attempt and command before the relay can answer. Every
-    // other command keeps one transaction around the whole branch.
+    // must commit its attempt and command before the relay can answer. Other
+    // commands also commit their row before delivery, response and audit.
     const outcome = await withAuthDbAccessContext(auth, async () => {
       const device = await getDeviceWithOrgCheck(deviceId, auth);
       if (!device) {
@@ -589,13 +589,22 @@ commandsRoutes.post(
 
       // #5128: through the one enqueue seam. The row now carries a delivery
       // deadline and its submitting org, and an online device gets the socket
-      // push here instead of waiting for its next heartbeat.
+      // push after commit instead of waiting for its next heartbeat.
       const res = await dispatchDeviceCommand({
         deviceId,
         type: data.type,
         payload: data.payload || {},
         userId: auth.user.id,
+        deferDelivery: true,
       });
+      return { res, orgId: device.orgId };
+    });
+    if (outcome instanceof Response) return outcome;
+
+    if ('res' in outcome) {
+      // Await the committed claim so the client and audit see its real outcome,
+      // including a refusal that happened between admission and delivery.
+      const res = outcome.res.ok && outcome.res.deliver ? await outcome.res.deliver() : outcome.res;
       if (!res.ok) {
         if (res.code === 'device_decommissioned') {
           return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
@@ -616,7 +625,7 @@ commandsRoutes.post(
       const command = res.command;
 
       writeRouteAudit(c, {
-        orgId: device.orgId,
+        orgId: outcome.orgId,
         action: 'device.command.queue',
         resourceType: 'device_command',
         resourceId: command.id,
@@ -625,6 +634,7 @@ commandsRoutes.post(
           deviceId,
           ...commandAuditDetails(command.id, data.type, data.payload || {}),
           delivery: res.delivery,
+          ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
         }
       });
 
@@ -642,8 +652,7 @@ commandsRoutes.post(
         deliverBy: res.deliverBy,
         ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
       }, 201);
-    });
-    if (outcome instanceof Response) return outcome;
+    }
 
     const delivered = await outcome.deliver();
     if (!delivered.ok) {
