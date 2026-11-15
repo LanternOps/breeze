@@ -1123,13 +1123,20 @@ const DEFERRED_SYNC_RETRY_MS = 60_000;
 let binarySyncDeferred = false;
 let deferredRetryTimer: NodeJS.Timeout | null = null;
 let deferredRetryInFlight: Promise<void> | null = null;
+/** Retries whose probe read writable but whose writes were still refused. */
+let deferredWriteRefusals = 0;
+const DEFERRED_REFUSAL_REMINDER_EVERY = 30;
 /**
- * Set only while a retry runs syncBinaries(). The per-component catches below
- * (user-helper, helper, watchdog, backup, the current-version safety net)
- * swallow errors on a normal boot; during a retry a read-only failure must
- * reach the retry so the registration stays deferred instead of reading as
- * done. The probe and the writes can use different pooled sessions, and one
- * opened while the database was read-only keeps that default.
+ * Set while a retry runs syncBinaries(), and for the whole of a
+ * BINARY_SOURCE=github syncBinaries() (boot, network retry, deferred retry;
+ * the POST sync-github route calls syncFromGitHub directly and is unaffected).
+ * The per-component catches below (user-helper, helper, watchdog, backup, each
+ * GitHub upsert, the current-version safety net) swallow errors on a normal
+ * local boot; with this set a read-only failure reaches the caller, so the
+ * registration is deferred (or stays deferred) instead of reading as done
+ * with rows missing. The probe and the writes can use different pooled
+ * sessions, and one opened while the database was read-only keeps that
+ * default.
  */
 let propagateReadOnlyFailures = false;
 
@@ -1207,14 +1214,27 @@ export async function retryDeferredBinarySync(): Promise<void> {
       }
     } catch (err) {
       if (isReadOnlySqlError(err)) {
-        // A write still hit a read-only session; keep waiting, quietly.
+        // A write still hit a read-only session; keep waiting. Normally that
+        // clears once the stale sessions are recycled; say so periodically if
+        // it does not (a leaked read-only transaction would look the same).
+        binarySyncDeferred = true;
+        deferredWriteRefusals += 1;
+        if (deferredWriteRefusals % DEFERRED_REFUSAL_REMINDER_EVERY === 0) {
+          console.warn(
+            `[binarySync] Deferred binary registration: the database reads writable but writes were still refused ` +
+              `${deferredWriteRefusals} times; still retrying. Last error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        return;
+      }
+      if (githubSyncRetryStopped && isTransientSyncFailure(err)) {
+        // Shutting down: a network failure now is not worth a report.
         binarySyncDeferred = true;
         return;
       }
       // github mode: the database is writable now, but the release lookup hit
       // a network failure. That is the bounded network retry's job (#11641).
-      // Not after shutdown stopped it: scheduling would re-arm it.
-      if (!githubSyncRetryStopped && scheduleGithubSyncRetry(err)) {
+      if (scheduleGithubSyncRetry(err)) {
         stopDeferredBinarySyncRetry();
         return;
       }
@@ -1358,7 +1378,7 @@ export function isTransientSyncFailure(err: unknown, depth = 0): boolean {
 
 let githubSyncRetryTimer: NodeJS.Timeout | null = null;
 let githubSyncRetryRunning = false;
-/** Set by stopGithubSyncRetry(): an attempt already in flight schedules nothing further. */
+/** Set by stopGithubSyncRetry() (shutdown): nothing in flight schedules anything further. */
 let githubSyncRetryStopped = false;
 
 /** True while a background retry of the boot-time GitHub sync is scheduled or running. */
@@ -1367,8 +1387,9 @@ export function isGithubSyncRetryPending(): boolean {
 }
 
 /**
- * Cancels the retry (shutdown, tests): clears a scheduled attempt, and an
- * attempt already in flight finishes without scheduling another.
+ * Cancels the retry for the rest of the process (shutdown, tests): clears a
+ * scheduled attempt, an attempt already in flight finishes without scheduling
+ * another, and scheduleGithubSyncRetry() schedules nothing afterwards.
  */
 export function stopGithubSyncRetry(): void {
   githubSyncRetryStopped = true;
@@ -1385,14 +1406,14 @@ export function stopGithubSyncRetry(): void {
  * already reported it. Returns whether a retry is pending.
  */
 export function scheduleGithubSyncRetry(err: unknown): boolean {
-  if (getBinarySource() !== "github") return false;
+  // After shutdown (stopGithubSyncRetry) nothing is scheduled again.
+  if (getBinarySource() !== "github" || githubSyncRetryStopped) return false;
   if (isReadOnlySqlError(err)) {
     deferGithubSyncForReadOnly();
     return true;
   }
   if (!isTransientSyncFailure(err)) return false;
   if (isGithubSyncRetryPending()) return true;
-  githubSyncRetryStopped = false;
   scheduleGithubSyncAttempt(1, err);
   return true;
 }
@@ -1470,6 +1491,47 @@ async function runGithubSyncRetry(retry: number): Promise<void> {
   }
 }
 
+/** The BINARY_SOURCE=github half of syncBinaries(). */
+async function syncBinariesFromGithub(pairedBinariesVersion: string | undefined): Promise<void> {
+  if (pairedBinariesVersion) {
+    await reportServerOnlyBoot(pairedBinariesVersion);
+    return;
+  }
+  const pinnedTag = pinnedGithubReleaseTag();
+  console.log(
+    `[binarySync] BINARY_SOURCE=github, syncing from GitHub release ${pinnedTag ?? "latest"}`,
+  );
+  try {
+    await syncFromGitHub(pinnedTag);
+  } catch (err) {
+    // Deliberately NOT falling back to /releases/latest: that would silently
+    // move the fleet's promoted release to something the operator never
+    // asked for. (Pre-#3499 it was worse still — the download redirect
+    // stayed pinned to this version while isLatest moved, which is the
+    // inverse of the #3742 checksum loop. The redirect now follows the
+    // promoted row, so that particular mismatch is gone; the reason to
+    // refuse the fallback is now intent, not divergence.)
+    // Tell the operator what to do instead.
+    // A transient failure says nothing about whether the release exists, so it
+    // gets its own wording; boot retries it (scheduleGithubSyncRetry). A
+    // read-only database says nothing about the release either: boot defers.
+    if (pinnedTag && !isReadOnlySqlError(err)) {
+      console.error(
+        isTransientSyncFailure(err)
+          ? pinnedReleaseNetworkFailureHint(pinnedTag, err)
+          : unpublishedPinnedReleaseHint(pinnedTag, err),
+      );
+    }
+    throw err;
+  }
+  // Safety net: with no pinned version syncFromGitHub() hits /releases/latest
+  // which EXCLUDES pre-releases, so RC deploys (APP_VERSION=x.y.z-rc.N) would
+  // otherwise never land in agent_versions. ensureCurrentVersionRegistered()
+  // reads APP_VERSION and explicitly fetches that tag if it's missing.
+  // It's idempotent and cheap for non-RC releases (early-returns on hit).
+  await ensureCurrentVersionRegistered();
+}
+
 export async function syncBinaries(): Promise<void> {
   // Set only in server-only release images (see getPairedBinariesVersion);
   // undefined for every full-release image, which leaves this function's
@@ -1477,42 +1539,16 @@ export async function syncBinaries(): Promise<void> {
   const pairedBinariesVersion = getPairedBinariesVersion();
 
   if (getBinarySource() === "github") {
-    if (pairedBinariesVersion) {
-      await reportServerOnlyBoot(pairedBinariesVersion);
-      return;
-    }
-    const pinnedTag = pinnedGithubReleaseTag();
-    console.log(
-      `[binarySync] BINARY_SOURCE=github, syncing from GitHub release ${pinnedTag ?? "latest"}`,
-    );
+    // #11741: a read-only refusal anywhere in this sync reaches the caller
+    // (boot or a retry), which defers it, instead of being logged per upsert
+    // and reading as done.
+    const propagateBefore = propagateReadOnlyFailures;
+    propagateReadOnlyFailures = true;
     try {
-      await syncFromGitHub(pinnedTag);
-    } catch (err) {
-      // Deliberately NOT falling back to /releases/latest: that would silently
-      // move the fleet's promoted release to something the operator never
-      // asked for. (Pre-#3499 it was worse still — the download redirect
-      // stayed pinned to this version while isLatest moved, which is the
-      // inverse of the #3742 checksum loop. The redirect now follows the
-      // promoted row, so that particular mismatch is gone; the reason to
-      // refuse the fallback is now intent, not divergence.)
-      // Tell the operator what to do instead.
-      // A transient failure says nothing about whether the release exists, so it
-      // gets its own wording; boot retries it (scheduleGithubSyncRetry).
-      if (pinnedTag) {
-        console.error(
-          isTransientSyncFailure(err)
-            ? pinnedReleaseNetworkFailureHint(pinnedTag, err)
-            : unpublishedPinnedReleaseHint(pinnedTag, err),
-        );
-      }
-      throw err;
+      await syncBinariesFromGithub(pairedBinariesVersion);
+    } finally {
+      propagateReadOnlyFailures = propagateBefore;
     }
-    // Safety net: with no pinned version syncFromGitHub() hits /releases/latest
-    // which EXCLUDES pre-releases, so RC deploys (APP_VERSION=x.y.z-rc.N) would
-    // otherwise never land in agent_versions. ensureCurrentVersionRegistered()
-    // reads APP_VERSION and explicitly fetches that tag if it's missing.
-    // It's idempotent and cheap for non-RC releases (early-returns on hit).
-    await ensureCurrentVersionRegistered();
     return;
   }
 
@@ -2193,7 +2229,6 @@ async function syncFromGitHubRelease(
   // ------------------------------------------------------------------
   const synced: string[] = [];
   const failures: string[] = [];
-  const failureErrors: unknown[] = [];
 
   for (const entry of plan) {
     const label = `${entry.component}:${entry.platform}/${entry.arch}`;
@@ -2209,13 +2244,13 @@ async function syncFromGitHubRelease(
       );
       synced.push(label);
     } catch (err) {
+      rethrowReadOnlyDuringRetry(err);
       const message = err instanceof Error ? err.message : String(err);
       console.error(
         `[binarySync] Failed to upsert ${entry.component} version for ${entry.platform}/${entry.arch}:`,
         message,
       );
       failures.push(`${label} (${message})`);
-      failureErrors.push(err);
     }
   }
 
@@ -2226,12 +2261,8 @@ async function syncFromGitHubRelease(
   // per-component isolation #816 relies on (a user-helper upsert failing must
   // not block the agent) — but it is now reported rather than only logged.
   if (synced.length === 0 && plan.length > 0) {
-    // `cause` lets boot tell a read-only database (SQLSTATE 25006, #11741)
-    // from a real fault: it is a read-only error only when every upsert was
-    // refused as read-only.
     throw new Error(
       `GitHub sync registered 0 of ${plan.length} binaries for ${version}: ${failures.join("; ")}`,
-      { cause: failureErrors.find((e) => !isReadOnlySqlError(e)) ?? failureErrors[0] },
     );
   }
 
@@ -2273,6 +2304,7 @@ async function syncFromGitHubRelease(
       );
       synced.push(`backup:${platform}/${target.goarch}`);
     } catch (err) {
+      rethrowReadOnlyDuringRetry(err);
       console.error(
         `[binarySync] Failed to upsert backup version for ${platform}/${target.goarch}:`,
         err instanceof Error ? err.message : err,

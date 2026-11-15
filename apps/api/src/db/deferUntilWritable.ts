@@ -25,9 +25,10 @@ import { isReadOnlySqlError } from './readOnlyDatabase';
  * waiting too. While waiting, one reminder is logged every
  * `REMINDER_EVERY_ATTEMPTS` attempts (30 min at the default interval).
  *
- * Shutdown calls `stopDeferredWrites()`: every pending retry is cleared, a run
- * already in flight settles silently, and no new retry starts, so nothing
- * retries against a pool that is draining or closed.
+ * Shutdown calls `stopDeferredWrites()`: every pending retry is cleared and no
+ * new retry starts, so nothing retries against a pool that is draining or
+ * closed. A run already in flight settles quietly unless it fails with an
+ * error that is neither read-only nor a connection fault.
  */
 
 export const DEFERRED_WRITE_RETRY_MS = 60_000;
@@ -72,7 +73,11 @@ export function deferUntilDatabaseWritable(
   task: () => Promise<void>,
   options: { intervalMs?: number } = {},
 ): void {
-  if (stopped || deferred.has(label)) return;
+  if (stopped) {
+    console.warn(`[db] ${label}: not deferred; the process is shutting down (it runs again on the next boot).`);
+    return;
+  }
+  if (deferred.has(label)) return;
   const intervalMs = options.intervalMs ?? DEFERRED_WRITE_RETRY_MS;
   console.warn(
     `[db] ${label}: the database is read-only (SQLSTATE 25006); deferred until it accepts writes ` +
@@ -93,7 +98,16 @@ export function deferUntilDatabaseWritable(
           console.log(`[db] ${label}: deferred write completed; the database accepts writes again.`);
         })
         .catch((error: unknown) => {
-          if (!isCurrent(label, entry)) return; // stopped while in flight
+          if (!isCurrent(label, entry)) {
+            // Stopped while in flight (shutdown). A read-only or connection
+            // error is expected while the pool drains; anything else is a
+            // real fault and is still reported.
+            if (!isRetryableWhileDeferred(error)) {
+              console.error(`[db] ${label}: deferred write failed during shutdown:`, error);
+              captureException(error, undefined, { area: 'deferred_write_retry' });
+            }
+            return;
+          }
           if (isRetryableWhileDeferred(error)) {
             // Still read-only, a stale session, or the database is restarting.
             if (entry.attempts % REMINDER_EVERY_ATTEMPTS === 0) {

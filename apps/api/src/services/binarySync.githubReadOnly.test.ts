@@ -10,9 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * failure behaves as before.
  */
 
+type Row = { version: string; component: string; platform: string; architecture: string };
+
 const state = vi.hoisted(() => ({
   readOnly: true,
+  // Refuse one write as read-only although the probe may read writable (a
+  // stale pooled session, or the database flipping mid-sync).
+  refuse: null as null | ((v: Row) => boolean),
   inserts: [] as string[],
+  // Extra release assets beyond the linux/amd64 agent.
+  extraAssets: [] as string[],
   // One entry per expected release lookup: an Error to throw, or "ok".
   net: [] as Array<Error | "ok">,
   netCalls: 0,
@@ -32,9 +39,9 @@ vi.mock("../db", () => {
       }),
     }),
     insert: () => ({
-      values: (v: { component: string; platform: string; architecture: string }) => ({
+      values: (v: Row) => ({
         onConflictDoUpdate: async () => {
-          if (state.readOnly) throw readOnlyError();
+          if (state.readOnly || state.refuse?.(v)) throw readOnlyError();
           state.inserts.push(`${v.component}:${v.platform}/${v.architecture}`);
         },
       }),
@@ -52,23 +59,25 @@ vi.mock("../db", () => {
 });
 
 const CHECKSUM = "a".repeat(64);
-const BASE = "https://github.com/example/breeze/releases/download/v0.127.0";
+const BASE = "https://github.com/example/breeze/releases/download";
 
 vi.mock("./urlSafety", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./urlSafety")>()),
   safeFetchFollowingRedirects: vi.fn(async (url: string) => {
+    const names = ["breeze-agent-linux-amd64", ...state.extraAssets];
     if (url.endsWith("/checksums.txt")) {
-      return new Response(`${CHECKSUM}  breeze-agent-linux-amd64\n`, { status: 200 });
+      return new Response(names.map((n) => `${CHECKSUM}  ${n}\n`).join(""), { status: 200 });
     }
     const step = state.net[state.netCalls++];
     if (step === undefined) throw new Error(`unexpected GitHub call #${state.netCalls}`);
     if (step instanceof Error) throw step;
+    const tag = url.match(/\/releases\/tags\/(v[^/]+)$/)?.[1] ?? "v0.127.0";
     return new Response(
       JSON.stringify({
-        tag_name: "v0.127.0",
+        tag_name: tag,
         assets: [
-          { name: "checksums.txt", browser_download_url: `${BASE}/checksums.txt`, size: 100 },
-          { name: "breeze-agent-linux-amd64", browser_download_url: `${BASE}/breeze-agent-linux-amd64`, size: 1234 },
+          { name: "checksums.txt", browser_download_url: `${BASE}/${tag}/checksums.txt`, size: 100 },
+          ...names.map((n) => ({ name: n, browser_download_url: `${BASE}/${tag}/${n}`, size: 1234 })),
         ],
       }),
       { status: 200 },
@@ -108,6 +117,8 @@ beforeEach(() => {
   delete process.env.BINARY_EDITION;
   delete process.env.NODE_ENV;
   state.readOnly = true;
+  state.refuse = null;
+  state.extraAssets = [];
   state.inserts = [];
   state.net = [];
   state.netCalls = 0;
@@ -224,6 +235,100 @@ describe("BINARY_SOURCE=github boot sync on a read-only database (#11741)", { ti
 
     expect(binarySync.isBinarySyncDeferred()).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("defers a boot sync where only some writes were refused, instead of reading as done", async () => {
+    state.readOnly = false;
+    state.extraAssets = ["breeze-agent-linux-arm64"];
+    state.refuse = (v) => v.architecture === "arm64";
+    state.net = ["ok", "ok"];
+    const binarySync = await import("./binarySync");
+
+    expect(await bootSync(binarySync)).toBe(true);
+    expect(binarySync.isBinarySyncDeferred()).toBe(true);
+
+    state.refuse = null;
+    await binarySync.retryDeferredBinarySync();
+    expect(binarySync.isBinarySyncDeferred()).toBe(false);
+    expect(state.inserts).toContain("agent:linux/arm64");
+  });
+
+  it("defers when only a backup write is refused", async () => {
+    state.readOnly = false;
+    state.extraAssets = ["breeze-backup-linux-amd64"];
+    state.refuse = (v) => v.component === "backup";
+    state.net = ["ok"];
+    const binarySync = await import("./binarySync");
+
+    expect(await bootSync(binarySync)).toBe(true);
+    expect(binarySync.isBinarySyncDeferred()).toBe(true);
+  });
+
+  it("defers when the current-version safety net's writes are refused", async () => {
+    // /releases/latest registers fine; the running RC's own release is
+    // refused (the safety net used to log that and carry on).
+    process.env.APP_VERSION = "0.128.0-rc.1";
+    state.readOnly = false;
+    state.refuse = (v) => v.version === "0.128.0-rc.1";
+    state.net = ["ok", "ok"];
+    const binarySync = await import("./binarySync");
+
+    expect(await bootSync(binarySync)).toBe(true);
+    expect(state.netCalls).toBe(2);
+    expect(state.inserts).toEqual(["agent:linux/amd64"]);
+    expect(binarySync.isBinarySyncDeferred()).toBe(true);
+  });
+
+  it("does not hand a network failure on to a GitHub retry stopped by shutdown", async () => {
+    state.net = ["ok"];
+    const binarySync = await import("./binarySync");
+    expect(await bootSync(binarySync)).toBe(true);
+
+    state.readOnly = false;
+    let fail!: (e: Error) => void;
+    const { safeFetchFollowingRedirects } = await import("./urlSafety");
+    vi.mocked(safeFetchFollowingRedirects).mockImplementationOnce(
+      () => new Promise<Response>((_resolve, reject) => { fail = reject; }),
+    );
+    const retry = binarySync.retryDeferredBinarySync();
+    await vi.advanceTimersByTimeAsync(0);
+    binarySync.stopDeferredBinarySyncRetry();
+    binarySync.stopGithubSyncRetry();
+    fail(new Error("request timed out after 30000ms"));
+    await retry;
+
+    expect(binarySync.isGithubSyncRetryPending()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(errors.filter((e) => /restart the API/.test(e))).toEqual([]);
+    const { captureException } = await import("./sentry");
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it("schedules nothing for a boot failure that arrives after shutdown", async () => {
+    const binarySync = await import("./binarySync");
+    binarySync.stopDeferredBinarySyncRetry();
+    binarySync.stopGithubSyncRetry();
+
+    const readOnly = Object.assign(new Error("cannot execute INSERT in a read-only transaction"), { code: "25006" });
+    expect(binarySync.scheduleGithubSyncRetry(readOnly)).toBe(false);
+    expect(binarySync.scheduleGithubSyncRetry(new Error("request timed out after 30000ms"))).toBe(false);
+    expect(binarySync.isBinarySyncDeferred()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reminds every 30 retries when the database reads writable but writes are still refused", async () => {
+    state.net = Array.from({ length: 31 }, () => "ok" as const);
+    const binarySync = await import("./binarySync");
+    expect(await bootSync(binarySync)).toBe(true);
+
+    state.readOnly = false;
+    state.refuse = () => true;
+    for (let i = 0; i < 29; i += 1) await binarySync.retryDeferredBinarySync();
+    const reminder = (w: string) => /writes were still refused 30 times/.test(w);
+    expect(warnings.filter(reminder)).toEqual([]);
+    await binarySync.retryDeferredBinarySync();
+    expect(warnings.filter(reminder)).toHaveLength(1);
+    expect(binarySync.isBinarySyncDeferred()).toBe(true);
   });
 
   it("leaves any other failure as boot reported it (unchanged)", async () => {
