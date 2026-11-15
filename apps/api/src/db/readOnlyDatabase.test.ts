@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { isReadOnlyProbeResult, isReadOnlySqlError } from './readOnlyDatabase';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  isPoolObservedReadOnly,
+  isReadOnlyProbeResult,
+  isReadOnlySqlError,
+  notePoolReadOnly,
+  notePoolWritable,
+  observeReadOnlyProbeResult,
+} from './readOnlyDatabase';
 import { readOnlyStartupError } from './autoMigrate';
 
 describe('isReadOnlyProbeResult (#11731)', () => {
@@ -45,5 +52,36 @@ describe('isReadOnlySqlError (#11731)', () => {
     expect(isReadOnlySqlError(Object.assign(new Error('x'), { code: '40001' }))).toBe(false);
     expect(isReadOnlySqlError(new Error('plain'))).toBe(false);
     expect(isReadOnlySqlError(null)).toBe(false);
+  });
+});
+
+// #11741 review: the log throttle is gated on this flag, never on a single
+// statement's 25006 (an intentional READ ONLY transaction raises that too).
+describe('pool read-only observation (#11741)', () => {
+  afterEach(() => notePoolWritable());
+
+  it('starts clear and follows notePoolReadOnly / notePoolWritable', () => {
+    expect(isPoolObservedReadOnly()).toBe(false);
+    notePoolReadOnly();
+    expect(isPoolObservedReadOnly()).toBe(true);
+    notePoolWritable();
+    expect(isPoolObservedReadOnly()).toBe(false);
+  });
+
+  it('a readiness probe that reads the session default as read-only sets the flag', () => {
+    expect(observeReadOnlyProbeResult([{ ro: 'on' }])).toBe(true);
+    expect(isPoolObservedReadOnly()).toBe(true);
+  });
+
+  it('a writable probe answer does not clear it (other pooled sessions may still be stale)', () => {
+    notePoolReadOnly();
+    expect(observeReadOnlyProbeResult([{ ro: 'off' }])).toBe(false);
+    expect(isPoolObservedReadOnly()).toBe(true);
+  });
+
+  it('a 25006 from a statement never sets it', () => {
+    const err = Object.assign(new Error('cannot execute INSERT in a read-only transaction'), { code: '25006' });
+    expect(isReadOnlySqlError(err)).toBe(true);
+    expect(isPoolObservedReadOnly()).toBe(false);
   });
 });
