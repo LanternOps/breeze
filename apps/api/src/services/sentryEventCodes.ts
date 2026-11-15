@@ -327,7 +327,7 @@ export const SENTRY_EVENT_CODES = [
   'backup_snapshot_ambiguous_destination',
   /**
    * The stale-backup reaper's signal-recording window keeps closing before it
-   * outlives the stall limit, so no running backup can be failed for silence
+   * outlives the stall limit, so the stall rule cannot fail a running backup
    * (#11766, jobs/backupSignalRecording.ts). Usually recurring pool-acquire or
    * context-setup timeouts on an otherwise healthy database.
    */

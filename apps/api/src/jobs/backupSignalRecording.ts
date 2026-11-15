@@ -32,9 +32,11 @@
  * staying open for longer than BACKUP_STALL_TIMEOUT_MS log a warning with the
  * count, and report it to Sentry at most once per
  * SIGNAL_WINDOW_RESET_REPORT_INTERVAL_MS. A shorter window ends nothing: the
- * silence rule needs a window longer than the stall limit to fail any job, so
- * a failure every 6 to 16 minutes holds the reaper as surely as one every
- * cycle.
+ * stall rule (A) needs a window longer than its limit to fail any job, so a
+ * failure every 6 to 16 minutes holds it as surely as one every cycle. The
+ * other silence rules have their own limits (B's offline grace is shorter, D's
+ * no-transfer window is hours), so the threshold is A's, the rule that catches
+ * the commonest wedge.
  *
  * The state is per process. The reaper is one repeatable queue job, so each
  * cycle runs on one consumer: an API process under BREEZE_ROLE=all, or the
@@ -81,7 +83,7 @@ let notedFailures = new WeakSet<object>();
  * Record a cycle with no evidence of a recording problem. Opens a window at
  * `nowMs` if none is open, and returns the start of the open window. A window
  * that has been open for longer than BACKUP_STALL_TIMEOUT_MS ends any run of
- * resets: from then on the silence rule can fail a job again.
+ * resets: from then on the stall rule (A) can fail a job again.
  */
 export function noteSignalRecordingHealthy(nowMs: number): number {
   readOnlyEpisode = false;
@@ -97,15 +99,16 @@ function closeWindow(cause: string): void {
   const message =
     `[StaleCommandReaper] The backup signal-recording window has been reset ${consecutiveResets} times in a row ` +
     `without staying open for longer than the ${BACKUP_STALL_TIMEOUT_MS / 60_000}-minute stall limit ` +
-    `(latest cause: ${cause}). While this continues no running backup ` +
-    'job can be failed for silence (rules A, B and D; rule C still applies) and no pending job for a dispatch that ' +
-    'never completed. ' +
+    `(latest cause: ${cause}). While this continues the stall rule (A) cannot fail a running backup job, ` +
+    'nor can the no-transfer rule (D); the offline rule (B) only within windows longer than its grace, and rule C ' +
+    'still applies. A pending job for a dispatch that never completed is not failed either. ' +
     'If the database is otherwise healthy, look for recurring pool-acquire or context-setup timeouts.';
   console.warn(message);
   const nowMs = Date.now();
   if (lastResetReportMs !== null && nowMs - lastResetReportMs < SIGNAL_WINDOW_RESET_REPORT_INTERVAL_MS) return;
   lastResetReportMs = nowMs;
-  // Sentry drops the message text (scrubEvent); the event code carries it.
+  // scrubEvent drops the message text, so Sentry sees only the event code:
+  // the count and the latest cause stay in the console line above.
   captureMessage(message, {
     eventCode: 'backup_signal_window_reset_repeatedly',
     level: 'warning',
