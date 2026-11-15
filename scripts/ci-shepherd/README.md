@@ -42,6 +42,14 @@ probe leg done.
 gh variable set CI_SHEPHERD_MODE --body act -R LanternOps/breeze
 ```
 
+This one switch arms two things at once: the W06b queue decisions (re-queue,
+hold, park) and the W06c flaky-test upkeep, including the ledger PR that
+auto-merges with no review and lets an unprotected test fail both attempts
+for up to 14 days. There is no separate switch for the ledger. The act-mode
+gate review must cover both: the queue decisions in `decisions.jsonl`, and
+the shadow `flake_issue_create`, `ledger_pr` and `ledger_protected` lines
+(what act would have opened and quarantined).
+
 ### Probe leg
 
 The probe proves the write path on a throwaway PR. Add the label
@@ -102,6 +110,8 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
 | `ci-shepherd:ignore` | The shepherd leaves this PR alone. |
 | `ci-shepherd:resume` | A human releases a hold. The retry budget is unchanged. |
 | `ci-shepherd:probe` | Marks a throwaway PR for the probe leg. |
+| `flaky-test` | An issue the shepherd keeps for one flaky test, with its evidence. |
+| `flaky-fix-required` | A flaky test that used its 60 quarantine days. It is never renewed; fix it. |
 
 ### Decision kinds
 
@@ -119,6 +129,104 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
   job (it would wait for the queue timeout) was dequeued and re-queued, under
   the infra budget.
 - `noop`: nothing to do. The reasons are in the line.
+- `flake_issue_create`, `flake_fix_required`, `ledger_pr`,
+  `ledger_add_waiting_issue` (`source: flake`): the flaky-test upkeep below.
+  In shadow each is logged once a day per test or proposal.
+- `ledger_protected` (`source: flake`, any mode): a protected test the
+  proposals would otherwise have added or renewed. Once a day per test.
+- `flake_issue_cap` (`source: flake`): the daily cap on new flaky-test issues
+  was reached; `carried` lists the tests held for the next day. Once a day.
+
+### Flaky tests and the ledger PR (W06c)
+
+After each tick's sightings ingest, the shepherd keeps the flaky ledger fed
+(`flake-upkeep.mjs`). Writes happen in act mode only.
+
+- **Sightings** (`evidence.mjs`, `sweeps.mjs`). A failure counts only when
+  the run's own change did not touch the test: not the test file, not its
+  sibling source, not its Go package, and for an integration test not a
+  migration (`apps/api/migrations/`) or the schema (`apps/api/src/db/`). The
+  change is read for each run with failures: base...head for a PR run, the
+  commit itself for a run on main, and for a merge queue run `main...head`,
+  i.e. every entry of its group not yet on main, this one included. (The sha
+  in a queue branch name `gh-readonly-queue/main/pr-N-<sha>` is the commit
+  the entry was stacked on: for every entry but the first, the previous
+  entry's group commit. A compare from it sees only the entry's own PR, so a
+  test the first entry broke would look untouched in every entry behind it.)
+  When the change cannot be read (an error, a run naming no PR, 300 files or
+  more, or a queue group that already merged, whose base on main is gone),
+  the failure counts as touched and is dropped. A queue sighting keeps the
+  merge base it was checked from (`queueBase`) and the commit it was stacked
+  on (`queueParent`); one stored before this check has no `queueBase` and is
+  not counted.
+- **What "untouched" can and cannot tell.** It is a file-path check, nothing
+  more. It catches a change to the test itself, its sibling source, its Go
+  package, and (integration) migrations or the schema. It does not see a
+  test broken indirectly: a change to a module the test imports, a shared
+  fixture, a config file, a dependency bump or another entry's change that
+  merged before the read. Such a failure still counts as untouched, so an
+  untouched failure is a lead, not proof of a flake. The flake signal the
+  ledger relies on is the fail-then-pass requirement below: at least one
+  sighting where the test failed and then passed on the same code (a retry
+  passed, or attempt 2 failed only on other tests). A deterministic break
+  fails both attempts every time and never meets it.
+- **Issues** (`flake-issues.mjs`). A test gets one `flaky-test` issue once,
+  within 14 days, it failed in 2 distinct CI runs and the evidence points
+  away from the change: runs of at least 2 different PRs, or a merge queue
+  run, or a fail-then-pass on one commit (the retry passed). Two runs of one
+  PR never open an issue, and the merge queue runs of one queue chain
+  (entries stacked on one another, or built on the same tip of main) count
+  as one run. At most 5 new issues per UTC day, counted in
+  `state.json` so a restart does not reset it; tests over the cap are queued
+  with the evidence they qualified on and opened on a later day. The body
+  holds a summary of that evidence (a suspicion, not proof) and a hidden
+  `<!-- ci-shepherd:flake v1 … -->` record: counts per kind, the newest 50
+  sightings and the days quarantined so far. An issue is trusted only when
+  the operator account wrote it and nobody else edited its body last: comment
+  on these issues, do not edit them. An issue someone else edited blocks new
+  issues and is never cited by a ledger PR until the operator account edits
+  it again. Known issues are read by number, so removing the `flaky-test`
+  label neither drops an issue nor resets its quarantine days. A closed issue
+  is left closed; new evidence after the close opens a successor that keeps
+  the quarantine days.
+- **Proposals** (`ledger-proposals.mjs`). A test is added to
+  `.github/flaky-tests.json` only when it has an open issue and, in the last 7
+  days, ≥ 3 independent runs from ≥ 2 independent PRs, at least one in the
+  merge queue or failing both attempts, and at least one passing on a retry
+  (fail-then-pass or fail-other: the real flake signal, see above). The
+  entries of one queue chain count as one run and one PR, together with any
+  PR run of those PRs; a queue failure counts only when the test was
+  untouched by every entry of its group. No `main_broken` breaker
+  may name it, and its file must exist on main. Entries run 14 days and renew
+  only on fresh flake evidence. Each test is quarantined for at most 60 days in
+  total, then gets `flaky-fix-required`. Expired entries and entries with no
+  sighting in 14 days are removed.
+- **Protected tests** (`quarantineEligibility` in `ledger-proposals.mjs`).
+  The shepherd never adds or renews: any test run by the integration runner
+  (`vitest-integration`), any `*.contract.test.*`, anything under
+  `src/__tests__/`, and any test whose path matches `rls`, `tenan`, `auth`,
+  `security`, `migration`, `billing`, `cascade`, `permission`, `rbac`,
+  `access`, `partner`, `org-merge`/`org_merge`/`orgMerge`, `export`, `audit`,
+  `signing`, `enroll`, `token`, `session`, `mfa` or `sso` (case-insensitive
+  substrings, so `urls`, `author` and `processor` match too: it errs towards
+  protecting). They still get
+  their `flaky-test` issue, which says they are protected. Quarantining one is
+  a ledger PR a human writes and reviews; an entry a human added is kept as
+  written until it expires. The ledger PR refuses to open if a protected test
+  ever reaches it.
+- **Ledger PR** (`ledger-pr.mjs`). At most one open PR, branch
+  `ci-shepherd/ledger-<date>`, made in a temporary worktree of the shepherd's
+  own clone (`--checkout-dir`, passed by `run.sh`) and auto-merged through the
+  queue. The ruleset requires no approval, so nobody reviews it before it
+  merges. The shepherd checks at most hourly. While one is open it waits, and
+  it never force-pushes. It does not reopen a ledger PR a human closed until
+  the next day.
+- **Vetoes.** Closing a ledger PR only skips that day: the next day's
+  proposal opens a new one. To stop a test's quarantine, close its
+  `flaky-test` issue: the shepherd then no longer cites it, and only evidence
+  newer than the close can open a successor. To stop all quarantines, set the
+  mode to `off` (or anything but `act`). Entries expire on their own within 14
+  days.
 
 ### Reading the logs
 
@@ -140,6 +248,8 @@ State lives in `~/.local/state/breeze-ci-shepherd/`.
   from. Review the `shadow` lines here before going to act.
 - `state.json`: the cursor, seen removals, breakers and pending intents.
 - `sightings.jsonl`: flake sightings from completed CI runs.
+- `flake-records.json`: the parsed `flaky-test` issue records (refreshed from
+  GitHub daily); `state.json`'s `flake` key holds the issue index.
 - `launchd.out.log`, `launchd.err.log`: launchd's capture of the job output.
 
 ### Install

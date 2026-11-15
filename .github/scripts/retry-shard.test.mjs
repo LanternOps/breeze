@@ -1035,7 +1035,8 @@ test('report v2 carries each attempt\'s flags (the shepherd refuses a flake pair
 
 test('ledgerPaths is exported for the shepherd: vitest prefixes and the go module mapping', () => {
   assert.deepEqual(ledgerPaths('vitest-web', {}), { prefix: 'apps/web/' });
-  assert.deepEqual(ledgerPaths('vitest-integration', {}), { prefix: 'apps/api/', sourceRoot: 'apps/api/src/' });
+  // A migration or schema change touches every integration test, whatever its covers.
+  assert.deepEqual(ledgerPaths('vitest-integration', {}), { prefix: 'apps/api/', sourceRoot: 'apps/api/src/', schemaRoots: ['apps/api/migrations/', 'apps/api/src/db/'] });
   const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
   assert.deepEqual(ledgerPaths('go', { repoRoot, goDir: join(repoRoot, 'agent') }), { goModule: AGENT, goDir: 'agent' });
   assert.equal(ledgerPaths('portal', {}), null);

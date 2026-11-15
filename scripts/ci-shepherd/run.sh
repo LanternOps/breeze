@@ -22,7 +22,7 @@ prepare() {
 }
 
 run_tick() {
-  node "$HOME_DIR/checkout/scripts/ci-shepherd/shepherd.mjs" tick --repo LanternOps/breeze --state-dir "$STATE_DIR"
+  node "$HOME_DIR/checkout/scripts/ci-shepherd/shepherd.mjs" tick --repo LanternOps/breeze --state-dir "$STATE_DIR" --checkout-dir "$HOME_DIR/checkout"
 }
 
 # set -e is suspended inside the `if`, so a failure still reaches the log line.

@@ -19,11 +19,9 @@
 // gate could not judge) and thin_fault (W05: a skip the selection never allowed).
 // None of this proves a flake: suspected_flake and known_flake are bounded
 // bets the decision layer budgets, and a retry never turns a failure into a pass.
-import { join } from 'node:path';
-
 import { failureTouched } from '../../.github/scripts/flaky-ledger.mjs';
-import { ledgerPaths, ledgerRunner } from '../../.github/scripts/retry-shard.mjs';
-import { GO_DIR, attemptsOf, failureFromId } from './evidence.mjs';
+import { ledgerRunner } from '../../.github/scripts/retry-shard.mjs';
+import { attemptsOf, failureFromId, touchPathsFor } from './evidence.mjs';
 import { isFailedConclusion } from './facts.mjs';
 import { INFRA_SIGNATURES, signatureEvidence } from './signatures.mjs';
 
@@ -75,10 +73,10 @@ function failingIds(job) {
 
 function touchedPaths(job, repoRoot) {
   const ledger = job.runner && job.label ? ledgerRunner(job.runner, job.label) : null;
-  const paths = ledger ? ledgerPaths(ledger, { repoRoot, goDir: join(repoRoot, GO_DIR) }) : null;
   // Without sourceRoot on purpose: for classification it would make every API
-  // PR's integration failure "real".
-  return { ledger, paths: { ...(paths ?? {}), sourceRoot: undefined } };
+  // PR's integration failure "real". A migration or schema change still
+  // touches every integration test (schemaRoots).
+  return { ledger, paths: touchPathsFor(ledger, repoRoot) ?? {} };
 }
 
 export function classifyJob(job, ctx) {

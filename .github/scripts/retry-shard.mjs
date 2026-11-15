@@ -273,8 +273,9 @@ export function ledgerRunner(runner, label) {
 export function ledgerPaths(ledger, { repoRoot, goDir }) {
   if (ledger === 'vitest-api') return { prefix: 'apps/api/' };
   // An integration test exercises far beyond its sibling: without a declared
-  // `covers`, any non-test change under apps/api/src/ touches it.
-  if (ledger === 'vitest-integration') return { prefix: 'apps/api/', sourceRoot: 'apps/api/src/' };
+  // `covers`, any non-test change under apps/api/src/ touches it. A migration
+  // or schema change touches every integration test, `covers` or not.
+  if (ledger === 'vitest-integration') return { prefix: 'apps/api/', sourceRoot: 'apps/api/src/', schemaRoots: ['apps/api/migrations/', 'apps/api/src/db/'] };
   if (ledger === 'vitest-web') return { prefix: 'apps/web/' };
   if (ledger !== 'go') return null;
   try {

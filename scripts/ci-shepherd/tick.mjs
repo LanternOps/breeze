@@ -10,7 +10,8 @@
 //      verdict, breakers, decision, apply.
 //   5. Ingest flake sightings from CI runs completed since the last tick.
 //   6. Sweeps: breakers, stuck queue entries, pending re-adds, parked PRs with
-//      a new head, the resume label.
+//      a new head, the resume label; after ingest, flaky-test issues and the
+//      rolling ledger PR (flake-upkeep.mjs, W06c).
 //   7. Save state atomically. A BudgetExceeded keeps the cursor at the first
 //      removal it did not finish.
 import { readFileSync } from 'node:fs';
@@ -21,6 +22,7 @@ import { parkInBreaker, setBreakerIssue, updateBreakers } from './breakers.mjs';
 import { classifyRun } from './classify.mjs';
 import { LABELS, decide, pageFor, staleReasons, summarizeVerdict } from './decide.mjs';
 import { History } from './evidence.mjs';
+import { flakeUpkeep } from './flake-upkeep.mjs';
 import { groupRunFor, headPushedAt, prSnapshot, recentRemovals, requiredJobIds, runFacts } from './facts.mjs';
 import { acquireLock, appendJsonl, loadState, readJsonl, releaseLock, saveState, tickBudget, writeJsonl } from './state.mjs';
 import { actOnBreakers, ingestSightings, settled, sweepBreakers, sweepParked, sweepReadds, sweepResume, sweepStuck } from './sweeps.mjs';
@@ -104,7 +106,7 @@ function prune(state, now) {
 // mid-apply), locked, off, hourly_budget_spent, budget_exceeded,
 // mode_unreadable, error. The CLI exits 0 only for ok, locked, off and
 // hourly_budget_spent, so runs.log's exit code shows every other one.
-export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () => Date.now(), exec, repoRoot, log = (l) => process.stdout.write(`${l}\n`) }) {
+export async function tick({ gh, repo, stateDir, checkoutDir = null, now = Date.now(), clock = () => Date.now(), exec, repoRoot, log = (l) => process.stdout.write(`${l}\n`) }) {
   const lock = acquireLock(stateDir, now);
   if (!lock.ok) {
     log(`ci-shepherd tick status=locked held_since=${lock.heldSince}`);
@@ -177,6 +179,7 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
       }
       return r.mode;
     };
+    Object.assign(t, { modeNow, writer, viewer, stateDir, checkoutDir, record, save: () => saveState(stateDir, state) });
 
     // apply + act-mode persistence: a decision is pending (saved) before its
     // first write and leaves the list once applied or skipped. A main CI
@@ -318,6 +321,9 @@ export async function tick({ gh, repo, stateDir, now = Date.now(), clock = () =>
       summary.sweeps.ingested = ingest.runs;
       summary.sweeps.sightings = ingest.sightings;
       if (ingest.deferred) summary.sweeps.ingestDeferred = ingest.deferred;
+    });
+    await sweep('flaky tests', async () => {
+      summary.sweeps.flake = await flakeUpkeep(t);
     });
     return summary;
   } catch (e) {
