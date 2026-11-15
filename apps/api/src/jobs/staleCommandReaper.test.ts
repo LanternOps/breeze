@@ -1588,12 +1588,17 @@ describe('reapStaleBackupJobs — server-side outage (#11766)', () => {
     expect(setMock).not.toHaveBeenCalled();
   });
 
-  it('a reap pass that throws (writes failing) closes the window too', async () => {
+  /** A DrizzleQueryError-shaped error whose cause carries the SQLSTATE. */
+  function dbError(message: string, code: string): Error {
+    return Object.assign(new Error(`Failed query: ${message}`), { cause: Object.assign(new Error(message), { code }) });
+  }
+
+  it('a reap pass that throws a database error (writes failing) closes the window too', async () => {
     writable();
     vi.setSystemTime(OUTAGE_START + 20 * MIN);
     selectMock.mockReturnValueOnce(selectChain([runningJob(OUTAGE_START)]));
     updateMock.mockImplementation(() => {
-      throw new Error('cannot execute UPDATE in a read-only transaction');
+      throw dbError('cannot execute UPDATE in a read-only transaction', '25006');
     });
     await expect(reapStaleBackupJobs()).rejects.toThrow('read-only');
     expect(signalRecordingWindowStart()).toBeNull();
@@ -1601,6 +1606,86 @@ describe('reapStaleBackupJobs — server-side outage (#11766)', () => {
     const setMock = captureSet();
     expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START)])).toBe(0);
     expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('a reap pass that throws a non-database error leaves the window open (a bug must not hold every reap)', async () => {
+    writable();
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    selectMock.mockReturnValueOnce(selectChain([runningJob(OUTAGE_START)]));
+    updateMock.mockImplementation(() => {
+      throw new TypeError("Cannot read properties of undefined (reading 'id')");
+    });
+    await expect(reapStaleBackupJobs()).rejects.toThrow(TypeError);
+    expect(signalRecordingWindowStart()).toBe(0);
+  });
+
+  it('a probe that cannot reach the database closes the window and rethrows', async () => {
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    executeMock.mockRejectedValue(Object.assign(new Error('write CONNECTION_CLOSED'), { code: 'CONNECTION_CLOSED' }));
+
+    await expect(reapStaleBackupJobs()).rejects.toThrow('CONNECTION_CLOSED');
+    expect(signalRecordingWindowStart()).toBeNull();
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable probe result fails open (reaps as before) and is reported once', async () => {
+    const { captureException } = await import('../services/sentry');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      executeMock.mockResolvedValue([]);
+      const setMock = captureSet();
+      const now = OUTAGE_START + 20 * MIN;
+
+      expect(await cycleAt(now, [runningJob(OUTAGE_START)])).toBe(1);
+      expect(setMock).toHaveBeenCalledTimes(1);
+      expect(await cycleAt(now + MIN, [])).toBe(0);
+
+      const probeErrors = errorSpy.mock.calls.filter(([m]) => String(m).includes('Read-only probe returned an unexpected result'));
+      expect(probeErrors).toHaveLength(1);
+      expect(captureException).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('a read-only database is reported once per episode, including when the process starts read-only', async () => {
+    resetSignalRecordingWindowForTests(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      executeMock.mockResolvedValue([{ read_only: true }]);
+      vi.setSystemTime(OUTAGE_START);
+      await reapStaleBackupJobs();
+      vi.setSystemTime(OUTAGE_START + 2 * MIN);
+      await reapStaleBackupJobs();
+      const readOnlyWarnings = () => warnSpy.mock.calls.filter(([m]) => String(m).includes('Database is read-only')).length;
+      expect(readOnlyWarnings()).toBe(1);
+
+      // Writable again, then read-only again: a new episode.
+      writable();
+      await cycleAt(RECOVERY, []);
+      executeMock.mockResolvedValue([{ read_only: true }]);
+      await reapStaleBackupJobs();
+      expect(readOnlyWarnings()).toBe(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('an online device whose heartbeat was also unrecordable is not reaped as offline until its grace runs inside the window', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+    // Status still `online` (nothing could write `offline`), last_seen_at as
+    // old as the job's keepalive: isDeviceOfflineForReap says offline.
+    const unheard = () => runningJob(OUTAGE_START, { deviceLastSeenAt: new Date(OUTAGE_START) });
+
+    expect(await cycleAt(RECOVERY, [unheard()])).toBe(0);
+    expect(await cycleAt(RECOVERY + 10 * MIN - 1, [unheard()])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + 10 * MIN + 1, [unheard()])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      errorLog: '[stale-backup-reaper] Device went offline during backup',
+    }));
   });
 
   it('a genuinely dead job is reaped once a full stall window of recording has passed, with a truthful reason', async () => {
@@ -1705,6 +1790,16 @@ describe('reapStaleBackupJobs — server-side outage (#11766)', () => {
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
       errorLog: '[stale-backup-reaper] Backup dispatch never completed',
     }));
+
+    // Same with an acknowledgement recorded before the outage: the stale
+    // keepalive does not shorten the window either.
+    resetSignalRecordingWindowForTests(null);
+    setMock.mockClear();
+    const acked = { ...pending, lastKeepaliveAt: new Date(OUTAGE_START) };
+    expect(await cycleAt(RECOVERY, [], [acked])).toBe(0);
+    expect(await cycleAt(RECOVERY + STALL_MS - 1, [], [acked])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + STALL_MS + 1, [], [acked])).toBe(1);
   });
 });
 

@@ -41,9 +41,11 @@ import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
 import { catchUpExpiryReason } from './backupCatchUp';
 import {
+  isSignalRecordingFailure,
+  noteDatabaseReadOnly,
+  noteReadOnlyProbeUnreadable,
   noteSignalRecordingHealthy,
   noteSignalRecordingImpaired,
-  signalRecordingWindowStart,
 } from './backupSignalRecording';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
@@ -1610,7 +1612,7 @@ async function failBackupJobForTimedOutCommand(
  * A `running` job is reaped when ANY of:
  *  A (silent):   liveness is set and stale past BACKUP_STALL_TIMEOUT_MS
  *  B (offline):  the owning device is offline (see isDeviceOfflineForReap)
- *                AND coalesce(liveness, startedAt) is stale past
+ *                AND coalesce(liveness, startedAt, createdAt) is stale past
  *                BACKUP_OFFLINE_GRACE_MS
  *  D (no transfer): liveness is fresh but coalesce(lastProgressAt,
  *                startedAt, createdAt) is stale past backupNoTransferWindowMs
@@ -1618,15 +1620,18 @@ async function failBackupJobForTimedOutCommand(
  *  C (absolute): no signal was ever reported (legacy agent) and
  *                startedAt is stale past BACKUP_ABSOLUTE_TIMEOUT_MS
  *
- * A `pending` job is reaped when createdAt is stale past
- * BACKUP_PENDING_TIMEOUT_MS (dispatch never completed).
+ * A `pending` job is reaped when coalesce(startedAt, createdAt) is stale past
+ * BACKUP_PENDING_TIMEOUT_MS (dispatch never completed), unless a catch-up is
+ * still waiting (catchUpUntil in the future) or its liveness is within
+ * BACKUP_STALL_TIMEOUT_MS.
  *
  * Silence is counted only inside the signal-recording window (#11766, see
  * backupSignalRecording.ts): the A, B, D and pending-liveness clocks start at
  * the later of the recorded signal and the window start, because a signal the
  * server could not write (database read-only or unreachable, API down) is not
- * evidence the agent stopped. C is a total-duration cap, not a silence clock,
- * and is unchanged.
+ * evidence the agent stopped. Each rule still needs its full limit inside the
+ * window (15 min for A and pending, 10 min for B, the no-transfer window for
+ * D). C is a total-duration cap, not a silence clock, and is unchanged.
  *
  * Per reaped running job on an online device: best-effort
  * queueBackupStopCommand so a live-but-silent agent stops uploading.
@@ -1635,20 +1640,22 @@ export async function reapStaleBackupJobs(): Promise<number> {
   const now = Date.now();
   try {
     if (await databaseRefusesWrites()) {
-      if (signalRecordingWindowStart() !== null) {
+      if (noteDatabaseReadOnly()) {
         console.warn(
           '[StaleCommandReaper] Database is read-only: agent backup signals cannot be recorded, so no backup job ' +
-          'is judged stale until it accepts writes again and a full stall window has been recorded',
+          'is judged stale until it accepts writes again and each silence limit has run inside the recorded window',
         );
       }
-      noteSignalRecordingImpaired();
       return 0;
     }
     return await reapStaleBackupJobsInWindow(now, noteSignalRecordingHealthy(now));
   } catch (err) {
-    // A pass that could not read or write backup_jobs is evidence keepalive
-    // writes were failing too; silence up to here is not counted.
-    noteSignalRecordingImpaired();
+    // A pass the database could not serve (unreachable, read-only, out of
+    // disk) means keepalive writes were failing too, so silence up to here is
+    // not counted. Any other error is a reaper bug: it still fails the domain
+    // (logged and reported by runStaleCommandReaperCycle) but must not hold
+    // every backup reap behind a window that never ages.
+    if (isSignalRecordingFailure(err)) noteSignalRecordingImpaired();
     throw err;
   }
 }
@@ -1665,7 +1672,17 @@ async function databaseRefusesWrites(): Promise<boolean> {
   );
   const rows: unknown = Array.isArray(result) ? result : (result as { rows?: unknown } | undefined)?.rows;
   const first = Array.isArray(rows) ? (rows[0] as { read_only?: unknown } | undefined) : undefined;
-  return first?.read_only === true;
+  if (typeof first?.read_only !== 'boolean') {
+    // Fail open (the pre-#11766 behaviour), but loudly: a driver or shape
+    // change here silently turns the outage protection off.
+    if (noteReadOnlyProbeUnreadable()) {
+      const message = '[StaleCommandReaper] Read-only probe returned an unexpected result; treating the database as writable';
+      console.error(message, result);
+      captureException(new Error(message));
+    }
+    return false;
+  }
+  return first.read_only;
 }
 
 async function reapStaleBackupJobsInWindow(now: number, windowStart: number): Promise<number> {
