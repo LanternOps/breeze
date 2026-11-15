@@ -179,16 +179,27 @@ volume there has no effect.
 digests. It keeps the verified copy in `<work-dir>/release-manifest/` and, before
 it starts the stack, copies it to the root of the `binaries` volume, replacing
 the previous release's. `guided-setup.sh --upgrade` does the same for the target
-release. It only copies files that passed verification. If setup cannot verify a
-pair for the release, it places none and removes any older pair from the volume,
-because an older release's manifest next to newer binaries makes local
-registration refuse them.
+release. It only copies files that passed verification. Each file goes into the
+volume over the standard input of a one-shot `binaries-init` container, so the
+copy adds no host mount of its own. With the default named `binaries` volume it
+works on SELinux hosts, with snap Docker, from a folder Docker Desktop does not
+share, and against a remote `DOCKER_HOST`. With the local `./data` storage
+layout, Docker must still be able to mount `./data/binaries`, as it must for
+every start of the stack.
+
+If setup cannot verify a pair for the release, or the copy fails, it removes any
+older pair from the volume, because an older release's manifest next to newer
+binaries makes local registration refuse them. Setup logs each pair it removes
+from or replaces in the volume, unless it is already this release's pair. It
+warns when that pair is not one it staged, for example a pair copied in by hand.
+When the copy fails, setup prints the commands to run.
 
 For a server-only release (one that reuses an earlier release's binaries image),
 setup places the pair of the release whose binaries it carries. It verifies that
-pair with the same key and checks that it lists the same binaries image digest.
+pair with the same key, checks that it lists the same binaries image digest, and
+checks that its `releaseKind` is `full`.
 
-With `--no-up`, or when you decline the restart, setup prints the copy command
+With `--no-up`, or when you decline the restart, setup prints the copy commands
 with the other commands to run.
 
 ### Manual installs and air-gapped installs
@@ -216,24 +227,39 @@ RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS="$(grep '^RELEASE_ARTIFACT_MANIFEST_PUBLIC
     --expected-release "$TAG" \
     --require "binaries=$(grep '^BREEZE_BINARIES_IMAGE_REF=' .env | cut -d= -f2-)"
 
-# A server-only release lists no binaries. If this prints "server-only", stop:
-# set TAG to the release in "binariesRelease" and start again from the top.
+# Continue only if this prints "releaseKind": "full" or prints no releaseKind
+# line. A server-only release lists no binaries. If this prints "server-only",
+# stop: set TAG to the release in "binariesRelease" and start again from the top.
 grep -E '"(releaseKind|binariesRelease)"' release-manifest/release-artifact-manifest.json
 
-# Copy both files to the volume root through the binaries-init service.
-docker compose run --rm --no-deps -T --entrypoint sh \
-  -v "$PWD/release-manifest:/release-manifest:ro" binaries-init \
-  -c 'set -eu; for f in release-artifact-manifest.json.ed25519 release-artifact-manifest.json; do cp "/release-manifest/$f" "/target/.$f.tmp"; chmod 0644 "/target/.$f.tmp"; mv -f "/target/.$f.tmp" "/target/$f"; done'
+# Copy both files to the volume root through the binaries-init service. Each
+# file goes over standard input, so nothing on the host is mounted.
+docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
+  -c 'set -eu; f=/target/release-artifact-manifest.json.ed25519; t=/target/.release-artifact-manifest.json.ed25519.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; [ ! -d "$f" ]; chmod 0644 "$t"; if [ -e "$f" ]; then h=$(sha256sum < "$f") || h=unreadable; echo "breeze-replaced ${h%% *}"; fi; mv -f "$t" "$f"' \
+  < release-manifest/release-artifact-manifest.json.ed25519
+docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
+  -c 'set -eu; f=/target/release-artifact-manifest.json; t=/target/.release-artifact-manifest.json.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; [ ! -d "$f" ]; chmod 0644 "$t"; if [ -e "$f" ]; then h=$(sha256sum < "$f") || h=unreadable; echo "breeze-replaced ${h%% *}"; fi; mv -f "$t" "$f"' \
+  < release-manifest/release-artifact-manifest.json
 
 # The API reads the pair at startup.
 docker compose up -d --force-recreate api
 ```
 
 Run the copy step only after the verification printed
-`Verified signed release image inventory` and the `releaseKind` line does not
-say `server-only`. A server-only release carries the binaries of the release
+`Verified signed release image inventory` and the `releaseKind` line says
+`full` or is absent. A server-only release carries the binaries of the release
 named in its `binariesRelease` field, and that release's pair is the one that
 describes the volume.
+
+If either copy command fails, remove the pair from the volume so the new
+binaries do not sit beside an older release's manifest, then fix the cause and
+copy again. The command prints a `breeze-removed …` line when it removed
+something; that is expected output, not an error.
+
+```bash
+docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
+  -c 'set -eu; m=/target/release-artifact-manifest.json; s=$m.ed25519; if [ -e "$m" ]; then h=$(sha256sum < "$m") || h=unreadable; echo "breeze-removed ${h%% *}"; elif [ -e "$s" ]; then echo breeze-removed-signature; fi; rm -f "$m" "$s" /target/.release-artifact-manifest.json.tmp /target/.release-artifact-manifest.json.ed25519.tmp'
+```
 
 If the volume is not managed by Compose, copy both files into the directory that
 holds `agent/`, `viewer/` and `helper/`, and make sure the API user can read
