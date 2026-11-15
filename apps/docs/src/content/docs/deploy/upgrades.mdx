@@ -452,7 +452,8 @@ Apart from `--site-id`, no change breaks an install on default settings. If you 
 - `OAUTH_REFRESH_ROTATION_GRACE_MS` (api, mapped; `10000`, at most `30000`, `0` turns it off).
 - `MIGRATION_LOCK_TIMEOUT_MS` (api, mapped; `300000`). A value that is not a positive whole number of milliseconds stops the API at boot.
 - `TUNNEL_ORIGIN_TEMPLATE` is newly mapped on the `web` service.
-- Not in `.env.example` or the shipped Compose files: `BACKUP_GC_LIVE_SET_MAX_BYTES` (api, or `worker` when split) and `M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE` (Microsoft Graph read executor; `100`, from 10 to 1000). Leave both unset unless you need them.
+- `BACKUP_GC_LIVE_SET_MAX_BYTES` (api, or `worker` when split) is now mapped in the shipped Compose files and documented in the environment reference; on earlier Compose files it only takes effect if you add the passthrough yourself.
+- Not in `.env.example` or the shipped Compose files: `M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE` (Microsoft Graph read executor; `100`, from 10 to 1000). Leave it unset unless you need it.
 - Monitoring overlay only: `PROMETHEUS_IMAGE_REF`, `GRAFANA_IMAGE_REF`, `ALERTMANAGER_IMAGE_REF`, `LOKI_IMAGE_REF`, `PROMTAIL_IMAGE_REF`, `REDIS_EXPORTER_IMAGE_REF` and `POSTGRES_EXPORTER_IMAGE_REF`.
 
 See [Environment Variables](/deploy/environment/).
