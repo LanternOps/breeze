@@ -168,6 +168,49 @@ type vaultSnapshot struct {
 	timestamp   time.Time
 }
 
+// vaultManifestDirID reports whether key is a snapshot manifest by folded
+// name (snapshots/<id>/manifest.json under any spelling; a system-state
+// manifest deeper in a snapshot prefix is not one) and returns its <id>
+// segment as spelled.
+func vaultManifestDirID(key string) (string, bool) {
+	parts := strings.Split(key, "/")
+	if len(parts) != 3 || vaultKeyFold(parts[0]) != vaultKeyFold(snapshotRootDir) ||
+		vaultKeyFold(parts[2]) != vaultKeyFold(snapshotManifestKey) {
+		return "", false
+	}
+	return parts[1], true
+}
+
+// vaultManifestsByID returns the listed keys that are snapshot manifests
+// (vaultManifestDirID), grouped by the vaultKeyFold of their snapshot ID, and
+// the folded IDs in listing order.
+func vaultManifestsByID(items []string) (byID map[string][]string, order []string) {
+	byID = map[string][]string{}
+	for _, item := range items {
+		id, ok := vaultManifestDirID(item)
+		if !ok {
+			continue
+		}
+		folded := vaultKeyFold(id)
+		if _, seen := byID[folded]; !seen {
+			order = append(order, folded)
+		}
+		byID[folded] = append(byID[folded], item)
+	}
+	return byID, order
+}
+
+// ambiguousManifestsError reports manifests that resolve to one snapshot:
+// two spellings in one snapshot directory, or two directories whose IDs fold
+// together (one directory on a case-insensitive vault). Restore reads
+// snapshots/<id>/manifest.json exactly, so which one it reads, and so which
+// objects the snapshot needs, depends on the filesystem; nothing may be
+// deleted or presented as complete on the strength of either.
+func ambiguousManifestsError(keys []string) error {
+	return fmt.Errorf("manifests %s resolve to one snapshot, so which one restore reads depends on the vault filesystem; remove the one that is not the snapshot's",
+		strings.Join(keys, " and "))
+}
+
 // readVaultSnapshots reads every snapshot manifest in the vault (the objects
 // at exactly snapshots/<id>/manifest.json; a system-state manifest deeper in
 // a snapshot prefix is not a snapshot) and returns them oldest-first. It
@@ -178,21 +221,26 @@ type vaultSnapshot struct {
 //
 // A manifest is recognized by its folded name (vaultKeyFold), not its exact
 // spelling: a manifest the listing spelled differently and retention skipped
-// would leave a snapshot whose references nothing protects.
+// would leave a snapshot whose references nothing protects. It also fails
+// when two listed manifests resolve to one folded snapshot ID
+// (ambiguousManifestsError): retention would keep one and drop the other,
+// and the one restore reads might be the dropped one.
 func (v *VaultManager) readVaultSnapshots() ([]vaultSnapshot, error) {
 	items, err := v.vault.List(snapshotRootDir)
 	if err != nil {
 		return nil, fmt.Errorf("list vault snapshots: %w", err)
 	}
-	rootFold, manifestFold := vaultKeyFold(snapshotRootDir), vaultKeyFold(snapshotManifestKey)
+	byID, order := vaultManifestsByID(items)
 	var snapshots []vaultSnapshot
 	var errs []error
-	for _, item := range items {
-		parts := strings.Split(item, "/")
-		if len(parts) != 3 || vaultKeyFold(parts[0]) != rootFold || vaultKeyFold(parts[2]) != manifestFold {
+	for _, folded := range order {
+		keys := byID[folded]
+		if len(keys) > 1 {
+			errs = append(errs, ambiguousManifestsError(keys))
 			continue
 		}
-		id := parts[1]
+		item := keys[0]
+		id, _ := vaultManifestDirID(item)
 		if !validVaultSnapshotID(id) {
 			errs = append(errs, fmt.Errorf("manifest %s: %q is not a valid snapshot ID", item, id))
 			continue
@@ -214,6 +262,40 @@ func (v *VaultManager) readVaultSnapshots() ([]vaultSnapshot, error) {
 		return snapshots[i].id < snapshots[j].id
 	})
 	return snapshots, nil
+}
+
+// checkSnapshotDirectories refuses a sync of snapshotID when its directory
+// is ambiguous: primaryItems (the listing of its prefix on primary) holds
+// more than one manifest spelling, or the vault holds a manifest for its
+// folded ID that is not provably this snapshot's own. Copying would leave a
+// vault snapshot that retention refuses to act on, or overwrite another
+// snapshot's manifest on a case-insensitive vault.
+func (v *VaultManager) checkSnapshotDirectories(snapshotID string, primaryItems []string) error {
+	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
+	folded := vaultKeyFold(snapshotID)
+	primaryManifests, _ := vaultManifestsByID(primaryItems)
+	if keys := primaryManifests[folded]; len(keys) > 1 {
+		return fmt.Errorf("on primary: %w", ambiguousManifestsError(keys))
+	}
+	items, err := v.vault.List(snapshotRootDir)
+	if err != nil {
+		return fmt.Errorf("list vault snapshots: %w", err)
+	}
+	vaultManifests, _ := vaultManifestsByID(items)
+	keys := vaultManifests[folded]
+	switch {
+	case len(keys) > 1:
+		return fmt.Errorf("in the vault: %w", ambiguousManifestsError(keys))
+	case len(keys) == 1 && keys[0] != manifestKey:
+		// One manifest listed under another spelling: on a case-insensitive
+		// vault possibly this snapshot's own (the listing spells it as on
+		// disk), otherwise another snapshot's or a stray. It is this
+		// snapshot's only when manifestKey reads back naming snapshotID.
+		if _, err := v.scanVaultManifest(manifestKey, snapshotID, nil); err != nil {
+			return fmt.Errorf("the vault holds manifest %s, which is not provably snapshot %s's own: %w", keys[0], snapshotID, err)
+		}
+	}
+	return nil
 }
 
 // readVaultManifest reads one vault manifest with its references.

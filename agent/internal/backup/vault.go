@@ -108,6 +108,8 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) (*VaultSyncResult, error)
 //  2. Collect the objects to hold: everything under the snapshot's own prefix
 //     on primary, plus every non-empty BackupPath the manifest references
 //     (an incremental entry's key lies under an older snapshot's prefix).
+//     Refuse when the snapshot's directory holds two manifests, on primary
+//     or in the vault (checkSnapshotDirectories).
 //  3. Copy each object the vault lacks, at the same key.
 //  4. Only when every object is in the vault, upload the manifest.
 //
@@ -152,9 +154,17 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 	if err != nil {
 		return nil, fmt.Errorf("failed to list primary snapshot files: %w", err)
 	}
+	if err := v.checkSnapshotDirectories(snapshotID, primaryFiles); err != nil {
+		return nil, fmt.Errorf("vault sync refused snapshot %s: %w", snapshotID, err)
+	}
 	want := make(map[string]struct{}, len(primaryFiles)+len(manifest.refs))
 	for _, file := range primaryFiles {
-		want[file] = struct{}{}
+		// The manifest, under any spelling, is uploaded last (step 4): a copy
+		// under another spelling would make the snapshot visible to retention
+		// before its objects are in the vault.
+		if _, isManifest := vaultManifestDirID(file); !isManifest {
+			want[file] = struct{}{}
+		}
 	}
 	for key := range manifest.refs {
 		want[key] = struct{}{}
@@ -421,16 +431,18 @@ func (v *VaultManager) enforceRetention() error {
 		}
 	}
 
-	var errs []error
+	// readVaultSnapshots refuses two manifests whose IDs fold together, so a
+	// dropped snapshot never shares a folded ID with a kept one. Should one,
+	// skipping it would leave a snapshot whose references the keep set does
+	// not hold: delete nothing instead.
 	for _, snap := range dropped {
 		if _, shared := keep.ids[vaultKeyFold(snap.id)]; shared {
-			// Two snapshot IDs that fold together share one directory on a
-			// case-insensitive vault: deleting this one's manifest could delete
-			// the kept one's. Leave it.
-			slog.Warn("vault retention: not dropping a snapshot whose ID folds onto a kept snapshot's",
-				"snapshotId", snap.id)
-			continue
+			return fmt.Errorf("vault retention deleted nothing: dropped snapshot %s (%s) folds onto a kept snapshot's ID", snap.id, snap.manifestKey)
 		}
+	}
+
+	var errs []error
+	for _, snap := range dropped {
 		if err := v.dropVaultSnapshot(snap, keep); err != nil {
 			errs = append(errs, err)
 		}
