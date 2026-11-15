@@ -29,7 +29,14 @@
  * A pool or setup timeout under ordinary load closes the window too, because
  * the reaper cannot tell it from an outage. So a run of closures is never
  * silent: every SIGNAL_WINDOW_RESET_WARN_EVERY closures without the window
- * staying open for a full reaper cycle log a warning with the count.
+ * staying open for longer than BACKUP_STALL_TIMEOUT_MS log a warning with the
+ * count, and report it to Sentry at most once per
+ * SIGNAL_WINDOW_RESET_REPORT_INTERVAL_MS. A shorter window ends nothing: the
+ * stall rule (A) needs a window longer than its limit to fail any job, so a
+ * failure every 6 to 16 minutes holds it as surely as one every cycle. The
+ * other silence rules have their own limits (B's offline grace is shorter, D's
+ * no-transfer window is hours), so the threshold is A's, the rule that catches
+ * the commonest wedge.
  *
  * The state is per process. The reaper is one repeatable queue job, so each
  * cycle runs on one consumer: an API process under BREEZE_ROLE=all, or the
@@ -49,15 +56,22 @@ import {
   DbPoolAcquireAbortedError,
   DbPoolAcquireTimeoutError,
 } from '../db/prologueDeadline';
+import { BACKUP_STALL_TIMEOUT_MS } from '../services/commandTimeouts';
+import { captureMessage } from '../services/sentry';
 import { pgErrorCode } from '../utils/pgErrors';
 
 /**
  * A warning is logged each time this many window closures have happened in a
- * row, i.e. without the window staying open across a full reaper cycle.
+ * row, i.e. without the window staying open for longer than
+ * BACKUP_STALL_TIMEOUT_MS.
  */
 export const SIGNAL_WINDOW_RESET_WARN_EVERY = 5;
 
+/** The warning reaches Sentry at most once per this interval, per process. */
+export const SIGNAL_WINDOW_RESET_REPORT_INTERVAL_MS = 60 * 60 * 1000;
+
 let windowStartMs: number | null = null;
+let lastResetReportMs: number | null = null;
 let readOnlyEpisode = false;
 let probeUnreadableReported = false;
 let consecutiveResets = 0;
@@ -68,12 +82,13 @@ let notedFailures = new WeakSet<object>();
 /**
  * Record a cycle with no evidence of a recording problem. Opens a window at
  * `nowMs` if none is open, and returns the start of the open window. A window
- * found already open has survived a full cycle, which ends any run of resets.
+ * that has been open for longer than BACKUP_STALL_TIMEOUT_MS ends any run of
+ * resets: from then on the stall rule (A) can fail a job again.
  */
 export function noteSignalRecordingHealthy(nowMs: number): number {
   readOnlyEpisode = false;
   if (windowStartMs === null) windowStartMs = nowMs;
-  else consecutiveResets = 0;
+  else if (nowMs - windowStartMs > BACKUP_STALL_TIMEOUT_MS) consecutiveResets = 0;
   return windowStartMs;
 }
 
@@ -81,13 +96,24 @@ function closeWindow(cause: string): void {
   windowStartMs = null;
   consecutiveResets += 1;
   if (consecutiveResets % SIGNAL_WINDOW_RESET_WARN_EVERY !== 0) return;
-  console.warn(
+  const message =
     `[StaleCommandReaper] The backup signal-recording window has been reset ${consecutiveResets} times in a row ` +
-    `without staying open for a full reaper cycle (latest cause: ${cause}). While this continues no running backup ` +
-    'job can be failed for silence (rules A, B and D; rule C still applies) and no pending job for a dispatch that ' +
-    'never completed. ' +
-    'If the database is otherwise healthy, look for recurring pool-acquire or context-setup timeouts.',
-  );
+    `without staying open for longer than the ${BACKUP_STALL_TIMEOUT_MS / 60_000}-minute stall limit ` +
+    `(latest cause: ${cause}). While this continues the stall rule (A) cannot fail a running backup job, ` +
+    'nor can the no-transfer rule (D); the offline rule (B) only within windows longer than its grace, and rule C ' +
+    'still applies. A pending job for a dispatch that never completed is not failed either. ' +
+    'If the database is otherwise healthy, look for recurring pool-acquire or context-setup timeouts.';
+  console.warn(message);
+  const nowMs = Date.now();
+  if (lastResetReportMs !== null && nowMs - lastResetReportMs < SIGNAL_WINDOW_RESET_REPORT_INTERVAL_MS) return;
+  lastResetReportMs = nowMs;
+  // scrubEvent drops the message text, so Sentry sees only the event code:
+  // the count and the latest cause stay in the console line above.
+  captureMessage(message, {
+    eventCode: 'backup_signal_window_reset_repeatedly',
+    level: 'warning',
+    fingerprint: ['backup_signal_window_reset_repeatedly'],
+  });
 }
 
 /**
@@ -197,5 +223,6 @@ export function resetSignalRecordingWindowForTests(startMs: number | null): void
   readOnlyEpisode = false;
   probeUnreadableReported = false;
   consecutiveResets = 0;
+  lastResetReportMs = null;
   notedFailures = new WeakSet<object>();
 }

@@ -3,7 +3,7 @@ import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStale
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, lt, lte, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { db, hasDbAccessContext, runAfterDbContextCommit, withDbTransaction } from '../db';
+import { db, hasDbAccessContext, runAfterDbContextCommit, withDbTransaction, withDbTransactionIfHeld } from '../db';
 import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 import {
   deviceCommands,
@@ -27,6 +27,7 @@ import { getBullMQConnection } from '../services/redis';
 import {
   getCommandTimeoutMs,
   BACKUP_JOB_ABSOLUTE_TIMEOUT_MS,
+  BACKUP_STALL_TIMEOUT_MS,
   EXCLUDED_COMMAND_TYPES,
   SCRIPT_GRACE_BUFFER_MS,
 } from '../services/commandTimeouts';
@@ -34,6 +35,7 @@ import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
 import { releaseFilesystemScanGenerationForCommand } from '../services/filesystemScanGenerationRelease';
+import { failVaultSyncWithoutResult } from '../services/vaultSyncPersistence';
 import { finalizeContainmentAction } from '../services/incidentContainmentResults';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
@@ -115,7 +117,6 @@ const REMOTE_SESSION_PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const REMOTE_SESSION_ACTIVE_TIMEOUT_MS = REMOTE_SESSION_ACTIVE_MAX_AGE_MS; // 24 hours (zombie safety net)
 
 // Backup job orphan/stall reconciliation thresholds.
-const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;      // progress-capable agent went silent
 const BACKUP_OFFLINE_GRACE_MS = 10 * 60 * 1000;      // device offline mid-job (covers reboot)
 const BACKUP_ABSOLUTE_TIMEOUT_MS = BACKUP_JOB_ABSOLUTE_TIMEOUT_MS; // legacy agents: no progress signal exists
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
@@ -349,6 +350,22 @@ export async function propagateTimedOutDeviceCommand(params: {
       );
     } catch (err) {
       console.error(`[StaleCommandReaper] Failed to release filesystem scan generation for timed-out command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // #11905 — a vault_sync that never answers leaves its vault `pending`
+  // forever otherwise: the Sync route marks it pending before queueing, and
+  // only an agent result moved it on. This covers both clocks and a delivery
+  // refusal (expired by the refresher, failed here on the delivery clock).
+  // Contained like the blocks above, in a savepoint for the manual
+  // mark-timed-out route's request transaction (see the containment block).
+  if (params.commandType === CommandTypes.VAULT_SYNC) {
+    try {
+      await withDbTransactionIfHeld(() =>
+        failVaultSyncWithoutResult({ commandId, payload, reason: errorMsg, completedAt }));
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to record the vault sync outcome for timed-out command ${commandId}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }

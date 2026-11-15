@@ -325,6 +325,13 @@ export const SENTRY_EVENT_CODES = [
   'backup_result_org_divergence',
   /** Snapshots are unattributable because two orgs share a destination. */
   'backup_snapshot_ambiguous_destination',
+  /**
+   * The stale-backup reaper's signal-recording window keeps closing before it
+   * outlives the stall limit, so the stall rule cannot fail a running backup
+   * (#11766, jobs/backupSignalRecording.ts). Usually recurring pool-acquire or
+   * context-setup timeouts on an otherwise healthy database.
+   */
+  'backup_signal_window_reset_repeatedly',
 
   // --- filesystem analysis results (#8024) ------------------------------
   /** A `filesystem_analysis` result reported `completed` but its stdout was

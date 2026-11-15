@@ -210,6 +210,14 @@ const RESTORE_TIMEOUT_TYPES = new Set<string>([
 export const BACKUP_JOB_ABSOLUTE_TIMEOUT_MS = TWENTY_FOUR_HOURS;
 
 /**
+ * How long a progress-capable backup agent may go silent before the stale
+ * backup reaper fails its job (rule A, jobs/staleCommandReaper.ts). Here
+ * rather than in the reaper so jobs/backupSignalRecording.ts, which the
+ * reaper imports, can size its reset run against the same value.
+ */
+export const BACKUP_STALL_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
  * #6354 W02 — a `caller_verify` prompt is never on screen longer than
  * `WORKSTATION_TIMEOUT_MAX_MS` (the helper's own countdown ceiling), and the
  * verification it serves expires on the same clock. The grace only covers the
