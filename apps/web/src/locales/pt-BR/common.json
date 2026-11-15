@@ -2472,6 +2472,7 @@
           "invalidTimeRange": "A hora inicial deve ser anterior à hora final.",
           "searchFailed": "Falha ao pesquisar logs",
           "saveFailed": "Falha ao salvar consulta",
+          "savedQueriesFailed": "Não foi possível carregar as consultas salvas.",
           "noRowsExport": "Não há linhas para exportar."
         },
         "savePrompt": "Nome desta consulta salva:",
@@ -2491,10 +2492,14 @@
         },
         "searchFleetLogs": "Pesquisar Logs da Frota",
         "saveQuery": "Salvar Consulta",
+        "usingSavedFilters": "Esta pesquisa usa os filtros salvos.",
+        "customSearch": "Pesquisa personalizada",
+        "savedQueries": "Consultas salvas",
         "exportCsv": "Exportar CSV",
         "resultsTitle": "Resultados da Pesquisa",
         "loading": "Carregando...",
         "resultsCount": "{{shown}} exibido(s) de {{total}} no total",
+        "resultsCountWithoutTotal": "{{shown}} exibidos",
         "table": {
           "timestamp": "Data/hora",
           "level": "Nível",
@@ -2504,6 +2509,7 @@
         "unknownSite": "Local desconhecido",
         "empty": "Nenhum log correspondeu aos filtros atuais.",
         "pageCount": "Página {{page}} de {{totalPages}}",
+        "currentPage": "Página {{page}}",
         "previous": "Anterior"
       }
     },
