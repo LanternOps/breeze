@@ -103,7 +103,11 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
   const viewer = t.viewer ?? (fl.refreshedAt && now - ms(fl.refreshedAt) < REFRESH_MS ? fl.viewer : null) ?? (await t.gh.rest('GET', 'user')).body?.login;
   if (!viewer) throw new Error('flake upkeep: cannot read the operator login');
   fl.viewer = viewer;
-  if (!fl.refreshedAt || now - ms(fl.refreshedAt) >= REFRESH_MS || Object.keys(fl.pending).length) {
+  // Refresh daily, after a create whose outcome is unknown, and whenever the
+  // index names a test whose record is missing (a lost flake-records.json
+  // must not reset its quarantine days to 0).
+  const stale = !fl.refreshedAt || now - ms(fl.refreshedAt) >= REFRESH_MS;
+  if (stale || Object.keys(fl.pending).length || Object.keys(fl.index).some((k) => !records[k])) {
     const r = await refreshIndex(t.gh, { repo: t.repo, viewer });
     fl.index = r.index;
     records = r.records;

@@ -164,6 +164,22 @@ test('without a checkout dir, act opens issues but no ledger PR, and says why', 
   assert.match(s.errors.join('\n'), /no checkout dir/);
 });
 
+test('a lost flake-records.json is rebuilt from the issues before any proposal', async () => {
+  const env = setup();
+  await env.run();
+  const issue = env.world.issues[0];
+  // The issue says 50 days quarantined; locally the records file is gone.
+  const rec = parseFlakeIssue(issue.body);
+  issue.body = issue.body.replace(/"quarantine_days":\d+/, '"quarantine_days":50');
+  assert.equal(parseFlakeIssue(issue.body).quarantine_days, 50);
+  assert.equal(rec.quarantine_days, 0);
+  writeFileSync(join(env.stateDir, 'flake-records.json'), '{}\n');
+  env.world.clock += 5 * 60_000;
+  await env.run();
+  const records = JSON.parse(readFileSync(join(env.stateDir, 'flake-records.json'), 'utf8'));
+  assert.equal(Object.values(records)[0].quarantine_days, 50);
+});
+
 test('nothing to do costs no API call', async () => {
   const env = setup({ sightings: [] });
   await env.run();
