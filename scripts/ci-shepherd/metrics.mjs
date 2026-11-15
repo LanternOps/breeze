@@ -136,7 +136,10 @@ async function listRuns(gh, m, { repo, start, end, event, status = null, onError
   const runs = [];
   for (let d = start; d < end; d += DAY) {
     for (let page = 1; page <= LIST_PAGES; page++) {
-      if (!m.can()) return { runs: [], complete: false };
+      if (!m.can()) {
+        onError(`${event} run listing: the API budget ran out`);
+        return { runs: [], complete: false };
+      }
       const res = await gh.rest('GET', runsPath(repo, dayQuery(event, status, d, Math.min(d + DAY, end), page)));
       if (res.status !== 200) {
         onError(`${event} run listing: ${res.status}`);
@@ -160,7 +163,10 @@ async function listRuns(gh, m, { repo, start, end, event, status = null, onError
 async function sampleRuns(gh, m, { repo, start, end, event, status, max, budget, onError }) {
   const days = [];
   for (let d = start; d < end; d += DAY) {
-    if (!m.can()) return { runs: [], k: null };
+    if (!m.can()) {
+      onError(`${event} run listing: the API budget ran out`);
+      return { runs: [], k: null };
+    }
     const to = Math.min(d + DAY, end);
     const res = await gh.rest('GET', runsPath(repo, dayQuery(event, status, d, to, 1)));
     if (res.status !== 200) {
@@ -215,7 +221,7 @@ const SCAN_QUERY = `query($owner: String!, $name: String!, $after: String) {
         headRefOid
         isCrossRepository
         timelineItems(last: ${TIMELINE_LAST}, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
-          totalCount
+          pageInfo { hasPreviousPage }
           nodes { ${EVENT_FIELDS} }
         }
       }
@@ -237,22 +243,22 @@ const PR_EVENTS_QUERY = `query($owner: String!, $name: String!, $n: Int!, $after
 const queueEvent = (ev) => (ev.__typename === 'AddedToMergeQueueEvent' ? { type: 'added', id: ev.id, at: ev.createdAt } : { type: 'removed', id: ev.id, at: ev.createdAt, reason: ev.reason ?? null });
 const byTime = (a, b) => ms(a.at) - ms(b.at);
 
-// Every queue event of one PR since `since`, or null when they do not fit in
-// PR_EVENT_PAGES pages (or the budget). For a PR whose queue events outrun
-// the scan's last 50 (an auto-merge loop re-adding itself all week).
+// Every queue event of one PR since `since`: { events } or { error }. For a
+// PR whose queue events outrun the scan's last 50 (an auto-merge loop
+// re-adding itself all week).
 async function prQueueEvents(gh, m, { repo, pr, since }) {
   const [owner, name] = repo.split('/');
   const events = [];
   let after = null;
   for (let page = 0; page < PR_EVENT_PAGES; page++) {
-    if (!m.can()) return null;
+    if (!m.can()) return { error: 'the API budget ran out' };
     const conn = (await gh.graphql(PR_EVENTS_QUERY, { owner, name, n: pr, after, since: iso(since) }))?.repository?.pullRequest?.timelineItems;
-    if (!conn) return null;
+    if (!conn) return { error: 'no timeline in the answer' };
     events.push(...conn.nodes.map(queueEvent));
-    if (!conn.pageInfo.hasNextPage) return events.sort(byTime);
+    if (!conn.pageInfo.hasNextPage) return { events: events.sort(byTime) };
     after = conn.pageInfo.endCursor;
   }
-  return null;
+  return { error: `more than ${PR_EVENT_PAGES * 100} queue events since ${iso(since)}` };
 }
 
 // Queue events of every PR updated since `start` (a queue event bumps a PR's
@@ -267,7 +273,10 @@ async function scanQueueEvents(gh, m, { repo, start, onError }) {
   const prs = [];
   let after = null;
   for (let page = 0; page < SCAN_PAGES; page++) {
-    if (!m.can()) return { prs, complete: false };
+    if (!m.can()) {
+      onError('queue event scan: the API budget ran out');
+      return { prs, complete: false };
+    }
     let conn;
     try {
       conn = (await gh.graphql(SCAN_QUERY, { owner, name, after }))?.repository?.pullRequests;
@@ -281,25 +290,27 @@ async function scanQueueEvents(gh, m, { repo, start, onError }) {
       return { prs, complete: false };
     }
     for (const p of conn.nodes) {
-      const items = p.timelineItems ?? { nodes: [], totalCount: 0 };
+      // hasPreviousPage, not totalCount: with itemTypes, GitHub's totalCount
+      // counts more than the nodes it serves (20 for 6 events, seen live).
+      const items = p.timelineItems ?? { nodes: [], pageInfo: { hasPreviousPage: false } };
       let events = items.nodes.map(queueEvent).sort(byTime);
       let eventsFrom = null;
-      if ((items.totalCount ?? 0) > items.nodes.length && events.length) {
+      if (items.pageInfo?.hasPreviousPage && events.length) {
         eventsFrom = ms(events[0].at);
         if (eventsFrom >= start) {
           const since = start - EVENT_LOOKBACK_MS;
-          let all = null;
+          let all;
           try {
             all = await prQueueEvents(gh, m, { repo, pr: p.number, since });
           } catch (e) {
             if (e.name === 'BudgetExceeded') throw e;
-            onError(`queue event scan: PR ${p.number}: ${e.message}`);
+            all = { error: e.message };
           }
-          if (!all) {
-            onError(`queue event scan: PR ${p.number} has more queue events than ${PR_EVENT_PAGES * 100} since ${iso(since)}, or they could not be read`);
+          if (all.error) {
+            onError(`queue event scan: PR ${p.number}: ${all.error}`);
             return { prs, complete: false };
           }
-          events = all;
+          events = all.events;
           eventsFrom = since;
         }
       }
@@ -413,19 +424,27 @@ export const runClassifier =
   };
 
 // Σ job durations and the Linux runner waits, from every k-th merge_group run.
+// The first run's job count (filter=all: every attempt) sizes k, with a
+// margin for re-run attempts.
 async function jobStats(gh, m, { repo, runs, budget }) {
-  const room = Math.min(budget, m.left());
   if (!runs.length) return { k: 1, seconds: 0, linux: 0, waited: 0 };
-  if (room < 1) return { k: null };
-  // About 1.2 job pages per run (filter=all holds every attempt's jobs).
-  const k = Math.max(1, Math.ceil((runs.length * 1.2) / room));
+  const jobsPage = (run, page) => gh.rest('GET', `repos/${repo}/actions/runs/${run.id}/jobs?filter=all&per_page=100&page=${page}`);
+  if (!m.can()) return { k: null, error: 'jobs: the API budget ran out' };
+  const first = await jobsPage(runs[0], 1);
+  if (first.status !== 200) return { k: null, error: `jobs of run ${runs[0].id}: ${first.status}` };
+  const perRun = 1.5 * Math.max(1, Math.ceil((first.body.total_count ?? 0) / 100));
+  const room = Math.min(budget, m.left() + 1);
+  const k = Math.max(1, Math.ceil((runs.length * perRun) / Math.max(1, room)));
   let seconds = 0;
   let linux = 0;
   let waited = 0;
   for (let i = 0; i < runs.length; i += k) {
     for (let page = 1; page <= JOB_PAGES; page++) {
-      if (!m.can()) return { k: null };
-      const res = await gh.rest('GET', `repos/${repo}/actions/runs/${runs[i].id}/jobs?filter=all&per_page=100&page=${page}`);
+      let res = i === 0 && page === 1 ? first : null;
+      if (!res) {
+        if (!m.can()) return { k: null, error: 'jobs: the API budget ran out' };
+        res = await jobsPage(runs[i], page);
+      }
       if (res.status !== 200) return { k: null, error: `jobs of run ${runs[i].id}: ${res.status}` };
       const jobs = res.body.jobs ?? [];
       for (const j of jobs) {

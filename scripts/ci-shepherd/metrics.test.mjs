@@ -84,8 +84,8 @@ function fakeGh({ runs = [], prs = [], jobs = {}, pushes = {}, issues = [], comm
       mergedAt: p.mergedAt ?? null,
       headRefOid: p.head,
       isCrossRepository: Boolean(p.fork),
-      // timelineItems(last: 50)
-      timelineItems: { totalCount: p.events.length, nodes: p.events.slice(-50).map(node) },
+      // timelineItems(last: 50). Like GitHub, totalCount over-counts.
+      timelineItems: { totalCount: p.events.length + 14, pageInfo: { hasPreviousPage: p.events.length > 50 }, nodes: p.events.slice(-50).map(node) },
     }));
     return { repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } };
   };
@@ -277,7 +277,7 @@ test('a PR with more queue events than the scan reads is read again on its own',
   const cut = await weekMetrics(fakeGh(heavy), { repo: REPO, week: WEEK, decisionsLog: heavy.log, onError: (e) => errors.push(e) });
   for (const i of [1, 3, 6, 7]) assert.deepEqual([cut[i].value, cut[i].coverage], ['—', 'unavailable'], cut[i].name);
   assert.equal(cut[0].coverage, 'exact');
-  assert.ok(errors.some((e) => /PR 502 has more queue events than 500/.test(e)), errors.join('\n'));
+  assert.ok(errors.some((e) => /PR 502: more than 500 queue events/.test(e)), errors.join('\n'));
 });
 
 test('a merged head that arrived before the events read has an undetermined latency', async () => {
@@ -303,16 +303,23 @@ test('over the API budget the job rows are sampled 1/k with the right k', async 
   const runs = Array.from({ length: 50 }, (_, i) => run(30000 + i, 'merge_group', 'success', iso(ms('2026-11-03T00:00:00Z') + i * 60_000), 10));
   const jobs = Object.fromEntries(runs.map((r) => [r.id, [job(['ubuntu-latest'], r.created_at, 0, 60)]]));
   // Fixed reads: 7 queue-run days, 7 PR-run days, 1 queue event scan = 15.
-  // 30 left for jobs: k = ceil(50 runs × 1.2 / 30) = 2 → 25 runs read.
+  // The first run's jobs (1 page; 1.5 pages a run with the margin) leave 30:
+  // k = ceil(50 runs × 1.5 / 30) = 3 → 17 runs read, 51 h scaled.
   const gh = fakeGh({ runs, jobs });
   const rows = await weekMetrics(gh, { repo: REPO, week: WEEK, apiBudget: 45 });
-  assert.equal(rows[4].coverage, 'sampled 1/2');
-  assert.equal(rows[4].value, '≈50 h (50 runs)');
-  assert.equal(rows[5].coverage, 'sampled 1/2');
-  assert.equal(rows[5].value, '0.0% (0 of 25 jobs read)');
+  assert.equal(rows[4].coverage, 'sampled 1/3');
+  assert.equal(rows[4].value, '≈51 h (50 runs)');
+  assert.equal(rows[5].coverage, 'sampled 1/3');
+  assert.equal(rows[5].value, '0.0% (0 of 17 jobs read)');
   assert.equal(rows[0].coverage, 'exact');
   assert.ok(gh.calls <= 45, `spent ${gh.calls}`);
-  assert.equal(gh.requests.filter((r) => /\/jobs\?/.test(r)).length, 25);
+  assert.equal(gh.requests.filter((r) => /\/jobs\?/.test(r)).length, 17);
+
+  // Too little left for even one run's jobs: unavailable, and said why.
+  const errors = [];
+  const none = await weekMetrics(fakeGh({ runs, jobs }), { repo: REPO, week: WEEK, apiBudget: 15, onError: (e) => errors.push(e) });
+  assert.deepEqual([none[4].value, none[4].coverage], ['—', 'unavailable']);
+  assert.ok(errors.includes('jobs: the API budget ran out'), errors.join('\n'));
 
   const full = await weekMetrics(fakeGh({ runs, jobs }), { repo: REPO, week: WEEK });
   assert.deepEqual([full[4].value, full[4].coverage], ['50 h (50 runs)', 'exact']);
