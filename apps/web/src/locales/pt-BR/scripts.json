@@ -680,6 +680,7 @@
     "output": {
       "emptyMarker": "(vazio)",
       "noOutput": "Sem saída",
+      "purged": "Saída removida após o período de retenção ({{date}})",
       "title": "Saída",
       "stdout": "Saída padrão (stdout)",
       "stderr": "Erro padrão (stderr)"

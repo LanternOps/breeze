@@ -22,6 +22,7 @@ vi.mock('../services/permissions', () => ({
 // the site-ceiling suite sets it per-test. Hoisted ref, not a module const —
 // vi.mock factories are hoisted above module initialisation.
 vi.mock('../middleware/auth', () => ({
+  withAuthDbAccessContext: vi.fn(async (_auth, fn) => fn()),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization', orgId: 'org-1', user: { id: 'user-1' },

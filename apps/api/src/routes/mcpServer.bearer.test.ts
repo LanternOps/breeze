@@ -101,6 +101,20 @@ vi.mock('../db', () => {
   };
 });
 
+// #9600: getUserPermissions now reads role grants through the inheritance
+// resolver (own rows + "Inherit From" ancestors) instead of the direct
+// rolePermissions innerJoin. Give the creator's role the same grants the db
+// fixture above models, so buildAuthFromApiKey's scope re-clamp still sees an
+// unrestricted creator holding what ai:read requires.
+vi.mock('../services/roleInheritance', () => ({
+  getRolePermissionGrants: vi.fn(async () => [
+    { resource: 'devices', action: 'read' },
+    { resource: 'alerts', action: 'read' },
+    { resource: 'scripts', action: 'read' },
+    { resource: 'automations', action: 'read' },
+  ]),
+}));
+
 vi.mock('../db/schema', () => ({
   devices: {}, alerts: {}, scripts: {}, automations: {},
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },

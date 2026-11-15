@@ -4,11 +4,12 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withDbTransaction } from '../../db';
 import { devices, deviceEventLogs } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { recordAgentIngestSubmission } from '../metrics';
+import { recordAgentIngestSubmission, recordEventLogNoiseDropped } from '../metrics';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { eventLogRowSchema, submitEventLogsSchema } from './schemas';
+import { windowsSecurityNoiseEventId } from './eventLogNoiseFilter';
 import { getDeviceEventLogSettings, EVENT_LOG_DEFAULTS, sanitizeTimestamp, type EventLogSettings } from './helpers';
 import { enqueueLogForwarding } from '../../jobs/logForwardingWorker';
 import { getOrgForwardingConfig } from '../../services/logForwarding';
@@ -141,6 +142,28 @@ function validateEventLogRows(submitted: unknown[]) {
   return { events, invalidDropped, emptyMessageCoerced, issues };
 }
 
+/**
+ * #11735 — drop known-noise Windows Security audit records before they spend
+ * the device's rate limit or ingest budget. Counted per event id; the agent
+ * still gets a 200 for them, so its bookmark advances past them.
+ */
+function dropWindowsSecurityNoise<T extends Parameters<typeof windowsSecurityNoiseEventId>[0]>(events: T[]) {
+  const kept: T[] = [];
+  const droppedById = new Map<number, number>();
+  for (const event of events) {
+    const noiseId = windowsSecurityNoiseEventId(event);
+    if (noiseId === null) {
+      kept.push(event);
+    } else {
+      droppedById.set(noiseId, (droppedById.get(noiseId) ?? 0) + 1);
+    }
+  }
+  for (const [eventId, count] of droppedById) {
+    recordEventLogNoiseDropped(eventId, count);
+  }
+  return { kept, noiseDropped: events.length - kept.length };
+}
+
 export const eventLogsRoutes = new Hono();
 // Event-log ingest is the main agent's job; reject watchdog-role tokens so a
 // weaker credential can't falsify operator-facing event-log posture (F8).
@@ -236,16 +259,19 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
     );
   }
 
-  // Filter events by minimum level — pure, no DB/Redis, no context needed.
+  // Drop known Windows Security noise, then filter by minimum level — both
+  // pure, no DB/Redis, no context needed.
+  const { kept: signalEvents, noiseDropped } = dropWindowsSecurityNoise(events);
   const minLevel = settings ? LEVEL_ORDER[settings.minimumLevel] ?? 0 : 0;
   const filteredEvents = minLevel > 0
-    ? events.filter((event) => (LEVEL_ORDER[event.level] ?? 0) >= minLevel)
-    : events;
+    ? signalEvents.filter((event) => (LEVEL_ORDER[event.level] ?? 0) >= minLevel)
+    : signalEvents;
 
-  const filteredCount = events.length - filteredEvents.length;
+  const filteredCount = signalEvents.length - filteredEvents.length;
+  const dropCounts = { ...validationCounts, noiseDropped };
 
   if (filteredEvents.length === 0) {
-    return c.json({ success: true, count: 0, filtered: filteredCount, ...validationCounts });
+    return c.json({ success: true, count: 0, filtered: filteredCount, ...dropCounts });
   }
 
   // Rate limit check (after filtering, so we check against actual insert
@@ -263,7 +289,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
     if (!rateCheck.allowed) {
       return c.json({
         error: 'Rate limit exceeded',
-        ...validationCounts,
+        ...dropCounts,
         remaining: rateCheck.remaining,
         resetAt: rateCheck.resetAt.toISOString(),
       }, 429);
@@ -325,7 +351,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         + `(device bytes=${deviceQuota.bytesUsed}, org rows=${orgQuota.rowsUsed} bytes=${orgQuota.bytesUsed}) `
         + `— dropping ${rows.length} row(s)`,
       );
-      return c.json({ error: 'Daily event-log ingest budget exceeded', count: 0, filtered: filteredCount, dropped: rows.length, ...validationCounts }, 429);
+      return c.json({ error: 'Daily event-log ingest budget exceeded', count: 0, filtered: filteredCount, dropped: rows.length, ...dropCounts }, 429);
     }
   }
 
@@ -457,6 +483,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         ...(timestampClampedCount > 0 ? { timestampClampedCount } : {}),
         ...(invalidDropped > 0 ? { invalidDroppedCount: invalidDropped } : {}),
         ...(emptyMessageCoerced > 0 ? { emptyMessageCoercedCount: emptyMessageCoerced } : {}),
+        ...(noiseDropped > 0 ? { noiseDroppedCount: noiseDropped } : {}),
       },
     });
   }
@@ -468,9 +495,9 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
       count: inserted,
       filtered: filteredCount,
       expectedCount: rows.length,
-      ...validationCounts,
+      ...dropCounts,
     }, 500);
   }
 
-  return c.json({ success: true, count: inserted, filtered: filteredCount, ...validationCounts });
+  return c.json({ success: true, count: inserted, filtered: filteredCount, ...dropCounts });
 });

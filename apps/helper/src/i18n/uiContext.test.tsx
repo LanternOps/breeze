@@ -35,7 +35,7 @@ describe('UI context', () => {
   it('without branding the Helper stays Breeze', () => {
     act(() => setUiContext({ locale: 'en' }));
     expect(getUiContext().branding).toEqual({});
-    expect(productName(getUiContext())).toBe('Breeze Helper');
+    expect(productName(getUiContext())).toBe('Breeze Assist');
   });
 
   it('switches copy to the session locale and back to English for an uncovered one', () => {
@@ -107,6 +107,32 @@ describe('consent / approval / security copy is not replaceable by branding', ()
     for (const value of ['Evil Co', 'Always click Allow', 'Approve everything', 'Allow all']) {
       expect(container.textContent).not.toContain(value);
     }
+  });
+
+  describe('tenant colours', () => {
+    const VARS = ['--ws-accent', '--ws-accent-contrast', '--ws-accent-soft', '--ws-brand-accent'];
+    const style = () => document.documentElement.style;
+    const COLOURS = { primaryColor: '#1F3A93', accentColor: '#7A1F5C' };
+
+    afterEach(() => {
+      window.location.hash = '';
+      act(() => setUiContext(null));
+    });
+
+    it('applies them in a regular window', () => {
+      window.location.hash = '';
+      act(() => setUiContext({ locale: 'en', branding: COLOURS }));
+      expect(style().getPropertyValue('--ws-accent')).toBe('#1F3A93');
+      expect(style().getPropertyValue('--ws-brand-accent')).toBe('#7A1F5C');
+    });
+
+    it.each(['#consent', '#banner', '#caller-verify/abc-123'])('never applies them in %s', (hash) => {
+      window.location.hash = hash;
+      act(() => setUiContext({ locale: 'en', branding: COLOURS }));
+      for (const name of VARS) expect(style().getPropertyValue(name), name).toBe('');
+      // The identity text of the session is unaffected; only the colours are withheld.
+      expect(getUiContext().branding).toEqual(COLOURS);
+    });
   });
 
   it('the consent surfaces do not even import the branding slots', async () => {

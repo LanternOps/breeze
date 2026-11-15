@@ -29,16 +29,29 @@ export const RETENTION_JOB_NAMES = [
   'agent_health_observation_retention',
   'agent_log_retention',
   'ai_agent_op_evidence_retention',
+  'ai_agent_run_retention',
   'ai_invocation_retention',
   'ai_tool_output_retention',
+  'ai_transcript_retention',
   'ai_unattended_exposure_retention',
+  'alert_correlation_group_retention',
+  'alert_retention',
+  'audit_baseline_result_retention',
   'audit_retention',
+  'auth_session_retention',
+  'automation_run_retention',
+  'c2c_consent_session_retention',
   'change_log_retention',
+  'cis_baseline_result_retention',
+  'device_command_retention',
   'device_metrics_retention',
+  'device_session_retention',
   'dns_security_retention',
   'edr_detection_retention',
   'event_log_retention',
   'filesystem_cleanup_run_retention',
+  'filesystem_snapshot_retention',
+  'fleet_remediation_run_retention',
   'flow_run_retention',
   'intent_outbox_retention',
   'ip_history_retention',
@@ -46,18 +59,37 @@ export const RETENTION_JOB_NAMES = [
   'm365_sync_retention',
   'metric_anomaly_incident_retention',
   'metric_rollup_maintenance',
+  'ml_feedback_event_retention',
   'ml_output_retention',
   'monitor_episode_retention',
+  'network_change_event_retention',
+  'network_monitor_result_retention',
   'pam_evidence_retention',
+  'patch_job_result_retention',
+  'peripheral_policy_delivery_event_retention',
   'playbook_retention',
   'process_sample_retention',
   'reliability_retention',
+  'remote_session_retention',
   'removed_device_purge',
+  'report_run_retention',
   'restore_point_attempt_retention',
+  'script_execution_batch_retention',
+  'script_execution_output_retention',
+  'script_execution_retention',
+  'security_posture_snapshot_retention',
   'service_process_check_retention',
   'snmp_retention',
   'software_inventory_observation_retention',
+  'sso_session_retention',
+  'support_session_retention',
+  'ticket_import_run_retention',
   'ticket_outbox_retention',
+  'topology_diagnostic_run_retention',
+  'tunnel_session_retention',
+  'unifi_sync_run_retention',
+  'user_notification_read_retention',
+  'user_notification_retention',
   'user_risk_retention',
   'wake_attempt_retention',
   'webhook_delivery_retention',
@@ -107,6 +139,14 @@ export interface RetentionRunOutcome {
    * nothing, and a 0 on the counter would claim it had measured a delete.
    */
   rowsEligible?: number;
+  /**
+   * A report-only count was cancelled at its statement timeout (#4342 W6.c,
+   * `REPORT_ONLY_COUNT_TIMEOUT_MS`), so this run has no eligible count. Sets
+   * `breeze_retention_count_unavailable{job_name}` to 1 and drops the last
+   * `rows_eligible` value, which no longer describes the table. The next count
+   * that completes clears it. Pass alone: nothing was deleted or measured.
+   */
+  countUnavailable?: boolean;
 }
 
 interface RetentionMetricsRecorder {
@@ -187,6 +227,7 @@ const ROWS_DELETED_METRIC = 'breeze_retention_rows_deleted_total';
 const LAST_RUN_METRIC = 'breeze_retention_last_run_timestamp_seconds';
 const BACKLOG_METRIC = 'breeze_retention_backlog_incomplete';
 const ROWS_ELIGIBLE_METRIC = 'breeze_retention_rows_eligible';
+const COUNT_UNAVAILABLE_METRIC = 'breeze_retention_count_unavailable';
 const ROLLUP_RUNS_METRIC = 'breeze_rollup_runs_total';
 const ROLLUP_DURATION_METRIC = 'breeze_rollup_duration_seconds';
 const COMPACTION_STALLED_METRIC = 'breeze_metric_rollup_compaction_stalled_months';
@@ -200,7 +241,7 @@ function safeSeconds(value: number): number {
 }
 
 /**
- * Registers (or reuses, if this Registry already carries them) the seven series
+ * Registers (or reuses, if this Registry already carries them) the eight series
  * and binds them as the live recorder. Called once from `routes/metrics.ts`.
  *
  * NOTHING is seeded here — deliberately. The retention workers are `global` /
@@ -252,6 +293,18 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
       registers: [registry],
     });
 
+  // Present only while a job's last report-only count timed out: set on a
+  // timeout, removed by the next completed count or enforce run, so healthy
+  // jobs publish no series at all.
+  const countUnavailable =
+    (registry.getSingleMetric(COUNT_UNAVAILABLE_METRIC) as Gauge<'job_name'> | undefined) ??
+    new Gauge({
+      name: COUNT_UNAVAILABLE_METRIC,
+      help: '1 when the last report-only eligible-row count of a retention job was cancelled at its statement timeout, so no count is published',
+      labelNames: ['job_name'] as const,
+      registers: [registry],
+    });
+
   const rollupRunsTotal =
     (registry.getSingleMetric(ROLLUP_RUNS_METRIC) as Counter<'status'> | undefined) ??
     new Counter({
@@ -299,9 +352,16 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
         // A report run deleted nothing, so a backlog flag left by an earlier
         // enforce run (before the flag was turned off) is stale; clear it.
         backlogIncomplete.remove(jobName);
+        countUnavailable.remove(jobName);
       } else if (outcome.rowsDeleted !== undefined) {
         // An enforcing run: the last report count no longer describes anything.
         rowsEligible.remove(jobName);
+        countUnavailable.remove(jobName);
+      } else if (outcome.countUnavailable) {
+        // A timed-out count: yesterday's number must not read as today's.
+        countUnavailable.labels(jobName).set(1);
+        rowsEligible.remove(jobName);
+        backlogIncomplete.remove(jobName);
       }
     },
     onRollupRun: (status, durationSeconds) => {

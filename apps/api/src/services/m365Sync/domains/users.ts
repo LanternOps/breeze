@@ -230,7 +230,9 @@ export async function persistUsers(
 ): Promise<DomainPersistResult> {
   const items = result.items as UserItem[];
   const primaryOk = result.sources[M365_SYNC_PRIMARY_SOURCE_KEY.users] === 'ok';
-  const complete = primaryOk && !result.truncated;
+  // An executor that predates `malformedItems` reports undefined: treated as 0
+  // so a rolling deploy cannot strand the sync.
+  const complete = primaryOk && !result.truncated && (result.malformedItems ?? 0) === 0;
 
   const plan = planEntityWrites(ctx, items, complete, (item) => {
     if (!item.id) return null;

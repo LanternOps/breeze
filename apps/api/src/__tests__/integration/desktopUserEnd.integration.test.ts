@@ -26,6 +26,7 @@ async function seedSession(input: {
   type?: 'desktop' | 'terminal';
   endedAt?: Date | null;
   device?: string;
+  endReason?: 'peer_disconnected' | 'operator_ended' | 'capture_failed';
 }): Promise<string> {
   const id = randomUUID();
   await getTestDb().insert(remoteSessions).values({
@@ -36,6 +37,7 @@ async function seedSession(input: {
     type: input.type ?? 'desktop',
     status: input.status,
     endedAt: input.endedAt ?? null,
+    endReason: input.endReason ?? null,
     iceCandidates: [],
     ...(input.status === 'disconnected' || input.status === 'failed'
       ? { terminalGeneration: 1n, terminationPhase: 'confirmed' as const, desktopStartGeneration: 1n }
@@ -86,6 +88,28 @@ describe.runIf(hasDb)('recordDesktopSessionEndedByUser (live DB)', () => {
     const id = await seedSession({ status: 'disconnected', endedAt: new Date(Date.now() - 30_000) });
     await expect(recordDesktopSessionEndedByUser({ sessionId: id, deviceId })).resolves.toBe('recorded');
     expect((await rowOf(id))?.endReason).toBe('ended_by_user');
+  });
+
+  // #11839: every terminal write now records a reason, so the agent's own
+  // peer drop (`desk-disconnect`, or the reconnect-hold end) commits
+  // 'peer_disconnected' first when it is handled before this report. The
+  // report must still win over that generic reason — and only over it.
+  it('upgrades a just-ended row whose reason is the generic peer drop', async () => {
+    const id = await seedSession({ status: 'disconnected', endedAt: new Date(Date.now() - 30_000), endReason: 'peer_disconnected' });
+    await expect(recordDesktopSessionEndedByUser({ sessionId: id, deviceId })).resolves.toBe('recorded');
+    expect((await rowOf(id))?.endReason).toBe('ended_by_user');
+    expect(await auditRowsFor(id)).toHaveLength(1);
+    await expect(recordDesktopSessionEndedByUser({ sessionId: id, deviceId })).resolves.toBe('not_recorded');
+    expect(await auditRowsFor(id)).toHaveLength(1);
+  });
+
+  it('does not relabel a session ended for a specific reason (technician end, capture failure)', async () => {
+    for (const endReason of ['operator_ended', 'capture_failed'] as const) {
+      const id = await seedSession({ status: 'disconnected', endedAt: new Date(Date.now() - 30_000), endReason });
+      await expect(recordDesktopSessionEndedByUser({ sessionId: id, deviceId })).resolves.toBe('not_recorded');
+      expect((await rowOf(id))?.endReason).toBe(endReason);
+      expect(await auditRowsFor(id)).toHaveLength(0);
+    }
   });
 
   it('refuses a session that ended long ago, a failed one, a terminal session and another device\'s session', async () => {

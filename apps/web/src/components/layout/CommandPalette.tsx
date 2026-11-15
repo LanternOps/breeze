@@ -37,6 +37,9 @@ type SearchResult = {
   title: string;
   description?: string;
   href?: string;
+  /** The result's customer (#11803). null = partner-wide (no single customer). */
+  orgId?: string | null;
+  orgName?: string | null;
 };
 
 type CommandItem = {
@@ -49,6 +52,8 @@ type CommandItem = {
   icon: LucideIcon;
   kind: 'action' | 'recent' | 'result';
   category?: SearchCategory;
+  /** Customer label shown beside a server result (#11803). */
+  orgLabel?: string;
 };
 
 type Section = {
@@ -189,7 +194,11 @@ const normalizeResults = (payload: unknown): SearchResult[] => {
       type,
       title,
       description: pickDescription(record),
-      href: pickString(record.href) || pickString(record.url)
+      href: pickString(record.href) || pickString(record.url),
+      // Only an explicit null means partner-wide; an absent key (an older API)
+      // means "unknown" and gets no label.
+      orgId: record.orgId === null ? null : pickString(record.orgId),
+      orgName: pickString(record.orgName) ?? null
     });
   };
 
@@ -281,11 +290,18 @@ export default function CommandPalette() {
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const permissions = useAuthStore((s) => s.user?.permissions);
   const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
-  // The palette is a global overlay: server results follow the org switcher
+  // #11803: the palette searches every customer the user can access. The
+  // customer selected in the header only ranks its matches first (preferOrgId),
   // on every page, including catalog routes where fetchWithAuth injects no
-  // ambient orgId. null = All organizations (the server returns every
-  // accessible org). The API narrows only within the caller's access (#9612).
+  // ambient orgId. "This customer only" (off by default: an MSP opens Cmd+K to
+  // jump anywhere) turns it back into a hard filter. The API checks both
+  // against the caller's own access (#9612). null = All organizations.
   const selectedOrgId = useOrgStore((s) => s.currentOrgId);
+  const customerCount = useOrgStore((s) => s.organizations.length);
+  const [thisCustomerOnly, setThisCustomerOnly] = useState(false);
+  // Only worth offering when there is more than one customer to choose between.
+  const canNarrow = selectedOrgId !== null && customerCount > 1;
+  const narrowed = canNarrow && thisCustomerOnly;
   // Read-only: the palette mounts on every page, so it must not trigger the
   // /config or autopay fetches the gate hooks fire. An unknown gate hides the
   // entry (the nav's own default), and the sidebar loads /config anyway.
@@ -341,15 +357,27 @@ export default function CommandPalette() {
 
     const performSearch = async () => {
       try {
-        const response = await fetchWithAuth(`/search?q=${encodeURIComponent(debouncedQuery)}`, {
-          orgIdOverride: selectedOrgId ?? null,
+        const params = new URLSearchParams({ q: debouncedQuery });
+        const hinted = Boolean(selectedOrgId && !narrowed);
+        if (hinted) params.set('preferOrgId', selectedOrgId!);
+        // orgIdOverride null = never inject the ambient org: the header's
+        // customer must not silently narrow the search.
+        let response = await fetchWithAuth(`/search?${params.toString()}`, {
+          orgIdOverride: narrowed ? selectedOrgId : null,
         });
         if (!isActive) return;
+        // The hint is optional: a stale or revoked header customer must not
+        // block a search the user did not narrow. Ask once more without it.
+        if (hinted && response.status === 403) {
+          params.delete('preferOrgId');
+          response = await fetchWithAuth(`/search?${params.toString()}`, { orgIdOverride: null });
+          if (!isActive) return;
+        }
 
         if (!response.ok) {
-          // A 403 with an org selected is the server refusing that org (a
+          // A 403 on a narrowed search is the server refusing that org (a
           // stale or revoked selection, #9612), not a dead session.
-          if (response.status === 403 && selectedOrgId) {
+          if (response.status === 403 && narrowed) {
             setResults([]);
             setErrorMessage("You don't have access to the selected organization.");
             return;
@@ -382,7 +410,7 @@ export default function CommandPalette() {
     return () => {
       isActive = false;
     };
-  }, [debouncedQuery, open, selectedOrgId]);
+  }, [debouncedQuery, open, selectedOrgId, narrowed]);
 
   useEffect(() => {
     if (open) return;
@@ -545,10 +573,19 @@ export default function CommandPalette() {
       return acc;
     }, {} as Record<SearchCategory, CommandItem[]>);
 
+    // Label results with their customer whenever more than one could be in
+    // play: the user has several customers, or (org list not loaded yet) the
+    // results themselves span several. Never on a narrowed search.
+    const resultOrgs = new Set(results.map((r) => r.orgId).filter((id): id is string => typeof id === 'string'));
+    const showOrgLabels = !narrowed && (customerCount > 1 || resultOrgs.size > 1);
+
     results.forEach((result, index) => {
       // The server no longer owns settings results; ignore any from an older API.
       if (result.type === 'settings') return;
       const key = `result:${result.type}:${result.id ?? `${result.title}-${index}`}`;
+      const orgLabel = !showOrgLabels
+        ? undefined
+        : result.orgName ?? (result.orgId === null ? t('layout.search.partnerWide') : undefined);
       grouped[result.type].push({
         key,
         title: result.title,
@@ -556,13 +593,14 @@ export default function CommandPalette() {
         href: buildResultHref(result),
         icon: CATEGORY_CONFIG[result.type].icon,
         kind: 'result',
-        category: result.type
+        category: result.type,
+        orgLabel
       });
     });
 
     grouped.settings = settingsItems;
     return grouped;
-  }, [results, settingsItems]);
+  }, [results, settingsItems, narrowed, customerCount, t]);
 
   const { sections, selectableItems, indexByKey } = useMemo(() => {
     const builtSections: Section[] = [];
@@ -759,6 +797,23 @@ export default function CommandPalette() {
               </span>
             </div>
 
+            {canNarrow && (
+              <label className="flex w-fit cursor-pointer items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  data-testid="palette-this-customer-only"
+                  checked={thisCustomerOnly}
+                  onChange={(event) => {
+                    setThisCustomerOnly(event.target.checked);
+                    // Keep typing in the search box after a click on the toggle.
+                    inputRef.current?.focus();
+                  }}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                {t('layout.search.thisCustomerOnly')}
+              </label>
+            )}
+
             <div className="max-h-[60vh] overflow-y-auto">
               {isLoading && (
                 <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
@@ -830,6 +885,20 @@ export default function CommandPalette() {
                                 </div>
                               )}
                             </div>
+                            {item.orgLabel && (
+                              <span
+                                data-testid="palette-item-org"
+                                title={item.orgLabel}
+                                className={cn(
+                                  'max-w-[40%] shrink-0 truncate rounded border px-1.5 py-0.5 text-[11px]',
+                                  isActive
+                                    ? 'border-primary-foreground/40 text-primary-foreground/90'
+                                    : 'text-muted-foreground'
+                                )}
+                              >
+                                {item.orgLabel}
+                              </span>
+                            )}
                             {itemIndex >= 0 && itemIndex < 9 && (
                               <kbd
                                 aria-hidden="true"

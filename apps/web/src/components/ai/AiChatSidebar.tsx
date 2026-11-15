@@ -113,6 +113,7 @@ export default function AiChatSidebar() {
     interruptResponse,
     isInterrupting,
     isFlagged,
+    transcriptPurgedAt,
     flagSession,
     unflagSession,
     m365Connections,
@@ -288,6 +289,8 @@ export default function AiChatSidebar() {
     // grant as it is NOW. Re-read, never the lookup from when the panel
     // opened — a grant revoked, paused or expired since then must start a
     // plain chat (and offer Meet Wisp), not a session the server refuses.
+    // A Wisp thread is one conversation (#11672): when it still has a live
+    // session, this continues it rather than forking a second one.
     if (!wisp && wispEligible) {
       const result = await lookUpActiveGrant(selectedOrgId);
       setGrantLookup(result);
@@ -569,6 +572,7 @@ export default function AiChatSidebar() {
               onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
+              transcriptPurgedAt={transcriptPurgedAt}
               assistantLabel={wisp ? t("wisp.title") : undefined}
               emptyState={
                 wisp ? (

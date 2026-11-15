@@ -328,6 +328,23 @@ export async function lockSource(partnerId: string, sourceId: string): Promise<{
   };
 }
 
+/**
+ * Locks the source row FOR SHARE (W4b, the created-contacts removal): it
+ * conflicts with `lockSource`'s FOR UPDATE, so no run starts (and no mapping
+ * or revocation lands) while the holder's transaction is open, and several
+ * holders do not block each other. Returns the source's principal.
+ */
+export async function lockSourceShared(partnerId: string, sourceId: string): Promise<{ principalId: string }> {
+  const [row] = await db
+    .select({ principalId: ticketImportSources.partnerServicePrincipalId })
+    .from(ticketImportSources)
+    .where(and(eq(ticketImportSources.id, sourceId), eq(ticketImportSources.partnerId, partnerId)))
+    .limit(1)
+    .for('share');
+  if (!row) throw notFound();
+  return row;
+}
+
 /** The id of the source's queued or running run, if any. */
 export async function activeRunOf(sourceId: string): Promise<string | null> {
   const [row] = await db

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { dbExecuteMock, withSystemDbAccessContextMock, runOutsideDbContextMock, captureMessageMock } = vi.hoisted(() => ({
+const { dbExecuteMock, withSystemDbAccessContextMock, runOutsideDbContextMock, withDbTransactionMock, captureMessageMock } = vi.hoisted(() => ({
   dbExecuteMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>, _label?: string) => fn()),
   runOutsideDbContextMock: vi.fn((fn: () => unknown) => fn()),
+  withDbTransactionMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   captureMessageMock: vi.fn(),
 }));
 
@@ -12,6 +13,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => Promise<unknown>, label?: string) =>
     withSystemDbAccessContextMock(fn, label),
   runOutsideDbContext: (fn: () => unknown) => runOutsideDbContextMock(fn),
+  withDbTransaction: (fn: () => Promise<unknown>) => withDbTransactionMock(fn),
 }));
 
 vi.mock('../services/sentry', () => ({
@@ -24,6 +26,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   __resetBacklogCaptureThrottle,
   countEligibleRows,
+  countEligibleRowsBounded,
   parsePositiveIntEnv,
   pruneInCtidBatches,
   resolveRetentionDays,
@@ -542,6 +545,103 @@ describe('countEligibleRows', () => {
   it('rejects a non-positive cap before any query', async () => {
     await expect(baseCount({ cap: 0 })).rejects.toThrow(/cap/i);
     await expect(baseCount({ cap: 2.5 })).rejects.toThrow(/cap/i);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+});
+
+// #4342 W6.c review: a report-only count has no index guarantee
+// (audit_baseline_results has no (device_id, baseline_id, checked_at) index), so
+// it runs under a statement timeout and a timeout is an answer, not a failure.
+describe('countEligibleRowsBounded', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    runOutsideDbContextMock.mockImplementation((fn: () => unknown) => fn());
+    withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+  });
+
+  const boundedCount = (overrides: Partial<Parameters<typeof countEligibleRowsBounded>[0]> = {}) =>
+    countEligibleRowsBounded({
+      table: 'audit_baseline_results',
+      where: sql`checked_at < ${CUTOFF}`,
+      cap: 10,
+      label: 'test.boundedCount',
+      statementTimeoutMs: 5000,
+      ...overrides,
+    });
+
+  const canceled = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+
+  it('tightens statement_timeout, then runs the same capped count, inside a savepoint of one fresh system context', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockResolvedValueOnce([{ n: 3 }]);
+
+    await expect(boundedCount()).resolves.toEqual({ timedOut: false, eligible: 3, capped: false });
+
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock.mock.calls[0]?.[1]).toBe('test.boundedCount');
+    expect(withDbTransactionMock).toHaveBeenCalledTimes(1);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    const tighten = compiled(0);
+    expect(tighten.sql).toContain("'statement_timeout'");
+    expect(tighten.params).toContain(5000);
+    const count = compiled(1);
+    expect(count.sql).toMatch(/count\(\*\)/i);
+    expect(count.sql).toContain('FROM audit_baseline_results');
+    expect(count.sql).toMatch(/LIMIT \$\d+/);
+    expect(count.params).toContain(11);
+    expect(count.sql).not.toMatch(/\b(DELETE|UPDATE)\b/i);
+  });
+
+  it('reports capped like countEligibleRows', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockResolvedValueOnce([{ n: 11 }]);
+    await expect(boundedCount({ cap: 10 })).resolves.toEqual({ timedOut: false, eligible: 10, capped: true });
+  });
+
+  it('turns a statement timeout (57014) into timedOut instead of throwing', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockRejectedValueOnce(canceled());
+    await expect(boundedCount()).resolves.toEqual({ timedOut: true });
+  });
+
+  // Drizzle wraps the driver error; the code sits on `cause`.
+  it('recognises a 57014 wrapped in a Drizzle query error', async () => {
+    const wrapped = Object.assign(new Error('Failed query: SELECT ...'), { cause: canceled() });
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockRejectedValueOnce(wrapped);
+    await expect(boundedCount()).resolves.toEqual({ timedOut: true });
+  });
+
+  // The repo rule (docs/agents/tenancy-rls.md): the catch sits OUTSIDE the
+  // savepoint, so the failed statement is rolled back there and the system
+  // context's own transaction can still commit.
+  it('catches outside the savepoint, not inside it', async () => {
+    let rejectedThroughSavepoint = false;
+    withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => {
+      try {
+        return await fn();
+      } catch (err) {
+        rejectedThroughSavepoint = true;
+        throw err;
+      }
+    });
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockRejectedValueOnce(canceled());
+
+    await expect(boundedCount()).resolves.toEqual({ timedOut: true });
+    expect(rejectedThroughSavepoint).toBe(true);
+  });
+
+  it('propagates any other error', async () => {
+    dbExecuteMock
+      .mockResolvedValueOnce([{ prior_ms: 0 }])
+      .mockRejectedValueOnce(Object.assign(new Error('relation does not exist'), { code: '42P01' }));
+    await expect(boundedCount()).rejects.toThrow('relation does not exist');
+  });
+
+  it('rejects an unusable timeout, table or cap before any query', async () => {
+    for (const statementTimeoutMs of [0, -1, 1.5, Number.NaN]) {
+      await expect(boundedCount({ statementTimeoutMs })).rejects.toThrow(/statementTimeoutMs/);
+    }
+    await expect(boundedCount({ table: 'x; drop' })).rejects.toThrow(/identifier/i);
+    await expect(boundedCount({ cap: 0 })).rejects.toThrow(/cap/i);
     expect(dbExecuteMock).not.toHaveBeenCalled();
   });
 });

@@ -23,6 +23,9 @@ const { state } = vi.hoisted(() => ({
     reopenRereadRows: null as unknown[] | null,
     // #11541: where-conditions and limits of every portal_users sender lookup.
     portalUserLookups: [] as { where: unknown; limit: number }[],
+    // When set, portal_users lookups answer by the address bound in the query
+    // (keyed lower-case) instead of serving selectRows['portal_users'].
+    portalUsersByEmail: null as Record<string, unknown[]> | null,
     // Test hook: force an insert into `table` to throw (optionally with a pg `code`),
     // to exercise the durable-failed-row insert itself failing.
     failInsert: null as { table: string; code?: string; message?: string; wrapped?: boolean } | null
@@ -120,6 +123,11 @@ vi.mock('../../db', () => {
       },
       limit(_n: number) {
         if (resolvedTable === 'portal_users') state.portalUserLookups.push({ where: whereCond, limit: _n });
+        if (resolvedTable === 'portal_users' && state.portalUsersByEmail) {
+          const byEmail = state.portalUsersByEmail;
+          const hit = flattenChunks(whereCond).find((v) => v in byEmail);
+          return Promise.resolve(hit ? byEmail[hit]! : []);
+        }
         if (isReopenReread()) {
           state.reopenRereads.push(whereCond);
           if (state.reopenRereadRows) return Promise.resolve(state.reopenRereadRows);
@@ -331,10 +339,20 @@ vi.mock('../ticketRowLock', () => ({
   lockTicketsForWrite: vi.fn(async () => new Map()),
 }));
 
+// Pass-through wrapper so a test can make rebuilding a queued Mailgun job fail.
+const { normalizeMailgunFormSpy } = vi.hoisted(() => ({ normalizeMailgunFormSpy: vi.fn() }));
+vi.mock('./mailgun', async () => {
+  const actual = await vi.importActual<typeof import('./mailgun')>('./mailgun');
+  normalizeMailgunFormSpy.mockImplementation(actual.normalizeMailgunForm);
+  return { ...actual, normalizeMailgunForm: normalizeMailgunFormSpy };
+});
+
 import { processInboundEmail, InboundEmailProcessingRecorded } from './inboundEmailService';
+import { MailgunInboundProvider } from './mailgun';
 import type { NormalizedInboundEmail } from './types';
 
 function email(overrides: Partial<NormalizedInboundEmail> = {}): NormalizedInboundEmail {
+  const from = overrides.from ?? 'jane@customer.com';
   return {
     provider: 'mailgun',
     providerMessageId: '<msg-1@customer.com>',
@@ -346,7 +364,8 @@ function email(overrides: Partial<NormalizedInboundEmail> = {}): NormalizedInbou
     messageId: '<msg-1@customer.com>',
     // Default to a VERIFIED sender so the existing happy-path assertions (which all
     // predate sender-auth gating) keep exercising the trusted match/create paths.
-    senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
+    // The verdict is for the From address's own domain.
+    senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: from.slice(from.lastIndexOf('@') + 1).toLowerCase() },
     attachments: [],
     raw: { recipient: 'acme@tickets.example.com' },
     ...overrides
@@ -369,6 +388,7 @@ beforeEach(() => {
   state.reopenRereads = [];
   state.reopenRereadRows = null;
   state.portalUserLookups = [];
+  state.portalUsersByEmail = null;
   state.failInsert = null;
   resolveMock.mockReset();
   createTicketMock.mockReset();
@@ -1417,7 +1437,7 @@ describe('processInboundEmail', () => {
       // Spoofable display name in the header — must NOT win over the stored name.
       fromName: 'Spoofed Name',
       inReplyTo: '<msg-1@tickets.example.com>',
-      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true }
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: 'customer.com' }
     }));
 
     const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
@@ -2021,6 +2041,79 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
     expect(inboundOf()[0]!.ticketId).toBe('t-victim');
   });
 
+  // Rows written before inbound mail was attributed to the From address
+  // recorded the envelope sender as fromAddress; raw.from is the From header.
+  // Such a row (recorded address != its From header) only admits senders whose
+  // domain maps to the ticket's organization.
+  const envelopeRow = (raw: Record<string, unknown>) => ({ fromAddress: 'bounces+7@esp.example', raw: { sender: 'bounces+7@esp.example', ...raw } });
+
+  it('accepts a same-organization participant named by the From header of an earlier Mailgun row', async () => {
+    state.selectRows['ticket_email_inbound_participants'] = [envelopeRow({ from: 'Colleague <colleague@customer-b.example>' })];
+    resolveOrgMock.mockResolvedValue({ orgId: 'org-b', autoCreateContact: false });
+    await processInboundEmail(email({
+      from: 'colleague@customer-b.example',
+      subject: 'no token here at all',
+      inReplyTo: '<anchor-b@tickets.example.com>',
+    }));
+
+    expect(comments()).toHaveLength(1);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+  });
+
+  it('refuses an outside-domain participant named by the From header of an earlier Mailgun row', async () => {
+    state.selectRows['ticket_email_inbound_participants'] = [envelopeRow({ from: 'Outside <someone@outside.example>' })];
+    await processInboundEmail(email({
+      from: 'someone@outside.example',
+      subject: 'no token here at all',
+      inReplyTo: '<anchor-b@tickets.example.com>',
+    }));
+
+    expect(comments()).toHaveLength(0);
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('refuses an outside-domain Cc participant of an earlier envelope-attributed Mailgun row', async () => {
+    state.selectRows['ticket_email_inbound_participants'] = [
+      { fromAddress: 'victim@customer-b.example', raw: { sender: 'victim@customer-b.example', from: 'someone@outside.example', Cc: 'helper@outside.example' } },
+    ];
+    await processInboundEmail(email({
+      from: 'helper@outside.example',
+      subject: 'no token here at all',
+      inReplyTo: '<anchor-b@tickets.example.com>',
+    }));
+
+    expect(comments()).toHaveLength(0);
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('still accepts a Cc participant of a Mailgun row attributed to its From header', async () => {
+    state.selectRows['ticket_email_inbound_participants'] = [
+      { fromAddress: 'victim@customer-b.example', raw: { sender: 'victim@customer-b.example', from: 'Victim <victim@customer-b.example>', Cc: 'helper@outside.example' } },
+    ];
+    await processInboundEmail(email({
+      from: 'helper@outside.example',
+      subject: 'no token here at all',
+      inReplyTo: '<anchor-b@tickets.example.com>',
+    }));
+
+    expect(comments()).toHaveLength(1);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+  });
+
+  it('does not accept a participant from an earlier row whose From header holds several addresses', async () => {
+    state.selectRows['ticket_email_inbound_participants'] = [
+      { fromAddress: 'bounces+7@esp.example', raw: { from: 'a@else.example, colleague@somewhere.example' } },
+    ];
+    await processInboundEmail(email({
+      from: 'colleague@somewhere.example',
+      subject: 'no token here at all',
+      inReplyTo: '<anchor-b@tickets.example.com>',
+    }));
+
+    expect(comments()).toHaveLength(0);
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
   it('rejects an unbound sender even when they possess the thread key', async () => {
     state.selectRows['ticket_email_inbound_participants'] = [{ fromAddress: 'known@somewhere.example', raw: {} }];
     await processInboundEmail(email({
@@ -2512,5 +2605,238 @@ describe('default inbound assignee', () => {
     await expect(processInboundEmail(email())).rejects.toBeInstanceOf(InboundEmailProcessingRecorded);
 
     expect(captureExceptionMock).toHaveBeenCalled();
+  });
+});
+
+// Sender identity is the From address the authentication verdict covers. A
+// verdict for any other domain, or one that names no domain, authorizes nothing:
+// no portal-login attribution, no thread/token append, no domain routing.
+describe('sender identity is bound to the authenticated From domain', () => {
+  const PORTAL_ROW = { id: 'pu-1', orgId: 'o-1', name: 'Jane Stored', contactId: 'ct-1' };
+  const VERDICT_FOR_OTHER_DOMAIN = { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: 'sender.example' } as const;
+  const tokenTicket = {
+    id: 't-1', partnerId: 'p-1', orgId: 'o-1', status: 'open',
+    emailThreadKey: '<anchor@tickets.example.com>', internalNumber: 'T-2026-0001',
+    submittedBy: 'pu-1', requesterContactId: 'ct-1', submitterEmail: 'jane@customer.com',
+  };
+  const comments = () => state.inserts.filter((i) => i.table === 'ticket_comments');
+
+  beforeEach(() => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    state.portalUsersByEmail = { 'jane@customer.com': [PORTAL_ROW] };
+  });
+
+  it('quarantines a portal-login From address when the verdict is for another domain', async () => {
+    await processInboundEmail(email({ senderAuth: VERDICT_FOR_OTHER_DOMAIN }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.error).toBe('unverified sender (SPF/DKIM/DMARC): verdict is not for the From domain');
+  });
+
+  it('does not append to a subject-token ticket when the verdict is for another domain', async () => {
+    state.selectRows['tickets'] = [tokenTicket];
+
+    await processInboundEmail(email({ subject: 'Re: [T-2026-0001] printer', senderAuth: VERDICT_FOR_OTHER_DOMAIN }));
+
+    expect(comments()).toHaveLength(0);
+    expect(changeStatusMock).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('does not route by a mapped domain when the verdict is for another domain', async () => {
+    state.portalUsersByEmail = {};
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-1', autoCreateContact: true });
+
+    await processInboundEmail(email({ senderAuth: VERDICT_FOR_OTHER_DOMAIN }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(resolveOrgMock).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('quarantines a verified verdict that names no authenticated domain', async () => {
+    await processInboundEmail(email({ senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: null } }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('honours the drop-unverified policy for a verdict that is not for the From domain', async () => {
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: true });
+
+    await processInboundEmail(email({ senderAuth: VERDICT_FOR_OTHER_DOMAIN }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(inboundOf()[0]!.parseStatus).toBe('ignored');
+  });
+
+  it('accepts a verdict whose domain matches the From address case-insensitively', async () => {
+    await processInboundEmail(email({
+      from: 'jane@customer.com',
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: 'Customer.COM' },
+    }));
+
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect(createTicketMock.mock.calls[0]![0]).toMatchObject({ orgId: 'o-1', submittedBy: 'pu-1' });
+  });
+
+  it('drops mail whose envelope sender is on the inbound domain as a self-loop', async () => {
+    await processInboundEmail(email({ envelopeFrom: 'bounce@tickets.example.com' }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).toBe('ignored');
+    expect(log[0]!.error).toContain('self-loop');
+  });
+
+  // A job queued by a release whose normalizers did not record the authenticated
+  // domain carries a verified verdict with no authenticatedDomain key at all.
+  describe('jobs queued before the domain was recorded', () => {
+    const legacyVerdict = { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true } as const;
+    const form = (fields: Record<string, string>) => ({
+      recipient: 'acme@tickets.example.com', 'stripped-text': 'body', 'Message-Id': '<m-1@x>', ...fields,
+    });
+
+    it('rebuilds a Mailgun job from its webhook form and identifies the sender by From', async () => {
+      await processInboundEmail(email({
+        from: 'jane@customer.com', // the envelope sender, as the old parser recorded it
+        senderAuth: legacyVerdict,
+        raw: form({
+          sender: 'jane@customer.com', from: 'mallory@sender.example', subject: 'new request',
+          'message-headers': JSON.stringify([['Authentication-Results', 'mxa.mailgun.org; dmarc=pass header.from=sender.example']]),
+        }),
+      }));
+
+      expect(createTicketMock).not.toHaveBeenCalled();
+      const log = inboundOf();
+      expect(log[0]!.parseStatus).toBe('quarantined');
+      expect(log[0]!.fromAddress).toBe('mallory@sender.example');
+    });
+
+    it('still files a legitimate Mailgun job after rebuilding it', async () => {
+      await processInboundEmail(email({
+        from: 'bounces+1@esp.example',
+        senderAuth: legacyVerdict,
+        raw: form({
+          sender: 'bounces+1@esp.example', from: 'Jane <jane@customer.com>', subject: 'new request',
+          'message-headers': JSON.stringify([['Authentication-Results', 'mxa.mailgun.org; dmarc=pass header.from=customer.com']]),
+        }),
+      }));
+
+      expect(createTicketMock).toHaveBeenCalledTimes(1);
+      expect(createTicketMock.mock.calls[0]![0]).toMatchObject({ orgId: 'o-1', submittedBy: 'pu-1', submitterEmail: 'jane@customer.com' });
+    });
+
+    it('records a durable failed row when rebuilding a Mailgun job fails', async () => {
+      normalizeMailgunFormSpy.mockImplementationOnce(() => { throw new Error('rebuild failed'); });
+
+      await expect(processInboundEmail(email({
+        senderAuth: legacyVerdict,
+        raw: form({ sender: 'jane@customer.com', from: 'jane@customer.com', subject: 's' }),
+      }))).rejects.toBeInstanceOf(InboundEmailProcessingRecorded);
+
+      expect(createTicketMock).not.toHaveBeenCalled();
+      const log = inboundOf();
+      expect(log).toHaveLength(1);
+      expect(log[0]!.parseStatus).toBe('failed');
+      expect(log[0]!.partnerId).toBe('p-1');
+    });
+
+    it('quarantines a polled-mailbox job for review even when unverified mail is dropped', async () => {
+      loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: true });
+      state.selectRows['ticket_mailbox_connections'] = [{ id: 'c-1' }];
+
+      await processInboundEmail(email({ provider: 'gmail', resolvedPartnerId: 'p-1', senderAuth: legacyVerdict }), {
+        provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'g-1',
+      } as never);
+
+      expect(createTicketMock).not.toHaveBeenCalled();
+      const log = inboundOf();
+      expect(log[0]!.parseStatus).toBe('quarantined');
+      expect(log[0]!.error).toBe('unverified sender (SPF/DKIM/DMARC): queued before the From-domain check');
+    });
+  });
+
+  // End to end through the real Mailgun parser: the envelope sender names a
+  // portal login while the From header (the address DMARC covers) does not.
+  describe('Mailgun webhook form', () => {
+    const provider = new MailgunInboundProvider();
+    const form = (fields: Record<string, string>) => ({
+      recipient: 'acme@tickets.example.com',
+      'stripped-text': 'body',
+      'Message-Id': '<m-1@sender.example>',
+      ...fields,
+    });
+    const parse = (fields: Record<string, string>) =>
+      provider.parse({ parseBody: async () => form(fields) } as unknown as import('hono').HonoRequest);
+    const ar = (value: string) => JSON.stringify([['Authentication-Results', value]]);
+
+    it('does not file a ticket as the envelope sender\'s portal login', async () => {
+      const n = await parse({
+        sender: 'jane@customer.com',
+        from: 'Mallory <mallory@sender.example>',
+        subject: 'new request',
+        'message-headers': ar('mxa.mailgun.org; dmarc=pass (p=REJECT) header.from=sender.example'),
+      });
+
+      await processInboundEmail(n);
+
+      expect(createTicketMock).not.toHaveBeenCalled();
+      const log = inboundOf();
+      expect(log[0]!.parseStatus).toBe('quarantined');
+      expect(log[0]!.fromAddress).toBe('mallory@sender.example');
+    });
+
+    it('does not append to the envelope sender\'s ticket by subject token', async () => {
+      state.selectRows['tickets'] = [tokenTicket];
+      const n = await parse({
+        sender: 'jane@customer.com',
+        from: 'mallory@sender.example',
+        subject: 'Re: [T-2026-0001] printer',
+        'message-headers': ar('mxa.mailgun.org; dmarc=pass header.from=sender.example'),
+      });
+
+      await processInboundEmail(n);
+
+      expect(comments()).toHaveLength(0);
+      expect(changeStatusMock).not.toHaveBeenCalled();
+      expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+    });
+
+    it('attributes mail sent through a bulk-mail bounce address to the From login', async () => {
+      const n = await parse({
+        sender: 'bounces+123@esp.example',
+        from: 'Jane <jane@customer.com>',
+        subject: 'new request',
+        'message-headers': ar('mxa.mailgun.org; dkim=pass header.d=customer.com; dmarc=pass header.from=customer.com'),
+      });
+
+      await processInboundEmail(n);
+
+      expect(createTicketMock).toHaveBeenCalledTimes(1);
+      expect(createTicketMock.mock.calls[0]![0]).toMatchObject({ orgId: 'o-1', submittedBy: 'pu-1', submitterEmail: 'jane@customer.com' });
+    });
+
+    it('appends a From-login reply to that login\'s ticket by subject token', async () => {
+      state.selectRows['tickets'] = [tokenTicket];
+      const n = await parse({
+        sender: 'jane@customer.com',
+        from: 'jane@customer.com',
+        subject: 'Re: [T-2026-0001] printer',
+        'message-headers': ar('mxa.mailgun.org; dmarc=pass header.from=customer.com'),
+      });
+
+      await processInboundEmail(n);
+
+      expect(comments()).toHaveLength(1);
+      expect(comments()[0]!.values).toMatchObject({ portalUserId: 'pu-1' });
+      expect(inboundOf()[0]!.parseStatus).toBe('matched');
+    });
   });
 });

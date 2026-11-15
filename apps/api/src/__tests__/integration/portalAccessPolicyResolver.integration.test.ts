@@ -16,7 +16,7 @@ import { getTestDb } from './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { hasDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
-import { clientAiTenantMappings, portalAccessPolicies } from '../../db/schema';
+import { clientAiTenantMappings, customerEmailDomains, portalAccessPolicies } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { portalOrgDbAccessContext } from '../../routes/portal/portalDbContext';
 import {
@@ -120,5 +120,60 @@ describe('resolvePortalAccessPolicy (real DB)', () => {
       return resolvePortalAccessPolicy(orgA.id);
     });
     expect(after.orgId).toBe(orgA.id);
+  });
+});
+
+// W7 (#11384) plan D6: Google is masked by the org's currently verified domains,
+// read through W5's read API (which throws inside a request transaction).
+describe('resolvePortalAccessPolicy: Google verified-domain mask (real DB)', () => {
+  async function seedVerifiedDomain(org: { id: string; partnerId: string }, domain: string, verifiedAt = new Date(Date.now() - 60 * 60_000)) {
+    await getTestDb().insert(customerEmailDomains).values({
+      partnerId: org.partnerId, orgId: org.id, domain, isActive: true,
+      verifiedAt, verifiedMethod: 'dns_txt',
+      verifiedEvidence: { via: 'dns_txt', recordName: `_breeze-verify.${domain}` },
+      lastCheckedAt: verifiedAt, lastPassedAt: verifiedAt, lastCheckStatus: 'pass',
+    });
+  }
+
+  it('resolves googleDomains with no context held and under a portal org context', async () => {
+    const { partnerP, orgA, orgB } = await setup();
+    __testOnly.setCapabilities({ entra: false, google: true, selfRegistration: false });
+    await seedPolicy({ partnerId: partnerP.id, googleEnabled: true });
+    await seedPolicy({ orgId: orgA.id, passwordMode: 'sso_only' });
+    const suffix = randomUUID().slice(0, 8);
+    await seedVerifiedDomain(orgA, `zeta-${suffix}.example.com`);
+    await seedVerifiedDomain(orgA, `alpha-${suffix}.example.com`);
+    // Stale (no pass for 8 days): not current, so not listed.
+    await seedVerifiedDomain(orgA, `stale-${suffix}.example.com`, new Date(Date.now() - 8 * 86_400_000));
+    const expected = [`alpha-${suffix}.example.com`, `zeta-${suffix}.example.com`];
+
+    expect(hasDbAccessContext()).toBe(false);
+    const free = await resolvePortalAccessPolicy(orgA.id);
+    expect(free.googleDomains).toEqual(expected);
+    expect(free.effective.googleEnabled).toEqual({ value: true, source: 'partner' });
+    expect(free.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
+
+    // Under a held request (portal org) context the W5 read must not run inside it.
+    const held = await withDbAccessContext(portalOrgDbAccessContext(orgA.id), () => resolvePortalAccessPolicy(orgA.id));
+    expect(held.googleDomains).toEqual(expected);
+    expect(held.effective).toEqual(free.effective);
+    expect(held.fingerprint).toBe(free.fingerprint);
+
+    // A sibling org with no verified domain: Google masked, source kept; no lock-out from sso_only.
+    await seedPolicy({ orgId: orgB.id, passwordMode: 'sso_only' });
+    const masked = await withDbAccessContext(portalOrgDbAccessContext(orgB.id), () => resolvePortalAccessPolicy(orgB.id));
+    expect(masked.googleDomains).toEqual([]);
+    expect(masked.effective.googleEnabled).toEqual({ value: false, source: 'partner' });
+    expect(masked.effective.passwordMode).toEqual({ value: 'allowed', source: 'org' });
+    expect(masked.passwordModeFallback).toBe(true);
+  });
+
+  it('ships dark: with the real (unset) Google capability a stored googleEnabled true resolves false and reads nothing', async () => {
+    const { partnerP, orgA } = await setup();
+    await seedPolicy({ partnerId: partnerP.id, googleEnabled: true });
+    await seedVerifiedDomain(orgA, `dark-${randomUUID().slice(0, 8)}.example.com`);
+    const policy = await resolvePortalAccessPolicy(orgA.id);
+    expect(policy.googleDomains).toBeNull();
+    expect(policy.effective.googleEnabled).toEqual({ value: false, source: 'partner' });
   });
 });

@@ -37,7 +37,29 @@ type CompactConfig = {
    * cut structured listings mid-JSON at ~2KB with no way to recover (#3093).
    */
   maxStdoutChars: number;
+  /**
+   * #11673: string leaves under these keys get the stdout budget, never less
+   * than LONG_TEXT_MIN_CHARS — set per tool from LONG_TEXT_KEYS_BY_TOOL,
+   * never on a tier itself.
+   */
+  longTextKeys?: ReadonlySet<string>;
 };
+
+/**
+ * #11673: per tool, the keys whose text the model reads to answer and that
+ * end with the conclusion, so the generic 1,500-char leaf cap cuts the part
+ * it needs. `get_ai_agent_run`'s `summary` is a run's report (up to 2,000
+ * chars, runLoop's RUN_SUMMARY_MAX_CHARS) with its next step last.
+ */
+const LONG_TEXT_KEYS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  get_ai_agent_run: new Set(['summary']),
+};
+/**
+ * A long-text key never drops below this, even in the tighter tiers (where
+ * stdout falls to 2,000 / 1,000): a whole run report is the point of reading
+ * the run, so the tiers shrink the trace around it instead.
+ */
+const LONG_TEXT_MIN_CHARS = 2_000;
 
 const DEFAULT_CONFIG: CompactConfig = {
   maxStringChars: 1_500,
@@ -295,8 +317,13 @@ function compactValue(
 
   if (typeof value === 'string') {
     // stdout carries the command output the model asked for — give it the
-    // dedicated (larger) budget instead of the generic leaf cap (#3093).
-    const maxChars = keyHint === 'stdout' ? config.maxStdoutChars : config.maxStringChars;
+    // dedicated (larger) budget instead of the generic leaf cap (#3093), and
+    // so does a tool's registered long-text key (#11673).
+    const maxChars = keyHint === 'stdout'
+      ? config.maxStdoutChars
+      : config.longTextKeys?.has(keyHint) === true
+        ? Math.max(config.maxStdoutChars, LONG_TEXT_MIN_CHARS)
+        : config.maxStringChars;
     return truncateText(value, maxChars, stats);
   }
 
@@ -1320,6 +1347,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   browse_snapshots: new Set(['label', 'metadata']),
   restore_snapshot: new Set(['selectedPaths']),
   trigger_backup: new Set(['errorLog']),
+  // #11768: the terminal line of a failed job's errorLog, written by the agent.
+  query_backups: new Set(['failureSummary']),
+  get_backup_status: new Set(['failureSummary']),
   list_network_assets: new Set(['hostname', 'label', 'manufacturer', 'model']),
   get_network_asset: new Set(['hostname', 'label', 'manufacturer', 'model']),
   get_ip_history: new Set(['hostname', 'interfaceName']),
@@ -1514,8 +1544,10 @@ export function compactToolResultForChat(
   // gone) and leave `stdoutTruncation` stale. Recomputing from the sanitized
   // payload keeps the marker and counters accurate for whichever tier ships.
   const baseStats: CompactStats = { ...stats };
+  const longTextKeys = Object.hasOwn(LONG_TEXT_KEYS_BY_TOOL, toolName) ? LONG_TEXT_KEYS_BY_TOOL[toolName] : undefined;
   let serialized = '';
-  for (const tier of COMPACTION_TIERS) {
+  for (const baseTier of COMPACTION_TIERS) {
+    const tier: CompactConfig = longTextKeys ? { ...baseTier, longTextKeys } : baseTier;
     const tierStats: CompactStats = { ...baseStats };
     const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, tierStats, tier);
     const compacted = compactValue(toolSpecific, tierStats, tier);

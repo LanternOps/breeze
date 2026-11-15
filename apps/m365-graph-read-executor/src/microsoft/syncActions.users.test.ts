@@ -209,4 +209,28 @@ describe('executeGraphSyncAction — m365.sync.users', () => {
     expect(calls.filter((call) => call.path.startsWith('/groups/'))).toHaveLength(50);
     expect(result.sources).toMatchObject({ roleAssignments: 'error' }); // incomplete expansion is not 'ok'
   });
+
+  it('a user without a string id or a duplicated id is counted in malformedItems', async () => {
+    const [ada, grace] = USERS_PAGE as unknown as [Record<string, unknown>, Record<string, unknown>];
+    const { client } = stubClient({
+      ...HAPPY,
+      '/users': page([ada, { ...ada }, { ...grace, id: 42 }, { ...grace, id: '' }, grace]),
+    });
+    const result = await executeGraphSyncAction({ type: 'm365.sync.users' }, context(client));
+    expect(result).toMatchObject({ success: true, malformedItems: 3 });
+    if (!('items' in result)) throw new Error('expected success');
+    // Malformed items are still dropped; the first copy of a duplicate is kept.
+    expect(result.items.map((item) => item.id)).toEqual([ADA, GRACE]);
+  });
+
+  // Version skew: an API that predates `malformedItems` parses this result
+  // with a .strict() schema, so the field must be absent unless it is > 0, or
+  // a new executor in front of an old API fails every org's users sync.
+  it('omits malformedItems for a clean listing (an older strict API still parses it)', async () => {
+    const { client } = stubClient(HAPPY);
+    const result = await executeGraphSyncAction({ type: 'm365.sync.users' }, context(client));
+    expect(result).toMatchObject({ success: true });
+    expect('malformedItems' in result).toBe(false);
+    expect(Object.keys(result).sort()).toEqual(['fetchedAt', 'items', 'kind', 'sources', 'success', 'truncated']);
+  });
 });

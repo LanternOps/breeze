@@ -18,6 +18,7 @@ export * from './edr';
 export * from './aiModelRegistry';
 export * from './aiModelQuality';
 export * from './hourBlock';
+export * from './remoteSessionEndReason';
 
 // ============================================
 // Multi-Tenancy Types

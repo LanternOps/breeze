@@ -43,6 +43,9 @@ scriptsRoutes.get(
         exitCode: scriptExecutions.exitCode,
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
+        // #4342 W2 — set when the retention job removed stdout/stderr, so the
+        // tab says the output was removed instead of "no output".
+        outputPurgedAt: scriptExecutions.outputPurgedAt,
         errorMessage: scriptExecutions.errorMessage,
         // #5318 — the device Scripts tab now renders the same status labels as
         // the scripts pages, which qualify a terminal status with the cancel

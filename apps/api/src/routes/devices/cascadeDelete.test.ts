@@ -107,15 +107,15 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import * as schema from '../../db/schema';
+import { coreRoutes } from './core';
 import {
-  coreRoutes,
   getDeviceCascadeDeleteTables,
   DEVICE_CASCADE_DELETE_PREDICATES,
   DEVICE_CASCADE_DELETE_TABLES,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
   DEVICE_LINK_DEPENDENT_COLUMNS,
-} from './core';
+} from '../../services/deviceCascadeTables';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isAgentConnected, sendCommandToAgent } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -195,7 +195,7 @@ describe('device hard-delete table coverage contract', () => {
       `Every table with a device_id FK to devices.id must appear in EXACTLY ONE of ` +
         `getDeviceCascadeDeleteTables() (rows deleted; order matters — children before parents), ` +
         `DEVICE_DETACH_DEVICE_ID_TABLES (tenant business records — device_id SET NULL), or ` +
-        `DEVICE_LINKED_DEVICE_ID_TABLES (linked_device_id SET NULL) in core.ts. ` +
+        `DEVICE_LINKED_DEVICE_ID_TABLES (linked_device_id SET NULL) in services/deviceCascadeTables.ts. ` +
         `If the device_id column references a table other than devices, add it to NOT_DEVICES_FK ` +
         `in this test instead.\n\nProblems: ${problems.join('; ')}`
     ).toEqual([]);
@@ -269,7 +269,7 @@ describe('device hard-delete table coverage contract', () => {
 
     expect(
       missing,
-      `These tables have a linked_device_id FK but are missing from DEVICE_LINKED_DEVICE_ID_TABLES in core.ts. ` +
+      `These tables have a linked_device_id FK but are missing from DEVICE_LINKED_DEVICE_ID_TABLES in services/deviceCascadeTables.ts. ` +
         `Add them so linked_device_id gets SET NULL during cascade delete.\n\n` +
         `Missing: ${missing.join(', ')}`
     ).toEqual([]);
@@ -580,7 +580,7 @@ describe('linked_device_id detach clears every link-conditional column (#3952)',
         `linked_device_id, but the device hard-delete detach does not clear them. ` +
         `Nulling linked_device_id alone violates the constraint (23514) and rolls ` +
         `the whole cascade back as a 500 — this is issue #3952. Add each column to ` +
-        `DEVICE_LINK_DEPENDENT_COLUMNS in core.ts, or, if the constraint genuinely ` +
+        `DEVICE_LINK_DEPENDENT_COLUMNS in services/deviceCascadeTables.ts, or, if the constraint genuinely ` +
         `does not forbid the detached state, record it in ` +
         `LINK_CHECK_COLUMNS_NOT_CLEARED in this file WITH a reason.\n\n` +
         `Unregistered: ${problems.join(', ')}`

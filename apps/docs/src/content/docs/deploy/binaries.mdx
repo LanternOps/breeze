@@ -87,13 +87,14 @@ Binaries are served from disk. The API reads from these directories:
 | `VIEWER_BINARY_DIR` | `./viewer/bin` | Viewer installers (e.g. `breeze-viewer-macos.dmg`) |
 | `HELPER_BINARY_DIR` | `AGENT_BINARY_DIR` | Helper binaries (e.g. `breeze-helper-windows.msi`). When unset it uses the same directory as `AGENT_BINARY_DIR` (v0.120.0+; earlier releases used `./agent/bin` regardless of `AGENT_BINARY_DIR`). The bundled `docker-compose.yml` overrides this to `/data/binaries/helper`, alongside the other two directories under the shared `binaries` volume. |
 
-macOS agent packages and `Breeze Installer.app.zip` are privileged installers.
-Local mode serves them only when the release's original
+macOS agent packages, `Breeze Installer.app.zip` and the Windows MSI are
+privileged installers. Local mode serves them only when the release's original
 `release-artifact-manifest.json` and `.ed25519` signature are staged at the
 parent of `AGENT_BINARY_DIR` and verify with
 `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`. A deployment-generated manifest that
 merely signs whatever bytes happen to be on the volume is not a source-authenticity
-substitute.
+substitute. The binaries image does **not** contain this pair; see
+[Release manifest pair](#release-manifest-pair) for how it gets there.
 
 Breeze Assist (Helper) installers are verified the same way, but always against
 the public release's manifest entry (`edition: "self-host"`, whatever
@@ -140,11 +141,136 @@ depends_on:
 
 The init container:
 1. Runs on every `docker compose up` (`pull_policy: always` ensures the registry is re-checked for the image ref you've pinned in `BREEZE_BINARIES_IMAGE_REF`, which must be set — there is no `latest` fallback)
-2. Copies bundled binaries to the shared `binaries` volume
+2. Copies bundled binaries to the shared `binaries` volume (the agent, viewer and helper directories and a `VERSION` file, but not the release manifest pair, see below)
 3. Exits (restart: "no")
 4. The API mounts the volume read-only
 
 When `BINARY_SOURCE=github` (default), the API ignores the local volume and syncs versions from GitHub Releases instead. The volume is only used when `BINARY_SOURCE=local`.
+
+## Release Manifest Pair
+
+With `BINARY_SOURCE=local`, the API looks for the release's
+`release-artifact-manifest.json` and `release-artifact-manifest.json.ed25519` at
+the root of the `binaries` volume (`/data/binaries`, the parent of
+`AGENT_BINARY_DIR`). The binaries image cannot contain them: the signed manifest
+lists the binaries image's own digest, so it is signed after that image is
+built. The pair is published on the GitHub Release instead and has to be copied
+into the volume.
+
+When the pair is missing:
+
+- Boot-time registration still registers the local binaries, but signs their
+  update manifests with the per-deployment key instead of using the official
+  release manifest. The API logs a `[binarySync] … not found` warning that names
+  the missing file.
+- Installers that need the pair are refused, and the API log names the missing
+  file and links to this section: the Windows MSI (`503 MSI not available`),
+  macOS packages and Breeze Assist installers (`503 Installer unavailable`),
+  creating a macOS installer link (`503 macOS PKG not reachable`), and the
+  macOS `Breeze Installer.app.zip` download when that file is staged (a server
+  error).
+
+The pair is not needed with `BINARY_SOURCE=github`, and copying it into the
+volume there has no effect.
+
+### Guided setup
+
+`guided-setup.sh` already downloads and verifies this pair to pin the image
+digests. It keeps the verified copy in `<work-dir>/release-manifest/` and, before
+it starts the stack, copies it to the root of the `binaries` volume, replacing
+the previous release's. `guided-setup.sh --upgrade` does the same for the target
+release. It only copies files that passed verification. Each file goes into the
+volume over the standard input of a one-shot `binaries-init` container, so the
+copy adds no host mount of its own. With the default named `binaries` volume it
+works on SELinux hosts, with snap Docker, from a folder Docker Desktop does not
+share, and against a remote `DOCKER_HOST`. With the local `./data` storage
+layout, Docker must still be able to mount `./data/binaries`, as it must for
+every start of the stack.
+
+If setup cannot verify a pair for the release, or the copy fails, it removes any
+older pair from the volume, because an older release's manifest next to newer
+binaries makes local registration refuse them. Setup logs each pair it removes
+from or replaces in the volume, unless it is already this release's pair. It
+warns when that pair is not one it staged, for example a pair copied in by hand.
+When the copy fails, setup prints the commands to run.
+
+For a server-only release (one that reuses an earlier release's binaries image),
+setup places the pair of the release whose binaries it carries. It verifies that
+pair with the same key, checks that it lists the same binaries image digest, and
+checks that its `releaseKind` is `full`.
+
+With `--no-up`, or when you decline the restart, setup prints the copy commands
+with the other commands to run.
+
+### Manual installs and air-gapped installs
+
+Repeat these steps on every upgrade, after `BREEZE_BINARIES_IMAGE_REF` points at
+the new release. On an air-gapped host, run the three downloads on a connected
+machine and copy the files across. Run the verification on the Breeze host.
+
+```bash
+TAG=v0.129.0   # the release your BREEZE_BINARIES_IMAGE_REF comes from
+mkdir -p release-manifest
+curl -fsSL -o release-manifest/release-artifact-manifest.json \
+  https://github.com/lanternops/breeze/releases/download/$TAG/release-artifact-manifest.json
+curl -fsSL -o release-manifest/release-artifact-manifest.json.ed25519 \
+  https://github.com/lanternops/breeze/releases/download/$TAG/release-artifact-manifest.json.ed25519
+curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/$TAG/scripts/release/verify-release-images.sh
+
+# Verify the signature and that the manifest lists the binaries image you run.
+# Continue only if this prints "Verified signed release image inventory".
+RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS="$(grep '^RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=' .env | cut -d= -f2-)" \
+  bash verify-release-images.sh \
+    --manifest release-manifest/release-artifact-manifest.json \
+    --signature release-manifest/release-artifact-manifest.json.ed25519 \
+    --expected-repository lanternops/breeze \
+    --expected-release "$TAG" \
+    --require "binaries=$(grep '^BREEZE_BINARIES_IMAGE_REF=' .env | cut -d= -f2-)"
+
+# Continue only if this prints "releaseKind": "full" or prints no releaseKind
+# line. A server-only release lists no binaries. If this prints "server-only",
+# stop: set TAG to the release in "binariesRelease" and start again from the top.
+grep -E '"(releaseKind|binariesRelease)"' release-manifest/release-artifact-manifest.json
+
+# Copy both files to the volume root through the binaries-init service. Each
+# file goes over standard input, so nothing on the host is mounted.
+docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
+  -c 'set -eu; f=/target/release-artifact-manifest.json.ed25519; t=/target/.release-artifact-manifest.json.ed25519.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; [ ! -d "$f" ]; chmod 0644 "$t"; if [ -e "$f" ]; then h=$(sha256sum < "$f") || h=unreadable; echo "breeze-replaced ${h%% *}"; fi; mv -f "$t" "$f"' \
+  < release-manifest/release-artifact-manifest.json.ed25519
+docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
+  -c 'set -eu; f=/target/release-artifact-manifest.json; t=/target/.release-artifact-manifest.json.tmp; trap "rm -f $t" EXIT; cat > "$t"; [ -s "$t" ]; [ ! -d "$f" ]; chmod 0644 "$t"; if [ -e "$f" ]; then h=$(sha256sum < "$f") || h=unreadable; echo "breeze-replaced ${h%% *}"; fi; mv -f "$t" "$f"' \
+  < release-manifest/release-artifact-manifest.json
+
+# The API reads the pair at startup.
+docker compose up -d --force-recreate api
+```
+
+Run the copy step only after the verification printed
+`Verified signed release image inventory` and the `releaseKind` line says
+`full` or is absent. A server-only release carries the binaries of the release
+named in its `binariesRelease` field, and that release's pair is the one that
+describes the volume.
+
+If either copy command fails, remove the pair from the volume so the new
+binaries do not sit beside an older release's manifest, then fix the cause and
+copy again. The command prints a `breeze-removed …` line when it removed
+something; that is expected output, not an error.
+
+```bash
+docker compose run --rm --no-deps -T --entrypoint sh binaries-init \
+  -c 'set -eu; m=/target/release-artifact-manifest.json; s=$m.ed25519; if [ -e "$m" ]; then h=$(sha256sum < "$m") || h=unreadable; echo "breeze-removed ${h%% *}"; elif [ -e "$s" ]; then echo breeze-removed-signature; fi; rm -f "$m" "$s" /target/.release-artifact-manifest.json.tmp /target/.release-artifact-manifest.json.ed25519.tmp'
+```
+
+If the volume is not managed by Compose, copy both files into the directory that
+holds `agent/`, `viewer/` and `helper/`, and make sure the API user can read
+them.
+
+<Aside type="caution" title="Replace the pair on every upgrade">
+  A pair from an older release does not describe the new binaries. Local
+  registration then refuses every binary the older manifest lists with a
+  different checksum, and those binaries are not offered to agents. Copy the new
+  release's pair before the API starts on the new version.
+</Aside>
 
 ## S3 Offload (Optional)
 
@@ -314,7 +440,7 @@ Companion to the install script, for Linux and macOS. Stops and removes the agen
     S3_BUCKET=breeze-binaries
     ```
 
-    On upgrade, the init container pulls the new binaries image, copies to the volume, and the API syncs to S3 automatically.
+    On upgrade, the init container pulls the new binaries image, copies to the volume, and the API syncs to S3 automatically. `guided-setup.sh --upgrade` also replaces the [release manifest pair](#release-manifest-pair); a manual install repeats that step itself.
   </TabItem>
   <TabItem label="Local Dev">
     Build the agent and binaries are served from `./agent/bin`:

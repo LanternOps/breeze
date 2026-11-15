@@ -184,6 +184,33 @@ it('/trust/<p>/<o> is public-cacheable only for a loaded 200; 404s, degraded she
   } finally { vi.unstubAllGlobals(); }
 });
 
+it('W6: /request-access/verify and /accept-invite are served with no-referrer, no-store and noindex headers', async () => {
+  const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  try {
+    for (const path of ['/request-access/verify', '/accept-invite']) {
+      const out = await run(contextFor(path, { signedIn: false }));
+      expect(out.status, path).toBe(200);
+      expect(out.headers.get('Referrer-Policy'), path).toBe('no-referrer');
+      expect(out.headers.get('Cache-Control'), path).toBe('no-store');
+      expect(out.headers.get('X-Robots-Tag'), path).toBe('noindex, nofollow, noarchive');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('W6: /request-access is public and redirects a signed-in user to their landing', async () => {
+  const anon = await run(contextFor('/request-access', { signedIn: false }));
+  expect(anon.status).toBe(200);
+  expect(anon.headers.get('Location')).toBeNull();
+
+  vi.stubGlobal('fetch', activeAccountFetch());
+  try {
+    const signedIn = await run(contextFor('/request-access', { signedIn: true }));
+    expect(signedIn.status).toBe(302);
+    expect(signedIn.headers.get('Location')).toBe(withBase('/quotes'));
+  } finally { vi.unstubAllGlobals(); }
+});
+
 it('W2: /trust/access/* token pages are never cached, never indexed and send no referrer, even on a loaded 200', async () => {
   const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
   try {

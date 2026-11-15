@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
-import { parseMailboxes } from './addressParse';
+import { parseMailboxes, parseSingleMailbox } from './addressParse';
+import { dmarcAuthenticatedDomain, leadingAuthservId, parseAuthClausesOrNull, stampsUnreadableReason } from './authenticationResults';
 import { getConfig } from '../../config/validate';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import type {
@@ -36,57 +37,87 @@ export class MailgunInboundProvider implements InboundEmailProvider {
   }
 
   async parse(req: HonoRequest): Promise<NormalizedInboundEmail> {
-    const b = (await req.parseBody()) as Record<string, string>;
-    const from = extractEmail(b.sender || b.from || '');
-    // Display name of the visible From's RFC 5322 mailbox (see addressParse.ts).
-    const fromName = parseMailboxes(b.from)[0]?.name ?? '';
-    const refs = (b['References'] || '').trim();
-    // When no Message-Id is present, fall back to a content hash that is STABLE
-    // across provider retries — the signing `timestamp` differs each retry, so
-    // hashing it (the old fallback) defeated dedup. Hash the immutable envelope.
-    const messageId = b['Message-Id'] || b['message-id'];
-    const fallbackId = `sha256:${createHash('sha256')
-      .update(`${from}\n${b.subject ?? ''}\n${b['stripped-text'] ?? b['body-plain'] ?? ''}`)
-      .digest('hex')}`;
-    // Return-Path for ingest-level bounce/loop suppression. Mailgun records the
-    // envelope MAIL FROM twice: as the `Return-Path` MIME header the receiving MTA
-    // stamps, and as the top-level `sender` form field (per Mailgun's routes docs,
-    // `sender` is MAIL FROM, distinct from the `from` header). A bounce/NDR — and an
-    // RFC 3834 auto-reply — uses a null envelope, surfaced as an empty `sender` or
-    // `<>`. Trust the header first; fall back to the envelope ONLY when it is
-    // unambiguously the null form, so (a) an ordinary address is never read as a
-    // bounce, and (b) a missing Return-Path header no longer hides a real bounce.
-    const returnPathHeader = parseHeader(b['message-headers'], 'Return-Path');
-    const envelopeNull = b.sender !== undefined && ['', '<>'].includes(b.sender.trim());
-    const returnPath = returnPathHeader ?? (envelopeNull ? '<>' : undefined);
-    return {
-      provider: this.name,
-      providerMessageId: messageId || fallbackId,
-      to: extractEmail(b.recipient || ''),
-      from,
-      fromName: fromName || undefined,
-      subject: b.subject || '',
-      text: b['stripped-text'] || b['body-plain'] || '',
-      // No forwardScanText: staff-forward routing runs only for connected Gmail
-      // mailboxes. Mailgun's body-plain may be Mailgun's own text rendering of
-      // an HTML-only message, and its fields do not say which.
-      html: b['body-html'] || undefined,
-      messageId: b['Message-Id'] || undefined,
-      inReplyTo: b['In-Reply-To'] || undefined,
-      references: refs ? refs.split(/\s+/) : undefined,
-      autoSubmitted: parseHeader(b['message-headers'], 'Auto-Submitted'),
-      precedence: parseHeader(b['message-headers'], 'Precedence'),
-      outboundMarker: parseHeader(b['message-headers'], BREEZE_OUTBOUND_HEADER),
-      // Loop/bounce signals (ingest-level loop suppression). returnPath computed
-      // above: Return-Path header, else a null envelope (`sender` empty/`<>`).
-      returnPath,
-      xLoop: parseHeader(b['message-headers'], 'X-Loop'),
-      senderAuth: extractSenderAuth(b),
-      senderAuthDiagnostic: senderAuthGap(b['message-headers']),
-      attachments: [],
-      raw: b
-    };
+    return normalizeMailgunForm((await req.parseBody()) as Record<string, string>);
   }
+}
+
+/**
+ * Map Mailgun's parsed-message webhook form to the pipeline's message. Also used
+ * to rebuild a queued job from its stored form (`raw`), which is the whole form.
+ */
+export function normalizeMailgunForm(b: Record<string, string>): NormalizedInboundEmail {
+  // The sender identity is the RFC 5322 From mailbox: DMARC, the only verdict
+  // that sets `verified`, is evaluated over the From header's domain. Mailgun's
+  // `sender` field is the SMTP envelope (MAIL FROM), which DMARC does not bind;
+  // it differs from From for list, forwarded and bulk-mail-provider traffic, so
+  // it is kept separately (envelopeFrom) and used only for loop handling.
+  const fromMailbox = parseMailboxes(b.from)[0];
+  const from = fromMailbox?.address ?? (b.from ?? '').trim().toLowerCase();
+  const envelopeFrom = parseMailboxes(b.sender)[0]?.address;
+  // Display name of the visible From's RFC 5322 mailbox (see addressParse.ts).
+  const fromName = fromMailbox?.name ?? '';
+  const refs = (b['References'] || '').trim();
+  // When no Message-Id is present, fall back to a content hash that is STABLE
+  // across provider retries — the signing `timestamp` differs each retry, so
+  // hashing it (the old fallback) defeated dedup. Hash the immutable envelope.
+  // Keyed on the envelope sender first, as it always has been, so the key of a
+  // message already in flight does not change.
+  const messageId = b['Message-Id'] || b['message-id'];
+  const fallbackId = `sha256:${createHash('sha256')
+    .update(`${extractEmail(b.sender || b.from || '')}\n${b.subject ?? ''}\n${b['stripped-text'] ?? b['body-plain'] ?? ''}`)
+    .digest('hex')}`;
+  // Return-Path for ingest-level bounce/loop suppression. Mailgun records the
+  // envelope MAIL FROM twice: as the `Return-Path` MIME header the receiving MTA
+  // stamps, and as the top-level `sender` form field (per Mailgun's routes docs,
+  // `sender` is MAIL FROM, distinct from the `from` header). A bounce/NDR — and an
+  // RFC 3834 auto-reply — uses a null envelope, surfaced as an empty `sender` or
+  // `<>`. Trust the header first; fall back to the envelope ONLY when it is
+  // unambiguously the null form, so (a) an ordinary address is never read as a
+  // bounce, and (b) a missing Return-Path header no longer hides a real bounce.
+  const returnPathHeader = parseHeader(b['message-headers'], 'Return-Path');
+  // Mailgun always sends `sender` (the envelope; '' or `<>` for a bounce), so a
+  // missing one is unreadable, as is a DKIM identity that changes how a stamp reads.
+  const unreadable = stampsUnreadableReason({
+    envelope: b.sender,
+    envelopeRequired: true,
+    dkimSignatures: parseHeaderAll(b['message-headers'], 'DKIM-Signature'),
+  });
+  const envelopeNull = b.sender !== undefined && ['', '<>'].includes(b.sender.trim());
+  const returnPath = returnPathHeader ?? (envelopeNull ? '<>' : undefined);
+  return {
+    provider: 'mailgun',
+    providerMessageId: messageId || fallbackId,
+    to: extractEmail(b.recipient || ''),
+    from,
+    ...(envelopeFrom ? { envelopeFrom } : {}),
+    fromName: fromName || undefined,
+    subject: b.subject || '',
+    text: b['stripped-text'] || b['body-plain'] || '',
+    // No forwardScanText: staff-forward routing runs only for connected Gmail
+    // mailboxes. Mailgun's body-plain may be Mailgun's own text rendering of
+    // an HTML-only message, and its fields do not say which.
+    html: b['body-html'] || undefined,
+    messageId: b['Message-Id'] || undefined,
+    inReplyTo: b['In-Reply-To'] || undefined,
+    references: refs ? refs.split(/\s+/) : undefined,
+    autoSubmitted: parseHeader(b['message-headers'], 'Auto-Submitted'),
+    precedence: parseHeader(b['message-headers'], 'Precedence'),
+    outboundMarker: parseHeader(b['message-headers'], BREEZE_OUTBOUND_HEADER),
+    // Loop/bounce signals (ingest-level loop suppression). returnPath computed
+    // above: Return-Path header, else a null envelope (`sender` empty/`<>`).
+    returnPath,
+    xLoop: parseHeader(b['message-headers'], 'X-Loop'),
+    // The verdict's domain is checked against the From header itself (the form
+    // field and any From in message-headers), not against `from` above, so it
+    // refuses a header that could name a mailbox on another domain.
+    senderAuth: unreadable === null
+      ? extractSenderAuth(b)
+      : { spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', verified: false },
+    ...(unreadable === null ? {} : { senderAuthConsulted: unreadable }),
+    senderAuthDiagnostic: senderAuthGap(b['message-headers']),
+    attachments: [],
+    raw: b
+  };
 }
 
 // Mailgun stamps its receiving MX host as the authserv-id (the leading token before the
@@ -127,12 +158,17 @@ function isMailgunAuthservId(authservId: string): boolean {
 // foreign/absent authserv-id yields no DMARC pass. `verified` requires that authserv-id-
 // asserted DMARC pass — we do NOT trust a bare SPF+DKIM pass, because neither verdict on
 // its own proves alignment to the (spoofable) From domain. Any absent/foreign verdict is
-// NOT a pass (fail closed).
+// NOT a pass (fail closed). `authenticatedDomain` names the From domain that pass is
+// for: the single From mailbox's domain, unless a trusted DMARC clause names another
+// `header.from` (see dmarcAuthenticatedDomain).
 function extractSenderAuth(b: Record<string, string>): SenderAuth {
   // Every Authentication-Results header stamped with a Mailgun-family authserv-id. Normally
   // exactly one (the receiving instance's); more than one means either benign duplication or a
   // surviving forged sibling-host header — mechanismVerdict resolves that by requiring agreement.
   const trusted = mailgunAuthResults(b['message-headers']);
+  if (trusted === null) {
+    return { spf: normalizeVerdict(b['X-Mailgun-Spf']), dkim: normalizeVerdict(b['X-Mailgun-Dkim-Check-Result']), dmarc: 'unknown', verified: false };
+  }
   // Mailgun's own namespaced fields are authoritative and take precedence; fall back to the
   // trusted header(s) only when the field is absent (`?? undefined` preserves the prior
   // "present-but-empty stays as-is" semantics).
@@ -142,7 +178,12 @@ function extractSenderAuth(b: Record<string, string>): SenderAuth {
   // DMARC pass (asserted via Mailgun's authserv-id) is the only From-domain-aligned
   // trust signal; a standalone SPF+DKIM pass is NOT treated as verified.
   const verified = dmarc === 'pass';
-  return { spf, dkim, dmarc, verified };
+  if (!verified) return { spf, dkim, dmarc, verified };
+  // `from` is Mailgun's copy of the From header; message-headers may carry the
+  // header too. More than one From there names no single sender.
+  const headerFroms = parseHeaderAll(b['message-headers'], 'From');
+  const fromAddress = headerFroms.length <= 1 ? parseSingleMailbox(b.from)?.address ?? null : null;
+  return { spf, dkim, dmarc, verified, authenticatedDomain: dmarcAuthenticatedDomain(trusted, fromAddress, [b.from, ...headerFroms]) };
 }
 
 // Return EVERY Authentication-Results header value carrying a Mailgun-family authserv-id (the
@@ -150,10 +191,15 @@ function extractSenderAuth(b: Record<string, string>): SenderAuth {
 // Authentication-Results headers — M365's own plus Mailgun's — so we scan ALL of them rather
 // than only the first, which may be the foreign-authserv-id one. authserv-id comparison is
 // case-insensitive and tolerant of an optional trailing version digit (e.g. "mxa.mailgun.org 1").
-function mailgunAuthResults(headersJson: string | undefined): string[] {
+function mailgunAuthResults(headersJson: string | undefined): string[] | null {
   const trusted: string[] = [];
   for (const raw of parseHeaderAll(headersJson, 'Authentication-Results')) {
-    const authservId = (raw.split(';')[0] ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+    if (typeof raw !== 'string') continue; // not a header value Mailgun writes
+    // Selection reads the authserv-id through the same splitter as every other path.
+    // A header that does not split could be a trusted stamp we cannot read, so the
+    // whole message is then unverified (null) rather than read from its siblings.
+    const authservId = leadingAuthservId(raw);
+    if (authservId === null) return null;
     if (isMailgunAuthservId(authservId)) trusted.push(raw);
   }
   return trusted;
@@ -172,28 +218,27 @@ function senderAuthGap(headersJson: string | undefined): SenderAuthDiagnostic | 
       return 'headers-unparseable';
     }
   }
-  return mailgunAuthResults(headersJson).length === 0 ? 'no-mailgun-authserv' : undefined;
+  const trusted = mailgunAuthResults(headersJson);
+  return trusted !== null && trusted.length === 0 ? 'no-mailgun-authserv' : undefined;
 }
 
 // Collapse a mechanism's verdict across all trusted Mailgun A-R headers into a single raw
-// token, failing closed on disagreement. Returns 'pass' ONLY when at least one trusted header
-// asserts the mechanism and every header that asserts it says pass; returns 'fail' if any
-// trusted header reports a non-pass verdict for it (so a forged sibling-host pass cannot
-// override a genuine fail); returns undefined when no trusted header mentions the mechanism.
+// token, failing closed on disagreement. Clauses are read with the shared quote- and
+// comment-aware parser, so text inside a quoted property or a comment is never a verdict.
+// For DMARC every clause in every trusted header counts; for SPF/DKIM the first clause of
+// each header does. Returns 'pass' ONLY when at least one is present and all say pass;
+// 'fail' when any does not (so another trusted host's pass cannot override a fail)
+// or when a trusted header cannot be read; undefined when no trusted header mentions it.
 function mechanismVerdict(trusted: string[], mechanism: string): string | undefined {
-  const verdicts = trusted
-    .map((h) => extractMechanism(h, mechanism))
-    .filter((v): v is string => v !== undefined)
-    .map((v) => v.toLowerCase());
+  const verdicts: string[] = [];
+  for (const header of trusted) {
+    const clauses = parseAuthClausesOrNull(header);
+    if (clauses === null) return 'fail';
+    const results = clauses.filter((c) => c.method === mechanism).map((c) => c.result.toLowerCase());
+    verdicts.push(...(mechanism === 'dmarc' ? results : results.slice(0, 1)));
+  }
   if (verdicts.length === 0) return undefined;
   return verdicts.every((v) => v === 'pass') ? 'pass' : 'fail';
-}
-
-// Pull `<mechanism>=<result>` out of an Authentication-Results header value, e.g.
-// "mxa.mailgun.org; dkim=pass header.d=x.com; dmarc=fail" -> for 'dkim' returns 'pass'.
-function extractMechanism(authResults: string, mechanism: string): string | undefined {
-  const m = new RegExp(`\\b${mechanism}\\s*=\\s*([a-zA-Z]+)`, 'i').exec(authResults);
-  return m?.[1];
 }
 
 // Normalize a raw verdict token to the SenderAuthVerdict union. Anything we don't

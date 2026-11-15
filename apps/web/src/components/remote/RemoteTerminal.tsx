@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { ActionError, runAction } from '@/lib/runAction';
+import { showToast } from '@/components/shared/Toast';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
@@ -586,6 +588,34 @@ export default function RemoteTerminal({
     // Retire the current attempt so its close/error events cannot re-enter the
     // connection state machine while we tear the session down here.
     connectAttemptRef.current += 1;
+
+    // End the session BEFORE closing the socket (#11839). The server ends the
+    // row itself when the socket closes, recorded as the viewer closing it, and
+    // an End sent after that finds a terminal row and is refused. Ending first
+    // records the operator's End. A failed End (the session was already ended
+    // elsewhere, or the API is unreachable) must not keep the socket open.
+    if (sessionId) {
+      try {
+        await runAction({
+          request: () => fetchWithAuth(`/remote/sessions/${sessionId}/end`, {
+            method: 'POST',
+            body: JSON.stringify({
+              bytesTransferred: bytesTransferred.sent + bytesTransferred.received
+            })
+          }),
+          errorFallback: stableT('remoteTerminal.errors.endSession'),
+          // 400 = already ended, 404 = gone: the session is over either way.
+          suppressErrorToast: (status) => status === 400 || status === 404,
+        });
+      } catch (error) {
+        // ActionError is already toasted (or deliberately not); a 401 is the
+        // auth redirect's. Either way the socket still has to close below.
+        if (!(error instanceof ActionError)) {
+          showToast({ type: 'error', message: stableT('remoteTerminal.errors.endSession') });
+        }
+      }
+    }
+
     if (webSocketRef.current) {
       const disposables = (webSocketRef.current as unknown as Record<string, unknown[]>)._disposables;
       if (disposables) {
@@ -600,19 +630,6 @@ export default function RemoteTerminal({
       webSocketRef.current = null;
     }
 
-    if (sessionId) {
-      try {
-        await fetchWithAuth(`/remote/sessions/${sessionId}/end`, {
-          method: 'POST',
-          body: JSON.stringify({
-            bytesTransferred: bytesTransferred.sent + bytesTransferred.received
-          })
-        });
-      } catch (error) {
-        console.error('Failed to end session:', error);
-      }
-    }
-
     setStatus('disconnected');
     // Clear the session id synchronously here rather than relying on the async
     // ws.onclose handler: disconnect() flips status to 'disconnected'
@@ -625,7 +642,7 @@ export default function RemoteTerminal({
       disconnectFiredRef.current = true;
       onDisconnect?.();
     }
-  }, [sessionId, bytesTransferred, onDisconnect]);
+  }, [sessionId, bytesTransferred, onDisconnect, stableT]);
 
   // Copy terminal content to clipboard
   const copyToClipboard = useCallback(async () => {

@@ -47,13 +47,20 @@
  * same `batchSize * maxBatches` an enforce run could remove, so "capped" means
  * "one enforce run would not drain this". `retentionEnforceFromEnv`
  * reads the flag, and only an explicit `true`/`1` enforces.
+ *
+ * The row cap bounds how many rows match, not how long finding them takes: a
+ * predicate with no supporting index can visit far more rows than it returns.
+ * `countEligibleRowsBounded` adds a statement timeout and reports a timeout as
+ * `timedOut` instead of throwing (#4342 W6.c report-only targets).
  */
 
 import { SQL, sql } from 'drizzle-orm';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
+import { tightenStatementTimeout } from '../db/lockTimeout';
 import { extractRowCount } from '../db/rowCount';
 import { captureMessage } from '../services/sentry';
+import { pgErrorCode } from '../utils/pgErrors';
 
 /**
  * A table name cannot be a bound parameter, so it is the one value that reaches
@@ -282,24 +289,84 @@ export async function countEligibleRows(options: {
   label: string;
 }): Promise<{ eligible: number; capped: boolean }> {
   const { table, where, cap, label } = options;
+  assertCountArgs(table, cap);
+  const result = await inFreshSystemContext(label, () => db.execute(cappedCountQuery(table, where, cap)));
+  return readEligibleCount(table, cap, result);
+}
+
+/** SQLSTATE 57014 `query_canceled`: what `statement_timeout` raises. */
+const QUERY_CANCELED = '57014';
+
+export type BoundedEligibleCount =
+  | { timedOut: false; eligible: number; capped: boolean }
+  | { timedOut: true };
+
+/**
+ * `countEligibleRows` with a statement timeout, for a predicate whose cost has
+ * no index guarantee (#4342 W6.c). A count still running at
+ * `statementTimeoutMs` is cancelled and resolves `{ timedOut: true }`, so a
+ * slow count gives up its pooled connection and the caller reports "count
+ * unavailable" instead of failing. Any other error still throws.
+ *
+ * The count runs in a savepoint (`withDbTransaction`) inside the fresh system
+ * context, and the catch is outside the savepoint (docs/agents/tenancy-rls.md):
+ * the cancelled statement rolls back there and the context commits normally.
+ * The timeout is `SET LOCAL` (never widened) inside that savepoint, so it
+ * applies to this count and nothing else.
+ */
+export async function countEligibleRowsBounded(options: {
+  table: string;
+  where: SQL;
+  cap: number;
+  label: string;
+  statementTimeoutMs: number;
+}): Promise<BoundedEligibleCount> {
+  const { table, where, cap, label, statementTimeoutMs } = options;
+  assertCountArgs(table, cap);
+  if (!Number.isInteger(statementTimeoutMs) || statementTimeoutMs < 1) {
+    throw new Error(
+      `[retentionBatch] Refusing to count "${table}": statementTimeoutMs must be a positive integer, got ${statementTimeoutMs}`,
+    );
+  }
+
+  return inFreshSystemContext(label, async (): Promise<BoundedEligibleCount> => {
+    let result: unknown;
+    try {
+      result = await withDbTransaction(async () => {
+        await tightenStatementTimeout(db, statementTimeoutMs);
+        return db.execute(cappedCountQuery(table, where, cap));
+      });
+    } catch (err) {
+      if (pgErrorCode(err) === QUERY_CANCELED) return { timedOut: true };
+      throw err;
+    }
+    return { timedOut: false, ...readEligibleCount(table, cap, result) };
+  });
+}
+
+function assertCountArgs(table: string, cap: number): void {
   if (!BARE_IDENTIFIER.test(table)) {
     throw new Error(`[retentionBatch] Refusing to count "${table}": table must be a bare SQL identifier`);
   }
   if (!Number.isInteger(cap) || cap < 1) {
     throw new Error(`[retentionBatch] Refusing to count "${table}": cap must be a positive integer, got ${cap}`);
   }
+}
 
-  const target = sql.raw(table);
-  const result = await inFreshSystemContext(label, () => db.execute(sql`
+/** Scans at most `cap + 1` matching rows. `table` is checked by the caller. */
+function cappedCountQuery(table: string, where: SQL, cap: number): SQL {
+  return sql`
     SELECT count(*)::int AS n
     FROM (
       SELECT 1
-      FROM ${target}
+      FROM ${sql.raw(table)}
       WHERE ${where}
       LIMIT ${cap + 1}
     ) s
-  `));
+  `;
+}
 
+function readEligibleCount(table: string, cap: number, result: unknown): { eligible: number; capped: boolean } {
   const rows: unknown = Array.isArray(result)
     ? result
     : (result as { rows?: unknown } | null | undefined)?.rows;

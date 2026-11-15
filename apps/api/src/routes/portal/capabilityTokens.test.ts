@@ -48,7 +48,7 @@ function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
   const entraTenant = org ? { tenantId: 'a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5', provenAt: '2027-01-23T10:00:00.000Z' } : null;
   return {
     orgId, partnerId: 'p-1', entraTenant,
-    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: entraTenant !== null }),
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: entraTenant !== null, googleDomainVerified: false }),
   };
 }
 import { portalInviteTokens, portalResetTokens } from './helpers';

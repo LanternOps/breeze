@@ -66,6 +66,7 @@ import {
   createUser,
   grantRolePermissions,
   userEpochs,
+  ensurePartnerServicePrincipalOwner,
 } from './db-utils';
 import { getTestDb } from './setup';
 import { seedHoldingOrg } from './unassignedPoolFixtures';
@@ -141,6 +142,7 @@ describe('partner API principal discovery', () => {
       createdBy: user.id,
       updatedBy: user.id,
     }).returning();
+    await ensurePartnerServicePrincipalOwner(user.id, partnerId);
     const { rawKey } = await issuePartnerServicePrincipalKey(db as unknown as Database, {
       partnerServicePrincipalId: principal!.id,
       partnerId,

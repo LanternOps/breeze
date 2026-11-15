@@ -13,11 +13,11 @@
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, portalUsers } from '../db/schema';
-import type { PortalBrowserAccess, PortalIdentityProvider } from '../db/schema/portal';
+import type { PortalAccountDisabledBy, PortalBrowserAccess } from '../db/schema/portal';
 import type { AuthContext } from '../middleware/auth';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPasswordEligible } from './portalAccountState';
-import { listIdentityProvidersByUser } from './portalUserIdentities';
+import { listIdentityStatesByUser, type PortalIdentityListState } from './portalUserIdentities';
 
 type PortalUserListRow = {
   id: string;
@@ -25,6 +25,7 @@ type PortalUserListRow = {
   name: string | null;
   passwordHash: string | null;
   status: string;
+  disabledBy: PortalAccountDisabledBy | null;
   receiveNotifications: boolean;
   lastLoginAt: Date | null;
   invitedAt: Date | null;
@@ -52,12 +53,15 @@ export function effectivePortalStatus(row: {
   return 'active';
 }
 
-function toListItem(row: PortalUserListRow, identityProviders: PortalIdentityProvider[]) {
+function toListItem(row: PortalUserListRow, identities: PortalIdentityListState[]) {
+  const identityProviders = identities.map((i) => i.provider);
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     status: row.status,
+    // W8 (#11385): who disabled the account (msp | directory | scim), null unless disabled.
+    disabledBy: row.disabledBy ?? null,
     effectiveStatus: effectivePortalStatus({ ...row, hasExternalIdentity: identityProviders.length > 0 }),
     receiveNotifications: row.receiveNotifications,
     lastLoginAt: row.lastLoginAt,
@@ -70,6 +74,9 @@ function toListItem(row: PortalUserListRow, identityProviders: PortalIdentityPro
     // lifecycle status) and the external sign-in providers linked to the login.
     browserAccess: row.browserAccess,
     identityProviders,
+    // W8 (#11385, plan Task 8): each identity's directory state, so the MSP sees
+    // a disabled sign-in method and can restore it.
+    identities,
   };
 }
 
@@ -83,6 +90,7 @@ export async function listPortalUsersForOrg(orgId: string): Promise<PortalUserLi
     name: portalUsers.name,
     passwordHash: portalUsers.passwordHash,
     status: portalUsers.status,
+    disabledBy: portalUsers.disabledBy,
     receiveNotifications: portalUsers.receiveNotifications,
     lastLoginAt: portalUsers.lastLoginAt,
     invitedAt: portalUsers.invitedAt,
@@ -91,8 +99,9 @@ export async function listPortalUsersForOrg(orgId: string): Promise<PortalUserLi
     browserAccess: portalUsers.browserAccess
   }).from(portalUsers).where(eq(portalUsers.orgId, orgId)).orderBy(desc(portalUsers.createdAt));
   // Sequential, never Promise.all: the caller may hold one request transaction.
-  const providers = await listIdentityProvidersByUser(db, rows.map((r) => r.id));
-  return rows.map((row) => toListItem(row, providers.get(row.id) ?? []));
+  // One identity read for every listed account (never one per user).
+  const identities = await listIdentityStatesByUser(db, rows.map((r) => r.id));
+  return rows.map((row) => toListItem(row, identities.get(row.id) ?? []));
 }
 
 /**

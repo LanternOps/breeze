@@ -225,6 +225,9 @@ vi.mock('./aiAgentSdkTools', () => ({
     manage_configuration_policy: 1,
   },
   BREEZE_MCP_TOOL_NAMES: [],
+  // #11395: read by the preflight only under a constrained chat tool profile.
+  listChatSurfaceToolNames: () => ['query_devices', 'get_device_details', 'set_device_context', 'execute_command'],
+  chatToolDomain: () => undefined,
 }));
 
 const mockGetUserPushTokens = vi.fn();
@@ -1595,6 +1598,40 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth, page, undefined, CEILING);
     expect(wisp.resolveGrantCeiling.mock.invocationCallOrder[0]).toBeLessThan(mockBuildSystemPrompt.mock.invocationCallOrder[0]!);
     expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING, page, makeResolvedModel('platform').logicalModel);
+  });
+
+  // #11395: a constrained tool profile rebuilds the prompt every turn. A Wisp
+  // session must keep its grant ceiling and its thread seed on that rebuild,
+  // with or without a page.
+  const MINIMAL_FACTS = { toolProfile: 'minimal', toolAllowlist: null, effectiveWindow: null, transport: 'gateway' } as const;
+
+  it('#11395: a constrained Wisp turn WITHOUT a page keeps the ceiling and the seed', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ wispGrantId: 'grant-1' }));
+    mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { toolProfileFacts: MINIMAL_FACTS }));
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+    expect(result).toMatchObject({ ok: true, systemPrompt: 'rebuilt prompt\n## Wisp thread\nsummary' });
+    const args = mockBuildSystemPrompt.mock.calls.at(-1)!;
+    expect(args[3]).toBe(CEILING);
+    expect(args[4]).toMatchObject({ promptMode: 'constrained' });
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING, undefined, expect.anything());
+  });
+
+  it('#11395: a constrained Wisp turn WITH a page passes both the ceiling and the exposure', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ wispGrantId: 'grant-1' }));
+    mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('openai_compatible', { toolProfileFacts: MINIMAL_FACTS }));
+    const page = { type: 'device', id: 'd-1' } as const;
+    await runPreFlightChecks('session-1', 'hello', auth, page as any);
+    const args = mockBuildSystemPrompt.mock.calls.at(-1)!;
+    expect(args[1]).toEqual(page);
+    expect(args[3]).toBe(CEILING);
+    expect(args[4]).toMatchObject({ promptMode: 'constrained' });
+  });
+
+  it('#11395: an identity-profile Wisp turn without a page keeps the stored prompt (unchanged)', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ wispGrantId: 'grant-1' }));
+    await runPreFlightChecks('session-1', 'hello', auth);
+    expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    expect(wisp.wispSeedForSession).not.toHaveBeenCalled();
   });
 
   it('refuses an inactive ceiling before building record context', async () => {

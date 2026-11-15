@@ -35,6 +35,7 @@ export interface LockedReattachDevice {
   orgId: string;
   siteId: string;
   hostname: string;
+  osType: string;
   status: string;
   isEphemeral: boolean;
   agentTokenSuspendedAt: Date | null;
@@ -65,6 +66,7 @@ const lockedDeviceColumns = {
   orgId: devices.orgId,
   siteId: devices.siteId,
   hostname: devices.hostname,
+  osType: devices.osType,
   status: devices.status,
   isEphemeral: devices.isEphemeral,
   agentTokenSuspendedAt: devices.agentTokenSuspendedAt,

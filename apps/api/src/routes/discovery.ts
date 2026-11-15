@@ -1123,7 +1123,7 @@ discoveryRoutes.get(
         id: discoveryJobs.id,
         orgId: discoveryJobs.orgId,
         siteId: discoveryJobs.siteId,
-        profileId: discoveryJobs.profileId,
+        profileId: discoveryProfiles.id,
         profileName: discoveryProfiles.name,
         agentId: discoveryJobs.agentId,
         status: discoveryJobs.status,
@@ -1137,7 +1137,12 @@ discoveryRoutes.get(
         createdAt: discoveryJobs.createdAt
       })
       .from(discoveryJobs)
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the job's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveryJobs.orgId),
+        eq(discoveryProfiles.siteId, discoveryJobs.siteId),
+      ))
       .where(where)
       .orderBy(desc(discoveryJobs.createdAt));
 
@@ -1423,7 +1428,12 @@ discoveryRoutes.get(
         eq(discoveredAssets.siteId, devices.siteId),
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the asset's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+        eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+      ))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
@@ -1544,10 +1554,16 @@ discoveryRoutes.get(
         eq(discoveredAssets.siteId, devices.siteId),
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the asset's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+        eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+      ))
       .leftJoin(bridgeDevices, and(
         eq(discoveryJobs.agentId, bridgeDevices.agentId),
         eq(bridgeDevices.orgId, discoveredAssets.orgId),
+        eq(bridgeDevices.siteId, discoveredAssets.siteId),
       ))
       .leftJoin(sites, eq(discoveredAssets.siteId, sites.id))
       .where(and(...conditions))

@@ -33,20 +33,22 @@ describe('reconcileDrExecution compare-and-swap against real PostgreSQL (#6322)'
 
     // An empty group reconciles to "completed" with no device commands, so the
     // tick attempts a real non-terminal -> terminal write with no side effects.
-    await testDb.insert(drPlanGroups).values({
+    const groups = await testDb.insert(drPlanGroups).values({
       planId: plan.id,
       orgId: org.id,
       name: 'Tier 1',
       sequence: 1,
       devices: [],
       restoreConfig: { commandType: 'vm_restore_from_backup', payload: {} },
-    });
+    }).returning();
 
     const [execution] = await testDb.insert(drExecutions).values({
       planId: plan.id,
       orgId: org.id,
       executionType: 'rehearsal',
       status: 'pending',
+      // The definition execution creation captures; reconcile runs only this.
+      results: { definition: { version: 1, planId: plan.id, orgId: org.id, groups } },
       authorizationPrincipalKind: 'api_key',
       authorizationPrincipalId: crypto.randomUUID(),
       authorizationGrantRevision: 'grant',

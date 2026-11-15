@@ -53,6 +53,10 @@ vi.mock('../db', () => {
     runAfterDbContextExit: (label: string, work: () => unknown) => {
       afterContextExitWork.push({ label, work });
     },
+    // Commit-only work (#11772 nudge) is held the same way; the tests flush it as "committed".
+    runAfterDbContextCommit: (label: string, work: () => unknown) => {
+      afterContextExitWork.push({ label, work });
+    },
     withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -193,6 +197,7 @@ vi.mock('./featureConfigResolver', () => ({
 }));
 
 import { db } from '../db';
+import { nudgeConnectionHealth } from './connectionHealth/nudge';
 import {
   applyBackupCommandResultToJob,
   markBackupJobFailedIfInFlight,
@@ -1750,7 +1755,8 @@ describe('backup result persistence', () => {
 
       // Nothing reaches the queue while the persisting transaction is held.
       expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
-      expect(afterContextExitWork).toHaveLength(1);
+      // The #11772 destination-health nudge is held beside it; only hydration is counted here.
+      expect(afterContextExitWork.filter((t) => t.label === 'backupResultPersistence.requestIndexHydration')).toHaveLength(1);
 
       await flushAfterContextExit();
       expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
@@ -1833,6 +1839,33 @@ describe('backup result persistence', () => {
       await flushAfterContextExit();
       expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
       expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
+    });
+
+    // #11743: filesBackedUp already includes the references, so a 140,000-entry
+    // incremental with 120,000 references is under the eager threshold.
+    it('queues hydration for a reference-heavy S3 incremental below the eager threshold', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 140_000, referencedFiles: 120_000 } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueSnapshotFileIndexHydrationMock).toHaveBeenCalledWith('snapshot-db-1', 'result_brokered_read');
+    });
+
+    it('leaves a reference-heavy S3 incremental above the eager threshold for its first use', async () => {
+      arrangeSuccess({ storageIdentity: 's3::::bucket' });
+
+      await applyBackupCommandResultToJob({
+        jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+        result: { snapshotId: 'provider-snap-1', filesBackedUp: 250_001, referencedFiles: 200_000 } as any,
+      });
+
+      await flushAfterContextExit();
+      expect(enqueueSnapshotFileIndexHydrationMock).not.toHaveBeenCalled();
     });
 
     it('does not queue hydration for a failed result', async () => {
@@ -2983,5 +3016,52 @@ describe('recoverable index drops are not job warnings (#11026)', () => {
       result: { error: 'disk full', warning: `bounded: ${NOTE}` } as any,
     });
     expect((updateChain.set.mock.calls[0][0] as { errorLog: string }).errorLog).toBe('disk full');
+  });
+});
+
+// #11772: a committed backup result asks the backup_destination health source
+// to look again soon (the nudge coalesces per kind), after commit only.
+describe('backup destination health nudge (#11772)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(txSelect).mockReturnValue(chainMock([]) as any);
+    afterContextExitWork.length = 0;
+    findForeignSnapshotClaimMock.mockResolvedValue(null);
+  });
+
+  it('nudges once the applied result commits, never before', async () => {
+    vi.mocked(db.update).mockReturnValueOnce(chainMock([{ id: 'job-1', orgId: 'org-1', configId: 'config-1' }]) as any);
+
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      result: { error: 'storage session: storage answered status 403 (AccessDenied)' } as any,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(nudgeConnectionHealth).not.toHaveBeenCalled();
+    expect(afterContextExitWork.map((t) => t.label)).toContain('backupDestinationHealth.nudge');
+    await flushAfterContextExit();
+    expect(nudgeConnectionHealth).toHaveBeenCalledTimes(1);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('backup_destination');
+  });
+
+  it('does not nudge for a result that was not applied', async () => {
+    vi.mocked(db.update).mockReturnValue(chainMock([]) as any);
+    vi.mocked(txSelect).mockReturnValue(chainMock([{ deviceId: 'device-1', orgId: 'org-1', status: 'cancelled' }]) as any);
+
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      result: { error: 'storage session: storage answered status 403' } as any,
+    });
+
+    expect(result.applied).toBe(false);
+    await flushAfterContextExit();
+    expect(nudgeConnectionHealth).not.toHaveBeenCalled();
   });
 });

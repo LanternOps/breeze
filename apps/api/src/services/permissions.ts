@@ -1,16 +1,18 @@
 import { db, getCurrentDbAccessContext, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, users } from '../db/schema';
+import { partnerUsers, organizationUsers, users } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { permissionGrantMatches } from './permissionMatching';
 import { normalizeSiteAllowlist } from './siteAllowlist';
+import { getRolePermissionGrants } from './roleInheritance';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 /**
  * Request-scoped "never serve this user's permissions from cache". Used for a
  * partner service principal's MCP request (middleware/
- * partnerServicePrincipalMcpAuth.ts): its owner gate reads permissions
+ * partnerServicePrincipalMcpAuth.ts): its owner gate
+ * (services/partnerServicePrincipalOwnerAuthority.ts) reads permissions
  * uncached, and every per-tool check later in the SAME request
  * (aiGuardrails.checkPermissionRequirements and the tools' own
  * getUserPermissions(auth.user.id) reads) must see that same fresh state, not
@@ -265,13 +267,15 @@ export async function getUserPermissions(
     scope: 'partner' | 'organization',
     extra: Pick<UserPermissions, 'orgAccess' | 'allowedOrgIds' | 'allowedSiteIds'>,
   ): Promise<UserPermissions> => {
-    const rolePerms = await db
-      .select({ resource: permissions.resource, action: permissions.action })
-      .from(rolePermissions)
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(eq(rolePermissions.roleId, roleId));
+    // #9600: a role grants its own rows plus its "Inherit From" ancestors'.
+    // The walk is cycle-safe, depth-bounded and refuses any ancestor outside
+    // the role's own scope and tenant (services/roleInheritance.ts). It runs
+    // inside runForAxis, under the same context that just read the
+    // membership, so it can see the member's role; a role that is not
+    // visible there reads its own rows only, as before inheritance.
+    const rolePerms = await getRolePermissionGrants(roleId);
     return {
-      permissions: rolePerms.map(p => ({ resource: p.resource, action: p.action })),
+      permissions: rolePerms,
       partnerId: context.partnerId || null,
       orgId: context.orgId || null,
       roleId,

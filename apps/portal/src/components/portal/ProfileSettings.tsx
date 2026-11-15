@@ -6,9 +6,16 @@ import { Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { usePortalAuth } from '@/lib/auth';
 import { portalApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { getLinkStatus, startMicrosoftLink, type LinkStatus } from '@/lib/oidc';
+import {
+  getGoogleLinkStatus,
+  getLinkStatus,
+  startGoogleLink,
+  startMicrosoftLink,
+  type LinkStatus
+} from '@/lib/oidc';
 import { BTN_PRIMARY, INPUT } from './ui';
 import { MicrosoftSignInButton } from './MicrosoftSignInButton';
+import { GoogleSignInButton } from './GoogleSignInButton';
 
 // The API's updateProfile accepts `name` only (routes/portal/schemas.ts);
 // it used to strip a changed email silently and this form then said
@@ -62,16 +69,26 @@ export function ProfileSettings() {
   const [linkStatus, setLinkStatus] = useState<LinkStatus | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
+  // Google account card (W7). null = unknown, or the deployment has no Google
+  // client (link-status answers 404): the card stays hidden.
+  const [googleStatus, setGoogleStatus] = useState<LinkStatus | null>(null);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
   // Read after mount (not in the initial state) so the hydrated tree matches the SSR HTML.
   const [ssoCode, setSsoCode] = useState<string | null>(null);
+  // `p=google` marks a Google link result; a missing `p` is Microsoft.
+  const [ssoGoogle, setSsoGoogle] = useState(false);
   useEffect(() => {
-    setSsoCode(new URLSearchParams(window.location.search).get('sso'));
+    const params = new URLSearchParams(window.location.search);
+    setSsoCode(params.get('sso'));
+    setSsoGoogle(params.get('p') === 'google');
   }, []);
+  const ssoProviderName = ssoGoogle ? 'Google' : 'Microsoft';
   const ssoBanner =
     ssoCode === 'linked'
-      ? 'Your Microsoft account is connected.'
+      ? `Your ${ssoProviderName} account is connected.`
       : ssoCode === 'unavailable'
-        ? "Microsoft sign-in isn't set up for this account here."
+        ? `${ssoProviderName} sign-in isn't set up for this account here.`
         : null;
 
   useEffect(() => {
@@ -79,10 +96,23 @@ export function ProfileSettings() {
     void getLinkStatus().then((status) => {
       if (!cancelled) setLinkStatus(status);
     });
+    void getGoogleLinkStatus().then((status) => {
+      if (!cancelled) setGoogleStatus(status);
+    });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const onConnectGoogle = async () => {
+    setGoogleBusy(true);
+    setGoogleError(null);
+    const result = await startGoogleLink();
+    if (!result.ok) {
+      setGoogleError(result.error);
+      setGoogleBusy(false);
+    }
+  };
 
   const onConnectMicrosoft = async () => {
     setLinkBusy(true);
@@ -440,6 +470,39 @@ export function ProfileSettings() {
                   busy={linkBusy}
                   label="Connect Microsoft"
                   testId="portal-profile-connect-microsoft"
+                />
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {googleStatus && (googleStatus.available || googleStatus.linked) && (
+        <section data-testid="portal-profile-google" className="border-t border-border/70 pt-5">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            Google account
+          </h2>
+          {googleStatus.linked ? (
+            <p className="mt-4 text-sm text-foreground">
+              Connected. You can sign in to the portal with Google.
+            </p>
+          ) : (
+            <div className="mt-4 space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Connect your Google Workspace account to sign in without a password.
+              </p>
+              {googleError && (
+                <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {googleError}
+                </div>
+              )}
+              <div className="sm:max-w-xs">
+                <GoogleSignInButton
+                  onClick={onConnectGoogle}
+                  busy={googleBusy}
+                  label="Continue with Google"
+                  testId="portal-profile-connect-google"
                 />
               </div>
             </div>

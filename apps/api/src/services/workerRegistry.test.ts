@@ -43,7 +43,7 @@ const EXPECTED_WORKER_NAMES = [
   // Site location W2 — presence read-model evaluation.
   'topologyPresenceWorker',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'aiArtifactSweeper', 'helperScreenshotRetentionWorker', 'endpointMessageRetention', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention', 'aiTranscriptSweeper',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'connectionHealthDigestWorker', 'aiArtifactSweeper', 'helperScreenshotRetentionWorker', 'endpointMessageRetention', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention', 'aiToolOutputRetention', 'aiTranscriptRetention', 'aiTranscriptSweeper',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
@@ -105,10 +105,14 @@ const EXPECTED_WORKER_NAMES = [
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper',
   // Portal registration W3 — daily portal identity drift report.
   'portalIdentityReconcile',
+  // Portal registration W8 — directory deprovisioning.
+  'portalDirectoryWorker',
   'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
+  // High-volume table retention W5 (#4342, #11592) — report-only.
+  'historyRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.
   'aiChargebackWorker',
   'alertVerdictScheduler', 'aiAgentSweepScheduler',
@@ -119,6 +123,8 @@ const EXPECTED_WORKER_NAMES = [
   'aiAgentGraduation',
   'scriptReviewWorker',
   'scriptVerifyWorker',
+  // High-volume table retention W2 (#4342, #11589) — report-only.
+  'scriptExecutionRetention',
   'aiBudgetReservationSweep',
   // #5306 — MFA enrolment grace window email nudge (daily sweep).
   'mfaEnrollmentNoticeWorker',
@@ -127,6 +133,8 @@ const EXPECTED_WORKER_NAMES = [
   'monitorEpisodeRetention',
   // EDR provider framework W02 (#8164) — daily prune of terminal edr_detections.
   'edrDetectionRetentionWorker',
+  // #4342 W3 — closed-alert retention.
+  'alertRetention',
   // #4248 W03 (AI Scorecard #5757) — narrative delivery reconciliation sweep.
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
@@ -151,6 +159,8 @@ const EXPECTED_WORKER_NAMES = [
   'portalSelfRegistrationWorker',
   // Observation retention (#11737) — report-only.
   'observationRetention',
+  // High-volume table retention W1 (#4342, #11588) — report-only.
+  'deviceCommandRetention', 'filesystemSnapshotRetention', 'networkMonitorResultRetention', 'deviceSessionRetention',
 ];
 
 describe('workerRegistry: losslessness', () => {

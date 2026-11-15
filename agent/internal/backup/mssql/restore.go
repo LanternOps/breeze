@@ -21,6 +21,9 @@ func ResolveRestoreTargetDir(instance string) (string, error) {
 	if instance == "" {
 		return "", fmt.Errorf("%w: instance name is required", ErrRestoreFailed)
 	}
+	if err := validateInstanceName(instance); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrRestoreFailed, err)
+	}
 	serverName := buildServerName(instance)
 	return resolveBackupTargetDir(instance, serverName)
 }
@@ -32,13 +35,13 @@ func RunRestore(instance, backupFile, targetDB string, noRecovery bool) (*Restor
 	if instance == "" {
 		return nil, fmt.Errorf("%w: instance name is required", ErrRestoreFailed)
 	}
-	if backupFile == "" {
-		return nil, fmt.Errorf("%w: backup file path is required", ErrRestoreFailed)
+	if err := ValidateBackupArtifactPath(backupFile); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRestoreFailed, err)
 	}
 	if targetDB == "" {
 		return nil, fmt.Errorf("%w: target database name is required", ErrRestoreFailed)
 	}
-	if err := validateSQLIdentifier(instance); err != nil {
+	if err := validateInstanceName(instance); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRestoreFailed, err)
 	}
 	if err := validateSQLIdentifier(targetDB); err != nil {
@@ -49,7 +52,6 @@ func RunRestore(instance, backupFile, targetDB string, noRecovery bool) (*Restor
 	serverName := buildServerName(instance)
 
 	escapedDB := strings.ReplaceAll(targetDB, "]", "]]")
-	escapedFile := strings.ReplaceAll(backupFile, "'", "''")
 
 	recoveryOption := "RECOVERY"
 	if noRecovery {
@@ -60,7 +62,7 @@ func RunRestore(instance, backupFile, targetDB string, noRecovery bool) (*Restor
 	// own source database name, so SQL Server doesn't try to recreate the
 	// backup's files at physical paths a still-attached source database
 	// owns (Msg 1834). See resolveRestoreQuery (restoremove.go).
-	query, buildErr := resolveRestoreQuery(serverName, backupFile, escapedFile, targetDB, escapedDB, recoveryOption)
+	query, buildErr := resolveRestoreQuery(serverName, backupFile, targetDB, escapedDB, recoveryOption)
 	if buildErr != nil {
 		duration := time.Since(start)
 		return &RestoreResult{
@@ -117,15 +119,16 @@ func VerifyBackup(instance, backupFile string) (*VerifyResult, error) {
 	if instance == "" {
 		return nil, fmt.Errorf("%w: instance name is required", ErrVerifyFailed)
 	}
-	if backupFile == "" {
-		return nil, fmt.Errorf("%w: backup file path is required", ErrVerifyFailed)
+	if err := validateInstanceName(instance); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrVerifyFailed, err)
+	}
+	query, err := buildVerifyQuery(backupFile)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrVerifyFailed, err)
 	}
 
 	start := time.Now()
 	serverName := buildServerName(instance)
-	escapedFile := strings.ReplaceAll(backupFile, "'", "''")
-
-	query := fmt.Sprintf("RESTORE VERIFYONLY FROM DISK='%s'", escapedFile)
 
 	slog.Info("mssql verify starting", "instance", instance, "backupFile", backupFile)
 

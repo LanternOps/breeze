@@ -2,7 +2,9 @@
  * Customer domain verification (portal registration W5, #11382) — public API.
  * The checkers stay internal; W6/W7 consume only the read API
  * (`findOrgByVerifiedDomain`, `isDomainVerifiedForOrg`,
- * `listVerifiedDomainsForOrg`), which re-checks evidence at use (plan D6).
+ * `listVerifiedDomainsForOrg`), which re-checks evidence at use (plan D6),
+ * and W7 fences the writes such a fact authorized with `lockVerifiedDomainRow`
+ * (W7 plan D8 / D15).
  */
 export {
   DomainVerificationError,
@@ -16,6 +18,7 @@ export {
   listCustomerDomainsDueForRecheck,
   listOrgCustomerDomains,
   listVerifiedDomainsForOrg,
+  lockVerifiedDomainRow,
   recheckCustomerDomain,
   removeCustomerDomainVerification,
   startDnsVerification,

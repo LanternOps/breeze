@@ -171,6 +171,13 @@ export interface PortalInviteEmailParams {
    */
   microsoftUrl?: string;
   /**
+   * Portal registration W7 (#11384) D12: the invitation-bound "Sign in with
+   * Google" link (the invite link with `&method=google`), present only when
+   * Google is effective for the org. A primary button: the only one when
+   * Microsoft is absent, the second when it is present.
+   */
+  googleUrl?: string;
+  /**
    * Whether the org's effective policy allows password sign-in. False
    * (`sso_only`): the email never offers a password.
    */
@@ -252,6 +259,22 @@ export interface PortalDomainVerificationLostEmailParams {
   orgName: string;
   domain: string;
   reason: PortalDomainVerificationLostReason;
+}
+
+/**
+ * Portal registration W8 (#11385, plan D12): a directory deprovisioning run
+ * was held for the MSP's approval. Platform mail from Breeze to the partner's
+ * active admins. Counts only — it never names the people affected.
+ */
+export interface PortalDirectoryHeldEmailParams {
+  to: string | string[];
+  partnerName: string;
+  orgName: string;
+  source: 'entra' | 'google';
+  /** Distinct portal accounts the held run would act on. */
+  affected: number;
+  /** The org's Portal tab in the dashboard, or null when no dashboard URL is configured. */
+  portalTabUrl: string | null;
 }
 
 export interface VerificationEmailParams {
@@ -790,6 +813,17 @@ export class EmailService {
       purpose: 'partner.portal_domain_verification.lost',
     });
   }
+
+  async sendPortalDirectoryHeld(params: PortalDirectoryHeldEmailParams): Promise<void> {
+    const template = buildPortalDirectoryHeldTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'partner.portal_directory.held',
+    });
+  }
 }
 
 let cachedService: EmailService | null = null;
@@ -1251,13 +1285,15 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
 
 /**
  * The portal invite. Which sign-in methods it offers follows the org's
- * effective policy (W4 #11381, spec §5.5):
- *  - password only (Microsoft off): unchanged — one "Set your password" button;
- *  - Microsoft and password: "Sign in with Microsoft" is the button, and
- *    "Or set a password" a secondary link;
- *  - `sso_only`: Microsoft only; no password line, link or wording.
+ * effective policy (W4 #11381, spec §5.5; W7 #11384 D12):
+ *  - password only (no SSO method): unchanged — one "Set your password" button;
+ *  - one SSO method and password: "Sign in with Microsoft" or "Sign in with
+ *    Google" is the button, and "Or set a password" a secondary link;
+ *  - both SSO methods: two primary buttons, Microsoft then Google, then the
+ *    password link when allowed;
+ *  - `sso_only`: the SSO button(s) only; no password line, link or wording.
  * The subject never changes. A partner's custom button label was written for
- * the password button, so it never relabels the Microsoft one.
+ * the password button, so it never relabels an SSO one.
  */
 export function buildPortalInviteTemplate(params: PortalInviteEmailParams): EmailTemplate {
   const orgName = params.orgName?.trim();
@@ -1267,16 +1303,25 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>`
     : '';
   const custom = params.custom ?? null;
-  const microsoftUrl = params.microsoftUrl || undefined;
-  const passwordOnly = !microsoftUrl && params.passwordAllowed;
-  // No password and no Microsoft: an SSO-only org whose method is not Microsoft
-  // (Google, W7). The plain invite link; its page offers what the org allows.
-  const primary = microsoftUrl
-    ? { url: microsoftUrl, label: 'Sign in with Microsoft', preheader: 'Sign in with Microsoft to access your support portal.' }
+  // The SSO buttons, in display order (an empty URL is absent).
+  const ssoButtons = [
+    params.microsoftUrl ? { url: params.microsoftUrl, label: 'Sign in with Microsoft', provider: 'Microsoft' } : null,
+    params.googleUrl ? { url: params.googleUrl, label: 'Sign in with Google', provider: 'Google' } : null,
+  ].filter((b): b is { url: string; label: string; provider: string } => b !== null);
+  const [firstSso, ...moreSso] = ssoButtons;
+  const passwordOnly = !firstSso && params.passwordAllowed;
+  // No password and no SSO URL (a caller that offers neither): the plain
+  // invite link; its page offers what the org allows.
+  const primary = firstSso
+    ? {
+      url: firstSso.url,
+      label: firstSso.label,
+      preheader: `Sign in with ${ssoButtons.map((b) => b.provider).join(' or ')} to access your support portal.`,
+    }
     : passwordOnly
       ? { url: params.inviteUrl, label: undefined, preheader: 'Set your password to access your support portal.' }
       : { url: params.inviteUrl, label: 'Accept your invite', preheader: 'Accept your invite to access your support portal.' };
-  const passwordSecondary = Boolean(microsoftUrl) && params.passwordAllowed;
+  const passwordSecondary = Boolean(firstSso) && params.passwordAllowed;
   const rendered = renderPartnerEmail({
     id: 'portal_invite',
     custom: !passwordOnly && custom ? { ...custom, buttonLabel: null } : custom,
@@ -1289,14 +1334,15 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     },
     ctaUrl: primary.url,
     ctaLabel: primary.label,
+    ...(moreSso.length > 0 ? { extraCtas: moreSso.map(({ label, url }) => ({ label, url })) } : {}),
     footer: supportFooter(params.supportEmail, 'Need help? Contact'),
     preheader: primary.preheader,
     bodyBeforeCta: messageBlock,
     bodyAfterCta: passwordSecondary ? renderLinkRow([{ label: 'Or set a password', url: params.inviteUrl }]) : '',
   });
   const support = getSupportEmail(params.supportEmail);
-  const actionLines = microsoftUrl
-    ? [`Sign in with Microsoft: ${microsoftUrl}`, passwordSecondary ? `Or set a password: ${params.inviteUrl}` : null]
+  const actionLines = firstSso
+    ? [...ssoButtons.map((b) => `${b.label}: ${b.url}`), passwordSecondary ? `Or set a password: ${params.inviteUrl}` : null]
     : [passwordOnly ? `Set your password: ${params.inviteUrl}` : `Accept your invite: ${params.inviteUrl}`];
   const text = [
     orgName ? `You're invited to the ${orgName} support portal.` : `You're invited to your support portal.`,
@@ -1460,6 +1506,49 @@ export function buildPortalDomainVerificationLostTemplate(params: PortalDomainVe
     footer: supportFooter(undefined, 'Need help? Contact'),
   });
   const text = [lead, impact, why].join('\n');
+  return { subject, html, text };
+}
+
+const PORTAL_DIRECTORY_NAME: Record<PortalDirectoryHeldEmailParams['source'], string> = {
+  entra: 'Microsoft Entra',
+  google: 'Google Workspace',
+};
+
+/**
+ * Directory deprovisioning run held (portal registration W8 #11385, plan
+ * D8a/D12): sent once per held run, after commit, to the partner's active
+ * admins. Names the org, the directory and the count, and links to the org's
+ * Portal tab — never the people (the panel lists them to an authorized MSP
+ * user). Breeze-branded platform mail, same idiom as
+ * buildPortalDomainVerificationLostTemplate.
+ */
+export function buildPortalDirectoryHeldTemplate(params: PortalDirectoryHeldEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const directory = PORTAL_DIRECTORY_NAME[params.source];
+  const accounts = `${params.affected} portal account${params.affected === 1 ? '' : 's'}`;
+  const subject = `Portal sign-ins held for your review: ${orgName}`;
+  const lead = `${orgName}'s ${directory} directory reports ${accounts} whose people were disabled or removed there. Breeze has held these sign-in changes for your review instead of applying them.`;
+  const impact = 'Until your team applies or dismisses them, those people can still sign in to the customer portal.';
+  const where = params.portalTabUrl
+    ? 'Review them on the organization\'s Portal tab.'
+    : `Review them under Settings › Organizations › ${orgName} › Portal.`;
+  const why = `You're receiving this because you administer ${params.partnerName} in Breeze.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: `${accounts} held for your review in ${orgName}.`,
+    heading: 'Portal sign-ins held for your review',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(impact)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(where)}</p>
+      ${params.portalTabUrl ? renderButton('Review held changes', params.portalTabUrl) : ''}
+      <p style="${MUTED_PARA}">${escapeHtml(why)}</p>
+    `,
+    footer: supportFooter(undefined, 'Need help? Contact'),
+  });
+  const text = [lead, impact, where, params.portalTabUrl ? `Review held changes: ${params.portalTabUrl}` : null, why]
+    .filter((line): line is string => line !== null)
+    .join('\n');
   return { subject, html, text };
 }
 

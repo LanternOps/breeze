@@ -204,8 +204,14 @@ describe('device path policy in the executeTool gate', () => {
   });
 
   it('resolves the level from the DEVICE org, not the session org or an input orgId', async () => {
-    spyHandler('file_operations');
-    await call('file_operations', { ...inputFor('file_operations', SYSTEM), orgId: 'org-other' });
+    const handler = spyHandler('file_operations');
+    // file_operations defines no orgId: since #11861 an input orgId is refused
+    // outright, before the gate, so it can never steer the level.
+    const smuggled = await call('file_operations', { ...inputFor('file_operations', SYSTEM), orgId: 'org-other' });
+    expect(String(smuggled.error)).toMatch(/^Invalid input: unknown argument "orgId"/);
+    expect(handler).not.toHaveBeenCalled();
+    expect(vi.mocked(resolveAiDataPolicyForEstablishedPartner)).not.toHaveBeenCalled();
+    await call('file_operations', inputFor('file_operations', SYSTEM));
     expect(vi.mocked(resolveAiDataPolicyForEstablishedPartner).mock.calls).toEqual([['org-dev', PARTNER]]);
   });
 

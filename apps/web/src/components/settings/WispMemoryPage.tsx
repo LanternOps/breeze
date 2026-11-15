@@ -1,7 +1,7 @@
 import '@/lib/i18n';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { MemoryBlockDto } from '@breeze/shared';
+import { memoryBlockSubjectText, type MemoryBlockDto } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useAiStore } from '../../stores/aiStore';
@@ -275,7 +275,9 @@ export default function WispMemoryPage() {
                     className={block.status === 'retracted' ? 'opacity-50' : 'transition hover:bg-muted/40'}
                   >
                     <td className="px-4 py-3 align-top text-sm">
-                      <div className="font-medium">{block.subjectKey}</div>
+                      <div className="font-medium">
+                        {memoryBlockSubjectText(block) ?? t('wispMemory.subjectFallback')}
+                      </div>
                       <button
                         type="button"
                         data-testid={`wisp-memory-toggle-${block.id}`}
@@ -284,6 +286,14 @@ export default function WispMemoryPage() {
                       >
                         {expanded[block.id] ? t('wispMemory.hideContent') : t('wispMemory.showContent')}
                       </button>
+                      {expanded[block.id] && (
+                        <div
+                          data-testid={`wisp-memory-key-${block.id}`}
+                          className="mt-2 max-w-md break-all font-mono text-xs text-muted-foreground"
+                        >
+                          {block.subjectKey}
+                        </div>
+                      )}
                       {expanded[block.id] && (
                         <pre
                           data-testid={`wisp-memory-content-${block.id}`}

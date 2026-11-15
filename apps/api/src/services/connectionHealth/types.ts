@@ -19,6 +19,8 @@ export const CONNECTION_SOURCE_KINDS = [
   'webhook',
   'psa_ticketing',
   'google_workspace',
+  // #11772: a backup destination failing for the devices that use it.
+  'backup_destination',
 ] as const;
 export type ConnectionSourceKind = (typeof CONNECTION_SOURCE_KINDS)[number];
 export type HealthState = 'healthy' | 'broken' | 'unknown' | 'retired';

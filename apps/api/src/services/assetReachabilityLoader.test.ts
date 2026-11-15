@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /** Rows handed back, in order, to successive `db.select()` chains. */
 let selectResults: unknown[][] = [];
-const captured: { wheres: unknown[] } = { wheres: [] };
+const captured: { wheres: unknown[]; joins: unknown[] } = { wheres: [], joins: [] };
 
 vi.mock('../db', () => {
   const chain = () => {
     const rows = selectResults.shift() ?? [];
     const c: Record<string, unknown> = {};
     c.from = () => c;
-    c.leftJoin = () => c;
+    c.leftJoin = (_table: unknown, condition: unknown) => { captured.joins.push(condition); return c; };
     c.innerJoin = () => c;
     c.where = (condition: unknown) => { captured.wheres.push(condition); return c; };
     c.orderBy = () => c;
@@ -20,6 +20,8 @@ vi.mock('../db', () => {
   return { db: { select: () => chain() } };
 });
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { loadReachabilityInputs, loadReachability } from './assetReachabilityLoader';
 
 const A1 = '11111111-1111-4111-8111-111111111111';
@@ -29,9 +31,19 @@ const NOW = new Date('2026-09-16T12:00:00.000Z');
 beforeEach(() => {
   selectResults = [];
   captured.wheres = [];
+  captured.joins = [];
 });
 
 describe('loadReachabilityInputs', () => {
+  it('reads the profile schedule only from a profile in the asset org and site', async () => {
+    await loadReachabilityInputs([A1]);
+    const rendered = captured.joins.map((join) => new PgDialect().sqlToQuery(join as SQL).sql);
+    const profileJoin = rendered.find((sql) => sql.includes('"discovery_profiles"."id"'));
+    expect(profileJoin).toBeDefined();
+    expect(profileJoin).toContain('"discovery_profiles"."org_id" = "discovered_assets"."org_id"');
+    expect(profileJoin).toContain('"discovery_profiles"."site_id" = "discovered_assets"."site_id"');
+  });
+
   it('returns an empty map without touching the database for an empty id list', async () => {
     const result = await loadReachabilityInputs([]);
     expect(result.size).toBe(0);

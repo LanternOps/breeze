@@ -867,6 +867,8 @@ The MCP coverage entry is `human_only_migration` (F30).
 | `TICKET_IMPORT_MAX_CLOCK_SKEW_MS` | 300,000 | §5.2 |
 | `TICKET_IMPORT_MAX_ISSUES_PER_RUN` | 50,000 | §5.10 |
 | `TICKET_IMPORT_MAX_TICKET_BYTES` | 256 MiB | §11 |
+| `TICKET_IMPORT_MAX_TICKET_ARTICLES` | 10,000 | §11 (#11296 follow-up) |
+| `TICKET_IMPORT_MAX_TICKET_READ_BYTES` | 256 MiB | §11 (#11296 follow-up) |
 
 ### 5.9 Passes, the delta and what is report-only
 
@@ -949,7 +951,9 @@ predictions (`predicted.*`, including `contactsToCreate` per org).
 Issue `kind`s, with at most `TICKET_IMPORT_MAX_ISSUES_PER_RUN` rows (default 50,000; counters stay
 exact beyond it):
 
-- **Skipped or failed:** `skipped_no_org`, `failed`.
+- **Skipped or failed:** `skipped_no_org`, `failed`, and `row_unreadable` (a list row the module
+  cannot read, of a ticket already imported: it stays imported, is counted skipped and the next
+  run reads the row again; a ticket never imported fails as before; #11296 follow-up).
 - **Writer decisions:** `status_kept` (with the #8884 detail), `attachments_skipped`,
   `link_not_written`.
 - **People:** `owner_unmatched`, once per distinct source owner. The row holds the source user
@@ -1063,6 +1067,69 @@ creates a user: owners (decision 24, declined) and comment authors stay display-
   `requester_contact_id` to NULL on delete and keeps that snapshot, so the ticket ends exactly
   where answer 3 would have put it. Refusing removal while referenced would make the set
   unremovable, because every created contact is referenced by construction.
+- **Decided in W4b, where this section was open:**
+  - **The option is the module's** (Zammad: `createRequesterContacts`, and
+    `createRequesterContactsUpdatedSince`, a UTC `YYYY-MM-DD`, inclusive, compared with the
+    ticket's `updated_at`). The writer resolves any `{ createContact }` it is sent, given
+    `options.people`; `people.runId` is carried but not stored, as the link has no run column.
+  - **Cost:** the header transaction of a first import charges the 1 unit whenever the variant
+    is present, as the status steps are charged before the lock decides.
+  - **The writer reports** `contactsCreated` and `requesterResolution` (`linked`, `matched`,
+    `created`, `display_only`). A display-only fallback counts in `requestersWithoutContact`; the
+    module sends no `requester_without_contact` note with the variant.
+  - **"Edited since it was created"** is the contact's `updated_at` later than its link's. The
+    import sets the link's `updated_at` to the contact's as `createContact` left it, since
+    `createContact` stamps `updated_at` again after its insert, on the API's clock.
+  - **Removal** deletes at most 500 per call and answers `{ removed, skipped, skippedBy,
+    remaining, stoppedBy }`; besides the per-contact `contact.delete` rows it writes one
+    partner-level `ticket_import.created_contacts_removed` row. The listing pages by contact id
+    and says, per contact, why removal would keep it (`portal_login`, `role`, `other_link`,
+    `edited`, `in_use`).
+  - **Removal's transactions.** One short transaction chooses the batch in SQL (the skip
+    conditions in the `WHERE`, `LIMIT 500`) under the source lock, refusing with 409 while a run
+    is active. Each contact then gets its own transaction: the source `FOR SHARE` and the run
+    check again (a run started meanwhile stops the call, `stoppedBy: 'run_active'`), the inbound
+    (org, lower(email)) advisory lock, the org projection lock, the contact `FOR UPDATE`, every
+    skip condition again, and only then `deleteContact`. A contact that became ineligible is
+    kept and counted under its reason. One aggregate query counts `skippedBy` and `remaining`.
+    No lock is held across the batch.
+  - **Removal's audit holds on a failure partway.** Each contact's `contact.delete` row is written
+    as soon as its own transaction commits, not after the call, and the partner-level summary row
+    is written however the call ends (`result: failure`, `stoppedBy: 'error'` and the count removed
+    so far when it throws). A call that throws before removing anything writes no row.
+  - **A removed contact can come back.** Removal deletes the contact and, by cascade, its import
+    link. A resumed ticket keeps its display-only requester, but a later pass that imports a *new*
+    ticket from the same customer, with the option still on, creates the contact again. To keep
+    the set removed, turn the option off before the next pass (the wizard says so next to the
+    removal).
+  - **Every FK to `contacts`, decided** (a contact with any of these is kept, `in_use` unless
+    named otherwise):
+    - `contact_external_links`: this source's link is the marker and cascades; another
+      system's is `other_link`;
+    - `portal_users.contact_id`: `portal_login`;
+    - `contact_roles`, and `contacts.roles`: `role`;
+    - `tickets.requester_contact_id`: any ticket that is not one this source's import wrote
+      (window-stamped, with this principal's ref on it or moved off it by a merge), such as a
+      live ticket inbound mail attached later. The import's own tickets never keep it: they
+      fall back to their snapshot;
+    - `report_schedule_recipients`, `manual_assets.assigned_contact_id`,
+      `ai_operator_task_targets`, `caller_verification_subject_bindings`,
+      `caller_verifications`: any row;
+    - `caller_verification_destinations`: a row from a source other than `import`, or an
+      attested one. `createContact` records the imported email as an `import` destination,
+      which does not count.
+  - **The `ticket-import:` link namespace is reserved.** The CSV contact importer answers a
+    conflict for a row naming it (and refuses it again at the write), and the AI operator's link
+    upsert refuses it. Otherwise a caller could adopt a contact into a source's set, or match an
+    import's contact by its link.
+  - **The dry run** dedupes `contactsToCreate` per (org, email) across the run. It keeps
+    16-hex digests in the run's cursor (a dry run commits only at a slice's end), HMAC-SHA256
+    keyed by the run id, so a stored digest cannot be checked against a guessed address
+    across runs. The cap is 5,000 distinct addresses. Past it, new addresses are counted
+    without dedupe, `predicted.contactsToCreateOverCap` says how many, and
+    `contactsToCreate` is then a ceiling.
+  - **After a source is deleted** the routes answer 404. The documented query above still
+    finds its contacts, because the links stay with them.
 - **Turn it on before the bulk run.** The requester is not re-applied on resume (§5.9), so tickets
   imported while the option was off stay display-only.
 
@@ -1483,6 +1550,15 @@ Step 1's §8 is binding except for these points. A one-line note in that section
   per article. The converted ticket is held in memory, because `importTicket` takes a whole ticket
   (F2 has no comment ceiling). A ticket whose converted content passes
   `TICKET_IMPORT_MAX_TICKET_BYTES` (default 256 MiB) fails with `ticket_too_large` and is listed.
+  The read is bounded too (#11296 follow-up): each answer is capped, and one ticket's load holds
+  at most `TICKET_IMPORT_MAX_TICKET_ARTICLES` articles (default 10,000) and
+  `TICKET_IMPORT_MAX_TICKET_READ_BYTES` of article JSON (default 256 MiB), charged as each article
+  arrives. Past either the load stops at once and the ticket fails with `ticket_too_large`, so a
+  broken server cannot hold memory in the shared API process. Attachment files are not read at
+  load and do not count.
+  The attachment-location index a load leaves behind is bounded in entries (#11730 review): a
+  ticket listing over 10,000 attachments is not indexed (its files are found by a fresh read) and
+  the index holds at most 100,000 entries across sources, least recently used dropped first.
 - **Zammad load.** About 107k requests for the bulk pass. Each one writes the token's
   `last_used_at` (Z11). Concurrency is 2, backoff is honoured, and the bulk runs off-hours.
 - **Partial runs** are safe by construction: every write is resumable (F3), a slice crash

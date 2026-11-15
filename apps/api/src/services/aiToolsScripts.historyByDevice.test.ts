@@ -10,6 +10,7 @@ vi.mock('../db', () => ({
 }));
 
 import { db } from '../db';
+import { scriptExecutions } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerScriptTools } from './aiToolsScripts';
@@ -175,5 +176,15 @@ describe('get_script_execution_history by device (#10417)', () => {
     await tool().handler({ scriptId: SCRIPT_ID, deviceId: DEVICE_ID }, auth());
     const query = new PgDialect().sqlToQuery(q.where() as any);
     expect(query.params).toEqual(expect.arrayContaining([SCRIPT_ID, DEVICE_ID, ORG_ID]));
+  });
+});
+
+describe('get_script_execution_history reports output removed by retention (#4342 W2)', () => {
+  it('projects outputPurgedAt for each run', async () => {
+    mockExecutionsQuery([{ id: 'execution-a', scriptId: SCRIPT_ID, deviceId: DEVICE_ID, status: 'completed', stdout: null, stderr: null, outputPurgedAt: '2026-01-01T00:00:00.000Z' }]);
+    const result = JSON.parse(await tool().handler({ deviceId: DEVICE_ID }, auth([SITE_ID])));
+    const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(projection.outputPurgedAt).toBe(scriptExecutions.outputPurgedAt);
+    expect(result.executions[0].outputPurgedAt).toBe('2026-01-01T00:00:00.000Z');
   });
 });

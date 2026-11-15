@@ -220,9 +220,25 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(open) });
     expect(open).toHaveBeenCalledWith({
       provider: 'local',
+      orgId: ORG_ID,
+      configId: undefined,
       providerConfig: { path: '/srv/backups' },
       key: 'snapshots/snap-current/manifest.json',
     });
+  });
+
+  it('passes the destination identifier only when the snapshot-owned configuration row grants it', async () => {
+    resolveSnapshotProviderConfigMock.mockResolvedValue({
+      snapshot: snapshotRow(),
+      config: { id: 'destination-1', orgId: ORG_ID },
+      localConfigId: 'destination-1',
+      providerType: 'local',
+      providerConfig: { path: '/srv/backups' },
+    });
+    loadSnapshot();
+    const open = vi.fn(async () => stream(manifest([])));
+    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(open) });
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID, configId: 'destination-1' }));
   });
 
   it('a digest mismatch writes nothing and leaves the old rows', async () => {

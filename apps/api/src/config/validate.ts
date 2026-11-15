@@ -8,6 +8,7 @@ import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m3
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
 import { getPortalEntraConfig } from './portalEntra';
+import { getPortalGoogleConfig } from './portalGoogle';
 import { warnOnTrustedProxyCidrMismatch } from './proxyTrustBootCheck';
 import {
   OFFICIAL_RELEASE_REPOSITORY,
@@ -649,6 +650,14 @@ const envObjectSchema = z
     // the default on anything but a plain positive integer. Declared so
     // collectWarnings() reports such a value once at boot; not boot-refused,
     // like the other knobs of its family.
+    // Portal registration W8 (#11385, plan D7): read per run through
+    // retentionEnforceFromEnv (services/portalDirectory/mode.ts), where any
+    // value but true/1/false/0 runs report-only. Declared so collectWarnings()
+    // reports such a value once at boot; never boot-refused (it fails safe).
+    PORTAL_DIRECTORY_DEPROVISION_ENFORCE: z
+      .string()
+      .optional()
+      .describe('Set to true to let directory deprovisioning disable customer-portal sign-ins; unset = report only.'),
     TICKET_IMPORT_MAX_BYTES_PER_HOUR: z
       .string()
       .optional()
@@ -693,6 +702,14 @@ const envObjectSchema = z
       .string()
       .optional()
       .describe('Converted content of one imported ticket in bytes. Default 268435456 (256 MiB), between 1 MiB and 2 GiB.'),
+    TICKET_IMPORT_MAX_TICKET_ARTICLES: z
+      .string()
+      .optional()
+      .describe('Articles one imported ticket may have when read from the source. Default 10000, between 1 and 1000000.'),
+    TICKET_IMPORT_MAX_TICKET_READ_BYTES: z
+      .string()
+      .optional()
+      .describe('Article bytes one imported ticket may hold while it is read from the source. Default 268435456 (256 MiB), between 1 MiB and 2 GiB.'),
     MFA_RECOVERY_CODE_PEPPER: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_EMAIL: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
@@ -736,6 +753,9 @@ const envObjectSchema = z
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
     AGENT_BACKUP_SERVER_URL: z.string().optional(),
+    // API-side directory for local backup destinations (self-hosted only;
+    // refused on a hosted deployment, see superRefine). '' = unset.
+    BACKUP_LOCAL_ROOT: z.string().optional(),
 
     // Platform date from which partners without an explicit approval-security
     // enforcement choice require an approver device for high/critical
@@ -1077,6 +1097,14 @@ const envObjectSchema = z
     PORTAL_ENTRA_CLIENT_SECRET: z.string().optional(),
     PORTAL_ENTRA_CALLBACK_BASE_URL: z.string().optional(),
 
+    // Customer portal "Sign in with Google" (portal registration W7). The
+    // portal's own Google OAuth client; off unless BOTH the id and the secret
+    // are set. Parsed at call time by config/portalGoogle.ts; validated at boot
+    // below, like the Entra app.
+    PORTAL_GOOGLE_CLIENT_ID: z.string().optional(),
+    PORTAL_GOOGLE_CLIENT_SECRET: z.string().optional(),
+    PORTAL_GOOGLE_CALLBACK_BASE_URL: z.string().optional(),
+
     // Customer-portal self-registration kill switch (portal registration W6,
     // plan D2). Unset/empty, true or 1 → on; false or 0 → off. Read at call
     // time by config/portalSelfRegistration.ts (same accepted values); any
@@ -1340,6 +1368,21 @@ const envSchema = envObjectSchema
             'AGENT_BACKUP_SERVER_URL must be a valid https:// URL (http:// allowed only for localhost)',
         });
       }
+    }
+
+    // API-side local backup storage reads operator-provisioned directories on
+    // the API and worker servers. A hosted deployment does not offer it, so a
+    // value there is a configuration mistake and refuses to boot.
+    const backupLocalRoot = (data.BACKUP_LOCAL_ROOT ?? '').trim();
+    const hostedForLocalBackup = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+    if (backupLocalRoot && hostedForLocalBackup) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BACKUP_LOCAL_ROOT'],
+        message:
+          'BACKUP_LOCAL_ROOT is not supported on a hosted deployment (IS_HOSTED=true). '
+          + 'API-side local backup storage is a self-hosted feature; unset BACKUP_LOCAL_ROOT.',
+      });
     }
 
     // --- JWT signing keyring (zero-downtime rotation) ---
@@ -3154,6 +3197,19 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     });
   }
 
+  // PORTAL_DIRECTORY_DEPROVISION_ENFORCE (services/portalDirectory/mode.ts):
+  // same parse as retentionEnforceFromEnv. An unrecognised value runs
+  // report-only (D7: fail toward report); say so once at boot.
+  const directoryEnforceRaw = (env.PORTAL_DIRECTORY_DEPROVISION_ENFORCE ?? '').trim().toLowerCase();
+  if (directoryEnforceRaw !== '' && !['true', '1', 'false', '0'].includes(directoryEnforceRaw)) {
+    warnings.push({
+      key: 'PORTAL_DIRECTORY_DEPROVISION_ENFORCE',
+      message:
+        `"${env.PORTAL_DIRECTORY_DEPROVISION_ENFORCE}" is not true/1 or false/0; directory deprovisioning ` +
+        'runs report-only (nothing is disabled).',
+    });
+  }
+
   // The ticket import worker's knobs (services/ticketImport/importLimits.ts)
   // are plain positive integers; anything else falls back to its default.
   // The global lease cap is kept below the worker concurrency, so a slot is
@@ -3273,6 +3329,8 @@ export function validateConfig(): AppConfig {
   // first throw on a customer's request. Throws only when the app is
   // configured (both id and secret set).
   getPortalEntraConfig(env);
+  // Portal Google client (W7): the same boot check for its client id and base.
+  getPortalGoogleConfig(env);
 
   // (The APP_ENCRYPTION_KEY_ID ↔ M365_GRAPH_ACTIONS_TOOLS_ENABLED pairing rule
   // used to live here as a post-parse throw reading `env` directly. It now runs

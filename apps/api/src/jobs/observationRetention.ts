@@ -47,7 +47,7 @@
  * at one report per 15 minutes). Larger fleets raise _MAX_BATCHES. A backlog
  * drains over successive runs, each batch in its own short system transaction.
  *
- * `*_received_at_idx` (migration 2027-01-23-140000) serves the age scan; the
+ * `*_received_at_idx` (migration 2027-01-24-230000) serves the age scan; the
  * pointer probes use existing primary keys and partial indexes.
  *
  * A payload can reshape batches and turn enforcement OFF (`forceReport`). It

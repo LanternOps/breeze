@@ -71,10 +71,13 @@ export async function reapOnce(): Promise<void> {
     // (a) EXPIRED CODES — the technician generated a code that nobody ever
     // used. No device exists yet, so there is nothing to tear down; a bulk
     // UPDATE is enough. Safety net for: codes accumulating as usable
-    // credentials long after the tech forgot about them.
+    // credentials long after the tech forgot about them. The sealed copy of the
+    // code is cleared in the same statement (#11836). The technician can still
+    // revive the session with "New code" (routes/remote/supportSessions.ts),
+    // which is why these rows keep endedReason 'expired' with no claim.
     await db
       .update(supportSessions)
-      .set({ status: 'expired', endedAt: now, endedReason: 'expired' })
+      .set({ status: 'expired', endedAt: now, endedReason: 'expired', codeEncrypted: null })
       .where(and(
         eq(supportSessions.status, 'pending'),
         lt(supportSessions.codeExpiresAt, now),

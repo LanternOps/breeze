@@ -67,6 +67,7 @@ const M1 = 'a1111111-1111-4111-8111-111111111111';
 const M2 = 'a2222222-2222-4222-8222-222222222222';
 const PO1 = 'b1111111-1111-4111-8111-111111111111';
 const PO2 = 'b2222222-2222-4222-8222-222222222222';
+const PO3 = 'b3333333-3333-4333-8333-333333333333';
 const N1 = 'e1111111-1111-4111-8111-111111111111';
 
 const ceiling = (over: Partial<GrantCeiling> = {}): GrantCeiling => ({
@@ -133,6 +134,20 @@ describe('listThreadTimeline', () => {
         toolName: 'list_devices', toolInput: { q: 1 }, toolOutput: { tombstone: true }, toolUseId: 'tu1', createdAt: '2026-10-24T09:00:00.000Z',
       },
     ]);
+  });
+
+  it('#11673: a specialist run report is marked markdown; a step outcome and every other post stay literal text', async () => {
+    const RUN = '33333333-3333-4333-8333-333333333333';
+    h.rows.ai_messages = [];
+    h.rows.wisp_thread_posts = [
+      post(PO1, '2026-10-24T10:00:00.000Z', { kind: 'specialist_result', sections: null, dedupeKey: `wisp.specialist_result:${RUN}:completed` }),
+      post(PO2, '2026-10-24T09:00:00.000Z', { kind: 'specialist_result', sections: null, dedupeKey: `wisp.specialist_step:${RUN}:completed` }),
+      post(PO3, '2026-10-24T08:00:00.000Z', { kind: 'nudge', sections: null, dedupeKey: `wisp.specialist_result:${RUN}:completed` }),
+    ];
+    const page = await listThreadTimeline(ceiling(), T1);
+    expect(page.items[0]).toMatchObject({ id: PO1, bodyFormat: 'markdown' });
+    expect(page.items[1]).not.toHaveProperty('bodyFormat');
+    expect(page.items[2]).not.toHaveProperty('bodyFormat');
   });
 
   it("#11145: a couldn't-look post carries its variant; no other post does, and the dedupe key never leaves the server", async () => {

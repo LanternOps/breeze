@@ -195,7 +195,7 @@ export async function runPartnerGroupSweep(deps: PartnerGroupSweepDeps = {}): Pr
   const failures: unknown[] = [];
   for (const group of orgGroups) {
     try {
-      await runOutsideDbContext(() => withSystemDbAccessContext(() => evaluateGroupMembership(group.id, { exportLockBeforeWrites: true }), 'partnerGroupEvaluation.sweep.org'));
+      await runOutsideDbContext(() => withSystemDbAccessContext(() => evaluateGroupMembership(group.id), 'partnerGroupEvaluation.sweep.org'));
     } catch (error) {
       console.error(`[PartnerGroupEvaluation] Sweep evaluation failed for org group ${group.id}:`, error);
       failures.push(error);

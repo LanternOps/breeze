@@ -7,6 +7,14 @@ import { wispGrants } from './wisp';
 import { wispThreads } from './wispThreads';
 
 /**
+ * Who cancelled a check-in: the grantor from the thread's chip (`user`), Wisp
+ * with `cancel_check_in` (`wisp`), or Breeze with a `cancel_reason`
+ * (`breeze`). Mirrors wisp_check_ins_cancelled_by_chk (pinned by checkIns.test.ts).
+ */
+export const WISP_CHECK_IN_CANCELLED_BY = ['user', 'wisp', 'breeze'] as const;
+export type WispCheckInCancelledBy = (typeof WISP_CHECK_IN_CANCELLED_BY)[number];
+
+/**
  * Wisp check-in timers W01 (#10992, feature #10991) — a follow-up Wisp
  * scheduled on its own thread (migrations/2027-01-20-130000-wisp-check-ins.sql).
  * A delayed `check-in` job on wisp-wake fires it; the grantor's next turn in
@@ -57,6 +65,12 @@ export const wispCheckIns = pgTable('wisp_check_ins', {
   dueAt: timestamp('due_at', { withTimezone: true }).notNull(),
   /** What Wisp should do when it fires (1–1000 chars); written by the model. */
   instruction: text('instruction').notNull(),
+  /**
+   * #11675 (migrations/2027-01-24-210000-wisp-check-ins-label.sql): the short
+   * line the technician reads (1–120 chars, one line); written by the model.
+   * Null when Wisp gave none, and on rows scheduled before the column existed.
+   */
+  label: text('label'),
   context: jsonb('context').$type<WispCheckInContext>(),
   status: text('status').$type<WispCheckInStatus>().notNull().default('scheduled'),
   firedAt: timestamp('fired_at', { withTimezone: true }),
@@ -73,6 +87,11 @@ export const wispCheckIns = pgTable('wisp_check_ins', {
   fireReason: text('fire_reason').$type<WispCheckInFireReason>(),
   /** Why Breeze cancelled it (≤ 200 chars); null when Wisp or the user cancelled it. */
   cancelReason: text('cancel_reason'),
+  /**
+   * Who cancelled it (#11611, migrations/2027-01-24-110000-wisp-check-ins-cancelled-by.sql);
+   * null while not cancelled, and on rows cancelled before the column existed.
+   */
+  cancelledBy: text('cancelled_by').$type<WispCheckInCancelledBy>(),
   /** `notify` or `run` (WISP_CHECK_IN_MODES). */
   mode: text('mode').$type<WispCheckInMode>().notNull().default('notify'),
   /** The assessment run a `run` check-in admitted; a provenance pointer, no FK. */
@@ -118,6 +137,7 @@ export const wispCheckIns = pgTable('wisp_check_ins', {
   ),
   runIdModeChk: check('wisp_check_ins_run_id_mode_chk', sql`${t.runId} IS NULL OR ${t.mode} = 'run'`),
   instructionLenChk: check('wisp_check_ins_instruction_len_chk', sql`char_length(${t.instruction}) BETWEEN 1 AND 1000`),
+  labelLenChk: check('wisp_check_ins_label_len_chk', sql`${t.label} IS NULL OR char_length(${t.label}) BETWEEN 1 AND 120`),
   dueWindowChk: check(
     'wisp_check_ins_due_window_chk',
     sql`${t.dueAt} >= ${t.createdAt} + interval '1 minute' AND ${t.dueAt} <= ${t.createdAt} + interval '7 days'`,
@@ -129,6 +149,7 @@ export const wispCheckIns = pgTable('wisp_check_ins', {
   triggerShapeChk: check('wisp_check_ins_trigger_shape_chk', sql`(${t.triggerKind} = 'time') = (${t.triggerSubjectId} IS NULL)`),
   fireReasonChk: check('wisp_check_ins_fire_reason_chk', sql`${t.fireReason} IS NULL OR ${t.fireReason} IN ('due','event','deadline')`),
   cancelReasonLenChk: check('wisp_check_ins_cancel_reason_len_chk', sql`${t.cancelReason} IS NULL OR char_length(${t.cancelReason}) <= 200`),
+  cancelledByChk: check('wisp_check_ins_cancelled_by_chk', sql`${t.cancelledBy} IS NULL OR ${t.cancelledBy} IN ('user','wisp','breeze')`),
   statusShapeChk: check(
     'wisp_check_ins_status_shape_chk',
     sql`(${t.status} <> 'fired' OR ${t.firedAt} IS NOT NULL) AND (${t.status} <> 'consumed' OR (${t.firedAt} IS NOT NULL AND ${t.consumedAt} IS NOT NULL)) AND (${t.status} <> 'cancelled' OR ${t.cancelledAt} IS NOT NULL) AND (${t.status} <> 'running' OR ${t.runId} IS NOT NULL)`,

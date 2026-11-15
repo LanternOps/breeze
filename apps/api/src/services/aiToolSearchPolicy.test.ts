@@ -67,6 +67,13 @@ describe('resolveToolSearchPolicy', () => {
     expect(policy.env.ENABLE_TOOL_SEARCH).toBe('false');
   });
 
+  it('a constrained tool profile turns search off (profile_static) before the operator and host checks (#11394)', () => {
+    expect(resolveToolSearchPolicy({ ...base, profileSearch: false })).toMatchObject({ enabled: false, reason: 'profile_static', tools: [] });
+    expect(resolveToolSearchPolicy({ ...base, profileSearch: false, override: 'on' }).reason).toBe('profile_static');
+    expect(resolveToolSearchPolicy({ ...base, surfaceSearch: false, profileSearch: false }).reason).toBe('surface_static');
+    expect(resolveToolSearchPolicy({ ...base, profileSearch: true })).toMatchObject({ enabled: true, reason: 'first_party_host' });
+  });
+
   it('turns search off when too few turns remain for a search round-trip', () => {
     const low = resolveToolSearchPolicy({ ...base, remainingTurns: TOOL_SEARCH_MIN_REMAINING_TURNS - 1 });
     expect(low.enabled).toBe(false);

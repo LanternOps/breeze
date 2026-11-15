@@ -51,11 +51,16 @@ async function inRolledBackTx(body: (tx: Tx, notices: string[]) => Promise<void>
  */
 async function dropW2Objects(tx: Tx): Promise<void> {
   await tx.unsafe(`
-    DROP TABLE IF EXISTS public.portal_user_identities;
+    -- CASCADE: W8's portal_directory_actions FK (identity_id, org_id) points at
+    -- it (2027-01-24-200000); the ROLLBACK restores that constraint too.
+    DROP TABLE IF EXISTS public.portal_user_identities CASCADE;
     DROP INDEX IF EXISTS public.portal_users_id_org_uq CASCADE;
     DROP TRIGGER IF EXISTS portal_users_browser_access_fill ON public.portal_users;
     DROP FUNCTION IF EXISTS public.breeze_portal_users_fill_browser_access();
     ALTER TABLE public.portal_users DROP CONSTRAINT IF EXISTS portal_users_status_chk;
+    -- W8 (2027-01-24-200000): disabled_by did not exist before W2 either; the
+    -- replay's unknown-status normalization writes status = 'disabled' only.
+    ALTER TABLE public.portal_users DROP CONSTRAINT IF EXISTS portal_users_disabled_by_status_chk;
     ALTER TABLE public.portal_users DROP CONSTRAINT IF EXISTS portal_users_browser_access_chk;
     ALTER TABLE public.portal_users DROP COLUMN IF EXISTS browser_access;
   `);

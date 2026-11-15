@@ -5,8 +5,9 @@
  *
  *  - `createPortalAccessRequest` — the producers' entry (W4 SSO, W6 add-in,
  *    W7 self-registration). At most one pending row per (org, email) (plan
- *    D3): a repeat only bumps `last_requested_at`. Expiry is lazy: a pending
- *    row past `expires_at` reads as expired and create replaces it.
+ *    D3): a repeat only bumps `last_requested_at`, and an SSO repeat by a
+ *    DIFFERENT identity is refused (W7 D9). Expiry is lazy: a pending row past
+ *    `expires_at` reads as expired and create replaces it.
  *  - `approvePortalAccessRequest` / `denyPortalAccessRequest` — the MSP's
  *    decision. Each owns ONE `withDbTransaction` around its whole body, so a
  *    refusal rolls back every write it made and the route's catch (outside the
@@ -38,6 +39,7 @@ import {
   initialPortalAccountState,
   planPortalAccountTransition,
 } from './portalAccountState';
+import { lockVerifiedDomainRow } from './portalDomainVerification';
 import { createIdentityOnlyAccount } from './portalIdentityAccounts';
 import { PORTAL_GOOGLE_ISSUER, entraIssuer, portalUserHasIdentitySql } from './portalUserIdentities';
 import { emailDomainOf } from './portalSelfRegistration/emailDomain';
@@ -64,7 +66,8 @@ export type PortalAccessRequestErrorCode =
   | 'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS'
   | 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED'
   | 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN'
-  | 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED';
+  | 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED'
+  | 'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED';
 
 export class PortalAccessRequestError extends Error {
   constructor(
@@ -105,6 +108,13 @@ const domainNotVerified = () => new PortalAccessRequestError(
   'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED', 409,
   "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
 );
+// W7 D8: a `google` request whose Workspace domain (`hd`) is not, or no longer,
+// verified for this org — the route's pre-check found no fact for this org, or
+// the domain row the fact named changed before the approval could lock it.
+const googleDomainNotVerified = () => new PortalAccessRequestError(
+  'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED', 409,
+  "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.",
+);
 
 // ---------------------------------------------------------------------------
 // Create
@@ -113,27 +123,83 @@ const domainNotVerified = () => new PortalAccessRequestError(
 export type CreatePortalAccessRequestInput =
   | { source: 'self'; orgId: string; email: string; name: string | null }
   | { source: 'entra'; orgId: string; email: string; name: string | null; tid: string; oid: string }
-  | { source: 'google'; orgId: string; email: string; name: string | null; sub: string }
+  /** `hostedDomain`: the verified ID token's `hd` (W7 D8), the domain approval is fenced on. */
+  | { source: 'google'; orgId: string; email: string; name: string | null; sub: string; hostedDomain: string }
   | { source: 'addin_user'; orgId: string; portalUserId: string; email: string; name: string | null };
 
 export type CreatePortalAccessRequestOutcome =
   | { kind: 'created' | 'already_pending'; requestId: string }
-  | { kind: 'capped' };
+  | { kind: 'capped' }
+  /**
+   * W7 D9: an SSO create (`entra` / `google`) found a live pending request at
+   * the address holding a DIFFERENT identity (source, issuer or subject).
+   * Nothing was written; `requestId` is the pending row's.
+   */
+  | { kind: 'claims_conflict'; requestId: string };
 
-/** The claim columns for a source (the `portal_access_requests_claims_chk` shape). */
-function requestClaims(input: CreatePortalAccessRequestInput): {
-  issuer: string | null; subject: string | null; entraTenantId: string | null; portalUserId: string | null;
-} {
+type RequestClaims = {
+  issuer: string | null;
+  subject: string | null;
+  entraTenantId: string | null;
+  portalUserId: string | null;
+  googleHostedDomain: string | null;
+};
+
+/**
+ * The claim columns for a source (the `portal_access_requests_claims_chk` and
+ * `portal_access_requests_google_hd_chk` shapes).
+ */
+function requestClaims(input: CreatePortalAccessRequestInput): RequestClaims {
   switch (input.source) {
     case 'entra':
-      return { issuer: entraIssuer(input.tid), subject: input.oid, entraTenantId: input.tid, portalUserId: null };
-    case 'google':
-      return { issuer: PORTAL_GOOGLE_ISSUER, subject: input.sub, entraTenantId: null, portalUserId: null };
+      return { issuer: entraIssuer(input.tid), subject: input.oid, entraTenantId: input.tid, portalUserId: null, googleHostedDomain: null };
+    case 'google': {
+      const googleHostedDomain = input.hostedDomain.trim().toLowerCase();
+      // The verifier refuses a token without `hd` (D1); reaching here without one is a bug.
+      if (!googleHostedDomain) throw new Error('google access request is missing its hosted domain');
+      return { issuer: PORTAL_GOOGLE_ISSUER, subject: input.sub, entraTenantId: null, portalUserId: null, googleHostedDomain };
+    }
     case 'addin_user':
-      return { issuer: null, subject: null, entraTenantId: null, portalUserId: input.portalUserId };
+      return { issuer: null, subject: null, entraTenantId: null, portalUserId: input.portalUserId, googleHostedDomain: null };
     case 'self':
-      return { issuer: null, subject: null, entraTenantId: null, portalUserId: null };
+      return { issuer: null, subject: null, entraTenantId: null, portalUserId: null, googleHostedDomain: null };
   }
+}
+
+/**
+ * W7 D9, under the admission lock: the live pending request at this address,
+ * when it holds a different identity than an SSO create asserts. Only SSO
+ * creates read it (`self` / `addin_user` keep W3's bump, with no extra read).
+ * The admission lock serializes every create for the org, so no other pending
+ * row can appear at the address between this read and the upsert; a decision
+ * that lands in between only turns the upsert into a fresh insert.
+ */
+async function conflictingPendingRequest(
+  input: CreatePortalAccessRequestInput,
+  email: string,
+  claims: RequestClaims,
+): Promise<string | null> {
+  if (input.source !== 'entra' && input.source !== 'google') return null;
+  const [pending] = await db
+    .select({
+      id: portalAccessRequests.id,
+      source: portalAccessRequests.source,
+      issuer: portalAccessRequests.issuer,
+      subject: portalAccessRequests.subject,
+    })
+    .from(portalAccessRequests)
+    .where(and(
+      eq(portalAccessRequests.orgId, input.orgId),
+      eq(portalAccessRequests.email, email),
+      eq(portalAccessRequests.status, 'pending'),
+    ))
+    .limit(1);
+  if (!pending) return null;
+  // Exact comparison, as the identity key is unique: (issuer, subject) is never normalized.
+  const sameIdentity = pending.source === input.source
+    && pending.issuer === claims.issuer
+    && pending.subject === claims.subject;
+  return sameIdentity ? null : pending.id;
 }
 
 /**
@@ -150,11 +216,15 @@ function requestClaims(input: CreatePortalAccessRequestInput): {
  *    system context. The caller has derived `orgId` server-side.
  *
  * Steps: take the org's admission lock, normalise the email (`lower(btrim)`),
- * expire this address's stale pending row, refuse at
+ * expire this address's stale pending row, refuse an SSO create whose address
+ * is pending for a different identity (`claims_conflict`, W7 D9: the MSP
+ * denies the queued one, then the person signs in again), refuse at
  * {@link PORTAL_ACCESS_REQUEST_PENDING_CAP} live pending rows, then
  * insert-or-bump on the pending-only unique index. The cap counts the org's
  * OTHER addresses, so a repeat from someone already queued still bumps rather
- * than reading as `capped`.
+ * than reading as `capped`. A `self` / `addin_user` repeat bumps whatever is
+ * pending (W3) and never changes its claims; a `google` repeat by the same
+ * identity also refreshes `google_hosted_domain` to the newest `hd`.
  *
  * The admission lock (`pg_advisory_xact_lock`, one per org) makes the count and
  * the insert one step: concurrent creates for an org run one at a time, so two
@@ -190,6 +260,10 @@ export async function createPortalAccessRequest(
         lte(portalAccessRequests.expiresAt, now),
       ));
 
+    // D9: an email match never decides which identity is queued.
+    const conflictId = await conflictingPendingRequest(input, email, claims);
+    if (conflictId) return { kind: 'claims_conflict', requestId: conflictId };
+
     const [counted] = await db
       .select({ n: sql<number>`count(*)::int` })
       .from(portalAccessRequests)
@@ -220,7 +294,12 @@ export async function createPortalAccessRequest(
         // partial index as the arbiter only from a matching predicate (42P10).
         target: [portalAccessRequests.orgId, portalAccessRequests.email],
         targetWhere: sql`${portalAccessRequests.status} = 'pending'`,
-        set: { lastRequestedAt: now, updatedAt: now },
+        // A google repeat is the same identity (D9 checked it): its newest `hd` replaces the old one.
+        set: {
+          lastRequestedAt: now,
+          updatedAt: now,
+          ...(input.source === 'google' ? { googleHostedDomain: claims.googleHostedDomain } : {}),
+        },
       })
       // xmax = 0 only on a freshly inserted tuple; the DO UPDATE branch stamps it.
       .returning({ id: portalAccessRequests.id, inserted: sql<boolean>`(xmax = 0)` });
@@ -250,8 +329,25 @@ type DecisionInput = { orgId: string; requestId: string; deciderUserId: string; 
  * request transaction (`isDomainVerifiedForOrg` throws inside one) just before
  * this call. Only `self` requests read it, and anything but `true` refuses
  * (DOMAIN_NOT_VERIFIED), so a caller that forgets the pre-check fails closed.
+ *
+ * `googleDomain` (W7 D8): for a `google` request, the caller's
+ * `findOrgByVerifiedDomain(request hd)` fact, read OUTSIDE the request
+ * transaction just before this call: `{ verifiedAt }` when it names THIS org,
+ * else null. The approval re-validates it under a row lock
+ * ({@link lockVerifiedGoogleDomain}); null or absent refuses.
+ *
+ * `googleContactAllowed` (W7 D3): for a `google` request, whether the address
+ * may be linked to the org's contact (its domain is the `hd`, or is verified
+ * for the org), computed by the caller outside the transaction. Anything but
+ * `true` creates the account with no contact.
+ *
+ * Every other source ignores both.
  */
-type ApproveInput = DecisionInput & { selfDomainVerified?: boolean };
+type ApproveInput = DecisionInput & {
+  selfDomainVerified?: boolean;
+  googleDomain?: { verifiedAt: Date } | null;
+  googleContactAllowed?: boolean;
+};
 
 type LockedRequest = {
   id: string;
@@ -262,6 +358,7 @@ type LockedRequest = {
   issuer: string | null;
   subject: string | null;
   entraTenantId: string | null;
+  googleHostedDomain: string | null;
   portalUserId: string | null;
   status: PortalAccessRequestStatus;
   expiresAt: Date;
@@ -289,6 +386,7 @@ async function lockPendingRequest(orgId: string, requestId: string, now: Date): 
       issuer: portalAccessRequests.issuer,
       subject: portalAccessRequests.subject,
       entraTenantId: portalAccessRequests.entraTenantId,
+      googleHostedDomain: portalAccessRequests.googleHostedDomain,
       portalUserId: portalAccessRequests.portalUserId,
       status: portalAccessRequests.status,
       expiresAt: portalAccessRequests.expiresAt,
@@ -414,28 +512,64 @@ async function lockProvenEntraTenant(request: LockedRequest): Promise<void> {
 }
 
 /**
+ * W7 D8, the Google twin of {@link lockProvenEntraTenant}. A `google` request
+ * carries the `hd` its sign-in resolved the org from, captured up to
+ * {@link PORTAL_ACCESS_REQUEST_TTL_DAYS} days ago. A pre-check alone races a
+ * W5 transfer: check passes → the domain is displaced to org B → this approval
+ * creates the globally unique `(issuer, sub)` identity in org A → that
+ * person's later sign-in resolves org B and is denied `identity_other_org`.
+ *
+ * So the caller's outside-transaction fact (`findOrgByVerifiedDomain`, full W5
+ * evidence semantics) is re-validated here, before any write: `FOR SHARE` on
+ * the org's domain row with the fact's `verified_at`, held to commit
+ * (`lockVerifiedDomainRow`). A W5 writer that ends the verification waits for
+ * this approval, or committed first and the row no longer matches. No fact, no
+ * `hd` on the request (none can exist: `portal_access_requests_google_hd_chk`)
+ * or no row → GOOGLE_DOMAIN_NOT_VERIFIED.
+ */
+async function lockVerifiedGoogleDomain(
+  request: LockedRequest,
+  fact: { verifiedAt: Date } | null | undefined,
+): Promise<void> {
+  if (!fact || !request.googleHostedDomain) throw googleDomainNotVerified();
+  const held = await lockVerifiedDomainRow(db, {
+    orgId: request.orgId,
+    domain: request.googleHostedDomain,
+    verifiedAt: fact.verifiedAt,
+  });
+  if (!held) throw googleDomainNotVerified();
+}
+
+/**
  * `entra` / `google`: an identity-only account (plan D2), written by the
  * shared services/portalIdentityAccounts.ts writer (W4 instant mode uses the
  * same one). An `entra` request first re-checks its tenant
- * ({@link lockProvenEntraTenant}: ENTRA_TENANT_NOT_PROVEN). The writer's
- * outcomes map back to this queue's 409s, and the throw rolls back everything
- * the writer did (the contact link, a login row): `account_exists` →
- * ACCOUNT_EXISTS, `identity_linked` → IDENTITY_LINKED. The contact is linked at
- * the request's address, as an MSP invite does (the approval is an MSP action).
+ * ({@link lockProvenEntraTenant}: ENTRA_TENANT_NOT_PROVEN), a `google` request
+ * its Workspace domain ({@link lockVerifiedGoogleDomain}:
+ * GOOGLE_DOMAIN_NOT_VERIFIED). The writer's outcomes map back to this queue's
+ * 409s, and the throw rolls back everything the writer did (the contact link,
+ * a login row): `account_exists` → ACCOUNT_EXISTS, `identity_linked` →
+ * IDENTITY_LINKED. An `entra` account's contact is linked at the request's
+ * address, as an MSP invite does (the approval is an MSP action); a `google`
+ * account's only when the caller's D3 rule allowed it (`googleContactAllowed`),
+ * else it gets no contact.
  */
-async function createIdentityAccount(request: LockedRequest, deciderUserId: string, now: Date): Promise<ApprovedAccount> {
+async function createIdentityAccount(
+  request: LockedRequest, deciderUserId: string, now: Date, input: ApproveInput,
+): Promise<ApprovedAccount> {
   const provider = request.source;
   if ((provider !== 'entra' && provider !== 'google') || !request.issuer || !request.subject) {
     throw new Error('SSO access request is missing its identity claims');
   }
   if (provider === 'entra' && !request.entraTenantId) throw new Error('entra access request has no tenant id');
   if (provider === 'entra') await lockProvenEntraTenant(request);
+  if (provider === 'google') await lockVerifiedGoogleDomain(request, input.googleDomain);
 
   const outcome = await createIdentityOnlyAccount(db, {
     orgId: request.orgId,
     email: request.email,
     name: request.name,
-    contactAddress: request.email,
+    contactAddress: provider === 'entra' || input.googleContactAllowed === true ? request.email : null,
     actorUserId: deciderUserId,
     writer: 'sso_request_approved',
     now,
@@ -491,7 +625,8 @@ async function createInvitedAccount(
  *
  * Outcomes: `account_created` (entra/google), `invite_pending` (self — the
  * route issues the invite), `browser_access_granted` (addin_user). A `self`
- * request also needs `selfDomainVerified: true` (see {@link ApproveInput}).
+ * request also needs `selfDomainVerified: true`, a `google` request its
+ * `googleDomain` fact (see {@link ApproveInput}).
  */
 export async function approvePortalAccessRequest(input: ApproveInput): Promise<ApprovePortalAccessRequestResult> {
   const now = input.now ?? new Date();
@@ -505,7 +640,7 @@ export async function approvePortalAccessRequest(input: ApproveInput): Promise<A
         break;
       case 'entra':
       case 'google':
-        account = await createIdentityAccount(request, input.deciderUserId, now);
+        account = await createIdentityAccount(request, input.deciderUserId, now, input);
         break;
       case 'self':
         account = await createInvitedAccount(request, input.deciderUserId, now, input.selfDomainVerified);
@@ -553,9 +688,10 @@ export async function denyPortalAccessRequest(
 // ---------------------------------------------------------------------------
 
 /**
- * The source and address of one of the org's requests, for the route's
- * pre-approval checks (W6 D11). Null when there is no such request in the org
- * (or the id is malformed); the approval then reports NOT_FOUND itself.
+ * The source, address and (for `google`) Workspace domain of one of the org's
+ * requests, for the route's pre-approval checks (W6 D11, W7 D3 / D8). Null when
+ * there is no such request in the org (or the id is malformed); the approval
+ * then reports NOT_FOUND itself.
  *
  * Its own savepoint, so a failed read stops there and a caller catching OUTSIDE
  * this call (the `/decide` loop) leaves the request transaction usable (#11203).
@@ -563,11 +699,15 @@ export async function denyPortalAccessRequest(
 export async function readPortalAccessRequestForDecision(
   orgId: string,
   requestId: string,
-): Promise<{ source: PortalAccessRequestSource; email: string } | null> {
+): Promise<{ source: PortalAccessRequestSource; email: string; googleHostedDomain: string | null } | null> {
   if (!UUID_RE.test(requestId)) return null;
   return withDbTransaction(async () => {
     const [row] = await db
-      .select({ source: portalAccessRequests.source, email: portalAccessRequests.email })
+      .select({
+        source: portalAccessRequests.source,
+        email: portalAccessRequests.email,
+        googleHostedDomain: portalAccessRequests.googleHostedDomain,
+      })
       .from(portalAccessRequests)
       .where(and(eq(portalAccessRequests.id, requestId), eq(portalAccessRequests.orgId, orgId)))
       .limit(1);
@@ -590,10 +730,13 @@ export interface PortalAccessRequestListItem {
   portalUserId: string | null;
   /** Any portal account in the org at this address (approve would refuse with ACCOUNT_EXISTS). */
   accountExists: boolean;
+  /** `google` rows: the Workspace domain (`hd`) the request was made from (W7 D8). Null for every other source. */
+  googleHostedDomain: string | null;
   /**
-   * `self` rows: whether the address's domain is verified for the org right now
-   * (approve refuses with DOMAIN_NOT_VERIFIED when it is not; W6 D11). Null for
-   * every other source.
+   * Whether the domain approval checks is verified for the org right now:
+   * `self` rows the address's domain (approve refuses with DOMAIN_NOT_VERIFIED
+   * when it is not; W6 D11), `google` rows the `hd` (GOOGLE_DOMAIN_NOT_VERIFIED;
+   * W7 D8). Null for every other source.
    */
   domainVerified: boolean | null;
 }
@@ -606,7 +749,8 @@ export interface PortalAccessRequestListItem {
  *
  * `verifiedDomains`: the org's currently verified domains, lower-cased, read by
  * the caller outside the request transaction (`listVerifiedDomainsForOrg`).
- * Without it every `self` row reads `domainVerified: false`, as approve would.
+ * Without it every `self` and `google` row reads `domainVerified: false`, as
+ * approve would.
  */
 export async function listPortalAccessRequests(
   orgId: string,
@@ -636,6 +780,7 @@ export async function listPortalAccessRequests(
       decidedByUserId: t.decidedByUserId,
       decidedByName: users.name,
       portalUserId: t.portalUserId,
+      googleHostedDomain: t.googleHostedDomain,
       accountExists: sql<boolean>`exists (select 1 from "portal_users" "pu_acct" where "pu_acct"."org_id" = "portal_access_requests"."org_id" and lower("pu_acct"."email") = "portal_access_requests"."email")`,
     })
     .from(t)
@@ -657,13 +802,21 @@ export async function listPortalAccessRequests(
     decidedBy: r.decidedByUserId ? { id: r.decidedByUserId, name: r.decidedByName ?? null } : null,
     portalUserId: r.portalUserId,
     accountExists: Boolean(r.accountExists),
-    domainVerified: r.source === 'self' ? selfDomainVerified(r.email, opts.verifiedDomains) : null,
+    googleHostedDomain: r.source === 'google' ? (r.googleHostedDomain ?? null) : null,
+    domainVerified: listDomainVerified(r, opts.verifiedDomains),
   }));
   return { items, hasMore: rows.length > limit };
 }
 
-function selfDomainVerified(email: string, verifiedDomains: ReadonlySet<string> | undefined): boolean {
-  const domain = emailDomainOf(email);
+/** The domain approve would check for this row, against the org's verified set (see {@link PortalAccessRequestListItem}). */
+function listDomainVerified(
+  row: { source: PortalAccessRequestSource; email: string; googleHostedDomain: string | null },
+  verifiedDomains: ReadonlySet<string> | undefined,
+): boolean | null {
+  const domain = row.source === 'self'
+    ? emailDomainOf(row.email)
+    : row.source === 'google' ? (row.googleHostedDomain ?? null) : undefined;
+  if (domain === undefined) return null;
   return domain !== null && verifiedDomains !== undefined && verifiedDomains.has(domain);
 }
 

@@ -123,7 +123,7 @@ func uploadSystemStateArtifact(t *testing.T, provider *providers.LocalProvider, 
 // runs, and the run must not be reported as StateApplied.
 func TestApplySystemState_WrongChecksum_NotAppliedAndArtifactDiscarded(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-checksum-mismatch"
 
 	goodContent := []byte("good artifact bytes")
@@ -188,7 +188,7 @@ func TestApplySystemState_WrongChecksum_NotAppliedAndArtifactDiscarded(t *testin
 // so pre-D15 manifests still apply.
 func TestApplySystemState_EmptyChecksum_UnverifiedWarningButApplied(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-no-checksum"
 
 	content := []byte("legacy artifact, no checksum recorded")
@@ -226,7 +226,7 @@ func TestApplySystemState_EmptyChecksum_UnverifiedWarningButApplied(t *testing.T
 // manifest that never recorded a checksum.
 func TestApplySystemState_SizeMismatch_FailsEvenWithoutChecksum(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-size-mismatch"
 
 	content := []byte("short")
@@ -267,7 +267,7 @@ func TestApplySystemState_SizeMismatch_FailsEvenWithoutChecksum(t *testing.T) {
 // explicitly rather than merely default to it.
 func TestApplySystemState_ManifestWithZeroArtifacts_ExpectSystemStateFalse_SoftPath(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-zero-artifacts"
 
 	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
@@ -297,7 +297,7 @@ func TestApplySystemState_ManifestWithZeroArtifacts_ExpectSystemStateFalse_SoftP
 // created).
 func TestApplySystemState_ManifestWithZeroArtifacts_ExpectSystemStateTrue_Fatal(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-zero-artifacts-expected"
 
 	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
@@ -331,7 +331,7 @@ func TestApplySystemState_ManifestWithZeroArtifacts_ExpectSystemStateTrue_Fatal(
 // required capture cannot be partially applied.
 func TestApplySystemState_RequiredStepIncomplete_Fatal(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-required-incomplete"
 
 	uploadSystemStateArtifact(t, provider, snapshotID, "registry_SYSTEM", []byte("hive bytes"))
@@ -368,7 +368,7 @@ func TestApplySystemState_RequiredStepIncomplete_Fatal(t *testing.T) {
 // error — only the required∩incomplete intersection blocks the run.
 func TestApplySystemState_NonRequiredIncomplete_WarnsOnly(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-nonrequired-incomplete"
 
 	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
@@ -402,7 +402,7 @@ func TestApplySystemState_NonRequiredIncomplete_WarnsOnly(t *testing.T) {
 // that must be treated as a broken snapshot, not "no state to restore".
 func TestApplySystemState_ExpectSystemStateTrue_ManifestMissing_Fatal(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-missing-manifest"
 	// Deliberately do not upload any system-state/manifest.json.
 
@@ -429,7 +429,7 @@ func TestApplySystemState_ExpectSystemStateTrue_ManifestMissing_Fatal(t *testing
 // snapshot) — this must remain a warning, not an error.
 func TestApplySystemState_ExpectSystemStateFalse_ManifestMissing_Soft(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-no-state-expected"
 
 	useFakeRestorer(t, &fakeStateRestorer{})
@@ -501,7 +501,7 @@ func buildOrdinaryManifestFixture(t *testing.T, provider *providers.LocalProvide
 // have produced ("completed").
 func TestRunRecoveryContext_ExpectSystemStateFalse_SoftSkip_StatusUnchanged(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-pipeline-no-state"
 	buildOrdinaryManifestFixture(t, provider, snapshotID)
 
@@ -525,7 +525,7 @@ func TestRunRecoveryContext_ExpectSystemStateFalse_SoftSkip_StatusUnchanged(t *t
 // overall status "completed".
 func TestRunRecoveryContext_HappyPath_StateAppliedAndCompleted(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-pipeline-happy"
 	buildOrdinaryManifestFixture(t, provider, snapshotID)
 
@@ -562,7 +562,7 @@ func TestRunRecoveryContext_HappyPath_StateAppliedAndCompleted(t *testing.T) {
 // here.
 func TestRunRecoveryContext_ExpectSystemStateTrue_NotApplied_NeverCompleted(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-pipeline-expected-but-missing"
 	buildOrdinaryManifestFixture(t, provider, snapshotID)
 	// Deliberately no system-state manifest uploaded, but ExpectSystemState
@@ -603,7 +603,7 @@ func TestRunRecoveryContext_ExpectSystemStateTrue_NotApplied_NeverCompleted(t *t
 // real symlink in staging, pointing at the recorded target exactly.
 func TestApplySystemState_SymlinkArtifact_NoDownloadCreatesSymlink(t *testing.T) {
 	baseDir := t.TempDir()
-	base := providers.NewLocalProvider(baseDir)
+	base := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-symlink"
 
 	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
@@ -683,7 +683,7 @@ func TestApplySystemState_SymlinkArtifact_NoDownloadCreatesSymlink(t *testing.T)
 // silently ignored.
 func TestApplySystemState_SymlinkArtifact_CreationFailureCountsAsVerificationFailure(t *testing.T) {
 	baseDir := t.TempDir()
-	base := providers.NewLocalProvider(baseDir)
+	base := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-symlink-failure"
 
 	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
@@ -724,7 +724,7 @@ func TestApplySystemState_SymlinkArtifact_CreationFailureCountsAsVerificationFai
 // /etc — W03).
 func TestApplySystemState_RegularArtifact_MetadataReapplied(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-metadata"
 
 	content := []byte("metadata artifact content")
@@ -797,7 +797,7 @@ func TestApplySystemState_RegularArtifact_MetadataReapplied(t *testing.T) {
 // invoke chmod/chown/chtimes at all.
 func TestApplySystemState_ZeroMetadataFields_NotReapplied(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-zero-metadata"
 
 	content := []byte("no metadata recorded")
@@ -837,7 +837,7 @@ func TestApplySystemState_ZeroMetadataFields_NotReapplied(t *testing.T) {
 // the artifact's bytes already downloaded and verified fine.
 func TestApplySystemState_LchownFailure_WarnsButStillApplied(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-lchown-eperm"
 
 	content := []byte("owned by someone else")
@@ -899,7 +899,7 @@ func (p *partialWriteThenErrorProvider) Download(remotePath, localPath string) e
 // it, and must never write a file outside the staging directory.
 func TestApplySystemState_PathTraversal_RelativeParentEscape_Rejected(t *testing.T) {
 	baseDir := t.TempDir()
-	base := providers.NewLocalProvider(baseDir)
+	base := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-traversal-parent"
 
 	content := []byte("malicious content")
@@ -946,7 +946,7 @@ func TestApplySystemState_PathTraversal_RelativeParentEscape_Rejected(t *testing
 // path half of the same P1 fix.
 func TestApplySystemState_PathTraversal_AbsolutePath_Rejected(t *testing.T) {
 	baseDir := t.TempDir()
-	base := providers.NewLocalProvider(baseDir)
+	base := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-traversal-absolute"
 
 	outsideTarget := filepath.Join(t.TempDir(), "absolute-escape.txt")
@@ -988,7 +988,7 @@ func TestApplySystemState_PathTraversal_AbsolutePath_Rejected(t *testing.T) {
 // at the symlink's real target — it must be rejected outright.
 func TestApplySystemState_ArtifactUnderStagedSymlink_Rejected(t *testing.T) {
 	baseDir := t.TempDir()
-	base := providers.NewLocalProvider(baseDir)
+	base := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-symlink-escape"
 	outsideDir := t.TempDir() // sibling temp dir, NOT nested in staging
 
@@ -1037,7 +1037,7 @@ func TestApplySystemState_ArtifactUnderStagedSymlink_Rejected(t *testing.T) {
 // complete.
 func TestApplySystemState_DownloadError_RemovesPartialFile(t *testing.T) {
 	baseDir := t.TempDir()
-	base := providers.NewLocalProvider(baseDir)
+	base := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-partial-download"
 
 	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
@@ -1072,7 +1072,7 @@ func TestApplySystemState_DownloadError_RemovesPartialFile(t *testing.T) {
 // unverified.
 func TestApplySystemState_ZeroSizeBytes_NonEmptyContent_Fails(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-zero-size-mismatch"
 
 	content := []byte("x")
@@ -1131,7 +1131,7 @@ func TestApplyArtifactMetadata_LchownRunsBeforeChmod(t *testing.T) {
 // artifact and the mismatch, while staying in Warnings as before.
 func TestRunRecoveryContext_VerificationFailure_SetsTerminalError(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-5479-terminal-error"
 	buildOrdinaryManifestFixture(t, provider, snapshotID)
 
@@ -1198,7 +1198,7 @@ func TestAppendRecoveryError_KeepsFirstReasonFirst(t *testing.T) {
 // check and leaves the run "partial".
 func TestRunRecoveryContext_NotCompleted_NeverHasEmptyError(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-5479-no-empty-error"
 	buildOrdinaryManifestFixture(t, provider, snapshotID)
 
@@ -1224,7 +1224,7 @@ func TestRunRecoveryContext_NotCompleted_NeverHasEmptyError(t *testing.T) {
 // earlier cause — while the later failure survives in the warnings.
 func TestRunRecoveryContext_FirstFailureWins_AcrossFailureKinds(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	snapshotID := "snap-5479-first-failure-wins"
 	buildOrdinaryManifestFixture(t, provider, snapshotID)
 

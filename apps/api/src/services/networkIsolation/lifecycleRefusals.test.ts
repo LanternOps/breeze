@@ -10,7 +10,7 @@ vi.mock('../sentry', () => ({ captureMessage: vi.fn() }));
 vi.mock('../fixMemory/store', () => ({ deleteDeviceFixOutcomes: vi.fn(async () => ({ deleted: 0, identitiesMarked: 0 })) }));
 vi.mock('../hardwareHealth/retire', () => ({ resolveAlertsForRemovedComponents: vi.fn() }));
 vi.mock('../siteOwnedAlerts', () => ({ detachOriginDeviceTopologyAlerts: vi.fn(async () => 0) }));
-vi.mock('../../routes/devices/core', () => ({
+vi.mock('../deviceCascadeTables', () => ({
   DEVICE_CASCADE_DELETE_PREDICATES: new Map(), DEVICE_DETACH_DEVICE_ID_TABLES: [],
   DEVICE_LINKED_DEVICE_ID_TABLES: [], DEVICE_LINK_DEPENDENT_COLUMNS: [], getDeviceCascadeDeleteTables: () => [],
 }));

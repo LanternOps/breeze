@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
+import { FOREIGN_KEY_VIOLATION_SQLSTATES } from '../../utils/pgErrors';
 
 /**
  * Schema contract for `partners.service_management_mode` (#5075 W04).
@@ -22,7 +23,6 @@ class Rollback extends Error {}
 
 /** Postgres SQLSTATEs the constraints must raise. */
 const CHECK_VIOLATION = '23514';
-const FK_VIOLATION = '23503';
 
 function sqlState(err: unknown): string | undefined {
   if (!err || typeof err !== 'object') return undefined;
@@ -187,7 +187,7 @@ describe('partners.service_management_mode contract (#5075 W04)', () => {
     });
   });
 
-  it('RESTRICTs deleting a PSA connection a partner is bound to (23503)', async () => {
+  it('RESTRICTs deleting a PSA connection a partner is bound to (23503, or 23001 on Postgres 18)', async () => {
     await withFixture(async ({ partnerId, connectionId }) => {
       await db.execute(sql`
         UPDATE partners
@@ -202,7 +202,8 @@ describe('partners.service_management_mode contract (#5075 W04)', () => {
       // ON DELETE RESTRICT, deliberately: SET NULL or CASCADE would leave the
       // partner as external-with-no-connection, which the pairing CHECK forbids.
       expect(err, 'deleting a bound connection must be refused').not.toBeNull();
-      expect(sqlState(err)).toBe(FK_VIOLATION);
+      // RESTRICT: 23503, or 23001 restrict_violation on Postgres 18.
+      expect(FOREIGN_KEY_VIOLATION_SQLSTATES).toContain(sqlState(err));
     });
   });
 

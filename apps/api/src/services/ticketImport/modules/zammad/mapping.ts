@@ -316,20 +316,51 @@ export function mapOwner(ticket: ZammadTicket, people: Readonly<Record<string, Z
   return { assigneeUserId: null, unmatched: { userId: ownerId, name: personName(person, ownerId), email } };
 }
 
+/** `firstname lastname`, or null when the source has neither (a created contact is then named by nothing but its email). */
+function fullName(person: ZammadPerson | null): string | null {
+  const full = cleanText([person?.firstname, person?.lastname].filter((p) => p && p.trim() && p.trim() !== '-').join(' ')).trim();
+  return full ? full.slice(0, 255) : null;
+}
+
 /**
  * The requester (`customer_id`): a contact when exactly one in the target org
  * has the email (F15), else display-only with the email when it has one.
+ *
+ * With "create missing requester contacts" on (W4b, §5.13) and no single
+ * match, a customer with an email whose ticket passes the "updated since"
+ * filter is sent as `{ createContact }`, named from `firstname lastname`
+ * (§6.4), with the customer id as the source user key. The writer resolves it
+ * (an existing link, one email match, a new contact, or display-only with
+ * several matches) and reports which, so it carries no
+ * `requester_without_contact` note. A customer without an email, and the
+ * system user, stay display-only.
  */
 export function mapRequester(
   ticket: ZammadTicket,
   people: Readonly<Record<string, ZammadPerson | null>>,
   ctx: Pick<ConversionContext, 'contactIdByEmail'>,
+  create: { enabled: boolean; updatedSince?: string } = { enabled: false },
 ): { requester: ImportedTicket['requester']; withoutContact: boolean } {
   const person = own(people, String(ticket.customer_id)) ?? null;
   const email = usableEmail(person?.email);
   const contactId = email ? ctx.contactIdByEmail.get(email) : undefined;
   if (contactId) return { requester: { contactId }, withoutContact: false };
+  if (email && create.enabled && ticket.customer_id !== ZAMMAD_SYSTEM_USER_ID && updatedSince(ticket, create.updatedSince)) {
+    const name = fullName(person);
+    return {
+      requester: { createContact: { ...(name ? { name } : {}), email, sourceUserKey: String(ticket.customer_id) } },
+      withoutContact: false,
+    };
+  }
   return { requester: { name: personName(person, ticket.customer_id), ...(email ? { email } : {}) }, withoutContact: true };
+}
+
+/** The ticket was updated in the source on or after `since` (a UTC `YYYY-MM-DD`); true with no filter. */
+function updatedSince(ticket: ZammadTicket, since: string | undefined): boolean {
+  if (!since) return true;
+  const bound = Date.parse(`${since}T00:00:00.000Z`);
+  const updated = Date.parse(ticket.updated_at);
+  return Number.isFinite(bound) && Number.isFinite(updated) && updated >= bound;
 }
 
 /** The author of an article: `origin_by`, else `created_by` (Z14); System articles are "Zammad (system)". */

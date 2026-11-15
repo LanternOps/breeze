@@ -45,6 +45,8 @@ export function readOnlyGitHub(gh) {
 // --auto`, the path proven to start merge_group CI with the operator token)
 // and the main CI dispatch. Arguments are an array; no shell.
 export const ghCli = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
+// git, for the one push the shepherd makes: the rolling ledger branch (W06c).
+export const gitCli = (args, { cwd } = {}) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
 
 const DISABLE_AUTO_MERGE = `mutation($pullRequestId: ID!) {
   disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) { clientMutationId }
@@ -58,7 +60,7 @@ async function ok(res, what, accept = []) {
   throw new GitHubError(res.status, `${what}: ${res.status} ${res.body?.message ?? ''}`.trim());
 }
 
-export function createWriter({ gh, exec = ghCli, repo }) {
+export function createWriter({ gh, exec = ghCli, git = gitCli, repo }) {
   if (gh.readOnly) throw new Error('createWriter: refusing a read-only client');
   return {
     async comments(pr) {
@@ -94,6 +96,32 @@ export function createWriter({ gh, exec = ghCli, repo }) {
     },
     async dispatchMainCi() {
       exec(['workflow', 'run', 'CI', '--ref', 'main', '-R', repo]);
+    },
+    // W06c: flaky-test issues and the rolling ledger PR.
+    async ensureLabel(name, { color = 'ededed', description = '' } = {}) {
+      const res = await gh.rest('GET', `repos/${repo}/labels/${encodeURIComponent(name)}`);
+      if (res.status === 200) return;
+      if (res.status !== 404) throw new GitHubError(res.status, `read label ${name}: ${res.status}`);
+      // 422: another writer created it in between.
+      await ok(await gh.rest('POST', `repos/${repo}/labels`, { name, color, description }), `create label ${name}`, [422]);
+    },
+    async createIssue({ title, body, labels = [] }) {
+      const res = await ok(await gh.rest('POST', `repos/${repo}/issues`, { title, body, labels }), 'create issue');
+      return res.body.number;
+    },
+    async editIssue(number, fields) {
+      await ok(await gh.rest('PATCH', `repos/${repo}/issues/${number}`, fields), `edit issue ${number}`);
+    },
+    // A new branch only: never a force push, so an existing branch is refused.
+    async pushBranch(cwd, branch) {
+      git(['push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`], { cwd });
+    },
+    // `gh pr create` prints the new PR's URL; its number is the last path segment.
+    async createPr({ head, base = 'main', title, body }) {
+      const out = exec(['pr', 'create', '-R', repo, '--head', head, '--base', base, '--title', title, '--body', body]);
+      const m = /\/pull\/(\d+)\s*$/.exec(String(out).trim());
+      if (!m) throw new Error(`gh pr create: no PR URL in its output: ${String(out).slice(0, 200)}`);
+      return Number(m[1]);
     },
     // Find an open issue with this exact title (first label) or create it.
     async issueUpsert({ title, body, labels = [] }) {

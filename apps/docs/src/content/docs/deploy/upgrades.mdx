@@ -187,6 +187,63 @@ Both Compose files gain 8 optional `api` mappings (`${VAR:-}`). Leaving them out
 | New `api` mappings for the hourly observation retention job: `AGENT_HEALTH_OBSERVATION_RETENTION_*` and `SOFTWARE_INVENTORY_OBSERVATION_RETENTION_*`, each with `_DAYS` (defaults: 30 for health, 90 for software inventory), `_BATCH_SIZE`, `_MAX_BATCHES` and `_ENFORCE`. | Nothing. The job only counts eligible rows and deletes nothing until you set the matching `_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
 | New index on `received_at` for `agent_health_observations` and `software_inventory_observations`, built `CONCURRENTLY` on upgrade. | Nothing. Writes continue during the build; on a large install the migration step takes longer than usual. |
 
+### Unreleased — local backup destinations on the API server
+
+Both Compose files gain one optional mapping, `BACKUP_LOCAL_ROOT` (`${BACKUP_LOCAL_ROOT:-}`), shared by `api` and `worker`.
+
+| Change | Required action |
+|---|---|
+| The API and worker no longer read a local backup destination from its **Local Path** setting. They read it only from `<BACKUP_LOCAL_ROOT>/<organization ID>/<storage configuration ID>/`. | Nothing, unless you use server-side features on local destinations (connectivity test, file-level browse, server-side verification, storage sweep, recovery downloads, recovery media). If you do, follow [Upgrading an install that uses API-side local storage](/backup/storage/#upgrading-an-install-that-uses-api-side-local-storage) before relying on them. Until then they are unavailable and the storage sweep deletes nothing from those destinations. Without `BACKUP_LOCAL_ROOT`, the connectivity test now reports local destinations as **Not tested here** instead of testing the Local Path on the server. |
+
+### Unreleased — count-only history retention windows mapped
+
+Both Compose files gain 10 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings for the count-only targets of the history retention job: `SSO_SESSION_RETENTION_DAYS`, `C2C_CONSENT_SESSION_RETENTION_DAYS`, `TUNNEL_SESSION_RETENTION_DAYS`, `UNIFI_SYNC_RUN_RETENTION_DAYS`, `FLEET_REMEDIATION_RUN_RETENTION_DAYS`, `TICKET_IMPORT_RUN_RETENTION_DAYS`, `TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_DAYS`, `AUDIT_BASELINE_RESULT_RETENTION_DAYS`, `PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_DAYS`, `ML_FEEDBACK_EVENT_RETENTION_DAYS`. | Nothing. These targets only count eligible rows. They have no `_ENFORCE` variable and delete nothing. See [Count-only retention targets](/deploy/environment/#count-only-retention-targets). |
+
+### Unreleased — history retention settings mapped
+
+Both Compose files gain 26 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings for the report-only history retention job: `HISTORY_RETENTION_BATCH_SIZE`, `HISTORY_RETENTION_MAX_BATCHES`, and a `_DAYS` and `_ENFORCE` pair for each of `AI_AGENT_RUN_RETENTION_*`, `PATCH_JOB_RESULT_RETENTION_*`, `SECURITY_POSTURE_SNAPSHOT_RETENTION_*`, `CIS_BASELINE_RESULT_RETENTION_*`, `AUTOMATION_RUN_RETENTION_*`, `REPORT_RUN_RETENTION_*`, `USER_NOTIFICATION_READ_RETENTION_*`, `USER_NOTIFICATION_RETENTION_*`, `REMOTE_SESSION_RETENTION_*`, `SUPPORT_SESSION_RETENTION_*`, `AUTH_SESSION_RETENTION_*`, `NETWORK_CHANGE_EVENT_RETENTION_*`. | Nothing. Each target only counts eligible rows and deletes nothing until you set its own `_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+| The network baseline worker no longer handles the `prune-change-events` job type. Nothing ever scheduled it. | Nothing. Change-event cleanup moves to `NETWORK_CHANGE_EVENT_RETENTION_*`. |
+
+### Unreleased — report-only script execution retention settings mapped
+
+Both Compose files gain 5 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings for the report-only script execution retention job: `SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_DAYS`, `SCRIPT_EXECUTION_RETENTION_BATCH_SIZE`, `SCRIPT_EXECUTION_RETENTION_MAX_BATCHES` and `SCRIPT_EXECUTION_RETENTION_ENFORCE`. | Nothing. The job only counts eligible rows and changes nothing until you set `SCRIPT_EXECUTION_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+
+### Next release — closed-alert retention settings
+
+Both Compose files gain the same lines under the `api` environment. Every new mapping is optional; leaving it out of `.env` keeps the default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings `ALERT_RETENTION_DAYS`, `ALERT_RETENTION_BATCH_SIZE`, `ALERT_RETENTION_MAX_BATCHES` and `ALERT_RETENTION_ENFORCE` (`${VAR:-}`). | Nothing for the defaults (365 days, 1000 rows, 100 batches). The job is report-only until you set `ALERT_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+
+### Unreleased — report-only AI transcript retention
+
+Both Compose files gain 3 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default. The release also runs a migration that sets the new technician transcript window to 365 days on every existing partner AI data policy row (a partner with no row already gets 365 by default).
+
+| Change | Required action |
+|---|---|
+| New `api` mappings for the report-only AI transcript retention job: `AI_TRANSCRIPT_RETENTION_BATCH_SIZE`, `AI_TRANSCRIPT_RETENTION_MAX_BATCHES` and `AI_TRANSCRIPT_RETENTION_ENFORCE`. | Nothing. The job only counts conversations past their window and changes nothing until you set `AI_TRANSCRIPT_RETENTION_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+
+### Unreleased — report-only retention settings mapped
+
+Both Compose files gain 16 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.
+
+| Change | Required action |
+|---|---|
+| New `api` mappings for four report-only retention jobs: `DEVICE_COMMAND_RETENTION_*`, `FILESYSTEM_SNAPSHOT_RETENTION_*`, `NETWORK_MONITOR_RESULT_RETENTION_*`, `DEVICE_SESSION_RETENTION_*`. Each has `_DAYS`, `_BATCH_SIZE`, `_MAX_BATCHES` and `_ENFORCE`. | Nothing. The jobs only count eligible rows and delete nothing until you set the matching `_ENFORCE=true`. See [Report-only retention jobs](/deploy/environment/#report-only-retention-jobs). |
+
 ### v0.128.0 — portal Microsoft sign-in, migration lock wait, worker container name, monitoring images pinned
 
 The [v0.128.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.128.0/docker-compose.yml) change the `api` and `web` environments, the optional `worker` service and `docker-compose.monitoring.yml`. Both Compose files gain the same lines. Every new mapping is optional; leaving it out of `.env` keeps the built-in default.
@@ -412,7 +469,8 @@ Apart from `--site-id`, no change breaks an install on default settings. If you 
 - `OAUTH_REFRESH_ROTATION_GRACE_MS` (api, mapped; `10000`, at most `30000`, `0` turns it off).
 - `MIGRATION_LOCK_TIMEOUT_MS` (api, mapped; `300000`). A value that is not a positive whole number of milliseconds stops the API at boot.
 - `TUNNEL_ORIGIN_TEMPLATE` is newly mapped on the `web` service.
-- Not in `.env.example` or the shipped Compose files: `BACKUP_GC_LIVE_SET_MAX_BYTES` (api, or `worker` when split) and `M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE` (Microsoft Graph read executor; `100`, from 10 to 1000). Leave both unset unless you need them.
+- `BACKUP_GC_LIVE_SET_MAX_BYTES` (api, or `worker` when split) is now mapped in the shipped Compose files and documented in the environment reference; on earlier Compose files it only takes effect if you add the passthrough yourself.
+- Not in `.env.example` or the shipped Compose files: `M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE` (Microsoft Graph read executor; `100`, from 10 to 1000). Leave it unset unless you need it.
 - Monitoring overlay only: `PROMETHEUS_IMAGE_REF`, `GRAFANA_IMAGE_REF`, `ALERTMANAGER_IMAGE_REF`, `LOKI_IMAGE_REF`, `PROMTAIL_IMAGE_REF`, `REDIS_EXPORTER_IMAGE_REF` and `POSTGRES_EXPORTER_IMAGE_REF`.
 
 See [Environment Variables](/deploy/environment/).

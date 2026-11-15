@@ -23,6 +23,16 @@
  * query or its own delete predicate. `retentionTarget.test.ts` pins the rendered SQL of the count's
  * `where` to the rendered SQL of the delete's, byte for byte.
  *
+ * REPORT-ONLY TARGETS COUNT UNDER A TIMEOUT
+ * ----------------------------------------
+ * A `reportOnly` target's predicate has no index guarantee (#4342 W6.c), so
+ * its count runs under `REPORT_ONLY_COUNT_TIMEOUT_MS`
+ * (`countEligibleRowsBounded`). A count that runs past it is cancelled and
+ * returned as `mode: 'reportUnavailable'`: logged as "count unavailable (timed
+ * out)", published as `breeze_retention_count_unavailable`, and never a
+ * failure, so the other targets and the job carry on. Targets that can
+ * enforce keep `countEligibleRows`, unchanged.
+ *
  * NO AMBIENT CONTEXT
  * ------------------
  * Do not call this inside a DB context. The batch primitives each open a fresh
@@ -36,14 +46,32 @@ import { recordRetentionRun, type RetentionJobName } from '../services/retention
 import { captureException } from '../services/sentry';
 import {
   countEligibleRows,
+  countEligibleRowsBounded,
   pruneInCtidBatches,
   updateInCtidBatches,
   warnOnRetentionBacklog,
+  type BatchedPruneResult,
 } from './retentionBatch';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type RetentionAction = { kind: 'delete' } | { kind: 'scrub'; set: SQL };
+/**
+ * Statement timeout for a `reportOnly` target's count. Long enough for an
+ * indexed count capped at one run's capacity, short enough that a predicate
+ * walking an index past millions of rows gives its connection back.
+ */
+export const REPORT_ONLY_COUNT_TIMEOUT_MS = 5_000;
+
+/**
+ * What an enforcing run does to an eligible row.
+ *
+ * `reportOnly` has no enforce path at all: the runner counts, whatever
+ * `knobs.enforce` says. A target ships this way when its predicate is still
+ * being evaluated against production counts and no `_ENFORCE` switch exists
+ * for it yet (#4342 W6.c). Giving it a delete path is a code change, reviewed
+ * on its own, not an env flip.
+ */
+export type RetentionAction = { kind: 'delete' } | { kind: 'scrub'; set: SQL } | { kind: 'reportOnly' };
 
 export interface RetentionTarget {
   /** A `RETENTION_JOB_NAMES` member. One per target: the gauges are `.set()` per name. */
@@ -68,6 +96,8 @@ export interface RetentionKnobs {
 
 export type RetentionTargetResult =
   | { mode: 'report'; table: string; retentionDays: number; eligible: number; eligibleCapped: boolean; durationMs: number }
+  /** A `reportOnly` count cancelled at `timeoutMs`: no number, and not a failure. */
+  | { mode: 'reportUnavailable'; table: string; retentionDays: number; reason: 'timeout'; timeoutMs: number; durationMs: number }
   | { mode: 'enforce'; table: string; retentionDays: number; affected: number; batches: number; hasMore: boolean; durationMs: number };
 
 export interface RetentionRunOptions {
@@ -103,15 +133,32 @@ export async function runRetentionTarget(
   const nowIso = now.toISOString();
   const where = target.where(cutoffIso, nowIso);
 
-  if (!enforce) {
-    const { eligible, capped } = await countEligibleRows({
-      table: target.table,
-      where,
-      cap: batchSize * maxBatches,
-      label: o.label,
-    });
+  const reportOnlyTarget = target.action.kind === 'reportOnly';
+  if (!enforce || reportOnlyTarget) {
+    const countArgs = { table: target.table, where, cap: batchSize * maxBatches, label: o.label };
+    const enableHint = reportOnlyTarget
+      ? 'report-only target: no enforce switch in this release'
+      : o.enforceVar ? `set ${o.enforceVar}=true to delete` : 'set this job\'s _RETENTION_ENFORCE=true to delete';
+    const count = reportOnlyTarget
+      ? await countEligibleRowsBounded({ ...countArgs, statementTimeoutMs: REPORT_ONLY_COUNT_TIMEOUT_MS })
+      : { timedOut: false as const, ...(await countEligibleRows(countArgs)) };
     const durationMs = Date.now() - startedAt;
-    const enableHint = o.enforceVar ? `set ${o.enforceVar}=true to delete` : 'set this job\'s _RETENTION_ENFORCE=true to delete';
+    if (count.timedOut) {
+      console.log(
+        `${o.logPrefix} REPORT-ONLY: ${target.table} count unavailable (timed out after ${REPORT_ONLY_COUNT_TIMEOUT_MS} ms; ` +
+        `window ${retentionDays} d); ${enableHint}`,
+      );
+      recordRetentionRun(target.metricName, { countUnavailable: true });
+      return {
+        mode: 'reportUnavailable',
+        table: target.table,
+        retentionDays,
+        reason: 'timeout',
+        timeoutMs: REPORT_ONLY_COUNT_TIMEOUT_MS,
+        durationMs,
+      };
+    }
+    const { eligible, capped } = count;
     console.log(
       `${o.logPrefix} REPORT-ONLY: ${eligible}${capped ? '+' : ''} ${target.table} rows eligible ` +
       `(window ${retentionDays} d); ${enableHint}`,
@@ -120,14 +167,12 @@ export async function runRetentionTarget(
     return { mode: 'report', table: target.table, retentionDays, eligible, eligibleCapped: capped, durationMs };
   }
 
-  const batchArgs = { table: target.table, where, batchSize, maxBatches, label: o.label };
-  const result = target.action.kind === 'scrub'
-    ? await updateInCtidBatches({ ...batchArgs, set: target.action.set })
-    : await pruneInCtidBatches(batchArgs);
+  const action = target.action;
+  const result = await enforceRetentionAction(action, { table: target.table, where, batchSize, maxBatches, label: o.label });
   const durationMs = Date.now() - startedAt;
 
   console.log(
-    `${o.logPrefix} ${target.action.kind === 'scrub' ? 'Scrubbed' : 'Deleted'} ${result.deleted} ${target.table} rows ` +
+    `${o.logPrefix} ${action.kind === 'scrub' ? 'Scrubbed' : 'Deleted'} ${result.deleted} ${target.table} rows ` +
     `older than ${retentionDays} days (batches=${result.batches}) in ${durationMs}ms`,
   );
   warnOnRetentionBacklog(o.logPrefix, target.table, result);
@@ -145,6 +190,33 @@ export async function runRetentionTarget(
 }
 
 /**
+ * The enforcing branch: what an enforcing run does to the eligible rows. Fails
+ * closed. Each action kind is handled by name and anything else throws, so no
+ * kind reaches a delete by default. `reportOnly` throws too: the early return
+ * in `runRetentionTarget` must have counted it, and reaching here means that
+ * guard was bypassed. Exported so a test can make exactly that call.
+ */
+export async function enforceRetentionAction(
+  action: RetentionAction,
+  batchArgs: { table: string; where: SQL; batchSize: number; maxBatches: number; label: string },
+): Promise<BatchedPruneResult> {
+  switch (action.kind) {
+    case 'delete':
+      return pruneInCtidBatches(batchArgs);
+    case 'scrub':
+      return updateInCtidBatches({ ...batchArgs, set: action.set });
+    case 'reportOnly':
+      throw new Error(`[retentionTarget] Refusing to enforce ${batchArgs.table}: its action is reportOnly, which only counts`);
+    default: {
+      const unknown: never = action;
+      throw new Error(
+        `[retentionTarget] Refusing to enforce ${batchArgs.table}: unknown action kind ${JSON.stringify((unknown as { kind?: unknown }).kind)}`,
+      );
+    }
+  }
+}
+
+/**
  * Run targets one after another with a shared run instant. A target that throws
  * is logged, captured, and recorded as `incomplete` on its own metric, and the
  * rest still run: one table's failure must not leave every later table
@@ -156,8 +228,18 @@ export async function runRetentionTarget(
  *
  * The caller decides whether a returned `{ table, error }` fails its job.
  */
+export interface RetentionTargetEntry {
+  target: RetentionTarget;
+  knobs: RetentionKnobs;
+  /**
+   * The variable that enables THIS target, when targets in one job carry their
+   * own flags (W5). Overrides `RetentionRunOptions.enforceVar` in its log line.
+   */
+  enforceVar?: string;
+}
+
 export async function runRetentionTargets(
-  targets: ReadonlyArray<{ target: RetentionTarget; knobs: RetentionKnobs }>,
+  targets: ReadonlyArray<RetentionTargetEntry>,
   o: RetentionRunOptions,
 ): Promise<Array<RetentionTargetResult | { table: string; error: string }>> {
   const seen = new Set<RetentionJobName>();
@@ -170,9 +252,9 @@ export async function runRetentionTargets(
 
   const now = o.now ?? new Date();
   const results: Array<RetentionTargetResult | { table: string; error: string }> = [];
-  for (const { target, knobs } of targets) {
+  for (const { target, knobs, enforceVar } of targets) {
     try {
-      results.push(await runRetentionTarget(target, knobs, { ...o, now }));
+      results.push(await runRetentionTarget(target, knobs, { ...o, now, enforceVar: enforceVar ?? o.enforceVar }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`${o.logPrefix} Retention target ${target.table} failed:`, err);

@@ -86,21 +86,15 @@ func serviceAccountFor(instance string) string {
 //
 // Never returns a path under the OS temp directory.
 func resolveBackupTargetDir(instance, serverName string) (string, error) {
-	out, propErr := runSqlcmd(serverName, "SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(512))")
-	if propErr == nil && containsSqlError(out) {
-		propErr = fmt.Errorf("sqlcmd: %s", extractSqlError(out))
-	}
+	base, propErr := queryServerPath(serverName, "InstanceDefaultBackupPath")
 	if propErr == nil {
-		if base := parseSqlcmdSingleValue(out); base != "" {
-			dir := winJoin(base, "breeze")
-			if mkErr := mkdirAllFn(dir, 0o755); mkErr != nil {
-				return "", fmt.Errorf("create backup target dir %q: %w", dir, mkErr)
-			}
-			slog.Info("mssql backup target directory resolved",
-				"instance", instance, "dir", dir, "source", "InstanceDefaultBackupPath")
-			return dir, nil
+		dir := winJoin(base, "breeze")
+		if mkErr := mkdirAllFn(dir, 0o755); mkErr != nil {
+			return "", fmt.Errorf("create backup target dir %q: %w", dir, mkErr)
 		}
-		propErr = fmt.Errorf("InstanceDefaultBackupPath returned no usable value")
+		slog.Info("mssql backup target directory resolved",
+			"instance", instance, "dir", dir, "source", "InstanceDefaultBackupPath")
+		return dir, nil
 	}
 
 	dir := winJoin(programDataDir(), "Breeze", "mssql-staging", instance)

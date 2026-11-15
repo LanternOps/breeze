@@ -401,18 +401,25 @@ func TestShQuote(t *testing.T) {
 	}
 }
 
-func TestPsQuote(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"plain", "plain"},
-		{"o'brien", "o''brien"},
-		{`C:\path`, `C:\path`},
-	}
-	for _, tt := range tests {
-		if got := psQuote(tt.in); got != tt.want {
-			t.Errorf("psQuote(%q) = %s, want %s", tt.in, got, tt.want)
+func TestWindowsUninstallScriptQuotesPaths(t *testing.T) {
+	script := buildWindowsUninstallScript(windowsUninstallScriptOptions{
+		ServiceName:         "BreezeAgent",
+		WatchdogServiceName: "BreezeWatchdog",
+		AgentBinaryPath:     "C:\\Program Files\\O\u2019Brien\\breeze-agent.exe",
+		WatchdogBinaryPath:  "C:\\Program Files\\O\u2019Brien\\breeze-watchdog.exe",
+		ConfigDir:           "C:\\ProgramData\\\u2018Breeze\u2019",
+		RemoveConfig:        true,
+		DelaySeconds:        5,
+	})
+	for _, want := range []string{
+		"& 'C:\\Program Files\\O\u2019\u2019Brien\\breeze-agent.exe' containment release-all",
+		"Remove-Item -LiteralPath 'C:\\Program Files\\O\u2019\u2019Brien\\breeze-watchdog.exe' -Force",
+		"Remove-Item -LiteralPath 'C:\\Program Files\\O\u2019\u2019Brien\\breeze-agent.exe' -Force",
+		"Out-File -LiteralPath 'C:\\ProgramData\\\u2018\u2018Breeze\u2019\u2019\\logs\\uninstall-isolation-release-error.txt'",
+		"Remove-Item -LiteralPath 'C:\\ProgramData\\\u2018\u2018Breeze\u2019\u2019' -Recurse",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script missing %q:\n%s", want, script)
 		}
 	}
 }

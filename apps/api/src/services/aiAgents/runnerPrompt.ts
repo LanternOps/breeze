@@ -1618,12 +1618,6 @@ export function buildPatchTaskPrompt(ctx: AgentRunPromptContext): string {
     + `low ${r.outstandingBySeverity.low}, unrated ${r.outstandingBySeverity.unrated}`,
   );
   lines.push(`oldest outstanding: ${r.oldestOutstandingDays === null ? '(none)' : `${r.oldestOutstandingDays} days`}`);
-  if (r.snapshot) {
-    lines.push(
-      `latest compliance snapshot (${patchCell(r.snapshot.date, 12)}): pending approval ${patchCell(r.snapshot.patchesPendingApproval)}, `
-      + `installed last 24h ${patchCell(r.snapshot.patchesInstalled24h)}, failed installs last 24h ${patchCell(r.snapshot.failedInstalls24h)}`,
-    );
-  }
   lines.push('');
 
   lines.push(patchSectionHeader('Update rings (partner-wide)', e.sections.ringPosture));

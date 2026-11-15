@@ -89,6 +89,7 @@ export function standingFacts(over: Partial<StandingStateFacts> = {}): StandingS
     alerts: { critical: 0, high: 0 },
     recentAssessments: [{ orgName: 'Harbor Dental', at: minutesFromNow(-25) }],
     pictureUpdatedAt: minutesFromNow(-5),
+    userActions: [],
     ...over,
   };
 }

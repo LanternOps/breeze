@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -198,17 +197,15 @@ type legacyWorker legacyMatcher
 
 func (legacyWorker) Close() {}
 
-func (l legacyWorker) ScanFile(path string) ([]yarascan.Match, error) {
-	// Lstat, as W01's walk used the DirEntry's own info: a path swapped for a
-	// symlink after the walk saw it is not followed.
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
+func (l legacyWorker) ScanFile(f *os.File, size int64, path string) ([]yarascan.Match, error) {
+	// The caller opened f without following a link, checked it and measured
+	// it; the signatures read at most size bytes of the content through f.
+	// f is nil for a file over the size limit, which is matched by name only.
+	var content io.ReaderAt
+	if f != nil {
+		content = io.NewSectionReader(f, 0, size)
 	}
-	if !info.Mode().IsRegular() {
-		return nil, nil
-	}
-	found, err := scanFileForThreats(path, info, l.options)
+	found, err := scanFileForThreats(path, size, content, l.options)
 	out := make([]yarascan.Match, 0, len(found))
 	for _, th := range found {
 		out = append(out, yarascan.Match{RuleName: th.Name, Severity: th.Severity, ThreatType: th.Type})
@@ -232,8 +229,8 @@ func RemoveThreat(threat Threat) error {
 	return nil
 }
 
-func scanFileForThreats(path string, info fs.FileInfo, options threatScanOptions) ([]Threat, error) {
-	nameLower := strings.ToLower(info.Name())
+func scanFileForThreats(path string, size int64, content io.ReaderAt, options threatScanOptions) ([]Threat, error) {
+	nameLower := strings.ToLower(filepath.Base(path))
 	pathLower := strings.ToLower(path)
 	var matches []Threat
 
@@ -256,11 +253,11 @@ func scanFileForThreats(path string, info fs.FileInfo, options threatScanOptions
 		return matches, nil
 	}
 
-	if info.Size() <= 0 || (options.MaxFileSize > 0 && info.Size() > options.MaxFileSize) {
+	if content == nil || size <= 0 || (options.MaxFileSize > 0 && size > options.MaxFileSize) {
 		return matches, nil
 	}
 
-	content, err := readFileSample(path, options.MaxReadBytes)
+	sample, err := readFileSample(content, options.MaxReadBytes)
 	if err != nil {
 		return matches, err
 	}
@@ -269,7 +266,7 @@ func scanFileForThreats(path string, info fs.FileInfo, options threatScanOptions
 		if len(signature.ContentPattern) == 0 {
 			continue
 		}
-		if bytes.Contains(content, signature.ContentPattern) {
+		if bytes.Contains(sample, signature.ContentPattern) {
 			matches = append(matches, Threat{
 				Name:     signature.Name,
 				Type:     signature.Type,
@@ -295,23 +292,12 @@ func signatureMatchesName(signature threatSignature, nameLower string, pathLower
 	return false
 }
 
-func readFileSample(path string, maxReadBytes int64) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			log.Warn("failed to close scanned file", "path", path, "error", closeErr.Error())
-		}
-	}()
-
+// readFileSample reads up to maxReadBytes from the start of r.
+func readFileSample(r io.ReaderAt, maxReadBytes int64) ([]byte, error) {
 	if maxReadBytes <= 0 {
 		maxReadBytes = 1024 * 1024
 	}
-
-	reader := io.LimitReader(file, maxReadBytes)
-	return io.ReadAll(reader)
+	return io.ReadAll(io.NewSectionReader(r, 0, maxReadBytes))
 }
 
 func copyFile(src string, dest string) error {

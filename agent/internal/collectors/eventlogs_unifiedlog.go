@@ -16,7 +16,14 @@ const (
 	// securityUnifiedLogPredicate matches auth failures and TCC changes.
 	securityUnifiedLogPredicate = `subsystem == "com.apple.opendirectoryd" OR eventMessage CONTAINS[c] "authentication" OR subsystem == "com.apple.TCC"`
 	// hardwareUnifiedLogPredicate matches disk, thermal, and kernel errors.
-	hardwareUnifiedLogPredicate = `(subsystem CONTAINS "com.apple.iokit" AND messageType >= error) OR eventMessage CONTAINS[c] "thermal" OR eventMessage CONTAINS[c] "kernel panic"`
+	// The IOKit CFPlugIn loader subsystem is excluded: it logs routine
+	// plug-in load failures at error level, which are not hardware faults
+	// but were counted by hardware event-log alert rules.
+	hardwareUnifiedLogPredicate = `(subsystem CONTAINS "com.apple.iokit" AND subsystem != "` + iokitCFPluginSubsystem + `" AND messageType >= error) OR eventMessage CONTAINS[c] "thermal" OR eventMessage CONTAINS[c] "kernel panic"`
+
+	// iokitCFPluginSubsystem is the IOKit plug-in loader's unified-log
+	// subsystem. Its error entries are software noise, never hardware.
+	iokitCFPluginSubsystem = "com.apple.iokit.cfplugin"
 )
 
 // unifiedLogMaxLookback bounds the `log show --start` window. Querying the
@@ -121,6 +128,12 @@ func unifiedLogEvents(entries []unifiedLogEntry, securityEnabled, hardwareEnable
 		if level != "error" && level != "critical" {
 			continue
 		}
+		category := classifyUnifiedLogCategory(e.Subsystem, e.EventMessage, securityEnabled, hardwareEnabled)
+		// The predicate already excludes the CFPlugIn loader; this guard keeps
+		// a "thermal"/"kernel panic" message clause match from it out too.
+		if category == "hardware" && strings.EqualFold(e.Subsystem, iokitCFPluginSubsystem) {
+			continue
+		}
 
 		source := e.Subsystem
 		if source == "" {
@@ -130,7 +143,7 @@ func unifiedLogEvents(entries []unifiedLogEntry, securityEnabled, hardwareEnable
 		results = append(results, EventLogEntry{
 			Timestamp: e.Timestamp,
 			Level:     level,
-			Category:  classifyUnifiedLogCategory(e.Subsystem, e.EventMessage, securityEnabled, hardwareEnabled),
+			Category:  category,
 			Source:    truncateCollectorString(source),
 			EventID:   unifiedLogEntryEventID(fmt.Sprintf("%s:%d", source, e.ProcessID), e),
 			Message:   truncateString(e.EventMessage, 500),

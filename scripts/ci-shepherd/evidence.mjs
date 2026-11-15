@@ -6,10 +6,15 @@
 //   fail_other — failed on attempt 1 only, while attempt 2 failed on other tests.
 // Attempts come from a schema-2 flake report, or else from the job log split at
 // retry-shard's retry marker (facts.processLog). Fork runs give no sightings:
-// their code is not ours, and neither is their evidence.
+// their code is not ours, and neither is their evidence. Nor does a test the
+// run's own change touched (the test file, its sibling source, its Go package,
+// or, for an integration test, a migration or schema change): that failure is
+// the change's, not the test's. When the change's files are unknown, every
+// failure counts as touched.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { failureTouched } from '../../.github/scripts/flaky-ledger.mjs';
 import { ledgerPaths, ledgerRunner } from '../../.github/scripts/retry-shard.mjs';
 
 // Both Go retry-shard jobs pass `--go-dir agent`.
@@ -57,7 +62,38 @@ export function repoPathOf(ledger, failure, repoRoot) {
   return `${paths.goDir}/${failure.pkg.slice(paths.goModule.length + 1)}`;
 }
 
-export function ingestRun(facts, { repo, repoRoot }) {
+// The shepherd's touch paths for a ledger runner: the ledger's own rule
+// (failureTouched) without `sourceRoot`, which would make every API PR's
+// integration failure "touched"; `schemaRoots` (migrations, src/db) stays.
+// Null when the runner has no mapping.
+export function touchPathsFor(ledger, repoRoot) {
+  const paths = ledger ? pathsFor(ledger, repoRoot) : null;
+  return paths ? { ...paths, sourceRoot: undefined } : null;
+}
+
+// Did the change (a Set of repo paths, or null when unknown) touch the test
+// behind this sighting? Unknown or unmappable → touched.
+export function sightingTouched(s, changed, repoRoot) {
+  if (!(changed instanceof Set)) return true;
+  const paths = touchPathsFor(s.runner, repoRoot);
+  if (!paths) return true;
+  return failureTouched(failureFromId(s.runner, s.id), changed, paths);
+}
+
+// A run's sightings, given the files its change touched: `changed` is a Set
+// of repo paths, or null/absent when they could not be read (then nothing is
+// kept).
+// Kept sightings carry `untouched: true`: the flaky-test upkeep counts only
+// those, so sightings stored before this check existed never open an issue.
+export function ingestRun(facts, { repo, repoRoot, changed = null }) {
+  return untouchedOnly(candidateSightings(facts, { repo, repoRoot }), changed, repoRoot);
+}
+
+export const untouchedOnly = (sightings, changed, repoRoot) => sightings.filter((s) => !sightingTouched(s, changed, repoRoot)).map((s) => ({ ...s, untouched: true }));
+
+// Every sighting a run's attempts show, before the touch filter (the ingest
+// uses it to skip reading the change of a run with nothing to record).
+export function candidateSightings(facts, { repo, repoRoot }) {
   if (facts.run.headRepo?.toLowerCase() !== repo.toLowerCase()) return [];
   const out = [];
   for (const job of facts.jobs) {

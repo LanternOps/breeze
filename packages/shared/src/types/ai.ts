@@ -146,7 +146,9 @@ export type AiPageContext =
   // tell that an open chat session belongs to a different tenant than the page
   // it is now sitting on (#5684). It is a client-side hint only: the API never
   // authorizes on it — the session org is derived from the device row (#5593).
-  | { type: 'device'; id: string; hostname: string; orgId?: string; os?: string; status?: string; ip?: string }
+  // `displayName` is the web badge's label only (#11673): aiPageContextSchema
+  // does not carry it, so the API strips it on parse and no prompt sees it.
+  | { type: 'device'; id: string; hostname: string; displayName?: string; orgId?: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
   | { type: 'custom'; label: string; data: Record<string, unknown> }
@@ -331,7 +333,7 @@ export type AiStreamEvent =
    * requester's phone; `waitingOn` says who must decide.
    * The thinking indicator shows the wait from these while the card is open.
    */
-  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary; standingInstructionConflict?: AiStandingInstructionConflict }
+  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary; standingInstructionConflict?: AiStandingInstructionConflict; ticketContext?: AiApprovalTicketContext }
   /**
    * W03 (#5612): a proposal outcome delivered into the author's chat session —
    * request-changes findings + note, or a verification result. The durable
@@ -406,6 +408,12 @@ export type AiStreamEvent =
     type: 'done';
     usage?: { inputTokens: number; outputTokens: number; costCents: number };
     /**
+     * #11676: the technician pressed Stop and this turn ended because of it.
+     * Not a failure: no `error` precedes it, and the partial reply so far is
+     * kept and marked stopped.
+     */
+    stopped?: true;
+    /**
      * #10428 (Wisp only): the turn's message held a standing instruction, and
      * its capture runs after `done`. The chip polls
      * `GET /wisp/memory/captures/status/:captureId` until it is terminal.
@@ -428,6 +436,19 @@ export type AiStreamEvent =
  * the same text so every channel shows it.
  */
 export type AiStandingInstructionConflict = { text: string };
+
+/**
+ * #11674: the ticket a `manage_tickets` approval acts on, resolved server-side
+ * (org-pinned) so the chat card can name it by number and say who a public
+ * reply emails. The requester fields mirror `tickets.submitter_*`, which is
+ * where the notify worker sends customer-visible replies.
+ */
+export type AiApprovalTicketContext = {
+  ticketNumber: string;
+  subject: string;
+  requesterName?: string;
+  requesterEmail?: string;
+};
 
 export type AiPendingCardEvent = Extract<AiStreamEvent, { type: 'approval_required' | 'plan_approval_required' }>;
 

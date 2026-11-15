@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
 // CollectHardwareProfile captures hardware info via CIM/WMI. It uses PowerShell
@@ -120,17 +122,14 @@ func (c *WindowsCollector) CollectHardwareProfile(ctx context.Context) (*Hardwar
 // the requested property names, matching csvField lookups). filter is an
 // optional WQL filter (e.g. "NetConnectionStatus=2"); pass "" for none.
 //
-// SAFETY: className, filter, and props are ALL interpolated raw into the
-// PowerShell -Command script. Every current caller passes code-defined string
-// literals, so there is no injection surface. This invariant MUST hold — never
-// pass a caller/agent/server-controlled value here. A dynamic -Filter in
-// particular would allow PowerShell/WQL injection into a script that runs with
-// the agent's (typically SYSTEM) privileges; parameterize or strictly validate
-// before introducing any non-literal argument.
+// className and props are written into the PowerShell -Command script as
+// code, so every caller must pass code-defined string literals for them. The
+// filter is written as a quoted PowerShell literal, but its text is still WQL:
+// it too must come from code, never from a caller, agent or server value.
 func cimCSV(ctx context.Context, className, filter string, props ...string) ([]byte, error) {
 	script := "Get-CimInstance -ClassName " + className
 	if filter != "" {
-		script += " -Filter '" + filter + "'"
+		script += " -Filter " + psscript.Quote(filter)
 	}
 	script += " | Select-Object " + strings.Join(props, ",") + " | ConvertTo-Csv -NoTypeInformation"
 	cmd := collectorCommand(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)

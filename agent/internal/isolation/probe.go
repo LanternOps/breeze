@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 // NegativeProbeTimeout is the local timeout for the negative probe's SYN.
@@ -185,7 +187,9 @@ func NewHTTPVerifier(cfg HTTPVerifierConfig) func(ctx context.Context, isolation
 			tr.TLSClientConfig = cfg.TLSConfig.Clone()
 		}
 		defer tr.CloseIdleConnections()
-		client := &http.Client{Transport: tr, Timeout: timeout}
+		// The request carries the agent credential; redirects follow the
+		// shared credentialed-request policy.
+		client := httpguard.NewClient(tr, timeout)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL(isolationID), strings.NewReader("{}"))
 		if err != nil {

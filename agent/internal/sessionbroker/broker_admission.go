@@ -33,6 +33,7 @@ var (
 	errDuplicateHelperKey        = errors.New("helper already registered for Windows session and role")
 	errHelperKeyNotDesired       = errors.New("helper Windows session and role are not currently eligible")
 	errMaxConnectionsPerIdentity = errors.New("too many connections for identity")
+	errDuplicateSessionID        = errors.New("session ID already in use")
 	errHelperReservationInvalid  = errors.New("helper admission reservation is no longer valid")
 	errBrokerClosed              = errors.New("session broker is closed")
 )
@@ -251,6 +252,12 @@ func (b *Broker) canAdmitWithoutEviction(identityKey string) bool {
 // requires the exact single-use process reservation claimed during handshake.
 func (b *Broker) registerNonLifecycleSession(identityKey string, helperRole ipc.HelperRole, session *Session, backupReservation *backupSpawnReservation) error {
 	b.mu.Lock()
+	// The handshake's duplicate check ran under the read lock earlier; another
+	// helper with the same session ID may have registered since.
+	if existing := b.sessions[session.SessionID]; existing != nil && existing != session {
+		b.mu.Unlock()
+		return errDuplicateSessionID
+	}
 	var bh *backupHelper
 	if helperRole == backupipc.HelperRoleBackup {
 		bh = b.backup

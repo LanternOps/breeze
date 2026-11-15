@@ -39,7 +39,7 @@ import { importPackageSchema, installMethodBodySchema, installMethodPatchSchema,
 import {
   authorizeCatalogItemRead, insertLatestSoftwareVersion, resolveScopedOrgId, setLatestSoftwareVersion,
 } from './softwareVersionShared';
-import { pgErrorCode } from '../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { SOFTWARE_CATALOG_ACTIONS } from './aiToolSchemasSoftware';
 import {
   auditToolWrite, bounded, clampLimit, clip, json, jsonError, notFound, orgWideWriteDenied, requireFields, str, thrown,
@@ -451,7 +451,7 @@ export function registerSoftwareCatalogTools(aiTools: Map<string, AiTool>): void
             .returning({ id: softwareInstallMethods.id }));
           if (deleted.length === 0) return notFound('Install method');
         } catch (err) {
-          if (pgErrorCode(err) === '23503') {
+          if (isPgForeignKeyViolationCode(pgErrorCode(err))) {
             return jsonError('This install method is referenced by past deployments; disable it (update_install_method enabled false) instead', 'CONFLICT');
           }
           throw err;
