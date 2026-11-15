@@ -31,6 +31,7 @@ import { CLIENT_AI_REDIS_KEYS } from '../../routes/clientAi/schemas';
 import { portalAuthMiddleware } from '../../routes/portal/auth';
 import { portalSessions } from '../../routes/portal/helpers';
 import { __testOnly as policyTestOnly } from '../../services/portalAccessPolicy';
+import { planPortalAccountTransition, type PortalAccountFacts } from '../../services/portalAccountState';
 import {
   resolvePortalOidcSignIn,
   type PortalOidcSignInOutcome,
@@ -349,6 +350,68 @@ describe('restore and remove (D9, OD3; Review Focus 4)', () => {
     await expect(restorePortalIdentity({ ...input, confirmMspDisabled: false })).rejects.toMatchObject({ code: 'PORTAL_ACCOUNT_MSP_DISABLED_CONFIRM' });
     expect((await readIdentity(identityIds.entra!))!.disabledAt).not.toBeNull(); // rolled back whole
     expect(await restorePortalIdentity({ ...input, confirmMspDisabled: true })).toMatchObject({ accountStatus: 'active' });
+  });
+
+  // W08a known follow-up (OD3): removing the account's LAST sign-in method
+  // must leave an account the MSP can re-invite. Before, it kept
+  // auth_method 'entra' and every invite writer refused it (identity_managed),
+  // so the only recovery was deleting the account.
+  const factsOf = (row: Awaited<ReturnType<typeof readAccount>>, identities: number): PortalAccountFacts => ({
+    status: row.status,
+    browserAccess: row.browserAccess,
+    authMethod: row.authMethod,
+    hasPasswordHash: Boolean(row.passwordHash),
+    hasExternalIdentity: identities > 0,
+    hasUsableExternalIdentity: identities > 0,
+    passwordUsable: false,
+    disabledBy: row.disabledBy,
+  });
+
+  it('removing the last sign-in method makes the account invitable: password method, no hash, epoch bumped', async () => {
+    const { partner, org, tid } = await seedOrg();
+    const actor = await createUser({ partnerId: partner.id, email: `tech-${randomUUID()}@msp.test`, name: 'Tech One' });
+    // A stray hash on a non-password row is not a credential; it must not become one.
+    const { account, identityIds } = await seedAccount(org.id, { entra: { tid, oid: randomUUID() }, passwordHash: 'h'.repeat(60) });
+    await entraDisable(org.id, identityIds.entra!);
+    const disabled = await readAccount(account.id);
+    expect(disabled).toMatchObject({ status: 'disabled', disabledBy: 'directory', authMethod: 'entra' });
+
+    await removeDisabledPortalIdentity({ orgId: org.id, portalUserId: account.id, identityId: identityIds.entra!, actorUserId: actor.id });
+
+    const after = await readAccount(account.id);
+    expect(after).toMatchObject({ status: 'disabled', disabledBy: 'directory', authMethod: 'password', passwordHash: null });
+    expect(after.authEpoch).toBe(disabled.authEpoch + 1);
+    // Reactivate (no credential ⇒ invited), then an invite or a Microsoft invite is accepted.
+    const reactivated = planPortalAccountTransition(factsOf(after, 0), 'msp_reactivate');
+    expect(reactivated.status).toBe('invited');
+    const invitedFacts = { ...factsOf(after, 0), status: 'invited', disabledBy: null };
+    expect(planPortalAccountTransition(invitedFacts, 'msp_resend_invite').status).toBe('invited');
+    expect(planPortalAccountTransition(invitedFacts, 'msp_sso_invite').status).toBe('invited');
+    const audit = await admin().select().from(auditLogs)
+      .where(and(eq(auditLogs.orgId, org.id), eq(auditLogs.action, 'organization.portal_user.identity.remove')));
+    expect(audit[0]!.details).toMatchObject({ provider: 'entra', authMethodReset: true });
+  });
+
+  it('removing one of two sign-in methods leaves the account as it is', async () => {
+    const { partner, org, tid } = await seedOrg();
+    const actor = await createUser({ partnerId: partner.id, email: `tech-${randomUUID()}@msp.test`, name: 'Tech One' });
+    const { account, identityIds } = await seedAccount(org.id, { entra: { tid, oid: randomUUID() }, google: { sub: randomUUID() } });
+    await entraDisable(org.id, identityIds.entra!);
+    const before = await readAccount(account.id);
+    await removeDisabledPortalIdentity({ orgId: org.id, portalUserId: account.id, identityId: identityIds.entra!, actorUserId: actor.id });
+    expect(await readAccount(account.id)).toMatchObject({ authMethod: 'entra', status: before.status, authEpoch: before.authEpoch });
+    expect(await readIdentity(identityIds.google!)).toBeDefined();
+  });
+
+  it('a password account keeps its password when its last identity is removed', async () => {
+    const { partner, org, tid } = await seedOrg();
+    const actor = await createUser({ partnerId: partner.id, email: `tech-${randomUUID()}@msp.test`, name: 'Tech One' });
+    const { account, identityIds } = await seedAccount(org.id, { authMethod: 'password', passwordHash: 'p'.repeat(60), entra: { tid, oid: randomUUID() } });
+    await entraDisable(org.id, identityIds.entra!);
+    const before = await readAccount(account.id);
+    expect(before.status).toBe('active'); // keeps password access (OD4)
+    await removeDisabledPortalIdentity({ orgId: org.id, portalUserId: account.id, identityId: identityIds.entra!, actorUserId: actor.id });
+    expect(await readAccount(account.id)).toMatchObject({ authMethod: 'password', passwordHash: 'p'.repeat(60), status: 'active', authEpoch: before.authEpoch });
   });
 
   it('remove deletes one directory-disabled identity, cascades its actions and frees the legacy columns', async () => {

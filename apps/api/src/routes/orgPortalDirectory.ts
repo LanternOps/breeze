@@ -167,10 +167,11 @@ export function registerOrgPortalDirectoryRoutes(orgRoutes: Hono): void {
   // would otherwise block linking the new one). 409
   // PORTAL_IDENTITY_NOT_DIRECTORY_DISABLED for anything else.
   //
-  // After removal the person relinks through the sign-in link step (an
-  // invite-bound or link flow). Known follow-up (W08b / docs): an account
-  // whose auth_method is 'entra' is still refused by the invite writers, so
-  // the MSP cannot re-invite it from the portal-users list yet.
+  // After removal the person relinks through an invite-bound sign-in or, when
+  // they can still sign in another way, the link step. When it was the
+  // account's last sign-in method, the service turns an identity-method account
+  // into a credential-less password-method row so the invite writers accept it
+  // (reactivate → invited → invite).
   orgRoutes.delete(
     '/organizations/:id/portal-users/:userId/identities/:identityId',
     requireScope('partner', 'system'),

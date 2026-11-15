@@ -607,16 +607,40 @@ describe('removeDisabledPortalIdentity (OD3)', () => {
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       action: 'organization.portal_user.identity.remove',
       actorType: 'user', actorId: ACTOR, resourceType: 'portal_user', resourceId: PU,
-      details: { identityId: IDENT, provider: 'entra', blockers: ['entra_directory'] },
+      details: { identityId: IDENT, provider: 'entra', blockers: ['entra_directory'], authMethodReset: true },
     });
     expect(markRequestAuditWritten).toHaveBeenCalled();
+  });
+
+  it('the last sign-in method of an identity-method account: password method, no hash, epoch bumped', async () => {
+    h.results.push(
+      [owner()], [], [account({ status: 'disabled', disabledBy: 'directory', passwordHash: 'stray' })],
+      [identity({ disabledAt: NOW, disabledReason: 'absent', disabledBlockers: ['entra_directory'] })],
+      [], [], [{ n: 0 }], [], [],
+    );
+    await removeDisabledPortalIdentity(removeInput);
+    const reset = updatesOf(portalUsers).map((u) => firstArg(u, 'set') as Record<string, unknown>).find((v) => 'authMethod' in v);
+    expect(reset).toMatchObject({ authMethod: 'password', passwordHash: null });
+    expect(reset).toHaveProperty('authEpoch');
+  });
+
+  it('a password-method account keeps its method and hash when its last identity goes', async () => {
+    h.results.push(
+      [owner({ provider: 'google', entraTenantId: null })], [], [account({ authMethod: 'password', passwordHash: 'kept' })],
+      [identity({ provider: 'google', entraTenantId: null, disabledAt: NOW, disabledReason: 'suspended', disabledBlockers: ['google_directory'] })],
+      [], [{ n: 0 }], [],
+    );
+    await removeDisabledPortalIdentity(removeInput);
+    expect(updatesOf(portalUsers)).toEqual([]);
+    expect(firstArg(inserts()[0], 'values')).toMatchObject({ details: { authMethodReset: false } });
   });
 
   it('a google identity has no legacy columns to clear', async () => {
     h.results.push(
       [owner({ provider: 'google', entraTenantId: null })], [], [account()],
       [identity({ provider: 'google', entraTenantId: null, disabledAt: NOW, disabledReason: 'suspended', disabledBlockers: ['google_directory'] })],
-      [], [],
+      // delete, then the remaining-identity count: another sign-in method is left.
+      [], [{ n: 1 }], [],
     );
     await removeDisabledPortalIdentity(removeInput);
     expect(sqlText(h.calls[1]!).params).toEqual([`portal-directory:${ORG}:google`]);
