@@ -5138,20 +5138,19 @@ jobs:
           EOF
 
       # e2e-tests is deliberately OUTSIDE the pnpm workspace
-      # (pnpm-workspace.yaml covers apps/*, packages/* and ee/* only), so it
-      # installs standalone. It ships no pnpm-lock.yaml — only the
-      # package-lock.json the auth-browser-transition job's `npm ci` uses — and
-      # pnpm's CI frozen-lockfile default is a no-op when no pnpm lockfile
-      # exists, so this resolves fresh rather than failing.
+      # (pnpm-workspace.yaml covers apps/*, packages/* and ee/* only) and ships
+      # no pnpm lockfile, only package-lock.json. `npm ci` installs exactly that
+      # lockfile (and fails on drift) so a half-published upstream release
+      # cannot reach this job (#11197). Guarded by
+      # scripts/security/check-e2e-install-pinned.sh.
       - name: Install e2e-tests dependencies
         working-directory: e2e-tests
-        run: pnpm install --ignore-workspace
+        run: npm ci
 
       # apt 403 guard lives in the composite action (see its description).
       - name: Install Chromium
         uses: ./.github/actions/install-chromium
         with:
-          run-prefix: pnpm exec
           working-directory: e2e-tests
 
       # `pnpm wt-stack up` without a workspace install: the CLI imports nothing
