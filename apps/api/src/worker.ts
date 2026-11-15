@@ -57,6 +57,9 @@
  * and `db/dbPoolHealthMonitor` are deliberately NOT static — their graphs
  * reach `postgres`, and the health server must be listening before that loads.
  *
+ * #11741 added `db/readOnlyLogThrottle` (`db/readOnlyDatabase` and the shared
+ * pgErrors helper only), installed first thing in `bootWorker()`.
+ *
  * Boot order (the contract, see the plan doc's Task 6):
  *   1. dotenv + role guard (fail closed — this binary runs ONLY as worker).
  *   2. validateConfig(); initSentry().
@@ -138,6 +141,7 @@ import {
 } from './services/workerReadinessRegistry';
 import { envInt } from './utils/envInt';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
+import { installReadOnlyLogThrottle } from './db/readOnlyLogThrottle';
 
 if (breezeRole() !== 'worker') {
   // This binary runs ONLY as the worker role — mirrors index.ts's inverse
@@ -382,6 +386,10 @@ function startHealthServer(port: number): Server {
  * `process.exit` — see that file for the test-seam rationale.
  */
 export async function bootWorker(): Promise<void> {
+  // #11741: one line per source per minute for read-only database errors
+  // (SQLSTATE 25006) instead of a stack per failed job. A leaf import
+  // (`db/readOnlyDatabase` -> `@breeze/shared` pgErrors only).
+  installReadOnlyLogThrottle();
   console.log('[worker] Breeze worker process starting...');
 
   // Step 2.
@@ -465,6 +473,7 @@ export async function bootWorker(): Promise<void> {
     stopWedgedBackendMonitor,
   } = await import('./db/dbPoolHealthMonitor');
   const { getWedgedBackendMinAgeMs } = await import('./db/wedgedBackends');
+  const { startReadOnlySessionRecovery, stopReadOnlySessionRecovery } = await import('./db/readOnlySessionRecovery');
   const { startRedisMemoryMonitor, stopRedisMemoryMonitor } = await import('./services/redisMemoryMonitor');
   // Registers the role-agnostic runtime series onto the shared registry and
   // binds the CONNECT_TIMEOUT counter recorder. Dynamic because its graph
@@ -509,6 +518,10 @@ export async function bootWorker(): Promise<void> {
       + `threshold ${getWedgedBackendMinAgeMs()}ms)`,
     );
   }
+
+  // #11741: recycle pooled sessions that kept a read-only default after the
+  // database became writable again (see db/readOnlySessionRecovery.ts).
+  startReadOnlySessionRecovery();
 
   // #6452 — Redis memory watchdog. Runs in the worker role too: BullMQ shares
   // the same noeviction instance, and a wedged/stuck queue is exactly the
@@ -723,6 +736,7 @@ export async function bootWorker(): Promise<void> {
     stopEventLoopMonitor();
     stopDbPoolHealthMonitor();
     stopWedgedBackendMonitor();
+    stopReadOnlySessionRecovery();
     stopRedisMemoryMonitor();
 
     if (auditRetryInterval) {

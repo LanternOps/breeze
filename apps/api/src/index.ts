@@ -290,6 +290,10 @@ import {
   stopDbPoolHealthMonitor,
 } from './db/dbPoolHealthMonitor';
 import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
+import {
+  startReadOnlySessionRecovery,
+  stopReadOnlySessionRecovery,
+} from './db/readOnlySessionRecovery';
 import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuardWithExemptions } from './middleware/partnerGuard';
@@ -361,6 +365,7 @@ import { validateConfig } from './config/validate';
 import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { isReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
+import { installReadOnlyLogThrottle } from './db/readOnlyLogThrottle';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
@@ -1511,6 +1516,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // shutting down.
   stopDbPoolHealthMonitor();
   stopWedgedBackendMonitor();
+  stopReadOnlySessionRecovery();
   stopRedisMemoryMonitor();
   // #11731: a deferred binary registration must not start against a pool
   // that is draining. Nor must a network retry of the boot sync (#11641).
@@ -1726,6 +1732,11 @@ async function bootstrap(): Promise<void> {
     process.exit(78); // EX_CONFIG
   }
 
+  // #11741: one line per source per minute for read-only database errors
+  // (SQLSTATE 25006) instead of a stack per failed write. First, so every
+  // later path that can log one goes through it.
+  installReadOnlyLogThrottle();
+
   console.log(`Breeze API starting on port ${port}...`);
   // #7024: BREEZE_VERSION edited without new image digests — say so at boot.
   warnOnVersionMismatch();
@@ -1842,6 +1853,11 @@ async function bootstrap(): Promise<void> {
     // record the running version after. Report-only; never blocks boot.
     upgradeChecks: true,
   });
+
+  // #11741: pooled sessions opened while the database was read-only keep that
+  // default after it becomes writable; recycle them instead of waiting out
+  // max_lifetime. One pooled `select` per interval while all is well.
+  startReadOnlySessionRecovery();
   // Migrations may have changed role_permissions (W02 seeded agreements:* and
   // back-filled it onto every role holding the equivalent contracts grant), and
   // the permission resolver caches UserPermissions for CACHE_TTL = 5 minutes

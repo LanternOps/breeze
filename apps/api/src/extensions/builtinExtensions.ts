@@ -46,6 +46,7 @@ import type { ExtensionStateStore } from './stateStore';
 import { defaultStageExtension } from './stageExtension';
 import {
   checkExtensionMigrationParity,
+  assertNotBelowSchemaFloor,
   reconcileExtensionMigrations,
   type MigratableExtension,
 } from './migrator';
@@ -54,6 +55,11 @@ import { assertExtensionTenancyRls, assertNoUnaccountedPublicTables } from './te
 import { registerExtensionWebAsset, type RegisterableExtensionWebAsset } from './webAssets';
 import { registerGlobalRateLimitSkipPrefix } from '../middleware/globalRateLimit';
 import { MIGRATION_TABLE } from '../db/autoMigrate';
+import {
+  isReadOnlyProbeResult,
+  ReadOnlyDatabaseError,
+  TRANSACTION_READ_ONLY_PROBE_SQL,
+} from '../db/readOnlyDatabase';
 
 export { BUILTIN_EXTENSION_NAMES, builtinTenancyDeclarations } from './builtinRegistry';
 export type { BuiltinExtension } from './builtinRegistry';
@@ -275,6 +281,13 @@ export interface BuiltinPorts {
    * hasn't finished migrating yet.
    */
   checkMigrationParity(builtin: BuiltinExtension, sql: postgres.Sql | null): Promise<void>;
+  /**
+   * #11741: whether the database refuses writes (a provider's
+   * `default_transaction_read_only = on`, or a standby). Asked once per boot,
+   * on the migration connection. When it does, enabled built-ins load from
+   * what the last writable boot recorded, without the per-boot state writes.
+   */
+  isDatabaseReadOnly(sql: postgres.Sql | null): Promise<boolean>;
   publishTenancy(manifest: ExtensionManifestV1): void;
   /**
    * Has this built-in ever applied even ONE migration on this database? Used
@@ -477,6 +490,10 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
             'migrations first',
         );
       }
+    },
+    isDatabaseReadOnly: async (sql) => {
+      if (!sql) return false;
+      return isReadOnlyProbeResult(await sql.unsafe(TRANSACTION_READ_ONLY_PROBE_SQL));
     },
     publishTenancy: (manifest) => registerRuntimeExtensionTenancy(manifest.tenancy),
     builtinEverMigrated: defaultBuiltinEverMigrated,
@@ -729,6 +746,50 @@ async function skipDisabledBuiltin(
 }
 
 /**
+ * #11741: the read-only counterpart of the migrate/parity step. Verifies,
+ * without writing, that this built-in can serve from what the last writable
+ * boot left: its migrations are all in the ledger (the same check a
+ * worker-role process runs), the code is not older than the recorded schema
+ * floor, and its `installed_extensions` row exists (the persisted operator
+ * enable flag lives there). Anything else needs a write, so it throws a
+ * ReadOnlyDatabaseError naming what and why.
+ */
+async function verifyBuiltinReadOnly(
+  builtin: BuiltinExtension,
+  sql: postgres.Sql | null,
+  stateStore: ExtensionStateStore,
+  ports: BuiltinPorts,
+  mode: 'full' | 'worker',
+): Promise<void> {
+  const { name, version } = builtin.manifest;
+  try {
+    await ports.checkMigrationParity(builtin, sql);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ReadOnlyDatabaseError(
+      `[extensions] built-in "${name}" ${version} has migrations to apply, but the database is ` +
+        `read-only (default_transaction_read_only = on, or a standby). ${detail}. Make the ` +
+        `database writable (a full disk is the usual cause), or unset ${builtin.enableEnvVar} to ` +
+        'boot without this built-in.',
+    );
+  }
+  await assertNotBelowSchemaFloor(name, version, stateStore);
+  if (!(await stateStore.get(name))) {
+    throw new ReadOnlyDatabaseError(
+      `[extensions] built-in "${name}" has never been recorded on this database, and its first ` +
+        'boot has to write installed_extensions, but the database is read-only. Make the database ' +
+        `writable, or unset ${builtin.enableEnvVar} to boot without this built-in.`,
+    );
+  }
+  console.warn(
+    `[extensions] database is read-only: built-in "${name}" ${version} loads from the state the ` +
+      'last writable boot recorded. installed_extensions and the schema-floor history are not ' +
+      `updated this boot${mode === 'worker' ? ' (worker mode)' : ''}; the next boot with a ` +
+      'writable database records them.',
+  );
+}
+
+/**
  * Load every ENABLED built-in extension at startup. The single entry point boot
  * wires in; resolves when all enabled built-ins are activated, and REJECTS
  * (aborting boot) if any phase of any of them fails.
@@ -775,11 +836,19 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
 
   const sql = ports.createMigrationSql();
   try {
+    // #11741: on a read-only database every built-in loads from the state the
+    // last writable boot recorded. Nothing here writes: migrations are only
+    // verified, and the `installed_extensions` / schema-floor bookkeeping is
+    // left as it is. What genuinely needs a write fails with a
+    // ReadOnlyDatabaseError instead of the raw SQLSTATE 25006.
+    const readOnly = await ports.isDatabaseReadOnly(sql);
     for (const builtin of enabled) {
       const { manifest } = builtin;
       const name = manifest.name;
 
-      if (mode === 'worker') {
+      if (readOnly) {
+        await verifyBuiltinReadOnly(builtin, sql, stateStore, ports, mode);
+      } else if (mode === 'worker') {
         // wave 3.5d-b (#4086): a worker-role process never applies
         // migrations — it only verifies an api/all-role process already has.
         await ports.checkMigrationParity(builtin, sql);
@@ -806,13 +875,15 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       // mid-pipeline activation failure leave the row claiming an active
       // version that never actually activated. `recordActive`, called only
       // after activate() succeeds, is the sole writer of `active_version`.
-      await stateStore.upsertObserved({
-        name,
-        configuredVersion: manifest.version,
-        manifestApiVersion: manifest.apiVersion,
-        serverSdkVersion: manifest.requires.serverSdk,
-        webSdkVersion: manifest.requires.webSdk ?? null,
-      });
+      if (!readOnly) {
+        await stateStore.upsertObserved({
+          name,
+          configuredVersion: manifest.version,
+          manifestApiVersion: manifest.apiVersion,
+          serverSdkVersion: manifest.requires.serverSdk,
+          webSdkVersion: manifest.requires.webSdk ?? null,
+        });
+      }
 
       // Activation reads the durable flag, so the enabled gate and the
       // platform-admin enable/disable surface behave identically for a
@@ -830,7 +901,7 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       // activeVersion is recorded here — only after activate() succeeds — so a
       // mid-pipeline failure never leaves installed_extensions claiming an
       // active version that was never actually activated.
-      await stateStore.recordActive(name, manifest.version);
+      if (!readOnly) await stateStore.recordActive(name, manifest.version);
 
       // NOTE: deliberately no registerExtensionRoot. Fault attribution keys on
       // per-extension root stack paths; a built-in is compiled into the core

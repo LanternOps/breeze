@@ -35,6 +35,7 @@ import {
 } from './stateStore';
 import type { ExtensionLifecycleState } from '../db/schema/extensions';
 import type { RegisterableExtensionWebAsset } from './webAssets';
+import { ReadOnlyDatabaseError } from '../db/readOnlyDatabase';
 
 /**
  * The built-in loading path is exercised entirely through injected ports, so
@@ -590,6 +591,126 @@ describe('loadBuiltinExtensions — mode: worker', () => {
     await h.load();
     expect(runMigrations).toHaveBeenCalledTimes(1);
     expect(checkMigrationParity).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #11741 item 4: on a read-only database (`default_transaction_read_only = on`)
+ * an enabled built-in boots from what the last writable boot recorded instead
+ * of crash-looping on the per-boot `installed_extensions` /
+ * `extension_schema_history` writes. Anything that genuinely needs a write
+ * (a pending migration, a first boot) still fails, with an error that names the
+ * read-only condition.
+ */
+describe('loadBuiltinExtensions — read-only database (#11741)', () => {
+  enableFixtureBuiltin();
+
+  async function recordedState(opts: { enabled?: boolean; floor?: string } = {}) {
+    const backend = new InMemoryExtensionStateBackend();
+    const stateStore = new ExtensionStateStore(backend);
+    // What a previous writable boot left behind.
+    await stateStore.upsertObserved({ name: NAME, configuredVersion: VERSION });
+    await stateStore.recordActive(NAME, VERSION);
+    if (opts.enabled === false) await stateStore.setEnabled(NAME, false);
+    if (opts.floor) await stateStore.recordSchemaFloor(NAME, VERSION, opts.floor);
+    const writes = [
+      vi.spyOn(backend, 'upsertObserved'),
+      vi.spyOn(backend, 'recordActive'),
+      vi.spyOn(backend, 'insertSchemaFloor'),
+      vi.spyOn(backend, 'setEnabled'),
+      vi.spyOn(backend, 'recordFailure'),
+    ];
+    return { stateStore, writes };
+  }
+
+  function quietWarnings() {
+    return vi.spyOn(console, 'warn').mockImplementation(() => {});
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('activates from the recorded state without writing, verifying parity instead of migrating', async () => {
+    const warn = quietWarnings();
+    const { stateStore, writes } = await recordedState({ enabled: false });
+    const runMigrations = vi.fn(async () => {});
+    const checkMigrationParity = vi.fn(async () => {});
+    const h = createHarness({
+      stateStore,
+      ports: { isDatabaseReadOnly: async () => true, runMigrations, checkMigrationParity },
+    });
+
+    await h.load();
+
+    expect(runMigrations).not.toHaveBeenCalled();
+    expect(checkMigrationParity).toHaveBeenCalledTimes(1);
+    expect(h.calls).toEqual(['migration', 'tenancy', 'stage', 'validate', 'activate', 'web']);
+    // The persisted operator flag still decides the snapshot.
+    expect(h.registry.get(NAME)?.enabled).toBe(false);
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('read-only'));
+  });
+
+  it('writes nothing in worker mode either', async () => {
+    quietWarnings();
+    const { stateStore, writes } = await recordedState();
+    const h = createHarness({ stateStore, ports: { isDatabaseReadOnly: async () => true } });
+
+    await h.load('worker');
+
+    expect(h.registry.get(NAME)?.enabled).toBe(true);
+    for (const write of writes) expect(write).not.toHaveBeenCalled();
+  });
+
+  it('fails with a read-only error when a migration is pending', async () => {
+    const { stateStore } = await recordedState();
+    const h = createHarness({
+      stateStore,
+      ports: {
+        isDatabaseReadOnly: async () => true,
+        checkMigrationParity: async () => {
+          throw new Error('missing from ledger: demo-builtin/0002-next.sql');
+        },
+      },
+    });
+
+    const error = await h.load().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReadOnlyDatabaseError);
+    expect((error as Error).message).toContain('read-only');
+    expect((error as Error).message).toContain('missing from ledger: demo-builtin/0002-next.sql');
+    expect(h.registry.get(NAME)).toBeUndefined();
+  });
+
+  it('fails with a read-only error on a first boot (no recorded state)', async () => {
+    const backend = new InMemoryExtensionStateBackend();
+    const upsert = vi.spyOn(backend, 'upsertObserved');
+    const h = createHarness({
+      stateStore: new ExtensionStateStore(backend),
+      ports: { isDatabaseReadOnly: async () => true },
+    });
+
+    const error = await h.load().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReadOnlyDatabaseError);
+    expect((error as Error).message).toContain(NAME);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(h.registry.get(NAME)).toBeUndefined();
+  });
+
+  it('still refuses code older than the recorded schema floor', async () => {
+    const { stateStore } = await recordedState({ floor: '9.0.0' });
+    const h = createHarness({ stateStore, ports: { isDatabaseReadOnly: async () => true } });
+
+    await expect(h.load()).rejects.toThrow(/OLDER than the highest recorded schema floor 9\.0\.0/);
+    expect(h.registry.get(NAME)).toBeUndefined();
+  });
+
+  it('leaves the writable path unchanged', async () => {
+    const runMigrations = vi.fn(async () => {});
+    const h = createHarness({ ports: { isDatabaseReadOnly: async () => false, runMigrations } });
+    await h.load();
+    expect(runMigrations).toHaveBeenCalledTimes(1);
+    expect((await h.stateStore.get(NAME))?.lifecycleState).toBe('active');
   });
 });
 
