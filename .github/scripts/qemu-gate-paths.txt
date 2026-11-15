@@ -29,6 +29,7 @@ agent/internal/backup/hyperv/
 agent/internal/backup/integrity/
 agent/internal/backup/layout/
 agent/internal/backup/mssql/
+agent/internal/backup/objectkey/
 agent/internal/backup/providers/
 agent/internal/backup/rebuild/
 agent/internal/backup/storagesession/
