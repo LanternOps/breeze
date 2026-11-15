@@ -61,15 +61,28 @@ function floorMlFeedbackDays(days: number): number {
 
 // The outer table is referenced by its bare name (retentionBatch selects FROM
 // it unaliased); the inner subquery aliases its own table.
+//
+// "Not the newest of its (device, baseline)" is written as "not equal to its
+// group's max(checked_at)" rather than "a newer row exists" (an EXISTS probe
+// per row). The two select the same rows: a row is below its group's maximum
+// exactly when a strictly newer row exists, rows tied at the maximum are all
+// kept either way, and all three columns are NOT NULL. The difference is cost.
+// There is no (device_id, baseline_id, checked_at) index, so each EXISTS probe
+// walks audit_results_baseline_checked_idx past every other device's rows on
+// that baseline, or hashes the whole table and scans a group's rows per outer
+// row. Here the planner aggregates once (one entry per device and baseline)
+// and anti-joins on all three columns (EXPLAIN in PR #11928). The count still
+// runs under REPORT_ONLY_COUNT_TIMEOUT_MS. A supporting index is a follow-up.
 export const AUDIT_BASELINE_RESULT_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'audit_baseline_result_retention',
   table: 'audit_baseline_results',
   action: { kind: 'reportOnly' },
   where: (cutoffIso) => sql`checked_at < ${utcWallTime(cutoffIso)}
-    AND EXISTS (SELECT 1 FROM audit_baseline_results n
-      WHERE n.device_id = audit_baseline_results.device_id
-        AND n.baseline_id = audit_baseline_results.baseline_id
-        AND n.checked_at > audit_baseline_results.checked_at)`,
+    AND NOT EXISTS (SELECT 1 FROM (SELECT r.device_id, r.baseline_id, max(r.checked_at) AS newest_checked_at
+        FROM audit_baseline_results r GROUP BY r.device_id, r.baseline_id) g
+      WHERE g.device_id = audit_baseline_results.device_id
+        AND g.baseline_id = audit_baseline_results.baseline_id
+        AND g.newest_checked_at = audit_baseline_results.checked_at)`,
 };
 
 export const PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_TARGET: ReportOnlyRetentionTarget = {

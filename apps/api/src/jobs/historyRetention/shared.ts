@@ -63,8 +63,23 @@ export function reportOnlyKnobs(retentionDays: number): RetentionKnobs & { enfor
 export function reportOnlyDays(name: string, raw: string | undefined, fallback: number, maxDays: number): number {
   const days = resolveRetentionDays(raw, fallback, maxDays);
   const parsed = Number.parseInt(raw || '', 10);
-  if (Number.isFinite(parsed) && parsed > maxDays) {
+  // Set but unusable (0, negative, not a number): `resolveRetentionDays` falls
+  // back to the default, and without this line the nightly count would be read
+  // as the operator's window when it is not.
+  if (raw && !(Number.isFinite(parsed) && parsed > 0)) {
+    console.warn(
+      `${LOG_PREFIX} ${name}="${capForLog(raw)}" is not a positive whole number of days; ` +
+      `counting at the default ${days} days (report-only: nothing is deleted).`,
+    );
+  } else if (Number.isFinite(parsed) && parsed > maxDays) {
     console.warn(`${LOG_PREFIX} ${name}=${parsed} exceeds the ${maxDays}-day cap; counting at ${maxDays} (report-only: nothing is deleted).`);
   }
   return days;
+}
+
+/** Env values are operator-controlled but unbounded: log at most 32 characters. */
+const LOG_VALUE_MAX = 32;
+
+function capForLog(raw: string): string {
+  return raw.length > LOG_VALUE_MAX ? `${raw.slice(0, LOG_VALUE_MAX)}…` : raw;
 }

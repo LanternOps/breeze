@@ -23,6 +23,16 @@
  * query or its own delete predicate. `retentionTarget.test.ts` pins the rendered SQL of the count's
  * `where` to the rendered SQL of the delete's, byte for byte.
  *
+ * REPORT-ONLY TARGETS COUNT UNDER A TIMEOUT
+ * ----------------------------------------
+ * A `reportOnly` target's predicate has no index guarantee (#4342 W6.c), so
+ * its count runs under `REPORT_ONLY_COUNT_TIMEOUT_MS`
+ * (`countEligibleRowsBounded`). A count that runs past it is cancelled and
+ * returned as `mode: 'reportUnavailable'`: logged as "count unavailable (timed
+ * out)", published as `breeze_retention_count_unavailable`, and never a
+ * failure, so the other targets and the job carry on. Targets that can
+ * enforce keep `countEligibleRows`, unchanged.
+ *
  * NO AMBIENT CONTEXT
  * ------------------
  * Do not call this inside a DB context. The batch primitives each open a fresh
@@ -36,12 +46,21 @@ import { recordRetentionRun, type RetentionJobName } from '../services/retention
 import { captureException } from '../services/sentry';
 import {
   countEligibleRows,
+  countEligibleRowsBounded,
   pruneInCtidBatches,
   updateInCtidBatches,
   warnOnRetentionBacklog,
+  type BatchedPruneResult,
 } from './retentionBatch';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Statement timeout for a `reportOnly` target's count. Long enough for an
+ * indexed count capped at one run's capacity, short enough that a predicate
+ * walking an index past millions of rows gives its connection back.
+ */
+export const REPORT_ONLY_COUNT_TIMEOUT_MS = 5_000;
 
 /**
  * What an enforcing run does to an eligible row.
@@ -77,6 +96,8 @@ export interface RetentionKnobs {
 
 export type RetentionTargetResult =
   | { mode: 'report'; table: string; retentionDays: number; eligible: number; eligibleCapped: boolean; durationMs: number }
+  /** A `reportOnly` count cancelled at `timeoutMs`: no number, and not a failure. */
+  | { mode: 'reportUnavailable'; table: string; retentionDays: number; reason: 'timeout'; timeoutMs: number; durationMs: number }
   | { mode: 'enforce'; table: string; retentionDays: number; affected: number; batches: number; hasMore: boolean; durationMs: number };
 
 export interface RetentionRunOptions {
@@ -114,16 +135,30 @@ export async function runRetentionTarget(
 
   const reportOnlyTarget = target.action.kind === 'reportOnly';
   if (!enforce || reportOnlyTarget) {
-    const { eligible, capped } = await countEligibleRows({
-      table: target.table,
-      where,
-      cap: batchSize * maxBatches,
-      label: o.label,
-    });
-    const durationMs = Date.now() - startedAt;
+    const countArgs = { table: target.table, where, cap: batchSize * maxBatches, label: o.label };
     const enableHint = reportOnlyTarget
       ? 'report-only target: no enforce switch in this release'
       : o.enforceVar ? `set ${o.enforceVar}=true to delete` : 'set this job\'s _RETENTION_ENFORCE=true to delete';
+    const count = reportOnlyTarget
+      ? await countEligibleRowsBounded({ ...countArgs, statementTimeoutMs: REPORT_ONLY_COUNT_TIMEOUT_MS })
+      : { timedOut: false as const, ...(await countEligibleRows(countArgs)) };
+    const durationMs = Date.now() - startedAt;
+    if (count.timedOut) {
+      console.log(
+        `${o.logPrefix} REPORT-ONLY: ${target.table} count unavailable (timed out after ${REPORT_ONLY_COUNT_TIMEOUT_MS} ms; ` +
+        `window ${retentionDays} d); ${enableHint}`,
+      );
+      recordRetentionRun(target.metricName, { countUnavailable: true });
+      return {
+        mode: 'reportUnavailable',
+        table: target.table,
+        retentionDays,
+        reason: 'timeout',
+        timeoutMs: REPORT_ONLY_COUNT_TIMEOUT_MS,
+        durationMs,
+      };
+    }
+    const { eligible, capped } = count;
     console.log(
       `${o.logPrefix} REPORT-ONLY: ${eligible}${capped ? '+' : ''} ${target.table} rows eligible ` +
       `(window ${retentionDays} d); ${enableHint}`,
@@ -133,10 +168,7 @@ export async function runRetentionTarget(
   }
 
   const action = target.action;
-  const batchArgs = { table: target.table, where, batchSize, maxBatches, label: o.label };
-  const result = action.kind === 'scrub'
-    ? await updateInCtidBatches({ ...batchArgs, set: action.set })
-    : await pruneInCtidBatches(batchArgs);
+  const result = await enforceRetentionAction(action, { table: target.table, where, batchSize, maxBatches, label: o.label });
   const durationMs = Date.now() - startedAt;
 
   console.log(
@@ -155,6 +187,33 @@ export async function runRetentionTarget(
     hasMore: result.hasMore,
     durationMs,
   };
+}
+
+/**
+ * The enforcing branch: what an enforcing run does to the eligible rows. Fails
+ * closed. Each action kind is handled by name and anything else throws, so no
+ * kind reaches a delete by default. `reportOnly` throws too: the early return
+ * in `runRetentionTarget` must have counted it, and reaching here means that
+ * guard was bypassed. Exported so a test can make exactly that call.
+ */
+export async function enforceRetentionAction(
+  action: RetentionAction,
+  batchArgs: { table: string; where: SQL; batchSize: number; maxBatches: number; label: string },
+): Promise<BatchedPruneResult> {
+  switch (action.kind) {
+    case 'delete':
+      return pruneInCtidBatches(batchArgs);
+    case 'scrub':
+      return updateInCtidBatches({ ...batchArgs, set: action.set });
+    case 'reportOnly':
+      throw new Error(`[retentionTarget] Refusing to enforce ${batchArgs.table}: its action is reportOnly, which only counts`);
+    default: {
+      const unknown: never = action;
+      throw new Error(
+        `[retentionTarget] Refusing to enforce ${batchArgs.table}: unknown action kind ${JSON.stringify((unknown as { kind?: unknown }).kind)}`,
+      );
+    }
+  }
 }
 
 /**

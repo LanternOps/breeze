@@ -46,7 +46,8 @@ import {
   HISTORY_RETENTION_TARGETS,
   runHistoryRetention,
 } from '../../jobs/historyRetention';
-import { runRetentionTarget, type RetentionTargetResult } from '../../jobs/retentionTarget';
+import { countEligibleRowsBounded } from '../../jobs/retentionBatch';
+import { REPORT_ONLY_COUNT_TIMEOUT_MS, runRetentionTarget, type RetentionTargetResult } from '../../jobs/retentionTarget';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -507,5 +508,113 @@ describe('history retention second pass: report-only by construction (#4342 W6.c
         expect((await surviving(table, ids)).size, `${table} rows survive`).toBe(ids.length);
       }
     }
+  });
+
+  // #4342 W6.c review: the audit_baseline_results predicate was rewritten from
+  // "a newer row exists for this (device, baseline)" to "this row is not its
+  // group's newest" (one hashed aggregate instead of a probe per row). They
+  // must select the same rows, ties included.
+  it('audit_baseline_results: the rewritten predicate selects exactly what the EXISTS form did', async () => {
+    await seedAuditBaselineResults(seed);
+    const baselineId = randomUUID();
+    await exec(sql`INSERT INTO audit_baselines (id, org_id, name, os_type, profile, settings)
+      VALUES (${baselineId}::uuid, ${seed.orgId}::uuid, 'Tie baseline', 'windows', 'standard', '{}'::jsonb)`);
+    const row = (checkedAt: Date) => exec(sql`INSERT INTO audit_baseline_results
+      (id, org_id, device_id, baseline_id, compliant, score, deviations, checked_at)
+      VALUES (${randomUUID()}::uuid, ${seed.orgId}::uuid, ${seed.deviceId}::uuid, ${baselineId}::uuid, true, 100, '[]'::jsonb, ${tsu(checkedAt)})`);
+    // Two rows tied at an old group maximum (both newest: kept by both forms),
+    // and two tied below it in a second device's group (both eligible).
+    await row(daysAgo(150));
+    await row(daysAgo(150));
+    await row(daysAgo(160));
+    const d3 = (await createDevice({ orgId: seed.orgId, siteId: seed.siteId })).id;
+    for (const d of [daysAgo(120), daysAgo(120), daysAgo(110)]) {
+      await exec(sql`INSERT INTO audit_baseline_results
+        (id, org_id, device_id, baseline_id, compliant, score, deviations, checked_at)
+        VALUES (${randomUUID()}::uuid, ${seed.orgId}::uuid, ${d3}::uuid, ${baselineId}::uuid, true, 100, '[]'::jsonb, ${tsu(d)})`);
+    }
+
+    const entry = HISTORY_REPORT_ONLY_TARGETS.find((e) => e.target.table === 'audit_baseline_results')!;
+    const cutoffIso = new Date(Date.now() - entry.knobs.retentionDays * DAY_MS).toISOString();
+    const existsForm = await getTestDb().execute(sql`SELECT id FROM audit_baseline_results
+      WHERE checked_at < (${cutoffIso}::timestamptz AT TIME ZONE 'UTC')
+        AND EXISTS (SELECT 1 FROM audit_baseline_results n
+          WHERE n.device_id = audit_baseline_results.device_id
+            AND n.baseline_id = audit_baseline_results.baseline_id
+            AND n.checked_at > audit_baseline_results.checked_at)`) as unknown as Array<{ id: string }>;
+    const selected = await selectedBy(entry);
+    // [0], [1] from the base seed, the 160 d row, and both 120 d rows.
+    expect(selected.size).toBe(5);
+    expect(selected).toEqual(new Set(existsForm.map((r) => r.id)));
+  });
+
+  // #4342 W6.c review: a report-only count is bounded in time. Held behind an
+  // ACCESS EXCLUSIVE lock, the audit_baseline_results count must give up at
+  // REPORT_ONLY_COUNT_TIMEOUT_MS and be reported as unavailable, while every
+  // other target still counts and the job still completes. Without the bound
+  // the count waits for the lock (released here after 20 s as a backstop).
+  it('a report-only count that times out is reported unavailable; the rest of the job still runs', async () => {
+    const auditIds = await seedAuditBaselineResults(seed);
+    const ssoIds = await seedSsoSessions(seed);
+
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const lockHeld = new Promise<void>((r) => { locked = r; });
+    const holder = getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`LOCK TABLE audit_baseline_results IN ACCESS EXCLUSIVE MODE`);
+      locked();
+      await released;
+    });
+    const backstop = setTimeout(release, 20_000);
+
+    let results: RetentionTargetResult[];
+    const startedAt = Date.now();
+    try {
+      await lockHeld;
+      results = await runHistoryRetention();
+    } finally {
+      clearTimeout(backstop);
+      release();
+      await holder;
+    }
+    const elapsedMs = Date.now() - startedAt;
+
+    const auditIdx = HISTORY_RETENTION_TARGETS.length + CASES.findIndex((c) => c.table === 'audit_baseline_results');
+    const ssoIdx = HISTORY_RETENTION_TARGETS.length + CASES.findIndex((c) => c.table === 'sso_sessions');
+    expect(results).toHaveLength(HISTORY_RETENTION_TARGETS.length + CASES.length);
+    expect(results[auditIdx]).toMatchObject({
+      mode: 'reportUnavailable',
+      table: 'audit_baseline_results',
+      reason: 'timeout',
+      timeoutMs: REPORT_ONLY_COUNT_TIMEOUT_MS,
+    });
+    expect(reportEligible(results[ssoIdx], 'sso_sessions')).toBe(1);
+    expect(elapsedMs).toBeLessThan(REPORT_ONLY_COUNT_TIMEOUT_MS + 10_000);
+    expect((await surviving('audit_baseline_results', auditIds)).size).toBe(auditIds.length);
+    expect((await surviving('sso_sessions', ssoIds)).size).toBe(ssoIds.length);
+  }, 60_000);
+
+  // The savepoint rule (docs/agents/tenancy-rls.md) on real Postgres: the
+  // cancelled statement is rolled back in its savepoint, the system context
+  // still commits, and the pool serves the next count normally.
+  it('countEligibleRowsBounded turns a real statement timeout into timedOut and leaves the pool usable', async () => {
+    const ids = await seedSsoSessions(seed);
+    // The predicate is only evaluated against a row, hence the seed first.
+    await expect(countEligibleRowsBounded({
+      table: 'sso_sessions',
+      where: sql`(SELECT true FROM pg_sleep(0.5))`,
+      cap: 10,
+      label: 'test.boundedTimeout',
+      statementTimeoutMs: 100,
+    })).resolves.toEqual({ timedOut: true });
+
+    await expect(countEligibleRowsBounded({
+      table: 'sso_sessions',
+      where: sql`id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})`,
+      cap: 10,
+      label: 'test.boundedTimeout',
+      statementTimeoutMs: 5_000,
+    })).resolves.toEqual({ timedOut: false, eligible: ids.length, capped: false });
   });
 });

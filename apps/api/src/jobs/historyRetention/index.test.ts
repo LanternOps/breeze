@@ -150,6 +150,20 @@ describe('history retention worker (#4342 W5)', () => {
     expect((err as Error).message).not.toContain('sessions');
   });
 
+  // #4342 W6.c review: a count cancelled at its statement timeout is an
+  // answer ("count unavailable"), not a failed target.
+  it('does not fail the job for a report-only count that timed out', async () => {
+    const unavailable = {
+      mode: 'reportUnavailable', table: 'audit_baseline_results', retentionDays: 90, reason: 'timeout', timeoutMs: 5000, durationMs: 5001,
+    };
+    runTargetsMock.mockResolvedValueOnce([
+      unavailable,
+      { mode: 'report', table: 'sessions', retentionDays: 30, eligible: 0, eligibleCapped: false, durationMs: 1 },
+    ]);
+    const { runHistoryRetention } = await load();
+    await expect(runHistoryRetention()).resolves.toContainEqual(unavailable);
+  });
+
   it('schedules on its pre-allocated registry slot with no window in the payload', async () => {
     const { initializeHistoryRetention } = await load();
     const { jobSchedule } = await import('../scheduleRegistry');

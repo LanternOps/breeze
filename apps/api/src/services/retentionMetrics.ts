@@ -137,6 +137,14 @@ export interface RetentionRunOutcome {
    * nothing, and a 0 on the counter would claim it had measured a delete.
    */
   rowsEligible?: number;
+  /**
+   * A report-only count was cancelled at its statement timeout (#4342 W6.c,
+   * `REPORT_ONLY_COUNT_TIMEOUT_MS`), so this run has no eligible count. Sets
+   * `breeze_retention_count_unavailable{job_name}` to 1 and drops the last
+   * `rows_eligible` value, which no longer describes the table. The next count
+   * that completes clears it. Pass alone: nothing was deleted or measured.
+   */
+  countUnavailable?: boolean;
 }
 
 interface RetentionMetricsRecorder {
@@ -217,6 +225,7 @@ const ROWS_DELETED_METRIC = 'breeze_retention_rows_deleted_total';
 const LAST_RUN_METRIC = 'breeze_retention_last_run_timestamp_seconds';
 const BACKLOG_METRIC = 'breeze_retention_backlog_incomplete';
 const ROWS_ELIGIBLE_METRIC = 'breeze_retention_rows_eligible';
+const COUNT_UNAVAILABLE_METRIC = 'breeze_retention_count_unavailable';
 const ROLLUP_RUNS_METRIC = 'breeze_rollup_runs_total';
 const ROLLUP_DURATION_METRIC = 'breeze_rollup_duration_seconds';
 const COMPACTION_STALLED_METRIC = 'breeze_metric_rollup_compaction_stalled_months';
@@ -230,7 +239,7 @@ function safeSeconds(value: number): number {
 }
 
 /**
- * Registers (or reuses, if this Registry already carries them) the seven series
+ * Registers (or reuses, if this Registry already carries them) the eight series
  * and binds them as the live recorder. Called once from `routes/metrics.ts`.
  *
  * NOTHING is seeded here — deliberately. The retention workers are `global` /
@@ -282,6 +291,18 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
       registers: [registry],
     });
 
+  // Present only while a job's last report-only count timed out: set on a
+  // timeout, removed by the next completed count or enforce run, so healthy
+  // jobs publish no series at all.
+  const countUnavailable =
+    (registry.getSingleMetric(COUNT_UNAVAILABLE_METRIC) as Gauge<'job_name'> | undefined) ??
+    new Gauge({
+      name: COUNT_UNAVAILABLE_METRIC,
+      help: '1 when the last report-only eligible-row count of a retention job was cancelled at its statement timeout, so no count is published',
+      labelNames: ['job_name'] as const,
+      registers: [registry],
+    });
+
   const rollupRunsTotal =
     (registry.getSingleMetric(ROLLUP_RUNS_METRIC) as Counter<'status'> | undefined) ??
     new Counter({
@@ -329,9 +350,16 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
         // A report run deleted nothing, so a backlog flag left by an earlier
         // enforce run (before the flag was turned off) is stale; clear it.
         backlogIncomplete.remove(jobName);
+        countUnavailable.remove(jobName);
       } else if (outcome.rowsDeleted !== undefined) {
         // An enforcing run: the last report count no longer describes anything.
         rowsEligible.remove(jobName);
+        countUnavailable.remove(jobName);
+      } else if (outcome.countUnavailable) {
+        // A timed-out count: yesterday's number must not read as today's.
+        countUnavailable.labels(jobName).set(1);
+        rowsEligible.remove(jobName);
+        backlogIncomplete.remove(jobName);
       }
     },
     onRollupRun: (status, durationSeconds) => {

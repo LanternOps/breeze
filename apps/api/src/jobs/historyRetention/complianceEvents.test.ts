@@ -31,10 +31,19 @@ describe('compliance and evaluation event targets (#4342 W6.c, report-only)', ()
     const { AUDIT_BASELINE_RESULT_RETENTION_TARGET: t } = await load();
     const { sql, params } = render(t.where(CUTOFF, NOW));
     expect(sql).toMatch(/^checked_at < \(\$1::timestamptz AT TIME ZONE 'UTC'\)/);
-    expect(sql).toContain('EXISTS (SELECT 1 FROM audit_baseline_results n');
-    expect(sql).toContain('n.device_id = audit_baseline_results.device_id');
-    expect(sql).toContain('n.baseline_id = audit_baseline_results.baseline_id');
-    expect(sql).toContain('n.checked_at > audit_baseline_results.checked_at');
+    // "A newer row exists for this (device, baseline)" written as "this row is
+    // not its group's newest": one aggregate the planner hashes once, instead
+    // of a correlated probe per row that walks audit_results_baseline_checked_idx
+    // past every other device's rows (no (device_id, baseline_id, checked_at)
+    // index exists). Same rows: checked_at, device_id, baseline_id are NOT NULL.
+    expect(sql).toContain(
+      'AND NOT EXISTS (SELECT 1 FROM (SELECT r.device_id, r.baseline_id, max(r.checked_at) AS newest_checked_at ' +
+      'FROM audit_baseline_results r GROUP BY r.device_id, r.baseline_id) g',
+    );
+    expect(sql).toContain('g.device_id = audit_baseline_results.device_id');
+    expect(sql).toContain('g.baseline_id = audit_baseline_results.baseline_id');
+    expect(sql).toContain('g.newest_checked_at = audit_baseline_results.checked_at');
+    expect(sql).not.toMatch(/\bn\.checked_at > /);
     expect(params).toEqual([CUTOFF]);
   });
 
