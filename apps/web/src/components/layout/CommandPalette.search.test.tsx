@@ -121,14 +121,49 @@ describe('CommandPalette — searches every customer, header customer ranks firs
     expect(searchCalls()[1]![0]).toBe(`/search?q=srv-02&preferOrgId=${ORG_B}`);
   });
 
-  it('says the selected customer is out of reach, not that the session expired, on a 403', async () => {
-    fetchWithAuthMock.mockResolvedValue({ ok: false, status: 403, json: async () => ({ error: 'Access denied to this organization' }) });
+  it('turning "This customer only" back off searches every customer again', async () => {
+    useOrgStore.setState({ currentOrgId: ORG_A });
+    open();
+    const toggle = screen.getByTestId('palette-this-customer-only');
+    search('srv-02');
+    await waitFor(() => expect(searchCalls()).toHaveLength(1));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(searchCalls()).toHaveLength(2));
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(searchCalls()).toHaveLength(3));
+    expect(searchCalls()[2]).toEqual([`/search?q=srv-02&preferOrgId=${ORG_A}`, { orgIdOverride: null }]);
+  });
+
+  it('a stale header customer does not block an unnarrowed search: retries once without the hint', async () => {
+    const forbidden = { ok: false, status: 403, json: async () => ({ error: 'Access denied to this organization' }) };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(forbidden)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ results: [{ id: 'dev-2', type: 'devices', title: 'srv-02-b', orgId: ORG_B, orgName: 'Vega Corp' }] }) });
     useOrgStore.setState({ currentOrgId: ORG_A });
     open();
     search('srv-02');
 
+    expect(await screen.findByText('srv-02-b')).toBeInTheDocument();
+    expect(searchCalls().map(([url, init]) => [url, init])).toEqual([
+      [`/search?q=srv-02&preferOrgId=${ORG_A}`, { orgIdOverride: null }],
+      ['/search?q=srv-02', { orgIdOverride: null }],
+    ]);
+    expect(screen.queryByText("You don't have access to the selected organization.")).toBeNull();
+  });
+
+  it('says the selected customer is out of reach, not that the session expired, on a narrowed 403', async () => {
+    fetchWithAuthMock.mockResolvedValue({ ok: false, status: 403, json: async () => ({ error: 'Access denied to this organization' }) });
+    useOrgStore.setState({ currentOrgId: ORG_A });
+    open();
+    fireEvent.click(screen.getByTestId('palette-this-customer-only'));
+    search('srv-02');
+
     expect(await screen.findByText("You don't have access to the selected organization.")).toBeInTheDocument();
     expect(screen.queryByText(/session expired/i)).toBeNull();
+    // A narrowed search is never retried wider.
+    expect(searchCalls()).toHaveLength(1);
   });
 });
 
@@ -172,6 +207,28 @@ describe('CommandPalette — each result names its customer (#11803)', () => {
     search('srv-02');
 
     await screen.findByText('srv-02');
+    expect(orgLabels()).toEqual([]);
+  });
+
+  it('still labels results that span several customers when the customer list has not loaded', async () => {
+    respondWith(RESULTS);
+    useOrgStore.setState({ organizations: [] });
+    open();
+    search('srv-02');
+
+    await screen.findByText('srv-02-b');
+    expect(orgLabels()).toEqual(['Acme', 'Vega Corp', 'Partner-wide']);
+  });
+
+  it('gives no label to a result whose customer name is unknown or missing (older API)', async () => {
+    respondWith([
+      { id: 'dev-1', type: 'devices', title: 'srv-02', orgId: ORG_A, orgName: null },
+      { id: 'dev-2', type: 'devices', title: 'srv-02-b' },
+    ]);
+    open();
+    search('srv-02');
+
+    await screen.findByText('srv-02-b');
     expect(orgLabels()).toEqual([]);
   });
 

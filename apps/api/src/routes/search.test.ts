@@ -752,9 +752,13 @@ describe('search routes', () => {
       }
       // A partner-wide script counts as the preferred org's own.
       expect(text(captured.orderBy[1]![0])).toContain('organizations.partnerId');
-      // A hint, not a filter: no where clause pins the preferred org.
-      for (const where of captured.where) expect(text(where)).toContain(ORG_A);
-      expect(vi.mocked(eq)).not.toHaveBeenCalledWith('devices.orgId', ORG_B);
+      // A hint, not a filter: each where clause is exactly what it is with no
+      // preference (the access list), never a pin on the preferred org.
+      const hintedWhere = captured.where.map(text);
+      vi.mocked(db.select).mockReset();
+      const baseline = stubCategorySelects();
+      await app.request('/search?q=srv-02');
+      expect(hintedWhere).toEqual(baseline.where.map(text));
     });
 
     it('adds no ranking term when there is no preference', async () => {

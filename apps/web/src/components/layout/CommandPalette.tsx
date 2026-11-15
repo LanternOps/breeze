@@ -302,7 +302,6 @@ export default function CommandPalette() {
   // Only worth offering when there is more than one customer to choose between.
   const canNarrow = selectedOrgId !== null && customerCount > 1;
   const narrowed = canNarrow && thisCustomerOnly;
-  const showOrgLabels = customerCount > 1 && !narrowed;
   // Read-only: the palette mounts on every page, so it must not trigger the
   // /config or autopay fetches the gate hooks fire. An unknown gate hides the
   // entry (the nav's own default), and the sidebar loads /config anyway.
@@ -359,18 +358,26 @@ export default function CommandPalette() {
     const performSearch = async () => {
       try {
         const params = new URLSearchParams({ q: debouncedQuery });
-        if (selectedOrgId && !narrowed) params.set('preferOrgId', selectedOrgId);
+        const hinted = Boolean(selectedOrgId && !narrowed);
+        if (hinted) params.set('preferOrgId', selectedOrgId!);
         // orgIdOverride null = never inject the ambient org: the header's
         // customer must not silently narrow the search.
-        const response = await fetchWithAuth(`/search?${params.toString()}`, {
+        let response = await fetchWithAuth(`/search?${params.toString()}`, {
           orgIdOverride: narrowed ? selectedOrgId : null,
         });
         if (!isActive) return;
+        // The hint is optional: a stale or revoked header customer must not
+        // block a search the user did not narrow. Ask once more without it.
+        if (hinted && response.status === 403) {
+          params.delete('preferOrgId');
+          response = await fetchWithAuth(`/search?${params.toString()}`, { orgIdOverride: null });
+          if (!isActive) return;
+        }
 
         if (!response.ok) {
-          // A 403 with an org selected is the server refusing that org (a
+          // A 403 on a narrowed search is the server refusing that org (a
           // stale or revoked selection, #9612), not a dead session.
-          if (response.status === 403 && selectedOrgId) {
+          if (response.status === 403 && narrowed) {
             setResults([]);
             setErrorMessage("You don't have access to the selected organization.");
             return;
@@ -566,6 +573,12 @@ export default function CommandPalette() {
       return acc;
     }, {} as Record<SearchCategory, CommandItem[]>);
 
+    // Label results with their customer whenever more than one could be in
+    // play: the user has several customers, or (org list not loaded yet) the
+    // results themselves span several. Never on a narrowed search.
+    const resultOrgs = new Set(results.map((r) => r.orgId).filter((id): id is string => typeof id === 'string'));
+    const showOrgLabels = !narrowed && (customerCount > 1 || resultOrgs.size > 1);
+
     results.forEach((result, index) => {
       // The server no longer owns settings results; ignore any from an older API.
       if (result.type === 'settings') return;
@@ -587,7 +600,7 @@ export default function CommandPalette() {
 
     grouped.settings = settingsItems;
     return grouped;
-  }, [results, settingsItems, showOrgLabels, t]);
+  }, [results, settingsItems, narrowed, customerCount, t]);
 
   const { sections, selectableItems, indexByKey } = useMemo(() => {
     const builtSections: Section[] = [];

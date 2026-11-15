@@ -263,6 +263,27 @@ describe('GET /search — every accessible customer, labelled (#11803)', () => {
     expect(alertTitles).toEqual(['rank-alert older', 'rank-alert newer']);
   });
 
+  it('ranks a partner-wide script with the preferred customer, but not another partner-wide script (system scope)', async () => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'system' });
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, client.env.user.id));
+    const partnerId = client.env.partner.id;
+    const orgA = client.env.organization.id;
+    const orgB = (await createOrganization({ partnerId, name: 'Vega Corp' }))!.id;
+    const otherPartner = (await createPartner())!.id;
+    const userId = client.env.user.id;
+    // Name order alone would put these a < b < c < d.
+    const foreignShared = await seedScript('pwrank-a-foreign-shared', { orgId: null, partnerId: otherPartner }, userId);
+    const ownA = await seedScript('pwrank-b-own-a', { orgId: orgA, partnerId }, userId);
+    const ownB = await seedScript('pwrank-c-own-b', { orgId: orgB, partnerId }, userId);
+    const shared = await seedScript('pwrank-d-shared', { orgId: null, partnerId }, userId);
+
+    const plain = (await results(client, '/search?q=pwrank')).filter((r) => r.type === 'scripts');
+    expect(plain.map((r) => r.id)).toEqual([foreignShared, ownA, ownB, shared]);
+
+    const preferred = (await results(client, `/search?q=pwrank&preferOrgId=${orgB}`)).filter((r) => r.type === 'scripts');
+    expect(preferred.map((r) => r.id)).toEqual([ownB, shared, foreignShared, ownA]);
+  });
+
   it('partner user restricted to a subset of customers never sees the rest, and cannot ask for them', async () => {
     const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
     const partnerId = client.env.partner.id;
