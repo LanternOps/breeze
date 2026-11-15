@@ -41,6 +41,10 @@ export const RETRY_MS = 3600_000;
 // A week whose reads keep failing is posted anyway (its rows unavailable)
 // after this many hourly attempts, rather than never.
 export const MAX_DEGRADED_TRIES = 6;
+// Wall-clock limit on one metrics run inside a tick. GitHub served about
+// 3 s a call on a live run (job listings are large), and the tick's lock
+// goes stale after 15 minutes.
+export const TICK_TIME_LIMIT_MS = 8 * 60_000;
 // What one missing classification may cost: the PR, its group run, the run's
 // jobs, artifacts, reports, annotations and logs.
 export const CLASSIFY_COST = 25;
@@ -120,10 +124,11 @@ export function percentile(values, p) {
 
 // ── Reads, inside a call budget ──────────────────────────────────────────
 
-// The metrics' own share of the budget: they stop before it, never throw at it.
-function meter(gh, apiBudget) {
+// The metrics' own share of the budget, and a wall-clock limit: they stop
+// before either, never throw at it.
+function meter(gh, apiBudget, { deadline = Infinity, clock = Date.now } = {}) {
   const limit = Math.min(gh.calls + Math.max(0, apiBudget), gh.budget ?? Infinity);
-  return { can: (n = 1) => gh.calls + n <= limit, left: () => Math.max(0, limit - gh.calls) };
+  return { can: (n = 1) => gh.calls + n <= limit && clock() < deadline, left: () => Math.max(0, limit - gh.calls) };
 }
 
 const runsPath = (repo, q) => `repos/${repo}/actions/workflows/ci.yml/runs?${q}`;
@@ -143,7 +148,7 @@ async function listRuns(gh, m, { repo, start, end, event, status = null, onError
   for (let d = start; d < end; d += DAY) {
     for (let page = 1; page <= LIST_PAGES; page++) {
       if (!m.can()) {
-        onError(`${event} run listing: the API budget ran out`);
+        onError(`${event} run listing: the API budget or time limit ran out`);
         return { runs: [], complete: false };
       }
       const res = await gh.rest('GET', runsPath(repo, dayQuery(event, status, d, Math.min(d + DAY, end), page)));
@@ -170,7 +175,7 @@ async function sampleRuns(gh, m, { repo, start, end, event, status, max, budget,
   const days = [];
   for (let d = start; d < end; d += DAY) {
     if (!m.can()) {
-      onError(`${event} run listing: the API budget ran out`);
+      onError(`${event} run listing: the API budget or time limit ran out`);
       return { runs: [], k: null };
     }
     const to = Math.min(d + DAY, end);
@@ -197,7 +202,7 @@ async function sampleRuns(gh, m, { repo, start, end, event, status, max, budget,
   for (const day of days) {
     for (const page of pagesFor(day, k)) {
       if (!m.can()) {
-        onError(`${event} run listing: the API budget ran out`);
+        onError(`${event} run listing: the API budget or time limit ran out`);
         return { runs: [], k: null };
       }
       const res = await gh.rest('GET', runsPath(repo, dayQuery(event, status, day.d, day.to, page)));
@@ -261,7 +266,7 @@ async function prQueueEvents(gh, m, { repo, pr, since }) {
   const events = [];
   let after = null;
   for (let page = 0; page < PR_EVENT_PAGES; page++) {
-    if (!m.can()) return { error: 'the API budget ran out' };
+    if (!m.can()) return { error: 'the API budget or time limit ran out' };
     const conn = (await gh.graphql(PR_EVENTS_QUERY, { owner, name, n: pr, after, since: iso(since) }))?.repository?.pullRequest?.timelineItems;
     if (!conn) return { error: 'no timeline in the answer' };
     events.push(...conn.nodes.map(queueEvent));
@@ -284,7 +289,7 @@ async function scanQueueEvents(gh, m, { repo, start, onError }) {
   let after = null;
   for (let page = 0; page < SCAN_PAGES; page++) {
     if (!m.can()) {
-      onError('queue event scan: the API budget ran out');
+      onError('queue event scan: the API budget or time limit ran out');
       return { prs, complete: false };
     }
     let conn;
@@ -361,7 +366,7 @@ async function queueLatency(gh, m, { repo, prs, start, end, budget, onError }) {
   for (let i = 0; i < merged.length; i += k) {
     const p = merged[i];
     if (!m.can()) {
-      onError('queue latency: the API budget ran out');
+      onError('queue latency: the API budget or time limit ran out');
       return { k: null };
     }
     let pushed = null;
@@ -421,7 +426,7 @@ async function removalClasses(gh, m, { removals, log, budget, classifyRemoval, o
   let failed = 0;
   for (const r of picked) {
     if (!m.can(CLASSIFY_COST)) {
-      onError('queue failures: the API budget ran out while classifying');
+      onError('queue failures: the API budget or time limit ran out while classifying');
       return { list: out, k: null };
     }
     try {
@@ -455,7 +460,7 @@ export const runClassifier =
 async function jobStats(gh, m, { repo, runs, budget }) {
   if (!runs.length) return { k: 1, seconds: 0, linux: 0, waited: 0 };
   const jobsPage = (run, page) => gh.rest('GET', `repos/${repo}/actions/runs/${run.id}/jobs?filter=all&per_page=100&page=${page}`);
-  if (!m.can()) return { k: null, error: 'jobs: the API budget ran out' };
+  if (!m.can()) return { k: null, error: 'jobs: the API budget or time limit ran out' };
   const first = await jobsPage(runs[0], 1);
   if (first.status !== 200) return { k: null, error: `jobs of run ${runs[0].id}: ${first.status}` };
   const perRun = 1.5 * Math.max(1, Math.ceil((first.body.total_count ?? 0) / 100));
@@ -470,7 +475,7 @@ async function jobStats(gh, m, { repo, runs, budget }) {
     for (let page = 1; page <= JOB_PAGES; page++) {
       let res = i === 0 && page === 1 ? first : null;
       if (!res) {
-        if (!m.can()) return { k: null, error: 'jobs: the API budget ran out' };
+        if (!m.can()) return { k: null, error: 'jobs: the API budget or time limit ran out' };
         res = await jobsPage(runs[i], page);
       }
       if (res.status !== 200) return { k: null, error: `jobs of run ${runs[i].id}: ${res.status}` };
@@ -520,7 +525,7 @@ async function humanReadds(gh, m, { repo, removals, prs, log, start, end, onErro
     if (covered) continue;
     if (!pushedOf.has(r.pr)) {
       if (!m.can()) {
-        onError('human re-adds: the API budget ran out');
+        onError('human re-adds: the API budget or time limit ran out');
         return { available: false };
       }
       let pushed = null;
@@ -549,10 +554,11 @@ async function humanReadds(gh, m, { repo, removals, prs, log, start, end, onErro
 // `history` (a History) classify removals the log has no class for; without
 // `ciYml` they are left out and the row is unavailable. `onError(message)`
 // hears every read that made a row unavailable. `classifyRemoval(gh,
-// removal) → class` replaces the run classifier (tests).
-export async function weekMetrics(gh, { repo, week, decisionsLog = [], apiBudget = DEFAULT_API_BUDGET, ciYml = null, repoRoot = null, history = History.fromSightings([]), classifyRemoval = ciYml ? runClassifier({ repo, ciYml, repoRoot, history }) : null, onError = () => {} }) {
+// removal) → class` replaces the run classifier (tests). `deadline` (ms,
+// against `clock`): no read starts after it.
+export async function weekMetrics(gh, { repo, week, decisionsLog = [], apiBudget = DEFAULT_API_BUDGET, ciYml = null, repoRoot = null, history = History.fromSightings([]), classifyRemoval = ciYml ? runClassifier({ repo, ciYml, repoRoot, history }) : null, onError = () => {}, deadline = Infinity, clock = Date.now }) {
   const { start, end } = weekBounds(week);
-  const m = meter(gh, apiBudget);
+  const m = meter(gh, apiBudget, { deadline, clock });
   const rows = Object.fromEntries(ROWS.map((r) => [r.key, { name: r.name, value: '—', baseline: r.baseline, target: r.target, coverage: 'unavailable' }]));
   const set = (key, value, coverage) => Object.assign(rows[key], { value, coverage });
   const log = Array.isArray(decisionsLog) ? decisionsLog : [];
@@ -735,7 +741,8 @@ export async function weeklyMetrics(t, { readLog = () => readJsonl(join(t.stateD
   const errors = [];
   let rows;
   try {
-    rows = await compute(t.gh, { repo: t.repo, week, decisionsLog: readLog(), apiBudget: left - 50, ciYml: t.ciYml, repoRoot: t.repoRoot, history: t.history, onError: (e) => errors.push(e) });
+    const clock = t.clock ?? Date.now;
+    rows = await compute(t.gh, { repo: t.repo, week, decisionsLog: readLog(), apiBudget: left - 50, ciYml: t.ciYml, repoRoot: t.repoRoot, history: t.history, onError: (e) => errors.push(e), clock, deadline: clock() + TICK_TIME_LIMIT_MS });
   } catch (e) {
     // The tick's own budget: the metrics wait an hour, the tick goes on.
     if (e.name !== 'BudgetExceeded') throw e;

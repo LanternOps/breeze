@@ -182,7 +182,7 @@ export async function tick({ gh, repo, stateDir, checkoutDir = null, now = Date.
       }
       return r.mode;
     };
-    Object.assign(t, { modeNow, writer, viewer, stateDir, checkoutDir, record, save: () => saveState(stateDir, state) });
+    Object.assign(t, { modeNow, writer, viewer, stateDir, checkoutDir, record, clock, save: () => saveState(stateDir, state) });
 
     // apply + act-mode persistence: a decision is pending (saved) before its
     // first write and leaves the list once applied or skipped. A main CI

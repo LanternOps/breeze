@@ -333,7 +333,7 @@ test('over the API budget the job rows are sampled 1/k with the right k', async 
   const errors = [];
   const none = await weekMetrics(fakeGh({ runs, jobs }), { repo: REPO, week: WEEK, apiBudget: 15, onError: (e) => errors.push(e) });
   assert.deepEqual([none[4].value, none[4].coverage], ['—', 'unavailable']);
-  assert.ok(errors.includes('jobs: the API budget ran out'), errors.join('\n'));
+  assert.ok(errors.includes('jobs: the API budget or time limit ran out'), errors.join('\n'));
 
   const full = await weekMetrics(fakeGh({ runs, jobs }), { repo: REPO, week: WEEK });
   assert.deepEqual([full[4].value, full[4].coverage], ['50 h (50 runs)', 'exact']);
@@ -604,6 +604,23 @@ test('the marker is found on a later comment page; an unreadable page posts noth
   broken.gh.rest = async (method, path) => (/comments/.test(path) ? { status: 502, body: {} } : rest(method, path));
   await assert.rejects(postWeekly(broken.gh, { repo: REPO, week: WEEK, rows: broken.rows, writer: broken.writer, viewer: OP }), /comments: 502/);
   assert.deepEqual(broken.writer.writes, []);
+});
+
+test('no read starts after the deadline: the rows past it are unavailable', async () => {
+  let now = 0;
+  const gh = fakeGh(syntheticWeek());
+  const rest = gh.rest;
+  // Each REST call takes a minute; the deadline is 10 minutes.
+  gh.rest = async (method, path) => {
+    now += 60_000;
+    return rest(method, path);
+  };
+  const errors = [];
+  const rows = await weekMetrics(gh, { repo: REPO, week: WEEK, decisionsLog: syntheticWeek().log, clock: () => now, deadline: 10 * 60_000, onError: (e) => errors.push(e) });
+  assert.equal(rows[0].coverage, 'exact'); // 7 queue-run days
+  assert.equal(rows[2].coverage, 'unavailable');
+  assert.ok(errors.includes('pull_request run listing: the API budget or time limit ran out'), errors.join('\n'));
+  assert.ok(now <= 11 * 60_000);
 });
 
 test('the tick leaves the metrics for later when its budget is nearly spent', async () => {
