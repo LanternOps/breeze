@@ -12,6 +12,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/bulk/commands/'],
     ['POST', '/api/v1/devices/abc-123/commands'],
     ['POST', '/api/v1/devices/abc-123/commands/'],
+    ['POST', '/api/v1/devices/abc-123/auto-update'],
+    ['POST', '/api/v1/devices/abc-123/auto-update/'],
+    ['post', '/api/v1/devices/abc-123/auto-update'],
     ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
     // Ticket import sources and runs (#8313 W4): outbound connect / commit-then-enqueue.
     ['POST', '/api/v1/ticket-imports/sources'],
@@ -282,6 +285,9 @@ describe('isSelfManagedDbContextRoute', () => {
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
+    ['GET', '/api/v1/devices/abc-123/auto-update', 'only the write route owns its context'],
+    ['PATCH', '/api/v1/devices/abc-123/auto-update', 'only POST dispatches this command'],
+    ['POST', '/api/v1/devices/abc-123/auto-update/extra', 'a deeper path is not the self-managed route'],
     ['GET', '/api/v1/ticket-imports/sources', 'the list keeps the ambient tx'],
     ['GET', '/api/v1/ticket-imports/sources/abc-123/created-contacts', 'the created-contacts listing keeps the ambient tx'],
     ['PUT', '/api/v1/ticket-imports/sources/abc-123/mappings', 'mappings call no source and keep the ambient tx'],
