@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // makeJunction creates a real NTFS junction (IO_REPARSE_TAG_MOUNT_POINT) with
@@ -100,7 +98,7 @@ func TestJunction_BackupRestoreRoundTripOnWindows(t *testing.T) {
 	createTempFile(t, music, "song.txt", "la la")
 	makeJunction(t, filepath.Join(root, "My Music"), music)
 
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{root}, StagingDir: t.TempDir()})
 	job, err := mgr.RunBackupContext(context.Background(), nil)
 	if err != nil {

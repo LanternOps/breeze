@@ -1156,6 +1156,7 @@
       "policy": "Criterio",
       "portal_access_request": "Richiesta di accesso al portale",
       "portal_auth": "Accesso al portale",
+      "portal_directory_run": "Esecuzione della directory del portale",
       "portal_user": "Utente del portale",
       "psa_connection": "Connessione PSA",
       "psa_ticket_mapping": "Mappatura ticket PSA",

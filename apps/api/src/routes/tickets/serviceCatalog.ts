@@ -23,7 +23,7 @@ import {
   updateCatalog,
   updateItem,
 } from '../../services/serviceCatalogService';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 
 /**
  * Service catalog management API (#8325, wave A1). One catalog per partner;
@@ -71,7 +71,7 @@ function validationFailed(c: Context, message: string, field?: string) {
 function handleWriteError(c: Context, err: unknown): Response {
   if (err instanceof ServiceCatalogError) return validationFailed(c, err.message, err.field);
   const code = pgErrorCode(err);
-  if (code === '23503' || code === '23514') return validationFailed(c, 'Request violates a service catalog constraint');
+  if (isPgForeignKeyViolationCode(code) || code === '23514') return validationFailed(c, 'Request violates a service catalog constraint');
   throw err;
 }
 

@@ -1661,6 +1661,12 @@
     "online": "Online"
   },
   "deviceList": {
+    "diskUsage": "Disk Usage",
+    "diskUsageScope": "Disks to display",
+    "allDisks": "All disks",
+    "osDiskOnly": "OS disk only",
+    "sortByDiskUsage": "Sort by disk usage (highest displayed usage)",
+    "osDiskUsageUnavailable": "The agent has not identified the system disk yet.",
     "selectedComposition": "{{agent}} agent, {{network}} network",
     "agentOnlyBulkAction": "Applies to agent devices only",
     "eligibleOfSelected": "{{count}} of {{total}}",
@@ -3800,6 +3806,7 @@
     "deleteTitle": "Delete \"{{name}}\"",
     "empty": "No saved views yet. Build a filter, then save it as a view.",
     "manageAll": "Manage all views",
+    "ownerOrgHint": "Views belong to one organization. Choose which one owns this view.",
     "saveCurrent": "Save current as view…",
     "saveCurrentTitle": "Save the current filter as a view",
     "setDefaultTitle": "Set as default view",
@@ -3858,7 +3865,11 @@
     "oldDeviceUnavailable": "The old device record is no longer available.",
     "title": "Possible duplicate enrollment",
     "unknownDevice": "the previous device",
-    "viewOldDevice": "View old device"
+    "viewOldDevice": "View old device",
+    "reattach": "Reattach",
+    "reattachPending": "A reattach onto the old record is pending: the new install completes it when its agent checks in. The request expires {{expiresAt}}.",
+    "reviewPending": "A possible reinstall awaits partner review.",
+    "reattachPendingOther": "A reattach of this device is pending. The request expires {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "Remote-access security findings could not be loaded for this view.",
@@ -4271,7 +4282,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Device limit reached",
       "STEP_UP_REQUIRED": "Confirmation required",
       "ASSIGNMENT_FAILED": "Failed"
-    }
+    },
+    "modeLegend": "What to do with this device",
+    "modeAssign": "Assign as a new device",
+    "modeReattach": "Reattach to {{hostname}} (a reinstall of an existing record)",
+    "reattachPending": "A reattach of this device is pending: its new install completes it when its agent checks in. The request expires {{expiresAt}}.",
+    "cancelReattachConfirm": "Assigning this device as new cancels its pending reattach. I understand."
   },
   "timeFleet": {
     "title": "Time synchronization",
@@ -5046,5 +5062,86 @@
       "previousPage": "Previous",
       "nextPage": "Next"
     }
+  },
+  "reinstalledBadge": {
+    "label": "Reinstalled on {{date}}",
+    "title": "This record took over a reinstalled machine on {{at}}. The new install rebuilt its inventory."
+  },
+  "reattachDialog": {
+    "title": "Reattach to {{target}}",
+    "description": "Use the existing record {{target}} for the new install {{source}}, keeping its history, policies and configuration.",
+    "newInstall": "New install",
+    "existingRecord": "Existing record",
+    "holdingArea": "Holding area",
+    "fields": {
+      "hostname": "Hostname",
+      "os": "Operating system",
+      "model": "Manufacturer and model",
+      "serial": "Serial number",
+      "systemUuid": "System UUID",
+      "agentVersion": "Agent version",
+      "place": "Organization / site",
+      "enrolledAt": "Enrolled",
+      "lastSeenAt": "Last seen"
+    },
+    "matchedOn": "Matched on: {{evidence}}",
+    "evidence": {
+      "systemUuid": "system UUID",
+      "serial": "serial number and manufacturer",
+      "hostname": "hostname only",
+      "other": "reported identifiers"
+    },
+    "evidenceNoticeHint": "Hardware identifiers reported by the device. Not verified.",
+    "evidenceNoticeTpm": "Same TPM endorsement key the old install proved possession of. This proves key continuity, not the same physical TPM; cloned virtual TPMs share keys.",
+    "consequences": "The new install rebuilds the inventory of {{target}}. Queued work, grants and sessions of the old install are cancelled, and the {{source}} record is retired.",
+    "possession": "I confirmed, outside Breeze, that the new install runs on the machine {{target}} describes.",
+    "acknowledgeOsChange": "The new install reports {{sourceOs}} and the existing record {{targetOs}}. I confirm the operating system changed.",
+    "restoreDecommissioned": "{{target}} was removed. Restore it as part of this reattach.",
+    "confirmNameLabel": "Type {{hostname}} to confirm",
+    "stepUpHeading": "Confirm it’s you",
+    "stepUpIntro": "Reattaching retires a device record. Verify with your second factor to continue.",
+    "stepUpPasskeyNote": "Your browser will ask for your passkey when you continue.",
+    "stepUpCodeLabel": "Authenticator code",
+    "stepUpRetry": "That verification expired or no longer matches. Enter a new code.",
+    "noStepUpFactor": "Reattaching needs a passkey or an authenticator app. Set one up in your profile, then try again.",
+    "genericError": "The reattach could not be requested. Try again.",
+    "cancel": "Cancel",
+    "close": "Close",
+    "submit": "Reattach to {{hostname}}",
+    "submitting": "Requesting…",
+    "submitStepUp": "Verify and reattach",
+    "requestedToast": "Reattach to {{hostname}} requested",
+    "pendingTitle": "Reattach requested",
+    "pendingMessage": "{{source}} takes over {{target}} the next time its agent checks in; nothing else is needed here. The request expires {{expiresAt}}.",
+    "refusals": {
+      "device_not_found": "One of the devices no longer exists or is outside your access.",
+      "not_partner_user": "Only partner users can reattach devices.",
+      "user_inactive": "Your account is not active.",
+      "permission_denied": "You need permission to edit and remove devices in the organizations of both devices.",
+      "org_access_denied": "You do not have access to the organizations of both devices.",
+      "full_admin_required": "Reattaching a device from the holding area on reported identifiers needs a full partner administrator.",
+      "partner_mismatch": "The devices are no longer in your partner.",
+      "MFA_REQUIRED": "Reattaching needs a session signed in with two-factor authentication. Sign in again with your second factor.",
+      "target_alive": "{{hostname}} is still in use: its install authenticated recently. A reattach needs the old install to be silent.",
+      "liveness_unknown": "Whether {{hostname}} is still in use could not be checked. Try again in a moment.",
+      "os_changed": "The operating systems differ. Confirm the operating system change and try again.",
+      "target_changed": "{{hostname}} changed since it was shown (it re-enrolled or was reattached). Open the reattach again to see its current state.",
+      "rebind_unsupported": "The new install’s agent is too old to be reattached. Upgrade the agent first.",
+      "source_decommissioned": "The new install’s record was removed.",
+      "source_ineligible": "This device cannot be reattached: Quick Support devices cannot.",
+      "target_ephemeral": "{{hostname}} is a temporary device and cannot be reattached onto.",
+      "target_decommissioned": "{{hostname}} was removed. Choose to restore it to reattach onto it.",
+      "target_ineligible": "{{hostname}} is not a managed record.",
+      "target_retired": "{{hostname}} was already retired by an earlier reattach.",
+      "device_quarantined": "One of the devices is quarantined.",
+      "device_suspended": "One of the devices has its agent credentials suspended.",
+      "org_draining": "The organization of one of the devices is not active.",
+      "device_in_open_intent": "One of the devices is already in a pending reattach.",
+      "confirm_target_name_required": "Type the existing device’s name to confirm.",
+      "confirm_target_name_mismatch": "The name typed does not match {{hostname}}.",
+      "same_device": "A device cannot be reattached onto itself.",
+      "invalid_target_version": "The existing record’s version is missing. Open the reattach again."
+    },
+    "stepUpHeld": "Your verification is still valid for this reattach."
   }
 }

@@ -27,6 +27,9 @@ export const KNOWN_CONDITIONS = [
   "delivery_failed",
   "sync_stale",
   "verification_failed",
+  "destination_access_denied",
+  "destination_not_found",
+  "destination_failing",
 ] as const;
 
 const isSafeHref = (href: unknown): href is string =>

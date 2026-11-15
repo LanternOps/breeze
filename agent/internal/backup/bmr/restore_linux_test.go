@@ -34,7 +34,11 @@ func fakeCommands(t *testing.T, results map[string]error) *[]recordedCommand {
 		}
 		return []byte("ok"), nil
 	}
-	t.Cleanup(func() { runCommand = orig })
+	origEnv := runCommandEnv
+	runCommandEnv = func(ctx context.Context, _ []string, name string, args ...string) ([]byte, error) {
+		return runCommand(ctx, name, args...)
+	}
+	t.Cleanup(func() { runCommand, runCommandEnv = orig, origEnv })
 	return &calls
 }
 
@@ -619,6 +623,8 @@ func TestRestoreSystemStateOffline_AppliesUnderRootWithoutTouchingHost(t *testin
 	mustWriteFile(t, filepath.Join(root, "etc", "passwd"), "root:x:0:0:root:/root:/bin/bash\n")
 	mustWriteFile(t, filepath.Join(root, "etc", "group"), "root:x:0:\ncrontab:x:105:\n")
 	mustWriteFile(t, filepath.Join(root, "usr", "sbin", "netfilter-persistent"), "#!/bin/sh\n")
+	mustWriteFile(t, filepath.Join(root, "lib", "systemd", "system", "ssh.service"), "[Service]\n")
+	mustWriteFile(t, filepath.Join(root, "lib", "systemd", "system", "cron.service"), "[Service]\n")
 	recorded := fakeCommands(t, map[string]error{})
 
 	warnings, err := RestoreSystemStateOffline(context.Background(), root, staging)
@@ -628,7 +634,7 @@ func TestRestoreSystemStateOffline_AppliesUnderRootWithoutTouchingHost(t *testin
 	if b, _ := os.ReadFile(filepath.Join(root, "etc", "hostname")); string(b) != "srv-1\n" {
 		t.Errorf("etc tree not applied under root: %q", b)
 	}
-	if !hasCommand(*recorded, "systemctl --root="+root+" enable ssh.service") || !hasCommand(*recorded, "systemctl --root="+root+" enable cron.service") {
+	if !hasCommand(*recorded, "systemctl --root="+root+" enable -- ssh.service") || !hasCommand(*recorded, "systemctl --root="+root+" enable -- cron.service") {
 		t.Errorf("services not enabled offline: %+v", *recorded)
 	}
 	for _, c := range *recorded {

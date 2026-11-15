@@ -217,4 +217,28 @@ describe('translateMessagesRequest', () => {
       expect(() => translateMessagesRequest(bad, 'q')).toThrowError(GatewayError);
     }
   });
+
+  describe('compactSchemas (#11395)', () => {
+    const schema = {
+      type: 'object', required: ['q'], additionalProperties: false,
+      properties: { q: { type: 'string', maxLength: 50, pattern: '^a' }, n: { type: 'integer', minimum: 1, default: 3 } },
+    };
+    const req = { ...base, tools: [{ name: 'mcp__breeze__search', description: 'Search.', input_schema: schema }] };
+
+    it('compacts the upstream parameters but keeps the ORIGINAL schema for call validation', () => {
+      const t = translateMessagesRequest(req, 'qwen', { compactSchemas: true });
+      expect(t.body.tools![0]!.function.parameters).toEqual({
+        type: 'object', required: ['q'], additionalProperties: false,
+        properties: { q: { type: 'string' }, n: { type: 'integer' } },
+      });
+      expect(t.tools.schemas.get('mcp__breeze__search')).toEqual(schema);
+    });
+
+    it('is off by default: the upstream parameters are the schema as sent (byte-identical)', () => {
+      const off = translateMessagesRequest(req, 'qwen');
+      const explicit = translateMessagesRequest(req, 'qwen', { compactSchemas: false });
+      expect(off.body.tools![0]!.function.parameters).toEqual(schema);
+      expect(JSON.stringify(explicit.body)).toBe(JSON.stringify(off.body));
+    });
+  });
 });

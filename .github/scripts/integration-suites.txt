@@ -67,6 +67,7 @@ suite ai sources apps/api/src/jobs/patchScheduleBackfill.ts
 suite ai sources apps/api/src/jobs/softwareComplianceWorker.ts
 suite ai sources apps/api/src/jobs/softwareRemediationWorker.ts
 suite ai sources apps/api/src/routes/agents/helpers.ts
+suite ai sources apps/api/src/routes/partnerAiDataPolicy.ts
 suite ai sources apps/api/src/routes/backup/verificationService.ts
 suite ai sources apps/api/src/services/accounting/accountingConnectionService.ts
 suite ai sources apps/api/src/services/accounting/accountingInvoicePush.ts
@@ -120,6 +121,7 @@ suite automation sources apps/api/src/jobs/flowRunQueue.ts
 suite automation sources apps/api/src/jobs/flowRunner.ts
 suite automation sources apps/api/src/jobs/flowScheduleTick.ts
 suite automation sources apps/api/src/routes/devices/core.ts
+suite automation sources apps/api/src/services/deviceCascadeTables.ts
 suite automation sources apps/api/src/routes/devices/moveOrg.ts
 suite automation sources apps/api/src/services/aiTools.ts
 suite automation sources apps/api/src/services/aiToolsScripts.ts
@@ -174,6 +176,7 @@ suite device sources apps/api/src/jobs/automationWorker.ts
 suite device sources apps/api/src/jobs/backupRetention.ts
 suite device sources apps/api/src/jobs/backupSlaWorker.ts
 suite device sources apps/api/src/jobs/patchJobExecutor.ts
+suite device sources apps/api/src/jobs/networkMonitorResultRetention.ts
 suite device sources apps/api/src/routes/agents.ts
 suite device sources apps/api/src/routes/agents/enrollment.ts
 suite device sources apps/api/src/routes/agents/helpers.ts
@@ -258,6 +261,7 @@ suite org sources apps/api/src/jobs/deviceGroupJobs.ts
 suite org sources apps/api/src/routes/patches/index.ts
 suite org sources apps/api/src/routes/portal/helpers.ts
 suite org sources apps/api/src/routes/quotesPublic.ts
+suite org sources apps/api/src/services/aiGuardrails.ts
 suite org sources apps/api/src/services/contractService.ts
 suite org sources apps/api/src/services/contractTypes.ts
 suite org sources apps/api/src/services/deviceGroupDelete.ts
@@ -331,6 +335,7 @@ suite portal sources apps/api/src/services/portal*
 suite portal sources apps/api/src/routes/portal*
 # import evidence: owned by another suite and imported by a test here
 suite portal sources apps/api/src/routes/orgPortalEntraTenant.ts
+suite portal sources apps/api/src/routes/orgPortalDirectory.ts
 suite portal sources apps/api/src/routes/orgPortalAccessPolicy.ts
 suite portal sources apps/api/src/routes/orgPortalAccessRequests.ts
 suite portal sources apps/api/src/routes/orgPortalUsers.ts

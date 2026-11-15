@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { dbSelectResults } = vi.hoisted(() => ({
+const { dbSelectResults, authContextState } = vi.hoisted(() => ({
   dbSelectResults: [] as Array<Array<{ currencyCode: string }>>,
+  authContextState: { depth: 0, opened: 0 },
 }));
 
 // Mock the service layer — routes are thin; we assert wiring, validation, error mapping.
@@ -93,6 +94,11 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: () => async (_c: any, next: any) => next(),
   requirePermission: () => async (_c: any, next: any) => next(),
   requireMfa: () => async (_c: any, next: any) => next(),
+  withAuthDbAccessContext: async (_auth: any, fn: () => Promise<unknown>) => {
+    authContextState.depth += 1;
+    authContextState.opened += 1;
+    try { return await fn(); } finally { authContextState.depth -= 1; }
+  },
   // #2190 — the import routes rebuild the request DbAccessContext from `auth`
   // and pass it into the (mocked) import services; the value only needs to exist.
   dbAccessContextFromAuth: (auth: any) => ({
@@ -231,6 +237,43 @@ describe('catalog item image routes', () => {
     expect(body.data.imageId).toBe('img1');
     expect(imgSvc.fetchImageFromUrl).toHaveBeenCalledWith('https://example.com/p.png');
     expect(imgSvc.writeCatalogItemImage).toHaveBeenCalledWith(ID, 'p1', 'image/png', expect.anything());
+  });
+
+  it('POST /:id/image/from-url reads and writes in short contexts and downloads outside them', async () => {
+    const seen: Record<string, number> = {};
+    (svc.getCatalogItem as any).mockImplementation(async () => { seen.read = authContextState.depth; return { item: { id: ID } }; });
+    (imgSvc.fetchImageFromUrl as any).mockImplementation(async () => {
+      seen.fetch = authContextState.depth;
+      return { mime: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) };
+    });
+    (imgSvc.writeCatalogItemImage as any).mockImplementation(async () => {
+      seen.write = authContextState.depth;
+      return { id: 'img1', byteSize: 4, sha256: 'x' };
+    });
+    authContextState.opened = 0;
+    const res = await app().request(`/${ID}/image/from-url`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/p.png' })
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ read: 1, fetch: 0, write: 1 });
+    expect(authContextState.opened).toBe(2);
+  });
+
+  it('POST /:id/image/from-url answers 504 (and stores nothing) when the download runs out of time', async () => {
+    const { ResponseDeadlineError } = await import('../../services/urlSafety');
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    for (const err of [new ResponseDeadlineError(20_000), new Error('request timed out after 10000ms')]) {
+      (imgSvc.fetchImageFromUrl as any).mockRejectedValueOnce(err);
+      const res = await app().request(`/${ID}/image/from-url`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://cdn.example/p.png' })
+      });
+      expect(res.status).toBe(504);
+    }
+    expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
   });
 
   it('POST /:id/image/from-url returns 400 (and does not store) when the download fails/blocked', async () => {

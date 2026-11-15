@@ -366,7 +366,17 @@ A proxy session stays alive as long as it's actively used: each request slides t
 - **Source IP restrictions** limit which users or networks can open proxy sessions.
 - Idle timeout and an absolute 12-hour session cap apply to prevent long-lived, unattended sessions.
 - A built-in SSRF-safe blocklist prevents proxying to internal metadata endpoints and loopback addresses.
+- When partner trust enforcement restricts a partner's remote control, its open tunnels end at their next authorization check: the next proxied request for Network Proxy, and the next 30-second check for a VNC tunnel.
 - Each proxy session is associated with a specific user and fully audit logged.
+
+**Allowlist rule format:**
+
+- **Destination rules** are `address-or-CIDR:port-range`. The address is IPv4 or IPv6, and the port part is a single port, a range, or `*`. Examples: `192.168.1.0/24:80-443`, `10.0.5.20:8080`, `2001:db8::/32:443`, `2001:db8::20:*`. The port is read after the last colon, so IPv6 addresses need no brackets.
+- **Source rules** contain only the address or CIDR, for example `198.51.100.0/24` or `2001:db8::/48`. A rule written as a single address with no prefix length matches only that address.
+- An IPv6 rule never matches an IPv4 address, and an IPv4 rule never matches an IPv6 address. An IPv4-mapped address such as `::ffff:192.0.2.10` counts as IPv4, so `::/0` does not cover IPv4 clients or targets.
+- Write an IPv6 CIDR as its network address (`2001:db8::/32`, not `2001:db8::5/32`). Use `/128` or a bare address for a single IPv6 host.
+- Breeze refuses to save a rule it cannot parse, and refuses to re-enable an older stored rule that does not parse. You can still disable or delete such a rule.
+- The blocklist cannot be overridden by a rule. It covers loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), the unspecified addresses, and the IPv6 cloud metadata addresses. The agent checks every address a host name resolves to and connects to an address it checked. VNC tunnels reach only the device's local VNC service at `127.0.0.1:5900`.
 
 ### Wake-on-LAN
 
@@ -475,7 +485,7 @@ Quick Support connects you to a machine that runs **no permanently enrolled agen
 
 1. On **Remote Access → Quick Support**, create a session. Optionally attribute it to a customer organization and add a label (e.g. "Contoso — CFO laptop"). Attribution is for reporting only; it does not grant or change access to that customer's data.
 
-2. Breeze returns a one-time code (`234-567-892`) and a link. Codes are digits only (2–9, with no 0 or 1) and displayed in groups of three so they read cleanly over the phone. **The code is shown once and cannot be retrieved again.** It expires in 15 minutes. Codes issued before v0.105.0 that contain letters remain redeemable.
+2. Breeze returns a one-time code (`234-567-892`) and a link. Codes are digits only (2–9, with no 0 or 1) and displayed in groups of three so they read cleanly over the phone. The code works once and expires in 15 minutes; a countdown shows the time left. Codes issued before v0.105.0 that contain letters remain redeemable.
 
 3. Send the link or read the code out. The end user opens the link, downloads the client, and runs it. The code is embedded in the download's filename, so they normally never type it — the landing page also accepts manual code entry if they arrive without one.
 
@@ -485,7 +495,13 @@ Quick Support connects you to a machine that runs **no permanently enrolled agen
 
 </Steps>
 
-Clicking a row in the session history re-opens a live detail panel for that session — you can connect to (or end) a still-active session from history; only the one-time code stays create-time-only.
+Clicking a row in the session history re-opens a live detail panel for that session — you can connect to (or end) a still-active session from history.
+
+**The code stays visible while the session waits.** Until the end user redeems it, the code stays on the session's row in the Quick Support list, and the detail panel shows it with the link and copy buttons for both, so reloading or leaving the page no longer means starting over. The code disappears as soon as the end user redeems it, you end the session, or it expires. Only technicians who can create Quick Support sessions for your partner see it (the `remote:access` permission, with partner scope).
+
+**New code.** If the 15 minutes run out before the end user gets to it, or you want to stop the current code working, click **New code** on the session. Breeze replaces the code and its link and restarts the 15-minute timer on the same session; the previous code stops working at once. New code is available until the end user redeems a code, you end the session, or the eight-hour hard cap passes. Sessions created before this change have no stored code, so they show **New code** instead of a code.
+
+Breeze stores the code encrypted while the session is pending and deletes the stored copy when the session leaves that state. Redemption still looks codes up by hash, and the per-IP rate limits and failed-guess budget on the public code endpoints are unchanged.
 
 <Aside type="caution">
   Quick Support requires **partner scope**. An organization-scoped login cannot create these sessions. Sessions are visible to all technicians at your partner, not only their creator.

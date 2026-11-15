@@ -441,7 +441,7 @@ export async function createFlowRun(
       }
 
       const at = new Date();
-      const admission = await assertFlowRunAdmission(owner, flow.id, { doc: doc.data, at });
+      const admission = await assertFlowRunAdmission(owner, flow.id, { doc: doc.data, at, runOrgId: i.orgId });
       if (!admission.ok) return { created: false, reason: admission.error };
 
       const inserted = await db.execute(sql`

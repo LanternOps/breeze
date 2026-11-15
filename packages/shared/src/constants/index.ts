@@ -207,3 +207,6 @@ export * from './alertLifecycle';
 // OAuth authorization-server error page reasons (#9938), shared by the API
 // renderError hook and the web /oauth/consent/error page. Leaf module, no imports.
 export * from './oauthErrorPage';
+// DR plan group step types + case-insensitive normaliser, shared by the plan
+// editor and the execution dispatcher (#11856). Leaf module, no imports.
+export * from './drStepTypes';

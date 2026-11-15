@@ -1263,6 +1263,39 @@
     },
     "troubleshootingLink": "Guida alla risoluzione dei problemi"
   },
+  "failureCause": {
+    "storage_access_denied": {
+      "hint": "La destinazione del backup ha rifiutato la richiesta. Verifica che la chiave di accesso sia valida e abbia permessi di scrittura, la policy del bucket e lo stato dell’account di archiviazione, quindi esegui Testa connessione."
+    },
+    "storage_not_found": {
+      "hint": "La destinazione del backup segnala che il bucket o i suoi oggetti non esistono. Verifica che il bucket esista ancora e che nessuna regola di ciclo di vita elimini i dati di backup."
+    },
+    "storage_clock_skew": {
+      "hint": "La destinazione del backup ha rifiutato l’orario della richiesta, il che indica comunemente un orologio molto sfasato. Controlla data e ora del dispositivo."
+    },
+    "storage_operation_failed": {
+      "hint": "Breeze non è riuscito a completare un’operazione di archiviazione con la destinazione. Di solito è un problema temporaneo o un’incompatibilità del provider. Se continua, contatta il supporto."
+    },
+    "storage_session_expired": {
+      "hint": "La sessione di caricamento è terminata prima della fine dell’esecuzione. L’esecuzione successiva riprende da dove si è fermata questa."
+    },
+    "helper_stopped": {
+      "hint": "Il processo di backup sul dispositivo è stato interrotto durante l’esecuzione, comunemente perché il dispositivo è andato in stop, si è riavviato o si è spento. Mantienilo attivo e acceso durante la finestra di backup."
+    },
+    "run_cancelled_on_device": {
+      "hint": "L’esecuzione è stata interrotta sul dispositivo, comunemente da un riavvio o da uno spegnimento."
+    },
+    "never_started": {
+      "hint": "Il dispositivo non ha mai avviato questa esecuzione, di solito perché un altro backup era ancora in corso o l’agente si stava riavviando."
+    },
+    "no_agent_signal": {
+      "hint": "Breeze non ha più ricevuto segnali dal dispositivo durante l’esecuzione."
+    },
+    "destination": {
+      "title": "{{name}}: l’ultimo backup non è riuscito su {{failing}} dispositivi su {{total}}",
+      "link": "Apri i profili di backup per testare la connessione"
+    }
+  },
   "fullRunReason": {
     "no_prior_snapshot": "Primo backup per questo dispositivo e questa destinazione",
     "base_expired": "Il backup precedente era scaduto in base alla conservazione",

@@ -245,4 +245,32 @@ describe('syncConnectionModels — openai_compatible (real DB, real discoverer)'
     await syncConnectionModels(connectionId, T0);
     expect(await snapshot()).toEqual(before);
   });
+
+  it('#11396: sync writes context_window_discovered from the listing and leaves observed/override untouched', async () => {
+    const { partnerId, connectionId } = await seedGateway();
+    await fixtureSql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, model_id, source, enabled,
+        context_window_override, context_window_observed, context_window_observed_at, context_window_observed_config_version)
+      VALUES (${partnerId}, ${connectionId}, 'lm', 'discovered', true, 16384, 8192, now(), 1)`;
+    respond = () => Response.json({ object: 'list', data: [
+      { id: 'lm', max_context_length: 262_144, loaded_context_length: 8_192 },
+      { id: 'or', context_length: 131_072 },
+      { id: 'none' },
+    ] });
+    expect((await syncConnectionModels(connectionId, T0)).status).toBe('ok');
+    const windows = async () => fixtureSql<Array<Record<string, unknown>>>`
+      SELECT model_id, context_window_discovered, context_window_override, context_window_observed,
+             context_window_observed_config_version
+        FROM partner_ai_models WHERE connection_id = ${connectionId} ORDER BY model_id`;
+    expect(await windows()).toEqual([
+      { model_id: 'lm', context_window_discovered: 8_192, context_window_override: 16_384, context_window_observed: 8_192, context_window_observed_config_version: 1 },
+      { model_id: 'none', context_window_discovered: null, context_window_override: null, context_window_observed: null, context_window_observed_config_version: null },
+      { model_id: 'or', context_window_discovered: 131_072, context_window_override: null, context_window_observed: null, context_window_observed_config_version: null },
+    ]);
+
+    // The listing is the current truth: a later sync that no longer states a window clears it.
+    listing('lm', 'or', 'none');
+    await syncConnectionModels(connectionId, at(1));
+    expect((await windows()).map((r) => r.context_window_discovered)).toEqual([null, null, null]);
+  });
 });

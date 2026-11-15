@@ -20,7 +20,7 @@ import {
   DEVICE_CASCADE_DELETE_PREDICATES,
   getDeviceCascadeDeleteTables,
   type DeviceCurrentOwnership,
-} from '../routes/devices/core';
+} from './deviceCascadeTables';
 
 /** postgres-js returns the row array itself; node-postgres wraps it in `.rows`. */
 function asRows<T>(result: unknown): T[] {

@@ -49,6 +49,7 @@ import { formatTimeAgo } from "@/lib/formatTime";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import RebootScheduledBadge from "./RebootScheduledBadge";
 import UninstallStateBadge from "./UninstallStateBadge";
+import ReinstalledBadge from "./ReinstalledBadge";
 import { DeviceIsolationBadge } from "./networkIsolation/IsolationBadge";
 import DeviceBackupActivityBadge from "../backup/DeviceBackupActivityBadge";
 import DeviceActions from "./DeviceActions";
@@ -946,6 +947,8 @@ export default function DeviceDetails({
                   uninstall={device.uninstall}
                   status={device.status}
                 />
+                {/* #8318: this record took over a reinstalled machine. */}
+                <ReinstalledBadge lastReattachedAt={device.lastReattachedAt} />
                 <DeviceIsolationBadge deviceId={device.id} />
                 <DeviceBackupActivityBadge deviceId={device.id} />
                 {device.pendingReboot && (
@@ -1061,6 +1064,8 @@ export default function DeviceDetails({
           possible-replacement link. */}
       <PossibleReplacementBanner
         possibleReplacementOfDeviceId={device.possibleReplacementOfDeviceId}
+        sourceDeviceId={device.id}
+        sourceOrgId={device.orgId || undefined}
       />
 
       <OverflowTabs

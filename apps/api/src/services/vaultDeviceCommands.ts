@@ -13,11 +13,15 @@
  *
  * `vault_sync` needs a snapshot id. When the caller names none (the web UI's
  * Sync button never does), the device's newest file-backup snapshot is used.
+ * It also names the destination that snapshot was written to (#11858): the
+ * helper's own store is not where a policy-managed device's backups live.
  */
-import { and, desc, eq, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, isNull, or, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
 import { backupSnapshots, localVaults } from '../db/schema';
+import { backupReadCredentialPayload, type BackupProviderConfigRef } from './backupCommandCredentials';
+import { BACKUP_DESTINATION_CONFIG_NOT_FOUND_MESSAGE, resolveBackupProviderConfig } from './backupProviderConfig';
 import { redactSecretsFromOutput } from './secretRedaction';
 
 export type VaultConfigurePayload =
@@ -43,23 +47,76 @@ export async function buildVaultConfigurePayload(
   return { vaultPath: vault.vaultPath, retentionCount: vault.retentionCount, enabled: true };
 }
 
-export async function resolveLatestVaultSyncSnapshotId(
+export const VAULT_SYNC_NO_SNAPSHOT_MESSAGE = 'No backup snapshot to sync yet: run a file backup on this device first';
+export const VAULT_SYNC_SNAPSHOT_NOT_FOUND_MESSAGE = 'Backup snapshot not found for this device';
+
+/** The destination a `vault_sync` reads from: a reference, resolved at delivery. */
+export type VaultSyncDestination = { provider: string; providerConfigRef: BackupProviderConfigRef };
+
+export type VaultSyncSource =
+  | { ok: true; snapshotId: string; destination: VaultSyncDestination | null }
+  | { ok: false; status: 400 | 404 | 422; error: string };
+
+/**
+ * The snapshot a `vault_sync` copies and where the helper reads it from.
+ *
+ * The snapshot is the one named, or the device's newest file backup, and must
+ * belong to this device in this org. It is read from the destination it was
+ * WRITTEN to (the snapshot's `configId`, recorded by the backup job), not the
+ * device's current destination, which may have changed since. Restore and
+ * verify follow the same rule (services/backupProviderConfig.ts).
+ *
+ * - Local destination: named by reference (`provider` + `providerConfigRef`).
+ *   The delivery refresher resolves the path into the outgoing frame only
+ *   (services/backupCommandCredentials.ts).
+ * - No recorded destination (written before destinations were recorded): no
+ *   destination, so the helper reads its own store, as before.
+ * - Storage (S3) destination: no destination either. A storage destination is
+ *   never sent to a device for a read, and `vault_sync` is not served through
+ *   storage sessions, so the helper keeps reading its own store.
+ * - Recorded destination that no longer resolves in this org: refused.
+ */
+export async function resolveVaultSyncSource(
   deviceId: string,
   orgId: string,
-): Promise<string | null> {
+  requestedSnapshotId?: string | null,
+): Promise<VaultSyncSource> {
+  const conditions: SQL[] = [eq(backupSnapshots.deviceId, deviceId), eq(backupSnapshots.orgId, orgId)];
+  if (requestedSnapshotId) {
+    conditions.push(eq(backupSnapshots.snapshotId, requestedSnapshotId));
+  } else {
+    // The vault mirrors file backups (the helper auto-syncs only after
+    // backup_run). A NULL type predates the column and is a file backup.
+    conditions.push(or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType))!);
+  }
   const [snapshot] = await db
-    .select({ snapshotId: backupSnapshots.snapshotId })
+    .select({ snapshotId: backupSnapshots.snapshotId, configId: backupSnapshots.configId })
     .from(backupSnapshots)
-    .where(and(
-      eq(backupSnapshots.deviceId, deviceId),
-      eq(backupSnapshots.orgId, orgId),
-      // The vault mirrors file backups (the helper auto-syncs only after
-      // backup_run). A NULL type predates the column and is a file backup.
-      or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
-    ))
+    .where(and(...conditions))
     .orderBy(desc(backupSnapshots.timestamp))
     .limit(1);
-  return snapshot?.snapshotId ?? null;
+
+  if (!snapshot) {
+    return requestedSnapshotId
+      ? { ok: false, status: 404, error: VAULT_SYNC_SNAPSHOT_NOT_FOUND_MESSAGE }
+      : { ok: false, status: 400, error: VAULT_SYNC_NO_SNAPSHOT_MESSAGE };
+  }
+  if (!snapshot.configId) {
+    return { ok: true, snapshotId: snapshot.snapshotId, destination: null };
+  }
+
+  const config = await resolveBackupProviderConfig(snapshot.configId, orgId);
+  if (!config) {
+    return { ok: false, status: 422, error: BACKUP_DESTINATION_CONFIG_NOT_FOUND_MESSAGE };
+  }
+  if (config.provider !== 'local') {
+    return { ok: true, snapshotId: snapshot.snapshotId, destination: null };
+  }
+  return {
+    ok: true,
+    snapshotId: snapshot.snapshotId,
+    destination: backupReadCredentialPayload(snapshot.configId, orgId, config.provider),
+  };
 }
 
 export interface ApplyVaultConfigureCommandResultInput {

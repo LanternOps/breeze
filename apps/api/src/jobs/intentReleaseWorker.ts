@@ -92,6 +92,7 @@ import {
   type SecretToolResult,
 } from '../services/actionIntents/secretBearingTools';
 import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
+import { releaseArgumentsForStoredIntent } from './intentReleaseLegacyArgs';
 
 /**
  * Durable release worker (spec
@@ -1662,8 +1663,12 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
           // row's spec §4.1 `approval_method` — so a reviewer-decided lane
           // run reads as `unattended_reviewer_gated` instead of the
           // constant it used to be stamped with.
+          //
+          // #11861: the arguments are the stored ones, except that a pre-change
+          // AI time-entry proposal drops its two retired keys
+          // (intentReleaseLegacyArgs.ts; delete once none remain pending).
           () =>
-            executeTool(intent.actionName, intent.arguments, auth, {
+            executeTool(intent.actionName, releaseArgumentsForStoredIntent(intent), auth, {
               // B-W04: MCP has no session anchor — same binding as the direct path.
               ...(mcpRelease && isTopologyAiToolName(intent.actionName)
                 ? { topologyBinding: { kind: 'mcp_site_key' as const } }

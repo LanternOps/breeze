@@ -59,7 +59,7 @@ vi.mock('../../middleware/auth', () => ({
   }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  withAuthDbAccessContext: async (_auth: unknown, fn: () => Promise<unknown>) => fn(),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
@@ -538,5 +538,28 @@ describe('system cleanup honours the per-device remote-tools policy', () => {
     const res = await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/list`, { method: 'POST' });
     expect(res.status).toBe(404);
     expect(checkDeviceRemoteToolsPolicyMock).not.toHaveBeenCalled();
+  });
+});
+
+// The poll GETs and the cancel POST keep the request's own transaction, so
+// their device check reads in it rather than opening a second pooled one.
+describe('routes that keep the request transaction read in it', () => {
+  it.each([
+    ['GET', `/devices/${DEVICE_ID}/filesystem/system-cleanup/list/${COMMAND_ID}`],
+    ['GET', `/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}`],
+    ['POST', `/devices/${DEVICE_ID}/filesystem/system-cleanup/run/${RUN_ID}/cancel`],
+  ])('%s %s opens no context of its own', async (method, path) => {
+    const { withAuthDbAccessContext } = await import('../../middleware/auth');
+    vi.mocked(withAuthDbAccessContext).mockClear();
+    await app().request(path, { method });
+    expect(getDeviceWithOrgAndSiteCheckMock).toHaveBeenCalled();
+    expect(withAuthDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('the POSTs that own their context still open one', async () => {
+    const { withAuthDbAccessContext } = await import('../../middleware/auth');
+    vi.mocked(withAuthDbAccessContext).mockClear();
+    await app().request(`/devices/${DEVICE_ID}/filesystem/system-cleanup/list`, { method: 'POST' });
+    expect(withAuthDbAccessContext).toHaveBeenCalled();
   });
 });

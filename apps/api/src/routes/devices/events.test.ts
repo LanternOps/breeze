@@ -166,6 +166,17 @@ describe('formatActionMessage (automated command labels)', () => {
   });
 });
 
+describe('formatActionMessage (reinstall reattach, #8318)', () => {
+  it('labels every reattach lifecycle event instead of humanizing the key', () => {
+    expect(formatActionMessage('device.reinstall_suspected', 'PC-1', 'success')).toBe('Possible reinstall detected — PC-1');
+    expect(formatActionMessage('device.reinstall.requested', 'PC-1', 'success')).toBe('Reattach of a reinstalled machine requested — PC-1');
+    expect(formatActionMessage('device.reinstall.staged', null, 'success')).toBe('Reattach staged by the new install');
+    expect(formatActionMessage('device.reinstall.cancelled', null, 'success')).toBe('Reattach cancelled');
+    expect(formatActionMessage('device.reinstall.expired', null, 'success')).toBe('Reattach request expired');
+    expect(formatActionMessage('device.reinstall.reattached', 'PC-1', 'success')).toBe('Reinstalled machine reattached — PC-1');
+  });
+});
+
 describe('formatActionMessage (restart decisions made at the device, #10190 W05)', () => {
   // services/rebootUserActionAudit.ts writes these; the person at the device
   // is not a console user, so the copy says where the decision was made.

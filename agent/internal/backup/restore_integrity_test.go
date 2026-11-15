@@ -35,7 +35,7 @@ type integrityFile struct {
 
 func setupIntegritySnapshot(t *testing.T, files []integrityFile) *integritySnapshot {
 	t.Helper()
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	s := &integritySnapshot{provider: provider, snapshotID: "snap-integrity-1"}
 	for _, f := range files {
 		key := path.Join("snapshots", s.snapshotID, "files", f.name)
@@ -334,7 +334,7 @@ func TestRestoreAttested_VaultCopyDiffersRestoresFromPrimary(t *testing.T) {
 	primary := setupIntegritySnapshot(t, []integrityFile{{name: "a.txt", content: "alpha"}, {name: "b.txt", content: "bravo"}})
 	e := primary.attested(t)
 	// The vault holds the same snapshot, but its copy of b.txt differs.
-	vault := &integritySnapshot{provider: providers.NewLocalProvider(t.TempDir()), snapshotID: primary.snapshotID}
+	vault := &integritySnapshot{provider: privateTestLocalProvider(t, t.TempDir()), snapshotID: primary.snapshotID}
 	vault.putObject(t, primary.manifestKey(), string(primary.storedManifest(t)))
 	vault.putObject(t, primary.manifest.Files[0].BackupPath, "alpha")
 	vault.putObject(t, primary.manifest.Files[1].BackupPath, sameSizeDifferent("bravo"))

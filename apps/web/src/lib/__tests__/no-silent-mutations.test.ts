@@ -74,6 +74,8 @@ const TARGET_GLOBS = [
   'src/components/settings/BusinessHoursApplyDialog.tsx',
   // #8330: saved-filter create/edit/delete surface the API's error text.
   'src/components/filters/SavedFilterList.tsx',
+  // #11879: the Devices toolbar "Views" save/delete go through runAction.
+  'src/components/devices/SavedViewsMenu.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
   'src/lib/endpointMessages.ts',
   'src/components/endpointMessages/SendMessageDialog.tsx',
@@ -131,6 +133,8 @@ const TARGET_GLOBS = [
   // runAction from birth.
   'src/components/devices/AssignParkedDeviceDialog.tsx',
   'src/components/devices/UnassignedDevicesPage.tsx',
+  // #8318 wave 2-3: the reattach request (POST /devices/:id/reattach) goes through runAction from birth.
+  'src/components/devices/ReattachDeviceForm.tsx',
   'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',

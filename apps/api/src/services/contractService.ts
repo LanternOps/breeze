@@ -22,7 +22,7 @@ import { periodIndexFor, nextBillingDate, isExpired, todayISO, firstUnclaimedPer
 import { emitContractEvent } from './contractEvents';
 import { rebaseUnmaterializedDeliverables } from './serviceDeliverableService';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
-import { pgErrorNode, isPgUniqueViolation } from '../utils/pgErrors';
+import { pgErrorNode, isPgUniqueViolation, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 
 /**
  * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
@@ -403,8 +403,7 @@ function assertBlockPatchAllowed(
 function isGroupFkViolation(err: unknown): boolean {
   const node = pgErrorNode(err);
   const constraint = node?.constraint_name ?? node?.constraint;
-  // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
-  return node?.code === '23503' && constraint === 'contract_lines_device_group_org_fk';
+  return isPgForeignKeyViolationCode(node?.code) && constraint === 'contract_lines_device_group_org_fk';
 }
 
 /**

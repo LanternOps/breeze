@@ -2,7 +2,6 @@ package procoutput
 
 import (
 	"encoding/json"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -96,37 +95,5 @@ func TestBytesToUTF8InvalidBytesUseReplacementOnNonWindows(t *testing.T) {
 	got := BytesToUTF8(raw)
 	if got == string(raw) {
 		t.Fatal("expected invalid bytes to be sanitized")
-	}
-}
-
-func TestWindowsScriptCommandPowerShell(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows script bootstrap is platform-specific")
-	}
-	shellCmd, args := WindowsScriptCommand("powershell.exe", []string{"-NoProfile", "-File"}, `C:\scripts\test.ps1`)
-	if shellCmd != "powershell.exe" {
-		t.Fatalf("shellCmd = %q", shellCmd)
-	}
-	if len(args) < 4 || args[0] != "-NoProfile" || args[2] != "-Command" {
-		t.Fatalf("unexpected args: %#v", args)
-	}
-	if args[len(args)-1] == "" {
-		t.Fatal("expected bootstrap command")
-	}
-}
-
-func TestWindowsScriptCommandCmd(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows script bootstrap is platform-specific")
-	}
-	shellCmd, args := WindowsScriptCommand("cmd.exe", []string{"/C"}, `C:\scripts\test.bat`)
-	if shellCmd != "cmd.exe" {
-		t.Fatalf("shellCmd = %q", shellCmd)
-	}
-	if len(args) != 2 || args[0] != "/C" {
-		t.Fatalf("unexpected args: %#v", args)
-	}
-	if args[1] != "chcp 65001 >nul & C:\\scripts\\test.bat" {
-		t.Fatalf("unexpected cmd bootstrap: %q", args[1])
 	}
 }

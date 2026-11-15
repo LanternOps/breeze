@@ -153,11 +153,21 @@ export const JOB_SCHEDULES = {
   // Hour 11 held only :03 in this lane; :23 keeps the daily = 3 (mod 5) lane.
   'portal-identity-reconcile': '23 11 * * *',
   'vulnerability-sofa-sync': '3 12 * * *',
+  // Portal registration W8 (#11385, plan D10) — daily Google Workspace
+  // directory pass: fans out one google-org job per org with an active Google
+  // connection and an enabled Google identity. Hour 12 held :03 and :08 in
+  // this lane; :23 keeps the daily = 3 (mod 5) lane.
+  'portal-directory-google': '23 12 * * *',
   'vulnerability-correlate': '3 13 * * *',
   'reliability-history-retention': '3 14 * * *',
   'playbook-execution-retention': '23 14 * * *',
   'cve-enrichment': '43 14 * * *',
   'receipt-retention': '3 15 * * *',
+  // High-volume table retention W4 (#4342, #11591) — AI transcripts (stub
+  // technician/client sessions past their windows, hard-delete stubs past the
+  // org's audit window), report-only until AI_TRANSCRIPT_RETENTION_ENFORCE.
+  // Daily tier lane (≡ 3 mod 5), slot pre-allocated by the retention plan.
+  'ai-transcript-retention': '8 15 * * *',
   'winget-index-sync': '3 16 * * *',
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
@@ -203,6 +213,10 @@ export const JOB_SCHEDULES = {
   // days; open/in_progress/unknown are never pruned. Hour 20 held :03 and :27;
   // :08 keeps the daily = 3 (mod 5) lane.
   'edr-detection-retention': '8 20 * * *',
+  // High-volume table retention W2 (#4342, #11589) — script executions,
+  // report-only until SCRIPT_EXECUTION_RETENTION_ENFORCE=true. Daily tier lane
+  // (≡ 3 mod 5), slot pre-allocated by the retention plan.
+  'script-execution-retention': '8 12 * * *',
   // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
   // the hosted drift report (listDomains vs local rows + outbox) and, on a
   // `static` instance, the re-check that a domain the operator removed from
@@ -235,6 +249,11 @@ export const JOB_SCHEDULES = {
   // Closed wake-attempt history expires daily; the outcome sweep uses a
   // sub-hourly repeat interval and does not need a registry slot.
   'wake-attempt-retention': '23 22 * * *',
+  // High-volume table retention W5 (#4342, #11592) — run and access history,
+  // twelve targets in one worker, each report-only until its own
+  // _RETENTION_ENFORCE=true. Daily tier lane (≡ 3 mod 5), slot pre-allocated
+  // by the retention plan.
+  'history-retention': '8 16 * * *',
   // #9128 — daily prune of terminal webhook_deliveries rows past
   // WEBHOOK_DELIVERY_RETENTION_DAYS (default 90). :13 keeps the daily = 3
   // (mod 5) lane in hour 22.
@@ -248,6 +267,11 @@ export const JOB_SCHEDULES = {
   // rows are never deleted. Hour 23 was free in the daily tier; :03 keeps the
   // daily = 3 (mod 5) lane.
   'flow-run-retention': '3 23 * * *',
+  // #4342 W3 — daily closed-alert retention (alerts past ALERT_RETENTION_DAYS,
+  // default 365, then orphaned correlation groups). Report-only until
+  // ALERT_RETENTION_ENFORCE=true. Pre-allocated slot; :08 keeps the daily = 3
+  // (mod 5) lane in hour 13.
+  'alert-retention': '8 13 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
@@ -313,6 +337,18 @@ export const JOB_SCHEDULES = {
   // domains; each row is only re-checked once ~23 h old, so the tick bounds how
   // late a daily re-check runs. :39 is free in every hour.
   'portal-domain-recheck': '39 * * * *',
+  // Portal registration W8 (#11385, plan D10) — hourly recovery sweep of the
+  // portal-directory-deprovision queue: re-enqueue stale `applying` runs, retry
+  // session purges, prune old runs. :51 is free in every hour and outside the
+  // ≡0 (mod 5) ticks.
+  'portal-directory-recover': '51 * * * *',
+  // High-volume table retention W1 (#4342, #11588) — device telemetry tables,
+  // report-only until each job's _RETENTION_ENFORCE=true. Daily tier lane
+  // (≡ 3 mod 5), four slots in hour 11 pre-allocated by the retention plan.
+  'device-command-retention': '8 11 * * *',
+  'filesystem-snapshot-retention': '18 11 * * *',
+  'network-monitor-result-retention': '33 11 * * *',
+  'device-session-retention': '48 11 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

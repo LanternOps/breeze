@@ -71,3 +71,32 @@ func TestCollectDisksPartitionErrorHandling(t *testing.T) {
 		})
 	}
 }
+
+func TestWindowsOSVolume(t *testing.T) {
+	tests := []struct {
+		name        string
+		systemDrive string
+		mountPoint  string
+		want        *bool
+	}{
+		{name: "system drive is not C", systemDrive: "D:", mountPoint: `d:\`, want: new(true)},
+		{name: "forward slash", systemDrive: `D:\`, mountPoint: "D:/", want: new(true)},
+		{name: "C is a data drive", systemDrive: "D:", mountPoint: `C:\`, want: new(false)},
+		{name: "subdirectory mount is a different volume", systemDrive: "D:", mountPoint: `D:\data\`, want: new(false)},
+		{name: "system drive unknown", mountPoint: `C:\`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := windowsOSVolume(tt.systemDrive, tt.mountPoint)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("expected unknown OS volume, got %t", *got)
+				}
+				return
+			}
+			if got == nil || *got != *tt.want {
+				t.Fatalf("windowsOSVolume(%q, %q) = %v, want %t", tt.systemDrive, tt.mountPoint, got, *tt.want)
+			}
+		})
+	}
+}

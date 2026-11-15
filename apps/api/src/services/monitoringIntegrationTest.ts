@@ -14,8 +14,20 @@ export interface MonitoringTestFetchInit {
   headers?: Record<string, string>;
   body?: string;
   timeoutMs?: number;
+  /** Total duration of the whole probe; `timeoutMs` measures inactivity. */
+  deadlineMs?: number;
+  /** Resolve on the response headers; the probe reads only the status. */
+  streamResponse?: boolean;
   allowPrivateNetwork?: boolean;
 }
+
+/**
+ * Every probe reads only the status line, is bounded in total duration by
+ * PROBE_DEADLINE_MS, and never buffers a body, so testing a large endpoint (a
+ * big /metrics page, say) needs no memory for it.
+ */
+export const PROBE_TIMEOUT_MS = 10_000;
+export const PROBE_DEADLINE_MS = 15_000;
 
 export interface MonitoringTestDeps {
   fetch: (url: string, init: MonitoringTestFetchInit) => Promise<Response>;
@@ -62,6 +74,14 @@ function fetchFailure(e: unknown, host: string): MonitoringTestResult {
 
 export async function testMonitoringProvider(input: MonitoringTestInput, deps: MonitoringTestDeps): Promise<MonitoringTestResult> {
   const { provider, config, endpointId, allowPrivateNetwork } = input;
+  const probe = async (url: string, init: MonitoringTestFetchInit): Promise<Response> => {
+    const res = await deps.fetch(url, {
+      ...init, timeoutMs: PROBE_TIMEOUT_MS, deadlineMs: PROBE_DEADLINE_MS, streamResponse: true,
+    });
+    // Release the socket: nothing reads the body.
+    res.body?.cancel().catch(() => {});
+    return res;
+  };
 
   if (provider === 'prometheus') {
     const baseResult = requireHttpUrl(config.endpointUrl, 'Prometheus endpoint URL');
@@ -69,10 +89,10 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
     const base = baseResult.url;
 
     try {
-      let res = await deps.fetch(`${base}/-/healthy`, { method: 'GET', timeoutMs: 10_000, allowPrivateNetwork });
+      let res = await probe(`${base}/-/healthy`, { method: 'GET', allowPrivateNetwork });
       if (res.ok) return { ok: true, message: 'Prometheus is reachable.' };
       const metricsPath = (config.metricsPath as string | undefined) || '/metrics';
-      res = await deps.fetch(`${base}${metricsPath}`, { method: 'GET', timeoutMs: 10_000, allowPrivateNetwork });
+      res = await probe(`${base}${metricsPath}`, { method: 'GET', allowPrivateNetwork });
       if (res.ok) return { ok: true, message: 'Metrics endpoint is reachable.' };
       return { ok: false, kind: 'unreachable', message: `Prometheus returned HTTP ${res.status}` };
     } catch (e) {
@@ -87,10 +107,9 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
     if (typeof apiKey !== 'string' || !apiKey) return { ok: false, kind: 'invalid', message: 'Enter the Grafana API key before testing' };
 
     try {
-      const res = await deps.fetch(`${urlResult.url}/api/org`, {
+      const res = await probe(`${urlResult.url}/api/org`, {
         method: 'GET',
         headers: { Authorization: `Bearer ${apiKey}` },
-        timeoutMs: 10_000,
         allowPrivateNetwork
       });
       if (res.ok) return { ok: true, message: 'Grafana accepted the API key.' };
@@ -114,10 +133,9 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
     if (typeof apiKey !== 'string' || !apiKey) return { ok: false, kind: 'invalid', message: 'Enter the Opsgenie API key before testing' };
 
     try {
-      const res = await deps.fetch('https://api.opsgenie.com/v2/account', {
+      const res = await probe('https://api.opsgenie.com/v2/account', {
         method: 'GET',
         headers: { Authorization: `GenieKey ${apiKey}` },
-        timeoutMs: 10_000,
         allowPrivateNetwork
       });
       if (res.ok) return { ok: true, message: 'Opsgenie accepted the API key.' };
@@ -152,11 +170,10 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
     const name = typeof selected.name === 'string' && selected.name ? selected.name : new URL(urlResult.url).host;
 
     try {
-      const res = await deps.fetch(urlResult.url, {
+      const res = await probe(urlResult.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ event: 'breeze.monitoring.test', sentAt: new Date().toISOString() }),
-        timeoutMs: 10_000,
         allowPrivateNetwork
       });
       if (res.ok) return { ok: true, message: `Webhook ${name} accepted the test event (HTTP ${res.status}).` };

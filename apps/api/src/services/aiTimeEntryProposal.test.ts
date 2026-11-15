@@ -53,6 +53,7 @@ vi.mock('./actionIntents/intentService', () => ({
 import { handleTicketStatusChangedEvent } from './aiAgents/ticketHelpdeskSubscriber';
 import type { BreezeEvent } from './eventBus';
 import { ActionIntentError } from './actionIntents/intentService';
+import { validateToolInput } from './aiToolSchemas';
 
 import { aiAgentRuns, aiAgents, devices, organizations, ticketDrafts, tickets } from '../db/schema';
 import {
@@ -167,8 +168,12 @@ describe('proposeTimeEntryForAiAssistedWork (#4177)', () => {
       orgId: ORG_ID,
       scope: { ticketId: TICKET_ID },
       idempotencyKey: `ai-time-entry:${RUN_ID}:draft_sent`,
-      input: expect.objectContaining({ action: 'log_time_entry', ticketId: TICKET_ID, durationMinutes: 15, isBillable: false, proposedForUserId: USER_ID }),
+      input: expect.objectContaining({ action: 'log_time_entry', ticketId: TICKET_ID, isBillable: false }),
     });
+    // The release path re-validates the stored arguments against the tool's
+    // schema, which refuses a key it does not define (#11861): a proposal
+    // carrying one is approved by a human and then fails at release.
+    expect(validateToolInput('manage_tickets', input.input as Record<string, unknown>)).toEqual({ success: true });
     // Never an autonomy request — this lane is human-reviewed by construction.
     expect(input).not.toHaveProperty('autonomy');
     expect(input.actionLabel).toBe('Log 15 min on ticket #42');
@@ -264,7 +269,9 @@ describe('proposeTimeEntryFromOutboxClaim (#4177) — the outbox claim is a poin
 
     expect(mocks.loadCardsForOrg).toHaveBeenCalledWith(ORG_ID, PARTNER_ID, 'USD');
     expect(created).toHaveLength(1);
-    expect(created[0]!.input.input).toMatchObject({ isBillable: false, durationMinutes: 20 });
+    expect(created[0]!.input.input).toMatchObject({ isBillable: false });
+    const block = created[0]!.input.input as Record<string, unknown>;
+    expect(new Date(String(block.endedAt)).getTime() - new Date(String(block.startedAt)).getTime()).toBe(20 * 60_000);
   });
 
   it('mints for a verified consumed draft, with the technician taken from consumed_by (never the payload)', async () => {
@@ -275,7 +282,8 @@ describe('proposeTimeEntryFromOutboxClaim (#4177) — the outbox claim is a poin
     const result = await proposeTimeEntryFromOutboxClaim({ orgId: ORG_ID, ticketId: TICKET_ID, claim: { ...claim, technicianUserId: 'forged' } });
 
     expect(result).toEqual({ intentId: 'intent-1' });
-    expect((created[0]!.input.input as Record<string, unknown>).proposedForUserId).toBe(USER_ID);
+    // The payload's forged technician reaches nothing that is minted.
+    expect(JSON.stringify(created[0]!.input)).not.toContain('forged');
     expect(created[0]!.input.idempotencyKey).toBe(`ai-time-entry:${RUN_ID}:draft_sent`);
   });
 

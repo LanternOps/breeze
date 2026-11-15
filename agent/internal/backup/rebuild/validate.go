@@ -2,8 +2,11 @@ package rebuild
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,8 +73,7 @@ func validate(ctx context.Context, r *run) error {
 	checked, mismatched := 0, []string{}
 	for i := 0; i < len(withSum); i += step {
 		f := withSum[i]
-		target := filepath.Join(r.staging, backup.RestoreKey(f))
-		sum, err := backup.SHA256File(target)
+		sum, err := hashTreeFile(r.staging, backup.RestoreKey(f))
 		if err != nil || sum != f.Checksum {
 			mismatched = append(mismatched, f.SourcePath)
 		}
@@ -83,15 +85,19 @@ func validate(ctx context.Context, r *run) error {
 	// 2. Boot artefacts.
 	if !r.opts.SkipBoot {
 		_, efiFile := grubTarget(r.sys.Arch())
-		if !fileExists(filepath.Join(r.staging, "boot", "efi", "EFI", "BOOT", efiFile)) {
+		esp, err := espEFIDir(r.result.Plan)
+		if err != nil {
+			return err
+		}
+		if !treeFileExists(r.staging, filepath.Join(esp, "BOOT", efiFile)) {
 			return fmt.Errorf("EFI/BOOT/%s missing after boot phase", efiFile)
 		}
-		if !fileExists(filepath.Join(r.staging, "boot", "grub", "grub.cfg")) && !fileExists(filepath.Join(r.staging, "boot", "grub2", "grub.cfg")) && !fileExists(filepath.Join(r.staging, "boot", "efi", "EFI", bootloaderID(r.staging), "grub.cfg")) {
+		if !treeFileExists(r.staging, filepath.Join("boot", "grub", "grub.cfg")) && !treeFileExists(r.staging, filepath.Join("boot", "grub2", "grub.cfg")) && !treeFileExists(r.staging, filepath.Join(esp, bootloaderID(r.staging), "grub.cfg")) {
 			return errors.New("no grub.cfg found in the restored tree")
 		}
 	}
 	// 3. fstab UUIDs resolve to planned partitions.
-	if fstab, err := os.ReadFile(filepath.Join(r.staging, "etc", "fstab")); err == nil {
+	if fstab, err := readTreeFile(r.staging, filepath.Join("etc", "fstab")); err == nil {
 		known := map[string]bool{}
 		for _, p := range r.result.Plan.Partitions {
 			known[strings.ToLower(p.FSUUID)] = true
@@ -115,4 +121,72 @@ func validate(ctx context.Context, r *run) error {
 		return fmt.Errorf("rebuild target is still in use after validation (unmount or detach failed): %w", r.releaseErr)
 	}
 	return nil
+}
+
+// hashTreeFile returns the hex SHA-256 of the regular file base/name, read
+// through base's root: a link that stays inside base is followed, while a
+// path that leads outside base, or to anything but a regular file, is an
+// error (validate counts it as a mismatch).
+func hashTreeFile(base, name string) (string, error) {
+	file, err := openTreeFile(base, name)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// readTreeFile reads the regular file base/name through base's root.
+func readTreeFile(base, name string) ([]byte, error) {
+	file, err := openTreeFile(base, name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	return io.ReadAll(file)
+}
+
+// treeFileExists reports whether base/name resolves, inside base's root, to
+// an existing file or directory.
+func treeFileExists(base, name string) bool {
+	tree, err := os.OpenRoot(base)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = tree.Close() }()
+	_, err = tree.Stat(name)
+	return err == nil
+}
+
+// openTreeFile opens base/name through base's root once it has resolved to a
+// regular file (checked before opening, so a device or FIFO is never opened).
+func openTreeFile(base, name string) (*os.File, error) {
+	tree, err := os.OpenRoot(base)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tree.Close() }()
+	info, err := tree.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", name)
+	}
+	file, err := tree.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		_ = file.Close()
+		if err == nil {
+			err = fmt.Errorf("%s is not a regular file", name)
+		}
+		return nil, err
+	}
+	return file, nil
 }

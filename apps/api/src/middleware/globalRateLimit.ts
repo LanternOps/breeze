@@ -97,6 +97,10 @@ export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhos
  * IP; it just can no longer touch the dashboard or auth budget.
  */
 export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
+  // Huntress webhook deliveries arrive from the vendor's shared senders; their
+  // own bucket keeps them off the dashboard/auth budget. The route also meters
+  // each source address (600/min) before reading the body.
+  { prefix: '/api/v1/huntress/webhook', name: 'huntresswebhook', limit: 1200 },
   { prefix: '/api/v1/desktop-ws/', name: 'desktopws', limit: 600 },
   // Public invoice view-and-pay links (2026-08-21 spec §6): unauthenticated,
   // bearer-URL surface. Isolated so a scanner hammering a leaked/expired link

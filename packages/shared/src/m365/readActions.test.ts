@@ -274,6 +274,12 @@ describe('m365 sync action contracts', () => {
     expect(m365SyncActionResultSchema.safeParse({ ...result, sources: { users: 'nope' } }).success).toBe(false);
     expect(m365SyncActionResultSchema.safeParse({ ...result, extra: 1 }).success).toBe(false);
     expect(m365SyncActionResultSchema.safeParse({ ...result, fetchedAt: 'yesterday' }).success).toBe(false);
+    // `malformedItems` is optional (the executor omits it when 0); present, it
+    // is a non-negative integer.
+    expect('malformedItems' in result).toBe(false);
+    expect(m365SyncActionResultSchema.safeParse({ ...result, malformedItems: 3 }).success).toBe(true);
+    expect(m365SyncActionResultSchema.safeParse({ ...result, malformedItems: -1 }).success).toBe(false);
+    expect(m365SyncActionResultSchema.safeParse({ ...result, malformedItems: 1.5 }).success).toBe(false);
 
     expect(m365SyncActionResponseSchema.safeParse(result).success).toBe(true);
     expect(m365SyncActionResponseSchema.safeParse({

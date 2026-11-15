@@ -833,18 +833,24 @@
     },
     "code": {
       "heading": "Read this code to the person you are helping",
-      "shownOnce": "Copy this code now. Breeze stores only a hash of it, so once you leave or reload this page it cannot be recovered — you would have to start a new session.",
+      "visibleWhilePending": "The code stays here until the person uses it or it expires. It works only once.",
       "expires": "Expires at {{time}}",
+      "expiresIn": "Expires in {{time}}",
+      "expired": "This code has expired. Generate a new code to keep using this session.",
       "instructions": "Send them the link, then have them run the downloaded client and type the code.",
       "copyCode": "Copy code",
       "copyLink": "Copy download link",
       "copiedCode": "Code copied to the clipboard",
       "copiedLink": "Download link copied to the clipboard",
-      "copyFailed": "Could not copy to the clipboard"
+      "copyFailed": "Could not copy to the clipboard",
+      "newCode": "New code",
+      "newCodeSubmitting": "Generating code…",
+      "newCodeSuccess": "New code generated. The previous code no longer works.",
+      "newCodeError": "Could not generate a new code"
     },
     "detail": {
       "heading": "Session detail",
-      "noCode": "The one-time code was shown only when this session was created and cannot be retrieved. Start a new session if the person needs another code.",
+      "noCode": "No code is shown for this session. Generate a new code if the person still needs one.",
       "attribution": "Reference",
       "close": "Close session detail"
     },

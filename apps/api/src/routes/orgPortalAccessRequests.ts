@@ -19,7 +19,11 @@ import {
   summarizePendingPortalAccessRequests,
   type ApprovePortalAccessRequestResult,
 } from '../services/portalAccessRequests';
-import { isDomainVerifiedForOrg, listVerifiedDomainsForOrg } from '../services/portalDomainVerification';
+import {
+  findOrgByVerifiedDomain,
+  isDomainVerifiedForOrg,
+  listVerifiedDomainsForOrg,
+} from '../services/portalDomainVerification';
 import { emailDomainOf } from '../services/portalSelfRegistration/emailDomain';
 import type { PortalAccessRequestSource } from '../db/schema';
 import { PortalAccountTransitionError } from '../services/portalAccountState';
@@ -53,7 +57,18 @@ import { buildPortalUrl } from './portal/helpers';
  * runs through `runOutsideDbContext` (its own system-scope connection), and the
  * answer goes into the approval as `selfDomainVerified`. The approval refuses
  * with DOMAIN_NOT_VERIFIED otherwise. The list likewise reads the org's
- * verified domains once per page for `domainVerified`.
+ * verified domains once per page for `domainVerified` (`self` rows by the
+ * address's domain, `google` rows by their `hd`).
+ *
+ * Google Workspace domain check (W7 D8, D3): for a `google` request the route
+ * reads the request's `hd` and, outside the request transaction the same way,
+ * asks W5 which org that domain is verified for (`findOrgByVerifiedDomain`).
+ * The approval gets `googleDomain` (`{ verifiedAt }` when the fact names this
+ * org, else null), re-validates it under a row lock and refuses with
+ * GOOGLE_DOMAIN_NOT_VERIFIED otherwise; `/decide` reports that refusal per id
+ * as `domain_not_verified`, like the `self` one. It also gets
+ * `googleContactAllowed`: the address may be linked to the org's contact only
+ * when its domain is the `hd` or is itself verified for the org.
  *
  * Emails (OD3) go out after the service returns: a self request's approval
  * sends the normal invite, an SSO / add-in approval sends "you can now sign
@@ -77,8 +92,15 @@ const APPROVE_ACTION = 'organization.portal_user.access_request.approve';
 const DENY_ACTION = 'organization.portal_user.access_request.deny';
 /** The `/decide` result for an id whose decision failed with anything but a refusal. */
 const DECIDE_INTERNAL_ERROR = 'INTERNAL_ERROR';
-/** The `/decide` result for a `self` request whose domain is no longer verified (W6 D11). */
+/**
+ * The `/decide` result for a request whose domain is no longer verified: a
+ * `self` request's address domain (W6 D11) or a `google` request's `hd` (W7 D8).
+ */
 const DECIDE_DOMAIN_NOT_VERIFIED = 'domain_not_verified';
+const DOMAIN_NOT_VERIFIED_CODES: ReadonlySet<string> = new Set([
+  'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED',
+  'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED',
+]);
 
 type DecisionRefusal = { status: 400 | 403 | 404 | 409; body: { error: string; code: string } };
 
@@ -93,22 +115,56 @@ function decisionRefusal(err: unknown): DecisionRefusal | null {
   return null;
 }
 
+type ApprovalDomainFacts = {
+  selfDomainVerified?: boolean;
+  googleDomain?: { verifiedAt: Date } | null;
+  googleContactAllowed?: boolean;
+};
+
 /**
- * W6 D11: the approval's `selfDomainVerified` for one request. `{}` for any
- * source but `self` (and for a request the pre-read does not find: the approval
- * then reports NOT_FOUND itself). For `self`, W5's read API answers outside the
- * request transaction; an address with no domain is not verified.
+ * The approval's domain facts for one request, each read with W5's read API
+ * outside the request transaction (it throws inside one). `{}` for a request
+ * the pre-read does not find (the approval then reports NOT_FOUND itself) and
+ * for `entra` / `addin_user` requests.
+ *  - `self` (W6 D11): `selfDomainVerified`; an address with no domain is not verified.
+ *  - `google` (W7 D8, D3): see {@link googleApprovalFacts}.
  *
  * Callers run it inside the same try as the approval: the pre-read is its own
- * savepoint and the W5 read is on its own connection, so a failure in either
+ * savepoint and each W5 read is on its own connection, so a failure in either
  * leaves the request transaction usable.
  */
-async function selfDomainCheck(orgId: string, requestId: string): Promise<{ selfDomainVerified?: boolean }> {
+async function approvalDomainFacts(orgId: string, requestId: string): Promise<ApprovalDomainFacts> {
   const request = await readPortalAccessRequestForDecision(orgId, requestId);
-  if (!request || request.source !== 'self') return {};
+  if (!request) return {};
+  if (request.source === 'google') return googleApprovalFacts(orgId, request.email, request.googleHostedDomain);
+  if (request.source !== 'self') return {};
   const domain = emailDomainOf(request.email);
   if (!domain) return { selfDomainVerified: false };
   return { selfDomainVerified: await runOutsideDbContext(() => isDomainVerifiedForOrg(domain, orgId)) };
+}
+
+/**
+ * A `google` request's facts. `googleDomain`: W5's fact for the request's `hd`
+ * when it names THIS org (`{ verifiedAt }`, which the approval fences), else
+ * null: a lapsed, removed or displaced domain refuses. `googleContactAllowed`
+ * (D3): the address's domain is the `hd`, or is itself verified for the org;
+ * never a merely declared domain. With no fact the approval refuses anyway, so
+ * the contact rule is not read and is false.
+ *
+ * A request with no recorded `hd` cannot exist (`portal_access_requests_google_hd_chk`);
+ * it gets no facts, which the approval refuses as GOOGLE_DOMAIN_NOT_VERIFIED.
+ * The W5 reads run one after the other, never in `Promise.all`.
+ */
+async function googleApprovalFacts(orgId: string, email: string, hostedDomain: string | null): Promise<ApprovalDomainFacts> {
+  if (!hostedDomain) return {};
+  const fact = await runOutsideDbContext(() => findOrgByVerifiedDomain(hostedDomain));
+  if (!fact || fact.orgId !== orgId) return { googleDomain: null, googleContactAllowed: false };
+  const googleDomain = { verifiedAt: fact.verifiedAt };
+  const emailDomain = emailDomainOf(email);
+  if (!emailDomain) return { googleDomain, googleContactAllowed: false };
+  // The stored hd is lower-cased by its CHECK, as emailDomainOf lower-cases the address.
+  if (emailDomain === hostedDomain) return { googleDomain, googleContactAllowed: true };
+  return { googleDomain, googleContactAllowed: await runOutsideDbContext(() => isDomainVerifiedForOrg(emailDomain, orgId)) };
 }
 
 /** The org's currently verified domains, lower-cased, read once outside the request transaction (W6 D11). */
@@ -288,8 +344,8 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
         const input = { orgId: org.id, requestId, deciderUserId: auth.user.id };
         try {
           if (decision === 'approve') {
-            const domainCheck = await selfDomainCheck(org.id, requestId);
-            decided.push({ kind: 'approve', requestId, result: await approvePortalAccessRequest({ ...input, ...domainCheck }) });
+            const domainFacts = await approvalDomainFacts(org.id, requestId);
+            decided.push({ kind: 'approve', requestId, result: await approvePortalAccessRequest({ ...input, ...domainFacts }) });
             results.set(requestId, 'approved');
           } else {
             decided.push({ kind: 'deny', requestId, result: await denyPortalAccessRequest(input) });
@@ -306,7 +362,7 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
           }
           results.set(requestId, !refusal
             ? DECIDE_INTERNAL_ERROR
-            : refusal.body.code === 'PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED' ? DECIDE_DOMAIN_NOT_VERIFIED : refusal.body.code);
+            : DOMAIN_NOT_VERIFIED_CODES.has(refusal.body.code) ? DECIDE_DOMAIN_NOT_VERIFIED : refusal.body.code);
         }
       }
 
@@ -345,8 +401,8 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
 
       let result: ApprovePortalAccessRequestResult;
       try {
-        const domainCheck = await selfDomainCheck(org.id, requestId);
-        result = await approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: auth.user.id, ...domainCheck });
+        const domainFacts = await approvalDomainFacts(org.id, requestId);
+        result = await approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: auth.user.id, ...domainFacts });
       } catch (err) {
         const refusal = decisionRefusal(err);
         // Anything else is a 500 with nothing committed: the service's

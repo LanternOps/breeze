@@ -70,6 +70,7 @@ export type AttestationUnderVerification = {
 };
 
 export type SnapshotUnderVerification = {
+  orgId?: string;
   deviceId: string;
   jobId: string;
   snapshotId: string;
@@ -84,7 +85,7 @@ export type AttestationVerifyDeps = {
   load: (snapshotDbId: string) => Promise<{
     attestation: AttestationUnderVerification;
     snapshot: SnapshotUnderVerification | null;
-    provider: { type: string; config: Record<string, unknown> } | null;
+    provider: { configId?: string; type: string; config: Record<string, unknown> } | null;
     /**
      * A brokered write of the snapshot may still change its bytes (its id
      * reservation is sealing, or a completion or delete is in flight): the
@@ -95,13 +96,13 @@ export type AttestationVerifyDeps = {
     sealedUntil?: Date | null;
   } | null>;
   /** A sidecar (layout, system-state manifest): small enough to hold. */
-  fetchObject: (args: { provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<Uint8Array>;
+  fetchObject: (args: { orgId?: string; configId?: string; provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<Uint8Array>;
   /**
    * The manifest, read once as a stream (#11026): it can be hundreds of MB.
    * Rejects with BackupObjectTooLargeError from a declared length over
    * `maxBytes`; the stream errors with it once more than that arrives.
    */
-  openObject: (args: { provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<NodeJS.ReadableStream>;
+  openObject: (args: { orgId?: string; configId?: string; provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<NodeJS.ReadableStream>;
   /**
    * Moves a still-pending row to its terminal status, re-checking the
    * snapshot binding at write time: a `verified` whose binding no longer
@@ -156,7 +157,8 @@ type ManifestCheck =
  */
 async function checkManifestObject(
   deps: AttestationVerifyDeps,
-  provider: { type: string; config: Record<string, unknown> },
+  provider: { configId?: string; type: string; config: Record<string, unknown> },
+  orgId: string | undefined,
   key: string,
   object: { sha256: string; size: number },
   fullRunSnapshotId: string | null,
@@ -176,7 +178,7 @@ async function checkManifestObject(
   try {
     // Bounded by the attested size: a larger stored object is a mismatch
     // without reading it all.
-    const stream = await deps.openObject({ provider: provider.type, providerConfig: provider.config, key, maxBytes: object.size });
+    const stream = await deps.openObject({ orgId, configId: provider.configId, provider: provider.type, providerConfig: provider.config, key, maxBytes: object.size });
     for await (const chunk of stream as AsyncIterable<Uint8Array>) {
       hash.update(chunk);
       bytes += chunk.byteLength;
@@ -290,6 +292,7 @@ export async function verifySnapshotAttestation(
       const checked = await checkManifestObject(
         deps,
         provider,
+        snapshot.orgId,
         physicalKeyFor(keyRoot, object.key),
         object,
         attestation.parentProviderSnapshotId === null ? attestation.providerSnapshotId : null,
@@ -319,6 +322,8 @@ export async function verifySnapshotAttestation(
       // Bounded by the attested size: a larger stored object is a mismatch
       // without reading it all.
       bytes = await deps.fetchObject({
+        orgId: snapshot.orgId,
+        configId: provider.configId,
         provider: provider.type,
         providerConfig: provider.config,
         key: physicalKeyFor(keyRoot, object.key),
@@ -375,6 +380,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
       if (!row) return null;
       const [snapshot] = await db
         .select({
+          orgId: backupSnapshots.orgId,
           deviceId: backupSnapshots.deviceId,
           jobId: backupSnapshots.jobId,
           snapshotId: backupSnapshots.snapshotId,
@@ -385,13 +391,13 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
         .from(backupSnapshots)
         .where(eq(backupSnapshots.id, snapshotDbId))
         .limit(1);
-      let provider: { type: string; config: Record<string, unknown> } | null = null;
+      let provider: { configId?: string; type: string; config: Record<string, unknown> } | null = null;
       if (snapshot && row.status === 'pending' && row.verificationMode === 'server_fetched') {
         const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
         // Only the destination's own configuration row — never provider
         // details carried in snapshot metadata.
         if (resolved?.config?.provider) {
-          provider = { type: resolved.config.provider, config: asRecord(resolved.config.providerConfig) };
+          provider = { configId: resolved.config.orgId === snapshot.orgId ? resolved.localConfigId : undefined, type: resolved.config.provider, config: asRecord(resolved.config.providerConfig) };
         }
       }
       const write = snapshot ? await readSnapshotWriteState(snapshot.snapshotId) : null;
@@ -424,6 +430,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
       const [snapshot] = await db
         .select({
           jobId: backupSnapshots.jobId,
+          orgId: backupSnapshots.orgId,
           deviceId: backupSnapshots.deviceId,
           snapshotId: backupSnapshots.snapshotId,
           storageIdentity: backupSnapshots.storageIdentity,

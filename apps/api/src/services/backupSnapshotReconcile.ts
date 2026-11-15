@@ -883,7 +883,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
   try {
     for (const root of roots) {
       const found = await extractManifestBearingSnapshots(iterateRootedObjects(
-        { provider: config.provider, providerConfig: config.providerConfig, root },
+        { provider: config.provider, providerConfig: config.providerConfig, orgId: params.orgId, configId: config.id, root },
         backupSnapshotRootPrefix(),
       ));
       for (const [snapshotId, writtenAt] of found) storageSnapshots.push({ snapshotId, writtenAt, root });
@@ -1154,7 +1154,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     let result: ParsedBackupCommandResult;
     try {
       const manifest = await openRootedObjectStream(
-        { provider: config.provider, providerConfig: config.providerConfig, root: entry.root },
+        { provider: config.provider, providerConfig: config.providerConfig, orgId: params.orgId, configId: config.id, root: entry.root },
         backupSnapshotManifestKey(entry.snapshotId),
         MANIFEST_STREAM_MAX_BYTES,
       );

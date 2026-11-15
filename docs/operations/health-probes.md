@@ -57,6 +57,31 @@ for the rollout runbook that reads it. The deploy admission gate probes the
 public API hostname only — it proves the `api` container's readiness for its
 configured role, not the worker's.
 
+## Read-only database
+
+A database can answer reads while rejecting every write (SQLSTATE 25006): a
+managed provider sets `default_transaction_read_only = on` when its storage
+fills, or `DATABASE_URL` points at a standby. Readiness probes
+`transaction_read_only` after `select 1` succeeds and reports it as its own
+cause: 503, `"dbReadOnly": true`, `"reason": "db-read-only"`. `/health` stays
+200 and the API keeps serving reads (#11731).
+
+Startup follows the same rule. With every migration in this image already
+applied, `autoMigrate` only reads (the `breeze_app` grant refresh is skipped
+until the next writable boot) and the API starts. With a pending migration, a
+fresh database, or an unseeded one, it exits with a `ReadOnlyDatabaseError`
+that names the read-only condition and what startup needed to write, instead
+of the raw `cannot execute CREATE TABLE in a read-only transaction`.
+
+With `BINARY_SOURCE=local` (where a binary-sync failure is fatal at boot),
+binary sync on a read-only database only reads. It compares the binaries
+volume with `agent_versions`. When everything is registered it writes nothing.
+When a row would change, it logs one warning, sets `"binarySyncPending": true`
+on `/health/ready` (informational; `ready` is unaffected) and re-checks every
+60 s. The first check that finds the database writable runs the normal sync and
+clears the flag. Sessions opened while the database was read-only keep that
+default until they reconnect, so recovery can wait on pool recycling.
+
 The maximum supported readiness failure and recovery visibility threshold is
 10 seconds. `READINESS_CACHE_TTL_MS` defaults to 5,000 ms and
 `READINESS_PROBE_TIMEOUT_MS` defaults to 3,000 ms. The API constrains the probe
@@ -70,7 +95,7 @@ consumer counts only. Consumer names, queue names, endpoints, transition
 timestamps, and internal errors are intentionally not exposed. The worker
 container's `/health/ready` follows the same rule. When its evaluator runs,
 the body carries the same fields plus `role: "worker"`, and a 503 adds a
-single `reason` of `db`, `redis`, or `workers-pending`. Three 503s bypass the
+single `reason` of `db`, `db-read-only`, `redis`, or `workers-pending`. Three 503s bypass the
 evaluator and carry only `{ "ready": false, "reason": ... }` with none of the
 other fields: `shutting-down` (SIGTERM received), `migrations-pending` (schema
 parity not yet confirmed), and `db` when the evaluator itself throws.

@@ -891,7 +891,6 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // every org_id-columned public table be enumerated for auditability).
   'partner_enrollment_key_idempotency',
   'patch_compliance_reports',
-  'patch_compliance_snapshots',
   'patch_jobs',
   'pax8_company_mappings',
   'pax8_contract_line_links',
@@ -917,6 +916,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'portal_access_policies',
   'portal_access_requests',
   'portal_branding',
+  // portal_directory_actions / portal_directory_runs (W8 #11385): shape 1.
+  // Actions carry composite (x, org_id) FKs to runs, portal_user_identities and
+  // portal_users (all ON DELETE CASCADE), so they go before every parent; runs
+  // go before nothing they reference. localeCompare: 'portal_branding' <
+  // 'portal_directory_actions' < 'portal_directory_runs' < 'portal_user_identities'.
+  'portal_directory_actions',
+  'portal_directory_runs',
   // Child of portal_users (composite FK, ON DELETE CASCADE) — before its parent.
   'portal_user_identities',
   'portal_users',

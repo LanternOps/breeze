@@ -303,6 +303,13 @@ export const SENTRY_EVENT_CODES = [
    */
   'ai_agent_onlytools_unknown_name',
   /**
+   * An in-process SDK MCP server handed to `unknownToolArgsHooks` was not built
+   * by `createArgCheckedSdkMcpServer` (or is a copy of one), so unknown tool
+   * arguments on it are stripped by the SDK instead of refused (#11861).
+   * Always a wiring bug; expected never to fire.
+   */
+  'ai_tool_arg_guard_unrecorded_server',
+  /**
    * An AI chat tool call reached our handler without the SDK's tool_use id
    * (`_meta['claudecode/toolUseId']`), so its result was paired by tool name
    * instead (#7931). Reported once per session. Expected never to fire; if it
@@ -428,6 +435,13 @@ export const SENTRY_EVENT_CODES = [
    * not delete on this container's disk (`[AiTranscriptSweeper]` log has ids).
    */
   'ai_transcript_sweep_incomplete',
+  /**
+   * #4342 W4: a nightly AI transcript retention run (report or enforce) had
+   * orgs that failed or carried an unusable window, or transcript deletes that
+   * failed, so its counts or its stubbing are incomplete. Per-org errors are in
+   * the worker log (`[AiTranscriptRetention]`).
+   */
+  'ai_transcript_retention_incomplete',
 
   // --- server-side i18n (#3860) -----------------------------------------
   /** `tApi` was asked for a key no bundle defines — the raw key string is
@@ -490,6 +504,12 @@ export const SENTRY_EVENT_CODES = [
    *  uuid): legacy admits it without a claim and a switched flow does not
    *  attempt it, so exactly one engine runs it. */
   'flow_conversion_event_key_unbuildable',
+
+  // --- portal directory deprovisioning (portal registration W8 #11385) ----
+  /** An enforced directory run was held whole for MSP approval (D8a/D8c): a
+   *  threshold or the chain's first enforcement. Leavers keep access until the
+   *  MSP applies or dismisses it in the org's Portal tab. Counts only. */
+  'portal_directory_held',
 ] as const;
 
 /**

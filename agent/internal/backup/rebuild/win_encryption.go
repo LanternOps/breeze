@@ -66,8 +66,13 @@ func winEncryption(_ context.Context, r *run) error {
 	if r.rootVolume == "" {
 		return errors.New("encryption: no root volume recorded for this run")
 	}
-	dir := filepath.Join(winBreezeDir(r), "data")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	tree, err := os.OpenRoot(r.rootVolume)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tree.Close() }()
+	dir := filepath.Join("ProgramData", "Breeze", "data")
+	if err := tree.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.Marshal(postRestoreActions{
@@ -78,7 +83,7 @@ func winEncryption(_ context.Context, r *run) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "post-restore-actions.json"), data, 0o600); err != nil {
+	if err := tree.WriteFile(filepath.Join(dir, "post-restore-actions.json"), data, 0o600); err != nil {
 		return err
 	}
 	r.warn("volume C: was BitLocker-protected at backup; it is restored unencrypted; re-encryption on first boot arrives with the Windows recovery media (W07)")

@@ -33,7 +33,7 @@ RUN pnpm --filter @breeze/api deploy --legacy --prod /deployed
 
 # YARA rule pre-check binary (#6263 W03a) — same stage as apps/api/Dockerfile;
 # see the comment there. Tag must equal agent/go.mod's `go` directive.
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS yarac
+FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS yarac
 ARG TARGETOS
 ARG TARGETARCH
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
@@ -42,6 +42,7 @@ COPY agent/go.mod agent/go.sum ./
 RUN go mod download
 COPY agent/cmd/breeze-yarac ./cmd/breeze-yarac
 COPY agent/internal ./internal
+COPY agent/pkg/httpguard ./pkg/httpguard
 RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /out/breeze-yarac ./cmd/breeze-yarac
 
 FROM base AS runner

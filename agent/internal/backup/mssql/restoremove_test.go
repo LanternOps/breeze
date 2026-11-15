@@ -1,8 +1,13 @@
 package mssql
 
 import (
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // D25 (proven live on SQL Server 2025 Express): restoring a backup under a
@@ -24,8 +29,8 @@ const fakeFileListOnlyTwoData = "AssureDB|D:\\SQLData\\AssureDB.mdf|D|\n" +
 	"AssureDB_log|D:\\SQLData\\AssureDB_log.ldf|L|\n" +
 	"\n(3 rows affected)\n"
 
-const fakeInstanceDefaultDataPath = "D:\\SQLData\\\n\n(1 rows affected)\n"
-const fakeInstanceDefaultLogPath = "L:\\SQLLogs\\\n\n(1 rows affected)\n"
+var fakeInstanceDefaultDataPath = serverPathOutput(`D:\SQLData\`)
+var fakeInstanceDefaultLogPath = serverPathOutput(`L:\SQLLogs\`)
 
 // (a) FILELISTONLY output with one data + one log file: the assembled
 // RESTORE statement contains both MOVE clauses, using the resolved default
@@ -42,7 +47,6 @@ func TestResolveRestoreQuery_DifferentTargetAddsMoveClausesForDataAndLog(t *test
 	query, err := resolveRestoreQuery(
 		`.\SQLEXPRESS`,
 		`D:\Backups\AssureDB_full_20260909_120000.bak`,
-		`D:\Backups\AssureDB_full_20260909_120000.bak`,
 		"AssureDB_restored",
 		"AssureDB_restored",
 		"RECOVERY",
@@ -51,13 +55,15 @@ func TestResolveRestoreQuery_DifferentTargetAddsMoveClausesForDataAndLog(t *test
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	wantData := `MOVE 'AssureDB' TO 'D:\SQLData\AssureDB_restored_AssureDB.mdf'`
-	wantLog := `MOVE 'AssureDB_log' TO 'L:\SQLLogs\AssureDB_restored_AssureDB_log.ldf'`
-	if !strings.Contains(query, wantData) {
-		t.Fatalf("query = %q, want to contain data MOVE clause %q", query, wantData)
+	moves := moveTargets(t, query)
+	if got, want := moves["AssureDB"], `D:\SQLData\AssureDB_restored_AssureDB.mdf`; got != want {
+		t.Fatalf("query = %q, data file MOVE target = %q, want %q", query, got, want)
 	}
-	if !strings.Contains(query, wantLog) {
-		t.Fatalf("query = %q, want to contain log MOVE clause %q", query, wantLog)
+	if got, want := moves["AssureDB_log"], `L:\SQLLogs\AssureDB_restored_AssureDB_log.ldf`; got != want {
+		t.Fatalf("query = %q, log file MOVE target = %q, want %q", query, got, want)
+	}
+	if len(moves) != 2 {
+		t.Fatalf("query = %q, MOVE targets = %v", query, moves)
 	}
 	if !strings.Contains(query, "REPLACE") || !strings.Contains(query, "STATS=10") || !strings.Contains(query, "RECOVERY") {
 		t.Fatalf("query = %q, must still contain REPLACE, STATS=10, RECOVERY", query)
@@ -80,7 +86,6 @@ func TestResolveRestoreQuery_SecondDataFileGetsNdfExtension(t *testing.T) {
 	query, err := resolveRestoreQuery(
 		`.\SQLEXPRESS`,
 		`D:\Backups\AssureDB_full_20260909_120000.bak`,
-		`D:\Backups\AssureDB_full_20260909_120000.bak`,
 		"AssureDB_restored",
 		"AssureDB_restored",
 		"RECOVERY",
@@ -89,16 +94,12 @@ func TestResolveRestoreQuery_SecondDataFileGetsNdfExtension(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	wantFirst := `MOVE 'AssureDB' TO 'D:\SQLData\AssureDB_restored_AssureDB.mdf'`
-	wantSecond := `MOVE 'AssureDB2' TO 'D:\SQLData\AssureDB_restored_AssureDB2.ndf'`
-	if !strings.Contains(query, wantFirst) {
-		t.Fatalf("query = %q, want first data file to get .mdf: %q", query, wantFirst)
+	moves := moveTargets(t, query)
+	if got, want := moves["AssureDB"], `D:\SQLData\AssureDB_restored_AssureDB.mdf`; got != want {
+		t.Fatalf("first data file MOVE target = %q, want .mdf %q", got, want)
 	}
-	if !strings.Contains(query, wantSecond) {
-		t.Fatalf("query = %q, want second data file to get .ndf: %q", query, wantSecond)
-	}
-	if strings.Contains(query, "AssureDB2.mdf") {
-		t.Fatalf("query = %q, must not give a second data file a .mdf extension", query)
+	if got, want := moves["AssureDB2"], `D:\SQLData\AssureDB_restored_AssureDB2.ndf`; got != want {
+		t.Fatalf("second data file MOVE target = %q, want .ndf %q", got, want)
 	}
 }
 
@@ -113,7 +114,6 @@ func TestResolveRestoreQuery_SameNameRestoreHasNoMoveClause(t *testing.T) {
 	query, err := resolveRestoreQuery(
 		`.\SQLEXPRESS`,
 		`D:\Backups\AssureDB_full_20260909_120000.bak`,
-		`D:\Backups\AssureDB_full_20260909_120000.bak`,
 		"AssureDB",
 		"AssureDB",
 		"RECOVERY",
@@ -122,9 +122,13 @@ func TestResolveRestoreQuery_SameNameRestoreHasNoMoveClause(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := `RESTORE DATABASE [AssureDB] FROM DISK='D:\Backups\AssureDB_full_20260909_120000.bak' WITH RECOVERY, REPLACE, STATS=10`
+	binding, err := bindBackupFile(`D:\Backups\AssureDB_full_20260909_120000.bak`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := binding + ` RESTORE DATABASE [AssureDB] FROM DISK=@backup_file WITH RECOVERY, REPLACE, STATS=10`
 	if query != want {
-		t.Fatalf("query = %q, want exactly %q (today's pre-D25 statement, unchanged)", query, want)
+		t.Fatalf("query = %q, want exactly %q (the pre-D25 WITH options, unchanged)", query, want)
 	}
 	if strings.Contains(query, "MOVE") {
 		t.Fatalf("query = %q, must not contain a MOVE clause for a same-name restore", query)
@@ -147,7 +151,6 @@ func TestResolveRestoreQuery_FilelistonlyFailureNamesTheStep(t *testing.T) {
 
 	_, err := resolveRestoreQuery(
 		`.\SQLEXPRESS`,
-		`D:\Backups\AssureDB_full_20260909_120000.bak`,
 		`D:\Backups\AssureDB_full_20260909_120000.bak`,
 		"AssureDB_restored",
 		"AssureDB_restored",
@@ -174,7 +177,6 @@ func TestResolveRestoreQuery_NoRecoveryPreservedWithMoveClauses(t *testing.T) {
 	query, err := resolveRestoreQuery(
 		`.\SQLEXPRESS`,
 		`D:\Backups\AssureDB_full_20260909_120000.bak`,
-		`D:\Backups\AssureDB_full_20260909_120000.bak`,
 		"AssureDB_restored",
 		"AssureDB_restored",
 		"NORECOVERY",
@@ -188,7 +190,7 @@ func TestResolveRestoreQuery_NoRecoveryPreservedWithMoveClauses(t *testing.T) {
 	if strings.Contains(query, "WITH RECOVERY") {
 		t.Fatalf("query = %q, must not also contain RECOVERY when NORECOVERY was requested", query)
 	}
-	if !strings.Contains(query, "MOVE 'AssureDB'") {
+	if _, ok := moveTargets(t, query)["AssureDB"]; !ok {
 		t.Fatalf("query = %q, want MOVE clauses still present alongside NORECOVERY", query)
 	}
 }
@@ -221,5 +223,106 @@ func TestSourceDatabaseNameFromBackupFile(t *testing.T) {
 				t.Fatalf("db = %q, want %q", db, tc.wantDB)
 			}
 		})
+	}
+}
+
+// bindingFromQuery returns the value a statement binds to @backup_file,
+// decoded from the hex UTF-16LE literal it is carried in.
+func bindingFromQuery(t *testing.T, query string) string {
+	t.Helper()
+	m := regexp.MustCompile(`SET @backup_file = CAST\(0x([0-9A-F]*) AS nvarchar\(4000\)\)`).FindStringSubmatch(query)
+	if m == nil {
+		t.Fatalf("query %q does not bind @backup_file", query)
+	}
+	raw, err := hex.DecodeString(m[1])
+	if err != nil || len(raw)%2 != 0 {
+		t.Fatalf("binding %q: %v", m[1], err)
+	}
+	units := make([]uint16, len(raw)/2)
+	for i := range units {
+		units[i] = binary.LittleEndian.Uint16(raw[2*i:])
+	}
+	return string(utf16.Decode(units))
+}
+
+// The backup file path never appears in the statement text: it is bound to
+// a variable from its encoded form, so quoting and line structure do not
+// depend on its contents. This holds for the restore statement and for the
+// FILELISTONLY probe a renamed restore runs first.
+func TestResolveRestoreQueryBindsBackupFileOutsideStatementText(t *testing.T) {
+	paths := []string{
+		`D:\Backups\AssureDB_full_20260909_120000.bak`,
+		`D:\Backups\o'brien $(name) [x] 日本語.bak`,
+		`D:\Backups\AssureDB_full_20260909_120000.bak' WITH FILE=1 --`,
+	}
+	for _, p := range paths {
+		t.Run(p, func(t *testing.T) {
+			resetTrustCertProbe(t)
+			r := &recordingRunner{}
+			withRecordingRunner(t, r)
+			query, err := resolveRestoreQuery(`.\SQLEXPRESS`, p, "AssureDB", "AssureDB", "RECOVERY")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.Contains(query, p) || strings.Contains(query, strings.ReplaceAll(p, "'", "''")) || strings.Contains(query, "$(") {
+				t.Fatalf("query carries the path text: %q", query)
+			}
+			if !strings.Contains(query, "RESTORE DATABASE [AssureDB] FROM DISK=@backup_file WITH RECOVERY, REPLACE, STATS=10") {
+				t.Fatalf("query = %q", query)
+			}
+			if got := bindingFromQuery(t, query); got != p {
+				t.Fatalf("bound %q, want %q", got, p)
+			}
+		})
+	}
+
+	resetTrustCertProbe(t)
+	r := &recordingRunner{responses: []fakeResponse{
+		{out: []byte(fakeFileListOnlyOneDataOneLog)},
+		{out: []byte(fakeInstanceDefaultDataPath)},
+		{out: []byte(fakeInstanceDefaultLogPath)},
+	}}
+	withRecordingRunner(t, r)
+	p := `D:\Backups\AssureDB_full_20260909_120000.bak`
+	query, err := resolveRestoreQuery(`.\SQLEXPRESS`, p, "AssureDB_restored", "AssureDB_restored", "RECOVERY")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.calls) != 3 {
+		t.Fatalf("calls=%v", r.calls)
+	}
+	if strings.Contains(r.calls[0], p) || !strings.Contains(r.calls[0], "RESTORE FILELISTONLY FROM DISK=@backup_file") {
+		t.Fatalf("FILELISTONLY call = %q", r.calls[0])
+	}
+	if strings.Contains(query, p) || bindingFromQuery(t, query) != p {
+		t.Fatalf("query = %q", query)
+	}
+}
+
+// A backup file path holding a control character is refused before any
+// statement is built or any sqlcmd call is made.
+func TestResolveRestoreQueryRefusesControlCharactersInBackupFile(t *testing.T) {
+	for _, p := range []string{
+		"D:\\Backups\\AssureDB_full_20260909_120000.bak\nrest",
+		"D:\\Backups\\AssureDB_full_20260909_120000.bak\rrest",
+		"D:\\Backups\\Assure\x00DB_full_20260909_120000.bak",
+		"D:\\Backups\\Assure\tDB.bak",
+		"D:\\Backups\\Assure\u0085DB.bak",
+		"D:\\Backups\\Assure\u2028DB.bak",
+	} {
+		for _, target := range []string{"AssureDB", "Other"} {
+			t.Run(fmt.Sprintf("%q/%s", p, target), func(t *testing.T) {
+				resetTrustCertProbe(t)
+				r := &recordingRunner{}
+				withRecordingRunner(t, r)
+				query, err := resolveRestoreQuery(`.\SQLEXPRESS`, p, target, target, "RECOVERY")
+				if err == nil || query != "" {
+					t.Fatalf("query=%q err=%v", query, err)
+				}
+				if len(r.calls) != 0 {
+					t.Fatalf("sqlcmd ran: %v", r.calls)
+				}
+			})
+		}
 	}
 }

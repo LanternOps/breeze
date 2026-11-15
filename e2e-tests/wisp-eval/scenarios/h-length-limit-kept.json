@@ -1,0 +1,17 @@
+{
+  "id": "length-limit-kept",
+  "title": "An explicit length limit (two sentences per customer) is kept",
+  "issue": 11678,
+  "expect": "known-red",
+  "door": "wisp",
+  "steps": [
+    { "name": "ranking", "type": "say", "approve": "none", "maxSec": 90,
+      "text": "Across all three customers, who is in the worst shape right now and why? Two sentences each, no more." }
+  ],
+  "checks": [
+    { "kind": "reply_matches", "step": "ranking", "flags": "i", "pattern": "Northwind|Harbor", "precondition": true,
+      "note": "it answered the question" },
+    { "kind": "max_words", "step": "ranking", "max": 130,
+      "note": "#11678 §9: three customers x two sentences x ~20 words, plus 10%; the 2026-11-10 pass got three sentences each plus an opening line and a closing paragraph" }
+  ]
+}

@@ -833,18 +833,24 @@
     },
     "code": {
       "heading": "Léale este código a la persona que está ayudando",
-      "shownOnce": "Copie este código ahora. Breeze solo almacena un hash del mismo, así que una vez que salga de esta página o la recargue no podrá recuperarlo: tendría que iniciar una nueva sesión.",
+      "visibleWhilePending": "El código permanece aquí hasta que la persona lo use o venza. Solo funciona una vez.",
       "expires": "Vence a las {{time}}",
+      "expiresIn": "Vence en {{time}}",
+      "expired": "Este código venció. Genere un código nuevo para seguir usando esta sesión.",
       "instructions": "Envíele el enlace, pídale que ejecute el cliente descargado y que escriba el código.",
       "copyCode": "Copiar código",
       "copyLink": "Copiar enlace de descarga",
       "copiedCode": "Código copiado al portapapeles",
       "copiedLink": "Enlace de descarga copiado al portapapeles",
-      "copyFailed": "No se pudo copiar al portapapeles"
+      "copyFailed": "No se pudo copiar al portapapeles",
+      "newCode": "Código nuevo",
+      "newCodeSubmitting": "Generando código…",
+      "newCodeSuccess": "Código nuevo generado. El código anterior ya no funciona.",
+      "newCodeError": "No se pudo generar un código nuevo"
     },
     "detail": {
       "heading": "Detalle de la sesión",
-      "noCode": "El código de un solo uso se mostró únicamente al crear esta sesión y no se puede recuperar. Inicie una sesión nueva si la persona necesita otro código.",
+      "noCode": "No se muestra ningún código para esta sesión. Genere un código nuevo si la persona todavía necesita uno.",
       "attribution": "Referencia",
       "close": "Cerrar el detalle de la sesión"
     },

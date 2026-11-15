@@ -814,6 +814,11 @@ var errMSSQLArtifactNotFromSnapshot = fmt.Errorf("an integrity-checked MSSQL res
 // comes from the snapshot's (checked) manifest and is checked against its
 // entry before its path is returned. It returns the checks' warnings.
 func resolveMSSQLBackupArtifact(instance string, provider providers.BackupProvider, snapshotID, backupFile string, expect *integrity.Expectation) (string, func(), []string, error) {
+	if backupFile != "" {
+		if err := mssql.ValidateBackupArtifactPath(backupFile); err != nil {
+			return "", nil, nil, err
+		}
+	}
 	if isBrokeredProvider(provider) {
 		return resolveBrokeredMSSQLArtifact(instance, provider, snapshotID, backupFile, expect)
 	}
@@ -891,6 +896,12 @@ func mssqlStored(file backup.SnapshotFile) integrity.Stored {
 // file that fails is removed and never reaches its final name. Without one
 // it is downloaded straight to its final name, as before.
 func downloadMSSQLArtifact(instance string, provider providers.BackupProvider, remotePath, filename string, want integrity.Stored, expect *integrity.Expectation) (string, func(), []string, error) {
+	if err := mssql.ValidateBackupArtifactPath(remotePath); err != nil {
+		return "", nil, nil, err
+	}
+	if err := mssql.ValidateBackupArtifactName(filename); err != nil {
+		return "", nil, nil, err
+	}
 	targetDir, err := resolveMSSQLRestoreTargetDir(instance)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("resolve restore target directory: %w", err)

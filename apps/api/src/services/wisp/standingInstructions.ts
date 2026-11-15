@@ -62,3 +62,25 @@ export function isMemoryBlockLapsed(
   // (schema failure), so it stays in the prompt and is not shown as expired.
   return typeof until === 'string' && Number.isFinite(Date.parse(until)) && isStandingInstructionLapsed({ until }, now);
 }
+
+/**
+ * #11614: the rule a clause states, without its wording (subject, effect,
+ * verb, condition and end time), so one thread never keeps the same rule
+ * twice because the extractor phrased it differently on a later turn.
+ * `standingInstructionSubjectKey` hashes the wording, so it cannot see this.
+ * The subject is the resolved device, or for a note the named targets.
+ *
+ * null when the rule cannot be compared safely: no verb (two different
+ * "don't touch X" rules would collide) or a note naming no target.
+ */
+export function standingInstructionRuleKey(
+  c: Pick<StandingInstructionContent, 'effect' | 'verb' | 'deviceId' | 'condition' | 'until' | 'targetLabels'>,
+): string | null {
+  if (c.verb === null) return null;
+  const norm = (s: string) => s.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+  const labels = [...new Set(c.targetLabels.map(norm).filter((l) => l !== ''))].sort();
+  if (c.deviceId === null && labels.length === 0) return null;
+  const subject = c.deviceId !== null ? ['device', c.deviceId] : ['note', ...labels];
+  const until = c.until === null ? null : Date.parse(c.until);
+  return JSON.stringify([subject, c.effect, c.verb, c.condition === null ? null : norm(c.condition), until]);
+}

@@ -410,6 +410,17 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { evidence: { ticketNumber: 'T-1', approvalIntentId: 'intent-1' } });
     });
 
+    it('an argument the tool does not define → propose_input_unknown_args at filing, no intent (#11861)', async () => {
+      // Release would refuse it after a human approved the card.
+      const result = makeResult(calls({
+        proposedActions: [{ toolName: 'run_script', input: { scriptId: 's-1', inventedKey: true }, reason: 'clear the spooler', concernId: C1 }],
+      }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(evaluateStandingInstructions).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_input_unknown_args']);
+    });
+
     it('Tier 1 → refused with propose_tier1_refused, no intent', async () => {
       const result = makeResult(calls({ proposedActions: [{ toolName: 'query_devices', input: {}, reason: 'look around' }] }));
       await finalizeAssessment(makeCtx(), result);

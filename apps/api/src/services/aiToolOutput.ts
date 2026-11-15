@@ -1320,6 +1320,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   browse_snapshots: new Set(['label', 'metadata']),
   restore_snapshot: new Set(['selectedPaths']),
   trigger_backup: new Set(['errorLog']),
+  // #11768: the terminal line of a failed job's errorLog, written by the agent.
+  query_backups: new Set(['failureSummary']),
+  get_backup_status: new Set(['failureSummary']),
   list_network_assets: new Set(['hostname', 'label', 'manufacturer', 'model']),
   get_network_asset: new Set(['hostname', 'label', 'manufacturer', 'model']),
   get_ip_history: new Set(['hostname', 'interfaceName']),

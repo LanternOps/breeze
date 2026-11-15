@@ -15,7 +15,8 @@ import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { useRunContextLabel } from "../common/RunContext";
 import ScriptProposalApprovalCard from "./ScriptProposalApprovalCard";
-import type { AiApprovalOutcome, AiApprovalScope, AiScriptRunContext, AiStandingInstructionConflict } from "@breeze/shared";
+import ApprovalContentPreview from "./ApprovalContentPreview";
+import type { AiApprovalOutcome, AiApprovalScope, AiApprovalTicketContext, AiScriptRunContext, AiStandingInstructionConflict } from "@breeze/shared";
 import { useStableT } from '@/lib/i18n/useStableT';
 
 // Fallback only: the product default (also `AI_APPROVAL_TIMEOUT_DEFAULT_MINUTES`
@@ -47,6 +48,12 @@ interface AiApprovalDialogProps {
   description: string;
   input: Record<string, unknown>;
   deviceContext?: DeviceContext;
+  /**
+   * #11674: the ticket a manage_tickets call acts on, resolved server-side.
+   * With the call's own input it lets the card show the ticket number and
+   * subject, who a public reply emails, and the reply itself.
+   */
+  ticketContext?: AiApprovalTicketContext;
   onApprove: () => void;
   onReject: () => void;
   /**
@@ -280,6 +287,7 @@ export default function AiApprovalDialog({
   description,
   input,
   deviceContext,
+  ticketContext,
   onApprove,
   onReject,
   intentBacked,
@@ -633,6 +641,11 @@ export default function AiApprovalDialog({
       {scriptRunContext && <RunContextRow ctx={scriptRunContext} />}
 
       {deviceContext && <DeviceBadge ctx={deviceContext} />}
+
+      {/* #11674: what is being approved — a ticket reply's text and recipient,
+          or the memory Wisp will store — always visible, never only in the
+          collapsed parameters below. */}
+      <ApprovalContentPreview toolName={toolName} input={input} ticketContext={ticketContext} />
 
       {proposalId ? (
         <ScriptProposalApprovalCard

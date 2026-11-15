@@ -1156,6 +1156,7 @@
       "policy": "Policy",
       "portal_access_request": "Portal access request",
       "portal_auth": "Portal sign-in",
+      "portal_directory_run": "Portal directory run",
       "portal_user": "Portal user",
       "psa_connection": "PSA connection",
       "psa_ticket_mapping": "PSA ticket mapping",

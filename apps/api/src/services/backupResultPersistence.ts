@@ -1,6 +1,7 @@
 import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
 import { safeErrorMessage } from './aiModels/safeDbError';
-import { db, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
+import { db, runAfterDbContextCommit, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
+import { nudgeConnectionHealth } from './connectionHealth/nudge';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -898,10 +899,20 @@ async function checkLateResultBaseFence(job: {
  */
 export const EAGER_HYDRATION_MAX_ENTRIES = 250_000;
 
-/** Entries a snapshot's index will hold: files the run backed up plus those it referenced. */
+/**
+ * Entries a snapshot's index will hold.
+ *
+ * The agent reports `filesBackedUp` as every manifest entry, reference entries
+ * included, and counts `referencedFiles` from that same list, so the
+ * references are a part of `filesBackedUp`, not an addition to it (#11743;
+ * agent/internal/backup/backup.go, both the normal and the journal-adoption
+ * path). `referencedFiles` is a lower bound: it stands in when `filesBackedUp`
+ * is absent, and a malformed report with fewer files than references still
+ * counts at least the references.
+ */
 export function indexedEntriesOf(result: { filesBackedUp?: number; referencedFiles?: number }): number | undefined {
   if (result.filesBackedUp === undefined && result.referencedFiles === undefined) return undefined;
-  return (result.filesBackedUp ?? 0) + (result.referencedFiles ?? 0);
+  return Math.max(result.filesBackedUp ?? 0, result.referencedFiles ?? 0);
 }
 
 export function snapshotIndexHydrationReason(params: {
@@ -919,7 +930,29 @@ export function snapshotIndexHydrationReason(params: {
   return null;
 }
 
-export async function applyBackupCommandResultToJob(params: {
+type ApplyBackupCommandResultParams = Parameters<typeof applyBackupCommandResult>[0];
+type ApplyBackupCommandResultOutcome = Awaited<ReturnType<typeof applyBackupCommandResult>>;
+
+/**
+ * Records a backup job's terminal result (see applyBackupCommandResult below).
+ *
+ * #11772: an applied result can change whether its destination is failing, so
+ * the connection-health `backup_destination` source is asked to look again
+ * once the write commits (a rollback drops the request). The nudge coalesces
+ * per kind and never throws, so it costs at most one reconcile of the kind per
+ * delay window whatever the result volume.
+ */
+export async function applyBackupCommandResultToJob(
+  params: ApplyBackupCommandResultParams,
+): Promise<ApplyBackupCommandResultOutcome> {
+  const outcome = await applyBackupCommandResult(params);
+  if (outcome.applied) {
+    runAfterDbContextCommit('backupDestinationHealth.nudge', () => nudgeConnectionHealth('backup_destination'));
+  }
+  return outcome;
+}
+
+async function applyBackupCommandResult(params: {
   jobId: string;
   orgId: string;
   deviceId: string;

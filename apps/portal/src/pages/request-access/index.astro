@@ -1,0 +1,18 @@
+---
+// Customer-portal self-registration (W6 #11383). Public: the page answers on
+// every host, and the API gives every address the same reply. The login page
+// links here only on a verified custom portal domain whose org has
+// self-registration on; on the shared host it is reachable by direct URL.
+import AuthLayout from '../../layouts/AuthLayout.astro';
+import RequestAccessForm from '../../components/portal/RequestAccessForm';
+---
+
+<AuthLayout title="Request access">
+  <RequestAccessForm client:load />
+  <noscript>
+    <p class="mt-4 text-center text-sm text-muted-foreground">
+      JavaScript is required to request access. Please enable JavaScript and
+      reload this page.
+    </p>
+  </noscript>
+</AuthLayout>

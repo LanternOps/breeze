@@ -264,19 +264,22 @@ export async function resolveSnapshotProviderConfig(snapshotDbId: string | null 
 
   const metadata = asRecord(snapshot.metadata);
   let configId = snapshot.configId ?? getStringValue(metadata, 'configId');
+  let configSource: 'snapshot' | 'job' | 'metadata' = snapshot.configId ? 'snapshot' : 'metadata';
   if (!configId && snapshot.jobId) {
     const [job] = await db
       .select({ configId: backupJobs.configId })
       .from(backupJobs)
-      .where(eq(backupJobs.id, snapshot.jobId))
+      .where(and(eq(backupJobs.id, snapshot.jobId), eq(backupJobs.orgId, snapshot.orgId)))
       .limit(1);
     configId = job?.configId ?? null;
+    configSource = 'job';
   }
 
   if (!configId) {
     return {
       snapshot,
       config: null,
+      localConfigId: undefined as string | undefined,
       providerType:
         getStringValue(metadata, 'provider') ||
         getStringValue(metadata, 'providerType') ||
@@ -307,6 +310,7 @@ export async function resolveSnapshotProviderConfig(snapshotDbId: string | null 
   return {
     snapshot,
     config: config ?? null,
+    localConfigId: config && config.orgId === snapshot.orgId && configSource !== 'metadata' ? config.id : undefined,
     providerType:
       config?.provider ||
       getStringValue(metadata, 'provider') ||

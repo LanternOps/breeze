@@ -14,6 +14,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/yarascan"
 )
 
@@ -75,6 +76,7 @@ type walkResult struct {
 type fileJob struct {
 	path string
 	size int64
+	info fs.FileInfo // what the walk saw; the worker opens only this file
 }
 
 // errCollector is the one place walk/scan errors go; it applies the
@@ -101,6 +103,18 @@ func (c *errCollector) file(path string, err error) {
 	}
 }
 
+// skipped records a file the system would not let the scan read: it counts
+// as failed and is logged, but never ends the scan, whatever the policy.
+func (c *errCollector) skipped(path string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failed++
+	if c.logged < maxLoggedFileErrors {
+		c.logged++
+		log.Warn("IOC scan could not open a file", "path", path, "error", err.Error())
+	}
+}
+
 // always records an error that is fatal regardless of policy.
 func (c *errCollector) always(err error) {
 	c.mu.Lock()
@@ -121,6 +135,9 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 	defer cancelWork()
 
 	jobs := make(chan fileJob, cfg.Workers*4)
+	// One scope per walk: the protected-location rules, and the protected
+	// files' identities (collected once, on first need).
+	scope := tools.NewScanScope()
 	ec := &errCollector{fatal: cfg.FileErrorsFatal}
 	var (
 		mu       sync.Mutex
@@ -168,7 +185,44 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 					mu.Unlock()
 					continue // drain without scanning so the producer unblocks
 				}
-				matches, err := w.ScanFile(job.path)
+				// Files over the size limit are judged by the size the walk
+				// measured, before anything is opened: the rule-set engine
+				// never sees them (the walk does not queue them), and the
+				// built-in signatures match only their names.
+				oversize := options.MaxFileSize > 0 && job.size > options.MaxFileSize
+				var (
+					f    *os.File
+					info fs.FileInfo
+					err  error
+					size = job.size
+				)
+				if !oversize {
+					// Open once, check the handle, and scan, quote evidence
+					// from and hash that same handle.
+					f, info, err = scanOpen(scope, job.path, job.info)
+					if errors.Is(err, tools.ErrScanSkipped) {
+						continue
+					}
+					if err == nil {
+						// The limit applies to the file as it is now: it may
+						// have grown since the walk measured it. The scan
+						// reads at most the size measured here.
+						size = info.Size()
+						if cfg.SkipOversized && options.MaxFileSize > 0 && size > options.MaxFileSize {
+							_ = f.Close()
+							continue
+						}
+					}
+				}
+				var matches []yarascan.Match
+				if err == nil {
+					matches, err = w.ScanFile(f, size, job.path)
+				}
+				closeJob := func() {
+					if f != nil {
+						_ = f.Close()
+					}
+				}
 				// W01 counted every file offered to the matcher; the YARA walk
 				// counts only files actually scanned (failures are FilesFailed).
 				if err == nil || cfg.FileErrorsFatal {
@@ -179,6 +233,7 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 				if errors.Is(err, yarascan.ErrWorkerUnavailable) {
 					// This worker's engine is gone for good: count the file,
 					// leave the remaining jobs to the healthy workers.
+					closeJob()
 					ec.file(job.path, err)
 					mu.Lock()
 					lostErrs = append(lostErrs, err)
@@ -187,23 +242,35 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 					return
 				}
 				if err != nil {
-					// W01 (fatal mode) skips permission-denied files silently;
-					// the non-fatal mode counts every unreadable file.
-					if !cfg.FileErrorsFatal || !os.IsPermission(err) {
+					closeJob()
+					switch {
+					case cfg.FileErrorsFatal && os.IsPermission(err):
+						// W01 skips permission-denied files silently.
+					case isPerFileError(err):
+						// The system refused this one file (an antivirus
+						// block, a sharing or lock violation): a failed
+						// file, never the end of the scan, in either mode.
+						ec.skipped(job.path, err)
+					default:
 						ec.file(job.path, err)
 					}
 					continue
 				}
 				if len(matches) == 0 {
+					closeJob()
 					continue
 				}
 				sum, hashErr := "", error(nil)
-				if job.size <= maxHashBytes {
-					sum, hashErr = fileSHA256(job.path)
+				switch {
+				case f == nil:
+					hashErr = errNotOpened // matched by name only; not auto-quarantined
+				case job.size <= maxHashBytes:
+					sum, hashErr = readerSHA256(f)
 					if hashErr != nil {
 						log.Warn("could not hash a matched file; it will not be auto-quarantined", "path", job.path, "error", hashErr.Error())
 					}
 				}
+				closeJob()
 				mu.Lock()
 				for _, mt := range matches {
 					key := mt.RuleSetID + "|" + mt.RuleName + "|" + job.path
@@ -220,7 +287,7 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 		}()
 	}
 
-	walkErr := produce(workCtx, uniquePaths(paths), options, cfg, jobs, ec)
+	walkErr := produce(workCtx, uniquePaths(paths), options, cfg, jobs, ec, scope)
 	close(jobs)
 	wg.Wait()
 
@@ -289,8 +356,24 @@ func fileSHA256(p string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = f.Close() }()
+	return readerSHA256(f)
+}
+
+// scanOpen opens a queued file through the scan's checks (a variable so a
+// test can count opens or make one fail).
+var scanOpen = func(s *tools.ScanScope, path string, walked fs.FileInfo) (*os.File, fs.FileInfo, error) {
+	return s.OpenFile(path, walked)
+}
+
+// errNotOpened marks a match on a file that was not opened (over the size
+// limit, matched by name only), so it is not hashed or auto-quarantined.
+var errNotOpened = errors.New("the file was not opened")
+
+// readerSHA256 hashes r from its start (at most maxHashBytes), whatever its
+// current offset, so the handle a worker scanned can be hashed as is.
+func readerSHA256(r io.ReaderAt) (string, error) {
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(f, maxHashBytes+1))
+	n, err := io.Copy(h, io.NewSectionReader(r, 0, maxHashBytes+1))
 	if err != nil {
 		return "", err
 	}
@@ -304,13 +387,18 @@ func fileSHA256(p string) (string, error) {
 // W01's detectThreatsCtx verbatim: os.Lstat on roots, symlinks never
 // followed, permission-denied directories skipped, exclusions by
 // isExcludedPath, regular files only.
-func produce(ctx context.Context, roots []string, options threatScanOptions, cfg walkConfig, jobs chan<- fileJob, ec *errCollector) error {
-	send := func(p string, size int64) error {
+func produce(ctx context.Context, roots []string, options threatScanOptions, cfg walkConfig, jobs chan<- fileJob, ec *errCollector, scope *tools.ScanScope) error {
+	send := func(p string, info fs.FileInfo) error {
+		// Load the file's ID now, while the walk is looking at it: on Windows
+		// a walked FileInfo otherwise reads it lazily, by path, when it is
+		// first compared, which would be after the worker's open.
+		_ = os.SameFile(info, info)
+		size := info.Size()
 		if cfg.SkipOversized && options.MaxFileSize > 0 && size > options.MaxFileSize {
 			return nil
 		}
 		select {
-		case jobs <- fileJob{path: p, size: size}:
+		case jobs <- fileJob{path: p, size: size, info: info}:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
@@ -323,6 +411,19 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 		if root == "" || isExcludedPath(root, options.ExcludePaths) {
 			continue
 		}
+		// A root must be an absolute path in an accepted form and must not
+		// be a protected location at its canonical spelling. A refused root
+		// is reported; a missing one is skipped, as before.
+		scanRoot, err := scope.CheckRoot(root)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				ec.file(root, err)
+			}
+			continue
+		}
+		// WalkPath enters a volume mounted at a folder (Windows); for any
+		// other root it is the root itself.
+		root = scanRoot.WalkPath()
 		info, err := os.Lstat(root)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -335,7 +436,7 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 		}
 		if !info.IsDir() {
 			if info.Mode().IsRegular() {
-				if err := send(root, info.Size()); err != nil {
+				if err := send(root, info); err != nil {
 					return err
 				}
 			}
@@ -358,7 +459,7 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 				}
 				return nil
 			}
-			if d.Type()&os.ModeSymlink != 0 || d.IsDir() {
+			if d.Type()&os.ModeSymlink != 0 {
 				return nil
 			}
 			fi, err := d.Info()
@@ -368,10 +469,16 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 				}
 				return nil
 			}
-			if !fi.Mode().IsRegular() {
+			if scope.Skip(scanRoot, cur, fi) {
+				if d.IsDir() {
+					return fs.SkipDir
+				}
 				return nil
 			}
-			return send(cur, fi.Size())
+			if d.IsDir() || !fi.Mode().IsRegular() {
+				return nil
+			}
+			return send(cur, fi)
 		})
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
