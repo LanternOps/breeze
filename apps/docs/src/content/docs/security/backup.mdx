@@ -195,7 +195,7 @@ crontab -e
 
 Roles and role memberships belong to the Postgres cluster, not to a database, so a `pg_dump` does not contain them. Breeze uses three: `breeze_app` (the API request role), `breeze_audit_admin` (deletes append-only audit and evidence rows) and `breeze_search`. A restore into a new cluster, such as a Postgres 16 to 18 move, starts without them.
 
-`./scripts/restore.sh --db` creates the three roles before it runs `pg_restore`. The `DATABASE_URL` user needs `CREATEROLE`. If it cannot create them, the script stops before restoring anything and tells you to restore globals first. After `pg_restore`, any `role "..." does not exist` error is a failure that names the missing roles. It is no longer a warning.
+`./scripts/restore.sh --db` creates the three roles before it runs `pg_restore`. The `DATABASE_URL` user needs `CREATEROLE` only when those roles are missing (for example after a database-only restore into a new cluster); if they already exist, it does not. If it cannot create them, the script stops before restoring anything and tells you to restore globals first. After `pg_restore`, any `role "..." does not exist` error is a failure that names the missing roles. It is no longer a warning.
 
 If you restore by hand, copy the globals first. On the old cluster:
 

@@ -53,6 +53,39 @@ describe('ensureClusterRoles', () => {
     expect(report.warnings).toEqual([]);
   });
 
+  it('logs a re-grant of an existing role at warn, naming the REVOKE; a role created this run stays at log', async () => {
+    const run = async (roles: string[]) => {
+      const { client } = fakeClient({ roles });
+      const out = { log: [] as string[], warn: [] as string[] };
+      await ensureClusterRoles(client, {
+        phase: 'pre-migration',
+        env: {},
+        logger: { log: (m) => out.log.push(m), warn: (m) => out.warn.push(m), error: () => {} },
+      });
+      return out;
+    };
+    const existing = await run(['breeze_app', 'breeze_audit_admin', 'breeze_search']);
+    expect(existing.warn).toHaveLength(1);
+    expect(existing.warn[0]).toContain('Granted breeze_audit_admin to breeze_app');
+    expect(existing.warn[0]).toContain('AUDIT_ADMIN_DATABASE_URL');
+    expect(existing.warn[0]).toContain('REVOKE breeze_audit_admin FROM breeze_app;');
+    expect(existing.log).toEqual([]);
+
+    const fresh = await run(['breeze_app']);
+    expect(fresh.warn).toEqual([]);
+    expect(fresh.log.some((m) => m.includes('Granted breeze_audit_admin to breeze_app'))).toBe(true);
+  });
+
+  it('words a failed grant in the present tense', async () => {
+    const { client } = fakeClient({
+      roles: ['breeze_app', 'breeze_audit_admin', 'breeze_search'],
+      failOn: { pattern: /GRANT breeze_audit_admin/, code: '42501' },
+    });
+    const report = await ensureClusterRoles(client, { phase: 'pre-migration', env: {}, logger: quiet });
+    expect(report.warnings[0]).toContain('Could not grant breeze_audit_admin to breeze_app:');
+    expect(report.warnings[0]).not.toContain('Could not granted');
+  });
+
   it('turns a refused CREATE ROLE into a warning with the statement, skips what depends on it, and does not throw', async () => {
     const { client, statements } = fakeClient({
       roles: ['breeze_app'],

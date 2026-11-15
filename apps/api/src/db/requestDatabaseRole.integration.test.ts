@@ -169,6 +169,7 @@ describe('request database role startup enforcement', () => {
 
     const { initializeDatabaseForStartup } = await import('./databaseStartup');
     const errors: unknown[] = [];
+    const warns: unknown[] = [];
 
     await initializeDatabaseForStartup({
       autoMigrateEnabled: false,
@@ -176,13 +177,15 @@ describe('request database role startup enforcement', () => {
       migrate: vi.fn(),
       logger: {
         log: () => {},
-        warn: () => {},
+        warn: (...args: unknown[]) => warns.push(args[0]),
         error: (...args: unknown[]) => errors.push(args[0]),
       },
     });
 
     // Two reports, in order: the audit-admin access problem (the bypass role is
     // not a member of breeze_audit_admin, #11929), then the unsafe-role banner.
+    // No AUDIT_ADMIN_DATABASE_URL here, so the first is an error, not a warning.
+    expect(warns).toHaveLength(0);
     expect(errors).toHaveLength(2);
     expect(String(errors[0])).toContain(`"${BYPASS_ROLE}" is not a member of breeze_audit_admin`);
     expect(String(errors[1])).toContain('BYPASSRLS');

@@ -387,10 +387,12 @@ describe('initializeDatabaseForStartup upgrade preflight', () => {
       const { logger, run } = boot({ auditAdminMember: false }, { AUDIT_ADMIN_DATABASE_URL: 'postgresql://a@db/b' }, probe);
       await run;
       expect(probe).toHaveBeenCalledOnce();
-      const errors = logger.error.mock.calls.map((c) => String(c[0]));
-      expect(errors).toHaveLength(1);
-      expect(errors[0]).toContain('permanent device delete still needs the membership');
-      expect(errors[0]).not.toContain('AUDIT_ADMIN_DATABASE_URL is not set');
+      // The documented hardened setup: a warning, never an error.
+      expect(logger.error).not.toHaveBeenCalled();
+      const warns = logger.warn.mock.calls.map((c) => String(c[0]));
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('permanent device delete still needs the membership');
+      expect(warns[0]).not.toContain('AUDIT_ADMIN_DATABASE_URL is not set');
     });
 
     it('reports a failing dedicated connection without failing boot', async () => {

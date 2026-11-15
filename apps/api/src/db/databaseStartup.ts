@@ -183,7 +183,7 @@ async function reportAuditAdminAccess(
   probe: (() => Promise<void>) | undefined,
 ): Promise<void> {
   const problem = auditAdminAccessProblem(role, env);
-  if (problem) logger.error(problem);
+  if (problem) logger[problem.level](problem.message);
 
   const url = env.AUDIT_ADMIN_DATABASE_URL;
   if (typeof url !== 'string' || url.trim().length === 0) return;

@@ -64,11 +64,15 @@ const AUDIT_ADMIN_ROLE = 'breeze_audit_admin';
 const SEARCH_ROLE = 'breeze_search';
 
 /**
- * The roles migrations create, with the attributes they create them with
- * (2026-05-25-i: bare `CREATE ROLE breeze_audit_admin`, which defaults to
- * NOLOGIN; 2026-07-16 td-synnex: `CREATE ROLE breeze_search NOLOGIN`). An
- * existing role is never altered: an operator who gave breeze_audit_admin a
- * LOGIN and password for AUDIT_ADMIN_DATABASE_URL keeps them.
+ * The roles migrations create, with the attributes the creating migrations
+ * give them (2026-05-25-i: bare `CREATE ROLE breeze_audit_admin`, which
+ * defaults to NOLOGIN; 2026-07-16 td-synnex: `CREATE ROLE breeze_search
+ * NOLOGIN`). A later migration, 2026-06-11-d-audit-retention-admin-login,
+ * gives breeze_audit_admin LOGIN, so a breeze_audit_admin re-created here is
+ * NOLOGIN until the operator runs `ALTER ROLE breeze_audit_admin LOGIN
+ * PASSWORD '...'` (only needed for AUDIT_ADMIN_DATABASE_URL). An existing role
+ * is never altered: an operator who gave breeze_audit_admin a LOGIN and
+ * password for AUDIT_ADMIN_DATABASE_URL keeps them.
  */
 export const MIGRATION_CREATED_ROLES = [
   { name: AUDIT_ADMIN_ROLE, create: `CREATE ROLE ${AUDIT_ADMIN_ROLE} NOLOGIN` },
@@ -153,18 +157,24 @@ export async function ensureClusterRoles(
    * Run one fix in its own transaction. A failed statement aborts only its own
    * transaction, and the catch sits outside it, so later steps still run.
    */
-  const step = async (label: string, statements: string): Promise<boolean> => {
+  const step = async (
+    label: string,
+    statements: string,
+    opts: StepOptions,
+  ): Promise<boolean> => {
     try {
       await client.begin(async (tx) => {
         await tx.unsafe(SESSION_SQL);
         await tx.unsafe(statements);
       });
       report.applied.push(label);
-      logger.log(`${LOG} ${label}`);
+      const message = `${LOG} ${label}${opts.successNote ? `. ${opts.successNote}` : ''}`;
+      if (opts.successLevel === 'warn') logger.warn(message);
+      else logger.log(message);
       return true;
     } catch (err) {
       const code = pgErrorCode(err);
-      const what = `${LOG} Could not ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+      const what = `${LOG} Could not ${opts.action}`;
       if (code && PRIVILEGE_ERRORS.has(code)) {
         // Expected on managed Postgres: say exactly what to run, and by whom.
         const warning = `${what}: the migration role lacks the privilege (SQLSTATE ${code}). `
@@ -195,9 +205,17 @@ export async function ensureClusterRoles(
   }
 
   // 1. Roles.
+  const createdThisRun = new Set<string>();
   for (const role of MIGRATION_CREATED_ROLES) {
     if (existing.has(role.name)) continue;
-    if (await step(`Created missing role ${role.name}`, `${role.create};`)) existing.add(role.name);
+    if (await step(
+      `Created missing role ${role.name}`,
+      `${role.create};`,
+      { action: `create missing role ${role.name}` },
+    )) {
+      existing.add(role.name);
+      createdThisRun.add(role.name);
+    }
   }
 
   // 2. breeze_app's membership in breeze_audit_admin (the 42501 in #11929).
@@ -211,11 +229,23 @@ export async function ensureClusterRoles(
       logger.warn(warning);
     }
     if (!member) {
+      // A role created a moment ago has no operator history: this is a fresh
+      // install (or a restore that lost the role), and the grant is routine.
+      // A role that already existed without the membership may have had it
+      // revoked on purpose (migration 2026-06-11-e), so say so loudly.
+      const preExisting = !createdThisRun.has(AUDIT_ADMIN_ROLE);
       await step(
         `Granted ${AUDIT_ADMIN_ROLE} to ${APP_ROLE}${options.phase === 'post-migration'
           ? ' (the membership was missing: usually a database-only restore into a new cluster)'
           : ''}`,
         `GRANT ${AUDIT_ADMIN_ROLE} TO ${APP_ROLE};`,
+        {
+          action: `grant ${AUDIT_ADMIN_ROLE} to ${APP_ROLE}`,
+          ...(preExisting && {
+            successLevel: 'warn' as const,
+            successNote: `If the membership was revoked deliberately, set AUDIT_ADMIN_DATABASE_URL on every process that boots or migrates, then undo this with: REVOKE ${AUDIT_ADMIN_ROLE} FROM ${APP_ROLE};`,
+          }),
+        },
       );
     }
   }
@@ -245,7 +275,15 @@ export async function ensureClusterRoles(
   return report;
 }
 
-type Step = (label: string, statements: string) => Promise<boolean>;
+/** `label` is past tense (success and the `applied` report); `action` is the
+ *  present-tense form used after "Could not" in the failure warning. */
+interface StepOptions {
+  action: string;
+  successLevel?: 'log' | 'warn';
+  successNote?: string;
+}
+
+type Step = (label: string, statements: string, opts: StepOptions) => Promise<boolean>;
 
 async function existingRoles(client: postgres.Sql): Promise<Set<string>> {
   const names = [APP_ROLE, ...MIGRATION_CREATED_ROLES.map((r) => r.name)];
@@ -287,6 +325,7 @@ async function ensureAuditAdminPrivileges(client: postgres.Sql, step: Step): Pro
     await step(
       `Granted ${privileges.join(', ')} on ${table} to ${AUDIT_ADMIN_ROLE}`,
       `GRANT ${privileges.join(', ')} ON TABLE public.${table} TO ${AUDIT_ADMIN_ROLE};`,
+      { action: `grant ${privileges.join(', ')} on ${table} to ${AUDIT_ADMIN_ROLE}` },
     );
   }
 
@@ -300,6 +339,7 @@ async function ensureAuditAdminPrivileges(client: postgres.Sql, step: Step): Pro
     await step(
       `Granted EXECUTE on ${fn} to ${AUDIT_ADMIN_ROLE}`,
       `GRANT EXECUTE ON FUNCTION ${fn} TO ${AUDIT_ADMIN_ROLE};`,
+      { action: `grant EXECUTE on ${fn} to ${AUDIT_ADMIN_ROLE}` },
     );
   }
 }
@@ -348,12 +388,14 @@ async function ensureSearchRoleObjects(
     await step(
       `Granted SELECT on ${SEARCH_TABLE} to ${SEARCH_ROLE}`,
       `GRANT SELECT ON TABLE public.${SEARCH_TABLE} TO ${SEARCH_ROLE};`,
+      { action: `grant SELECT on ${SEARCH_TABLE} to ${SEARCH_ROLE}` },
     );
   }
   if (state.hasTable && !state.hasPolicy) {
     await step(
       `Recreated policy ${SEARCH_POLICY} on ${SEARCH_TABLE}`,
       `CREATE POLICY ${SEARCH_POLICY} ON public.${SEARCH_TABLE} FOR SELECT TO ${SEARCH_ROLE} USING (true);`,
+      { action: `recreate policy ${SEARCH_POLICY} on ${SEARCH_TABLE}` },
     );
   }
   if (!state.hasFunction) return;
@@ -366,6 +408,7 @@ async function ensureSearchRoleObjects(
       `GRANT CREATE ON SCHEMA public TO ${SEARCH_ROLE};
 ALTER FUNCTION ${SEARCH_FUNCTION} OWNER TO ${SEARCH_ROLE};
 REVOKE CREATE ON SCHEMA public FROM ${SEARCH_ROLE};`,
+      { action: `make ${SEARCH_ROLE} the owner of ${SEARCH_FUNCTION}` },
     );
   }
   if (state.publicExecute || (existing.has(APP_ROLE) && !state.appExecute)) {
@@ -373,6 +416,7 @@ REVOKE CREATE ON SCHEMA public FROM ${SEARCH_ROLE};`,
       `Restored the EXECUTE grants on ${SEARCH_FUNCTION}`,
       `REVOKE ALL ON FUNCTION ${SEARCH_FUNCTION} FROM PUBLIC;${
         existing.has(APP_ROLE) ? `\nGRANT EXECUTE ON FUNCTION ${SEARCH_FUNCTION} TO ${APP_ROLE};` : ''}`,
+      { action: `restore the EXECUTE grants on ${SEARCH_FUNCTION}` },
     );
   }
 }

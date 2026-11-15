@@ -85,14 +85,12 @@ export type AuditAdminTx = Parameters<Parameters<AuditAdminDb['transaction']>[0]
  *
  * It commits on its own, independently of any transaction the caller holds.
  * Callers that run it from inside one must not wait on a lock that
- * transaction holds; `lockTimeoutMs` turns that into a fast 55P03 instead of
- * a hang Postgres cannot see as a deadlock.
+ * transaction holds.
  *
  * Callers gate on `hasDedicatedAuditAdminPool()` first.
  */
 export async function withAuditAdminTransaction<T>(
   fn: (tx: AuditAdminTx) => Promise<T>,
-  options: { lockTimeoutMs?: number } = {},
 ): Promise<T> {
   return getAuditAdminDb().transaction(async (tx) => {
     await tx.execute(sql`select set_config('breeze.scope', 'system', true)`);
@@ -101,9 +99,6 @@ export async function withAuditAdminTransaction<T>(
     await tx.execute(sql`select set_config('breeze.accessible_partner_ids', '*', true)`);
     await tx.execute(sql`select set_config('breeze.user_id', '', true)`);
     await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-    if (options.lockTimeoutMs !== undefined) {
-      await tx.execute(sql`select set_config('lock_timeout', ${`${options.lockTimeoutMs}ms`}, true)`);
-    }
     return fn(tx);
   });
 }
