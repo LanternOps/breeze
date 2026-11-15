@@ -65,15 +65,7 @@ export function createGuardedS3Client(config: S3ClientConfig): S3Client {
       httpsAgent,
     },
   });
-  client.middlewareStack.addRelativeTo(tolerateAbortDateMiddleware, {
-    // "after" the deserializer runs inside it, so this sees the raw response
-    // before the SDK parses it (the S3 client's own throw-200-exceptions
-    // middleware is registered the same way).
-    relation: 'after',
-    toMiddleware: 'deserializerMiddleware',
-    name: 'breezeTolerateAbortDateMiddleware',
-    override: true,
-  });
+  tolerateUnparseableAbortDate(client);
   return client;
 }
 
@@ -148,3 +140,23 @@ const tolerateAbortDateMiddleware = ((next: DeserializeHandler) => async (args: 
   }
   return result;
 }) as unknown as Parameters<S3Client['middlewareStack']['addRelativeTo']>[0];
+
+/**
+ * Registers the abort-date tolerance on `client`. The single registration
+ * point for every S3 client in the API: the guarded customer-store client
+ * (above) and the platform env-configured clients (`s3Storage.ts`,
+ * `artifacts/blobStorage.ts`) all call this, so they cannot drift. Returns the
+ * client for inline use. Idempotent (`override: true` on a fixed name).
+ */
+export function tolerateUnparseableAbortDate<T extends S3Client>(client: T): T {
+  client.middlewareStack.addRelativeTo(tolerateAbortDateMiddleware, {
+    // "after" the deserializer runs inside it, so this sees the raw response
+    // before the SDK parses it (the S3 client's own throw-200-exceptions
+    // middleware is registered the same way).
+    relation: 'after',
+    toMiddleware: 'deserializerMiddleware',
+    name: 'breezeTolerateAbortDateMiddleware',
+    override: true,
+  });
+  return client;
+}
