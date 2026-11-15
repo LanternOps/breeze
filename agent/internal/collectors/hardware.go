@@ -322,15 +322,18 @@ func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {
 		hw.RAMTotalMB = vmem.Total / 1024 / 1024
 	}
 
-	// Disk — use platform-appropriate root path
-	rootPath := "/"
+	// Disk — the OS volume: the system drive on Windows; elsewhere / or, on
+	// immutable Linux, the real storage under the read-only image root.
+	var diskUsage *disk.UsageStat
 	if runtime.GOOS == "windows" {
-		rootPath = os.Getenv("SystemDrive") + "\\"
+		rootPath := os.Getenv("SystemDrive") + "\\"
 		if rootPath == "\\" {
 			rootPath = "C:\\"
 		}
+		diskUsage, err = disk.Usage(rootPath)
+	} else {
+		diskUsage, err = osDiskUsage()
 	}
-	diskUsage, err := disk.Usage(rootPath)
 	if err == nil {
 		hw.DiskTotalGB = diskUsage.Total / 1024 / 1024 / 1024
 	}

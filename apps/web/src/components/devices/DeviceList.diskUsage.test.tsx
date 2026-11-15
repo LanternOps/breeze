@@ -111,6 +111,17 @@ describe('DeviceList disk usage', () => {
     expect(displayedDisks([disks[0]!], 'os', 'macos')).toEqual([disks[0]]);
   });
 
+  it('prefers the agent-reported Linux OS volume over the read-only image root', () => {
+    // Immutable Linux (composefs/ostree): / is an image that is always full;
+    // the agent flags the real storage (/sysroot) as the OS volume.
+    const disks = [disk('/', 100, false), disk('/sysroot', 35, true), disk('/boot', 20, false)];
+    expect(displayedDisks(disks, 'os', 'linux')).toEqual([disks[1]]);
+    expect(diskUsageSortValue(disks, 'os', 'linux')).toBe(35);
+    // Older agents send no flag, and an all-false report still falls back to /.
+    expect(displayedDisks([disk('/', 30), disk('/home', 90)], 'os', 'linux')).toEqual([disk('/', 30)]);
+    expect(displayedDisks([disk('/', 30, false), disk('/home', 90, false)], 'os', 'linux')).toEqual([disk('/', 30, false)]);
+  });
+
   it('skips malformed inventory and sorts by the displayed percentage', () => {
     const valid = disk('/', 99.96);
     const disks = [

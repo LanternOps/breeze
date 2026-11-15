@@ -65,9 +65,12 @@ func (c *InventoryCollector) CollectDisks() ([]DiskInfo, error) {
 
 	var disks []DiskInfo
 	seen := make(map[string]bool)
-	var systemDrive string
-	if runtime.GOOS == "windows" {
+	var systemDrive, linuxOSMount string
+	switch runtime.GOOS {
+	case "windows":
 		systemDrive = os.Getenv("SystemDrive")
+	case "linux":
+		linuxOSMount = linuxOSMountPoint()
 	}
 
 	for _, partition := range partitions {
@@ -75,7 +78,9 @@ func (c *InventoryCollector) CollectDisks() ([]DiskInfo, error) {
 		if seen[partition.Mountpoint] {
 			continue
 		}
-		if strings.HasPrefix(partition.Fstype, "squashfs") ||
+		// Read-only images (squashfs snaps, erofs/composefs roots on
+		// immutable distros) are always 100% full and are not storage.
+		if isImagePartition(partition.Fstype, partition.Device) ||
 			strings.HasPrefix(partition.Fstype, "tmpfs") ||
 			strings.HasPrefix(partition.Fstype, "devfs") ||
 			partition.Mountpoint == "" {
@@ -103,7 +108,7 @@ func (c *InventoryCollector) CollectDisks() ([]DiskInfo, error) {
 			FreeGB:      float64(usage.Free) / 1024 / 1024 / 1024,
 			UsedPercent: usage.UsedPercent,
 			Health:      "healthy",
-			IsOSVolume:  windowsOSVolume(systemDrive, partition.Mountpoint),
+			IsOSVolume:  osVolumeFlag(runtime.GOOS, systemDrive, linuxOSMount, partition.Mountpoint),
 		})
 	}
 
