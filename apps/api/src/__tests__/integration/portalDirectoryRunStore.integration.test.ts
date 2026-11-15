@@ -305,6 +305,86 @@ describe('recordEvaluatedRun on real Postgres', () => {
     expect(await readAccount(f.accounts[0]!.portalUserId)).toMatchObject({ status: 'active', authEpoch: 5 });
   });
 
+  // W08a review follow-up: a report-mode chain re-reports the same people on
+  // every complete snapshot (about 4 a day), kept 365 days. One open row per
+  // identity and state, carried forward in place: the row keeps its id and
+  // created_at (first reported) and moves to the newest run that confirmed it.
+  async function orgActions(orgId: string) {
+    return admin().select().from(portalDirectoryActions).where(eq(portalDirectoryActions.orgId, orgId));
+  }
+
+  it('repeated report runs keep ONE reported row per identity, carried to the newest run', async () => {
+    const f = await seedOrg(3);
+    const t0 = new Date(Date.now() - 10 * HOUR);
+    const leaver = f.accounts[0]!;
+    const r1 = await record(f, 1, t0, [leaver.oid]);
+    const [first] = await actionsOf(r1.runId);
+    expect(first).toMatchObject({ status: 'reported', identityId: leaver.identityId });
+
+    const r2 = await record(f, 2, new Date(t0.getTime() + 3 * HOUR), [leaver.oid]);
+    const r3 = await record(f, 3, new Date(t0.getTime() + 6 * HOUR), [leaver.oid]);
+
+    const all = await orgActions(f.orgId);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ id: first!.id, runId: r3.runId, status: 'reported', identityId: leaver.identityId });
+    expect(all[0]!.createdAt.toISOString()).toBe(first!.createdAt.toISOString());
+    // Each run still records what it saw, and its digest covers the carried row.
+    for (const r of [r1, r2, r3]) expect(await readRun(r.runId)).toMatchObject({ disposition: 'reported', affectedCount: 1 });
+    expect(await actionsOf(r1.runId)).toEqual([]);
+    expect(await actionsOf(r2.runId)).toEqual([]);
+    expect(r3).toMatchObject({ affected: 1, disposition: 'reported' });
+  });
+
+  it('a gap or a changed state opens a new row; the old one stays as history', async () => {
+    const f = await seedOrg(3);
+    const t0 = new Date(Date.now() - 20 * HOUR);
+    const leaver = f.accounts[0]!;
+    const r1 = await record(f, 1, t0, [leaver.oid]);
+    // Re-enabled in one snapshot, then disabled again: a new episode.
+    await record(f, 2, new Date(t0.getTime() + 3 * HOUR), []);
+    const r3 = await record(f, 3, new Date(t0.getTime() + 6 * HOUR), [leaver.oid]);
+    const [episode1] = await actionsOf(r1.runId);
+    const [episode2] = await actionsOf(r3.runId);
+    expect(episode1).toMatchObject({ status: 'reported' });
+    expect(episode2).toMatchObject({ status: 'reported' });
+    expect(episode2!.id).not.toBe(episode1!.id);
+
+    // A changed effect (a second leaver on the same account would differ; here
+    // the account gains a usable password) is a different state: a new row.
+    await admin().update(portalUsers).set({ authMethod: 'password', passwordHash: 'x'.repeat(60) })
+      .where(eq(portalUsers.id, leaver.portalUserId));
+    const r4 = await record(f, 4, new Date(t0.getTime() + 9 * HOUR), [leaver.oid]);
+    const [episode3] = await actionsOf(r4.runId);
+    expect(episode3).toMatchObject({ status: 'reported', keepsPassword: true, effect: 'identity' });
+    expect(episode3!.id).not.toBe(episode2!.id);
+    expect(await actionsOf(r3.runId)).toHaveLength(1);
+    expect(await orgActions(f.orgId)).toHaveLength(3);
+  });
+
+  it('a rearmed identity keeps one skipped (rearmed) row across runs', async () => {
+    const f = await seedOrg(3);
+    const leaver = f.accounts[0]!;
+    await admin().update(portalUserIdentities).set({ directoryRearmSince: new Date(Date.now() - 30 * HOUR) })
+      .where(eq(portalUserIdentities.id, leaver.identityId));
+    const t0 = new Date(Date.now() - 20 * HOUR);
+    for (const [g, h] of [[1, 0], [2, 3], [3, 6]] as const) await record(f, g, new Date(t0.getTime() + h * HOUR), [leaver.oid]);
+    const all = await orgActions(f.orgId);
+    expect(all.map((a) => [a.status, a.skipReason])).toEqual([['skipped', 'rearmed']]);
+  });
+
+  it('enforce mode never carries a reported row into a held one, nor one held row into the next', async () => {
+    const f = await seedOrg(40);
+    const leaver = f.accounts[0]!;
+    const t0 = new Date(Date.now() - 20 * HOUR);
+    const reported = await record(f, 1, t0, [leaver.oid]);
+    process.env[ENFORCE] = 'true';
+    const held1 = await record(f, 2, new Date(t0.getTime() + 3 * HOUR), [leaver.oid]);
+    const held2 = await record(f, 3, new Date(t0.getTime() + 6 * HOUR), [leaver.oid]);
+    expect((await actionsOf(reported.runId)).map((a) => a.status)).toEqual(['reported']);
+    expect((await actionsOf(held1.runId)).map((a) => a.status)).toEqual(['superseded']);
+    expect((await actionsOf(held2.runId)).map((a) => a.status)).toEqual(['held']);
+  });
+
   it('a run for org A never touches an identity of org B (inv. 4)', async () => {
     process.env[ENFORCE] = 'true';
     const a = await seedOrg(2);

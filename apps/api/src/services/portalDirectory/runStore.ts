@@ -219,6 +219,86 @@ async function previewEffects(
 }
 
 /**
+ * Statuses that only RECORD what a snapshot saw (report mode, an MSP
+ * exemption): nothing ever applies, holds or decides them, so one row can
+ * stand for consecutive runs. `held` / `pending` rows are decisions about one
+ * run's evidence and are never carried (D8: supersede, digest, apply).
+ */
+const CARRIED_STATUSES: ReadonlySet<PortalDirectoryActionStatus> = new Set(['reported', 'skipped']);
+
+/**
+ * One open row per identity and state (W08a review follow-up). A report-mode
+ * chain re-reports the same people on every complete snapshot — about four a
+ * day — and runs with actions are kept 365 days. When the chain's previous
+ * evaluated run holds a `reported` (or `skipped (rearmed)`) row for the same
+ * identity in the same state (status, reason, effect, keeps-password), that
+ * row is moved to this run in place: its id and `created_at` (first reported)
+ * stay, so the row reads "reported since created_at, last confirmed by
+ * run_id". A gap (a run that did not report the person) or any change of
+ * state opens a new row and leaves the old one as history. The earlier run
+ * keeps its counts but no longer its row, so an emptied run ages out with the
+ * 30-day empty-run retention. Runs under the caller's `(org, source)`
+ * advisory lock (D8g), so two runs never carry the same row.
+ *
+ * Mutates `rows[i].id` to the carried id (the digest covers what is stored)
+ * and returns the carried ids.
+ */
+async function carryOpenRows(
+  tx: RunStoreExecutor,
+  orgId: string,
+  previousRunId: string,
+  runId: string,
+  rows: ActionRow[],
+  statusOf: (r: ActionRow) => PortalDirectoryActionStatus,
+): Promise<Set<string>> {
+  const candidates = rows.filter((r) => CARRIED_STATUSES.has(statusOf(r)));
+  if (candidates.length === 0) return new Set();
+  const previous = await tx
+    .select({
+      id: portalDirectoryActions.id,
+      identityId: portalDirectoryActions.identityId,
+      portalUserId: portalDirectoryActions.portalUserId,
+      provider: portalDirectoryActions.provider,
+      reason: portalDirectoryActions.reason,
+      effect: portalDirectoryActions.effect,
+      keepsPassword: portalDirectoryActions.keepsPassword,
+      status: portalDirectoryActions.status,
+      skipReason: portalDirectoryActions.skipReason,
+    })
+    .from(portalDirectoryActions)
+    .where(and(
+      eq(portalDirectoryActions.orgId, orgId),
+      eq(portalDirectoryActions.runId, previousRunId),
+      inArray(portalDirectoryActions.identityId, candidates.map((r) => r.identityId)),
+    ));
+  const byIdentity = new Map(previous.map((a) => [a.identityId, a]));
+  const carried = new Set<string>();
+  for (const r of candidates) {
+    const prev = byIdentity.get(r.identityId);
+    if (
+      !prev
+      || prev.status !== statusOf(r)
+      || prev.skipReason !== (r.rearmed ? 'rearmed' : null)
+      || prev.portalUserId !== r.portalUserId
+      || prev.provider !== r.provider
+      || prev.reason !== r.reason
+      || prev.effect !== r.effect
+      || prev.keepsPassword !== r.keepsPassword
+    ) continue;
+    r.id = prev.id;
+    carried.add(prev.id);
+  }
+  const ids = [...carried];
+  for (let i = 0; i < ids.length; i += OBSERVATION_CHUNK) {
+    await tx
+      .update(portalDirectoryActions)
+      .set({ runId })
+      .where(and(eq(portalDirectoryActions.orgId, orgId), inArray(portalDirectoryActions.id, ids.slice(i, i + OBSERVATION_CHUNK))));
+  }
+  return carried;
+}
+
+/**
  * A complete snapshot, evaluated (plan Task 5 steps 1–8):
  *  1. insert the run — a duplicate `snapshot_key` returns the existing run
  *     (`created: false`) and writes nothing;
@@ -232,7 +312,9 @@ async function previewEffects(
  *  7. disposition: no actions ⇒ `none`; report ⇒ `reported`; enforce ⇒ `held`
  *     (a D6 threshold or the chain's first enforcement) or `applying`. Action
  *     status follows (`reported` / `held` / `pending`); a rearmed identity is
- *     listed as `skipped` (rearmed), never counted or applied;
+ *     listed as `skipped` (rearmed), never counted or applied. A `reported` /
+ *     `skipped (rearmed)` row the previous evaluated run already holds in the
+ *     same state is carried forward, not duplicated ({@link carryOpenRows});
  *  8. store the impact digest; a held run writes its
  *     `portal.directory.run.held` audit row here, in the run's transaction.
  */
@@ -303,7 +385,7 @@ export async function recordEvaluatedRun(tx: RunStoreExecutor, p: {
     ...extra,
   );
   const [prevEvaluated] = await tx
-    .select({ directoryUserCount: portalDirectoryRuns.directoryUserCount })
+    .select({ id: portalDirectoryRuns.id, directoryUserCount: portalDirectoryRuns.directoryUserCount })
     .from(portalDirectoryRuns)
     .where(chainWhere(eq(portalDirectoryRuns.outcome, 'evaluated')))
     .orderBy(desc(portalDirectoryRuns.createdAt))
@@ -398,8 +480,11 @@ export async function recordEvaluatedRun(tx: RunStoreExecutor, p: {
     }
   }
   const awaiting: PortalDirectoryActionStatus = disposition === 'reported' ? 'reported' : disposition === 'held' ? 'held' : 'pending';
-  if (rows.length > 0) {
-    await tx.insert(portalDirectoryActions).values(rows.map((r) => ({
+  const statusOf = (r: ActionRow): PortalDirectoryActionStatus => (r.rearmed ? 'skipped' : awaiting);
+  const carried = prevEvaluated ? await carryOpenRows(tx, p.orgId, prevEvaluated.id, runId, rows, statusOf) : new Set<string>();
+  const fresh = rows.filter((r) => !carried.has(r.id));
+  if (fresh.length > 0) {
+    await tx.insert(portalDirectoryActions).values(fresh.map((r) => ({
       id: r.id,
       orgId: p.orgId,
       runId,
@@ -409,7 +494,7 @@ export async function recordEvaluatedRun(tx: RunStoreExecutor, p: {
       reason: r.reason,
       effect: r.effect,
       keepsPassword: r.keepsPassword,
-      status: r.rearmed ? 'skipped' as const : awaiting,
+      status: statusOf(r),
       skipReason: r.rearmed ? 'rearmed' : null,
     })));
   }
