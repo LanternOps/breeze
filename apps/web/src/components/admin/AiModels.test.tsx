@@ -50,6 +50,24 @@ beforeEach(() => {
 });
 
 describe('AiModels admin page', () => {
+  it('uses application theme colors in the permission panel', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ error: 'forbidden' }, 403));
+    render(<AiModels />);
+    const panel = await screen.findByTestId('ai-models-requires-platform-admin');
+    expect(panel).toHaveClass('bg-card', 'text-muted-foreground');
+    expect(panel).not.toHaveClass('bg-white');
+  });
+
+  it('keeps native model fields readable with the selected application theme', async () => {
+    mockApi();
+    render(<AiModels />);
+    fireEvent.click(await screen.findByTestId('ai-models-row-id-new-edit'));
+    await screen.findByTestId('ai-models-drawer');
+    for (const id of ['ai-models-rate-inputCentsPerM', 'ai-models-min-plan', 'ai-models-prompt-profile']) {
+      expect(screen.getByTestId(id)).toHaveClass('bg-background', 'text-foreground');
+    }
+  });
+
   it('lists models with price, lifecycle and a New badge on unpriced discoveries', async () => {
     mockApi();
     render(<AiModels />);
