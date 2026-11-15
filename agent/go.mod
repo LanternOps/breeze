@@ -1,6 +1,6 @@
 module github.com/breeze-rmm/agent
 
-go 1.26.11
+go 1.27.4
 
 require (
 	cloud.google.com/go/storage v1.71.0
