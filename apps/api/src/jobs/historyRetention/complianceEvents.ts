@@ -33,8 +33,7 @@
 import { sql } from 'drizzle-orm';
 
 import { resolveRetentionDays, utcWallTime } from '../retentionBatch';
-import type { RetentionTarget } from '../retentionTarget';
-import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry } from './shared';
+import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
 
 const MAX_DAYS = 1095;
 
@@ -60,7 +59,7 @@ function floorMlFeedbackDays(days: number): number {
 
 // The outer table is referenced by its bare name (retentionBatch selects FROM
 // it unaliased); the inner subquery aliases its own table.
-export const AUDIT_BASELINE_RESULT_RETENTION_TARGET = {
+export const AUDIT_BASELINE_RESULT_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'audit_baseline_result_retention',
   table: 'audit_baseline_results',
   action: { kind: 'reportOnly' },
@@ -69,21 +68,21 @@ export const AUDIT_BASELINE_RESULT_RETENTION_TARGET = {
       WHERE n.device_id = audit_baseline_results.device_id
         AND n.baseline_id = audit_baseline_results.baseline_id
         AND n.checked_at > audit_baseline_results.checked_at)`,
-} satisfies RetentionTarget;
+};
 
-export const PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_TARGET = {
+export const PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'peripheral_policy_delivery_event_retention',
   table: 'peripheral_policy_delivery_events',
   action: { kind: 'reportOnly' },
   where: (cutoffIso) => sql`occurred_at < ${cutoffIso}::timestamptz`,
-} satisfies RetentionTarget;
+};
 
-export const ML_FEEDBACK_EVENT_RETENTION_TARGET = {
+export const ML_FEEDBACK_EVENT_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'ml_feedback_event_retention',
   table: 'ml_feedback_events',
   action: { kind: 'reportOnly' },
   where: (cutoffIso) => sql`occurred_at < ${utcWallTime(cutoffIso)}`,
-} satisfies RetentionTarget;
+};
 
 export const COMPLIANCE_EVENT_TARGETS: ReadonlyArray<HistoryReportOnlyEntry> = [
   {

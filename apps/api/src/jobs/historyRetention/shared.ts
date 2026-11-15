@@ -39,8 +39,10 @@ export function historyKnobs(retentionDays: number, enforce: boolean): Retention
  * nightly count can be read at the window an operator is weighing. Giving one
  * of these a delete path is a later, separately reviewed change (Part B).
  */
+export type ReportOnlyRetentionTarget = RetentionTarget & { action: { kind: 'reportOnly' } };
+
 export interface HistoryReportOnlyEntry {
-  target: RetentionTarget & { action: { kind: 'reportOnly' } };
+  target: ReportOnlyRetentionTarget;
   knobs: RetentionKnobs & { enforce: false };
   /** The variable that sets this target's window. */
   daysVar: string;

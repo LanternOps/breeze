@@ -27,8 +27,7 @@
 import { sql } from 'drizzle-orm';
 
 import { resolveRetentionDays, utcWallTime } from '../retentionBatch';
-import type { RetentionTarget } from '../retentionTarget';
-import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry } from './shared';
+import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
 
 const EXPIRED_SESSION_MAX_DAYS = 365;
 const MAX_DAYS = 1095;
@@ -37,27 +36,27 @@ const SSO_SESSION_DAYS = resolveRetentionDays(process.env.SSO_SESSION_RETENTION_
 const C2C_CONSENT_SESSION_DAYS = resolveRetentionDays(process.env.C2C_CONSENT_SESSION_RETENTION_DAYS, 7, EXPIRED_SESSION_MAX_DAYS, LOG_PREFIX);
 const TUNNEL_SESSION_DAYS = resolveRetentionDays(process.env.TUNNEL_SESSION_RETENTION_DAYS, 365, MAX_DAYS, LOG_PREFIX);
 
-export const SSO_SESSION_RETENTION_TARGET = {
+export const SSO_SESSION_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'sso_session_retention',
   table: 'sso_sessions',
   action: { kind: 'reportOnly' },
   where: (cutoffIso) => sql`expires_at < ${utcWallTime(cutoffIso)}`,
-} satisfies RetentionTarget;
+};
 
-export const C2C_CONSENT_SESSION_RETENTION_TARGET = {
+export const C2C_CONSENT_SESSION_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'c2c_consent_session_retention',
   table: 'c2c_consent_sessions',
   action: { kind: 'reportOnly' },
   where: (cutoffIso) => sql`expires_at < ${utcWallTime(cutoffIso)}`,
-} satisfies RetentionTarget;
+};
 
-export const TUNNEL_SESSION_RETENTION_TARGET = {
+export const TUNNEL_SESSION_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'tunnel_session_retention',
   table: 'tunnel_sessions',
   action: { kind: 'reportOnly' },
   where: (cutoffIso) => sql`status IN ('disconnected', 'failed')
     AND COALESCE(ended_at, created_at) < ${utcWallTime(cutoffIso)}`,
-} satisfies RetentionTarget;
+};
 
 export const SESSION_EXPIRY_TARGETS: ReadonlyArray<HistoryReportOnlyEntry> = [
   {

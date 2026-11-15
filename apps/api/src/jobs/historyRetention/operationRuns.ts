@@ -49,8 +49,7 @@
 import { sql } from 'drizzle-orm';
 
 import { resolveRetentionDays } from '../retentionBatch';
-import type { RetentionTarget } from '../retentionTarget';
-import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry } from './shared';
+import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
 
 const UNIFI_SYNC_RUN_MAX_DAYS = 365;
 const MAX_DAYS = 1095;
@@ -62,7 +61,7 @@ const TOPOLOGY_DIAGNOSTIC_RUN_DAYS = resolveRetentionDays(process.env.TOPOLOGY_D
 
 // Outer tables are referenced by their bare names (retentionBatch selects FROM
 // them unaliased); inner subqueries alias their own table.
-export const UNIFI_SYNC_RUN_RETENTION_TARGET = {
+export const UNIFI_SYNC_RUN_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'unifi_sync_run_retention',
   table: 'unifi_sync_runs',
   action: { kind: 'reportOnly' },
@@ -72,9 +71,9 @@ export const UNIFI_SYNC_RUN_RETENTION_TARGET = {
       WHERE n.integration_id = unifi_sync_runs.integration_id
         AND n.status IN ('success', 'partial', 'failed')
         AND n.started_at > unifi_sync_runs.started_at)`,
-} satisfies RetentionTarget;
+};
 
-export const FLEET_REMEDIATION_RUN_RETENTION_TARGET = {
+export const FLEET_REMEDIATION_RUN_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'fleet_remediation_run_retention',
   table: 'fleet_remediation_runs',
   action: { kind: 'reportOnly' },
@@ -83,9 +82,9 @@ export const FLEET_REMEDIATION_RUN_RETENTION_TARGET = {
     AND EXISTS (SELECT 1 FROM fleet_remediation_runs n
       WHERE n.finding_id = fleet_remediation_runs.finding_id
         AND n.created_at > fleet_remediation_runs.created_at)`,
-} satisfies RetentionTarget;
+};
 
-export const TICKET_IMPORT_RUN_RETENTION_TARGET = {
+export const TICKET_IMPORT_RUN_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'ticket_import_run_retention',
   table: 'ticket_import_runs',
   action: { kind: 'reportOnly' },
@@ -94,9 +93,9 @@ export const TICKET_IMPORT_RUN_RETENTION_TARGET = {
     AND EXISTS (SELECT 1 FROM ticket_import_runs n
       WHERE n.source_id = ticket_import_runs.source_id
         AND n.started_at > ticket_import_runs.started_at)`,
-} satisfies RetentionTarget;
+};
 
-export const TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_TARGET = {
+export const TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'topology_diagnostic_run_retention',
   table: 'topology_diagnostic_runs',
   action: { kind: 'reportOnly' },
@@ -127,7 +126,7 @@ export const TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_TARGET = {
           AND (e->>'lastAppliedScheduledFor' IS NULL
             OR (e->>'lastAppliedScheduledFor')::timestamptz < topology_diagnostic_runs.scheduled_for))
     ))`,
-} satisfies RetentionTarget;
+};
 
 export const OPERATION_RUN_TARGETS: ReadonlyArray<HistoryReportOnlyEntry> = [
   {
