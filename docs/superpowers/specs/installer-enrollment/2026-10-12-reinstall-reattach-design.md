@@ -1195,6 +1195,24 @@ flagged by the #2764 collision path can be reattached from the banner.
   moves on.
 - **Separate from #7433:** this does not deliver non-exportable agent keys.
 
+**Decided in wave T1 (the agent part), where this section was open:**
+- **Package and pin.** `agent/internal/tpmattest`, `github.com/google/go-tpm` v0.9.8. The
+  agent builds with `CGO_ENABLED=0` for Windows, Linux and macOS (amd64 and arm64).
+  `go-tpm-tools` enters `go.mod` only for the simulator tests.
+- **Both keys are transient primaries in the endorsement hierarchy**: the EK from
+  `tpm2.RSAEKTemplate`, and the AK as a restricted RSA-2048 signing key (RSASSA-SHA256, noDA).
+  They are flushed after each attempt, so nothing persists in the TPM. On Linux the agent uses
+  `/dev/tpmrm0` only, never the exclusive `/dev/tpm0`.
+- **When.** Attestation rides on the hardware send (startup, every 24 h, manual refresh). It runs
+  once per process and again after 7 days, in the background with a 3-minute bound. A failure is
+  retried at the next hardware send. The agent keeps no local state: the server refreshes the
+  time for the same EK, and a reinstall attests on its first start.
+- **`tpmAvailable`** is sent with the hardware report: false for no TPM 2.0 (none, TPM 1.2, TBS
+  not found, disabled or not running, or `tbs.dll` missing). It is omitted when the probe cannot
+  tell (a permission error), so the server keeps what it had.
+- **Tests.** The flow is tested against the TCG reference simulator (`-tags tpmsim`, cgo). A
+  `-tags tpmreal` test runs it on the machine's own TPM.
+
 ### 12.2 API (collection)
 
 - **Challenge:** `POST /agents/:id/attestation/challenge` validates the AK attributes (restricted,
