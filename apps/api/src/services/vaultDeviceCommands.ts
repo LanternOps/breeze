@@ -76,9 +76,10 @@ export type VaultSyncSource =
  *   storage sessions, so the helper keeps reading its own store.
  * - Recorded destination that no longer resolves in this org: refused.
  *
- * Only the destination's `provider` is read here. The destination itself is
- * resolved at delivery, so reading (and decrypting) its config in the request
- * path would expose its secrets to this code for nothing.
+ * Only the destination's `provider` is selected. Selecting `provider_config`
+ * would open (decrypt) the sealed config through its column type, and the
+ * destination itself is resolved at delivery, so the request path has no use
+ * for it.
  */
 export async function resolveVaultSyncSource(
   deviceId: string,

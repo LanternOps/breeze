@@ -111,7 +111,7 @@ describe('vault_sync terminal outcome without an agent result (#11905)', () => {
     expect(await commandStatus(commandId)).toBe('failed');
     const v = await vault(s.vaultId);
     expect(v.lastSyncStatus).toBe('failed');
-    expect(v.lastSyncError).toMatch(/^Vault sync did not run: Device did not reconnect before .+; command was never delivered$/);
+    expect(v.lastSyncError).toMatch(/^Vault sync did not complete: Device did not reconnect before .+; command was never delivered$/);
   });
 
   it('a delivered vault_sync the agent never answered marks its vault failed with the timeout', async () => {
@@ -128,7 +128,7 @@ describe('vault_sync terminal outcome without an agent result (#11905)', () => {
     expect(await commandStatus(commandId)).toBe('failed');
     const v = await vault(s.vaultId);
     expect(v.lastSyncStatus).toBe('failed');
-    expect(v.lastSyncError).toMatch(/^Vault sync did not run: Server-side timeout: no response from agent after \d+ minutes$/);
+    expect(v.lastSyncError).toMatch(/^Vault sync did not complete: Server-side timeout: no response from agent after \d+ minutes$/);
   });
 
   it('a vault_sync refused at delivery marks its vault failed with the refusal reason', async () => {
@@ -148,7 +148,7 @@ describe('vault_sync terminal outcome without an agent result (#11905)', () => {
     const v = await vault(s.vaultId);
     expect(v.lastSyncStatus).toBe('failed');
     expect(v.lastSyncError).toBe(
-      "Vault sync did not run: Command was not delivered: The snapshot's backup destination is not available to this device.",
+      "Vault sync did not complete: Command was not delivered: The snapshot's backup destination is not available to this device.",
     );
   });
 
@@ -164,7 +164,7 @@ describe('vault_sync terminal outcome without an agent result (#11905)', () => {
     expect(await commandStatus(commandId)).toBe('cancelled');
     const v = await vault(s.vaultId);
     expect(v.lastSyncStatus).toBe('failed');
-    expect(v.lastSyncError).toBe('Vault sync did not run: Cancelled before the device received it');
+    expect(v.lastSyncError).toBe('Vault sync did not complete: Cancelled before the device received it');
   });
 
   it('leaves the vault pending when a newer sync for it is still in flight', async () => {
@@ -194,7 +194,7 @@ describe('vault_sync terminal outcome without an agent result (#11905)', () => {
     const s = await seed();
     await getTestDb().update(localVaults).set({ lastSyncStatus: 'completed', lastSyncError: null })
       .where(eq(localVaults.id, s.vaultId));
-    await insertVaultSync(s, {
+    const commandId = await insertVaultSync(s, {
       status: 'pending',
       createdAt: new Date(Date.now() - 2 * DAY_MS),
       deliverBy: new Date(Date.now() - 60_000),
@@ -202,6 +202,7 @@ describe('vault_sync terminal outcome without an agent result (#11905)', () => {
 
     await asSystem(() => reapStaleDeviceCommands());
 
+    expect(await commandStatus(commandId)).toBe('failed');
     const v = await vault(s.vaultId);
     expect(v.lastSyncStatus).toBe('completed');
     expect(v.lastSyncError).toBeNull();
@@ -210,7 +211,7 @@ describe('vault_sync terminal outcome without an agent result (#11905)', () => {
   it('does not write a vault outside the org the command was queued for', async () => {
     const s = await seed();
     const otherOrg = await createOrganization({ partnerId: s.partnerId });
-    await insertVaultSync(s, {
+    const commandId = await insertVaultSync(s, {
       status: 'pending',
       createdAt: new Date(Date.now() - 2 * DAY_MS),
       deliverBy: new Date(Date.now() - 60_000),
@@ -219,7 +220,105 @@ describe('vault_sync terminal outcome without an agent result (#11905)', () => {
 
     await asSystem(() => reapStaleDeviceCommands());
 
+    // The reaper did process the row; only the vault write was withheld.
+    expect(await commandStatus(commandId)).toBe('failed');
     const v = await vault(s.vaultId);
     expect(v.lastSyncStatus).toBe('pending');
+  });
+
+  it('a newer sync that is already delivered (sent) also keeps the vault pending', async () => {
+    const s = await seed();
+    const old = await insertVaultSync(s, {
+      status: 'pending',
+      createdAt: new Date(Date.now() - 2 * DAY_MS),
+      deliverBy: new Date(Date.now() - 60_000),
+    });
+    await insertVaultSync(s, {
+      status: 'sent',
+      createdAt: new Date(Date.now() - 60_000),
+      executedAt: new Date(Date.now() - 30_000),
+    });
+
+    await asSystem(() => reapStaleDeviceCommands());
+
+    expect(await commandStatus(old)).toBe('failed');
+    expect((await vault(s.vaultId)).lastSyncStatus).toBe('pending');
+  });
+
+  it("a newer in-flight sync for a DIFFERENT vault on the device does not block this vault's outcome", async () => {
+    const s = await seed();
+    const [otherVault] = await getTestDb().insert(localVaults).values({
+      orgId: s.orgId,
+      deviceId: s.deviceId,
+      vaultPath: 'E:\\OtherVault',
+      isActive: true,
+      lastSyncStatus: 'pending',
+    }).returning({ id: localVaults.id });
+    await insertVaultSync(s, {
+      status: 'pending',
+      createdAt: new Date(Date.now() - 2 * DAY_MS),
+      deliverBy: new Date(Date.now() - 60_000),
+    });
+    await insertVaultSync(s, {
+      status: 'pending',
+      createdAt: new Date(Date.now() - 60_000),
+      deliverBy: new Date(Date.now() + DAY_MS),
+      payload: { vaultId: otherVault!.id, vaultPath: 'E:\\OtherVault', snapshotId: 'snap-1' },
+    });
+
+    await asSystem(() => reapStaleDeviceCommands());
+
+    expect((await vault(s.vaultId)).lastSyncStatus).toBe('failed');
+    expect((await vault(otherVault!.id)).lastSyncStatus).toBe('pending');
+  });
+
+  it('an OLDER sync still in flight does not block a newer one that expired', async () => {
+    const s = await seed();
+    await insertVaultSync(s, {
+      status: 'sent',
+      createdAt: new Date(Date.now() - 2 * DAY_MS),
+      executedAt: new Date(Date.now() - 30_000),
+    });
+    const newer = await insertVaultSync(s, {
+      status: 'pending',
+      createdAt: new Date(Date.now() - 60_000),
+      deliverBy: new Date(Date.now() - 1_000),
+    });
+
+    await asSystem(() => reapStaleDeviceCommands());
+
+    expect(await commandStatus(newer)).toBe('failed');
+    expect((await vault(s.vaultId)).lastSyncStatus).toBe('failed');
+  });
+
+  it("does not write another device's vault the payload names", async () => {
+    const s = await seed();
+    const other = await seed();
+    const commandId = await insertVaultSync(s, {
+      status: 'pending',
+      createdAt: new Date(Date.now() - 2 * DAY_MS),
+      deliverBy: new Date(Date.now() - 60_000),
+      payload: { vaultId: other.vaultId, vaultPath: 'D:\\BreezeVault', snapshotId: 'snap-1' },
+      submittedOrgId: null,
+    });
+
+    await asSystem(() => reapStaleDeviceCommands());
+
+    expect(await commandStatus(commandId)).toBe('failed');
+    expect((await vault(other.vaultId)).lastSyncStatus).toBe('pending');
+  });
+
+  it('a legacy command with no submitted org still fails its own vault', async () => {
+    const s = await seed();
+    await insertVaultSync(s, {
+      status: 'pending',
+      createdAt: new Date(Date.now() - 2 * DAY_MS),
+      deliverBy: new Date(Date.now() - 60_000),
+      submittedOrgId: null,
+    });
+
+    await asSystem(() => reapStaleDeviceCommands());
+
+    expect((await vault(s.vaultId)).lastSyncStatus).toBe('failed');
   });
 });

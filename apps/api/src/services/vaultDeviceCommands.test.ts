@@ -173,8 +173,8 @@ describe('resolveVaultSyncSource', () => {
   });
 
   // The request path needs only the provider: the destination itself is
-  // resolved at delivery. Reading the whole config would decrypt its secrets
-  // here for nothing.
+  // resolved at delivery. Selecting provider_config would decrypt the sealed
+  // config (its column type opens it) for nothing.
   it("reads only the destination's provider, never its config", async () => {
     selectMock.mockReturnValueOnce(chainMock([{ snapshotId: 'snap-dest', configId: CONFIG_ID }]));
     selectMock.mockReturnValueOnce(chainMock([{ provider: 'local' }]));

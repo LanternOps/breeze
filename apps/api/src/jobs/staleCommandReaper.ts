@@ -3,7 +3,7 @@ import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStale
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, lt, lte, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { db, hasDbAccessContext, runAfterDbContextCommit, withDbTransaction } from '../db';
+import { db, hasDbAccessContext, runAfterDbContextCommit, withDbTransaction, withDbTransactionIfHeld } from '../db';
 import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 import {
   deviceCommands,
@@ -355,9 +355,9 @@ export async function propagateTimedOutDeviceCommand(params: {
   // Contained like the blocks above, in a savepoint for the manual
   // mark-timed-out route's request transaction (see the containment block).
   if (params.commandType === CommandTypes.VAULT_SYNC) {
-    const failVault = () => failVaultSyncWithoutResult({ commandId, payload, reason: errorMsg, completedAt });
     try {
-      await (hasDbAccessContext() ? withDbTransaction(failVault) : failVault());
+      await withDbTransactionIfHeld(() =>
+        failVaultSyncWithoutResult({ commandId, payload, reason: errorMsg, completedAt }));
     } catch (err) {
       console.error(`[StaleCommandReaper] Failed to record the vault sync outcome for timed-out command ${commandId}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));

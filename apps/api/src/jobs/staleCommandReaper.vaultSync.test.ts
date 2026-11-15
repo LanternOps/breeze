@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { updateMock, failVaultMock, captureExceptionMock } = vi.hoisted(() => ({
+const { updateMock, failVaultMock, captureExceptionMock, txIfHeldMock, drReconcileMock } = vi.hoisted(() => ({
   updateMock: vi.fn(),
   failVaultMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  txIfHeldMock: vi.fn(),
+  drReconcileMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({ Queue: class {}, Worker: class {}, Job: class {} }));
@@ -13,6 +15,7 @@ vi.mock('../db', async (importOriginal) => {
   return {
     ...actual,
     db: { ...actual.db, update: (...args: unknown[]) => updateMock(...(args as [])) },
+    withDbTransactionIfHeld: (fn: () => Promise<unknown>) => txIfHeldMock(fn),
   };
 });
 
@@ -24,6 +27,10 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
+}));
+
+vi.mock('./drExecutionWorker', () => ({
+  enqueueDrExecutionReconcile: (...args: unknown[]) => drReconcileMock(...(args as [])),
 }));
 
 vi.mock('../services/vaultSyncPersistence', () => ({
@@ -54,6 +61,7 @@ describe('staleCommandReaper vault_sync outcome (#11905)', () => {
     vi.resetAllMocks();
     updateMock.mockReturnValue({ set: () => ({ where: () => Promise.resolve([]) }) });
     failVaultMock.mockResolvedValue(true);
+    txIfHeldMock.mockImplementation((fn: () => Promise<unknown>) => fn());
   });
 
   it('records the reaper reason on the vault a timed-out vault_sync names', async () => {
@@ -84,11 +92,22 @@ describe('staleCommandReaper vault_sync outcome (#11905)', () => {
     expect(failVaultMock).not.toHaveBeenCalled();
   });
 
+  // The manual mark-timed-out route runs this inside its request
+  // transaction: the write must sit in a savepoint, with the catch outside,
+  // or a caught SQL fault would still fail the request when it commits.
+  it('runs the vault write inside the savepoint helper', async () => {
+    txIfHeldMock.mockImplementationOnce(async () => undefined);
+    await timedOut({ commandType: 'vault_sync' });
+    expect(txIfHeldMock).toHaveBeenCalledTimes(1);
+    expect(failVaultMock).not.toHaveBeenCalled();
+  });
+
   it('contains a vault write failure so later propagation still runs', async () => {
     failVaultMock.mockRejectedValueOnce(new Error('db down'));
-    await expect(timedOut({ commandType: 'vault_sync' })).resolves.toBeUndefined();
+    const drExecutionId = '00000000-0000-4000-8000-0000000000dd';
+    await expect(timedOut({ commandType: 'vault_sync', payload: { ...PAYLOAD, drExecutionId } })).resolves.toBeUndefined();
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-    // the deployment_results + restore_jobs updates still ran
-    expect(updateMock).toHaveBeenCalledTimes(2);
+    // The DR reconcile is the last step, after the vault block.
+    expect(drReconcileMock).toHaveBeenCalledWith(drExecutionId, 0);
   });
 });

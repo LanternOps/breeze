@@ -275,8 +275,9 @@ export interface FailVaultSyncWithoutResultInput {
  * stayed `pending` forever with no error.
  *
  * Writes the vault the payload names, and only while all of these hold:
- *  - it belongs to the command row's device and to the org the command was
- *    queued for (`submitted_org_id`, stamped at enqueue);
+ *  - it belongs to the command row's device and, when the command carries
+ *    `submitted_org_id` (stamped at enqueue; rows queued before it existed do
+ *    not), to that org;
  *  - it is still `pending`, so an outcome a result already recorded is kept;
  *  - no NEWER `vault_sync` for the same vault is still pending or in flight.
  *    The vault row records no command id, so the attempts are ordered on
@@ -284,8 +285,15 @@ export interface FailVaultSyncWithoutResultInput {
  *    `pending` for its own command, and failing the vault now would report
  *    that live attempt as failed.
  *
- * `last_sync_at` is left alone: no sync ran. Returns whether a vault was
- * written.
+ * Known narrow window: the Sync route writes `pending` before it inserts its
+ * command, so an older command reaped between those two statements still
+ * fails the vault. The newer attempt's own result then overwrites that; if it
+ * never answers, the vault keeps the older reason. Either way it is terminal.
+ *
+ * The error says the sync did not COMPLETE, not that it did not run: a
+ * delivered command that timed out may have run on the device. `last_sync_at`
+ * is left alone, since no completed sync is known. Returns whether a vault
+ * was written.
  */
 export async function failVaultSyncWithoutResult(input: FailVaultSyncWithoutResultInput): Promise<boolean> {
   const executor = input.executor ?? db;
@@ -307,7 +315,15 @@ export async function failVaultSyncWithoutResult(input: FailVaultSyncWithoutResu
     .from(deviceCommands)
     .where(and(eq(deviceCommands.id, input.commandId), eq(deviceCommands.type, 'vault_sync')))
     .limit(1);
-  if (!command) return false;
+  if (!command) {
+    // Both callers have just written this row terminal in the same context,
+    // so a miss means a scope or type mismatch, not a race: say so.
+    console.warn(
+      `[VaultSyncPersistence] vault_sync ${input.commandId} not found in this context; ` +
+      `vault ${vaultId} keeps its sync status`,
+    );
+    return false;
+  }
 
   const newer = alias(deviceCommands, 'newer_vault_sync');
   const newerAttemptInFlight = executor
@@ -326,7 +342,7 @@ export async function failVaultSyncWithoutResult(input: FailVaultSyncWithoutResu
     .update(localVaults)
     .set({
       lastSyncStatus: 'failed',
-      lastSyncError: redactSecretsFromOutput(`Vault sync did not run: ${input.reason}`),
+      lastSyncError: redactSecretsFromOutput(`Vault sync did not complete: ${input.reason}`),
       updatedAt: input.completedAt,
     })
     .where(and(
@@ -340,5 +356,15 @@ export async function failVaultSyncWithoutResult(input: FailVaultSyncWithoutResu
       notExists(newerAttemptInFlight),
     ))
     .returning({ id: localVaults.id });
-  return updated.length > 0;
+  if (updated.length === 0) {
+    // Usually intended (a result or a newer attempt owns the vault), but an
+    // org or device mismatch lands here too, so leave a trace.
+    console.info(
+      `[VaultSyncPersistence] vault_sync ${input.commandId} left vault ${vaultId} unchanged ` +
+      `(device=${command.deviceId}, submittedOrg=${command.submittedOrgId ?? 'none'}): ` +
+      'not pending, owned by a newer attempt, or outside the command\'s device/org',
+    );
+    return false;
+  }
+  return true;
 }
