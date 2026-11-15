@@ -323,6 +323,7 @@ async function agentResult(fx: Fixture, message: Record<string, unknown>): Promi
 type TerminalWsHandlers = {
   onOpen: (event: unknown, ws: unknown) => Promise<void>;
   onClose: (event: unknown, ws: unknown) => Promise<void> | void;
+  onError: (event: unknown, ws: unknown) => Promise<void> | void;
 };
 
 /**
@@ -604,6 +605,22 @@ const WRITERS: WriterCase[] = [
     sendsStop: false,
   },
   {
+    // #11839: only the agent's no-video watchdog sets a stopReason (#5300).
+    writer: 'routes/agentWs.ts:desk-disconnect peer_disconnected (with stopReason)',
+    seedStatus: 'active',
+    run: async (fx) => {
+      await agentResult(fx, {
+        commandId: `desk-disconnect-${fx.sessionId}`,
+        status: 'completed',
+        result: { event: 'peer_disconnected', sessionId: fx.sessionId, stopReason: 'no video frames for 30s' },
+      });
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'capture_failed',
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
     // #10542: the held end of a peer drop that followed a viewer reconnect.
     writer: 'services/desktopReconnectGrace.ts:endDesktopSessionAfterReconnectGrace',
     seedStatus: 'active',
@@ -662,6 +679,34 @@ const WRITERS: WriterCase[] = [
     expectStatus: 'disconnected',
     expectEndReason: 'access_revoked',
     // A PTY row has no endpoint acknowledgement flow: confirmed on commit.
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
+    writer: 'routes/terminalWs.ts:onClose (viewer closed the socket)',
+    seedStatus: 'pending',
+    seed: { type: 'terminal' },
+    run: async (fx) => {
+      const { handlers, ws } = await openTerminalWs(fx);
+      expect((await readFence(fx.sessionId)).status).toBe('active');
+      await handlers.onClose({}, ws);
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'viewer_closed',
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
+    writer: 'routes/terminalWs.ts:onError (viewer socket failed)',
+    seedStatus: 'pending',
+    seed: { type: 'terminal' },
+    run: async (fx) => {
+      const { handlers, ws } = await openTerminalWs(fx);
+      expect((await readFence(fx.sessionId)).status).toBe('active');
+      await handlers.onError(new Error('injected socket error'), ws);
+    },
+    expectStatus: 'disconnected',
+    expectEndReason: 'connection_lost',
     expectPhase: 'confirmed',
     sendsStop: false,
   },

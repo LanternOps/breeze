@@ -76,7 +76,9 @@ export const remoteSessions = pgTable('remote_sessions', {
   // Why the session ended (#11839; first value 'ended_by_user' from #10190 W06).
   // Written by every terminal writer through terminalIntentSet as
   // COALESCE(existing, new), so a reason recorded while the row was still live
-  // (the agent's desk-userend) is never overwritten. NULL = not recorded (rows
+  // (the agent's desk-userend) is never overwritten. desktopUserEnd.ts is the
+  // one writer outside the contract: it sets 'ended_by_user' on a live row, or
+  // replaces the generic 'peer_disconnected' its own stop recorded first. NULL = not recorded (rows
   // that predate #11839). Closed set REMOTE_SESSION_END_REASONS, CHECK-
   // constrained (widened by 2027-01-24-220000-remote-sessions-end-reason-widen.sql).
   endReason: text('end_reason').$type<RemoteSessionEndReason>(),

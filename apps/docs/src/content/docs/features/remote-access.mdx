@@ -560,13 +560,13 @@ Every remote session that ends records a reason, shown under its status in **Rem
 | Ended by a technician | A technician ended it (the viewer's hang-up or the **End** button). |
 | Viewer closed | The viewer's connection closed normally (WebSocket desktop or terminal). |
 | Connection to the viewer lost | The viewer's connection failed, stopped answering heartbeats, or the API server holding it went away. |
-| Device connection dropped | The device reported that the peer connection dropped, and the viewer did not reconnect within the grace window. |
-| Never connected | The session was still pending or connecting when it timed out. A site whose sessions keep ending this way usually cannot complete the WebRTC connection (for example, only host candidates and no TURN). |
+| Device connection dropped | The device reported that the peer connection dropped. When the viewer was reconnecting, Breeze first waits a short grace period. |
+| Never connected | The session was still pending or connecting when it timed out. A device whose sessions keep ending this way is worth checking for a connection that cannot be established between viewer and device. |
 | Replaced by a newer session | A new session to the same device replaced it. |
 | Screen capture stopped | The device stopped producing video mid-session and ended it; the details panel shows the device's reason. |
 | Failed to start | The device or the API could not start the session; the details panel shows the error. |
 | Consent declined | The person at the device declined the consent prompt. |
-| Access revoked | A live access check failed: the technician's account, role, MFA or the remote access policy changed. |
+| Access revoked | The technician's access ended: a live access check failed (role, membership, MFA or the remote access policy changed), or their account was changed (password or MFA reset, deactivation). |
 | Maximum session duration reached | The session reached the policy's maximum duration, or the 24-hour server limit. |
 | Device removed or reinstalled | The device was decommissioned, reinstalled, or had its credentials revoked. |
 

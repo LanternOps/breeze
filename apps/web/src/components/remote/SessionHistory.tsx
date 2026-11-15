@@ -20,7 +20,6 @@ import { fetchWithAuth } from '@/stores/auth';
 import { formatDateTime as formatUserDateTime, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
-import type { RemoteSessionEndReason } from '@breeze/shared';
 import { endReasonLabelKey } from './sessionEndReason';
 import '@/lib/i18n';
 
@@ -55,10 +54,11 @@ export type RemoteSession = {
   bytesTransferred?: number;
   recordingUrl?: string;
   /**
-   * Why it ended (#11839). Typed loosely on purpose: an API newer than this
-   * bundle may send a reason it has no label for; `endReasonLabelKey` drops it.
+   * Why it ended (#11839): a RemoteSessionEndReason from @breeze/shared. Typed
+   * as string on purpose: an API newer than this bundle may send a reason it
+   * has no label for, and `endReasonLabelKey` drops it.
    */
-  endReason?: RemoteSessionEndReason | string | null;
+  endReason?: string | null;
   /** The recorded failure detail, when there is one (agent error, timeout text). */
   errorMessage?: string | null;
   createdAt: string;

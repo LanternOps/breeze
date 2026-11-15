@@ -16,7 +16,9 @@
  *      endpoint has not yet acknowledged, `'confirmed'` when the endpoint's own
  *      stop proof is already in hand (or the row has no endpoint to ask),
  *   4. carries whatever terminal columns the writer already wrote (status,
- *      endedAt, errorMessage, …).
+ *      endedAt, errorMessage, …),
+ *   5. records the writer's required `endReason` (#11839) as
+ *      COALESCE(existing, new), so a reason already on the row wins.
  *
  * The stop the server then sends carries `terminalGeneration` in BOTH the
  * command id and the payload (`buildStopDesktopCommand`), so the agent's fence

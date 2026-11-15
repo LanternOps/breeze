@@ -22,11 +22,19 @@ export const REMOTE_SESSION_END_REASONS = [
   'operator_ended',
   /** The viewer's socket closed normally (desktop WebSocket fallback, terminal). */
   'viewer_closed',
-  /** The viewer's transport failed: socket error, missed heartbeat, or the API lost the connection. */
+  /**
+   * The viewer's transport failed: socket error, missed heartbeat, the API
+   * instance holding it went away, or it lost its connection ownership lease.
+   */
   'connection_lost',
-  /** The device reported that the WebRTC peer dropped, and the viewer did not reconnect. */
+  /**
+   * The device reported that the WebRTC peer dropped (after the reconnect
+   * grace, when the viewer was reconnecting). Device-side idle, lifetime and
+   * lease stops also land here today: the agent reports them with no reason.
+   * A later `ended_by_user` report replaces it (desktopUserEnd.ts).
+   */
   'peer_disconnected',
-  /** The session timed out while pending/connecting and never became active. */
+  /** The session was still pending/connecting when a stale sweep or the reaper timed it out. */
   'never_connected',
   /** A newer session for the same device replaced it. */
   'superseded',
@@ -39,7 +47,10 @@ export const REMOTE_SESSION_END_REASONS = [
   'start_failed',
   /** The person at the device declined the consent prompt. */
   'consent_denied',
-  /** A live access recheck failed: the technician's account, role, MFA or policy changed. */
+  /**
+   * The technician's access ended: a live revocation-lease recheck failed, or
+   * their account changed (password/MFA reset, deactivation, role or membership).
+   */
   'access_revoked',
   /** The session reached its maximum allowed duration. */
   'max_duration',
