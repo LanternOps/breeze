@@ -3389,6 +3389,8 @@ mod tests {
         assert!(chat_tooltip(&three).contains("3 unread chat messages"));
         assert!(chat_tooltip(&TraySummary { total_unread: 1, ..TraySummary::default() }).contains("1 unread chat message"));
         assert!(!chat_tooltip(&TraySummary::default()).contains("unread"));
+        // #11718: the tooltip names the product "Breeze Assist" (install identity stays "Breeze Helper").
+        assert!(chat_tooltip(&TraySummary::default()).starts_with("Breeze Assist v"));
         // The static menu ids are untouched: the chat entry is added dynamically.
         assert!(!tray_menu_item_ids(&HelperConfig::default()).contains(&"open_chat"));
     }
