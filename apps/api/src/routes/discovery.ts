@@ -416,6 +416,7 @@ const createProfileSchema = z.object({
   resolveHostnames: z.boolean().optional(),
   timeout: z.number().int().positive().optional(),
   concurrency: z.number().int().positive().optional(),
+  alertSettings: alertSettingsSchema,
   // #7969: devices.id of the agent that must run this profile's scans; null
   // or absent = automatic selection.
   pinnedDeviceId: z.string().guid().nullable().optional()
@@ -691,6 +692,7 @@ discoveryRoutes.post(
       resolveHostnames: body.resolveHostnames ?? false,
       timeout: body.timeout ?? null,
       concurrency: body.concurrency ?? null,
+      alertSettings: body.alertSettings ?? null,
       pinnedDeviceId: body.pinnedDeviceId ?? null,
       createdBy: auth.user?.id ?? null
     }).returning();
