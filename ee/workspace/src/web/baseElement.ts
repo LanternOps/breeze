@@ -6,18 +6,36 @@
  * - an `updateComplete` promise that settles when the current render/fetch
  *   cycle does (the host and tests await it);
  * - an AbortSignal that is aborted on disconnect so in-flight fetches never
- *   outlive the element.
+ *   outlive the element;
+ * - the `hostApi` property the web host assigns before `context` (host API v1,
+ *   `@breeze/extension-web-sdk`): the only way these elements reach the API,
+ *   since a bare `fetch` carries no Bearer token and is always 401 (#11922).
  *
  * Rendering rule (load-bearing): API-derived strings reach the DOM only via
  * `textContent` (see `el()`); nothing in a subclass may assign `innerHTML`
  * from data.
  */
+import { parseExtensionHostApiV1, type ExtensionHostApiV1 } from '@breeze/extension-web-sdk';
 import { WORKSPACE_STYLES } from './styles';
 
 export abstract class WorkspaceBaseElement extends HTMLElement {
   protected readonly root: ShadowRoot;
   #abort = new AbortController();
   #updateComplete: Promise<void> = Promise.resolve();
+  #hostApi: ExtensionHostApiV1 | null = null;
+
+  /** Assigned by the web host. Anything that is not a host API v1 is dropped. */
+  set hostApi(value: unknown) {
+    try {
+      this.#hostApi = parseExtensionHostApiV1(value);
+    } catch {
+      this.#hostApi = null;
+    }
+  }
+
+  get hostApi(): ExtensionHostApiV1 | null {
+    return this.#hostApi;
+  }
 
   constructor() {
     super();
