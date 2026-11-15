@@ -371,6 +371,20 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
     }
   });
 
+  // #4142 W3: the device cascade registration lists used to live in
+  // routes/devices/core.ts, so services/deviceDeletion.ts (and every purge
+  // worker over it) imported a route file for data. They now live in a
+  // services module that must stay a leaf over the schema: a route import here
+  // would re-pin deviceBulkPurge, quickSupportReaper and removedDevicePurge.
+  it('the device cascade tables module reaches no routes/ file', () => {
+    const file = path.join(SRC_ROOT, 'services/deviceCascadeTables.ts');
+    expect(fs.existsSync(file), 'services/deviceCascadeTables.ts must exist').toBe(true);
+    const closure = importClosure(file, { followDynamic: true });
+    const routeFiles = [...closure].filter((f) => f.startsWith(ROUTES_DIR)).map(relPath);
+    expect(routeFiles).toEqual([]);
+    expect(socketLocalOffenders(closure)).toEqual([]);
+  });
+
   // Ratchet (#4142): the check above only forbids a `global` entry from being
   // dirty. This is the reverse: a `socket-owner` entry whose closure is clean
   // is pinned by habit, not by need, and keeps its worker-split capacity on the
@@ -383,6 +397,26 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
         reason:
           "#9050: sweeps disk-local AI transcript files under the api container's CLAUDE_CONFIG_DIR; " +
           'must run where the files are written',
+      },
+      // #4142 W3 process-local check: both purge jobs unlink the purged
+      // device's screenshot files (services/screenshotFiles.ts). SCREENSHOT_DIR
+      // defaults to /tmp/breeze-screenshots, and the api and worker containers
+      // each mount their own /tmp tmpfs (deploy/docker-compose.prod.yml), so a
+      // worker-side unlink would miss the api container's file. Drop both once
+      // screenshots move to shared storage. Known gap: the global
+      // helperScreenshotRetentionWorker sweeps the same directory from the
+      // worker container (docs/deploy/worker-split.md).
+      {
+        name: 'deviceBulkPurge',
+        reason:
+          "unlinks purged devices' screenshot files under SCREENSHOT_DIR, which defaults to the api " +
+          "container's own /tmp tmpfs (not shared with the worker container)",
+      },
+      {
+        name: 'removedDevicePurge',
+        reason:
+          "unlinks purged devices' screenshot files under SCREENSHOT_DIR, which defaults to the api " +
+          "container's own /tmp tmpfs (not shared with the worker container)",
       },
     ];
 

@@ -121,6 +121,7 @@ suite automation sources apps/api/src/jobs/flowRunQueue.ts
 suite automation sources apps/api/src/jobs/flowRunner.ts
 suite automation sources apps/api/src/jobs/flowScheduleTick.ts
 suite automation sources apps/api/src/routes/devices/core.ts
+suite automation sources apps/api/src/services/deviceCascadeTables.ts
 suite automation sources apps/api/src/routes/devices/moveOrg.ts
 suite automation sources apps/api/src/services/aiTools.ts
 suite automation sources apps/api/src/services/aiToolsScripts.ts
