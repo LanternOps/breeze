@@ -32,7 +32,7 @@ vi.mock('../assetReachabilityLoader', () => ({
   }),
 }));
 
-import { networkSiteHealth } from './networkVisibilityReadModel';
+import { networkOverview, networkSiteHealth } from './networkVisibilityReadModel';
 
 const NOW = new Date('2026-09-17T12:00:00.000Z');
 const ORG = '22222222-2222-2222-2222-222222222222';
@@ -179,5 +179,69 @@ describe('networkSiteHealth (CPEV-W2)', () => {
       expect.objectContaining({ siteId: SITE_A, activeAlertCount: 3, highestAlertSeverity: 'critical' }),
       expect.objectContaining({ siteId: SITE_B, activeAlertCount: 0, highestAlertSeverity: null }),
     ]);
+  });
+});
+
+describe('networkOverview (#11686)', () => {
+  beforeEach(() => {
+    state.byTable = {};
+    state.queried = [];
+    state.reachability = new Map();
+    state.reachabilityError = null;
+  });
+
+  it('counts only non-dismissed assets, matching the asset list and sites', async () => {
+    state.byTable.discovered_assets = [
+      asset('a1', SITE_A, 'Alpha'),
+      asset('a2', SITE_A, 'Alpha'),
+      asset('d1', SITE_A, 'Alpha', 'dismissed'),
+      asset('d2', SITE_B, 'Beta', 'dismissed'),
+    ];
+    state.reachability = new Map<string, unknown>([
+      ['a1', reach('responding', 'ok')],
+      ['a2', reach('not_responding')],
+      ['d1', reach('responding', 'ok')],
+      ['d2', reach('not_responding')],
+    ]);
+    const loader = await import('../assetReachabilityLoader');
+    vi.mocked(loader.loadReachability).mockClear();
+
+    const result = await networkOverview(ORG, NOW);
+
+    expect(result).toMatchObject({
+      dataStatus: 'ok',
+      totalAssets: 2,
+      onlineAssets: 1,
+      offlineAssets: 1,
+      snmpDevicesPolling: 1,
+    });
+    expect(vi.mocked(loader.loadReachability).mock.calls[0]?.[0]).toEqual(['a1', 'a2']);
+  });
+
+  it('excludes down monitors linked to a dismissed asset, keeps the rest', async () => {
+    state.byTable.discovered_assets = [
+      asset('a1', SITE_A, 'Alpha'),
+      asset('d1', SITE_A, 'Alpha', 'dismissed'),
+    ];
+    state.reachability = new Map<string, unknown>([['a1', reach('responding')]]);
+    state.byTable.network_monitor_results = [
+      offlineResult('m-dismissed', null, 'd1'),
+      offlineResult('m-visible', null, 'a1'),
+      offlineResult('m-unlinked', SITE_A, null),
+      offlineResult('m-dismissed-with-site', SITE_A, 'd1'),
+    ];
+
+    const result = await networkOverview(ORG, NOW);
+
+    expect(result.monitorsDown).toBe(2);
+  });
+
+  it('answers no_data when every asset is dismissed and there are no monitor results', async () => {
+    state.byTable.discovered_assets = [asset('d1', SITE_A, 'Alpha', 'dismissed')];
+
+    expect(await networkOverview(ORG, NOW)).toMatchObject({
+      dataStatus: 'no_data',
+      totalAssets: null,
+    });
   });
 });
