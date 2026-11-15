@@ -251,6 +251,9 @@ const defaultDeps: EntraCaptureDeps = {
   afterRunCommitted,
 };
 
+/** The real I/O, for an integration test that wraps one seam (the 40001 race). */
+export const __testOnly = { defaultDeps };
+
 type InTransaction =
   | { kind: 'done'; result: EntraCaptureResult }
   | { kind: 'evaluated'; recorded: RecordedRun };

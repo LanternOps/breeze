@@ -38,6 +38,7 @@ import { entraIssuer } from '../../services/portalUserIdentities';
 import { entraChainKey } from '../../services/portalDirectory/chain';
 import {
   M365_SYNC_MAX_ITEMS_USERS_DEFAULT,
+  __testOnly as captureTestOnly,
   captureEntraDirectoryRun,
   type EntraCaptureContext,
 } from '../../services/portalDirectory/entraCapture';
@@ -307,6 +308,37 @@ describe('captureEntraDirectoryRun on real Postgres', () => {
     expect(await captureEntraDirectoryRun(ctx)).toEqual({ recorded: false, reason: 'no_identities' });
     expect(await runsOf(f.orgId)).toEqual([]);
   });
+
+  // W08a review follow-up: a sign-in touching an identity row after the
+  // capture's REPEATABLE READ snapshot makes the observation UPDATE fail with
+  // 40001. The capture re-runs once (fence re-read) and records the snapshot.
+  it('a concurrent identity update (40001) is retried and the snapshot is recorded once', async () => {
+    const f = await seedOrg(2);
+    const ctx = await completeRun(f, { generation: 1, now: new Date(), listed: everyone(f) });
+    const real = captureTestOnly.defaultDeps;
+    let raced = 0;
+    const result = await captureEntraDirectoryRun(ctx, {
+      ...real,
+      async readDirectoryRows(orgId, subjects) {
+        const rows = await real.readDirectoryRows(orgId, subjects);
+        if (raced === 0) {
+          raced += 1;
+          // Committed on another connection after this transaction's snapshot.
+          await admin().update(portalUserIdentities)
+            .set({ lastUsedAt: new Date() })
+            .where(eq(portalUserIdentities.id, f.accounts[0]!.identityId));
+        }
+        return rows;
+      },
+    });
+    expect(raced).toBe(1);
+    expect(result).toMatchObject({ recorded: true, outcome: 'evaluated' });
+    const runs = await runsOf(f.orgId);
+    expect(runs).toHaveLength(1);
+    for (const a of f.accounts) {
+      expect(await readIdentity(a.identityId)).toMatchObject({ directoryLastRunId: runs[0]!.id });
+    }
+  }, 30_000);
 
   it('lock timeout records nothing and does not throw', async () => {
     const f = await seedOrg(1);
