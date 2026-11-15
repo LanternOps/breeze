@@ -73,6 +73,8 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('../db', () => ({
   db: h.chain,
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+  withDbTransactionIfHeld: (fn: () => Promise<unknown>) => fn(),
   runOutsideDbContext: async (fn: () => unknown) => {
     h.outside.depth += 1;
     try { return await fn(); } finally { h.outside.depth -= 1; }

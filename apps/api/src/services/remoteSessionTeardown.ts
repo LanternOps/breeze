@@ -8,6 +8,7 @@ import { captureException } from './sentry';
 import type { RemoteSessionEndReason } from '@breeze/shared';
 import {
   buildStopDesktopCommand,
+  runTerminalWrite,
   terminalIntentSet,
   terminalSessionReturning,
   toTerminalSessionRow,
@@ -386,7 +387,7 @@ async function disconnectAndTeardown(
   try {
     disconnected = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
-        const rows = await db
+        const rows = await runTerminalWrite(() => db
           .update(remoteSessions)
           .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason }, 'pending'))
           .where(
@@ -395,7 +396,7 @@ async function disconnectAndTeardown(
               inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
             )
           )
-          .returning(terminalSessionReturning());
+          .returning(terminalSessionReturning()));
         return rows.map(toTerminalSessionRow);
       })
     );

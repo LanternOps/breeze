@@ -75,6 +75,8 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('../db', () => ({
   withSystemDbAccessContext: withSystemDbAccessContextMock,
+  // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+  withDbTransactionIfHeld: (fn: () => Promise<unknown>) => fn(),
   db: {
     update: vi.fn(() => ({
       set: vi.fn((values: Record<string, unknown>) => {

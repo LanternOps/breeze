@@ -76,6 +76,7 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 import {
   buildStopDesktopCommand,
+  runTerminalWrite,
   terminalIntentSet,
   terminalSessionReturning,
   toTerminalSessionRow,
@@ -206,11 +207,11 @@ sessionRoutes.delete(
     // One UPDATE both rechecks and claims the exact stale rows. Splitting this
     // into SELECT ids + UPDATE ids lets a session become fresh/active or be
     // replaced after validation but before teardown.
-    const result = (await db
+    const result = (await runTerminalWrite(() => db
       .update(remoteSessions)
       .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'never_connected' }, 'pending'))
       .where(and(...conditions))
-      .returning(terminalSessionReturning())).map(toTerminalSessionRow);
+      .returning(terminalSessionReturning()))).map(toTerminalSessionRow);
 
     // Revoke viewer tokens AND signal each agent to stop the peer-to-peer
     // WebRTC stream / terminal PTY. Marking the row + revoking the token alone
@@ -316,7 +317,7 @@ sessionRoutes.post(
       // Savepoint around the UPDATE so a failed statement rolls back and the
       // request transaction survives the catch below (#11203). Teardown runs
       // outside it in its own system context.
-      const revoked = await withDbTransaction(async () => {
+      const revoked = await withDbTransaction(() => runTerminalWrite(async () => {
         const staleUpdate = db
           .update(remoteSessions)
           .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'superseded' }, 'pending'))
@@ -342,7 +343,7 @@ sessionRoutes.post(
         }
         await staleUpdate;
         return null;
-      });
+      }));
       // Revoke viewer tokens AND push the agent stop so a stale row for a
       // still-live desktop/terminal doesn't leave the stream running.
       if (revoked) await teardownDisconnectedSessions(revoked);
@@ -1414,7 +1415,7 @@ sessionRoutes.post(
     // UPDATE also bumps the generation every start bumps, records it as the
     // terminal one, and moves the phase to 'pending' until the agent's stop
     // result lands. The live-status guard is the contract's own.
-    const [updated] = await db
+    const [updated] = await runTerminalWrite(() => db
       .update(remoteSessions)
       .set(terminalIntentSet({
         status: 'disconnected',
@@ -1428,7 +1429,7 @@ sessionRoutes.post(
         eq(remoteSessions.id, sessionId),
         inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
       ))
-      .returning();
+      .returning());
 
     if (!updated) {
       // Lost the race (or the row went away). Re-read to answer with the same

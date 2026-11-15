@@ -29,6 +29,7 @@ import {
   teardownDisconnectedTunnels,
 } from '../../remoteSessionTeardown';
 import {
+  runTerminalWrite,
   terminalIntentSet,
   terminalSessionReturning,
   toTerminalSessionRow,
@@ -43,11 +44,11 @@ export const sessionsHandler: BoundaryHandler = {
     const d = ctx.deviceId;
 
     const remote = (
-      await db
+      await runTerminalWrite(() => db
         .update(remoteSessions)
         .set(terminalIntentSet({ status: 'disconnected', endedAt: ctx.at, endReason: 'device_removed' }, 'confirmed'))
         .where(and(eq(remoteSessions.deviceId, d), inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])))
-        .returning(terminalSessionReturning())
+        .returning(terminalSessionReturning()))
     ).map(toTerminalSessionRow);
 
     const tunnels = await db

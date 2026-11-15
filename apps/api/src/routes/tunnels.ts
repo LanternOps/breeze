@@ -53,6 +53,7 @@ import { isTunnelOriginEnabledForOrg } from '../services/tunnelOriginOptIn';
 import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
 import { teardownDisconnectedSessions } from '../services/remoteSessionTeardown';
 import {
+  runTerminalWrite,
   terminalIntentSet,
   terminalSessionReturning,
   toTerminalSessionRow,
@@ -1729,7 +1730,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
       // so each straggler's stop can name its terminal generation. The stop
       // itself is dispatched AFTER this context commits — the relay's ack wait
       // must not pin this connection idle-in-transaction.
-      const swept = (await db
+      const swept = (await runTerminalWrite(() => db
         .update(remoteSessions)
         .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'superseded' }, 'pending'))
         .where(
@@ -1739,7 +1740,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
         )
-        .returning(terminalSessionReturning())).map(toTerminalSessionRow);
+        .returning(terminalSessionReturning()))).map(toTerminalSessionRow);
       const created = await createRemoteSession('remote', {
         id: transitionSessionId,
         deviceId: bound.deviceId,

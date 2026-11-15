@@ -21,14 +21,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 
 import './setup';
 import { getTestDb } from './setup';
 import { setupTestEnvironment } from './db-utils';
 import { createAccessToken } from '../../services/jwt';
-import type { RemoteSessionEndReason } from '@breeze/shared';
+import { REMOTE_SESSION_END_REASONS, type RemoteSessionEndReason } from '@breeze/shared';
 
 const { dispatchCommandToAgentMock, sendCommandToAgentMock } = vi.hoisted(() => ({
   dispatchCommandToAgentMock: vi.fn(async (_agentId: string, _command: unknown) => ({ status: 'sent' as const, via: 'local' as const })),
@@ -366,6 +366,18 @@ function stopCommandsFor(sessionId: string): Array<{ id: string; payload: Record
     .map(([, command]) => command as { id: string; type: string; payload: Record<string, unknown> })
     .filter((command) => command.type === 'stop_desktop' && command.payload.sessionId === sessionId)
     .map(({ id, payload }) => ({ id, payload }));
+}
+
+/** The #10190 CHECK, before 2027-01-24-220000 widened it. */
+const PRE_11839_END_REASON_CHECK = `end_reason IS NULL OR end_reason IN ('ended_by_user')`;
+const CURRENT_END_REASON_CHECK = `end_reason IS NULL OR end_reason IN (${REMOTE_SESSION_END_REASONS.map((r) => `'${r}'`).join(', ')})`;
+
+/** Swap remote_sessions_end_reason_check (as the owning role, outside any test transaction). */
+async function useEndReasonCheck(predicate: string): Promise<void> {
+  await getTestDb().execute(sql.raw(
+    `ALTER TABLE remote_sessions DROP CONSTRAINT IF EXISTS remote_sessions_end_reason_check, `
+      + `ADD CONSTRAINT remote_sessions_end_reason_check CHECK (${predicate})`,
+  ));
 }
 
 const TEN_MINUTES_AGO = () => new Date(Date.now() - 11 * 60 * 1000);
@@ -785,6 +797,25 @@ describe('one terminal-intent contract for every terminal writer', () => {
       await writerCase.run(fx).catch(() => undefined);
 
       expect(await readFence(fx.sessionId)).toEqual(settled);
+    });
+
+    it('#11839: still ends the session on a database without the widened end-reason CHECK (reason left NULL)', async () => {
+      // New API code against a database that has not run
+      // 2027-01-24-220000-remote-sessions-end-reason-widen.sql (a self-hoster
+      // with auto-migrate off): only 'ended_by_user' passes the old CHECK.
+      // Labelling must never stop the session from ending.
+      const fx = await seed(writerCase.seedStatus, writerCase.seed);
+      await useEndReasonCheck(PRE_11839_END_REASON_CHECK);
+      try {
+        await writerCase.run(fx);
+        const after = await readFence(fx.sessionId);
+        expect(after.status).toBe(writerCase.expectStatus);
+        expect(after.endedAt).not.toBeNull();
+        expect(after.terminalGeneration).toBe(SEED_GENERATION + 1n);
+        expect(after.endReason).toBeNull();
+      } finally {
+        await useEndReasonCheck(CURRENT_END_REASON_CHECK);
+      }
     });
   });
 

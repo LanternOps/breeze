@@ -19,6 +19,8 @@ const { returningMock, whereMock, setMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  // No context held in a unit run: the savepoint helper just runs fn.
+  withDbTransactionIfHeld: <T>(fn: () => Promise<T>) => fn(),
   db: {
     update: vi.fn(() => ({
       set: setMock.mockImplementation(() => ({
@@ -44,12 +46,23 @@ vi.mock('../db/schema', () => ({
 }));
 
 import {
+  __resetEndReasonFallbackWarningForTest,
   buildStopDesktopCommand,
   commitDesktopTerminalIntent,
   confirmDesktopTerminalIntent,
   parseDesktopStopCommandId,
   terminalIntentSet,
 } from './remoteDesktopTerminalIntent';
+
+/** A postgres.js CHECK violation as Drizzle wraps it (SQLSTATE on the cause). */
+function checkViolation(constraint: string): Error {
+  return Object.assign(new Error('Failed query: update "remote_sessions" ...'), {
+    cause: Object.assign(new Error(`new row for relation "remote_sessions" violates check constraint "${constraint}"`), {
+      code: '23514',
+      constraint_name: constraint,
+    }),
+  });
+}
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
@@ -172,6 +185,58 @@ describe('commitDesktopTerminalIntent', () => {
       phase: 'pending',
     });
     expect(result).toMatchObject({ ok: true, terminalGeneration: 9007199254740993n });
+  });
+});
+
+describe('#11839: an unmigrated end-reason CHECK never stops a session ending', () => {
+  const ROW = { id: SESSION_ID, type: 'desktop', deviceId: DEVICE_ID, terminalGeneration: 5n, terminationPhase: 'pending', status: 'disconnected' };
+  const WRITE = { status: 'disconnected' as const, endedAt: new Date(), endReason: 'operator_ended' as const };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetEndReasonFallbackWarningForTest();
+  });
+
+  it('retries once without the end reason when remote_sessions_end_reason_check refuses it, and warns once per process', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    returningMock
+      .mockRejectedValueOnce(checkViolation('remote_sessions_end_reason_check'))
+      .mockResolvedValueOnce([ROW])
+      .mockRejectedValueOnce(checkViolation('remote_sessions_end_reason_check'))
+      .mockResolvedValueOnce([ROW]);
+
+    const first = await commitDesktopTerminalIntent({ sessionId: SESSION_ID, write: WRITE, phase: 'pending' });
+    expect(first).toMatchObject({ ok: true, terminalGeneration: 5n });
+    expect(setMock).toHaveBeenCalledTimes(2);
+    const labelled = setMock.mock.calls[0]![0] as Record<string, unknown>;
+    const retried = setMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(sqlText(labelled.endReason)).toContain('COALESCE');
+    // The retry still ends the session (same terminal columns and fence), it
+    // just leaves end_reason alone.
+    expect('endReason' in retried).toBe(false);
+    expect(retried.status).toBe('disconnected');
+    expect(sqlText(retried.terminalGeneration)).toContain('+ 1');
+
+    await commitDesktopTerminalIntent({ sessionId: SESSION_ID, write: WRITE, phase: 'pending' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('2027-01-24-220000-remote-sessions-end-reason-widen.sql');
+    // The ALS flag does not leak: a set clause built afterwards carries the reason.
+    expect(terminalIntentSet(WRITE, 'pending').endReason).toBeDefined();
+    warn.mockRestore();
+  });
+
+  it('does not retry a CHECK violation on any other constraint', async () => {
+    returningMock.mockRejectedValueOnce(checkViolation('remote_sessions_termination_fence_check'));
+    await expect(commitDesktopTerminalIntent({ sessionId: SESSION_ID, write: WRITE, phase: 'pending' }))
+      .rejects.toThrow(/Failed query/);
+    expect(setMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a failure that is not a CHECK violation', async () => {
+    returningMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { cause: { code: '40P01' } }));
+    await expect(commitDesktopTerminalIntent({ sessionId: SESSION_ID, write: WRITE, phase: 'pending' }))
+      .rejects.toThrow('boom');
+    expect(setMock).toHaveBeenCalledTimes(1);
   });
 });
 

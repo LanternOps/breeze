@@ -174,6 +174,26 @@ describe('SessionHistory end reason (#10190)', () => {
     expect(screen.getByText('host-future').closest('tr')!.textContent).not.toMatch(/endReasons|some_future_reason/);
   });
 
+  // #11839 review: the desktop viewer app closes the peer without calling End,
+  // so peer_disconnected is the commonest ending for a normal viewer hang-up.
+  // Its label must not blame the device.
+  it('labels peer_disconnected neutrally, not as a device drop', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: [
+          { ...base, id: 's-peer', endReason: 'peer_disconnected', device: { hostname: 'host-peer', osType: 'windows' } }
+        ],
+        pagination: { page: 1, limit: 100, total: 1 }
+      })
+    );
+    render(<SessionHistory />);
+
+    expect(await screen.findByText('host-peer')).toBeTruthy();
+    const row = screen.getByText('host-peer').closest('tr')!.textContent;
+    expect(row).toMatch(/Connection closed/);
+    expect(row).not.toMatch(/Device|dropped/i);
+  });
+
   it('normalizeRemoteSession maps errorMessage, defaulting to null', () => {
     const api = { ...base, id: 'x', type: 'desktop' as const, status: 'disconnected' as const };
     expect(normalizeRemoteSession({ ...api, errorMessage: 'revoked:user_inactive' }).errorMessage).toBe('revoked:user_inactive');

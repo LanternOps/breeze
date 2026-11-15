@@ -68,6 +68,8 @@ vi.mock('../db', () => {
     db: mockDb,
     runOutsideDbContext: vi.fn((fn: () => any) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+    // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+    withDbTransactionIfHeld: vi.fn(async (fn: () => any) => fn()),
   };
 });
 

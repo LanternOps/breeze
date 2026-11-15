@@ -18,7 +18,12 @@
 export const REMOTE_SESSION_END_REASONS = [
   /** The person at the keyboard ended it from the on-screen indicator (#10190). */
   'ended_by_user',
-  /** A technician ended it (End button / viewer hang-up, POST /remote/sessions/:id/end). */
+  /**
+   * A technician ended it through POST /remote/sessions/:id/end (the web
+   * terminal's Disconnect, the web launcher dismissing a session the viewer
+   * never opened). The desktop viewer app does not call End today, so its
+   * hang-up is NOT recorded here (see `peer_disconnected`).
+   */
   'operator_ended',
   /** The viewer's socket closed normally (desktop WebSocket fallback, terminal). */
   'viewer_closed',
@@ -28,10 +33,13 @@ export const REMOTE_SESSION_END_REASONS = [
    */
   'connection_lost',
   /**
-   * The device reported that the WebRTC peer dropped (after the reconnect
-   * grace, when the viewer was reconnecting). Device-side idle, lifetime and
-   * lease stops also land here today: the agent reports them with no reason.
-   * A later `ended_by_user` report replaces it (desktopUserEnd.ts).
+   * The device reported that the WebRTC peer closed (after the reconnect
+   * grace, when the viewer was reconnecting). This does NOT mean the device
+   * dropped: the desktop viewer app ends a session by closing the peer without
+   * calling End, so a normal viewer hang-up lands here, as do a real network
+   * drop and the device's own idle, lifetime and lease stops (the agent
+   * reports them with no reason). Hence the neutral label ("Connection
+   * closed"). A later `ended_by_user` report replaces it (desktopUserEnd.ts).
    */
   'peer_disconnected',
   /** The session was still pending/connecting when a stale sweep or the reaper timed it out. */

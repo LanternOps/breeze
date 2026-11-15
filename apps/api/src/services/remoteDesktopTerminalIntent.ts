@@ -36,9 +36,11 @@
  * Generations never pass through a JavaScript `Number`: `bigint` in storage
  * and here, canonical decimal string on the wire (`formatDesktopGeneration`).
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { remoteSessions } from '../db/schema';
+import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import { formatDesktopGeneration } from './remoteDesktopStartIntent';
 import { isRemoteSessionEndReason, type RemoteSessionEndReason } from '@breeze/shared';
 
@@ -92,7 +94,8 @@ export function terminalIntentSet<W extends TerminalIntentWrite>(
   write: W,
   phase: TerminalPhaseSource,
 ): Omit<W, 'endReason'> & {
-  endReason: SQL;
+  /** Absent only on the `runTerminalWrite` retry against an unmigrated CHECK. */
+  endReason?: SQL;
   desktopStartGeneration: SQL;
   terminalGeneration: SQL;
   terminationPhase: SQL | 'confirmed';
@@ -112,15 +115,81 @@ export function terminalIntentSet<W extends TerminalIntentWrite>(
   // Both expressions read the OLD column value inside one UPDATE, so they land
   // on the same number: the generation this terminal decision committed at.
   const bumped = sql`${remoteSessions.desktopStartGeneration} + 1`;
+  const { endReason, ...columns } = write;
   return {
-    ...write,
-    endReason: sql`COALESCE(${remoteSessions.endReason}, ${write.endReason})`,
+    ...columns,
+    // On the unmigrated-CHECK retry the column is left untouched (see
+    // runTerminalWrite): the session ends, and the reason stays unrecorded.
+    ...(endReasonOmitted.getStore()
+      ? {}
+      : { endReason: sql`COALESCE(${remoteSessions.endReason}, ${endReason})` }),
     desktopStartGeneration: bumped,
     terminalGeneration: bumped,
     terminationPhase: phase === 'confirmed'
       ? 'confirmed'
       : sql`CASE WHEN ${remoteSessions.type} = 'desktop' THEN 'pending' ELSE 'confirmed' END`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Labelling must never stop a session ending (#11839)
+// ---------------------------------------------------------------------------
+
+/** The CHECK that 2027-01-24-220000-remote-sessions-end-reason-widen.sql widens. */
+export const END_REASON_CHECK_CONSTRAINT = 'remote_sessions_end_reason_check';
+const END_REASON_MIGRATION = '2027-01-24-220000-remote-sessions-end-reason-widen.sql';
+
+/** Set only while `runTerminalWrite` retries a write without its end reason. */
+const endReasonOmitted = new AsyncLocalStorage<true>();
+let warnedEndReasonCheckOutdated = false;
+
+/** A terminal write refused by the end-reason CHECK, matched by constraint name. */
+export function isEndReasonCheckViolation(err: unknown): boolean {
+  return pgErrorCode(err) === '23514' && pgErrorConstraint(err) === END_REASON_CHECK_CONSTRAINT;
+}
+
+/**
+ * Run ONE terminal write (an UPDATE whose set clause is `terminalIntentSet`)
+ * so that recording WHY a session ended can never stop it ending.
+ *
+ * New API code can run against a database whose `remote_sessions_end_reason_check`
+ * still allows only 'ended_by_user' (a self-hosted install with auto-migrate
+ * off that has not applied the widening migration). There every labelled
+ * terminal write fails with 23514 and the session would stay live. So the
+ * first attempt runs in a savepoint when a DB context is held (a caught query
+ * failure would otherwise abort the held transaction and resurface at commit),
+ * and a 23514 on exactly that constraint re-runs `write` once with the end
+ * reason left out of the set clause. Any other failure, including a 23514 on a
+ * different constraint, propagates unchanged.
+ *
+ * `write` must build its set clause with `terminalIntentSet` INSIDE the
+ * callback, so the retry's set clause is rebuilt without the reason. The
+ * static scan in `remoteDesktopTerminalIntent.writers.test.ts` requires every
+ * `terminalIntentSet(` call to sit inside a `runTerminalWrite(` call.
+ *
+ * Holds a savepoint, so the `withDbTransaction` rules apply to callers: do not
+ * start it beside sibling statements in a `Promise.all`.
+ */
+export async function runTerminalWrite<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await withDbTransactionIfHeld(write);
+  } catch (err) {
+    if (!isEndReasonCheckViolation(err)) throw err;
+    if (!warnedEndReasonCheckOutdated) {
+      warnedEndReasonCheckOutdated = true;
+      console.warn(
+        `[remoteDesktopTerminalIntent] ${END_REASON_CHECK_CONSTRAINT} rejected a session end reason: `
+          + `the database has not applied migration ${END_REASON_MIGRATION}. Sessions still end, `
+          + 'but why they ended is not recorded until it is applied.',
+      );
+    }
+    return endReasonOmitted.run(true, write);
+  }
+}
+
+/** Test seam: re-arm the once-per-process warning. */
+export function __resetEndReasonFallbackWarningForTest(): void {
+  warnedEndReasonCheckOutdated = false;
 }
 
 /**
@@ -212,7 +281,7 @@ export interface CommitDesktopTerminalIntentInput {
 export async function commitDesktopTerminalIntent(
   input: CommitDesktopTerminalIntentInput,
 ): Promise<CommitDesktopTerminalIntentResult> {
-  const [updated] = await db
+  const [updated] = await runTerminalWrite(() => db
     .update(remoteSessions)
     .set(terminalIntentSet(input.write, input.phase))
     .where(and(
@@ -220,7 +289,7 @@ export async function commitDesktopTerminalIntent(
       inArray(remoteSessions.status, [...LIVE_STATUSES]),
       ...(input.where ?? []),
     ))
-    .returning(terminalSessionReturning());
+    .returning(terminalSessionReturning()));
 
   if (!updated) return { ok: false, reason: 'not_live' };
   const row = toTerminalSessionRow(updated);
