@@ -110,10 +110,11 @@ func (v *VaultManager) SyncSnapshot(snapshotID string) (*VaultSyncResult, error)
 //  4. Only when every object is in the vault, upload the manifest.
 //
 // Any object that cannot be copied fails the sync and the manifest is not
-// uploaded, so the vault never presents a snapshot it cannot restore. Objects
-// copied before the failure are kept: a later sync skips them, and the next
-// retention that drops the snapshot prefix they sit under removes any that
-// no kept snapshot references.
+// uploaded, so the vault never presents a snapshot it cannot restore. The
+// objects this run copied are then deleted again: no manifest would ever
+// reference them, so retention would never reclaim them. Deleting them is
+// safe because vaultMu is held and they were absent before this run, so no
+// complete vault snapshot references them.
 func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapshotID string) (*VaultSyncResult, error) {
 	if primary == nil {
 		return nil, errors.New("primary provider is required")
@@ -161,6 +162,7 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 	// prefix the objects fall under.
 	vaultSet := v.vaultObjectsUnder(objects)
 	var errs []error
+	var copied []string
 	for _, file := range objects {
 		if _, exists := vaultSet[file]; exists {
 			continue
@@ -168,15 +170,19 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 		if err := v.copyFromPrimary(primary, file); err != nil {
 			errs = append(errs, err)
 			slog.Warn("vault sync: object not copied", "snapshotId", snapshotID, "key", file, "error", err.Error())
+			continue
 		}
+		copied = append(copied, file)
 	}
 	if len(errs) > 0 {
+		v.removeCopied(snapshotID, copied)
 		return nil, fmt.Errorf("vault sync failed: %d of %d objects of snapshot %s could not be copied, so the vault does not hold this snapshot: %w",
 			len(errs), len(objects), snapshotID, errors.Join(errs...))
 	}
 
 	// 4. Every object is in the vault: the manifest makes the snapshot visible.
 	if err := v.vault.Upload(manifestTmpPath, manifestKey); err != nil {
+		v.removeCopied(snapshotID, copied)
 		return nil, fmt.Errorf("vault sync failed at manifest upload: %w", err)
 	}
 
@@ -196,8 +202,21 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 	return syncResult, nil
 }
 
+// removeCopied deletes the objects a failed sync copied (see
+// syncSnapshotFrom). Best effort: a leftover is only unreclaimed space.
+func (v *VaultManager) removeCopied(snapshotID string, copied []string) {
+	for _, key := range copied {
+		if err := v.vault.Delete(key); err != nil && !errors.Is(err, providers.ErrObjectNotFound) {
+			slog.Warn("vault sync: could not remove an object copied by the failed sync",
+				"snapshotId", snapshotID, "key", key, "error", err.Error())
+		}
+	}
+}
+
 // copyFromPrimary copies one object from primary into the vault at the same
-// key, through a temporary file.
+// key, through a temporary file. LocalProvider.Upload writes through a
+// temporary file renamed over the key, so an interrupted copy never leaves a
+// truncated object that a later sync would take as present.
 func (v *VaultManager) copyFromPrimary(primary providers.BackupProvider, key string) error {
 	tmpFile, err := os.CreateTemp("", "vault-sync-*")
 	if err != nil {
@@ -259,11 +278,18 @@ func (v *VaultManager) vaultSizeOf(keys []string) (int64, bool) {
 			var err error
 			sizes, err = sizer.ObjectSizes(path.Join(snapshotRootDir, id))
 			if err != nil {
+				slog.Warn("vault sync: could not read object sizes, reporting no size",
+					"snapshotId", id, "error", err.Error())
 				return 0, false
 			}
 			byPrefix[id] = sizes
 		}
-		total += sizes[key]
+		size, found := sizes[key]
+		if !found {
+			slog.Warn("vault sync: a copied object is missing from the size listing, reporting no size", "key", key)
+			return 0, false
+		}
+		total += size
 	}
 	return total, true
 }
@@ -378,7 +404,9 @@ func (v *VaultManager) SyncAfterBackupFrom(primary providers.BackupProvider, sna
 		return result, err
 	}
 	if err := v.enforceRetention(); err != nil {
-		return result, err
+		// The command still fails (as a retention error always has), but the
+		// message says the snapshot itself reached the vault.
+		return result, fmt.Errorf("snapshot %s was copied to the vault, but %w", snapshotID, err)
 	}
 	return result, nil
 }

@@ -77,6 +77,13 @@ func readManifestReferences(localPath, snapshotID string) (*vaultManifest, error
 //     keeps '\' as an ordinary filename byte (a Linux name can hold one), and
 //     on Linux and macOS it is one; on Windows the local store would walk it.
 func validateManifestObjectKey(key string) (objectkey.Parsed, error) {
+	return validateObjectKeyForSeparator(key, filepath.Separator)
+}
+
+// validateObjectKeyForSeparator is validateManifestObjectKey for a local
+// store whose path separator is sep, so tests exercise the Windows rule on
+// every platform.
+func validateObjectKeyForSeparator(key string, sep rune) (objectkey.Parsed, error) {
 	parsed, ok := objectkey.Parse(key)
 	if !ok {
 		return objectkey.Parsed{}, fmt.Errorf("%q is not an object key inside the snapshots namespace", key)
@@ -84,9 +91,9 @@ func validateManifestObjectKey(key string) (objectkey.Parsed, error) {
 	if parsed.Rest == snapshotManifestKey {
 		return objectkey.Parsed{}, fmt.Errorf("%q names a snapshot manifest, not a file object", key)
 	}
-	if filepath.Separator != '/' {
+	if sep != '/' {
 		for _, seg := range strings.Split(parsed.Rest, "/") {
-			for _, part := range strings.Split(seg, string(filepath.Separator)) {
+			for _, part := range strings.Split(seg, string(sep)) {
 				if part == ".." {
 					return objectkey.Parsed{}, fmt.Errorf("%q walks out of its directory on this platform", key)
 				}
