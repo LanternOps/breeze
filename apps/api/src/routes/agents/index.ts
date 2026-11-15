@@ -5,6 +5,7 @@ import { enrollmentRoutes } from './enrollment';
 import { isolationVerifyRoutes } from './isolationVerify';
 import { heartbeatRoutes } from './heartbeat';
 import { uninstallIntentRoutes } from './uninstallIntent';
+import { attestationRoutes } from './attestation';
 import { commandsRoutes } from './commands';
 import { pamObservationRoutes } from './pamObservations';
 import { pamReconciliationRoutes } from './pamReconciliation';
@@ -92,6 +93,7 @@ agentRoutes.route('/', enrollmentRoutes);
 // Mount all `:id/*` routes
 agentRoutes.route('/', heartbeatRoutes);
 agentRoutes.route('/', uninstallIntentRoutes);
+agentRoutes.route('/', attestationRoutes);
 agentRoutes.route('/', commandsRoutes);
 agentRoutes.route('/', pamObservationRoutes);
 agentRoutes.route('/', pamReconciliationRoutes);

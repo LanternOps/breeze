@@ -1085,6 +1085,10 @@ export const updateHardwareSchema = z.object({
   biosVersion: z.string().optional(),
   gpuModel: z.string().optional(),
   systemUuid: systemUuidField,
+  // #8318 T1 (§12.1): false when the machine has no TPM or TBS is unavailable.
+  // Tolerant like systemUuid: anything but a boolean is dropped, never a 400.
+  // The EK baseline itself is never part of this report (attestation route only).
+  tpmAvailable: z.unknown().optional().transform((v) => (typeof v === 'boolean' ? v : undefined)),
   // #5351: kept RAW here and validated separately with
   // agentMemoryInventorySchema by the route, so an invalid memory block is
   // logged and ignored instead of 400-ing the whole hardware report.

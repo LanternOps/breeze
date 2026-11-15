@@ -304,6 +304,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/topologyAdjacency.ts': { exempt: 'agent_transport' },
   'agents/unifiTelemetry.ts': { exempt: 'agent_transport' },
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },
+  'agents/attestation.ts': { exempt: 'agent_transport' },
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
   'agents/workloads.ts': { exempt: 'agent_transport' },
   // #9075 W2b: the client's unauthenticated signing link (token-bearer, like quotesPublic.ts).
@@ -532,6 +533,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/software.ts': { tools: ['get_device_software'] }, // W12 (#6782)
   'devices/softwareActions.ts': { tools: ['manage_device_software'] }, // W12 (#6782): update / uninstall
   'devices/stats.ts': { tools: ['get_fleet_device_stats'] },
+  'devices/tpmCoverage.ts': { exempt: 'internal_plumbing', note: 'Fleet share with a recorded TPM EK baseline (#8318 T1), a number for the reattach readiness UI; no device data the model needs.' },
   'devices/attentionCounts.ts': { exempt: 'internal_plumbing', note: 'Per-page alert/ticket count batch for the devices list UI (#9038); the same counts reach the model through manage_alerts and the ticket tools.' },
   'devices/tabCounts.ts': { exempt: 'internal_plumbing' },
   'devices/warranty.ts': { tools: ['manage_device_warranty'] }, // W13 (#6783)

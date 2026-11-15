@@ -1210,6 +1210,31 @@ flagged by the #2764 collision path can be reattached from the banner.
 **Review gate.** `MakeCredential` (KDFa, RSA-OAEP with label `IDENTITY`, AES-CFB, HMAC) gets
 Go-generated test vectors and an **independent review before merge** (#8318).
 
+**Decided in wave T1 (the API part), where this section was open:**
+- **The wire.** The challenge takes the EK's and the AK's `TPMT_PUBLIC` (base64) and answers
+  `credentialBlob` and `encryptedSecret`: the buffers of `TPM2B_ID_OBJECT` and
+  `TPM2B_ENCRYPTED_SECRET` without their size, as `TPM2_ActivateCredential` takes them. The secret
+  is 32 random bytes; the seed is 16 (the EK's AES-128 key size, as go-tpm's `credactivation`).
+- **The EK is checked against the RSA-2048 default template**: attributes `0x000300b2`, the
+  `PolicySecret(TPM_RH_ENDORSEMENT)` policy, AES-128-CFB, a null scheme. The AK must be SHA-256
+  named, restricted, sign, fixedTPM, fixedParent and sensitiveDataOrigin, and not decrypt. The EK
+  certificate is not sent: TOFU needs none.
+- **The baseline is the SHA-256 of the EK's DER SubjectPublicKeyInfo**, hex. It names the key, not
+  its TPM encoding.
+- **The challenge** lives in Redis, single use (`GETDEL`, consumed by a wrong answer too), bound to
+  the device and agent that asked, with the secret kept as its SHA-256 and compared in constant
+  time. A device may ask for 6 an hour. Both routes are main-agent only and closed to a parked
+  device until T2.
+- **A different EK on the same row** (a board swap, an fTPM reset) replaces the baseline. A first
+  baseline and a change are audited on the device (`device.tpm_baseline.recorded`, `.changed`); a
+  refresh is not.
+- **`tpm_available`** is a third column, reported by the hardware report (a non-boolean is dropped,
+  never a 400). It tells "no TPM" from "not attested yet" for the metric.
+- **Generic reads** never return the EK hash (`DEVICE_HARDWARE_READ_COLUMNS`): device detail, the
+  hardware route and the AI device tool read every other column.
+- **The coverage metric** is `GET /devices/tpm-coverage[?orgId=]`: `{ devices, attested, noTpm,
+  notAttested }` over the caller's device-list scope, decommissioned and parked devices left out.
+
 ## 13. Decisions confirmed in review
 
 The maintainer confirmed all eleven on 2026-10-15
