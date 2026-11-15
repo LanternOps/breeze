@@ -3786,6 +3786,7 @@
     "deleteTitle": "Sil \"{{name}}\"",
     "empty": "Henüz kayıtlı görünüm yok. Bir filtre oluşturun ve ardından bunu görünüm olarak kaydedin.",
     "manageAll": "Tüm görünümleri yönet",
+    "ownerOrgHint": "Görünümler tek bir kuruluşa aittir. Bu görünümün hangi kuruluşa ait olacağını seçin.",
     "saveCurrent": "Geçerli olanı görünüm olarak kaydet…",
     "saveCurrentTitle": "Geçerli filtreyi görünüm olarak kaydet",
     "setDefaultTitle": "Varsayılan görünüm olarak ayarla",

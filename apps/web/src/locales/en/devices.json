@@ -3806,6 +3806,7 @@
     "deleteTitle": "Delete \"{{name}}\"",
     "empty": "No saved views yet. Build a filter, then save it as a view.",
     "manageAll": "Manage all views",
+    "ownerOrgHint": "Views belong to one organization. Choose which one owns this view.",
     "saveCurrent": "Save current as view…",
     "saveCurrentTitle": "Save the current filter as a view",
     "setDefaultTitle": "Set as default view",

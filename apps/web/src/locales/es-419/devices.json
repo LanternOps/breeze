@@ -3786,6 +3786,7 @@
     "deleteTitle": "Eliminar \"{{name}}\"",
     "empty": "Aún no hay vistas guardadas. Cree un filtro y luego guárdelo como una vista.",
     "manageAll": "Administrar todas las vistas",
+    "ownerOrgHint": "Las vistas pertenecen a una sola organización. Elige cuál será la propietaria de esta vista.",
     "saveCurrent": "Guardar actual como vista…",
     "saveCurrentTitle": "Guardar el filtro actual como una vista",
     "setDefaultTitle": "Establecer como vista predeterminada",

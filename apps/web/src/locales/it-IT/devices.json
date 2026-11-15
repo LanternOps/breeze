@@ -3786,6 +3786,7 @@
     "deleteTitle": "Elimina \"{{name}}\"",
     "empty": "Non ci sono ancora viste salvate. Crea un filtro, quindi salvalo come vista.",
     "manageAll": "Gestisci tutte le viste",
+    "ownerOrgHint": "Le viste appartengono a una sola organizzazione. Scegli quella a cui appartiene questa vista.",
     "saveCurrent": "Salva filtro corrente come vista...",
     "saveCurrentTitle": "Salva il filtro corrente come vista",
     "setDefaultTitle": "Imposta come vista predefinita",
