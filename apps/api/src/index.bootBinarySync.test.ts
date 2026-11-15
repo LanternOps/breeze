@@ -41,4 +41,15 @@ describe('boot-time binary sync (#6098)', () => {
 
     expect(indexSource).toMatch(/stopDeferredBinarySyncRetry\(\);\s*stopGithubSyncRetry\(\);/);
   });
+
+  // #11741: the deferred startup writes (db/deferUntilWritable) are cleared on
+  // shutdown in both process roles, like the binary-sync retries above.
+  it('clears deferred startup writes on shutdown in the api and worker processes', () => {
+    for (const file of ['./index.ts', './worker.ts']) {
+      const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+      const shutdownIdx = source.indexOf('stopReadOnlySessionRecovery();');
+      expect(shutdownIdx, file).toBeGreaterThan(-1);
+      expect(source.slice(shutdownIdx, shutdownIdx + 400), file).toMatch(/stopDeferredWrites\(\);/);
+    }
+  });
 });

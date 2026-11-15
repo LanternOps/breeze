@@ -294,6 +294,7 @@ import {
   startReadOnlySessionRecovery,
   stopReadOnlySessionRecovery,
 } from './db/readOnlySessionRecovery';
+import { stopDeferredWrites } from './db/deferUntilWritable';
 import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuardWithExemptions } from './middleware/partnerGuard';
@@ -1518,6 +1519,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   stopDbPoolHealthMonitor();
   stopWedgedBackendMonitor();
   stopReadOnlySessionRecovery();
+  // #11741: deferred startup writes (CIS catalog seed, patch-settings repair)
+  // must not retry against a pool that is draining.
+  stopDeferredWrites();
   stopRedisMemoryMonitor();
   // #11731: a deferred binary registration must not start against a pool
   // that is draining. Nor must a network retry of the boot sync (#11641).
