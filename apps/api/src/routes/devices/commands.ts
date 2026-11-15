@@ -869,38 +869,47 @@ commandsRoutes.post(
     const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-    // Site denial must win over device-state denials — see bulk-generic
-    // for rationale.
-    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-    if (device.status === 'decommissioned') {
-      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
-    }
+    // Persist under the caller scope, then release the transaction before
+    // claiming or pushing the command to the agent.
+    const outcome = await withAuthDbAccessContext(auth, async () => {
+      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      if (!device) {
+        return c.json({ error: 'Device not found' }, 404);
+      }
+      // Site denial must win over device-state denials — see bulk-generic
+      // for rationale.
+      if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      if (device.status === 'decommissioned') {
+        return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+      }
 
-    try {
-      await assertDeviceExecuteAllowed(deviceId, COMMAND_SET_AUTO_UPDATE, auth.user.id);
-    } catch (error) {
-      if (!(error instanceof TrustDeniedError)) throw error;
-      return c.json(trustDenyBody({
-        allow: false,
-        code: error.code,
-        capability: 'device_execute',
-        reason: error.reason,
-      }, false), 403);
-    }
+      try {
+        await assertDeviceExecuteAllowed(deviceId, COMMAND_SET_AUTO_UPDATE, auth.user.id);
+      } catch (error) {
+        if (!(error instanceof TrustDeniedError)) throw error;
+        return c.json(trustDenyBody({
+          allow: false,
+          code: error.code,
+          capability: 'device_execute',
+          reason: error.reason,
+        }, false), 403);
+      }
 
-    // #5128: through the one enqueue seam (see the single-command route).
-    const res = await dispatchDeviceCommand({
-      deviceId,
-      type: COMMAND_SET_AUTO_UPDATE,
-      payload: { enabled: data.enabled },
-      userId: auth.user.id,
+      // #5128: through the one enqueue seam (see the single-command route).
+      const res = await dispatchDeviceCommand({
+        deviceId,
+        type: COMMAND_SET_AUTO_UPDATE,
+        payload: { enabled: data.enabled },
+        userId: auth.user.id,
+        deferDelivery: true,
+      });
+      return { res, orgId: device.orgId };
     });
+    if (outcome instanceof Response) return outcome;
+
+    const res = outcome.res.ok && outcome.res.deliver ? await outcome.res.deliver() : outcome.res;
     if (!res.ok) {
       if (res.code === 'device_decommissioned') {
         return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
@@ -921,7 +930,7 @@ commandsRoutes.post(
     const command = res.command;
 
     writeRouteAudit(c, {
-      orgId: device.orgId,
+      orgId: outcome.orgId,
       action: 'device.auto_update.set',
       resourceType: 'device_command',
       resourceId: command.id,
