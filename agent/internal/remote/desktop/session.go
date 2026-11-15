@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -316,9 +317,13 @@ func (m *SessionManager) notifyActivity() {
 
 // NewSessionManager creates a new session manager.
 // Eagerly loads OpenH264 in the background so the DLL is ready before
-// the first desktop session (avoids download timeout during IPC).
+// the first desktop session (avoids download timeout during IPC). Skipped under
+// go test: the preload downloads and dlopens the real library into the test
+// process, and with cgo that crashes later threads once the YARA engine runs.
 func NewSessionManager() *SessionManager {
-	go PreloadOpenH264()
+	if !testing.Testing() {
+		go PreloadOpenH264()
+	}
 	return &SessionManager{
 		sessions: make(map[string]*Session),
 		config:   DefaultConfig(),
