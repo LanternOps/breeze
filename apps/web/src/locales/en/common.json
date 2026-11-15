@@ -2470,6 +2470,7 @@
           "invalidTimeRange": "Start time must be before end time.",
           "searchFailed": "Failed to search logs",
           "saveFailed": "Failed to save query",
+          "savedQueriesFailed": "Could not load saved queries.",
           "noRowsExport": "No rows to export."
         },
         "savePrompt": "Name this saved query:",
@@ -2489,10 +2490,14 @@
         },
         "searchFleetLogs": "Search Fleet Logs",
         "saveQuery": "Save Query",
+        "savedQueries": "Saved queries",
+        "customSearch": "Custom search",
+        "usingSavedFilters": "This search uses the stored filters.",
         "exportCsv": "Export CSV",
         "resultsTitle": "Search Results",
         "loading": "Loading...",
         "resultsCount": "{{shown}} shown of {{total}} total",
+        "resultsCountWithoutTotal": "{{shown}} shown",
         "table": {
           "timestamp": "Timestamp",
           "level": "Level",
@@ -2502,6 +2507,7 @@
         "unknownSite": "Unknown site",
         "empty": "No logs matched the current filters.",
         "pageCount": "Page {{page}} of {{totalPages}}",
+        "currentPage": "Page {{page}}",
         "previous": "Previous"
       }
     },

@@ -2470,6 +2470,7 @@
           "invalidTimeRange": "L’heure de début doit être avant la fin de l’heure.",
           "searchFailed": "Impossible de rechercher dans les journaux",
           "saveFailed": "Impossible d’enregistrer la requête",
+          "savedQueriesFailed": "Impossible de charger les requêtes enregistrées.",
           "noRowsExport": "Pas de lignes à exporter."
         },
         "savePrompt": "Nomme cette requête enregistrée :",
@@ -2489,10 +2490,14 @@
         },
         "searchFleetLogs": "Rechercher dans les journaux du parc",
         "saveQuery": "Enregistrer la requête",
+        "usingSavedFilters": "Cette recherche utilise les filtres enregistrés.",
+        "customSearch": "Recherche personnalisée",
+        "savedQueries": "Requêtes enregistrées",
         "exportCsv": "Exportation CSV",
         "resultsTitle": "Résultats de recherche",
         "loading": "Chargement...",
         "resultsCount": "{{shown}} montré de {{total}} total",
+        "resultsCountWithoutTotal": "{{shown}} affichés",
         "table": {
           "timestamp": "Horodatage",
           "level": "Niveau",
@@ -2502,6 +2507,7 @@
         "unknownSite": "Site inconnu",
         "empty": "Aucun journal ne correspondait aux filtres actuels.",
         "pageCount": "Page {{page}} de {{totalPages}}",
+        "currentPage": "Page {{page}}",
         "previous": "Précédent"
       }
     },

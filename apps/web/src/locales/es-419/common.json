@@ -2470,6 +2470,7 @@
           "invalidTimeRange": "La hora de inicio debe ser anterior a la hora de finalización.",
           "searchFailed": "No se pudieron buscar registros",
           "saveFailed": "No se pudo guardar la consulta",
+          "savedQueriesFailed": "No se pudieron cargar las consultas guardadas.",
           "noRowsExport": "No hay filas para exportar."
         },
         "savePrompt": "Nombre esta consulta guardada:",
@@ -2489,10 +2490,14 @@
         },
         "searchFleetLogs": "Buscar registros de flota",
         "saveQuery": "Guardar consulta",
+        "usingSavedFilters": "Esta búsqueda utiliza los filtros guardados.",
+        "customSearch": "Búsqueda personalizada",
+        "savedQueries": "Consultas guardadas",
         "exportCsv": "Exportar CSV",
         "resultsTitle": "Resultados de la búsqueda",
         "loading": "Cargando...",
         "resultsCount": "{{shown}} mostrado del total de {{total}}",
+        "resultsCountWithoutTotal": "{{shown}} mostrados",
         "table": {
           "timestamp": "Marca de tiempo",
           "level": "Nivel",
@@ -2502,6 +2507,7 @@
         "unknownSite": "Sitio desconocido",
         "empty": "Ningún registro coincidió con los filtros actuales.",
         "pageCount": "Página {{page}} de {{totalPages}}",
+        "currentPage": "Página {{page}}",
         "previous": "Anterior"
       }
     },

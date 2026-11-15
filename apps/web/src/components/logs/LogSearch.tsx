@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Download, Save, Search } from 'lucide-react';
 
@@ -44,6 +44,8 @@ type SearchResponse = {
   nextCursor?: string | null;
 };
 
+type SavedQuery = { id: string; name: string };
+
 const LEVELS: EventLogRow['log']['level'][] = ['info', 'warning', 'error', 'critical'];
 
 function toDatetimeLocalInput(date: Date): string {
@@ -58,7 +60,14 @@ export default function LogSearch() {
   const [source, setSource] = useState('');
   const [selectedLevels, setSelectedLevels] = useState<Array<EventLogRow['log']['level']>>([]);
   const [limit, setLimit] = useState(100);
+  const [pageSize, setPageSize] = useState(100);
   const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([]);
+  const [savedQueryId, setSavedQueryId] = useState('');
+  const [savedQueriesError, setSavedQueriesError] = useState(false);
+  const [savedQueriesVersion, setSavedQueriesVersion] = useState(0);
+  const searchRequest = useRef<AbortController | null>(null);
 
   const [startTime, setStartTime] = useState(() => toDatetimeLocalInput(new Date(Date.now() - (24 * 60 * 60 * 1000))));
   const [endTime, setEndTime] = useState(() => toDatetimeLocalInput(new Date()));
@@ -67,10 +76,10 @@ export default function LogSearch() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<EventLogRow[]>([]);
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState<number | null>(0);
 
-  const currentPage = Math.floor(offset / limit) + 1;
-  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const currentPage = Math.floor(offset / pageSize) + 1;
+  const totalPages = total === null ? null : Math.max(1, Math.ceil(total / pageSize));
 
   const canSearch = useMemo(() => {
     const start = new Date(startTime);
@@ -78,17 +87,45 @@ export default function LogSearch() {
     return !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && start <= end;
   }, [startTime, endTime]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetchWithAuth('/logs/queries', { signal: controller.signal });
+        if (!response.ok) throw new Error();
+        const { data }: { data?: SavedQuery[] } = await response.json();
+        if (controller.signal.aborted) return;
+        setSavedQueries(Array.isArray(data) ? data : []);
+        setSavedQueriesError(false);
+      } catch {
+        if (!controller.signal.aborted) setSavedQueriesError(true);
+      }
+    })();
+    return () => controller.abort();
+  }, [savedQueriesVersion]);
+
   const fetchLogs = useCallback(async (nextOffset = 0) => {
-    if (!canSearch) {
+    searchRequest.current?.abort();
+    if (nextOffset === 0) {
+      setResults([]);
+      setTotal(0);
+      setOffset(0);
+      setHasMore(false);
+    }
+    if (!savedQueryId && !canSearch) {
+      setLoading(false);
       setError(stableT('longTail.logs.LogSearch.errors.invalidTimeRange'));
       return;
     }
 
+    const controller = new AbortController();
+    searchRequest.current = controller;
     setLoading(true);
     setError(null);
 
     try {
-      const payload = {
+      // The saved query can contain scope and filter fields this form does not expose.
+      const payload = savedQueryId ? { savedQueryId, offset: nextOffset } : {
         query: query.trim() || undefined,
         source: source.trim() || undefined,
         level: selectedLevels.length > 0 ? selectedLevels : undefined,
@@ -106,6 +143,7 @@ export default function LogSearch() {
       const response = await fetchWithAuth('/logs/search', {
         method: 'POST',
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -114,18 +152,25 @@ export default function LogSearch() {
       }
 
       const data: SearchResponse = await response.json();
+      if (controller.signal.aborted) return;
+      const responseLimit = data.limit > 0 ? data.limit : limit;
       setResults(Array.isArray(data.results) ? data.results : []);
-      setTotal(Number(data.total ?? 0));
+      setTotal(data.total ?? null);
+      setPageSize(responseLimit);
       setOffset(nextOffset);
+      setHasMore(data.hasMore ?? (data.total !== null && nextOffset + responseLimit < data.total));
     } catch (err) {
-      setError(err instanceof Error ? err.message : stableT('longTail.logs.LogSearch.errors.searchFailed'));
+      if (!controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : stableT('longTail.logs.LogSearch.errors.searchFailed'));
+      }
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
-  }, [canSearch, query, source, selectedLevels, startTime, endTime, limit, stableT]);
+  }, [savedQueryId, canSearch, query, source, selectedLevels, startTime, endTime, limit, stableT]);
 
   useEffect(() => {
-    fetchLogs(0);
+    void fetchLogs(0);
+    return () => searchRequest.current?.abort();
   }, [fetchLogs]);
 
   const toggleLevel = (level: EventLogRow['log']['level']) => {
@@ -168,6 +213,7 @@ export default function LogSearch() {
         const body = await response.json().catch(() => ({}));
         throw new Error(typeof body.error === 'string' ? body.error : t('longTail.logs.LogSearch.errors.saveFailed'));
       }
+      setSavedQueriesVersion((version) => version + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('longTail.logs.LogSearch.errors.saveFailed'));
     } finally {
@@ -225,7 +271,27 @@ export default function LogSearch() {
         <p className="text-sm text-muted-foreground">{t('longTail.logs.LogSearch.description')}</p>
       </div>
       <div className="rounded-lg border bg-card p-4 shadow-xs">
-        <div className="grid gap-3 lg:grid-cols-6">
+        <div className="mb-3">
+          <label htmlFor="log-search-saved" className="mb-1 block text-xs font-medium text-muted-foreground">
+            {t('longTail.logs.LogSearch.savedQueries')}
+          </label>
+          <select
+            id="log-search-saved"
+            value={savedQueryId}
+            onChange={(event) => setSavedQueryId(event.target.value)}
+            className="w-full rounded-md border px-3 py-2 text-sm sm:w-auto"
+          >
+            <option value="">{t('longTail.logs.LogSearch.customSearch')}</option>
+            {savedQueries.map((saved) => <option key={saved.id} value={saved.id}>{saved.name}</option>)}
+          </select>
+          {savedQueriesError && (
+            <p className="mt-1 text-xs text-destructive" role="status">{t('longTail.logs.LogSearch.errors.savedQueriesFailed')}</p>
+          )}
+        </div>
+        {savedQueryId && (
+          <p className="text-sm text-muted-foreground">{t('longTail.logs.LogSearch.usingSavedFilters')}</p>
+        )}
+        <div className={savedQueryId ? 'hidden' : 'grid gap-3 lg:grid-cols-6'}>
           <div className="lg:col-span-2">
             <label htmlFor="log-search-query" className="mb-1 block text-xs font-medium text-muted-foreground">{t('common:actions.search')}</label>
             <input
@@ -285,7 +351,7 @@ export default function LogSearch() {
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className={savedQueryId ? 'hidden' : 'mt-3 flex flex-wrap gap-2'}>
           {LEVELS.map((level) => (
             <label key={level} className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
               <input
@@ -301,7 +367,7 @@ export default function LogSearch() {
         <div className="mt-4 flex flex-wrap gap-2">
           <button
             onClick={() => fetchLogs(0)}
-            disabled={loading || !canSearch}
+            disabled={loading || (!savedQueryId && !canSearch)}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
           >
             <Search className="h-4 w-4" />
@@ -310,7 +376,7 @@ export default function LogSearch() {
 
           <button
             onClick={saveQuery}
-            disabled={saving || loading || !canSearch}
+            disabled={Boolean(savedQueryId) || saving || loading || !canSearch}
             className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm disabled:opacity-50"
           >
             <Save className="h-4 w-4" />
@@ -340,7 +406,9 @@ export default function LogSearch() {
           <span className="text-xs text-muted-foreground">
             {loading
               ? t('longTail.logs.LogSearch.loading')
-              : t('longTail.logs.LogSearch.resultsCount', { shown: results.length, total })}
+              : total === null
+                ? t('longTail.logs.LogSearch.resultsCountWithoutTotal', { shown: results.length })
+                : t('longTail.logs.LogSearch.resultsCount', { shown: results.length, total })}
           </span>
         </div>
 
@@ -389,18 +457,20 @@ export default function LogSearch() {
         </div>
 
         <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
-          <span className="text-muted-foreground">{t('longTail.logs.LogSearch.pageCount', { page: currentPage, totalPages })}</span>
+          <span className="text-muted-foreground">{totalPages === null
+            ? t('longTail.logs.LogSearch.currentPage', { page: currentPage })
+            : t('longTail.logs.LogSearch.pageCount', { page: currentPage, totalPages })}</span>
           <div className="flex gap-2">
             <button
-              onClick={() => fetchLogs(Math.max(0, offset - limit))}
+              onClick={() => fetchLogs(Math.max(0, offset - pageSize))}
               disabled={loading || offset === 0}
               className="rounded-md border px-3 py-1.5 disabled:opacity-50"
             >
               {t('longTail.logs.LogSearch.previous')}
             </button>
             <button
-              onClick={() => fetchLogs(offset + limit)}
-              disabled={loading || (offset + limit) >= total}
+              onClick={() => fetchLogs(offset + pageSize)}
+              disabled={loading || !hasMore}
               className="rounded-md border px-3 py-1.5 disabled:opacity-50"
             >
               {t('common:actions.next')}
