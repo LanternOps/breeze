@@ -317,8 +317,10 @@ describe('captureEntraDirectoryRun on real Postgres', () => {
     const ctx = await completeRun(f, { generation: 1, now: new Date(), listed: everyone(f) });
     const real = captureTestOnly.defaultDeps;
     let raced = 0;
+    let attempts = 0;
     const result = await captureEntraDirectoryRun(ctx, {
       ...real,
+      transaction: (fn) => { attempts += 1; return real.transaction(fn); },
       async readDirectoryRows(orgId, subjects) {
         const rows = await real.readDirectoryRows(orgId, subjects);
         if (raced === 0) {
@@ -332,6 +334,7 @@ describe('captureEntraDirectoryRun on real Postgres', () => {
       },
     });
     expect(raced).toBe(1);
+    expect(attempts).toBe(2); // the first attempt really lost the race
     expect(result).toMatchObject({ recorded: true, outcome: 'evaluated' });
     const runs = await runsOf(f.orgId);
     expect(runs).toHaveLength(1);
