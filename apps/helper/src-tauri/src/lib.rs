@@ -1812,7 +1812,7 @@ fn chat_menu_label(summary: &crate::ipc::chat::TraySummary) -> Option<String> {
 }
 
 fn chat_tooltip(summary: &crate::ipc::chat::TraySummary) -> String {
-    let base = format!("Breeze Helper v{}", env!("CARGO_PKG_VERSION"));
+    let base = format!("Breeze Assist v{}", env!("CARGO_PKG_VERSION"));
     match summary.total_unread {
         0 => base,
         1 => format!("{base} - 1 unread chat message"),
@@ -2085,7 +2085,7 @@ pub fn run() {
             if let Some(tray) = app.tray_by_id("main") {
                 // Set tray tooltip with version
                 let _ = tray.set_tooltip(Some(&format!(
-                    "Breeze Helper v{}",
+                    "Breeze Assist v{}",
                     env!("CARGO_PKG_VERSION")
                 )));
 
