@@ -43,7 +43,16 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type RetentionAction = { kind: 'delete' } | { kind: 'scrub'; set: SQL };
+/**
+ * What an enforcing run does to an eligible row.
+ *
+ * `reportOnly` has no enforce path at all: the runner counts, whatever
+ * `knobs.enforce` says. A target ships this way when its predicate is still
+ * being evaluated against production counts and no `_ENFORCE` switch exists
+ * for it yet (#4342 W6.c). Giving it a delete path is a code change, reviewed
+ * on its own, not an env flip.
+ */
+export type RetentionAction = { kind: 'delete' } | { kind: 'scrub'; set: SQL } | { kind: 'reportOnly' };
 
 export interface RetentionTarget {
   /** A `RETENTION_JOB_NAMES` member. One per target: the gauges are `.set()` per name. */
@@ -103,7 +112,8 @@ export async function runRetentionTarget(
   const nowIso = now.toISOString();
   const where = target.where(cutoffIso, nowIso);
 
-  if (!enforce) {
+  const reportOnlyTarget = target.action.kind === 'reportOnly';
+  if (!enforce || reportOnlyTarget) {
     const { eligible, capped } = await countEligibleRows({
       table: target.table,
       where,
@@ -111,7 +121,9 @@ export async function runRetentionTarget(
       label: o.label,
     });
     const durationMs = Date.now() - startedAt;
-    const enableHint = o.enforceVar ? `set ${o.enforceVar}=true to delete` : 'set this job\'s _RETENTION_ENFORCE=true to delete';
+    const enableHint = reportOnlyTarget
+      ? 'report-only target: no enforce switch in this release'
+      : o.enforceVar ? `set ${o.enforceVar}=true to delete` : 'set this job\'s _RETENTION_ENFORCE=true to delete';
     console.log(
       `${o.logPrefix} REPORT-ONLY: ${eligible}${capped ? '+' : ''} ${target.table} rows eligible ` +
       `(window ${retentionDays} d); ${enableHint}`,
@@ -120,14 +132,15 @@ export async function runRetentionTarget(
     return { mode: 'report', table: target.table, retentionDays, eligible, eligibleCapped: capped, durationMs };
   }
 
+  const action = target.action;
   const batchArgs = { table: target.table, where, batchSize, maxBatches, label: o.label };
-  const result = target.action.kind === 'scrub'
-    ? await updateInCtidBatches({ ...batchArgs, set: target.action.set })
+  const result = action.kind === 'scrub'
+    ? await updateInCtidBatches({ ...batchArgs, set: action.set })
     : await pruneInCtidBatches(batchArgs);
   const durationMs = Date.now() - startedAt;
 
   console.log(
-    `${o.logPrefix} ${target.action.kind === 'scrub' ? 'Scrubbed' : 'Deleted'} ${result.deleted} ${target.table} rows ` +
+    `${o.logPrefix} ${action.kind === 'scrub' ? 'Scrubbed' : 'Deleted'} ${result.deleted} ${target.table} rows ` +
     `older than ${retentionDays} days (batches=${result.batches}) in ${durationMs}ms`,
   );
   warnOnRetentionBacklog(o.logPrefix, target.table, result);

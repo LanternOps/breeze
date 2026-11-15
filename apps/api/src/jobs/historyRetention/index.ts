@@ -1,5 +1,6 @@
 /**
- * History retention (#4342 W5): one daily worker, twelve report-first targets.
+ * History retention (#4342 W5, W6.c): one daily worker, twelve report-first
+ * targets plus ten report-only second-pass targets.
  *
  * Every target is REPORT-ONLY until its own `<NAME>_RETENTION_ENFORCE=true`
  * (see `retentionTarget.ts` for the report/enforce contract). The targets
@@ -10,6 +11,14 @@
  *   runHistory.ts           automation_runs, report_runs
  *   accessHistory.ts        user_notifications (read, all), remote_sessions, support_sessions, sessions
  *   networkChangeEvents.ts  network_change_events
+ *
+ * Then ten second-pass targets (#4342 W6.c), REPORT-ONLY BY CONSTRUCTION:
+ * their action is `reportOnly` and they have no `_ENFORCE` variable, so no
+ * env value or payload can make them delete (`HistoryReportOnlyEntry`):
+ *
+ *   sessionExpiry.ts        sso_sessions, c2c_consent_sessions, tunnel_sessions
+ *   operationRuns.ts        unifi_sync_runs, fleet_remediation_runs, ticket_import_runs, topology_diagnostic_runs
+ *   complianceEvents.ts     audit_baseline_results, peripheral_policy_delivery_events, ml_feedback_events
  *
  * They run one after another through `runRetentionTargets`, so a target that
  * throws is captured and marked incomplete on its own metric while the rest
@@ -33,10 +42,19 @@ import { jobSchedule } from '../scheduleRegistry';
 import { attachWorkerObservability } from '../workerObservability';
 import { AI_AGENT_RUN_TARGETS } from './aiAgentRuns';
 import { ACCESS_HISTORY_TARGETS } from './accessHistory';
+import { COMPLIANCE_EVENT_TARGETS } from './complianceEvents';
 import { NETWORK_CHANGE_EVENT_TARGETS } from './networkChangeEvents';
+import { OPERATION_RUN_TARGETS } from './operationRuns';
 import { PATCH_AND_POSTURE_TARGETS } from './patchAndPosture';
 import { RUN_HISTORY_TARGETS } from './runHistory';
-import { BATCH_SIZE, LOG_PREFIX, MAX_BATCHES, type HistoryRetentionEntry } from './shared';
+import { SESSION_EXPIRY_TARGETS } from './sessionExpiry';
+import {
+  BATCH_SIZE,
+  LOG_PREFIX,
+  MAX_BATCHES,
+  type HistoryReportOnlyEntry,
+  type HistoryRetentionEntry,
+} from './shared';
 
 const QUEUE_NAME = 'history-retention';
 
@@ -47,6 +65,13 @@ export const HISTORY_RETENTION_TARGETS: ReadonlyArray<HistoryRetentionEntry> = [
   ...RUN_HISTORY_TARGETS,
   ...ACCESS_HISTORY_TARGETS,
   ...NETWORK_CHANGE_EVENT_TARGETS,
+];
+
+/** Second-pass targets (#4342 W6.c), run after the twelve. They only count. */
+export const HISTORY_REPORT_ONLY_TARGETS: ReadonlyArray<HistoryReportOnlyEntry> = [
+  ...SESSION_EXPIRY_TARGETS,
+  ...OPERATION_RUN_TARGETS,
+  ...COMPLIANCE_EVENT_TARGETS,
 ];
 
 export interface HistoryRetentionJobData {
@@ -80,11 +105,19 @@ export async function runHistoryRetention(
   const batchSize = Math.max(1, job.batchSize ?? BATCH_SIZE);
   const maxBatches = Math.max(1, job.maxBatches ?? MAX_BATCHES);
   const results = await runRetentionTargets(
-    HISTORY_RETENTION_TARGETS.map((e) => ({
-      target: e.target,
-      knobs: { ...e.knobs, batchSize, maxBatches, enforce: e.knobs.enforce && !job.forceReport },
-      enforceVar: e.enforceVar,
-    })),
+    [
+      ...HISTORY_RETENTION_TARGETS.map((e) => ({
+        target: e.target,
+        knobs: { ...e.knobs, batchSize, maxBatches, enforce: e.knobs.enforce && !job.forceReport },
+        enforceVar: e.enforceVar,
+      })),
+      // No enforceVar: none exists. `reportOnly` already makes the runner count;
+      // `enforce: false` is stated too so the knobs never claim otherwise.
+      ...HISTORY_REPORT_ONLY_TARGETS.map((e) => ({
+        target: e.target,
+        knobs: { ...e.knobs, batchSize, maxBatches, enforce: false },
+      })),
+    ],
     { logPrefix: LOG_PREFIX, label: 'historyRetention' },
   );
 
@@ -133,7 +166,8 @@ export async function initializeHistoryRetention(): Promise<void> {
 
     const enforcing = HISTORY_RETENTION_TARGETS.filter((e) => e.knobs.enforce).map((e) => e.target.metricName);
     console.log(
-      `${LOG_PREFIX} Retention worker initialized (${enforcing.length === 0 ? 'all targets report-only' : `ENFORCING: ${enforcing.join(', ')}`})`,
+      `${LOG_PREFIX} Retention worker initialized (${enforcing.length === 0 ? 'all targets report-only' : `ENFORCING: ${enforcing.join(', ')}`}; ` +
+      `${HISTORY_REPORT_ONLY_TARGETS.length} second-pass targets report-only by construction)`,
     );
   } catch (error) {
     console.error(`${LOG_PREFIX} Failed to initialize:`, error);

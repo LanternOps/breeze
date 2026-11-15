@@ -11,7 +11,7 @@
  */
 
 import { parsePositiveIntEnv } from '../retentionBatch';
-import type { RetentionKnobs, RetentionTargetEntry } from '../retentionTarget';
+import type { RetentionKnobs, RetentionTarget, RetentionTargetEntry } from '../retentionTarget';
 
 export const LOG_PREFIX = '[HistoryRetention]';
 
@@ -28,4 +28,26 @@ export interface HistoryRetentionEntry extends RetentionTargetEntry {
 
 export function historyKnobs(retentionDays: number, enforce: boolean): RetentionKnobs {
   return { retentionDays, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES, enforce };
+}
+
+/**
+ * A second-pass target (#4342 W6.c): REPORT-ONLY BY CONSTRUCTION.
+ *
+ * Its action is `reportOnly`, so `runRetentionTarget` only ever counts it,
+ * and it has no `_ENFORCE` variable and no `enforceVar`: no env value or job
+ * payload can make it delete. Only its window (`daysVar`) is tunable, so the
+ * nightly count can be read at the window an operator is weighing. Giving one
+ * of these a delete path is a later, separately reviewed change (Part B).
+ */
+export interface HistoryReportOnlyEntry {
+  target: RetentionTarget & { action: { kind: 'reportOnly' } };
+  knobs: RetentionKnobs & { enforce: false };
+  /** The variable that sets this target's window. */
+  daysVar: string;
+  /** The window cap, for the unit tests and the docs. */
+  maxRetentionDays: number;
+}
+
+export function reportOnlyKnobs(retentionDays: number): RetentionKnobs & { enforce: false } {
+  return { retentionDays, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES, enforce: false };
 }

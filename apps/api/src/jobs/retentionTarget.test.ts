@@ -198,6 +198,27 @@ describe('runRetentionTarget', () => {
     expect(m.pruneInCtidBatches).not.toHaveBeenCalled();
   });
 
+  // #4342 W6.c: a target whose action is `reportOnly` has no enforce path at
+  // all. Even a caller that passes enforce: true only gets a count.
+  it('a reportOnly target only counts, even when enforce is true', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await runRetentionTarget(
+      target({ table: 'sso_sessions', action: { kind: 'reportOnly' } }),
+      knobs({ enforce: true }),
+      { ...opts, enforceVar: undefined },
+    );
+    expect(m.countEligibleRows).toHaveBeenCalledTimes(1);
+    expect(m.pruneInCtidBatches).not.toHaveBeenCalled();
+    expect(m.updateInCtidBatches).not.toHaveBeenCalled();
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('webhook_delivery_retention', { rowsEligible: 7 });
+    expect(result).toMatchObject({ mode: 'report', table: 'sso_sessions', eligible: 7 });
+    const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes('REPORT-ONLY'));
+    expect(line).toContain('7 sso_sessions rows eligible');
+    // No variable turns this target on, so the line must not point at one.
+    expect(line).not.toContain('_RETENTION_ENFORCE');
+    expect(line).toContain('no enforce switch');
+  });
+
   it('propagates a failing batch without recording a run', async () => {
     m.pruneInCtidBatches.mockRejectedValueOnce(new Error('statement timeout'));
 

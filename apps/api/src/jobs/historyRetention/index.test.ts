@@ -41,6 +41,20 @@ const EXPECTED = [
   ['network_change_events', 'network_change_event_retention'],
 ];
 
+/** #4342 W6.c: second-pass targets. Report-only by construction (no delete path, no flag). */
+const EXPECTED_REPORT_ONLY = [
+  ['sso_sessions', 'sso_session_retention'],
+  ['c2c_consent_sessions', 'c2c_consent_session_retention'],
+  ['tunnel_sessions', 'tunnel_session_retention'],
+  ['unifi_sync_runs', 'unifi_sync_run_retention'],
+  ['fleet_remediation_runs', 'fleet_remediation_run_retention'],
+  ['ticket_import_runs', 'ticket_import_run_retention'],
+  ['topology_diagnostic_runs', 'topology_diagnostic_run_retention'],
+  ['audit_baseline_results', 'audit_baseline_result_retention'],
+  ['peripheral_policy_delivery_events', 'peripheral_policy_delivery_event_retention'],
+  ['ml_feedback_events', 'ml_feedback_event_retention'],
+];
+
 describe('history retention worker (#4342 W5)', () => {
   beforeAll(async () => { await load(); }, 60_000);
 
@@ -61,20 +75,51 @@ describe('history retention worker (#4342 W5)', () => {
     await runHistoryRetention();
     expect(runTargetsMock).toHaveBeenCalledTimes(1);
     const [entries, opts] = runTargetsMock.mock.calls[0]!;
-    expect(entries.map((e: { target: { metricName: string } }) => e.target.metricName)).toEqual(EXPECTED.map(([, m]) => m));
+    // The twelve enforceable targets first, then the report-only ones, in one run
+    // (runRetentionTargets rejects a metric name shared across the two lists).
+    expect(entries.map((e: { target: { metricName: string } }) => e.target.metricName))
+      .toEqual([...EXPECTED, ...EXPECTED_REPORT_ONLY].map(([, m]) => m));
     expect(opts).toMatchObject({ logPrefix: '[HistoryRetention]', label: 'historyRetention' });
-    for (const e of entries) {
+    for (const e of entries.slice(0, EXPECTED.length)) {
       expect(e.knobs).toMatchObject({ batchSize: 1000, maxBatches: 100, enforce: false });
       expect(e.enforceVar).toMatch(/^[A-Z_]+_RETENTION_ENFORCE$/);
+    }
+  });
+
+  it('runs the ten second-pass targets report-only: no flag, no delete path, after the twelve', async () => {
+    const { HISTORY_REPORT_ONLY_TARGETS } = await load();
+    expect(HISTORY_REPORT_ONLY_TARGETS.map((e) => [e.target.table, e.target.metricName])).toEqual(EXPECTED_REPORT_ONLY);
+    for (const e of HISTORY_REPORT_ONLY_TARGETS) {
+      expect(e.target.action).toEqual({ kind: 'reportOnly' });
+      expect(e.knobs.enforce).toBe(false);
+      expect(e.daysVar).toMatch(/^[A-Z0-9_]+_RETENTION_DAYS$/);
+    }
+  });
+
+  it('a second-pass target stays report-only even when a payload and a stray env try to enable it', async () => {
+    vi.stubEnv('SSO_SESSION_RETENTION_ENFORCE', 'true');
+    vi.stubEnv('ML_FEEDBACK_EVENT_RETENTION_ENFORCE', 'true');
+    const { runHistoryRetention } = await load();
+    await runHistoryRetention({ enforce: true } as never);
+    const [entries] = runTargetsMock.mock.calls[0]!;
+    const reportOnly = entries.slice(EXPECTED.length);
+    expect(reportOnly).toHaveLength(EXPECTED_REPORT_ONLY.length);
+    for (const e of reportOnly) {
+      expect(e.knobs.enforce).toBe(false);
+      expect(e.target.action).toEqual({ kind: 'reportOnly' });
+      expect(e.enforceVar).toBeUndefined();
     }
   });
 
   it('a payload overrides batch shape only, never a window or a flag', async () => {
     const { runHistoryRetention, HISTORY_RETENTION_TARGETS } = await load();
     await runHistoryRetention({ batchSize: 7, maxBatches: 3, retentionDays: 1, enforce: true } as never);
+    const { HISTORY_REPORT_ONLY_TARGETS } = await load();
+    const all = [...HISTORY_RETENTION_TARGETS, ...HISTORY_REPORT_ONLY_TARGETS];
     const [entries] = runTargetsMock.mock.calls[0]!;
+    expect(entries).toHaveLength(all.length);
     entries.forEach((e: { knobs: { retentionDays: number; batchSize: number; maxBatches: number; enforce: boolean } }, i: number) => {
-      expect(e.knobs).toEqual({ ...HISTORY_RETENTION_TARGETS[i]!.knobs, batchSize: 7, maxBatches: 3, enforce: false });
+      expect(e.knobs).toEqual({ ...all[i]!.knobs, batchSize: 7, maxBatches: 3, enforce: false });
     });
   });
 
