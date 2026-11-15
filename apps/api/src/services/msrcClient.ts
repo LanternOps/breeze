@@ -50,10 +50,11 @@ type CvrfDocument = {
 
 export function severityFromCvss(score: number | null): string | null {
   if (score == null) return null;
-  if (score >= 9) return 'Critical';
-  if (score >= 7) return 'High';
-  if (score >= 4) return 'Medium';
-  if (score > 0) return 'Low';
+  // Lowercase: the API filter, summaries and web contract use lowercase (#11902).
+  if (score >= 9) return 'critical';
+  if (score >= 7) return 'high';
+  if (score >= 4) return 'medium';
+  if (score > 0) return 'low';
   return null;
 }
 
