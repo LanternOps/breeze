@@ -455,6 +455,16 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     expect(outcome.assessment.specialistRequests).toHaveLength(1);
   });
 
+  // #11513: the finalizer's code reaches the row, where the no-changes
+  // anchor (assessment.ts lastCleanAssessmentFinish) reads it.
+  it('a failed anomaly read finishes the run completed with error_code assessment_anomalies_unread', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    loadAssessmentContext.mockResolvedValue({ ...assessmentCtx(), anomaliesReadFailed: true });
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()?.to).toBe('completed');
+    expect(finalTransition()?.patch.errorCode).toBe('assessment_anomalies_unread');
+  });
+
   it('W07: dispatchSpecialistRequests runs after finalizeAssessment and before the run is finished', async () => {
     seedRows({ profile: 'assessment', grant: true });
     dispatchSpecialistRequests.mockImplementationOnce(async (...args: unknown[]) => {

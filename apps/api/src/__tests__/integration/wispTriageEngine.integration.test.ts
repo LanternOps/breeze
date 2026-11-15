@@ -732,13 +732,13 @@ describe('no-changes gate (#11423)', () => {
   it('a run that could not read the anomalies does not move the anchor: an anomaly announced before it still wakes the next tick', async () => {
     // A completed assessment 30 min ago, after a clean one 120 min ago; an
     // anomaly was announced between them (60 min ago).
-    async function withLaterRun(errorCode: string | null) {
+    async function withLaterRun(errorCode: string | null, status: 'completed' | 'awaiting_approval' = 'completed') {
       const f = await anomalyFixture(new Date(Date.now() - 121 * MIN));
       await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 60 * MIN) });
       const startedAt = new Date(Date.now() - 31 * MIN);
       await asSystem(() => db.insert(aiAgentRuns).values({
         agentId: f.agentId, orgId: f.t.orgA, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
-        policySnapshot: {} as never, profile: 'assessment', status: 'completed', costCents: 5, errorCode,
+        policySnapshot: {} as never, profile: 'assessment', status, costCents: 5, errorCode,
         queuedAt: startedAt, startedAt, finishedAt: new Date(startedAt.getTime() + 60_000),
         grantId: f.g.grantId, grantRevisionId: f.g.revisionId,
       } as never));
@@ -756,6 +756,10 @@ describe('no-changes gate (#11423)', () => {
     // The digest watermark still advances to the degraded run's start: the
     // anomalies are current state and are read again whatever the window.
     expect(await lastAssessmentWatermark(degraded.g.grantId, degraded.t.orgA)).toEqual(degraded.startedAt);
+
+    // The same for a run that also left a pending intent (awaiting_approval).
+    const pending = await withLaterRun('assessment_anomalies_unread', 'awaiting_approval');
+    expect(await pending.look()).toHaveProperty('runId');
   });
 
   it('an event reason runs even when nothing changed', async () => {

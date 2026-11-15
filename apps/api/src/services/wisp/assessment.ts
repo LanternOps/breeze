@@ -410,7 +410,8 @@ export type DigestChangeSource = 'alerts' | 'tickets' | 'incidents' | 'runs' | '
  * That run never saw the anomalies, so the anchor stays at the run before it,
  * and an anomaly announced or closed since then is still a change. Until a
  * run reads them, the failed run is itself a `runs` change for a grant that
- * may read runs, so the gate stays open: the same fail-open as a failed probe.
+ * may read runs, so the gate keeps running the model: it fails open, as a
+ * failed probe does.
  */
 async function lastCleanAssessmentFinish(grantId: string, orgId: string): Promise<Date | null> {
   const [row] = await sys(() => db
@@ -685,6 +686,10 @@ const NO_CHANGES_ANCHOR_EXCLUDED_ERROR_CODES = [PARTIALLY_APPLIED_ERROR_CODE, AS
  *     harmless: concerns upsert idempotently.
  *   - a run whose finalizer returned `assessment_partially_applied` (stored in
  *     `error_code`) does not advance it, so the dropped work is re-assessed.
+ *   - a run that returned ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE (#11513)
+ *     DOES advance it, on purpose: the anomalies are current state, read
+ *     again whatever the window. Only the no-changes anchor
+ *     (lastCleanAssessmentFinish) skips that run.
  */
 export async function lastAssessmentWatermark(grantId: string, orgId: string): Promise<Date | null> {
   const [row] = await sys(() => db
@@ -1000,7 +1005,7 @@ const DIGEST_ANOMALY_METRIC_NAME_LIMIT = 10;
  * outside it (CLAUDE.md: a catch around a query wraps the whole
  * transaction). It is a join over tables no other section reads, so a failure
  * there must not fail every assessment run. Like loadReadiness, a failure is
- * logged and sent to Sentry, and the section degrades to null. The prompt
+ * logged and sent to Sentry, and loadDigest renders the section as null. The prompt
  * then says the anomalies were not read, so it does not claim there are none
  * while the reason names an anomaly incident, and the run is flagged
  * (`anomaliesReadFailed`) so it does not anchor the no-changes gate (#11513).
