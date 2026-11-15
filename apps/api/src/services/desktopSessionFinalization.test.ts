@@ -103,6 +103,7 @@ vi.mock('../db', () => ({
 }));
 
 import {
+  desktopFinalizationEndReason,
   desktopSessionFinalizationInputSchema,
   finalizeDesktopSessionOnce,
   inspectDesktopFinalization,
@@ -296,6 +297,20 @@ describe('inspectDesktopFinalization', () => {
     await expect(inspectDesktopFinalization(input.sessionId)).resolves.toMatchObject({
       state: 'persisted',
       stopState: 'pending',
+    });
+  });
+});
+
+describe('desktopFinalizationEndReason (#11839)', () => {
+  it('maps every WebSocket-fallback close reason to the operator-facing end reason', () => {
+    const reasons = desktopSessionFinalizationInputSchema.shape.reason.options;
+    expect(Object.fromEntries(reasons.map((r) => [r, desktopFinalizationEndReason(r)]))).toEqual({
+      client_close: 'viewer_closed',
+      socket_error: 'connection_lost',
+      pong_timeout: 'connection_lost',
+      revoked: 'access_revoked',
+      setup_failed: 'start_failed',
+      orphan_recovery: 'connection_lost',
     });
   });
 });

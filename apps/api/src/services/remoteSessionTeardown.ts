@@ -5,6 +5,7 @@ import { revokeViewerSession } from './viewerTokenRevocation';
 import { dispatchCommandToAgent } from './agentCommandRelay';
 import { closeLocalTerminalSession, closeLocalTunnelSession } from './remoteSessionSocketLocal';
 import { captureException } from './sentry';
+import type { RemoteSessionEndReason } from '@breeze/shared';
 import {
   buildStopDesktopCommand,
   terminalIntentSet,
@@ -307,7 +308,10 @@ export const TEARDOWN_FAILED = -1;
 export async function terminateUserRemoteSessions(userId: string): Promise<number> {
   const remoteCount = await disconnectAndTeardown(
     eq(remoteSessions.userId, userId),
-    `user ${userId}`
+    `user ${userId}`,
+    // Every caller is an access change on the technician's account
+    // (password/MFA reset, deactivation, role or membership change).
+    'access_revoked',
   );
   const tunnelCount = await disconnectTunnelsAndTeardown(
     eq(tunnelSessions.userId, userId),
@@ -332,7 +336,8 @@ export async function terminateUserRemoteSessions(userId: string): Promise<numbe
 export async function terminateDeviceRemoteSessions(deviceId: string): Promise<number> {
   const remoteCount = await disconnectAndTeardown(
     eq(remoteSessions.deviceId, deviceId),
-    `device ${deviceId}`
+    `device ${deviceId}`,
+    'device_removed',
   );
   const tunnelCount = await disconnectTunnelsAndTeardown(
     eq(tunnelSessions.deviceId, deviceId),
@@ -373,7 +378,8 @@ async function disconnectTunnelsAndTeardown(scopePredicate: SQL, label: string):
  */
 async function disconnectAndTeardown(
   scopePredicate: SQL,
-  label: string
+  label: string,
+  endReason: RemoteSessionEndReason,
 ): Promise<number> {
   let disconnected: TerminalSessionRow[];
 
@@ -382,7 +388,7 @@ async function disconnectAndTeardown(
       withSystemDbAccessContext(async () => {
         const rows = await db
           .update(remoteSessions)
-          .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
+          .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason }, 'pending'))
           .where(
             and(
               scopePredicate,

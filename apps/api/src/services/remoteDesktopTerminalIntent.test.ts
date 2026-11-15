@@ -39,6 +39,7 @@ vi.mock('../db/schema', () => ({
     desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
     terminalGeneration: 'remoteSessions.terminalGeneration',
     terminationPhase: 'remoteSessions.terminationPhase',
+    endReason: 'remoteSessions.endReason',
   },
 }));
 
@@ -66,7 +67,7 @@ function sqlText(value: unknown): string {
 describe('terminalIntentSet', () => {
   it('bumps the shared generation, records it as terminal, and sets the phase — on top of the caller columns', () => {
     const endedAt = new Date('2026-09-12T00:00:00Z');
-    const set = terminalIntentSet({ status: 'disconnected', endedAt }, 'pending');
+    const set = terminalIntentSet({ status: 'disconnected', endedAt, endReason: 'operator_ended' }, 'pending');
 
     expect(set.status).toBe('disconnected');
     expect(set.endedAt).toBe(endedAt);
@@ -80,12 +81,27 @@ describe('terminalIntentSet', () => {
   });
 
   it('writes confirmed directly when the endpoint is the source of the terminal fact', () => {
-    const set = terminalIntentSet({ status: 'failed', endedAt: new Date() }, 'confirmed');
+    const set = terminalIntentSet({ status: 'failed', endedAt: new Date(), endReason: 'start_failed' }, 'confirmed');
     expect(set.terminationPhase).toBe('confirmed');
   });
 
+  it('#11839: records the end reason, keeping one already on the row (first reason wins)', () => {
+    const set = terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'never_connected' }, 'pending');
+    const text = sqlText(set.endReason);
+    // COALESCE(existing, new): an 'ended_by_user' recorded while the row was
+    // still live survives the terminal write that follows it.
+    expect(text).toMatch(/^COALESCE\(remoteSessions\.endReason, never_connected\)$/);
+  });
+
+  it('#11839: refuses an end reason outside the closed set (the CHECK would reject it at runtime)', () => {
+    expect(() => terminalIntentSet(
+      { status: 'disconnected', endedAt: new Date(), endReason: 'lease_expired' as never },
+      'pending',
+    )).toThrow(/end reason/i);
+  });
+
   it('refuses a non-terminal status: the contract is for terminal writers only', () => {
-    expect(() => terminalIntentSet({ status: 'active' as never, endedAt: new Date() }, 'pending')).toThrow(/terminal/i);
+    expect(() => terminalIntentSet({ status: 'active' as never, endedAt: new Date(), endReason: 'operator_ended' }, 'pending')).toThrow(/terminal/i);
   });
 });
 
@@ -130,7 +146,7 @@ describe('commitDesktopTerminalIntent', () => {
   it('commits through the shared set clause and returns the terminal generation as a bigint', async () => {
     const result = await commitDesktopTerminalIntent({
       sessionId: SESSION_ID,
-      write: { status: 'disconnected', endedAt: new Date() },
+      write: { status: 'disconnected', endedAt: new Date(), endReason: 'operator_ended' },
       phase: 'pending',
     });
     expect(result).toMatchObject({ ok: true, terminalGeneration: 5n, row: { id: SESSION_ID, type: 'desktop' } });
@@ -143,7 +159,7 @@ describe('commitDesktopTerminalIntent', () => {
     returningMock.mockResolvedValue([]);
     await expect(commitDesktopTerminalIntent({
       sessionId: SESSION_ID,
-      write: { status: 'disconnected', endedAt: new Date() },
+      write: { status: 'disconnected', endedAt: new Date(), endReason: 'operator_ended' },
       phase: 'pending',
     })).resolves.toEqual({ ok: false, reason: 'not_live' });
   });
@@ -152,7 +168,7 @@ describe('commitDesktopTerminalIntent', () => {
     returningMock.mockResolvedValue([{ id: SESSION_ID, type: 'desktop', deviceId: DEVICE_ID, terminalGeneration: '9007199254740993', terminationPhase: 'pending', status: 'disconnected' }]);
     const result = await commitDesktopTerminalIntent({
       sessionId: SESSION_ID,
-      write: { status: 'disconnected', endedAt: new Date() },
+      write: { status: 'disconnected', endedAt: new Date(), endReason: 'operator_ended' },
       phase: 'pending',
     });
     expect(result).toMatchObject({ ok: true, terminalGeneration: 9007199254740993n });

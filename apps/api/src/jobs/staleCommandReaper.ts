@@ -1445,6 +1445,7 @@ async function reapStaleRemoteSessions(): Promise<number> {
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: connection was never established',
+      endReason: 'never_connected',
     }, 'pending'))
     .where(
       and(
@@ -1461,6 +1462,7 @@ async function reapStaleRemoteSessions(): Promise<number> {
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: exceeded maximum session duration',
+      endReason: 'max_duration',
     }, 'pending'))
     .where(
       and(

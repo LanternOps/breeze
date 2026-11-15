@@ -703,7 +703,6 @@
       "disconnected": "Disconnessa",
       "failed": "Non riuscita",
       "pending": "In sospeso",
-      "endedByUser": "Terminata dall’utente",
       "teardownPending": "In chiusura (in attesa del dispositivo)"
     },
     "subtitle": "Registro di controllo degli accessi remoti",
@@ -715,7 +714,22 @@
       "terminal": "Terminale"
     },
     "viewDetails": "Visualizza dettagli",
-    "yesterdayAt": "Ieri {{time}}"
+    "yesterdayAt": "Ieri {{time}}",
+    "endReasons": {
+      "endedByUser": "Terminata dall’utente",
+      "operatorEnded": "Terminata da un tecnico",
+      "viewerClosed": "Visualizzatore chiuso",
+      "connectionLost": "Connessione al visualizzatore persa",
+      "peerDisconnected": "Connessione del dispositivo interrotta",
+      "neverConnected": "Mai connessa",
+      "superseded": "Sostituita da una sessione più recente",
+      "captureFailed": "Acquisizione dello schermo interrotta",
+      "startFailed": "Avvio non riuscito",
+      "consentDenied": "Consenso rifiutato",
+      "accessRevoked": "Accesso revocato",
+      "maxDuration": "Durata massima della sessione raggiunta",
+      "deviceRemoved": "Dispositivo rimosso o reinstallato"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Titolo dei dettagli",
@@ -732,7 +746,8 @@
       "started": "Avviata",
       "userId": "ID utente",
       "os": "Sistema operativo",
-      "email": "Email"
+      "email": "Email",
+      "error": "Errore"
     },
     "sections": {
       "recording": "Registrazione",
@@ -740,7 +755,6 @@
       "timeline": "Sequenza temporale"
     },
     "subtitle": "Visualizza e controlla le sessioni di accesso remoto",
-    "endedByUser": "Terminata dall’utente",
     "teardownPending": "In attesa della conferma del dispositivo",
     "title": "Cronologia sessioni",
     "viewDevice": "Visualizza dispositivo",

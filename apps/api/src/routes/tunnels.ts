@@ -1731,7 +1731,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
       // must not pin this connection idle-in-transaction.
       const swept = (await db
         .update(remoteSessions)
-        .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
+        .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'superseded' }, 'pending'))
         .where(
           and(
             eq(remoteSessions.deviceId, bound.deviceId),

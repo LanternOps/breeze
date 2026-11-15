@@ -45,7 +45,7 @@ export const sessionsHandler: BoundaryHandler = {
     const remote = (
       await db
         .update(remoteSessions)
-        .set(terminalIntentSet({ status: 'disconnected', endedAt: ctx.at }, 'confirmed'))
+        .set(terminalIntentSet({ status: 'disconnected', endedAt: ctx.at, endReason: 'device_removed' }, 'confirmed'))
         .where(and(eq(remoteSessions.deviceId, d), inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])))
         .returning(terminalSessionReturning())
     ).map(toTerminalSessionRow);

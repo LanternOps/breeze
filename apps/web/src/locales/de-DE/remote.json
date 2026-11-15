@@ -703,7 +703,6 @@
       "disconnected": "Nicht verbunden",
       "failed": "Fehlgeschlagen",
       "pending": "Ausstehend",
-      "endedByUser": "Vom Benutzer beendet",
       "teardownPending": "Wird beendet (Gerät bestätigt noch)"
     },
     "subtitle": "Überwachungsprotokoll für den Fernzugriff",
@@ -715,7 +714,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Details anzeigen",
-    "yesterdayAt": "Gestern {{time}}"
+    "yesterdayAt": "Gestern {{time}}",
+    "endReasons": {
+      "endedByUser": "Vom Benutzer beendet",
+      "operatorEnded": "Von einem Techniker beendet",
+      "viewerClosed": "Viewer geschlossen",
+      "connectionLost": "Verbindung zum Viewer verloren",
+      "peerDisconnected": "Geräteverbindung abgebrochen",
+      "neverConnected": "Nie verbunden",
+      "superseded": "Durch eine neuere Sitzung ersetzt",
+      "captureFailed": "Bildschirmaufnahme gestoppt",
+      "startFailed": "Start fehlgeschlagen",
+      "consentDenied": "Zustimmung abgelehnt",
+      "accessRevoked": "Zugriff widerrufen",
+      "maxDuration": "Maximale Sitzungsdauer erreicht",
+      "deviceRemoved": "Gerät entfernt oder neu installiert"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Details Titel",
@@ -732,7 +746,8 @@
       "started": "Begonnen",
       "userId": "Benutzer-ID",
       "os": "Betriebssystem",
-      "email": "E-Mail"
+      "email": "E-Mail",
+      "error": "Fehler"
     },
     "sections": {
       "recording": "Aufnahme",
@@ -740,7 +755,6 @@
       "timeline": "Zeitleiste"
     },
     "subtitle": "Fernzugriffssitzungen anzeigen und überwachen",
-    "endedByUser": "Vom Benutzer beendet",
     "teardownPending": "Bestätigung des Geräts ausstehend",
     "title": "Sitzungsverlauf",
     "viewDevice": "Gerät anzeigen",

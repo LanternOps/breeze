@@ -208,7 +208,7 @@ sessionRoutes.delete(
     // replaced after validation but before teardown.
     const result = (await db
       .update(remoteSessions)
-      .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
+      .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'never_connected' }, 'pending'))
       .where(and(...conditions))
       .returning(terminalSessionReturning())).map(toTerminalSessionRow);
 
@@ -319,7 +319,7 @@ sessionRoutes.post(
       const revoked = await withDbTransaction(async () => {
         const staleUpdate = db
           .update(remoteSessions)
-          .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
+          .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'superseded' }, 'pending'))
           .where(
             and(
               eq(remoteSessions.deviceId, data.deviceId),
@@ -507,6 +507,7 @@ sessionRoutes.get(
         status: remoteSessions.status,
         terminationPhase: remoteSessions.terminationPhase,
         endReason: remoteSessions.endReason,
+        errorMessage: remoteSessions.errorMessage,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -533,8 +534,9 @@ sessionRoutes.get(
         type: s.type,
         status: s.status,
         terminationPhase: s.terminationPhase ?? 'none',
-        // #10190 W06: why it ended, when known ('ended_by_user'); else null.
+        // Why it ended (#11839, REMOTE_SESSION_END_REASONS); null on rows that predate it.
         endReason: s.endReason ?? null,
+        errorMessage: s.errorMessage ?? null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -670,6 +672,7 @@ sessionRoutes.get(
         status: remoteSessions.status,
         terminationPhase: remoteSessions.terminationPhase,
         endReason: remoteSessions.endReason,
+        errorMessage: remoteSessions.errorMessage,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -697,8 +700,9 @@ sessionRoutes.get(
         type: s.type,
         status: s.status,
         terminationPhase: s.terminationPhase ?? 'none',
-        // #10190 W06: why it ended, when known ('ended_by_user'); else null.
+        // Why it ended (#11839, REMOTE_SESSION_END_REASONS); null on rows that predate it.
         endReason: s.endReason ?? null,
+        errorMessage: s.errorMessage ?? null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -777,7 +781,7 @@ sessionRoutes.get(
       // the agent has not yet acknowledged the stop. The web UI must not
       // render such a session as connected.
       terminationPhase: session.terminationPhase ?? 'none',
-      // #10190 W06: 'ended_by_user' when the person at the keyboard ended it.
+      // Why it ended (#11839, REMOTE_SESSION_END_REASONS); null on rows that predate it.
       endReason: session.endReason ?? null,
       webrtcOffer: session.webrtcOffer,
       webrtcAnswer: session.webrtcAnswer,
@@ -1415,6 +1419,7 @@ sessionRoutes.post(
       .set(terminalIntentSet({
         status: 'disconnected',
         endedAt,
+        endReason: 'operator_ended',
         durationSeconds,
         bytesTransferred: body.bytesTransferred !== undefined ? BigInt(body.bytesTransferred) : session.bytesTransferred,
         recordingUrl: recordingUrl ?? session.recordingUrl

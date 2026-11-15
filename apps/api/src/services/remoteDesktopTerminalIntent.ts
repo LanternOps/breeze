@@ -38,6 +38,7 @@ import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { remoteSessions } from '../db/schema';
 import { formatDesktopGeneration } from './remoteDesktopStartIntent';
+import { isRemoteSessionEndReason, type RemoteSessionEndReason } from '@breeze/shared';
 
 /** Statuses a terminal decision may leave the row in. */
 export const TERMINAL_REMOTE_SESSION_STATUSES = ['disconnected', 'failed', 'denied'] as const;
@@ -65,6 +66,14 @@ export type TerminalPhaseSource = 'pending' | 'confirmed';
 export interface TerminalIntentWrite {
   status: TerminalRemoteSessionStatus;
   endedAt: Date;
+  /**
+   * #11839: WHY the session ended. Required, so no writer can end a session
+   * without saying why — a bare 'disconnected' hid lease revocations and
+   * sessions that never connected behind what looked like a normal hang-up.
+   * Written as COALESCE(existing, this): a reason already on the row (the
+   * agent's 'ended_by_user', recorded while the row was still live) wins.
+   */
+  endReason: RemoteSessionEndReason;
   errorMessage?: string | SQL | null;
   durationSeconds?: number;
   bytesTransferred?: bigint | null;
@@ -80,7 +89,8 @@ export interface TerminalIntentWrite {
 export function terminalIntentSet<W extends TerminalIntentWrite>(
   write: W,
   phase: TerminalPhaseSource,
-): W & {
+): Omit<W, 'endReason'> & {
+  endReason: SQL;
   desktopStartGeneration: SQL;
   terminalGeneration: SQL;
   terminationPhase: SQL | 'confirmed';
@@ -90,11 +100,19 @@ export function terminalIntentSet<W extends TerminalIntentWrite>(
       `[remoteDesktopTerminalIntent] terminalIntentSet requires a terminal status, got '${String(write.status)}'`,
     );
   }
+  if (!isRemoteSessionEndReason(write.endReason)) {
+    // The CHECK constraint would reject it at runtime and the session would
+    // stay live; refuse here so the failure names the writer instead.
+    throw new Error(
+      `[remoteDesktopTerminalIntent] terminalIntentSet requires a known end reason, got '${String(write.endReason)}'`,
+    );
+  }
   // Both expressions read the OLD column value inside one UPDATE, so they land
   // on the same number: the generation this terminal decision committed at.
   const bumped = sql`${remoteSessions.desktopStartGeneration} + 1`;
   return {
     ...write,
+    endReason: sql`COALESCE(${remoteSessions.endReason}, ${write.endReason})`,
     desktopStartGeneration: bumped,
     terminalGeneration: bumped,
     terminationPhase: phase === 'confirmed'

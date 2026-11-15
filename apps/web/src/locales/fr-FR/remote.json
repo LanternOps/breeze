@@ -703,7 +703,6 @@
       "disconnected": "Déconnecté",
       "failed": "Échec",
       "pending": "En attente",
-      "endedByUser": "Terminée par l’utilisateur",
       "teardownPending": "En cours de fin (en attente de l’appareil)"
     },
     "subtitle": "Journal d’audit d’accès à distance",
@@ -715,7 +714,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Voir les détails",
-    "yesterdayAt": "Hier {{time}}"
+    "yesterdayAt": "Hier {{time}}",
+    "endReasons": {
+      "endedByUser": "Terminée par l’utilisateur",
+      "operatorEnded": "Terminée par un technicien",
+      "viewerClosed": "Visionneuse fermée",
+      "connectionLost": "Connexion à la visionneuse perdue",
+      "peerDisconnected": "Connexion de l’appareil interrompue",
+      "neverConnected": "Jamais connectée",
+      "superseded": "Remplacée par une session plus récente",
+      "captureFailed": "Capture d’écran arrêtée",
+      "startFailed": "Échec du démarrage",
+      "consentDenied": "Consentement refusé",
+      "accessRevoked": "Accès révoqué",
+      "maxDuration": "Durée maximale de session atteinte",
+      "deviceRemoved": "Appareil retiré ou réinstallé"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Détails Titre",
@@ -732,7 +746,8 @@
       "started": "Démarré",
       "userId": "Utilisateur ID",
       "os": "OS",
-      "email": "E-mail"
+      "email": "E-mail",
+      "error": "Erreur"
     },
     "sections": {
       "recording": "Enregistrement",
@@ -740,7 +755,6 @@
       "timeline": "Chronologie"
     },
     "subtitle": "Consultez et auditez les sessions d’accès à distance",
-    "endedByUser": "Terminée par l’utilisateur",
     "teardownPending": "En attente de la confirmation de l’appareil",
     "title": "Historique des sessions",
     "viewDevice": "Dispositif de vue",

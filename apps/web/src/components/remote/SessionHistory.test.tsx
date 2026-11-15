@@ -150,6 +150,36 @@ describe('SessionHistory end reason (#10190)', () => {
     expect(screen.getByText('host-legacy').closest('tr')!.textContent).not.toMatch(/Ended by the user/);
   });
 
+  // #11839 — every recorded reason is shown, so a session that never
+  // connected or lost its access no longer reads as a plain hang-up.
+  it('shows the end reason for each recorded reason and nothing for an unknown one', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: [
+          { ...base, id: 's-never', endReason: 'never_connected', device: { hostname: 'host-never', osType: 'linux' } },
+          { ...base, id: 's-revoked', endReason: 'access_revoked', device: { hostname: 'host-revoked', osType: 'linux' } },
+          { ...base, id: 's-capture', endReason: 'capture_failed', device: { hostname: 'host-capture', osType: 'linux' } },
+          { ...base, id: 's-future', endReason: 'some_future_reason', device: { hostname: 'host-future', osType: 'linux' } }
+        ],
+        pagination: { page: 1, limit: 100, total: 4 }
+      })
+    );
+    render(<SessionHistory />);
+
+    expect(await screen.findByText('host-never')).toBeTruthy();
+    expect(screen.getByText('host-never').closest('tr')!.textContent).toMatch(/Never connected/);
+    expect(screen.getByText('host-revoked').closest('tr')!.textContent).toMatch(/Access revoked/);
+    expect(screen.getByText('host-capture').closest('tr')!.textContent).toMatch(/Screen capture stopped/);
+    // An API newer than this bundle: no raw key, no crash.
+    expect(screen.getByText('host-future').closest('tr')!.textContent).not.toMatch(/endReasons|some_future_reason/);
+  });
+
+  it('normalizeRemoteSession maps errorMessage, defaulting to null', () => {
+    const api = { ...base, id: 'x', type: 'desktop' as const, status: 'disconnected' as const };
+    expect(normalizeRemoteSession({ ...api, errorMessage: 'revoked:user_inactive' }).errorMessage).toBe('revoked:user_inactive');
+    expect(normalizeRemoteSession(api).errorMessage).toBeNull();
+  });
+
   it('normalizeRemoteSession maps endReason, defaulting to null', () => {
     const api = { ...base, id: 'x', type: 'desktop' as const, status: 'disconnected' as const };
     expect(normalizeRemoteSession({ ...api, endReason: 'ended_by_user' }).endReason).toBe('ended_by_user');

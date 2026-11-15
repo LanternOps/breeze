@@ -248,7 +248,7 @@ export async function expireStaleSessions(orgId: string) {
   // capture the expired ids via `.returning()` directly — no duck-type guard.
   const expired = await db
     .update(remoteSessions)
-    .set(terminalIntentSet({ status: 'disconnected', endedAt: now }, 'pending'))
+    .set(terminalIntentSet({ status: 'disconnected', endedAt: now, endReason: 'never_connected' }, 'pending'))
     .where(
       and(
         inArray(remoteSessions.deviceId,
@@ -269,7 +269,7 @@ export async function expireStaleSessionsForUser(userId: string) {
   // capture the expired ids via `.returning()` directly — no duck-type guard.
   const expired = await db
     .update(remoteSessions)
-    .set(terminalIntentSet({ status: 'disconnected', endedAt: now }, 'pending'))
+    .set(terminalIntentSet({ status: 'disconnected', endedAt: now, endReason: 'never_connected' }, 'pending'))
     .where(
       and(
         eq(remoteSessions.userId, userId),
