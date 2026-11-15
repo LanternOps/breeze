@@ -899,10 +899,20 @@ async function checkLateResultBaseFence(job: {
  */
 export const EAGER_HYDRATION_MAX_ENTRIES = 250_000;
 
-/** Entries a snapshot's index will hold: files the run backed up plus those it referenced. */
+/**
+ * Entries a snapshot's index will hold.
+ *
+ * The agent reports `filesBackedUp` as every manifest entry, reference entries
+ * included, and counts `referencedFiles` from that same list, so the
+ * references are a part of `filesBackedUp`, not an addition to it (#11743;
+ * agent/internal/backup/backup.go, both the normal and the journal-adoption
+ * path). `referencedFiles` stands in only when `filesBackedUp` is absent, and
+ * it also acts as a floor: a snapshot never holds fewer entries than the
+ * references it carries.
+ */
 export function indexedEntriesOf(result: { filesBackedUp?: number; referencedFiles?: number }): number | undefined {
   if (result.filesBackedUp === undefined && result.referencedFiles === undefined) return undefined;
-  return (result.filesBackedUp ?? 0) + (result.referencedFiles ?? 0);
+  return Math.max(result.filesBackedUp ?? 0, result.referencedFiles ?? 0);
 }
 
 export function snapshotIndexHydrationReason(params: {
