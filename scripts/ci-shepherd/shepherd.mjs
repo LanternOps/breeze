@@ -21,9 +21,14 @@
 //       they were at the removal; sightings are cut at the removal time.
 //   shepherd.mjs record-fixture --run <id> --pr <n> --name <slug>
 //       Writes trimmed facts to fixtures/<slug>.json for the classifier tests.
+//   shepherd.mjs metrics --week <YYYY-Www> --dry-run [--json] [--state-dir <dir>]
+//       Prints one ISO week's CI throughput metrics (metrics.mjs). Read-only:
+//       only the tick posts them. Reads the state dir's decisions.jsonl and
+//       sightings.jsonl when present. Default budget 4000 calls, spent from
+//       the operator token's 5,000/h.
 //
 // Common options: --repo <owner/name> (default LanternOps/breeze),
-// --budget <calls> (default 600). The token comes from GH_TOKEN, GITHUB_TOKEN
+// --budget <calls> (default 600; 4000 for metrics). The token comes from GH_TOKEN, GITHUB_TOKEN
 // or `gh auth token`.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -35,7 +40,9 @@ import { classifyRun } from './classify.mjs';
 import { History, ingestRun, readSightings } from './evidence.mjs';
 import { groupRunFor, prSnapshot, recentRemovals, requiredJobIds, runFacts } from './facts.mjs';
 import { createGitHub } from './github.mjs';
+import { DEFAULT_API_BUDGET, renderWeekly, weekBounds, weekMetrics } from './metrics.mjs';
 import { probe } from './probe.mjs';
+import { readJsonl } from './state.mjs';
 import { OK_STATUSES, tick } from './tick.mjs';
 import { ghCli } from './writer.mjs';
 
@@ -49,11 +56,15 @@ class UsageError extends Error {}
 
 export function parseArgs(argv) {
   const [command, ...rest] = argv;
-  const opts = { command, repo: 'LanternOps/breeze', budget: 600, json: false };
+  const opts = { command, repo: 'LanternOps/breeze', json: false };
   for (let i = 0; i < rest.length; i++) {
     const k = rest[i];
     if (k === '--json') {
       opts.json = true;
+      continue;
+    }
+    if (k === '--dry-run') {
+      opts.dryRun = true;
       continue;
     }
     const v = rest[i + 1];
@@ -68,6 +79,7 @@ export function parseArgs(argv) {
     }
   }
   if (!/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) throw new UsageError('--repo must be owner/name');
+  opts.budget ??= command === 'metrics' ? DEFAULT_API_BUDGET : 600;
   return opts;
 }
 
@@ -181,14 +193,23 @@ export function renderReplay({ rows, counts, complete = true }) {
 }
 
 const USAGE =
-  'usage: shepherd.mjs classify --run <id> --pr <n> | replay --since <YYYY-MM-DD> [--until <date>] [--json] | record-fixture --run <id> --pr <n> --name <slug> | tick [--state-dir <dir>] [--checkout-dir <clone>] | probe --pr <n>';
+  'usage: shepherd.mjs classify --run <id> --pr <n> | replay --since <YYYY-MM-DD> [--until <date>] [--json] | record-fixture --run <id> --pr <n> --name <slug> | metrics --week <YYYY-Www> --dry-run [--json] | tick [--state-dir <dir>] [--checkout-dir <clone>] | probe --pr <n>';
 export const DEFAULT_STATE_DIR = join(homedir(), '.local/state/breeze-ci-shepherd');
 
 export async function main(argv, { makeGitHub = (budget) => createGitHub({ token: token(), budget }), exec = ghCli, now = () => Date.now(), log } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
-    if (!['classify', 'replay', 'record-fixture', 'tick', 'probe'].includes(opts.command)) throw new UsageError(`unknown command ${opts.command ?? ''}`);
+    if (!['classify', 'replay', 'record-fixture', 'metrics', 'tick', 'probe'].includes(opts.command)) throw new UsageError(`unknown command ${opts.command ?? ''}`);
+    if (opts.command === 'metrics') {
+      try {
+        weekBounds(opts.week);
+      } catch {
+        throw new UsageError('metrics needs --week YYYY-Www (an ISO week that exists)');
+      }
+      // The tick is the only writer: this command only prints.
+      if (!opts.dryRun) throw new UsageError('metrics only prints (the tick posts): pass --dry-run');
+    }
     const badDate = (d) => d !== undefined && (!/^\d{4}-\d{2}-\d{2}/.test(d) || Number.isNaN(Date.parse(d)));
     if (opts.command === 'replay' && (opts.since === undefined || badDate(opts.since) || badDate(opts.until))) throw new UsageError('replay needs --since YYYY-MM-DD (and --until, if given, a real date)');
     if (opts.command === 'probe' && !opts.pr) throw new UsageError('probe needs --pr');
@@ -208,6 +229,14 @@ export async function main(argv, { makeGitHub = (budget) => createGitHub({ token
     const res = await probe({ gh, repo: opts.repo, pr: opts.pr, exec, stateDir: opts.stateDir ?? DEFAULT_STATE_DIR, now: now(), clock: now });
     (log ?? ((l) => process.stdout.write(`${l}\n`)))(`ci-shepherd probe ${JSON.stringify(res)}`);
     return res.status === 'applied' ? 0 : res.status === 'refused' ? 2 : 1;
+  }
+  if (opts.command === 'metrics') {
+    const stateDir = opts.stateDir ?? DEFAULT_STATE_DIR;
+    const history = History.fromSightings(readJsonl(join(stateDir, 'sightings.jsonl')));
+    const rows = await weekMetrics(gh, { repo: opts.repo, week: opts.week, decisionsLog: readJsonl(join(stateDir, 'decisions.jsonl')), apiBudget: opts.budget, ciYml: readCiYml(), repoRoot: REPO_ROOT, history, onError: (e) => process.stderr.write(`shepherd: metrics: ${e}\n`) });
+    process.stdout.write(opts.json ? `${JSON.stringify(rows, null, 2)}\n` : renderWeekly({ week: opts.week, rows }));
+    process.stderr.write(`shepherd: metrics: ${gh.calls} API calls\n`);
+    return 0;
   }
   if (opts.command === 'record-fixture') await recordFixture(gh, opts);
   else if (opts.command === 'classify') await classifyOne(gh, opts);

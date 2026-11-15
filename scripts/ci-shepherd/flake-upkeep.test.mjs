@@ -62,7 +62,7 @@ function setup({ mode = 'act', sightings = CORROBORATED, files = [FILE] } = {}) 
   const stateDir = mkdtempSync(join(tmpdir(), 'ci-shepherd-upkeep-state-'));
   writeFileSync(join(stateDir, 'sightings.jsonl'), sightings.map((s) => `${JSON.stringify(s)}\n`).join(''));
   const repos = clone(files);
-  const run = (over = {}) => tick({ gh, repo: REPO, stateDir, checkoutDir: repos.checkout, now: world.clock, clock: () => world.clock, exec: world.exec, repoRoot: REPO_ROOT, log: () => {}, ...over });
+  const run = (over = {}) => tick({ gh, repo: REPO, stateDir, checkoutDir: repos.checkout, now: world.clock, clock: () => world.clock, exec: world.exec, repoRoot: REPO_ROOT, log: () => {}, weekly: async () => ({ status: 'stubbed' }), ...over });
   const decisions = () => readJsonl(join(stateDir, 'decisions.jsonl'));
   const state = () => JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'));
   const ledgerBranches = () => git(repos.origin, 'for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n').filter((b) => b.startsWith(LEDGER_BRANCH_PREFIX));

@@ -277,7 +277,11 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       return log ? new Response(log, { status: 200 }) : notFound();
     }
     if ((m = /^R\/issues\/(\d+)\/comments$/.exec(p))) {
-      const pr = w.prs.get(Number(m[1]));
+      // A PR's comments, or an issue's (the metrics issue, W06d).
+      const issue = w.issues.find((i) => i.number === Number(m[1]));
+      if (issue) issue.comments ??= [];
+      const pr = w.prs.get(Number(m[1])) ?? issue;
+      if (!pr) return notFound();
       if (method === 'GET') {
         const per = Number(q.get('per_page') ?? 30);
         const page = Number(q.get('page') ?? 1);
