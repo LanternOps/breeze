@@ -57,6 +57,7 @@ import { findUnknownInputKeys } from '../aiToolUnknownKeys';
 import { captureException } from '../sentry';
 import { assessableOrgIds } from '../wisp/assessableOrgs';
 import { rollupPartnerPicture } from '../wisp/assessment';
+import { ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE } from '../wisp/assessmentTypes';
 import {
   ConcernSubjectHeldError,
   getConcernForCeiling,
@@ -465,8 +466,12 @@ async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId:
 /**
  * Returns `null` on a clean apply (skips are not failures — they are recorded
  * in `outcome.assessmentSkipped`), or `assessment_partially_applied` when at
- * least one step threw. Like every sibling, the caller applies it only on the
- * normal-finish path; an assessment is circuit-neutral either way.
+ * least one step threw. A clean apply whose metric anomaly read failed
+ * returns ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE instead of null (#11513), so
+ * the run does not anchor the no-changes gate; dropped work outranks it,
+ * because `assessment_partially_applied` already keeps the run out of both
+ * the watermark and the anchor. Like every sibling, the caller applies it
+ * only on the normal-finish path; an assessment is circuit-neutral either way.
  */
 export async function finalizeAssessment(ctx: RunContext, result: LoopResult): Promise<string | null> {
   if (!isAssessmentProfile(ctx.run)) return null;
@@ -567,5 +572,6 @@ export async function finalizeAssessment(ctx: RunContext, result: LoopResult): P
     outcome.assessmentSkipped = [...(outcome.assessmentSkipped ?? []), ...skipped];
     console.info('[aiAgentRunLoop] assessment outcome partially skipped', { runId: run.id, skipped });
   }
-  return failed ? 'assessment_partially_applied' : null;
+  if (failed) return 'assessment_partially_applied';
+  return a.anomaliesReadFailed ? ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE : null;
 }
