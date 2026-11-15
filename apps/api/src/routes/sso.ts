@@ -3696,6 +3696,13 @@ ssoRoutes.get('/callback', async (c) => {
     // read resolves live policy for existing users. Newly provisioned users
     // conservatively receive mfa:false until their membership commits.
     //
+    // The read is fail-closed, as at accept-invite: a policy-admitted session
+    // is only granted on a policy that was actually read. If the settings read
+    // fails, `required` resolves true and a no-factor user gets mfa:false (held
+    // to enrollment) rather than a session the tenant's policy might refuse.
+    // Sign-in itself still succeeds, and the IdP arm for an enrolled user does
+    // not depend on this read.
+    //
     // #11889: the IdP assertion is NOT a precondition of every mfa:true. A
     // user who holds NO Breeze factor under a policy that does not require
     // one is policy-admitted, exactly like the password login
@@ -3710,7 +3717,7 @@ ssoRoutes.get('/callback', async (c) => {
       userId: user.id,
       orgId: provider.partnerId ? null : provider.orgId,
       partnerId: provider.partnerId ?? null,
-    });
+    }, { failClosed: true });
     const ssoPolicyAdmitted = user.mfaEnabled !== true
       && provisionedRoleId === null
       && !ssoPolicy.required;
