@@ -283,7 +283,7 @@ export default function AiModels() {
 
   if (requiresPlatformAdmin) {
     return (
-      <div data-testid="ai-models-requires-platform-admin" className="rounded-lg border bg-white p-6 text-sm text-gray-600">
+      <div data-testid="ai-models-requires-platform-admin" className="rounded-lg border bg-card text-card-foreground p-6 text-sm text-muted-foreground">
         {t('admin.aiModels.requiresPlatformAdmin')}
       </div>
     );
@@ -299,7 +299,7 @@ export default function AiModels() {
             <Sparkles className="h-5 w-5" aria-hidden="true" />
             {t('admin.aiModels.title')}
           </h1>
-          <p className="mt-1 max-w-2xl text-sm text-gray-600">{t('admin.aiModels.subtitle')}</p>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t('admin.aiModels.subtitle')}</p>
         </div>
         <button
           type="button"
@@ -321,16 +321,16 @@ export default function AiModels() {
 
       {loading ? (
         <div data-testid="ai-models-loading" className="flex justify-center p-8">
-          <Loader2 className="h-6 w-6 animate-spin text-gray-400" aria-hidden="true" />
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
         </div>
       ) : models.length === 0 ? (
-        <div data-testid="ai-models-empty" className="rounded-lg border bg-white p-6 text-sm text-gray-600">
+        <div data-testid="ai-models-empty" className="rounded-lg border bg-card text-card-foreground p-6 text-sm text-muted-foreground">
           {t('admin.aiModels.empty')}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border bg-white">
+        <div className="overflow-x-auto rounded-lg border bg-card text-card-foreground">
           <table data-testid="ai-models-table" className="min-w-full text-sm">
-            <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
+            <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="px-3 py-2">{t('admin.aiModels.columns.model')}</th>
                 <th className="px-3 py-2">{t('admin.aiModels.columns.status')}</th>
@@ -348,7 +348,7 @@ export default function AiModels() {
                   <tr key={model.id} data-testid={`ai-models-row-${model.id}`} className="border-t">
                     <td className="px-3 py-2">
                       <div className="font-medium">{model.displayName}</div>
-                      <div className="font-mono text-xs text-gray-500">{model.modelId}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{model.modelId}</div>
                     </td>
                     <td className="px-3 py-2">
                       <span data-testid={`ai-models-row-${model.id}-lifecycle`}>
@@ -360,7 +360,7 @@ export default function AiModels() {
                         </span>
                       )}
                       {model.lastSeenAt === null && (
-                        <div className="text-xs text-gray-500">{t('admin.aiModels.notSeen')}</div>
+                        <div className="text-xs text-muted-foreground">{t('admin.aiModels.notSeen')}</div>
                       )}
                     </td>
                     <td className="px-3 py-2">{t(/* i18n-dynamic */ `admin.aiModels.thinkingMode.${model.derived.thinkingMode}`)}</td>
@@ -411,7 +411,7 @@ export default function AiModels() {
               <div className="grid grid-cols-2 gap-2">
                 {RATE_KEYS.map((key) => (
                   <label key={key} className="space-y-1">
-                    <span className="text-xs text-gray-600">{t(/* i18n-dynamic */ `admin.aiModels.drawer.${key}`)}</span>
+                    <span className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `admin.aiModels.drawer.${key}`)}</span>
                     <input
                       data-testid={`ai-models-rate-${key}`}
                       type="number"
@@ -419,10 +419,10 @@ export default function AiModels() {
                       step="any"
                       value={draft.rates[key]}
                       onChange={(e) => updateDraft({ rates: { ...draft.rates, [key]: e.target.value } })}
-                      className="w-full rounded border px-2 py-1"
+                      className="w-full rounded border px-2 py-1 bg-background text-foreground dark:[color-scheme:dark]"
                     />
                     {editing.rates && (
-                      <span className="block text-xs text-gray-500" data-testid={`ai-models-rate-${key}-stored`}>
+                      <span className="block text-xs text-muted-foreground" data-testid={`ai-models-rate-${key}-stored`}>
                         {t('admin.aiModels.drawer.storedPrice', { value: dollarsPerM(editing.rates[key]) })}
                       </span>
                     )}
@@ -433,11 +433,11 @@ export default function AiModels() {
 
             <fieldset className="space-y-2">
               <legend className="font-medium">{t('admin.aiModels.drawer.fastPrices')}</legend>
-              <p className="text-xs text-gray-500">{t('admin.aiModels.drawer.fastPricesHint')}</p>
+              <p className="text-xs text-muted-foreground">{t('admin.aiModels.drawer.fastPricesHint')}</p>
               <div className="grid grid-cols-2 gap-2">
                 {RATE_KEYS.map((key) => (
                   <label key={key} className="space-y-1">
-                    <span className="text-xs text-gray-600">{t(/* i18n-dynamic */ `admin.aiModels.drawer.${key}`)}</span>
+                    <span className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `admin.aiModels.drawer.${key}`)}</span>
                     <input
                       data-testid={`ai-models-fast-rate-${key}`}
                       type="number"
@@ -445,10 +445,10 @@ export default function AiModels() {
                       step="any"
                       value={draft.fastRates[key]}
                       onChange={(e) => updateDraft({ fastRates: { ...draft.fastRates, [key]: e.target.value } })}
-                      className="w-full rounded border px-2 py-1"
+                      className="w-full rounded border px-2 py-1 bg-background text-foreground dark:[color-scheme:dark]"
                     />
                     {editing.optionRates?.['speed:fast'] && (
-                      <span className="block text-xs text-gray-500" data-testid={`ai-models-fast-rate-${key}-stored`}>
+                      <span className="block text-xs text-muted-foreground" data-testid={`ai-models-fast-rate-${key}-stored`}>
                         {t('admin.aiModels.drawer.storedPrice', { value: dollarsPerM(editing.optionRates['speed:fast'][key]) })}
                       </span>
                     )}
@@ -507,15 +507,15 @@ export default function AiModels() {
                 type="text"
                 value={draft.inferenceGeo}
                 onChange={(e) => updateDraft({ inferenceGeo: e.target.value })}
-                className="w-full rounded border px-2 py-1"
+                className="w-full rounded border px-2 py-1 bg-background text-foreground dark:[color-scheme:dark]"
               />
-              <span className="block text-xs text-gray-500">{t('admin.aiModels.drawer.inferenceGeoHint')}</span>
+              <span className="block text-xs text-muted-foreground">{t('admin.aiModels.drawer.inferenceGeoHint')}</span>
             </label>
 
             <div className="grid grid-cols-2 gap-3">
               <label className="space-y-1">
                 <span className="font-medium">{t('admin.aiModels.drawer.minPlan')}</span>
-                <select data-testid="ai-models-min-plan" value={draft.minPlan} onChange={(e) => updateDraft({ minPlan: e.target.value })} className="w-full rounded border px-2 py-1">
+                <select data-testid="ai-models-min-plan" value={draft.minPlan} onChange={(e) => updateDraft({ minPlan: e.target.value })} className="w-full rounded border px-2 py-1 bg-background text-foreground dark:[color-scheme:dark]">
                   <option value="">{t('admin.aiModels.drawer.allPlans')}</option>
                   {planOptions.map((plan) => <option key={plan} value={plan}>{plan}</option>)}
                 </select>
@@ -526,7 +526,7 @@ export default function AiModels() {
                   data-testid="ai-models-prompt-profile"
                   value={draft.promptProfile}
                   onChange={(e) => updateDraft({ promptProfile: e.target.value as PromptProfile })}
-                  className="w-full rounded border px-2 py-1"
+                  className="w-full rounded border px-2 py-1 bg-background text-foreground dark:[color-scheme:dark]"
                 >
                   {PROMPT_PROFILES.map((profile) => (
                     <option key={profile} value={profile}>{t(/* i18n-dynamic */ `admin.aiModels.promptProfile.${profile}`)}</option>
@@ -545,7 +545,7 @@ export default function AiModels() {
               />
               <span>
                 {t('admin.aiModels.drawer.offered')}
-                <span className="block text-xs text-gray-500">{t('admin.aiModels.drawer.offeredHint')}</span>
+                <span className="block text-xs text-muted-foreground">{t('admin.aiModels.drawer.offeredHint')}</span>
               </span>
             </label>
 
@@ -559,7 +559,7 @@ export default function AiModels() {
               />
               <span>
                 {t('admin.aiModels.drawer.isDefault')}
-                <span className="block text-xs text-gray-500">
+                <span className="block text-xs text-muted-foreground">
                   {locked ? t('admin.aiModels.drawer.defaultLocked') : t('admin.aiModels.drawer.defaultHint')}
                 </span>
               </span>
@@ -567,9 +567,9 @@ export default function AiModels() {
 
             {confirmingPrices && largePriceChanges.length > 0 && (
               <div role="alertdialog" aria-labelledby="ai-models-price-confirm-title" data-testid="ai-models-price-confirm"
-                className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3">
+                className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3 text-amber-950 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
                 <p id="ai-models-price-confirm-title" className="font-medium">{t('admin.aiModels.drawer.priceChangeTitle')}</p>
-                <p className="text-xs text-gray-700">{t('admin.aiModels.drawer.priceChangeIntro')}</p>
+                <p className="text-xs">{t('admin.aiModels.drawer.priceChangeIntro')}</p>
                 <ul className="space-y-1 text-xs">
                   {largePriceChanges.map((change) => (
                     <li key={`${change.group}-${change.key}`} data-testid={`ai-models-price-confirm-${change.group}-${change.key}`}>
