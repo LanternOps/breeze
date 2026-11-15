@@ -102,6 +102,8 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
 | `ci-shepherd:ignore` | The shepherd leaves this PR alone. |
 | `ci-shepherd:resume` | A human releases a hold. The retry budget is unchanged. |
 | `ci-shepherd:probe` | Marks a throwaway PR for the probe leg. |
+| `flaky-test` | An issue the shepherd keeps for one flaky test, with its evidence. |
+| `flaky-fix-required` | A flaky test that used its 60 quarantine days. It is never renewed; fix it. |
 
 ### Decision kinds
 
@@ -119,6 +121,36 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
   job (it would wait for the queue timeout) was dequeued and re-queued, under
   the infra budget.
 - `noop`: nothing to do. The reasons are in the line.
+- `flake_issue_create`, `flake_fix_required`, `ledger_pr`,
+  `ledger_add_waiting_issue` (`source: flake`): the flaky-test upkeep below.
+  In shadow each is logged once a day per test or proposal.
+
+### Flaky tests and the ledger PR (W06c)
+
+After each tick's sightings ingest, the shepherd keeps the flaky ledger fed
+(`flake-upkeep.mjs`). Writes happen in act mode only.
+
+- **Issues** (`flake-issues.mjs`). A test seen failing in 2 distinct CI runs
+  within 14 days gets one `flaky-test` issue. Its body holds a summary and a
+  hidden `<!-- ci-shepherd:flake v1 … -->` record: counts per kind, the
+  newest 50 sightings and the days quarantined so far. Only issues the
+  operator account wrote are trusted. A closed issue is left closed; new
+  evidence after the close opens a successor that keeps the quarantine days.
+- **Proposals** (`ledger-proposals.mjs`). A test is added to
+  `.github/flaky-tests.json` only when it has an open issue and, in the last 7
+  days, ≥ 3 sightings from ≥ 2 PRs, at least one in the merge queue or failing
+  both attempts, and at least one passing on a retry. No `main_broken` breaker
+  may name it, and its file must exist on main. Entries run 14 days and renew
+  only on fresh flake evidence. Each test is quarantined for at most 60 days in
+  total, then gets `flaky-fix-required`. Expired entries and entries with no
+  sighting in 14 days are removed.
+- **Ledger PR** (`ledger-pr.mjs`). At most one open PR, branch
+  `ci-shepherd/ledger-<date>`, made in a temporary worktree of the shepherd's
+  own clone (`--checkout-dir`, passed by `run.sh`) and auto-merged through the
+  queue. The shepherd checks at most hourly. While one is open it waits, and it
+  never force-pushes. It does not reopen a ledger PR a human closed until the
+  next day. To stop quarantines, close the PR. Entries expire on their own
+  within 14 days.
 
 ### Reading the logs
 
@@ -140,6 +172,8 @@ State lives in `~/.local/state/breeze-ci-shepherd/`.
   from. Review the `shadow` lines here before going to act.
 - `state.json`: the cursor, seen removals, breakers and pending intents.
 - `sightings.jsonl`: flake sightings from completed CI runs.
+- `flake-records.json`: the parsed `flaky-test` issue records (refreshed from
+  GitHub daily); `state.json`'s `flake` key holds the issue index.
 - `launchd.out.log`, `launchd.err.log`: launchd's capture of the job output.
 
 ### Install

@@ -5,8 +5,10 @@
 // = shadow: it records what it would do in decisions.jsonl). `probe` refuses
 // outside act mode.
 //
-//   shepherd.mjs tick [--state-dir <dir>]
+//   shepherd.mjs tick [--state-dir <dir>] [--checkout-dir <clone>]
 //       One tick (tick.mjs). Default state dir: $HOME/.local/state/breeze-ci-shepherd.
+//       --checkout-dir is the shepherd's own clone (run.sh passes it): the
+//       rolling ledger PR is made there, and without it none is opened.
 //   shepherd.mjs probe --pr <n> [--state-dir <dir>]
 //       G-act: hold then resume a PR labelled ci-shepherd:probe, in act mode
 //       only, under the tick's lock.
@@ -179,7 +181,7 @@ export function renderReplay({ rows, counts, complete = true }) {
 }
 
 const USAGE =
-  'usage: shepherd.mjs classify --run <id> --pr <n> | replay --since <YYYY-MM-DD> [--until <date>] [--json] | record-fixture --run <id> --pr <n> --name <slug> | tick [--state-dir <dir>] | probe --pr <n>';
+  'usage: shepherd.mjs classify --run <id> --pr <n> | replay --since <YYYY-MM-DD> [--until <date>] [--json] | record-fixture --run <id> --pr <n> --name <slug> | tick [--state-dir <dir>] [--checkout-dir <clone>] | probe --pr <n>';
 export const DEFAULT_STATE_DIR = join(homedir(), '.local/state/breeze-ci-shepherd');
 
 export async function main(argv, { makeGitHub = (budget) => createGitHub({ token: token(), budget }), exec = ghCli, now = () => Date.now(), log } = {}) {
@@ -199,7 +201,7 @@ export async function main(argv, { makeGitHub = (budget) => createGitHub({ token
   }
   const gh = makeGitHub(opts.budget);
   if (opts.command === 'tick') {
-    const summary = await tick({ gh, repo: opts.repo, stateDir: opts.stateDir ?? DEFAULT_STATE_DIR, now: now(), clock: now, exec, repoRoot: REPO_ROOT, ...(log ? { log } : {}) });
+    const summary = await tick({ gh, repo: opts.repo, stateDir: opts.stateDir ?? DEFAULT_STATE_DIR, checkoutDir: opts.checkoutDir ?? null, now: now(), clock: now, exec, repoRoot: REPO_ROOT, ...(log ? { log } : {}) });
     return OK_STATUSES.has(summary.status) ? 0 : 1;
   }
   if (opts.command === 'probe') {
