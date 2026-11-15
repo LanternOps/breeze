@@ -136,7 +136,8 @@ const CAUSE_RULES: ReadonlyArray<{ cause: BackupFailureCause; pattern: RegExp }>
   { cause: 'helper_stopped', pattern: /\bbackup helper exited unexpectedly\b/i },
   { cause: 'run_cancelled_on_device', pattern: /^context canceled\b/i },
   { cause: 'never_started', pattern: /\bdispatch never completed\b/i },
-  { cause: 'no_agent_signal', pattern: /\bno progress reported for\b/i },
+  // "no progress reported for" is the pre-#11766 wording of the same reap.
+  { cause: 'no_agent_signal', pattern: /\bno agent signal since\b|\bno progress reported for\b/i },
 ];
 
 function causeOfLine(text: string, category: BackupFailureCategory | null): BackupFailureCause | null {

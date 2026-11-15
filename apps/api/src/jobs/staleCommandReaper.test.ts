@@ -3,9 +3,10 @@ import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 
-const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock, applyAutomationActionTerminalMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, executeMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock, applyAutomationActionTerminalMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
+  executeMock: vi.fn(),
   deviceCommandsTable: {
     id: 'device_commands.id',
     type: 'device_commands.type',
@@ -82,6 +83,10 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
   applyAutomationActionTerminalMock: vi.fn().mockResolvedValue(true),
 }));
 
+// Only the runStaleCommandReaperCycle suite drives the system-context wrapper;
+// every other suite calls domain functions directly and never reaches it.
+const { withSystemMock } = vi.hoisted(() => ({ withSystemMock: vi.fn() }));
+
 vi.mock('bullmq', () => ({
   Queue: class {},
   Worker: class {},
@@ -92,10 +97,12 @@ vi.mock('../db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db')>();
   return {
     ...actual,
+    withSystemDbAccessContext: (...args: unknown[]) => withSystemMock(...(args as [])),
     db: {
       ...actual.db,
       select: (...args: unknown[]) => selectMock(...(args as [])),
       update: (...args: unknown[]) => updateMock(...(args as [])),
+      execute: (...args: unknown[]) => executeMock(...(args as [])),
     },
   };
 });
@@ -149,7 +156,22 @@ import {
   backupNoTransferWindowMs,
   BACKUP_NO_TRANSFER_MIN_WINDOW_MS,
   BACKUP_NO_TRANSFER_MAX_WINDOW_MS,
+  runStaleCommandReaperCycle,
 } from './staleCommandReaper';
+import { resetSignalRecordingWindowForTests, signalRecordingWindowStart } from './backupSignalRecording';
+import {
+  DbAccessContextPrologueAbortedError,
+  DbAccessContextPrologueTimeoutError,
+  DbPoolAcquireAbortedError,
+  DbPoolAcquireTimeoutError,
+} from '../db/prologueDeadline';
+
+// #11766: the backup reaper discounts silence from before its signal-recording
+// window opened. Every suite below that is not about that window runs with one
+// open since the epoch, so nothing is discounted.
+beforeEach(() => {
+  resetSignalRecordingWindowForTests(0);
+});
 
 function selectChain(resolvedValue: unknown) {
   const chain: Record<string, any> = {};
@@ -733,7 +755,7 @@ describe('reapStaleBackupJobs', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'failed',
-        errorLog: '[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes',
+        errorLog: expect.stringMatching(/^\[stale-backup-reaper\] Backup stalled: no agent signal since \d{4}-\d\d-\d\dT[\d:.]+Z \(limit 15m\)$/),
       })
     );
     expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', { jobId: 'job-stall' });
@@ -1466,7 +1488,7 @@ describe('reapStaleBackupJobs — liveness vs progress (#2798)', () => {
       .mockReturnValueOnce(selectChain([]));
     expect(await reapStaleBackupJobs()).toBe(1);
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
-      errorLog: '[stale-backup-reaper] Backup stalled: no progress reported for 15 minutes',
+      errorLog: '[stale-backup-reaper] Backup stalled: no agent signal since 2026-07-16T23:44:00.000Z (limit 15m)',
     }));
   });
 
@@ -1491,6 +1513,485 @@ describe('reapStaleBackupJobs — liveness vs progress (#2798)', () => {
       }]));
     expect(await reapStaleBackupJobs()).toBe(0);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('reapStaleBackupJobs — server-side outage (#11766)', () => {
+  const MIN = 60 * 1000;
+  const STALL_MS = 15 * MIN;
+  // Outage start (last keepalive the server could record) and recovery.
+  const OUTAGE_START = new Date('2026-11-11T09:44:00.000Z').getTime();
+  const RECOVERY = OUTAGE_START + 344 * MIN;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    queueBackupStopCommandMock.mockResolvedValue({ command: {} });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * A running job whose backup signal the server last recorded at
+   * `keepaliveMs`. Unless `extra` says otherwise, cycleAt makes the device's
+   * own heartbeat one second old: the device is heard, only the job is silent.
+   */
+  function runningJob(keepaliveMs: number, extra: Record<string, unknown> = {}) {
+    return {
+      id: 'job-o',
+      deviceId: 'device-o',
+      lastKeepaliveAt: new Date(keepaliveMs),
+      lastProgressAt: new Date(keepaliveMs),
+      totalSize: null as number | null,
+      transferredSize: null as number | null,
+      startedAt: new Date(OUTAGE_START - 30 * MIN),
+      createdAt: new Date(OUTAGE_START - 31 * MIN),
+      errorLog: null,
+      deviceStatus: 'online',
+      ...extra,
+    };
+  }
+
+  function writable() {
+    executeMock.mockResolvedValue([{ read_only: false }]);
+  }
+
+  function captureSet(id = 'job-o') {
+    const setMock = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id }]) })),
+    }));
+    updateMock.mockImplementation(() => ({ set: setMock }));
+    return setMock;
+  }
+
+  async function cycleAt(ms: number, running: unknown[], pending: unknown[] = []): Promise<number> {
+    vi.setSystemTime(ms);
+    const heard = running.map((row) => ({ deviceLastSeenAt: new Date(ms - 1000), ...(row as object) }));
+    selectMock.mockReturnValueOnce(selectChain(heard)).mockReturnValueOnce(selectChain(pending));
+    return reapStaleBackupJobs();
+  }
+
+  it('a read-only database closes the window and the cycle attempts no reap', async () => {
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    executeMock.mockResolvedValue([{ read_only: true }]);
+
+    expect(await reapStaleBackupJobs()).toBe(0);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(signalRecordingWindowStart()).toBeNull();
+  });
+
+  it('outage longer than the stall window, agent still running: not reaped after recovery', async () => {
+    const setMock = captureSet();
+    // During the outage the database refuses writes.
+    vi.setSystemTime(OUTAGE_START + 60 * MIN);
+    executeMock.mockResolvedValue([{ read_only: true }]);
+    await reapStaleBackupJobs();
+
+    // First cycles after recovery: the job's keepalive is 344 minutes old only
+    // because the server could not write it. It must not be failed.
+    writable();
+    expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(await cycleAt(RECOVERY + 10 * MIN, [runningJob(OUTAGE_START)])).toBe(0);
+    // The agent's keepalive lands once the server can record it again.
+    expect(await cycleAt(RECOVERY + 16 * MIN, [runningJob(RECOVERY + 15 * MIN)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  /** A DrizzleQueryError-shaped error whose cause carries the SQLSTATE. */
+  function dbError(message: string, code: string): Error {
+    return Object.assign(new Error(`Failed query: ${message}`), { cause: Object.assign(new Error(message), { code }) });
+  }
+
+  it('a reap pass that throws a database error (writes failing) closes the window too', async () => {
+    writable();
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    selectMock.mockReturnValueOnce(selectChain([runningJob(OUTAGE_START)]));
+    updateMock.mockImplementation(() => {
+      throw dbError('cannot execute UPDATE in a read-only transaction', '25006');
+    });
+    await expect(reapStaleBackupJobs()).rejects.toThrow('read-only');
+    expect(signalRecordingWindowStart()).toBeNull();
+
+    const setMock = captureSet();
+    expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('a reap pass that throws a non-database error leaves the window open (a bug must not hold every reap)', async () => {
+    writable();
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    selectMock.mockReturnValueOnce(selectChain([runningJob(OUTAGE_START)]));
+    updateMock.mockImplementation(() => {
+      throw new TypeError("Cannot read properties of undefined (reading 'id')");
+    });
+    await expect(reapStaleBackupJobs()).rejects.toThrow(TypeError);
+    expect(signalRecordingWindowStart()).toBe(0);
+  });
+
+  it('a probe that cannot reach the database closes the window and rethrows', async () => {
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    executeMock.mockRejectedValue(Object.assign(new Error('write CONNECTION_CLOSED'), { code: 'CONNECTION_CLOSED' }));
+
+    await expect(reapStaleBackupJobs()).rejects.toThrow('CONNECTION_CLOSED');
+    expect(signalRecordingWindowStart()).toBeNull();
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable probe result fails open (reaps as before) and is reported once', async () => {
+    const { captureException } = await import('../services/sentry');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      executeMock.mockResolvedValue([]);
+      const setMock = captureSet();
+      const now = OUTAGE_START + 20 * MIN;
+
+      expect(await cycleAt(now, [runningJob(OUTAGE_START)])).toBe(1);
+      expect(setMock).toHaveBeenCalledTimes(1);
+      expect(await cycleAt(now + MIN, [])).toBe(0);
+
+      const probeErrors = errorSpy.mock.calls.filter(([m]) => String(m).includes('Read-only probe returned an unexpected result'));
+      expect(probeErrors).toHaveLength(1);
+      expect(captureException).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('a read-only database is reported once per episode, including when the process starts read-only', async () => {
+    resetSignalRecordingWindowForTests(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      executeMock.mockResolvedValue([{ read_only: true }]);
+      vi.setSystemTime(OUTAGE_START);
+      await reapStaleBackupJobs();
+      vi.setSystemTime(OUTAGE_START + 2 * MIN);
+      await reapStaleBackupJobs();
+      const readOnlyWarnings = () => warnSpy.mock.calls.filter(([m]) => String(m).includes('Database is read-only')).length;
+      expect(readOnlyWarnings()).toBe(1);
+
+      // Writable again, then read-only again: a new episode.
+      writable();
+      await cycleAt(RECOVERY, []);
+      executeMock.mockResolvedValue([{ read_only: true }]);
+      await reapStaleBackupJobs();
+      expect(readOnlyWarnings()).toBe(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('an online device whose heartbeat was also unrecordable is not reaped as offline until its grace runs inside the window', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+    // Status still `online` (nothing could write `offline`), last_seen_at as
+    // old as the job's keepalive: isDeviceOfflineForReap says offline.
+    const unheard = () => runningJob(OUTAGE_START, { deviceLastSeenAt: new Date(OUTAGE_START) });
+
+    expect(await cycleAt(RECOVERY, [unheard()])).toBe(0);
+    expect(await cycleAt(RECOVERY + 10 * MIN - 1, [unheard()])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + 10 * MIN + 1, [unheard()])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      errorLog: '[stale-backup-reaper] Device went offline during backup',
+    }));
+  });
+
+  it('a genuinely dead job is reaped once a full stall window of recording has passed, with a truthful reason', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+
+    expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(await cycleAt(RECOVERY + STALL_MS - 1, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+
+    expect(await cycleAt(RECOVERY + STALL_MS + 1, [runningJob(OUTAGE_START)])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      errorLog:
+        '[stale-backup-reaper] Backup stalled: no agent signal since 2026-11-11T09:44:00.000Z, ' +
+        'and none in the 15m since the server could record signals again (limit 15m)',
+    }));
+    expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-o', { jobId: 'job-o' });
+  });
+
+  it('a dead job with no outage is reaped on the normal clock and names the missing signal', async () => {
+    writable();
+    const setMock = captureSet();
+    const now = OUTAGE_START + 20 * MIN;
+
+    expect(await cycleAt(now, [runningJob(OUTAGE_START, { deviceLastSeenAt: new Date(now - 1000) })])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      errorLog: '[stale-backup-reaper] Backup stalled: no agent signal since 2026-11-11T09:44:00.000Z (limit 15m)',
+    }));
+  });
+
+  it('API restart: a fresh process opens its window at its first cycle and discounts earlier silence', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+    const boot = OUTAGE_START + 25 * MIN;
+
+    // Silent for 25 minutes, but the process has only just started.
+    expect(await cycleAt(boot, [runningJob(OUTAGE_START)])).toBe(0);
+    expect(signalRecordingWindowStart()).toBe(boot);
+    // The agent reconnects and its keepalive lands.
+    expect(await cycleAt(boot + 16 * MIN, [runningJob(boot + 2 * MIN)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('the offline-device rule counts only recordable time too', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+    const offline = { deviceStatus: 'offline' };
+
+    expect(await cycleAt(RECOVERY, [runningJob(OUTAGE_START, offline)])).toBe(0);
+    expect(await cycleAt(RECOVERY + 10 * MIN - 1, [runningJob(OUTAGE_START, offline)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + 10 * MIN + 1, [runningJob(OUTAGE_START, offline)])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      errorLog: '[stale-backup-reaper] Device went offline during backup',
+    }));
+  });
+
+  it('the no-transfer rule counts only recordable time: a live agent gets its full window after recovery', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet();
+    // Keepalive fresh after recovery; last recorded byte advance before the outage.
+    const live = (now: number) => runningJob(now - 30 * 1000, { lastProgressAt: new Date(OUTAGE_START) });
+    const MIN_WINDOW = BACKUP_NO_TRANSFER_MIN_WINDOW_MS;
+
+    expect(await cycleAt(RECOVERY, [live(RECOVERY)])).toBe(0);
+    expect(await cycleAt(RECOVERY + 20 * MIN, [live(RECOVERY + 20 * MIN)])).toBe(0);
+    expect(await cycleAt(RECOVERY + MIN_WINDOW - 1, [live(RECOVERY + MIN_WINDOW - 1)])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + MIN_WINDOW + 1, [live(RECOVERY + MIN_WINDOW + 1)])).toBe(1);
+    const errorLog = String(setMock.mock.calls[0]?.[0]?.errorLog);
+    expect(errorLog).toContain('no data transferred or verified for 7h 44m');
+    expect(errorLog).toContain('2h since the server could record signals again');
+  });
+
+  it('a pending job is not failed as "dispatch never completed" until a stall window of recording has passed', async () => {
+    resetSignalRecordingWindowForTests(null);
+    writable();
+    const setMock = captureSet('job-p');
+    const pending = {
+      id: 'job-p',
+      deviceId: 'device-p',
+      errorLog: null,
+      createdAt: new Date(OUTAGE_START - 10 * MIN),
+      lastProgressAt: null,
+      lastKeepaliveAt: null,
+      startedAt: null,
+      catchUpUntil: null,
+      deviceStatus: 'online',
+      deviceLastSeenAt: new Date(RECOVERY - 1000),
+      deviceBackupVersion: null,
+    };
+
+    expect(await cycleAt(RECOVERY, [], [pending])).toBe(0);
+    expect(await cycleAt(RECOVERY + STALL_MS - 1, [], [pending])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + STALL_MS + 1, [], [pending])).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+      errorLog: '[stale-backup-reaper] Backup dispatch never completed',
+    }));
+
+    // Same with an acknowledgement recorded before the outage: the stale
+    // keepalive does not shorten the window either.
+    resetSignalRecordingWindowForTests(null);
+    setMock.mockClear();
+    const acked = { ...pending, lastKeepaliveAt: new Date(OUTAGE_START) };
+    expect(await cycleAt(RECOVERY, [], [acked])).toBe(0);
+    expect(await cycleAt(RECOVERY + STALL_MS - 1, [], [acked])).toBe(0);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(await cycleAt(RECOVERY + STALL_MS + 1, [], [acked])).toBe(1);
+  });
+});
+
+// #11766 review: when the database is unreachable, the system-context wrapper
+// (pool slot, BEGIN, RLS setup queries) throws BEFORE reapStaleBackupJobs runs,
+// so the reaper's own catch never sees the error. The cycle must close the
+// window itself, or the first cycle after a long outage fails every running job.
+describe('runStaleCommandReaperCycle — database unreachable before the backup pass (#11766)', () => {
+  const MIN = 60 * 1000;
+  const OUTAGE_START = new Date('2026-11-11T09:44:00.000Z').getTime();
+  const RECOVERY = OUTAGE_START + 40 * MIN;
+
+  const connectionRefused = () =>
+    Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+  const expiry = { contextLabel: 'withSystemDbAccessContext(scope=system)', elapsedMs: 10_000, timeoutMs: 10_000 };
+  const UNAVAILABLE: Array<[string, () => Error]> = [
+    ['a refused connection', connectionRefused],
+    ['a pool-acquire abort', () => new DbPoolAcquireAbortedError(expiry.contextLabel)],
+    ['a pool-acquire timeout', () => new DbPoolAcquireTimeoutError(expiry)],
+    ['a setup-query (prologue) timeout', () => new DbAccessContextPrologueTimeoutError(expiry)],
+    ['a setup-query (prologue) abort', () => new DbAccessContextPrologueAbortedError(expiry.contextLabel)],
+    ['a wrapped pool-acquire timeout', () => new Error('outer', { cause: new DbPoolAcquireTimeoutError(expiry) })],
+  ];
+
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    executeMock.mockResolvedValue([{ read_only: false }]);
+    queueBackupStopCommandMock.mockResolvedValue({ command: {} });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** Every non-backup domain is a no-op here; only the backup pass matters. */
+  function systemContext(backup: (fn: () => Promise<number>) => Promise<number>) {
+    withSystemMock.mockImplementation((fn: () => Promise<number>) =>
+      fn === reapStaleBackupJobs ? backup(fn) : Promise.resolve(0));
+  }
+  const healthy = () => systemContext((fn) => fn());
+  const unreachable = (makeError: () => Error) => systemContext(() => Promise.reject(makeError()));
+
+  function runningJob(keepaliveMs: number, nowMs: number) {
+    return {
+      id: 'job-u',
+      deviceId: 'device-u',
+      lastKeepaliveAt: new Date(keepaliveMs),
+      lastProgressAt: new Date(keepaliveMs),
+      totalSize: null,
+      transferredSize: null,
+      startedAt: new Date(OUTAGE_START - 30 * MIN),
+      createdAt: new Date(OUTAGE_START - 31 * MIN),
+      errorLog: null,
+      deviceStatus: 'online',
+      deviceLastSeenAt: new Date(nowMs - 1000),
+    };
+  }
+
+  function captureSet() {
+    const setMock = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'job-u' }]) })),
+    }));
+    updateMock.mockImplementation(() => ({ set: setMock }));
+    return setMock;
+  }
+
+  async function healthyCycleAt(nowMs: number, running: unknown[]) {
+    vi.setSystemTime(nowMs);
+    healthy();
+    selectMock.mockReturnValueOnce(selectChain(running)).mockReturnValueOnce(selectChain([]));
+    return runStaleCommandReaperCycle();
+  }
+
+  async function unreachableCycleAt(nowMs: number, makeError: () => Error) {
+    vi.setSystemTime(nowMs);
+    unreachable(makeError);
+    return runStaleCommandReaperCycle();
+  }
+
+  it.each(UNAVAILABLE)('%s from the system-context wrapper closes the window, and the next healthy cycle spares a job silent since before the outage', async (_label, makeError) => {
+    // Recording since the epoch: without the fix nothing would discount the outage.
+    resetSignalRecordingWindowForTests(0);
+    const setMock = captureSet();
+
+    const during = await unreachableCycleAt(OUTAGE_START + 20 * MIN, makeError);
+    expect(during.backupJobs).toBe(-1);
+    expect(signalRecordingWindowStart()).toBeNull();
+
+    // First cycle after recovery: the keepalive is 40 minutes old only because
+    // nothing could be written. Rule A must not fire.
+    const after = await healthyCycleAt(RECOVERY, [runningJob(OUTAGE_START, RECOVERY)]);
+    expect(after.backupJobs).toBe(0);
+    expect(signalRecordingWindowStart()).toBe(RECOVERY);
+    expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('a non-database error from the wrapper leaves the window open (a bug must not hold every reap)', async () => {
+    resetSignalRecordingWindowForTests(0);
+    await unreachableCycleAt(OUTAGE_START + 20 * MIN, () => new TypeError('not a database error'));
+    expect(signalRecordingWindowStart()).toBe(0);
+  });
+
+  it('an error that fails a different domain does not touch the window', async () => {
+    resetSignalRecordingWindowForTests(0);
+    vi.setSystemTime(OUTAGE_START + 20 * MIN);
+    withSystemMock.mockImplementation((fn: () => Promise<number>) =>
+      fn === reapStaleBackupJobs ? Promise.resolve(0) : Promise.reject(connectionRefused()));
+    await runStaleCommandReaperCycle();
+    expect(signalRecordingWindowStart()).toBe(0);
+  });
+
+  describe('repeated resets are not silent', () => {
+    const resetWarnings = () =>
+      warnSpy.mock.calls.filter(([m]: unknown[]) => String(m).includes('signal-recording window has been reset'));
+
+    it('warns once per 5 resets in a row, with the count and cause, and starts over once the window survives a cycle', async () => {
+      resetSignalRecordingWindowForTests(0);
+      const poolTimeout = () => new DbPoolAcquireTimeoutError(expiry);
+      let now = OUTAGE_START;
+      const tick = () => (now += 2 * MIN);
+
+      for (let i = 1; i <= 4; i++) await unreachableCycleAt(tick(), poolTimeout);
+      expect(resetWarnings()).toHaveLength(0);
+
+      await unreachableCycleAt(tick(), poolTimeout);
+      expect(resetWarnings()).toHaveLength(1);
+      expect(String(resetWarnings()[0]![0])).toContain('reset 5 times in a row');
+      expect(String(resetWarnings()[0]![0])).toContain('DbPoolAcquireTimeoutError');
+
+      for (let i = 6; i <= 9; i++) await unreachableCycleAt(tick(), poolTimeout);
+      expect(resetWarnings()).toHaveLength(1);
+      await unreachableCycleAt(tick(), poolTimeout);
+      expect(resetWarnings()).toHaveLength(2);
+      expect(String(resetWarnings()[1]![0])).toContain('reset 10 times in a row');
+
+      // Two healthy cycles: the window opens, then stays open across a cycle,
+      // which ends the run of resets.
+      await healthyCycleAt(tick(), []);
+      await healthyCycleAt(tick(), []);
+      for (let i = 1; i <= 4; i++) await unreachableCycleAt(tick(), poolTimeout);
+      expect(resetWarnings()).toHaveLength(2);
+    });
+
+    it('a timeout on every other cycle still counts: a window that never survives a cycle is not "healthy"', async () => {
+      resetSignalRecordingWindowForTests(0);
+      const poolTimeout = () => new DbPoolAcquireTimeoutError(expiry);
+      let now = OUTAGE_START;
+      const tick = () => (now += 2 * MIN);
+
+      for (let i = 1; i <= 5; i++) {
+        await unreachableCycleAt(tick(), poolTimeout);
+        await healthyCycleAt(tick(), []);
+      }
+      expect(resetWarnings()).toHaveLength(1);
+      expect(String(resetWarnings()[0]![0])).toContain('reset 5 times in a row');
+    });
+
+    it('a reset raised inside the backup pass and seen again by the cycle counts once', async () => {
+      resetSignalRecordingWindowForTests(0);
+      let now = OUTAGE_START;
+      for (let i = 1; i <= 5; i++) {
+        vi.setSystemTime((now += 2 * MIN));
+        // The probe itself fails: reapStaleBackupJobs notes it, rethrows, and
+        // the same error object reaches the cycle's catch.
+        executeMock.mockRejectedValueOnce(connectionRefused());
+        healthy();
+        await runStaleCommandReaperCycle();
+        expect(resetWarnings()).toHaveLength(i === 5 ? 1 : 0);
+      }
+      expect(String(resetWarnings()[0]![0])).toContain('reset 5 times in a row');
+      expect(errorSpy).toHaveBeenCalled();
+    });
   });
 });
 
