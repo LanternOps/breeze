@@ -28,6 +28,14 @@
  * Never throws: a lock timeout (55P03) or any other failure is logged with ids
  * and codes only and loses just this snapshot — the next complete snapshot
  * captures again, and D5 never invents the missing one.
+ *
+ * Contention is not a fault. Under REPEATABLE READ a concurrent update of a
+ * row this transaction writes (a sign-in touching an identity's
+ * `last_used_at`, a Restore) aborts it with 40001, and crossing row locks can
+ * abort it with 40P01. Either is retried ONCE in a fresh transaction, which
+ * re-reads the fence; a second abort skips the snapshot with a warning
+ * (`serialization_failure`), like a lock timeout. A lock timeout is not
+ * retried: it already waited 5 s.
  */
 import { and, eq, isNotNull, isNull, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, systemDbAccessContext, withDbAccessContext } from '../../db';
@@ -51,6 +59,9 @@ const LOG = '[portal-directory]';
 const M365_READ_PROFILE = 'customer-graph-read';
 const M365_EXECUTABLE = new Set(['active', 'degraded']);
 const SUBJECT_CHUNK = 1000;
+/** 40001 serialization_failure, 40P01 deadlock_detected: the transaction lost a race and may be re-run. */
+const RETRYABLE_CONTENTION = new Set(['40001', '40P01']);
+const CAPTURE_ATTEMPTS = 2;
 
 /**
  * The executor's default `M365_SYNC_MAX_ITEMS_USERS` (apps/m365-graph-read-
@@ -72,7 +83,7 @@ export interface EntraCaptureContext {
 }
 
 export type EntraCaptureResult =
-  | { recorded: false; reason: 'fenced' | 'no_identities' | 'lock_timeout' | 'error' }
+  | { recorded: false; reason: 'fenced' | 'no_identities' | 'lock_timeout' | 'serialization_failure' | 'error' }
   | { recorded: true; outcome: 'incomplete' | 'skipped'; reason: RunRefusalReason }
   | { recorded: true; outcome: 'evaluated'; runId: string; disposition: RunDisposition };
 
@@ -249,9 +260,9 @@ export async function captureEntraDirectoryRun(
   deps: EntraCaptureDeps = defaultDeps,
 ): Promise<EntraCaptureResult> {
   const ids = { orgId: ctx.orgId, connectionId: ctx.connectionId, generation: ctx.generation };
-  let outcome: InTransaction;
-  try {
-    outcome = await deps.transaction(async (): Promise<InTransaction> => {
+  // One fenced transaction; `attempt` re-runs it whole, the fence included.
+  const attempt = async (): Promise<InTransaction> => {
+    return deps.transaction(async (): Promise<InTransaction> => {
       const tx = db as RunStoreExecutor;
       const done = (result: EntraCaptureResult): InTransaction => ({ kind: 'done', result });
 
@@ -326,19 +337,31 @@ export async function captureEntraDirectoryRun(
       });
       return { kind: 'evaluated', recorded };
     });
-  } catch (err) {
-    const code = pgErrorCode(err);
-    if (code === '55P03') {
-      console.warn(`${LOG} entra capture lock timeout; this snapshot is not recorded`, ids);
-      return { recorded: false, reason: 'lock_timeout' };
+  };
+
+  let outcome: InTransaction | undefined;
+  for (let n = 1; outcome === undefined; n += 1) {
+    try {
+      outcome = await attempt();
+    } catch (err) {
+      const code = pgErrorCode(err);
+      if (code === '55P03') {
+        console.warn(`${LOG} entra capture lock timeout; this snapshot is not recorded`, ids);
+        return { recorded: false, reason: 'lock_timeout' };
+      }
+      if (code && RETRYABLE_CONTENTION.has(code)) {
+        if (n < CAPTURE_ATTEMPTS) continue;
+        console.warn(`${LOG} entra capture lost a concurrent-update race twice; this snapshot is not recorded`, { ...ids, code });
+        return { recorded: false, reason: 'serialization_failure' };
+      }
+      // Ids and codes only: a failed query's message embeds its parameters.
+      console.error(`${LOG} entra capture failed; this snapshot is not recorded`, {
+        ...ids,
+        error: err instanceof Error ? err.name : 'unknown',
+        code: code ?? null,
+      });
+      return { recorded: false, reason: 'error' };
     }
-    // Ids and codes only: a failed query's message embeds its parameters.
-    console.error(`${LOG} entra capture failed; this snapshot is not recorded`, {
-      ...ids,
-      error: err instanceof Error ? err.name : 'unknown',
-      code: code ?? null,
-    });
-    return { recorded: false, reason: 'error' };
   }
 
   if (outcome.kind === 'done') return outcome.result;
