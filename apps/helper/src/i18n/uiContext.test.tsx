@@ -35,7 +35,7 @@ describe('UI context', () => {
   it('without branding the Helper stays Breeze', () => {
     act(() => setUiContext({ locale: 'en' }));
     expect(getUiContext().branding).toEqual({});
-    expect(productName(getUiContext())).toBe('Breeze Helper');
+    expect(productName(getUiContext())).toBe('Breeze Assist');
   });
 
   it('switches copy to the session locale and back to English for an uncovered one', () => {
