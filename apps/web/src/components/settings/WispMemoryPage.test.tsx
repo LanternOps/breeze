@@ -154,6 +154,7 @@ describe('WispMemoryPage', () => {
     expect(screen.getByTestId('wisp-memory-row-si2').textContent).toContain('wispMemory.subjectFallback');
     expect(screen.getByTestId('wisp-memory-row-si').textContent).not.toContain('device:');
     expect(screen.getByTestId('wisp-memory-row-si2').textContent).not.toContain('device:');
+    expect(screen.queryByTestId('wisp-memory-key-si')).toBeNull();
     fireEvent.click(screen.getByTestId('wisp-memory-toggle-si'));
     expect(screen.getByTestId('wisp-memory-key-si').textContent).toBe(RAW);
   });

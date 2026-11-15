@@ -15,14 +15,19 @@ const h = vi.hoisted(() => ({
   calls: [] as string[],
   rows: {} as Record<string, unknown[]>,
   wheres: {} as Record<string, unknown[]>,
+  selected: {} as Record<string, string[]>,
 }));
 
 vi.mock('../../db', async () => {
   const { getTableName } = await import('drizzle-orm');
-  const select = vi.fn(() => {
+  const select = vi.fn((fields?: Record<string, unknown>) => {
     let table = '';
     const chain: Record<string, unknown> = {};
-    chain.from = (t: Parameters<typeof getTableName>[0]) => { table = getTableName(t); h.calls.push(`select:${table}`); return chain; };
+    chain.from = (t: Parameters<typeof getTableName>[0]) => {
+      table = getTableName(t); h.calls.push(`select:${table}`);
+      (h.selected[table] ??= []).push(...Object.keys(fields ?? {}));
+      return chain;
+    };
     for (const m of ['leftJoin', 'innerJoin', 'orderBy', 'limit']) chain[m] = () => chain;
     chain.where = (w: unknown) => { (h.wheres[table] ??= []).push(w); return chain; };
     chain.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
@@ -207,6 +212,14 @@ describe('listActivity — ceiling filter', () => {
     const fallback = byId.get(uid(2))!.title;
     expect(fallback).toBe('Remembered standing instruction');
     for (const i of items) expect(i.title).not.toMatch(/device:|0123456789abcdef/);
+    // The mock returns queued rows whatever is selected, so pin that the query loads `content` itself.
+    expect(h.selected.ai_memory_blocks).toContain('content');
+  });
+
+  it('a long standing-instruction text is capped in the title', async () => {
+    h.rows.ai_memory_blocks = [instructionRow(1, t(1), { text: 'x'.repeat(400) })];
+    const { items } = await listActivity(ceiling());
+    expect(items[0]!.title.length).toBeLessThan(150);
   });
 
   it('concern href is null without a threadId', async () => {

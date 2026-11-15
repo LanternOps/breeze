@@ -336,12 +336,13 @@ async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Prom
   return rows.map((r) => {
     // #11612: a standing instruction's key is an internal clause id; its own text is the readable subject.
     const subject = memoryBlockSubjectText(r);
+    const label = `Remembered ${humanize(r.blockType)}`;
     return row('memory', r.id, r.createdAt, {
-    orgId: r.ownerKind === 'org' ? r.ownerOrgId : null,
-    title: subject === null ? `Remembered ${humanize(r.blockType)}` : `Remembered ${humanize(r.blockType)}: ${truncate(subject, 100)}`,
-    detail: humanize(r.status),
-    href: null,
-    costCents: null,
+      orgId: r.ownerKind === 'org' ? r.ownerOrgId : null,
+      title: subject === null ? label : `${label}: ${truncate(subject, 100)}`,
+      detail: humanize(r.status),
+      href: null,
+      costCents: null,
     });
   });
 }
