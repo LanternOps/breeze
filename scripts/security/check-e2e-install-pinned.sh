@@ -4,6 +4,12 @@
 # workspace and has no pnpm lockfile, so `pnpm install` / `npm install` there
 # resolve version ranges at run time; only `npm ci` is lockfile-pinned.
 #
+# A step is flagged when any non-comment line in it (single-line `run:` or a
+# `run: |` block) is a floating install AND the step targets e2e-tests via
+# `working-directory:` (quoted / ./ / trailing-slash spellings accepted), a
+# job-level `defaults.run.working-directory`, `cd e2e-tests`, `--dir`/`--prefix
+# e2e-tests`.
+#
 # Usage: check-e2e-install-pinned.sh [repo-root]   (default: this repo)
 set -euo pipefail
 
@@ -12,27 +18,35 @@ cd "$ROOT"
 
 [[ -f e2e-tests/package-lock.json ]] || { echo "ERROR: e2e-tests/package-lock.json is missing" >&2; exit 1; }
 shopt -s nullglob
-files=(.github/workflows/*.yml .github/workflows/*.yaml)
+files=(.github/workflows/*.yml .github/workflows/*.yaml .github/actions/*/action.yml)
 (( ${#files[@]} > 0 )) || { echo "ERROR: no workflow files found" >&2; exit 1; }
+
+# Positive control: the guard must see at least one e2e-tests step, so a
+# renamed key or an empty glob cannot turn it into a vacuous pass.
+grep -Eq 'working-directory:.*e2e-tests' "${files[@]}" ||
+  { echo "ERROR: found no e2e-tests install step to inspect (guard is stale?)" >&2; exit 1; }
 
 bad=0
 for f in "${files[@]}"; do
-  # Per step (a `- name:`/`- uses:`/`- run:` item): flag a floating install
-  # when the step's working-directory is e2e-tests, or when a run line does
-  # `cd e2e-tests` first. Only single-line `run:` values are inspected.
   out="$(awk -v F="$f" '
     function floating(s) {
-      return s ~ /(pnpm|yarn)[[:space:]]+(install|add|i)([[:space:]]|$)/ || s ~ /npm[[:space:]]+(install|i)([[:space:]]|$)/
+      return s ~ /(pnpm|yarn)[[:space:]]+(.*[[:space:]])?(install|add|i)([[:space:]]|$)/ || s ~ /npm[[:space:]]+(.*[[:space:]])?(install|i)([[:space:]]|$)/
     }
-    function flush() { if (wd && runfloat) print F ":" runline ": " runtext; wd=0; runfloat=0 }
-    /^[[:space:]]*-[[:space:]]+[a-z-]+:/ { flush() }
-    /working-directory:[[:space:]]*e2e-tests[[:space:]]*$/ { wd=1 }
-    /^[[:space:]]*(-[[:space:]]+)?run:/ {
-      line=$0; sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/, "", line)
-      if (floating(line)) {
-        runfloat=1; runline=NR; runtext=line
-        if (line ~ /cd[[:space:]]+e2e-tests/) print F ":" NR ": " line
-      }
+    function targets(s) {
+      return s ~ /(cd|--dir|--prefix)[[:space:]=]+["\x27]?(\.\/)?e2e-tests/
+    }
+    function flush() {
+      if (hit && (wd || filewd || tgt)) print F ":" hitline ": " hittext
+      hit=0; wd=0; tgt=0
+    }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*defaults:/ { indef=1 }
+    /^[[:space:]]*steps:/ { indef=0 }
+    /^[[:space:]]*-[[:space:]]+[A-Za-z_-]+:/ { flush() }
+    /working-directory:[[:space:]]*["\x27]?(\.\/)?e2e-tests\/?["\x27]?[[:space:]]*(#.*)?$/ { if (indef) filewd=1; else wd=1 }
+    {
+      if (floating($0) && !hit) { hit=1; hitline=NR; hittext=$0; sub(/^[[:space:]]+/, "", hittext) }
+      if (targets($0)) tgt=1
     }
     END { flush() }
   ' "$f" | sort -u)"
