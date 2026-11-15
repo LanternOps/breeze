@@ -34,7 +34,7 @@
  * seam as metricAnomalySubscriber.ts).
  */
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import {
   WISP_CHECK_IN_TRIGGER_EVENTS,
   type Concern,
@@ -85,6 +85,7 @@ import { getOrCreateThread, seedContextForSession, updateThreadPicture } from '.
 import { listWatches } from './watches';
 import { parseWatchHitSummary } from './watchHits';
 import { incWispAssessment } from '../wispMetrics';
+import { ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE } from './assessmentTypes';
 import type {
   AssessmentDigest,
   AssessmentReason,
@@ -400,9 +401,16 @@ export type DigestChangeSource = 'alerts' | 'tickets' | 'incidents' | 'runs' | '
 
 /**
  * `finished_at` of the latest assessment of (grant, org) that finished
- * cleanly: the same runs lastAssessmentWatermark reads, so it is the end of
- * the run the next digest window starts at. null when there is none (or it
- * has no finish time), and then the gate does not apply.
+ * cleanly: the runs lastAssessmentWatermark reads, so normally the end of the
+ * run the next digest window starts at. null when there is none (or it has no
+ * finish time), and then the gate does not apply.
+ *
+ * #11513: it also skips a run whose metric anomaly read failed
+ * (ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE), which the watermark still counts.
+ * That run never saw the anomalies, so the anchor stays at the run before it,
+ * and an anomaly announced or closed since then is still a change. Until a
+ * run reads them, the failed run is itself a `runs` change for a grant that
+ * may read runs, so the gate stays open: the same fail-open as a failed probe.
  */
 async function lastCleanAssessmentFinish(grantId: string, orgId: string): Promise<Date | null> {
   const [row] = await sys(() => db
@@ -413,7 +421,7 @@ async function lastCleanAssessmentFinish(grantId: string, orgId: string): Promis
       eq(aiAgentRuns.orgId, orgId),
       eq(aiAgentRuns.profile, 'assessment'),
       inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
-      or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
+      or(isNull(aiAgentRuns.errorCode), notInArray(aiAgentRuns.errorCode, [...NO_CHANGES_ANCHOR_EXCLUDED_ERROR_CODES])),
       notCheckInRun(),
     )), 'wisp.assessment.noChangesAnchor');
   return toDate(row?.at);
@@ -660,6 +668,8 @@ async function clearNoAgentReadiness(partnerId: string, orgId: string): Promise<
 const WATERMARK_RUN_STATUSES = ['completed', 'awaiting_approval'] as const;
 /** The finalizer's error code for dropped work (aiAgents/assessmentFinalizer.ts). */
 const PARTIALLY_APPLIED_ERROR_CODE = 'assessment_partially_applied';
+/** Finalizer error codes of runs that are not a no-changes anchor (lastCleanAssessmentFinish). */
+const NO_CHANGES_ANCHOR_EXCLUDED_ERROR_CODES = [PARTIALLY_APPLIED_ERROR_CODE, ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE] as const;
 
 /**
  * Where the next assessment's digest window starts for (grant, org): the
@@ -890,7 +900,7 @@ async function loadDigest(
   since: Date,
   firstLook: boolean,
   anomalyIncidentId: string | null,
-): Promise<AssessmentDigest> {
+): Promise<{ digest: AssessmentDigest; anomaliesReadFailed: boolean }> {
   const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
     ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
   const base = await sys(async () => {
@@ -964,8 +974,9 @@ async function loadDigest(
       })),
     };
   }, 'wisp.assessment.digest');
-  const anomalies = may('anomalies') ? await loadAnomalySection(orgId, anomalyIncidentId, currentRunId) : null;
-  return { ...base, anomalies };
+  // Not permitted is null by design; a failed read is null too, and flagged.
+  const anomalies = may('anomalies') ? await loadAnomalySection(orgId, anomalyIncidentId, currentRunId) : { ok: true as const, rows: null };
+  return { digest: { ...base, anomalies: anomalies.ok ? anomalies.rows : null }, anomaliesReadFailed: !anomalies.ok };
 }
 
 /**
@@ -984,23 +995,24 @@ function anomalyIncidentAnnounced(): SQL {
 const DIGEST_ANOMALY_METRIC_NAME_LIMIT = 10;
 
 /**
- * #11425: the digest's metric anomalies, or null when they could not be read.
+ * #11425: the digest's metric anomalies, or `ok: false` when they could not be read.
  * The read has its own system context and transaction, and the catch sits
  * outside it (CLAUDE.md: a catch around a query wraps the whole
  * transaction). It is a join over tables no other section reads, so a failure
  * there must not fail every assessment run. Like loadReadiness, a failure is
  * logged and sent to Sentry, and the section degrades to null. The prompt
  * then says the anomalies were not read, so it does not claim there are none
- * while the reason names an anomaly incident.
+ * while the reason names an anomaly incident, and the run is flagged
+ * (`anomaliesReadFailed`) so it does not anchor the no-changes gate (#11513).
  */
 async function loadAnomalySection(
   orgId: string,
   triggerId: string | null,
   runId: string,
-): Promise<AssessmentDigest['anomalies']> {
+): Promise<{ ok: true; rows: AssessmentDigest['anomalies'] } | { ok: false }> {
   try {
     const rows = await sys(() => loadDigestAnomalies(orgId, triggerId), 'wisp.assessment.digest.anomalies');
-    return rows.map((r) => ({
+    return { ok: true, rows: rows.map((r) => ({
       id: r.id,
       deviceId: r.deviceId,
       deviceName: r.deviceName ? sanitizeSweepText(r.deviceName, 120) : null,
@@ -1010,13 +1022,13 @@ async function loadAnomalySection(
       peakScore: Number(r.peakScore),
       openedAt: toIso(r.openedAt),
       status: sanitizeSweepText(String(r.status), 20),
-    }));
+    })) };
   } catch (err) {
     console.warn('[wisp.assessment] metric anomaly read failed; digest carries anomalies: null', {
       runId, orgId, error: err instanceof Error ? err.message : String(err),
     });
     captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.anomalies', runId, orgId });
-    return null;
+    return { ok: false };
   }
 }
 
@@ -1212,7 +1224,7 @@ export async function loadAssessmentContext(run: {
     && (ref.watermark === null || ref.reason.kind === 'onboarding' || ref.reason.kind === 'on_demand');
   const reason = ref.reason;
   const anomalyIncidentId = reason.kind === 'event' ? reason.anomalyIncidentId ?? null : null;
-  const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook, anomalyIncidentId);
+  const { digest, anomaliesReadFailed } = await loadDigest(ceiling, run.orgId, run.id, since, firstLook, anomalyIncidentId);
 
   const watchId = reason.kind === 'watch' ? reason.watchId : null;
   const watch = watchId !== null
@@ -1232,6 +1244,7 @@ export async function loadAssessmentContext(run: {
     firstLook,
     noEarlierAssessment: ref.watermark === null,
     digest,
+    anomaliesReadFailed,
     watch,
     reason,
     readiness,

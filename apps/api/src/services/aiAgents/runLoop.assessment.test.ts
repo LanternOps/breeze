@@ -266,6 +266,7 @@ function assessmentCtx(): AssessmentRunContext {
     threadSummary: 'Wisp picture', openConcerns: [], changedSince: null,
     digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [], anomalies: [] },
     watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false, noEarlierAssessment: false,
+    anomaliesReadFailed: false,
   };
 }
 

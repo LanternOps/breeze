@@ -122,6 +122,7 @@ function assessmentCtx(overrides: Partial<AssessmentRunContext> = {}): Assessmen
     threadSummary: '', openConcerns: [], changedSince: null,
     digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [], anomalies: [] },
     watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false, noEarlierAssessment: false,
+    anomaliesReadFailed: false,
     ...overrides,
   };
 }
@@ -539,6 +540,29 @@ describe('finalizeAssessment (Wisp W05b)', () => {
     expect(await finalizeAssessment(makeCtx(), result)).toBe('assessment_partially_applied');
     expect(notifyUser).toHaveBeenCalledTimes(1);
     expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  // #11513: a failed anomaly read finished the run without seeing the
+  // anomalies, so the run must not move the no-changes gate's anchor.
+  describe('a failed metric anomaly read (#11513)', () => {
+    it('a clean apply returns assessment_anomalies_unread and still applies the model calls', async () => {
+      const result = makeResult(calls({ concernsRaised: [RAISE] }));
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: true })), result))
+        .toBe('assessment_anomalies_unread');
+      expect(concerns.upsertConcern).toHaveBeenCalledTimes(1);
+      expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+    });
+
+    it('dropped work still wins: assessment_partially_applied (excluded from the watermark too)', async () => {
+      concerns.upsertConcern.mockRejectedValue(new Error('db down'));
+      const result = makeResult(calls({ concernsRaised: [RAISE] }));
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: true })), result))
+        .toBe('assessment_partially_applied');
+    });
+
+    it('anomalies that were read (or not permitted) leave a clean apply null', async () => {
+      expect(await finalizeAssessment(makeCtx(assessmentCtx({ anomaliesReadFailed: false })), makeResult(calls()))).toBeNull();
+    });
   });
 
   describe('the grant must still be usable for ANY write (model calls, readiness, touch)', () => {
