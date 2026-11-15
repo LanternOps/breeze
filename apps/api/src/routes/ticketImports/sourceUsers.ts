@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { TicketImportError } from '../../services/ticketImport/importErrors';
 import { getTicketImportModule } from '../../services/ticketImport/moduleRegistry';
@@ -19,7 +19,9 @@ import { callerPartner, idParamSchema, importErrorResponse, sourceCallError } fr
  * logged.
  *
  * Who: the report's readers, a partner-wide admin of the caller's partner
- * (`callerPartner`). A POST only to carry the key list; it changes nothing.
+ * (`callerPartner`), with MFA: each call opens the stored source credentials
+ * and calls the source with them, as the preflight does (#11949 review). A
+ * POST only to carry the key list; it changes nothing.
  * In SELF_MANAGED_DB_CONTEXT_ROUTES: the source call runs with no request
  * transaction held, the source read in its own short context.
  */
@@ -27,9 +29,10 @@ export const ticketImportSourceUserRoutes = new Hono();
 
 export const SOURCE_USER_KEYS_MAX = 200;
 
-const readGate = [
+const resolveGate = [
   requireScope('partner'),
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requireMfa(),
 ] as const;
 
 const resolveSchema = z.object({
@@ -38,7 +41,7 @@ const resolveSchema = z.object({
 
 ticketImportSourceUserRoutes.post(
   '/sources/:id/source-users/resolve',
-  ...readGate,
+  ...resolveGate,
   zValidator('param', idParamSchema),
   zValidator('json', resolveSchema),
   async (c) => {

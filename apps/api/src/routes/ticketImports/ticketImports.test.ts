@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 const mocks = vi.hoisted(() => ({
   auth: { value: null as Record<string, unknown> | null },
+  mfa: { satisfied: true },
   store: {
     listSources: vi.fn(),
     getSource: vi.fn(),
@@ -47,7 +48,7 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   },
   requirePermission: () => async (_c: any, next: any) => next(),
-  requireMfa: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (c: any, next: any) => (mocks.mfa.satisfied ? next() : c.json({ error: 'MFA required' }, 403)),
   withAuthDbAccessContext: async (_auth: unknown, fn: () => unknown) => fn(),
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: mocks.audit }));
@@ -426,6 +427,18 @@ describe('POST /sources/:id/source-users/resolve (#8313 W6, spec §5.10)', () =>
     expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] })).status).toBe(403);
     signIn({ partnerOrgAccess: 'selected' });
     expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] })).status).toBe(403);
+    expect(mocks.store.readSourceForUse).not.toHaveBeenCalled();
+    expect(resolvePeople).not.toHaveBeenCalled();
+  });
+
+  // #11949 review: each call opens the stored credentials, so MFA gates it, as the preflight.
+  it('needs MFA before the stored credentials are opened', async () => {
+    mocks.mfa.satisfied = false;
+    try {
+      expect((await send('POST', `/sources/${SOURCE}/source-users/resolve`, { keys: ['3'] })).status).toBe(403);
+    } finally {
+      mocks.mfa.satisfied = true;
+    }
     expect(mocks.store.readSourceForUse).not.toHaveBeenCalled();
     expect(resolvePeople).not.toHaveBeenCalled();
   });
