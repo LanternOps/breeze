@@ -2,22 +2,12 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { mintStepUpGrant } from '../../lib/mfaStepUp';
-import { fetchWithAuth } from '../../stores/auth';
-import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
+import { discoverReauthTier } from '../../lib/reauthTier';
+import type { ReauthTier } from '../settings/StepUpPrompt';
 
 /** Exactly the resource the server digests for a `topology_arm` grant (routes/auth/schemas.ts `topologyArmStepUpResource`). */
 export type TopologyArmResource = { siteId: string; action: 'arm_policy' | 'arm_telemetry'; subjectId: string };
 type Pending = { resource: TopologyArmResource; submit: (grantId?: string) => Promise<void>; fallback: string };
-
-async function discoverTier(): Promise<ReauthTier> {
-  const [user, passkeys] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
-  if (!user.ok || !passkeys.ok) throw new Error('factor discovery failed');
-  const me = await user.json() as { mfaMethod?: string | null } | null;
-  const keys = await passkeys.json() as unknown;
-  const list = Array.isArray(keys) ? keys : (keys as { passkeys?: unknown[] } | null)?.passkeys;
-  if (!me || !Array.isArray(list)) throw new Error('factor discovery failed');
-  return pickReauthTier(list.length, me.mfaMethod ?? null);
-}
 
 /**
  * Server-driven `topology_arm` step-up (same contract as MaintenanceModeDialog):
@@ -41,7 +31,7 @@ export function useTopologyArmStepUp(): { arm: (pending: Pending) => Promise<voi
     } catch (cause) {
       if (cause instanceof ActionError && cause.status === 403 && cause.code === 'step_up_required') {
         try {
-          const discovered = await discoverTier();
+          const discovered = await discoverReauthTier();
           if (!live.current) return;
           setTier(discovered); setPending(next); setCode(''); setError(undefined);
         } catch { if (live.current) setError(t('operations.stepUp.unavailable')); }

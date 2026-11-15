@@ -265,21 +265,14 @@ async function rankForSource(source: SourceSnapshot) {
   return { matches, retired, ranked: rankCandidates(source, qualifying) };
 }
 
-/** The source as the candidates read (#8318 wave 2-2) reports it. */
-export type RankedCandidatesSource = Pick<
-  SourceSnapshot,
-  'id' | 'orgId' | 'siteId' | 'hostname' | 'osType' | 'orgType' | 'partnerId' | 'storedTargetId' | 'storedReason' | 'enrolledAt'
->;
-
 /**
- * The ranked candidates of one source, for the reattach dialog (#8318 wave
- * 2-2, services/reinstallCandidates/viewer.ts): the SAME search, rules and
- * order the detection uses, with every qualifying candidate instead of the
- * best one. Runs in the caller's DB context, which must be system scope (the
- * search is partner-wide and reads the ledger). Null when the source does not
- * exist; an empty list for a source the search never runs for.
+ * The source a reattach dialog ranks candidates for (#8318 wave 2-2,
+ * services/reinstallCandidates/viewer.ts). The viewer reads it, checks the
+ * caller can see it, and only then ranks: the SAME search, rules and order the
+ * detection uses, with every qualifying candidate instead of the best one.
+ * Both reads run in the caller's DB context, which must be system scope (the
+ * search is partner-wide and reads the ledger).
  */
-/** The full source snapshot ranking needs; callers read only its `RankedCandidatesSource` fields. */
 export type ReinstallSource = SourceSnapshot;
 
 /** The source as candidates are ranked for it, or null when it does not exist. */
@@ -293,7 +286,6 @@ export async function rankReinstallCandidatesFor(source: ReinstallSource): Promi
   const { ranked } = await rankForSource(source);
   return ranked;
 }
-
 
 async function plan(sourceDeviceId: string): Promise<Plan | { skip: string }> {
   const source = await readSource(sourceDeviceId);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Clock } from 'lucide-react';
-import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
+import { useReauthTier } from '../../lib/reauthTier';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -116,7 +116,6 @@ export default function ReattachDeviceForm({
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [discoveredTier, setDiscoveredTier] = useState<ReauthTier | null>(null);
   const [intent, setIntent] = useState<ReattachRequestedIntent | null>(null);
   // A grant minted and not yet consumed: a refusal before the consume (a 409
   // such as liveness_unknown) leaves it spendable, and the TOTP code it was
@@ -141,9 +140,7 @@ export default function ReattachDeviceForm({
     setIntent(null);
   }, [candidate.deviceId, candidate.targetVersion]);
 
-  const tier: ReauthTier | null = passkeyCount === undefined || mfaMethod === undefined
-    ? discoveredTier
-    : pickReauthTier(passkeyCount, mfaMethod);
+  const { tier, ensureTier } = useReauthTier(passkeyCount, mfaMethod);
   const noUsableFactor = phase === 'stepUp' && tier === 'password';
   const hint = REQUEST_EVIDENCE_LEVEL === 'hint';
 
@@ -159,27 +156,24 @@ export default function ReattachDeviceForm({
     ? heldGrant
     : null;
 
+  // An idle dialog drops the grant when it stops being usable, so the step-up
+  // shows the code field again instead of "verified" (#8318 2-3 review).
+  useEffect(() => {
+    if (!heldGrant) return;
+    const timer = setTimeout(() => setHeldGrant(null), Math.max(0, heldGrant.mintedAt + HELD_GRANT_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [heldGrant]);
+
   useEffect(() => {
     onBusyChange?.(submitting || phase === 'stepUp');
   }, [submitting, phase, onBusyChange]);
   useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
 
   const discoverTier = useCallback(async (): Promise<boolean> => {
-    if (tier !== null) return true;
-    try {
-      const [userResponse, passkeyResponse] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
-      if (!userResponse.ok || !passkeyResponse.ok) throw new Error('factor discovery failed');
-      const user = await userResponse.json() as { mfaMethod?: string | null } | null;
-      const passkeyData = await passkeyResponse.json() as unknown;
-      const passkeys = Array.isArray(passkeyData) ? passkeyData : (passkeyData as { passkeys?: unknown[] } | null)?.passkeys;
-      if (!user || !Array.isArray(passkeys)) throw new Error('factor discovery failed');
-      setDiscoveredTier(pickReauthTier(passkeys.length, user.mfaMethod ?? null));
-      return true;
-    } catch {
-      setError(t('reattachDialog.genericError'));
-      return false;
-    }
-  }, [tier, t]);
+    if (await ensureTier()) return true;
+    setError(t('reattachDialog.genericError'));
+    return false;
+  }, [ensureTier, t]);
 
   const refusalMessage = useCallback((refusalCode: string | undefined, fallback: string): string => {
     if (isKnownReattachRefusal(refusalCode)) {
@@ -197,8 +191,13 @@ export default function ReattachDeviceForm({
 
     let stepUpGrant: string | undefined;
     if (phase === 'stepUp') {
-      if (usableGrant) {
+      // Checked again at submit: a background tab can run the expiry timer late.
+      if (usableGrant && Date.now() - usableGrant.mintedAt < HELD_GRANT_MS) {
         stepUpGrant = usableGrant.grantId;
+      } else if (usableGrant && tier !== 'passkey') {
+        // It lapsed while the dialog sat idle: ask for a fresh code, send nothing.
+        setHeldGrant(null);
+        return;
       } else {
         try {
           stepUpGrant = await mintStepUpGrant({
