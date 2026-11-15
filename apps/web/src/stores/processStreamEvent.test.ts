@@ -899,3 +899,49 @@ describe('wisp instruction capture (done)', () => {
     spy.mockRestore();
   });
 });
+
+describe('#11676: a turn the technician stopped', () => {
+  function harness(messages: StreamableState['messages']) {
+    const h = { state: { ...makeState(), messages } as StreamableState };
+    return {
+      get state() { return h.state; },
+      set: (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; },
+      get: () => h.state,
+    };
+  }
+  const at = new Date('2026-11-14T10:00:00Z');
+
+  it('done with stopped keeps the partial reply, marks it stopped, and sets no error', () => {
+    const h = harness([
+      { id: 'a0', role: 'assistant', content: 'Earlier answer', createdAt: at },
+      { id: 'u1', role: 'user', content: 'Write me a checklist', createdAt: at },
+      { id: 'a1', role: 'assistant', content: 'Step 1: confirm', isStreaming: true, createdAt: at },
+    ]);
+    processStreamEvent({ type: 'done', stopped: true }, h.set, h.get, 'a1');
+    expect(h.state.error).toBeNull();
+    expect(h.state.isStreaming).toBe(false);
+    const a1 = h.state.messages.find((m) => m.id === 'a1');
+    expect(a1).toMatchObject({ content: 'Step 1: confirm', stopped: true, isStreaming: false });
+    // Only this turn's reply is marked, never an earlier one.
+    expect(h.state.messages.find((m) => m.id === 'a0')?.stopped).toBeUndefined();
+  });
+
+  it('a stop before any reply text marks nothing from an earlier turn', () => {
+    const h = harness([
+      { id: 'a0', role: 'assistant', content: 'Earlier answer', createdAt: at },
+      { id: 'u1', role: 'user', content: 'Write me a checklist', createdAt: at },
+    ]);
+    processStreamEvent({ type: 'done', stopped: true }, h.set, h.get, null);
+    expect(h.state.messages.some((m) => m.stopped)).toBe(false);
+    expect(h.state.error).toBeNull();
+  });
+
+  it('a done without stopped marks nothing', () => {
+    const h = harness([
+      { id: 'u1', role: 'user', content: 'hi', createdAt: at },
+      { id: 'a1', role: 'assistant', content: 'Hello', isStreaming: true, createdAt: at },
+    ]);
+    processStreamEvent({ type: 'done' }, h.set, h.get, 'a1');
+    expect(h.state.messages.find((m) => m.id === 'a1')?.stopped).toBeUndefined();
+  });
+});

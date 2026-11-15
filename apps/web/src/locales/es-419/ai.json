@@ -85,6 +85,7 @@
   "aiChatMessages": {
     "title": "Breeze AI",
     "description": "Pregunte sobre sus dispositivos, alertas, métricas o solucione problemas.",
+    "stopped": "Detenido",
     "unknownTool": "herramienta desconocida",
     "toolResult": "Resultado de la herramienta",
     "unattendedRelease": "Revisado por el revisor de scripts de la IA y publicado sin una tarjeta de aprobación.",

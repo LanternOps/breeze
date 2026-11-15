@@ -17,7 +17,7 @@ import type { AiMessage } from '@/stores/processStreamEvent';
  */
 export type ChatRow = Pick<
   AiMessage,
-  'id' | 'role' | 'content' | 'toolName' | 'toolInput' | 'toolOutput' | 'toolUseId' | 'isError' | 'handoff' | 'isStreaming'
+  'id' | 'role' | 'content' | 'toolName' | 'toolInput' | 'toolOutput' | 'toolUseId' | 'isError' | 'handoff' | 'isStreaming' | 'stopped'
 > & { createdAt?: Date | string };
 
 export type ToolCall = {

@@ -406,6 +406,12 @@ export type AiStreamEvent =
     type: 'done';
     usage?: { inputTokens: number; outputTokens: number; costCents: number };
     /**
+     * #11676: the technician pressed Stop and this turn ended because of it.
+     * Not a failure: no `error` precedes it, and the partial reply so far is
+     * kept and marked stopped.
+     */
+    stopped?: true;
+    /**
      * #10428 (Wisp only): the turn's message held a standing instruction, and
      * its capture runs after `done`. The chip polls
      * `GET /wisp/memory/captures/status/:captureId` until it is terminal.

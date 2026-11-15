@@ -32,7 +32,25 @@ export interface AiMessage {
    */
   topologyExplanationInvalid?: boolean;
   isStreaming?: boolean;
+  /** #11676: the technician pressed Stop; this is the partial reply so far. Live only (not persisted). */
+  stopped?: boolean;
   createdAt: Date;
+}
+
+/**
+ * #11676: mark this turn's latest assistant reply (the last one after the
+ * turn's user message) as stopped. A turn stopped before any reply text marks
+ * nothing, so an earlier turn's answer is never relabelled.
+ */
+function markTurnReplyStopped(messages: AiMessage[]): AiMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'user') return messages;
+    if (m.role === 'assistant') {
+      return messages.map((row, j) => (j === i ? { ...row, stopped: true, isStreaming: false } : row));
+    }
+  }
+  return messages;
 }
 
 /** Plain-text rendering of a validated topology explanation for the chat transcript. */
@@ -518,6 +536,8 @@ export function processStreamEvent(
       set((s) => ({
         isStreaming: false, thinking: false, joinedMidResponse: false,
         ...(s.pendingApproval?.resolution ? { pendingApproval: null } : {}),
+        // #11676: a stopped turn keeps its partial reply, marked as stopped.
+        ...(event.stopped ? { messages: markTurnReplyStopped(s.messages) } : {}),
       }));
       // #10428: the API extracts a standing instruction after `done`; follow it
       // so the chip can show under the reply. Loaded lazily: only a Wisp turn
