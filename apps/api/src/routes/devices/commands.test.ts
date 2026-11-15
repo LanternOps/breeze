@@ -298,6 +298,14 @@ describe('device commands routes', () => {
     it.each(cases)(
       'queues %s only through the execute gate and dispatcher',
       async (type, payload) => {
+        const deliver = vi.fn(async () => undefined);
+        dispatchDeviceCommandMock.mockImplementationOnce(async () => ({
+          ok: true,
+          command: { id: 'cmd-1', deviceId, type, status: 'pending', createdAt: new Date() },
+          delivery: 'delivered',
+          deliverBy: new Date(),
+          deliver,
+        }));
         vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
           id: deviceId,
           orgId: 'org-123',
@@ -314,7 +322,13 @@ describe('device commands routes', () => {
           type,
           payload,
           userId: 'user-123',
+          deferDelivery: true,
         });
+        expect(deliver).not.toHaveBeenCalled();
+        expect(runAfterDbContextCommit).toHaveBeenCalledWith('commands.create.deliver', expect.any(Function));
+        const continuation = vi.mocked(runAfterDbContextCommit).mock.lastCall?.[1];
+        await continuation?.();
+        expect(deliver).toHaveBeenCalledOnce();
         const { writeRouteAudit } = await import('../../services/auditEvents');
         expect(writeRouteAudit).toHaveBeenCalledWith(
           expect.anything(),

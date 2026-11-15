@@ -595,6 +595,7 @@ commandsRoutes.post(
         type: data.type,
         payload: data.payload || {},
         userId: auth.user.id,
+        deferDelivery: true,
       });
       if (!res.ok) {
         if (res.code === 'device_decommissioned') {
@@ -614,6 +615,12 @@ commandsRoutes.post(
         return c.json({ error: res.error }, 500);
       }
       const command = res.command;
+      // The result callback must see the queued row before socket delivery.
+      if (res.deliver) {
+        runAfterDbContextCommit('commands.create.deliver', async () => {
+          await res.deliver!();
+        });
+      }
 
       writeRouteAudit(c, {
         orgId: device.orgId,
