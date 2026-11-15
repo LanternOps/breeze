@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Clock, X } from 'lucide-react';
 import type { WispCheckIn, WispCheckInTriggerEvent } from '@breeze/shared';
 
@@ -16,12 +17,18 @@ function dueLabel(dueAt: string, now: Date): string {
 }
 
 /** What an event check-in waits for (#11675): its chip names the trigger, and `dueAt` is when it gives up. */
-const WAITING_FOR_KEY: Readonly<Record<WispCheckInTriggerEvent, string>> = {
-  device_online: 'wisp.checkIn.waitingFor.deviceOnline',
-  script_finished: 'wisp.checkIn.waitingFor.scriptFinished',
-  command_finished: 'wisp.checkIn.waitingFor.commandFinished',
-  run_settled: 'wisp.checkIn.waitingFor.runSettled',
-};
+function waitingForLabel(t: TFunction<'ai'>, kind: WispCheckInTriggerEvent, time: string): string {
+  switch (kind) {
+    case 'device_online':
+      return t('wisp.checkIn.waitingFor.deviceOnline', { time });
+    case 'script_finished':
+      return t('wisp.checkIn.waitingFor.scriptFinished', { time });
+    case 'command_finished':
+      return t('wisp.checkIn.waitingFor.commandFinished', { time });
+    case 'run_settled':
+      return t('wisp.checkIn.waitingFor.runSettled', { time });
+  }
+}
 
 /**
  * Wisp check-in timers W05 (#10996, spec §5): "Wisp will check back at 14:32"
@@ -58,7 +65,7 @@ export default function WispCheckInChip({
           <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
           <span>
             {checkIn.trigger
-              ? t(WAITING_FOR_KEY[checkIn.trigger.kind], { time: dueLabel(checkIn.dueAt, now) })
+              ? waitingForLabel(t, checkIn.trigger.kind, dueLabel(checkIn.dueAt, now))
               : t('wisp.checkIn.scheduledAt', { time: dueLabel(checkIn.dueAt, now) })}
           </span>
           <button
