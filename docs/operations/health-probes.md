@@ -81,6 +81,17 @@ on `/health/ready` (informational; `ready` is unaffected) and re-checks every
 60 s. The first check that finds the database writable runs the normal sync and
 clears the flag.
 
+With `BINARY_SOURCE=github` (where a binary-sync failure is not fatal), a boot
+sync whose writes the read-only database refuses waits the same way: one
+warning, `"binarySyncPending": true`, a check every 60 s, and the sync runs
+again once the database accepts writes (#11741). Before this it re-synced only
+on the next restart. If that later sync fails on the network, it moves to the
+bounded network retry; a network retry that reaches a read-only database waits
+for writes instead.
+
+Shutdown stops all of these retries, including the deferred worker-startup
+writes below, so none runs against a closing pool.
+
 Sessions opened while the database was read-only keep that default after it
 becomes writable (`ALTER DATABASE ... SET` applies at session start). Each API
 and worker process watches for this (#11741): once a pooled session reports

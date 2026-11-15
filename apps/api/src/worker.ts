@@ -474,6 +474,7 @@ export async function bootWorker(): Promise<void> {
   } = await import('./db/dbPoolHealthMonitor');
   const { getWedgedBackendMinAgeMs } = await import('./db/wedgedBackends');
   const { startReadOnlySessionRecovery, stopReadOnlySessionRecovery } = await import('./db/readOnlySessionRecovery');
+  const { stopDeferredWrites } = await import('./db/deferUntilWritable');
   const { startRedisMemoryMonitor, stopRedisMemoryMonitor } = await import('./services/redisMemoryMonitor');
   // Registers the role-agnostic runtime series onto the shared registry and
   // binds the CONNECT_TIMEOUT counter recorder. Dynamic because its graph
@@ -738,6 +739,9 @@ export async function bootWorker(): Promise<void> {
     stopDbPoolHealthMonitor();
     stopWedgedBackendMonitor();
     stopReadOnlySessionRecovery();
+    // #11741: deferred startup writes (CIS catalog seed, patch-settings
+    // repair) must not retry against a pool that is draining.
+    stopDeferredWrites();
     stopRedisMemoryMonitor();
 
     if (auditRetryInterval) {

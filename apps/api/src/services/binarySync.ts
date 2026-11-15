@@ -1110,6 +1110,12 @@ async function syncBinaryDirsToS3(): Promise<void> {
 // it compares the volume with what is registered, writes nothing, and when a
 // write is genuinely needed it defers the whole registration to a retry that
 // runs once the database accepts writes again. The writable path is unchanged.
+//
+// BINARY_SOURCE=github (#11741) has no read-only path: its boot sync is
+// non-fatal, and a sync whose writes are refused as read-only joins the same
+// deferral (scheduleGithubSyncRetry), as does a network retry that reaches a
+// read-only database. A deferred github sync that then fails on the network
+// hands back to the bounded network retry.
 
 /** How often a deferred registration checks whether the database is writable. */
 const DEFERRED_SYNC_RETRY_MS = 60_000;
@@ -1203,6 +1209,13 @@ export async function retryDeferredBinarySync(): Promise<void> {
       if (isReadOnlySqlError(err)) {
         // A write still hit a read-only session; keep waiting, quietly.
         binarySyncDeferred = true;
+        return;
+      }
+      // github mode: the database is writable now, but the release lookup hit
+      // a network failure. That is the bounded network retry's job (#11641).
+      // Not after shutdown stopped it: scheduling would re-arm it.
+      if (!githubSyncRetryStopped && scheduleGithubSyncRetry(err)) {
+        stopDeferredBinarySyncRetry();
         return;
       }
       binarySyncDeferred = true;
@@ -1365,15 +1378,29 @@ export function stopGithubSyncRetry(): void {
 
 /**
  * Boot's syncBinaries() failed with `err`. In BINARY_SOURCE=github mode, a
- * network failure schedules a bounded background retry; anything else is left
- * as boot already reported it. Returns whether a retry is pending.
+ * network failure schedules a bounded background retry, and a write refused
+ * because the database is read-only (#11741) defers the sync until the
+ * database accepts writes (the same deferral local mode uses, reported as
+ * `binarySyncPending` on /health/ready). Anything else is left as boot
+ * already reported it. Returns whether a retry is pending.
  */
 export function scheduleGithubSyncRetry(err: unknown): boolean {
-  if (getBinarySource() !== "github" || !isTransientSyncFailure(err)) return false;
+  if (getBinarySource() !== "github") return false;
+  if (isReadOnlySqlError(err)) {
+    deferGithubSyncForReadOnly();
+    return true;
+  }
+  if (!isTransientSyncFailure(err)) return false;
   if (isGithubSyncRetryPending()) return true;
   githubSyncRetryStopped = false;
   scheduleGithubSyncAttempt(1, err);
   return true;
+}
+
+function deferGithubSyncForReadOnly(): void {
+  deferBinarySyncForReadOnly(
+    `the GitHub sync of release ${pinnedGithubReleaseTag() ?? "latest"} could not write agent_versions`,
+  );
 }
 
 function scheduleGithubSyncAttempt(retry: number, lastErr: unknown): void {
@@ -1404,6 +1431,12 @@ async function runGithubSyncRetry(retry: number): Promise<void> {
     await syncBinaries();
     console.log(`[binarySync] GitHub sync of release ${tag} succeeded on retry ${retry}`);
   } catch (err) {
+    if (isReadOnlySqlError(err)) {
+      // The network is back but the database is read-only (#11741): wait for
+      // it to accept writes instead of spending the remaining network retries.
+      if (!githubSyncRetryStopped) deferGithubSyncForReadOnly();
+      return;
+    }
     if (!isTransientSyncFailure(err)) {
       console.error(
         `[binarySync] GitHub sync retry ${retry} of ${total} for release ${tag} failed, and not a network failure; ` +
@@ -2160,6 +2193,7 @@ async function syncFromGitHubRelease(
   // ------------------------------------------------------------------
   const synced: string[] = [];
   const failures: string[] = [];
+  const failureErrors: unknown[] = [];
 
   for (const entry of plan) {
     const label = `${entry.component}:${entry.platform}/${entry.arch}`;
@@ -2181,6 +2215,7 @@ async function syncFromGitHubRelease(
         message,
       );
       failures.push(`${label} (${message})`);
+      failureErrors.push(err);
     }
   }
 
@@ -2191,8 +2226,12 @@ async function syncFromGitHubRelease(
   // per-component isolation #816 relies on (a user-helper upsert failing must
   // not block the agent) — but it is now reported rather than only logged.
   if (synced.length === 0 && plan.length > 0) {
+    // `cause` lets boot tell a read-only database (SQLSTATE 25006, #11741)
+    // from a real fault: it is a read-only error only when every upsert was
+    // refused as read-only.
     throw new Error(
       `GitHub sync registered 0 of ${plan.length} binaries for ${version}: ${failures.join("; ")}`,
+      { cause: failureErrors.find((e) => !isReadOnlySqlError(e)) ?? failureErrors[0] },
     );
   }
 

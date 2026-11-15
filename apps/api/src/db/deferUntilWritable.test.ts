@@ -7,6 +7,7 @@ import {
   __resetDeferredWritesForTests,
   deferUntilDatabaseWritable,
   isDeferredUntilWritable,
+  stopDeferredWrites,
 } from './deferUntilWritable';
 
 function readOnlyError(): Error {
@@ -107,5 +108,42 @@ describe('deferUntilDatabaseWritable', () => {
     release();
     await vi.advanceTimersByTimeAsync(0);
     expect(isDeferredUntilWritable('slow')).toBe(false);
+  });
+
+  // #11741: shutdown clears every pending retry, so none runs against a pool
+  // that is draining or closed, and refuses new ones.
+  it('stopDeferredWrites clears every pending retry and refuses new ones', async () => {
+    const a = vi.fn().mockRejectedValue(readOnlyError());
+    const b = vi.fn().mockRejectedValue(readOnlyError());
+    deferUntilDatabaseWritable('a', a, { intervalMs: 1_000 });
+    deferUntilDatabaseWritable('b', b, { intervalMs: 1_000 });
+    expect(vi.getTimerCount()).toBe(2);
+
+    stopDeferredWrites();
+    expect(isDeferredUntilWritable('a')).toBe(false);
+    expect(isDeferredUntilWritable('b')).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+
+    const late = vi.fn().mockResolvedValue(undefined);
+    deferUntilDatabaseWritable('late', late, { intervalMs: 1_000 });
+    expect(isDeferredUntilWritable('late')).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(a).not.toHaveBeenCalled();
+    expect(late).not.toHaveBeenCalled();
+  });
+
+  it('a run in flight at shutdown neither logs completion nor reports its failure', async () => {
+    let fail: (e: Error) => void = () => {};
+    const task = vi.fn(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+    deferUntilDatabaseWritable('inflight', task, { intervalMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(task).toHaveBeenCalledTimes(1);
+
+    stopDeferredWrites();
+    fail(new Error('Cannot use a pool after calling end on the pool'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(captureException).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalled();
   });
 });

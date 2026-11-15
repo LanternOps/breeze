@@ -24,6 +24,10 @@ import { isReadOnlySqlError } from './readOnlyDatabase';
  * failover or restart, so a refused, reset or terminated connection keeps
  * waiting too. While waiting, one reminder is logged every
  * `REMINDER_EVERY_ATTEMPTS` attempts (30 min at the default interval).
+ *
+ * Shutdown calls `stopDeferredWrites()`: every pending retry is cleared, a run
+ * already in flight settles silently, and no new retry starts, so nothing
+ * retries against a pool that is draining or closed.
  */
 
 export const DEFERRED_WRITE_RETRY_MS = 60_000;
@@ -55,6 +59,8 @@ interface Deferred {
 }
 
 const deferred = new Map<string, Deferred>();
+/** Set by stopDeferredWrites() (shutdown): no new retry starts. */
+let stopped = false;
 
 /** True while `label`'s write is waiting for a writable database. */
 export function isDeferredUntilWritable(label: string): boolean {
@@ -66,7 +72,7 @@ export function deferUntilDatabaseWritable(
   task: () => Promise<void>,
   options: { intervalMs?: number } = {},
 ): void {
-  if (deferred.has(label)) return;
+  if (stopped || deferred.has(label)) return;
   const intervalMs = options.intervalMs ?? DEFERRED_WRITE_RETRY_MS;
   console.warn(
     `[db] ${label}: the database is read-only (SQLSTATE 25006); deferred until it accepts writes ` +
@@ -82,10 +88,12 @@ export function deferUntilDatabaseWritable(
       entry.attempts += 1;
       void task()
         .then(() => {
+          if (!isCurrent(label, entry)) return; // stopped while in flight
           stop(label, entry);
           console.log(`[db] ${label}: deferred write completed; the database accepts writes again.`);
         })
         .catch((error: unknown) => {
+          if (!isCurrent(label, entry)) return; // stopped while in flight
           if (isRetryableWhileDeferred(error)) {
             // Still read-only, a stale session, or the database is restarting.
             if (entry.attempts % REMINDER_EVERY_ATTEMPTS === 0) {
@@ -109,12 +117,27 @@ export function deferUntilDatabaseWritable(
   deferred.set(label, entry);
 }
 
-function stop(label: string, entry: Deferred): void {
-  clearInterval(entry.timer);
-  if (deferred.get(label) === entry) deferred.delete(label);
+function isCurrent(label: string, entry: Deferred): boolean {
+  return deferred.get(label) === entry;
 }
 
-/** Clears every pending retry (tests, shutdown). */
+function stop(label: string, entry: Deferred): void {
+  clearInterval(entry.timer);
+  if (isCurrent(label, entry)) deferred.delete(label);
+}
+
+/**
+ * Shutdown: clears every pending retry and refuses new ones for the rest of
+ * the process. A write still waiting is dropped; it runs again on the next
+ * boot, where the initializer that deferred it repeats.
+ */
+export function stopDeferredWrites(): void {
+  stopped = true;
+  for (const [label, entry] of deferred) stop(label, entry);
+}
+
+/** Clears every pending retry and re-arms the helper (tests). */
 export function __resetDeferredWritesForTests(): void {
   for (const [label, entry] of deferred) stop(label, entry);
+  stopped = false;
 }
