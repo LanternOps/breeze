@@ -2101,7 +2101,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   // Event log tools
   search_logs: z.object({
-    query: z.string().max(500).optional(),
+    query: z.string().max(500).nullish(),
     timeRange: z.object({
       start: z.string().datetime({ offset: true }),
       end: z.string().datetime({ offset: true }),
@@ -2113,8 +2113,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     siteIds: z.array(uuid).max(500).optional(),
     limit: z.number().int().min(1).max(500).optional(),
     offset: z.number().int().min(0).optional(),
-    cursor: z.string().max(1024).optional(),
-    countMode: z.enum(['exact', 'estimated', 'none']).optional(),
+    cursor: z.string().max(1024).nullish(),
+    countMode: z.enum(['exact', 'estimated', 'none', 'normal']).nullish(),
     sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
     sortOrder: z.enum(['asc', 'desc']).optional(),
     includeFullMessage: z.boolean().optional(),
