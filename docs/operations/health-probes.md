@@ -84,7 +84,8 @@ clears the flag.
 Sessions opened while the database was read-only keep that default after it
 becomes writable (`ALTER DATABASE ... SET` applies at session start). Each API
 and worker process watches for this (#11741): once a pooled session reports
-read-only, it checks a fresh session every 30 s, and when that one accepts
+read-only, it checks a fresh session every 30 s (every 5 min once the
+database has been read-only for 30 min, so a standby stays cheap), and when that one accepts
 writes it terminates the idle request-pool sessions opened before that moment
 (same role, same database, the pool's `application_name`). The pool reconnects
 them with the current default. Busy sessions are left alone and handled on a
