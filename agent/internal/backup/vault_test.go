@@ -1,11 +1,19 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"sort"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // createTestSnapshot writes a fake snapshot (manifest + one data file) into a
@@ -279,5 +287,468 @@ func TestNewVaultManager_Errors(t *testing.T) {
 	_, err = NewVaultManager(VaultConfig{VaultPath: t.TempDir()}, nil)
 	if err == nil {
 		t.Error("expected error for nil primary provider")
+	}
+}
+
+// --- #11857: a vault copy of an incremental snapshot -----------------------
+
+const vaultTestIdentity = "local|vault-test|device|file"
+
+// vaultTestRun is one file backup into primary: name → content. Files whose
+// content and modTime are unchanged since prev are referenced, not re-uploaded.
+func vaultTestRun(t *testing.T, primary *providers.LocalProvider, srcDir string, files map[string]string, prev *Snapshot) *Snapshot {
+	t.Helper()
+	modTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var walked []backupFile
+	for _, name := range names {
+		p := filepath.Join(srcDir, name)
+		if err := os.WriteFile(p, []byte(files[name]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, modTime, modTime); err != nil {
+			t.Fatal(err)
+		}
+		walked = append(walked, backupFile{sourcePath: p, snapshotPath: "path_0/" + name, size: int64(len(files[name])), modTime: modTime})
+	}
+	snap, err := createSnapshotWithProgress(context.Background(), primary, walked, nil, nil, prev, nil, withRunIdentity(vaultTestIdentity))
+	if err != nil {
+		t.Fatalf("backup run failed: %v", err)
+	}
+	// Distinct manifest timestamps, so ListSnapshots orders runs as made.
+	time.Sleep(5 * time.Millisecond)
+	return snap
+}
+
+// restoreVaultSnapshot restores snapshotID through the vault's own provider
+// alone and returns restored file name → content.
+func restoreVaultSnapshot(t *testing.T, vault providers.BackupProvider, snapshotID string) map[string]string {
+	t.Helper()
+	target := t.TempDir()
+	result, err := RestoreFromSnapshot(vault, RestoreConfig{SnapshotID: snapshotID, TargetPath: target, WorkRoot: t.TempDir()}, nil)
+	if err != nil {
+		t.Fatalf("restore from the vault failed: %v", err)
+	}
+	if result.Status != "completed" || result.FilesFailed != 0 {
+		t.Fatalf("restore from the vault: status %s, %d failed %v", result.Status, result.FilesFailed, result.FailedFiles)
+	}
+	got := map[string]string{}
+	if err := filepath.WalkDir(target, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return readErr
+		}
+		got[d.Name()] = string(data)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func vaultHas(t *testing.T, vault providers.BackupProvider, key string) bool {
+	t.Helper()
+	items, err := vault.List(key)
+	if err != nil {
+		t.Fatalf("list %s: %v", key, err)
+	}
+	for _, item := range items {
+		if item == key {
+			return true
+		}
+	}
+	return false
+}
+
+func referencedKeys(snap *Snapshot) []string {
+	var keys []string
+	for _, f := range snap.Files {
+		if isReferenceEntry(f, snap.ID) {
+			keys = append(keys, f.BackupPath)
+		}
+	}
+	return keys
+}
+
+func newVaultTestManager(t *testing.T, primary providers.BackupProvider, retention int) (*VaultManager, *providers.LocalProvider) {
+	t.Helper()
+	vaultDir := privateStoreTempDir(t)
+	vm, err := NewVaultManager(VaultConfig{VaultPath: vaultDir, RetentionCount: retention, Enabled: true}, primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return vm, privateTestLocalProvider(t, vaultDir)
+}
+
+// The vault copy of an incremental snapshot holds every object its manifest
+// references, including those under the earlier snapshot's prefix, so a
+// restore from the vault alone returns the backed-up bytes.
+func TestVaultSync_IncrementalSnapshotRestoresFromVaultAlone(t *testing.T) {
+	primary := privateTestLocalProvider(t, t.TempDir())
+	src := t.TempDir()
+	files := map[string]string{"alpha.txt": "alpha bytes, unchanged", "beta.txt": "beta bytes, unchanged"}
+	full := vaultTestRun(t, primary, src, files, nil)
+	files["gamma.txt"] = "gamma is new in the second run"
+	incr := vaultTestRun(t, primary, src, files, full)
+	if refs := referencedKeys(incr); len(refs) != 2 {
+		t.Fatalf("control: the second run must reference the first run's 2 unchanged files, got %v", refs)
+	}
+
+	vm, vault := newVaultTestManager(t, primary, 5)
+	result, err := vm.SyncAfterBackupFrom(primary, incr.ID)
+	if err != nil {
+		t.Fatalf("sync of the incremental snapshot failed: %v", err)
+	}
+	for _, key := range referencedKeys(incr) {
+		if !vaultHas(t, vault, key) {
+			t.Errorf("vault lacks referenced object %s", key)
+		}
+	}
+	if got := restoreVaultSnapshot(t, vault, incr.ID); !reflect.DeepEqual(got, files) {
+		t.Fatalf("restore from the vault alone = %v, want %v", got, files)
+	}
+
+	// The result counts every object the vault copy holds for this
+	// snapshot: its own prefix plus the referenced objects.
+	own, err := vault.ObjectSizes(path.Join(snapshotRootDir, incr.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refSizes, err := vault.ObjectSizes(path.Join(snapshotRootDir, full.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantBytes int64
+	for _, size := range own {
+		wantBytes += size
+	}
+	for _, key := range referencedKeys(incr) {
+		wantBytes += refSizes[key]
+	}
+	if result.TotalBytes != wantBytes || result.FileCount != len(own)+2 {
+		t.Errorf("sync result = %d objects / %d bytes, want %d / %d", result.FileCount, result.TotalBytes, len(own)+2, wantBytes)
+	}
+}
+
+// Retention that drops the oldest snapshot keeps the objects a kept
+// snapshot references, deletes the dropped snapshot's other objects and its
+// manifest, and the kept snapshot still restores from the vault.
+func TestVaultRetention_KeepsObjectsAKeptSnapshotReferences(t *testing.T) {
+	primary := privateTestLocalProvider(t, t.TempDir())
+	src := t.TempDir()
+	files := map[string]string{"alpha.txt": "alpha bytes, unchanged", "beta.txt": "beta bytes, first version"}
+	full := vaultTestRun(t, primary, src, files, nil)
+	files["beta.txt"] = "beta bytes, second version, longer"
+	incr := vaultTestRun(t, primary, src, files, full)
+	refs := referencedKeys(incr)
+	if len(refs) != 1 {
+		t.Fatalf("control: the second run must reference only alpha, got %v", refs)
+	}
+	var staleBeta string
+	for _, f := range full.Files {
+		if f.BackupPath != refs[0] {
+			staleBeta = f.BackupPath
+		}
+	}
+
+	vm, vault := newVaultTestManager(t, primary, 1)
+	if _, err := vm.SyncAfterBackupFrom(primary, full.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.SyncAfterBackupFrom(primary, incr.ID); err != nil {
+		t.Fatalf("sync + retention failed: %v", err)
+	}
+
+	if vaultHas(t, vault, path.Join(snapshotRootDir, full.ID, snapshotManifestKey)) {
+		t.Error("the dropped snapshot's manifest is still in the vault")
+	}
+	if vaultHas(t, vault, staleBeta) {
+		t.Errorf("the dropped snapshot's unreferenced object %s is still in the vault", staleBeta)
+	}
+	if !vaultHas(t, vault, refs[0]) {
+		t.Fatalf("retention deleted %s, which the kept snapshot references", refs[0])
+	}
+	if got := restoreVaultSnapshot(t, vault, incr.ID); !reflect.DeepEqual(got, files) {
+		t.Fatalf("restore of the kept snapshot = %v, want %v", got, files)
+	}
+}
+
+// Once no kept snapshot references an object left under a dropped
+// snapshot's prefix, the next retention that drops its referrer deletes it,
+// so the vault does not keep orphans forever.
+func TestVaultRetention_DeletesReferencedObjectsOnceNoKeptSnapshotNeedsThem(t *testing.T) {
+	primary := privateTestLocalProvider(t, t.TempDir())
+	src := t.TempDir()
+	files := map[string]string{"alpha.txt": "alpha bytes"}
+	first := vaultTestRun(t, primary, src, files, nil)
+	second := vaultTestRun(t, primary, src, files, first)
+	files["alpha.txt"] = "alpha bytes, rewritten in the third run"
+	third := vaultTestRun(t, primary, src, files, second)
+	alphaV1 := first.Files[0].BackupPath
+
+	vm, vault := newVaultTestManager(t, primary, 1)
+	for _, snap := range []*Snapshot{first, second} {
+		if _, err := vm.SyncAfterBackupFrom(primary, snap.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !vaultHas(t, vault, alphaV1) {
+		t.Fatal("control: the kept second snapshot references alpha v1, retention must keep it")
+	}
+	if _, err := vm.SyncAfterBackupFrom(primary, third.ID); err != nil {
+		t.Fatal(err)
+	}
+	if vaultHas(t, vault, alphaV1) {
+		t.Errorf("%s is referenced by no kept snapshot but is still in the vault", alphaV1)
+	}
+	if got := restoreVaultSnapshot(t, vault, third.ID); !reflect.DeepEqual(got, files) {
+		t.Fatalf("restore of the kept snapshot = %v, want %v", got, files)
+	}
+}
+
+// A referenced object the sync cannot copy fails the sync, and the vault
+// does not present the snapshot (no manifest).
+func TestVaultSync_MissingReferencedObjectFailsSync(t *testing.T) {
+	primary := privateTestLocalProvider(t, t.TempDir())
+	src := t.TempDir()
+	files := map[string]string{"alpha.txt": "alpha bytes"}
+	full := vaultTestRun(t, primary, src, files, nil)
+	incr := vaultTestRun(t, primary, src, files, full)
+	if err := primary.Delete(full.Files[0].BackupPath); err != nil {
+		t.Fatal(err)
+	}
+
+	vm, vault := newVaultTestManager(t, primary, 5)
+	if _, err := vm.SyncAfterBackupFrom(primary, incr.ID); err == nil {
+		t.Fatal("sync reported success although a referenced object is missing from primary")
+	}
+	if vaultHas(t, vault, path.Join(snapshotRootDir, incr.ID, snapshotManifestKey)) {
+		t.Error("the vault presents a snapshot whose referenced object was never copied")
+	}
+}
+
+// A manifest is data: a key outside the snapshots namespace is refused and
+// the vault never presents the snapshot.
+func TestVaultSync_RefusesHostileManifestKeys(t *testing.T) {
+	for _, key := range []string{
+		"../outside.gz",
+		"/etc/passwd",
+		"snapshots/../outside.gz",
+		"snapshots/snap-a/../../outside.gz",
+		"snapshots/snap-a/files/../../../outside.gz",
+		"outside.gz",
+		"snapshots/snap-other/manifest.json",
+		"snapshots//files/x.gz",
+	} {
+		t.Run(key, func(t *testing.T) {
+			primaryDir := t.TempDir()
+			primary := privateTestLocalProvider(t, primaryDir)
+			snapID := "snap-hostile"
+			writeFidelityManifest(t, primaryDir, snapID, Snapshot{
+				ID:        snapID,
+				Timestamp: time.Now().UTC(),
+				Files:     []SnapshotFile{{SourcePath: "/src/a.txt", BackupPath: key, Size: 1}},
+				Size:      1,
+			})
+			vm, vault := newVaultTestManager(t, primary, 5)
+			if _, err := vm.SyncSnapshot(snapID); err == nil {
+				t.Fatalf("sync accepted manifest key %q", key)
+			}
+			if vaultHas(t, vault, path.Join(snapshotRootDir, snapID, snapshotManifestKey)) {
+				t.Error("the vault presents a snapshot with a refused key")
+			}
+		})
+	}
+}
+
+// When a manifest in the vault cannot be read, retention cannot know what a
+// kept snapshot references, so it deletes nothing and says why.
+func TestVaultRetention_UnreadableManifestBlocksDeletion(t *testing.T) {
+	primary := privateTestLocalProvider(t, t.TempDir())
+	src := t.TempDir()
+	files := map[string]string{"alpha.txt": "alpha bytes"}
+	var snaps []*Snapshot
+	var prev *Snapshot
+	for i := 0; i < 3; i++ {
+		prev = vaultTestRun(t, primary, src, files, prev)
+		snaps = append(snaps, prev)
+	}
+	vm, vault := newVaultTestManager(t, primary, 5)
+	for _, snap := range snaps {
+		if _, err := vm.SyncSnapshot(snap.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := vault.List(snapshotRootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	garbage := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(garbage, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Upload(garbage, path.Join(snapshotRootDir, snaps[2].ID, snapshotManifestKey)); err != nil {
+		t.Fatal(err)
+	}
+
+	vm.config.RetentionCount = 1
+	if err := vm.EnforceRetention(); err == nil {
+		t.Fatal("retention reported success although a manifest could not be read")
+	}
+	after, err := vault.List(snapshotRootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("retention deleted objects although a manifest was unreadable:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
+// A system-state manifest (snapshots/<id>/system-state/manifest.json) is not
+// a snapshot: retention must not read it as one with an empty ID, whose
+// prefix is the whole snapshots namespace.
+func TestVaultRetention_SystemStateManifestIsNotASnapshot(t *testing.T) {
+	primary := privateTestLocalProvider(t, t.TempDir())
+	src := t.TempDir()
+	files := map[string]string{"alpha.txt": "alpha bytes"}
+	first := vaultTestRun(t, primary, src, files, nil)
+	files["alpha.txt"] = "alpha bytes, second version"
+	second := vaultTestRun(t, primary, src, files, first)
+	ssManifest := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(ssManifest, []byte(`{"platform":"linux","artifacts":[],"schemaVersion":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, snap := range []*Snapshot{first, second} {
+		if err := primary.Upload(ssManifest, path.Join(snapshotRootDir, snap.ID, systemStateDir, systemStateManifestKey)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	vm, vault := newVaultTestManager(t, primary, 1)
+	if _, err := vm.SyncAfterBackupFrom(primary, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.SyncAfterBackupFrom(primary, second.ID); err != nil {
+		t.Fatalf("sync + retention failed: %v", err)
+	}
+	if got := restoreVaultSnapshot(t, vault, second.ID); !reflect.DeepEqual(got, files) {
+		t.Fatalf("restore of the kept snapshot = %v, want %v", got, files)
+	}
+	if !vaultHas(t, vault, path.Join(snapshotRootDir, second.ID, systemStateDir, systemStateManifestKey)) {
+		t.Error("retention deleted the kept snapshot's system-state manifest")
+	}
+}
+
+// A manifest whose id differs from the snapshot directory it sits in names
+// some other prefix; retention must not act on it.
+func TestVaultRetention_ManifestIDMismatchBlocksDeletion(t *testing.T) {
+	primary := privateTestLocalProvider(t, t.TempDir())
+	src := t.TempDir()
+	files := map[string]string{"alpha.txt": "alpha bytes"}
+	first := vaultTestRun(t, primary, src, files, nil)
+	second := vaultTestRun(t, primary, src, files, first)
+	vm, vault := newVaultTestManager(t, primary, 5)
+	for _, snap := range []*Snapshot{first, second} {
+		if _, err := vm.SyncSnapshot(snap.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := vault.List(snapshotRootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := *first
+	forged.ID = ""
+	data, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgedPath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(forgedPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Upload(forgedPath, path.Join(snapshotRootDir, first.ID, snapshotManifestKey)); err != nil {
+		t.Fatal(err)
+	}
+	vm.config.RetentionCount = 1
+	if err := vm.EnforceRetention(); err == nil {
+		t.Fatal("retention reported success with a manifest whose id is not its directory")
+	}
+	after, err := vault.List(snapshotRootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("retention deleted objects:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
+func TestValidateManifestObjectKey(t *testing.T) {
+	for _, key := range []string{
+		"snapshots/snap-a/files/path_0/a.txt.gz",
+		"snapshots/snap-a/files/path_0/system-systemd\\x2dcryptsetup.slice.gz",
+		"snapshots/snap-a/system-state/registry/SYSTEM",
+	} {
+		if _, err := validateManifestObjectKey(key); err != nil {
+			t.Errorf("valid key %q refused: %v", key, err)
+		}
+	}
+	bad := []string{"", "snapshots", "snapshots/snap-a", "snapshots/snap-a/", "snapshots/snap-a/files/\x00x",
+		"snapshots/snap-a/manifest.json", "C:/snapshots/a/b", "snapshots/.hidden/x"}
+	if runtime.GOOS == "windows" {
+		// A backslash is a separator to the Windows local store.
+		bad = append(bad, "snapshots/snap-a/files/..\\..\\..\\outside.gz")
+	}
+	for _, key := range bad {
+		if _, err := validateManifestObjectKey(key); err == nil {
+			t.Errorf("hostile key %q accepted", key)
+		}
+	}
+}
+
+// A dropped manifest that names an object under a kept snapshot's own
+// prefix (not referenced by the kept manifest's files, e.g. its system
+// state) must never delete it.
+func TestVaultRetention_NeverDeletesUnderAKeptSnapshotPrefix(t *testing.T) {
+	primaryDir := t.TempDir()
+	primary := privateTestLocalProvider(t, primaryDir)
+	src := t.TempDir()
+	kept := vaultTestRun(t, primary, src, map[string]string{"alpha.txt": "alpha bytes"}, nil)
+	keptState := path.Join(snapshotRootDir, kept.ID, systemStateDir, "registry", "SYSTEM")
+	stateFile := filepath.Join(t.TempDir(), "SYSTEM")
+	if err := os.WriteFile(stateFile, []byte("hive bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := primary.Upload(stateFile, keptState); err != nil {
+		t.Fatal(err)
+	}
+	// An older snapshot whose manifest names that object.
+	olderID := "snap-older"
+	writeFidelityManifest(t, primaryDir, olderID, Snapshot{
+		ID:        olderID,
+		Timestamp: kept.Timestamp.Add(-time.Hour),
+		Files:     []SnapshotFile{{SourcePath: "/src/state", BackupPath: keptState, Size: 10}},
+		Size:      10,
+	})
+
+	vm, vault := newVaultTestManager(t, primary, 1)
+	if _, err := vm.SyncSnapshot(olderID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vm.SyncAfterBackupFrom(primary, kept.ID); err != nil {
+		t.Fatalf("sync + retention failed: %v", err)
+	}
+	if vaultHas(t, vault, path.Join(snapshotRootDir, olderID, snapshotManifestKey)) {
+		t.Fatal("control: retention must drop the older snapshot")
+	}
+	if !vaultHas(t, vault, keptState) {
+		t.Fatalf("retention deleted %s, which lies under the kept snapshot's own prefix", keptState)
 	}
 }

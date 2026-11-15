@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -22,11 +23,27 @@ type VaultConfig struct {
 // VaultManager manages a local vault (a disk or USB drive attached to the
 // device; network shares are refused by the local provider) that mirrors
 // snapshots from the primary backup provider for offline or fast-local recovery.
+//
+// The vault mirrors primary's key layout. An incremental snapshot's manifest
+// references unchanged files by the absolute key they were first uploaded
+// under, inside an older snapshot's prefix (see referenceEntry), so a vault
+// snapshot is complete only when the vault holds every key its manifest
+// references, wherever it lives (#11857). Sync copies by the manifest and
+// retention keeps by the manifests of the snapshots it keeps.
 type VaultManager struct {
 	config  VaultConfig
 	primary providers.BackupProvider
 	vault   providers.BackupProvider // LocalProvider pointed at VaultPath
 }
+
+// vaultMu serializes the vault's mutations (sync and retention) within the
+// helper process. vault_sync is not an execution-queue workload, so a manual
+// sync can run beside the sync that follows a backup, and a reconfigure
+// builds a new VaultManager over the same directory. Retention that ran
+// between one sync's reference copies and its manifest upload would delete
+// those copies (no manifest references them yet), leaving a vault snapshot
+// that reports complete without its bytes.
+var vaultMu sync.Mutex
 
 // VaultStatus reports the current state of the local vault.
 type VaultStatus struct {
@@ -37,6 +54,12 @@ type VaultStatus struct {
 	LastSyncAt     string `json:"lastSyncAt,omitempty"`
 }
 
+// VaultSyncResult reports a completed sync. FileCount and TotalBytes cover
+// every object the vault copy of the snapshot consists of: the objects under
+// its own prefix (manifest included) plus the objects its manifest
+// references under older snapshots' prefixes, whether this run copied them
+// or the vault already held them. TotalBytes is the stored size in the vault
+// (0 when the vault provider cannot report sizes).
 type VaultSyncResult struct {
 	SnapshotID       string `json:"snapshotId"`
 	VaultPath        string `json:"vaultPath,omitempty"`
@@ -71,26 +94,37 @@ func NewVaultManager(cfg VaultConfig, primary providers.BackupProvider) (*VaultM
 }
 
 // SyncSnapshot copies a snapshot from the primary provider into the vault.
-//  1. Download manifest from primary
-//  2. List files in vault for this snapshot
-//  3. Download missing files from primary -> vault
-//  4. Copy manifest to vault
+// See syncSnapshotFrom.
 func (v *VaultManager) SyncSnapshot(snapshotID string) (*VaultSyncResult, error) {
+	vaultMu.Lock()
+	defer vaultMu.Unlock()
 	return v.syncSnapshotFrom(v.primary, snapshotID)
 }
 
+// syncSnapshotFrom copies snapshotID from primary into the vault:
+//  1. Download and decode the manifest; validate every key it references.
+//  2. Collect the objects to hold: everything under the snapshot's own prefix
+//     on primary, plus every non-empty BackupPath the manifest references
+//     (an incremental entry's key lies under an older snapshot's prefix).
+//  3. Copy each object the vault lacks, at the same key.
+//  4. Only when every object is in the vault, upload the manifest.
+//
+// Any object that cannot be copied fails the sync and the manifest is not
+// uploaded, so the vault never presents a snapshot it cannot restore. Objects
+// copied before the failure are kept: a later sync skips them, and the next
+// retention that drops the snapshot prefix they sit under removes any that
+// no kept snapshot references.
 func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapshotID string) (*VaultSyncResult, error) {
 	if primary == nil {
 		return nil, errors.New("primary provider is required")
 	}
+	if !validVaultSnapshotID(snapshotID) {
+		return nil, fmt.Errorf("vault sync: snapshot ID %q is not a valid snapshot ID", snapshotID)
+	}
 	prefix := path.Join(snapshotRootDir, snapshotID)
 	manifestKey := path.Join(prefix, snapshotManifestKey)
-	syncResult := &VaultSyncResult{
-		SnapshotID: snapshotID,
-		VaultPath:  v.config.VaultPath,
-	}
 
-	// 1. Download manifest from primary to a temp file
+	// 1. Download the manifest from primary and read the keys it references.
 	manifestTmp, err := os.CreateTemp("", "vault-manifest-*.json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp manifest: %w", err)
@@ -102,109 +136,226 @@ func (v *VaultManager) syncSnapshotFrom(primary providers.BackupProvider, snapsh
 	if err := primary.Download(manifestKey, manifestTmpPath); err != nil {
 		return nil, fmt.Errorf("failed to download manifest from primary: %w", err)
 	}
+	manifest, err := readManifestReferences(manifestTmpPath, snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("vault sync refused snapshot %s: %w", snapshotID, err)
+	}
 
-	// 2. List all files in the primary snapshot
-	primaryFiles, err := primary.List(prefix)
+	// 2. Everything under the snapshot's own prefix on primary, plus every
+	// referenced key. The manifest itself is uploaded last (step 4).
+	primaryFiles, err := listSnapshotPrefixItems(primary, snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list primary snapshot files: %w", err)
 	}
-	syncResult.FileCount = len(primaryFiles)
-
-	// 3. Build set of files already in vault
-	vaultFiles, vaultListErr := v.vault.List(prefix)
-	if vaultListErr != nil {
-		slog.Warn("vault: failed to list existing vault files, will re-download all",
-			"prefix", prefix, "error", vaultListErr.Error())
-	}
-	vaultSet := make(map[string]struct{}, len(vaultFiles))
-	for _, f := range vaultFiles {
-		vaultSet[f] = struct{}{}
-	}
-
-	// 4. Download missing files from primary -> temp -> vault
-	var errs []error
+	want := make(map[string]struct{}, len(primaryFiles)+len(manifest.refs))
 	for _, file := range primaryFiles {
+		want[file] = struct{}{}
+	}
+	for key := range manifest.refs {
+		want[key] = struct{}{}
+	}
+	delete(want, manifestKey)
+	objects := sortedKeys(want)
+
+	// 3. Copy what the vault lacks. The vault is listed once per snapshot
+	// prefix the objects fall under.
+	vaultSet := v.vaultObjectsUnder(objects)
+	var errs []error
+	for _, file := range objects {
 		if _, exists := vaultSet[file]; exists {
 			continue
 		}
-
-		tmpFile, tmpErr := os.CreateTemp("", "vault-sync-*")
-		if tmpErr != nil {
-			errs = append(errs, fmt.Errorf("temp file for %s: %w", file, tmpErr))
-			continue
+		if err := v.copyFromPrimary(primary, file); err != nil {
+			errs = append(errs, err)
+			slog.Warn("vault sync: object not copied", "snapshotId", snapshotID, "key", file, "error", err.Error())
 		}
-		tmpPath := tmpFile.Name()
-		_ = tmpFile.Close()
-
-		if dlErr := primary.Download(file, tmpPath); dlErr != nil {
-			os.Remove(tmpPath)
-			errs = append(errs, fmt.Errorf("download %s: %w", file, dlErr))
-			slog.Warn("vault sync: failed to download from primary", "file", file, "error", dlErr.Error())
-			continue
-		}
-		if ulErr := v.vault.Upload(tmpPath, file); ulErr != nil {
-			os.Remove(tmpPath)
-			errs = append(errs, fmt.Errorf("upload %s to vault: %w", file, ulErr))
-			slog.Warn("vault sync: failed to upload to vault", "file", file, "error", ulErr.Error())
-			continue
-		}
-
-		os.Remove(tmpPath)
+	}
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("vault sync failed: %d of %d objects of snapshot %s could not be copied, so the vault does not hold this snapshot: %w",
+			len(errs), len(objects), snapshotID, errors.Join(errs...))
 	}
 
-	// 5. Ensure manifest is in vault
-	if manifestErr := v.vault.Upload(manifestTmpPath, manifestKey); manifestErr != nil {
-		slog.Warn("vault: manifest upload failed, cleaning up partial snapshot",
-			"snapshotId", snapshotID)
-		// Best-effort cleanup of already-uploaded files
-		for _, f := range primaryFiles {
-			_ = v.vault.Delete(f)
-		}
-		return nil, fmt.Errorf("vault sync failed at manifest upload: %w", manifestErr)
+	// 4. Every object is in the vault: the manifest makes the snapshot visible.
+	if err := v.vault.Upload(manifestTmpPath, manifestKey); err != nil {
+		return nil, fmt.Errorf("vault sync failed at manifest upload: %w", err)
 	}
-	syncResult.ManifestVerified = true
-	if totalSize, ok := v.vaultTotalSize(prefix); ok {
+
+	held := append(objects, manifestKey)
+	syncResult := &VaultSyncResult{
+		SnapshotID:       snapshotID,
+		VaultPath:        v.config.VaultPath,
+		FileCount:        len(held),
+		ManifestVerified: true,
+	}
+	if totalSize, ok := v.vaultSizeOf(held); ok {
 		syncResult.TotalBytes = totalSize
 	}
 
-	if len(errs) > 0 {
-		return syncResult, fmt.Errorf("vault sync completed with errors: %w", errors.Join(errs...))
-	}
-
-	slog.Info("vault sync completed", "snapshotId", snapshotID)
+	slog.Info("vault sync completed", "snapshotId", snapshotID,
+		"objects", len(held), "referencedObjects", manifest.externalRefs)
 	return syncResult, nil
 }
 
-// EnforceRetention deletes the oldest snapshots from the vault beyond the
-// configured retention count.
-func (v *VaultManager) EnforceRetention() error {
-	snapshots, err := ListSnapshots(v.vault)
-	if err != nil && len(snapshots) == 0 {
-		return err
+// copyFromPrimary copies one object from primary into the vault at the same
+// key, through a temporary file.
+func (v *VaultManager) copyFromPrimary(primary providers.BackupProvider, key string) error {
+	tmpFile, err := os.CreateTemp("", "vault-sync-*")
+	if err != nil {
+		return fmt.Errorf("temp file for %s: %w", key, err)
 	}
+	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	defer os.Remove(tmpPath)
 
+	if err := primary.Download(key, tmpPath); err != nil {
+		return fmt.Errorf("download %s: %w", key, err)
+	}
+	if err := v.vault.Upload(tmpPath, key); err != nil {
+		return fmt.Errorf("upload %s to vault: %w", key, err)
+	}
+	return nil
+}
+
+// vaultObjectsUnder returns the vault's objects under each snapshot prefix
+// that keys fall under. A prefix whose listing fails is treated as empty, so
+// its objects are copied again rather than assumed present.
+func (v *VaultManager) vaultObjectsUnder(keys []string) map[string]struct{} {
+	present := map[string]struct{}{}
+	listed := map[string]bool{}
+	for _, key := range keys {
+		id := snapshotIDOfKey(key)
+		if id == "" || listed[id] {
+			continue
+		}
+		listed[id] = true
+		items, err := listSnapshotPrefixItems(v.vault, id)
+		if err != nil {
+			slog.Warn("vault: failed to list existing vault objects, will copy them again",
+				"snapshotId", id, "error", err.Error())
+			continue
+		}
+		for _, item := range items {
+			present[item] = struct{}{}
+		}
+	}
+	return present
+}
+
+// vaultSizeOf sums the stored sizes of keys in the vault, read in one walk
+// per snapshot prefix.
+func (v *VaultManager) vaultSizeOf(keys []string) (int64, bool) {
+	sizer, ok := v.vault.(interface {
+		ObjectSizes(string) (map[string]int64, error)
+	})
+	if !ok {
+		return 0, false
+	}
+	byPrefix := map[string]map[string]int64{}
+	var total int64
+	for _, key := range keys {
+		id := snapshotIDOfKey(key)
+		sizes, seen := byPrefix[id]
+		if !seen {
+			var err error
+			sizes, err = sizer.ObjectSizes(path.Join(snapshotRootDir, id))
+			if err != nil {
+				return 0, false
+			}
+			byPrefix[id] = sizes
+		}
+		total += sizes[key]
+	}
+	return total, true
+}
+
+// EnforceRetention deletes the oldest snapshots from the vault beyond the
+// configured retention count. See enforceRetention.
+func (v *VaultManager) EnforceRetention() error {
+	vaultMu.Lock()
+	defer vaultMu.Unlock()
+	return v.enforceRetention()
+}
+
+// enforceRetention keeps the newest RetentionCount snapshots and drops the
+// rest. A dropped snapshot's objects (those under its own prefix, and those
+// its manifest references under older prefixes) are deleted unless a kept
+// snapshot's manifest references them or they lie under a kept snapshot's
+// own prefix; its manifest is deleted last, and only once every other
+// deletion for it succeeded, so a partly-deleted snapshot stays listed and
+// the next retention finishes it.
+//
+// Every manifest in the vault must be read first: an unreadable one could
+// be a kept snapshot whose references are unknown, so retention then deletes
+// nothing and returns why.
+func (v *VaultManager) enforceRetention() error {
+	snapshots, err := v.readVaultSnapshots()
+	if err != nil {
+		return fmt.Errorf("vault retention deleted nothing: %w", err)
+	}
 	if len(snapshots) <= v.config.RetentionCount {
 		return nil
 	}
 
-	// Snapshots are sorted oldest-first by ListSnapshots
-	toDelete := snapshots[:len(snapshots)-v.config.RetentionCount]
-	var errs []error
+	// readVaultSnapshots sorts oldest-first.
+	cut := len(snapshots) - v.config.RetentionCount
+	dropped, kept := snapshots[:cut], snapshots[cut:]
+	keepKeys := map[string]struct{}{}
+	keptIDs := map[string]bool{}
+	for _, snap := range kept {
+		keptIDs[snap.id] = true
+		for key := range snap.refs {
+			keepKeys[key] = struct{}{}
+		}
+	}
 
-	for _, snap := range toDelete {
-		prefix := path.Join(snapshotRootDir, snap.ID)
-		items, listErr := v.vault.List(prefix)
+	var errs []error
+	for _, snap := range dropped {
+		manifestKey := path.Join(snapshotRootDir, snap.id, snapshotManifestKey)
+		items, listErr := listSnapshotPrefixItems(v.vault, snap.id)
 		if listErr != nil {
-			errs = append(errs, fmt.Errorf("list snapshot %s: %w", snap.ID, listErr))
+			errs = append(errs, fmt.Errorf("list snapshot %s: %w", snap.id, listErr))
 			continue
 		}
-
+		candidates := make(map[string]struct{}, len(items)+len(snap.refs))
 		for _, item := range items {
-			if delErr := v.vault.Delete(item); delErr != nil {
-				errs = append(errs, fmt.Errorf("delete %s: %w", item, delErr))
+			candidates[item] = struct{}{}
+		}
+		for key := range snap.refs {
+			candidates[key] = struct{}{}
+		}
+		delete(candidates, manifestKey)
+
+		var snapErrs []error
+		keptForNewer := 0
+		for _, key := range sortedKeys(candidates) {
+			if _, referenced := keepKeys[key]; referenced {
+				keptForNewer++
+				continue
+			}
+			parsed, err := validateManifestObjectKey(key)
+			if err != nil {
+				snapErrs = append(snapErrs, fmt.Errorf("not deleting %q: %w", key, err))
+				continue
+			}
+			if keptIDs[parsed.SnapshotID] {
+				continue
+			}
+			if err := v.vault.Delete(key); err != nil && !errors.Is(err, providers.ErrObjectNotFound) {
+				snapErrs = append(snapErrs, fmt.Errorf("delete %s: %w", key, err))
 			}
 		}
-		slog.Info("vault retention: deleted snapshot", "snapshotId", snap.ID)
+		if len(snapErrs) > 0 {
+			errs = append(errs, snapErrs...)
+			slog.Warn("vault retention: snapshot only partly deleted, its manifest is kept so the next retention retries",
+				"snapshotId", snap.id, "errors", len(snapErrs))
+			continue
+		}
+		if err := v.vault.Delete(manifestKey); err != nil && !errors.Is(err, providers.ErrObjectNotFound) {
+			errs = append(errs, fmt.Errorf("delete %s: %w", manifestKey, err))
+			continue
+		}
+		slog.Info("vault retention: deleted snapshot", "snapshotId", snap.id,
+			"keptForNewerSnapshots", keptForNewer)
 	}
 
 	return errors.Join(errs...)
@@ -220,11 +371,13 @@ func (v *VaultManager) SyncAfterBackup(snapshotID string) (*VaultSyncResult, err
 // command-built provider (a policy-managed device has no agent.yaml manager)
 // lives only there.
 func (v *VaultManager) SyncAfterBackupFrom(primary providers.BackupProvider, snapshotID string) (*VaultSyncResult, error) {
+	vaultMu.Lock()
+	defer vaultMu.Unlock()
 	result, err := v.syncSnapshotFrom(primary, snapshotID)
 	if err != nil {
 		return result, err
 	}
-	if err := v.EnforceRetention(); err != nil {
+	if err := v.enforceRetention(); err != nil {
 		return result, err
 	}
 	return result, nil
