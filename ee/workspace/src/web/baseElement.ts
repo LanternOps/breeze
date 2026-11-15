@@ -28,8 +28,11 @@ export abstract class WorkspaceBaseElement extends HTMLElement {
   set hostApi(value: unknown) {
     try {
       this.#hostApi = parseExtensionHostApiV1(value);
-    } catch {
+    } catch (error) {
       this.#hostApi = null;
+      // Requests will fail as host-unavailable; leave the reason for whoever debugs it.
+      // eslint-disable-next-line no-console
+      console.warn(`${this.localName}: ignoring an invalid hostApi from the host`, error);
     }
   }
 

@@ -104,6 +104,7 @@ describe('createExtensionHostApiV1', () => {
         'content-type': 'application/json',
         authorization: 'Bearer forged',
         cookie: 'x=y',
+        'Proxy-Authorization': 'Basic forged',
         'x-trace': '1',
       },
       body: '{"a":1}',
@@ -122,6 +123,7 @@ describe('createExtensionHostApiV1', () => {
     expect(headers.get('x-trace')).toBe('1');
     expect(headers.has('authorization')).toBe(false);
     expect(headers.has('cookie')).toBe(false);
+    expect(headers.has('proxy-authorization')).toBe(false);
   });
 
   it('refuses an unknown HTTP method', async () => {

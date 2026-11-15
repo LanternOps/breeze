@@ -485,6 +485,8 @@ export class WorkspaceDashboard extends WorkspaceBaseElement {
       this.#paint();
     } catch (error) {
       if (this.#isAbort(error)) return;
+      // eslint-disable-next-line no-console
+      console.error('workspace-dashboard: summary fetch failed', error);
       this.renderError('The Knowledge dashboard could not be loaded.', () => {
         this.track(this.#refresh(config));
       });
