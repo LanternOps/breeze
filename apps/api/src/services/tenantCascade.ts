@@ -29,7 +29,10 @@
  *   - `audit_logs` is in the cascade list (it has an `org_id` column).
  *   - `breeze_app` cannot DELETE from `audit_logs` (Task 29 trigger);
  *     the cascade runs `SET LOCAL ROLE breeze_audit_admin` +
- *     `SET LOCAL breeze.allow_audit_retention = '1'` for that one table.
+ *     `SET LOCAL breeze.allow_audit_retention = '1'` for that one table
+ *     (and the other AUDIT_ADMIN_REQUIRED_TABLES), or, when
+ *     AUDIT_ADMIN_DATABASE_URL is set, runs those steps on the dedicated
+ *     breeze_audit_admin connection instead (#11929).
  *   - The `tenant.erasure` audit event itself is written with
  *     `org_id = NULL` BEFORE the cascade so it survives the cascade.
  *
@@ -39,6 +42,7 @@
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
+import { hasDedicatedAuditAdminPool, withAuditAdminTransaction } from '../db/auditAdminPool';
 import { withExtensionOrgCascade } from '../extensions/tenancyRegistry';
 import { createAuditLog } from './auditService';
 import { assertNoUnresolvedIsolation, findUnresolvedIsolations, NetworkIsolationUnresolvedError } from './networkIsolation/lifecycle';
@@ -2533,6 +2537,15 @@ async function cascadeDeleteOrgInternal(
         ? await deleteAiScreenshotsCascadeStep(orgId)
         : table === 'patch_compliance_reports'
         ? await deletePatchComplianceReportsCascadeStep(orgId)
+        : AUDIT_ADMIN_REQUIRED_TABLES.has(table) && hasDedicatedAuditAdminPool()
+        // AUDIT_ADMIN_DATABASE_URL set: run this table's step on the dedicated
+        // breeze_audit_admin login, which keeps working after breeze_app's
+        // membership is revoked (#915, #11929). Same one-transaction-per-table
+        // shape and the same erasure marker as the branch below.
+        ? await withAuditAdminTransaction(async (adminTx) => {
+            await adminTx.execute(sql`SELECT set_config('breeze.backup_erasure_org', ${orgId}, true)`);
+            return extractRowCount(await adminTx.execute(orgRowsDeleteSql(table, orgId)));
+          })
         : await dbModule.withSystemDbAccessContext(async () => {
             // Every walk transaction is marked as this org's erasure, so the
             // on-delete fence trigger records any backup source row deleted in
@@ -2723,18 +2736,20 @@ async function writeErasureFailedAudit(
   }
 }
 
+function orgRowsDeleteSql(table: string, orgId: string) {
+  // `organizations` is id-keyed (its own primary key IS the org id);
+  // every other table in the list has an `org_id` column.
+  if (table === 'organizations') {
+    return sql`DELETE FROM organizations WHERE id = ${orgId}`;
+  }
+  return sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE org_id = ${orgId}`;
+}
+
 function deleteOrgRows(
   table: string,
   orgId: string,
 ): ReturnType<typeof dbModule.db.execute> {
-  // `organizations` is id-keyed (its own primary key IS the org id);
-  // every other table in the list has an `org_id` column.
-  if (table === 'organizations') {
-    return dbModule.db.execute(sql`DELETE FROM organizations WHERE id = ${orgId}`);
-  }
-  return dbModule.db.execute(
-    sql`DELETE FROM ${sql.raw(quoteIdent(table))} WHERE org_id = ${orgId}`,
-  );
+  return dbModule.db.execute(orgRowsDeleteSql(table, orgId));
 }
 
 function isUndefinedTable(err: unknown): boolean {

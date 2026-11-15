@@ -431,6 +431,15 @@ export async function deleteDeviceCascade(
       // DEVICE_CASCADE_AUDIT_ADMIN_TABLES above). Arm both layers only for
       // this one statement and immediately restore the caller's role before
       // continuing through ordinary child tables.
+      //
+      // Deliberately NOT the dedicated AUDIT_ADMIN_DATABASE_URL connection,
+      // even when it is configured (#11929). A second connection commits on
+      // its own, before the caller's transaction, and the caller still has
+      // refusals to run after this cascade (purgeRemovedDevice's link-group
+      // site-access check): a refused delete would leave the device in place
+      // with its evidence already destroyed. The delete must stay in this
+      // transaction, so it needs breeze_app's membership; boot logs an error
+      // when that is missing (databaseStartup.ts).
       await tx.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
       await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
       await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE ${predicate}`);
