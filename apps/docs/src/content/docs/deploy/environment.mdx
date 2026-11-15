@@ -364,6 +364,16 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `AUTH_SESSION_RETENTION_ENFORCE` | `false` | `true` or `1` (any letter case) turns deletion on for this target only; unset, empty or anything else keeps it report-only: the run counts its eligible rows, logs a `REPORT-ONLY` line and sets `breeze_retention_rows_eligible`, and deletes nothing. See [Report-only retention jobs](#report-only-retention-jobs) |
 | `NETWORK_CHANGE_EVENT_RETENTION_DAYS` | `90` | Report-only until `NETWORK_CHANGE_EVENT_RETENTION_ENFORCE=true` (see below). Days to keep: 1–365. Nightly at 16:08 UTC (history retention job). Removes: Network change events older than their discovery profile's change retention setting (1–365 days), or older than this window when the event has no profile or the setting is invalid. Profiles with alerts disabled are included. |
 | `NETWORK_CHANGE_EVENT_RETENTION_ENFORCE` | `false` | `true` or `1` (any letter case) turns deletion on for this target only; unset, empty or anything else keeps it report-only: the run counts its eligible rows, logs a `REPORT-ONLY` line and sets `breeze_retention_rows_eligible`, and deletes nothing. See [Report-only retention jobs](#report-only-retention-jobs) |
+| `SSO_SESSION_RETENTION_DAYS` | `7` | **Count only; nothing is deleted.** Days: 1–365. Nightly at 16:08 UTC (history retention job). Counts: SSO sign-in starts that were never completed and expired more than this many days ago. See [Count-only retention targets](#count-only-retention-targets) |
+| `C2C_CONSENT_SESSION_RETENTION_DAYS` | `7` | **Count only; nothing is deleted.** Days: 1–365. Nightly at 16:08 UTC. Counts: Microsoft 365 backup consent starts that were never completed and expired more than this many days ago |
+| `TUNNEL_SESSION_RETENTION_DAYS` | `365` | **Count only; nothing is deleted.** Days: 1–1095. Nightly at 16:08 UTC. Counts: ended VNC and web proxy tunnel sessions (disconnected or failed) that ended before the window |
+| `UNIFI_SYNC_RUN_RETENTION_DAYS` | `90` | **Count only; nothing is deleted.** Days: 1–365. Nightly at 16:08 UTC. Counts: finished UniFi sync runs started before the window, except the newest finished run of each integration |
+| `FLEET_REMEDIATION_RUN_RETENTION_DAYS` | `365` | **Count only; nothing is deleted.** Days: 1–1095. Nightly at 16:08 UTC. Counts: fleet finding remediation runs completed before the window, except the newest run of each finding |
+| `TICKET_IMPORT_RUN_RETENTION_DAYS` | `365` | **Count only; nothing is deleted.** Days: 1–1095. Nightly at 16:08 UTC. Counts: finished ticket import and dry runs that finished before the window, except the newest run of each import source |
+| `TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_DAYS` | `90` | **Count only; nothing is deleted.** Days: 1–1095. Nightly at 16:08 UTC. Counts: finished network diagnostic runs that finished before the window. A scheduled monitoring run is counted only when a newer finished run of the same check exists and the run is not still waiting to be applied to monitoring alerts |
+| `AUDIT_BASELINE_RESULT_RETENTION_DAYS` | `90` | **Count only; nothing is deleted.** Days: 1–1095. Nightly at 16:08 UTC. Counts: audit baseline evaluation results checked before the window, except the newest result of each device and baseline |
+| `PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_DAYS` | `365` | **Count only; nothing is deleted.** Days: 1–1095. Nightly at 16:08 UTC. Counts: peripheral control policy delivery records older than the window |
+| `ML_FEEDBACK_EVENT_RETENTION_DAYS` | `400` | **Count only; nothing is deleted.** Days: 365–1095 (lower values are raised to 365, the longest window the feedback reports read). Nightly at 16:08 UTC. Counts: alert, ticket and anomaly feedback labels older than the window |
 | `RESTORE_POINT_ATTEMPT_RETENTION_DAYS` | `90` | Days to keep System Restore checkpoint attempts (the device's System Restore tab), clamped to 1–365. An attempt still awaiting the device is kept until its command can no longer report back, whatever this is set to |
 | `RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
 | `RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per sweep, per nightly run |
@@ -436,6 +446,12 @@ Some retention jobs ship **report-only**: each nightly run counts the rows it wo
 - **Once enforcing:** the job reports `breeze_retention_rows_deleted_total`. While a backlog remains, it also sets `breeze_retention_backlog_incomplete` to `1`.
 
 Deleted rows cannot be recovered. Confirm you have a current database backup before you turn on any `_ENFORCE` variable.
+
+#### Count-only retention targets
+
+The history retention job also runs ten **count-only** targets, configured by the `_DAYS` variables from `SSO_SESSION_RETENTION_DAYS` to `ML_FEEDBACK_EVENT_RETENTION_DAYS` above. They log the same `REPORT-ONLY` line, ending `report-only target: no enforce switch in this release`, and set the same `breeze_retention_rows_eligible` gauge. Unlike the jobs above, they have no `_ENFORCE` variable, and no setting makes them delete. The counts show how large each table's history is, so that a later release can decide whether to add deletion for it.
+
+Each count stops after 5 seconds. A count that takes longer is cancelled and logs `REPORT-ONLY: <table> count unavailable (timed out after 5000 ms; …)` instead of a number. It also sets `breeze_retention_count_unavailable{job_name="…"}` to `1` and removes that target's `breeze_retention_rows_eligible` value. The other targets and the job still run, and the next count that finishes clears the flag. A `_DAYS` value that is not a positive whole number, such as `0`, `-5` or `ninety`, logs one warning that names the variable, and the target counts at its default window.
 
 ### Metric history retention (`metric_rollups`)
 

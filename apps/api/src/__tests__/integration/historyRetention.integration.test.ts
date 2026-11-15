@@ -71,7 +71,7 @@ import {
   tickets,
   userNotifications,
 } from '../../db/schema';
-import { HISTORY_RETENTION_TARGETS, runHistoryRetention } from '../../jobs/historyRetention';
+import { HISTORY_REPORT_ONLY_TARGETS, HISTORY_RETENTION_TARGETS, runHistoryRetention } from '../../jobs/historyRetention';
 import type { RetentionTargetResult } from '../../jobs/retentionTarget';
 import { loadOldestRebootRequiredSince } from '../../services/patchAlerts';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
@@ -111,10 +111,17 @@ function affected(r: RetentionTargetResult | undefined): number {
   return r.affected;
 }
 
-/** For every one of the twelve targets, the report count equals the enforce count. */
+/**
+ * For every one of the twelve targets, the report count equals the enforce count.
+ * The run also carries the ten report-only second-pass targets after them
+ * (#4342 W6.c, `historyRetentionReportOnly.integration.test.ts`); those only
+ * ever report, so both runs return them in report mode.
+ */
 function expectParity(report: RetentionTargetResult[], enforce: RetentionTargetResult[]) {
-  expect(report).toHaveLength(12);
-  expect(enforce).toHaveLength(12);
+  const total = 12 + HISTORY_REPORT_ONLY_TARGETS.length;
+  expect(report).toHaveLength(total);
+  expect(enforce).toHaveLength(total);
+  for (let i = 12; i < total; i++) expect(enforce[i]?.mode).toBe('report');
   for (let i = 0; i < 12; i++) {
     expect(eligible(report[i]), `eligible(report) === affected(enforce) for target #${i}`).toBe(affected(enforce[i]));
   }
