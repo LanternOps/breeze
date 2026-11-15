@@ -11,7 +11,8 @@
 //   5. Ingest flake sightings from CI runs completed since the last tick.
 //   6. Sweeps: breakers, stuck queue entries, pending re-adds, parked PRs with
 //      a new head, the resume label; after ingest, flaky-test issues and the
-//      rolling ledger PR (flake-upkeep.mjs, W06c).
+//      rolling ledger PR (flake-upkeep.mjs, W06c); then, on the first act
+//      tick after Monday 13:00Z, last week's metrics (metrics.mjs, W06d).
 //   7. Save state atomically. A BudgetExceeded keeps the cursor at the first
 //      removal it did not finish.
 import { readFileSync } from 'node:fs';
@@ -24,6 +25,7 @@ import { LABELS, decide, pageFor, staleReasons, summarizeVerdict } from './decid
 import { History } from './evidence.mjs';
 import { flakeUpkeep } from './flake-upkeep.mjs';
 import { groupRunFor, headPushedAt, prSnapshot, recentRemovals, requiredJobIds, runFacts } from './facts.mjs';
+import { weeklyMetrics } from './metrics.mjs';
 import { acquireLock, appendJsonl, loadState, readJsonl, releaseLock, saveState, tickBudget, writeJsonl } from './state.mjs';
 import { actOnBreakers, ingestSightings, settled, sweepBreakers, sweepParked, sweepReadds, sweepResume, sweepStuck } from './sweeps.mjs';
 import { createWriter, readOnlyGitHub } from './writer.mjs';
@@ -106,7 +108,8 @@ function prune(state, now) {
 // mid-apply), locked, off, hourly_budget_spent, budget_exceeded,
 // mode_unreadable, error. The CLI exits 0 only for ok, locked, off and
 // hourly_budget_spent, so runs.log's exit code shows every other one.
-export async function tick({ gh, repo, stateDir, checkoutDir = null, now = Date.now(), clock = () => Date.now(), exec, repoRoot, log = (l) => process.stdout.write(`${l}\n`) }) {
+// `weekly` is the weekly metrics hook (tests of other sweeps pass a stub).
+export async function tick({ gh, repo, stateDir, checkoutDir = null, now = Date.now(), clock = () => Date.now(), exec, repoRoot, log = (l) => process.stdout.write(`${l}\n`), weekly = weeklyMetrics }) {
   const lock = acquireLock(stateDir, now);
   if (!lock.ok) {
     log(`ci-shepherd tick status=locked held_since=${lock.heldSince}`);
@@ -324,6 +327,9 @@ export async function tick({ gh, repo, stateDir, checkoutDir = null, now = Date.
     });
     await sweep('flaky tests', async () => {
       summary.sweeps.flake = await flakeUpkeep(t);
+    });
+    await sweep('weekly metrics', async () => {
+      summary.sweeps.metrics = (await weekly(t)).status;
     });
     return summary;
   } catch (e) {

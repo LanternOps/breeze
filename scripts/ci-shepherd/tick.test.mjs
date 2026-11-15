@@ -10,6 +10,7 @@ import { createWorld } from './fake-world.mjs';
 import { headPushedAt, prSnapshot } from './facts.mjs';
 import { createGitHub } from './github.mjs';
 import { parseMarkers } from './markers.mjs';
+import { METRICS_TITLE, marker } from './metrics.mjs';
 import { probe } from './probe.mjs';
 import { REPO_ROOT } from './shepherd.mjs';
 import { readJsonl } from './state.mjs';
@@ -33,7 +34,7 @@ function setup({ mode = null } = {}) {
   const world = createWorld({ mode, now: T0 });
   const gh = createGitHub({ token: 'test', fetchImpl: world.fetchImpl, budget: 100_000 });
   const stateDir = mkdtempSync(join(tmpdir(), 'ci-shepherd-tick-'));
-  const run = (over = {}) => tick({ gh, repo: REPO, stateDir, now: world.clock, clock: () => world.clock, exec: world.exec, repoRoot: REPO_ROOT, log: () => {}, ...over });
+  const run = (over = {}) => tick({ gh, repo: REPO, stateDir, now: world.clock, clock: () => world.clock, exec: world.exec, repoRoot: REPO_ROOT, log: () => {}, weekly: async () => ({ status: 'stubbed' }), ...over });
   const decisions = () => readJsonl(join(stateDir, 'decisions.jsonl'));
   const state = () => JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'));
   const writesOf = (op, pr) => world.writes.filter((x) => x.op === op && (pr === undefined || x.pr === pr));
@@ -859,4 +860,36 @@ test('writer: issue upsert reuses an open issue with the same title; the main CI
   assert.equal(world.writes.filter((x) => x.op === 'issue_create').length, 1);
   await w.dispatchMainCi();
   assert.deepEqual(world.execs.at(-1), ['workflow', 'run', 'CI', '--ref', 'main', '-R', REPO]);
+});
+
+// W06d: the real weekly metrics hook (the other tests stub it).
+test('weekly metrics: posted once through the real tick wiring, in act mode only', async () => {
+  const monday = Date.parse('2026-11-09T14:00:00Z'); // last week, 2026-W45, is due
+  for (const mode of [null, 'shadow']) {
+    const env = setup({ mode });
+    env.world.clock = monday;
+    const s = await env.run({ weekly: undefined });
+    assert.equal(s.sweeps.metrics, 'not_act');
+    assert.deepEqual(env.world.writes, []);
+  }
+  const env = setup({ mode: 'act' });
+  env.world.clock = monday;
+  const s1 = await env.run({ weekly: undefined });
+  assert.equal(s1.sweeps.metrics, 'posted', JSON.stringify(s1.errors));
+  const issue = env.world.issues.find((i) => i.title === METRICS_TITLE);
+  assert.ok(issue, 'the metrics issue was opened');
+  assert.equal(env.writesOf('issue_create').length, 1);
+  const posts = () => env.writesOf('comment_post').filter((x) => x.pr === issue.number);
+  assert.equal(posts().length, 1);
+  assert.ok(posts()[0].body.includes(marker('2026-W45')));
+  assert.equal(env.decisions().filter((d) => d.kind === 'metrics_post').length, 1);
+  assert.equal(env.state().metrics.postedWeek, '2026-W45');
+  // A later tick, and one after state.json was lost, post nothing more.
+  env.world.clock = monday + 10 * MIN;
+  assert.equal((await env.run({ weekly: undefined })).sweeps.metrics, 'posted');
+  writeFileSync(join(env.stateDir, 'state.json'), '{}');
+  env.world.clock = monday + 120 * MIN;
+  assert.equal((await env.run({ weekly: undefined })).sweeps.metrics, 'noop');
+  assert.equal(env.writesOf('issue_create').length, 1);
+  assert.equal(posts().length, 1);
 });
