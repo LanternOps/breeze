@@ -26,15 +26,15 @@
 
 import { sql } from 'drizzle-orm';
 
-import { resolveRetentionDays, utcWallTime } from '../retentionBatch';
-import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
+import { utcWallTime } from '../retentionBatch';
+import { reportOnlyDays, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
 
 const EXPIRED_SESSION_MAX_DAYS = 365;
 const MAX_DAYS = 1095;
 
-const SSO_SESSION_DAYS = resolveRetentionDays(process.env.SSO_SESSION_RETENTION_DAYS, 7, EXPIRED_SESSION_MAX_DAYS, LOG_PREFIX);
-const C2C_CONSENT_SESSION_DAYS = resolveRetentionDays(process.env.C2C_CONSENT_SESSION_RETENTION_DAYS, 7, EXPIRED_SESSION_MAX_DAYS, LOG_PREFIX);
-const TUNNEL_SESSION_DAYS = resolveRetentionDays(process.env.TUNNEL_SESSION_RETENTION_DAYS, 365, MAX_DAYS, LOG_PREFIX);
+const SSO_SESSION_DAYS = reportOnlyDays('SSO_SESSION_RETENTION_DAYS', process.env.SSO_SESSION_RETENTION_DAYS, 7, EXPIRED_SESSION_MAX_DAYS);
+const C2C_CONSENT_SESSION_DAYS = reportOnlyDays('C2C_CONSENT_SESSION_RETENTION_DAYS', process.env.C2C_CONSENT_SESSION_RETENTION_DAYS, 7, EXPIRED_SESSION_MAX_DAYS);
+const TUNNEL_SESSION_DAYS = reportOnlyDays('TUNNEL_SESSION_RETENTION_DAYS', process.env.TUNNEL_SESSION_RETENTION_DAYS, 365, MAX_DAYS);
 
 export const SSO_SESSION_RETENTION_TARGET: ReportOnlyRetentionTarget = {
   metricName: 'sso_session_retention',

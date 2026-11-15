@@ -32,20 +32,22 @@
 
 import { sql } from 'drizzle-orm';
 
-import { resolveRetentionDays, utcWallTime } from '../retentionBatch';
-import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
+import { utcWallTime } from '../retentionBatch';
+import { LOG_PREFIX, reportOnlyDays, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
 
 const MAX_DAYS = 1095;
 
 /** The longest `occurred_at` window any ml_feedback_events reader accepts. */
 export const ML_FEEDBACK_READER_MAX_DAYS = 365;
 
-const AUDIT_BASELINE_RESULT_DAYS = resolveRetentionDays(process.env.AUDIT_BASELINE_RESULT_RETENTION_DAYS, 90, MAX_DAYS, LOG_PREFIX);
-const PERIPHERAL_POLICY_DELIVERY_EVENT_DAYS = resolveRetentionDays(
-  process.env.PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_DAYS, 365, MAX_DAYS, LOG_PREFIX,
+const AUDIT_BASELINE_RESULT_DAYS = reportOnlyDays(
+  'AUDIT_BASELINE_RESULT_RETENTION_DAYS', process.env.AUDIT_BASELINE_RESULT_RETENTION_DAYS, 90, MAX_DAYS,
+);
+const PERIPHERAL_POLICY_DELIVERY_EVENT_DAYS = reportOnlyDays(
+  'PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_DAYS', process.env.PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_DAYS, 365, MAX_DAYS,
 );
 const ML_FEEDBACK_EVENT_DAYS = floorMlFeedbackDays(
-  resolveRetentionDays(process.env.ML_FEEDBACK_EVENT_RETENTION_DAYS, 400, MAX_DAYS, LOG_PREFIX),
+  reportOnlyDays('ML_FEEDBACK_EVENT_RETENTION_DAYS', process.env.ML_FEEDBACK_EVENT_RETENTION_DAYS, 400, MAX_DAYS),
 );
 
 function floorMlFeedbackDays(days: number): number {

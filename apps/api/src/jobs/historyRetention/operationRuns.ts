@@ -48,16 +48,15 @@
 
 import { sql } from 'drizzle-orm';
 
-import { resolveRetentionDays } from '../retentionBatch';
-import { LOG_PREFIX, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
+import { reportOnlyDays, reportOnlyKnobs, type HistoryReportOnlyEntry, type ReportOnlyRetentionTarget } from './shared';
 
 const UNIFI_SYNC_RUN_MAX_DAYS = 365;
 const MAX_DAYS = 1095;
 
-const UNIFI_SYNC_RUN_DAYS = resolveRetentionDays(process.env.UNIFI_SYNC_RUN_RETENTION_DAYS, 90, UNIFI_SYNC_RUN_MAX_DAYS, LOG_PREFIX);
-const FLEET_REMEDIATION_RUN_DAYS = resolveRetentionDays(process.env.FLEET_REMEDIATION_RUN_RETENTION_DAYS, 365, MAX_DAYS, LOG_PREFIX);
-const TICKET_IMPORT_RUN_DAYS = resolveRetentionDays(process.env.TICKET_IMPORT_RUN_RETENTION_DAYS, 365, MAX_DAYS, LOG_PREFIX);
-const TOPOLOGY_DIAGNOSTIC_RUN_DAYS = resolveRetentionDays(process.env.TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_DAYS, 90, MAX_DAYS, LOG_PREFIX);
+const UNIFI_SYNC_RUN_DAYS = reportOnlyDays('UNIFI_SYNC_RUN_RETENTION_DAYS', process.env.UNIFI_SYNC_RUN_RETENTION_DAYS, 90, UNIFI_SYNC_RUN_MAX_DAYS);
+const FLEET_REMEDIATION_RUN_DAYS = reportOnlyDays('FLEET_REMEDIATION_RUN_RETENTION_DAYS', process.env.FLEET_REMEDIATION_RUN_RETENTION_DAYS, 365, MAX_DAYS);
+const TICKET_IMPORT_RUN_DAYS = reportOnlyDays('TICKET_IMPORT_RUN_RETENTION_DAYS', process.env.TICKET_IMPORT_RUN_RETENTION_DAYS, 365, MAX_DAYS);
+const TOPOLOGY_DIAGNOSTIC_RUN_DAYS = reportOnlyDays('TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_DAYS', process.env.TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_DAYS, 90, MAX_DAYS);
 
 // Outer tables are referenced by their bare names (retentionBatch selects FROM
 // them unaliased); inner subqueries alias their own table.

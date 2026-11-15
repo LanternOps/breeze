@@ -152,6 +152,13 @@ async function seedUnifiSyncRuns(s: Seed): Promise<string[]> {
   const b = await integration(false);
   await syncRun(b, 'success', daysAgo(200)); // newest finished for B: kept
   await syncRun(b, 'running', daysAgo(300)); // non-terminal: kept
+  await syncRun(a, 'partial', daysAgo(98)); // [5] partial is finished: eligible
+  await syncRun(a, 'success', daysAgo(30)); // [6] has a newer run but inside the window: kept
+  // C: only a newer RUNNING run above an old success. Running is not "finished",
+  // so the success is still C's newest finished run: kept.
+  const c = await integration(false);
+  await syncRun(c, 'success', daysAgo(200)); // [7] kept
+  await syncRun(c, 'running', daysAgo(10)); // [8] non-terminal: kept
   return ids;
 }
 
@@ -178,6 +185,9 @@ async function seedFleetRemediationRuns(s: Seed): Promise<string[]> {
   await remediation(x, 'queued', daysAgo(600), null); // non-terminal: kept
   const y = await finding();
   await remediation(y, 'failed', daysAgo(500), daysAgo(500)); // newest of Y: kept
+  await remediation(x, 'succeeded', daysAgo(200), daysAgo(200)); // [4] has a newer run but inside the window: kept
+  // [5] non-terminal with a stale completed_at (a roll-up bug shape): the status list alone keeps it.
+  await remediation(x, 'running', daysAgo(450), daysAgo(450));
   return ids;
 }
 
@@ -207,6 +217,7 @@ async function seedTicketImportRuns(s: Seed): Promise<string[]> {
   await importRun(sourceS, 'completed', daysAgo(1), daysAgo(1)); // newest: kept
   const sourceT = await source();
   await importRun(sourceT, 'stopped', daysAgo(500), daysAgo(500)); // only run: kept
+  await importRun(sourceS, 'completed', daysAgo(200), daysAgo(200)); // [4] has a newer run but inside the window: kept
   return ids;
 }
 
@@ -216,33 +227,55 @@ async function seedTopologyDiagnosticRuns(s: Seed): Promise<string[]> {
   const nodeId = randomUUID();
   await exec(sql`INSERT INTO topology_site_state (org_id, site_id)
     VALUES (${orgId}::uuid, ${siteId}::uuid) ON CONFLICT DO NOTHING`);
-  await exec(sql`INSERT INTO topology_nodes (id, org_id, site_id, identity_key, identity_material, kind)
-    VALUES (${nodeId}::uuid, ${orgId}::uuid, ${siteId}::uuid, ${nodeId},
-      ${JSON.stringify({ version: 1, kind: 'endpoint', sourceKey: nodeId })}::jsonb, 'endpoint')`);
+  const node2Id = randomUUID();
+  for (const id of [nodeId, node2Id]) {
+    await exec(sql`INSERT INTO topology_nodes (id, org_id, site_id, identity_key, identity_material, kind)
+      VALUES (${id}::uuid, ${orgId}::uuid, ${siteId}::uuid, ${id},
+        ${JSON.stringify({ version: 1, kind: 'endpoint', sourceKey: id })}::jsonb, 'endpoint')`);
+  }
 
-  const policyId = randomUUID();
-  const entry = (contextKey: string, lastAppliedScheduledFor: Date) => ({
+  const entry = (contextKey: string, lastAppliedScheduledFor: Date | null, family = 'ipv4') => ({
     contextKey,
-    family: 'ipv4',
-    lastAppliedScheduledFor: lastAppliedScheduledFor.toISOString(),
+    family,
+    lastAppliedScheduledFor: lastAppliedScheduledFor ? lastAppliedScheduledFor.toISOString() : null,
     consecutiveFailures: 0,
     consecutiveSuccesses: 0,
   });
-  const alertState = { schemaVersion: 1, entries: [entry('k1', daysAgo(95)), entry('k3', daysAgo(130))] };
-  await exec(sql`INSERT INTO topology_monitoring_policies (id, org_id, site_id, key, definition, activation_intent, alert_state)
-    VALUES (${policyId}::uuid, ${orgId}::uuid, ${siteId}::uuid, ${`policy-${policyId.slice(0, 8)}`},
-      '{"kind":"policy"}'::jsonb, false, ${JSON.stringify(alertState)}::jsonb)`);
+  const policy = async (revision: number, entries: ReturnType<typeof entry>[]) => {
+    const id = randomUUID();
+    await exec(sql`INSERT INTO topology_monitoring_policies
+      (id, org_id, site_id, key, definition, activation_intent, alert_state, revision)
+      VALUES (${id}::uuid, ${orgId}::uuid, ${siteId}::uuid, ${`policy-${id.slice(0, 8)}`},
+        '{"kind":"policy"}'::jsonb, false, ${JSON.stringify({ schemaVersion: 1, entries })}::jsonb, ${revision})`);
+    return id;
+  };
+  // P is at revision 1. The (k1, ipv6) entry is applied up to 102 d ago: that is
+  // after [9] (105 d), so [9] is not pending and only its own key keeps it, and
+  // before [2] (100 d), so a family-blind pending check would wrongly hold [2].
+  const p = await policy(1, [
+    entry('k1', daysAgo(95)), entry('k1', daysAgo(102), 'ipv6'), entry('k3', daysAgo(130)), entry('k6', null),
+  ]);
+  // Q is at revision 2, for the two revision guards.
+  const q = await policy(2, [entry('r1', daysAgo(140)), entry('r2', daysAgo(170))]);
+
+  interface Sched { policyId: string; revision: number; contextKey: string; scheduledFor: Date; family?: string }
+  const at = (d: number, policyId: string, revision: number, contextKey: string, family?: string): Sched =>
+    ({ policyId, revision, contextKey, scheduledFor: daysAgo(d), family });
 
   const diagRun = async (
-    finishedAt: Date,
-    scheduled: { contextKey: string; scheduledFor: Date } | null,
+    finishedAt: Date | null,
+    scheduled: Sched | null,
+    o: { state?: string; node?: string } = {},
   ) => {
     const id = randomUUID();
     ids.push(id);
-    const queuedAt = new Date(finishedAt.getTime() - HOUR_MS);
+    const anchor = finishedAt ?? scheduled?.scheduledFor ?? new Date(NOW);
+    const queuedAt = new Date(anchor.getTime() - HOUR_MS);
     const sched = scheduled
-      ? sql`${policyId}::uuid, 1, ${scheduled.contextKey}, 'ipv4', ${tsz(scheduled.scheduledFor)}, ${hex64()}, ${hex64()}, '{}'::jsonb`
+      ? sql`${scheduled.policyId}::uuid, ${scheduled.revision}, ${scheduled.contextKey}, ${scheduled.family ?? 'ipv4'},
+          ${tsz(scheduled.scheduledFor)}, ${hex64()}, ${hex64()}, '{}'::jsonb`
       : sql`NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL`;
+    const node = o.node ?? nodeId;
     await exec(sql`INSERT INTO topology_diagnostic_runs
       (id, org_id, site_id, recipe_id, recipe_version, requester_id, subject_node_id, origin_node_id,
        origin_snapshot, plan, plan_digest, idempotency_key, body_hash, attempt_id, state, queued_at,
@@ -250,22 +283,39 @@ async function seedTopologyDiagnosticRuns(s: Seed): Promise<string[]> {
        policy_id, policy_revision, scheduled_context_key, scheduled_family, scheduled_for, occurrence_key,
        continuity_key, requester_authority)
       VALUES (${id}::uuid, ${orgId}::uuid, ${siteId}::uuid, 'target_connectivity', 1, ${userId}::uuid,
-        ${nodeId}::uuid, ${nodeId}::uuid, '{}'::jsonb, '{}'::jsonb, ${hex64()}, ${randomUUID()}, ${hex64()},
-        ${randomUUID()}::uuid, 'completed', ${tsz(queuedAt)},
-        ${tsz(new Date(queuedAt.getTime() + 60_000))}, ${tsz(new Date(queuedAt.getTime() + 120_000))}, ${tsz(finishedAt)},
+        ${node}::uuid, ${node}::uuid, '{}'::jsonb, '{}'::jsonb, ${hex64()}, ${randomUUID()}, ${hex64()},
+        ${randomUUID()}::uuid, ${o.state ?? 'completed'}, ${tsz(queuedAt)},
+        ${tsz(new Date(queuedAt.getTime() + 60_000))}, ${tsz(new Date(queuedAt.getTime() + 120_000))},
+        ${finishedAt ? tsz(finishedAt) : sql`NULL`},
         ${sched})`);
   };
 
-  await diagRun(daysAgo(100), null); // on-demand, outside the window: eligible
-  await diagRun(daysAgo(80), null); // on-demand, inside: kept
-  // k1: run1 has a newer settled run AND was applied: eligible. run2 is the newest: kept.
-  await diagRun(daysAgo(100), { contextKey: 'k1', scheduledFor: daysAgo(100) });
-  await diagRun(daysAgo(95), { contextKey: 'k1', scheduledFor: daysAgo(95) });
-  // k2: a lone run is the newest of its key: kept.
-  await diagRun(daysAgo(200), { contextKey: 'k2', scheduledFor: daysAgo(200) });
-  // k3: run3 has a newer run but is still pending assessment (lastApplied 130 d < 120 d): kept.
-  await diagRun(daysAgo(120), { contextKey: 'k3', scheduledFor: daysAgo(120) });
-  await diagRun(daysAgo(110), { contextKey: 'k3', scheduledFor: daysAgo(110) });
+  await diagRun(daysAgo(100), null); // [0] on-demand, outside the window: eligible
+  await diagRun(daysAgo(80), null); // [1] on-demand, inside: kept
+  // k1: [2] has a newer settled run AND was applied: eligible. [3] is the newest: kept.
+  await diagRun(daysAgo(100), at(100, p, 1, 'k1'));
+  await diagRun(daysAgo(95), at(95, p, 1, 'k1'));
+  // k2: [4] the newest SETTLED run of its key: kept, even under [7], a newer queued run.
+  await diagRun(daysAgo(200), at(200, p, 1, 'k2'));
+  // k3: [5] has a newer run but is still pending assessment (applied to 130 d < 120 d): kept.
+  await diagRun(daysAgo(120), at(120, p, 1, 'k3'));
+  await diagRun(daysAgo(110), at(110, p, 1, 'k3')); // [6] kept
+  await diagRun(null, at(190, p, 1, 'k2'), { state: 'queued' }); // [7] non-terminal: kept
+  // [8] k1 on a second subject: the newest of its own (subject, key): kept.
+  await diagRun(daysAgo(105), at(105, p, 1, 'k1'), { node: node2Id });
+  // [9] k1 in the other family: the newest of (k1, ipv6): kept.
+  await diagRun(daysAgo(105), at(105, p, 1, 'k1', 'ipv6'));
+  // k6: its entry was never applied (null), so [10] is pending: kept. [11] newest: kept.
+  await diagRun(daysAgo(100), at(100, p, 1, 'k6'));
+  await diagRun(daysAgo(95), at(95, p, 1, 'k6'));
+  // r1 (Q at revision 2): [12] is current-revision and the only newer run [13] is an
+  // older revision, so [12] is still what the health overlay shows: kept. [13] kept.
+  await diagRun(daysAgo(150), at(150, q, 2, 'r1'));
+  await diagRun(daysAgo(140), at(140, q, 1, 'r1'));
+  // r2: [14] is a stale revision (1; Q is at 2), which the assessment drain never takes
+  // up, and a newer current-revision run [15] exists: eligible. [15] newest: kept.
+  await diagRun(daysAgo(160), at(160, q, 1, 'r2'));
+  await diagRun(daysAgo(155), at(155, q, 2, 'r2'));
   return ids;
 }
 
@@ -285,6 +335,15 @@ async function seedAuditBaselineResults(s: Seed): Promise<string[]> {
   await result(s.deviceId, daysAgo(1)); // newest: kept
   const d2 = (await createDevice({ orgId: s.orgId, siteId: s.siteId })).id;
   await result(d2, daysAgo(200)); // only row for D2: kept
+  await result(s.deviceId, daysAgo(30)); // [4] has a newer row but inside the window: kept
+  // [5] same device, a second baseline whose only row is old: the newest for (D1, B2): kept.
+  const baseline2 = randomUUID();
+  await exec(sql`INSERT INTO audit_baselines (id, org_id, name, os_type, profile, settings)
+    VALUES (${baseline2}::uuid, ${s.orgId}::uuid, 'Retention baseline 2', 'windows', 'standard', '{}'::jsonb)`);
+  const id5 = randomUUID();
+  ids.push(id5);
+  await exec(sql`INSERT INTO audit_baseline_results (id, org_id, device_id, baseline_id, compliant, score, deviations, checked_at)
+    VALUES (${id5}::uuid, ${s.orgId}::uuid, ${s.deviceId}::uuid, ${baseline2}::uuid, true, 100, '[]'::jsonb, ${tsu(daysAgo(200))})`);
   return ids;
 }
 
@@ -325,11 +384,11 @@ const CASES: ReadonlyArray<{
   { table: 'sso_sessions', eligibleIdx: [0], seed: seedSsoSessions },
   { table: 'c2c_consent_sessions', eligibleIdx: [0], seed: seedC2cConsentSessions },
   { table: 'tunnel_sessions', eligibleIdx: [0, 1], seed: seedTunnelSessions },
-  { table: 'unifi_sync_runs', eligibleIdx: [0, 1], seed: seedUnifiSyncRuns },
+  { table: 'unifi_sync_runs', eligibleIdx: [0, 1, 5], seed: seedUnifiSyncRuns },
   { table: 'fleet_remediation_runs', eligibleIdx: [0], seed: seedFleetRemediationRuns },
   { table: 'ticket_import_runs', eligibleIdx: [0, 1], seed: seedTicketImportRuns },
-  // [0] the 100 d on-demand run, [2] k1's older run (newer settled run exists, already applied).
-  { table: 'topology_diagnostic_runs', eligibleIdx: [0, 2], seed: seedTopologyDiagnosticRuns },
+  // [0] the 100 d on-demand run, [2] k1's older applied run, [14] r2's stale-revision run.
+  { table: 'topology_diagnostic_runs', eligibleIdx: [0, 2, 14], seed: seedTopologyDiagnosticRuns },
   { table: 'audit_baseline_results', eligibleIdx: [0, 1], seed: seedAuditBaselineResults },
   { table: 'peripheral_policy_delivery_events', eligibleIdx: [0], seed: seedPeripheralDeliveryEvents },
   { table: 'ml_feedback_events', eligibleIdx: [0], seed: seedMlFeedbackEvents },

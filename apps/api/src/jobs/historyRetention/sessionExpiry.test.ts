@@ -64,10 +64,17 @@ describe('session expiry targets (#4342 W6.c, report-only)', () => {
     vi.stubEnv('SSO_SESSION_RETENTION_DAYS', '2');
     vi.stubEnv('C2C_CONSENT_SESSION_RETENTION_DAYS', '900');
     vi.stubEnv('TUNNEL_SESSION_RETENTION_DAYS', '30');
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { SESSION_EXPIRY_TARGETS: [sso, c2c, tunnel] } = await load();
     expect(sso!.knobs.retentionDays).toBe(2);
     expect(c2c!.knobs.retentionDays).toBe(365);
     expect(tunnel!.knobs.retentionDays).toBe(30);
+    // The clamp is reported, naming the variable, and never claims a delete these targets cannot do.
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('C2C_CONSENT_SESSION_RETENTION_DAYS=900');
+    expect(lines[0]).toContain('365');
+    expect(lines[0]).toContain('nothing is deleted');
+    expect(lines[0]).not.toMatch(/WILL be deleted/);
   });
 });

@@ -10,7 +10,7 @@
  * sees them; never build one from a prefix.
  */
 
-import { parsePositiveIntEnv } from '../retentionBatch';
+import { parsePositiveIntEnv, resolveRetentionDays } from '../retentionBatch';
 import type { RetentionKnobs, RetentionTarget, RetentionTargetEntry } from '../retentionTarget';
 
 export const LOG_PREFIX = '[HistoryRetention]';
@@ -52,4 +52,19 @@ export interface HistoryReportOnlyEntry {
 
 export function reportOnlyKnobs(retentionDays: number): RetentionKnobs & { enforce: false } {
   return { retentionDays, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES, enforce: false };
+}
+
+/**
+ * A report-only target's window: `resolveRetentionDays` without its log
+ * prefix, so its "WILL be deleted" cap warning (true for enforcing jobs) never
+ * prints for a target that cannot delete. The clamp is still reported, here.
+ * Pass the env value as a literal `process.env.X` so `envScan.ts` sees it.
+ */
+export function reportOnlyDays(name: string, raw: string | undefined, fallback: number, maxDays: number): number {
+  const days = resolveRetentionDays(raw, fallback, maxDays);
+  const parsed = Number.parseInt(raw || '', 10);
+  if (Number.isFinite(parsed) && parsed > maxDays) {
+    console.warn(`${LOG_PREFIX} ${name}=${parsed} exceeds the ${maxDays}-day cap; counting at ${maxDays} (report-only: nothing is deleted).`);
+  }
+  return days;
 }
