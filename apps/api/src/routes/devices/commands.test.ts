@@ -375,11 +375,11 @@ describe('device commands routes', () => {
     it('does not deliver or audit when the transaction fails to commit', async () => {
       const deliver = vi.fn();
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
-      dispatchDeviceCommandMock.mockResolvedValueOnce({
+      dispatchDeviceCommandMock.mockImplementationOnce(async () => ({
         ok: true,
         command: { id: 'cmd-1', deviceId, type: 'time_resync', status: 'pending', createdAt: new Date() },
         delivery: 'queued_live', deliverBy: new Date(), deliver,
-      });
+      }));
       vi.mocked(withDbAccessContext).mockImplementationOnce(async (_ctx, fn) => {
         await fn();
         throw new Error('commit failed');
