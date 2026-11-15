@@ -20,13 +20,14 @@ describe('parseCvrf', () => {
   it('derives a CVSS-bucket severity when score present', () => {
     const record = parseCvrf(sample).records.find((item) => item.cvssScore != null);
 
-    if (record) {
-      expect(['critical', 'high', 'medium', 'low']).toContain(record.severity);
-    }
+    expect(record).toBeDefined();
+    expect(['critical', 'high', 'medium', 'low']).toContain(record?.severity);
   });
 
   it('severityFromCvss returns the lowercase buckets the API filters on (#11902)', () => {
-    expect([9.8, 7.5, 5, 2, 0, null].map(severityFromCvss)).toEqual(['critical', 'high', 'medium', 'low', null, null]);
+    expect([9.8, 9, 8.9, 7, 6.9, 4, 3.9, 0.1, 0, null].map(severityFromCvss)).toEqual([
+      'critical', 'critical', 'high', 'high', 'medium', 'medium', 'low', 'low', null, null,
+    ]);
   });
 
   describe('malformed CVE ids (#2261)', () => {

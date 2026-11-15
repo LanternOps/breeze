@@ -77,7 +77,10 @@ describe('vulnerability severity filter is case-insensitive (#11902)', () => {
     expect(list.status).toBe(200);
     expect(list.body.items.map((i) => i.cveId).sort()).toEqual(['CVE-2026-91001', 'CVE-2026-91002', 'CVE-2026-91003']);
 
-    const high = await get<{ items: Array<{ cveId: string }> }>(env, '?severity=high&status=open');
+    const upper = await get<{ items: Array<{ cveId: string }> }>(env, '?severity=CRITICAL&status=open');
+    expect(upper.body.items).toHaveLength(3);
+
+    const high =await get<{ items: Array<{ cveId: string }> }>(env, '?severity=high&status=open');
     expect(high.body.items.map((i) => i.cveId)).toEqual(['CVE-2026-91004']);
   });
 });
