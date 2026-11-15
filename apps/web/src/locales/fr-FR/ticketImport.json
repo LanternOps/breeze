@@ -463,6 +463,8 @@
     "removeFailed": "Impossible de retirer les contacts.",
     "result": "Retirés : {{removed}}. Conservés : {{skipped}}. Restants pour le prochain clic : {{remaining}}.",
     "stoppedByRun": "Arrêté : une exécution de cette source a démarré.",
+    "recreateHint": "« {{option}} » est toujours activé pour cette source : la prochaine exécution recrée les contacts supprimés. Désactivez-le dans les correspondances avant de relancer.",
+    "openMappings": "Ouvrir les correspondances",
     "runActive": "Impossible de retirer des contacts pendant une exécution.",
     "removeMessage_one": "Retirer le {{count}} contact créé par cet import et resté tel qu'importé ? Ses tickets gardent le nom et l'e-mail du demandeur.",
     "removeMessage_other": "Retirer les {{count}} contacts créés par cet import et restés tels qu'importés ? Leurs tickets gardent le nom et l'e-mail du demandeur.",

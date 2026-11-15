@@ -463,6 +463,8 @@
     "removeFailed": "Die Kontakte konnten nicht entfernt werden.",
     "result": "Entfernt: {{removed}}. Behalten: {{skipped}}. Für den nächsten Klick verbleibend: {{remaining}}.",
     "stoppedByRun": "Gestoppt: Ein Lauf dieser Quelle wurde gestartet.",
+    "recreateHint": "Die Option „{{option}}“ ist für diese Quelle noch aktiv: Der nächste Lauf erstellt entfernte Kontakte erneut. Schalten Sie sie in den Zuordnungen aus, bevor Sie erneut ausführen.",
+    "openMappings": "Zuordnungen öffnen",
     "runActive": "Während eines Laufs können keine Kontakte entfernt werden.",
     "removeMessage_one": "Den {{count}} von diesem Import angelegten, unveränderten Kontakt entfernen? Seine Tickets behalten Name und E-Mail des Anfragenden.",
     "removeMessage_other": "Die {{count}} von diesem Import angelegten, unveränderten Kontakte entfernen? Ihre Tickets behalten Name und E-Mail des Anfragenden.",

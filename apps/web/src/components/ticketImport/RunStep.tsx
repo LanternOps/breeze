@@ -31,6 +31,7 @@ type Props = {
   onRunsChanged: () => void;
   onContinue: () => void;
   onOpenWindowStep: () => void;
+  onOpenMappings?: () => void;
 };
 
 /** The delta report's reading order (§7 step 9): a flipped internal flag first. */
@@ -65,7 +66,7 @@ function handleError(err: unknown, fallback: string) {
   if (!(err instanceof ActionError)) showToast({ type: 'error', message: fallback });
 }
 
-export default function RunStep({ kind, source, runs, openWindow, latestWindow = null, nameOfOrg, onRunsChanged, onContinue, onOpenWindowStep }: Props) {
+export default function RunStep({ kind, source, runs, openWindow, latestWindow = null, nameOfOrg, onRunsChanged, onContinue, onOpenWindowStep, onOpenMappings }: Props) {
   const { t } = useTranslation('ticketImport');
   const prefix = kind === 'dry_run' ? 'dryRun' : kind;
   const listed = runForStep(kind, runs, openWindow ?? latestWindow);
@@ -195,7 +196,8 @@ export default function RunStep({ kind, source, runs, openWindow, latestWindow =
         )}
       </Panel>
 
-      {kind !== 'dry_run' && <CreatedContactsPanel source={source} nameOfOrg={nameOfOrg} runActive={active || otherActive} />}
+      {kind !== 'dry_run' && <CreatedContactsPanel source={source} nameOfOrg={nameOfOrg} runActive={active || otherActive}
+        onOpenMappings={onOpenMappings} />}
 
       <ConfirmDialog
         open={confirmCancel}

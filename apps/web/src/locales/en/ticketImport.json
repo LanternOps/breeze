@@ -463,6 +463,8 @@
     "removeFailed": "Could not remove the contacts.",
     "result": "Removed {{removed}}, kept {{skipped}}, {{remaining}} left for the next click.",
     "stoppedByRun": "Stopped: a run of this source started.",
+    "recreateHint": "“{{option}}” is still on for this source: the next run creates removed contacts again. Turn it off in the mappings before you run again.",
+    "openMappings": "Open mappings",
     "runActive": "Contacts cannot be removed while a run is in progress.",
     "removeMessage_one": "Remove the {{count}} contact this import created that is still as imported? Its tickets keep the requester's name and email.",
     "removeMessage_other": "Remove the {{count}} contacts this import created that are still as imported? Their tickets keep the requester's name and email.",

@@ -463,6 +463,8 @@
     "removeFailed": "Kişiler kaldırılamadı.",
     "result": "Kaldırılan: {{removed}}. Korunan: {{skipped}}. Sonraki tıklamaya kalan: {{remaining}}.",
     "stoppedByRun": "Durduruldu: bu kaynağın bir çalıştırması başladı.",
+    "recreateHint": "“{{option}}” bu kaynak için hâlâ açık: sonraki çalıştırma kaldırılan kişileri yeniden oluşturur. Tekrar çalıştırmadan önce eşlemelerde kapatın.",
+    "openMappings": "Eşlemeleri aç",
     "runActive": "Bir çalıştırma sürerken kişiler kaldırılamaz.",
     "removeMessage_one": "Bu aktarımın oluşturduğu ve aktarıldığı gibi kalan {{count}} kişi kaldırılsın mı? Biletleri talep sahibinin adını ve e-postasını korur.",
     "removeMessage_other": "Bu aktarımın oluşturduğu ve aktarıldığı gibi kalan {{count}} kişi kaldırılsın mı? Biletleri talep sahibinin adını ve e-postasını korur.",

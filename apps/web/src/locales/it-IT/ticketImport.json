@@ -463,6 +463,8 @@
     "removeFailed": "Impossibile rimuovere i contatti.",
     "result": "Rimossi: {{removed}}. Mantenuti: {{skipped}}. Ne restano {{remaining}} per il prossimo clic.",
     "stoppedByRun": "Interrotto: è partita un'esecuzione di questa sorgente.",
+    "recreateHint": "«{{option}}» è ancora attivo per questa sorgente: la prossima esecuzione ricrea i contatti rimossi. Disattivalo nelle mappature prima di eseguire di nuovo.",
+    "openMappings": "Apri le mappature",
     "runActive": "Non è possibile rimuovere contatti mentre un'esecuzione è in corso.",
     "removeMessage_one": "Rimuovere il {{count}} contatto creato da questa importazione e rimasto come importato? I suoi ticket mantengono nome ed email del richiedente.",
     "removeMessage_other": "Rimuovere i {{count}} contatti creati da questa importazione e rimasti come importati? I loro ticket mantengono nome ed email del richiedente.",

@@ -299,6 +299,7 @@ export default function TicketImportPage() {
       case 'delta':
         body = <RunStep key={step} kind={step === 'dry-run' ? 'dry_run' : step} source={detail} runs={runs} openWindow={openWindow} latestWindow={latestWindow}
           nameOfOrg={nameOfOrg} onRunsChanged={refreshAll} onOpenWindowStep={() => toStep('window')}
+          onOpenMappings={() => toStep('mappings')}
           onContinue={() => toStep(step === 'dry-run' ? 'window' : step === 'bulk' ? 'delta' : 'close')} />;
         break;
       case 'window':

@@ -45,6 +45,29 @@ describe('CreatedContactsPanel (#8313 W6)', () => {
     expect(await screen.findByTestId('ticket-import-contacts-result')).toHaveTextContent('Removed 1, kept 1, 0 left');
     expect(screen.getByTestId('ticket-import-contacts-result')).toHaveTextContent('Has a portal login: 1');
     await waitFor(() => expect(screen.queryByTestId('ticket-import-contact-c-1')).toBeNull());
+    // The option is off on this source: no hint that a run brings them back.
+    expect(screen.queryByTestId('ticket-import-contacts-recreate-hint')).toBeNull();
+  });
+
+  // #11756 review (§5.13): with the option still on, the next run creates the
+  // removed contacts again, so the wizard says so next to the removal and after it.
+  it('says a later run re-creates removed contacts while the option is on, and opens the mappings', async () => {
+    const onOpenMappings = vi.fn();
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'POST') {
+        return json(200, { data: { removed: 1, skipped: 0, skippedBy: { portal_login: 0, role: 0, other_link: 0, edited: 0, in_use: 0 }, remaining: 0, stoppedBy: null } });
+      }
+      return json(200, { data: [contact('c-1')], next: null });
+    });
+    const source = { ...sourceDetail(), options: { createRequesterContacts: true } };
+    render(<CreatedContactsPanel source={source} nameOfOrg={() => 'Acme'} runActive={false} onOpenMappings={onOpenMappings} />);
+    fireEvent.click(await screen.findByTestId('ticket-import-contacts-remove'));
+    expect(await screen.findByText(/the next run creates removed contacts again/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('ticket-import-contacts-remove-confirm'));
+    const hint = await screen.findByTestId('ticket-import-contacts-recreate-hint');
+    expect(hint).toHaveTextContent('“Create missing requester contacts” is still on for this source');
+    fireEvent.click(screen.getByTestId('ticket-import-contacts-open-mappings'));
+    expect(onOpenMappings).toHaveBeenCalledTimes(1);
   });
 
   it('cannot remove while a run is active, and says so', async () => {

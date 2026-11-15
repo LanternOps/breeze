@@ -463,6 +463,8 @@
     "removeFailed": "Não foi possível remover os contatos.",
     "result": "Removidos: {{removed}}. Mantidos: {{skipped}}. Restam {{remaining}} para o próximo clique.",
     "stoppedByRun": "Interrompido: uma execução desta origem começou.",
+    "recreateHint": "“{{option}}” continua ligado nesta origem: a próxima execução cria de novo os contatos removidos. Desligue a opção nos mapeamentos antes de executar outra vez.",
+    "openMappings": "Abrir mapeamentos",
     "runActive": "Não é possível remover contatos enquanto houver uma execução em andamento.",
     "removeMessage_one": "Remover o {{count}} contato criado por esta importação que continua como importado? Os chamados dele mantêm o nome e o e-mail do solicitante.",
     "removeMessage_other": "Remover os {{count}} contatos criados por esta importação que continuam como importados? Os chamados deles mantêm o nome e o e-mail do solicitante.",

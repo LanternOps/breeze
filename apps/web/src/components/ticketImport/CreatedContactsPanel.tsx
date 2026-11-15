@@ -13,17 +13,21 @@ import { Notice, Panel, buttonDanger, buttonSecondary, formatCount, importFriend
  * each with why a removal would keep it, and removable as a set
  * (POST …/created-contacts/remove, at most 500 per call, any partner-wide
  * admin, refused while a run is active). The runbook's step 6 removes a wrong
- * set and runs again with the option changed.
+ * set and runs again with the option changed. While the source still has
+ * "create missing requester contacts" on, the panel says a later run creates
+ * removed contacts again (§5.13), next to the removal and after it.
  */
 type Props = {
   source: ImportSource;
   nameOfOrg: (orgId: string) => string;
   runActive: boolean;
+  /** Opens the mappings step, where the option is turned off. */
+  onOpenMappings?: () => void;
 };
 
 const PAGE = 100;
 
-export default function CreatedContactsPanel({ source, nameOfOrg, runActive }: Props) {
+export default function CreatedContactsPanel({ source, nameOfOrg, runActive, onOpenMappings }: Props) {
   const { t } = useTranslation('ticketImport');
   const [contacts, setContacts] = useState<CreatedContact[]>([]);
   const [next, setNext] = useState<string | null>(null);
@@ -79,6 +83,11 @@ export default function CreatedContactsPanel({ source, nameOfOrg, runActive }: P
   };
 
   const removable = contacts.filter((c) => c.keptBecause.length === 0).length;
+  const createStillOn = source.options.createRequesterContacts === true;
+  const recreateHint = t('contacts.recreateHint', { option: t('mappings.createContacts') });
+  const removeMessage = next
+    ? `${t('contacts.removeMessage', { count: removable })} ${t('contacts.removeMessageMore')}`
+    : t('contacts.removeMessage', { count: removable });
 
   return (
     <Panel
@@ -102,6 +111,17 @@ export default function CreatedContactsPanel({ source, nameOfOrg, runActive }: P
               </span>
             )}
             {result.stoppedBy === 'run_active' && <span className="block text-xs">{t('contacts.stoppedByRun')}</span>}
+          </Notice>
+        </div>
+      )}
+      {result && result.removed > 0 && createStillOn && (
+        <div className="mb-3">
+          <Notice tone="warning" testId="ticket-import-contacts-recreate-hint">
+            {recreateHint}
+            {onOpenMappings && (
+              <button type="button" className="ml-1 font-medium underline underline-offset-2" onClick={onOpenMappings}
+                data-testid="ticket-import-contacts-open-mappings">{t('contacts.openMappings')}</button>
+            )}
           </Notice>
         </div>
       )}
@@ -147,9 +167,7 @@ export default function CreatedContactsPanel({ source, nameOfOrg, runActive }: P
         onClose={() => setConfirm(false)}
         onConfirm={() => void remove()}
         title={t('contacts.removeTitle')}
-        message={next
-          ? `${t('contacts.removeMessage', { count: removable })} ${t('contacts.removeMessageMore')}`
-          : t('contacts.removeMessage', { count: removable })}
+        message={createStillOn ? `${removeMessage} ${recreateHint}` : removeMessage}
         confirmLabel={t('contacts.remove')}
         isLoading={removing}
         confirmTestId="ticket-import-contacts-remove-confirm"

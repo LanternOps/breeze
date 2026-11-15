@@ -463,6 +463,8 @@
     "removeFailed": "No se pudieron quitar los contactos.",
     "result": "Quitados: {{removed}}. Conservados: {{skipped}}. Quedan {{remaining}} para el próximo clic.",
     "stoppedByRun": "Detenido: empezó una ejecución de este origen.",
+    "recreateHint": "“{{option}}” sigue activado en este origen: la próxima ejecución vuelve a crear los contactos eliminados. Desactívelo en las asignaciones antes de ejecutar de nuevo.",
+    "openMappings": "Abrir asignaciones",
     "runActive": "No se pueden quitar contactos mientras hay una ejecución en curso.",
     "removeMessage_one": "¿Quitar el {{count}} contacto creado por esta importación que sigue como se importó? Sus tickets conservan el nombre y el correo del solicitante.",
     "removeMessage_other": "¿Quitar los {{count}} contactos creados por esta importación que siguen como se importaron? Sus tickets conservan el nombre y el correo del solicitante.",
