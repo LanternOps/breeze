@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode } from '../../utils/pgErrors';
 import {
   createPartner,
   createOrganization,
@@ -131,10 +131,10 @@ it('denies a forged cross-tenant insert as breeze_app (42501) and a wrong compos
   // system scope passes RLS, so only the composite (device_id, org_id) FK can refuse a wrong owner.
   await expect(
     withDbAccessContext(system, () => insertWorkload(f.device.id, f.other.id)),
-  ).rejects.toSatisfy((e: unknown) => pgErrorCode(e) === '23503');
+  ).rejects.toSatisfy((e: unknown) => isPgForeignKeyViolationCode(pgErrorCode(e)));
   await expect(
     withDbAccessContext(system, () => insertRuntime(f.device.id, f.other.id)),
-  ).rejects.toSatisfy((e: unknown) => pgErrorCode(e) === '23503');
+  ).rejects.toSatisfy((e: unknown) => isPgForeignKeyViolationCode(pgErrorCode(e)));
 });
 
 it('isolates reads, updates and deletes by org', async () => {

@@ -24,6 +24,7 @@
  * stays with each caller; this module owns only the consistency of the write.
  */
 import { and, eq, inArray } from 'drizzle-orm';
+import { isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { db, withDbTransaction } from '../db';
 import { drExecutions, drPlanGroups, drPlans } from '../db/schema';
 
@@ -170,7 +171,7 @@ async function writeUnderPlanLock<T>(
     return { status: 'written', row };
   } catch (error) {
     if (error instanceof DrPlanWriteRefused) return error.result;
-    if (options.onForeignKeyViolation && pgErrorCode(error) === '23503') return options.onForeignKeyViolation;
+    if (options.onForeignKeyViolation && isPgForeignKeyViolationCode(pgErrorCode(error))) return options.onForeignKeyViolation;
     throw error;
   }
 }

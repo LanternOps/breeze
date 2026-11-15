@@ -21,6 +21,7 @@ import './setup';
 import { describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
+import { FOREIGN_KEY_VIOLATION_SQLSTATES } from '../../utils/pgErrors';
 import { getTestDb } from './setup';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { seedMovedDeviceWithHistory } from './ownershipEpochFixture';
@@ -289,7 +290,8 @@ describe('5.2 transitive holds, depth cap, and release', () => {
     const err = await getTestDb().execute(sql`DELETE FROM organizations WHERE id = ${survivor.id}::uuid`)
       .then(() => undefined, (e: unknown) => e as { cause?: { code?: string; message?: string } });
     expect(err, 'survivor org deleted while a hold names it').toBeDefined();
-    expect(err!.cause?.code).toBe('23503');
+    // RESTRICT: 23503, or 23001 restrict_violation on Postgres 18.
+    expect(FOREIGN_KEY_VIOLATION_SQLSTATES).toContain(err!.cause?.code);
     expect(await holdRow(loser.id)).toBeDefined();
   });
 

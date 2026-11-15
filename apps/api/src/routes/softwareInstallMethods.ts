@@ -16,7 +16,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveScopedOrgId, type AuthScopeContext } from '../services/softwareVersionShared';
-import { pgErrorCode } from '../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { importCatalogPackage } from '../services/softwareCatalogOps';
 import {
   importPackageSchema,
@@ -221,7 +221,7 @@ softwareInstallMethodRoutes.delete(
       );
     } catch (err: unknown) {
       // Same DrizzleQueryError unwrap as the create handler above (#3881).
-      if (pgErrorCode(err) === '23503') {
+      if (isPgForeignKeyViolationCode(pgErrorCode(err))) {
         return c.json({
           error: 'This install method is referenced by past deployments — disable it instead of deleting it',
         }, 409);

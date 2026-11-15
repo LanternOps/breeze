@@ -105,7 +105,7 @@ import {
   withExtensionDeviceOrgDenormalized,
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
-import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+import { pgErrorCode, pgErrorNode, isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import { findDbSaturationError } from '../../middleware/dbSaturationResponse';
 import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
 import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
@@ -2875,7 +2875,7 @@ coreRoutes.delete(
       // the 55P03 one silently, and the pre-existing 23503 one too. `pgErrors`
       // documents exactly this hazard and exists for it.
       const pgCode = pgErrorCode(err);
-      if (pgCode === '23503') {
+      if (isPgForeignKeyViolationCode(pgCode)) {
         // Read the diagnostics off the SAME node the code came from. Unwrapping
         // only the code and then reading `detail`/`table_name` off the outer
         // Drizzle error yields blanks on every wrapped statement, i.e. "related

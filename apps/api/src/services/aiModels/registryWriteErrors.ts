@@ -7,6 +7,7 @@
  * so programming bugs stay diagnosable.
  */
 import { carriesQueryValues, errorSqlstate, formatSafeDbErrorDetail, safeDbErrorDetail } from './safeDbError';
+import { isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import { OfferingWriteError } from './offerings';
 import { ConnectionKeyError } from './connectionKeys';
 
@@ -67,7 +68,7 @@ export function toRegistryWriteError(error: unknown, fallbackMessage: string): n
   let mapped: RegistryWriteError;
   if (sqlstate === '23505') {
     mapped = new RegistryWriteError('This conflicts with an existing setting.', 'conflict', 409, constraint ? { constraint } : undefined);
-  } else if (sqlstate === '23503' || sqlstate === '23514') {
+  } else if (isPgForeignKeyViolationCode(sqlstate) || sqlstate === '23514') {
     mapped = new RegistryWriteError('That value is not allowed here.', 'invalid', 422, constraint ? { constraint } : undefined);
   } else {
     mapped = new RegistryWriteError(fallbackMessage, 'write_failed', 500);

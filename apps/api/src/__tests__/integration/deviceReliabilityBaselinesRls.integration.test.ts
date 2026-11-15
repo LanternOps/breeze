@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 import { replayMigration } from './replayMigration';
@@ -51,7 +51,7 @@ describe('device_reliability_baselines tenancy', () => {
     await expect(withDbAccessContext(otherCtx, () => insertMarker(f.device, f.org)))
       .rejects.toSatisfy((e: unknown) => pgErrorCode(e) === '42501');
     await expect(withDbAccessContext(system, () => insertMarker(f.device, f.other)))
-      .rejects.toSatisfy((e: unknown) => pgErrorCode(e) === '23503');
+      .rejects.toSatisfy((e: unknown) => isPgForeignKeyViolationCode(pgErrorCode(e)));
     await withDbAccessContext(system, () => insertMarker(f.device, f.org));
     expect(await withDbAccessContext(otherCtx, () => db.execute(sql`SELECT * FROM device_reliability_baselines`))).toHaveLength(0);
   });

@@ -13,7 +13,7 @@ import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination'
 import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
-import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import {
   automationPolicies,
   automationPolicyCompliance,
@@ -753,7 +753,7 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
       console.error(`[fleet:${toolName}]`, input.action, message, err);
 
       // Surface specific DB constraint errors instead of generic "Operation failed"
-      if (code === '23503') {
+      if (isPgForeignKeyViolationCode(code)) {
         // #6206: a violated FK into `users` is a DIFFERENT failure from a
         // stale template/device/policy id, and the generic message actively
         // misdirects — it sends the reader looking for a deleted record when

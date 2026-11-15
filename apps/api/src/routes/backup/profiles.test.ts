@@ -320,13 +320,14 @@ describe('backup profiles routes', () => {
       expect(res.status).toBe(404);
     });
 
-    it('returns the friendly 409 when the RESTRICT FK fires on a race', async () => {
+    // Postgres 18 reports a RESTRICT refusal as 23001; older versions as 23503 (#11624).
+    it.each(['23503', '23001'])('returns the friendly 409 when the RESTRICT FK fires on a race (%s)', async (code) => {
       // A policy can link the profile between the in-use check and the DELETE.
       selectMock
         .mockReturnValueOnce(chainMock([ORG_PROFILE]))
         .mockReturnValueOnce(chainMock([])) // not in use at check time
         .mockReturnValueOnce(chainMock([{ policyId: 'p-9', policyName: 'Raced In' }]));
-      const fkError = Object.assign(new Error('FK violation'), { code: '23503' });
+      const fkError = Object.assign(new Error('FK violation'), { code });
       deleteMock.mockReturnValue(
         Object.assign(Promise.reject(fkError), {
           where: vi.fn(() => ({ returning: vi.fn(() => Promise.reject(fkError)) })),
