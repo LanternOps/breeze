@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { isPgForeignKeyViolation, isPgUniqueViolation, pgErrorCode, pgErrorConstraint, pgErrorNode } from './pgErrors';
+import {
+  FOREIGN_KEY_VIOLATION_SQLSTATES,
+  isPgForeignKeyViolation,
+  isPgForeignKeyViolationCode,
+  isPgUniqueViolation,
+  pgErrorCode,
+  pgErrorConstraint,
+  pgErrorNode,
+} from './pgErrors';
 
 // postgres.js surfaces the index as `constraint_name` (the real shape we hit in prod)
 const pgErr = (constraint?: string) =>
@@ -148,9 +156,36 @@ describe('isPgForeignKeyViolation', () => {
     expect(isPgForeignKeyViolation(err, 'some_other_fk')).toBe(false);
   });
 
+  // Postgres 18 (upstream commit 086c84b23) reports an ON DELETE/UPDATE
+  // RESTRICT refusal as 23001 restrict_violation; NO ACTION keys still raise
+  // 23503. Both mean "the row is still referenced" (#11624).
+  it('matches a Postgres 18 RESTRICT refusal (23001), bare and Drizzle-wrapped', () => {
+    expect(isPgForeignKeyViolation(Object.assign(new Error('restrict'), { code: '23001' }))).toBe(true);
+    const wrapped = drizzleWrap(Object.assign(new Error('restrict'), {
+      code: '23001', constraint_name: 'pam_rules_match_signer_group_fk',
+    }));
+    expect(isPgForeignKeyViolation(wrapped)).toBe(true);
+    expect(isPgForeignKeyViolation(wrapped, 'pam_rules_match_signer_group_fk')).toBe(true);
+    expect(isPgForeignKeyViolation(wrapped, 'some_other_fk')).toBe(false);
+  });
+
   it('does not match a unique violation or a plain error', () => {
     expect(isPgForeignKeyViolation(Object.assign(new Error('dup'), { code: '23505' }))).toBe(false);
     expect(isPgForeignKeyViolation(new Error('plain'))).toBe(false);
     expect(isPgForeignKeyViolation(null)).toBe(false);
+  });
+});
+
+describe('isPgForeignKeyViolationCode', () => {
+  it('accepts both foreign-key SQLSTATEs (23503 on every version, 23001 for RESTRICT on Postgres 18+)', () => {
+    expect([...FOREIGN_KEY_VIOLATION_SQLSTATES]).toEqual(['23503', '23001']);
+    expect(isPgForeignKeyViolationCode('23503')).toBe(true);
+    expect(isPgForeignKeyViolationCode('23001')).toBe(true);
+  });
+
+  it('rejects every other code and non-strings', () => {
+    for (const code of ['23505', '23514', '23502', '42501', '2300', '230011', '', undefined, null, 23503]) {
+      expect(isPgForeignKeyViolationCode(code)).toBe(false);
+    }
   });
 });

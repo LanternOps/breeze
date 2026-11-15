@@ -25,7 +25,7 @@ import { db, withDbTransaction } from '../db';
 import { manualAssets, sites, devices, discoveredAssets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { RouteAuditInput } from './auditEvents';
-import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 
 export interface ManualAssetOpResult {
   status: ContentfulStatusCode;
@@ -93,14 +93,14 @@ const fail = (error: string, status: ContentfulStatusCode): ManualAssetOpResult 
 // `manual_assets` carries FIVE FK constraints that can raise 23503 on the
 // insert/update statements below (org_id, the composite site FK, the
 // composite assigned-contact FK, created_by, updated_by). A blanket
-// `pgErrorCode(err) === '23503'` cannot tell which one fired, so it would
+// foreign-key code check cannot tell which one fired, so it would
 // mislabel e.g. a site-deleted-mid-request race as "assigned contact not
 // found" — checking the specific constraint NAME keeps the 400 message
 // honest and lets every other FK violation fall through to `throw err`
 // (500 + logging), which is correct: those are not user-correctable input
 // errors at this point in the flow.
 export function isAssignedContactFkViolation(err: unknown): boolean {
-  return pgErrorCode(err) === '23503'
+  return isPgForeignKeyViolationCode(pgErrorCode(err))
     && pgErrorConstraint(err) === 'manual_assets_assigned_contact_org_fk';
 }
 

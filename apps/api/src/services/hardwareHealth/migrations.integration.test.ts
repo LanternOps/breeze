@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode } from '../../utils/pgErrors';
 import { createPartner, createOrganization, createSite } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
 import { replayMigration } from '../../__tests__/integration/replayMigration';
@@ -32,7 +32,7 @@ it.each(tables)('%s denies forged ownership and cross-org reads', async table =>
   const f = await fixture();
   const other:DbAccessContext = {scope:'organization',orgId:f.other,accessibleOrgIds:[f.other],accessiblePartnerIds:[],currentPartnerId:f.partner};
   await expect(withDbAccessContext(other,()=>insert(table,f.device,f.org))).rejects.toSatisfy((e:unknown)=>pgErrorCode(e)==='42501');
-  await expect(withDbAccessContext(system,()=>insert(table,f.device,f.other))).rejects.toSatisfy((e:unknown)=>pgErrorCode(e)==='23503');
+  await expect(withDbAccessContext(system,()=>insert(table,f.device,f.other))).rejects.toSatisfy((e:unknown)=>isPgForeignKeyViolationCode(pgErrorCode(e)));
   await withDbAccessContext(system,()=>insert(table,f.device,f.org));
   expect(await withDbAccessContext(other,()=>db.execute(sql`SELECT * FROM ${sql.identifier(table)}`))).toHaveLength(0);
 });

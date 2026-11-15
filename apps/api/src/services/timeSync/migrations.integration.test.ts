@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices } from '../../db/schema';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode } from '../../utils/pgErrors';
 import {
   createPartner,
   createOrganization,
@@ -91,7 +91,7 @@ it('denies forged ownership and cross-org CRUD under the app role', async () => 
   ).rejects.toSatisfy((e: unknown) => pgErrorCode(e) === '42501');
   await expect(
     withDbAccessContext(system, () => insert(f.device.id, f.other.id)),
-  ).rejects.toSatisfy((e: unknown) => pgErrorCode(e) === '23503');
+  ).rejects.toSatisfy((e: unknown) => isPgForeignKeyViolationCode(pgErrorCode(e)));
   await withDbAccessContext(system, () => insert(f.device.id, f.org.id));
   for (const query of [
     sql`SELECT * FROM device_time_status WHERE device_id=${f.device.id}`,

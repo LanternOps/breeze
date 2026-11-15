@@ -62,7 +62,7 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '../../../db';
 import { customFieldDefinitions, organizations } from '../../../db/schema';
-import { pgErrorCode, pgErrorNode } from '../../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode, pgErrorNode } from '../../../utils/pgErrors';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../partnerWideAccess';
 import { customFieldWriteConflict } from '../writeErrors';
 import type {
@@ -379,11 +379,13 @@ function withCause(entry: DefinitionImportErrorEntry, cause: unknown): Definitio
  * not, collapses to the generic line.
  */
 const WRITE_FAILURE_COPY: Record<string, string> = {
-  '23503': 'The organization this custom field refers to no longer exists',
   '23514': 'A custom field must be owned by exactly one of an organization or the partner',
   '22001': 'A value on this row is too long for the field it targets',
   '42501': 'You do not have access to create a custom field for this owner',
 };
+// Keyed off isPgForeignKeyViolationCode, not a '23503' table entry: Postgres 18
+// reports a RESTRICT refusal as 23001 (#11624).
+const FOREIGN_KEY_WRITE_FAILURE = 'The organization this custom field refers to no longer exists';
 const GENERIC_WRITE_FAILURE = 'Could not write this custom field — check the server log for details';
 
 function writeFailure(err: unknown, fieldKey: string): ExpectationProblem {
@@ -400,6 +402,7 @@ function writeFailure(err: unknown, fieldKey: string): ExpectationProblem {
     };
   }
   const code = pgErrorCode(err);
+  if (isPgForeignKeyViolationCode(code)) return { error: FOREIGN_KEY_WRITE_FAILURE, code: 'write-failed' };
   return { error: (code && WRITE_FAILURE_COPY[code]) ?? GENERIC_WRITE_FAILURE, code: 'write-failed' };
 }
 

@@ -7,7 +7,7 @@
  */
 
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
-import { pgErrorCode } from '../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { patchPolicies } from '../db/schema/patches';
 import { softwarePolicies } from '../db/schema/softwarePolicies';
 import { peripheralPolicies } from '../db/schema/peripheralControl';
@@ -222,7 +222,7 @@ function safeHandler(toolName: string, fn: Handler): Handler {
       // Log BEFORE the pg-code early returns — those branches return without
       // reaching sanitizeThrownToolError, so without this they log nothing.
       console.error(`[policy-prereq:${toolName}]`, input.action, code ?? '', err);
-      if (code === '23503') return JSON.stringify({ error: 'Referenced record not found.' });
+      if (isPgForeignKeyViolationCode(code)) return JSON.stringify({ error: 'Referenced record not found.' });
       if (code === '23505') return JSON.stringify({ error: 'Duplicate entry — a record with this name already exists.' });
       if (code === '22P02') return JSON.stringify({ error: 'Invalid ID format — expected a valid UUID.' });
       // Fail closed: anything else may embed the query/column list (#2603).

@@ -26,7 +26,7 @@ import { claimFlowLinkedIntentForDispatch } from '../../services/flows/intentCla
 import { enableFlow, pauseFlow } from '../../services/flows/versions';
 import { CUSTOM_EXECUTORS, CUSTOM_RESOLVE_EXECUTORS } from '../../services/orgMergeCustomExecutors';
 import { buildRepoint } from '../../services/orgMergeExecutors';
-import { pgErrorConstraint } from '../../utils/pgErrors';
+import { FOREIGN_KEY_VIOLATION_SQLSTATES, pgErrorConstraint } from '../../utils/pgErrors';
 import { getTestDb } from './setup';
 import {
   assignUserToOrganization,
@@ -398,11 +398,11 @@ describe('flow-origin action_intents constraints (real Postgres)', () => {
     expect(row!.requestingFlowRunId).toBe(s.runId);
   });
 
-  runDb('deleting a run an intent references is refused (23503, ON DELETE RESTRICT)', async () => {
+  runDb('deleting a run an intent references is refused (ON DELETE RESTRICT: 23503, or 23001 on Postgres 18)', async () => {
     const t = await tenant();
     const s = await seedRun(t);
     await insertIntent(flowIntentValues(t.orgA, t.partnerId, s.runId));
-    const raised = await expectSqlState(() => withSystemDbAccessContext(() => db.delete(flowRuns).where(eq(flowRuns.id, s.runId))), '23503');
+    const raised = await expectSqlState(() => withSystemDbAccessContext(() => db.delete(flowRuns).where(eq(flowRuns.id, s.runId))), FOREIGN_KEY_VIOLATION_SQLSTATES);
     expect(pgErrorConstraint(raised)).toBe('action_intents_requesting_flow_run_fk');
     expect((await readFlowRunState(s)).run.id).toBe(s.runId);
   });

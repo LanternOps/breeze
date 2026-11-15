@@ -26,6 +26,7 @@
 import { createHash } from 'node:crypto';
 import { and, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
+import { isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import {
   backupLayoutManifestKey,
   backupSnapshotManifestKey,
@@ -363,7 +364,9 @@ const defaultRecordDeps: RecordSnapshotAttestationDeps = {
   },
 };
 
-const GUARD_REFUSAL_CODES = new Set(['42501', '23514', '23503']);
+// Plus every foreign-key refusal (isPgForeignKeyViolationCode): 23503, or
+// 23001 for a RESTRICT key on Postgres 18 (#11624).
+const GUARD_REFUSAL_CODES = new Set(['42501', '23514']);
 
 function pgErrorCode(err: unknown): string | undefined {
   const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
@@ -460,7 +463,8 @@ export async function recordSnapshotAttestation(
           .returning({ id: backupSnapshotAttestations.id }),
       );
     } catch (err) {
-      if (!GUARD_REFUSAL_CODES.has(pgErrorCode(err) ?? '')) throw err;
+      const code = pgErrorCode(err);
+      if (!GUARD_REFUSAL_CODES.has(code ?? '') && !isPgForeignKeyViolationCode(code)) throw err;
       refusedByGuard = true;
     }
     if (refusedByGuard) {
