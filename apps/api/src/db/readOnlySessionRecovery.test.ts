@@ -9,6 +9,7 @@ vi.mock('./requestDatabaseConfig', () => ({
   resolveRequestDatabaseConfig: () => ({ url: 'postgres://example.invalid/db' }),
 }));
 
+import { isPoolObservedReadOnly, notePoolReadOnly, notePoolWritable } from './readOnlyDatabase';
 import {
   createReadOnlySessionRecovery,
   probeRequestPool,
@@ -164,6 +165,75 @@ describe('createReadOnlySessionRecovery', () => {
     advance(60_000);
     for (let i = 0; i < 6; i++) await recovery.tick();
     expect(deps.probeFreshSession).toHaveBeenCalledTimes(5); // every 3rd tick now
+  });
+});
+
+// #11741 review: the monitor owns the "pool observed read-only" flag that
+// gates the log throttle.
+describe('createReadOnlySessionRecovery pool read-only flag', () => {
+  beforeEach(() => {
+    notePoolWritable();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    notePoolWritable();
+    vi.restoreAllMocks();
+  });
+
+  it('sets the flag when a pooled session reads read-only, keeps it through recovery, clears it when done', async () => {
+    const recycle = vi.fn()
+      .mockResolvedValueOnce({ terminated: 1, remaining: 1 })
+      .mockResolvedValueOnce({ terminated: 1, remaining: 0 });
+    const probeFreshSession = vi.fn()
+      .mockResolvedValueOnce({ readOnly: true, checkedAt: 't0' })
+      .mockResolvedValue({ readOnly: false, checkedAt: 't1' });
+    const { recovery } = harness({
+      probePool: vi.fn(async () => ({ readOnly: true, applicationName: 'breeze-api' })),
+      probeFreshSession,
+      recycleSessionsOpenedBefore: recycle,
+    });
+    expect(isPoolObservedReadOnly()).toBe(false);
+    await recovery.tick(); // pool read-only
+    expect(isPoolObservedReadOnly()).toBe(true);
+    await recovery.tick(); // fresh session still read-only
+    expect(isPoolObservedReadOnly()).toBe(true);
+    await recovery.tick(); // fresh writable -> recovering, 1 stale session left
+    expect(recovery.state()).toBe('recovering');
+    expect(isPoolObservedReadOnly()).toBe(true);
+    await recovery.tick(); // none left
+    expect(recovery.state()).toBe('watching');
+    expect(isPoolObservedReadOnly()).toBe(false);
+  });
+
+  it('clears the flag when the recovery window expires', async () => {
+    const { recovery, advance } = harness({
+      probePool: vi.fn(async () => ({ readOnly: true, applicationName: 'breeze-api' })),
+      probeFreshSession: vi.fn(async () => ({ readOnly: false, checkedAt: 't' })),
+      recycleSessionsOpenedBefore: vi.fn(async () => ({ terminated: 0, remaining: 1 })),
+    });
+    await recovery.tick();
+    await recovery.tick();
+    expect(isPoolObservedReadOnly()).toBe(true);
+    advance(11_000);
+    await recovery.tick();
+    expect(recovery.state()).toBe('watching');
+    expect(isPoolObservedReadOnly()).toBe(false);
+  });
+
+  it('a watching tick that reads a writable pooled session clears a flag set elsewhere (readiness)', async () => {
+    notePoolReadOnly();
+    const { recovery } = harness();
+    await recovery.tick();
+    expect(recovery.state()).toBe('watching');
+    expect(isPoolObservedReadOnly()).toBe(false);
+  });
+
+  it('a failing probe leaves the flag as it was', async () => {
+    notePoolReadOnly();
+    const { recovery } = harness({ probePool: vi.fn(async () => { throw new Error('connection refused'); }) });
+    await recovery.tick();
+    expect(isPoolObservedReadOnly()).toBe(true);
   });
 });
 

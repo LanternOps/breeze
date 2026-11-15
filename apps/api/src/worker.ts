@@ -446,7 +446,7 @@ export async function bootWorker(): Promise<void> {
   // Everything below is dynamically imported — see the header comment for
   // why (several of these modules' own static closures reach `routes/`).
   const dbModule = await import('./db');
-  const { isReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } = await import('./db/readOnlyDatabase');
+  const { observeReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } = await import('./db/readOnlyDatabase');
   const { getRedis, closeRedis } = await import('./services/redis');
   const { waitForMigrationParity } = await import('./db/migrationParity');
   const { loadBuiltinExtensions } = await import('./extensions/builtinExtensions');
@@ -553,9 +553,10 @@ export async function bootWorker(): Promise<void> {
     }
   };
   // #11731: reachable but rejecting writes. Throws on failure; the evaluator
-  // reports it and treats the answer as unknown.
+  // reports it and treats the answer as unknown. A read-only answer also sets
+  // the pool flag that gates the read-only log throttle (#11741).
   probeDbReadOnly = async () => runWithSystemDbAccess(async () =>
-    isReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
+    observeReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
   );
   probeRedis = async () => {
     try {

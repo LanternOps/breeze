@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isPoolObservedReadOnly, notePoolReadOnly, notePoolWritable } from './readOnlyDatabase';
 import {
   createReadOnlyLogThrottle,
   installReadOnlyLogThrottle,
@@ -35,12 +36,98 @@ describe('readOnlyLogSource', () => {
     expect(a).toBe(b);
   });
 
-  it('falls back to a fixed key when there is no message', () => {
-    expect(readOnlyLogSource([readOnlyError()])).toBe('(no message)');
+  it('falls back to a fixed key when there is neither a message nor a stack', () => {
+    const bare = Object.assign(new Error(''), { code: '25006' });
+    bare.stack = undefined;
+    expect(readOnlyLogSource([bare])).toBe('(no message)');
+  });
+
+  // #11741 review: `console.error(err)` with no string argument.
+  it('keys a bare error on its top application stack frame, so two callers stay distinct', () => {
+    // The same driver text from both: only the call site tells them apart.
+    function heartbeatWriter(): Error {
+      return Object.assign(new Error('cannot execute UPDATE in a read-only transaction'), { code: '25006' });
+    }
+    function monitorWriter(): Error {
+      return Object.assign(new Error('cannot execute UPDATE in a read-only transaction'), { code: '25006' });
+    }
+    const a = readOnlyLogSource([heartbeatWriter()]);
+    const b = readOnlyLogSource([monitorWriter()]);
+    expect(a).not.toBe(b);
+    expect(a).not.toBe('(no message)');
+    // file:function, relative to src/, never an absolute path.
+    expect(a).toBe('db/readOnlyLogThrottle.test.ts:heartbeatWriter');
+    expect(b).toBe('db/readOnlyLogThrottle.test.ts:monitorWriter');
+  });
+
+  it('skips library frames and strips absolute paths from a bundled build', () => {
+    const err = readOnlyError();
+    err.stack = [
+      'Error: cannot execute UPDATE in a read-only transaction',
+      '    at ErrorResponse (/app/node_modules/.pnpm/postgres@3.4.7/node_modules/postgres/cjs/src/connection.js:790:26)',
+      '    at handle (node:internal/process/task_queues:95:5)',
+      '    at async recordHeartbeat (/app/apps/api/dist/index.cjs:123456:7)',
+    ].join('\n');
+    expect(readOnlyLogSource([err])).toBe('index.cjs:recordHeartbeat');
+  });
+
+  it('falls back to the wrapper error\'s own message, normalized, when no application frame is known', () => {
+    const wrapper = new Error('Failed query: update "devices" set "last_seen_at" = $1 where "id" = $2', {
+      cause: readOnlyError(),
+    });
+    wrapper.stack = `Error: ${wrapper.message}\n    at query (/app/node_modules/drizzle-orm/session.js:1:1)`;
+    const other = new Error('Failed query: insert into "alerts" values ($1)', { cause: readOnlyError() });
+    other.stack = `Error: ${other.message}\n    at query (/app/node_modules/drizzle-orm/session.js:1:1)`;
+    expect(readOnlyLogSource([wrapper])).toContain('Failed query: update "devices"');
+    expect(readOnlyLogSource([wrapper])).not.toBe(readOnlyLogSource([other]));
   });
 });
 
-describe('createReadOnlyLogThrottle', () => {
+// #11741 review: SQLSTATE 25006 also comes from an intentional READ ONLY
+// transaction (withArchivedOrgReadContext). Until the pool itself has been
+// observed read-only, such an error is a code bug and must reach the log whole.
+describe('createReadOnlyLogThrottle while the pool has not been observed read-only', () => {
+  beforeEach(() => notePoolWritable());
+
+  it('logs every read-only error in full, with its stack, every time', () => {
+    expect(isPoolObservedReadOnly()).toBe(false);
+    const { sink, lines } = fakeConsole();
+    const throttle = createReadOnlyLogThrottle(sink, { now: () => 0 });
+    const leaked = new Error('Failed query: insert into "audit_logs" ...', { cause: readOnlyError('INSERT') });
+    for (let i = 0; i < 3; i++) throttle.console.error('[archivedOrgRead] export failed:', leaked);
+    throttle.console.warn('[Reaper] pass failed: cannot execute DELETE in a read-only transaction');
+    throttle.console.error(leaked);
+    expect(lines).toEqual([
+      { level: 'error', args: ['[archivedOrgRead] export failed:', leaked] },
+      { level: 'error', args: ['[archivedOrgRead] export failed:', leaked] },
+      { level: 'error', args: ['[archivedOrgRead] export failed:', leaked] },
+      { level: 'warn', args: ['[Reaper] pass failed: cannot execute DELETE in a read-only transaction'] },
+      { level: 'error', args: [leaked] },
+    ]);
+    expect((lines[0]!.args[1] as Error).stack).toContain('readOnlyLogThrottle.test.ts');
+  });
+
+  it('throttles only while the flag is set, and passes through again once it clears', () => {
+    const { sink, lines } = fakeConsole();
+    const throttle = createReadOnlyLogThrottle(sink, { now: () => 0 });
+    const err = readOnlyError();
+    throttle.console.error('[W] failed:', err); // full
+    notePoolReadOnly();
+    throttle.console.error('[W] failed:', err); // compact
+    throttle.console.error('[W] failed:', err); // counted
+    notePoolWritable();
+    throttle.console.error('[W] failed:', err); // full again
+    expect(lines).toHaveLength(3);
+    expect(lines[0]!.args).toEqual(['[W] failed:', err]);
+    expect(lines[1]!.args).toEqual([expect.stringContaining('SQLSTATE 25006')]);
+    expect(lines[2]!.args).toEqual(['[W] failed:', err]);
+  });
+});
+
+describe('createReadOnlyLogThrottle while the pool is observed read-only', () => {
+  beforeEach(() => notePoolReadOnly());
+  afterEach(() => notePoolWritable());
+
   it('passes every line through untouched when nothing is a read-only error', () => {
     const { sink, lines } = fakeConsole();
     const throttle = createReadOnlyLogThrottle(sink, { now: () => 0 });
@@ -170,8 +257,10 @@ describe('createReadOnlyLogThrottle', () => {
 
 describe('installReadOnlyLogThrottle', () => {
   const realError = console.error;
+  beforeEach(() => notePoolReadOnly());
   afterEach(() => {
     console.error = realError;
+    notePoolWritable();
   });
 
   it('routes the process console through the throttle and restores it', () => {

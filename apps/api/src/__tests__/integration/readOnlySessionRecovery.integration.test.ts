@@ -7,6 +7,8 @@ import {
   recycleSessionsOpenedBeforeAt,
 } from '../../db/readOnlySessionRecovery';
 import { defaultIsDatabaseReadOnly } from '../../extensions/builtinExtensions';
+import { isReadOnlySqlError, notePoolReadOnly, notePoolWritable } from '../../db/readOnlyDatabase';
+import { createReadOnlyLogThrottle, type ConsoleLike } from '../../db/readOnlyLogThrottle';
 
 /**
  * #11741 item 3, against real Postgres: a session opened while the database
@@ -133,6 +135,43 @@ describe('read-only session recovery (#11741)', () => {
     const pass = await recycleSessionsOpenedBeforeAt(scratchUrl, applicationName, fresh.checkedAt);
     expect(pass).toEqual({ terminated: 0, remaining: 0 });
     expect(await readOnlySetting(other)).toBe('on');
+  });
+
+  it('a 25006 from an intentional READ ONLY transaction is logged in full until the pool is observed read-only', async () => {
+    // What withArchivedOrgReadContext does: the database is writable, the
+    // transaction is READ ONLY on purpose, and a write leaks into it.
+    const sql = pool();
+    const leaked = await sql
+      .begin(async (tx) => {
+        await tx`SET TRANSACTION READ ONLY`;
+        await tx`create table leaked_write (id int)`;
+      })
+      .then(() => null, (error: unknown) => error);
+    expect(isReadOnlySqlError(leaked)).toBe(true);
+    expect((leaked as Error).stack).toBeTruthy();
+
+    const lines: unknown[][] = [];
+    const record = (...args: unknown[]) => { lines.push(args); };
+    const sink: ConsoleLike = { error: record, warn: record, log: record, info: record };
+    const throttle = createReadOnlyLogThrottle(sink);
+    notePoolWritable();
+    try {
+      for (let i = 0; i < 3; i++) throttle.console.error('[archivedOrgRead] write leaked:', leaked);
+      expect(lines).toEqual([
+        ['[archivedOrgRead] write leaked:', leaked],
+        ['[archivedOrgRead] write leaked:', leaked],
+        ['[archivedOrgRead] write leaked:', leaked],
+      ]);
+
+      // Once the pool itself has been seen read-only, the same error is summarized.
+      notePoolReadOnly();
+      throttle.console.error('[archivedOrgRead] write leaked:', leaked);
+      throttle.console.error('[archivedOrgRead] write leaked:', leaked);
+      expect(lines).toHaveLength(4);
+      expect(lines[3]).toEqual([expect.stringContaining('SQLSTATE 25006')]);
+    } finally {
+      notePoolWritable();
+    }
   });
 
   it('the extension loader\'s default probe reads the read-only flag (#11741 item 4)', async () => {

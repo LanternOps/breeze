@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import postgres from 'postgres';
 import { db, withSystemDbAccessContext } from './index';
+import { notePoolReadOnly, notePoolWritable } from './readOnlyDatabase';
 import { resolveRequestDatabaseConfig } from './requestDatabaseConfig';
 
 /**
@@ -43,6 +44,11 @@ import { resolveRequestDatabaseConfig } from './requestDatabaseConfig';
  * clock, not ours). It can include the other API process's pool (api and worker
  * share the role and the application name). Their sessions are equally old, so
  * equally likely stale, and they reconnect the same way.
+ *
+ * The monitor also drives the process-wide "pool observed read-only" flag
+ * (readOnlyDatabase.ts) that gates the read-only log throttle: set when a
+ * pooled session reads read-only, kept through recovery (stale sessions keep
+ * failing), cleared when recovery ends or a watching tick reads writable.
  *
  * The one cost: a session that the pool hands out between the snapshot and the
  * signal fails that one statement (SQLSTATE 57P01). This happens once per
@@ -125,21 +131,27 @@ export function createReadOnlySessionRecovery(
           `recycled (${terminatedTotal} terminated).`,
       );
       state = 'watching';
+      notePoolWritable();
     } else if (recoveryExpired()) {
       console.warn(
         `[db-read-only-recovery] ${pass.remaining} session(s) opened before the database became ` +
           'writable are still busy; leaving them to the pool\'s max_lifetime.',
       );
       state = 'watching';
+      notePoolWritable();
     }
   };
 
   const step = async (): Promise<void> => {
     if (state === 'watching') {
       const pool = await deps.probePool();
-      if (!pool.readOnly) return;
+      if (!pool.readOnly) {
+        notePoolWritable();
+        return;
+      }
       applicationName = pool.applicationName;
       state = 'read-only';
+      notePoolReadOnly();
       readOnlySince = deps.now();
       readOnlyTicks = 0;
       console.warn(
@@ -192,6 +204,7 @@ export function createReadOnlySessionRecovery(
         if (recoveryExpired()) {
           console.warn('[db-read-only-recovery] giving up on recycling; the pool\'s max_lifetime retires the rest.');
           state = 'watching';
+          notePoolWritable();
         }
       } finally {
         running = false;

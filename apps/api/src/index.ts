@@ -364,7 +364,7 @@ import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
 import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
-import { isReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
+import { observeReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
 import { installReadOnlyLogThrottle } from './db/readOnlyLogThrottle';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
@@ -1452,11 +1452,12 @@ async function checkDatabaseConnectivity(): Promise<boolean> {
  * = on`, or a standby). `select 1` still succeeds there, so readiness needs
  * this to report `db-read-only` instead of claiming a healthy database.
  * Throws on failure; the readiness evaluator reports it and treats the
- * answer as unknown.
+ * answer as unknown. A read-only answer also sets the pool flag that gates
+ * the read-only log throttle (#11741).
  */
 async function checkDatabaseReadOnly(): Promise<boolean> {
   return runWithSystemDbAccess(async () =>
-    isReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
+    observeReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
   );
 }
 

@@ -1,4 +1,4 @@
-import { isReadOnlySqlError } from './readOnlyDatabase';
+import { isPoolObservedReadOnly, isReadOnlySqlError } from './readOnlyDatabase';
 
 /**
  * #11741 item 1: one log line per source per minute for SQLSTATE 25006.
@@ -17,6 +17,14 @@ import { isReadOnlySqlError } from './readOnlyDatabase';
  * read-only transaction" text) and no other error. Every other line passes
  * through untouched, in order, with its original arguments.
  *
+ * Gated on the pool, not the statement (#11741 review): SQLSTATE 25006 also
+ * comes from an intentional `SET TRANSACTION READ ONLY` (withArchivedOrgReadContext),
+ * where a leaked write is a code bug that must be logged in full. The throttle
+ * acts only while `isPoolObservedReadOnly()` is set, which only the readiness
+ * probe and the session recovery monitor set, from the session default
+ * (readOnlyDatabase.ts). While it is clear, every 25006 line passes through
+ * untouched with its stack. Checking it is a variable read, no query.
+ *
  * For a read-only error, the first call from a source in a window writes ONE
  * line without a stack: the source, the SQLSTATE, the driver message and the
  * call's own first message (shortened), so what failed stays visible. Later
@@ -27,7 +35,10 @@ import { isReadOnlySqlError } from './readOnlyDatabase';
  * A source is the leading `[tag]` of the first string argument (every worker
  * and service in this codebase prefixes its lines that way), so per-job ids do
  * not split one handler into a thousand sources. Untagged messages fall back to
- * the message with digits and ids normalized.
+ * the message with digits and ids normalized. A call with no string at all
+ * (`console.error(err)`) is keyed on the error's top application stack frame
+ * (`file:function`, relative, library frames skipped), else on its own message
+ * normalized the same way, so different callers stay distinct.
  */
 
 export interface ConsoleLike {
@@ -57,14 +68,59 @@ function firstString(args: readonly unknown[]): string | undefined {
   return undefined;
 }
 
+function normalizeMessage(message: string): string {
+  return message.replace(UUID, '<id>').replace(DIGITS, '#').trim().slice(0, 80);
+}
+
+// `    at fn (path:line:col)` or `    at path:line:col`, optionally `async`.
+const STACK_FRAME = /^\s*at\s+(?:async\s+)?(?:(.+?)\s+\()?(.+?):\d+:\d+\)?\s*$/;
+const LIBRARY_FRAME = /(?:^|[\\/])node_modules[\\/]|^node:|^internal[\\/]|^<anonymous>$|^native$/;
+const SOURCE_ROOT = /^.*[\\/](?:src|dist)[\\/]/;
+
+/**
+ * `file:function` of the first stack frame outside node_modules and Node's
+ * internals. The path is cut after its last `src/` or `dist/` (else to the
+ * basename), so no absolute path reaches the log.
+ */
+function topApplicationFrame(stack: string): string | undefined {
+  for (const line of stack.split('\n')) {
+    const match = STACK_FRAME.exec(line);
+    if (!match) continue;
+    const fn = match[1];
+    const path = match[2]!.replace(/^file:\/\//, '');
+    if (LIBRARY_FRAME.test(path)) continue;
+    const short = SOURCE_ROOT.test(path) ? path.replace(SOURCE_ROOT, '') : path.split(/[\\/]/).pop()!;
+    if (!short) continue;
+    return fn ? `${short}:${fn.replace(/^(?:new|async)\s+/, '')}` : short;
+  }
+  return undefined;
+}
+
+/** The source of a call that carries an error but no message string. */
+function bareErrorSource(args: readonly unknown[]): string {
+  for (const arg of args) {
+    if (arg === null || typeof arg !== 'object') continue;
+    const stack = (arg as { stack?: unknown }).stack;
+    if (typeof stack === 'string') {
+      const frame = topApplicationFrame(stack);
+      if (frame) return frame;
+    }
+    const message = (arg as { message?: unknown }).message;
+    if (typeof message === 'string') {
+      const normalized = normalizeMessage(message);
+      if (normalized) return normalized;
+    }
+  }
+  return NO_MESSAGE_SOURCE;
+}
+
 /** The throttle key for a console call. Exported for tests. */
 export function readOnlyLogSource(args: readonly unknown[]): string {
   const message = firstString(args);
-  if (message === undefined) return NO_MESSAGE_SOURCE;
+  if (message === undefined) return bareErrorSource(args);
   const tag = LEADING_TAG.exec(message)?.[1];
   if (tag) return tag;
-  const normalized = message.replace(UUID, '<id>').replace(DIGITS, '#').trim().slice(0, 80);
-  return normalized || NO_MESSAGE_SOURCE;
+  return normalizeMessage(message) || NO_MESSAGE_SOURCE;
 }
 
 /**
@@ -126,9 +182,16 @@ export interface ReadOnlyLogThrottle {
 
 export function createReadOnlyLogThrottle(
   sink: ConsoleLike,
-  options: { now?: () => number; windowMs?: number; maxSources?: number } = {},
+  options: {
+    now?: () => number;
+    windowMs?: number;
+    maxSources?: number;
+    /** Throttle only while this is true; defaults to the process-wide pool flag. */
+    poolReadOnly?: () => boolean;
+  } = {},
 ): ReadOnlyLogThrottle {
   const now = options.now ?? Date.now;
+  const poolReadOnly = options.poolReadOnly ?? isPoolObservedReadOnly;
   const windowMs = options.windowMs ?? READ_ONLY_LOG_WINDOW_MS;
   const maxSources = options.maxSources ?? DEFAULT_MAX_SOURCES;
   const sources = new Map<string, SourceState>();
@@ -153,6 +216,8 @@ export function createReadOnlyLogThrottle(
 
   /** True when the call was handled (written compactly or counted). */
   const handle = (level: Level, args: readonly unknown[]): boolean => {
+    // An intentional READ ONLY transaction's 25006 is a bug, not an outage.
+    if (!poolReadOnly()) return false;
     const detail = readOnlyDetail(args);
     if (detail === null) return false;
 
