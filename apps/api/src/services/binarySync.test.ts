@@ -2022,6 +2022,51 @@ describe("binarySync", () => {
       );
     });
 
+    // #11870: falling back to the per-deployment key used to be silent, so an
+    // operator who expected the official manifest to be used had no signal
+    // that the pair was missing from the binaries volume.
+    it("says which manifest file is missing, and where the docs are, when it falls back to per-deployment signing", async () => {
+      setLocalScanEnv();
+      mockReadFileVersionOnly("0.65.9");
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      const warning = warnSpy.mock.calls
+        .map((args) => String(args[0] ?? ""))
+        .find((line) => line.includes("per-deployment"));
+      expect(warning).toBeDefined();
+      expect(warning).toContain("/data/binaries/release-artifact-manifest.json");
+      expect(warning).toContain("https://docs.breezermm.com/deploy/binaries/#release-manifest-pair");
+      warnSpy.mockRestore();
+    });
+
+    it("names the missing signature when only the manifest is staged", async () => {
+      setLocalScanEnv();
+      fsMocks.readFile.mockImplementation((path: unknown) => {
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json.ed25519")) {
+          return Promise.reject(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+        }
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json")) {
+          return Promise.resolve(Buffer.from("{}"));
+        }
+        return Promise.resolve("0.65.9");
+      });
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
+      );
+      const warning = warnSpy.mock.calls
+        .map((args) => String(args[0] ?? ""))
+        .find((line) => line.includes("per-deployment"));
+      expect(warning).toContain("/data/binaries/release-artifact-manifest.json.ed25519");
+      expect(warning).not.toMatch(/\/data\/binaries\/release-artifact-manifest\.json(?!\.ed25519)/);
+      warnSpy.mockRestore();
+    });
+
     // #11297: backup used to be re-signed with the per-deployment key even
     // when the staged official manifest covered it, so an agent that trusts
     // only the official key refused the backup artifact — and because the

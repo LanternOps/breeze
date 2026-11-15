@@ -29,3 +29,4 @@ apps/web/src/lib/__tests__/alertingDocs.test.ts apps/docs/src/content/docs/*
 apps/web/src/lib/__tests__/alertingDocs.test.ts apps/docs/astro.config.mjs
 scripts/release/check-server-only-eligibility.test.mjs selfhost-signing-template/README.md
 scripts/release/release-path-policy.test.mjs selfhost-signing-template/README.md
+scripts/release/release-image-consumers.test.mjs apps/docs/src/content/docs/deploy/binaries.mdx
