@@ -6,12 +6,16 @@ import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { createAuditLogAsync } from './auditService';
 import { emitTicketEvent } from './ticketEvents';
 import { lockOrgTicketLinks } from './ticketLinkLock';
+import { LIVE_TICKET_WRITE, isImportWrite, type TicketWriteMode } from './ticketWriteMode';
 import { lockTicketsForWrite } from './ticketRowLock';
 import { assertTicketsNotMerged } from './ticketMerge/errors';
 import {
   actorAuditIdentity,
   actorAuthorFields,
   actorUserFk,
+  assertImportWrite,
+  importRowStamp,
+  ticketSideEffects,
   type TicketActor,
 } from './ticketService';
 
@@ -204,7 +208,7 @@ export async function getTicketLinkForTicket(ticketId: string, linkId: string) {
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-interface LockedTicket { id: string; orgId: string; partnerId: string | null; deleted: boolean; number: string }
+interface LockedTicket { id: string; orgId: string; partnerId: string | null; deleted: boolean; number: string; createdAt: Date }
 
 async function lockTickets(tx: Tx, ids: readonly [string, string]): Promise<Map<string, LockedTicket>> {
   // #8972 W0: the shared ticket row lock (services/ticketRowLock.ts) — both
@@ -214,14 +218,24 @@ async function lockTickets(tx: Tx, ids: readonly [string, string]): Promise<Map<
   // #8972 W1: no link is added to or removed from a merged tombstone.
   assertTicketsNotMerged(locked.values());
   if (locked.size === 0) return new Map();
-  const numbers = await tx.execute(sql`
-    SELECT id, COALESCE(internal_number, ticket_number) AS number
-      FROM tickets
-     WHERE id IN (${ids[0]}::uuid, ${ids[1]}::uuid)`) as unknown as Array<{ id: string; number: string }>;
-  const numberById = new Map(numbers.map((r) => [r.id, r.number]));
-  return new Map([...locked.values()].map((r) => [r.id, {
-    id: r.id, orgId: r.orgId, partnerId: r.partnerId, deleted: r.deletedAt !== null, number: numberById.get(r.id) ?? '',
-  }]));
+  // Drizzle reads `created_at` (no time zone, UTC wall-clock) as UTC, as every
+  // other writer does; a raw read would parse it in the server's zone.
+  const reads = await tx
+    .select({ id: tickets.id, internalNumber: tickets.internalNumber, ticketNumber: tickets.ticketNumber, createdAt: tickets.createdAt })
+    .from(tickets)
+    .where(or(eq(tickets.id, ids[0]), eq(tickets.id, ids[1])));
+  const byId = new Map(reads.map((r) => [r.id, r]));
+  return new Map([...locked.values()].map((r) => {
+    const read = byId.get(r.id);
+    return [r.id, {
+      id: r.id,
+      orgId: r.orgId,
+      partnerId: r.partnerId,
+      deleted: r.deletedAt !== null,
+      number: read ? displayNumber(read) : '',
+      createdAt: read?.createdAt ?? new Date(0),
+    }];
+  }));
 }
 
 async function wouldCloseCycle(tx: Tx, sourceId: string, targetId: string, linkType: TicketLinkType): Promise<boolean> {
@@ -269,10 +283,24 @@ async function assertUnderLimit(tx: Tx, ids: readonly [string, string]): Promise
   }
 }
 
+/**
+ * Adds one link. `mode` is live (the default) for the routes and the AI
+ * action. Import mode (#8313 W2; spec 2026-10-19 §5.3 item 4) is reached only
+ * through `importTicketLink` (services/ticketImport/importLinks.ts), inside
+ * the import transaction that holds its open window: the actor must be the
+ * window's principal, both tickets in a window org, and `mode.at` not before
+ * either ticket's creation. The link and its two feed rows are stamped
+ * `mode.at` and the window id, and the events and the audit row go through
+ * `ticketSideEffects(mode)`, so an import emits and audits nothing
+ * (ticketService.sideEffects.test.ts scans this function too).
+ */
 export async function addTicketLink(
   input: { source: TicketRef; target: TicketRef; linkType: TicketLinkType },
   actor: TicketActor,
+  mode: TicketWriteMode = LIVE_TICKET_WRITE,
 ): Promise<TicketLinkView> {
+  const fx = ticketSideEffects(mode);
+  const importMode = isImportWrite(mode) ? mode : null;
   const { source, target, linkType } = input;
   if (source.id === target.id) throw new TicketLinkError('SELF_LINK', 'A ticket cannot be linked to itself');
   if (source.orgId !== target.orgId) {
@@ -293,6 +321,10 @@ export async function addTicketLink(
     // Re-checked under the lock: a concurrent org move may have moved either.
     if (s.orgId !== orgId || t.orgId !== orgId) {
       throw new TicketLinkError('CROSS_ORG', 'Tickets can only be linked within one organization');
+    }
+    if (importMode) {
+      assertImportWrite(importMode, actor, s);
+      assertImportWrite(importMode, actor, t);
     }
 
     const [existing] = await tx.select({ id: ticketLinks.id }).from(ticketLinks).where(and(
@@ -316,6 +348,7 @@ export async function addTicketLink(
         targetTicketId: storedTarget,
         linkType,
         createdBy: actorUserFk(actor),
+        ...(importMode ? { createdAt: importMode.at, migrationWindowId: importMode.window.id } : {}),
       }).returning({ id: ticketLinks.id });
     } catch (err) {
       // Unreachable while the org lock above is held; kept so a future
@@ -340,6 +373,7 @@ export async function addTicketLink(
         content: `Linked: ${readable(ticketLinkLabel(linkType, 'outgoing'))} ${tLocked.number}`,
         isPublic: false,
         newValue: storedTarget,
+        ...importRowStamp(mode),
       },
       {
         ticketId: storedTarget,
@@ -348,6 +382,7 @@ export async function addTicketLink(
         content: `Linked: ${readable(ticketLinkLabel(linkType, 'incoming'))} ${sLocked.number}`,
         isPublic: false,
         newValue: storedSource,
+        ...importRowStamp(mode),
       },
     ]);
     return { linkId: inserted!.id, locked };
@@ -359,12 +394,12 @@ export async function addTicketLink(
     [storedSource, storedTarget, 'outgoing'],
     [storedTarget, storedSource, 'incoming'],
   ] as const) {
-    await emitTicketEvent({
+    await fx.emitTicketEvent({
       type: 'ticket.link_added', ticketId, orgId, partnerId, actorUserId,
       payload: { linkId, linkType, otherTicketId, direction },
     });
   }
-  await createAuditLogAsync({
+  await fx.createAuditLogAsync({
     orgId,
     ...actorAuditIdentity(actor),
     action: 'ticket.link_add',

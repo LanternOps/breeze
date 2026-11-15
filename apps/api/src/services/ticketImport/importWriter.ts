@@ -231,7 +231,7 @@ export type ImportTicketOptions = {
   people?: { sourceId: string; runId: string };
 };
 
-type WriteScope = {
+export type WriteScope = {
   actor: TicketActor;
   at: (time: Date) => TicketWriteMode;
   window: OpenWindow;
@@ -659,8 +659,11 @@ async function applyFinalStatus(scope: WriteScope, ticketId: string, t: Imported
   return skip;
 }
 
-/** Charge the bucket, open the narrowed context, lock the window FOR SHARE, run `fn`. */
-async function inImportTransaction<T>(
+/**
+ * Charge the bucket, open the narrowed context, lock the window FOR SHARE, run
+ * `fn`. Shared with the import-mode link writer (importLinks.ts, W2).
+ */
+export async function inImportTransaction<T>(
   descriptor: WindowDescriptor,
   context: DbAccessContext,
   orgId: string,

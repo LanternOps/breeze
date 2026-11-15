@@ -1036,7 +1036,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // ticket_import_org_maps (#8313 W4): a source org's target org. Partner-axis;
   // ids, the source's org key and its display name only.
   "ticket_import_org_maps": tablePolicy("org_id", {"included":["id","source_id","partner_id","source_org_key","source_org_name","org_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "ticket_links": tablePolicy("org_id", {"included":["id","org_id","source_ticket_id","target_ticket_id","link_type","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ticket_links": tablePolicy("org_id", {"included":["id","org_id","source_ticket_id","target_ticket_id","link_type","created_by","created_at","migration_window_id"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ticket_outbox (wave 6 PR 3, #3828): payload is id-only by construction
   // (Task 2 enforces this) but jsonb is always excludedOpen regardless —
   // an open container may embed capabilities even when today's contents

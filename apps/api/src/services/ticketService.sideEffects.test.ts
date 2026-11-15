@@ -109,6 +109,31 @@ describe('import mode side effects are confined to ticketSideEffects (spec §4.5
     }
   });
 
+  // #8313 W2 (spec 2026-10-19 §5.3 item 4): links in import mode go through
+  // addTicketLink, so its events and audit row go through fx too.
+  it('ticketLinkService.ts addTicketLink takes a mode and calls no side effect directly', () => {
+    const source = readFileSync(join(__dirname, 'ticketLinkService.ts'), 'utf8');
+    const start = source.indexOf('export async function addTicketLink(');
+    expect(start).toBeGreaterThan(-1);
+    const body = stripComments(source.slice(start, source.indexOf('\n}\n', start) + 2));
+    expect(body).toMatch(/mode: TicketWriteMode = LIVE_TICKET_WRITE/);
+    expect(body).toMatch(/const fx = ticketSideEffects\(mode\);/);
+    for (const effect of SIDE_EFFECTS) {
+      expect(body, `addTicketLink calls ${effect} directly`).not.toMatch(new RegExp(`(?<![.\\w])${effect}\\s*\\(`));
+    }
+    expect(body).toMatch(/fx\.emitTicketEvent\(\{\s*type: 'ticket\.link_added'/);
+    expect(body).toMatch(/fx\.createAuditLogAsync\(\{/);
+  });
+
+  it('ticketImport/importLinks.ts reaches the link only through addTicketLink in import mode', () => {
+    const body = stripComments(readFileSync(join(__dirname, 'ticketImport/importLinks.ts'), 'utf8'));
+    for (const effect of SIDE_EFFECTS) {
+      expect(body, `importLinks.ts calls ${effect}`).not.toMatch(new RegExp(`\\b${effect}\\s*\\(`));
+    }
+    expect(body, 'importLinks.ts writes ticket_links itself').not.toMatch(/insert\(\s*ticketLinks\s*\)/);
+    expect(body).toMatch(/addTicketLink\([\s\S]*?scope\.at\(link\.at\)/);
+  });
+
   it('the scan really finds a direct call (self-check)', () => {
     const planted = stripComments('export async function x() {\n  await writeTicketOutbox(a, b, c);\n  await fx.emitTicketEvent({});\n}\n');
     expect(planted).toMatch(/(?<![.\w])writeTicketOutbox\s*\(/);

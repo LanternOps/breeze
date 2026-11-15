@@ -59,7 +59,7 @@ import { readWindowDescriptor, type WindowDescriptor } from './windowLock';
  *
  * The passes (§5.9): scan, one source page at a time (no org, unchanged,
  * removed or merged in Breeze, else load / convert / importTicket); links
- * (only with an import-mode link writer, W2); deletions (probe each imported
+ * (with an import-mode link writer, W2); deletions (probe each imported
  * ticket this run did not see; only after a complete scan); done. A dry run
  * is the scan with every conversion and `parseImportedTicket`, with no
  * window, no ticket writes, no downloads and no ledger writes.
@@ -73,7 +73,10 @@ import { readWindowDescriptor, type WindowDescriptor } from './windowLock';
  * `merged_in_breeze` by the writer and stays final.
  */
 
-/** The import-mode link writer of W2 (`importTicketLink`), behind an interface until it ships. */
+/**
+ * The import-mode link writer (W2: `importLinkWriter` in importLinks.ts, which
+ * the worker wires). Behind an interface so runner tests can fake it.
+ */
 export type ImportLinkWriter = {
   writeLink(
     windowId: string,
@@ -88,7 +91,10 @@ export type SliceDeps = {
   now?: () => Date;
   limits?: TicketImportLimits;
   importTicket?: typeof importTicket;
-  /** W2's writer; absent until then, so every link stays the conversion's note. */
+  /**
+   * The link writer. Absent or null, every link stays the conversion's note
+   * and the links phase is skipped; the worker passes `importLinkWriter`.
+   */
   linkWriter?: ImportLinkWriter | null;
   /** Tests inject a client per base URL. */
   httpFor?: (baseUrl: string) => SourceClient;
@@ -790,7 +796,11 @@ class SliceRunner {
       if (this.timeUp()) return { kind: 'yield' };
       // Final for this version once every link is written, or known impossible
       // (§6.6); a link worth another try leaves the item to be reloaded.
+      // Counted only once the item's links all answered: a stop or a defer
+      // partway leaves the item queued, and its next attempt answers the links
+      // already written as `already`, so nothing is counted twice.
       let final = true;
+      const answers: Array<Awaited<ReturnType<ImportLinkWriter['writeLink']>>> = [];
       for (const link of item.pendingLinks ?? []) {
         let result: Awaited<ReturnType<ImportLinkWriter['writeLink']>>;
         try {
@@ -800,10 +810,22 @@ class SliceRunner {
             { partnerId: this.input.partnerId },
           );
         } catch (error) {
-          if (isInfrastructureError(error)) throw error;
-          this.reportTicketFault(error, item.sourceTicketKey, 'link');
-          result = { outcome: 'not_written', code: 'internal_error', retry: true };
+          // As for a ticket (processRow): a closed window stops the run, a
+          // throughput limit defers it, a refusal is this link's alone.
+          const failure = classifyImportError(error);
+          if (failure.kind === 'stop') return { kind: 'stop', reason: failure.reason };
+          if (failure.kind === 'defer') return { kind: 'defer', delayMs: failure.delayMs, reason: 'window_rate_limited' };
+          if (failure.kind === 'failed') {
+            result = { outcome: 'not_written', code: failure.code };
+          } else {
+            if (isInfrastructureError(error)) throw error;
+            this.reportTicketFault(error, item.sourceTicketKey, 'link');
+            result = { outcome: 'not_written', code: 'internal_error', retry: true };
+          }
         }
+        answers.push(result);
+      }
+      for (const result of answers) {
         if (result.outcome === 'not_written') {
           this.counters.linksAsNotes += 1;
           this.issues.add({ sourceTicketKey: item.sourceTicketKey, sourceTicketNumber: null, kind: 'link_not_written', code: result.code ?? null });
