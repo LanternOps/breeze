@@ -43,6 +43,7 @@ import {
   scheduleCheckInSchema,
   snoozeConcernToolSchema,
   WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES,
+  WISP_CHECK_IN_LABEL_MAX,
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   wispCheckInTriggerSchema,
 } from '@breeze/shared';
@@ -473,7 +474,8 @@ const scit = wispCheckInTriggerSchema.shape;
 export const scheduleCheckInShape = {
   delayMinutes: sci.delayMinutes.describe(`Minutes from now until it is due (1 to ${WISP_CHECK_IN_MAX_DELAY_MINUTES}). Give exactly one of delayMinutes, at or trigger`),
   at: sci.at.describe('When it is due: ISO 8601 datetime with offset, 1 minute to 7 days ahead. Give exactly one of delayMinutes, at or trigger'),
-  instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars)'),
+  instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars). Only you see it'),
+  label: sci.label.describe(`What the user sees on the post and the chip: a short noun phrase, not an instruction (e.g. "FS01 disk space re-check"; max ${WISP_CHECK_IN_LABEL_MAX} chars)`),
   subject: sci.subject.describe('Optional: the Breeze object it is about (kind + UUID); its org is read from the object'),
   trigger: z.object({
     // The enum names itself; no description.

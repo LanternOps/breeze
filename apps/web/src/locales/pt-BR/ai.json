@@ -947,6 +947,12 @@
       "runNow": "Executar agora",
       "runNowMessage": "Pode seguir com a verificação agendada",
       "scheduledAt": "O Wisp vai verificar de novo às {{time}}",
+      "waitingFor": {
+        "deviceOnline": "Aguardando o dispositivo ficar online · desiste às {{time}}",
+        "scriptFinished": "Aguardando o script terminar · desiste às {{time}}",
+        "commandFinished": "Aguardando o comando terminar · desiste às {{time}}",
+        "runSettled": "Aguardando a execução terminar · desiste às {{time}}"
+      },
       "cancel": "Cancelar verificação agendada",
       "cancelled": "Verificação agendada cancelada",
       "cancelFailed": "Não foi possível cancelar a verificação agendada."

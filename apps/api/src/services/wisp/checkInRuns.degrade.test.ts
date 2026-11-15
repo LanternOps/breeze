@@ -15,9 +15,9 @@ describe('degradeReasonText', () => {
     expect(degradeReasonText(skipped)).toBe(text);
   });
 
-  it('degradedBody carries the cause into the post', () => {
-    expect(degradedBody('no_effective_agent', 'Check X.')).toBe(
-      "I couldn't check on my own: no Triage agent is switched on for this organization. Run it now? Check X.",
+  it('degradedBody carries the cause into the post, after the technician-facing notice (#11675)', () => {
+    expect(degradedBody('no_effective_agent', 'FS01 is back online.')).toBe(
+      "FS01 is back online. I couldn't check on my own: no Triage agent is switched on for this organization. Run it now?",
     );
   });
 });

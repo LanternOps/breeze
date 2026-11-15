@@ -947,6 +947,12 @@
       "runNow": "Ejecutar ahora",
       "runNowMessage": "Adelante con la revisión programada",
       "scheduledAt": "Wisp volverá a revisar a las {{time}}",
+      "waitingFor": {
+        "deviceOnline": "Esperando que el dispositivo se conecte · deja de esperar a las {{time}}",
+        "scriptFinished": "Esperando que el script termine · deja de esperar a las {{time}}",
+        "commandFinished": "Esperando que el comando termine · deja de esperar a las {{time}}",
+        "runSettled": "Esperando que la ejecución termine · deja de esperar a las {{time}}"
+      },
       "cancel": "Cancelar revisión programada",
       "cancelled": "Revisión programada cancelada",
       "cancelFailed": "No se pudo cancelar la revisión programada."

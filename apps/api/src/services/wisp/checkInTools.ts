@@ -23,6 +23,11 @@
  * is declared to chat (`wispCheckInToolDefinitions`) or listed or callable over
  * Breeze's MCP server (`isToolEnvGatedOff`).
  *
+ * #11675: `label` is the short line the technician reads (the fired post's
+ * title for a time check-in, the chip's tooltip); `instruction` is Wisp's note
+ * to itself and is never posted. The fired post is built from the trigger
+ * (services/wisp/checkInPost.ts).
+ *
  * The thread is always the grant's own (`threadForGrant`); nothing the model
  * passes names a thread, a grant or an org. A `subject` is resolved through
  * `resolveEntityRef` (the caller's authority ∩ the live ceiling) and its org is
@@ -271,6 +276,7 @@ const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ce
     sessionId: auth.wispGrant?.sessionId ?? null,
     dueAt,
     instruction: input.instruction,
+    label: input.label ?? null,
     orgId,
     context,
     trigger,

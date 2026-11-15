@@ -251,7 +251,7 @@ describe('wisp check-in tools — registry', () => {
     expect(WISP_CHECK_IN_TOOL_SCHEMAS.list_check_ins).toBe(listCheckInsInputSchema);
     expect(WISP_CHECK_IN_TOOL_SCHEMAS.cancel_check_in).toBe(cancelCheckInSchema);
     const schema = tools.get('schedule_check_in')!.definition.input_schema as { properties: Record<string, { description?: string }>; required?: string[] };
-    expect(Object.keys(schema.properties).sort()).toEqual(['at', 'delayMinutes', 'instruction', 'mode', 'subject', 'trigger']);
+    expect(Object.keys(schema.properties).sort()).toEqual(['at', 'delayMinutes', 'instruction', 'label', 'mode', 'subject', 'trigger']);
     expect(schema.required).toEqual(['instruction']);
     // A-W03: a parameter description is capped at 160 chars.
     for (const t of tools.values()) {
@@ -290,6 +290,7 @@ describe('wisp check-in tools — handlers', () => {
       sessionId: SESSION,
       dueAt: expect.any(Date),
       instruction: INSTRUCTION,
+      label: null,
       orgId: ORG,
       context: null,
       trigger: null,
@@ -311,6 +312,17 @@ describe('wisp check-in tools — handlers', () => {
     expect(input.sessionId).toBeNull();
   });
 
+  it('#11675: schedule_check_in passes the technician label to the service next to the instruction', async () => {
+    await run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, label: '  FS01 disk space re-check  ' });
+    const input = svc.createCheckIn.mock.calls[0]![1] as { instruction: string; label: string | null };
+    expect(input.label).toBe('FS01 disk space re-check');
+    expect(input.instruction).toBe(INSTRUCTION);
+    svc.createCheckIn.mockClear();
+    expect((await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, label: 'x'.repeat(121) }))).error).toBe('invalid_input');
+    expect((await json(run('schedule_check_in', { delayMinutes: 10, instruction: INSTRUCTION, label: '   ' }))).error).toBe('invalid_input');
+    expect(svc.createCheckIn).not.toHaveBeenCalled();
+  });
+
   it('schedule_check_in strips unknown keys before the service sees them (a model-supplied grant, thread or org is ignored)', async () => {
     await run('schedule_check_in', {
       delayMinutes: 5, instruction: INSTRUCTION, grantId: '00000000-0000-4000-8000-0000000000ff', threadId: '00000000-0000-4000-8000-0000000000fe', orgId: ORG2,
@@ -318,7 +330,7 @@ describe('wisp check-in tools — handlers', () => {
     const input = svc.createCheckIn.mock.calls[0]![1] as Record<string, unknown>;
     expect(input.threadId).toBe(THREAD);
     expect(input.orgId).toBe(ORG);
-    expect(Object.keys(input).sort()).toEqual(['context', 'dueAt', 'instruction', 'orgId', 'sessionId', 'threadId', 'trigger']);
+    expect(Object.keys(input).sort()).toEqual(['context', 'dueAt', 'instruction', 'label', 'orgId', 'sessionId', 'threadId', 'trigger']);
     expect(svc.threadForGrant).toHaveBeenCalledWith(GRANT);
   });
 
@@ -512,6 +524,7 @@ describe('wisp check-in tools — handlers', () => {
         sessionId: SESSION,
         dueAt: expect.any(Date),
         instruction: INSTRUCTION,
+        label: null,
         orgId: ORG2,
         context: null,
         trigger: { kind: 'device_online', subjectId: DEVICE },

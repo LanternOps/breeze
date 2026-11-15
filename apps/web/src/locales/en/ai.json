@@ -947,6 +947,12 @@
       "runNow": "Run now",
       "runNowMessage": "Go ahead with the check-in",
       "scheduledAt": "Wisp will check back at {{time}}",
+      "waitingFor": {
+        "deviceOnline": "Waiting for the device to come online · gives up {{time}}",
+        "scriptFinished": "Waiting for the script to finish · gives up {{time}}",
+        "commandFinished": "Waiting for the command to finish · gives up {{time}}",
+        "runSettled": "Waiting for the run to finish · gives up {{time}}"
+      },
       "cancel": "Cancel check-in",
       "cancelled": "Check-in cancelled",
       "cancelFailed": "Could not cancel the check-in."

@@ -947,6 +947,12 @@
       "runNow": "Esegui ora",
       "runNowMessage": "Procedi con il controllo programmato",
       "scheduledAt": "Wisp ricontrollerà alle {{time}}",
+      "waitingFor": {
+        "deviceOnline": "In attesa che il dispositivo torni online · rinuncia alle {{time}}",
+        "scriptFinished": "In attesa che lo script termini · rinuncia alle {{time}}",
+        "commandFinished": "In attesa che il comando termini · rinuncia alle {{time}}",
+        "runSettled": "In attesa che l'esecuzione termini · rinuncia alle {{time}}"
+      },
       "cancel": "Annulla controllo programmato",
       "cancelled": "Controllo programmato annullato",
       "cancelFailed": "Impossibile annullare il controllo programmato."

@@ -10,13 +10,15 @@
  *                           recover an admitted run → enqueueAssessment →
  *                           compare-and-set scheduled → running (run_id set).
  *                           Anything that cannot run degrades to the Phase 1
- *                           post ("I couldn't check on my own: …. Run it now?")
+ *                           post ("<notice> I couldn't check on my own: ….
+ *                           Run it now?"; the notice is checkInPost.ts, never
+ *                           the instruction, #11675)
  *                           and the row becomes `fired`, so the instruction
  *                           returns with the grantor's next message.
  *   postCheckInRunResult    the settled run's post: the run's summary
  *                           (sanitised, capped) → `consumed`; a run that did
- *                           not finish → "My check didn't finish (<status>).
- *                           Run it now? …" → `fired`. Called from the run
+ *                           not finish → "<notice> My check didn't finish
+ *                           (<status>). Run it now?" → `fired`. Called from the run
  *                           loop's finishRun and by the tick's reconcile.
  *   reconcileRunningCheckIns  the 5-minute tick's sweep for `running` rows
  *                           whose run settled without a post (a skipped or
@@ -58,6 +60,7 @@ import { wispCheckIns, type WispCheckInRow } from '../../db/schema/wispCheckIns'
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { wispThreads } from '../../db/schema/wispThreads';
 import { captureException } from '../sentry';
+import { checkInPost, checkInResultTitle } from './checkInPost';
 import { sanitizeCheckInInstruction } from './checkInTurn';
 import { AI_AGENT_RUN_SETTLED_STATUSES, type CheckInEvidence } from './checkInTriggers';
 import { GrantInactiveError, resolveGrantCeiling } from './grantAuthority';
@@ -65,8 +68,6 @@ import { isOrgReadableOnThread, nudgeDedupeKey, notifyUser } from './notifyUser'
 import { mobileDeepLink } from './nudgeLinks';
 import { cleanReport, SPECIALIST_RESULT_BODY_MAX_CHARS, specialistRunLink } from './specialistResult';
 
-/** Code points of the instruction shown in the post / bell title. */
-const TITLE_INSTRUCTION_CHARS = 80;
 /** Running rows the tick settles per run, oldest first; the rest wait for the next tick. */
 export const CHECK_IN_RUN_RECONCILE_LIMIT = 200;
 /** A sweep reports at most this many failed rows (a DB outage fails them all the same way). */
@@ -86,16 +87,6 @@ export function checkInRunDedupeKey(checkInId: string): string {
   return `wisp-check-in-${checkInId}`;
 }
 
-/** The post / bell title of a fire, a degrade or a run that did not finish. */
-export function checkInTitle(instruction: string): string {
-  return `Check-in due: ${Array.from(instruction).slice(0, TITLE_INSTRUCTION_CHARS).join('')}`;
-}
-
-/** The post / bell title of a run's result. */
-function checkInResultTitle(instruction: string): string {
-  return `Checked: ${Array.from(instruction).slice(0, TITLE_INSTRUCTION_CHARS).join('')}`;
-}
-
 /** What the degraded post says stopped the check (the `<reason>` in "I couldn't check on my own: <reason>."). */
 export function degradeReasonText(skipped: string): string {
   if (skipped === 'budget_exhausted') return "today's budget is spent";
@@ -107,9 +98,13 @@ export function degradeReasonText(skipped: string): string {
   return 'the check could not start';
 }
 
-/** The degraded post: what stopped the check, then the ask and the instruction (or the deadline line + instruction). */
-export function degradedBody(skipped: string, postBody: string): string {
-  return `I couldn't check on my own: ${degradeReasonText(skipped)}. Run it now? ${postBody}`;
+/**
+ * The degraded post: what happened (the technician-facing notice,
+ * checkInPost.ts), what stopped the check, then the ask. Never the
+ * instruction, which is Wisp's note to itself (#11675).
+ */
+export function degradedBody(skipped: string, notice: string): string {
+  return `${notice} I couldn't check on my own: ${degradeReasonText(skipped)}. Run it now?`;
 }
 
 export const CHECK_IN_DEVICE_DELETED_BODY = 'The device was deleted; nothing to check.';
@@ -214,10 +209,11 @@ export type RunCheckInFireOutcome = 'running' | 'fired' | 'skipped';
 /**
  * Fire one run check-in that fireCheckIn has already verified (usable grant,
  * thread and grantor; an event row's subject inside the live ceiling) and
- * claimed. `postBody` is what a notify fire would post (the instruction, or
- * the deadline line + the instruction): it is the run's instruction and the
- * degraded post's text. 'running' — a run was admitted (or recovered) and the
- * row names it. 'fired' — nothing ran; the grantor was told why and asked to
+ * claimed. `runInstruction` is what the run is told to do (the instruction,
+ * or the deadline line + the instruction; checkInRunInstruction) and is never
+ * posted; `post` is the technician-facing title and notice (checkInPost) that
+ * a degraded or device-deleted post shows (#11675). 'running' — a run was
+ * admitted (or recovered) and the row names it. 'fired' — nothing ran; the grantor was told why and asked to
  * run it now. 'skipped' — the row left `scheduled` meanwhile (cancelled).
  *
  * A throw (DB, admission, notifyUser) propagates so the caller's job retries:
@@ -230,11 +226,12 @@ export async function fireRunCheckIn(
     currentRevisionId: string | null;
     fireReason: WispCheckInFireReason;
     evidence: CheckInEvidence | null;
-    postBody: string;
+    runInstruction: string;
+    post: { title: string; notice: string };
     now: Date;
   },
 ): Promise<RunCheckInFireOutcome> {
-  const { now, postBody } = input;
+  const { now, runInstruction, post } = input;
   if (row.mode !== 'run' || row.orgId === null) throw new Error(`fireRunCheckIn: check-in ${row.id} is not a run check-in`);
   const orgId = row.orgId;
 
@@ -243,7 +240,7 @@ export async function fireRunCheckIn(
     if (UNEXPECTED_SKIPS.has(skipped)) {
       report('unexpected_skip', new Error(`run check-in admission skipped: ${skipped}`), { checkInId: row.id, grantId: row.grantId, skipped });
     }
-    await postForCheckIn(row, checkInTitle(row.instruction), degradedBody(skipped, postBody));
+    await postForCheckIn(row, post.title, degradedBody(skipped, post.notice));
     return (await flipScheduledToFired(row.id, now)) ? 'fired' : 'skipped';
   };
 
@@ -264,7 +261,7 @@ export async function fireRunCheckIn(
 
   // 4. A deleted subject device: nothing to check, and nothing to ask.
   if (await contextDeviceDeleted(row)) {
-    await postForCheckIn(row, checkInTitle(row.instruction), CHECK_IN_DEVICE_DELETED_BODY);
+    await postForCheckIn(row, post.title, CHECK_IN_DEVICE_DELETED_BODY);
     return (await flipScheduledToFired(row.id, now)) ? 'fired' : 'skipped';
   }
 
@@ -276,7 +273,7 @@ export async function fireRunCheckIn(
     reason: {
       kind: 'check_in',
       checkInId: row.id,
-      instruction: sanitizeCheckInInstruction(postBody),
+      instruction: sanitizeCheckInInstruction(runInstruction),
       evidence: input.evidence,
     },
     dedupeKey: checkInRunDedupeKey(row.id),
@@ -313,9 +310,9 @@ export function checkInRunResultBody(run: { status: string; summary: string | nu
   return `${summary || 'I checked and found nothing to report.'}${waiting}`;
 }
 
-/** The body of a run that settled without an answer. */
-export function checkInRunUnfinishedBody(status: string, postBody: string): string {
-  return `My check didn't finish (${status}). Run it now? ${postBody}`;
+/** The body of a run that settled without an answer: the notice (checkInPost.ts), then why and the ask. */
+export function checkInRunUnfinishedBody(status: string, notice: string): string {
+  return `${notice} My check didn't finish (${status}). Run it now?`;
 }
 
 /** running → cancelled with a reason, compare-and-set. */
@@ -389,9 +386,19 @@ export async function postCheckInRunResult(runId: string, now: Date = new Date()
   }
 
   const answered = read.runStatus !== null && RESULT_STATUSES.has(read.runStatus);
-  const delivered = answered
-    ? await postForCheckIn(row, checkInResultTitle(row.instruction), checkInRunResultBody({ status: runStatus, summary: read.runSummary }), specialistRunLink(runId))
-    : await postForCheckIn(row, checkInTitle(row.instruction), checkInRunUnfinishedBody(runStatus, row.instruction), read.runStatus === null ? undefined : specialistRunLink(runId));
+  // #11675: titles and notices in the technician's words, never the
+  // instruction. No subject name here (the subject is not re-read against the
+  // ceiling on this path), so an event row says "the device" where its
+  // fire-time post may have named it.
+  if (!answered && row.fireReason == null) {
+    // The claim (fireCheckIn) precedes the run, so a running row always has a
+    // reason; without one the notice cannot say whether the event happened.
+    report('missing_fire_reason', new Error(`running check-in ${row.id} has no fire_reason`), { checkInId: row.id, runId });
+  }
+  const unfinished = answered ? null : checkInPost(row, row.fireReason ?? (row.triggerKind === 'time' ? 'due' : 'event'), null);
+  const delivered = unfinished === null
+    ? await postForCheckIn(row, checkInResultTitle(row), checkInRunResultBody({ status: runStatus, summary: read.runSummary }), specialistRunLink(runId))
+    : await postForCheckIn(row, unfinished.title, checkInRunUnfinishedBody(runStatus, unfinished.notice), read.runStatus === null ? undefined : specialistRunLink(runId));
 
   // An answer leaves nothing for the next turn (consumed); a run that did not
   // finish asked the grantor to run it now, so the instruction returns with

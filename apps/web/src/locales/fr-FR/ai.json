@@ -947,6 +947,12 @@
       "runNow": "Exécuter maintenant",
       "runNowMessage": "Lance le point de suivi",
       "scheduledAt": "Wisp refera le point à {{time}}",
+      "waitingFor": {
+        "deviceOnline": "En attente de la connexion de l'appareil · abandonne à {{time}}",
+        "scriptFinished": "En attente de la fin du script · abandonne à {{time}}",
+        "commandFinished": "En attente de la fin de la commande · abandonne à {{time}}",
+        "runSettled": "En attente de la fin de l'exécution · abandonne à {{time}}"
+      },
       "cancel": "Annuler le point de suivi",
       "cancelled": "Point de suivi annulé",
       "cancelFailed": "Impossible d’annuler le point de suivi."
