@@ -12,8 +12,8 @@
 // does not stop the rest of its sweep.
 import { breakerDecisions, setBreakerIssue, updateBreakers } from './breakers.mjs';
 import { LABELS, decide, newHeadDecision, restoreDecision, resumeDecision, stuckDecision, READD_GRACE_MS } from './decide.mjs';
-import { attemptsOf, ingestRun } from './evidence.mjs';
-import { groupRunBySha, jobNames, mergeQueueEntries, runFacts } from './facts.mjs';
+import { attemptsOf, candidateSightings, untouchedOnly } from './evidence.mjs';
+import { groupRunBySha, jobNames, mergeQueueEntries, runChangedFiles, runFacts } from './facts.mjs';
 import { appendJsonl } from './state.mjs';
 
 const ms = (s) => Date.parse(s);
@@ -25,8 +25,9 @@ const PARKED_MAX_AGE_MS = 14 * 86_400_000;
 const INGEST_LOOKBACK_MS = 6 * 3600_000;
 const INGEST_PAGES = 3;
 // Calls one run's facts can take when only retry-shard jobs are read: the run,
-// its jobs, the artifact list, and a few reports, annotations and logs.
-export const INGEST_RUN_RESERVE = 12;
+// its jobs, the artifact list, a few reports, annotations and logs, and the
+// change's files.
+export const INGEST_RUN_RESERVE = 13;
 
 // The decision reached a final state for this mode.
 export const settled = (res) => res.status === 'applied' || res.status === 'skipped' || res.status === 'shadow';
@@ -245,7 +246,19 @@ export async function ingestSightings(t, { callLimit = Infinity } = {}) {
       t.error(`ingest: run ${r.id} skipped: ${e.message}`);
     }
     if (facts) {
-      const sightings = ingestRun(facts, { repo: t.repo, repoRoot: t.repoRoot });
+      // A failure the run's own change touched is the change's, not the
+      // test's: drop it. Unreadable change → every failure counts as touched.
+      let sightings = candidateSightings(facts, { repo: t.repo, repoRoot: t.repoRoot });
+      if (sightings.length) {
+        let changed = null;
+        try {
+          changed = await runChangedFiles(t.gh, { repo: t.repo, run: facts.run });
+        } catch (e) {
+          if (e.name === 'BudgetExceeded') break;
+          changed = null;
+        }
+        sightings = untouchedOnly(sightings, changed, t.repoRoot);
+      }
       for (const s of sightings) appendJsonl(t.sightingsPath, s);
       count += sightings.length;
       if (facts.run.headBranch === 'main' && facts.run.event !== 'merge_group' && facts.run.event !== 'pull_request') {

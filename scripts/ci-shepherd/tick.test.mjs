@@ -662,6 +662,75 @@ test('ingest skips fork runs: no sightings, no evidence read', async () => {
   assert.ok(!env.world.calls.some((c) => /\/actions\/runs\/8008/.test(c.path)), 'the fork run was never read');
 });
 
+// A completed web shard whose test failed both attempts (job-log evidence).
+const WEB_TEST = 'src/x/widget.test.tsx > Widget > renders';
+function webRun(env, { id, event = 'pull_request', pr = 500, head, base = '34'.repeat(20), branch = null }) {
+  const log = [' Failed Tests 1 ', ` FAIL  ${WEB_TEST}`, '##[warning]web-3: attempt 1 failed with 1 failing test(s); re-running the whole shard once', ' Failed Tests 1 ', ` FAIL  ${WEB_TEST}`].join('\n');
+  env.world.runs.push({
+    id,
+    run_attempt: 1,
+    head_sha: head,
+    head_branch: branch ?? (event === 'merge_group' ? `gh-readonly-queue/main/pr-${pr}-${base}` : `feature-${id}`),
+    head_repository: { full_name: REPO },
+    event,
+    status: 'completed',
+    conclusion: 'failure',
+    path: '.github/workflows/ci.yml',
+    created_at: iso(T0 - 25 * MIN),
+    updated_at: iso(T0 - 20 * MIN),
+    pull_requests: event === 'pull_request' && pr ? [{ number: pr, head: { sha: head }, base: { sha: base, ref: 'main' } }] : [],
+    jobs: [{ id: id * 10, name: 'Test Web (shard 3/4)', run_attempt: 1, conclusion: 'failure', started_at: iso(T0 - 24 * MIN), completed_at: iso(T0 - 20 * MIN), steps: [{ name: 'Run tests', conclusion: 'failure' }], annotations: [], log }],
+  });
+}
+
+test('ingest drops sightings of tests the change touched, from the files of the commit the run tested', async () => {
+  const head = '12'.repeat(20);
+  const base = '34'.repeat(20);
+  const sightingsOf = (env) => readJsonl(join(env.stateDir, 'sightings.jsonl'));
+  // Untouched: one fail_fail sighting, and the compare was asked for.
+  const kept = setup();
+  webRun(kept, { id: 9001, head, base });
+  kept.world.changed.set(`${base}...${head}`, ['docs/a.md']);
+  await kept.run();
+  assert.deepEqual(sightingsOf(kept).map((s) => [s.id, s.kind, s.pr]), [[WEB_TEST, 'fail_fail', 500]]);
+  assert.ok(kept.world.calls.some((c) => c.path === `/repos/${REPO}/compare/${base}...${head}`), 'read the change the run tested');
+  // The PR touched the test's sibling source: dropped.
+  const touched = setup();
+  webRun(touched, { id: 9001, head, base });
+  touched.world.changed.set(`${base}...${head}`, ['apps/web/src/x/widget.tsx']);
+  await touched.run();
+  assert.deepEqual(sightingsOf(touched), []);
+  // The change cannot be read (an error, or more files than the API lists): dropped.
+  const unreadable = setup();
+  webRun(unreadable, { id: 9001, head, base });
+  unreadable.world.failingGets.push([/\/compare\//, 500]);
+  await unreadable.run();
+  assert.deepEqual(sightingsOf(unreadable), []);
+  const huge = setup();
+  webRun(huge, { id: 9001, head, base });
+  huge.world.changed.set(`${base}...${head}`, Array.from({ length: 300 }, (_, i) => `docs/f${i}.md`));
+  await huge.run();
+  assert.deepEqual(sightingsOf(huge), []);
+  // A PR run that names no PR: nothing to compare against, dropped.
+  const orphan = setup();
+  webRun(orphan, { id: 9001, head, base, pr: null });
+  await orphan.run();
+  assert.deepEqual(sightingsOf(orphan), []);
+  // A merge_group run compares the group with the base it was built on; a
+  // push to main reads the commit's own files.
+  const queue = setup();
+  webRun(queue, { id: 9002, event: 'merge_group', pr: 501, head, base });
+  queue.world.changed.set(`${base}...${head}`, ['apps/web/src/x/widget.test.tsx']);
+  await queue.run();
+  assert.deepEqual(sightingsOf(queue), []);
+  const push = setup();
+  webRun(push, { id: 9003, event: 'push', pr: null, head, branch: 'main' });
+  push.world.changed.set(head, ['docs/a.md']);
+  await push.run();
+  assert.deepEqual(sightingsOf(push).map((s) => s.event), ['push']);
+  assert.ok(push.world.calls.some((c) => c.path === `/repos/${REPO}/commits/${head}`));
+});
+
 test('a failing sweep is reported and the others still run; a failing tick reports status=error as its last line', async () => {
   const env = setup();
   busyWorld(env);

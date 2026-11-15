@@ -144,6 +144,25 @@ test('the body matches no closing keyword, even when a test id carries one', asy
   assert.match(body, /\| add \|/);
 });
 
+test('a proposal that adds or renews a protected test is refused before any call or git write', async () => {
+  const IT = { id: 'src/services/devices.integration.test.ts > devices > lists', runner: 'vitest-integration', file: 'apps/api/src/services/devices.integration.test.ts', issue: 901, added: TODAY, expires: '2026-11-28' };
+  for (const over of [{ next: [ENTRY, IT], add: [ENTRY, IT] }, { next: [IT], add: [], renew: [IT] }]) {
+    const world = createWorld({ mode: 'act' });
+    const gh = createGitHub({ token: 't', fetchImpl: world.fetchImpl });
+    const writer = createWriter({ gh, exec: world.exec, repo: REPO });
+    const calls = [];
+    const git = (args) => {
+      calls.push(args);
+      return '';
+    };
+    await assert.rejects(ledgerPrTick({ gh, git, writer, checkoutDir: '/nonexistent', repo: REPO, proposal: proposal(over), today: TODAY, mode: 'act', modeNow: async () => 'act' }), /protected/);
+    await assert.rejects(ledgerPrTick({ proposal: proposal(over), today: TODAY, mode: 'shadow' }), /protected/);
+    assert.deepEqual(world.calls, []);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(world.execs, []);
+  }
+});
+
 test('an empty proposal gives noop and no call at all', async () => {
   const env = setup();
   const res = await env.run({ proposal: proposal({ next: [], add: [], evidence: {} }) });

@@ -26,11 +26,11 @@ const ID = 'src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage 
 const FILE = 'apps/web/src/components/psa/PsaConnectionsPage.test.tsx';
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
-const sighting = (over = {}) => ({ runner: 'vitest-web', id: ID, file: FILE, kind: 'fail_pass', run: 1, attempt: 1, job: 'Test Web (shard 3/4)', pr: 11312, event: 'pull_request', sha: 'a'.repeat(40), at: iso(T0 - 2 * H), ...over });
+const sighting = (over = {}) => ({ runner: 'vitest-web', id: ID, file: FILE, kind: 'fail_pass', run: 1, attempt: 1, job: 'Test Web (shard 3/4)', pr: 11312, event: 'pull_request', sha: 'a'.repeat(40), at: iso(T0 - 2 * H), untouched: true, ...over });
 // Corroborated: 3 runs, 2 PRs, one in the queue, one fail_other.
 const CORROBORATED = [sighting({ run: 1 }), sighting({ run: 2, pr: 11338, kind: 'fail_other' }), sighting({ run: 3, pr: 11338, event: 'merge_group', kind: 'fail_fail' })];
 
-function clone() {
+function clone(files = [FILE]) {
   const root = mkdtempSync(join(tmpdir(), 'ci-shepherd-upkeep-'));
   const origin = join(root, 'origin.git');
   const seed = join(root, 'seed');
@@ -41,8 +41,10 @@ function clone() {
   git(seed, 'config', 'user.email', 'test@example.invalid');
   mkdirSync(join(seed, '.github'), { recursive: true });
   writeFileSync(join(seed, LEDGER_PATH), '[]\n');
-  mkdirSync(join(seed, 'apps/web/src/components/psa'), { recursive: true });
-  writeFileSync(join(seed, FILE), 'test\n');
+  for (const f of files) {
+    mkdirSync(join(seed, f, '..'), { recursive: true });
+    writeFileSync(join(seed, f), 'test\n');
+  }
   git(seed, 'add', '.');
   git(seed, 'commit', '--quiet', '-m', 'seed');
   git(seed, 'remote', 'add', 'origin', origin);
@@ -54,12 +56,12 @@ function clone() {
   return { origin, checkout };
 }
 
-function setup({ mode = 'act', sightings = CORROBORATED } = {}) {
+function setup({ mode = 'act', sightings = CORROBORATED, files = [FILE] } = {}) {
   const world = createWorld({ mode, now: T0 });
   const gh = createGitHub({ token: 't', fetchImpl: world.fetchImpl, budget: 100_000 });
   const stateDir = mkdtempSync(join(tmpdir(), 'ci-shepherd-upkeep-state-'));
   writeFileSync(join(stateDir, 'sightings.jsonl'), sightings.map((s) => `${JSON.stringify(s)}\n`).join(''));
-  const repos = clone();
+  const repos = clone(files);
   const run = (over = {}) => tick({ gh, repo: REPO, stateDir, checkoutDir: repos.checkout, now: world.clock, clock: () => world.clock, exec: world.exec, repoRoot: REPO_ROOT, log: () => {}, ...over });
   const decisions = () => readJsonl(join(stateDir, 'decisions.jsonl'));
   const state = () => JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'));
@@ -287,4 +289,76 @@ test("proposal records: a successor issue's evidence starts after the last close
   const closed = proposalRecords({ index: { [key]: { issue: 1, open: false, closedAt: iso(T0 - 3 * H), labels: [] } }, records: {}, sightings: [sighting({ at: iso(T0 - 4 * H) })], ledger: [], today: '2026-11-08' });
   assert.deepEqual(closed[0].sightings, []);
   assert.equal(closed[0].issue, null);
+});
+
+test('the daily cap on new issues holds across a restart and carries the rest to the next day', async () => {
+  const list = [];
+  for (let i = 0; i < 7; i++) for (const [run, pr] of [[1, 1], [2, 2]]) list.push(sighting({ id: `src/t${i}.test.ts > t`, file: `apps/web/src/t${i}.test.ts`, run, pr }));
+  const env = setup({ sightings: list });
+  const s1 = await env.run();
+  assert.equal(s1.status, 'ok', JSON.stringify(s1.errors));
+  assert.equal(env.world.issues.length, 5);
+  assert.deepEqual(env.state().flake.creates, { day: '2026-11-08', count: 5 });
+  assert.equal(Object.keys(env.state().flake.queued).length, 2);
+  // A restart later the same day: the tick reloads state.json and opens nothing more.
+  env.world.clock += 5 * 60_000;
+  await env.run();
+  env.world.clock += 3 * H;
+  await env.run();
+  assert.equal(env.world.issues.length, 5);
+  assert.equal(env.decisions().filter((d) => d.kind === 'flake_issue_cap').length, 1, 'logged once');
+  // The next UTC day the carried candidates are opened.
+  env.world.clock = T0 + 24 * H;
+  await env.run();
+  assert.equal(env.world.issues.length, 7);
+  assert.deepEqual(env.state().flake.queued, {});
+  assert.deepEqual(env.state().flake.creates, { day: '2026-11-09', count: 2 });
+});
+
+test('a protected test gets its issue but never a ledger entry, even fully corroborated', async () => {
+  const IT_ID = 'src/services/devices.integration.test.ts > devices > lists';
+  const IT_FILE = 'apps/api/src/services/devices.integration.test.ts';
+  const it = (over) => sighting({ runner: 'vitest-integration', id: IT_ID, file: IT_FILE, job: 'Integration Tests (shard 1/16)', ...over });
+  const env = setup({ sightings: [it({ run: 1 }), it({ run: 2, pr: 11338, kind: 'fail_other' }), it({ run: 3, pr: 11338, event: 'merge_group', kind: 'fail_fail' })], files: [FILE, IT_FILE] });
+  const s = await env.run();
+  assert.equal(s.status, 'ok', JSON.stringify(s.errors));
+  assert.equal(env.world.issues.length, 1, 'the issue is opened');
+  assert.deepEqual(env.ledgerBranches(), []);
+  assert.deepEqual(env.world.writes.filter((w) => w.op === 'pr_create'), []);
+  assert.deepEqual(env.world.execs, [], 'no auto-merge request');
+  const skipped = env.decisions().filter((d) => d.kind === 'ledger_protected');
+  assert.equal(skipped.length, 1);
+  assert.match(skipped[0].reasons.join(' '), /integration/);
+});
+
+test('an issue someone else edited stops the ledger PR that would cite it', async () => {
+  const key = `vitest-web|${ID}`;
+  // The record already holds every local sighting, so the tick has nothing to
+  // write to the issue (its own edit would make the operator the last editor).
+  const body = issueBody({ total: { fail_pass: 1, fail_fail: 1, fail_other: 1 }, sightings: CORROBORATED });
+  const prime = (env, editor) => {
+    env.world.issues.push({ number: 900, title: 't', body, labels: [FLAKE_LABEL], state: 'open', author: env.world.viewer, editor });
+    writeFileSync(join(env.stateDir, 'state.json'), `${JSON.stringify({ flake: { refreshedAt: iso(T0 - 60_000), viewer: env.world.viewer, index: { [key]: { issue: 900, open: true, closedAt: null, labels: [FLAKE_LABEL], since: null } }, pending: {}, logged: {} } })}\n`);
+    writeFileSync(join(env.stateDir, 'flake-records.json'), `${JSON.stringify({ [key]: parseFlakeIssue(body) })}\n`);
+  };
+  const env = setup();
+  prime(env, 'someone-else');
+  const s = await env.run();
+  assert.deepEqual(env.world.writes.filter((w) => w.op === 'issue_edit'), [], 'precondition: no shepherd edit');
+  assert.deepEqual(env.ledgerBranches(), []);
+  assert.deepEqual(env.world.writes.filter((w) => w.op === 'pr_create'), []);
+  assert.match(s.errors.join('\n'), /900 was last edited by someone other than the operator/);
+  // Control: edited last by the operator, it opens.
+  const ok = setup();
+  prime(ok, ok.world.viewer);
+  await ok.run();
+  assert.equal(ok.ledgerBranches().length, 1);
+});
+
+test('sightings stored before the touch check (no untouched flag) open no issue', async () => {
+  const env = setup({ sightings: CORROBORATED.map(({ untouched, ...rest }) => rest) });
+  const s = await env.run();
+  assert.equal(s.status, 'ok', JSON.stringify(s.errors));
+  assert.equal(env.world.issues.length, 0);
+  assert.deepEqual(env.ledgerBranches(), []);
 });

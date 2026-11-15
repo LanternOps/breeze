@@ -7,15 +7,17 @@
 // still runs on reads and records what it would do in decisions.jsonl, once
 // per test (issues) or proposal (ledger PR) per day.
 //
-// Local state: `state.flake` = { refreshedAt, index, pending, evidenceSince,
-// ledgerCheckedAt, logged } in state.json; the parsed issue records in
-// `flake-records.json` beside it.
+// Local state: `state.flake` = { refreshedAt, index, known, pending, creates,
+// queued, evidenceSince, ledgerCheckedAt, logged } in state.json; the parsed
+// issue records in `flake-records.json` beside it. `creates` ({ day, count })
+// is the daily cap on new issues, counted before each create and saved, so a
+// restart cannot reset it; `queued` holds the candidates the cap held back.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { LEDGER_PATH } from '../../.github/scripts/flaky-ledger.mjs';
-import { FIX_REQUIRED_LABEL, accrueQuarantine, flakeKey, loadRecords, refreshIndex, saveRecords, upsertFlakeIssues } from './flake-issues.mjs';
+import { FIX_REQUIRED_LABEL, MAX_ISSUE_CREATES_PER_DAY, QUEUE_MAX_DAYS, accrueQuarantine, flakeKey, issueEditors, loadRecords, refreshIndex, saveRecords, trustedEdit, upsertFlakeIssues } from './flake-issues.mjs';
 import { ledgerPrTick, readMainLedger } from './ledger-pr.mjs';
 import { isEmptyProposal, proposeLedger } from './ledger-proposals.mjs';
 import { readJsonl } from './state.mjs';
@@ -28,7 +30,7 @@ const ms = (s) => Date.parse(s);
 const iso = (t) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const sightingKey = (s) => `${s.run}\0${s.attempt}\0${s.job}\0${s.runner}\0${s.id}`;
 
-const emptyFlake = () => ({ refreshedAt: null, viewer: null, index: {}, pending: {}, incomplete: null, evidenceSince: null, ledgerCheckedAt: null, unenqueued: null, logged: {} });
+const emptyFlake = () => ({ refreshedAt: null, viewer: null, index: {}, known: [], pending: {}, creates: null, queued: {}, incomplete: null, evidenceSince: null, ledgerCheckedAt: null, unenqueued: null, logged: {} });
 
 // main's ledger and file checks: origin/main of the shepherd's clone when the
 // tick has one (run.sh passes it), else the checkout the tick runs from.
@@ -82,10 +84,14 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
   const today = iso(now).slice(0, 10);
   fl.evidenceSince ??= iso(now);
   fl.logged = Object.fromEntries(Object.entries(fl.logged).filter(([, at]) => now - ms(at) < 2 * DAY));
+  fl.queued = Object.fromEntries(Object.entries(fl.queued ?? {}).filter(([, at]) => now - ms(at) < QUEUE_MAX_DAYS * DAY));
+  if (fl.creates?.day !== today) fl.creates = { day: today, count: 0 };
   const out = { created: 0, updated: 0, ledger: null };
-  const sightings = readJsonl(t.sightingsPath);
+  // Only sightings the ingest checked against the run's change: older ones
+  // (stored before that check) may be the change's own failures.
+  const sightings = readJsonl(t.sightingsPath).filter((s) => s.untouched === true);
   const main = mainLedger(t, git);
-  if (!sightings.length && !main.ledger.length && !Object.keys(fl.pending).length && !Object.keys(fl.index).length) return out;
+  if (!sightings.length && !main.ledger.length && !Object.keys(fl.pending).length && !Object.keys(fl.index).length && !Object.keys(fl.queued).length) return out;
 
   // Act only if act still holds now (mode is re-read before each write batch).
   const acting = t.mode === 'act' && (await t.modeNow()) === 'act';
@@ -108,19 +114,24 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
   // must not reset its quarantine days to 0).
   const stale = !fl.refreshedAt || now - ms(fl.refreshedAt) >= REFRESH_MS;
   if (stale || Object.keys(fl.pending).length || Object.keys(fl.index).some((k) => !records[k])) {
-    const r = await refreshIndex(t.gh, { repo: t.repo, viewer });
+    const r = await refreshIndex(t.gh, { repo: t.repo, viewer, known: fl.known ?? [] });
     fl.index = r.index;
+    fl.known = r.known;
     records = r.records;
     fl.refreshedAt = iso(now);
     fl.pending = {};
-    // Until the next refresh says otherwise: an issue it could not read may
-    // be some test's, so no new issue may be opened (it could duplicate one
-    // and restart its quarantine days).
-    fl.incomplete = r.unparsable.length || r.truncated ? { unparsable: r.unparsable, truncated: r.truncated } : null;
+    // Until the next refresh says otherwise: an issue it could not read or
+    // trust may be some test's, so no new issue may be opened (it could
+    // duplicate one and restart its quarantine days).
+    fl.incomplete = r.unparsable.length || r.untrusted.length || r.truncated ? { unparsable: r.unparsable, untrusted: r.untrusted, truncated: r.truncated } : null;
     saveRecords(recordsPath, records);
   }
   if (fl.incomplete) {
-    t.error(`flaky tests: no new issues while the flaky-test listing is incomplete (${fl.incomplete.truncated ? 'over the page cap' : `unreadable record on issue(s) ${fl.incomplete.unparsable.join(', ')}`})`);
+    const why = [];
+    if (fl.incomplete.truncated) why.push('over the page cap');
+    if (fl.incomplete.unparsable?.length) why.push(`unreadable record on issue(s) ${fl.incomplete.unparsable.join(', ')}`);
+    if (fl.incomplete.untrusted?.length) why.push(`issue(s) ${fl.incomplete.untrusted.join(', ')} last edited by someone other than the operator`);
+    t.error(`flaky tests: no new issues while the flaky-test listing is incomplete (${why.join('; ')})`);
   }
 
   // 1. Issues.
@@ -137,13 +148,25 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
     today,
     ledger: main.ledger,
     allowCreate: !fl.incomplete,
+    createsLeft: Math.max(0, MAX_ISSUE_CREATES_PER_DAY - fl.creates.count),
+    queued: fl.queued,
+    // Counted before the create and saved with its intent: a crash or a
+    // restart cannot give the day more creates than the cap.
     onIntent: (key) => {
       fl.pending[key] = iso(now);
+      fl.creates.count++;
       t.save();
     },
   });
   fl.index = up.index;
+  fl.queued = up.queued;
+  for (const key of up.created) if (fl.index[key]?.issue && !fl.known.includes(fl.index[key].issue)) fl.known.push(fl.index[key].issue);
   records = up.records;
+  if (up.capped.length) out.capped = up.capped.length;
+  if (up.capped.length && !fl.logged[`${today}:flake_issue_cap`]) {
+    fl.logged[`${today}:flake_issue_cap`] = iso(now);
+    t.record({ actionId: `flake:flake_issue_cap:${today}`, kind: 'flake_issue_cap', pr: null, mutations: [], reasons: [`daily cap of ${MAX_ISSUE_CREATES_PER_DAY} new flaky-test issues reached; ${up.capped.length} carried to the next day`], carried: up.capped, mode: t.mode, status: 'capped', source: 'flake', at: iso(now) });
+  }
   if (up.created.length || up.updated.length) saveRecords(recordsPath, records);
   for (const key of up.created) delete fl.pending[key];
   for (const f of up.failed) {
@@ -168,6 +191,16 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
       evidenceSince: fl.evidenceSince,
     });
   let proposal = propose();
+  // Protected tests the proposals refused: once a day each, in every mode.
+  const logProtected = (p) => {
+    for (const { key, reasons } of p.protected) {
+      const k = `${today}:ledger_protected:${key}`;
+      if (fl.logged[k]) continue;
+      fl.logged[k] = iso(now);
+      t.record({ actionId: `flake:ledger_protected:${key}`, kind: 'ledger_protected', pr: null, mutations: [], reasons, mode: t.mode, status: 'skipped', source: 'flake', issue: fl.index[key]?.issue ?? null, at: iso(now) });
+    }
+  };
+  logProtected(proposal);
   // Shadow opens no issue, so its adds wait on one: say so, so a shadow review
   // sees what act would quarantine.
   if (!writer) for (const key of proposal.waitingIssue) shadowLog('ledger_add_waiting_issue', key, { mutations: [{ op: 'ledger_add', args: { key } }] });
@@ -198,11 +231,20 @@ export async function flakeUpkeep(t, { git = gitCli } = {}) {
   // The index can be a day old. Before a PR that adds or renews a quarantine,
   // check each issue it cites is still open and the operator's: a human
   // closing it means "fixed" or "not flaky".
+  // Nor edited since by anyone else: its record may have been rewritten.
   let recheck = false;
-  for (const e of [...proposal.add, ...proposal.renew]) {
+  const cited = [...proposal.add, ...proposal.renew];
+  const edits = cited.length ? await issueEditors(t.gh, { repo: t.repo, numbers: cited.map((e) => e.issue) }) : new Map();
+  for (const e of cited) {
     const res = await t.gh.rest('GET', `repos/${t.repo}/issues/${e.issue}`);
     if (res.status !== 200) throw new Error(`flaky tests: issue ${e.issue} read failed (${res.status}) before the ledger PR`);
-    if (res.body.state === 'open' && res.body.user?.login === viewer) continue;
+    if (res.body.state === 'open' && res.body.user?.login === viewer && trustedEdit(edits.get(e.issue), viewer)) continue;
+    if (res.body.state === 'open' && !trustedEdit(edits.get(e.issue), viewer)) {
+      t.error(`flaky tests: issue ${e.issue} was last edited by someone other than the operator; not citing it`);
+      // No successor issue either until a refresh has looked at it again.
+      fl.incomplete = { ...(fl.incomplete ?? { unparsable: [], truncated: false }), untrusted: [...new Set([...(fl.incomplete?.untrusted ?? []), e.issue])] };
+      fl.refreshedAt = null;
+    }
     const key = flakeKey(e.runner, e.id);
     fl.index[key] = { ...(fl.index[key] ?? { issue: e.issue, labels: [] }), open: false, closedAt: res.body.closed_at ?? iso(now), since: null };
     recheck = true;

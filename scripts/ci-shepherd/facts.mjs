@@ -446,7 +446,7 @@ async function flakeReport(gh, repo, artifacts, label, ctx) {
 
 // ── Run facts ────────────────────────────────────────────────────────────
 
-const QUEUE_BRANCH_PR = /^gh-readonly-queue\/.+\/pr-(\d+)-[0-9a-f]+$/;
+const QUEUE_BRANCH_PR = /^gh-readonly-queue\/.+\/pr-(\d+)-([0-9a-f]+)$/;
 const failedStep = (steps = []) =>
   (steps.find((s) => s.conclusion === 'failure') ?? steps.find((s) => s.conclusion === 'cancelled') ?? steps.find((s) => s.status === 'in_progress'))?.name ?? null;
 
@@ -503,6 +503,37 @@ async function gateFor(gh, repo, headSha) {
   return { verdict: null, reason: 'gate_line_missing', run: run.id, selection: null };
 }
 
+// The files the change a run tested touched, as a Set of repo paths, or null
+// when that cannot be told (the caller then treats every failure as touched):
+//   pull_request / merge_group: base...head (for a queue group, every PR in
+//     the group up to this one);
+//   a run on main with no PR (push, schedule): the head commit's own files;
+//   anything else, a failed read, or a list the API may have cut (300 files
+//   per response): null.
+export const CHANGED_FILES_LIMIT = 300;
+export async function runChangedFiles(gh, { repo, run }) {
+  const SHA = /^[0-9a-f]{7,64}$/;
+  if (!SHA.test(run.headSha ?? '')) return null;
+  let path;
+  if (run.event === 'pull_request' || run.event === 'merge_group') {
+    if (!SHA.test(run.baseSha ?? '')) return null;
+    path = `repos/${repo}/compare/${run.baseSha}...${run.headSha}`;
+  } else if (run.pr === null && run.headBranch === 'main') {
+    path = `repos/${repo}/commits/${run.headSha}`;
+  } else {
+    return null;
+  }
+  const res = await gh.rest('GET', path);
+  if (res.status !== 200 || !Array.isArray(res.body?.files) || res.body.files.length >= CHANGED_FILES_LIMIT) return null;
+  const files = new Set();
+  for (const f of res.body.files) {
+    if (typeof f?.filename !== 'string') return null;
+    files.add(f.filename);
+    if (typeof f.previous_filename === 'string') files.add(f.previous_filename);
+  }
+  return files;
+}
+
 // RunFacts = { run, jobs: JobFact[], jobsComplete, ciSuccess: 'present'|'missing', gate }.
 // Only jobs that did not pass (never the CI Success aggregate) get their
 // annotations and log fetched; any retry-shard job's flake report is read when
@@ -525,6 +556,9 @@ export async function runFacts(gh, { repo, runId, ciYml, withGate = true, labell
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     pr: queuePr ? Number(queuePr[1]) : (r.pull_requests?.[0]?.number ?? null),
+    // The commit the change is measured from: a queue group's base (in its
+    // branch name), else the PR's base. Null for runs without either.
+    baseSha: queuePr ? queuePr[2] : (r.pull_requests?.[0]?.base?.sha ?? null),
   };
   const { jobs: apiJobs, complete: jobsComplete } = await listJobs(gh, repo, runId);
   let artifacts = null;

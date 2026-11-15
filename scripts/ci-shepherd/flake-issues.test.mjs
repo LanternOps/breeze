@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { FLAKE_LABEL, MAX_BODY, accrueQuarantine, flakeKey, loadRecords, mergeSightings, neutralText, parseFlakeIssue, refreshIndex, renderFlakeIssue, upsertFlakeIssues } from './flake-issues.mjs';
+import { FLAKE_LABEL, MAX_BODY, accrueQuarantine, flakeKey, loadRecords, mergeSightings, neutralText, parseFlakeIssue, refreshIndex, renderFlakeIssue, trustedEdit, upsertFlakeIssues } from './flake-issues.mjs';
 import { createWorld } from './fake-world.mjs';
 import { createGitHub } from './github.mjs';
 import { CLOSING_KEYWORD } from './markers.mjs';
@@ -168,6 +168,79 @@ test('one sighting does not create an issue, two from distinct runs do', async (
   assert.equal(env2.world.issues.length, 0);
 });
 
+// Must-fix: a change that breaks tests is not flakiness. Two runs of one PR
+// never open an issue on their own; the evidence must point away from it.
+test('a PR that breaks 30 tests and is pushed twice opens no issue', async () => {
+  const env = setup();
+  const list = [];
+  for (let i = 0; i < 30; i++) {
+    for (const run of [1, 2]) {
+      list.push(sighting({ id: `src/broken${i}.test.ts > b`, file: `apps/web/src/broken${i}.test.ts`, run, pr: 4242, event: 'pull_request', kind: run === 1 ? 'fail_fail' : 'fail_other' }));
+    }
+  }
+  const res = await env.upsert(list);
+  assert.equal(env.world.issues.length, 0);
+  assert.deepEqual(res.created, []);
+  assert.deepEqual(res.deferred, 0, 'not merely deferred');
+  // A third push of the same PR still opens nothing.
+  await env.upsert([...list, ...list.map((x) => ({ ...x, run: 3 }))]);
+  assert.equal(env.world.issues.length, 0);
+});
+
+test('failures in runs of two distinct PRs open one issue', async () => {
+  const env = setup();
+  const res = await env.upsert([sighting({ run: 1, pr: 1, event: 'pull_request', kind: 'fail_fail' }), sighting({ run: 2, pr: 2, event: 'pull_request', kind: 'fail_fail' })]);
+  assert.equal(env.world.issues.length, 1);
+  assert.deepEqual(res.created, [flakeKey('vitest-web', ID)]);
+});
+
+test('a failure in a merge_group run opens one issue', async () => {
+  const env = setup();
+  await env.upsert([sighting({ run: 1, pr: 1, event: 'pull_request', kind: 'fail_fail' }), sighting({ run: 2, pr: 1, event: 'merge_group', kind: 'fail_fail' })]);
+  assert.equal(env.world.issues.length, 1);
+});
+
+test('a fail-then-pass on the same commit opens one issue', async () => {
+  const env = setup();
+  await env.upsert([sighting({ run: 1, pr: 1, event: 'pull_request', kind: 'fail_fail' }), sighting({ run: 2, pr: 1, event: 'pull_request', kind: 'fail_pass' })]);
+  assert.equal(env.world.issues.length, 1);
+});
+
+test('the issue body claims only the evidence it has', async () => {
+  const env = setup();
+  await env.upsert([sighting({ run: 1, pr: 1, event: 'pull_request', kind: 'fail_fail' }), sighting({ run: 2, pr: 2, event: 'pull_request', kind: 'fail_fail' })]);
+  const visible = env.world.issues[0].body.split('<!-- ci-shepherd:flake')[0];
+  assert.match(visible, /suspect/i);
+  assert.match(visible, /2 different pull requests/);
+  assert.doesNotMatch(visible, /merge queue run/i, 'no merge_group sighting');
+  assert.doesNotMatch(visible, /passed on the retry, on the same commit/i, 'no fail_pass sighting');
+  assert.doesNotMatch(visible, /could not tie/i);
+  // A protected test's issue says the shepherd will not quarantine it.
+  const env2 = setup();
+  const it = 'src/__tests__/integration/devices.integration.test.ts > devices > lists';
+  await env2.upsert([sighting({ runner: 'vitest-integration', id: it, file: 'apps/api/src/__tests__/integration/devices.integration.test.ts', run: 1, event: 'merge_group' }), sighting({ runner: 'vitest-integration', id: it, file: 'apps/api/src/__tests__/integration/devices.integration.test.ts', run: 2, event: 'merge_group' })]);
+  assert.match(env2.world.issues[0].body.split('<!-- ci-shepherd:flake')[0], /never adds it to the flaky ledger/);
+});
+
+test('creates are capped by createsLeft; capped candidates are queued, carried and created first later', async () => {
+  const env = setup();
+  const list = [];
+  for (let i = 0; i < 7; i++) for (const run of [1, 2]) list.push(sighting({ id: `src/t${i}.test.ts > t`, file: `apps/web/src/t${i}.test.ts`, run, pr: run }));
+  const intents = [];
+  const a = await upsertFlakeIssues(env.gh, { repo: REPO, sightings: list, index: {}, records: {}, writer: env.writer, viewer: env.world.viewer, now: NOW, createsLeft: 5, onIntent: (k) => intents.push(k) });
+  assert.equal(env.world.issues.length, 5);
+  assert.equal(intents.length, 5);
+  assert.equal(a.capped.length, 2);
+  assert.deepEqual(Object.keys(a.queued).sort(), [...a.capped].sort());
+  // Fifteen days on, the sightings are past the 14-day window, but a queued
+  // candidate keeps the evidence it qualified on.
+  const later = NOW + 15 * 24 * H;
+  const b = await upsertFlakeIssues(env.gh, { repo: REPO, sightings: list, index: a.index, records: a.records, writer: env.writer, viewer: env.world.viewer, now: later, createsLeft: 5, queued: a.queued, onIntent: () => {} });
+  assert.equal(env.world.issues.length, 7);
+  assert.deepEqual(b.created.sort(), [...a.capped].sort());
+  assert.deepEqual(b.queued, {});
+});
+
 test('the flaky-test label is created when it is missing, once', async () => {
   const env = setup();
   await env.upsert([sighting({ run: 1 }), sighting({ run: 2 })]);
@@ -197,12 +270,12 @@ test('a fork sighting never reaches an issue', async () => {
     run: { id: run, attempt: 1, headRepo, event: 'pull_request', pr: 5, headSha: 'f'.repeat(40), updatedAt: iso(NOW - H) },
     jobs: [{ name: 'Test Web (shard 3/4)', runner: 'vitest', label: 'web-3', completedAt: iso(NOW - H), report: { schema: 2, flaky: [ID], first: { failures: [ID] }, second: { failures: [] } } }],
   });
-  const fromForks = [...ingestRun(facts(1, 'someone/breeze'), { repo: REPO, repoRoot: REPO_ROOT }), ...ingestRun(facts(2, 'other/breeze'), { repo: REPO, repoRoot: REPO_ROOT })];
+  const fromForks = [...ingestRun(facts(1, 'someone/breeze'), { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() }), ...ingestRun(facts(2, 'other/breeze'), { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() })];
   assert.deepEqual(fromForks, []);
   await env.upsert(fromForks);
   assert.equal(env.world.issues.length, 0);
   // The same runs from the repo itself do open one: the test is not vacuous.
-  const own = [...ingestRun(facts(1, REPO), { repo: REPO, repoRoot: REPO_ROOT }), ...ingestRun(facts(2, REPO), { repo: REPO, repoRoot: REPO_ROOT })];
+  const own = [...ingestRun(facts(1, REPO), { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() }), ...ingestRun(facts(2, REPO), { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() })];
   await env.upsert(own);
   assert.equal(env.world.issues.length, 1);
 });
@@ -240,6 +313,50 @@ test('refresh trusts only operator-authored issues and finds a created one again
   assert.deepEqual(Object.keys(r.index), [flakeKey('vitest-web', ID)]);
   assert.equal(r.index[flakeKey('vitest-web', ID)].issue, a.index[flakeKey('vitest-web', ID)].issue);
   assert.equal(r.records[flakeKey('vitest-web', ID)].sightings.length, 2);
+});
+
+test('refresh distrusts an operator issue whose body someone else edited last', async () => {
+  const env = setup();
+  const a = await env.upsert([sighting({ run: 1 }), sighting({ run: 2 })]);
+  const key = flakeKey('vitest-web', ID);
+  const issue = env.world.issues[0];
+  // The operator's own edits keep it trusted.
+  issue.editor = env.world.viewer;
+  let r = await refreshIndex(env.gh, { repo: REPO, viewer: env.world.viewer });
+  assert.equal(r.index[key].issue, a.index[key].issue);
+  assert.deepEqual(r.untrusted, []);
+  // Someone else rewrote the record: not indexed, and reported.
+  const rec = { ...parseFlakeIssue(issue.body), quarantine_days: 0 };
+  issue.body = renderFlakeIssue(rec).body;
+  issue.editor = 'someone-else';
+  r = await refreshIndex(env.gh, { repo: REPO, viewer: env.world.viewer });
+  assert.equal(r.index[key], undefined);
+  assert.deepEqual(r.untrusted, [issue.number]);
+});
+
+test('trustedEdit: never edited or edited last by the operator; not a deleted actor, not a missing answer', () => {
+  assert.equal(trustedEdit({ editor: null, lastEditedAt: null }, 'operator'), true);
+  assert.equal(trustedEdit({ editor: 'operator', lastEditedAt: '2026-11-14T00:00:00Z' }, 'operator'), true);
+  assert.equal(trustedEdit({ editor: 'someone-else', lastEditedAt: '2026-11-14T00:00:00Z' }, 'operator'), false);
+  assert.equal(trustedEdit({ editor: null, lastEditedAt: '2026-11-14T00:00:00Z' }, 'operator'), false);
+  assert.equal(trustedEdit(undefined, 'operator'), false);
+});
+
+test('a removed flaky-test label does not drop the issue or reset its quarantine days', async () => {
+  const env = setup();
+  await env.upsert([sighting({ run: 1 }), sighting({ run: 2 })]);
+  const key = flakeKey('vitest-web', ID);
+  const issue = env.world.issues[0];
+  issue.body = renderFlakeIssue({ ...parseFlakeIssue(issue.body), quarantine_days: 30, quarantine_through: '2026-11-13' }).body;
+  const first = await refreshIndex(env.gh, { repo: REPO, viewer: env.world.viewer });
+  assert.deepEqual(first.known, [issue.number]);
+  issue.labels = [];
+  const r = await refreshIndex(env.gh, { repo: REPO, viewer: env.world.viewer, known: first.known });
+  assert.equal(r.index[key]?.issue, issue.number);
+  assert.equal(r.records[key].quarantine_days, 30);
+  // So new evidence edits it rather than opening a fresh issue at 0 days.
+  await env.upsert([sighting({ run: 1 }), sighting({ run: 2 }), sighting({ run: 3 })], r);
+  assert.equal(env.world.issues.length, 1);
 });
 
 test('a closed issue is left closed; new evidence after it opens a successor that keeps the quarantine days', async () => {

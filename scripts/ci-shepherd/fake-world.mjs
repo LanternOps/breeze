@@ -21,6 +21,8 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     runs: [],
     issues: [],
     repoLabels: new Set(), // repository labels that exist (GET/POST labels)
+    // Changed files: `<base>...<head>` (compare) or `<sha>` (one commit). Unset → none.
+    changed: new Map(),
     calls: [],
     writes: [],
     execs: [],
@@ -187,6 +189,14 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
         .map((p) => ({ position: p.queue.position, state: p.queue.state, enqueuedAt: p.queue.enqueuedAt ?? iso(w.clock), headCommit: p.queue.groupSha ? { oid: p.queue.groupSha } : null, pullRequest: { number: p.number } }));
       return json(200, { data: { repository: { mergeQueue: { entries: { nodes } } } } });
     }
+    if (/\bissue\(number: \d+\)/.test(query)) {
+      const data = {};
+      for (const [, alias, n] of query.matchAll(/\b(\w+): issue\(number: (\d+)\)/g)) {
+        const i = w.issues.find((x) => x.number === Number(n));
+        data[alias] = i ? { number: i.number, editor: i.editor ? { login: i.editor } : null, lastEditedAt: i.editor ? iso(w.clock) : null } : null;
+      }
+      return json(200, { data: { repository: data } });
+    }
     return json(200, { errors: [{ message: `fake-world: unhandled query ${query.slice(0, 60)}` }] });
   }
 
@@ -207,6 +217,8 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     }
     for (const [re, status] of w.failingGets) if (method === 'GET' && re.test(`${path}${q.size ? `?${q}` : ''}`)) return json(status, { message: 'injected' });
     if (method === 'GET' && (m = /^R\/pulls\/(\d+)\/files$/.exec(p))) return json(200, (w.prs.get(Number(m[1]))?.files ?? []).map((filename) => ({ filename })));
+    if (method === 'GET' && (m = /^R\/compare\/(.+)$/.exec(p))) return json(200, { files: (w.changed.get(decodeURIComponent(m[1])) ?? []).map((filename) => ({ filename })) });
+    if (method === 'GET' && (m = /^R\/commits\/([0-9a-f]+)$/.exec(p))) return json(200, { sha: m[1], files: (w.changed.get(m[1]) ?? []).map((filename) => ({ filename })) });
     if (method === 'GET' && p === 'R/pulls') {
       const st = q.get('state') ?? 'open';
       const head = q.get('head');
@@ -326,6 +338,7 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       if (!i) return notFound();
       if (shouldFail('issue_edit')) return json(502, { message: 'Bad Gateway' });
       for (const k of ['title', 'body', 'state']) if (body[k] !== undefined) i[k] = body[k];
+      if (body.body !== undefined) i.editor = viewer;
       write('issue_edit', { number: i.number, fields: Object.keys(body).sort() });
       return json(200, { number: i.number });
     }

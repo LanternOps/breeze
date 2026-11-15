@@ -24,10 +24,43 @@
 //   fixRequired  tests that would be added or renewed but hit the 60-day
 //           cap: they get the `flaky-fix-required` label and are never
 //           renewed again.
+//   protected  tests quarantineEligibility refuses (integration, contract,
+//           src/__tests__/, and tenancy/RLS/auth/security/migration/billing/
+//           cascade paths): never added and never renewed, whatever the
+//           evidence, because the ledger PR auto-merges with no human review.
+//           They keep their flaky-test issue; quarantining one is a human's
+//           ledger PR. An entry a human added stays as written until it
+//           expires or goes silent (removal only strengthens the gate).
 //
 // "In the last N days" counts UTC calendar days: today and the N − 1 before.
 import { validateLedger } from '../../.github/scripts/flaky-ledger.mjs';
-import { flakeKey } from './flake-issues.mjs';
+
+// The key of one test across issues, records and the ledger (re-exported by
+// flake-issues.mjs, which imports this module).
+export const flakeKey = (runner, id) => `${runner}|${id}`;
+
+// Paths whose tests guard tenancy, auth and data integrity. Case-insensitive
+// substrings, matched against the test's repo path (or, without one, the path
+// part of its id); never against test names.
+export const PROTECTED_PATH = /rls|tenan|auth|security|migration|billing|cascade/i;
+const CONTRACT_TEST = /\.contract\.test\./i;
+const SUITE_DIR = /(^|\/)src\/__tests__\//;
+
+// Whether the shepherd may quarantine a test on its own (an auto-merging
+// ledger PR): { eligible, reasons }. Fails closed: a test it cannot place
+// (no runner, no path) is not eligible. The owner may relax this set later.
+export function quarantineEligibility({ runner, id, file }) {
+  const reasons = [];
+  const idPath = runner === 'go' ? String(id ?? '').replace(/\.(?:Test|Fuzz|Example)[^.]*$/, '') : String(id ?? '').split(' > ')[0].trim();
+  const paths = [file, idPath].filter((p) => typeof p === 'string' && p.length > 0);
+  if (runner === 'vitest-integration') reasons.push('run by the integration runner');
+  if (!runner || !paths.length) reasons.push('the test cannot be placed');
+  if (paths.some((p) => CONTRACT_TEST.test(p))) reasons.push('a contract test');
+  if (paths.some((p) => SUITE_DIR.test(p))) reasons.push('under src/__tests__/');
+  const hit = paths.map((p) => PROTECTED_PATH.exec(p)?.[0]).find(Boolean);
+  if (hit) reasons.push(`its path matches "${hit.toLowerCase()}"`);
+  return { eligible: reasons.length === 0, reasons };
+}
 
 export const ADD_MIN_SIGHTINGS = 3;
 export const ADD_MIN_PRS = 2;
@@ -66,8 +99,14 @@ export function proposeLedger({ ledger, records, breakers = [], today, fileExist
     evidence[key] = { sightings7: s7.length, kinds, prs: new Set(s7.map((s) => s.pr).filter((p) => p !== null && p !== undefined)).size };
   };
 
-  const out = { next: [], add: [], renew: [], remove: [], fixRequired: [], waitingIssue: [], evidence };
+  const out = { next: [], add: [], renew: [], remove: [], fixRequired: [], waitingIssue: [], protected: [], evidence };
   const inLedger = new Set();
+  const refuse = (key, test) => {
+    const e = quarantineEligibility(test);
+    if (e.eligible) return false;
+    out.protected.push({ key, reasons: e.reasons });
+    return true;
+  };
   for (const e of ledger) {
     const key = flakeKey(e.runner, e.id);
     inLedger.add(key);
@@ -84,7 +123,7 @@ export function proposeLedger({ ledger, records, breakers = [], today, fileExist
       continue;
     }
     const fresh = within(r, WINDOW_DAYS).some((s) => FLAKY_KINDS.has(s.kind));
-    if (expires <= t + RENEW_WITHIN_DAYS && fresh && r?.issue && !brokenOnMain(e.id)) {
+    if (expires <= t + RENEW_WITHIN_DAYS && fresh && r?.issue && !brokenOnMain(e.id) && !refuse(key, e)) {
       if (r.quarantine_days + ENTRY_DAYS <= CAP_DAYS) {
         const renewed = { ...e, issue: r.issue, added: today, expires: dayOf(t + ENTRY_DAYS) };
         out.renew.push(renewed);
@@ -107,7 +146,7 @@ export function proposeLedger({ ledger, records, breakers = [], today, fileExist
       prs.size >= ADD_MIN_PRS &&
       s7.some((s) => s.kind === 'fail_fail' || s.event === 'merge_group') &&
       s7.some((s) => FLAKY_KINDS.has(s.kind));
-    if (!corroborated || brokenOnMain(r.id) || !r.file || !fileExists(r.file)) continue;
+    if (!corroborated || brokenOnMain(r.id) || refuse(key, r) || !r.file || !fileExists(r.file)) continue;
     if (r.quarantine_days >= CAP_DAYS) {
       out.fixRequired.push(key);
       continue;
@@ -131,3 +170,10 @@ export function proposeLedger({ ledger, records, breakers = [], today, fileExist
 }
 
 export const isEmptyProposal = (p) => !p || (p.add.length === 0 && p.renew.length === 0 && p.remove.length === 0);
+
+// The backstop before any ledger PR: an add or renew of a protected test is a
+// bug upstream, never something to publish.
+export function assertNoProtected(proposal) {
+  const bad = [...(proposal?.add ?? []), ...(proposal?.renew ?? [])].filter((e) => !quarantineEligibility(e).eligible);
+  if (bad.length) throw new Error(`ledger PR: refusing to quarantine protected test(s) without review: ${bad.map((e) => e.id).join(', ').slice(0, 300)}`);
+}

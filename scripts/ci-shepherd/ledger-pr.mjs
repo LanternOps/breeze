@@ -9,14 +9,17 @@
 // ledger PR a human closed today is not reopened until tomorrow.
 //
 // The PR auto-merges (OD-4) under the merge queue: `.github/flaky-tests.json`
-// is a policy path, so its queue run is the full suite.
+// is a policy path, so its queue run is the full suite. The ruleset requires
+// no approval, so nothing reviews it: it never adds or renews a protected
+// test (ledger-proposals.mjs quarantineEligibility), and refuses to open if
+// asked to.
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { LEDGER_PATH } from '../../.github/scripts/flaky-ledger.mjs';
 import { flakeKey, neutralText } from './flake-issues.mjs';
-import { isEmptyProposal } from './ledger-proposals.mjs';
+import { assertNoProtected, isEmptyProposal } from './ledger-proposals.mjs';
 import { CLOSING_KEYWORD } from './markers.mjs';
 
 export const LEDGER_BRANCH_PREFIX = 'ci-shepherd/ledger-';
@@ -102,6 +105,8 @@ async function createLedgerPr(gh, writer, repo, { branch, title, body }) {
 
 export async function ledgerPrTick({ gh, git, writer, checkoutDir, repo, proposal, today, mode, modeNow, unenqueued = null, onCreated = () => {} }) {
   if (isEmptyProposal(proposal)) return { status: 'noop' };
+  // This PR auto-merges with no review: a protected test must never be in it.
+  assertNoProtected(proposal);
   const branch = `${LEDGER_BRANCH_PREFIX}${today}`;
   const { title, body, commitMessage } = renderLedgerPr(proposal);
   if (mode !== 'act' || !writer) return { status: 'shadow', branch, title, body };

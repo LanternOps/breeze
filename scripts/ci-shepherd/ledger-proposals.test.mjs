@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { LEDGER_PATH, validateLedger } from '../../.github/scripts/flaky-ledger.mjs';
-import { proposeLedger } from './ledger-proposals.mjs';
+import { proposeLedger, quarantineEligibility } from './ledger-proposals.mjs';
 import { REPO_ROOT } from './shepherd.mjs';
 
 // Deterministic flaky-ledger proposals (W06c C2, #10750). This is the one W06
@@ -167,4 +167,48 @@ test('every proposal validates, entries keep their own fields, and the evidence 
   assert.deepEqual(p.renew.map((e) => e.expires), ['2026-11-28']);
   assert.ok(p.next.some((e) => e.id === other.id && e.covers), 'a hand-written entry is kept as is');
   assert.equal(p.evidence[`vitest-web|${ID}`].sightings7, 3);
+});
+
+// Must-fix: tenancy, RLS, contract and other protected tests never reach an
+// auto-merging ledger PR, whatever the evidence.
+const PROTECTED = [
+  { runner: 'vitest-integration', id: 'src/services/devices.integration.test.ts > devices > lists', file: 'apps/api/src/services/devices.integration.test.ts' },
+  { runner: 'vitest-api', id: 'src/routes/devices.contract.test.ts > devices > shape', file: 'apps/api/src/routes/devices.contract.test.ts' },
+  { runner: 'vitest-api', id: 'src/__tests__/devices.test.ts > devices > x', file: 'apps/api/src/__tests__/devices.test.ts' },
+  { runner: 'vitest-api', id: 'src/db/rlsCoverage.test.ts > rls > x', file: 'apps/api/src/db/rlsCoverage.test.ts' },
+  { runner: 'vitest-api', id: 'src/services/tenantExport.test.ts > t > x', file: 'apps/api/src/services/tenantExport.test.ts' },
+  { runner: 'vitest-web', id: 'src/lib/Auth.test.tsx > a > x', file: 'apps/web/src/lib/Auth.test.tsx' },
+  { runner: 'vitest-api', id: 'src/security/headers.test.ts > s > x', file: 'apps/api/src/security/headers.test.ts' },
+  { runner: 'vitest-api', id: 'src/db/migrationRlsScope.test.ts > m > x', file: 'apps/api/src/db/migrationRlsScope.test.ts' },
+  { runner: 'vitest-api', id: 'src/services/billingSync.test.ts > b > x', file: 'apps/api/src/services/billingSync.test.ts' },
+  { runner: 'vitest-api', id: 'src/services/orgCascade.test.ts > c > x', file: 'apps/api/src/services/orgCascade.test.ts' },
+  { runner: 'go', id: 'github.com/breeze-rmm/agent/internal/auth.TestToken', file: 'agent/internal/auth' },
+];
+
+test('quarantineEligibility: the protected set, and an ordinary test is eligible', () => {
+  for (const t of PROTECTED) {
+    const e = quarantineEligibility(t);
+    assert.equal(e.eligible, false, t.id);
+    assert.ok(e.reasons.length > 0, t.id);
+  }
+  assert.deepEqual(quarantineEligibility({ runner: 'vitest-web', id: ID, file: FILE }), { eligible: true, reasons: [] });
+});
+
+test('a protected test is never added or renewed, under any evidence; it is reported instead', () => {
+  // Every corroboration rule holds, many times over.
+  const strong = (t) => [1, 2, 3, 4].flatMap((pr) => [s({ ...t, pr }), s({ ...t, pr, kind: 'fail_fail', event: 'merge_group' }), s({ ...t, pr, kind: 'fail_other' })]);
+  const records = PROTECTED.map((t) => ({ ...t, issue: 900, quarantine_days: 0, sightings: strong(t) }));
+  const p = propose({ records });
+  assert.deepEqual(p.add, []);
+  assert.deepEqual(p.next, []);
+  assert.equal(p.protected.length, PROTECTED.length);
+  // A protected entry a human put in the ledger is kept as written, never renewed.
+  const t = PROTECTED[0];
+  const handAdded = { id: t.id, runner: t.runner, file: t.file, issue: 900, added: '2026-11-01', expires: '2026-11-15' };
+  const q = propose({ ledger: [handAdded], records: [{ ...t, issue: 900, quarantine_days: 0, sightings: strong(t) }] });
+  assert.deepEqual(q.renew, []);
+  assert.deepEqual(q.next, [handAdded]);
+  assertValid(q);
+  // The control: the same evidence on an ordinary test is an add.
+  assert.equal(propose({ records: [record(strong({}))] }).add.length, 1);
 });

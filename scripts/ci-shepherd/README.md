@@ -42,6 +42,14 @@ probe leg done.
 gh variable set CI_SHEPHERD_MODE --body act -R LanternOps/breeze
 ```
 
+This one switch arms two things at once: the W06b queue decisions (re-queue,
+hold, park) and the W06c flaky-test upkeep, including the ledger PR that
+auto-merges with no review and lets an unprotected test fail both attempts
+for up to 14 days. There is no separate switch for the ledger. The act-mode
+gate review must cover both: the queue decisions in `decisions.jsonl`, and
+the shadow `flake_issue_create`, `ledger_pr` and `ledger_protected` lines
+(what act would have opened and quarantined).
+
 ### Probe leg
 
 The probe proves the write path on a throwaway PR. Add the label
@@ -124,18 +132,41 @@ token's limit is shared). Flake-sighting ingest runs last and uses at most
 - `flake_issue_create`, `flake_fix_required`, `ledger_pr`,
   `ledger_add_waiting_issue` (`source: flake`): the flaky-test upkeep below.
   In shadow each is logged once a day per test or proposal.
+- `ledger_protected` (`source: flake`, any mode): a protected test the
+  proposals would otherwise have added or renewed. Once a day per test.
+- `flake_issue_cap` (`source: flake`): the daily cap on new flaky-test issues
+  was reached; `carried` lists the tests held for the next day. Once a day.
 
 ### Flaky tests and the ledger PR (W06c)
 
 After each tick's sightings ingest, the shepherd keeps the flaky ledger fed
 (`flake-upkeep.mjs`). Writes happen in act mode only.
 
-- **Issues** (`flake-issues.mjs`). A test seen failing in 2 distinct CI runs
-  within 14 days gets one `flaky-test` issue. Its body holds a summary and a
-  hidden `<!-- ci-shepherd:flake v1 … -->` record: counts per kind, the
-  newest 50 sightings and the days quarantined so far. Only issues the
-  operator account wrote are trusted. A closed issue is left closed; new
-  evidence after the close opens a successor that keeps the quarantine days.
+- **Sightings** (`evidence.mjs`, `sweeps.mjs`). A failure counts only when
+  the run's own change did not touch the test: not the test file, not its
+  sibling source, not its Go package, and for an integration test not a
+  migration (`apps/api/migrations/`) or the schema (`apps/api/src/db/`). The
+  change is read for each run with failures: base...head for a PR or queue
+  run, the commit itself for a run on main. When it cannot be read (an error,
+  a run naming no PR, 300 files or more), the failure counts as touched and
+  is dropped.
+- **Issues** (`flake-issues.mjs`). A test gets one `flaky-test` issue once,
+  within 14 days, it failed in 2 distinct CI runs and the evidence points
+  away from the change: runs of at least 2 different PRs, or a merge queue
+  run, or a fail-then-pass on one commit (the retry passed). Two runs of one
+  PR never open an issue. At most 5 new issues per UTC day, counted in
+  `state.json` so a restart does not reset it; tests over the cap are queued
+  with the evidence they qualified on and opened on a later day. The body
+  holds a summary of that evidence (a suspicion, not proof) and a hidden
+  `<!-- ci-shepherd:flake v1 … -->` record: counts per kind, the newest 50
+  sightings and the days quarantined so far. An issue is trusted only when
+  the operator account wrote it and nobody else edited its body last: comment
+  on these issues, do not edit them. An issue someone else edited blocks new
+  issues and is never cited by a ledger PR until the operator account edits
+  it again. Known issues are read by number, so removing the `flaky-test`
+  label neither drops an issue nor resets its quarantine days. A closed issue
+  is left closed; new evidence after the close opens a successor that keeps
+  the quarantine days.
 - **Proposals** (`ledger-proposals.mjs`). A test is added to
   `.github/flaky-tests.json` only when it has an open issue and, in the last 7
   days, ≥ 3 sightings from ≥ 2 PRs, at least one in the merge queue or failing
@@ -144,13 +175,29 @@ After each tick's sightings ingest, the shepherd keeps the flaky ledger fed
   only on fresh flake evidence. Each test is quarantined for at most 60 days in
   total, then gets `flaky-fix-required`. Expired entries and entries with no
   sighting in 14 days are removed.
+- **Protected tests** (`quarantineEligibility` in `ledger-proposals.mjs`).
+  The shepherd never adds or renews: any test run by the integration runner
+  (`vitest-integration`), any `*.contract.test.*`, anything under
+  `src/__tests__/`, and any test whose path matches `rls`, `tenan`, `auth`,
+  `security`, `migration`, `billing` or `cascade` (case-insensitive, so
+  `urls` and `author` match too: it errs towards protecting). They still get
+  their `flaky-test` issue, which says they are protected. Quarantining one is
+  a ledger PR a human writes and reviews; an entry a human added is kept as
+  written until it expires. The ledger PR refuses to open if a protected test
+  ever reaches it.
 - **Ledger PR** (`ledger-pr.mjs`). At most one open PR, branch
   `ci-shepherd/ledger-<date>`, made in a temporary worktree of the shepherd's
   own clone (`--checkout-dir`, passed by `run.sh`) and auto-merged through the
-  queue. The shepherd checks at most hourly. While one is open it waits, and it
-  never force-pushes. It does not reopen a ledger PR a human closed until the
-  next day. To stop quarantines, close the PR. Entries expire on their own
-  within 14 days.
+  queue. The ruleset requires no approval, so nobody reviews it before it
+  merges. The shepherd checks at most hourly. While one is open it waits, and
+  it never force-pushes. It does not reopen a ledger PR a human closed until
+  the next day.
+- **Vetoes.** Closing a ledger PR only skips that day: the next day's
+  proposal opens a new one. To stop a test's quarantine, close its
+  `flaky-test` issue: the shepherd then no longer cites it, and only evidence
+  newer than the close can open a successor. To stop all quarantines, set the
+  mode to `off` (or anything but `act`). Entries expire on their own within 14
+  days.
 
 ### Reading the logs
 

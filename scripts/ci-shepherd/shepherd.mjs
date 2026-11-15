@@ -144,7 +144,7 @@ export async function replay(gh, { repo, since, until = null, ciYml, repoRoot = 
     rows.push(row);
   }
   const sightings = [...history];
-  for (const row of rows) if (row.facts && !row.isFork) sightings.push(...ingestRun(row.facts, { repo, repoRoot }));
+  for (const row of rows) if (row.facts && !row.isFork) sightings.push(...ingestRun(row.facts, { repo, repoRoot, changed: row.prFiles ? new Set(row.prFiles) : null }));
   const all = History.fromSightings(sightings);
   const requiredJobs = requiredJobIds(ciYml);
   const now = until === null ? Date.now() : Date.parse(until);
