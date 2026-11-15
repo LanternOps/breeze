@@ -293,6 +293,19 @@ describe('storage destination credentials at rest', () => {
     expect(hasSensitivePayload('hyperv_restore')).toBe(true);
   });
 
+  // #11858: the helper's vault_sync handler now reads providerConfig too.
+  it('seals an inline storage destination on a vault sync', () => {
+    const sealed = sealStorageCredentialsForPersistence(
+      'vault_sync',
+      { snapshotId: 's', provider: 's3', providerConfig },
+      ctx,
+    );
+    expect(sealed.providerConfig).toBeUndefined();
+    expect(typeof sealed.providerConfigEnvelope).toBe('string');
+    expect(JSON.stringify(sealed)).not.toContain('synthetic-secret-value');
+    expect(hasSensitivePayload('vault_sync')).toBe(true);
+  });
+
   it('leaves other command types and payloads without a destination untouched', () => {
     const other = { path: '/tmp', providerConfig: { note: 'not a storage command' } };
     expect(sealStorageCredentialsForPersistence('file_list', other, ctx)).toBe(other);

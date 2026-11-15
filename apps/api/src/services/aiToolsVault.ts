@@ -13,7 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
-import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from './vaultDeviceCommands';
+import { buildVaultConfigurePayload, resolveVaultSyncSource } from './vaultDeviceCommands';
 import { createLocalVault, updateVaultOnDevice, updateVaultWithinCurrentSite } from './localVaultUpdate';
 import { UnsupportedLocalStoreTargetError } from './localStoreTargets';
 import {
@@ -327,13 +327,17 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       }
 
       // The helper requires a snapshot id; default to the device's newest
-      // file-backup snapshot (#8385).
-      const snapshotId = typeof input.snapshotId === 'string'
-        ? input.snapshotId
-        : await resolveLatestVaultSyncSnapshotId(vault.deviceId, vault.orgId);
-      if (!snapshotId) {
-        return JSON.stringify({ error: 'No backup snapshot to sync yet: run a file backup on this device first' });
+      // file-backup snapshot (#8385). The command also names the destination
+      // that snapshot was written to (#11858).
+      const source = await resolveVaultSyncSource(
+        vault.deviceId,
+        vault.orgId,
+        typeof input.snapshotId === 'string' ? input.snapshotId : null,
+      );
+      if (!source.ok) {
+        return JSON.stringify({ error: source.error });
       }
+      const { snapshotId, destination } = source;
 
       // Repeat the tenant and device axes the checks above authorized: the
       // vault was read in a separate statement, so `id` alone would leave a
@@ -356,7 +360,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         'trigger_vault_sync',
         vault.deviceId,
         CommandTypes.VAULT_SYNC,
-        { vaultId: vault.id, vaultPath: vault.vaultPath, snapshotId },
+        { vaultId: vault.id, vaultPath: vault.vaultPath, snapshotId, ...destination },
         { userId: auth.user?.id, expectedOrgId: vault.orgId }
       );
 
