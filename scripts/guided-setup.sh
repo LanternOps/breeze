@@ -3696,6 +3696,7 @@ hold_verified_release_manifest_pair() {
   local manifest="$1" signature="$2" repo="$3" key="$4" base="$5"
   local kind binaries_tag binaries_base binaries_ref source_dir
 
+  [[ -n "${PENDING_MANIFEST_PAIR_DIR}" ]] && rm -rf "${PENDING_MANIFEST_PAIR_DIR}"
   PENDING_MANIFEST_PAIR_DIR=""
   kind="$(manifest_top_level_string "$manifest" "releaseKind")"
   source_dir="$(dirname "$manifest")"
@@ -3715,6 +3716,15 @@ hold_verified_release_manifest_pair() {
         binaries_base="https://github.com/${repo}/releases/download/${binaries_tag}"
       fi
       binaries_ref="$(get_env_value "BREEZE_BINARIES_IMAGE_REF")"
+      # The kept pair is already the carried release's when the previous
+      # release shipped these binaries (or was a server-only release carrying
+      # them). Re-verify it rather than download it again, so a network blip
+      # does not drop a pair that still describes the volume.
+      if verify_carried_release_manifest_pair "${RELEASE_MANIFEST_PAIR_DIR}" "$repo" "$key" "$binaries_tag" "$binaries_ref" quiet; then
+        log "The kept release manifest pair is ${binaries_tag}'s and lists the pinned binaries image; keeping it."
+        keep_verified_pair_pending "${RELEASE_MANIFEST_PAIR_DIR}"
+        return 0
+      fi
       source_dir="${RELEASE_VERIFY_TMP}/binaries-release"
       mkdir -p "$source_dir"
       log "Downloading the release manifest pair of ${binaries_tag}, whose binaries this server-only release carries."
@@ -3722,12 +3732,7 @@ hold_verified_release_manifest_pair() {
           "${binaries_base}/release-artifact-manifest.json" -o "${source_dir}/release-artifact-manifest.json" \
         || ! curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 --max-filesize 4096 \
           "${binaries_base}/release-artifact-manifest.json.ed25519" -o "${source_dir}/release-artifact-manifest.json.ed25519" \
-        || ! RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS="$key" \
-          bash "$RELEASE_IMAGE_VERIFIER_FILE" \
-            --manifest "${source_dir}/release-artifact-manifest.json" \
-            --signature "${source_dir}/release-artifact-manifest.json.ed25519" \
-            --expected-repository "$repo" --expected-release "$binaries_tag" \
-            --require "binaries=${binaries_ref}" >/dev/null; then
+        || ! verify_carried_release_manifest_pair "$source_dir" "$repo" "$key" "$binaries_tag" "$binaries_ref"; then
         warn "Could not download and verify the ${binaries_tag} release manifest pair; no release manifest pair will be placed in the binaries volume. BINARY_SOURCE=local needs it: see https://docs.breezermm.com/deploy/binaries/#release-manifest-pair"
         return 0
       fi
@@ -3738,10 +3743,36 @@ hold_verified_release_manifest_pair() {
       ;;
   esac
 
-  PENDING_MANIFEST_PAIR_DIR="$(mktemp -d)"
+  keep_verified_pair_pending "${source_dir}"
+}
+
+# Copies a verified pair from DIR into a fresh PENDING_MANIFEST_PAIR_DIR.
+keep_verified_pair_pending() {
+  local source_dir="$1" pending
+
+  pending="$(mktemp -d)" || fail "Failed to create a temporary directory for the verified release manifest pair."
   cp "${source_dir}/release-artifact-manifest.json" "${source_dir}/release-artifact-manifest.json.ed25519" \
-    "${PENDING_MANIFEST_PAIR_DIR}/" \
-    || fail "Failed to keep the verified release manifest pair."
+    "${pending}/" \
+    || { rm -rf "${pending}"; fail "Failed to keep the verified release manifest pair."; }
+  PENDING_MANIFEST_PAIR_DIR="${pending}"
+}
+
+# True when DIR holds a pair signed by KEY for release TAG of REPO that lists
+# BINARIES_REF as its binaries image. The verifier's reason goes to stderr
+# unless a sixth argument "quiet" is given (the kept-pair probe).
+verify_carried_release_manifest_pair() {
+  local dir="$1" repo="$2" key="$3" tag="$4" binaries_ref="$5" mode="${6:-}"
+  [[ -f "${dir}/release-artifact-manifest.json" && -f "${dir}/release-artifact-manifest.json.ed25519" ]] || return 1
+  if [[ "${mode}" == "quiet" ]]; then
+    verify_carried_release_manifest_pair "$dir" "$repo" "$key" "$tag" "$binaries_ref" 2>/dev/null
+    return
+  fi
+  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS="$key" \
+    bash "$RELEASE_IMAGE_VERIFIER_FILE" \
+      --manifest "${dir}/release-artifact-manifest.json" \
+      --signature "${dir}/release-artifact-manifest.json.ed25519" \
+      --expected-repository "$repo" --expected-release "$tag" \
+      --require "binaries=${binaries_ref}" >/dev/null
 }
 
 # Makes RELEASE_MANIFEST_PAIR_DIR hold exactly the pending verified pair, or
@@ -3760,7 +3791,8 @@ commit_release_manifest_pair() {
 
   # Public, signed files: world-readable, so the copy step can read them under
   # a user-namespace-remapped Docker daemon as well.
-  staged="$(mktemp -d "${RELEASE_MANIFEST_PAIR_DIR}.tmp.XXXXXX")"
+  staged="$(mktemp -d "${RELEASE_MANIFEST_PAIR_DIR}.tmp.XXXXXX")" \
+    || fail "Failed to create a staging directory next to ${RELEASE_MANIFEST_PAIR_DIR}."
   if ! cp "${PENDING_MANIFEST_PAIR_DIR}/release-artifact-manifest.json" \
       "${PENDING_MANIFEST_PAIR_DIR}/release-artifact-manifest.json.ed25519" "${staged}/" \
     || ! chmod 0755 "${staged}" \
@@ -3797,21 +3829,31 @@ place_release_manifest_pair_in_binaries_volume() {
     if compose run --rm --no-deps -T --entrypoint sh \
         -v "${RELEASE_MANIFEST_PAIR_DIR}:/release-manifest:ro" \
         binaries-init -c "${RELEASE_MANIFEST_PAIR_PLACE_SCRIPT}"; then
-      log "Placed the verified release manifest pair at the root of the binaries volume."
+      dry_run_enabled || log "Placed the verified release manifest pair at the root of the binaries volume."
       return 0
     fi
     warn "Could not copy the release manifest pair into the binaries volume. BINARY_SOURCE=local needs it; run:"
     warn "  $(release_manifest_pair_place_command_for_display)"
     return 0
   fi
-  compose run --rm --no-deps -T --entrypoint sh binaries-init -c "${RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT}" \
-    || warn "Could not remove an earlier release manifest pair from the binaries volume."
+  if ! compose run --rm --no-deps -T --entrypoint sh binaries-init -c "${RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT}"; then
+    warn "Could not remove an earlier release manifest pair from the binaries volume; if one is there it does not describe these binaries. Run:"
+    warn "  $(release_manifest_pair_place_command_for_display)"
+  fi
   return 0
 }
 
+# The copy command when a verified pair is kept, otherwise the remove command.
 release_manifest_pair_place_command_for_display() {
-  printf "%s run --rm --no-deps -T --entrypoint sh -v %s:/release-manifest:ro binaries-init -c '%s'" \
-    "$(compose_command_for_display)" "${RELEASE_MANIFEST_PAIR_DIR}" "${RELEASE_MANIFEST_PAIR_PLACE_SCRIPT}"
+  local dir
+  if release_manifest_pair_kept; then
+    printf -v dir '%q' "${RELEASE_MANIFEST_PAIR_DIR}"
+    printf "%s run --rm --no-deps -T --entrypoint sh -v %s:/release-manifest:ro binaries-init -c '%s'" \
+      "$(compose_command_for_display)" "${dir}" "${RELEASE_MANIFEST_PAIR_PLACE_SCRIPT}"
+  else
+    printf "%s run --rm --no-deps -T --entrypoint sh binaries-init -c '%s'" \
+      "$(compose_command_for_display)" "${RELEASE_MANIFEST_PAIR_REMOVE_SCRIPT}"
+  fi
 }
 
 github_repo_for_release_lookup() {
@@ -4509,16 +4551,15 @@ print_manual_start_commands() {
   print_upgrade_hint
 }
 
-# The images are pinned by digest, so `docker compose pull` re-fetches the
-# SAME release forever and editing BREEZE_VERSION alone does not change what
-# runs (#7024). Say how to upgrade wherever the installer prints next steps.
-# The copy step for BINARY_SOURCE=local, shown wherever setup prints the
-# commands it did not run itself (#11870).
+# The copy (or, with no verified pair, the remove) step for BINARY_SOURCE=local,
+# shown wherever setup prints the commands it did not run itself (#11870).
 print_release_manifest_pair_place_command() {
-  release_manifest_pair_kept || return 0
   log "  $(release_manifest_pair_place_command_for_display)"
 }
 
+# The images are pinned by digest, so `docker compose pull` re-fetches the
+# SAME release forever and editing BREEZE_VERSION alone does not change what
+# runs (#7024). Say how to upgrade wherever the installer prints next steps.
 print_upgrade_hint() {
   log ""
   log "To upgrade later, run: bash guided-setup.sh --work-dir ${WORK_DIR} --env-file ${ENV_FILE} --upgrade [VERSION]"
@@ -4952,7 +4993,7 @@ run_upgrade() {
     return
   fi
   compose pull \
-    || fail "docker compose pull failed; ${ENV_FILE} now pins ${target}. Fix registry access, then run: $(compose_command_for_display) pull && $(compose_command_for_display) up -d"
+    || fail "docker compose pull failed; ${ENV_FILE} now pins ${target}. Fix registry access, then run: $(compose_command_for_display) pull && $(release_manifest_pair_place_command_for_display) && $(compose_command_for_display) up -d"
   place_release_manifest_pair_in_binaries_volume
   compose up -d \
     || fail "docker compose up -d failed. Inspect with: $(compose_command_for_display) logs api"

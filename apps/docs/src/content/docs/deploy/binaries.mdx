@@ -163,10 +163,12 @@ When the pair is missing:
   update manifests with the per-deployment key instead of using the official
   release manifest. The API logs a `[binarySync] … not found` warning that names
   the missing file.
-- The Windows MSI, macOS packages, `Breeze Installer.app.zip` and Breeze Assist
-  installers are refused (`503 MSI not available`, `Installer unavailable`, or a
-  failed macOS installer-link check). The API log names the missing file and
-  links to this section.
+- Installers that need the pair are refused, and the API log names the missing
+  file and links to this section: the Windows MSI (`503 MSI not available`),
+  macOS packages and Breeze Assist installers (`503 Installer unavailable`),
+  creating a macOS installer link (`503 macOS PKG not reachable`), and the
+  macOS `Breeze Installer.app.zip` download when that file is staged (a server
+  error).
 
 The pair is not needed with `BINARY_SOURCE=github`, and copying it into the
 volume there has no effect.
@@ -205,6 +207,7 @@ curl -fsSL -o release-manifest/release-artifact-manifest.json.ed25519 \
 curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/$TAG/scripts/release/verify-release-images.sh
 
 # Verify the signature and that the manifest lists the binaries image you run.
+# Continue only if this prints "Verified signed release image inventory".
 RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS="$(grep '^RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=' .env | cut -d= -f2-)" \
   bash verify-release-images.sh \
     --manifest release-manifest/release-artifact-manifest.json \
@@ -212,6 +215,10 @@ RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS="$(grep '^RELEASE_ARTIFACT_MANIFEST_PUBLIC
     --expected-repository lanternops/breeze \
     --expected-release "$TAG" \
     --require "binaries=$(grep '^BREEZE_BINARIES_IMAGE_REF=' .env | cut -d= -f2-)"
+
+# A server-only release lists no binaries. If this prints "server-only", stop:
+# set TAG to the release in "binariesRelease" and start again from the top.
+grep -E '"(releaseKind|binariesRelease)"' release-manifest/release-artifact-manifest.json
 
 # Copy both files to the volume root through the binaries-init service.
 docker compose run --rm --no-deps -T --entrypoint sh \
@@ -222,11 +229,11 @@ docker compose run --rm --no-deps -T --entrypoint sh \
 docker compose up -d --force-recreate api
 ```
 
-Copy the files only after the verification command prints
-`Verified signed release image inventory`. If `grep '"releaseKind"'
-release-manifest/release-artifact-manifest.json` shows `"server-only"`, that
-release carries the binaries of the release named in its `"binariesRelease"`
-field. Set `TAG` to that release and repeat the steps.
+Run the copy step only after the verification printed
+`Verified signed release image inventory` and the `releaseKind` line does not
+say `server-only`. A server-only release carries the binaries of the release
+named in its `binariesRelease` field, and that release's pair is the one that
+describes the volume.
 
 If the volume is not managed by Compose, copy both files into the directory that
 holds `agent/`, `viewer/` and `helper/`, and make sure the API user can read
