@@ -382,12 +382,15 @@ describe('initializeDatabaseForStartup upgrade preflight', () => {
       }
     });
 
-    it('does not ask for the membership when AUDIT_ADMIN_DATABASE_URL is set, and probes that connection', async () => {
+    it('with AUDIT_ADMIN_DATABASE_URL set, probes that connection and says only device delete still needs the membership', async () => {
       const probe = vi.fn(async () => {});
       const { logger, run } = boot({ auditAdminMember: false }, { AUDIT_ADMIN_DATABASE_URL: 'postgresql://a@db/b' }, probe);
       await run;
       expect(probe).toHaveBeenCalledOnce();
-      expect(logger.error).not.toHaveBeenCalled();
+      const errors = logger.error.mock.calls.map((c) => String(c[0]));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('permanent device delete still needs the membership');
+      expect(errors[0]).not.toContain('AUDIT_ADMIN_DATABASE_URL is not set');
     });
 
     it('reports a failing dedicated connection without failing boot', async () => {

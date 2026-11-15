@@ -22,8 +22,9 @@ export interface RequestDatabaseRole {
  * the audit, PAM and AI-ledger retention jobs all `SET LOCAL ROLE
  * breeze_audit_admin` on the request pool. When the role cannot do that (the
  * membership is cluster-level and a database-only restore drops it) they fail
- * with 42501 at first use. Returns the boot error to log, or null when fine,
- * not probed, or not applicable because the dedicated connection is in use.
+ * with 42501 at first use. Permanent device delete needs it even with
+ * AUDIT_ADMIN_DATABASE_URL set. Returns the boot message to log, or null when
+ * the membership is present or was not probed.
  */
 export function auditAdminAccessProblem(
   role: RequestDatabaseRole,
@@ -31,13 +32,21 @@ export function auditAdminAccessProblem(
 ): string | null {
   const dedicated = typeof env.AUDIT_ADMIN_DATABASE_URL === 'string'
     && env.AUDIT_ADMIN_DATABASE_URL.trim().length > 0;
-  if (dedicated || role.auditAdminMember === undefined || role.auditAdminMember === true) return null;
+  if (role.auditAdminMember === undefined || role.auditAdminMember === true) return null;
   const what = role.auditAdminMember === null
     ? 'the breeze_audit_admin role does not exist'
     : `"${role.currentUser}" is not a member of breeze_audit_admin`;
   const fix = role.auditAdminMember === null
     ? `CREATE ROLE breeze_audit_admin NOLOGIN; then restart the API so it re-grants its table privileges, and run GRANT breeze_audit_admin TO ${role.currentUser};`
     : `GRANT breeze_audit_admin TO ${role.currentUser};`;
+  if (dedicated) {
+    // Retention and org erasure use the dedicated connection, but permanent
+    // device delete removes evidence in the same transaction as the device
+    // and so still switches role on the request connection (deviceDeletion.ts).
+    return `[database] ${what}. AUDIT_ADMIN_DATABASE_URL is set, so retention and organization erasure use `
+      + 'that connection, but permanent device delete still needs the membership and will fail with '
+      + `SQLSTATE 42501. If that is not intended, run as a database superuser: ${fix}`;
+  }
   return `[database] ${what}, and AUDIT_ADMIN_DATABASE_URL is not set. Permanent device delete, `
     + 'organization erasure and audit-log retention will fail with SQLSTATE 42501. This usually follows a '
     + 'database-only restore into a new Postgres cluster: roles and memberships belong to the cluster and '

@@ -7,8 +7,10 @@
  * Proves, on real Postgres:
  *  - the failure itself (CONTROL), and that ensureClusterRoles() repairs it;
  *  - a deliberate revoke is left alone when AUDIT_ADMIN_DATABASE_URL is set;
- *  - with that URL set, device delete, org erasure and AI-ledger retention use
- *    the dedicated connection and work with the membership revoked;
+ *  - with that URL set, org erasure and AI-ledger retention use the dedicated
+ *    connection and work with the membership revoked, while permanent device
+ *    delete stays in the caller's transaction (no evidence destroyed by a
+ *    delete that is refused later);
  *  - object privileges a role-less restore drops are re-granted;
  *  - a migration role that is NOT a superuser gets a warning, never a throw,
  *    and a managed-Postgres-shaped one (CREATEROLE + ADMIN OPTION) repairs it.
@@ -146,7 +148,7 @@ describe('#11929 breeze_app membership lost by a database-only restore', () => {
       ensureClusterRoles(client, { phase: 'post-migration', env: {}, logger: quiet }));
 
     expect(report.warnings).toEqual([]);
-    expect(report.applied.some((line) => line.includes('membership'))).toBe(true);
+    expect(report.applied.some((line) => line.startsWith('Granted breeze_audit_admin to breeze_app'))).toBe(true);
     expect(await isAppMember()).toBe(true);
     await permanentlyDelete(deviceId);
     expect(await evidenceCount(deviceId)).toBe(0);
@@ -165,7 +167,7 @@ describe('#11929 breeze_app membership lost by a database-only restore', () => {
       env: { AUDIT_ADMIN_DATABASE_URL: 'postgresql://breeze_audit_admin:x@localhost:5432/breeze' },
       logger: quiet,
     }));
-    expect(report.applied.some((line) => line.includes('membership'))).toBe(false);
+    expect(report.applied.some((line) => line.startsWith('Granted breeze_audit_admin to breeze_app'))).toBe(false);
     expect(await isAppMember()).toBe(false);
   });
 });
@@ -179,36 +181,44 @@ describe('#11929 dedicated audit-admin connection with the membership revoked', 
     await adminExec('ALTER ROLE breeze_audit_admin WITH NOLOGIN PASSWORD NULL');
   });
 
-  async function useDedicatedConnection(): Promise<void> {
+  async function useDedicatedConnection({ revoke = true } = {}): Promise<void> {
     process.env.AUDIT_ADMIN_DATABASE_URL = urlAs(APP_URL, 'breeze_audit_admin', AUDIT_ADMIN_PASSWORD);
     await closeAuditAdminPool();
+    if (!revoke) return;
     await adminExec('REVOKE breeze_audit_admin FROM breeze_app');
     expect(await isAppMember()).toBe(false);
   }
 
-  it('permanent device delete removes the append-only evidence through it', async () => {
+  function deleteThenFail(deviceId: string): Promise<void> {
+    return runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.transaction(async (tx) => {
+        await deleteDeviceCascade(tx as unknown as DeviceDeletionTx, deviceId);
+        // Stands in for a refusal after the cascade (purgeRemovedDevice's
+        // link-group site-access check).
+        throw new Error('refused after the cascade');
+      })));
+  }
+
+  it('permanent device delete stays in the caller transaction: a later refusal destroys no evidence', async () => {
     const { deviceId } = await seedDeviceWithEvidence();
-    await useDedicatedConnection();
+    await useDedicatedConnection({ revoke: false });
+    await expect(deleteThenFail(deviceId)).rejects.toThrow('refused after the cascade');
+    expect(await evidenceCount(deviceId)).toBe(2);
     await permanentlyDelete(deviceId);
     expect(await evidenceCount(deviceId)).toBe(0);
   });
 
-  it('a rolled-back device delete still deletes nothing it was not asked to', async () => {
-    // The dedicated connection commits on its own, so this pins what a caller
-    // rollback leaves: the device and its other rows stay; only that device's
-    // append-only evidence (which the retry deletes anyway) is gone.
+  it('permanent device delete still needs the membership, and fails whole without it', async () => {
     const { deviceId } = await seedDeviceWithEvidence();
-    const other = await seedDeviceWithEvidence();
     await useDedicatedConnection();
-    await expect(runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      db.transaction(async (tx) => {
-        await deleteDeviceCascade(tx as unknown as DeviceDeletionTx, deviceId);
-        throw new Error('caller failed after the cascade');
-      })))).rejects.toThrow('caller failed after the cascade');
-    expect(await evidenceCount(deviceId)).toBe(1); // the device row itself
-    expect(await evidenceCount(other.deviceId)).toBe(2);
-    await permanentlyDelete(deviceId);
-    expect(await evidenceCount(deviceId)).toBe(0);
+    let err: unknown = null;
+    try {
+      await permanentlyDelete(deviceId);
+    } catch (e) {
+      err = e;
+    }
+    expect(pgErrorCode(err)).toBe('42501');
+    expect(await evidenceCount(deviceId)).toBe(2);
   });
 
   it('org erasure removes the append-only evidence through it', async () => {

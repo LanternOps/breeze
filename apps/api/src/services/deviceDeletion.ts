@@ -10,7 +10,6 @@ import { assertNoUnresolvedIsolation } from './networkIsolation/lifecycle';
 // below). It lives in `db/` so this request-path service does not import from
 // `jobs/`, which would drag BullMQ + ioredis into a plain DELETE's module graph.
 import { extractRowCount } from '../db/rowCount';
-import { hasDedicatedAuditAdminPool, withAuditAdminTransaction } from '../db/auditAdminPool';
 import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
 import { detachOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { deleteDeviceFixOutcomes } from './fixMemory/store';
@@ -428,37 +427,19 @@ export async function deleteDeviceCascade(
       ? (ownership ? epochPredicate(ownership) : sql`false`)
       : sql`device_id = ${deviceId}`;
     if (DEVICE_CASCADE_AUDIT_ADMIN_TABLES.has(table)) {
-      if (hasDedicatedAuditAdminPool()) {
-        // AUDIT_ADMIN_DATABASE_URL is set, so breeze_app's membership in
-        // breeze_audit_admin may be revoked (the #915 hardening step): delete
-        // on the dedicated login instead of switching role (#11929).
-        //
-        // That is a second connection, so this DELETE commits on its own,
-        // ahead of the caller's transaction. It has to run here, in FK order,
-        // before the parents later in this loop. If the caller then rolls
-        // back, the device stays and this device's append-only evidence is
-        // already gone; the retried delete finishes the job. The caller holds
-        // the devices row lock, which these child DELETEs never wait on; the
-        // lock timeout bounds any other wait on this transaction to a fast,
-        // retryable 55P03 instead of a hang Postgres cannot see as a deadlock.
-        //
-        // Scoped to the org read under the caller's RLS above. No visible
-        // device (absent, or outside the caller's scope) means nothing of it
-        // may be deleted; an absent one has no rows here anyway (FK).
-        if (!ownership) continue;
-        const { orgId } = ownership;
-        await withAuditAdminTransaction(
-          (adminTx) => adminTx.execute(
-            sql`DELETE FROM ${sql.identifier(table)} WHERE (${predicate}) AND org_id = ${orgId}`,
-          ),
-          { lockTimeoutMs: DEVICE_LOCK_TIMEOUT_MS },
-        );
-        continue;
-      }
       // Append-only evidence: breeze_app has no DELETE grant (see
       // DEVICE_CASCADE_AUDIT_ADMIN_TABLES above). Arm both layers only for
       // this one statement and immediately restore the caller's role before
       // continuing through ordinary child tables.
+      //
+      // Deliberately NOT the dedicated AUDIT_ADMIN_DATABASE_URL connection,
+      // even when it is configured (#11929). A second connection commits on
+      // its own, before the caller's transaction, and the caller still has
+      // refusals to run after this cascade (purgeRemovedDevice's link-group
+      // site-access check): a refused delete would leave the device in place
+      // with its evidence already destroyed. The delete must stay in this
+      // transaction, so it needs breeze_app's membership; boot logs an error
+      // when that is missing (databaseStartup.ts).
       await tx.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
       await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
       await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE ${predicate}`);

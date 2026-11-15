@@ -196,7 +196,9 @@ export async function ensureClusterRoles(
     }
     if (!member) {
       await step(
-        `Restored ${APP_ROLE}'s membership in ${AUDIT_ADMIN_ROLE} (missing: usually a database-only restore into a new cluster)`,
+        `Granted ${AUDIT_ADMIN_ROLE} to ${APP_ROLE}${options.phase === 'post-migration'
+          ? ' (the membership was missing: usually a database-only restore into a new cluster)'
+          : ''}`,
         `GRANT ${AUDIT_ADMIN_ROLE} TO ${APP_ROLE};`,
       );
     }
