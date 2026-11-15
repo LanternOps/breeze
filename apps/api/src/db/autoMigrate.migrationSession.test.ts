@@ -54,6 +54,9 @@ vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(async (filePath: string) => migrationFiles[String(filePath).split(/[\\/]/).pop() ?? ''] ?? ''),
 }));
 vi.mock('./ensureAppRole', () => ({ ensureAppRole: vi.fn(async () => true) }));
+vi.mock('./ensureClusterRoles', () => ({
+  ensureClusterRoles: vi.fn(async () => ({ applied: [], warnings: [] })),
+}));
 vi.mock('./seed', () => ({ seed: vi.fn(async () => undefined) }));
 
 import {

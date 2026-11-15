@@ -1,5 +1,6 @@
 import { isReadOnlySqlError } from './readOnlyDatabase';
 import {
+  auditAdminAccessProblem,
   formatUnsafeDbRoleOptOutBanner,
   formatUnsafeRequestDatabaseRoleMessage,
   isUnsafeDbRoleOptOutEnabled,
@@ -34,6 +35,8 @@ export interface DatabaseStartupOptions {
    * suppressed alongside, a role that is merely known-unsafe.
    */
   readRequestRole?: () => Promise<RequestDatabaseRole>;
+  /** Connects through AUDIT_ADMIN_DATABASE_URL once (only when it is set). */
+  probeAuditAdminConnection?: () => Promise<void>;
   env?: NodeJS.ProcessEnv;
   logger?: Pick<Console, 'log' | 'warn' | 'error'>;
 }
@@ -140,6 +143,7 @@ export async function initializeDatabaseForStartup(
   }
 
   const role = await readRequestRole();
+  await reportAuditAdminAccess(role, env, logger, options.probeAuditAdminConnection);
   const unsafeCapabilities = unsafeRequestDatabaseRoleCapabilities(role);
 
   if (unsafeCapabilities.length === 0) {
@@ -166,4 +170,35 @@ export async function initializeDatabaseForStartup(
   }
 
   logger.error(formatUnsafeDbRoleOptOutBanner(role, unsafeCapabilities));
+}
+
+/**
+ * #11929: say at boot, not at the first permanent delete, when the path that
+ * deletes append-only evidence cannot work. Report-only; never fails boot.
+ */
+async function reportAuditAdminAccess(
+  role: RequestDatabaseRole,
+  env: NodeJS.ProcessEnv,
+  logger: Pick<Console, 'log' | 'warn' | 'error'>,
+  probe: (() => Promise<void>) | undefined,
+): Promise<void> {
+  const problem = auditAdminAccessProblem(role, env);
+  if (problem) logger.error(problem);
+
+  const url = env.AUDIT_ADMIN_DATABASE_URL;
+  if (typeof url !== 'string' || url.trim().length === 0) return;
+  const runProbe = probe ?? (async () => {
+    const { auditAdminPoolPing } = await import('./auditAdminPool');
+    await auditAdminPoolPing();
+  });
+  try {
+    await runProbe();
+  } catch (err) {
+    logger.error(
+      `[database] AUDIT_ADMIN_DATABASE_URL is set but connecting through it failed: ${describeError(err)}. `
+        + 'Permanent device delete, organization erasure and audit-log retention will fail until it works. '
+        + 'After a database-only restore into a new Postgres cluster the breeze_audit_admin login and its '
+        + "password are gone (they belong to the cluster): ALTER ROLE breeze_audit_admin LOGIN PASSWORD '...'.",
+    );
+  }
 }

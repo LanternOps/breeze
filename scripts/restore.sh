@@ -171,13 +171,61 @@ restore_database() {
     return 1
   fi
 
+  # Roles and role memberships belong to the Postgres cluster, not to the
+  # database, so a pg_dump does not contain them (#11929). Restoring before
+  # the Breeze roles exist silently drops every GRANT and row-level security
+  # policy that names them, and the API cannot recreate the policies. Create
+  # them first, with the attributes the migrations give them. The API's next
+  # boot sets breeze_app's password and restores its membership in
+  # breeze_audit_admin (unless AUDIT_ADMIN_DATABASE_URL is set). This needs a
+  # role with CREATEROLE; if the restore role lacks it, stop here rather than
+  # restore a database with its policies missing.
+  log "Ensuring the Breeze database roles exist in the target cluster..."
+  if ! psql -v ON_ERROR_STOP=1 -q -d "${PGDATABASE}" <<'SQL'
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'breeze_app') THEN
+    CREATE ROLE breeze_app WITH LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'breeze_audit_admin') THEN
+    CREATE ROLE breeze_audit_admin NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'breeze_search') THEN
+    CREATE ROLE breeze_search NOLOGIN;
+  END IF;
+END $$;
+SQL
+  then
+    pg_url_unset_env
+    log "ERROR: Could not create the breeze_app, breeze_audit_admin and breeze_search roles."
+    log "       Restore the old cluster's roles first (pg_dumpall --globals-only), or run this"
+    log "       script with a DATABASE_URL user that has CREATEROLE. Nothing was restored."
+    return 1
+  fi
+
   local exit_code=0
-  pg_restore --clean --if-exists -d "${PGDATABASE}" "${DB_FILE}" 2>&1 || exit_code=$?
+  local restore_log
+  restore_log="$(mktemp)"
+  pg_restore --clean --if-exists -d "${PGDATABASE}" "${DB_FILE}" >"${restore_log}" 2>&1 || exit_code=$?
+  cat "${restore_log}"
+
+  # A role the dump references but the cluster lacks means GRANTs and RLS
+  # policies were dropped. Never report that as success.
+  local missing_roles
+  missing_roles="$(grep -o 'role "[^"]*" does not exist' "${restore_log}" | sort -u | sed 's/ does not exist//' | tr '\n' ' ' || true)"
+  rm -f "${restore_log}"
+  if [ -n "${missing_roles}" ]; then
+    pg_url_unset_env
+    log "ERROR: pg_restore could not apply grants or row-level security policies for missing role(s): ${missing_roles}"
+    log "       The restored database is incomplete. Create those roles (or restore pg_dumpall --globals-only"
+    log "       from the old cluster), then restore again into an empty database."
+    return 1
+  fi
 
   if [ $exit_code -eq 0 ]; then
     log "pg_restore completed successfully"
   elif [ $exit_code -eq 1 ]; then
-    # Exit code 1 = non-fatal warnings only (e.g., "role does not exist")
+    # Exit code 1 = errors pg_restore ignored (e.g. --clean dropping an object
+    # that is not there yet). Missing roles were rejected above.
     log "WARNING: pg_restore completed with non-fatal warnings"
   else
     pg_url_unset_env

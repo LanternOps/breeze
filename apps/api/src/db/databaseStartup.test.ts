@@ -344,4 +344,59 @@ describe('initializeDatabaseForStartup upgrade preflight', () => {
     expect(runner.runUpgradePreflight).not.toHaveBeenCalled();
     expect(runner.recordRunningVersion).not.toHaveBeenCalled();
   });
+
+  describe('breeze_audit_admin access (#11929)', () => {
+    const boot = (role: object, env: NodeJS.ProcessEnv, probe?: () => Promise<void>) => {
+      const logger = silentLogger();
+      const run = initializeDatabaseForStartup({
+        autoMigrateEnabled: false,
+        production: true,
+        readRequestRole: vi.fn(async () => ({ ...SAFE_ROLE, ...role })),
+        probeAuditAdminConnection: probe,
+        env,
+        logger,
+      });
+      return { logger, run };
+    };
+
+    it('logs the exact GRANT when the request role lost its membership and no dedicated URL is set', async () => {
+      const { logger, run } = boot({ auditAdminMember: false }, {});
+      await expect(run).resolves.toBeUndefined();
+      const errors = logger.error.mock.calls.map((c) => String(c[0]));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('"breeze_app" is not a member of breeze_audit_admin');
+      expect(errors[0]).toContain('GRANT breeze_audit_admin TO breeze_app;');
+    });
+
+    it('names a missing breeze_audit_admin role', async () => {
+      const { logger, run } = boot({ auditAdminMember: null }, {});
+      await run;
+      expect(String(logger.error.mock.calls[0]?.[0])).toContain('the breeze_audit_admin role does not exist');
+    });
+
+    it('stays quiet when the membership is present or was not probed', async () => {
+      for (const role of [{ auditAdminMember: true }, {}]) {
+        const { logger, run } = boot(role, {});
+        await run;
+        expect(logger.error).not.toHaveBeenCalled();
+      }
+    });
+
+    it('does not ask for the membership when AUDIT_ADMIN_DATABASE_URL is set, and probes that connection', async () => {
+      const probe = vi.fn(async () => {});
+      const { logger, run } = boot({ auditAdminMember: false }, { AUDIT_ADMIN_DATABASE_URL: 'postgresql://a@db/b' }, probe);
+      await run;
+      expect(probe).toHaveBeenCalledOnce();
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('reports a failing dedicated connection without failing boot', async () => {
+      const probe = vi.fn(async () => { throw new Error('password authentication failed'); });
+      const { logger, run } = boot({ auditAdminMember: true }, { AUDIT_ADMIN_DATABASE_URL: 'postgresql://a@db/b' }, probe);
+      await expect(run).resolves.toBeUndefined();
+      const error = String(logger.error.mock.calls[0]?.[0]);
+      expect(error).toContain('password authentication failed');
+      expect(error).toContain('ALTER ROLE breeze_audit_admin LOGIN PASSWORD');
+    });
+  });
 });

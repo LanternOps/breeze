@@ -100,7 +100,9 @@ export async function getRequestDatabaseRole(): Promise<RequestDatabaseRole> {
     rows = await client`
       SELECT current_user AS "currentUser",
              rolsuper AS "isSuperuser",
-             rolbypassrls AS "bypassesRls"
+             rolbypassrls AS "bypassesRls",
+             (SELECT pg_has_role(current_user, a.oid, 'MEMBER')
+                FROM pg_roles a WHERE a.rolname = 'breeze_audit_admin') AS "auditAdminMember"
       FROM pg_roles
       WHERE rolname = current_user
     `;

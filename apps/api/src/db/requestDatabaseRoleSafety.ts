@@ -10,6 +10,38 @@ export interface RequestDatabaseRole {
   currentUser: string;
   isSuperuser: boolean;
   bypassesRls: boolean;
+  /**
+   * Whether the request role may `SET ROLE breeze_audit_admin` (#11929): null
+   * when that role does not exist, undefined when not probed.
+   */
+  auditAdminMember?: boolean | null;
+}
+
+/**
+ * Without AUDIT_ADMIN_DATABASE_URL, permanent device delete, org erasure and
+ * the audit, PAM and AI-ledger retention jobs all `SET LOCAL ROLE
+ * breeze_audit_admin` on the request pool. When the role cannot do that (the
+ * membership is cluster-level and a database-only restore drops it) they fail
+ * with 42501 at first use. Returns the boot error to log, or null when fine,
+ * not probed, or not applicable because the dedicated connection is in use.
+ */
+export function auditAdminAccessProblem(
+  role: RequestDatabaseRole,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  const dedicated = typeof env.AUDIT_ADMIN_DATABASE_URL === 'string'
+    && env.AUDIT_ADMIN_DATABASE_URL.trim().length > 0;
+  if (dedicated || role.auditAdminMember === undefined || role.auditAdminMember === true) return null;
+  const what = role.auditAdminMember === null
+    ? 'the breeze_audit_admin role does not exist'
+    : `"${role.currentUser}" is not a member of breeze_audit_admin`;
+  const fix = role.auditAdminMember === null
+    ? `CREATE ROLE breeze_audit_admin NOLOGIN; then restart the API so it re-grants its table privileges, and run GRANT breeze_audit_admin TO ${role.currentUser};`
+    : `GRANT breeze_audit_admin TO ${role.currentUser};`;
+  return `[database] ${what}, and AUDIT_ADMIN_DATABASE_URL is not set. Permanent device delete, `
+    + 'organization erasure and audit-log retention will fail with SQLSTATE 42501. This usually follows a '
+    + 'database-only restore into a new Postgres cluster: roles and memberships belong to the cluster and '
+    + `are not in a pg_dump. Run as a database superuser: ${fix} No restart is needed for the GRANT.`;
 }
 
 export const REQUEST_DATABASE_ROLE_REMEDIATION =
