@@ -822,7 +822,9 @@
         "wispHome": "Wisp öffnen",
         "wispHomeDescription": "Zu Ihrer Wisp-Startseite wechseln"
       },
-      "numberHint": "{{mod}}1–9 zum Öffnen"
+      "numberHint": "{{mod}}1–9 zum Öffnen",
+      "thisCustomerOnly": "Nur dieser Kunde",
+      "partnerWide": "Partnerweit"
     },
     "notifications": {
       "title": "Benachrichtigungen",

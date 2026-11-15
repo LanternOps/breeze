@@ -822,7 +822,9 @@
         "wispHome": "Wisp’i aç",
         "wispHomeDescription": "Wisp ana sayfanıza gidin"
       },
-      "numberHint": "Açmak için {{mod}}1–9"
+      "numberHint": "Açmak için {{mod}}1–9",
+      "thisCustomerOnly": "Yalnızca bu müşteri",
+      "partnerWide": "Tüm iş ortağı"
     },
     "notifications": {
       "title": "Bildirimler",

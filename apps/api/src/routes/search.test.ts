@@ -54,7 +54,8 @@ vi.mock('../db/schema', () => ({
   },
   organizations: {
     id: 'organizations.id',
-    partnerId: 'organizations.partnerId'
+    partnerId: 'organizations.partnerId',
+    name: 'organizations.name'
   }
 }));
 
@@ -195,7 +196,8 @@ describe('search routes', () => {
       id: 'dev-1',
       type: 'devices',
       title: 'Alek 2019 MBP',
-      description: 'Aleksey-16-MacBook-Pro.decom-09cb5eb9 · online · admitriev'
+      description: 'Aleksey-16-MacBook-Pro.decom-09cb5eb9 · online · admitriev',
+      orgName: null
     });
   });
 
@@ -233,7 +235,8 @@ describe('search routes', () => {
       id: 'dev-1',
       type: 'devices',
       title: 'host-16',
-      description: 'online'
+      description: 'online',
+      orgName: null
     });
   });
 
@@ -672,6 +675,130 @@ describe('search routes', () => {
       expect(scriptOrder).toContain('scripts.id');
       expect(alertOrder).toContain('alerts.triggeredAt');
       expect(alertOrder).toContain('desc');
+    });
+  });
+
+  // #11803: the palette searches every accessible customer; the header's
+  // customer is only a ranking hint, and each result names its customer.
+  describe('preferOrgId ranking and customer labels (#11803)', () => {
+    const ORG_A = '11111111-1111-4111-8111-111111111111';
+    const ORG_B = '22222222-2222-4222-8222-222222222222';
+    const FOREIGN = '33333333-3333-4333-8333-333333333333';
+
+    const text = (value: unknown) =>
+      JSON.stringify(value, (_k, v) => (typeof v === 'function' ? '[function]' : v));
+
+    function partnerCaller() {
+      authState.current = {
+        user: { id: 'user-1', email: 'p@example.com', name: 'Partner User' },
+        scope: 'partner',
+        orgId: null,
+        partnerId: 'partner-9',
+        accessibleOrgIds: [ORG_A, ORG_B],
+        canAccessOrg: (id: string) => id === ORG_A || id === ORG_B,
+        orgCondition: (col: unknown) => inArray(col as never, [ORG_A, ORG_B] as never),
+      };
+    }
+
+    type Captured = { where: unknown[]; orderBy: unknown[][] };
+    function stubCategorySelects(rows: unknown[][] = [[], [], []]): Captured {
+      const captured: Captured = { where: [], orderBy: [] };
+      for (const result of rows) {
+        const where = vi.fn((condition: unknown) => {
+          captured.where.push(condition);
+          return {
+            orderBy: vi.fn((...args: unknown[]) => {
+              captured.orderBy.push(args);
+              return { limit: vi.fn().mockResolvedValue(result) };
+            }),
+          };
+        });
+        vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where, leftJoin: vi.fn().mockReturnValue({ where }) }) } as never);
+      }
+      return captured;
+    }
+
+    it('refuses a preferOrgId outside the caller access with 403 and runs no query', async () => {
+      partnerCaller();
+
+      const res = await app.request(`/search?q=srv-02&preferOrgId=${FOREIGN}`);
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed preferOrgId with 400', async () => {
+      partnerCaller();
+
+      const res = await app.request('/search?q=srv-02&preferOrgId=not-a-uuid');
+
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('ranks the preferred org first in every category without filtering to it', async () => {
+      partnerCaller();
+      const captured = stubCategorySelects();
+
+      const res = await app.request(`/search?q=srv-02&preferOrgId=${ORG_B}`);
+
+      expect(res.status).toBe(200);
+      expect(captured.orderBy).toHaveLength(3);
+      for (const [column, order] of [['devices.orgId', captured.orderBy[0]], ['scripts.orgId', captured.orderBy[1]], ['alerts.orgId', captured.orderBy[2]]] as const) {
+        const leading = text(order![0]);
+        expect(leading).toMatch(/CASE WHEN/);
+        expect(leading).toContain(column);
+        expect(leading).toContain(ORG_B);
+      }
+      // A partner-wide script counts as the preferred org's own.
+      expect(text(captured.orderBy[1]![0])).toContain('organizations.partnerId');
+      // A hint, not a filter: no where clause pins the preferred org.
+      for (const where of captured.where) expect(text(where)).toContain(ORG_A);
+      expect(vi.mocked(eq)).not.toHaveBeenCalledWith('devices.orgId', ORG_B);
+    });
+
+    it('adds no ranking term when there is no preference', async () => {
+      partnerCaller();
+      const captured = stubCategorySelects();
+
+      await app.request('/search?q=srv-02');
+
+      expect(text(captured.orderBy[0]![0])).not.toContain('devices.orgId');
+    });
+
+    it('labels each result with its customer from one name lookup, partner-wide scripts with none', async () => {
+      partnerCaller();
+      stubCategorySelects([
+        [{ id: 'dev-1', orgId: ORG_A, title: 'srv-02', hostname: 'srv-02', status: 'online', lastUser: null }],
+        [{ id: 'script-1', orgId: null, title: 'srv-02 cleanup', description: null }],
+        [{ id: 'alert-1', orgId: ORG_B, title: 'srv-02 down', message: 'x', severity: 'high' }],
+      ]);
+      const orgWhere = vi.fn().mockResolvedValue([
+        { id: ORG_A, name: 'Acme' },
+        { id: ORG_B, name: 'Vega Corp' },
+      ]);
+      vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: orgWhere }) } as never);
+
+      const res = await app.request('/search?q=srv-02');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results).toEqual([
+        expect.objectContaining({ id: 'dev-1', orgId: ORG_A, orgName: 'Acme' }),
+        expect.objectContaining({ id: 'script-1', orgId: null, orgName: null }),
+        expect.objectContaining({ id: 'alert-1', orgId: ORG_B, orgName: 'Vega Corp' }),
+      ]);
+      expect(db.select).toHaveBeenCalledTimes(4);
+      expect(inArray).toHaveBeenCalledWith('organizations.id', [ORG_A, ORG_B]);
+    });
+
+    it('skips the name lookup when nothing matched', async () => {
+      partnerCaller();
+      stubCategorySelects();
+
+      await app.request('/search?q=srv-02');
+
+      expect(db.select).toHaveBeenCalledTimes(3);
     });
   });
 
