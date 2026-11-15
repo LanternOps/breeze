@@ -298,11 +298,12 @@ describe('device commands routes', () => {
     it.each(cases)(
       'queues %s only through the execute gate and dispatcher',
       async (type, payload) => {
-        const deliver = vi.fn(async () => undefined);
+        const command = { id: 'cmd-1', deviceId, type, status: 'pending', createdAt: new Date() };
+        const deliver = vi.fn(async () => ({ ok: true as const, command, delivery: 'delivered', deliverBy: new Date() }));
         dispatchDeviceCommandMock.mockImplementationOnce(async () => ({
           ok: true,
-          command: { id: 'cmd-1', deviceId, type, status: 'pending', createdAt: new Date() },
-          delivery: 'delivered',
+          command,
+          delivery: 'queued_live',
           deliverBy: new Date(),
           deliver,
         }));
@@ -324,10 +325,6 @@ describe('device commands routes', () => {
           userId: 'user-123',
           deferDelivery: true,
         });
-        expect(deliver).not.toHaveBeenCalled();
-        expect(runAfterDbContextCommit).toHaveBeenCalledWith('commands.create.deliver', expect.any(Function));
-        const continuation = vi.mocked(runAfterDbContextCommit).mock.lastCall?.[1];
-        await continuation?.();
         expect(deliver).toHaveBeenCalledOnce();
         const { writeRouteAudit } = await import('../../services/auditEvents');
         expect(writeRouteAudit).toHaveBeenCalledWith(
@@ -339,6 +336,59 @@ describe('device commands routes', () => {
         );
       },
     );
+    it.each(['delivered', 'cancelled', 'queued_live', 'indeterminate'] as const)(
+      'returns and audits the real %s outcome after the transaction commits',
+      async (delivery) => {
+        const events: string[] = [];
+        const command = { id: 'cmd-1', deviceId, type: 'time_resync', status: 'pending', createdAt: new Date() };
+        const deliverBy = new Date();
+        const cancelReason = delivery === 'cancelled' ? 'requester_inactive' : undefined;
+        const deliver = vi.fn(async () => {
+          events.push('deliver');
+          return { ok: true as const, command, delivery, deliverBy, ...(cancelReason ? { cancelReason } : {}) };
+        });
+        vi.mocked(withDbAccessContext).mockImplementationOnce(async (_ctx, fn) => {
+          events.push('begin');
+          const result = await fn();
+          events.push('commit');
+          return result;
+        });
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
+        dispatchDeviceCommandMock.mockImplementationOnce(async () => {
+          events.push('prepare');
+          return { ok: true, command, delivery: 'queued_live', deliverBy, deliver };
+        });
+        vi.mocked(writeRouteAudit).mockImplementationOnce(() => { events.push('audit'); });
+
+        const response = await request('time_resync', {});
+        expect(response.status).toBe(201);
+        expect(await response.json()).toMatchObject({
+          id: command.id, delivery, deliverBy: deliverBy.toISOString(), ...(cancelReason ? { cancelReason } : {}),
+        });
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          details: expect.objectContaining({ delivery, ...(cancelReason ? { cancelReason } : {}) }),
+        }));
+        expect(events).toEqual(['begin', 'prepare', 'commit', 'deliver', 'audit']);
+        expect(deliver).toHaveBeenCalledOnce();
+      },
+    );
+    it('does not deliver or audit when the transaction fails to commit', async () => {
+      const deliver = vi.fn();
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({ id: deviceId, orgId: 'org-123', status: 'online' } as never);
+      dispatchDeviceCommandMock.mockResolvedValueOnce({
+        ok: true,
+        command: { id: 'cmd-1', deviceId, type: 'time_resync', status: 'pending', createdAt: new Date() },
+        delivery: 'queued_live', deliverBy: new Date(), deliver,
+      });
+      vi.mocked(withDbAccessContext).mockImplementationOnce(async (_ctx, fn) => {
+        await fn();
+        throw new Error('commit failed');
+      });
+      const response = await request('time_resync', {});
+      expect(response.status).toBe(500);
+      expect(deliver).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
     it.each(cases)(
       'denies a foreign-org device for %s',
       async (type, payload) => {
