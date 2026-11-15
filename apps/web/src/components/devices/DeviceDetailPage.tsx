@@ -366,6 +366,8 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         type: "device",
         id: device.id,
         hostname: device.hostname,
+        // The badge's label (#11673). Web-only: the API schema strips it.
+        displayName: device.displayName || undefined,
         // Lets the AI store notice that an open chat belongs to another tenant
         // and start a session anchored to THIS device's org instead (#5684).
         orgId: device.orgId || undefined,

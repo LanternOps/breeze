@@ -41,7 +41,7 @@
  * Untrusted text: the instruction is model-written (the grantor approved it)
  * and is sanitised (`sanitizeCheckInInstruction`) before it enters the run's
  * trigger_ref; the run's summary is model output over device data and is
- * sanitised and capped (`cleanText`) before it is posted.
+ * sanitised and capped (`cleanReport`) before it is posted.
  *
  * DB access: every read and write runs in a FRESH system context; every
  * admission and notifyUser call happens outside it (#1105).
@@ -63,7 +63,7 @@ import { AI_AGENT_RUN_SETTLED_STATUSES, type CheckInEvidence } from './checkInTr
 import { GrantInactiveError, resolveGrantCeiling } from './grantAuthority';
 import { isOrgReadableOnThread, nudgeDedupeKey, notifyUser } from './notifyUser';
 import { mobileDeepLink } from './nudgeLinks';
-import { cleanText, SPECIALIST_RESULT_BODY_MAX_CHARS, specialistRunLink } from './specialistResult';
+import { cleanReport, SPECIALIST_RESULT_BODY_MAX_CHARS, specialistRunLink } from './specialistResult';
 
 /** Code points of the instruction shown in the post / bell title. */
 const TITLE_INSTRUCTION_CHARS = 80;
@@ -305,11 +305,11 @@ export type CheckInRunPostOutcome = 'posted' | 'already' | 'not_check_in' | 'not
 /** The status a did-not-finish post names when the run row is gone. */
 const RUN_UNAVAILABLE_STATUS = 'unavailable';
 
-/** The answer body: the run's summary, sanitised and capped, plus a pending-approval line. */
+/** The answer body: the run's summary, sanitised and capped at a paragraph boundary first, plus a pending-approval line. */
 export function checkInRunResultBody(run: { status: string; summary: string | null }): string {
   const waiting = run.status === 'awaiting_approval' ? ' A step I proposed is waiting for your approval.' : '';
   const room = SPECIALIST_RESULT_BODY_MAX_CHARS - Array.from(waiting).length;
-  const summary = run.summary ? cleanText(run.summary, room) : '';
+  const summary = run.summary ? cleanReport(run.summary, room) : '';
   return `${summary || 'I checked and found nothing to report.'}${waiting}`;
 }
 

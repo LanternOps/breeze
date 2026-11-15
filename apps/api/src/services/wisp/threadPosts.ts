@@ -66,6 +66,23 @@ export function couldntLookDedupeKey(grantId: string): string {
   return `${COULDNT_LOOK_KEY_PREFIX}${grantId}`;
 }
 
+const SPECIALIST_RESULT_KEY_PREFIX = 'wisp.specialist_result:';
+
+/** A settled specialist run's report post: one per (run, status). */
+export function specialistResultDedupeKey(runId: string, status: string): string {
+  return `${SPECIALIST_RESULT_KEY_PREFIX}${runId}:${status}`;
+}
+
+/**
+ * Whether a post is a specialist run's report (#11673): its body is the run's
+ * own summary, which the model writes in markdown, so the timeline marks it
+ * for the web's safe markdown subset. A step outcome (device output) and every
+ * other post stay literal text.
+ */
+export function isSpecialistReportPost(kind: string, dedupeKey: string | null): boolean {
+  return kind === 'specialist_result' && dedupeKey !== null && dedupeKey.startsWith(SPECIALIST_RESULT_KEY_PREFIX);
+}
+
 export type FirstLookPostTimes = { firstLookAt: string | null; couldntLookAt: string | null };
 
 /**
