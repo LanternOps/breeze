@@ -946,6 +946,12 @@
       "runNow": "Jetzt ausführen",
       "runNowMessage": "Führe die Nachkontrolle jetzt durch",
       "scheduledAt": "Wisp prüft um {{time}} erneut",
+      "waitingFor": {
+        "deviceOnline": "Wartet, bis das Gerät online ist · gibt um {{time}} auf",
+        "scriptFinished": "Wartet, bis das Skript fertig ist · gibt um {{time}} auf",
+        "commandFinished": "Wartet, bis der Befehl fertig ist · gibt um {{time}} auf",
+        "runSettled": "Wartet, bis der Lauf fertig ist · gibt um {{time}} auf"
+      },
       "cancel": "Nachkontrolle abbrechen",
       "cancelled": "Nachkontrolle abgebrochen",
       "cancelFailed": "Die Nachkontrolle konnte nicht abgebrochen werden."

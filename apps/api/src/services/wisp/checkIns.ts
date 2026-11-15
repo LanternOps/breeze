@@ -13,7 +13,9 @@
  *                          usable → (event rows) decide fire / cancel / skip
  *                          → claim `fire_reason` → notifyUser (which writes
  *                          the `check_in` post and the bell row in one step,
- *                          deduped on `wisp.check_in:<id>`) → compare-and-set
+ *                          deduped on `wisp.check_in:<id>`; the post is in
+ *                          the technician's words, checkInPost.ts, and never
+ *                          carries the instruction, #11675) → compare-and-set
  *                          scheduled → fired → (event path) remove the delayed
  *                          job. In that order so a retry after a failed
  *                          notifyUser still notifies, and a retry after a
@@ -49,10 +51,10 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, count, eq, gt, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import {
   WISP_CHECK_IN_INSTRUCTION_MAX,
+  WISP_CHECK_IN_LABEL_MAX,
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD,
   WISP_CHECK_IN_MIN_DELAY_MINUTES,
-  WISP_CHECK_IN_PENDING_STATE_LINES,
   type WispCheckIn,
   type WispCheckInContext,
   type WispCheckInFireReason,
@@ -74,7 +76,8 @@ import {
   type CheckInEvidence,
   type TriggerGoneReason,
 } from './checkInTriggers';
-import { checkInTitle, fireRunCheckIn } from './checkInRuns';
+import { checkInNotifyPost, checkInPost, checkInRunInstruction, displayText } from './checkInPost';
+import { fireRunCheckIn } from './checkInRuns';
 import { assertWithinCeiling, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { notifyUser } from './notifyUser';
 import { mobileDeepLink } from './nudgeLinks';
@@ -165,6 +168,8 @@ export async function createCheckIn(
     sessionId: string | null;
     dueAt: Date;
     instruction: string;
+    /** #11675: the short line for the technician (flattened to one line here); absent / null = none. */
+    label?: string | null;
     orgId: string | null;
     context: WispCheckInContext | null;
     /** Absent / null = a time check-in. */
@@ -231,6 +236,7 @@ export async function createCheckIn(
         userId: ceiling.grantorUserId,
         dueAt: input.dueAt,
         instruction: input.instruction,
+        label: displayText(input.label ?? null, WISP_CHECK_IN_LABEL_MAX),
         context: input.context,
         status: 'scheduled',
         jobId: checkInJobId(id),
@@ -382,22 +388,6 @@ export async function claimCheckInFire(checkInId: string, reason: WispCheckInFir
   return claimed.length > 0;
 }
 
-/** `HH:MM UTC`; a deadline post is written at (or just after) that time, so the date is not needed. */
-function utcClock(at: Date): string {
-  return `${at.toISOString().slice(11, 16)} UTC`;
-}
-
-/**
- * The post / bell body for a fire: the instruction, or for a `deadline` fire
- * what did not happen by the due time first ("Did not happen by 15:40 UTC:
- * the device is still offline. <instruction>"). Built from the row alone, so
- * a re-fire of a claimed row (fireCheckIn) writes the same body.
- */
-export function checkInPostBody(row: Pick<WispCheckInRow, 'instruction' | 'triggerKind' | 'dueAt'>, reason: WispCheckInFireReason): string {
-  if (reason !== 'deadline' || row.triggerKind === 'time') return row.instruction;
-  return `Did not happen by ${utcClock(row.dueAt)}: ${WISP_CHECK_IN_PENDING_STATE_LINES[row.triggerKind]}. ${row.instruction}`;
-}
-
 type FireRead = {
   row: WispCheckInRow;
   threadGrantId: string | null;
@@ -416,7 +406,7 @@ function unusableReason(read: FireRead, now: Date): CheckInCancelReason | null {
 }
 
 type EventDecision =
-  | { kind: 'fire'; reason: WispCheckInFireReason; evidence: CheckInEvidence | null }
+  | { kind: 'fire'; reason: WispCheckInFireReason; evidence: CheckInEvidence | null; subjectName: string | null }
   | { kind: 'cancel'; reason: CheckInCancelReason }
   | { kind: 'skip' };
 
@@ -463,8 +453,10 @@ async function decideEventFire(read: FireRead, path: CheckInFirePath, now: Date)
   if (gone) return { kind: 'cancel', reason: gone };
   // W07: what the state showed, for a run check-in's assessment (null when it did not hold).
   const evidence = condition.met ? condition.evidence : null;
-  if (claimed !== null) return { kind: 'fire', reason: claimed, evidence };
-  return { kind: 'fire', reason: condition.met ? 'event' : 'deadline', evidence };
+  // #11675: the post's title names the subject, read here inside the live ceiling.
+  const subjectName = subject.name;
+  if (claimed !== null) return { kind: 'fire', reason: claimed, evidence, subjectName };
+  return { kind: 'fire', reason: condition.met ? 'event' : 'deadline', evidence, subjectName };
 }
 
 /**
@@ -522,6 +514,7 @@ export async function fireCheckIn(
 
   let reason: WispCheckInFireReason = 'due';
   let evidence: CheckInEvidence | null = null;
+  let subjectName: string | null = null;
   if (row.triggerKind !== 'time') {
     const decision = await decideEventFire(read, path, now);
     if (decision.kind === 'skip') return 'skipped';
@@ -533,6 +526,7 @@ export async function fireCheckIn(
     }
     reason = decision.reason;
     evidence = decision.evidence;
+    subjectName = decision.subjectName;
   }
 
   if (!(await claimCheckInFire(checkInId, reason))) return 'skipped';
@@ -543,7 +537,8 @@ export async function fireCheckIn(
       currentRevisionId: read.grantRevisionId,
       fireReason: reason,
       evidence,
-      postBody: checkInPostBody(row, reason),
+      runInstruction: checkInRunInstruction(row, reason),
+      post: checkInPost(row, reason, subjectName),
       now,
     });
     if (outcome === 'skipped') return 'skipped';
@@ -551,6 +546,9 @@ export async function fireCheckIn(
     return outcome;
   }
 
+  // #11675: the technician's post, built from the trigger and the label. The
+  // instruction is Wisp's note to itself and reaches only the next turn.
+  const post = checkInNotifyPost(row, reason, subjectName);
   await notifyUser({
     category: 'wisp_nudge',
     kind: 'check_in',
@@ -559,8 +557,8 @@ export async function fireCheckIn(
     threadId: row.threadId,
     concernId: null,
     checkIn: { id: row.id, orgId: row.orgId },
-    title: checkInTitle(row.instruction),
-    body: checkInPostBody(row, reason),
+    title: post.title,
+    body: post.body,
     deepLink: mobileDeepLink(row.threadId, null),
   });
 
@@ -776,6 +774,7 @@ export function toCheckInDto(row: WispCheckInRow): WispCheckIn {
     status: row.status,
     dueAt: row.dueAt.toISOString(),
     instruction: row.instruction,
+    label: row.label ?? null,
     subject: row.context?.subject ?? null,
     firedAt: row.firedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),

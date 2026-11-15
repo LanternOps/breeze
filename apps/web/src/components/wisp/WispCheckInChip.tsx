@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { Clock, X } from 'lucide-react';
-import type { WispCheckIn } from '@breeze/shared';
+import type { WispCheckIn, WispCheckInTriggerEvent } from '@breeze/shared';
 
 const TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
 const DAY_AND_TIME = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -15,11 +15,24 @@ function dueLabel(dueAt: string, now: Date): string {
   return due.toDateString() === now.toDateString() ? TIME.format(due) : DAY_AND_TIME.format(due);
 }
 
+/** What an event check-in waits for (#11675): its chip names the trigger, and `dueAt` is when it gives up. */
+const WAITING_FOR_KEY: Readonly<Record<WispCheckInTriggerEvent, string>> = {
+  device_online: 'wisp.checkIn.waitingFor.deviceOnline',
+  script_finished: 'wisp.checkIn.waitingFor.scriptFinished',
+  command_finished: 'wisp.checkIn.waitingFor.commandFinished',
+  run_settled: 'wisp.checkIn.waitingFor.runSettled',
+};
+
 /**
  * Wisp check-in timers W05 (#10996, spec §5): "Wisp will check back at 14:32"
  * under the last turn, one row per `scheduled` check-in, each with a cancel ×.
  * Fired, consumed and cancelled rows are not timers any more; nothing renders
  * when no row is scheduled.
+ *
+ * An event check-in (#11675) says what it waits for and that `dueAt` is its
+ * deadline: "Waiting for the device to come online · gives up 15:30". The
+ * tooltip is the `label` Wisp wrote for the technician, never the instruction
+ * (Wisp's note to itself).
  */
 export default function WispCheckInChip({
   checkIns,
@@ -39,11 +52,15 @@ export default function WispCheckInChip({
           key={checkIn.id}
           data-testid="wisp-check-in-chip"
           data-check-in-id={checkIn.id}
-          title={checkIn.instruction}
+          title={checkIn.label ?? undefined}
           className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 py-0.5 pl-2.5 pr-1 text-xs text-muted-foreground"
         >
           <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
-          <span>{t('wisp.checkIn.scheduledAt', { time: dueLabel(checkIn.dueAt, now) })}</span>
+          <span>
+            {checkIn.trigger
+              ? t(WAITING_FOR_KEY[checkIn.trigger.kind], { time: dueLabel(checkIn.dueAt, now) })
+              : t('wisp.checkIn.scheduledAt', { time: dueLabel(checkIn.dueAt, now) })}
+          </span>
           <button
             type="button"
             data-testid="wisp-check-in-cancel"

@@ -2,7 +2,9 @@
  * Wisp check-in timers (feature #10991): Wisp schedules its own follow-up on
  * its thread. When the timer fires the grantor is notified, a `check_in` post
  * lands on the thread, and the next turn in that thread reaches the model with
- * the check-in's instruction prepended.
+ * the check-in's instruction prepended. The post is written for the technician
+ * (built from the trigger and the `label`); the instruction is Wisp's note to
+ * itself and is never posted (#11675).
  *
  * `WISP_CHECK_IN_STATUSES` mirrors the `wisp_check_ins_status_chk` CHECK and
  * the limits below mirror `wisp_check_ins_instruction_len_chk` /
@@ -44,6 +46,12 @@ export const WISP_CHECK_IN_MIN_DELAY_MINUTES = 1;
 export const WISP_CHECK_IN_MAX_DELAY_MINUTES = 10_080;
 /** Longest instruction, in characters (code points; `char_length` in SQL). */
 export const WISP_CHECK_IN_INSTRUCTION_MAX = 1000;
+/**
+ * Longest `label`, in characters (`wisp_check_ins_label_len_chk`, #11675): the
+ * short line written for the technician (the post title, the chip), as
+ * opposed to the instruction Wisp follows when the check-in fires.
+ */
+export const WISP_CHECK_IN_LABEL_MAX = 120;
 /** Most `scheduled` + `running` check-ins one thread may hold at once. */
 export const WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD = 5;
 /** Most `fired` check-ins prepended to (and consumed by) one turn, oldest first. */
@@ -91,7 +99,10 @@ export type WispCheckIn = {
   threadId: string;
   status: WispCheckInStatus;
   dueAt: string; // ISO
+  /** Wisp's note to itself: what to do when it fires. Model-facing; never posted to the technician (#11675). */
   instruction: string;
+  /** #11675: a short line for the technician (post title, chip tooltip); null when Wisp gave none. */
+  label: string | null;
   subject: { kind: WispEntityKind; id: string } | null;
   firedAt: string | null; // ISO
   createdAt: string; // ISO

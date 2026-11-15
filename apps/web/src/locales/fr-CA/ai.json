@@ -946,6 +946,12 @@
       "runNow": "Exécuter maintenant",
       "runNowMessage": "Lance le suivi planifié",
       "scheduledAt": "Wisp fera un suivi à {{time}}",
+      "waitingFor": {
+        "deviceOnline": "En attente de la connexion de l'appareil · abandonne à {{time}}",
+        "scriptFinished": "En attente de la fin du script · abandonne à {{time}}",
+        "commandFinished": "En attente de la fin de la commande · abandonne à {{time}}",
+        "runSettled": "En attente de la fin de l'exécution · abandonne à {{time}}"
+      },
       "cancel": "Annuler le suivi planifié",
       "cancelled": "Suivi planifié annulé",
       "cancelFailed": "Impossible d’annuler le suivi planifié."

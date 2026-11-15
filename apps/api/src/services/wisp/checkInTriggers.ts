@@ -32,7 +32,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { deviceCommands, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
-import { scriptExecutions } from '../../db/schema/scripts';
+import { scriptExecutions, scripts } from '../../db/schema/scripts';
 import type { WispCheckInRow } from '../../db/schema/wispCheckIns';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
 import { assertWithinCeiling, CeilingViolationError, type GrantCeiling } from './grantAuthority';
@@ -98,7 +98,28 @@ export type TriggerSubject = {
   exitCode: number | null;
   output: string | null;
   lastSeenAt: Date | null;
+  /**
+   * What the technician calls it, for the fired post's title (#11675): the
+   * device's display name or hostname, `<script> on <device>`, `<command type>
+   * on <device>`, or the run's device. Raw, agent- or admin-written text: the
+   * post sanitises and caps it (checkInPost.ts). null when unknown.
+   */
+  name: string | null;
 };
+
+/** The device as the UI names it: its display name, else its hostname. */
+function deviceName(d: { displayName: string | null; hostname: string | null } | null | undefined): string | null {
+  if (!d) return null;
+  const display = d.displayName?.trim();
+  return display ? display : (d.hostname?.trim() || null);
+}
+
+/** `<what> on <device>`, or whichever half is known. */
+function onDevice(what: string | null, device: string | null): string | null {
+  const w = what?.trim() || null;
+  if (w && device) return `${w} on ${device}`;
+  return w ?? device;
+}
 
 function sys<T>(fn: () => Promise<T>, label: string): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
@@ -120,13 +141,24 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
     switch (kind) {
       case 'device_online': {
         const [d] = await db
-          .select({ orgId: devices.orgId, partnerId: organizations.partnerId, siteId: devices.siteId, status: devices.status, lastSeenAt: devices.lastSeenAt })
+          .select({
+            orgId: devices.orgId,
+            partnerId: organizations.partnerId,
+            siteId: devices.siteId,
+            status: devices.status,
+            lastSeenAt: devices.lastSeenAt,
+            displayName: devices.displayName,
+            hostname: devices.hostname,
+          })
           .from(devices)
           .innerJoin(organizations, eq(organizations.id, devices.orgId))
           .where(eq(devices.id, subjectId))
           .limit(1);
         if (!d) return null;
-        return { kind, orgId: d.orgId, partnerId: d.partnerId, siteId: d.siteId, status: d.status, at: d.lastSeenAt, exitCode: null, output: null, lastSeenAt: d.lastSeenAt };
+        return {
+          kind, orgId: d.orgId, partnerId: d.partnerId, siteId: d.siteId, status: d.status, at: d.lastSeenAt,
+          exitCode: null, output: null, lastSeenAt: d.lastSeenAt, name: deviceName(d),
+        };
       }
       case 'script_finished': {
         const [s] = await db
@@ -139,10 +171,14 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
             exitCode: scriptExecutions.exitCode,
             stdout: scriptExecutions.stdout,
             stderr: scriptExecutions.stderr,
+            scriptName: scripts.name,
+            displayName: devices.displayName,
+            hostname: devices.hostname,
           })
           .from(scriptExecutions)
           .innerJoin(organizations, eq(organizations.id, scriptExecutions.orgId))
           .leftJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+          .leftJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
           .where(eq(scriptExecutions.id, subjectId))
           .limit(1);
         if (!s) return null;
@@ -151,6 +187,7 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
         return {
           kind, orgId: s.orgId, partnerId: s.partnerId, siteId: s.siteId ?? null, status: s.status, at: s.completedAt,
           exitCode: s.exitCode, output: output ? output.slice(0, OUTPUT_READ_MAX) : null, lastSeenAt: null,
+          name: onDevice(s.scriptName, deviceName(s)),
         };
       }
       case 'command_finished': {
@@ -162,6 +199,9 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
             status: deviceCommands.status,
             completedAt: deviceCommands.completedAt,
             result: deviceCommands.result,
+            type: deviceCommands.type,
+            displayName: devices.displayName,
+            hostname: devices.hostname,
           })
           .from(deviceCommands)
           .innerJoin(devices, eq(devices.id, deviceCommands.deviceId))
@@ -169,18 +209,32 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
           .where(eq(deviceCommands.id, subjectId))
           .limit(1);
         if (!c) return null;
-        return { kind, orgId: c.orgId, partnerId: c.partnerId, siteId: c.siteId, status: c.status, at: c.completedAt, exitCode: exitCodeOf(c.result), output: null, lastSeenAt: null };
+        return {
+          kind, orgId: c.orgId, partnerId: c.partnerId, siteId: c.siteId, status: c.status, at: c.completedAt,
+          exitCode: exitCodeOf(c.result), output: null, lastSeenAt: null, name: onDevice(c.type, deviceName(c)),
+        };
       }
       case 'run_settled': {
         const [r] = await db
-          .select({ orgId: aiAgentRuns.orgId, partnerId: organizations.partnerId, siteId: devices.siteId, status: aiAgentRuns.status, finishedAt: aiAgentRuns.finishedAt })
+          .select({
+            orgId: aiAgentRuns.orgId,
+            partnerId: organizations.partnerId,
+            siteId: devices.siteId,
+            status: aiAgentRuns.status,
+            finishedAt: aiAgentRuns.finishedAt,
+            displayName: devices.displayName,
+            hostname: devices.hostname,
+          })
           .from(aiAgentRuns)
           .innerJoin(organizations, eq(organizations.id, aiAgentRuns.orgId))
           .leftJoin(devices, eq(devices.id, aiAgentRuns.deviceId))
           .where(eq(aiAgentRuns.id, subjectId))
           .limit(1);
         if (!r) return null;
-        return { kind, orgId: r.orgId, partnerId: r.partnerId, siteId: r.siteId ?? null, status: r.status, at: r.finishedAt, exitCode: null, output: null, lastSeenAt: null };
+        return {
+          kind, orgId: r.orgId, partnerId: r.partnerId, siteId: r.siteId ?? null, status: r.status, at: r.finishedAt,
+          exitCode: null, output: null, lastSeenAt: null, name: deviceName(r),
+        };
       }
     }
   }, `wisp-check-in-trigger-subject-${kind}`);

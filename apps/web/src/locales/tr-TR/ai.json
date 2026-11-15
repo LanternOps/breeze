@@ -946,6 +946,12 @@
       "runNow": "Şimdi çalıştır",
       "runNowMessage": "Planlı kontrole devam et",
       "scheduledAt": "Wisp yeniden kontrol edecek: {{time}}",
+      "waitingFor": {
+        "deviceOnline": "Cihazın çevrimiçi olması bekleniyor · {{time}} itibarıyla vazgeçer",
+        "scriptFinished": "Betiğin bitmesi bekleniyor · {{time}} itibarıyla vazgeçer",
+        "commandFinished": "Komutun bitmesi bekleniyor · {{time}} itibarıyla vazgeçer",
+        "runSettled": "Çalıştırmanın bitmesi bekleniyor · {{time}} itibarıyla vazgeçer"
+      },
       "cancel": "Planlı kontrolü iptal et",
       "cancelled": "Planlı kontrol iptal edildi",
       "cancelFailed": "Planlı kontrol iptal edilemedi."

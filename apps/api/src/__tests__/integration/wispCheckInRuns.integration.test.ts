@@ -82,6 +82,8 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const MIN = 60_000;
 const DAY = 86_400_000;
 const INSTRUCTION = 'Check whether the patch scan on WS-01 finished and report the missing updates.';
+/** #11675: what a time check-in's post says happened; the instruction is never posted. */
+const TIME_NOTICE = "Wisp's check-in is due.";
 
 beforeEach(() => {
   vi.mocked(notifyUser).mockClear();
@@ -339,7 +341,7 @@ describe('firing a run check-in', () => {
     const [post] = await postsFor(fx.thread.id);
     expect(post).toMatchObject({
       kind: 'check_in',
-      body: `I couldn't check on my own: today's budget is spent. Run it now? ${INSTRUCTION}`,
+      body: `${TIME_NOTICE} I couldn't check on my own: today's budget is spent. Run it now?`,
       dedupeKey: `wisp.check_in:${row.id}`,
     });
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', runId: null, firedAt: now });
@@ -352,7 +354,7 @@ describe('firing a run check-in', () => {
     await makeDue(row.id, new Date());
     expect(await fireCheckIn(row.id, new Date())).toBe('fired');
     expect((await postsFor(fx.thread.id))[0]!.body).toBe(
-      `I couldn't check on my own: the grant changed since this was scheduled. Run it now? ${INSTRUCTION}`,
+      `${TIME_NOTICE} I couldn't check on my own: the grant changed since this was scheduled. Run it now?`,
     );
     expect(await runsFor(fx, row.id)).toHaveLength(0);
   });
@@ -381,7 +383,7 @@ describe('firing a run check-in', () => {
     const row = await scheduleRun(fx, new Date());
     await makeDue(row.id, new Date());
     expect(await fireCheckIn(row.id, new Date())).toBe('fired');
-    expect((await postsFor(fx.thread.id))[0]!.body).toBe(`I couldn't check on my own: the check could not start. Run it now? ${INSTRUCTION}`);
+    expect((await postsFor(fx.thread.id))[0]!.body).toBe(`${TIME_NOTICE} I couldn't check on my own: the check could not start. Run it now?`);
   });
 
   // #11610: an agent-readiness skip names what to fix instead of the generic text.
@@ -392,7 +394,7 @@ describe('firing a run check-in', () => {
     await makeDue(row.id, new Date());
     expect(await fireCheckIn(row.id, new Date())).toBe('fired');
     expect((await postsFor(fx.thread.id))[0]!.body).toBe(
-      `I couldn't check on my own: no Triage agent is switched on for this organization. Run it now? ${INSTRUCTION}`,
+      `${TIME_NOTICE} I couldn't check on my own: no Triage agent is switched on for this organization. Run it now?`,
     );
   });
 
@@ -422,7 +424,7 @@ describe('firing a run check-in', () => {
     expect(await fireCheckIn(row.id, new Date())).toBe('fired');
     expect(h.enqueueAssessment).not.toHaveBeenCalled();
     expect((await postsFor(fx.thread.id))[0]!.body).toBe(
-      `I couldn't check on my own: the grant changed since this was scheduled. Run it now? ${INSTRUCTION}`,
+      `${TIME_NOTICE} I couldn't check on my own: the grant changed since this was scheduled. Run it now?`,
     );
   });
 
@@ -467,7 +469,7 @@ describe('posting the settled run', () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({
       kind: 'check_in',
-      title: `Checked: ${INSTRUCTION.slice(0, 80)}`,
+      title: 'Wisp checked in',
       body: 'The scan finished: KB5031 and KB5032 are missing.',
       link: `/ai-agents/runs/${runId}`,
       dedupeKey: `wisp.check_in:${row.id}`,
@@ -511,7 +513,7 @@ describe('posting the settled run', () => {
     const { row, runId } = await firedRunning(fx);
     await setRun(runId, { status: 'failed', errorCode: 'wall_clock_exceeded', finishedAt: new Date() });
     expect(await postCheckInRunResult(runId)).toBe('posted');
-    expect((await postsFor(fx.thread.id))[0]!.body).toBe(`My check didn't finish (failed). Run it now? ${INSTRUCTION}`);
+    expect((await postsFor(fx.thread.id))[0]!.body).toBe(`${TIME_NOTICE} My check didn't finish (failed). Run it now?`);
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', runId });
     const fired = await withSystemDbAccessContext(() => loadFiredCheckIns(fx.grantId, fx.user.id));
     expect(fired.map((f) => f.id)).toEqual([row.id]);
@@ -568,8 +570,8 @@ describe('posting the settled run', () => {
     expect(await reconcileRunningCheckIns(new Date())).toEqual({ posted: 2 });
     const bodies = (await postsFor(fx.thread.id)).map((p) => p.body).sort();
     expect(bodies).toEqual([
-      `My check didn't finish (queued). Run it now? ${INSTRUCTION}`,
-      `My check didn't finish (unavailable). Run it now? ${INSTRUCTION}`,
+      `${TIME_NOTICE} My check didn't finish (queued). Run it now?`,
+      `${TIME_NOTICE} My check didn't finish (unavailable). Run it now?`,
     ]);
     expect((await rowOf(stuck.row.id)).status).toBe('fired');
     expect((await rowOf(gone.row.id)).status).toBe('fired');
@@ -585,7 +587,7 @@ describe('posting the settled run', () => {
     expect(await reconcileRunningCheckIns(new Date())).toEqual({ posted: 0 });
     h.wispEnabled.mockReturnValue(true);
     expect(await reconcileRunningCheckIns(new Date())).toEqual({ posted: 1 });
-    expect((await postsFor(fx.thread.id)).map((p) => p.body)).toEqual([`My check didn't finish (skipped). Run it now? ${INSTRUCTION}`]);
+    expect((await postsFor(fx.thread.id)).map((p) => p.body)).toEqual([`${TIME_NOTICE} My check didn't finish (skipped). Run it now?`]);
     expect((await rowOf(b.row.id)).status).toBe('running');
   });
 });

@@ -65,6 +65,12 @@ export const wispCheckIns = pgTable('wisp_check_ins', {
   dueAt: timestamp('due_at', { withTimezone: true }).notNull(),
   /** What Wisp should do when it fires (1–1000 chars); written by the model. */
   instruction: text('instruction').notNull(),
+  /**
+   * #11675 (migrations/2027-01-24-210000-wisp-check-ins-label.sql): the short
+   * line the technician reads (1–120 chars, one line); written by the model.
+   * Null when Wisp gave none, and on rows scheduled before the column existed.
+   */
+  label: text('label'),
   context: jsonb('context').$type<WispCheckInContext>(),
   status: text('status').$type<WispCheckInStatus>().notNull().default('scheduled'),
   firedAt: timestamp('fired_at', { withTimezone: true }),
@@ -131,6 +137,7 @@ export const wispCheckIns = pgTable('wisp_check_ins', {
   ),
   runIdModeChk: check('wisp_check_ins_run_id_mode_chk', sql`${t.runId} IS NULL OR ${t.mode} = 'run'`),
   instructionLenChk: check('wisp_check_ins_instruction_len_chk', sql`char_length(${t.instruction}) BETWEEN 1 AND 1000`),
+  labelLenChk: check('wisp_check_ins_label_len_chk', sql`${t.label} IS NULL OR char_length(${t.label}) BETWEEN 1 AND 120`),
   dueWindowChk: check(
     'wisp_check_ins_due_window_chk',
     sql`${t.dueAt} >= ${t.createdAt} + interval '1 minute' AND ${t.dueAt} <= ${t.createdAt} + interval '7 days'`,

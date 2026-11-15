@@ -2,7 +2,7 @@
   "id": "check-in-post-reads-for-human",
   "title": "A fired device-online check-in posts a line written for the technician, not Wisp's note to itself",
   "issue": 11675,
-  "expect": "known-red",
+  "expect": "pass",
   "door": "wisp",
   "steps": [
     {

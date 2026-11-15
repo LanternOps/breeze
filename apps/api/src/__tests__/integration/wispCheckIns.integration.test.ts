@@ -61,6 +61,7 @@ import {
   threadForGrant,
   toCheckInDto,
 } from '../../services/wisp/checkIns';
+import { CHECK_IN_REPLY_LINE } from '../../services/wisp/checkInPost';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -112,12 +113,13 @@ async function seed() {
 
 type Fx = Awaited<ReturnType<typeof seed>>;
 
-const create = (fx: Fx, now: Date, o: { dueInMs?: number; instruction?: string; orgId?: string | null } = {}) =>
+const create = (fx: Fx, now: Date, o: { dueInMs?: number; instruction?: string; label?: string | null; orgId?: string | null } = {}) =>
   createCheckIn(fx.ceiling, {
     threadId: fx.thread.id,
     sessionId: randomUUID(),
     dueAt: new Date(now.getTime() + (o.dueInMs ?? 10 * MIN)),
     instruction: o.instruction ?? 'Verify no msiexec processes remain on the device; if clear, rerun the memory report.',
+    label: o.label ?? null,
     orgId: o.orgId === undefined ? fx.org.id : o.orgId,
     context: { subject: { kind: 'device', id: randomUUID() } },
   }, now);
@@ -267,9 +269,10 @@ describe('fireCheckIn', () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({
       kind: 'check_in', orgId: fx.org.id, dedupeKey: `wisp.check_in:${row.id}`,
-      link: `/ai/wisp/thread/${fx.thread.id}#checkin=${row.id}`, body: row.instruction,
+      link: `/ai/wisp/thread/${fx.thread.id}#checkin=${row.id}`, title: 'Check-in from Wisp', body: `Wisp's check-in is due. ${CHECK_IN_REPLY_LINE}`,
     });
-    expect(posts[0]!.title.startsWith('Check-in due: ')).toBe(true);
+    // #11675: the instruction is Wisp's note to itself; it is never posted.
+    expect(posts[0]!.body).not.toContain(row.instruction);
     const notes = await notificationsFor(fx.user.id);
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatchObject({ dedupeKey: `wisp.check_in:${row.id}`, orgId: fx.org.id });
@@ -319,14 +322,16 @@ describe('fireCheckIn', () => {
     expect(vi.mocked(notifyUser)).not.toHaveBeenCalled();
   });
 
-  runDb('the title is "Check-in due: " + the first 80 code points of the instruction', async () => {
+  runDb('#11675: a time check-in posts the label it was scheduled with (one line), never the instruction', async () => {
     const fx = await seed();
-    const instruction = '🙂'.repeat(100);
-    const row = await create(fx, new Date(), { instruction });
+    const instruction = 'Tell the technician right away. Read-only: confirm FS01 has free disk space.';
+    const row = await create(fx, new Date(), { instruction, label: 'FS01 disk\nspace re-check' });
+    expect(row.label).toBe('FS01 disk space re-check');
     await fireCheckIn(row.id);
     const [post] = await postsFor(fx.thread.id);
-    expect(post!.title).toBe(`Check-in due: ${'🙂'.repeat(80)}`);
-    expect(post!.body).toBe(instruction);
+    expect(post!.title).toBe('Check-in: FS01 disk space re-check');
+    expect(post!.body).toBe(`Wisp's check-in is due: FS01 disk space re-check. ${CHECK_IN_REPLY_LINE}`);
+    expect(post!.body).not.toContain(instruction);
   });
 
   runDb('a second fireCheckIn is skipped and writes nothing', async () => {
