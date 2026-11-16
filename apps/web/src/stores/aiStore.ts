@@ -11,6 +11,14 @@ import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type Att
 import { extractApiError } from '@/lib/apiError';
 import { classifyHttpFailure, isRetryableAiError, retryModeFor, type AiErrorCode, type AiRetryMode, type AiRetryTarget } from '@/lib/aiErrors';
 import { i18n } from '@/lib/i18n';
+import {
+  closeAiNotification,
+  noteAiStreamFailure,
+  noteAiTurnEvent,
+  resetAiTurnNotify,
+  type AiNotifyContext,
+  type AiNotifySurface,
+} from '@/lib/aiNotifications';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { WISP_GRANT_UNUSABLE, isResumableWispSession, wispSessionOrgId } from '@/lib/wispSession';
 import { showToast } from '@/components/shared/Toast';
@@ -555,6 +563,44 @@ function topologyFieldsOf(session: Record<string, unknown> | undefined) {
 type AiSet = (partial: Partial<AiState> | ((s: AiState) => Partial<AiState>)) => void;
 type AiGet = () => AiState;
 
+const SIDEBAR_SURFACE: AiNotifySurface = { kind: 'sidebar' };
+
+/**
+ * #9429: run one notification step; a notification problem must never reach
+ * a stream loop (the turn would stop rendering).
+ */
+function notifySafely(step: () => void): void {
+  try {
+    step();
+  } catch (err) {
+    console.warn('[AiStore] Chat notification step failed:', err);
+  }
+}
+
+/**
+ * #9429: the side panel's notification context. A Wisp thread renders on its
+ * own page without the panel, so it counts as showing the chat (only a hidden
+ * or unfocused page notifies for it). A click opens the panel.
+ */
+function sidebarNotifyContext(get: AiGet): AiNotifyContext {
+  const s = get();
+  return {
+    sessionId: s.sessionId,
+    surfaceVisible: s.isOpen || s.wisp !== null,
+    onOpen: () => get().open(),
+  };
+}
+
+/** #9429: hand one applied stream event (send or attach) to the notification tracker. */
+function notifySidebarEvent(get: AiGet, event: AiStreamEvent): void {
+  notifySafely(() => noteAiTurnEvent(event.type, SIDEBAR_SURFACE, sidebarNotifyContext(get)));
+}
+
+/** #9429: the user is looking at the panel's conversation: drop its notifications. */
+function closeSidebarNotifications(sessionId: string | null): void {
+  notifySafely(() => closeAiNotification(SIDEBAR_SURFACE, sessionId));
+}
+
 /** Per-attempt bookkeeping of one attach (one GET …/stream). */
 interface AttachAttempt {
   /** False once a newer send/rebind/release/attach took the store over. */
@@ -576,6 +622,8 @@ function applyAttachEvent(set: AiSet, get: AiGet, event: AiStreamEvent, attempt:
     return false;
   }
   attempt.currentAssistantId = processStreamEvent(event, set, get, attempt.currentAssistantId);
+  // #9429: a topology investigation turn belongs to its own panel: no notifications.
+  if (!attempt.topology) notifySidebarEvent(get, event);
   // Same rule as a topology send: the events that normally withdraw an approval
   // card never reach a topology turn, so the run announcement or the turn's end does.
   if (attempt.topology && (event.type === 'done' || event.type === 'topology_diagnostic_run')) set({ pendingApproval: null });
@@ -635,6 +683,8 @@ function startAttach(
     && get().sessionId === sessionId;
   const topology = get().topologySiteId !== null;
   const filter = topology ? (e: AiStreamEvent) => TOPOLOGY_TURN_EVENTS.has(e.type) : undefined;
+  // #9429: the turn this attach follows starts with no failure reported.
+  if (!topology) notifySafely(() => resetAiTurnNotify(SIDEBAR_SURFACE));
 
   let settleReady!: (r: AttachLoopReady) => void;
   const ready = new Promise<AttachLoopReady>((resolve) => { settleReady = resolve; });
@@ -827,11 +877,13 @@ export const useAiStore = create<AiState>()(
     const opening = !get().isOpen;
     if (opening) {
       import('./helpStore').then(({ useHelpStore }) => useHelpStore.getState().close()).catch((err) => console.warn('[AiStore] Failed to close help panel:', err));
+      closeSidebarNotifications(get().sessionId);
     }
     set({ isOpen: opening });
   },
   open: () => {
     import('./helpStore').then(({ useHelpStore }) => useHelpStore.getState().close()).catch((err) => console.warn('[AiStore] Failed to close help panel:', err));
+    closeSidebarNotifications(get().sessionId);
     set({ isOpen: true });
   },
   close: () => set({ isOpen: false }),
@@ -999,6 +1051,7 @@ export const useAiStore = create<AiState>()(
 
   loadSession: async (sessionId: string) => {
     const ownsSession = claimSessionOwnership();
+    closeSidebarNotifications(sessionId);
     // Another chat's pick must never ride on this chat's next message.
     if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
     set({ isLoading: true, error: null, errorDetail: null, retryTarget: null });
@@ -1164,6 +1217,9 @@ export const useAiStore = create<AiState>()(
     abortCurrentAttach();
     /** False once this stream has been superseded — by a rebind, or a newer send. */
     const ownsStream = () => activeStreamToken === streamToken && get().sessionId === currentSessionId;
+    // #9429: a new turn starts with no failure reported (a route-level stream
+    // failure sends `error` with no `done`).
+    if (!topologyTurn) notifySafely(() => resetAiTurnNotify(SIDEBAR_SURFACE));
     let heldReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
@@ -1354,6 +1410,7 @@ export const useAiStore = create<AiState>()(
               if (!ownsStream()) break;
               if (topologyTurn && !TOPOLOGY_TURN_EVENTS.has(event.type)) continue;
               currentAssistantId = processStreamEvent(event, set, get, currentAssistantId);
+              if (!topologyTurn) notifySidebarEvent(get, event);
               // The tool_result / unattended_release events that normally withdraw
               // an approval card never reach a topology turn: withdraw it when the
               // run is announced or the turn ends (decided elsewhere, or timed out).
@@ -1386,6 +1443,7 @@ export const useAiStore = create<AiState>()(
         isStreaming: false
       });
       rememberFailure('disconnect');
+      if (!topologyTurn) notifySafely(() => noteAiStreamFailure(SIDEBAR_SURFACE, sidebarNotifyContext(get)));
     } finally {
       if (heldReader && currentSendReader === heldReader) currentSendReader = null;
       if (activeStreamToken === streamToken && get().isStreaming) {
