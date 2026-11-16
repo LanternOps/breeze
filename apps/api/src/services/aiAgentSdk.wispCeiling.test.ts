@@ -1140,6 +1140,121 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
 // per_step approval card — keeping Tier 2 and its executing audit row. Every
 // other Tier-2 write, every Tier-3 resolution, a paused session, a plan
 // deviation and a session without a grant keep the approval they had.
+describe('createSessionPreToolUse — device notes skip the per_step card', () => {
+  const approvalCards = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
+    session.eventBus.publish.mock.calls
+      .map((c) => c[0] as { type: string })
+      .filter((e) => e.type === 'approval_required');
+  const NOTE = { deviceId: '00000000-0000-4000-8000-0000000000d1', contextType: 'quirk', summary: 'Display timeout drifts back to 5 min.' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: CEILING, permissionKeys: ['devices:write'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 2, requiresApproval: false, description: 'x' } as any);
+  });
+
+  it.each([
+    ['an ordinary chat', () => makeActiveSession({ approvalMode: 'per_step', wispGrant: null })],
+    ['a Wisp chat', () => wispSession({ approvalMode: 'per_step' })],
+  ] as const)('set_device_context in %s runs with an audit row and no card', async (_label, makeSession) => {
+    const values = mockInsertValues();
+    const session = makeSession();
+
+    const result = await createSessionPreToolUse(session)('set_device_context', NOTE);
+
+    expect(result).toMatchObject({ allowed: true });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'set_device_context', status: 'executing' }));
+    expect(approvalCards(session)).toHaveLength(0);
+    expect(waitForApproval).not.toHaveBeenCalled();
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('is audited with its own method, never as a human decision or a read', async () => {
+    mockInsertValues();
+    // wispSession carries the audit snapshot the post-tool audit needs.
+    const session = wispSession({ approvalMode: 'per_step' });
+
+    expect(await createSessionPreToolUse(session)('set_device_context', NOTE)).toMatchObject({ allowed: true });
+    await createSessionPostToolUse(session)('set_device_context', NOTE, 'Context recorded.', false, 3);
+
+    const auditCall = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'ai.tool.set_device_context');
+    expect(auditCall).toBeDefined();
+    expect((auditCall![1] as any).details).toMatchObject({ approved: false, approvalMethod: 'note_write_auto' });
+  });
+
+  // Only the listed note tools skip it (membership: aiNoteWrites.contract.test.ts).
+  it.each(['registry_operations', 'take_screenshot'])('another Tier-2 device tool (%s) still gets the per_step card', async (toolName) => {
+    mockInsertReturning({ id: `exec-${toolName}` });
+    const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+    const result = await createSessionPreToolUse(session)(toolName, { deviceId: NOTE.deviceId });
+
+    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(approvalCards(session)).toHaveLength(1);
+  });
+
+  it('a paused session still prompts — pause is the hard brake', async () => {
+    mockInsertReturning({ id: 'exec-paused' });
+    const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null, isPaused: true });
+
+    const result = await createSessionPreToolUse(session)('set_device_context', NOTE);
+
+    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(waitForApproval).toHaveBeenCalled();
+  });
+
+  it('an unmatched note during an active plan is a deviation and still prompts', async () => {
+    mockInsertReturning({ id: 'exec-plan' });
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      wispGrant: null,
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'take_screenshot', input: { deviceId: 'd-1' } }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('set_device_context', NOTE);
+
+    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(waitForApproval).toHaveBeenCalled();
+    expect(session.currentPlanStepIndex).toBe(0);
+  });
+
+  // A connected (BYO) tool is someone else's code. One that carries this name
+  // must not inherit the built-in note tool's exemption.
+  it('a tenant tool that shares the name keeps its card', async () => {
+    mockInsertReturning({ id: 'exec-tenant' });
+    vi.mocked(checkPermissionRequirements).mockResolvedValue(null as never);
+    const tenant = makeTenantToolDescriptor({ tier: 2, qualifiedName: 'set_device_context' });
+    const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null, tenantTools: new Map([['set_device_context', tenant]]) });
+
+    const result = await createSessionPreToolUse(session)('set_device_context', NOTE);
+
+    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(waitForApproval).toHaveBeenCalled();
+    expect(approvalCards(session)).toHaveLength(1);
+  });
+
+  it('a Tier-3 resolution under the same tool name still requires a durable approval intent', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'x' } as any);
+    mockInsertReturning({ id: 'exec-t3' });
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-t3', actionName: 'set_device_context' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+    const result = await createSessionPreToolUse(session)('set_device_context', NOTE);
+
+    expect(result).toMatchObject({ allowed: false });
+    expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step card (#10392)', () => {
   const approvalCards = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
     session.eventBus.publish.mock.calls
@@ -1208,16 +1323,11 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
     expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
   });
 
-  // W07 (#11496, #10410): a run check-in spends grant budget unattended when it
-  // fires, so it asks once on a card; a notify one (explicit or default) does not.
-  it('schedule_check_in mode notify runs with no card; mode run (or an unknown mode) keeps the per_step card', async () => {
-    await expectNoCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'notify' });
-    vi.clearAllMocks();
-    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: CEILING, permissionKeys: ['ai_sessions:use'] });
-    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
-    vi.mocked(waitForApproval).mockResolvedValue(false);
-    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 2, requiresApproval: false, description: 'x' } as any);
-    await expectCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'run' });
+  // A run check-in spends grant budget when it fires, but only inside the
+  // grant's budget and the tool's rate limit, on the technician's own thread.
+  // Asking for each one made "check back when it settles" cost a click.
+  it.each(['notify', 'run'])('schedule_check_in mode %s runs with no card', async (mode) => {
+    await expectNoCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode });
   });
 
   it('schedule_check_in with an unrecognised mode keeps the card (any doubt asks)', async () => {
@@ -1464,14 +1574,24 @@ describe('createSessionPreToolUse — grant-level unattended reads (#10973)', ()
   describe('the switch off', () => {
     beforeEach(() => { wisp.enforceWispCeiling.mockResolvedValue(onCeiling(false)); });
 
-    it('a registry read and a device note keep their card', async () => {
-      for (const [tool, input] of [CALLS[0]!, CALLS[2]!]) {
-        mockInsertReturning({ id: `exec-${tool}` });
-        const session = humanSession();
-        expect(await createSessionPreToolUse(session)(tool, input)).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
-        expect(approvalCards(session)).toHaveLength(1);
-        expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
-      }
+    it('a registry read keeps its card', async () => {
+      const [tool, input] = CALLS[0]!;
+      mockInsertReturning({ id: `exec-${tool}` });
+      const session = humanSession();
+      expect(await createSessionPreToolUse(session)(tool, input)).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(approvalCards(session)).toHaveLength(1);
+      expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
+    });
+
+    // A device note no longer depends on the switch: it is an append-only
+    // note in any chat (aiNoteWrites.ts), audited as that, not as an unattended read.
+    it('a device note runs without a card, as a note write', async () => {
+      const [tool, input] = CALLS[2]!;
+      mockInsertValues();
+      const session = humanSession();
+      expect(await createSessionPreToolUse(session)(tool, input)).toMatchObject({ allowed: true });
+      expect(approvalCards(session)).toHaveLength(0);
+      expect(lastGuardrailContext()?.wispUnattendedReads).toBeUndefined();
     });
 
     it('a Security query stays a Tier-3 intent', async () => {

@@ -159,7 +159,7 @@ Unattended reads is a switch on your grant, off by default, under **Budget and c
 - read a registry key (`registry_operations` `read_key`);
 - read a registry value (`registry_operations` `get_value`);
 - query the Windows Security event log, with an optional filter by event ID, level, provider or age (`event_logs_query`);
-- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device.
+- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device. In a chat, saving a note never asks, with or without this switch; the switch decides it for device troubleshooting runs.
 
 Anything else still asks first. That includes every other event log channel, a Security query with a filter outside those four, and every registry write.
 
@@ -206,7 +206,7 @@ A check-in can wait for **a time** or **an event**:
 - **A time.** It fires after the delay Wisp chose.
 - **An event.** It fires when a device comes online, a script or device command finishes, or an agent run settles. Each has a deadline, 24 hours by default and at most 7 days. If the event has not happened by then, the check-in fires anyway and says so, for example "Did not happen by 15:40 UTC: the device is still offline". While it waits, its chip names the event and shows the deadline, for example "Waiting for the device to come online · gives up 3:30 PM". When it fires, Breeze re-reads the device, script, command or run, so a stale event fires nothing. Device commands are checked on Wisp's 5-minute tick only. A check-in whose device, script, command or run is deleted, or moves outside the grant, is cancelled with a reason instead of firing.
 
-By default a check-in only posts a reminder to the thread. A check-in can instead **check on its own**: when it fires, Wisp runs one read-only assessment of one organization under the grant and posts what it found, linked to the run. Scheduling one always asks for approval on a card, because it spends the grant's budget while nobody is watching. If the grant changed since the check-in was scheduled, today's budget is spent or the check cannot start, Wisp runs nothing and posts "I couldn't check on my own: … Run it now?" instead.
+By default a check-in only posts a reminder to the thread. A check-in can instead **check on its own**: when it fires, Wisp runs one read-only assessment of one organization under the grant and posts what it found, linked to the run. Scheduling one does not ask for approval. It runs once, a thread can hold at most five waiting check-ins, and each run counts against the grant's daily budget like any other background work, so a day's budget spent on check-ins pauses Wisp's other background work until 00:00 UTC. If the grant changed since the check-in was scheduled, today's budget is spent or the check cannot start, Wisp runs nothing and posts "I couldn't check on my own: … Run it now?" instead.
 
 ## Memory
 

@@ -47,7 +47,7 @@
  * subject's, else the grant's scope org, else the thread's focus org when the
  * live ceiling holds it (`run_needs_org` otherwise), and that org must be
  * assessable, i.e. reached without a site term (`run_org_not_assessable`).
- * Unlike a notify check-in it keeps its per_step card (selfStateTools.ts).
+ * Like a notify check-in it shows no per_step card (selfStateTools.ts).
  *
  * The per-call ceiling gate (tool allowlist, denied tools, permission) is
  * `createSessionPreToolUse`, which runs before any handler; it is not repeated.

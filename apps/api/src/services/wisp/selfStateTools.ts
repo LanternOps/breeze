@@ -29,17 +29,19 @@
  *                                  others see: it keeps the card. A snooze
  *                                  writes this grant's recipient row and the
  *                                  concern status, never memory.
- *   schedule_check_in 'notify_check_in'
- *                                  a NOTIFY check-in on this grant's own thread
- *                                  (the handler takes the thread from the
- *                                  grant, never from the model): it notifies
- *                                  only the grantor and runs nothing when it
- *                                  fires. `mode: 'run'` (W07 #11496) keeps the
- *                                  card: it runs an assessment that spends
- *                                  grant budget unattended when it fires, the
- *                                  same reason `create_watch` keeps its card.
- *                                  Only a missing or `notify` mode skips it;
- *                                  anything else asks.
+ *   schedule_check_in 'own_check_in'
+ *                                  a check-in on this grant's own thread (the
+ *                                  handler takes the thread from the grant,
+ *                                  never from the model). `notify` tells only
+ *                                  the grantor and runs nothing. `run` (W07
+ *                                  #11496) starts ONE assessment when it
+ *                                  fires; it used to keep the card for that
+ *                                  spend. It no longer does: the spend is
+ *                                  bounded by the grant budget and the tool's
+ *                                  rate limit (aiToolRateLimits.ts), and a
+ *                                  card per "check back later" was the
+ *                                  approval fatigue #3088 measured. A mode
+ *                                  that is neither still asks.
  *   cancel_check_in 'own_thread'   only this grant's own check-ins: the
  *                                  service's UPDATE is keyed on the grant, so
  *                                  another grant's id cancels nothing. No
@@ -58,9 +60,10 @@
  *     org- or partner-owned `concern_outcome` memory block — shared standing
  *     context, the same reason org/partner `remember` keeps its card — and it
  *     closes the concern for every recipient.
- *   - `create_watch`: every watch is a recurring assessment that spends grant
- *     budget — the same reason an auto-admit `launch_specialist` sweep keeps
- *     its card under per_step (#10144).
+ *   - `create_watch`: every watch is a RECURRING assessment that spends grant
+ *     budget on a cadence with no end — the same reason an auto-admit
+ *     `launch_specialist` sweep keeps its card under per_step (#10144). A run
+ *     check-in fires once.
  *   - `confirm_memory` / `retract_memory`: human-only, Tier 3.
  *
  * CONTRACT (wisp/selfStateTools.contract.test.ts): every entry is a
@@ -71,13 +74,13 @@
  * Leaf module — NO imports — so the chat gate can read it without loading the
  * Wisp graph for an ordinary session.
  */
-export type WispSelfStateScope = 'own_memory' | 'adds_row' | 'own_concern' | 'own_thread' | 'notify_check_in';
+export type WispSelfStateScope = 'own_memory' | 'adds_row' | 'own_concern' | 'own_thread' | 'own_check_in';
 
 export const WISP_SELF_STATE_TOOLS: ReadonlyMap<string, WispSelfStateScope> = new Map<string, WispSelfStateScope>([
   ['remember', 'own_memory'],
   ['raise_concern', 'adds_row'],
   ['link_entity', 'adds_row'],
   ['snooze_concern', 'own_concern'],
-  ['schedule_check_in', 'notify_check_in'],
+  ['schedule_check_in', 'own_check_in'],
   ['cancel_check_in', 'own_thread'],
 ]);

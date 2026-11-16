@@ -58,6 +58,7 @@ import type { GrantCeiling } from './wisp/grantAuthority';
 import type { WispCeilingRefusal } from './wisp/chatCeiling';
 // Leaf data module (no imports): loading it never pulls in the Wisp graph.
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
+import { TIER2_NOTE_WRITE_TOOLS } from './aiNoteWrites';
 import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 import {
   STANDING_CHECK_UNAVAILABLE_MESSAGE,
@@ -366,6 +367,7 @@ type ApprovalMethod =
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
   | 'read_only_auto' // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
   | 'wisp_self_state_auto' // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
+  | 'note_write_auto' // append-only Tier-2 note in any chat (aiNoteWrites.ts)
   | 'wisp_unattended_read'; // #10973 one of the four reads under the grant's unattended-reads switch
 const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; method: ApprovalMethod }>();
 
@@ -1300,10 +1302,11 @@ async function wispSelfStateSkipsCard(
     // grant_id), so the only rows it can touch are this grant's own.
     case 'own_thread':
       return true;
-    // W07 (#11496): only a notify check-in is a pure add. A `run` one spends
-    // grant budget unattended when it fires; an unrecognised mode asks too.
-    case 'notify_check_in':
-      return input.mode === undefined || input.mode === 'notify';
+    // A check-in on this grant's own thread. A `run` one spends grant budget
+    // when it fires, but only inside the grant's budget and the tool's rate
+    // limit, so it no longer asks. An unrecognised mode still does.
+    case 'own_check_in':
+      return input.mode === undefined || input.mode === 'notify' || input.mode === 'run';
     case 'own_memory':
       return input.ownerKind === 'user';
     case 'own_concern': {
@@ -1978,8 +1981,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && !session.isPaused
         && !planInFlight
         && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
+      // Append-only notes (aiNoteWrites.ts) skip the card in any chat, with
+      // the read-only path's two carve-outs. A tenant or flow tool that
+      // happens to share the name is someone else's tool and keeps its card.
+      const noteWriteAutoExec = guardrailCheck.tier === 2
+        && TIER2_NOTE_WRITE_TOOLS.has(toolName)
+        && !tenant
+        && !flowTool
+        && !session.isPaused
+        && !planInFlight;
       // #10428 W06: a standing-instruction warning always reaches a human.
-      if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || unattendedRead)) {
+      if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || noteWriteAutoExec || unattendedRead)) {
         const liveDenial = await refreshTier2Authority(
           'Authorization changed before execution; the action was not executed.',
         );
@@ -2011,7 +2023,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             ? 'wisp_unattended_read'
             : effectiveMode === 'auto_approve'
               ? 'auto_approve_mode'
-              : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
+              : readOnlyAutoExec ? 'read_only_auto'
+                : wispSelfStateAutoExec ? 'wisp_self_state_auto' : 'note_write_auto',
         });
         if (unattendedRead) {
           unattendedReadInputs.add(input);
