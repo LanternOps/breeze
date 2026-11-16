@@ -78,7 +78,13 @@ describe('admitAnalysisRun', () => {
     // The CHAT session belongs in trigger_ref — `ai_agent_runs.session_id` is
     // the agent session the run loop opens, a different thing entirely.
     expect(call.sessionId).toBeUndefined();
-    expect(call.triggerRef).toMatchObject({ source: 'chat_analysis', chatSessionId: 'chat-1' });
+    expect(call.triggerRef).toMatchObject({ source: 'chat_analysis', chatSessionId: 'chat-1', originSessionId: 'chat-1' });
+  });
+
+  it('records originSessionId as null (key present) when there is no chat session', async () => {
+    await admitAnalysisRun(input({ sessionId: null }));
+    const call = createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: Record<string, unknown> };
+    expect(call.triggerRef).toHaveProperty('originSessionId', null);
   });
 
   it('refuses artifact_forbidden for a handle that does not resolve in the org, without admitting', async () => {
