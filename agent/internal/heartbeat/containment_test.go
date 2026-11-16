@@ -177,8 +177,15 @@ func TestContainmentWireCapabilitiesAndAbsentReport(t *testing.T) {
 		if want := map[string]string{"windows": "wfp", "darwin": "pf", "linux": "nft"}[runtime.GOOS]; mechanism != want {
 			t.Fatalf("mechanism %v, want %s", mechanism, want)
 		}
-		if fields["networkIsolationUnsupportedReason"] != "not_activated" {
-			t.Fatalf("a shipped capability-0 build must say why: %v", fields["networkIsolationUnsupportedReason"])
+		// Windows is activated (#10095): before its first readiness probe it
+		// reports capability 0 because readiness is unproven. Linux and macOS
+		// ship not activated.
+		want := "not_activated"
+		if runtime.GOOS == "windows" {
+			want = "recovery_unavailable"
+		}
+		if fields["networkIsolationUnsupportedReason"] != want {
+			t.Fatalf("a shipped capability-0 build must say why: %v, want %s", fields["networkIsolationUnsupportedReason"], want)
 		}
 	default:
 		if ok {

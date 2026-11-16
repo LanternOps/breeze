@@ -16,8 +16,12 @@ import (
 	"github.com/breeze-rmm/agent/internal/serviceinstall"
 )
 
-// TODO(#10095-activation): flip to true only in the activation PR, after L1 passes and NETWORK_ISOLATION_MIN_AGENT_VERSION is pinned. Todd gate.
-const windowsIsolationActivated = false
+// windowsIsolationActivated lets the Windows agent probe readiness and report
+// capability 1 once WFP, the recovery executable and its tasks are all usable
+// (#10095). Starting an isolation still needs the server-side gates: the
+// NETWORK_ISOLATION_ENABLED flag (and partner list), the pinned
+// NETWORK_ISOLATION_MIN_AGENT_VERSION, and networkIsolationReady.
+const windowsIsolationActivated = true
 
 type windowsWFPSession interface {
 	Close() error

@@ -8,20 +8,25 @@ import (
 	"testing"
 )
 
-func TestWindowsShippedActivationSwitchRemainsOff(t *testing.T) {
-	if windowsIsolationActivated {
-		t.Fatal("activation PR must visibly update this fail-closed test")
+// Activation (#10095): the shipped Windows agent probes readiness and reports
+// capability 1 only once every prerequisite holds. Until the first probe it
+// reports 0, never a stale or assumed "ready".
+func TestWindowsShippedActivationSwitchIsOn(t *testing.T) {
+	if !windowsIsolationActivated {
+		t.Fatal("the activation PR ships windowsIsolationActivated = true")
 	}
 	i := newWindowsIsolator(nil).(*windowsIsolator)
+	if got := i.Capability(); got.Version != 0 || got.Ready || got.UnsupportedReason == "" || got.UnsupportedReason == "not_activated" {
+		t.Fatalf("capability before any readiness probe %+v", got)
+	}
 	probed := false
 	i.readiness.probe = func(context.Context) readinessInputs { probed = true; return readinessInputs{schedulerReady: true} }
 	i.RefreshReadiness(context.Background())
-	if probed {
-		t.Fatal("a not-activated agent must not probe readiness (WFP session / Task Scheduler on a timer)")
+	if !probed {
+		t.Fatal("an activated agent must probe readiness")
 	}
-	got := i.Capability()
-	if got != (Capability{Mechanism: "wfp", UnsupportedReason: "not_activated"}) {
-		t.Fatalf("shipped capability %+v", got)
+	if got := i.Capability(); got != (Capability{Version: 1, Mechanism: "wfp", Ready: true}) {
+		t.Fatalf("all prerequisites met, capability %+v", got)
 	}
 }
 

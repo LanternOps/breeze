@@ -9,7 +9,12 @@ describe('network isolation activation gate', () => {
     expect(semverCompare(NETWORK_ISOLATION_MIN_AGENT_VERSION, '999.0.0')).toBeLessThanOrEqual(0);
   });
 
-  it('ships the fail-closed default that the activation PR updates', () => {
-    expect(NETWORK_ISOLATION_MIN_AGENT_VERSION).toBe('999.0.0');
+  // Activation (#10095): the first agent release that carries the activated Windows build and the
+  // isolation-recovery release asset. Agents below it report capability 0 anyway (they ship
+  // windowsIsolationActivated = false); the gate is the server-side second key. If that release
+  // number changes before merge, update both lines together.
+  it('is pinned to the release that carries the activated Windows agent', () => {
+    expect(NETWORK_ISOLATION_MIN_AGENT_VERSION).toBe('0.130.0');
+    expect(semverCompare(NETWORK_ISOLATION_MIN_AGENT_VERSION, '0.129.0')).toBe(1);
   });
 });

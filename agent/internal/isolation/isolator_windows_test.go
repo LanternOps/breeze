@@ -13,11 +13,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/isolation/wfp"
 )
 
-func TestWindowsCapabilityStaysDisabled(t *testing.T) {
+// Capability is a cache read: before any readiness probe it is 0 with a
+// reason, and computing it never inspects files.
+func TestWindowsCapabilityZeroBeforeReadinessProbe(t *testing.T) {
 	iso := newWindowsIsolator(func() []string { t.Fatal("capability must not inspect files"); return nil })
 	got := iso.Capability()
-	if got.Version != 0 || got.Mechanism != "wfp" || got.Ready || got.UnsupportedReason == "" {
-		t.Fatalf("capability activated prematurely: %+v", got)
+	if got.Version != 0 || got.Mechanism != "wfp" || got.Ready || got.UnsupportedReason != "recovery_unavailable" {
+		t.Fatalf("unprobed capability %+v", got)
 	}
 }
 

@@ -94,7 +94,7 @@ describe('startNetworkIsolation', () => {
   it.each([
     ['feature_disabled', () => vi.stubEnv('NETWORK_ISOLATION_ENABLED', 'false')],
     ['partner_not_enabled', () => vi.stubEnv('NETWORK_ISOLATION_ENABLED_PARTNER_IDS', '77777777-7777-4777-8777-777777777777')],
-    ['agent_below_gate', () => { h.device.agentVersion = '1.0.0'; }],
+    ['agent_below_gate', () => { h.device.agentVersion = '0.1.0'; }],
     ['agent_below_gate', () => { h.device.networkIsolationVersion = 0; }],
     ['agent_not_ready', () => { h.device.networkIsolationReady = false; }],
     ['device_lifecycle', () => { h.device.status = 'quarantined'; }],

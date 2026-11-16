@@ -70,35 +70,35 @@ describe('network isolation command bypasses', () => {
   });
   it.each(['update', 'update_agent', 'dev_update'])('cancels %s below the version floor while unresolved', async type => {
     const { tx } = reader([episode]);
-    const result = await partitionClaimable(tx as never, device, [{ ...row({}), type, payload: { version: '1.0.0' } }]);
+    const result = await partitionClaimable(tx as never, device, [{ ...row({}), type, payload: { version: '0.1.0' } }]);
     expect(result.cancelled).toEqual([{ id: 'command', reason: 'network-isolation-version-floor' }]);
     expect(result.claimable).toEqual([]);
   });
   it.each(['update', 'update_agent', 'dev_update'])('allows %s after resolution and at the version floor', async type => {
-    for (const [episodes, version] of [[[], '1.0.0'], [[episode], '999.0.0']] as const) {
+    for (const [episodes, version] of [[[], '0.1.0'], [[episode], '999.0.0']] as const) {
       const { tx } = reader([...episodes]);
       expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type, payload: { version } })).toBeNull();
     }
   });
   it('refuses a signed rollback to an agent below the floor', async () => {
     const { tx } = reader([episode]);
-    const result = await partitionClaimable(tx as never, device, [{ ...row({}), type: 'agent_rollback_v1', payload: { targetVersion: '1.0.0' } }]);
+    const result = await partitionClaimable(tx as never, device, [{ ...row({}), type: 'agent_rollback_v1', payload: { targetVersion: '0.1.0' } }]);
     expect(result.cancelled).toEqual([{ id: 'command', reason: 'network-isolation-version-floor' }]);
   });
   it('allows signed rollback at the floor and after resolution', async () => {
-    for (const [episodes, targetVersion] of [[[], '1.0.0'], [[episode], '999.0.0']] as const) {
+    for (const [episodes, targetVersion] of [[[], '0.1.0'], [[episode], '999.0.0']] as const) {
       const { tx } = reader([...episodes]);
       expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type: 'agent_rollback_v1', payload: { targetVersion } })).toBeNull();
     }
   });
   it.each([{}, [], true, 1])('treats non-string dev_update component %j as the agent', async component => {
     const { tx } = reader([episode]);
-    expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type: 'dev_update', payload: { version: '1.0.0', component } }))
+    expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type: 'dev_update', payload: { version: '0.1.0', component } }))
       .toBe('network-isolation-version-floor');
   });
   it('does not apply the agent floor to separate helper components', async () => {
     const { tx } = reader([episode]);
-    expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type: 'dev_update', payload: { version: '1.0.0', component: 'desktop-helper' } })).toBeNull();
+    expect(await revalidateCommandForDelivery(tx as never, { ...row({}), type: 'dev_update', payload: { version: '0.1.0', component: 'desktop-helper' } })).toBeNull();
     expect(tx.select).not.toHaveBeenCalled();
   });
   describe('upgrade floor follows the binary the payload selects, not its version label (#10919)', () => {
@@ -117,17 +117,17 @@ describe('network isolation command bypasses', () => {
     const upgrade = (type: string, payload: unknown) => ({ ...row({}), type, payload });
 
     it('refuses a download whose release record is below the floor, whatever version it claims', async () => {
-      const { tx } = sequence([episode], [{ version: '1.0.0' }]);
+      const { tx } = sequence([episode], [{ version: '0.1.0' }]);
       expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '999.0.0', downloadUrl: URL, checksum: OLD })))
         .toBe('network-isolation-version-floor');
     });
     it('delivers a download whose release record is at the floor, whatever version it claims', async () => {
       const { tx } = sequence([episode], [{ version: '999.0.0' }]);
-      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: NEW }))).toBeNull();
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '0.1.0', downloadUrl: URL, checksum: NEW }))).toBeNull();
     });
     it('reads the release record by the payload checksum, for the agent component only', async () => {
       const { tx, chain } = sequence([episode], [{ version: '999.0.0' }]);
-      await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: NEW.toUpperCase() }));
+      await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '0.1.0', downloadUrl: URL, checksum: NEW.toUpperCase() }));
       expect(chain.from).toHaveBeenNthCalledWith(2, agentVersions);
       const query = new PgDialect().sqlToQuery(chain.where.mock.calls[1]![0]);
       expect(query.params).toEqual([NEW, 'agent']);
@@ -145,17 +145,17 @@ describe('network isolation command bypasses', () => {
       expect(tx.select).not.toHaveBeenCalled();
     });
     it.each([undefined, ''])('treats dev_update component %j as the agent when the payload names a download', async (component) => {
-      const { tx } = sequence([episode], [{ version: '1.0.0' }]);
+      const { tx } = sequence([episode], [{ version: '0.1.0' }]);
       expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '999.0.0', downloadUrl: URL, checksum: OLD, component })))
         .toBe('network-isolation-version-floor');
     });
-    it.each([{ targetVersion: '1.0.0' }, {}, { targetVersion: 999 }])('refuses a rollback directive %j that cannot prove the floor', async (directive) => {
+    it.each([{ targetVersion: '0.1.0' }, {}, { targetVersion: 999 }])('refuses a rollback directive %j that cannot prove the floor', async (directive) => {
       const { tx } = sequence([episode]);
       expect(await revalidateCommandForDelivery(tx as never, upgrade('agent_rollback_v1', { ...directive, directiveSignature: 'sig' })))
         .toBe('network-isolation-version-floor');
     });
     it('refuses when any release record sharing the checksum is below the floor', async () => {
-      const { tx } = sequence([episode], [{ version: '999.0.0' }, { version: '1.0.0' }]);
+      const { tx } = sequence([episode], [{ version: '999.0.0' }, { version: '0.1.0' }]);
       expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { downloadUrl: URL, checksum: NEW })))
         .toBe('network-isolation-version-floor');
     });
@@ -175,7 +175,7 @@ describe('network isolation command bypasses', () => {
     });
     it('reads no release record when the device has no unresolved episode', async () => {
       const { tx } = sequence([]);
-      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: OLD }))).toBeNull();
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '0.1.0', downloadUrl: URL, checksum: OLD }))).toBeNull();
       expect(tx.select).toHaveBeenCalledTimes(1);
     });
     it('still delivers a version-only upgrade at the floor without any read', async () => {
@@ -187,7 +187,7 @@ describe('network isolation command bypasses', () => {
     });
     it('leaves a helper-component download alone', async () => {
       const { tx } = sequence([episode]);
-      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '1.0.0', downloadUrl: URL, checksum: OLD, component: 'user-helper' }))).toBeNull();
+      expect(await revalidateCommandForDelivery(tx as never, upgrade('dev_update', { version: '0.1.0', downloadUrl: URL, checksum: OLD, component: 'user-helper' }))).toBeNull();
       expect(tx.select).not.toHaveBeenCalled();
     });
     it('keeps the signed rollback directive on its signed targetVersion', async () => {
