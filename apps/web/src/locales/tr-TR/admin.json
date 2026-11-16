@@ -1157,6 +1157,7 @@
       "portal_access_request": "Portal erişim isteği",
       "portal_auth": "Portal oturum açma",
       "portal_directory_run": "Portal dizin çalıştırması",
+      "portal_scim_token": "Portal sağlama token'ı",
       "portal_user": "Portal kullanıcısı",
       "psa_connection": "PSA bağlantısı",
       "psa_ticket_mapping": "PSA bilet eşlemesi",

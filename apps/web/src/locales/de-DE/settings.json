@@ -8938,5 +8938,46 @@
       "notHeld": "Dieser Batch wartet nicht mehr auf eine Entscheidung.",
       "enforcementOff": "Die Deprovisionierung ist auf diesem Server im Modus „Nur Bericht“, daher gibt es nichts anzuwenden."
     }
+  },
+  "portalScim": {
+    "title": "Microsoft-Entra-Bereitstellung (SCIM)",
+    "description": "Lassen Sie den Entra-Mandanten des Kunden Portalkonten für die Personen anlegen, die der App „Breeze Portal“ zugewiesen sind, und sie deaktivieren, wenn diese ausscheiden.",
+    "loading": "Bereitstellung wird geladen…",
+    "retry": "Erneut versuchen",
+    "refreshFailed": "Aktualisierung fehlgeschlagen. Die Anzeige ist möglicherweise nicht aktuell.",
+    "needsTenant": "Weisen Sie oben den Microsoft-Mandanten dieser Organisation nach, bevor Sie die Bereitstellung einrichten.",
+    "tenantUrl": "Mandanten-URL",
+    "noBaseUrl": "Die öffentliche Adresse der API ist nicht konfiguriert, daher kann die Mandanten-URL nicht angezeigt werden. Bitten Sie Ihren Administrator, PUBLIC_API_URL zu setzen.",
+    "counts": "{{provisioned}} bereitgestellt · {{deactivated}} vom Verzeichnis deaktiviert",
+    "secretOnce": "Kopieren Sie dieses Token jetzt und fügen Sie es in das Feld „Geheimes Token“ der Entra-App ein. Es wird nicht erneut angezeigt.",
+    "secretToken": "Geheimes Token",
+    "secretDone": "Ich habe es kopiert",
+    "lastUsed": "Zuletzt verwendet {{date}}",
+    "neverUsed": "Noch nicht verwendet",
+    "notWorking": "Funktioniert nicht: Der nachgewiesene Mandant dieser Organisation hat sich geändert",
+    "revoke": "Widerrufen",
+    "label": "Token-Name",
+    "create": "Bereitstellungs-Token erstellen",
+    "createSubmit": "Erstellen",
+    "cancel": "Abbrechen",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
+    "copyFailed": "Kopieren in die Zwischenablage nicht möglich.",
+    "revokeConfirm": {
+      "title": "Dieses Bereitstellungs-Token widerrufen?",
+      "message": "Entra beendet die Bereitstellung mit „{{label}}“ sofort. Bereits bereitgestellte Personen behalten ihre Konten."
+    },
+    "toasts": {
+      "created": "Bereitstellungs-Token erstellt.",
+      "revoked": "Bereitstellungs-Token widerrufen."
+    },
+    "errors": {
+      "load": "Bereitstellung konnte nicht geladen werden.",
+      "create": "Bereitstellungs-Token konnte nicht erstellt werden.",
+      "revoke": "Bereitstellungs-Token konnte nicht widerrufen werden.",
+      "tenantNotProven": "Weisen Sie den Microsoft-Mandanten dieser Organisation nach, bevor Sie ein Bereitstellungs-Token erstellen.",
+      "limit": "Diese Organisation hat bereits zwei aktive Bereitstellungs-Token. Widerrufen Sie zuerst eines.",
+      "notFound": "Dieses Bereitstellungs-Token existiert nicht mehr."
+    }
   }
 }

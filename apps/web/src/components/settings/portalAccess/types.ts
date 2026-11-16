@@ -330,3 +330,41 @@ const DIRECTORY_BLOCKERS: ReadonlySet<PortalIdentityBlocker> = new Set(['entra_d
 export function isDirectoryDisabled(identity: Pick<PortalUserIdentityState, 'disabledAt' | 'disabledBlockers'>): boolean {
   return identity.disabledAt !== null && identity.disabledBlockers.some((b) => DIRECTORY_BLOCKERS.has(b));
 }
+
+// ---------------------------------------------------------------------------
+// Entra SCIM provisioning (portal registration W9 #11386, API routes/orgPortalScim.ts)
+// ---------------------------------------------------------------------------
+
+/** One SCIM token, never with its secret (only the create response carries it). */
+export interface PortalScimTokenView {
+  id: string;
+  label: string;
+  /** The secret's last characters, to tell tokens apart. */
+  hint: string;
+  tenantId: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  /** Not revoked and bound to the org's current proven tenant: it would authenticate now. */
+  usable: boolean;
+}
+
+export interface PortalScimStatusView {
+  tenant: { proven: boolean; tenantId: string | null };
+  /** The Tenant URL for the Entra enterprise app, or null when the API's public URL is not configured. */
+  baseUrl: string | null;
+  tokens: PortalScimTokenView[];
+  counts: { provisioned: number; deactivated: number };
+}
+
+export function isPortalScimStatusView(value: unknown): value is PortalScimStatusView {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  const tenant = v.tenant as Record<string, unknown> | undefined;
+  const counts = v.counts as Record<string, unknown> | undefined;
+  return !!tenant && typeof tenant.proven === 'boolean'
+    && (v.baseUrl === null || typeof v.baseUrl === 'string')
+    && Array.isArray(v.tokens)
+    && v.tokens.every((tk) => !!tk && typeof tk === 'object' && typeof (tk as { id?: unknown }).id === 'string')
+    && !!counts && typeof counts.provisioned === 'number' && typeof counts.deactivated === 'number';
+}

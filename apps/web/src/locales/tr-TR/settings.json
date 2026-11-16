@@ -8938,5 +8938,46 @@
       "notHeld": "Bu toplu işlem artık bir karar beklemiyor.",
       "enforcementOff": "Hesap kaldırma bu sunucuda yalnızca rapor modunda, bu yüzden uygulanacak bir şey yok."
     }
+  },
+  "portalScim": {
+    "title": "Microsoft Entra sağlama (SCIM)",
+    "description": "Müşterinin Entra kiracısının, Breeze Portal uygulamasına atanan kişiler için portal hesapları oluşturmasına ve ayrıldıklarında bunları devre dışı bırakmasına izin verin.",
+    "loading": "Sağlama yükleniyor…",
+    "retry": "Tekrar dene",
+    "refreshFailed": "Yenilenemedi. Gördükleriniz güncel olmayabilir.",
+    "needsTenant": "Sağlamayı kurmadan önce yukarıda bu kuruluşun Microsoft kiracısını kanıtlayın.",
+    "tenantUrl": "Kiracı URL'si",
+    "noBaseUrl": "API'nin genel adresi yapılandırılmadığı için Kiracı URL'si gösterilemiyor. Yöneticinizden PUBLIC_API_URL değerini ayarlamasını isteyin.",
+    "counts": "{{provisioned}} sağlandı · {{deactivated}} dizin tarafından devre dışı bırakıldı",
+    "secretOnce": "Bu token'ı şimdi kopyalayın ve Entra uygulamasındaki Gizli Belirteç alanına yapıştırın. Bir daha gösterilmeyecek.",
+    "secretToken": "Gizli Belirteç",
+    "secretDone": "Kopyaladım",
+    "lastUsed": "Son kullanım {{date}}",
+    "neverUsed": "Henüz kullanılmadı",
+    "notWorking": "Çalışmıyor: bu kuruluşun kanıtlanmış kiracısı değişti",
+    "revoke": "İptal Et",
+    "label": "Token adı",
+    "create": "Sağlama token'ı oluştur",
+    "createSubmit": "Oluştur",
+    "cancel": "İptal",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı",
+    "copyFailed": "Panoya kopyalanamadı.",
+    "revokeConfirm": {
+      "title": "Bu sağlama token'ı iptal edilsin mi?",
+      "message": "Entra, \"{{label}}\" ile sağlamayı hemen durdurur. Daha önce sağlanan kişiler hesaplarını korur."
+    },
+    "toasts": {
+      "created": "Sağlama token'ı oluşturuldu.",
+      "revoked": "Sağlama token'ı iptal edildi."
+    },
+    "errors": {
+      "load": "Sağlama yüklenemedi.",
+      "create": "Sağlama token'ı oluşturulamadı.",
+      "revoke": "Sağlama token'ı iptal edilemedi.",
+      "tenantNotProven": "Sağlama token'ı oluşturmadan önce bu kuruluşun Microsoft kiracısını kanıtlayın.",
+      "limit": "Bu kuruluşta zaten iki etkin sağlama token'ı var. Önce birini iptal edin.",
+      "notFound": "Bu sağlama token'ı artık yok."
+    }
   }
 }

@@ -8938,5 +8938,46 @@
       "notHeld": "Este lote não está mais aguardando uma decisão.",
       "enforcementOff": "O desprovisionamento está no modo somente relatório neste servidor, então não há nada a aplicar."
     }
+  },
+  "portalScim": {
+    "title": "Provisionamento do Microsoft Entra (SCIM)",
+    "description": "Deixe o locatário do Entra do cliente criar contas do portal para as pessoas atribuídas ao aplicativo Breeze Portal e desativá-las quando saírem.",
+    "loading": "Carregando o provisionamento…",
+    "retry": "Tentar novamente",
+    "refreshFailed": "Não foi possível atualizar. O que você vê pode estar desatualizado.",
+    "needsTenant": "Comprove acima o locatário da Microsoft desta organização antes de configurar o provisionamento.",
+    "tenantUrl": "URL do locatário",
+    "noBaseUrl": "O endereço público da API não está configurado, então a URL do locatário não pode ser exibida. Peça ao seu administrador que defina PUBLIC_API_URL.",
+    "counts": "{{provisioned}} provisionadas · {{deactivated}} desativadas pelo diretório",
+    "secretOnce": "Copie este token agora e cole no campo Token secreto do aplicativo do Entra. Ele não será exibido novamente.",
+    "secretToken": "Token secreto",
+    "secretDone": "Já copiei",
+    "lastUsed": "Último uso {{date}}",
+    "neverUsed": "Ainda não utilizado",
+    "notWorking": "Não está funcionando: o locatário comprovado desta organização mudou",
+    "revoke": "Revogar",
+    "label": "Nome do token",
+    "create": "Criar token de provisionamento",
+    "createSubmit": "Criar",
+    "cancel": "Cancelar",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "copyFailed": "Não foi possível copiar para a área de transferência.",
+    "revokeConfirm": {
+      "title": "Revogar este token de provisionamento?",
+      "message": "O Entra para de provisionar com \"{{label}}\" imediatamente. As pessoas já provisionadas mantêm suas contas."
+    },
+    "toasts": {
+      "created": "Token de provisionamento criado.",
+      "revoked": "Token de provisionamento revogado."
+    },
+    "errors": {
+      "load": "Não foi possível carregar o provisionamento.",
+      "create": "Não foi possível criar o token de provisionamento.",
+      "revoke": "Não foi possível revogar o token de provisionamento.",
+      "tenantNotProven": "Comprove o locatário da Microsoft desta organização antes de criar um token de provisionamento.",
+      "limit": "Esta organização já tem dois tokens de provisionamento ativos. Revogue um primeiro.",
+      "notFound": "Esse token de provisionamento não existe mais."
+    }
   }
 }

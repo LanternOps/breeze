@@ -1157,6 +1157,7 @@
       "portal_access_request": "Demande d'accès au portail",
       "portal_auth": "Connexion au portail",
       "portal_directory_run": "Analyse d'annuaire du portail",
+      "portal_scim_token": "Jeton de provisionnement du portail",
       "portal_user": "Utilisateur du portail",
       "psa_connection": "Connexion PSA",
       "psa_ticket_mapping": "Association de ticket PSA",

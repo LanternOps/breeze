@@ -8938,5 +8938,46 @@
       "notHeld": "Questo batch non è più in attesa di una decisione.",
       "enforcementOff": "Il deprovisioning è in modalità solo report su questo server, quindi non c’è nulla da applicare."
     }
+  },
+  "portalScim": {
+    "title": "Provisioning Microsoft Entra (SCIM)",
+    "description": "Lascia che il tenant Entra del cliente crei gli account del portale per le persone assegnate all’app Breeze Portal e li disabiliti quando se ne vanno.",
+    "loading": "Caricamento del provisioning…",
+    "retry": "Riprova",
+    "refreshFailed": "Impossibile aggiornare. Ciò che vedi potrebbe non essere aggiornato.",
+    "needsTenant": "Dimostra qui sopra il tenant Microsoft di questa organizzazione prima di configurare il provisioning.",
+    "tenantUrl": "URL tenant",
+    "noBaseUrl": "L’indirizzo pubblico dell’API non è configurato, quindi l’URL tenant non può essere mostrato. Chiedi al tuo amministratore di impostare PUBLIC_API_URL.",
+    "counts": "{{provisioned}} con provisioning · {{deactivated}} disattivati dalla directory",
+    "secretOnce": "Copia ora questo token e incollalo nel campo Token segreto dell’app Entra. Non verrà mostrato di nuovo.",
+    "secretToken": "Token segreto",
+    "secretDone": "L’ho copiato",
+    "lastUsed": "Ultimo utilizzo {{date}}",
+    "neverUsed": "Non ancora utilizzato",
+    "notWorking": "Non funziona: il tenant dimostrato di questa organizzazione è cambiato",
+    "revoke": "Revoca",
+    "label": "Nome del token",
+    "create": "Crea token di provisioning",
+    "createSubmit": "Crea",
+    "cancel": "Annulla",
+    "copy": "Copia",
+    "copied": "Copiato",
+    "copyFailed": "Impossibile copiare negli appunti.",
+    "revokeConfirm": {
+      "title": "Revocare questo token di provisioning?",
+      "message": "Entra smette subito di eseguire il provisioning con \"{{label}}\". Le persone già provisionate mantengono i propri account."
+    },
+    "toasts": {
+      "created": "Token di provisioning creato.",
+      "revoked": "Token di provisioning revocato."
+    },
+    "errors": {
+      "load": "Impossibile caricare il provisioning.",
+      "create": "Impossibile creare il token di provisioning.",
+      "revoke": "Impossibile revocare il token di provisioning.",
+      "tenantNotProven": "Dimostra il tenant Microsoft di questa organizzazione prima di creare un token di provisioning.",
+      "limit": "Questa organizzazione ha già due token di provisioning attivi. Revocane prima uno.",
+      "notFound": "Quel token di provisioning non esiste più."
+    }
   }
 }

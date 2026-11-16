@@ -1157,6 +1157,7 @@
       "portal_access_request": "Solicitação de acesso ao portal",
       "portal_auth": "Login do portal",
       "portal_directory_run": "Execução de diretório do portal",
+      "portal_scim_token": "Token de provisionamento do portal",
       "portal_user": "Usuário do portal",
       "psa_connection": "Conexão de PSA",
       "psa_ticket_mapping": "Mapeamento de tickets PSA",
