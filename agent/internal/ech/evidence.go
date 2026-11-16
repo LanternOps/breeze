@@ -83,9 +83,9 @@ func SanitizeHost(raw string) string {
 	return h
 }
 
-// sanitizeIssuer keeps printable ASCII (0x20-0x7E) only, trims spaces and
-// caps the result at 64 characters.
-func sanitizeIssuer(raw string) string {
+// SanitizeIssuer keeps printable ASCII (0x20-0x7E) only, trims spaces and
+// caps the result at 64 characters: the wire contract for certIssuer.
+func SanitizeIssuer(raw string) string {
 	var b strings.Builder
 	for i := 0; i < len(raw); i++ {
 		if c := raw[i]; c >= 0x20 && c <= 0x7e {
@@ -147,7 +147,7 @@ func certEvidence(err error, now time.Time) (BlockEvidence, bool) {
 		if len(leaf.Issuer.Organization) > 0 && strings.TrimSpace(leaf.Issuer.Organization[0]) != "" {
 			issuer = leaf.Issuer.Organization[0]
 		}
-		ev.CertIssuer = sanitizeIssuer(issuer)
+		ev.CertIssuer = SanitizeIssuer(issuer)
 	}
 	return ev, true
 }
