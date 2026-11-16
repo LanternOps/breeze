@@ -130,11 +130,16 @@ describe('authentication (D9, Review Focus 2)', () => {
     expect(limiter.calls).toEqual(['portal_scim_unknown_id:203.0.113.7']);
   });
 
-  it('an address that spent its unknown-id budget gets 429 before any lookup, whatever id it sends next', async () => {
+  it('a spent unknown-id budget refuses further unknown ids (429) but never a real token from the same address', async () => {
     fakeRedis.zcount.mockImplementation(async (key: string) => (key.startsWith('portal_scim_unknown_id:') ? 600 : 0));
-    const fresh = `Bearer brzscim_${'d'.repeat(32)}_${'B'.repeat(43)}`;
-    expect((await req('GET', '/Users', { auth: fresh })).status).toBe(429);
-    expect(verifyPortalScimToken).not.toHaveBeenCalled();
+    verify.result = null;
+    verify.unknownId = true;
+    const guess = `Bearer brzscim_${'d'.repeat(32)}_${'B'.repeat(43)}`;
+    expect((await req('GET', '/Users', { auth: guess })).status).toBe(429);
+
+    verify.result = TOKEN;
+    users.listScimUsers.mockResolvedValue({ total: 0, records: [] });
+    expect((await req('GET', '/Users')).status).toBe(200);
   });
 
   it('failures against one token id never block another token from the same address (shared egress)', async () => {

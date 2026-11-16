@@ -229,10 +229,14 @@ describe('isolation (invariants 2 and 4, Review Focus 1)', () => {
   it('POST of an externalId already bound in another org is 409 with zero residual rows', async () => {
     const a = await seedOrg();
     const b = await seedOrg();
-    // Org B's tenant is A's (the identity key is (issuer, subject)): simulate the
-    // same person by re-proving B onto A's tenant id after A's identity exists.
+    // The tenant moves from A to B (a W4 proof transfer: one mapping per tenant),
+    // after A's SCIM identity for the person exists; B's token is bound to it.
     const { oid } = await create(a.token);
-    await admin().update(clientAiTenantMappings).set({ entraTenantId: a.tid }).where(eq(clientAiTenantMappings.orgId, b.org.id));
+    await admin().delete(clientAiTenantMappings).where(eq(clientAiTenantMappings.orgId, a.org.id));
+    await admin().update(clientAiTenantMappings).set({
+      entraTenantId: a.tid, provenAt: new Date(), provenVia: 'proof_run',
+      provenEvidence: { via: 'proof_run', adminOid: randomUUID(), runId: randomUUID() },
+    }).where(eq(clientAiTenantMappings.orgId, b.org.id));
     await admin().update(portalScimTokens).set({ entraTenantId: a.tid }).where(eq(portalScimTokens.orgId, b.org.id));
     const accountsBefore = await countRows(portalUsers, b.org.id);
 
@@ -249,8 +253,12 @@ describe('isolation (invariants 2 and 4, Review Focus 1)', () => {
     const { org, actor, token } = await seedOrg();
     const { body } = await create(token);
     await revokePortalScimToken({ orgId: org.id, tokenId: (await admin().select().from(portalScimTokens).where(eq(portalScimTokens.orgId, org.id)))[0]!.id, actorUserId: actor.id });
+    // A tenant change clears the proof (W4); the new tenant is then proven.
     const newTid = randomUUID();
-    await admin().update(clientAiTenantMappings).set({ entraTenantId: newTid }).where(eq(clientAiTenantMappings.orgId, org.id));
+    await admin().update(clientAiTenantMappings).set({
+      entraTenantId: newTid, provenAt: new Date(), provenVia: 'proof_run',
+      provenEvidence: { via: 'proof_run', adminOid: randomUUID(), runId: randomUUID() },
+    }).where(eq(clientAiTenantMappings.orgId, org.id));
     const fresh = await mintPortalScimToken({ orgId: org.id, label: 'New tenant', actorUserId: actor.id });
     expect((await call(fresh.token, 'GET', `/Users/${body.id}`)).status).toBe(404);
     expect((await (await call(fresh.token, 'GET', '/Users')).json() as any).totalResults).toBe(0);

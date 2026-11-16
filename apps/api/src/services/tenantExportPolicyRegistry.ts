@@ -799,9 +799,11 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "portal_scim_tokens": tablePolicy("org_id", {"included":["id","org_id","entra_tenant_id","label","created_by_user_id","created_at","last_used_at","revoked_at","revoked_by_user_id"],"reviewedIncluded":[],"excludedSensitive":["secret_hash","secret_hint"],"excludedOpen":[]}),
   // External identities (portal registration W2): issuer/subject are public identifiers, no secret material.
   // W9 (#11386): SCIM state (userName and name parts as the directory sent them, timestamps).
+  // scim_provisioned_at is a timestamp ("SCIM manages this identity since"), not provisioning
+  // material: reviewedIncluded for the "provision" name part.
   // W8 (#11385): the disabled state (disabled_blockers is text[], a list of source
   // names, not a capability list) and the directory observation columns.
-  "portal_user_identities": tablePolicy("org_id", {"included":["id","org_id","portal_user_id","provider","issuer","subject","entra_tenant_id","linked_via","last_used_at","created_at","disabled_at","disabled_reason","disabled_blockers","directory_chain","directory_seen_at","directory_absent_runs","directory_absent_since","directory_last_run_id","directory_rearm_since","scim_user_name","scim_display_name","scim_given_name","scim_family_name","scim_provisioned_at","scim_deleted_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "portal_user_identities": tablePolicy("org_id", {"included":["id","org_id","portal_user_id","provider","issuer","subject","entra_tenant_id","linked_via","last_used_at","created_at","disabled_at","disabled_reason","disabled_blockers","directory_chain","directory_seen_at","directory_absent_runs","directory_absent_since","directory_last_run_id","directory_rearm_since","scim_user_name","scim_display_name","scim_given_name","scim_family_name","scim_deleted_at"],"reviewedIncluded":["scim_provisioned_at"],"excludedSensitive":[],"excludedOpen":[]}),
   // disabled_by (W8 #11385): who disabled the account (msp|directory|scim), a plain enum.
   // auth_epoch is server-side bearer-session revocation state, not portable
   // customer content. Exporting it would disclose credential/status transition

@@ -106,24 +106,31 @@ const scimAuth: MiddlewareHandler<Env> = async (c, next) => {
   const parsed = parseScimBearer(authorization);
   if (!parsed) return unauthorized(c);
 
-  // Two failure budgets, both checked before any lookup (D9):
-  //  - per (token id, address): a REAL token refused (wrong secret, revoked,
-  //    proof or org changed). Keyed on the id too, so another tenant's bad
-  //    token on Microsoft's shared egress never locks out this org's token,
-  //    and someone who learns a token id cannot lock out the address Entra uses;
-  //  - per address: token ids that name NO row (id guessing). Rotating random
-  //    ids cannot dodge it. Legitimate traffic never produces unknown ids at
-  //    this rate, so it does not couple tenants on a shared address.
+  // Two failure budgets (D9):
+  //  - per (token id, address), checked BEFORE the lookup: a real token
+  //    refused (wrong secret, revoked, proof or org changed). Keyed on the id
+  //    too, so another tenant's bad token on Microsoft's shared egress never
+  //    locks out this org's token, and someone who learns a token id cannot
+  //    lock out the address Entra uses. It is the only gate a real token id
+  //    ever meets;
+  //  - per address, applied only AFTER a lookup miss: ids that name no row
+  //    (guessing). A real token id is never refused because of it. Lookup
+  //    volume per address is bounded by the global limiter's isolated 'scim'
+  //    bucket; a primary-key miss is cheap.
   const redis = getRedis();
   const ip = rateLimitIpKey(getTrustedClientIp(c, 'unknown'));
   const tokenFailKey = `portal_scim_auth_fail:${parsed.tokenId}:${ip}`;
   const unknownIdKey = `portal_scim_unknown_id:${ip}`;
   if (await failureBudgetSpent(redis, tokenFailKey, AUTH_FAIL_LIMIT)) return tooMany(c, AUTH_FAIL_WINDOW_S);
-  if (await failureBudgetSpent(redis, unknownIdKey, UNKNOWN_ID_LIMIT)) return tooMany(c, AUTH_FAIL_WINDOW_S);
 
   const auth = await authenticatePortalScimToken(authorization);
   if (!auth.ok) {
-    await rateLimiter(redis, auth.unknownId ? unknownIdKey : tokenFailKey, auth.unknownId ? UNKNOWN_ID_LIMIT : AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW_S);
+    if (auth.unknownId) {
+      if (await failureBudgetSpent(redis, unknownIdKey, UNKNOWN_ID_LIMIT)) return tooMany(c, AUTH_FAIL_WINDOW_S);
+      await rateLimiter(redis, unknownIdKey, UNKNOWN_ID_LIMIT, AUTH_FAIL_WINDOW_S);
+    } else {
+      await rateLimiter(redis, tokenFailKey, AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW_S);
+    }
     return unauthorized(c);
   }
   const token = auth.token;

@@ -43,6 +43,12 @@ describe('portal SCIM export policy (W9)', () => {
     }
   });
 
+  it('scim_provisioned_at matches the "provision" suspicious name part and is a REVIEWED include (else the live export plan throws)', () => {
+    const decision = registry['portal_user_identities']?.columns['scim_provisioned_at'];
+    expect(decision?.decision).toBe('include');
+    expect(decision?.reviewedSensitiveName).toBe(true);
+  });
+
   it('classifies every new portal_user_identities column as include', () => {
     const policy = registry['portal_user_identities'];
     const dbColumns = columnNames(portalUserIdentities);

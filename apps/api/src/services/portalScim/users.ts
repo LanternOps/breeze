@@ -287,7 +287,15 @@ async function writeAttributes(
   account: LockedAccount,
   identity: LockedIdentity,
   next: Desired,
-  opts: { force: boolean; now: Date },
+  opts: {
+    force: boolean;
+    now: Date;
+    /**
+     * Written in the same identity UPDATE as the attributes (adoption marks the
+     * identity SCIM-managed here, so the user-name ⇔ provisioned CHECK holds).
+     */
+    identityExtra?: { scimProvisionedAt: Date; scimDeletedAt: null };
+  },
 ): Promise<{ changed: string[]; emailKept: boolean }> {
   const changed: string[] = [];
   if (opts.force || next.userName !== identity.scimUserName) changed.push('userName');
@@ -302,6 +310,7 @@ async function writeAttributes(
         scimDisplayName: next.displayName,
         scimGivenName: next.givenName,
         scimFamilyName: next.familyName,
+        ...(opts.identityExtra ?? {}),
       })
       .where(and(eq(portalUserIdentities.id, identity.id), eq(portalUserIdentities.orgId, token.orgId)));
   }
@@ -554,11 +563,11 @@ async function adopt(
   }
   await assertUserNameFree(token, attrs.userName, identity.id, attrs.externalId);
 
-  await db
-    .update(portalUserIdentities)
-    .set({ scimProvisionedAt: now, scimDeletedAt: null })
-    .where(and(eq(portalUserIdentities.id, identity.id), eq(portalUserIdentities.orgId, token.orgId)));
-  const { emailKept } = await writeAttributes(token, account, identity, attrs, { force: true, now });
+  const { emailKept } = await writeAttributes(token, account, identity, attrs, {
+    force: true,
+    now,
+    identityExtra: { scimProvisionedAt: now, scimDeletedAt: null },
+  });
 
   // Spec §5.1: SCIM is a browser-access grant path. An add-in account the
   // directory assigns to the portal gets browser access (no epoch bump).
