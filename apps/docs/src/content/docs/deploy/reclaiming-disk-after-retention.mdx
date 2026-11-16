@@ -1,0 +1,138 @@
+---
+title: Reclaiming Disk After Retention
+description: Return disk to the operating system after the first retention drain on device_commands and device_filesystem_snapshots, using pg_repack with a VACUUM FULL fallback.
+sidebar:
+  order: 12
+  label: Reclaiming Disk (pg_repack)
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Breeze's nightly retention jobs delete old rows from high-volume history tables. PostgreSQL reuses the freed pages for new rows, but it does **not** hand them back to the operating system. On an install that has run for months before retention was enabled, `device_commands` and `device_filesystem_snapshots` can stay large on disk after the backlog is drained, mostly in their TOAST storage.
+
+This page is an **optional, one-time operator task**. Nothing in Breeze requires it. Skip it if disk is not under pressure: the freed space is already reused by new rows.
+
+<Aside type="caution">
+  Run this only **after** the first retention drain has finished. Repacking earlier rewrites rows that are about to be deleted, and the table will shrink again later.
+</Aside>
+
+## Prerequisites
+
+- **The drain is done.** The nightly retention run caps the batches it deletes, so a large backlog is cleared over several nights. Wait until the retention backlog warning stops appearing in the API logs.
+- **Free disk headroom.** Per the pg_repack documentation, a full-table repack needs free disk about **twice the size of the target table and its indexes**. `VACUUM FULL` needs room for a second full copy of the table. Measure first (step 1) and make sure the data volume, plus WAL growth and any replicas, can absorb it.
+- **A tested backup.** See the [Upgrade Guide](/deploy/upgrades/) for `./scripts/backup.sh --db`.
+- **The right role.** Run as a superuser, or as the owner of the tables and their indexes with `--no-superuser-check`. The `breeze_app` runtime role is deliberately unprivileged and is not the table owner; use your database owner or admin role.
+- **A primary key.** pg_repack requires each target table to have a primary key or a unique index on a `NOT NULL` column. Both tables have a primary key.
+- **The extension.** pg_repack is a PostgreSQL extension plus a client program. Check that your Postgres runs a version your pg_repack release supports (the 1.5.3 documentation lists PostgreSQL 9.5 through 18), then:
+  - **Self-hosted Postgres:** install the pg_repack package matching your Postgres major version in the database container or host, and the client program wherever you will run it.
+  - **Managed Postgres:** pg_repack is available only if your provider lists it among its supported extensions, and some providers restrict which role may create it. Check the provider's extension list. If it is not offered, use the [`VACUUM FULL` fallback](#fallback-vacuum-full-in-a-maintenance-window).
+  - Create the extension in the Breeze database: `CREATE EXTENSION pg_repack;`
+  - Keep the client program and the installed extension on the same pg_repack version.
+
+## Repack with pg_repack
+
+<Steps>
+
+1. **Measure the starting size**
+
+   ```sql
+   SELECT c.relname,
+          pg_size_pretty(pg_table_size(c.oid))          AS table_incl_toast,
+          pg_size_pretty(pg_indexes_size(c.oid))        AS indexes,
+          pg_size_pretty(pg_total_relation_size(c.oid)) AS total
+   FROM pg_class c
+   WHERE c.relname IN ('device_commands', 'device_filesystem_snapshots')
+     AND c.relkind = 'r';
+   ```
+
+   Record the `total` values and the free space on the data volume.
+
+2. **Preview**
+
+   `--dry-run` lists what would be repacked and exits.
+
+   ```bash
+   pg_repack --dry-run \
+     --host <db-host> --port 5432 --username <admin-role> --dbname <breeze-db> \
+     --table public.device_commands \
+     --table public.device_filesystem_snapshots
+   ```
+
+3. **Repack one table at a time**
+
+   ```bash
+   pg_repack --no-superuser-check \
+     --host <db-host> --port 5432 --username <table-owner-role> --dbname <breeze-db> \
+     --wait-timeout 300 --no-kill-backend \
+     --table public.device_commands
+   ```
+
+   Repeat for `public.device_filesystem_snapshots`. Omit `--no-superuser-check` when connecting as a superuser. Authenticate with `PGPASSWORD` or a `.pgpass` file rather than a command-line password.
+
+   - `--table` (`-t`) limits the run to the named table. The switch can be repeated, but one table per run keeps the disk headroom requirement lower and a failure easier to reason about.
+   - `--wait-timeout` (`-T`) is how many seconds pg_repack waits for its exclusive locks (default 60).
+   - `--no-kill-backend` (`-D`) makes pg_repack skip the table instead of cancelling conflicting queries when it cannot get the lock. Without it, pg_repack may cancel other sessions that block it, so keep it for a production database. If a table is skipped, run it again in a quieter period.
+   - `--jobs` (`-j`) rebuilds indexes in parallel using extra connections. It speeds up a repack, at the cost of more load.
+
+4. **Verify** (next section), then continue with the second table.
+
+</Steps>
+
+### Lock caveats
+
+- pg_repack builds a new copy of the table while the original stays online. It holds an `ACCESS EXCLUSIVE` lock only briefly, at the start and during the final swap. For the rest of the run it takes a `SHARE UPDATE EXCLUSIVE` lock, so inserts, updates, and deletes continue.
+- Even the short exclusive locks queue behind long-running transactions on the same table, and queries then queue behind pg_repack. Start during a quiet period and check for old open transactions first:
+
+  ```sql
+  SELECT pid, state, xact_start, left(query, 80) AS query
+  FROM pg_stat_activity
+  WHERE xact_start < now() - interval '5 minutes'
+  ORDER BY xact_start;
+  ```
+
+- Do not run DDL against the target tables while pg_repack is working, and do not apply a Breeze upgrade (which runs migrations) at the same time.
+- Expect extra write-ahead log and I/O while the new copy is built and indexes are rebuilt. If you stream WAL to replicas, confirm they can keep up.
+- After a fatal error, pg_repack can leave helper objects behind. Clean up by hand, as the pg_repack documentation describes: in the affected database run `DROP EXTENSION pg_repack CASCADE;` and then `CREATE EXTENSION pg_repack;`.
+
+## Verify the reclaimed space
+
+1. Re-run the size query from step 1 and compare the `total` values.
+2. Compare free space on the data volume at the OS or provider level. The database-level sizes shrink first; the volume reflects it once the old files are dropped.
+3. Confirm the application is healthy: the API readiness endpoint responds and device command traffic is flowing.
+4. Plain `ANALYZE` is not needed afterwards; pg_repack runs it after a full-table repack unless you pass `--no-analyze`.
+
+<Aside>
+  A small remaining size is normal. Live rows, indexes, and the free space the table keeps for upcoming writes all count toward the total.
+</Aside>
+
+## Fallback: `VACUUM FULL` in a maintenance window
+
+Use this when pg_repack is not available on your Postgres (common on managed services) or you cannot run the client program.
+
+`VACUUM FULL` rewrites the table into a new file, which returns unused space to the operating system, but it takes an `ACCESS EXCLUSIVE` lock on the table for the whole run. Reads and writes to that table block until it finishes. For these tables that means agents cannot report command results or filesystem snapshots, and the API requests that touch them wait or time out. PostgreSQL documents it as not recommended for routine use, and it needs free disk for a full second copy of the table.
+
+<Steps>
+
+1. **Schedule a window.** Announce it, and stop or pause the API and worker processes that write to these tables so requests do not pile up.
+
+2. **Take a backup**, then confirm the free-disk requirement from the prerequisites.
+
+3. **Run `VACUUM FULL` per table** as the table owner or a superuser:
+
+   ```sql
+   VACUUM (FULL, VERBOSE, ANALYZE) public.device_commands;
+   VACUUM (FULL, VERBOSE, ANALYZE) public.device_filesystem_snapshots;
+   ```
+
+   `VERBOSE` prints progress per table, and `ANALYZE` refreshes planner statistics in the same pass.
+
+4. **Bring the API and workers back up** and verify as above.
+
+</Steps>
+
+## References
+
+Commands and flags on this page were checked against these upstream documents:
+
+- pg_repack 1.5.3: [pg_repack project documentation](https://reorg.github.io/pg_repack/)
+- PostgreSQL 16, `VACUUM`: [PostgreSQL VACUUM reference](https://www.postgresql.org/docs/16/sql-vacuum.html)
