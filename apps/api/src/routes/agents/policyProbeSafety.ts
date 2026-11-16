@@ -163,3 +163,37 @@ export type IncomingPolicyRegistryStateEntry = {
 export function sanitizePolicyRegistryStateEntries<T extends IncomingPolicyRegistryStateEntry>(entries: T[]): T[] {
   return entries.filter((entry) => isAllowedPolicyRegistryProbe(entry.registryPath));
 }
+
+/**
+ * #11976: registry paths in compliance inline settings that the probe builder
+ * (derivePolicyStateProbesFromRules) drops, so the agent never collects them
+ * and the rule would report "Registry value not found" on every evaluation.
+ * The write paths refuse these up front instead: the feature-link routes with
+ * a 400, the AI tool with a readable error, and the service as the backstop.
+ * Reads each rule the way the probe builder does (type, then the camelCase or
+ * snake_case path, trimmed). Returns distinct paths in first-seen order.
+ */
+export function uncollectableComplianceRegistryPaths(settings: unknown): string[] {
+  if (!settings || typeof settings !== 'object') return [];
+  const items = (settings as { items?: unknown }).items;
+  if (!Array.isArray(items)) return [];
+  const refused = new Set<string>();
+  for (const item of items) {
+    const rules = item && typeof item === 'object' ? (item as { rules?: unknown }).rules : undefined;
+    if (!Array.isArray(rules)) continue;
+    for (const rule of rules) {
+      if (!rule || typeof rule !== 'object') continue;
+      const raw = rule as Record<string, unknown>;
+      const type = raw.type ?? raw.name;
+      if (typeof type !== 'string' || type.trim().toLowerCase() !== 'registry_check') continue;
+      const path = raw.registryPath ?? raw.registry_path;
+      if (typeof path !== 'string' || path.trim() === '') continue;
+      if (!isAllowedPolicyRegistryProbe(path.trim())) refused.add(path.trim());
+    }
+  }
+  return [...refused];
+}
+
+export function uncollectableComplianceRegistryPathMessage(path: string): string {
+  return `The registry path "${path}" cannot be used in a compliance rule: values under it are never collected from devices, so the rule would always report "Registry value not found". Choose a different key.`;
+}

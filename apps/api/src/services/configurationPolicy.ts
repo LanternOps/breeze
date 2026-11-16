@@ -87,6 +87,10 @@ import {
   tryNormalizePatchInlineSettings,
 } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
+import {
+  uncollectableComplianceRegistryPathMessage,
+  uncollectableComplianceRegistryPaths,
+} from '../routes/agents/policyProbeSafety';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
 import { scheduleComplianceAlertReconcile } from './complianceAlertReconcileTrigger';
@@ -1300,7 +1304,9 @@ async function decomposeInlineSettings(
  * — the others build their rows defensively from `unknown` and cannot throw —
  * plus the compliance rule set name rules decompose cannot enforce by itself:
  * names are unique within the link (DuplicateComplianceItemNameError) and fit
- * the 200-character state columns (ComplianceItemNameTooLongError).
+ * the 200-character state columns (ComplianceItemNameTooLongError), and no
+ * registry_check names a path the agent never collects
+ * (ComplianceRegistryPathNotCollectedError).
  */
 function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settings: unknown): void {
   // Same early-out as decomposeInlineSettings: nothing to decompose, nothing to check.
@@ -1828,6 +1834,22 @@ export class ComplianceItemNameTooLongError extends Error {
   }
 }
 
+/**
+ * #11976: a registry_check rule on a path the agent never collects
+ * (policyProbeSafety.uncollectableComplianceRegistryPaths) would report
+ * "Registry value not found" on every evaluation. The HTTP routes refuse this
+ * with a 400 (COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED) and the AI tool with a
+ * readable error; this is the backstop for every other caller.
+ */
+export class ComplianceRegistryPathNotCollectedError extends Error {
+  readonly code = 'COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED' as const;
+
+  constructor(readonly paths: string[]) {
+    super(uncollectableComplianceRegistryPathMessage(paths[0] ?? ''));
+    this.name = 'ComplianceRegistryPathNotCollectedError';
+  }
+}
+
 function assertValidComplianceItemNames(settings: unknown): void {
   if (!settings || typeof settings !== 'object') return;
   const items = (settings as { items?: unknown }).items;
@@ -1837,6 +1859,8 @@ function assertValidComplianceItemNames(settings: unknown): void {
   if (names.length > 0) throw new DuplicateComplianceItemNameError(names);
   const overlong = overlongComplianceItemNames(objects);
   if (overlong.length > 0) throw new ComplianceItemNameTooLongError(overlong);
+  const uncollectable = uncollectableComplianceRegistryPaths(settings);
+  if (uncollectable.length > 0) throw new ComplianceRegistryPathNotCollectedError(uncollectable);
 }
 
 /**

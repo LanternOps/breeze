@@ -1844,6 +1844,15 @@ describe('manage_policy_feature_link compliance validation + rejection hints (#6
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });
 
+  it('rejects a registry_check rule on a path the agent never collects, with a readable reason (#11976)', async () => {
+    const out = await add('compliance', {
+      items: [{ name: 'Accounts', rules: [{ type: 'registry_check', registryPath: 'HKLM\\SAM\\SAM\\Domains\\Account', registryValueName: 'F' }] }],
+    });
+    expect(out.error).toContain('HKLM\\SAM\\SAM\\Domains\\Account');
+    expect(out.error).toContain('never collected');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
   it('saves a well-formed compliance payload unnormalized (UI-only keys such as remediation survive)', async () => {
     const raw = {
       items: [{

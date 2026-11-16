@@ -16,6 +16,7 @@ import {
   policyIdSchema,
 } from './schemas';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
+import { withoutObservedRegistryValues } from '../../services/complianceRuleResults';
 import {
   getPagination,
   ensureOrgAccess,
@@ -589,7 +590,7 @@ complianceRoutes.get(
         configItemName: row.configItemName,
         deviceId: row.deviceId,
         status: row.status,
-        details: row.details,
+        details: withoutObservedRegistryValues(row.details),
         lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
         remediationAttempts: row.remediationAttempts,
         updatedAt: row.updatedAt?.toISOString() ?? null,
