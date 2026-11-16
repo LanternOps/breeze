@@ -99,6 +99,7 @@ const closeAgentRunSession = vi.hoisted(() =>
   vi.fn<(sessionId: string, status: 'completed' | 'failed') => Promise<void>>());
 vi.mock('./executionLedger', () => ({
   createAgentRunSession, startToolExecution, completeToolExecution, reconcileHungExecutions, closeAgentRunSession,
+  recordRunTaskPrompt: vi.fn(async () => undefined), recordRunAssistantTurn: vi.fn(async () => undefined),
 }));
 
 const resolveEffectiveAgentSystem = vi.hoisted(() =>
