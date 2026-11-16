@@ -458,6 +458,23 @@ describe('analysis admission — W02 scope frame and frozen export grants', () =
     expect(dbMockState.insertValues).toEqual([]);
   });
 
+  it('export grants without a grant are refused: nothing frozen has no ceiling behind it', async () => {
+    await expect(createAndEnqueueAgentRun(analysisInput({
+      analysis: { scope: 'devices', siteId: null, deviceIds: [DEVICE_A], inputHandles: [], exportGrants: GRANTS },
+    }))).resolves.toEqual({ created: false, skipped: 'analysis_not_available' });
+    expect(resolveAnalysisFrameSpy).not.toHaveBeenCalled();
+    expect(dbMockState.insertValues).toEqual([]);
+  });
+
+  it('an org membership restricted to sites is refused at step 1d too, before the frame', async () => {
+    resolveGrantCeiling.mockResolvedValue(ceiling({
+      orgTerms: new Map([[ORG_ID, { permissionKeys: new Set(['*:*']), siteIds: new Set(['site-1']) }]]),
+    }));
+    await expect(createAndEnqueueAgentRun(analysisInput({ grant: GRANT, analysis: ORG_SCOPE })))
+      .resolves.toEqual({ created: false, skipped: 'grant_org_out_of_ceiling' });
+    expect(resolveAnalysisFrameSpy).not.toHaveBeenCalled();
+  });
+
   it('grant-less devices scope still admits with no export grants (legacy authority)', async () => {
     const result = await createAndEnqueueAgentRun(analysisInput());
     expect(result.created).toBe(true);

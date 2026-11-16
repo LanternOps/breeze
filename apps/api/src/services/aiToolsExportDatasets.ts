@@ -128,8 +128,9 @@ async function siteScopedDeviceIds(req: DatasetRequest): Promise<string[] | null
  *
  * Wisp analysis sessions W02: the caller's EXACT-DEVICE axis
  * (`auth.allowedDeviceIds`) narrows too, whenever it is an array. An empty one
- * means "no devices", never "no frame": an analysis run admitted with no
- * devices carries `allowedDeviceIds: []` and no run frame, and without this
+ * means "no devices", never "no frame": an analysis run admitted before W02
+ * with no devices (W02 now refuses that launch as `frame_empty`) carries
+ * `allowedDeviceIds: []` and no run frame, and without this
  * the `event_logs` adapter read that as unrestricted and exported the whole
  * org's non-security logs. It is intersected here directly rather than through
  * `resolveSiteAllowedDeviceIds`, which only answers the site axis.

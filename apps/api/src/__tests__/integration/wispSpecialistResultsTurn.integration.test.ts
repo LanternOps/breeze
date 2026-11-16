@@ -539,11 +539,11 @@ describe('the real producer and the real handler (#11845 review)', () => {
     expect(result).toMatchObject({ admitted: true });
     const [row] = await sys(() => db.select({ stagedInputs: aiAgentRuns.stagedInputs })
       .from(aiAgentRuns).where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId)))));
-    const staged = row!.stagedInputs as Record<string, unknown> & { deviceIds: string[]; exportGrants: { datasets: string[]; sensitiveGates: string[] } };
+    const staged = row!.stagedInputs!;
     expect(staged.deviceIds).toContain(t.device.id);
     expect(staged.scope).toEqual({ kind: 'org', siteId: null, deviceCount: staged.deviceIds.length });
-    expect(staged.exportGrants.datasets).toContain('event_logs');
-    expect(Array.isArray(staged.exportGrants.sensitiveGates)).toBe(true);
+    expect(staged.exportGrants!.datasets).toContain('event_logs');
+    expect(Array.isArray(staged.exportGrants!.sensitiveGates)).toBe(true);
   });
 
   it('W02: a chat launch that names no scope is refused before any run row', async () => {

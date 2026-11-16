@@ -1771,9 +1771,13 @@ export async function createAndEnqueueAgentRun(
       //        authority to bound it (`workspace_launch_analysis` stays
       //        denied, #6086);
       //     2. a grant-bearing analysis must arrive WITH its export grants,
-      //        never fall back to the legacy set.
+      //        never fall back to the legacy set;
+      //     3. export grants without a grant are refused: nothing would
+      //        bound them, and freezing them would give the run authority no
+      //        human ceiling was checked for.
       if (analysis.scope !== 'devices' && !grantCeiling) return skip('analysis_not_available');
       if (grantCeiling && !analysis.exportGrants) return skip('analysis_not_available');
+      if (!grantCeiling && analysis.exportGrants) return skip('analysis_not_available');
       const frame = await resolveAnalysisFrame({
         orgId,
         scope: analysis.scope,

@@ -666,6 +666,20 @@ describe('frozen export grants reach the tool context (W02 analysis sessions)', 
     expect((verdicts[0] as { context?: ToolExecutionContext }).context).not.toHaveProperty('exportGrants');
   });
 
+  it('a present-but-null frozen grant reaches the tool context verbatim (the handler then permits nothing), never as absent', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['export_dataset'] }), stagedInputs: { ...STAGED_INPUTS, exportGrants: null as never } });
+    scriptQuery({ toolCalls: [{ tool: 'export_dataset', input: { dataset: 'event_logs' } }] });
+    await executeAgentRun(RUN_ID);
+    expect((verdicts[0] as { context?: Record<string, unknown> }).context).toHaveProperty('exportGrants', null);
+  });
+
+  it('an analysis run with no staged_inputs row value gets NO export grants, never the legacy set', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['export_dataset'] }), stagedInputs: null });
+    scriptQuery({ toolCalls: [{ tool: 'export_dataset', input: { dataset: 'event_logs' } }] });
+    await executeAgentRun(RUN_ID);
+    expect((verdicts[0] as { context?: ToolExecutionContext }).context?.exportGrants).toEqual({ datasets: [], sensitiveGates: [] });
+  });
+
   it('an org-frame run is pinned to its frozen list: a device added after admission is denied', async () => {
     // Spec §7. Passes on arrival: pins existing behaviour so the frame change cannot regress it.
     seedRows({ stagedInputs: { ...STAGED_INPUTS, scope: { kind: 'org', siteId: null, deviceCount: 2 } } });

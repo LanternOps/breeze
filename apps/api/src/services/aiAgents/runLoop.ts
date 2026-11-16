@@ -2740,8 +2740,12 @@ async function driveSdkLoop(
       ? (runLimits.analysisMaxStagedBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun)
       : EXPORT_DEFAULT_MAX_BYTES,
     // W02: the export authority frozen at admission. Absent on a pre-W02 run,
-    // which the handler reads as the legacy set, never as "everything".
-    exportGrants: analysis && stagedInputs ? stagedInputs.exportGrants : undefined,
+    // which the handler reads as the legacy set, never as "everything". An
+    // analysis run with no staged_inputs at all (admission always writes
+    // them, so this is a corrupt row) gets NO export grants, not the legacy set.
+    exportGrants: analysis
+      ? (stagedInputs ? stagedInputs.exportGrants : { datasets: [], sensitiveGates: [] })
+      : undefined,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, pairing,
