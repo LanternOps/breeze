@@ -3517,13 +3517,16 @@ export function checkGuardrails(
   }
 
   if (baseTier === 4) {
-    // Only tier 3 gets a scope — a base-Tier-4 tool has no approval path at
-    // all, not a bigger approval scope.
+    // #11989: Tier 4 is blocked. A tool registered at base Tier 4 (the
+    // extension SDK admits `tier: 4`) has no approval path at all, so it is
+    // refused here like the blocked/unknown arms above. The chat gate, the
+    // agent gate and the MCP route refuse on `!allowed` before any approval
+    // card or durable intent.
     return {
       tier: 4,
-      allowed: true,
-      requiresApproval: true,
-      description: buildApprovalDescription(toolName, action, input)
+      allowed: false,
+      requiresApproval: false,
+      reason: `Tool "${toolName}" is registered at Tier 4 and is not available`
     };
   }
 

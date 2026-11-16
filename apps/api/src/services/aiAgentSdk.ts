@@ -339,23 +339,25 @@ export async function settleBlockedTurnForNewMessage(
  * of createSessionPreToolUse below). Keyed by the ActiveSession object itself
  * rather than added as a field on the ActiveSession type — this keeps the
  * action-intents integration local to this module. At most one Tier-3 tool
- * is ever "executing" for a given session at a time (the same assumption
- * createSessionPostToolUse's existing sessionId+toolName+status='executing'
- * match already makes), so a single pending id per session is sufficient.
+ * is assumed to be "executing" for a given session at a time (the same
+ * assumption createSessionPostToolUse's sessionId+toolName+status='executing'
+ * match makes), so it holds a single pending id per session. Known
+ * limitation (#11994): the SDK can run sibling calls concurrently, so a second
+ * call can replace this entry or consume another call's. The approval-method
+ * record (#11989) is keyed per call and does not share this limitation.
  * WeakMap so an evicted/closed session's entry is GC'd with it.
  */
 const pendingIntentBySession = new WeakMap<ActiveSession, { intentId: string; orgId: string }>();
 
 /**
- * How the most recent tier>=2 call for a session was authorized, so the
- * postToolUse audit event can record `approved` honestly — true only when a
- * human (or an explicit policy ceremony) decided THIS call — plus the concrete
- * path taken. Before #3130 the audit detail hard-coded `approved: true` for
- * every tier>=2 execution, which was already wrong for auto_approve-mode and
- * plan-free auto executions and would have become actively misleading once
- * read-only Tier-2 calls started auto-executing under per_step. Same
- * single-in-flight assumption (and WeakMap rationale) as
- * pendingIntentBySession above.
+ * How a tier>=2 call was authorized, so the postToolUse audit event can record
+ * `approved` honestly — true only when a human (or an explicit policy
+ * ceremony) decided THIS call — plus the concrete path taken. Before #3130 the
+ * audit detail hard-coded `approved: true` for every tier>=2 execution, which
+ * was already wrong for auto_approve-mode and plan-free auto executions and
+ * would have become actively misleading once read-only Tier-2 calls started
+ * auto-executing under per_step. Recorded per call (#11989), see
+ * recordApprovalMethod below.
  */
 type ApprovalMethod =
   | 'per_step_user' // human decided the lightweight Tier-2 approval card
@@ -367,13 +369,67 @@ type ApprovalMethod =
   | 'read_only_auto' // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
   | 'wisp_self_state_auto' // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
   | 'wisp_unattended_read'; // #10973 one of the four reads under the grant's unattended-reads switch
-const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; method: ApprovalMethod }>();
+
+/**
+ * #11989: which call an approval record belongs to. The SDK runs sibling tool
+ * calls concurrently, so two approval-gated calls in one session can both pass
+ * the gate before either one's postToolUse runs; a single per-session slot
+ * gave the first call the second one's method, or `unknown`. The key is the
+ * model's tool_use id, which the MCP handler hands to both hooks from the same
+ * `extra` (see PreToolUseCallback's `toolUseId`). When the SDK sent no id, the
+ * call's own input object is the key: the handler passes that same object to
+ * both hooks.
+ */
+interface ApprovalCallKey {
+  toolUseId: string | undefined;
+  input: object;
+}
+type ApprovalRecord = { toolName: string; method: ApprovalMethod };
+/**
+ * Id-keyed records, per session so an evicted/closed session's records are
+ * GC'd with it. The post hook takes each call's record on entry.
+ */
+const approvalByToolUseId = new WeakMap<ActiveSession, Map<string, ApprovalRecord>>();
+/** Input-keyed records (no SDK id): GC'd with the call's input object. */
+const approvalByInput = new WeakMap<object, ApprovalRecord>();
+
+function recordApprovalMethod(
+  session: ActiveSession,
+  call: ApprovalCallKey,
+  toolName: string,
+  method: ApprovalMethod,
+): void {
+  const record: ApprovalRecord = { toolName, method };
+  if (call.toolUseId === undefined) {
+    approvalByInput.set(call.input, record);
+    return;
+  }
+  let byId = approvalByToolUseId.get(session);
+  if (!byId) {
+    byId = new Map();
+    approvalByToolUseId.set(session, byId);
+  }
+  byId.set(call.toolUseId, record);
+}
+
+/** Remove and return this call's approval record, if the gate wrote one. */
+function takeApprovalRecord(session: ActiveSession, call: ApprovalCallKey): ApprovalRecord | undefined {
+  if (call.toolUseId === undefined) {
+    const record = approvalByInput.get(call.input);
+    approvalByInput.delete(call.input);
+    return record;
+  }
+  const byId = approvalByToolUseId.get(session);
+  const record = byId?.get(call.toolUseId);
+  byId?.delete(call.toolUseId);
+  return record;
+}
 
 /**
  * #10973: the input objects the gate let through as unattended reads, so the
  * post hook resolves the same tier as the gate. Keyed by the call's own input
- * rather than `lastApprovalBySession`, because a Security query's tier depends on
- * it and the SDK may run sibling calls in parallel.
+ * rather than by session, because a Security query's tier depends on it and
+ * the SDK may run sibling calls in parallel.
  */
 const unattendedReadInputs = new WeakSet<object>();
 
@@ -402,15 +458,13 @@ function decidedApprovalMethod(check: { tier: number; approvalScope?: string }):
   return 'per_step_user';
 }
 
-/** Consume the recorded approval method for the audit event's details. */
+/** The audit event's approval details from this call's record (see takeApprovalRecord). */
 function approvalAuditDetails(
-  session: ActiveSession,
+  record: ApprovalRecord | undefined,
   toolName: string,
 ): { approved: boolean; approvalMethod: ApprovalMethod | 'unknown' } {
-  const last = lastApprovalBySession.get(session);
-  if (last?.toolName === toolName) {
-    lastApprovalBySession.delete(session);
-    return { approved: DECIDED_APPROVAL_METHODS.has(last.method), approvalMethod: last.method };
+  if (record?.toolName === toolName) {
+    return { approved: DECIDED_APPROVAL_METHODS.has(record.method), approvalMethod: record.method };
   }
   return { approved: false, approvalMethod: 'unknown' };
 }
@@ -1339,9 +1393,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     toolName: string,
     input: Record<string, unknown>,
     mcpToolName: string | undefined,
+    toolUseId: string | undefined,
   ): ReturnType<PreToolUseCallback> => {
     const wispCall: { current: WispCallState | null } = { current: null };
-    const result = await gated(wispCall, ledger, toolName, input, mcpToolName);
+    const result = await gated(wispCall, ledger, toolName, input, mcpToolName, toolUseId);
     if (!result.allowed || !session.wispGrant) return result;
     if (!wispCall.current) {
       captureException(new Error(`Wisp session ${session.breezeSessionId} reached an allowed exit for '${toolName}' without the ceiling gate`));
@@ -1385,7 +1440,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     const ledger: PreHookLedgerState = { rowWritten: false };
     let result: Awaited<ReturnType<PreToolUseCallback>>;
     try {
-      result = await decide(ledger, toolName, input, mcpToolName);
+      result = await decide(ledger, toolName, input, mcpToolName, toolUseId);
     } catch (err) {
       if (!ledger.rowWritten) {
         await recordPreHookRefusal(session, toolName, input, { error: PRE_HOOK_THREW_REFUSAL }, toolUseId);
@@ -1436,7 +1491,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     toolName: string,
     input: Record<string, unknown>,
     mcpToolName?: string,
+    toolUseId?: string,
   ): ReturnType<PreToolUseCallback> => {
+    // #11989: the approval path this call took, read back by its own
+    // postToolUse audit event (approvalAuditDetails).
+    const recordApproval = (method: ApprovalMethod): void =>
+      recordApprovalMethod(session, { toolUseId, input }, toolName, method);
     // Set only by the tier-3 branch below when it creates a durable intent;
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
@@ -1931,7 +1991,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         } catch (err) {
           console.error('[AI-SDK] Failed to update helper approval to executing:', helperExec.id, err);
         }
-        lastApprovalBySession.set(session, { toolName, method: 'pam' });
+        recordApproval('pam');
         return { allowed: true };
       }
 
@@ -2005,14 +2065,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
           return { allowed: false, error: 'Failed to create audit record. Please try again.' };
         }
-        lastApprovalBySession.set(session, {
-          toolName,
-          method: unattendedRead
+        recordApproval(
+          unattendedRead
             ? 'wisp_unattended_read'
             : effectiveMode === 'auto_approve'
               ? 'auto_approve_mode'
               : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
-        });
+        );
         if (unattendedRead) {
           unattendedReadInputs.add(input);
           verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedRead };
@@ -2129,7 +2188,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         // audit row's `toolOutcome` (approved_failed) and error carry that
         // half. Without this the postToolUse audit row read approved:false /
         // approvalMethod:'unknown', contradicting `action_intent.approved`.
-        lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
+        recordApproval(decidedApprovalMethod(guardrailCheck));
 
         // #9530: close the execution-ledger row. Nothing else will — the worker
         // never touches ai_tool_executions, and postToolUse's update is guarded
@@ -2215,7 +2274,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             return { allowed: false, error: 'Failed to create audit record. Please try again.' };
           }
           session.currentPlanStepIndex = match.stepIndex + 1;
-          lastApprovalBySession.set(session, { toolName, method: 'plan_step' });
+          recordApproval('plan_step');
           return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
         }
         if (match.matches) {
@@ -3435,7 +3494,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       // decided: the durable tier-3 intent flow (approver via the approvals
       // surface, or the requester self-deciding a SUPERVISED intent — Task 6)
       // or the tier-2 lightweight card (user clicked Approve).
-      lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
+      recordApproval(decidedApprovalMethod(guardrailCheck));
     }
     // #10416: a Wisp session's handler adds the wait to the tool result
     // (aiAgentSdkTools withApprovalWait); every other session is unchanged.
@@ -3619,6 +3678,10 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
 
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed, handoff, sdkToolUseId) => {
+    // #11989: take this call's approval record before any early return, so a
+    // call whose audit below writes no approval detail (a refusal echo, a
+    // topology turn, a post-hook tier below 2) never leaves it behind.
+    const approvalRecord = takeApprovalRecord(session, { toolUseId: sdkToolUseId, input });
     // #10411: the echo of a refusal whose ledger row the pre hook already
     // wrote — no second row, and no UPDATE of a same-name sibling's row.
     const refusalLedgered = takeLedgeredRefusal(session, toolName, output, isError, sdkToolUseId);
@@ -4093,7 +4156,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           // (auto_approve mode, #3130 read-only Tier 2) report approved: false
           // — before #3130 this hard-coded `approved: true` for every
           // tier>=2 execution, which misrepresented auto-approved calls.
-          ...(guardrailCheck.tier >= 2 ? approvalAuditDetails(session, toolName) : {}),
+          ...(guardrailCheck.tier >= 2 ? approvalAuditDetails(approvalRecord, toolName) : {}),
         },
       });
     }
