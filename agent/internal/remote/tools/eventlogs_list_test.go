@@ -93,6 +93,54 @@ func TestParseEventLogListUnparseableOutputSendsNoCounts(t *testing.T) {
 	}
 }
 
+func TestParseEventLogListOneBadRowKeepsTheOtherCounts(t *testing.T) {
+	// A row whose count is not a number keeps its name and loses only its own
+	// count; the other rows keep theirs. Blank names are skipped.
+	out := `[{"LogName":"Security","RecordCount":9500000},{"LogName":"Odd","RecordCount":"n/a"},{"LogName":"","RecordCount":5},{"LogName":"  ","RecordCount":6}]`
+	logs := wireLogs(t, parseEventLogList(out))
+	if len(logs) != 2 {
+		t.Fatalf("want Security and Odd, got %v", logs)
+	}
+	if logs[0]["name"] != "Security" || logs[0]["recordCount"] != float64(9500000) {
+		t.Errorf("Security: want recordCount 9500000, got %v", logs[0])
+	}
+	if logs[1]["name"] != "Odd" {
+		t.Errorf("want Odd, got %v", logs[1])
+	}
+	if v, ok := logs[1]["recordCount"]; ok {
+		t.Errorf("Odd: want no recordCount, got %v", v)
+	}
+}
+
+func TestParseEventLogListAllBlankNamesFallsBackToDefaults(t *testing.T) {
+	logs := wireLogs(t, parseEventLogList(`[{"LogName":" ","RecordCount":5}]`))
+	if len(logs) != len(defaultEventLogs()) {
+		t.Fatalf("want the default list, got %v", logs)
+	}
+}
+
+func TestEventLogListResponseWireKeepsCountsThroughSanitize(t *testing.T) {
+	// The path listEventLogsOS takes after PowerShell returns: parse,
+	// sanitize, marshal the response.
+	logs, truncated := sanitizeEventLogs(parseEventLogList(psListLogOutput))
+	raw, err := json.Marshal(EventLogListResponse{Logs: logs, Truncated: truncated})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var resp struct {
+		Logs []map[string]any `json:"logs"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Logs) != 3 || resp.Logs[0]["recordCount"] != float64(9500000) || resp.Logs[1]["recordCount"] != float64(0) {
+		t.Fatalf("want counts 9500000 and 0 on the wire, got %s", raw)
+	}
+	if _, ok := resp.Logs[2]["recordCount"]; ok {
+		t.Fatalf("want no recordCount for the null-count log, got %s", raw)
+	}
+}
+
 func TestParseEventLogListEmptyFallsBackToDefaults(t *testing.T) {
 	logs := wireLogs(t, parseEventLogList("   "))
 	if len(logs) == 0 {

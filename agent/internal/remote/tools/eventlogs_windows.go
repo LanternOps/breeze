@@ -21,20 +21,9 @@ func listEventLogsOS(startTime time.Time) CommandResult {
 		return NewErrorResult(fmt.Errorf("failed to list event logs: %w", err), time.Since(startTime).Milliseconds())
 	}
 
-	// Default logs if PowerShell fails
-	logs := []EventLog{
-		{Name: "System", DisplayName: "System"},
-		{Name: "Application", DisplayName: "Application"},
-		{Name: "Security", DisplayName: "Security"},
-		{Name: "Setup", DisplayName: "Setup"},
-	}
-
-	// Parse PowerShell output if available
-	truncated := false
-	if len(output) > 0 {
-		logs = parseEventLogList(string(output))
-		logs, truncated = sanitizeEventLogs(logs)
-	}
+	// parseEventLogList falls back to the default list (no counts) when the
+	// output is empty or names no log.
+	logs, truncated := sanitizeEventLogs(parseEventLogList(string(output)))
 
 	response := EventLogListResponse{
 		Logs:      logs,
