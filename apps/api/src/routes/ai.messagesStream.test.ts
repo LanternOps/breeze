@@ -134,6 +134,7 @@ vi.mock('../services/aiAgent', () => ({
   handleApproval: vi.fn(),
   isIntentBackedExecution: vi.fn(),
   searchSessions: vi.fn(),
+  sanitizeErrorForClient: vi.fn(() => 'An internal error occurred. Please try again.'),
 }));
 
 vi.mock('../services/aiCostTracker', () => ({
@@ -377,6 +378,121 @@ describe('POST /ai/sessions/:id/messages — turn identity, coded 409s, abort te
     active.eventBus.publish({ type: 'content_delta', delta: 'still going' });
     active.eventBus.publish({ type: 'done' });
     expect(active.eventBus.snapshot()).toMatchObject({ lastSeq: 3, sawDone: true });
+  });
+});
+
+describe('POST /ai/sessions/:id/messages — "Try again" (#9428)', () => {
+  let app: Hono;
+  let insertValues: ReturnType<typeof vi.fn>;
+  let latestRows: Array<{ id: string; role: string; content: string }>;
+  const model = makeResolvedModel('anthropic_byok');
+  const EXISTING_USER_ROW = '88888888-8888-4888-8888-888888888888';
+
+  function postBody(body: Record<string, unknown>) {
+    return app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function activeThatFinishes() {
+    const active = makeActiveSession();
+    active.inputController.pushMessage = vi.fn(() => active.eventBus.publish({ type: 'done' }));
+    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(active);
+    return active;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/ai', aiRoutes);
+    vi.mocked(runPreFlightChecks).mockResolvedValue({
+      ok: true, session: { ...DB_SESSION } as any,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model,
+    });
+    vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
+    vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+    insertValues = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: USER_ROW_ID }]) });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+    latestRows = [];
+    const limit = vi.fn(async () => latestRows);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit })) })) })),
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.mocked(runPreFlightChecks).mockReset();
+  });
+
+  const userInserts = () => insertValues.mock.calls.filter(([v]) => (v as { role?: string }).role === 'user');
+
+  it('retry with an identical trailing user row: no second row, the turn is still dispatched on that row', async () => {
+    latestRows = [{ id: EXISTING_USER_ROW, role: 'user', content: 'hi' }];
+    const active = activeThatFinishes();
+    const res = await postBody({ content: 'hi', retry: true });
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(userInserts()).toHaveLength(0);
+    expect(active.inputController.pushMessage).toHaveBeenCalledTimes(1);
+    // An attaching client anchors on the row the retry re-runs.
+    expect(active.turnUserMessageId).toBe(EXISTING_USER_ROW);
+  });
+
+  it('retry after the turn already answered (trailing row is assistant) inserts as usual', async () => {
+    latestRows = [{ id: 'a1', role: 'assistant', content: 'hello' }];
+    activeThatFinishes();
+    await (await postBody({ content: 'hi', retry: true })).text();
+    expect(userInserts()).toHaveLength(1);
+  });
+
+  it('retry with different text inserts as usual', async () => {
+    latestRows = [{ id: EXISTING_USER_ROW, role: 'user', content: 'something else' }];
+    activeThatFinishes();
+    await (await postBody({ content: 'hi', retry: true })).text();
+    expect(userInserts()).toHaveLength(1);
+  });
+
+  it('without retry, repeating the same message stays legal (inserted, no lookup)', async () => {
+    latestRows = [{ id: EXISTING_USER_ROW, role: 'user', content: 'hi' }];
+    activeThatFinishes();
+    await (await postBody({ content: 'hi' })).text();
+    expect(userInserts()).toHaveLength(1);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('a retry after a timeout (idle session, SDK turn still running) tears the old query down first', async () => {
+    latestRows = [{ id: EXISTING_USER_ROW, role: 'user', content: 'hi' }];
+    vi.mocked(streamingSessionManager.get).mockReturnValue({ state: 'idle' } as any);
+    activeThatFinishes();
+    await (await postBody({ content: 'hi', retry: true })).text();
+    expect(streamingSessionManager.remove).toHaveBeenCalledWith(SESSION_ID);
+    const removeOrder = vi.mocked(streamingSessionManager.remove).mock.invocationCallOrder[0]!;
+    const createOrder = vi.mocked(streamingSessionManager.getOrCreate).mock.invocationCallOrder[0]!;
+    expect(removeOrder).toBeLessThan(createOrder);
+  });
+
+  it('a retry while a turn is genuinely running is refused 409 turn_in_progress and kills nothing', async () => {
+    vi.mocked(streamingSessionManager.get).mockReturnValue({ state: 'processing' } as any);
+    vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValueOnce('not_blocked_on_approvals');
+    const res = await postBody({ content: 'hi', retry: true });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('turn_in_progress');
+    expect(streamingSessionManager.remove).not.toHaveBeenCalled();
+  });
+
+  it('a stream failure inside the route is coded stream_error', async () => {
+    const active = makeActiveSession();
+    active.eventBus.subscribe = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() { throw new Error('socket hang up'); },
+    }));
+    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(active);
+    const res = await postBody({ content: 'hi' });
+    const text = await res.text();
+    const errorLine = text.split('\n').find((l) => l.startsWith('data:') && l.includes('"type":"error"'));
+    expect(errorLine).toBeDefined();
+    expect(JSON.parse(errorLine!.slice('data:'.length))).toMatchObject({ type: 'error', code: 'stream_error' });
   });
 });
 

@@ -265,6 +265,7 @@ export type AiStreamErrorCode =
   | 'rate_limited'
   | 'provider_auth'
   | 'provider_quota'
+  | 'context_window_exceeded'
   | 'budget_exceeded'
   | 'turn_limit_reached'
   | 'config_changed'
