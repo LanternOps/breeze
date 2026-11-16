@@ -49,6 +49,8 @@ import { db } from '../db';
 import { actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices } from '../db/schema';
 import { listAgents } from './aiAgents/agentService';
 import { buildRunTrace } from './aiAgents/runTrace';
+import { STEP_RESULTS_BUDGET_CHARS, toChatIntentStepResults } from './mcpActionStatus';
+import { compactToolResultForChat, MAX_TOOL_RESULT_CHARS } from './aiToolOutput';
 import { runSiteScopeCondition } from './aiAgentRunSiteScope';
 import { deviceScopeCondition, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
@@ -61,6 +63,37 @@ import {
   canMutateOrgWideGovernance,
   SITE_CEILING_WRITE_DENIED_MESSAGE,
 } from './siteCeilingAccess';
+
+/** Room for the `stepResults` key, `stepResultsOmitted` and the compactor's `_chat` marker. */
+const STEP_RESULTS_ENVELOPE_CHARS = 400;
+
+function isCompactionDigest(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as { summarized?: unknown; _chat?: { reason?: unknown } } | null;
+    return parsed?.summarized === true && parsed._chat?.reason === 'max_output_chars_exceeded';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #11966: the room `get_ai_agent_run`'s step results get, measured against
+ * the full-profile tool-result budget. A trace that fits beside the default
+ * step budget gets it; a larger trace leaves the steps only what it does not
+ * use, so a result that fit before step results existed still fits (its run
+ * summary included). A trace that overflows on its own gets the default: the
+ * output becomes a digest either way, and the step results lead its preview.
+ */
+function stepResultsBudget(trace: unknown): number {
+  const traceJson = JSON.stringify({ trace });
+  const besideDefault = MAX_TOOL_RESULT_CHARS - STEP_RESULTS_BUDGET_CHARS - STEP_RESULTS_ENVELOPE_CHARS;
+  if (!isCompactionDigest(compactToolResultForChat('get_ai_agent_run', traceJson, besideDefault))) {
+    return STEP_RESULTS_BUDGET_CHARS;
+  }
+  const fitted = compactToolResultForChat('get_ai_agent_run', traceJson);
+  if (isCompactionDigest(fitted)) return STEP_RESULTS_BUDGET_CHARS;
+  return Math.max(0, MAX_TOOL_RESULT_CHARS - fitted.length - STEP_RESULTS_ENVELOPE_CHARS);
+}
 
 /**
  * The three structural facts only the DISPATCH site can establish, checked
@@ -179,7 +212,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
     searchHint: 'one AI agent run: trace, findings, tool calls, outcome summary',
     definition: {
       name: 'get_ai_agent_run',
-      description: 'Get an accessible AI agent run with a safe trace, findings, tool execution ledger and action intent summaries.',
+      description: 'Get an accessible AI agent run with a safe trace, findings, tool execution ledger, action intent summaries and each executed step\'s bounded result (stepResults).',
       input_schema: {
         type: 'object', properties: { runId: { type: 'string', description: 'Run UUID' } }, required: ['runId'],
       },
@@ -219,19 +252,32 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
       // The run and an intent can target different devices. Resolve both axes
       // inside the run's org before reading its intent summaries.
       const allowedDeviceIds = await resolveSiteAllowedDeviceIds(run.orgId, auth);
-      const intents = await db.select({
+      // #11966: `result` is read for the step summaries only; it reaches the
+      // output through toChatIntentStepResults, never through buildRunTrace.
+      const intentRows = await db.select({
         id: actionIntents.id, status: actionIntents.status, actionName: actionIntents.actionName,
         approvalScope: actionIntents.approvalScope, decidedVia: actionIntents.decidedVia,
+        result: actionIntents.result, errorCode: actionIntents.errorCode,
+        executedAt: actionIntents.executedAt, createdAt: actionIntents.createdAt,
       }).from(actionIntents).where(and(
         eq(actionIntents.requestingAgentRunId, run.id), eq(actionIntents.orgId, run.orgId),
         auth.orgCondition(actionIntents.orgId),
         allowedDeviceIds === null ? undefined : inArray(actionIntents.scopeDeviceId, allowedDeviceIds),
-      ));
+      )).orderBy(asc(actionIntents.createdAt));
+      const intents = intentRows.map(({ id: intentId, status, actionName, approvalScope, decidedVia }) => ({
+        id: intentId, status, actionName, approvalScope, decidedVia,
+      }));
       const agent = run.agentName !== null && run.agentKind !== null
         ? { name: run.agentName, kind: run.agentKind } : null;
-      return JSON.stringify({ trace: buildRunTrace(
+      const trace = buildRunTrace(
         run, agent, run.deviceHostname ? { hostname: run.deviceHostname } : null, ledgerRows, intents,
-      ) });
+      );
+      // Step results come FIRST: when even the tightest compaction tier
+      // overflows, the digest keeps only the head of the serialized output.
+      return JSON.stringify({
+        ...toChatIntentStepResults(intentRows, stepResultsBudget(trace)),
+        trace,
+      });
     },
   });
 

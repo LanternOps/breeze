@@ -19,6 +19,7 @@ import { runSiteScopeCondition } from './aiAgentRunSiteScope';
 import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { registerAiAgentGovernanceTools } from './aiToolsAiAgentGovernance';
 import { PAGE_RESUME_KEY } from './aiToolPageResume';
+import { compactToolResultForChat, MAX_TOOL_RESULT_CHARS } from './aiToolOutput';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const RUN = '22222222-2222-4222-8222-222222222222';
@@ -85,6 +86,74 @@ describe('AI-agent reads', () => {
     expect(resolveSiteAllowedDeviceIds).toHaveBeenCalledWith(ORG, expect.objectContaining({ allowedSiteIds: ['site-a'] }));
     expect(intents.where).toHaveBeenCalledWith(and(eq(actionIntents.requestingAgentRunId, RUN), eq(actionIntents.orgId, ORG), eq(aiAgentRuns.orgId, ORG), inArray(actionIntents.scopeDeviceId, [device])));
     expect(buildRunTrace).toHaveBeenCalledWith(row, null, null, [], []);
+  });
+  it('returns each executed step result, and hands the trace builder no raw result (#11966)', async () => {
+    const row = { id: RUN, orgId: ORG, deviceId: null, sessionId: null, agentName: null, agentKind: null, deviceHostname: null };
+    const intentId = '44444444-4444-4444-8444-444444444444';
+    const intentRow = {
+      id: intentId, status: 'completed', actionName: 'manage_services', approvalScope: 'four_eyes', decidedVia: 'human',
+      result: { status: 'completed', stdout: 'Service Spooler restarted' }, errorCode: null,
+      executedAt: new Date('2026-11-16T10:00:00.000Z'), createdAt: new Date('2026-11-16T09:59:00.000Z'),
+    };
+    const intents = query([intentRow]);
+    vi.mocked(db.select).mockImplementationOnce(() => query([row]) as never).mockImplementationOnce(() => intents as never);
+    const out = await run('get_ai_agent_run', { runId: RUN });
+    expect(out.trace).toEqual({ id: RUN, trace: [] });
+    expect(out.stepResults).toEqual([expect.objectContaining({
+      intentId, actionName: 'manage_services', status: 'completed', resultSummary: expect.stringContaining('Service Spooler restarted'),
+    })]);
+    expect(intents.orderBy).toHaveBeenCalledWith(asc(actionIntents.createdAt));
+    expect(buildRunTrace).toHaveBeenCalledWith(row, null, null, [], [
+      { id: intentId, status: 'completed', actionName: 'manage_services', approvalScope: 'four_eyes', decidedVia: 'human' },
+    ]);
+  });
+  describe('step results within the tool-result budget (#11966)', () => {
+    const steps = Array.from({ length: 6 }, (_, i) => ({
+      id: `44444444-4444-4444-8444-44444444444${i}`, status: 'completed', actionName: 'manage_services',
+      approvalScope: 'four_eyes', decidedVia: 'human', errorCode: null,
+      result: { status: 'completed', stdout: `step-marker-${i} ${'y'.repeat(3_000)}` },
+      executedAt: new Date(Date.UTC(2026, 10, 16, 10, i)), createdAt: new Date(Date.UTC(2026, 10, 16, 9, i)),
+    }));
+    // `rows` sizes the trace: 2 fits beside the default step budget, 6 and 8
+    // fit only on their own, 12 overflows even the tightest tier (measured
+    // against compactToolResultForChat's tiers when this was written).
+    const traceOf = (rows: number) => ({
+      id: RUN, summary: `run-summary ${'s'.repeat(1_980)}`,
+      trace: Array.from({ length: rows }, (_, i) => ({ toolName: `tool_${i}`, a: 'a'.repeat(280), b: 'b'.repeat(280) })),
+    });
+    const compactedRun = async (rows: number) => {
+      const row = { id: RUN, orgId: ORG, deviceId: null, sessionId: null, agentName: null, agentKind: null, deviceHostname: null };
+      vi.mocked(buildRunTrace).mockReturnValue(traceOf(rows) as never);
+      vi.mocked(db.select).mockImplementationOnce(() => query([row]) as never).mockImplementationOnce(() => query(steps) as never);
+      return compactToolResultForChat('get_ai_agent_run', await tools.get('get_ai_agent_run')!.handler({ runId: RUN }, auth()));
+    };
+
+    it('shows every step beside a small trace', async () => {
+      const out = JSON.parse(await compactedRun(2));
+      expect(out.summarized).toBeUndefined();
+      expect(out.stepResults.map((r: { resultSummary: string }) => r.resultSummary))
+        .toEqual(steps.map((_, i) => expect.stringContaining(`step-marker-${i}`)));
+      expect(out.trace.summary).toMatch(/^run-summary s{1980}$/);
+    });
+
+    it.each([6, 8])('never turns a %i-row trace that fit on its own into a digest', async (rows) => {
+      expect(JSON.parse(compactToolResultForChat('get_ai_agent_run', JSON.stringify({ trace: traceOf(rows) }))).summarized).toBeUndefined();
+      const compacted = await compactedRun(rows);
+      expect(compacted.length).toBeLessThanOrEqual(MAX_TOOL_RESULT_CHARS);
+      const out = JSON.parse(compacted);
+      expect(out.summarized).toBeUndefined();
+      expect(out.trace.summary).toMatch(/^run-summary s{1980}$/);
+      expect(out.stepResults.length).toBeGreaterThan(0);
+      expect(out.stepResults[0].resultSummary).toContain('step-marker-0');
+      expect(out.stepResultsOmitted).toEqual({ count: 6 - out.stepResults.length, reason: expect.stringContaining('left room') });
+    });
+
+    it('leads the digest preview with the step results when the trace overflows on its own', async () => {
+      const out = JSON.parse(await compactedRun(12));
+      expect(out.summarized).toBe(true);
+      expect(out.preview.startsWith('{"stepResults":[{"intentId":')).toBe(true);
+      expect(out.preview).toContain('step-marker-0');
+    });
   });
   it('short-circuits an empty exact-device ceiling without a site ceiling', async () => {
     expect(await run('list_ai_agent_runs', {}, { allowedDeviceIds: [] })).toEqual({ runs: [], showing: 0 });
@@ -168,14 +237,15 @@ describe('AI-agent reads', () => {
     expect(ledger.orderBy).toHaveBeenCalledWith(asc(aiToolExecutions.createdAt));
     expect(intents.where).toHaveBeenCalledWith(and(eq(actionIntents.requestingAgentRunId, RUN), eq(actionIntents.orgId, ORG), eq(aiAgentRuns.orgId, ORG), undefined));
     expect(Object.keys(vi.mocked(db.select).mock.calls[1]![0]!).sort()).toEqual(['toolName', 'status', 'durationMs', 'createdAt', 'completedAt', 'errorMessage'].sort());
-    expect(Object.keys(vi.mocked(db.select).mock.calls[2]![0]!).sort()).toEqual(['id', 'status', 'actionName', 'approvalScope', 'decidedVia'].sort());
+    // #11966: result/errorCode/executedAt/createdAt feed the step summaries only.
+    expect(Object.keys(vi.mocked(db.select).mock.calls[2]![0]!).sort()).toEqual(['id', 'status', 'actionName', 'approvalScope', 'decidedVia', 'result', 'errorCode', 'executedAt', 'createdAt'].sort());
     expect(buildRunTrace).toHaveBeenCalledWith(row, { name: 'Triage', kind: 'triage' }, { hostname: 'Device' }, [ledgerRow], [intentRow]);
   });
   it('returns only the safe trace, never the raw run outcome', async () => {
     const row = { id: RUN, orgId: ORG, outcome: { private: 'secret' }, sessionId: null, agentName: null, agentKind: null, deviceHostname: null };
     page = query([row]);
     vi.mocked(db.select).mockImplementationOnce(() => page as never).mockImplementation(() => query([]) as never);
-    expect(await run('get_ai_agent_run', { runId: RUN })).toEqual({ trace: { id: RUN, trace: [] } });
+    expect(await run('get_ai_agent_run', { runId: RUN })).toEqual({ trace: { id: RUN, trace: [] }, stepResults: [] });
     expect(buildRunTrace).toHaveBeenCalledWith(row, null, null, [], []);
     const projection = vi.mocked(db.select).mock.calls[0]![0]!;
     expect(Object.keys(projection).sort()).toEqual(['id', 'agentId', 'orgId', 'deviceId', 'alertId', 'anomalyIncidentId', 'sessionId', 'triggerKind', 'modeAtStart', 'status', 'summary', 'scheduleId', 'triggerRef', 'reportRunId', 'computeCents', 'outcome', 'intentIds', 'turnCount', 'costCents', 'errorCode', 'queuedAt', 'startedAt', 'finishedAt', 'agentName', 'agentKind', 'deviceHostname'].sort());
