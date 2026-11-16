@@ -272,12 +272,14 @@ describe('endpoints (D8)', () => {
 
   it('an unexpected service error is a generic 500 that leaks nothing', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    users.listScimUsers.mockRejectedValueOnce(new Error('select * from portal_users where email = jane@acme.example'));
+    users.listScimUsers.mockRejectedValueOnce(new Error('Failed query: select * from portal_users where lower(email) = $1\nparams: jane@acme.example'));
     const res = await req('GET', '/Users');
     expect(res.status).toBe(500);
     expect(JSON.stringify(await res.json())).not.toContain('jane');
     // The router's onError replaces the app-level handler: it must report itself.
     expect(sentry.captureException).toHaveBeenCalledTimes(1);
+    // …and the log never carries a query-bearing message's parameters.
+    expect(JSON.stringify(errors.mock.calls)).not.toContain('jane@acme.example');
     errors.mockRestore();
   });
 });

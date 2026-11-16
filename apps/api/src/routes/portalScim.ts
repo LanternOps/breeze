@@ -21,6 +21,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { getRedis, rateLimiter } from '../services';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { captureException } from '../services/sentry';
+import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import {
   SCIM_CONTENT_TYPE,
   SCIM_USER_SCHEMA,
@@ -150,11 +151,12 @@ function handleError(err: unknown, c: Context): Response {
     return scimError(c, err.status, err.message, err.scimType);
   }
   // This router's onError replaces the app-level handler, so report here. The
-  // response body stays generic; the error goes to logs and Sentry (no PII is
-  // put in these messages — services log ids only).
+  // response body stays generic. A Drizzle error's message carries the query
+  // and its parameters (userNames, addresses), so the log gets only the safe
+  // form (class + SQLSTATE + constraint); Sentry's scrubber drops messages.
   console.error('[portal-scim] request failed', {
     error: err instanceof Error ? err.name : 'unknown',
-    message: err instanceof Error ? err.message : String(err),
+    detail: safeErrorMessage(err),
   });
   captureException(err instanceof Error ? err : new Error(String(err)), c, { area: 'portal_scim' });
   return scimError(c, 500, 'The request could not be completed.');
