@@ -38,6 +38,11 @@ describe('annual allowance bound scales with max_devices', () => {
     expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionLimit: 10000 }, now)).toBe(10000);
     expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionLimit: 10001 }, now)).toBe(5000);
   });
+  it('scales the bound just past the floor (max_devices 551 → bound 1,102)', () => {
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 551, billingAdmissionLimit: 1101 }, now)).toBe(1101);
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 551, billingAdmissionLimit: 1102 }, now)).toBe(1102);
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 551, billingAdmissionLimit: 1103 }, now)).toBe(551);
+  });
   it('keeps the 1,100 floor for small partners', () => {
     expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 110, billingAdmissionLimit: 1100 }, now)).toBe(1100);
     expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 110, billingAdmissionLimit: 1101 }, now)).toBe(110);

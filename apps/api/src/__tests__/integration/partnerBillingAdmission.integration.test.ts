@@ -32,6 +32,12 @@ describe('partners.billing_admission_limit database bound', () => {
       .toEqual([{ id: expect.any(String), limit: 4000 }]);
   });
 
+  it('evaluates the bound without integer overflow for a huge max_devices', async () => {
+    // 2 * 2,000,000,000 exceeds int4; the CHECK must compute it in bigint, not raise 22003.
+    expect(await insertAllowance({ maxDevices: 2_000_000_000, limit: 2_100_000_000, expiresAt }))
+      .toEqual([{ id: expect.any(String), limit: 2_100_000_000 }]);
+  });
+
   it('rejects an allowance above 2 x max_devices', async () => {
     await expect(insertAllowance({ maxDevices: 2000, limit: 4001, expiresAt })).rejects.toMatchObject(violation);
   });
