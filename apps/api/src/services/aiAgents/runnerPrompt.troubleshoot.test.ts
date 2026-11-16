@@ -29,8 +29,8 @@ function ctx(goal: string | null = 'Outlook crashes on start since Tuesday'): Ag
 describe('device_troubleshooting prompts (#11084)', () => {
   it('renders a long goal whole up to the schema cap, keeping an exact path at its tail (#11973)', () => {
     const tail = 'HKLM\\SOFTWARE\\Vendor\\Product\\Deep\\Key';
-    const goal = `${'context '.repeat(150)}${tail}`.slice(-TROUBLESHOOT_GOAL_MAX_CHARS);
-    expect(goal.length).toBeGreaterThan(500);
+    const goal = `${'x'.repeat(TROUBLESHOOT_GOAL_MAX_CHARS - tail.length)}${tail}`;
+    expect(goal.length).toBe(TROUBLESHOOT_GOAL_MAX_CHARS);
     expect(buildAgentRunTaskPrompt(ctx(goal))).toContain(tail);
   });
 

@@ -561,7 +561,8 @@ describe('launchDeviceTroubleshooting (#11084)', () => {
     const goal = `Read HKLM\\SOFTWARE\\Vendor\\Product\\Settings\\Deep\\Key ${'context '.repeat(120)}`.trim();
     expect(goal.length).toBeGreaterThan(900);
     expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal })).toEqual({ deviceId: DEVICE, goal });
-    expect(TROUBLESHOOT_GOAL_MAX_CHARS).toBe(2000);
+    const atCap = 'x'.repeat(TROUBLESHOOT_GOAL_MAX_CHARS);
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: atCap })).toEqual({ deviceId: DEVICE, goal: atCap });
   });
 
   it('validates params: a uuid device and a 5–2000 char goal, nothing else', () => {
