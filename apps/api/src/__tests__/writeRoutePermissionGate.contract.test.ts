@@ -421,6 +421,14 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/webhooks/flows/:flowId': 'webhook: signature/token authenticated (services/flows/webhook/verify.ts), no user permission',
   // routes/webhooks/edr.ts
   'POST /api/v1/webhooks/edr/:connectionId': 'webhook: EDR push hint; connection lookup + adapter secret verification in handler',
+  // routes/portalScim.ts (portal registration W9 #11386, plan D9): Entra SCIM provisioning.
+  // The org's SCIM bearer token is the credential (hashed, constant-time, bound to the
+  // org's proven tenant, re-checked under the row locks); every write is scoped to that
+  // org and tenant and audited; uniform 401; per-IP failure and per-org limits.
+  'POST /api/v1/scim/portal/v2/Users': 'webhook: SCIM bearer token of one org (portal provisioning); org + tenant scoped, audited',
+  'PUT /api/v1/scim/portal/v2/Users/:id': 'webhook: SCIM bearer token of one org (portal provisioning); org + tenant scoped, audited',
+  'PATCH /api/v1/scim/portal/v2/Users/:id': 'webhook: SCIM bearer token of one org (portal provisioning); org + tenant scoped, audited',
+  'DELETE /api/v1/scim/portal/v2/Users/:id': 'webhook: SCIM bearer token of one org (portal provisioning); org + tenant scoped, audited',
   // routes/webhooks/emailProvider.ts
   'POST /api/v1/webhooks/email-provider/resend': 'webhook: Svix signature verified with configured webhook secret',
   // routes/webhooks/quickbooks.ts

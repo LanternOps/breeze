@@ -311,6 +311,11 @@ describe('isPartnerGuardExemptPath — exempt list (table-driven)', () => {
     ['/api/v1/webhooks/edr/not-a-uuid', false],
     ['/api/v1/webhooks/edr/------------------------------------', false],
     ['/api/v1/webhooks/edr', false],
+    // Portal SCIM (W9 #11386, plan D9): authenticated by the router's SCIM token only
+    ['/api/v1/scim/portal/v2/Users', true],
+    ['/api/v1/scim/portal/v2/Users/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e', true],
+    ['/api/v1/scim', true],
+    ['/api/v1/scimx', false],
     ['/api/v1/webhooks/edr/', false],
     ['/api/v1/edr/connections', false],
     // flow webhook ingress (W05): exact /webhooks/flows/<uuid> only

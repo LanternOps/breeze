@@ -71,6 +71,11 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // planned by the state module under the account row lock, each writing
   // disabledBy; plus OD3's remove (the W3 D4 entra_* fence, no state).
   'apps/api/src/services/portalDirectory/identityDisable.ts': { kind: 'state-module' },
+  // Portal registration W9 (#11386) plan D4/D5: SCIM adoption grants browser
+  // access (scim_grant_browser_access) and a SCIM userName change updates an
+  // identity-only account's name/email. Deactivate / reactivate go through
+  // identityDisable.ts; new SCIM accounts through portalIdentityAccounts.ts.
+  'apps/api/src/services/portalScim/users.ts': { kind: 'state-module' },
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');
