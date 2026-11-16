@@ -24,9 +24,11 @@ function outcome(overrides: Record<string, unknown> = {}) {
 }
 
 describe('restorePoint outcome status vocabulary (#4757)', () => {
-  // The agent (agent/internal/systemrestore/types.go, Status) produces exactly
-  // these eleven. A rename or a new value on any one of the three sides must
-  // fail here rather than silently classify real outcomes as invalid.
+  // The agent (agent/internal/systemrestore/types.go, Status) produces these
+  // eleven; 'interrupted' is accepted here before the agent half of #9163 adds
+  // it (API-first release ordering). This pins the three TypeScript sides to
+  // each other only: a rename or a new value on any one of them must fail here
+  // rather than silently classify real outcomes as invalid.
   const ELEVEN = [
     'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only', 'skipped_no_mutation',
     'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed', 'interrupted',

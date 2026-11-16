@@ -710,7 +710,9 @@ export function isAgentCommandErrorCode(value: unknown): value is AgentCommandEr
 /**
  * The eleven statuses an agent can report for a System Restore checkpoint
  * attempt (#4609, W06 #4757; 'interrupted' #9163). Mirrors `Status` in
- * agent/internal/systemrestore/types.go. 'requested' is deliberately absent:
+ * agent/internal/systemrestore/types.go, except 'interrupted': the API accepts
+ * it ahead of the agent half of #9163, which adds `StatusInterrupted` (the
+ * API must be deployed first). 'requested' is deliberately absent:
  * it is server-only, written at command-creation time, and an agent claiming
  * it is malformed. Pinned against the shared union and the ledger statuses in
  * restorePointResultSchema.test.ts.
