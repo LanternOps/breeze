@@ -2618,8 +2618,8 @@ describe("binarySync", () => {
     const RECOVERY = "breeze-isolation-recovery-windows-amd64.exe";
 
     function stubRelease(
-      signed: { manifest: Buffer; signature: Buffer; release?: string },
-      assets: { name: string; buffer: Buffer }[],
+      signed: { manifest: Buffer<ArrayBuffer>; signature: Buffer<ArrayBuffer>; release?: string },
+      assets: { name: string; buffer: Buffer<ArrayBuffer> }[],
     ) {
       vi.stubGlobal(
         "fetch",
