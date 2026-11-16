@@ -355,6 +355,12 @@ export class WorkspaceService {
         );
       }
       if (!record) throw new WorkspaceToolError('artifact_forbidden', 'That artifact is not available to this run.');
+      if (record.expiresAt.getTime() <= Date.now()) {
+        throw new WorkspaceToolError(
+          'artifact_expired',
+          'That file has expired and can no longer be staged. Export it again if you need it.',
+        );
+      }
       if (record.bytes > WORKSPACE_MAX_FILE_BYTES) {
         throw new WorkspaceToolError(
           'staged_bytes_cap',
