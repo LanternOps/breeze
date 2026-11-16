@@ -3,7 +3,7 @@
 # ============================================
 
 # Stage 1: Base image with pnpm
-FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS base
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS base
 RUN npm install -g pnpm@10.34.5
 RUN apk add --no-cache libc6-compat python3 make g++
 WORKDIR /app
@@ -77,7 +77,7 @@ COPY apps/api/assets ./apps/api/assets
 # platform (pure Go, CGO off) instead of under QEMU for each target arch. The
 # Go tag must equal agent/go.mod's `go` directive
 # (scripts/security/check-go-version-pins.sh); the digest pins the image.
-FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS yarac
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS yarac
 ARG TARGETOS
 ARG TARGETARCH
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
@@ -90,7 +90,7 @@ COPY agent/pkg/httpguard ./pkg/httpguard
 RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /out/breeze-yarac ./cmd/breeze-yarac
 
 # Stage 4: Production runner
-FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS runner
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS runner
 WORKDIR /app
 
 # Refresh libcrypto3/libssl3 because the pinned base digest predates the fix for
