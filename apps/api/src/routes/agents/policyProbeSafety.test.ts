@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   isAllowedPolicyConfigProbe,
+  isAllowedPolicyRegistryProbe,
   sanitizePolicyConfigStateEntries,
+  sanitizePolicyRegistryStateEntries,
 } from './policyProbeSafety';
 
 describe('policy config probe safety', () => {
@@ -25,6 +27,35 @@ describe('policy config probe safety', () => {
 
     expect(entries).toEqual([
       { filePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configValue: 'no' },
+    ]);
+  });
+});
+
+describe('policy registry probe safety (#11976)', () => {
+  it('allows ordinary policy registry paths in either hive spelling and separator', () => {
+    expect(isAllowedPolicyRegistryProbe('HKLM\\SOFTWARE\\Policies\\Microsoft\\Power\\PowerSettings\\{GUID}')).toBe(true);
+    expect(isAllowedPolicyRegistryProbe('HKEY_LOCAL_MACHINE/SOFTWARE/Contoso')).toBe(true);
+    expect(isAllowedPolicyRegistryProbe('HKCU\\SAM\\NotTheCredentialStore')).toBe(true);
+  });
+
+  it('rejects the credential stores (SAM, SECURITY / LSA secrets) however they are spelled', () => {
+    expect(isAllowedPolicyRegistryProbe('HKLM\\SAM\\SAM\\Domains\\Account')).toBe(false);
+    expect(isAllowedPolicyRegistryProbe('HKEY_LOCAL_MACHINE\\SECURITY\\Policy\\Secrets')).toBe(false);
+    expect(isAllowedPolicyRegistryProbe(' hklm/security ')).toBe(false);
+    expect(isAllowedPolicyRegistryProbe('HKLM\\SOFTWARE\\..\\SAM')).toBe(false);
+    expect(isAllowedPolicyRegistryProbe('HKLM\\\\SAM')).toBe(false);
+    // The agent trims the sub-path, so leading whitespace still opens SAM.
+    expect(isAllowedPolicyRegistryProbe('HKLM \\ SAM\\SAM')).toBe(false);
+  });
+
+  it('drops credential-store registry state entries before persistence', () => {
+    const entries = sanitizePolicyRegistryStateEntries([
+      { registryPath: 'HKLM\\SOFTWARE\\Contoso', valueName: 'Enabled', valueData: 1 },
+      { registryPath: 'HKLM\\SECURITY\\Policy\\Secrets\\X', valueName: 'CurrVal', valueData: 'secret' },
+    ]);
+
+    expect(entries).toEqual([
+      { registryPath: 'HKLM\\SOFTWARE\\Contoso', valueName: 'Enabled', valueData: 1 },
     ]);
   });
 });

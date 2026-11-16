@@ -93,7 +93,7 @@ import { isUpgradeTargetServable } from '../../services/localBinaryBuild';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
 import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
-import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
+import { isAllowedPolicyConfigProbe, isAllowedPolicyRegistryProbe } from './policyProbeSafety';
 import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
 import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
@@ -410,7 +410,7 @@ export function derivePolicyStateProbesFromRules(rules: unknown): {
     if (type === 'registry_check') {
       const registryPath = readTrimmedString(rawRule.registryPath ?? rawRule.registry_path);
       const valueName = readTrimmedString(rawRule.registryValueName ?? rawRule.registry_value_name);
-      if (!registryPath || !valueName) {
+      if (!registryPath || !valueName || !isAllowedPolicyRegistryProbe(registryPath)) {
         continue;
       }
 

@@ -1,3 +1,5 @@
+import { isDeniedRegistryTarget } from '../systemTools/sensitiveTargets';
+
 const REDACTED_POLICY_CONFIG_VALUE = '[redacted]';
 
 const ALLOWED_CONFIG_KEYS_BY_PATH = new Map<string, Set<string>>([
@@ -134,4 +136,30 @@ export function sanitizePolicyConfigStateEntries<T extends IncomingPolicyConfigS
       configValue: redactSensitivePolicyConfigValue(configKey, entry.configValue),
     } as T];
   });
+}
+
+/**
+ * #11976: a compliance registry_check now reaches the agent's probe list, and
+ * the agent reads it as LocalSystem and uploads the value. Refuse the same
+ * credential stores (HKLM\\SAM, HKLM\\SECURITY incl. LSA secrets) that the
+ * registry browser tools refuse, whatever the hive spelling or separator.
+ * The hive is the first path segment, as the agent's probe resolver splits it.
+ */
+export function isAllowedPolicyRegistryProbe(registryPath: string): boolean {
+  const normalized = registryPath.trim().replace(/\//g, '\\');
+  const separator = normalized.indexOf('\\');
+  const hive = separator === -1 ? normalized : normalized.slice(0, separator);
+  // The agent TrimSpaces the sub-path too, so `HKLM\ SAM` opens SAM.
+  const subPath = separator === -1 ? '' : normalized.slice(separator + 1).trim();
+  return !isDeniedRegistryTarget(hive, subPath);
+}
+
+export type IncomingPolicyRegistryStateEntry = {
+  registryPath: string;
+  valueName: string;
+};
+
+/** Ingest-side twin of the probe filter: drop credential-store values an agent reports anyway. */
+export function sanitizePolicyRegistryStateEntries<T extends IncomingPolicyRegistryStateEntry>(entries: T[]): T[] {
+  return entries.filter((entry) => isAllowedPolicyRegistryProbe(entry.registryPath));
 }

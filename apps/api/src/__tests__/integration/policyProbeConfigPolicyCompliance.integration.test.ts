@@ -140,6 +140,41 @@ describe('buildPolicyProbeConfigUpdate: configuration-policy compliance rules (#
     expect(probe?.policy_registry_state_probes).toEqual([{ registry_path: POWER_PATH, value_name: 'Inherited' }]);
   });
 
+  runDb('a compliance rule aimed at a credential store (SAM / SECURITY) never becomes a probe', async () => {
+    const t = await seedTenant();
+    await seedCompliancePolicy({
+      owner: { orgId: t.orgId, partnerId: null },
+      rules: [
+        registryRule('HKLM\\SAM\\SAM\\Domains\\Account', 'F'),
+        registryRule('HKEY_LOCAL_MACHINE/SECURITY/Policy/Secrets/DefaultPassword', 'CurrVal'),
+        registryRule(POWER_PATH, 'ACSettingIndex'),
+      ],
+    });
+
+    const probe = await withDbAccessContext(agentContext(t.orgId, t.partnerId), () =>
+      buildPolicyProbeConfigUpdate(t.orgId, { partnerId: t.partnerId }));
+
+    expect(probe?.policy_registry_state_probes).toEqual([{ registry_path: POWER_PATH, value_name: 'ACSettingIndex' }]);
+  });
+
+  runDb('ownership predicate: no partner = org-owned only; another partner\'s partner-wide rule never leaks (system scope, RLS cannot mask it)', async () => {
+    const t = await seedTenant();
+    const other = await seedTenant();
+    await seedCompliancePolicy({ owner: { orgId: t.orgId, partnerId: null }, rules: [registryRule(POWER_PATH, 'OrgOwn')] });
+    await seedCompliancePolicy({ owner: { orgId: null, partnerId: t.partnerId }, rules: [registryRule(POWER_PATH, 'OwnPartnerWide')] });
+    await seedCompliancePolicy({ owner: { orgId: null, partnerId: other.partnerId }, rules: [registryRule(POWER_PATH, 'ForeignPartnerWide')] });
+
+    const names = (probe: Awaited<ReturnType<typeof buildPolicyProbeConfigUpdate>>) =>
+      (probe?.policy_registry_state_probes ?? []).map((p) => p.value_name).sort();
+
+    // System scope sees every row, so only the app predicate excludes the foreign partner.
+    expect(names(await sys(() => buildPolicyProbeConfigUpdate(t.orgId, { partnerId: t.partnerId }))))
+      .toEqual(['OrgOwn', 'OwnPartnerWide']);
+    // partnerId null takes the org-only branch: the org's own partner-wide row drops out too.
+    expect(names(await sys(() => buildPolicyProbeConfigUpdate(t.orgId, { partnerId: null }))))
+      .toEqual(['OrgOwn']);
+  });
+
   runDb('inactive policies and other orgs\' policies are not probed; duplicates with automation policies collapse', async () => {
     const t = await seedTenant();
     const other = await seedTenant();
