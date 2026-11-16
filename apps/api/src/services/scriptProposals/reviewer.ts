@@ -28,7 +28,7 @@ import { messagesUsage, messagesUsageAfterDispatchError } from '../aiModels/invo
 import { refusalHeadline } from '../aiModels/refusals';
 import { resolveModel } from '../aiModels/resolveModel';
 import { safeErrorMessage } from '../aiModels/safeDbError';
-import { settleInvocation } from '../aiModels/settleInvocation';
+import { quoteInvocationCents, settleInvocation } from '../aiModels/settleInvocation';
 import { turnBindingFrom } from '../aiModels/turnBinding';
 import { createAuditLogAsync } from '../auditService';
 import { captureException } from '../sentry';
@@ -417,14 +417,14 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     : null;
   if (!resolved?.ok) {
     return failReview(job, resolved ? resolved.message : 'No AI model is available for script review.', 'failed', {
-      reservationId: undefined, model: undefined,
+      reservationId: undefined, model: undefined, costCents: 0,
     });
   }
   // Credits + plan gate for the resolved funding, BEFORE the reservation
   // (reserveAiBudget only enforces caps).
   const denial = await checkBudgetDetailed(job.orgId, resolved.funding);
   if (denial) {
-    return failReview(job, denial.message, 'failed', { reservationId: undefined, model: undefined });
+    return failReview(job, denial.message, 'failed', { reservationId: undefined, model: undefined, costCents: 0 });
   }
   const binding = turnBindingFrom(resolved);
   const model = binding.wireModel;
@@ -438,7 +438,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   });
   if (reservation.kind === 'denied') {
     return failReview(job, `Budget denied (${reservation.reason}): ${reservation.message}`, 'failed', {
-      reservationId: undefined, model: undefined,
+      reservationId: undefined, model: undefined, costCents: 0,
     });
   }
   const reservationId = reservation.reservationId;
@@ -448,16 +448,24 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   // resolved), written to the ledger and rolled into the org totals by
   // settleInvocation — always on THAT hop's binding and reservation (W09 F4/F5).
   // With no attempts (nothing came back) the reservation settles at zero.
-  const settleOn = (hop: FailoverHop, attempts: MessageAttempt[], dispatchFailed = false) => settleInvocation({
-    binding: hop.binding, orgId: job.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef,
-    ...(attempts.length > 0
-      ? (dispatchFailed ? messagesUsageAfterDispatchError(hop.binding, attempts) : messagesUsage(hop.binding, attempts))
-      : {
-          usage: [],
-          outcome: { stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false, servedModel: hop.binding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false },
-        }),
-    reservationId: hop.reservationId,
-  });
+  // #11972: what each settlement billed is added to `spentCents`, so the review
+  // row carries the same cents the ledger holds. Failover hops runWithFailover
+  // settles itself (settleZeroUsageHop) bill nothing and are not counted.
+  let spentCents = 0;
+  const settleOn = async (hop: FailoverHop, attempts: MessageAttempt[], dispatchFailed = false) => {
+    const settled = await settleInvocation({
+      binding: hop.binding, orgId: job.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef,
+      ...(attempts.length > 0
+        ? (dispatchFailed ? messagesUsageAfterDispatchError(hop.binding, attempts) : messagesUsage(hop.binding, attempts))
+        : {
+            usage: [],
+            outcome: { stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false, servedModel: hop.binding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false },
+          }),
+      reservationId: hop.reservationId,
+    });
+    spentCents += settled.costCents;
+    return settled;
+  };
   // Hop 0 keeps W03's stable key; a failover hop n reserves `<key>:hop:<n>`.
   const firstHop: FailoverHop = {
     index: 0, resolved, binding, reservationId, idempotencyKey: `script-review:${job.proposalId}:${job.attempt}`,
@@ -479,7 +487,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     ({ system, user } = buildReviewerPrompt({ proposal, scan, devices: targetDevices, ceiling }));
   } catch (error) {
     await releaseUndispatched();
-    return failReview(job, `Review inputs unavailable: ${errorMessage(error)}`, 'failed', { reservationId, model });
+    return failReview(job, `Review inputs unavailable: ${errorMessage(error)}`, 'failed', { reservationId, model, costCents: 0 });
   }
 
   let client0: ReturnType<typeof anthropicClientFor>;
@@ -488,7 +496,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   } catch (error) {
     await releaseUndispatched();
     const name = error instanceof Error ? error.name : 'Error';
-    return failReview(job, `Provider or model resolution failed (${name}): ${errorMessage(error)}`, 'failed', { reservationId, model });
+    return failReview(job, `Provider or model resolution failed (${name}): ${errorMessage(error)}`, 'failed', { reservationId, model, costCents: 0 });
   }
 
   // One hard wall clock for the whole review, failover hops and the parse
@@ -555,7 +563,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
             ? `Reviewer model call failed and its backup model was not admitted: ${error.admissionMessage}`
             : `Reviewer model call failed on every configured model: ${errorMessage(dispatchCause(error.lastError))}`),
           'failed',
-          { reservationId: error.lastHop.reservationId, model: error.lastHop.binding.wireModel, inputTokens, outputTokens, ...rawTextOnFailure },
+          { reservationId: error.lastHop.reservationId, model: error.lastHop.binding.wireModel, inputTokens, outputTokens, costCents: spentCents, ...rawTextOnFailure },
         ) };
       }
       const cause = dispatchCause(error);
@@ -567,7 +575,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
         job,
         failureReason(`Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(cause)}`),
         timedOut ? 'timeout' : 'failed',
-        { reservationId: current.reservationId, model: current.binding.wireModel, inputTokens, outputTokens, ...rawTextOnFailure },
+        { reservationId: current.reservationId, model: current.binding.wireModel, inputTokens, outputTokens, costCents: spentCents, ...rawTextOnFailure },
       ) };
     }
   };
@@ -615,7 +623,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
       // Tokens were spent: settle them, then fail the review with the category
       // so the proposal shows why (§9.1a) instead of "no parseable verdict".
       await settle(outcome.attempts);
-      return failReview(job, refusalHeadline(billed.outcome.refusalCategory), 'failed', { reservationId: served.reservationId, model: served.binding.wireModel, inputTokens, outputTokens });
+      return failReview(job, refusalHeadline(billed.outcome.refusalCategory), 'failed', { reservationId: served.reservationId, model: served.binding.wireModel, inputTokens, outputTokens, costCents: spentCents });
     }
 
     const textBlock = resp.content.find((b) => b.type === 'text');
@@ -643,10 +651,33 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     // Tokens really were spent: settle at the REAL counts, then fail closed.
     if (!settled) await settle(outcome.attempts);
     const reason = retrySkipped ? `${interpreted.reason} (the one retry was not attempted: ${retrySkipped})` : interpreted.reason;
-    return failReview(job, reason, 'failed', { reservationId: servedReservationId, model: servedModel, inputTokens, outputTokens, rawText });
+    return failReview(job, reason, 'failed', { reservationId: servedReservationId, model: servedModel, inputTokens, outputTokens, costCents: spentCents, rawText });
   }
 
   const floored = applyReviewFloors(interpreted.verdict, scan);
+
+  // #11972: the row is append-only, so its cost is fixed at insert, which comes
+  // before this call is settled (see below). quoteInvocationCents prices it with
+  // the rate selection settleInvocation bills; calls already settled (a parse
+  // retry's first attempt) are in `spentCents`. A quote fault leaves the cost
+  // unknown (null) rather than failing a review whose verdict is good: the
+  // ledger still holds the billed cents.
+  let reviewCostCents: number | null;
+  try {
+    reviewCostCents = spentCents + await quoteInvocationCents(
+      served.binding,
+      messagesUsage(served.binding, outcome.attempts).usage,
+      { orgId: job.orgId, reservationId: servedReservationId },
+    );
+  } catch (error) {
+    reviewCostCents = null;
+    console.error('[scriptReview] could not price the review row; its cost is recorded as unknown', {
+      proposalId: job.proposalId, orgId: job.orgId, reservationId: servedReservationId,
+    });
+    captureException(new Error(safeErrorMessage(error)), undefined, {
+      service: 'scriptReview', orgId: job.orgId, area: 'script_review_cost_quote',
+    });
+  }
 
   // Insert the model review row and transition the proposal atomically (one
   // system context = one transaction). If the transition loses its CAS (a
@@ -675,9 +706,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
           verdict: floored,
           inputTokens,
           outputTokens,
-          // Priced by settleInvocation against the reservation; the row keeps the
-          // token counts, the reservation keeps the cents.
-          costCents: null,
+          costCents: costCentsColumn(reviewCostCents),
           budgetReservationId: servedReservationId,
         })
         .returning();
@@ -733,6 +762,15 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
 }
 
 /**
+ * `cost_cents` is numeric(12,4). Null means unknown (the price could not be
+ * worked out), never "free". A non-finite sum is a pricing fault, so it is
+ * stored as unknown too.
+ */
+function costCentsColumn(cents: number | null): string | null {
+  return cents === null || !Number.isFinite(cents) ? null : cents.toFixed(4);
+}
+
+/**
  * Inserts a `model` reviewer_kind row recording the failure (so the reviews
  * table stays a complete chain even on failure) and transitions the proposal
  * to `review_failed` in the same transaction (D7 — fail closed; nothing runs
@@ -751,6 +789,12 @@ async function failReview(
     model: string | undefined;
     inputTokens?: number;
     outputTokens?: number;
+    /**
+     * #11972: the cents this review was billed so far (what its settlements
+     * returned). Required so a new failure branch cannot leave it out: 0 when
+     * nothing was dispatched.
+     */
+    costCents: number;
     /** The model's raw text when it was received but unusable — kept on the row for diagnosis. */
     rawText?: string;
   },
@@ -784,7 +828,7 @@ async function failReview(
         verdict: { error: reason, ...(ctx.rawText !== undefined ? { rawText: ctx.rawText.slice(0, 4000) } : {}) },
         inputTokens: ctx.inputTokens ?? 0,
         outputTokens: ctx.outputTokens ?? 0,
-        costCents: null,
+        costCents: costCentsColumn(ctx.costCents),
         budgetReservationId: ctx.reservationId ?? null,
       })
       .returning();

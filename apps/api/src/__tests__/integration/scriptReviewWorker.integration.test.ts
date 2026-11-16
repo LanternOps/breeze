@@ -141,6 +141,8 @@ runDb('a clean proposal becomes reviewed: static_scan + model rows, classifier f
   expect(ledger).toHaveLength(1);
   expect(ledger[0]).toMatchObject({ surface: 'script_reviewer', sourceRef: `script-review:${proposal.id}`, fundingSource: 'platform' });
   expect(Number(ledger[0]!.costCents)).toBeCloseTo(0.174, 4);
+  // #11972: the review row records the same cents the ledger billed.
+  expect(rows[1]!.costCents).toBe('0.1740');
 
   // The inline wait W01b's propose_script uses returns the MODEL row.
   const awaited = await waitForReviewCompletion(proposal.id, 5_000);
@@ -195,6 +197,13 @@ runDb('an unparseable verdict fails closed: model row failed, proposal review_fa
   const reservations = await reservationsFor(org.id);
   expect(reservations).toHaveLength(2);
   expect(reservations.map((r) => r.status)).toEqual(['settled', 'settled']);
+
+  // #11972: the failure row records what both settled attempts billed
+  // (610 in + 85 out at 200/1000 cents per M = 0.122 + 0.085 cents).
+  const ledger = await withSystemDbAccessContext(() =>
+    db.select().from(aiInvocations).where(eq(aiInvocations.orgId, org.id)));
+  expect(ledger.reduce((n, r) => n + Number(r.costCents), 0)).toBeCloseTo(0.207, 4);
+  expect(rows[1]!.costCents).toBe('0.2070');
 
   // The failed model row is what the inline wait reports — never the scan row.
   const awaited = await waitForReviewCompletion(proposal.id, 5_000);
