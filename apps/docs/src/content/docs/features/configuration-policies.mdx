@@ -308,6 +308,7 @@ The badge text is what a technician sees on the patch, script or deployment and 
 | Skipped — not enough privileges | The agent was not running with the rights System Restore needs. Check how the agent service runs on this device. |
 | Could not be verified | A request was made but the device could not confirm that the restore point exists. Do not assume one exists; check Windows directly (`Get-ComputerRestorePoint`). |
 | Failed — *message* | Windows or the agent returned an error, shown in the badge. Use the message to troubleshoot. |
+| Unknown — the agent stopped before it could report this restore point | The agent restarted, crashed or was shut down (for example by a reboot) while the command was running, before it could report the checkpoint's outcome. Whether a restore point was made is unknown: check Windows directly (`Get-ComputerRestorePoint`). When Windows listed a point carrying this request's description, its sequence number is recorded on the entry. |
 
 A checkpoint outcome never blocks the action it was requested for. A badge value your console does not recognise (for example after a partial upgrade) shows as "Outcome not recognised by this version of the console".
 
