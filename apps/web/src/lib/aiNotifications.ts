@@ -41,13 +41,15 @@ export interface AiNotifyContext {
 const STORAGE_PREFIX = 'breeze-ai-notify:';
 const TAG_PREFIX = 'breeze-ai:';
 
-/** Static map so every key is a literal (keyUsage.test.ts flags computed keys). */
-const BODY_KEYS: Record<AiNotifyKind, string> = {
-  response_ready: 'ai:aiNotifications.responseReady',
-  needs_approval: 'ai:aiNotifications.needsApproval',
-  needs_input: 'ai:aiNotifications.needsInput',
-  failed: 'ai:aiNotifications.failed',
-};
+/** One literal t() call per kind (keyUsage.test.ts rejects computed keys). */
+function bodyFor(kind: AiNotifyKind): string {
+  switch (kind) {
+    case 'response_ready': return i18n.t('ai:aiNotifications.responseReady');
+    case 'needs_approval': return i18n.t('ai:aiNotifications.needsApproval');
+    case 'needs_input': return i18n.t('ai:aiNotifications.needsInput');
+    case 'failed': return i18n.t('ai:aiNotifications.failed');
+  }
+}
 
 const NEEDS_USER: ReadonlySet<AiNotifyKind> = new Set<AiNotifyKind>(['needs_approval', 'needs_input']);
 
@@ -156,7 +158,8 @@ function tagFor(kind: AiNotifyKind, surface: AiNotifySurface, sessionId: string 
 
 const open = new Map<string, Notification>();
 
-function currentUserId(): string | undefined {
+/** The signed-in user's id, or undefined (signed out, or the auth store unavailable). Never throws. */
+export function currentUserId(): string | undefined {
   try {
     return useAuthStore.getState().user?.id;
   } catch {
@@ -174,7 +177,8 @@ export function notifyAi(kind: AiNotifyKind, surface: AiNotifySurface, opts: AiN
     const tag = tagFor(kind, surface, opts.sessionId);
     let n: Notification;
     try {
-      n = new api(i18n.t('ai:aiNotifications.title'), { body: i18n.t(BODY_KEYS[kind]), tag, silent: true });
+      // The title is the chat's own name (the side panel's heading), never the conversation's.
+      n = new api(i18n.t('ai:aiChatSidebar.title'), { body: bodyFor(kind), tag, silent: true });
     } catch (err) {
       // Android Chrome (and some embedded browsers) only allow service-worker
       // notifications: stop trying and let the bell hide itself.

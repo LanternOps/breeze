@@ -1119,13 +1119,12 @@
     "conversationGone": "Esta conversación ya no está disponible. Inicia un chat nuevo para continuar."
   },
   "aiNotifications": {
-    "title": "Breeze AI",
     "responseReady": "Respuesta lista",
     "needsApproval": "Necesita tu aprobación",
     "needsInput": "Necesita tu respuesta",
     "failed": "La respuesta falló",
     "enable": "Notificarme cuando una respuesta esté lista",
-    "disable": "Desactivar las notificaciones del chat de IA",
+    "disable": "Desactivar las notificaciones de Breeze AI",
     "blocked": "Las notificaciones están bloqueadas para este sitio. Permítelas en la configuración del navegador."
   }
 }

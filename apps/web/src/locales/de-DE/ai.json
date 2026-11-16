@@ -1119,13 +1119,12 @@
     "conversationGone": "Diese Unterhaltung ist nicht mehr verfügbar. Starten Sie einen neuen Chat, um fortzufahren."
   },
   "aiNotifications": {
-    "title": "Breeze AI",
     "responseReady": "Antwort bereit",
     "needsApproval": "Benötigt Ihre Genehmigung",
     "needsInput": "Benötigt Ihre Eingabe",
     "failed": "Antwort fehlgeschlagen",
     "enable": "Benachrichtigen, wenn eine Antwort bereit ist",
-    "disable": "KI-Chat-Benachrichtigungen ausschalten",
+    "disable": "Breeze AI-Benachrichtigungen ausschalten",
     "blocked": "Benachrichtigungen sind für diese Website blockiert. Erlauben Sie sie in den Browsereinstellungen."
   }
 }

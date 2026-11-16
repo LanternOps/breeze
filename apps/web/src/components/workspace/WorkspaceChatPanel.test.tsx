@@ -68,6 +68,15 @@ const baseTab = (over = {}) => ({
   ...over,
 });
 
+// #9429: the notification bell (states tested in AiNotifyToggle.test.tsx).
+vi.mock('../ai/AiNotifyToggle', () => ({ default: () => <span data-testid="ai-notify-toggle" /> }));
+describe('WorkspaceChatPanel - notification bell (#9429)', () => {
+  it('mounts the bell in the panel header', () => {
+    render(<WorkspaceChatPanel tab={baseTab() as any} />);
+    expect(screen.getByTestId('ai-notify-toggle')).toBeInTheDocument();
+  });
+});
+
 describe('WorkspaceChatPanel - Try again (#9428)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
