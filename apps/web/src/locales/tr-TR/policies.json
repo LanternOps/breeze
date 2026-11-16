@@ -1200,7 +1200,77 @@
       },
       "wakeOnLanTab": {
         "title": "Wake-on-LAN",
-        "description": "Çevrimdışı bir cihaz için Uyandır düğmesinin ne zaman gösterileceğini seçin."
+        "description": "Çevrimdışı bir cihaz için Uyandır düğmesinin ne zaman gösterileceğini seçin.",
+        "platformDefaultNote": "Atanmış bir ilke yok. Platform varsayılanı: Uyandır düğmesi çevrimdışı her cihazda görünür.",
+        "modeTitle": "Uyandır düğmesi ne zaman görünür",
+        "mode": {
+          "always": "Her zaman",
+          "alwaysHelp": "Çevrimdışı her cihazda Uyandır düğmesini göster. Art arda zaman aşımına uğrayan cihazlar aşağıda işaretlenir ancak asla gizlenmez.",
+          "verified": "Yalnızca hazır olduğu doğrulandığında",
+          "verifiedHelp": "Uyandır düğmesini yalnızca hazır bildiren veya önceki bir uyandırmayla çevrimiçi olduğu kanıtlanan cihazlar için göster. Diğer cihazlara bir kez test uyandırması gönderilebilir."
+        },
+        "aboutTitle": "Bu ayar hakkında",
+        "aboutBody": "Bu ilke yalnızca Uyandır düğmesinin ne zaman görüneceğine karar verir. Breeze her cihazın Wake-on-LAN hazırlığını okur ancak BIOS, ağ bağdaştırıcısı veya Windows ayarlarını değiştirmez.",
+        "panel": {
+          "title": "Cihaz durumu",
+          "description": "Bu ilkenin yönettiği cihazların hazırlığı.",
+          "advisory": "Dizüstü bilgisayarlar yalnızca elektrik şebekesine bağlıyken uyanır ve Modern Standby desteği modele göre değişir; hazır görünen bir dizüstü yine de çevrimiçi olmayabilir.",
+          "cappedNote": "Bu ilkenin eriştiği ilk {{scanned}} cihaz gösteriliyor. Sayılar yalnızca bu cihazları kapsar.",
+          "chipAll": "Tümü ({{count}})",
+          "loading": "Cihaz durumu yükleniyor...",
+          "loadFailed": "Cihaz durumu yüklenemedi.",
+          "empty": "Bu ilkeye bağlı eşleşen cihaz yok.",
+          "noAttempts": "Uyandırma denemesi yok",
+          "flagged": "İşaretlendi: art arda {{count}} zaman aşımı",
+          "testWake": "Test uyandırması gönder",
+          "allowAgain": "Yeniden uyandırmaya izin ver",
+          "testWakeSent": "{{host}} cihazına test uyandırması gönderildi.",
+          "allowedAgain": "{{host}} yeniden uyandırılabilir.",
+          "actionFailed": "İşlem başarısız oldu. Yeniden deneyin.",
+          "previous": "Önceki",
+          "next": "Sonraki",
+          "pageOf": "Sayfa {{page}} / {{pages}}",
+          "columns": {
+            "device": "Cihaz",
+            "state": "Durum",
+            "reasons": "Nedenler",
+            "hardware": "Donanım",
+            "lastAttempt": "Son deneme",
+            "actions": "İşlemler"
+          },
+          "states": {
+            "ready": "Hazır",
+            "needs_reboot": "Yeniden başlatma gerekli",
+            "not_configured": "Yapılandırılmamış",
+            "apply_failed": "Uygulama başarısız",
+            "firmware_protected": "Üretici yazılımı korumalı",
+            "unproven": "Kanıtlanmamış",
+            "no_wired_adapter": "Kablolu bağdaştırıcı yok",
+            "unsupported_vm": "Sanal makine",
+            "unsupported_os": "Desteklenmeyen işletim sistemi",
+            "agent_update_required": "Aracı güncellemesi gerekli",
+            "no_data": "Henüz veri yok"
+          },
+          "reasons": {
+            "virtual_machine": "Sanal makine",
+            "no_wired_adapter": "Kablolu ağ bağdaştırıcısı yok",
+            "fast_startup_enabled": "Hızlı Başlatma açık",
+            "fast_startup_unknown": "Hızlı Başlatma durumu bilinmiyor",
+            "nic_magic_packet_disabled": "Bağdaştırıcının magic packet ile uyandırması kapalı",
+            "nic_magic_packet_unknown": "Magic packet ile uyandırma durumu bilinmiyor",
+            "nic_eee_enabled": "Energy-Efficient Ethernet açık",
+            "firmware_adapter_unavailable": "Üretici yazılımı ayarları henüz okunamıyor"
+          },
+          "attempts": {
+            "pending": "Beklemede",
+            "sent": "Gönderildi",
+            "send_failed": "Gönderim başarısız",
+            "came_online": "Çevrimiçi oldu",
+            "timed_out": "Zaman aşımı",
+            "unknown": "Bilinmiyor",
+            "refused": "Reddedildi"
+          }
+        }
       },
       "containmentTab": {
         "title": "Sınırlama",

@@ -1200,7 +1200,77 @@
       },
       "wakeOnLanTab": {
         "title": "Wake-on-LAN",
-        "description": "Choisissez quand le bouton Réveiller s’affiche pour un appareil hors ligne."
+        "description": "Choisissez quand le bouton Réveiller s’affiche pour un appareil hors ligne.",
+        "platformDefaultNote": "Aucune politique n'est affectée. Valeur par défaut de la plateforme : le bouton Réveiller s'affiche sur tous les appareils hors ligne.",
+        "modeTitle": "Quand le bouton Réveiller s'affiche",
+        "mode": {
+          "always": "Toujours",
+          "alwaysHelp": "Afficher Réveiller sur tous les appareils hors ligne. Les appareils qui dépassent le délai à répétition sont signalés ci-dessous, mais jamais masqués.",
+          "verified": "Seulement quand c'est vérifié prêt",
+          "verifiedHelp": "Afficher Réveiller uniquement pour les appareils qui se déclarent prêts ou dont un réveil antérieur a abouti à une mise en ligne. Les autres appareils peuvent recevoir un réveil de test."
+        },
+        "aboutTitle": "À propos de ce paramètre",
+        "aboutBody": "Cette politique décide uniquement quand le bouton Réveiller s'affiche. Breeze lit l'état de préparation Wake-on-LAN de chaque appareil, mais ne modifie ni le BIOS, ni la carte réseau, ni les paramètres Windows.",
+        "panel": {
+          "title": "État des appareils",
+          "description": "Préparation des appareils régis par cette politique.",
+          "advisory": "Les ordinateurs portables ne se réveillent que sur secteur, et la prise en charge de Modern Standby varie selon le modèle : un portable déclaré prêt peut quand même ne pas se mettre en ligne.",
+          "cappedNote": "Affichage des {{scanned}} premiers appareils atteints par cette politique. Les totaux ne couvrent que ces appareils.",
+          "chipAll": "Tous ({{count}})",
+          "loading": "Chargement de l'état des appareils...",
+          "loadFailed": "Impossible de charger l'état des appareils.",
+          "empty": "Aucun appareil de cette politique ne correspond.",
+          "noAttempts": "Aucune tentative de réveil",
+          "flagged": "Signalé : {{count}} délais dépassés d'affilée",
+          "testWake": "Envoyer un réveil de test",
+          "allowAgain": "Autoriser à nouveau le réveil",
+          "testWakeSent": "Réveil de test envoyé à {{host}}.",
+          "allowedAgain": "{{host}} peut de nouveau être réveillé.",
+          "actionFailed": "L'action a échoué. Réessayez.",
+          "previous": "Précédent",
+          "next": "Suivant",
+          "pageOf": "Page {{page}} sur {{pages}}",
+          "columns": {
+            "device": "Appareil",
+            "state": "État",
+            "reasons": "Raisons",
+            "hardware": "Matériel",
+            "lastAttempt": "Dernière tentative",
+            "actions": "Actions"
+          },
+          "states": {
+            "ready": "Prêt",
+            "needs_reboot": "Redémarrage requis",
+            "not_configured": "Non configuré",
+            "apply_failed": "Échec de l'application",
+            "firmware_protected": "Protégé par le micrologiciel",
+            "unproven": "Non prouvé",
+            "no_wired_adapter": "Aucune carte filaire",
+            "unsupported_vm": "Machine virtuelle",
+            "unsupported_os": "Système non pris en charge",
+            "agent_update_required": "Mise à jour de l'agent requise",
+            "no_data": "Pas encore de données"
+          },
+          "reasons": {
+            "virtual_machine": "Machine virtuelle",
+            "no_wired_adapter": "Aucune carte réseau filaire",
+            "fast_startup_enabled": "Démarrage rapide activé",
+            "fast_startup_unknown": "État du démarrage rapide inconnu",
+            "nic_magic_packet_disabled": "Le réveil par paquet magique de la carte est désactivé",
+            "nic_magic_packet_unknown": "État du réveil par paquet magique inconnu",
+            "nic_eee_enabled": "Energy-Efficient Ethernet activé",
+            "firmware_adapter_unavailable": "Les paramètres du micrologiciel ne sont pas encore lisibles"
+          },
+          "attempts": {
+            "pending": "En attente",
+            "sent": "Envoyé",
+            "send_failed": "Échec de l'envoi",
+            "came_online": "Mis en ligne",
+            "timed_out": "Délai dépassé",
+            "unknown": "Inconnu",
+            "refused": "Refusé"
+          }
+        }
       },
       "containmentTab": {
         "title": "Confinement",

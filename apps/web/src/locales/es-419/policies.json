@@ -1200,7 +1200,77 @@
       },
       "wakeOnLanTab": {
         "title": "Wake-on-LAN",
-        "description": "Elige cuándo se muestra el botón Activar para un dispositivo sin conexión."
+        "description": "Elige cuándo se muestra el botón Activar para un dispositivo sin conexión.",
+        "platformDefaultNote": "No hay ninguna política asignada. Valor predeterminado de la plataforma: el botón Activar se muestra en todos los dispositivos sin conexión.",
+        "modeTitle": "Cuándo se muestra el botón Activar",
+        "mode": {
+          "always": "Siempre",
+          "alwaysHelp": "Mostrar Activar en todos los dispositivos sin conexión. Los dispositivos que agotan el tiempo de espera repetidamente se marcan abajo, pero nunca se ocultan.",
+          "verified": "Solo cuando se verifica que está listo",
+          "verifiedHelp": "Mostrar Activar solo en dispositivos que informan estar listos o que se comprobaron con una activación anterior que terminó en línea. A los demás se les puede enviar una activación de prueba."
+        },
+        "aboutTitle": "Acerca de esta configuración",
+        "aboutBody": "Esta política solo decide cuándo se muestra el botón Activar. Breeze lee la preparación para Wake-on-LAN de cada dispositivo, pero no cambia la configuración del BIOS, del adaptador de red ni de Windows.",
+        "panel": {
+          "title": "Estado de los dispositivos",
+          "description": "Preparación de los dispositivos que gobierna esta política.",
+          "advisory": "Las laptops solo se activan conectadas a la corriente, y la compatibilidad con Modern Standby varía según el modelo, así que una laptop que informa estar lista puede no conectarse.",
+          "cappedNote": "Se muestran los primeros {{scanned}} dispositivos que alcanza esta política. Los totales cubren solo esos dispositivos.",
+          "chipAll": "Todos ({{count}})",
+          "loading": "Cargando el estado de los dispositivos...",
+          "loadFailed": "No se pudo cargar el estado de los dispositivos.",
+          "empty": "Ningún dispositivo de esta política coincide.",
+          "noAttempts": "Sin intentos de activación",
+          "flagged": "Marcado: {{count}} tiempos de espera agotados seguidos",
+          "testWake": "Enviar activación de prueba",
+          "allowAgain": "Permitir activar de nuevo",
+          "testWakeSent": "Activación de prueba enviada a {{host}}.",
+          "allowedAgain": "{{host}} se puede activar de nuevo.",
+          "actionFailed": "La acción falló. Inténtalo de nuevo.",
+          "previous": "Anterior",
+          "next": "Siguiente",
+          "pageOf": "Página {{page}} de {{pages}}",
+          "columns": {
+            "device": "Dispositivo",
+            "state": "Estado",
+            "reasons": "Motivos",
+            "hardware": "Hardware",
+            "lastAttempt": "Último intento",
+            "actions": "Acciones"
+          },
+          "states": {
+            "ready": "Listo",
+            "needs_reboot": "Requiere reinicio",
+            "not_configured": "Sin configurar",
+            "apply_failed": "Falló la aplicación",
+            "firmware_protected": "Protegido por firmware",
+            "unproven": "Sin comprobar",
+            "no_wired_adapter": "Sin adaptador cableado",
+            "unsupported_vm": "Máquina virtual",
+            "unsupported_os": "SO no compatible",
+            "agent_update_required": "Se requiere actualizar el agente",
+            "no_data": "Aún sin datos"
+          },
+          "reasons": {
+            "virtual_machine": "Máquina virtual",
+            "no_wired_adapter": "Sin adaptador de red cableado",
+            "fast_startup_enabled": "Inicio rápido activado",
+            "fast_startup_unknown": "Estado de Inicio rápido desconocido",
+            "nic_magic_packet_disabled": "La activación por magic packet del adaptador está desactivada",
+            "nic_magic_packet_unknown": "Estado de la activación por magic packet desconocido",
+            "nic_eee_enabled": "Energy-Efficient Ethernet activado",
+            "firmware_adapter_unavailable": "Aún no se puede leer la configuración del firmware"
+          },
+          "attempts": {
+            "pending": "Pendiente",
+            "sent": "Enviado",
+            "send_failed": "Falló el envío",
+            "came_online": "Se conectó",
+            "timed_out": "Tiempo agotado",
+            "unknown": "Desconocido",
+            "refused": "Rechazado"
+          }
+        }
       },
       "containmentTab": {
         "title": "Contención",

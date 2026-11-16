@@ -125,6 +125,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/mappableOrgs.ts': 'listing: orgs an external tenant/customer may be mapped onto (EDR, backup and Pax8 mapping and name suggestions); excludes hidden and unassigned-pool orgs, never reads devices',
   'services/partnerVisibleOrgs.ts': 'listing: the partner org-list population, shared with the partner settings inheritance counts (#9170); excludes hidden orgs, never reads devices',
   'services/aiToolsBackupRecoveryReads.ts': 'caller read: joins devices only to apply the site ceiling to a recovery row',
+  'services/wakeStatusPanel.ts': 'read model + one scoped write (#10838): lists the devices a policy governs from the policy\'s own assignments (capped scan, caller RLS + site allowlist) and clears one device\'s timeout block; dispatches nothing and selects no wake targets',
   'services/wakeAvailability.ts': 'read model (#10838): whether the Wake button shows for the device ids a listing or detail page already holds; selects no targets and dispatches nothing',
   'services/backupHealthReadModel.ts': 'read model: backup health',
   'services/connectionHealth/sources/backupDestination.ts': 'read model: the backup_destination health verdict (#11772) counts the job outcomes of devices on one backup config; reads backup_jobs.device_id only to group them, selects no device targets and runs nothing',

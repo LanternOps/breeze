@@ -1200,7 +1200,77 @@
       },
       "wakeOnLanTab": {
         "title": "Wake-on-LAN",
-        "description": "Escolha quando o botão Ativar aparece para um dispositivo offline."
+        "description": "Escolha quando o botão Ativar aparece para um dispositivo offline.",
+        "platformDefaultNote": "Nenhuma política atribuída. Padrão da plataforma: o botão Ativar aparece em todo dispositivo offline.",
+        "modeTitle": "Quando o botão Ativar aparece",
+        "mode": {
+          "always": "Sempre",
+          "alwaysHelp": "Mostrar Ativar em todo dispositivo offline. Dispositivos que estouram o tempo repetidamente são sinalizados abaixo, mas nunca ocultados.",
+          "verified": "Somente quando verificado como pronto",
+          "verifiedHelp": "Mostrar Ativar apenas para dispositivos que informam estar prontos ou comprovados por uma ativação anterior que ficou online. Os demais podem receber uma ativação de teste."
+        },
+        "aboutTitle": "Sobre esta configuração",
+        "aboutBody": "Esta política apenas decide quando o botão Ativar aparece. O Breeze lê a prontidão de Wake-on-LAN de cada dispositivo, mas não altera BIOS, adaptador de rede nem configurações do Windows.",
+        "panel": {
+          "title": "Status dos dispositivos",
+          "description": "Prontidão dos dispositivos regidos por esta política.",
+          "advisory": "Notebooks só ativam ligados na tomada, e o suporte a Modern Standby varia conforme o modelo, então um notebook que informa estar pronto ainda pode não ficar online.",
+          "cappedNote": "Mostrando os primeiros {{scanned}} dispositivos alcançados por esta política. As contagens cobrem apenas esses dispositivos.",
+          "chipAll": "Todos ({{count}})",
+          "loading": "Carregando o status dos dispositivos...",
+          "loadFailed": "Não foi possível carregar o status dos dispositivos.",
+          "empty": "Nenhum dispositivo desta política corresponde.",
+          "noAttempts": "Nenhuma tentativa de ativação",
+          "flagged": "Sinalizado: {{count}} tempos esgotados seguidos",
+          "testWake": "Enviar ativação de teste",
+          "allowAgain": "Permitir ativar novamente",
+          "testWakeSent": "Ativação de teste enviada para {{host}}.",
+          "allowedAgain": "{{host}} pode ser ativado novamente.",
+          "actionFailed": "A ação falhou. Tente novamente.",
+          "previous": "Anterior",
+          "next": "Próxima",
+          "pageOf": "Página {{page}} de {{pages}}",
+          "columns": {
+            "device": "Dispositivo",
+            "state": "Estado",
+            "reasons": "Motivos",
+            "hardware": "Hardware",
+            "lastAttempt": "Última tentativa",
+            "actions": "Ações"
+          },
+          "states": {
+            "ready": "Pronto",
+            "needs_reboot": "Requer reinicialização",
+            "not_configured": "Não configurado",
+            "apply_failed": "Falha ao aplicar",
+            "firmware_protected": "Protegido pelo firmware",
+            "unproven": "Não comprovado",
+            "no_wired_adapter": "Sem adaptador com fio",
+            "unsupported_vm": "Máquina virtual",
+            "unsupported_os": "SO não compatível",
+            "agent_update_required": "Atualização do agente necessária",
+            "no_data": "Ainda sem dados"
+          },
+          "reasons": {
+            "virtual_machine": "Máquina virtual",
+            "no_wired_adapter": "Sem adaptador de rede com fio",
+            "fast_startup_enabled": "Inicialização rápida ativada",
+            "fast_startup_unknown": "Estado da Inicialização rápida desconhecido",
+            "nic_magic_packet_disabled": "Ativação por magic packet do adaptador desativada",
+            "nic_magic_packet_unknown": "Estado da ativação por magic packet desconhecido",
+            "nic_eee_enabled": "Energy-Efficient Ethernet ativado",
+            "firmware_adapter_unavailable": "As configurações do firmware ainda não podem ser lidas"
+          },
+          "attempts": {
+            "pending": "Pendente",
+            "sent": "Enviado",
+            "send_failed": "Falha no envio",
+            "came_online": "Ficou online",
+            "timed_out": "Tempo esgotado",
+            "unknown": "Desconhecido",
+            "refused": "Recusado"
+          }
+        }
       },
       "containmentTab": {
         "title": "Contenção",
