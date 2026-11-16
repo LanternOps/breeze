@@ -31,6 +31,7 @@ import { listControllerSitesForIntegration } from './unifi/unifiControllerSiteSe
 import { enqueueUnifiSync } from '../jobs/unifiWorker';
 import { UNIFI_STATUS_ACTIONS } from './aiToolSchemasNetworkMonitoring';
 import { bounded, clip, jsonError, json, mfaDenied, requireFields, thrown } from './aiToolsNetworkMonitoringShared';
+import { inToolDbPhase } from './aiToolDbContext';
 
 type Action = (typeof UNIFI_STATUS_ACTIONS)[number];
 
@@ -59,6 +60,9 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
     domain: 'network',
     searchHint: 'UniFi integration: connection status, consoles, collectors, site mappings, device telemetry, sync history',
     deviceArgs: [],
+    // `hosts` calls the UniFi cloud; it reads in short contexts and calls out
+    // with no transaction held. Every other action joins the dispatcher's.
+    selfManagedDbContext: ['hosts'],
     definition: {
       name: 'get_unifi_status',
       description:
@@ -89,7 +93,7 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
       }
 
       try {
-        const conn = await getConnection(db, partnerId);
+        const conn = await inToolDbPhase(auth, () => getConnection(db, partnerId));
 
         switch (action) {
           case 'status': {
@@ -106,7 +110,7 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
           }
           case 'hosts': {
             if (!conn) return jsonError('Not connected', 'NOT_CONNECTED');
-            const apiKey = await getDecryptedApiKey(db, partnerId);
+            const apiKey = await inToolDbPhase(auth, () => getDecryptedApiKey(db, partnerId));
             if (!apiKey) return jsonError('No API key found', 'NOT_CONNECTED');
             try {
               const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });

@@ -20,6 +20,7 @@ vi.mock('../services/topology/aiSessionAccess', () => ({
   resolveTopologySessionVisibility: vi.fn(async () => ({ kind: 'all' })),
   topologySessionAccessCondition: vi.fn(async () => undefined),
   topologySessionCondition: vi.fn(() => undefined),
+  topologyAuditSessionCondition: vi.fn(() => undefined),
 }));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),

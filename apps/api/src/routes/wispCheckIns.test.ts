@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   listCheckIns: vi.fn(),
   cancelCheckIn: vi.fn(),
   writeRouteAudit: vi.fn(),
+  forgetStandingStateFacts: vi.fn(),
 }));
 
 vi.mock('./wispThreads', () => ({ loadOwnThread: h.loadOwnThread }));
@@ -22,6 +23,7 @@ vi.mock('../services/wisp/checkIns', () => ({
   toCheckInDto: (row: { id: string; status: string }) => ({ dto: true, id: row.id, status: row.status }),
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
+vi.mock('../services/wisp/standingStateTurn', () => ({ forgetStandingStateFacts: h.forgetStandingStateFacts }));
 
 const { wispCheckInRoutes } = await import('./wispCheckIns');
 
@@ -80,7 +82,9 @@ describe('DELETE /thread/:id/check-ins/:checkInId', () => {
     h.cancelCheckIn.mockResolvedValue(row(CHECK_IN, 'cancelled'));
     const res = await req('DELETE', `/thread/${THREAD}/check-ins/${CHECK_IN}`);
     expect(res.status).toBe(204);
-    expect(h.cancelCheckIn).toHaveBeenCalledWith(GRANT, CHECK_IN);
+    // #11611: recorded as the user's cancel, and the next chat turn reads it.
+    expect(h.cancelCheckIn).toHaveBeenCalledWith(GRANT, CHECK_IN, 'user');
+    expect(h.forgetStandingStateFacts).toHaveBeenCalledWith(GRANT);
     expect(h.writeRouteAudit).toHaveBeenCalledTimes(1);
     expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), {
       orgId: ORG,
@@ -103,6 +107,7 @@ describe('DELETE /thread/:id/check-ins/:checkInId', () => {
     const res = await req('DELETE', `/thread/${THREAD}/check-ins/${CHECK_IN}`);
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ code: 'not_found' });
+    expect(h.forgetStandingStateFacts).not.toHaveBeenCalled();
     expect(h.writeRouteAudit).not.toHaveBeenCalled();
   });
 

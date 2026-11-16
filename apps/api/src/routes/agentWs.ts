@@ -114,6 +114,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 import {
   commandResultSchema as baseCommandResultSchema,
   commandResultResultByteLength,
+  MAX_AGENT_COMMAND_ID_LENGTH,
   MAX_COMMAND_RESULT_BYTES,
 } from './agents/schemas';
 import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
@@ -722,7 +723,7 @@ function recordOrphanedResultExpectation(agentId: string, command: AgentCommand)
 // duplicating the very thing this removes.
 const commandResultSchema = baseCommandResultSchema.extend({
   type: z.literal('command_result'),
-  commandId: z.string(),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
 });
 
 type AgentCommandResult = z.infer<typeof commandResultSchema>;
@@ -937,7 +938,8 @@ const heartbeatMessageSchema = z.object({
   type: z.literal('heartbeat'),
   timestamp: z.number(),
   ipHistoryUpdate: z.object({
-    deviceId: z.string().optional(),
+    // The agent's own device id (a UUID); only compared and, on a mismatch, logged.
+    deviceId: z.string().max(64).optional(),
     currentIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     changedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     removedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
@@ -972,7 +974,7 @@ function decodeTerminalOutput(data: string, encoding?: 'base64'): string | null 
 // progress body is dropped rather than failing the whole WS message parse.
 const backupProgressMessageSchema = z.object({
   type: z.literal('backup_progress'),
-  commandId: z.string(),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
   progress: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -998,7 +1000,7 @@ const revocationLeaseRenewSchema = z.object({
 // be a quiet drop in applyCommandProgress, not an INVALID_MESSAGE error frame.
 const commandProgressMessageSchema = z.object({
   type: z.literal('command_progress'),
-  commandId: z.string().max(128),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
   stage: z.string().max(32),
 });
 
@@ -3782,7 +3784,10 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
         // Handle command_result for terminal/desktop commands (non-UUID IDs).
         // H5: validate the message shape with Zod BEFORE any field access. On
         // parse failure we drop + log without touching the DB or downstream.
+        // An id over the limit is not read here: it falls through to the
+        // schema below, which refuses it like any other malformed frame.
         if (message?.type === 'command_result' && typeof message.commandId === 'string' &&
+            message.commandId.length <= MAX_AGENT_COMMAND_ID_LENGTH &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
           // Exact delivery-epoch proof: a stop/start result carries authority
           // to tear down a live session, so a superseded socket may not submit
@@ -3908,6 +3913,11 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                       write: {
                         status: 'disconnected',
                         endedAt: new Date(),
+                        // #11839: only the agent's no-video watchdog sets a
+                        // stopReason on a peer drop (#5300); every other
+                        // agent-side stop (operator, lifetime, lease, ICE
+                        // failure) reports it empty today.
+                        endReason: stopReason ? 'capture_failed' : 'peer_disconnected',
                         // Only fills errorMessage when it's still empty — never
                         // overwrites a startup-probe failure text (#5284/#5295)
                         // that a `desk-start` failure already stored there.
@@ -4058,6 +4068,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     write: {
                       status: 'denied',
                       endedAt: new Date(),
+                      endReason: 'consent_denied',
                       errorMessage: consentDeniedMessage(
                         reason,
                         typeof fastResult.consentDetail === 'string' ? fastResult.consentDetail : undefined,
@@ -4359,7 +4370,8 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     write: {
                       status: 'failed',
                       errorMessage: errorMsg,
-                      endedAt: new Date()
+                      endedAt: new Date(),
+                      endReason: 'start_failed',
                     },
                     phase: 'confirmed',
                     where: [
@@ -5101,7 +5113,7 @@ async function failUnreadableDesktopStart(
     await runWithAgentDbAccess('agentWs.desktop.unreadableStart', async () => {
       const result = await commitDesktopTerminalIntent({
         sessionId: startCommand.sessionId,
-        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date() },
+        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date(), endReason: 'start_failed' },
         phase: 'confirmed',
         where: [
           eq(remoteSessions.deviceId, deviceId),
@@ -5364,19 +5376,6 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/agent-ws/:id/ws with Authorization: Bearer <agent-token>
   app.get(
     '/:id/ws',
-    // Rate limiting middleware (M-D2: Redis-backed sliding window)
-    async (c, next) => {
-      const agentId = c.req.param('id');
-      const { allowed, degraded } = await checkAgentWsRateLimitDistributed(agentId);
-      if (!allowed) {
-        return c.json({ error: 'Too many connection attempts' }, 429);
-      }
-      if (degraded) {
-        // Best-effort breadcrumb so we can detect Redis blips affecting agent fleets.
-        c.set('agentWsRateLimitDegraded' as never, true as never);
-      }
-      return next();
-    },
     // Authentication middleware — validates BEFORE WebSocket upgrade
     async (c, next) => {
       const agentId = c.req.param('id');
@@ -5407,6 +5406,20 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
 
       // Store validated device context for the upgrade handler to access
       c.set('agentDb', result.ctx);
+      return next();
+    },
+    // Charge the device budget only after its credential is validated.
+    async (c, next) => {
+      const agentId = c.req.param('id');
+      const { allowed, degraded } = await checkAgentWsRateLimitDistributed(agentId);
+      if (!allowed) {
+        c.header('Retry-After', String(WS_RATE_WINDOW_SECONDS));
+        return c.json({ error: 'Too many connection attempts' }, 429);
+      }
+      if (degraded) {
+        // Best-effort breadcrumb so we can detect Redis blips affecting agent fleets.
+        c.set('agentWsRateLimitDegraded' as never, true as never);
+      }
       return next();
     },
     upgradeWebSocket((c: { req: { param: (key: string) => string }; get: (key: string) => unknown }) => {

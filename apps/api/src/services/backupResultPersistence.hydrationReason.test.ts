@@ -49,11 +49,56 @@ describe('snapshotIndexHydrationReason', () => {
 });
 
 describe('indexedEntriesOf', () => {
-  it('counts the files the run backed up plus the ones it referenced from older snapshots', async () => {
+  // #11743: the agent sets filesBackedUp to every manifest entry, reference
+  // entries included (agent/internal/backup/backup.go, `len(snapshot.Files)`),
+  // and counts referencedFiles from that same list. referencedFiles is a part
+  // of filesBackedUp, never an addition to it.
+  it('is the manifest entry count the agent reported, references already included', async () => {
     const { indexedEntriesOf } = await import('./backupResultPersistence');
-    expect(indexedEntriesOf({ filesBackedUp: 200_000, referencedFiles: 50_001 })).toBe(250_001);
+    expect(indexedEntriesOf({ filesBackedUp: 140_000, referencedFiles: 120_000 })).toBe(140_000);
+    expect(indexedEntriesOf({ filesBackedUp: 200_000, referencedFiles: 50_001 })).toBe(200_000);
+    expect(indexedEntriesOf({ filesBackedUp: 10, referencedFiles: 0 })).toBe(10);
     expect(indexedEntriesOf({ filesBackedUp: 10 })).toBe(10);
+  });
+
+  it('falls back to referencedFiles when filesBackedUp is absent', async () => {
+    const { indexedEntriesOf } = await import('./backupResultPersistence');
     expect(indexedEntriesOf({ referencedFiles: 10 })).toBe(10);
     expect(indexedEntriesOf({})).toBeUndefined();
+  });
+
+  it('never reads fewer entries than the references alone, even from a malformed report', async () => {
+    const { indexedEntriesOf } = await import('./backupResultPersistence');
+    expect(indexedEntriesOf({ filesBackedUp: 5, referencedFiles: 300_000 })).toBe(300_000);
+  });
+});
+
+describe('reference-heavy snapshots against the eager-hydration threshold (#11743)', () => {
+  async function reasonFor(result: { filesBackedUp: number; referencedFiles: number }, storageIdentity = S3) {
+    const { indexedEntriesOf } = await import('./backupResultPersistence');
+    return snapshotIndexHydrationReason({
+      storageIdentity,
+      referencedFiles: result.referencedFiles,
+      fileIndexStatus: 'none',
+      indexedEntries: indexedEntriesOf(result),
+    });
+  }
+
+  it('hydrates an S3 incremental of 140,000 entries, 120,000 of them references, eagerly', async () => {
+    expect(await reasonFor({ filesBackedUp: 140_000, referencedFiles: 120_000 })).toBe('result_brokered_read');
+  });
+
+  it('hydrates a local incremental of 140,000 entries, 120,000 of them references, eagerly', async () => {
+    expect(await reasonFor({ filesBackedUp: 140_000, referencedFiles: 120_000 }, 'local::/srv')).toBe('result');
+  });
+
+  it('hydrates an incremental of exactly 250,000 entries that are nearly all references eagerly', async () => {
+    expect(await reasonFor({ filesBackedUp: 250_000, referencedFiles: 249_999 })).toBe('result_brokered_read');
+  });
+
+  it('leaves an incremental of 250,001 entries for its first use, however many are references', async () => {
+    expect(await reasonFor({ filesBackedUp: 250_001, referencedFiles: 250_001 })).toBeNull();
+    expect(await reasonFor({ filesBackedUp: 250_001, referencedFiles: 1 })).toBeNull();
+    expect(await reasonFor({ filesBackedUp: 260_000, referencedFiles: 200_000 }, 'local::/srv')).toBeNull();
   });
 });

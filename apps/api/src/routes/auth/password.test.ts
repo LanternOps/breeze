@@ -447,6 +447,10 @@ describe('password reset eligibility (#719)', () => {
       expect(res.status).toBe(200);
       // Main password write.
       expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
+      // A pending email-address change is cancelled in the same transaction;
+      // email_epoch is left alone so an unfinished signup link keeps working.
+      expect(capturedUpdates).toContainEqual(expect.objectContaining({ pendingEmail: null, pendingEmailRequestedAt: null }));
+      expect(capturedUpdates.some((v) => 'emailEpoch' in v)).toBe(false);
       // advanceUserEpochs({ auth: true, passwordReset: true, credential: true })
       // — all bumped in the SAME update. credential_epoch is what kills the
       // user's human API keys (#7489).
@@ -813,6 +817,10 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
       expect(capturedUpdates.some((v) => 'passwordHash' in v)).toBe(true);
+      // A pending email-address change is cancelled in the same transaction;
+      // email_epoch is left alone so an unfinished signup link keeps working.
+      expect(capturedUpdates).toContainEqual(expect.objectContaining({ pendingEmail: null, pendingEmailRequestedAt: null }));
+      expect(capturedUpdates.some((v) => 'emailEpoch' in v)).toBe(false);
       // advanceUserEpochs({ auth: true, passwordReset: true }): SR2-08 closes
       // the same sibling-reset-token window from the authenticated path too —
       // a password change must also supersede any outstanding reset token —

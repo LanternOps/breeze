@@ -374,6 +374,9 @@
       "delivery_failed": "Échec des livraisons",
       "sync_stale": "Synchronisation bloquée",
       "verification_failed": "Échec de la vérification",
+      "destination_access_denied": "La destination refuse l’accès",
+      "destination_not_found": "Destination introuvable",
+      "destination_failing": "La destination échoue",
       "unknown": "Nécessite une intervention"
     }
   },

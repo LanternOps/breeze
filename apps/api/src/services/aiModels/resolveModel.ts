@@ -35,6 +35,8 @@ import type { RateSnapshot } from './pricing';
 import type { PromptProfile } from './promptProfiles';
 import { defaultTransport, transportCarries, type DispatchTransport, type TransportCarriage } from './transport';
 import { buildWireParams, type WireParams } from './wireParams';
+import type { ToolProfileFacts } from './toolProfileFacts';
+import type { KnownContextWindow } from './contextWindowFacts';
 
 /** Re-export of the shared list (one definition, #9496). */
 export const PLATFORM_ONLY_SURFACES = PLATFORM_ONLY_AI_SURFACES;
@@ -76,6 +78,8 @@ export interface ResolvedRefusalFallback {
   offeringId: string;
   displayName: string;
   wireModel: string;
+  /** #11396: the fallback offering's own known window (gateway only); absent = unknown. */
+  contextWindow?: KnownContextWindow | null;
   wireParams: WireParams;
   options: OfferingOptions;
   rateSnapshot: RateSnapshot;
@@ -109,6 +113,18 @@ export interface ResolvedModel {
   failover: ResolvedFailover | null;
   /** W09: fallback ids a dispatch could still try (unfiltered for eligibility; the re-resolution filters). */
   failoverRemaining: readonly string[];
+  /**
+   * #11393: facts only (profile, allow-list, window, transport), never the
+   * exposure: each surface entry finalizes its own exposure from these plus
+   * its declarations. Absent = DEFAULT_TOOL_PROFILE_FACTS (`full`).
+   */
+  toolProfileFacts?: ToolProfileFacts;
+  /**
+   * #11396: the offering's effective context window and its source (gateway
+   * offerings; `limits.maxInputTokens` carries the same number). Absent =
+   * unknown. Seeds the gateway grant's max_tokens plan.
+   */
+  contextWindow?: KnownContextWindow | null;
 }
 
 export interface ModelUnavailable {
@@ -139,6 +155,8 @@ export function unavailableMessage(reason: ResolveFailureReason, displayName?: s
       return 'The AI provider connection for this model is unavailable. Reconnect it under AI Providers & Models.';
     case 'tools_unsupported':
       return 'This AI model cannot use tools, which this feature needs. An administrator can choose a model that supports tools under AI Providers & Models.';
+    case 'tools_unverified_surface':
+      return 'This AI model failed Breeze\'s tool check for this feature. An administrator can re-verify it, change its tool profile, or choose another model under AI Providers & Models.';
     case 'no_eligible_model': return 'No AI model is available for this feature. Ask an administrator to enable one.';
     case 'registry_unavailable': return 'AI configuration is being upgraded. Try again in a moment.';
   }
@@ -250,6 +268,7 @@ async function refusalFallbackFor(
     wireParams,
     options: wireParams.applied,
     rateSnapshot: fbRate,
+    ...(fb.contextWindow ? { contextWindow: fb.contextWindow } : {}),
   };
 }
 
@@ -303,6 +322,8 @@ async function finalize(
     fellBack,
     failover,
     failoverRemaining,
+    ...(c.toolProfileFacts ? { toolProfileFacts: c.toolProfileFacts } : {}),
+    ...(c.contextWindow ? { contextWindow: c.contextWindow } : {}),
   };
 }
 

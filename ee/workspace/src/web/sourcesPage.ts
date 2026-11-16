@@ -32,7 +32,7 @@ function formatTimestamp(value: string | null): string {
 }
 
 export class WorkspaceSourcesPage extends WorkspaceBaseElement {
-  #api: WorkspaceApi = createWorkspaceApi();
+  #api: WorkspaceApi = createWorkspaceApi(() => this.hostApi);
   #context: ExtensionPageContextV1 | null = null;
   #sources: SourceRow[] = [];
   #form: FormMode = { kind: 'closed' };

@@ -127,7 +127,8 @@ export type AssessmentDigest = {
    * detector's raw score: an unbounded magnitude, not 0–1.
    *
    * null = not read: the grantor lacks `devices:read`, or the read failed
-   * (reported to Sentry). That is distinct from `[]` (read, none open).
+   * (reported to Sentry; `AssessmentRunContext.anomaliesReadFailed` tells the
+   * two apart). That is distinct from `[]` (read, none open).
    */
   anomalies: {
     id: string;
@@ -140,6 +141,16 @@ export type AssessmentDigest = {
     status: string;
   }[] | null;
 };
+
+/**
+ * #11513: the assessment finalizer's `error_code` for a run that applied
+ * cleanly but could not read the metric anomalies. The run still advances the
+ * digest watermark (the anomalies are current state, read again whatever the
+ * window), but it is not an anchor for the no-changes gate: it did not see the
+ * anomalies, so a change to them since the previous anchor must still wake the
+ * next tick or watch.
+ */
+export const ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE = 'assessment_anomalies_unread';
 
 /** One watch kind's serviceability for an org (Task 15, w00 A33). */
 export type ReadinessCheck = { watchKind: WatchKind; serviceable: boolean; reason: string | null };
@@ -178,6 +189,13 @@ export interface AssessmentRunContext {
    */
   noEarlierAssessment: boolean;
   digest: AssessmentDigest;
+  /**
+   * #11513: the grantor may read the metric anomalies but the read failed, so
+   * `digest.anomalies` is null for a failure, not by design. The finalizer
+   * then returns ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE, which keeps the run
+   * from anchoring the no-changes gate.
+   */
+  anomaliesReadFailed: boolean;
   /** Set when the run was requested by a watch (`reason.kind === 'watch'`) and the watch still exists. */
   watch: Watch | null;
   reason: AssessmentReason;

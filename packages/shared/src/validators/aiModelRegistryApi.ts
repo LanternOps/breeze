@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { AI_AGENT_ESCALATION_ROLES, AI_SURFACE_ROLES, AI_SURFACES, MAX_FALLBACK_OFFERINGS, type AiSurface } from '../constants/aiSurfaces';
 import { BYO_MODEL_ID_PATTERN } from '../constants/aiConnectionKinds';
+import { AI_TOOL_DOMAINS } from '../types/aiToolDomains';
 import { INFERENCE_GEO_PATTERN, modelRatesSchema, offeringOptionsSchema } from './aiModelOptions';
 
 /**
@@ -126,6 +127,43 @@ const allowedOptionsSchema = z.object({
   speed: z.array(offeringOptionsSchema.shape.speed.unwrap()).min(1).optional(),
 }).strict();
 
+/**
+ * Tool profiles for small-context models (#11393, spec
+ * 2026-11-06-small-model-tool-profiles). `auto` picks from a known context
+ * window and is `full` while the window is unknown; `custom` carries an
+ * allow-list. Mirrored by `partner_ai_models_tool_profile_chk`.
+ */
+export const AI_TOOL_PROFILES = ['auto', 'full', 'standard', 'minimal', 'custom'] as const;
+export type AiToolProfile = (typeof AI_TOOL_PROFILES)[number];
+
+/** A `custom` profile's allow-list: whole domains plus single tools, intersected with each surface's set at runtime. */
+export const aiToolAllowlistSchema = z.object({
+  domains: z.array(z.enum(AI_TOOL_DOMAINS)).max(AI_TOOL_DOMAINS.length),
+  tools: z.array(z.string().regex(/^[a-z0-9_]{1,64}$/)).max(200),
+}).strict();
+export type AiToolAllowlist = z.infer<typeof aiToolAllowlistSchema>;
+
+export const CONTEXT_WINDOW_OVERRIDE_MIN = 1024;
+export const CONTEXT_WINDOW_OVERRIDE_MAX = 100_000_000;
+
+/** A `custom` allow-list must name something: an empty one would leave a surface with no tools and no refusal. */
+const nonEmptyToolAllowlistSchema = aiToolAllowlistSchema.refine(
+  (a) => a.domains.length + a.tools.length > 0,
+  { message: 'Choose at least one tool area or tool.' },
+);
+
+/**
+ * The offering's tool fields as a patch fragment (spread into
+ * `offeringDetailsPatchSchema`). Only the shape is checked here; both fields
+ * may be absent.
+ */
+export const offeringToolSettingsPatchSchema = z.object({
+  toolProfile: z.enum(AI_TOOL_PROFILES).optional(),
+  toolAllowlist: nonEmptyToolAllowlistSchema.nullable().optional(),
+  contextWindowOverride: z.number().int().min(CONTEXT_WINDOW_OVERRIDE_MIN).max(CONTEXT_WINDOW_OVERRIDE_MAX).nullable().optional(),
+}).strict();
+export type OfferingToolSettingsPatch = z.infer<typeof offeringToolSettingsPatchSchema>;
+
 export const offeringDetailsPatchSchema = z.object({
   expectedUpdatedAt: z.string().datetime(),
   displayName: z.string().trim().min(1).max(120).nullable().optional(),
@@ -135,6 +173,13 @@ export const offeringDetailsPatchSchema = z.object({
   allowedOptions: allowedOptionsSchema.nullable().optional(),
   requiredPermission: z.enum(AI_MODEL_REQUIRED_PERMISSION_CHOICES).nullable().optional(),
   refusalFallbackOfferingId: uuid.nullable().optional(),
+  /**
+   * #11398 W05: the tool profile, its `custom` allow-list and the context
+   * window override. Only the shape is checked here; the API validates the
+   * MERGED stored + patch state (custom ⇔ allow-list, known tool names, the
+   * override on gateway models only, and every surface floor).
+   */
+  ...offeringToolSettingsPatchSchema.shape,
 }).strict();
 export type OfferingDetailsPatch = z.infer<typeof offeringDetailsPatchSchema>;
 
@@ -268,7 +313,7 @@ export const aiUsageQuerySchema = withUsageRangeRules(aiUsageQueryBaseSchema);
 export type AiUsageQuery = z.infer<typeof aiUsageQuerySchema>;
 
 /** W11 (#7609): the quality view's groupings (spec §13: by model, surface and prompt profile). */
-export const AI_QUALITY_GROUP_BYS = ['model', 'surface', 'prompt_profile'] as const;
+export const AI_QUALITY_GROUP_BYS = ['model', 'surface', 'prompt_profile', 'tool_profile'] as const;
 export type AiQualityGroupBy = (typeof AI_QUALITY_GROUP_BYS)[number];
 
 export const aiQualityQuerySchema = withUsageRangeRules(

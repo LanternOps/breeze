@@ -70,7 +70,10 @@ services:
       - ./apps/portal/package.json:/app/apps/portal/package.json:ro
       - ./apps/portal/tsconfig.json:/app/apps/portal/tsconfig.json:ro
       - ./apps/portal/astro.config.mjs:/app/apps/portal/astro.config.mjs:ro
-      - ./packages/shared/src:/app/packages/shared/src:cached
+      # The whole package, not src/ alone: a file at its root (zodJitlessAlias.mjs,
+      # which the astro configs import) otherwise comes from the image and breaks
+      # every image built before it landed (#11623). node_modules stays the image's.
+      - ./packages/shared:/app/packages/shared:cached
       - ./packages/document-ui/src:/app/packages/document-ui/src:cached
       - ./packages/document-ui/package.json:/app/packages/document-ui/package.json:ro
       - ./packages/document-ui/tsconfig.json:/app/packages/document-ui/tsconfig.json:ro

@@ -24,6 +24,8 @@ import {
 export type RootedStorage = {
   provider: string | null | undefined;
   providerConfig: unknown;
+  orgId?: string;
+  configId?: string;
   root: SnapshotKeyRoot;
 };
 
@@ -51,6 +53,8 @@ export async function* iterateRootedObjects(
   const pages = iterateBackupObjectsUnderPrefix({
     provider: storage.provider,
     providerConfig: storage.providerConfig,
+    orgId: storage.orgId,
+    configId: storage.configId,
     prefix: physicalKeyFor(storage.root, logicalPrefix),
   });
   if (storage.root.layout === 'legacy_flat') {
@@ -85,6 +89,8 @@ export async function openRootedObjectStream(
   return openBackupObjectStream({
     provider: storage.provider,
     providerConfig: storage.providerConfig,
+    orgId: storage.orgId,
+    configId: storage.configId,
     key: physicalKeyFor(storage.root, logicalKey),
     maxBytes,
   });
@@ -99,6 +105,8 @@ export async function fetchRootedObjectText(
   return fetchBackupObjectText({
     provider: storage.provider,
     providerConfig: storage.providerConfig,
+    orgId: storage.orgId,
+    configId: storage.configId,
     key: physicalKeyFor(storage.root, logicalKey),
     ...(maxBytes !== undefined ? { maxBytes } : {}),
   });
@@ -119,6 +127,8 @@ export async function deleteRootedObjectKeys(
   const result = await deleteBackupObjectKeys({
     provider: storage.provider,
     providerConfig: storage.providerConfig,
+    orgId: storage.orgId,
+    configId: storage.configId,
     keys: [...logicalOf.keys()],
   });
   if (storage.root.layout === 'legacy_flat') return result;

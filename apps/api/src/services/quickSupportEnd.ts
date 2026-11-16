@@ -89,6 +89,9 @@ export async function endSupportSession(
         status: reason === 'expired' ? 'expired' : 'ended',
         endedAt: new Date(),
         endedReason: reason,
+        // An ended session's code opens nothing; its sealed copy goes in the
+        // same statement (#11836, enforced by the table's CHECK constraint).
+        codeEncrypted: null,
       })
         .where(and(eq(supportSessions.id, sessionId), notInArray(supportSessions.status, [...TERMINAL_SESSION_STATUSES])))
         .returning({ id: supportSessions.id, deviceId: supportSessions.deviceId });

@@ -952,7 +952,7 @@
     "createNotificationChannel": "Criar canal de notificação",
     "editNotificationChannel": "Editar canal de notificação",
     "createChannel": "Criar canal",
-    "deleteChannelConfirm": "Confirmar exclusão do canal",
+    "deleteChannelConfirm": "Excluir o canal “{{name}}”? Os alertas encaminhados somente a ele deixarão de ser entregues.",
     "deleting": "Excluindo",
     "editRoutingRule": "Editar regra de roteamento",
     "newRoutingRule": "Nova regra de roteamento",

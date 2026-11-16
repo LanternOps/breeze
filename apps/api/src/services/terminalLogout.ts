@@ -13,7 +13,9 @@ import {
   advanceUserEpochs,
   revokeAllRefreshFamilies,
   revokeRefreshFamilyById,
+  type Tx,
 } from './authLifecycle';
+import { cancelPendingEmailChange } from './pendingEmailCancellation';
 import {
   classifyRefreshTokenAuthority,
   type RefreshAuthority,
@@ -297,6 +299,17 @@ export function createTerminalLogoutService(dependencies: TerminalLogoutDependen
   });
 }
 
+/**
+ * Sign one user out of every session inside the terminal-logout transaction:
+ * advance auth_epoch, durably revoke every refresh family, and cancel a
+ * pending email-address change.
+ */
+export async function revokeAllSessionsForTerminalLogout(tx: Tx, userId: string): Promise<void> {
+  await advanceUserEpochs(tx, userId, { auth: true });
+  await revokeAllRefreshFamilies(tx, userId, 'terminal_logout');
+  await cancelPendingEmailChange(tx, userId);
+}
+
 const productionDependencies: TerminalLogoutDependencies = {
   verifyRefreshToken: verifyToken,
   withLockedTransition: (binding, callback) =>
@@ -342,10 +355,7 @@ const productionDependencies: TerminalLogoutDependencies = {
           return new Map(rows.map((row) => [row.familyId, row]));
         },
         classifyRefreshAuthority: (token) => classifyRefreshTokenAuthority(mutation.tx, token),
-        globallyRevokeUser: async (userId) => {
-          await advanceUserEpochs(mutation.tx, userId, { auth: true });
-          await revokeAllRefreshFamilies(mutation.tx, userId, 'terminal_logout');
-        },
+        globallyRevokeUser: (userId) => revokeAllSessionsForTerminalLogout(mutation.tx, userId),
         exactlyRevokeFamily: (familyId) =>
           revokeRefreshFamilyById(mutation.tx, familyId, 'terminal_logout'),
         retireWithSuccessor: mutation.retireWithSuccessor,

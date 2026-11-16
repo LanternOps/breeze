@@ -426,9 +426,18 @@ test('gate verdict: read from the newest CI Gate run; a failed lookup or missing
     [`GET ${R}/actions/jobs/710/logs`]: { status: 200, text: logText },
   });
   const found = await runFacts(gh(withGate(`${line}\n`)).gh, { repo: REPO, runId: 9, ciYml });
-  assert.deepEqual(found.gate, { verdict: 'fail', reason: 'not_pinned', run: 71 });
+  assert.deepEqual(found.gate, { verdict: 'fail', reason: 'not_pinned', run: 71, selection: null });
   const missing = await runFacts(gh(withGate('2026-11-08T05:40:00Z nothing here\n')).gh, { repo: REPO, runId: 9, ciYml });
-  assert.deepEqual(missing.gate, { verdict: null, reason: 'gate_line_missing', run: 71 });
+  assert.deepEqual(missing.gate, { verdict: null, reason: 'gate_line_missing', run: 71, selection: null });
+  // W05 (#10749): the same job logs the queue selection first (`select`), then the verdict.
+  const selection = '2026-11-08T05:31:00.0000000Z ci-gate-selection: mode=full reason=attempt1_selection_missing thin_queue="enforce" thin_skip=[] source_attempt=2';
+  const unjustified = '2026-11-08T05:40:00.0000000Z ci-gate: verdict=fail reason=thin_skip_unjustified:test-web event=merge_group thin=0';
+  const thin = await runFacts(gh(withGate(`${selection}\n${unjustified}\n`)).gh, { repo: REPO, runId: 9, ciYml });
+  assert.deepEqual(thin.gate, { verdict: 'fail', reason: 'thin_skip_unjustified:test-web', run: 71,
+    selection: { mode: 'full', reason: 'attempt1_selection_missing' } });
+  // An empty reason (a thin selection) is read as ''.
+  const thinMode = await runFacts(gh(withGate(`${selection.replace('mode=full reason=attempt1_selection_missing', 'mode=thin reason=')}\n${line}\n`)).gh, { repo: REPO, runId: 9, ciYml });
+  assert.deepEqual(thinMode.gate.selection, { mode: 'thin', reason: '' });
   const failed = await runFacts(gh({ ...base(), [gateKey]: { status: 500, body: {} } }).gh, { repo: REPO, runId: 9, ciYml });
   assert.deepEqual(failed.gate, { verdict: null, reason: 'gate_lookup_500' });
 });

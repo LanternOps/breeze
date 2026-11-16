@@ -343,7 +343,7 @@ async function insertDrExecution(
     name: `Queued recovery DR ${randomUUID()}`,
   }).returning({ id: drPlans.id });
   if (!plan) throw new Error('DR plan fixture failed');
-  await db.insert(drPlanGroups).values({
+  const groups = await db.insert(drPlanGroups).values({
     planId: plan.id,
     orgId: world.orgId,
     name: 'Restore group',
@@ -353,7 +353,7 @@ async function insertDrExecution(
       commandType: 'vm_restore_from_backup',
       payload: { snapshotId: world.providerSnapshotId },
     },
-  });
+  }).returning();
   const [execution] = await db.insert(drExecutions).values({
     planId: plan.id,
     orgId: world.orgId,
@@ -361,7 +361,8 @@ async function insertDrExecution(
     status: 'pending',
     startedAt: new Date(),
     initiatedBy: world.operator.id,
-    results: {},
+    // The definition execution creation captures; reconcile runs only this.
+    results: { definition: { version: 1, planId: plan.id, orgId: world.orgId, groups } },
     ...subject,
   }).returning({ id: drExecutions.id });
   if (!execution) throw new Error('DR execution fixture failed');

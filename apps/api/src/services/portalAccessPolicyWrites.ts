@@ -16,6 +16,7 @@ import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import {
   getPortalSignInCapabilities,
+  listOrgVerifiedDomains,
   pickEffectivePortalAccessPolicy,
   readPortalAccessPolicyRows,
   toPortalAccessPolicyRowValues,
@@ -25,8 +26,10 @@ import { findProvenEntraTenantForOrg } from './portalEntraTenantProof';
 import {
   clearPasswordsForSsoOnly,
   lockSsoOnlyImpact,
+  readSsoOnlyGoogleFacts,
   ssoOnlyImpactDigest,
   type LockedSsoOnlyImpact,
+  type SsoOnlyGoogleFacts,
   type SsoOnlyOrgImpact,
   type SsoOnlyPolicyOwner,
 } from './portalSsoOnly';
@@ -135,16 +138,43 @@ function inheritedSource(source: PortalPolicySource): Exclude<PortalPolicySource
 }
 
 /**
- * The org facts a policy owner is judged with (W4 D2). A partner owner is judged
- * as if the tenant were proven: its default means "on wherever a tenant is proven".
+ * The org facts a policy owner is judged with (W4 D2, W7 D6). A partner owner is
+ * judged as if the tenant were proven and a domain verified: its default means
+ * "on wherever a tenant is proven / a domain is verified".
  */
-function factsFor(owner: PortalAccessPolicyView['owner'], entraTenantProven: boolean | null): PortalPolicyOrgFacts {
-  return { entraTenantProven: owner.kind === 'partner' ? true : entraTenantProven === true };
+function factsFor(
+  owner: PortalAccessPolicyView['owner'],
+  entraTenantProven: boolean | null,
+  googleDomainVerified: boolean | null,
+): PortalPolicyOrgFacts {
+  if (owner.kind === 'partner') return { entraTenantProven: true, googleDomainVerified: true };
+  return { entraTenantProven: entraTenantProven === true, googleDomainVerified: googleDomainVerified === true };
 }
 
 /** Org owners only: whether the org's Entra tenant is proven, under the caller's context. */
 async function isOrgEntraTenantProven(orgId: string): Promise<boolean> {
   return (await findProvenEntraTenantForOrg(orgId)) !== null;
+}
+
+/**
+ * Org owners only: the org's currently verified domains, lowercase and sorted
+ * (W6 OD6 counts them; W7 D6 masks Google without one), through the resolver's
+ * {@link listOrgVerifiedDomains}: W5's read API throws inside a request
+ * transaction, so under the routes' request context it runs through
+ * runOutsideDbContext, and it is never called inside a write savepoint. ONE
+ * read serves the count, the list and the Google fact. A failure propagates
+ * (fail closed).
+ */
+async function readVerifiedDomains(orgId: string): Promise<string[]> {
+  return listOrgVerifiedDomains(orgId);
+}
+
+/** The org-only facts an org view carries (W4 D2, W6 OD6, W7 D6). A partner view has neither. */
+type OrgViewFacts = { entraTenantProven: boolean; verifiedDomains: string[] };
+
+/** W7 D6: the org save's Google fact for lockSsoOnlyImpact, from its one domain read. */
+function orgGoogleFacts(orgId: string, verifiedDomains: string[]): SsoOnlyGoogleFacts {
+  return new Set(verifiedDomains.length > 0 ? [orgId] : []);
 }
 
 function buildView(
@@ -153,11 +183,13 @@ function buildView(
   partnerRow: PortalAccessPolicyRowValues | null,
   caps: PortalSignInCapabilities,
   canEdit: boolean,
-  /** Org owner: whether its tenant is proven. Partner owner: null. */
-  entraTenantProven: boolean | null,
+  /** Org owner: its tenant proof and verified-domain count. Partner owner: null. */
+  orgFacts: OrgViewFacts | null,
 ): PortalAccessPolicyView {
   const values = ownRow ?? BLANK_ROW;
-  const facts = factsFor(owner, entraTenantProven);
+  const entraTenantProven = orgFacts?.entraTenantProven ?? null;
+  const verifiedDomains = orgFacts ? orgFacts.verifiedDomains : null;
+  const facts = factsFor(owner, entraTenantProven, verifiedDomains ? verifiedDomains.length > 0 : null);
   // An org owner sits on top of its partner default; a partner owner sits on the built-in defaults.
   const resolve = (row: PortalAccessPolicyRowValues) => (owner.kind === 'org'
     ? pickEffectivePortalAccessPolicy(row, partnerRow, caps, facts)
@@ -185,6 +217,8 @@ function buildView(
     capabilities: caps,
     canEdit,
     entraTenantProven: owner.kind === 'org' ? entraTenantProven === true : null,
+    verifiedDomainCount: owner.kind === 'org' ? verifiedDomains?.length ?? 0 : null,
+    verifiedDomains: owner.kind === 'org' ? [...(verifiedDomains ?? [])] : null,
   };
 }
 
@@ -225,6 +259,20 @@ function assertEntraTenantProven(patch: PolicyPatch, entraTenantProven: boolean)
   );
 }
 
+/**
+ * An org override may not turn Google on before the org has a verified email
+ * domain (W7 D6; W4's TENANT_NOT_PROVEN twin). An inherited `true` is masked by
+ * the resolver instead, never refused.
+ */
+function assertGoogleDomainVerified(patch: PolicyPatch, googleDomainVerified: boolean): void {
+  if (patch.googleEnabled !== true || googleDomainVerified) return;
+  throw new PortalAccessPolicyValidationError(
+    PORTAL_ACCESS_POLICY_ERROR_CODES.GOOGLE_DOMAIN_NOT_VERIFIED,
+    'googleEnabled',
+    "Verify one of the organization's email domains before turning on Google sign-in.",
+  );
+}
+
 /** `sso_only` is refused unless the would-be effective policy for this owner has an SSO method on. */
 function assertSsoOnlyHasSso(patch: PolicyPatch, wouldBe: ReturnType<typeof pickEffectivePortalAccessPolicy>): void {
   if (patch.passwordMode !== 'sso_only') return;
@@ -255,8 +303,9 @@ async function requireAcknowledgedSsoOnlyFlips(
   owner: SsoOnlyPolicyOwner,
   fields: PolicyPatch,
   ack: string | null | undefined,
+  googleFacts: SsoOnlyGoogleFacts,
 ): Promise<LockedSsoOnlyImpact> {
-  const impact = await lockSsoOnlyImpact(owner, fields);
+  const impact = await lockSsoOnlyImpact(owner, fields, googleFacts);
   if (impact.flips.length === 0) return impact;
   const impactDigest = ssoOnlyImpactDigest(impact.flips);
   if (ack !== impactDigest) throw new PortalAccessPolicyConfirmRequiredError({ flips: impact.flips, impactDigest });
@@ -273,7 +322,11 @@ async function clearForFlips(impact: LockedSsoOnlyImpact): Promise<PortalAccessP
 export async function getOrgPortalAccessPolicyView(org: { id: string; partnerId: string }): Promise<PortalAccessPolicyView> {
   const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
   const entraTenantProven = await isOrgEntraTenantProven(org.id);
-  return buildView({ kind: 'org', id: org.id }, rows.org, rows.partner, getPortalSignInCapabilities(), true, entraTenantProven);
+  const verifiedDomains = await readVerifiedDomains(org.id);
+  return buildView(
+    { kind: 'org', id: org.id }, rows.org, rows.partner, getPortalSignInCapabilities(), true,
+    { entraTenantProven, verifiedDomains },
+  );
 }
 
 export async function getPartnerPortalAccessPolicyView(auth: PartnerWriteAuth, partnerId: string): Promise<PortalAccessPolicyView> {
@@ -296,22 +349,29 @@ export async function updateOrgPortalAccessPolicy(
   const fields = parsePatch(patch);
   const caps = getPortalSignInCapabilities();
   assertMethodsAvailable(fields, caps);
+  // Read before the write savepoint: W5's read API cannot run inside it. This one
+  // read is the view's count and list, the Google refusal and the flips' Google fact.
+  const verifiedDomains = await readVerifiedDomains(org.id);
+  const googleDomainVerified = verifiedDomains.length > 0;
   return withDbTransaction(async () => {
     const entraTenantProven = await isOrgEntraTenantProven(org.id);
+    const orgFacts: OrgViewFacts = { entraTenantProven, verifiedDomains };
     assertEntraTenantProven(fields, entraTenantProven);
+    assertGoogleDomainVerified(fields, googleDomainVerified);
     const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
     const before = rows.org ?? BLANK_ROW;
     const owner = { kind: 'org' as const, id: org.id };
     assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(
-      { ...before, ...fields }, rows.partner, caps, factsFor(owner, entraTenantProven),
+      { ...before, ...fields }, rows.partner, caps, factsFor(owner, entraTenantProven, googleDomainVerified),
     ));
 
     const changedFields = changedFieldsOf(fields, before);
     if (changedFields.length === 0) {
-      return { view: buildView(owner, rows.org, rows.partner, caps, true, entraTenantProven), changedFields, ssoOnly: null };
+      return { view: buildView(owner, rows.org, rows.partner, caps, true, orgFacts), changedFields, ssoOnly: null };
     }
     const impact = await requireAcknowledgedSsoOnlyFlips(
       { kind: 'org', orgId: org.id, partnerId: org.partnerId }, fields, opts.acknowledgeSsoOnly,
+      orgGoogleFacts(org.id, verifiedDomains),
     );
     const [row] = await db.insert(portalAccessPolicies).values({ orgId: org.id, partnerId: null, ...fields })
       .onConflictDoUpdate({
@@ -323,7 +383,7 @@ export async function updateOrgPortalAccessPolicy(
     if (!row) throw new Error('portal access policy: org upsert returned no row');
     const ssoOnly = await clearForFlips(impact);
     return {
-      view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true, entraTenantProven),
+      view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true, orgFacts),
       changedFields,
       ssoOnly,
     };
@@ -350,17 +410,20 @@ export async function updatePartnerPortalAccessPolicy(
   const fields = parsePatch(patch);
   const caps = getPortalSignInCapabilities();
   assertMethodsAvailable(fields, caps);
+  // W7 D6: each org's Google fact for the flips, read before the write savepoint
+  // (W5's read API cannot run inside it). Empty unless Google can matter.
+  const googleFacts = await readSsoOnlyGoogleFacts({ kind: 'partner', partnerId }, fields);
   return withDbTransaction(async () => {
     const rows = await readPortalAccessPolicyRows({ orgId: null, partnerId });
     const before = rows.partner ?? BLANK_ROW;
     const owner = { kind: 'partner' as const, id: partnerId };
-    assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(null, { ...before, ...fields }, caps, factsFor(owner, null)));
+    assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(null, { ...before, ...fields }, caps, factsFor(owner, null, null)));
 
     const changedFields = changedFieldsOf(fields, before);
     if (changedFields.length === 0) {
       return { view: buildView(owner, rows.partner, null, caps, true, null), changedFields, ssoOnly: null };
     }
-    const impact = await requireAcknowledgedSsoOnlyFlips({ kind: 'partner', partnerId }, fields, opts.acknowledgeSsoOnly);
+    const impact = await requireAcknowledgedSsoOnlyFlips({ kind: 'partner', partnerId }, fields, opts.acknowledgeSsoOnly, googleFacts);
     const [row] = await db.insert(portalAccessPolicies).values({ partnerId, orgId: null, ...fields })
       .onConflictDoUpdate({
         target: portalAccessPolicies.partnerId,

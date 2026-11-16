@@ -13,6 +13,7 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { unknownToolArgsHooks } from './aiSdkToolArgGuard';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
@@ -28,6 +29,7 @@ import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
 import { takeGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
+import { presentRefusedToolCallNote } from './aiModels/gateway/openai/translateResponse';
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
@@ -47,12 +49,14 @@ import type { ResolvedModel } from './aiModels/resolveModel';
 import { carriesQueryValues, safeErrorMessage } from './aiModels/safeDbError';
 import { priceUsage, quoteInvocationCents, settleInvocation, sumCostCents } from './aiModels/settleInvocation';
 import { liveQueryKey, turnBindingFrom, type TurnBinding } from './aiModels/turnBinding';
+import { DEFAULT_TOOL_PROFILE_FACTS, toolProfileKey, type ToolExposure } from './aiModels/toolExposure';
+import { allowedToolsUnder, finalizeSessionToolExposure } from './aiModels/sessionToolExposure';
 import { REFUSAL_DOCS_URL, listRefusalAlternatives, refusalMessageText, type RefusalAlternative } from './aiModels/refusals';
 import { describeTurnModel, persistLastTurnModel, turnDisplayFrom, type TurnDisplay } from './aiModels/turnModel';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
 import { storeSdkSessionPointer } from './aiSdkSessionPointer';
-import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
+import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES, chatToolDomain, listChatSurfaceToolNames } from './aiAgentSdkTools';
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
@@ -372,6 +376,14 @@ function reportableError(err: unknown): unknown {
   return carriesQueryValues(err) ? new Error(safeErrorMessage(err)) : err;
 }
 
+/**
+ * The Agent SDK's abort (its `AbortError` class or a `DOMException` named AbortError), matched by name:
+ * the SDK class is not imported here so suites that mock the SDK module keep working.
+ */
+function isAbortError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError';
+}
+
 /** Immutable audit snapshot extracted from the HTTP request context */
 export interface AuditSnapshot {
   ip: string | undefined;
@@ -553,6 +565,13 @@ export interface ActiveSession {
   workTurnLimit?: number;
   /** Set when workTurnLimit stopped the turn; cleared at settlement. */
   workTurnLimitStopped?: boolean;
+  /**
+   * #11676: the technician pressed Stop on this turn (`interrupt()`). The CLI
+   * then ends it with a non-success result, which is the stop, not a failure:
+   * the turn ends with `done.stopped` and no `error`. Cleared when the turn
+   * ends and when the next turn claims the slot.
+   */
+  userInterrupted?: boolean;
   /** Synchronously reserved focal auto-link slots; shares the tool-count reset lifecycle. */
   pendingTurnAutoLinkCount: number;
   /**
@@ -611,6 +630,12 @@ export interface ActiveSession {
   approvalWaitBudgetMs: number;
   /** Optional MCP allowlist for restricted sessions such as helper chat. */
   allowedTools?: string[];
+  /**
+   * #11393: the tool exposure this live query was created with (fixed for its
+   * life; a profile change moves `liveKey` and recreates the query). Absent on
+   * sessions built outside getOrCreate.
+   */
+  toolExposure?: ToolExposure;
   /**
    * Topology M4 Task 3 (#6000): the host-owned investigation runtime for the
    * CURRENT turn of a topology session (bound by the route through
@@ -884,6 +909,8 @@ export class StreamingSessionManager {
     // the caller that takes the slot binds its turn's runtime (or clears a
     // previous one) and resets the cap stop. A loser binds nothing, so the
     // running turn keeps streaming into its OWN gate and its cap stop holds.
+    // #11676: a Stop that landed as the previous turn finished never hides this turn's failure.
+    session.userInterrupted = false;
     if (turn) {
       session.topologyInvestigation = turn.topologyInvestigation;
       session.topologyStopped = false;
@@ -980,6 +1007,14 @@ export class StreamingSessionManager {
        * (spike D3) — silently: the user asked for it.
        */
       modelSwitch?: boolean;
+      /**
+       * #11395: the caller's `mcpServerFactory` registers the Breeze registry
+       * (`createBreezeMcpServer`, e.g. the helper's per-level factory), so the
+       * tool exposure narrows it like the default server. Unset for a factory
+       * that registers its own tools (client-declared helper tools, Office,
+       * the script builder).
+       */
+      registersBreezeServer?: boolean;
     },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
@@ -988,7 +1023,11 @@ export class StreamingSessionManager {
     };
 
     const binding = turnBindingFrom(resolved);
-    const key = liveQueryKey(binding);
+    // #11393: the tool profile's key segment comes from facts alone, so a
+    // reused session compares it every turn without resolving extras; null
+    // (the identity exposure) keeps the key byte-identical.
+    const toolFacts = resolved.toolProfileFacts ?? DEFAULT_TOOL_PROFILE_FACTS;
+    const key = liveQueryKey(binding, toolProfileKey(toolFacts, resolved.surface));
     const existing = this.sessions.get(breezeSessionId);
     if (existing && existing.state !== 'closed') {
       // Spec §9.2: a live SDK query is reused only while connection id,
@@ -1040,7 +1079,8 @@ export class StreamingSessionManager {
           dbSession.writeDefaultOrgId,
         );
         reusable.auditSnapshot = snapshot;
-        reusable.allowedTools = allowedTools;
+        // A constrained live query keeps its exposure's narrowing on reuse.
+        reusable.allowedTools = reusable.toolExposure ? allowedToolsUnder(reusable.toolExposure, allowedTools) : allowedTools;
         // Topology fields are NOT touched here (PR #7147 F1): this session may
         // be processing another request's turn, which this caller is about to
         // lose with a 409. Rebinding here streamed the running turn into the
@@ -1176,6 +1216,27 @@ export class StreamingSessionManager {
     }
     const flowToolsByName = new Map(flowDescriptors.map((d) => [d.name, d]));
 
+    // #11393: ONE exposure for this live query — registration (`onlyTools`),
+    // kept extras and `allowedTools` all read it. The identity exposure
+    // (`full`, or `auto` with an unknown window) changes none of them. A
+    // profile that drops a surface-required tool throws here, before any
+    // provider call. Tenant tools count as `integrations`, flow tools as
+    // `scripts` (plan Decision 4).
+    const sessionTools = finalizeSessionToolExposure({
+      surface: resolved.surface,
+      facts: toolFacts,
+      allowedTools,
+      // Lambdas, not references: read only under a constrained profile.
+      registryNames: () => listChatSurfaceToolNames(),
+      breezeServer: !mcpServerFactory || options?.registersBreezeServer === true,
+      domainOf: (name) => chatToolDomain(name),
+      extraTools: [
+        ...tenantDescriptors.map((d) => ({ name: d.qualifiedName, domain: 'integrations' as const })),
+        ...flowDescriptors.map((d) => ({ name: d.name, domain: 'scripts' as const })),
+      ],
+      approvalMode,
+    });
+
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
@@ -1229,7 +1290,8 @@ export class StreamingSessionManager {
       pendingApprovalWaits: 0,
       approvalMode,
       approvalWaitBudgetMs,
-      allowedTools,
+      allowedTools: sessionTools.allowedTools,
+      toolExposure: sessionTools.exposure,
       // Seeds a brand-new session only; a reused session is never rebound
       // here (see the reuse branch and tryTransitionToProcessing).
       topologyInvestigation: options?.topologyInvestigation,
@@ -1278,11 +1340,16 @@ export class StreamingSessionManager {
           // `session.orgId` only when `toolAuth` carries none (non-device
           // sessions, whose org doesn't drift the same way).
           [
-            ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
+            ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId, () => session.toolExposure?.resultCharBudget),
             // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
             ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
-          ],
-          wispAdmitTool ? { admitTool: wispAdmitTool } : undefined,
+          ].filter((extra) => sessionTools.exposure.names === null || sessionTools.keepsExtra(extra.name)),
+          wispAdmitTool || sessionTools.onlyTools
+            ? {
+                ...(wispAdmitTool ? { admitTool: wispAdmitTool } : {}),
+                ...(sessionTools.onlyTools ? { onlyTools: sessionTools.onlyTools } : {}),
+              }
+            : undefined,
         ),
       };
     });
@@ -1323,6 +1390,8 @@ export class StreamingSessionManager {
     // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
     const child = await timePreStreamPhase('prepareSdkChild', () => prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
+      // #11395: a constrained profile on a gateway connection compacts the advertised schemas.
+      ...(sessionTools.exposure.compactSchemas ? { compactSchemas: true } : {}),
     }));
     const revokeEgressGrant = child.revoke;
     session.revokeEgressGrant = revokeEgressGrant;
@@ -1391,6 +1460,7 @@ export class StreamingSessionManager {
         const childEnv = child.env;
         const toolSearchPolicy = resolveToolSearchPolicy({
           surfaceSearch: options?.toolSearch === true,
+          profileSearch: sessionTools.exposure.toolSearchAllowed,
           childEnv,
           remainingTurns: maxTurns,
         });
@@ -1406,8 +1476,10 @@ export class StreamingSessionManager {
             maxTurns: sdkMaxTurns(maxTurns, toolSearchPolicy.enabled),
             maxBudgetUsd,
             tools: toolSearchPolicy.tools,
-            allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
+            allowedTools: sessionTools.allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
             mcpServers: { [mcpServerName]: mcpServer },
+            // #11861: refuse an argument the tool does not define (the SDK would strip it).
+            hooks: unknownToolArgsHooks({ [mcpServerName]: mcpServer }),
             includePartialMessages: true,
             abortController,
             env: { ...childEnv, ...toolSearchPolicy.env },
@@ -1517,9 +1589,13 @@ export class StreamingSessionManager {
       // conclude the turn (#3089). The tier-3 intents stay pending_approval
       // and are still executed by the durable release worker once decided.
       settleApprovalWaits(session);
+      // #11676: recorded before the SDK call, so the result that ends the
+      // turn (which can arrive before interrupt() resolves) reads as a stop.
+      session.userInterrupted = true;
       await session.query.interrupt();
       return { interrupted: true };
     } catch (err) {
+      session.userInterrupted = false;
       captureException(err);
       console.error('[StreamingSessionManager] Interrupt failed:', err);
       return { interrupted: false, reason: 'Failed to interrupt SDK query' };
@@ -1762,9 +1838,11 @@ export class StreamingSessionManager {
                 // gate at THIS publish point — never onto the bus/replay ring.
                 if (session.topologyInvestigation) session.topologyInvestigation.append(event.delta.text);
                 else {
-                  session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                  // W04 (#11397): a constrained profile shows its own note for a refused tool-call batch.
+                  const text = presentRefusedToolCallNote(event.delta.text, session.toolExposure?.promptMode);
+                  session.eventBus.publish({ type: 'content_delta', delta: text });
                   // #10427: only a Wisp turn has a record (W05), so ordinary chat buffers nothing.
-                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, event.delta.text);
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, text);
                 }
               }
             } else if (event.type === 'content_block_start') {
@@ -1918,9 +1996,12 @@ export class StreamingSessionManager {
                 { platformKey: session.turnBinding.connectionKind === 'platform' },
               )
               : null;
+            // W04 (#11397): persisted exactly as streamed, a constrained
+            // profile's refused-batch note included.
+            const promptMode = session.toolExposure?.promptMode;
             const assistantContent = syntheticErrorText ?? message.message.content
               .filter((b: { type: string }) => b.type === 'text')
-              .map((b: { type: string; text?: string }) => b.text ?? '')
+              .map((b: { type: string; text?: string }) => presentRefusedToolCallNote(b.text ?? '', promptMode))
               .join('\n\n');
 
             try {
@@ -1940,7 +2021,9 @@ export class StreamingSessionManager {
                       : message.message.content.map((b) =>
                         b.type === 'tool_use'
                           ? { ...b, input: redactSensitiveToolInput(b.input as Record<string, unknown>) }
-                          : b,
+                          : b.type === 'text'
+                            ? { ...b, text: presentRefusedToolCallNote(b.text, promptMode) }
+                            : b,
                       )) as unknown as Record<string, unknown>[],
                     inputTokens: message.message.usage?.input_tokens ?? 0,
                     outputTokens: message.message.usage?.output_tokens ?? 0,
@@ -2049,6 +2132,9 @@ export class StreamingSessionManager {
             }
 
             const resultMsg = message as SDKResultMessage;
+            // #11676: read (and cleared) before anything below awaits.
+            const userInterrupted = session.userInterrupted === true;
+            session.userInterrupted = false;
             // #7794: the model gateway's reason for this turn's failure, if it
             // had one. Always taken here, so a note from a retry that later
             // recovered never surfaces on a later turn.
@@ -2078,6 +2164,28 @@ export class StreamingSessionManager {
               ? providerFailureMessage(providerFailure.cause, sawOutput, { platformKey: turnBinding.connectionKind === 'platform' })
               : null;
             let isErrorSuccessMessage: string | null = null;
+            // #11676: the technician pressed Stop and the turn ended in the
+            // shape an interrupt produces (a non-success result, or a success
+            // flagged is_error). That result is the stop, not a failure: no
+            // error event, and `done` says stopped. Never a stop: a turn that
+            // completed before the Stop landed, a coded limit (work/turn limit,
+            // budget: they say why), a topology turn (its own fixed ending), or
+            // a provider/gateway failure the turn already reported as final.
+            const isErrorResult = (resultMsg as { is_error?: unknown }).is_error === true;
+            const stoppedByUser = userInterrupted
+              && !topologyTurn
+              && !session.workTurnLimitStopped
+              && (resultMsg.subtype !== 'success' || isErrorResult)
+              && resultMsg.subtype !== 'error_max_budget_usd'
+              && resultMsg.subtype !== 'error_max_turns'
+              && !gatewayNote
+              && !providerMessage;
+            if (stoppedByUser) {
+              // Diagnosable later without a Sentry event or an error banner.
+              console.info('[StreamingSessionManager] Turn stopped by the user:', {
+                breezeSessionId: session.breezeSessionId, subtype: resultMsg.subtype, isError: isErrorResult,
+              });
+            }
 
             if (session.workTurnLimitStopped) {
               // Whatever the interrupted query reported, the reason is the limit.
@@ -2096,13 +2204,15 @@ export class StreamingSessionManager {
                 // fresh session on this code; the user re-sends by hand (work
                 // may have run partway, so never automatically).
                 session.eventBus.publish(TURN_LIMIT_ERROR);
+              } else if (stoppedByUser) {
+                // #11676: the interrupted turn's result (see above); `done` says stopped.
               } else {
                 session.eventBus.publish({
                   type: 'error',
                   message: gatewayNote ?? providerMessage ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')),
                 });
               }
-            } else if (!topologyTurn && (resultMsg as { is_error?: unknown }).is_error === true) {
+            } else if (!topologyTurn && !stoppedByUser && isErrorResult) {
               // The CLI gave up on the upstream after its own retries (529 /
               // 429 / 401) or got a non-retried failure (low-credit 400), and
               // reports that as a "success" flagged is_error. Without an error
@@ -2166,7 +2276,11 @@ export class StreamingSessionManager {
                 costCents: turn.costCents,
               },
               ...wispDone,
+              ...(stoppedByUser ? { stopped: true } : {}),
             });
+            // #11676: a Stop that landed while this turn settled (after the
+            // result was read) has nothing left to stop.
+            session.userInterrupted = false;
             session.state = 'idle';
             try {
               wispTurnEnd?.scheduleWispTurnEndAfterDone(session, wispDone);
@@ -2181,6 +2295,15 @@ export class StreamingSessionManager {
         }
       }
     } catch (err) {
+      // #11676: the SDK aborting the iterator after the technician pressed
+      // Stop is the stop, not a failure: no Sentry event, no error banner.
+      if (session.userInterrupted === true && !session.topologyInvestigation && !session.workTurnLimitStopped && isAbortError(err)) {
+        session.userInterrupted = false;
+        console.info('[StreamingSessionManager] Turn stopped by the user:', session.breezeSessionId);
+        this.stopThinking(session);
+        session.eventBus.publish({ type: 'done', stopped: true });
+        return;
+      }
       captureException(reportableError(err));
       console.error('[StreamingSessionManager] Query error:', safeErrorMessage(err));
       this.stopThinking(session);
@@ -2347,6 +2470,10 @@ export class StreamingSessionManager {
         // W11: the live query's prompt, not the claimed binding's profile (a
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
+        // #11395: the tool exposure this live query was created with.
+        toolExposure: session.toolExposure
+          ? { profile: session.toolExposure.profile, fingerprint: session.toolExposure.fingerprint }
+          : null,
         toolExecutionCount,
         // #10400: work round-trips only — a ToolSearch-only round-trip loads
         // tool definitions and is not charged to the session's turn budget.
@@ -2402,11 +2529,21 @@ export class StreamingSessionManager {
   /**
    * The gateway's reason for this turn's failure, removed as it is read. A
    * context-window refusal also marks the turn's observation, so that
-   * settlement records it by name (#10577).
+   * settlement records it by name (#10577). A refused tool-call batch
+   * (W04 #11397) is recorded by name the same way (the turn's stop reason)
+   * and its log-safe description (names only) is logged; it is never the technician-facing
+   * reason (the model's text already carries the note), so it returns null.
    */
   private takeTurnGatewayNote(session: ActiveSession): string | null {
     const failure = takeGatewayFailure(session.breezeSessionId);
     if (failure?.code === 'context_window_exceeded') session.refusalObservation.contextWindowExceeded = true;
+    if (failure?.code === 'refused_tool_batch') {
+      session.refusalObservation.refusedToolBatch = failure.message;
+      console.warn('[StreamingSessionManager] turn had a refused tool-call batch', {
+        breezeSessionId: session.breezeSessionId, toolProfile: session.toolExposure?.profile ?? null, detail: failure.message,
+      });
+      return null;
+    }
     return failure?.message ?? null;
   }
 

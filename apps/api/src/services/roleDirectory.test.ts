@@ -108,11 +108,17 @@ describe('roleDirectory gates (W18, #6789)', () => {
   });
 
   it('effective permissions carry the inheritance chain', async () => {
+    // #9600: effective permissions and the chain both come from the
+    // tenant-confined lineage walk (services/roleInheritance.ts): one role row
+    // per hop, then each lineage role's own grants, nearest first.
+    const child = { ...partnerRole, parentRoleId: 'r-parent' };
+    const parent = { ...partnerRole, id: 'r-parent', name: 'Base', parentRoleId: null };
     queue.push(
-      [{ ...partnerRole, parentRoleId: 'r-parent' }], // role row
-      [{ id: 'r-1', name: 'Tech', parentRoleId: 'r-parent' }], [{ resource: 'a', action: 'b' }], // own perms
-      [{ id: 'r-parent', name: 'Base', parentRoleId: null }], [{ resource: 'c', action: 'd' }], // inherited
-      [{ id: 'r-parent', name: 'Base', parentRoleId: null }], // chain walk
+      [child], // role row (access check)
+      [child], [parent], // lineage walk for the permissions
+      [{ resource: 'a', action: 'b' }], // own perms
+      [{ resource: 'c', action: 'd' }], // inherited
+      [child], [parent], // lineage walk for the chain
     );
     const result = await getRoleEffectivePermissionsForCaller(partnerAuth(), 'r-1');
     expect(result).toMatchObject({

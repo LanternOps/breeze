@@ -1303,3 +1303,73 @@ describe('manage_software_policies update refuses a generated (security_agents) 
     expect(updateMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('manage_backup_configs refuses local destinations on a network share', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each(['\\\\nas\\breeze', '//nas/breeze', '\\\\?\\UNC\\nas\\breeze', '\\\\?\\C:\\breeze', '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\breeze'])('create refuses %s before writing', async (path) => {
+    mockInsertReturns({ id: BACKUP_CONFIG_ID, name: 'NAS', provider: 'local', providerConfig: { path } });
+    const output = await getBackupConfigsTool().handler(
+      { action: 'create', name: 'NAS', type: 'file', provider: 'local', providerConfig: { path } },
+      makeOrgAuth(),
+    );
+    expect(JSON.parse(output).error).toMatch(/not supported/);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(recordCredentialChangeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([[{ Path: '\\\\nas\\breeze' }], [{ PATH: '\\\\nas\\breeze' }], [{}]])('create refuses local settings %j', async (providerConfig) => {
+    mockInsertReturns({ id: BACKUP_CONFIG_ID, name: 'NAS', provider: 'local', providerConfig });
+    const output = await getBackupConfigsTool().handler(
+      { action: 'create', name: 'NAS', type: 'file', provider: 'local', providerConfig },
+      makeOrgAuth(),
+    );
+    expect(JSON.parse(output).error).toBeTruthy();
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('update refuses a differently spelled path key merged into a local destination', async () => {
+    mockSelectReturns({ id: BACKUP_CONFIG_ID, orgId: ORG_ID, name: 'Disk', provider: 'local', providerConfig: { path: '/var/backups/breeze' } });
+    mockUpdate();
+    const output = await getBackupConfigsTool().handler(
+      { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { Path: '\\\\nas\\breeze' } },
+      makeOrgAuth(),
+    );
+    expect(JSON.parse(output).error).toBeTruthy();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('update refuses moving a local destination onto a share', async () => {
+    mockSelectReturns({ id: BACKUP_CONFIG_ID, orgId: ORG_ID, name: 'Disk', provider: 'local', providerConfig: { path: '/var/backups/breeze' } });
+    mockUpdate();
+    const output = await getBackupConfigsTool().handler(
+      { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { path: '\\\\nas\\breeze' } },
+      makeOrgAuth(),
+    );
+    expect(JSON.parse(output).error).toMatch(/not supported/);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('update refuses switching a destination to local on a share', async () => {
+    mockSelectReturns({ id: BACKUP_CONFIG_ID, orgId: ORG_ID, name: 'S3', provider: 's3', providerConfig: { bucket: 'b', region: 'us-east-1' } });
+    mockUpdate();
+    const output = await getBackupConfigsTool().handler(
+      { action: 'update', configId: BACKUP_CONFIG_ID, provider: 'local', providerConfig: { path: '//nas/breeze' } },
+      makeOrgAuth(),
+    );
+    expect(JSON.parse(output).error).toMatch(/not supported/);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('a rename of a saved share destination still saves', async () => {
+    mockSelectReturns({ id: BACKUP_CONFIG_ID, orgId: ORG_ID, name: 'NAS', provider: 'local', providerConfig: { path: '\\\\nas\\breeze' } });
+    mockUpdate();
+    const output = await getBackupConfigsTool().handler(
+      { action: 'update', configId: BACKUP_CONFIG_ID, name: 'NAS (retired)' },
+      makeOrgAuth(),
+    );
+    expect(JSON.parse(output).success).toBe(true);
+  });
+});

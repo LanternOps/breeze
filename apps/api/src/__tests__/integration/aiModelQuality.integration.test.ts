@@ -198,6 +198,20 @@ describe.skipIf(!RUN)('AI model quality view (#7609 W11)', () => {
       expect(r.rows.map((x) => [x.key, x.invocations]).sort()).toEqual([['claude-small', 2], ['unrecorded', 1]]);
     });
 
+    it('groups by tool profile with refused tool-call batches and their rate, pre-profile rows as unrecorded (W04 #11397)', async () => {
+      const w = await seedWorld();
+      await call(w.orgA, w.offS, { tool_profile: 'minimal', stop_reason: 'refused_tool_batch' });
+      await call(w.orgA, w.offS, { tool_profile: 'minimal', stop_reason: 'end_turn' });
+      await call(w.orgA, w.offS, { tool_profile: 'full', stop_reason: 'end_turn' });
+      await call(w.orgA, w.offS, {});
+      const r = await asPartner(w.pA, [w.orgA], () => queryAiQualityBreakdown({ ...RANGE, groupBy: 'tool_profile', accessibleOrgIds: [w.orgA] }));
+      const rows = byKey(r.rows);
+      expect([...rows.keys()].sort()).toEqual(['full', 'minimal', 'unrecorded']);
+      expect(rows.get('minimal')).toMatchObject({ invocations: 2, refusedToolBatches: 1, refusedToolBatchRate: 0.5 });
+      expect(rows.get('full')).toMatchObject({ refusedToolBatches: 0, refusedToolBatchRate: 0 });
+      expect(r.totals).toMatchObject({ invocations: 4, refusedToolBatches: 1, refusedToolBatchRate: 0.25 });
+    });
+
     it('groups by prompt variant (base keyed surface/profile@base) and honours the surface filter', async () => {
       const w = await seedWorld();
       await call(w.orgA, w.offS, { prompt_profile: 'claude-small' });

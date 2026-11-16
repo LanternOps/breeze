@@ -21,7 +21,7 @@ vi.mock('../../services/portalAccessPolicy', async (importOriginal) => {
     ...actual,
     resolvePortalAccessPolicy: async (orgId: string) => ({
       orgId, partnerId: 'partner-1', entraTenant: null,
-      ...actual.pickEffectivePortalAccessPolicy(null, null, actual.getPortalSignInCapabilities(), { entraTenantProven: false }),
+      ...actual.pickEffectivePortalAccessPolicy(null, null, actual.getPortalSignInCapabilities(), { entraTenantProven: false, googleDomainVerified: false }),
     }),
   };
 });

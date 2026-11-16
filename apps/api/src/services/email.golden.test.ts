@@ -79,6 +79,8 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'partner.portal_entra_tenant.displaced', params: { ...MESSAGE, purpose: 'partner.portal_entra_tenant.displaced' }, expectedFrom: DEFAULT_FROM },
   // Portal registration W5 (#11382): domain verification lost notice. Platform lane.
   { name: 'partner.portal_domain_verification.lost', params: { ...MESSAGE, purpose: 'partner.portal_domain_verification.lost' }, expectedFrom: DEFAULT_FROM },
+  // Portal registration W8 (#11385): a directory deprovisioning run was held for the MSP. Platform lane.
+  { name: 'partner.portal_directory.held', params: { ...MESSAGE, purpose: 'partner.portal_directory.held' }, expectedFrom: DEFAULT_FROM },
   { name: 'deployment.invite', params: { ...MESSAGE, purpose: 'deployment.invite' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.staff_notification', params: { ...MESSAGE, purpose: 'ticket.staff_notification' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.customer_notification (with partner)', params: { ...MESSAGE, purpose: 'ticket.customer_notification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
@@ -88,6 +90,8 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'portal.password_reset', params: { ...MESSAGE, purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'portal.access_request.approved', params: { ...MESSAGE, purpose: 'portal.access_request.approved', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'portal.access_request.declined', params: { ...MESSAGE, purpose: 'portal.access_request.declined', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.self_registration.verify', params: { ...MESSAGE, purpose: 'portal.self_registration.verify', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.self_registration.existing_account', params: { ...MESSAGE, purpose: 'portal.self_registration.existing_account', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'customer.connection_health_digest', params: { ...MESSAGE, purpose: 'customer.connection_health_digest', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'trust.access_verification', params: { ...MESSAGE, purpose: 'trust.access_verification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
@@ -280,6 +284,22 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
     expect(resendSendMock.mock.calls[0]![0].from).toBe(BRANDED_FROM);
   });
 
+  it('sendPortalInvite offering Google (W7) keeps the partner stream, sender and subject', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    const invite = {
+      to: 'buyer@customer.test', inviteUrl: 'https://portal.test/i', orgName: 'Contoso', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+    };
+    await svc.sendPortalInvite({ ...invite, passwordAllowed: true });
+    await svc.sendPortalInvite({
+      ...invite, microsoftUrl: 'https://portal.test/i&method=microsoft', googleUrl: 'https://portal.test/i&method=google', passwordAllowed: false,
+    });
+    const [plain, google] = spy.mock.calls.map((call) => call[0] as { purpose: string; subject: string; html: string });
+    expect(google).toMatchObject({ purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP', subject: plain!.subject });
+    expect(google!.html).toContain('Sign in with Google');
+    expect(resendSendMock.mock.calls.map((call) => call[0].from)).toEqual([BRANDED_FROM, BRANDED_FROM]);
+  });
+
   it('sendPortalAccessApproved / sendPortalAccessDeclined are partner-stream sends carrying the partner', async () => {
     const svc = await service();
     const spy = vi.spyOn(svc, 'sendEmail');
@@ -315,6 +335,18 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
       to: ['admin@msp.test'], partnerName: 'Acme MSP', orgName: 'Contoso', domain: 'contoso.test', reason: 'stale',
     });
     expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'partner.portal_domain_verification.lost', to: ['admin@msp.test'] });
+    expect(spy.mock.calls[0]![0]).not.toHaveProperty('partnerId');
+    expect(resendSendMock.mock.calls[0]![0].from).toBe(DEFAULT_FROM);
+  });
+
+  it('sendPortalDirectoryHeld is a platform send to the partner admins, never partner-branded', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendPortalDirectoryHeld({
+      to: ['admin@msp.test'], partnerName: 'Acme MSP', orgName: 'Contoso', source: 'entra', affected: 3,
+      portalTabUrl: 'https://app.example.com/settings/organizations/o-1#portal',
+    });
+    expect(spy.mock.calls[0]![0]).toMatchObject({ purpose: 'partner.portal_directory.held', to: ['admin@msp.test'] });
     expect(spy.mock.calls[0]![0]).not.toHaveProperty('partnerId');
     expect(resendSendMock.mock.calls[0]![0].from).toBe(DEFAULT_FROM);
   });

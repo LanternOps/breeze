@@ -163,6 +163,7 @@ import {
 import * as orgMergeModule from './orgMerge';
 import { createAuditLog } from './auditService';
 import { db as mockedDb } from '../db';
+import { getOrgMergePolicies } from './orgMergeRegistry';
 
 const org = (over: Partial<Record<string, unknown>>) => ({
   id: 'a',
@@ -1353,5 +1354,16 @@ describe('entra_tenant_conflict org-merge blocker (portal registration W4, plan 
     expect(assertSafe).toHaveBeenCalledWith(LOSER, false, SURVIVOR);
     expect(orgMergeModule.runPolicy).not.toHaveBeenCalled();
     expect(unfence).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('portal directory deprovisioning merge policy (W8 #11385, plan D12)', () => {
+  // Plain repoint: runs' only org-bearing unique key is (org_id, source,
+  // snapshot_key) and every snapshot_key starts with the org's own connection
+  // id, so a re-tenant cannot collide; actions' (run_id, identity_id) key has no
+  // org_id. The chain key keeps the old org id, which is what makes an absorbed
+  // org's held actions refuse at Apply (plan D8d) and its observations reset (D5).
+  it.each(['portal_directory_runs', 'portal_directory_actions'])('org merge repoints %s', (table) => {
+    expect(getOrgMergePolicies().get(table)).toEqual({ kind: 'repoint' });
   });
 });

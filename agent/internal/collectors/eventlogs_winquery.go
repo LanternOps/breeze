@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
 const (
@@ -18,26 +20,56 @@ const (
 	auditFailureKeyword uint64 = 0x10000000000000
 )
 
-// securityAuditEventIDs covers actionable Audit Success events. Failed logon
-// 4625 is already covered by the Audit Failure keyword. Deliberately exclude
-// 4672: every SYSTEM/service/admin logon emits it, exhausting the stream budget.
-// A follow-up could include it with a SubjectUserSid filter.
+// securityAuditEventIDs is the Security-log allowlist (#11735). Until v0.126.0
+// the query also took every Audit Failure record (a keyword clause); that
+// pulled in code-integrity, firewall and crypto-operation failures at ~100x
+// the useful volume, so the stream now selects these IDs only. Level 1-3
+// records (for example 1104 "security log full") are still selected by level.
+// 4776 (NTLM validation) is not listed: it also fires on every success, so it
+// needs a failures-only term; that is an open decision (#11735).
+//
+// Deliberately excluded: 4672 (every SYSTEM/service/admin logon emits it; a
+// follow-up could include it with a SubjectUserSid filter) and 4624 (every
+// successful logon).
 var securityAuditEventIDs = []int{
-	1102, // Audit log cleared.
-	4719, // System audit policy changed.
-	4720, // User account created.
-	4726, // User account deleted.
+	1102, // Audit log cleared: defense evasion.
+	4625, // Failed logon (Audit Failure): brute force, password spraying.
+	4719, // System audit policy changed: audit tampering.
 	4728, // Member added to a security-enabled global group.
 	4732, // Member added to a security-enabled local group.
 	4740, // Account locked out.
 	4756, // Member added to a security-enabled universal group.
+	4771, // Kerberos pre-authentication failed: brute force against a domain controller.
+}
+
+// Levels 1-3 and account lifecycle 4720-4726 are each selected as one range
+// to keep the XPath at 12 terms, the count #10702 shipped (Windows rejects a
+// query with too many expressions as invalid). Account lifecycle:
+// 4720 created, 4722 enabled, 4723 password change attempt, 4724 password
+// reset attempt, 4725 disabled, 4726 deleted. 4721 is not assigned.
+const (
+	securityAccountFirstEventID = 4720
+	securityAccountLastEventID  = 4726
+)
+
+func securityEventAllowed(id int) bool {
+	if id >= securityAccountFirstEventID && id <= securityAccountLastEventID {
+		return true
+	}
+	for _, allowed := range securityAuditEventIDs {
+		if id == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func securityEventSelection() string {
-	parts := []string{"Level=1", "Level=2", "Level=3", fmt.Sprintf("band(Keywords,%d)", auditFailureKeyword)}
+	parts := []string{"(Level>=1 and Level<=3)"}
 	for _, id := range securityAuditEventIDs {
 		parts = append(parts, fmt.Sprintf("EventID=%d", id))
 	}
+	parts = append(parts, fmt.Sprintf("(EventID>=%d and EventID<=%d)", securityAccountFirstEventID, securityAccountLastEventID))
 	return "(" + strings.Join(parts, " or ") + ")"
 }
 
@@ -87,10 +119,6 @@ func buildWinEventXPath(selection string, bookmark *eventLogBookmark, seed, now 
 	return "*[System[" + clause + " and " + selection + "]]", floorApplied
 }
 
-func psSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-}
-
 func buildWinEventCommand(logName, xpath string) string {
 	return fmt.Sprintf(`try { $ev = @(Get-WinEvent -LogName %s -FilterXPath %s -Oldest -MaxEvents %d -ErrorAction SilentlyContinue -ErrorVariable gwe) } `+
 		`catch { [Console]::Error.WriteLine($_.Exception.Message); exit 3 }; `+
@@ -98,7 +126,7 @@ func buildWinEventCommand(logName, xpath string) string {
 		`if ($ev.Count -eq 0 -and $errs.Count -gt 0) { [Console]::Error.WriteLine($errs[0].Exception.Message); exit 3 }; `+
 		`if ($errs.Count -gt 0) { [Console]::Error.WriteLine($errs[0].Exception.Message) }; `+
 		`$ev | Select-Object RecordId, LogName, Level, Keywords, @{N='TimeCreated';E={$_.TimeCreated.ToString('o')}}, @{N='TimeCreatedUtc';E={$_.TimeCreated.ToUniversalTime().ToString('o')}}, ProviderName, Id, Message, @{N='InsertionText';E={ if ([string]::IsNullOrWhiteSpace($_.Message)) { ($_.Properties.Value -join ' ') } else { $null } }} | ConvertTo-Json -Depth 2 -Compress; exit 0`,
-		psSingleQuote(logName), psSingleQuote(xpath), perQueryCap)
+		psscript.Quote(logName), psscript.Quote(xpath), perQueryCap)
 }
 
 // winEventQueryOutput never accepts partial output from a failed command.
@@ -190,13 +218,8 @@ func mapSecurityEventLevel(level int, keywords int64, eventID int) string {
 	if level >= 1 && level <= 3 {
 		return mapWinLevel(level)
 	}
-	if uint64(keywords)&auditFailureKeyword != 0 {
+	if uint64(keywords)&auditFailureKeyword != 0 || securityEventAllowed(eventID) {
 		return "warning"
-	}
-	for _, id := range securityAuditEventIDs {
-		if eventID == id {
-			return "warning"
-		}
 	}
 	return mapWinLevel(level)
 }

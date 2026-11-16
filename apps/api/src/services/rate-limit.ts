@@ -222,7 +222,7 @@ export const loginLimiter: RateLimitConfig = {
 //
 // Operator overrides: LOGIN_ACCOUNT_LOCKOUT_MAX (default 5) and
 // LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS (default 900). Setting MAX=0
-// disables the feature entirely — recordAccountFailure / isAccountLocked
+// disables the feature entirely — reserveAccountAttempt / releaseAccountAttempt
 // short-circuit BEFORE touching Redis so a Redis outage during the
 // disabled state can't accidentally fail-closed and lock everyone out.
 function positiveIntFromEnv(name: string, fallback: number): number {
@@ -290,61 +290,87 @@ function accountFailureKey(email: string): string {
   return `login:account-fail:${email.toLowerCase()}`;
 }
 
-export interface AccountFailureResult {
+export interface AccountAttemptReservation {
+  /**
+   * The credential may be checked and its result honoured. False when the
+   * account is locked (this attempt is past the limit) or the counter could
+   * not be reached.
+   */
+  allowed: boolean;
+  /** Attempts in the current window, this one included. */
   count: number;
-  locked: boolean;
-  // True only on the attempt that crossed the threshold for the first time
-  // in this window. Use it to fire the lockout email exactly once instead of
-  // on every subsequent failed attempt during the lockout window.
-  newlyLocked: boolean;
+  /** This attempt is the last one before the lock. If it fails, the account is now locked. */
+  reachesLimit: boolean;
 }
 
+// Count one attempt and start the window on the first one, atomically on the
+// server. Later attempts (including ones made while locked) never move the
+// expiry, so trying again does not extend a lock.
+const RESERVE_ACCOUNT_ATTEMPT_SCRIPT = `
+local n = redis.call('INCR', KEYS[1])
+if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return n
+`;
+
+// Give back a reserved attempt whose credential turned out to be correct.
+const RELEASE_ACCOUNT_ATTEMPT_SCRIPT = `
+local n = redis.call('DECR', KEYS[1])
+if n <= 0 then redis.call('DEL', KEYS[1]) end
+return n
+`;
+
 /**
- * Increment the per-account failure counter. Returns the new count, whether
- * the account is now locked, and whether THIS call is the one that crossed
- * the threshold (so callers can fire a lockout-notice email exactly once).
+ * Reserve one sign-in attempt for an account BEFORE its credential is checked.
+ * Concurrent attempts each get their own count from Redis, so no more than
+ * LOGIN_ACCOUNT_LOCKOUT_MAX credential results are honoured per window,
+ * however the requests are timed. Callers still run the credential check when
+ * `allowed` is false (equal work on every branch) and then deny.
  *
- * Fail-closed on Redis errors: if the counter can't be read or incremented
- * we report `locked: true` so we don't silently let an attacker keep
- * guessing during a Redis outage.
+ * After a correct credential, call releaseAccountAttempt so the counter keeps
+ * measuring failed attempts only; after a wrong one there is nothing to do
+ * (the attempt is already counted). clearAccountFailures still resets the
+ * counter on a completed sign-in.
+ *
+ * Fail-closed, as the lockout check has always been: no Redis, or a Redis
+ * error, reports `allowed: false`. With LOGIN_ACCOUNT_LOCKOUT_MAX=0 the
+ * feature is off and Redis is not touched.
  */
-export async function recordAccountFailure(
+export async function reserveAccountAttempt(
   redis: Redis | null,
   email: string
-): Promise<AccountFailureResult> {
-  // Feature disabled (MAX=0): short-circuit before any Redis call so the
-  // null-Redis fail-closed branch below can't accidentally lock everyone
-  // out when ops have explicitly turned the feature off.
+): Promise<AccountAttemptReservation> {
   const maxAttempts = getAccountLockoutMax();
-  const windowSeconds = getAccountLockoutWindowSeconds();
   if (maxAttempts <= 0) {
-    return { count: 0, locked: false, newlyLocked: false };
+    return { allowed: true, count: 0, reachesLimit: false };
   }
   if (!redis) {
-    console.error('[rate-limit] Redis unavailable, failing closed on account failure for:', email);
-    return { count: maxAttempts, locked: true, newlyLocked: false };
+    console.error('[rate-limit] Redis unavailable, refusing account attempt for:', email);
+    return { allowed: false, count: maxAttempts, reachesLimit: false };
   }
-
-  const key = accountFailureKey(email);
   try {
-    // Atomically increment the counter. newlyLocked is the call where the
-    // INCR's own return value is exactly maxAttempts — only one racer can
-    // observe that boundary, so the lockout email + audit row fire exactly
-    // once per lockout window. (The previous GET-then-INCR pattern let two
-    // concurrent 4→5 / 4→6 callers BOTH return newlyLocked.)
-    const count = await redis.incr(key);
-    if (count === 1) {
-      // Only reset TTL when the counter was just created — otherwise a
-      // sliding TTL would let an attacker keep the counter "young" by
-      // pacing attempts and never trip the lockout.
-      await redis.expire(key, windowSeconds);
+    const count = Number(await redis.eval(
+      RESERVE_ACCOUNT_ATTEMPT_SCRIPT,
+      1,
+      accountFailureKey(email),
+      String(getAccountLockoutWindowSeconds())
+    ));
+    if (!Number.isFinite(count)) {
+      return { allowed: false, count: maxAttempts, reachesLimit: false };
     }
-    const locked = count >= maxAttempts;
-    const newlyLocked = count === maxAttempts;
-    return { count, locked, newlyLocked };
+    return { allowed: count <= maxAttempts, count, reachesLimit: count === maxAttempts };
   } catch (err) {
-    console.error('[rate-limit] Redis error recording account failure for:', email, err);
-    return { count: maxAttempts, locked: true, newlyLocked: false };
+    console.error('[rate-limit] Redis error reserving account attempt for:', email, err);
+    return { allowed: false, count: maxAttempts, reachesLimit: false };
+  }
+}
+
+/** Best-effort: give back an attempt reserved by reserveAccountAttempt after a correct credential. */
+export async function releaseAccountAttempt(redis: Redis | null, email: string): Promise<void> {
+  if (!redis || getAccountLockoutMax() <= 0) return;
+  try {
+    await redis.eval(RELEASE_ACCOUNT_ATTEMPT_SCRIPT, 1, accountFailureKey(email));
+  } catch (err) {
+    console.error('[rate-limit] Redis error releasing account attempt for:', email, err);
   }
 }
 
@@ -362,28 +388,6 @@ export async function clearAccountFailures(redis: Redis | null, email: string): 
     await redis.del(accountFailureKey(email));
   } catch (err) {
     console.error('[rate-limit] Redis error clearing account failures for:', email, err);
-  }
-}
-
-/**
- * Check whether an account is currently locked (failure count at or above
- * the threshold within the lockout window). Fail-closed on Redis errors —
- * treat the account as locked so we don't silently let an attacker keep
- * guessing during a Redis outage.
- */
-export async function isAccountLocked(redis: Redis | null, email: string): Promise<boolean> {
-  const maxAttempts = getAccountLockoutMax();
-  if (maxAttempts <= 0) return false;
-  if (!redis) {
-    console.error('[rate-limit] Redis unavailable, treating account as locked for:', email);
-    return true;
-  }
-  try {
-    const v = await redis.get(accountFailureKey(email));
-    return v !== null && parseInt(v, 10) >= maxAttempts;
-  } catch (err) {
-    console.error('[rate-limit] Redis error checking account lock for:', email, err);
-    return true;
   }
 }
 

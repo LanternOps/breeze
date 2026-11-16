@@ -30,7 +30,7 @@ import {
   mapNetworkChangeRow,
   resolveOrgId
 } from './networkShared';
-import { pgErrorCode } from '../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 
 export const networkBaselineRoutes = new Hono();
 
@@ -668,7 +668,7 @@ networkBaselineRoutes.delete(
       // network_baselines, narrow this to that constraint name -- otherwise the
       // new violation inherits this hint, `?deleteChanges=true` will not clear
       // it, and the caller retries into the same wall.
-      if (!deleteChanges && pgErrorCode(error) === '23503') {
+      if (!deleteChanges && isPgForeignKeyViolationCode(pgErrorCode(error))) {
         return c.json({
           error: 'Cannot delete baseline without deleting associated change events',
           hint: 'Use ?deleteChanges=true to delete events with the baseline'

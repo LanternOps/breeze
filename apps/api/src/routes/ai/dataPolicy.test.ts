@@ -16,9 +16,12 @@ const USER_ID = '33333333-3333-4333-8333-333333333333';
 type SelectRow = Record<string, unknown>;
 let selectQueue: SelectRow[][] = [];
 let writes: Array<{ values: Record<string, unknown>; set: Record<string, unknown>; target: unknown }> = [];
+const executeMock = vi.fn();
 
 vi.mock('../../db', () => ({
   db: {
+    // The preview's bounded count (countTranscriptPreview, kept REAL).
+    execute: (...a: unknown[]) => executeMock(...a),
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -87,6 +90,8 @@ vi.mock('../../services/permissions', async (importOriginal) => {
   return { ...actual, getUserPermissions: vi.fn(async () => currentPerms) };
 });
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { PERMISSIONS } from '../../services/permissions';
 import { aiDataPolicies } from '../../db/schema';
 import { aiDataPolicyRoutes } from './dataPolicy';
@@ -124,16 +129,17 @@ function makePerms(grants: Array<{ resource: string; action: string }>): UserPer
   return { permissions: grants, partnerId: null, orgId: ORG_A, roleId: 'role-1', scope: 'organization' };
 }
 
-const SRC = { deviceFileReadLevel: 'default', toolOutputRetentionDays: 'default' } as const;
-const CEILING = { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30, source: SRC };
-const mockCeiling = (c: { deviceFileReadLevel: string; toolOutputRetentionDays: number | null }) =>
-  resolveAiDataPolicyCeiling.mockResolvedValue({ ...c, source: SRC });
+const SRC = { deviceFileReadLevel: 'default', toolOutputRetentionDays: 'default', transcriptRetentionDays: 'default' } as const;
+const CEILING = { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30, transcriptRetentionDays: 365, source: SRC };
+const mockCeiling = (c: { deviceFileReadLevel: string; toolOutputRetentionDays: number | null; transcriptRetentionDays?: number | null }) =>
+  resolveAiDataPolicyCeiling.mockResolvedValue({ transcriptRetentionDays: 365, ...c, source: SRC });
 
 beforeEach(() => {
   vi.clearAllMocks();
   selectQueue = [];
   writes = [];
   auditLog.length = 0;
+  executeMock.mockReset();
   currentAuth = orgAuth();
   currentPerms = makePerms(ALL_GRANTS);
   resolveAiDataPolicy.mockResolvedValue(CEILING);
@@ -152,16 +158,22 @@ const putReq = (body: unknown, url = URL_A) =>
 describe('GET /data-policy', () => {
   it('returns policy, effective and ceiling for an org token', async () => {
     const row = {
-      id: 'p1', orgId: ORG_A, partnerId: null, deviceFileReadLevel: 'off', toolOutputRetentionDays: 7,
+      id: 'p1', orgId: ORG_A, partnerId: null, deviceFileReadLevel: 'off', toolOutputRetentionDays: 7, transcriptRetentionDays: 60,
       createdBy: USER_ID, createdAt: new Date('2026-01-01T00:00:00Z'), updatedAt: new Date('2026-01-02T00:00:00Z'),
     };
     selectQueue = [[row]];
-    const effective = { deviceFileReadLevel: 'off', toolOutputRetentionDays: 7, source: { deviceFileReadLevel: 'org', toolOutputRetentionDays: 'org' } };
+    const effective = {
+      deviceFileReadLevel: 'off', toolOutputRetentionDays: 7, transcriptRetentionDays: 60,
+      source: { deviceFileReadLevel: 'org', toolOutputRetentionDays: 'org', transcriptRetentionDays: 'org' },
+    };
     resolveAiDataPolicy.mockResolvedValue(effective);
     const res = await getReq();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      policy: { id: 'p1', orgId: ORG_A, partnerId: null, deviceFileReadLevel: 'off', toolOutputRetentionDays: 7, updatedAt: '2026-01-02T00:00:00.000Z' },
+      policy: {
+        id: 'p1', orgId: ORG_A, partnerId: null, deviceFileReadLevel: 'off', toolOutputRetentionDays: 7, transcriptRetentionDays: 60,
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      },
       effective,
       ceiling: CEILING,
     });
@@ -222,6 +234,32 @@ describe('PUT /data-policy', () => {
     expect(res.status).toBe(422);
     expect(await res.json()).toEqual({ error: 'above_partner_ceiling', field: 'toolOutputRetentionDays' });
     expect(writes).toHaveLength(0);
+  });
+
+  it('rejects a transcript window longer than the partner ceiling with 422 naming the field', async () => {
+    mockCeiling({ deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30, transcriptRetentionDays: 180 });
+    const res = await putReq({ transcriptRetentionDays: 181 });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'above_partner_ceiling', field: 'transcriptRetentionDays' });
+    expect(writes).toHaveLength(0);
+    expect(auditLog).toHaveLength(0);
+  });
+
+  it('accepts a transcript window at or under the ceiling, and any window when the ceiling is forever', async () => {
+    mockCeiling({ deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30, transcriptRetentionDays: 180 });
+    expect((await putReq({ transcriptRetentionDays: 180 })).status).toBe(200);
+    expect(writes[0]!.values).toMatchObject({ orgId: ORG_A, transcriptRetentionDays: 180 });
+    mockCeiling({ deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30, transcriptRetentionDays: null });
+    expect((await putReq({ transcriptRetentionDays: 3650 })).status).toBe(200);
+  });
+
+  it('null clears the org transcript window (inherit) in insert and conflict set', async () => {
+    mockCeiling({ deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30, transcriptRetentionDays: 30 });
+    const res = await putReq({ transcriptRetentionDays: null });
+    expect(res.status).toBe(200);
+    expect(writes[0]!.values.transcriptRetentionDays).toBeNull();
+    expect(writes[0]!.set.transcriptRetentionDays).toBeNull();
+    expect((await res.json()).policy.transcriptRetentionDays).toBeNull();
   });
 
   it('allows any retention when the ceiling is keep-forever (null)', async () => {
@@ -324,11 +362,84 @@ describe('PUT /data-policy', () => {
 
   it.each([
     ['retention 0', { toolOutputRetentionDays: 0 }],
+    ['transcript retention 0', { transcriptRetentionDays: 0 }],
+    ['transcript retention above 3650', { transcriptRetentionDays: 3651 }],
     ['unknown level', { deviceFileReadLevel: 'everything' }],
     ['unknown key (strict)', { other: 1 }],
   ])('400s %s and writes nothing', async (_n, body) => {
     const res = await putReq(body);
     expect(res.status).toBe(400);
     expect(writes).toHaveLength(0);
+  });
+});
+
+describe('GET /data-policy/transcript-retention-preview', () => {
+  const dialect = new PgDialect();
+  const previewReq = (qs: string) => aiDataPolicyRoutes.request(`/data-policy/transcript-retention-preview${qs}`);
+  const renderedCount = (i = 0) => dialect.sqlToQuery(executeMock.mock.calls[i]![0] as SQL);
+
+  it.each([
+    ['days=0', '?days=0'],
+    ['days=abc', '?days=abc'],
+    ['missing days', ''],
+    ['days above 3650', '?days=3651'],
+    ['fractional days', '?days=2.5'],
+  ])('400s %s and counts nothing', async (_n, qs) => {
+    const res = await previewReq(qs);
+    expect(res.status).toBe(400);
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it("counts the org token's own technician sessions at window N, with enforced:false", async () => {
+    executeMock.mockResolvedValueOnce([{ n: 7 }]);
+    const res = await previewReq('?days=30');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: 7, capped: false, enforced: false });
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const q = renderedCount();
+    expect(q.sql).toContain('ai_sessions.type NOT IN');
+    expect(q.sql).toContain('ai_sessions.transcript_purged_at IS NULL');
+    expect(q.params).toContain(ORG_A);
+  });
+
+  it('reports capped when the bounded count overflows', async () => {
+    executeMock.mockResolvedValueOnce([{ n: 10_001 }]);
+    expect(await (await previewReq('?days=30')).json()).toEqual({ eligible: 10_000, capped: true, enforced: false });
+  });
+
+  it('an org token naming another org previews only its own org', async () => {
+    executeMock.mockResolvedValueOnce([{ n: 0 }]);
+    expect((await previewReq(`?days=30&orgId=${ORG_B}`)).status).toBe(200);
+    const q = renderedCount();
+    expect(q.params).toContain(ORG_A);
+    expect(q.params).not.toContain(ORG_B);
+  });
+
+  it('a partner token previews the ?orgId= org it can access', async () => {
+    currentAuth = partnerAuth();
+    executeMock.mockResolvedValueOnce([{ n: 2 }]);
+    const res = await previewReq(`?days=30&orgId=${ORG_A}`);
+    expect(res.status).toBe(200);
+    expect(renderedCount().params).toContain(ORG_A);
+  });
+
+  it('403s a partner token naming an org it cannot access, and counts nothing', async () => {
+    currentAuth = partnerAuth();
+    const res = await previewReq(`?days=30&orgId=${ORG_B}`);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to this organization denied.' });
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it('400s a partner token without orgId', async () => {
+    currentAuth = partnerAuth();
+    expect((await previewReq('?days=30')).status).toBe(400);
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it('403s without ai_agents:read', async () => {
+    currentPerms = makePerms([]);
+    expect((await previewReq('?days=30')).status).toBe(403);
+    expect(executeMock).not.toHaveBeenCalled();
   });
 });

@@ -84,9 +84,20 @@ describe('validateFlowDocument', () => {
     expect(r.issues.some((i) => i.code === 'input_invalid' && /exactly one/.test(i.message))).toBe(true);
   });
 
-  it('an unknown key next to a templated leaf keeps unrecognized_keys', async () => {
-    // Core tool schemas are non-strict (unknown keys strip), so use the strict
-    // built-in: the templated `minutes` is masked, the unknown key is not.
+  it('a core tool step with an argument the tool does not define is input_invalid, templated value or not (#11861)', async () => {
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'run_script', input: {
+      scriptId: SCRIPT, deviceIds: [DEVICE], target: '{{inputs.kind}}',
+    } }]), ORG_OWNER);
+    const inv = r.issues.filter((i) => i.code === 'input_invalid');
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.message).toMatch(/^\/: unknown argument "target" \(accepted: /);
+    expect(r.valid).toBe(false);
+  });
+
+  it('an unknown key next to a templated leaf is still reported (strict built-in, one issue)', async () => {
+    // The templated `minutes` is masked, the unknown key is not. `wait` is
+    // strict, so Zod's own unrecognized_keys for the same key is dropped as a
+    // duplicate of the unknown-argument issue.
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: '{{inputs.r}}', bogus: 1 } }]), ORG_OWNER);
     const inv = r.issues.filter((i) => i.code === 'input_invalid');
     expect(inv).toHaveLength(1);
@@ -463,6 +474,12 @@ describe('revalidateRenderedStep', () => {
     const r = await revalidateRenderedStep(RUN_PIN, { scriptId: SCRIPT, deviceIds: [DEVICE] }, ctx);
     expect(r).toEqual({ ok: true, tier: 3, approvalScope: 'supervised' });
     expect(findOwnedDeviceIds).toHaveBeenCalledWith(ORG, [DEVICE]);
+  });
+
+  it('a rendered core step with an argument the tool does not define is input_invalid, naming it (#11861)', async () => {
+    const r = await revalidateRenderedStep(RUN_PIN, { scriptId: SCRIPT, deviceIds: [DEVICE], target: 'all' }, ctx);
+    expect(r).toMatchObject({ ok: false, code: 'input_invalid' });
+    expect((r as { message: string }).message).toMatch(/^\/: unknown argument "target" \(accepted: /);
   });
 
   it('templated uuid rendered to "abc" is input_invalid', async () => {

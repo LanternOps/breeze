@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, text, timestamp, pgEnum, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { pgTable, uuid, varchar, text, timestamp, pgEnum, index, check } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
@@ -23,8 +24,18 @@ export const supportSessions = pgTable('support_sessions', {
   /** Always the partner's hidden 'quick_support' org — never a real customer org. */
   orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  /** SHA-256 hex of the one-time code. Never returned by any route. */
+  /** SHA-256 hex of the one-time code — the redeem lookup key. Never returned by any route. */
   codeHash: varchar('code_hash', { length: 64 }).notNull().unique(),
+  /**
+   * The same one-time code, sealed with the secret-encryption key and bound to
+   * this row's id (encryptedColumnRegistry, `aadBinding: 'row'`), so the
+   * technician can read it back while the customer has not used it yet
+   * (#11836). Only ever non-null while `status = 'pending'`: every transition
+   * out of pending sets it to NULL in the same statement, and the CHECK
+   * constraint `support_sessions_code_encrypted_pending_chk` refuses a status
+   * change that would leave it behind. Never logged, never exported.
+   */
+  codeEncrypted: text('code_encrypted'),
   codeExpiresAt: timestamp('code_expires_at', { withTimezone: true }).notNull(),
   status: supportSessionStatusEnum('status').notNull().default('pending'),
   hardExpiresAt: timestamp('hard_expires_at', { withTimezone: true }).notNull(),
@@ -41,4 +52,8 @@ export const supportSessions = pgTable('support_sessions', {
 }, (t) => ({
   reaperIdx: index('idx_support_sessions_reaper').on(t.status, t.hardExpiresAt),
   deviceIdx: index('idx_support_sessions_device').on(t.deviceId),
+  codeEncryptedPendingChk: check(
+    'support_sessions_code_encrypted_pending_chk',
+    sql`${t.codeEncrypted} IS NULL OR ${t.status} = 'pending'`,
+  ),
 }));

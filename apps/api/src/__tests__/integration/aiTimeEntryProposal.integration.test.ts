@@ -26,7 +26,7 @@ import './setup';
 import { getTestDb } from './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 vi.hoisted(() => {
@@ -67,6 +67,7 @@ import { approvalRoutes } from '../../routes/approvals';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
 import { changeTicketStatus, sendTicketDraft } from '../../services/ticketService';
 import { AI_TIME_ENTRY_DEFAULT_MINUTES } from '../../services/aiTimeEntryProposal';
+import { canonicalizeArguments, computeArgumentDigest } from '../../services/actionIntents/canonicalize';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -341,10 +342,15 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     expect(intent.arguments).toMatchObject({
       action: 'log_time_entry',
       ticketId: s.ticketId,
-      durationMinutes: AI_TIME_ENTRY_DEFAULT_MINUTES,
       isBillable: true,
-      proposedForUserId: s.tech.id,
     });
+    // The block spans the default duration; no key the tool does not define
+    // (#11861: release would refuse it after a human approved the proposal).
+    const args = intent.arguments as Record<string, unknown>;
+    expect(new Date(String(args.endedAt)).getTime() - new Date(String(args.startedAt)).getTime())
+      .toBe(AI_TIME_ENTRY_DEFAULT_MINUTES * 60_000);
+    expect(Object.keys(args)).not.toEqual(expect.arrayContaining(['durationMinutes']));
+    expect(Object.keys(args)).not.toEqual(expect.arrayContaining(['proposedForUserId']));
 
     // The proposal never auto-executes.
     expect(await entriesForTicket(s.ticketId)).toHaveLength(0);
@@ -388,6 +394,55 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     expect(entries[0]!.userId).not.toBe(s.agentId);
   });
 
+  /**
+   * Rewrites a freshly minted proposal's stored arguments (and both digests) as a
+   * row minted before #11861 would carry them. Content is DB-immutable, so the
+   * owner connection lifts the trigger for this one write, in one transaction.
+   */
+  async function forgeStoredArguments(intentId: string, extra: Record<string, unknown>): Promise<void> {
+    const adminDb = getTestDb() as any;
+    await adminDb.transaction(async (tx: any) => {
+      const [row] = await tx.select().from(actionIntents).where(eq(actionIntents.id, intentId));
+      const args = { ...(row.arguments as Record<string, unknown>), ...extra };
+      const digest = computeArgumentDigest(canonicalizeArguments(args));
+      await tx.execute(sql`ALTER TABLE action_intents DISABLE TRIGGER action_intents_immutable_trg`);
+      await tx.update(actionIntents).set({ arguments: args, argumentDigest: digest }).where(eq(actionIntents.id, intentId));
+      await tx.execute(sql`ALTER TABLE action_intents ENABLE TRIGGER action_intents_immutable_trg`);
+      await tx.update(approvalRequests).set({ actionArguments: args, boundArgumentDigest: digest }).where(eq(approvalRequests.intentId, intentId));
+    });
+  }
+
+  async function releaseForgedProposal(extra: Record<string, unknown>) {
+    const s = await seedScenario();
+    const draftId = await seedDraft(s, 'reply');
+    await withDbAccessContext(s.orgContext, () =>
+      sendTicketDraft(s.ticketId, draftId, undefined, { kind: 'user' as const, userId: s.tech.id, name: 'Tess Tech' }),
+    );
+    await publishLatestOutbox(s, 'ticket.commented');
+    const [intent] = await intentsForTicket(s.ticketId);
+    expect(intent).toBeTruthy();
+    await forgeStoredArguments(intent!.id, extra);
+    await approveViaRoute(s, intent!.id);
+    await releaseApprovedIntent(intent!.id);
+    const [released] = await intentsForTicket(s.ticketId);
+    return { s, released: released!, entries: await entriesForTicket(s.ticketId) };
+  }
+
+  runDb('a proposal stored before #11861 with the two retired keys still releases and logs the entry', async () => {
+    const { s, released, entries } = await releaseForgedProposal({ durationMinutes: AI_TIME_ENTRY_DEFAULT_MINUTES, proposedForUserId: randomUUID() });
+    expect((released.arguments as Record<string, unknown>).durationMinutes).toBe(AI_TIME_ENTRY_DEFAULT_MINUTES);
+    expect(released).toMatchObject({ status: 'completed', errorCode: null });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ userId: s.approver.id, source: 'ai_suggested', durationMinutes: AI_TIME_ENTRY_DEFAULT_MINUTES });
+  });
+
+  runDb('a stored proposal with any other unknown key is still refused at release with the unknown-argument error', async () => {
+    const { released, entries } = await releaseForgedProposal({ durationMinutes: AI_TIME_ENTRY_DEFAULT_MINUTES, bogusKey: 'x' });
+    expect(released).toMatchObject({ status: 'failed', errorCode: 'tool_returned_error' });
+    expect(JSON.stringify(released.result)).toContain('unknown argument \\"bogusKey\\"');
+    expect(entries).toHaveLength(0);
+  });
+
   runDb('resolving with an AI resolution note mints under its own trigger key and honours the category duration default', async () => {
     const s = await seedScenario({ categoryMinutes: 25 });
     const draftId = await seedDraft(s, 'resolution_note');
@@ -408,7 +463,9 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     });
     // Category default (25) beats the module constant; billable comes from
     // the resolver through the partner default billing profile.
-    expect(intents[0]!.arguments).toMatchObject({ action: 'log_time_entry', durationMinutes: 25, isBillable: true });
+    const args = intents[0]!.arguments as Record<string, unknown>;
+    expect(args).toMatchObject({ action: 'log_time_entry', isBillable: true });
+    expect(new Date(String(args.endedAt)).getTime() - new Date(String(args.startedAt)).getTime()).toBe(25 * 60_000);
     expect(await entriesForTicket(s.ticketId)).toHaveLength(0);
   });
 

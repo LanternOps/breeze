@@ -1,4 +1,4 @@
-import { pgErrorCode } from '@breeze/shared/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '@breeze/shared/pgErrors';
 import type { ExtensionLog, WorkspaceAudit } from '../hostTypes';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
@@ -143,7 +143,7 @@ function errorMessage(error: unknown): string {
 }
 
 function isForeignKeyViolation(error: unknown): boolean {
-  return pgErrorCode(error) === '23503';
+  return isPgForeignKeyViolationCode(pgErrorCode(error));
 }
 
 export function createSourcesRoutes(deps: SourcesRouteDeps): Hono<WorkspaceRouteEnv> {

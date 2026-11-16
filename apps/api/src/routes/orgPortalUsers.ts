@@ -19,6 +19,8 @@ import {
   PortalAccountTransitionError,
   initialPortalAccountState,
   isBulkInviteEligible,
+  isPasswordEligible,
+  passwordUsableFor,
   planPortalAccountTransition,
   type PortalAccountFacts,
   type PortalAccountTarget,
@@ -37,8 +39,8 @@ import {
   type PortalInviteErrorCode,
 } from '@breeze/shared';
 import { listPortalUsersForOrg } from '../services/portalUserDirectory';
-import { portalUserHasIdentitySql } from '../services/portalUserIdentities';
-import { isSsoOnlyStranded, resolveInviteSignInMethods } from '../services/portalSsoOnly';
+import { portalUserHasIdentitySql, portalUserHasUsableIdentitySql } from '../services/portalUserIdentities';
+import { isSsoOnlyStranded, resolveInviteSignInMethods, type InviteSignInMethods } from '../services/portalSsoOnly';
 import { normalizeContactEmail } from '../services/contacts/crud';
 import {
   bindContactLoginForInvite,
@@ -79,8 +81,12 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
   return { id };
 }
 
+// W8 (#11385, plan D3): both identity facts. `hasExternalIdentity` (ANY row)
+// is "identity-managed" — every invite writer refuses such an account;
+// `hasUsableExternalIdentity` (an ENABLED row) is "has a credential" —
+// msp_reactivate. Classified in __tests__/portalIdentityFacts.contract.test.ts.
 async function getOrgScopedPortalUser(orgId: string, userId: string) {
-  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, contactId: portalUsers.contactId, hasExternalIdentity: portalUserHasIdentitySql() })
+  const [row] = await db.select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, name: portalUsers.name, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, disabledBy: portalUsers.disabledBy, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, contactId: portalUsers.contactId, hasExternalIdentity: portalUserHasIdentitySql(), hasUsableExternalIdentity: portalUserHasUsableIdentitySql() })
     .from(portalUsers).where(and(eq(portalUsers.id, userId), eq(portalUsers.orgId, orgId))).limit(1);
   return row ?? null;
 }
@@ -94,9 +100,23 @@ async function getOrgScopedPortalUser(orgId: string, userId: string) {
 // overwriting the newer state.
 // ---------------------------------------------------------------------------
 
-type AccountRow = { status: string; browserAccess: string; authMethod: string; passwordHash: string | null; hasExternalIdentity: boolean };
+type AccountRow = {
+  status: string;
+  browserAccess: string;
+  authMethod: string;
+  passwordHash: string | null;
+  hasExternalIdentity: boolean;
+  /** W8: only getOrgScopedPortalUser selects it; absent elsewhere (read as false). */
+  hasUsableExternalIdentity?: boolean;
+  disabledBy?: PortalAccountFacts['disabledBy'];
+};
 
-function accountFacts(row: AccountRow): PortalAccountFacts {
+/**
+ * `passwordUsable` (W8 D3) needs the org's effective password mode, so only a
+ * caller planning `msp_reactivate` resolves and passes it; the other writers
+ * never read it.
+ */
+function accountFacts(row: AccountRow, passwordUsable?: boolean): PortalAccountFacts {
   return {
     status: row.status,
     browserAccess: row.browserAccess,
@@ -105,13 +125,17 @@ function accountFacts(row: AccountRow): PortalAccountFacts {
     // Identities release B (W3): EXISTS over portal_user_identities, selected
     // with portalUserHasIdentitySql() by every reader in this file.
     hasExternalIdentity: row.hasExternalIdentity,
+    // W8 (D3): an ENABLED identity (portalUserHasUsableIdentitySql).
+    hasUsableExternalIdentity: Boolean(row.hasUsableExternalIdentity),
+    disabledBy: row.disabledBy ?? null,
+    ...(passwordUsable !== undefined ? { passwordUsable } : {}),
   };
 }
 
 /** The target, or a refusal response carrying the transition's message and code. */
-function planOrRefuse(c: any, row: AccountRow, writer: PortalAccountWriter): PortalAccountTarget | Response {
+function planOrRefuse(c: any, row: AccountRow, writer: PortalAccountWriter, passwordUsable?: boolean): PortalAccountTarget | Response {
   try {
-    return planPortalAccountTransition(accountFacts(row), writer);
+    return planPortalAccountTransition(accountFacts(row, passwordUsable), writer);
   } catch (error) {
     if (error instanceof PortalAccountTransitionError) {
       return c.json({ error: error.message, code: error.code }, error.httpStatus);
@@ -120,12 +144,30 @@ function planOrRefuse(c: any, row: AccountRow, writer: PortalAccountWriter): Por
   }
 }
 
+/**
+ * The planned state columns. `disabledBy` always travels with `status` (W8 D2,
+ * CHECK portal_users_disabled_by_status_chk): msp_disable sets 'msp', every
+ * transition out of disabled clears it.
+ */
 function stateSet(target: PortalAccountTarget) {
   return {
     status: target.status,
     browserAccess: target.browserAccess,
+    disabledBy: target.disabledBy,
     ...(target.bumpEpoch ? { authEpoch: sql`${portalUsers.authEpoch} + 1` } : {}),
   };
+}
+
+/**
+ * W8 (D3): whether the account's password can sign in for msp_reactivate — a
+ * hash, password-eligible, and the org's effective password mode `allowed`
+ * (resolveInviteSignInMethods reads exactly that, in a savepoint). Only read
+ * when it can matter: reactivating a disabled account that holds a hash.
+ */
+async function reactivationPasswordUsable(orgId: string, row: AccountRow): Promise<boolean> {
+  if (row.status !== 'disabled' || !row.passwordHash || !isPasswordEligible(row)) return false;
+  const methods = await resolveInviteSignInMethods(orgId);
+  return passwordUsableFor({ hasPasswordHash: true, authMethod: row.authMethod }, methods.password ? 'allowed' : 'sso_only');
 }
 
 /** The epoch guard matched nothing: the row changed between our read and our write. */
@@ -147,14 +189,15 @@ async function hasPortalUserReferences(userId: string): Promise<boolean> {
  * row's CURRENT auth_epoch — pass the epoch the write returned) and email it.
  *
  * The email offers what the org's effective policy allows (W4 #11381, spec
- * §5.5): "Sign in with Microsoft" (the same invite link with
- * `&method=microsoft`) when Microsoft is effective, and a password only while
- * password sign-in is allowed. A policy read that fails sends nothing (false),
+ * §5.5, W7 D12): "Sign in with Microsoft" (the same invite link with
+ * `&method=microsoft`) when Microsoft is effective, "Sign in with Google"
+ * (`&method=google`) when Google is, and a password only while password
+ * sign-in is allowed. A policy read that fails sends nothing (false),
  * like a missing token store: never an invite offering the wrong methods. The
  * read runs in its own savepoint, so catching it leaves the request usable.
  */
 export async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string; authEpoch: number }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
-  let methods: { microsoft: boolean; password: boolean };
+  let methods: InviteSignInMethods;
   try {
     methods = await resolveInviteSignInMethods(orgId);
   } catch (err) {
@@ -199,6 +242,7 @@ export async function issueAndSendInvite(c: any, orgId: string, user: { id: stri
       to: user.email,
       inviteUrl,
       microsoftUrl: methods.microsoft ? `${inviteUrl}&method=microsoft` : undefined,
+      googleUrl: methods.google ? `${inviteUrl}&method=google` : undefined,
       passwordAllowed: methods.password,
       orgName: orgName ?? undefined,
       inviterName: inviterName ?? undefined,
@@ -587,11 +631,14 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     if (!target) return c.json({ error: 'Portal user not found' }, 404);
     const { status: requestedStatus, ...profileFields } = body;
     // status 'disabled' → msp_disable; 'active' → msp_reactivate, which may
-    // land on 'invited' for an account with no credential (plan D4) and
-    // refuses an invited account (invited → active is accept-invite only).
+    // land on 'invited' for an account with no USABLE credential (plan D4; W8
+    // D3: a disabled identity, or a hash under sso_only, is none) and refuses
+    // an invited account (invited → active is accept-invite only).
     let plan: PortalAccountTarget | null = null;
     if (requestedStatus !== undefined) {
-      const planned = planOrRefuse(c, target, requestedStatus === 'disabled' ? 'msp_disable' : 'msp_reactivate');
+      const planned = requestedStatus === 'disabled'
+        ? planOrRefuse(c, target, 'msp_disable')
+        : planOrRefuse(c, target, 'msp_reactivate', await reactivationPasswordUsable(org.id, target));
       if (planned instanceof Response) return planned;
       plan = planned;
     }
@@ -694,17 +741,18 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     return c.json({ data: results });
   });
 
-  // W4 (#11381, spec §5.11): "Send Microsoft sign-in invite" to stranded
-  // accounts (no identity, so `sso_only` leaves them unable to sign in).
-  // Sequential, one result per unique id, in request order.
+  // W4 (#11381, spec §5.11): "Send SSO sign-in invite" to stranded accounts
+  // (no identity of any provider, so `sso_only` leaves them unable to sign
+  // in). Available while Microsoft or Google is effective (W7 D12); the email
+  // offers whichever are. Sequential, one result per unique id, in request order.
   orgRoutes.post('/organizations/:id/portal-users/sso-invite', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', ssoInviteSchema), async (c) => {
     const org = await resolveAccessibleOrg(c);
     if (org instanceof Response) return org;
     const auth = c.get('auth') as AuthContext;
     const ids = [...new Set(c.req.valid('json').portalUserIds)];
     const methods = await resolveInviteSignInMethods(org.id);
-    if (!methods.microsoft) {
-      return c.json({ error: 'Microsoft sign-in is not available for this organization.', code: PORTAL_SSO_INVITE_UNAVAILABLE }, 409);
+    if (!methods.microsoft && !methods.google) {
+      return c.json({ error: 'Single sign-on is not available for this organization.', code: PORTAL_SSO_INVITE_UNAVAILABLE }, 409);
     }
     const orgName = await readOrgName(org.id);
     const results: Array<{ portalUserId: string } & SsoInviteResult> = [];

@@ -148,7 +148,7 @@
     "headingSingle": "Excluir {{name}}?",
     "itemCount": "Quantidade de itens",
     "moveToTrash": "Mover para a lixeira",
-    "recycleBinNotice": "Aviso sobre a lixeira",
+    "recycleBinNotice": "Itens movidos para a lixeira podem ser recuperados. A exclusão permanente não pode ser desfeita.",
     "totalSize": "Total: {{size}}",
     "itemCount_one": "{{count}} item",
     "itemCount_other": "{{count}} itens"
@@ -464,7 +464,7 @@
       "devices": "Dispositivos",
       "fileManager": "Gerenciador de Arquivos"
     },
-    "deviceNotFoundDescription": "Não foi possível encontrar o dispositivo solicitado.",
+    "deviceNotFoundDescription": "O dispositivo solicitado não existe ou você não tem acesso a ele.",
     "deviceNotFoundTitle": "Dispositivo não encontrado",
     "deviceOfflineDescription": "O dispositivo está {{status}}. O acesso remoto a arquivos só fica disponível quando ele está online.",
     "deviceOfflineTitle": "Dispositivo offline",
@@ -488,6 +488,7 @@
       "connection": "Erro de conexão",
       "createSession": "Falha ao criar a sessão",
       "createTicket": "Falha ao criar o tíquete de conexão",
+      "endSession": "Falha ao encerrar a sessão",
       "failed": "Falha na conexão",
       "initialize": "Falha ao inicializar o terminal",
       "invalidTicket": "Resposta de tíquete de conexão inválida",
@@ -507,7 +508,7 @@
     "welcome": "Bem-vindo"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Não foi possível encontrar o dispositivo solicitado.",
+    "deviceNotFoundDescription": "O dispositivo solicitado não existe ou você não tem acesso a ele.",
     "deviceNotFoundTitle": "Dispositivo não encontrado",
     "errorTitle": "Erro no terminal remoto",
     "errors": {
@@ -635,8 +636,8 @@
     },
     "actionBlocked": "Ação bloqueada",
     "adjustHint": "Tente ajustar a pesquisa ou os filtros.",
-    "agentRestartConfirm": "Confirmar reinicialização do agente",
-    "agentStopBlocked": "Não é possível parar o serviço do agente",
+    "agentRestartConfirm": "Reiniciar o agente do Breeze desconectará brevemente este dispositivo do Breeze. Continuar?",
+    "agentStopBlocked": "O agente do Breeze não pode ser parado daqui: isso interromperia o gerenciamento remoto deste dispositivo.",
     "allStatus": "Todos os status",
     "cannotStopAgent": "Não é possível parar o agente",
     "changeStartupType": "Alterar tipo de inicialização",
@@ -703,7 +704,6 @@
       "disconnected": "Desconectado",
       "failed": "Falhou",
       "pending": "Pendente",
-      "endedByUser": "Encerrada pelo usuário",
       "teardownPending": "Encerrando (aguardando o dispositivo)"
     },
     "subtitle": "Log de auditoria de acesso remoto",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Ver detalhes",
-    "yesterdayAt": "Ontem {{time}}"
+    "yesterdayAt": "Ontem {{time}}",
+    "endReasons": {
+      "endedByUser": "Encerrada pelo usuário",
+      "operatorEnded": "Encerrada por um técnico",
+      "viewerClosed": "Visualizador fechado",
+      "connectionLost": "Conexão com o visualizador perdida",
+      "peerDisconnected": "Conexão encerrada",
+      "neverConnected": "Nunca conectou",
+      "superseded": "Substituída por uma sessão mais recente",
+      "captureFailed": "Captura de tela interrompida",
+      "startFailed": "Falha ao iniciar",
+      "consentDenied": "Consentimento recusado",
+      "accessRevoked": "Acesso revogado",
+      "maxDuration": "Duração máxima da sessão atingida",
+      "deviceRemoved": "Dispositivo removido ou reinstalado"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Detalhes da sessão",
@@ -732,7 +747,8 @@
       "started": "Iniciada",
       "userId": "ID do usuário",
       "os": "SO",
-      "email": "E-mail"
+      "email": "E-mail",
+      "error": "Erro"
     },
     "sections": {
       "recording": "Gravação",
@@ -740,7 +756,6 @@
       "timeline": "Linha do tempo"
     },
     "subtitle": "Visualize e audite sessões de acesso remoto",
-    "endedByUser": "Encerrada pelo usuário",
     "teardownPending": "Aguardando confirmação do dispositivo",
     "title": "Histórico de Sessões",
     "viewDevice": "Ver dispositivo",
@@ -833,18 +848,24 @@
     },
     "code": {
       "heading": "Passe este código para a pessoa que você está atendendo",
-      "shownOnce": "Copie este código agora. O Breeze armazena apenas um hash dele, portanto, ao sair ou recarregar esta página, ele não poderá ser recuperado — você teria que iniciar uma nova sessão.",
+      "visibleWhilePending": "O código permanece aqui até que a pessoa o use ou ele expire. Ele funciona apenas uma vez.",
       "expires": "Expira às {{time}}",
+      "expiresIn": "Expira em {{time}}",
+      "expired": "Este código expirou. Gere um novo código para continuar usando esta sessão.",
       "instructions": "Envie o link, peça para executar o cliente baixado e digitar o código.",
       "copyCode": "Copiar código",
       "copyLink": "Copiar link de download",
       "copiedCode": "Código copiado para a área de transferência",
       "copiedLink": "Link de download copiado para a área de transferência",
-      "copyFailed": "Não foi possível copiar para a área de transferência"
+      "copyFailed": "Não foi possível copiar para a área de transferência",
+      "newCode": "Novo código",
+      "newCodeSubmitting": "Gerando código…",
+      "newCodeSuccess": "Novo código gerado. O código anterior não funciona mais.",
+      "newCodeError": "Não foi possível gerar um novo código"
     },
     "detail": {
       "heading": "Detalhes da sessão",
-      "noCode": "O código de uso único foi exibido apenas quando esta sessão foi criada e não pode ser recuperado. Inicie uma nova sessão se a pessoa precisar de outro código.",
+      "noCode": "Nenhum código é exibido para esta sessão. Gere um novo código se a pessoa ainda precisar de um.",
       "attribution": "Referência",
       "close": "Fechar os detalhes da sessão"
     },

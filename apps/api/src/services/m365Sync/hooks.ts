@@ -1,5 +1,6 @@
 import type { M365SyncDomain } from '@breeze/shared/m365';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { captureEntraDirectoryRun } from '../portalDirectory/entraCapture';
 import { reconcileDeviceLinks } from './links';
 import { recordM365SyncLinkAmbiguous } from './metrics';
 import { upsertPostureRollup } from './rollup';
@@ -17,12 +18,13 @@ function utcDate(now: Date): string {
  * is why each step opens its OWN short system context (a cross-org worker
  * write; every statement inside is keyed on the org explicitly).
  *
- * Two independent transactions on purpose:
+ * Independent transactions on purpose:
  *  1. For a persisted `intune_devices` run, `reconcileDeviceLinks` (spec §5.6).
  *  2. Always, `upsertPostureRollup` (spec §5.9) — every outcome can change
  *     freshness, including a `needs_consent` one.
- * A link failure must not cost the rollup, so the rollup still runs and the
- * link error is re-thrown afterwards. run.ts logs and swallows any throw from
+ *  3. For a `users` run, LAST, the portal directory capture (W8 D4).
+ * A link failure must not cost the rollup, and neither may cost the capture,
+ * so every step still runs and the earlier error is re-thrown afterwards. run.ts logs and swallows any throw from
  * here: a committed run with a stale rollup is repaired by the next run of any
  * domain in the org, whereas a run that un-completed because a rollup query was
  * slow would never make progress at all.
@@ -49,12 +51,41 @@ export async function afterDomainPersisted(
     }
   }
 
+  let rollupError: unknown = null;
   try {
     await runOutsideDbContext(() => withSystemDbAccessContext(
       () => upsertPostureRollup(ctx.orgId, ctx.tenantId, utcDate(ctx.now)),
       'm365SyncPostureRollup',
     ));
-  } catch (rollupError) {
+  } catch (error) {
+    rollupError = error;
+  }
+
+  // 3. LAST, for every terminal `users` run: the portal directory capture
+  //    (W8 D4). It runs under this run's generation fence — the only moment
+  //    m365_users is exactly one snapshot — and after the rollup, so a slow
+  //    capture (5 s lock timeout per attempt, at most two attempts) can never cost the rollup.
+  //    It never throws by contract; the catch keeps that true here too.
+  if (ctx.domain === 'users') {
+    try {
+      await captureEntraDirectoryRun({
+        orgId: ctx.orgId,
+        tenantId: ctx.tenantId,
+        connectionId: ctx.connectionId,
+        generation: ctx.generation,
+        now: ctx.now,
+        persisted: ctx.persisted,
+      });
+    } catch (error) {
+      console.error('[m365-sync] portal directory capture threw', {
+        orgId: ctx.orgId,
+        generation: ctx.generation,
+        error: error instanceof Error ? error.name : 'unknown',
+      });
+    }
+  }
+
+  if (rollupError !== null) {
     // Both failed: surface both, or the link failure (often the more
     // actionable one) would vanish behind the rollup's.
     if (linkError !== null) {

@@ -32,6 +32,9 @@ describe('aiToolErrors', () => {
       ['missing relation', 'relation "cis_baselines" does not exist'],
       ['unique violation', 'duplicate key value violates unique constraint "devices_pkey"'],
       ['fk violation', 'insert or update violates foreign key constraint "fk_org"'],
+      // Postgres 18's RESTRICT refusal text (#11624), also when relayed mid-sentence.
+      ['pg18 restrict violation', 'update or delete on table "pam_signer_groups" violates RESTRICT setting of foreign key constraint "pam_rules_match_signer_group_fk" on table "pam_rules"'],
+      ['pg18 restrict violation, relayed', 'Delete failed: violates RESTRICT setting of foreign key constraint "fk_x" on table "y" (retry later)'],
       ['rls violation', 'new row violates row-level security policy for table "devices"'],
       ['sqlstate with context', 'SQLSTATE 23503 raised during insert'],
       ['error code with context', 'pg error code 42703 while planning'],

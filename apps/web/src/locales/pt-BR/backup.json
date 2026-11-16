@@ -1263,6 +1263,39 @@
     },
     "troubleshootingLink": "Guia de solução de problemas"
   },
+  "failureCause": {
+    "storage_access_denied": {
+      "hint": "O destino do backup recusou a solicitação. Verifique se a chave de acesso é válida e tem permissão de gravação, a política do bucket e a situação da conta de armazenamento, e então execute Testar conexão."
+    },
+    "storage_not_found": {
+      "hint": "O destino do backup informa que o bucket ou seus objetos não existem. Verifique se o bucket ainda existe e se nenhuma regra de ciclo de vida exclui os dados do backup."
+    },
+    "storage_clock_skew": {
+      "hint": "O destino do backup rejeitou o horário da solicitação, o que geralmente indica um relógio muito desajustado. Verifique a data e a hora do dispositivo."
+    },
+    "storage_operation_failed": {
+      "hint": "O Breeze não conseguiu concluir uma operação de armazenamento com o destino. Isso geralmente é temporário ou uma incompatibilidade do provedor. Se continuar acontecendo, entre em contato com o suporte."
+    },
+    "storage_session_expired": {
+      "hint": "A sessão de envio terminou antes de a execução ser concluída. A próxima execução continua de onde esta parou."
+    },
+    "helper_stopped": {
+      "hint": "O processo de backup no dispositivo foi interrompido durante a execução, geralmente porque o dispositivo entrou em suspensão, reiniciou ou foi desligado. Mantenha-o ativo e ligado durante a janela de backup."
+    },
+    "run_cancelled_on_device": {
+      "hint": "A execução foi interrompida no dispositivo, geralmente por uma reinicialização ou desligamento."
+    },
+    "never_started": {
+      "hint": "O dispositivo nunca iniciou esta execução, geralmente porque outro backup ainda estava em andamento ou o agente estava reiniciando."
+    },
+    "no_agent_signal": {
+      "hint": "O Breeze deixou de receber sinais do dispositivo durante a execução."
+    },
+    "destination": {
+      "title": "{{name}}: o último backup falhou em {{failing}} de {{total}} dispositivos",
+      "link": "Abrir perfis de backup para testar a conexão"
+    }
+  },
   "fullRunReason": {
     "no_prior_snapshot": "Primeiro backup para este dispositivo e destino",
     "base_expired": "O backup anterior expirou pela retenção",

@@ -1,0 +1,27 @@
+{
+  "id": "specialist-result-reaches-chat",
+  "title": "A finished specialist's result reaches the next chat turn",
+  "issue": 11671,
+  "expect": "known-red",
+  "door": "wisp",
+  "steps": [
+    { "name": "launch", "type": "say", "approve": "approve", "maxSec": 150,
+      "text": "Dana at Northwind Dental says the x-ray workstation is crawling again right now. Start a new troubleshooting specialist on it (a fresh run, not a continuation of an earlier one) and tell me what you'd do.",
+      "note": "earlier runs of this scenario leave specialist history on NW-XRAY-WS; a continuation of the same prior run dedupes onto the earlier continuation and nothing new runs" },
+    { "name": "result-posted", "type": "wait_sql", "timeoutSec": 180, "required": true,
+      "sql": "select (count(*) > 0)::text from wisp_thread_posts where kind = 'specialist_result' and created_at > {{since}}",
+      "equals": "true" },
+    { "type": "sleep", "sec": 5 },
+    { "name": "verdict", "type": "say", "approve": "none", "maxSec": 90,
+      "text": "So what's the verdict on the x-ray box? And what do I tell Dana?" }
+  ],
+  "checks": [
+    { "kind": "tool_called", "tool": "launch_specialist", "step": "launch", "precondition": true,
+      "note": "the hand-off happened" },
+    { "kind": "reply_not_matches", "step": "verdict", "flags": "i",
+      "pattern": "(do(n'?t| not) have (a|the) (verdict|result)|nothing has come back|has(n'?t| not) (come back|reported|finished)|not (back|finished|done) yet|still (running|working|waiting))",
+      "note": "#11671: Wisp says the specialist has not reported although its report is in the thread" },
+    { "kind": "max_tool_calls", "step": "verdict", "max": 0, "origin": "chat",
+      "note": "#11671 acceptance: the verdict comes from the delivered result with no tool call. Without delivery Wisp either re-reads the device (2026-11-10: get_device_details, wrong answer) or fetches the run itself (get_ai_agent_run)" }
+  ]
+}

@@ -125,14 +125,24 @@ export async function networkOverview(
   orgId: string,
   now: Date = new Date(),
 ): Promise<NetworkOverviewDto> {
-  const assetRows = await db
+  const allAssetRows = await db
     .select({
       id: discoveredAssets.id,
+      approvalStatus: discoveredAssets.approvalStatus,
     })
     .from(discoveredAssets)
     .where(eq(discoveredAssets.orgId, orgId));
 
-  const latestMonitorRows = await loadLatestMonitorRows(orgId, now);
+  // Same customer-visible asset set as networkAssets()/networkSites()/
+  // networkSiteHealth(): dismissed assets are not portal-visible (#11686).
+  const assetRows = allAssetRows.filter((row) => row.approvalStatus !== 'dismissed');
+  const dismissedAssetIds = new Set(
+    allAssetRows.filter((row) => row.approvalStatus === 'dismissed').map((row) => row.id),
+  );
+
+  const latestMonitorRows = (await loadLatestMonitorRows(orgId, now)).filter(
+    (row) => !(row.assetId && dismissedAssetIds.has(row.assetId)),
+  );
 
   const assetIds = assetRows.map((row) => row.id);
 
@@ -146,7 +156,10 @@ export async function networkOverview(
   let offlineAssets = 0;
   let snmpDevicesPolling = 0;
 
-  for (const reachability of reachabilityByAsset.values()) {
+  for (const assetId of assetIds) {
+    const reachability = reachabilityByAsset.get(assetId);
+    // Asset removed between the two queries: stays in totalAssets, in neither state.
+    if (!reachability) continue;
     if (reachability.state === 'responding') {
       onlineAssets += 1;
     } else if (reachability.state === 'not_responding') {

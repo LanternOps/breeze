@@ -186,9 +186,11 @@ async function loadRunLineage(agentRunId: string, ticketId: string): Promise<Run
  * the run. Infrastructure errors propagate to the caller's retry.
  *
  * `technicianUserId` is the human whose AI-assisted work the entry would
- * bill. It is recorded on the proposal (`proposedForUserId`) for the
- * approver's benefit and for audit; it is NOT the entry's owner — the
- * approver is (release-time rule, see module header).
+ * bill. It is NOT the entry's owner — the approver is (release-time rule, see
+ * module header) — and it is not a `log_time_entry` argument, so it stays out
+ * of the stored arguments: the release path validates them against the tool's
+ * schema, which refuses a key it does not define (#11861). It remains
+ * traceable through the intent's requesting run and that run's consumed draft.
  */
 export async function proposeTimeEntryForAiAssistedWork(args: {
   ticketId: string;
@@ -236,10 +238,10 @@ export async function proposeTimeEntryForAiAssistedWork(args: {
         ticketId,
         startedAt: startedAt.toISOString(),
         endedAt: endedAt.toISOString(),
-        durationMinutes: defaults.durationMinutes,
+        // Only `log_time_entry` arguments: the duration is the block above
+        // (and the action label below), never a key of its own (#11861).
         isBillable: defaults.isBillable,
         description,
-        proposedForUserId: technicianUserId,
       },
       source: 'ai_agent',
       orgId,

@@ -22,8 +22,10 @@ import {
   CompletionRecordNoTicketError,
   postCompletionRecord,
   renderCompletionRecord,
+  SECRET_SHAPES,
   type CompletionRecordData,
 } from './completionRecord';
+import { LONG_TOKEN_RUNS, matchSpans, mulberry32, tokenShapedText } from '../../testUtils/generatedText';
 
 function data(over: Partial<CompletionRecordData> = {}): CompletionRecordData {
   return {
@@ -719,5 +721,34 @@ describe('completion record — the onboarding create-stage read projects only n
     expect(body).toContain('aiOperatorOperations');
     expect(body).not.toMatch(/result:\s*aiOperatorOperations\.result\b/);
     expect(body).toContain('OPERATION_RESULT_STATE_KEYS');
+  });
+});
+
+describe('completion record secret shapes', () => {
+  // The pattern before it was made linear, kept as the reference.
+  const reference = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b(AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[0-9A-Za-z_-]{30,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|(?=[A-Za-z0-9+/_-]*\d)(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}/;
+  const shape = SECRET_SHAPES;
+
+  it('matches the same input as the previous pattern', () => {
+    const next = mulberry32(0xc0de);
+    const seen = new Set<string>();
+    let withToken = 0;
+    for (let i = 0; i < 20_000; i += 1) {
+      const text = tokenShapedText(next);
+      seen.add(text);
+      const want = reference.test(text);
+      if (want) withToken += 1;
+      expect([text, shape.test(text)]).toEqual([text, want]);
+    }
+    expect(seen.size).toBeGreaterThan(15_000);
+    expect(withToken).toBeGreaterThan(10_000);
+  });
+
+  it('scans long token runs in linear time', () => {
+    for (const text of LONG_TOKEN_RUNS) {
+      const started = performance.now();
+      matchSpans(shape, text);
+      expect(performance.now() - started).toBeLessThan(150);
+    }
   });
 });

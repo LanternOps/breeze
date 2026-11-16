@@ -86,7 +86,8 @@
     "checklistProgress": "{{done}}/{{total}} étapes",
     "checklistTitle": "Liste de vérification : {{done}} étapes sur {{total}} terminées",
     "merged": "Fusionné",
-    "ageTitle": "Ouvert le {{created}} · Mis à jour le {{updated}}"
+    "ageTitle": "Ouvert le {{created}} · Mis à jour le {{updated}}",
+    "imported": "Importé"
   },
   "ticketArchivedList": {
     "emptyTitle": "Aucun billet archivé.",
@@ -143,7 +144,15 @@
       "sentWithoutAttachmentReply_one": "Réponse publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
       "sentWithoutAttachmentNote_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
       "sentWithoutAttachmentReply_other": "Réponse publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les.",
-      "sentWithoutAttachmentNote_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
+      "sentWithoutAttachmentNote_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les.",
+      "rejectedTicketDeleted": "{{name}} n’a pas été joint : ce billet a été supprimé.",
+      "rejectedTicketMerged": "{{name}} n’a pas été joint : ce billet a été fusionné avec un autre billet.",
+      "rejectedNotFound": "{{name}} n’a pas été joint : le billet est introuvable.",
+      "rejectedMalformed": "{{name}} n’a pas été joint : le téléversement était mal formé. Essayez de le joindre de nouveau.",
+      "openMergedTicket": "Ouvrir le billet fusionné",
+      "notKept_one": "1 pièce jointe n’a pas été conservée avec ce brouillon ({{names}}). Joignez-la de nouveau ou fermez l’avis pour envoyer sans elle.",
+      "notKept_other": "{{count}} pièces jointes n’ont pas été conservées avec ce brouillon ({{names}}). Joignez-les de nouveau ou fermez l’avis pour envoyer sans elles.",
+      "notKeptDismiss": "Fermer"
     },
     "modeLabel": "Visibilité du commentaire",
     "recipient": {
@@ -437,7 +446,9 @@
         "paused": "SLA en pause, temps restant {{relative}}",
         "breached": "SLA en violation"
       }
-    }
+    },
+    "importTickets": "Importer des billets",
+    "importedOnly": "Importés seulement"
   },
   "ticketWorkbench": {
     "notFound": "Billet non trouvé. Il se peut qu’il ait été supprimé, ou que vous n’y ayez peut-être pas accès.",

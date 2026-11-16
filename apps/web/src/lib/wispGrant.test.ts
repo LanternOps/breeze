@@ -113,3 +113,17 @@ describe('wispGrant owns its org scoping (no ambient orgId injection)', () => {
     vi.doUnmock('./mfaStepUp');
   });
 });
+
+describe('wispStateFromThread lastSessionId (#11672)', () => {
+  const withLast = (lastSessionId: unknown) => ({
+    data: { thread: { id: 't1', lastSessionId }, grant: { id: 'g1', status: 'active', expiresAt: '2027-01-01T00:00:00.000Z' } },
+  });
+
+  it('carries the thread\'s last session id, so a surface entering Wisp can resume it', () => {
+    expect(wispStateFromThread(withLast('sess-1'))?.lastSessionId).toBe('sess-1');
+  });
+
+  it.each([[null], [undefined], [''], [7]])('anything else (%s) is no last session', (value) => {
+    expect(wispStateFromThread(withLast(value))?.lastSessionId).toBeNull();
+  });
+});

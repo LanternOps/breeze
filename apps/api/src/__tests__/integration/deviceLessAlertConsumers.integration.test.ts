@@ -23,7 +23,7 @@ import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePr
 import { buildAlertWebhookProjections } from '../../services/webhookPayload/alertEnrichment';
 import { clearPermissionCache } from '../../services/permissions';
 import type { BreezeEvent } from '../../services/eventBus';
-import { createIntegrationTestClient, userEpochs } from './db-utils';
+import { createIntegrationTestClient, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 import { getTestDb } from './setup';
 
 // Keep all consumer reads, writes, auth and RLS real. Only outbound delivery,
@@ -153,6 +153,7 @@ describe('one device-less alert through the consumer contract (real Postgres)', 
     }).returning();
     if (!principal) throw new Error('Principal fixture missing');
     const epochs = await userEpochs(user.id);
+    await ensurePartnerServicePrincipalOwner(user.id, partner.id);
     const { rawKey } = await withSystemDbAccessContext(() => issuePartnerServicePrincipalKey(db, {
       partnerServicePrincipalId: principal.id, partnerId: partner.id, name: 'Consumer contract key',
       actorId: user.id, actorSessionEpochs: epochs,

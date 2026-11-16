@@ -103,6 +103,14 @@ describe('public device projection', () => {
     expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain('workloadInventoryProtocolVersion');
   });
 
+  // #8318 wave 2-2: the "Reinstalled on <date>" badge reads lastReattachedAt;
+  // the incarnation counter itself stays private.
+  it('exposes lastReattachedAt but not the install incarnation', () => {
+    expect(PUBLIC_DEVICE_FIELDS).toContain('lastReattachedAt');
+    expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain('installIncarnation');
+    expect(PUBLIC_DEVICE_FIELDS as readonly string[]).not.toContain('incarnationStartedAt');
+  });
+
   it('drops unknown future columns by default', () => {
     expect(projectPublicDevice({ ...safe, futureCredential: 'private' }))
       .not.toHaveProperty('futureCredential');
@@ -468,6 +476,28 @@ describe('reinstall link visibility (#8318 §7.3: a link may name another org\'s
     mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A1 }]);
     const out = await projectPublicDeviceForCaller(linked(TARGET_A), siteRestricted([SITE_A1]));
     expect(out).toMatchObject({ possibleReplacementOfDeviceId: TARGET_A });
+  });
+
+  it('without canAccessSite, the allowlist follows siteAccessCheck: null and [] deny, undefined allows (#6790)', async () => {
+    const allowlistOnly = (allowedSiteIds: unknown) => ({
+      scope: 'organization' as const, orgId: ORG_A, accessibleOrgIds: [ORG_A],
+      canAccessOrg: (id: string) => id === ORG_A,
+      allowedSiteIds: allowedSiteIds as string[] | undefined,
+    });
+    for (const malformed of [null, []]) {
+      mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A1 }]);
+      const [row] = await redactReplacementLinksForCaller([linked(TARGET_A)], allowlistOnly(malformed));
+      expect(row!.possibleReplacementOfDeviceId).toBeNull();
+    }
+    mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A1 }]);
+    const [listed] = await redactReplacementLinksForCaller([linked(TARGET_A)], allowlistOnly([SITE_A1]));
+    expect(listed!.possibleReplacementOfDeviceId).toBe(TARGET_A);
+    mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: null }]);
+    const [unsited] = await redactReplacementLinksForCaller([linked(TARGET_A)], allowlistOnly([SITE_A1]));
+    expect(unsited!.possibleReplacementOfDeviceId).toBeNull();
+    mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A2 }]);
+    const [open] = await redactReplacementLinksForCaller([linked(TARGET_A)], allowlistOnly(undefined));
+    expect(open!.possibleReplacementOfDeviceId).toBe(TARGET_A);
   });
 
   it('a device-bound AI run sees the link only when the target is one of its devices', async () => {

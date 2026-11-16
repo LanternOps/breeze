@@ -32,10 +32,16 @@ export const CATALOG_IMAGE_WEBP_REJECTED_MESSAGE = "WebP images can't be used in
  * Throws plain Errors; the route maps most of them to a generic 4xx, except
  * the WebP case above, which it recognizes by message and maps to 415.
  */
+/** The longest a catalog image import waits on the remote host, start to finish. */
+export const CATALOG_IMAGE_DOWNLOAD_DEADLINE_MS = 20_000;
+
 export async function fetchImageFromUrl(url: string): Promise<{ mime: string; buffer: Buffer }> {
   let res: Response;
   try {
-    res = await safeFetch(url, { timeoutMs: 10_000, maxBytes: MAX_CATALOG_IMAGE_SIZE_BYTES });
+    // timeoutMs is socket inactivity; deadlineMs bounds the whole download.
+    res = await safeFetch(url, {
+      timeoutMs: 10_000, deadlineMs: CATALOG_IMAGE_DOWNLOAD_DEADLINE_MS, maxBytes: MAX_CATALOG_IMAGE_SIZE_BYTES,
+    });
   } catch (err) {
     if (err instanceof ResponseTooLargeError) throw new Error('Image too large (max 5 MB)', { cause: err });
     throw err;

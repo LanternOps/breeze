@@ -78,6 +78,41 @@ describe('sendSsoInvites', () => {
     }));
     expect(fetchWithAuthMock.mock.calls[0][0]).toBe(URL_);
   });
+
+  describe('W7 (#11384): provider-conditional copy', () => {
+    it('only Google effective: the toasts and the unavailable message say Google', async () => {
+      fetchWithAuthMock.mockImplementation((_url: string, init: RequestInit) => invitedAll(init));
+      await sendSsoInvites(ORG, ['a'], t, vi.fn(), 'google');
+      expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Sent 1 Google sign-in invite(s).' });
+      showToastMock.mockReset();
+      fetchWithAuthMock.mockImplementation(() => json({ error: 'x', code: 'PORTAL_SSO_INVITE_UNAVAILABLE' }, 409));
+      await expect(sendSsoInvites(ORG, ['a'], t, vi.fn(), 'google')).rejects.toBeInstanceOf(ActionError);
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error', message: expect.stringContaining("Google sign-in isn't available for this organization"),
+      }));
+    });
+
+    it('both effective: provider-neutral invite copy and "Microsoft or Google" for unavailable', async () => {
+      fetchWithAuthMock.mockImplementation((_url: string, init: RequestInit) => invitedAll(init));
+      await sendSsoInvites(ORG, ['a', 'b'], t, vi.fn(), 'both');
+      expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Sent 2 sign-in invite(s).' });
+      showToastMock.mockReset();
+      fetchWithAuthMock.mockImplementation(() => json({ error: 'x', code: 'PORTAL_SSO_INVITE_UNAVAILABLE' }, 409));
+      await expect(sendSsoInvites(ORG, ['a'], t, vi.fn(), 'both')).rejects.toBeInstanceOf(ActionError);
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error', message: expect.stringContaining('Neither Microsoft nor Google sign-in is on for this organization'),
+      }));
+    });
+
+    it('Microsoft only (the default): no Google word in any toast', async () => {
+      fetchWithAuthMock.mockImplementation(() => json({ data: [
+        { portalUserId: 'a', result: 'invited', emailSent: true },
+        { portalUserId: 'b', result: 'not_stranded' },
+      ] }));
+      await sendSsoInvites(ORG, ['a', 'b'], t, vi.fn(), 'microsoft');
+      for (const [arg] of showToastMock.mock.calls) expect((arg as { message: string }).message).not.toMatch(/google/i);
+    });
+  });
 });
 
 describe('confirmRequiredImpact / withAcknowledge', () => {

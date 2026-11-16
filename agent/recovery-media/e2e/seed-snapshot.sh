@@ -71,6 +71,44 @@ chroot "$seed_root" systemctl enable serial-getty@ttyS0.service >/dev/null 2>&1 
   ln -sf /lib/systemd/system/serial-getty@.service \
     "$seed_root/etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service"
 
+# Boot files an installed system carries. The seed is a tree that was never
+# installed to a disk, so nothing has put a loader on its ESP; the rebuild
+# keeps the restored boot files and runs nothing from the restored system
+# (agent/internal/backup/rebuild/boot.go). Give the seed what grub-install
+# and update-grub leave on an installed Debian: a grub EFI image in
+# EFI/debian, grub's modules and a grub.cfg. EFI/BOOT/BOOTX64.EFI is left
+# out on purpose: the rebuild copies it from EFI/debian, and run-qemu.sh's
+# boot 2 starts through it. The layout below records no filesystem UUIDs, so the
+# config finds the root partition by a file and names /dev/vda2, as fstab
+# does.
+kernel_version="$(cd "$seed_root/boot" && ls vmlinuz-* 2>/dev/null | sed 's/^vmlinuz-//' | sort -V | tail -n 1)"
+if [ -z "$kernel_version" ] || [ ! -f "$seed_root/boot/initrd.img-$kernel_version" ]; then
+  echo "seed-snapshot: no kernel and initramfs under $seed_root/boot" >&2
+  exit 1
+fi
+mkdir -p "$seed_root/boot/grub" "$seed_root/boot/efi/EFI/debian"
+rm -rf "$seed_root/boot/grub/x86_64-efi"
+cp -r "$seed_root/usr/lib/grub/x86_64-efi" "$seed_root/boot/grub/x86_64-efi"
+cat > "$seed_root/boot/grub/grub.cfg" <<GRUBCFG
+set timeout=0
+set default=0
+menuentry "Debian GNU/Linux" {
+  search --no-floppy --set=root --file /boot/grub/grub.cfg
+  linux /boot/vmlinuz-${kernel_version} root=/dev/vda2 ro console=ttyS0,115200n8
+  initrd /boot/initrd.img-${kernel_version}
+}
+GRUBCFG
+mkdir -p "$seed_root/tmp"
+cat > "$seed_root/tmp/breeze-e2e-early.cfg" <<'EARLYCFG'
+search --no-floppy --set=root --file /boot/grub/grub.cfg
+set prefix=($root)/boot/grub
+configfile ($root)/boot/grub/grub.cfg
+EARLYCFG
+chroot "$seed_root" grub-mkimage -O x86_64-efi -o /boot/efi/EFI/debian/grubx64.efi \
+  -p /boot/grub -c /tmp/breeze-e2e-early.cfg \
+  part_gpt fat ext2 search search_fs_file configfile normal linux echo
+rm -f "$seed_root/tmp/breeze-e2e-early.cfg"
+
 breeze_backup_bin="${BREEZE_BACKUP_BIN:-}"
 if [ -z "$breeze_backup_bin" ]; then
   breeze_backup_bin="$(mktemp -d)/breeze-backup-linux-amd64"

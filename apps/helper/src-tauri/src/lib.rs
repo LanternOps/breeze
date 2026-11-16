@@ -1812,7 +1812,7 @@ fn chat_menu_label(summary: &crate::ipc::chat::TraySummary) -> Option<String> {
 }
 
 fn chat_tooltip(summary: &crate::ipc::chat::TraySummary) -> String {
-    let base = format!("Breeze Helper v{}", env!("CARGO_PKG_VERSION"));
+    let base = format!("Breeze Assist v{}", env!("CARGO_PKG_VERSION"));
     match summary.total_unread {
         0 => base,
         1 => format!("{base} - 1 unread chat message"),
@@ -2085,7 +2085,7 @@ pub fn run() {
             if let Some(tray) = app.tray_by_id("main") {
                 // Set tray tooltip with version
                 let _ = tray.set_tooltip(Some(&format!(
-                    "Breeze Helper v{}",
+                    "Breeze Assist v{}",
                     env!("CARGO_PKG_VERSION")
                 )));
 
@@ -3389,6 +3389,8 @@ mod tests {
         assert!(chat_tooltip(&three).contains("3 unread chat messages"));
         assert!(chat_tooltip(&TraySummary { total_unread: 1, ..TraySummary::default() }).contains("1 unread chat message"));
         assert!(!chat_tooltip(&TraySummary::default()).contains("unread"));
+        // #11718: the tooltip names the product "Breeze Assist" (install identity stays "Breeze Helper").
+        assert!(chat_tooltip(&TraySummary::default()).starts_with("Breeze Assist v"));
         // The static menu ids are untouched: the chat entry is added dynamically.
         assert!(!tray_menu_item_ids(&HelperConfig::default()).contains(&"open_chat"));
     }

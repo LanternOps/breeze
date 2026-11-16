@@ -101,6 +101,11 @@ export const MAIL_PURPOSES = {
   // customer org's domain is no longer verified. Platform lane, like the entra
   // notice above. Send site: EmailService.sendPortalDomainVerificationLost.
   'partner.portal_domain_verification.lost': { lane: 'platform' },
+  // Portal registration W8 (#11385): Breeze tells a partner's admins that a
+  // customer org's directory deprovisioning run is held for their approval.
+  // Platform lane, like the W5 notice above. Send site:
+  // EmailService.sendPortalDirectoryHeld (services/portalDirectory/notify.ts).
+  'partner.portal_directory.held': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 
@@ -113,6 +118,11 @@ export const MAIL_PURPOSES = {
   // invite. Send sites: EmailService.sendPortalAccessApproved / ...Declined.
   'portal.access_request.approved': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   'portal.access_request.declined': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  // Portal registration W6 (#11383): the self-registration verify link and the
+  // "you already have an account" mail. Customer-facing, same envelope as the
+  // invite. Send sites: EmailService.sendPortalSelfRegistrationLink / ...ExistingAccount.
+  'portal.self_registration.verify': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+  'portal.self_registration.existing_account': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
   // Caller verification (#6354 W03): the request-confirmation link sent to the
   // customer contact. Customer-facing, so it rides the partner's support stream
   // (their sending domain when verified, company-name fallback otherwise).

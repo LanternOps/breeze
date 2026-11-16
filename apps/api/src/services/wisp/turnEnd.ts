@@ -126,7 +126,9 @@ export async function runWispTurnEndBeforeDone(session: Session): Promise<WispDo
 /**
  * The standing instructions the model saved itself this turn with a successful
  * `remember`. The extractor's prompt asks it to skip those clauses and keep the
- * rest (per clause, not per turn); best-effort, not enforced.
+ * rest (per clause, not per turn); best-effort, not enforced. The extractor
+ * adds what earlier turns of the thread saved and drops a rule the thread
+ * already holds (#11614: `loadThreadSavedInstructions`).
  */
 export function rememberedStandingInstructions(outcomes: readonly WispTurnToolOutcome[]): string[] {
   const out: string[] = [];

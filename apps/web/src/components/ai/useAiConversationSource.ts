@@ -27,6 +27,8 @@ export interface ConversationRow {
   lastActivityAt?: string;
   createdAt: string;
   matchedContent?: string;
+  /** Set when transcript retention emptied the session (#4342 W4); the list labels it. */
+  transcriptPurgedAt?: string;
   /** Which surface of this document holds the conversation right now. */
   openIn: 'panel' | 'workspace' | null;
 }
@@ -47,6 +49,7 @@ function toRow(raw: unknown): BaseRow | null {
   if (!id || !orgId || !createdAt || !status || !STATUSES.has(status) || !isChatSessionType(r.type)) return null;
   const lastActivityAt = str(r.lastActivityAt);
   const matchedContent = str(r.matchedContent);
+  const transcriptPurgedAt = str(r.transcriptPurgedAt);
   return {
     id,
     title: str(r.title) ?? null,
@@ -57,6 +60,7 @@ function toRow(raw: unknown): BaseRow | null {
     createdAt,
     ...(lastActivityAt ? { lastActivityAt } : {}),
     ...(matchedContent ? { matchedContent } : {}),
+    ...(transcriptPurgedAt ? { transcriptPurgedAt } : {}),
   };
 }
 

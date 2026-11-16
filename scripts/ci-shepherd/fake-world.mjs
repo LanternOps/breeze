@@ -20,6 +20,10 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     prs: new Map(),
     runs: [],
     issues: [],
+    repoLabels: new Set(), // repository labels that exist (GET/POST labels)
+    // Changed files: `<base>...<head>` (compare) or `<sha>` (one commit). Unset → none.
+    // A compare value may also be { files, status, mergeBase } (see the route).
+    changed: new Map(),
     calls: [],
     writes: [],
     execs: [],
@@ -51,7 +55,9 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
 
   // A failed_checks removal of `pr` tested by a merge_group run whose failed
   // job is `job` (default: Type Check failing in its typecheck step = real).
-  w.removeFailed = (n, { at, job = { name: 'Type Check', step: 'Run typecheck', annotations: [] }, runId = id() } = {}) => {
+  // `job: null` is a green CI run (the queue removed it for the CI Gate), and
+  // `gateLog` adds a CI Gate run on the same queue sha whose job log is that text.
+  w.removeFailed = (n, { at, job = { name: 'Type Check', step: 'Run typecheck', annotations: [] }, runId = id(), gateLog = null } = {}) => {
     const pr = w.prs.get(n);
     const evId = `RFMQE_${id()}`;
     const group = `${String(runId).padStart(8, 'f')}${'b'.repeat(32)}`;
@@ -67,26 +73,35 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       head_repository: { full_name: repo },
       event: 'merge_group',
       status: 'completed',
-      conclusion: 'failure',
+      conclusion: job ? 'failure' : 'success',
       path: '.github/workflows/ci.yml',
       created_at: created,
       updated_at: at,
       pull_requests: [],
       jobs: [
-        {
-          id: jobIdN,
-          name: job.name,
-          run_attempt: 1,
-          conclusion: 'failure',
-          started_at: created,
-          completed_at: at,
-          steps: [{ name: job.step, conclusion: 'failure' }],
-          annotations: job.annotations ?? [],
-          log: job.log ?? null,
-        },
-        { id: id(), name: 'CI Success', run_attempt: 1, conclusion: 'failure', started_at: at, completed_at: at, steps: [], annotations: [], log: null },
+        ...(job
+          ? [{
+              id: jobIdN,
+              name: job.name,
+              run_attempt: 1,
+              conclusion: 'failure',
+              started_at: created,
+              completed_at: at,
+              steps: [{ name: job.step, conclusion: 'failure' }],
+              annotations: job.annotations ?? [],
+              log: job.log ?? null,
+            }]
+          : []),
+        { id: id(), name: 'CI Success', run_attempt: 1, conclusion: job ? 'failure' : 'success', started_at: at, completed_at: at, steps: [], annotations: [], log: null },
       ],
     });
+    if (gateLog !== null) {
+      w.runs.push({
+        id: id(), run_attempt: 1, head_sha: group, event: 'merge_group', status: 'completed', conclusion: 'failure',
+        path: '.github/workflows/ci-gate.yml', created_at: created, updated_at: at, pull_requests: [],
+        jobs: [{ id: id(), name: 'CI Gate', run_attempt: 1, conclusion: 'failure', started_at: created, completed_at: at, steps: [], annotations: [], log: gateLog }],
+      });
+    }
     return { id: evId, at, runId };
   };
 
@@ -97,6 +112,24 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
   };
 
   w.failOnce = (op) => w.failing.set(op, (w.failing.get(op) ?? 0) + 1);
+  // The write lands, but its response is lost (a 502 after GitHub applied it).
+  w.losing = new Map();
+  w.loseResponseOnce = (op) => w.losing.set(op, (w.losing.get(op) ?? 0) + 1);
+  // The write is refused outright (422): it did not happen.
+  w.refusing = new Map();
+  w.refuseOnce = (op) => w.refusing.set(op, (w.refusing.get(op) ?? 0) + 1);
+  const shouldRefuse = (op) => {
+    const n = w.refusing.get(op) ?? 0;
+    if (!n) return false;
+    w.refusing.set(op, n - 1);
+    return true;
+  };
+  const shouldLose = (op) => {
+    const n = w.losing.get(op) ?? 0;
+    if (!n) return false;
+    w.losing.set(op, n - 1);
+    return true;
+  };
   const shouldFail = (op) => {
     const n = w.failing.get(op) ?? 0;
     if (!n) return false;
@@ -157,6 +190,14 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
         .map((p) => ({ position: p.queue.position, state: p.queue.state, enqueuedAt: p.queue.enqueuedAt ?? iso(w.clock), headCommit: p.queue.groupSha ? { oid: p.queue.groupSha } : null, pullRequest: { number: p.number } }));
       return json(200, { data: { repository: { mergeQueue: { entries: { nodes } } } } });
     }
+    if (/\bissue\(number: \d+\)/.test(query)) {
+      const data = {};
+      for (const [, alias, n] of query.matchAll(/\b(\w+): issue\(number: (\d+)\)/g)) {
+        const i = w.issues.find((x) => x.number === Number(n));
+        data[alias] = i ? { number: i.number, editor: i.editor ? { login: i.editor } : null, lastEditedAt: i.editor ? iso(w.clock) : null } : null;
+      }
+      return json(200, { data: { repository: data } });
+    }
     return json(200, { errors: [{ message: `fake-world: unhandled query ${query.slice(0, 60)}` }] });
   }
 
@@ -177,6 +218,25 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     }
     for (const [re, status] of w.failingGets) if (method === 'GET' && re.test(`${path}${q.size ? `?${q}` : ''}`)) return json(status, { message: 'injected' });
     if (method === 'GET' && (m = /^R\/pulls\/(\d+)\/files$/.exec(p))) return json(200, (w.prs.get(Number(m[1]))?.files ?? []).map((filename) => ({ filename })));
+    if (method === 'GET' && (m = /^R\/compare\/(.+)$/.exec(p))) {
+      // A value is the file list (status `ahead`, no merge base given) or
+      // { files, status, mergeBase } for a compare against a branch.
+      const v = w.changed.get(decodeURIComponent(m[1])) ?? [];
+      const c = Array.isArray(v) ? { files: v } : v;
+      return json(200, { status: c.status ?? 'ahead', ...(c.mergeBase ? { merge_base_commit: { sha: c.mergeBase } } : {}), files: (c.files ?? []).map((filename) => ({ filename })) });
+    }
+    if (method === 'GET' && (m = /^R\/commits\/([0-9a-f]+)$/.exec(p))) return json(200, { sha: m[1], files: (w.changed.get(m[1]) ?? []).map((filename) => ({ filename })) });
+    if (method === 'GET' && p === 'R/pulls') {
+      const st = q.get('state') ?? 'open';
+      const head = q.get('head');
+      const per = Number(q.get('per_page') ?? 30);
+      const page = Number(q.get('page') ?? 1);
+      const list = [...w.prs.values()]
+        .filter((pr) => st === 'all' || (st === 'open' ? pr.state === 'OPEN' : pr.state !== 'OPEN'))
+        .filter((pr) => !head || `${repo.split('/')[0]}:${pr.headRef ?? `branch-${pr.number}`}` === head)
+        .map((pr) => ({ number: pr.number, state: pr.state === 'OPEN' ? 'open' : 'closed', merged_at: pr.state === 'MERGED' ? iso(w.clock) : null, head: { ref: pr.headRef ?? `branch-${pr.number}`, repo: { full_name: pr.isFork ? 'someone/breeze' : repo } } }));
+      return json(200, list.slice((page - 1) * per, page * per));
+    }
     if (method === 'GET' && p === 'R/actions/runs' && q.get('head_sha')) {
       const pr = [...w.prs.values()].find((x) => x.headSha === q.get('head_sha'));
       const runs = pr?.headPushedAt ? [{ id: id(), event: 'pull_request', head_sha: pr.headSha, created_at: pr.headPushedAt }] : [];
@@ -195,7 +255,10 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       }
       return json(200, { total_count: runs.length, workflow_runs: runs.map(runJson) });
     }
-    if (method === 'GET' && p === 'R/actions/workflows/ci-gate.yml/runs') return notFound();
+    if (method === 'GET' && p === 'R/actions/workflows/ci-gate.yml/runs') {
+      const runs = w.runs.filter((r) => r.path === '.github/workflows/ci-gate.yml' && r.head_sha === q.get('head_sha'));
+      return runs.length ? json(200, { total_count: runs.length, workflow_runs: runs.map(runJson) }) : notFound();
+    }
     if (method === 'GET' && (m = /^R\/actions\/runs\/(\d+)$/.exec(p))) {
       const r = w.runs.find((x) => x.id === Number(m[1]));
       return r ? json(200, runJson(r)) : notFound();
@@ -214,7 +277,11 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       return log ? new Response(log, { status: 200 }) : notFound();
     }
     if ((m = /^R\/issues\/(\d+)\/comments$/.exec(p))) {
-      const pr = w.prs.get(Number(m[1]));
+      // A PR's comments, or an issue's (the metrics issue, W06d).
+      const issue = w.issues.find((i) => i.number === Number(m[1]));
+      if (issue) issue.comments ??= [];
+      const pr = w.prs.get(Number(m[1])) ?? issue;
+      if (!pr) return notFound();
       if (method === 'GET') {
         const per = Number(q.get('per_page') ?? 30);
         const page = Number(q.get('page') ?? 1);
@@ -241,9 +308,10 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     }
     if (method === 'POST' && (m = /^R\/issues\/(\d+)\/labels$/.exec(p))) {
       if (shouldFail('label_add')) return json(502, { message: 'Bad Gateway' });
-      const pr = w.prs.get(Number(m[1]));
+      const pr = w.prs.get(Number(m[1])) ?? w.issues.find((i) => i.number === Number(m[1]));
+      if (!pr) return notFound();
       for (const l of body.labels) if (!pr.labels.includes(l)) pr.labels.push(l);
-      write('label_add', { pr: pr.number, labels: body.labels });
+      write('label_add', { pr: Number(m[1]), labels: body.labels });
       return json(200, pr.labels.map((name) => ({ name })));
     }
     if (method === 'DELETE' && (m = /^R\/issues\/(\d+)\/labels\/(.+)$/.exec(p))) {
@@ -256,21 +324,50 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
     }
     if (method === 'GET' && p === 'R/issues') {
       const label = q.get('labels');
+      const all = q.get('state') === 'all';
+      const per = Number(q.get('per_page') ?? 30);
+      const page = Number(q.get('page') ?? 1);
       const fromPrs = [...w.prs.values()]
-        .filter((pr) => pr.state === 'OPEN' && pr.labels.includes(label))
-        .map((pr) => ({ number: pr.number, state: 'open', title: `PR ${pr.number}`, pull_request: {}, labels: pr.labels.map((name) => ({ name })) }));
-      const issues = w.issues.filter((i) => i.state === 'open' && i.labels.includes(label)).map((i) => ({ ...i, labels: i.labels.map((name) => ({ name })) }));
-      return json(200, [...fromPrs, ...issues]);
+        .filter((pr) => (all || pr.state === 'OPEN') && pr.labels.includes(label))
+        .map((pr) => ({ number: pr.number, state: pr.state === 'OPEN' ? 'open' : 'closed', title: `PR ${pr.number}`, pull_request: {}, labels: pr.labels.map((name) => ({ name })) }));
+      const issues = w.issues
+        .filter((i) => (all || i.state === 'open') && i.labels.includes(label))
+        .map(({ author, ...i }) => ({ ...i, user: { login: author ?? viewer }, closed_at: i.closed_at ?? null, labels: i.labels.map((name) => ({ name })) }));
+      return json(200, [...fromPrs, ...issues].slice((page - 1) * per, page * per));
     }
     if (method === 'POST' && p === 'R/issues') {
-      const issue = { number: id(), title: body.title, body: body.body, labels: body.labels ?? [], state: 'open' };
+      if (shouldFail('issue_create')) return json(502, { message: 'Bad Gateway' });
+      if (shouldRefuse('issue_create')) return json(422, { message: 'Validation Failed' });
+      const issue = { number: id(), title: body.title, body: body.body, labels: body.labels ?? [], state: 'open', author: viewer };
       w.issues.push(issue);
-      write('issue_create', { title: body.title });
+      write('issue_create', { title: body.title, number: issue.number });
+      if (shouldLose('issue_create')) return json(502, { message: 'Bad Gateway' });
       return json(201, { number: issue.number });
+    }
+    if (method === 'PATCH' && (m = /^R\/issues\/(\d+)$/.exec(p))) {
+      const i = w.issues.find((x) => x.number === Number(m[1]));
+      if (!i) return notFound();
+      if (shouldFail('issue_edit')) return json(502, { message: 'Bad Gateway' });
+      for (const k of ['title', 'body', 'state']) if (body[k] !== undefined) i[k] = body[k];
+      if (body.body !== undefined) i.editor = viewer;
+      write('issue_edit', { number: i.number, fields: Object.keys(body).sort() });
+      return json(200, { number: i.number });
     }
     if (method === 'GET' && (m = /^R\/issues\/(\d+)$/.exec(p))) {
       const i = w.issues.find((x) => x.number === Number(m[1]));
-      return i ? json(200, i) : notFound();
+      if (!i) return notFound();
+      const { author, ...rest } = i;
+      return json(200, { ...rest, user: { login: author ?? viewer }, closed_at: i.closed_at ?? null, labels: i.labels.map((name) => ({ name })) });
+    }
+    if (method === 'GET' && (m = /^R\/labels\/(.+)$/.exec(p))) {
+      const name = decodeURIComponent(m[1]);
+      return w.repoLabels.has(name) ? json(200, { name }) : notFound();
+    }
+    if (method === 'POST' && p === 'R/labels') {
+      if (w.repoLabels.has(body.name)) return json(422, { message: 'Validation Failed', errors: [{ code: 'already_exists' }] });
+      w.repoLabels.add(body.name);
+      write('label_create', { name: body.name });
+      return json(201, { name: body.name });
     }
     return notFound();
   }
@@ -298,6 +395,13 @@ export function createWorld({ repo = 'LanternOps/breeze', viewer = 'operator', m
       pr.queue = { state: 'QUEUED', position: 1, enqueuedAt: iso(w.clock), groupSha: null };
       pr.events.push({ __typename: 'AddedToMergeQueueEvent', id: `AMQE_${id()}`, createdAt: iso(w.clock), actor: { login: viewer } });
       write('enqueue', { pr: pr.number });
+    } else if (a === 'pr' && b === 'create') {
+      if (shouldFail('pr_create')) throw new Error('gh: 502');
+      const opt = (name) => args[args.indexOf(name) + 1];
+      const n = id();
+      w.addPr(n, { headRef: opt('--head'), title: opt('--title'), body: opt('--body'), autoMerge: false });
+      write('pr_create', { pr: n, head: opt('--head'), title: opt('--title'), body: opt('--body') });
+      return `https://github.com/${repo}/pull/${n}\n`;
     } else if (a === 'workflow' && b === 'run') {
       write('dispatch_main_ci', {});
     }

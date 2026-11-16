@@ -496,6 +496,22 @@ describe('commitDeviceCustomFieldImport', () => {
     expect(txCount.current).toBe(3);
   });
 
+  // Postgres 18 reports a RESTRICT refusal as 23001, not 23503 (#11624).
+  it.each(['23503', '23001'])('gives a foreign-key refusal (%s) the no-longer-exists copy', async (code) => {
+    seed();
+    insertFailures.current = (table) => {
+      if (table === 'device_custom_field_values') throw Object.assign(new Error('violates foreign key constraint'), { code });
+    };
+
+    const summary = await commit([{ deviceId: D1, values: [v('asset_tag', 'A')] }], ctx, actor, { mode: 'update' });
+
+    expect(summary.errors[0]).toMatchObject({
+      index: 0,
+      code: 'write-failed',
+      error: 'This device, or a custom field it names, no longer exists',
+    });
+  });
+
   it('never leaks driver text into the error body, but keeps the cause in-process', async () => {
     seed();
     insertFailures.current = (table) => {

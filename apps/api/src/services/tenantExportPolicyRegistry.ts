@@ -142,7 +142,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // or a short billing status code (http_<status>[:code]) -> included. The
   // key trips no SUSPICIOUS_NAME_PARTS entry and carries no secret.
   "ai_credit_debits": tablePolicy("org_id", {"included":["id","org_id","source","source_id","idempotency_key","cost_cents","created_at","updated_at","debited_at","failed_at","error","attempts"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "ai_data_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","device_file_read_level","tool_output_retention_days","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ai_data_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","device_file_read_level","tool_output_retention_days","transcript_retention_days","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // AI model registry W02 (#7600): the invocation ledger. options_sent and
   // rate_snapshot are jsonb -> excludedOpen. The four *_tokens columns trip
   // SUSPICIOUS_NAME_PARTS ('token') but are counters -> reviewedIncluded
@@ -151,7 +151,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // AI model registry W11 (#7609): prompt_profile / prompt_variant /
   // occurred_at are short non-secret scalars -> included.
   // AI model registry W09 (#7607): failover provenance -> included (identifiers, counter, enum).
-  "ai_invocations": tablePolicy("org_id", {"included":["flow_run_id","id","org_id","surface","role","user_id","session_id","agent_run_id","source_ref","offering_id","connection_id","funding_source","requested_model","served_model","thinking_mode_sent","inference_geo_sent","stop_reason","refusal_category","fallback_used","model_role","catalog_revision_id","connection_config_version","cost_cents","chargeable","charge_billing_profile_id","charge_coverage","charge_basis","charge_currency","charge_amount","sdk_reported_cost_usd","ledger_mode","legacy_cost_cents","created_at","prompt_profile","prompt_variant","occurred_at","failover_from_offering_id","failover_hop","failover_cause"],"reviewedIncluded":["input_tokens","output_tokens","cache_read_tokens","cache_write_tokens"],"excludedSensitive":[],"excludedOpen":["options_sent","rate_snapshot"]}),
+  "ai_invocations": tablePolicy("org_id", {"included":["flow_run_id","id","org_id","surface","role","user_id","session_id","agent_run_id","source_ref","offering_id","connection_id","funding_source","requested_model","served_model","thinking_mode_sent","inference_geo_sent","stop_reason","refusal_category","fallback_used","model_role","catalog_revision_id","connection_config_version","cost_cents","chargeable","charge_billing_profile_id","charge_coverage","charge_basis","charge_currency","charge_amount","sdk_reported_cost_usd","ledger_mode","legacy_cost_cents","created_at","prompt_profile","prompt_variant","occurred_at","failover_from_offering_id","failover_hop","failover_cause","tool_profile","tool_exposure_fingerprint"],"reviewedIncluded":["input_tokens","output_tokens","cache_read_tokens","cache_write_tokens"],"excludedSensitive":[],"excludedOpen":["options_sent","rate_snapshot"]}),
   // AI model registry W02 (#7600): options is jsonb -> excludedOpen (CLAUDE.md).
   // The uuid[] columns hold offering ids (tenant identifiers, not json/jsonb/
   // bytea) -> included, precedent fix_memory.rebuild_pending_org_ids.
@@ -203,7 +203,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "ai_script_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","proposing_enabled","unattended_allowed","unattended_enabled","max_unattended_risk_tier","unattended_allowed_classes","max_unattended_per_hour","unattended_enabled_by","unattended_enabled_at","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["protected_resources"]}),
   // #7600 W02: offering_id / offering_partner_id are registry ids (included);
   // options is the jsonb OfferingOptions -> excludedOpen (CLAUDE.md).
-  "ai_sessions": tablePolicy("org_id", {"included":["total_compute_cents","id","org_id","user_id","device_id","status","type","title","model","system_prompt","billing_source","catalog_entry_id","catalog_revision_id","total_cost_cents","turn_count","max_turns","sdk_session_id","last_activity_at","created_at","updated_at","flagged_at","flagged_by","flag_reason","delegant_m365_connection_id","client_user_id","workbook_name","agent_id","topology_site_id","offering_id","offering_partner_id","continued_from_session_id","wisp_grant_id","wisp_grant_revision_id"],"reviewedIncluded":["total_input_tokens","total_output_tokens"],"excludedSensitive":[],"excludedOpen":["context_snapshot","options","sdk_usage_snapshot","last_turn_model"]}),
+  "ai_sessions": tablePolicy("org_id", {"included":["total_compute_cents","id","org_id","user_id","device_id","status","type","title","model","system_prompt","billing_source","catalog_entry_id","catalog_revision_id","total_cost_cents","turn_count","max_turns","sdk_session_id","last_activity_at","created_at","updated_at","flagged_at","flagged_by","flag_reason","delegant_m365_connection_id","client_user_id","workbook_name","agent_id","topology_site_id","offering_id","offering_partner_id","continued_from_session_id","wisp_grant_id","wisp_grant_revision_id","transcript_purged_at"],"reviewedIncluded":["total_input_tokens","total_output_tokens"],"excludedSensitive":[],"excludedOpen":["context_snapshot","options","sdk_usage_snapshot","last_turn_model"]}),
   "ai_unattended_exposure": tablePolicy("org_id", {"included":["id","org_id","partner_id","agent_id","run_id","device_id","intent_id","source","reserved_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ai_usage_charge_* (AI chargeback W10, #7608): the *_tokens columns match
   // SUSPICIOUS_NAME_PARTS ('token') but are counters -> reviewedIncluded.
@@ -400,7 +400,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // vanished from the tenant export (#3257 W05). field_key is denormalized
   // here precisely so this projection is readable without a join.
   "device_custom_field_values": tablePolicy("org_id", {"included":["id","device_id","org_id","definition_id","field_key","value_text","value_number","value_bool","value_date","source","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "device_disks": tablePolicy("org_id", {"included":["id","device_id","org_id","mount_point","device","fs_type","total_gb","used_gb","free_gb","used_percent","health","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "device_disks": tablePolicy("org_id", {"included":["id","device_id","org_id","mount_point","device","fs_type","total_gb","used_gb","free_gb","used_percent","health","is_os_volume","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "device_event_logs": tablePolicy("org_id", {"included":["id","device_id","org_id","timestamp","level","category","source","event_id","message","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"],"specific":{"search_vector":{"decision":"exclude","rationale":"PostgreSQL tsvector search-index data is derived from event content and is not needed in a portable tenant export."}}}),
   // `system` and `external_id` are tenant IDENTIFIERS, not secrets — the same
   // classification organization_external_links and contact_external_links carry.
@@ -762,7 +762,6 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // request_fingerprint above, which is reviewedIncluded only because its table
   // is enrollment-key adjacent. Plain `included` here.
   "patch_compliance_reports": tablePolicy("org_id", {"included":["id","org_id","requested_by","status","format","source","severity","row_count","output_path","error_message","started_at","completed_at","created_at","updated_at","execution_scope_version","execution_scope_kind","execution_scope_site_ids","execution_scope_user_id","execution_scope_fingerprint","execution_scope_captured_at","execution_scope_principal_kind"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["summary"]}),
-  "patch_compliance_snapshots": tablePolicy("org_id", {"included":["id","org_id","ring_id","snapshot_date","total_devices","compliant_devices","non_compliant_devices","critical_missing","important_missing","patches_pending_approval","patches_installed_24h","failed_installs_24h","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details_by_category"]}),
   "patch_jobs": tablePolicy("org_id", {"included":["id","org_id","policy_id","ring_id","config_policy_id","name","status","scheduled_at","started_at","completed_at","devices_total","devices_completed","devices_failed","devices_pending","devices_queued","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["patches","targets"]}),
   "pax8_company_mappings": tablePolicy("org_id", {"included":["id","integration_id","partner_id","pax8_company_id","pax8_company_name","status","org_id","ignored","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["metadata"]}),
   "pax8_contract_line_links": tablePolicy("org_id", {"included":["id","integration_id","partner_id","org_id","subscription_snapshot_id","contract_line_id","sync_enabled","last_applied_quantity","last_applied_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
@@ -783,16 +782,27 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // portal_access_policies / portal_access_requests (W3 #11380): sign-in policy
   // scalars and the access-request queue; no json/bytea. password_mode is a mode
   // enum (allowed|sso_only), not a secret: reviewedIncluded for the "password" name part.
+  // google_hosted_domain (W7 #11384): the request's Workspace domain, plain text like entra_tenant_id.
   "portal_access_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","entra_enabled","google_enabled","self_registration_mode","sso_new_person_mode","sso_session_max_hours","created_at","updated_at"],"reviewedIncluded":["password_mode"],"excludedSensitive":[],"excludedOpen":[]}),
-  "portal_access_requests": tablePolicy("org_id", {"included":["id","org_id","portal_user_id","email","name","source","issuer","subject","entra_tenant_id","status","requested_at","last_requested_at","expires_at","decided_at","decided_by_user_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "portal_access_requests": tablePolicy("org_id", {"included":["id","org_id","portal_user_id","email","name","source","issuer","subject","entra_tenant_id","google_hosted_domain","status","requested_at","last_requested_at","expires_at","decided_at","decided_by_user_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "portal_branding": tablePolicy("org_id", {"included":["id","org_id","logo_url","favicon_url","primary_color","secondary_color","accent_color","chrome_accent","custom_domain","domain_verified","welcome_message","support_email","support_phone","footer_text","custom_css","enable_tickets","enable_asset_checkout","enable_devices","enable_self_service","created_at","updated_at","enable_dashboard","enable_security","enable_backups","enable_reports","enable_support_usage","enable_service","enable_documents","enable_lifecycle","enable_hardware_health","enable_hardware_inventory","enable_performance_metrics","enable_software_inventory","enable_network_visibility","enable_network_alerts","enable_hour_block","enable_patch_detail","enable_vulnerability_detail","enable_physical_placement","enable_edr_visibility","enable_trust_page_editing"],"reviewedIncluded":["enable_password_reset"],"excludedSensitive":[],"excludedOpen":[]}),
+  // portal_directory_runs / portal_directory_actions (W8 #11385, plan D12):
+  // directory-deprovisioning run evidence and per-identity actions. Plain values
+  // only (text, integers, booleans, timestamps, uuids); no json/bytea. keeps_password
+  // is a boolean tag ("this account keeps password sign-in"), not a secret:
+  // reviewedIncluded for the "password" name part.
+  "portal_directory_actions": tablePolicy("org_id", {"included":["id","org_id","run_id","identity_id","portal_user_id","provider","reason","effect","status","skip_reason","applied_at","sessions_purged_at","restored_at","restored_by_user_id","created_at"],"reviewedIncluded":["keeps_password"],"excludedSensitive":[],"excludedOpen":[]}),
+  "portal_directory_runs": tablePolicy("org_id", {"included":["id","org_id","source","chain_key","snapshot_key","snapshot_at","outcome","reason","mode","directory_user_count","usable_count","affected_count","disposition","hold_reason","impact_digest","decided_by_user_id","decided_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // External identities (portal registration W2): issuer/subject are public identifiers, no secret material.
-  "portal_user_identities": tablePolicy("org_id", {"included":["id","org_id","portal_user_id","provider","issuer","subject","entra_tenant_id","linked_via","last_used_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // W8 (#11385): the disabled state (disabled_blockers is text[], a list of source
+  // names, not a capability list) and the directory observation columns.
+  "portal_user_identities": tablePolicy("org_id", {"included":["id","org_id","portal_user_id","provider","issuer","subject","entra_tenant_id","linked_via","last_used_at","created_at","disabled_at","disabled_reason","disabled_blockers","directory_chain","directory_seen_at","directory_absent_runs","directory_absent_since","directory_last_run_id","directory_rearm_since"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // disabled_by (W8 #11385): who disabled the account (msp|directory|scim), a plain enum.
   // auth_epoch is server-side bearer-session revocation state, not portable
   // customer content. Exporting it would disclose credential/status transition
   // history and invite consumers to treat an internal generation as restorable
   // identity state. Keep it with the password verifier outside tenant exports.
-  "portal_users": tablePolicy("org_id", {"included":["id","org_id","email","name","entra_oid","entra_tenant_id","auth_method","linked_user_id","contact_id","receive_notifications","last_login_at","status","browser_access","created_at","updated_at"],"reviewedIncluded":["invited_by","invited_at"],"excludedSensitive":["password_hash","auth_epoch"],"excludedOpen":[]}),
+  "portal_users": tablePolicy("org_id", {"included":["id","org_id","email","name","entra_oid","entra_tenant_id","auth_method","linked_user_id","contact_id","receive_notifications","last_login_at","status","browser_access","disabled_by","created_at","updated_at"],"reviewedIncluded":["invited_by","invited_at"],"excludedSensitive":["password_hash","auth_epoch"],"excludedOpen":[]}),
   "provision_credential_handles": tablePolicy("org_id", {"included":["id","org_id","device_id","created_by","created_at","expires_at","consumed_at","consumed_from_ip"],"reviewedIncluded":[],"excludedSensitive":["token"],"excludedOpen":["credentials"]}),
   // partner_id (epic #2135, 2026-08-17): dual ownership — org_id XOR partner_id.
   // A tenant identifier like org_id, so `included`. Note the org export only
@@ -878,7 +888,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // an `ai_origin jsonb` blob: jsonb is excludedOpen by policy and would be
   // STRIPPED from the tenant GDPR export, i.e. from the one artifact in which
   // a customer asks "who did this to my machine".
-  "script_executions": tablePolicy("org_id", {"included":["trigger_kind","trigger_ref_id","trigger_key","id","script_id","device_id","org_id","triggered_by","trigger_type","automation_run_id","monitor_id","status","started_at","completed_at","exit_code","stdout","stderr","error_message","created_at","cancel_requested_at","cancelled_by","cancel_state","cancel_command_id","cancel_prev_status","run_as","target_session_id","source_kind","proposal_id","language","timeout_seconds","content_digest","script_version_id","review_id","approved_by","approval_method","review_risk_tier","review_summary","ai_initiator_kind","ai_session_id","ai_agent_run_id"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["parameters","custom_field_result"]}),
+  "script_executions": tablePolicy("org_id", {"included":["trigger_kind","trigger_ref_id","trigger_key","id","script_id","device_id","org_id","triggered_by","trigger_type","automation_run_id","monitor_id","status","started_at","completed_at","exit_code","stdout","stderr","error_message","created_at","cancel_requested_at","cancelled_by","cancel_state","cancel_command_id","cancel_prev_status","run_as","target_session_id","source_kind","proposal_id","language","timeout_seconds","content_digest","script_version_id","review_id","approved_by","approval_method","review_risk_tier","review_summary","ai_initiator_kind","ai_session_id","ai_agent_run_id","output_purged_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["parameters","custom_field_result"]}),
   "script_proposal_reviews": tablePolicy("org_id", {"included":["id","org_id","proposal_id","reviewer_kind","model","reviewer_prompt_version","status","summary","risk_tier","goal_match","reversible","verification_adequate","recommended_action","cost_cents","budget_reservation_id","created_at"],"reviewedIncluded":["input_tokens","output_tokens"],"excludedSensitive":[],"excludedOpen":["verdict"]}),
   // acknowledged_patterns (W03, #5612): the STRICT patterns the approver signed
   // off on for this proposal — the same grant-list shape as
@@ -952,10 +962,11 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "sso_providers": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","type","status","issuer","client_id","userinfo_url","jwks_url","scopes","entity_id","sso_url","certificate","default_role_id","allowed_domains","enforce_sso","config_version","default_role_configured_by","created_by","created_at","updated_at"],"reviewedIncluded":["authorization_url","token_url","auto_provision","trusts_idp_mfa"],"excludedSensitive":["client_secret"],"excludedOpen":["attribute_mapping"]}),
   "sso_verified_domains": tablePolicy("org_id", {"included":["id","org_id","domain","verified_at","last_checked_at","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["verification_token"],"excludedOpen":[]}),
   "storage_encryption_keys": tablePolicy("org_id", {"included":["id","org_id","name","key_type","public_key_pem","is_active","created_at","rotated_at","expires_at"],"reviewedIncluded":[],"excludedSensitive":["encrypted_private_key","key_hash"],"excludedOpen":[]}),
-  // code_hash is the verifier for the one-time Quick Support code — credential
-  // material, never exported. claimed_from_ip is the end user's IP, which is
-  // ordinary tenant record data (mirrors devices.enrollment_ip / last_seen_ip).
-  "support_sessions": tablePolicy("org_id", {"included":["id","org_id","created_by_user_id","code_expires_at","status","hard_expires_at","device_id","attributed_org_id","attribution_label","claimed_at","claimed_from_ip","ended_at","ended_reason","created_at"],"reviewedIncluded":[],"excludedSensitive":["code_hash"],"excludedOpen":[]}),
+  // code_hash (the verifier) and code_encrypted (the pending-only sealed copy
+  // of the code, #11836) are credential material, never exported.
+  // claimed_from_ip is the end user's IP, which is ordinary tenant record
+  // data (mirrors devices.enrollment_ip / last_seen_ip).
+  "support_sessions": tablePolicy("org_id", {"included":["id","org_id","created_by_user_id","code_expires_at","status","hard_expires_at","device_id","attributed_org_id","attribution_label","claimed_at","claimed_from_ip","ended_at","ended_reason","created_at"],"reviewedIncluded":[],"excludedSensitive":["code_hash","code_encrypted"],"excludedOpen":[]}),
   // tenant_variables (#3409): `value` is always ciphertext and may hold vendor
   // API tokens, so it is excludedSensitive for every row — not just the
   // is_secret ones. `key`/`description` are MSP-authored labels, not secrets.
@@ -1025,7 +1036,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // ticket_import_org_maps (#8313 W4): a source org's target org. Partner-axis;
   // ids, the source's org key and its display name only.
   "ticket_import_org_maps": tablePolicy("org_id", {"included":["id","source_id","partner_id","source_org_key","source_org_name","org_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "ticket_links": tablePolicy("org_id", {"included":["id","org_id","source_ticket_id","target_ticket_id","link_type","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ticket_links": tablePolicy("org_id", {"included":["id","org_id","source_ticket_id","target_ticket_id","link_type","created_by","created_at","migration_window_id"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ticket_outbox (wave 6 PR 3, #3828): payload is id-only by construction
   // (Task 2 enforces this) but jsonb is always excludedOpen regardless —
   // an open container may embed capabilities even when today's contents
@@ -1162,8 +1173,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // Wisp check-in timers W01 (#10992). `context` is open jsonb (excludedOpen);
   // `instruction` is the model-written follow-up text, plain customer data like
   // a post body; job_id is a BullMQ id (`wisp-check-in-<uuid>`), not a secret.
+  // `label` (#11675) is the short model-written line shown to the technician,
+  // plain text like `instruction`.
   // Partner-level rows (org_id NULL) never enter an org export.
-  "wisp_check_ins": tablePolicy("org_id", {"included":["id","partner_id","org_id","grant_id","thread_id","session_id","user_id","due_at","instruction","status","fired_at","consumed_at","cancelled_at","job_id","created_at","trigger_kind","trigger_subject_id","fire_reason","cancel_reason","mode","run_id","grant_revision_id"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["context"]}),
+  "wisp_check_ins": tablePolicy("org_id", {"included":["id","partner_id","org_id","grant_id","thread_id","session_id","user_id","due_at","instruction","status","fired_at","consumed_at","cancelled_at","job_id","created_at","trigger_kind","trigger_subject_id","fire_reason","cancel_reason","mode","run_id","grant_revision_id","cancelled_by","label"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["context"]}),
   // Wisp W05a (#9911). evidence / params are open jsonb (excludedOpen); the
   // recipient's free-text feedback note is a person's words (reviewedIncluded).
   // Partner-level rows (org_id NULL) never enter an org export.

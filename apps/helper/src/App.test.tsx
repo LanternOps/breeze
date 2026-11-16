@@ -167,7 +167,7 @@ it('shows the username prompt when no username is set yet', () => {
 it('without branding the onboarding is Breeze-branded English', () => {
   setChatState({ connectionState: 'connected', username: null });
   render(<App />);
-  expect(screen.getByText('Welcome to Breeze Helper')).toBeInTheDocument();
+  expect(screen.getByText('Welcome to Breeze Assist')).toBeInTheDocument();
   expect(screen.getByText("What's your name?")).toBeInTheDocument();
 });
 
@@ -175,7 +175,7 @@ it('onboarding follows the session locale', () => {
   setUiContext({ locale: 'pt-BR' });
   setChatState({ connectionState: 'connected', username: null });
   render(<App />);
-  expect(screen.getByText('Boas-vindas ao Breeze Helper')).toBeInTheDocument();
+  expect(screen.getByText('Boas-vindas ao Breeze Assist')).toBeInTheDocument();
   expect(screen.getByText('Qual é o seu nome?')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Continuar' })).toBeInTheDocument();
 });
@@ -206,6 +206,6 @@ it('invalid branding sent to the webview is dropped, not rendered', () => {
   setUiContext({ branding: { displayName: 'x'.repeat(200), welcomeMessage: 'a\nb' } });
   setChatState({ connectionState: 'connected', username: null });
   render(<App />);
-  expect(screen.getByText('Welcome to Breeze Helper')).toBeInTheDocument();
+  expect(screen.getByText('Welcome to Breeze Assist')).toBeInTheDocument();
   expect(screen.queryByText('a\nb')).toBeNull();
 });

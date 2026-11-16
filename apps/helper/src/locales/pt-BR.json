@@ -1,5 +1,5 @@
 {
-  "app.name": "Breeze Helper",
+  "app.name": "Breeze Assist",
   "onboarding.welcome": "Boas-vindas ao {name}",
   "onboarding.providedBy": "Fornecido por {company}",
   "onboarding.namePrompt": "Qual é o seu nome?",
@@ -54,7 +54,7 @@
   "consent.autoBlock": "Recusando automaticamente em {countdown}",
   "consent.deny": "Recusar",
   "consent.allow": "Permitir",
-  "native.main.title": "Breeze Helper",
+  "native.main.title": "Breeze Assist",
   "native.consent.title": "Solicitação de sessão remota",
   "native.banner.title": "Sessão remota ativa",
   "native.notification.title": "Notificação do seu provedor de TI",

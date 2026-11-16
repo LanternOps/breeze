@@ -121,6 +121,8 @@ const selectResults: unknown[][] = [];
 const updateResults: unknown[][] = [];
 const insertedValues: unknown[] = [];
 let updateWhereCalled = 0;
+// What each db.update() was built with, in call order.
+const updateCalls: Array<{ set: unknown; where: unknown }> = [];
 // Every builder handed back by db.select(), in call order — lets a test
 // inspect what a specific `.where(...)` call was actually built with instead
 // of just trusting a mock that returns a fixed row regardless of the query.
@@ -137,9 +139,10 @@ vi.mock('../db', () => {
   });
 
   const update = vi.fn(() => ({
-    set: vi.fn(() => ({
-      where: vi.fn(() => {
+    set: vi.fn((setValues: unknown) => ({
+      where: vi.fn((whereArg: unknown) => {
         updateWhereCalled++;
+        updateCalls.push({ set: setValues, where: whereArg });
         return { returning: vi.fn(() => Promise.resolve(updateResults.shift() ?? [])) };
       }),
     })),
@@ -253,6 +256,7 @@ const fetchMock = vi.fn(() => Promise.resolve(
 beforeEach(() => {
   selectResults.length = 0;
   updateResults.length = 0;
+  updateCalls.length = 0;
   insertedValues.length = 0;
   selectBuilders.length = 0;
   updateWhereCalled = 0;
@@ -804,6 +808,26 @@ describe('POST /redeem', () => {
   it('rejects a payload with an unknown osType', async () => {
     const res = await redeem({ osType: 'freebsd' });
     expect(res.status).toBe(400);
+  });
+
+  // #11836: the claim must match the hash it looked up, so a "New code" that
+  // commits between the lookup and the claim leaves the old code claiming
+  // nothing; and leaving pending clears the technician-readable sealed copy
+  // in the same statement.
+  it('claims only while the looked-up code is still the session\'s code, clearing the sealed copy', async () => {
+    const session = pendingSession({ codeHash: hashSupportCode(CODE) });
+    selectResults.push([session]);
+    updateResults.push([{ ...session, status: 'claimed' }]);
+    selectResults.push([{ id: 'site-1' }]);
+    expect((await redeem()).status).toBe(200);
+
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]!.set).toMatchObject({ status: 'claimed', codeEncrypted: null });
+    const leaves = collectSqlLeafStrings(updateCalls[0]!.where);
+    expect(leaves).toContain('supportSessions.status');
+    expect(leaves).toContain('pending');
+    expect(leaves).toContain('supportSessions.codeHash');
+    expect(leaves).toContain(hashSupportCode(CODE));
   });
 
   it('hashes the code before lookup — the plaintext is never queried', async () => {

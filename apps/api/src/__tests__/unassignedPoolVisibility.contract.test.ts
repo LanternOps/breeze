@@ -72,6 +72,7 @@ const EXECUTION_SITES: Record<string, string> = {
 /** About Quick Support itself, not an enumeration of orgs a person sees. */
 const QUICK_SUPPORT_SPECIFIC: Record<string, string> = {
   'services/quickSupportOrg.ts': 'the Quick Support org helpers themselves',
+  'routes/remote/supportSessions.ts': 'Quick Support routes: matches a session to the caller\'s own partner\'s Quick Support org before revealing or replacing its code (#11836); never lists orgs',
   'services/timeSuggestionService.ts': 'attributes Quick Support session time to the customer org; a parked device never has a session',
   'services/orgArchive.ts': 'protected lifecycle: already refuses both types (NON_ARCHIVABLE_ORG_TYPES)',
   'services/orgMerge.ts': 'protected lifecycle: Quick Support merge refusal; the holding org is refused separately',

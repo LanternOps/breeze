@@ -336,6 +336,8 @@ describe('backup jobs routes', () => {
     expect(data[0].failureCategory).toBe('device_offline');
     // Explicit null, not a dropped key: "nothing failed" is an answer.
     expect(data[1]).toHaveProperty('failureCategory', null);
+    expect(data[0]).toHaveProperty('failureCause', null);
+    expect(data[1]).toHaveProperty('failureCause', null);
   });
 
   it('GET /jobs/:id returns failureCategory', async () => {
@@ -352,7 +354,9 @@ describe('backup jobs routes', () => {
     const res = await app.request('/jobs/job-1');
 
     expect(res.status).toBe(200);
-    expect((await res.json()).failureCategory).toBe('agent');
+    const body = await res.json();
+    expect(body.failureCategory).toBe('agent');
+    expect(body.failureCause).toBe('helper_stopped');
   });
 
   it('GET /jobs/:id returns dataAccounting and resumedAt', async () => {

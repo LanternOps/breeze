@@ -10,6 +10,7 @@ import { createWorld } from './fake-world.mjs';
 import { headPushedAt, prSnapshot } from './facts.mjs';
 import { createGitHub } from './github.mjs';
 import { parseMarkers } from './markers.mjs';
+import { METRICS_TITLE, marker } from './metrics.mjs';
 import { probe } from './probe.mjs';
 import { REPO_ROOT } from './shepherd.mjs';
 import { readJsonl } from './state.mjs';
@@ -33,7 +34,7 @@ function setup({ mode = null } = {}) {
   const world = createWorld({ mode, now: T0 });
   const gh = createGitHub({ token: 'test', fetchImpl: world.fetchImpl, budget: 100_000 });
   const stateDir = mkdtempSync(join(tmpdir(), 'ci-shepherd-tick-'));
-  const run = (over = {}) => tick({ gh, repo: REPO, stateDir, now: world.clock, clock: () => world.clock, exec: world.exec, repoRoot: REPO_ROOT, log: () => {}, ...over });
+  const run = (over = {}) => tick({ gh, repo: REPO, stateDir, now: world.clock, clock: () => world.clock, exec: world.exec, repoRoot: REPO_ROOT, log: () => {}, weekly: async () => ({ status: 'stubbed' }), ...over });
   const decisions = () => readJsonl(join(stateDir, 'decisions.jsonl'));
   const state = () => JSON.parse(readFileSync(join(stateDir, 'state.json'), 'utf8'));
   const writesOf = (op, pr) => world.writes.filter((x) => x.op === op && (pr === undefined || x.pr === pr));
@@ -113,6 +114,46 @@ test('shadow makes no write call, and records what it would do (one line per rem
     assert.equal(env.decisions().filter((l) => l.kind === 'resume').length, 1);
     assert.deepEqual(env.world.writeCalls(), []);
   }
+});
+
+// W05 (#10749): an entry the CI Gate ejected for a skip its selection never
+// allowed. Its own CI is green; without the gate's reason it would be an
+// `unknown` re-queued once. It holds and pages, in shadow (no write) and in act.
+const thinGateLog = (selectionReason) => [
+  `2026-11-08T11:30:00.0000000Z ci-gate-selection: mode=full reason=${selectionReason} thin_queue="enforce" thin_skip=[]`,
+  '2026-11-08T11:49:00.0000000Z ci-gate: verdict=fail reason=thin_skip_unjustified:test-shared event=merge_group thin=0',
+  '',
+].join('\n');
+
+test('thin_skip_unjustified: held and paged, never re-queued; shadow writes nothing', async () => {
+  for (const mode of [null, 'act']) {
+    const env = setup({ mode });
+    env.world.addPr(108, { autoMerge: false });
+    env.world.removeFailed(108, { at: iso(T0 - 10 * MIN), job: null, gateLog: thinGateLog('anchor_policy_in_p') });
+    const summary = await env.run();
+    const [d] = env.decisions().filter((l) => l.source === 'removal');
+    assert.deepEqual([d.kind, d.class, d.signature, d.holdReason], ['hold', 'thin_fault', 'thin_skip_unjustified', 'thin_fault'], String(mode));
+    assert.equal(summary.status, 'degraded', 'a page makes the tick exit non-zero');
+    assert.equal(summary.errors.length, 1);
+    assert.match(summary.errors[0], /^PAGE thin_skip_unjustified: PR 108 .*CI_THIN_QUEUE --body off/);
+    assert.equal(env.world.execs.filter((e) => e.includes('merge')).length, 0, 'never re-queued');
+    if (mode === null) assert.deepEqual(env.world.writes, []);
+    else assert.deepEqual(env.world.prs.get(108).labels, [LABELS.hold]);
+    // Decided once: a second tick neither re-decides nor pages again.
+    const again = await env.run();
+    assert.deepEqual(again.errors, []);
+  }
+});
+
+test('attempt1_selection_missing: held and paged as the fail-closed fallback, with no kill-switch advice', async () => {
+  const env = setup();
+  env.world.addPr(109, { autoMerge: false });
+  env.world.removeFailed(109, { at: iso(T0 - 10 * MIN), job: null, gateLog: thinGateLog('attempt1_selection_missing') });
+  const summary = await env.run();
+  const [d] = env.decisions().filter((l) => l.source === 'removal');
+  assert.deepEqual([d.kind, d.class, d.signature], ['hold', 'thin_fault', 'attempt1_selection_missing']);
+  assert.match(summary.errors[0], /^PAGE attempt1_selection_missing: PR 109 /);
+  assert.doesNotMatch(summary.errors[0], /--body off/);
 });
 
 test('the read-only client refuses writes before they reach the network; a writer refuses it', async () => {
@@ -622,6 +663,156 @@ test('ingest skips fork runs: no sightings, no evidence read', async () => {
   assert.ok(!env.world.calls.some((c) => /\/actions\/runs\/8008/.test(c.path)), 'the fork run was never read');
 });
 
+// A completed web shard whose test failed both attempts (job-log evidence).
+const WEB_TEST = 'src/x/widget.test.tsx > Widget > renders';
+function webRun(env, { id, event = 'pull_request', pr = 500, head, base = '34'.repeat(20), branch = null }) {
+  const log = [' Failed Tests 1 ', ` FAIL  ${WEB_TEST}`, '##[warning]web-3: attempt 1 failed with 1 failing test(s); re-running the whole shard once', ' Failed Tests 1 ', ` FAIL  ${WEB_TEST}`].join('\n');
+  env.world.runs.push({
+    id,
+    run_attempt: 1,
+    head_sha: head,
+    head_branch: branch ?? (event === 'merge_group' ? `gh-readonly-queue/main/pr-${pr}-${base}` : `feature-${id}`),
+    head_repository: { full_name: REPO },
+    event,
+    status: 'completed',
+    conclusion: 'failure',
+    path: '.github/workflows/ci.yml',
+    created_at: iso(T0 - 25 * MIN),
+    updated_at: iso(T0 - 20 * MIN),
+    pull_requests: event === 'pull_request' && pr ? [{ number: pr, head: { sha: head }, base: { sha: base, ref: 'main' } }] : [],
+    jobs: [{ id: id * 10, name: 'Test Web (shard 3/4)', run_attempt: 1, conclusion: 'failure', started_at: iso(T0 - 24 * MIN), completed_at: iso(T0 - 20 * MIN), steps: [{ name: 'Run tests', conclusion: 'failure' }], annotations: [], log }],
+  });
+}
+
+test('ingest drops sightings of tests the change touched, from the files of the commit the run tested', async () => {
+  const head = '12'.repeat(20);
+  const base = '34'.repeat(20);
+  const sightingsOf = (env) => readJsonl(join(env.stateDir, 'sightings.jsonl'));
+  // Untouched: one fail_fail sighting, and the compare was asked for.
+  const kept = setup();
+  webRun(kept, { id: 9001, head, base });
+  kept.world.changed.set(`${base}...${head}`, ['docs/a.md']);
+  await kept.run();
+  assert.deepEqual(sightingsOf(kept).map((s) => [s.id, s.kind, s.pr]), [[WEB_TEST, 'fail_fail', 500]]);
+  assert.ok(kept.world.calls.some((c) => c.path === `/repos/${REPO}/compare/${base}...${head}`), 'read the change the run tested');
+  // The PR touched the test's sibling source: dropped.
+  const touched = setup();
+  webRun(touched, { id: 9001, head, base });
+  touched.world.changed.set(`${base}...${head}`, ['apps/web/src/x/widget.tsx']);
+  await touched.run();
+  assert.deepEqual(sightingsOf(touched), []);
+  // The change cannot be read (an error, or more files than the API lists): dropped.
+  const unreadable = setup();
+  webRun(unreadable, { id: 9001, head, base });
+  unreadable.world.failingGets.push([/\/compare\//, 500]);
+  await unreadable.run();
+  assert.deepEqual(sightingsOf(unreadable), []);
+  const huge = setup();
+  webRun(huge, { id: 9001, head, base });
+  huge.world.changed.set(`${base}...${head}`, Array.from({ length: 300 }, (_, i) => `docs/f${i}.md`));
+  await huge.run();
+  assert.deepEqual(sightingsOf(huge), []);
+  // A PR run that names no PR: nothing to compare against, dropped.
+  const orphan = setup();
+  webRun(orphan, { id: 9001, head, base, pr: null });
+  await orphan.run();
+  assert.deepEqual(sightingsOf(orphan), []);
+  // A push to main reads the commit's own files (merge_group runs: below).
+  const push = setup();
+  webRun(push, { id: 9003, event: 'push', pr: null, head, branch: 'main' });
+  push.world.changed.set(head, ['docs/a.md']);
+  await push.run();
+  assert.deepEqual(sightingsOf(push).map((s) => s.event), ['push']);
+  assert.ok(push.world.calls.some((c) => c.path === `/repos/${REPO}/commits/${head}`));
+});
+
+// Merge-queue runs. Entry A is first in the queue (built on main's tip M);
+// B is stacked on A's group commit and C on B's, so each queue branch name
+// carries the PREVIOUS entry's group commit, not main. A touched the widget's
+// sibling source and broke its test; B and C did not touch it, but their
+// groups contain A's change.
+const M = 'ee'.repeat(20);
+const QA = 'a1'.repeat(20);
+const QB = 'b2'.repeat(20);
+const QC = 'c3'.repeat(20);
+const A_FILES = ['apps/web/src/x/widget.tsx'];
+const B_FILES = ['docs/b.md'];
+const C_FILES = ['docs/c.md'];
+function stackedQueue(env) {
+  webRun(env, { id: 9101, event: 'merge_group', pr: 601, head: QA, base: M });
+  webRun(env, { id: 9102, event: 'merge_group', pr: 602, head: QB, base: QA });
+  webRun(env, { id: 9103, event: 'merge_group', pr: 603, head: QC, base: QB });
+  // Each entry's own change (what a compare from the branch-name sha sees)…
+  env.world.changed.set(`${M}...${QA}`, A_FILES);
+  env.world.changed.set(`${QA}...${QB}`, B_FILES);
+  env.world.changed.set(`${QB}...${QC}`, C_FILES);
+  // …and everything in the group ahead of main (main...head).
+  env.world.changed.set(`main...${QA}`, { files: A_FILES, status: 'ahead', mergeBase: M });
+  env.world.changed.set(`main...${QB}`, { files: [...A_FILES, ...B_FILES], status: 'ahead', mergeBase: M });
+  env.world.changed.set(`main...${QC}`, { files: [...A_FILES, ...B_FILES, ...C_FILES], status: 'ahead', mergeBase: M });
+}
+
+test('merge queue: a test the first entry broke is touched for every entry stacked on it (no issue, no ledger add)', async () => {
+  const env = setup();
+  stackedQueue(env);
+  await env.run();
+  const kept = readJsonl(join(env.stateDir, 'sightings.jsonl'));
+  assert.deepEqual(kept.map((s) => [s.pr, s.event]), [], 'B and C carry A\'s change: their failures are touched');
+  for (const pr of [601, 602, 603]) {
+    const head = { 601: QA, 602: QB, 603: QC }[pr];
+    assert.ok(env.world.calls.some((c) => c.path === `/repos/${REPO}/compare/main...${head}`), `PR ${pr}'s group compared with main`);
+  }
+  // What the upkeep would do with them: no issue, and no ledger add even with
+  // a third sighting (a fail-then-pass) from an unrelated PR.
+  const { issueWorthy } = await import('./flake-issues.mjs');
+  const { proposeLedger } = await import('./ledger-proposals.mjs');
+  assert.equal(issueWorthy(kept), false);
+  const other = { runner: 'vitest-web', id: WEB_TEST, file: 'apps/web/src/x/widget.test.tsx', kind: 'fail_pass', run: 9200, attempt: 1, job: 'Test Web (shard 3/4)', pr: 700, event: 'pull_request', sha: 'd4'.repeat(20), at: iso(T0 - 10 * MIN), untouched: true };
+  const p = proposeLedger({ ledger: [], records: [{ runner: 'vitest-web', id: WEB_TEST, file: other.file, issue: 900, quarantine_days: 0, sightings: [...kept, other] }], today: '2026-11-08', fileExists: () => true });
+  assert.deepEqual(p.add, []);
+});
+
+test('merge queue: a test untouched by every PR in the group is kept once, with the group base it was checked from', async () => {
+  const env = setup();
+  webRun(env, { id: 9104, event: 'merge_group', pr: 604, head: QB, base: QA });
+  env.world.changed.set(`main...${QB}`, { files: ['docs/a.md', 'docs/b.md'], status: 'ahead', mergeBase: M });
+  await env.run();
+  const kept = readJsonl(join(env.stateDir, 'sightings.jsonl'));
+  assert.deepEqual(kept.map((s) => [s.pr, s.event, s.kind, s.queueBase, s.queueParent]), [[604, 'merge_group', 'fail_fail', M, QA]]);
+  // A main that moved on without A (diverged) still measures from the merge base.
+  const env2 = setup();
+  webRun(env2, { id: 9105, event: 'merge_group', pr: 605, head: QB, base: QA });
+  env2.world.changed.set(`main...${QB}`, { files: ['docs/a.md'], status: 'diverged', mergeBase: M });
+  await env2.run();
+  assert.deepEqual(readJsonl(join(env2.stateDir, 'sightings.jsonl')).map((s) => s.queueBase), [M]);
+});
+
+test('merge queue: a group whose base on main cannot be told counts every failure as touched', async () => {
+  const cases = {
+    // The group already merged: main...head is empty, its base is gone.
+    merged: (env) => env.world.changed.set(`main...${QB}`, { files: [], status: 'identical', mergeBase: QB }),
+    behind: (env) => env.world.changed.set(`main...${QB}`, { files: [], status: 'behind', mergeBase: QB }),
+    noMergeBase: (env) => env.world.changed.set(`main...${QB}`, { files: ['docs/a.md'], status: 'ahead' }),
+    compareFails: (env) => env.world.failingGets.push([/\/compare\//, 500]),
+    tooMany: (env) => env.world.changed.set(`main...${QB}`, { files: Array.from({ length: 300 }, (_, i) => `docs/f${i}.md`), status: 'ahead', mergeBase: M }),
+  };
+  for (const [name, arrange] of Object.entries(cases)) {
+    const env = setup();
+    webRun(env, { id: 9106, event: 'merge_group', pr: 606, head: QB, base: QA });
+    // The entry's own change alone would leave the test untouched.
+    env.world.changed.set(`${QA}...${QB}`, ['docs/b.md']);
+    arrange(env);
+    await env.run();
+    assert.deepEqual(readJsonl(join(env.stateDir, 'sightings.jsonl')), [], name);
+  }
+  // A merge_group run on a branch that is not a queue branch: no base to read.
+  const odd = setup();
+  webRun(odd, { id: 9107, event: 'merge_group', pr: 607, head: QB, branch: 'feature-x' });
+  odd.world.changed.set(`main...${QB}`, { files: ['docs/a.md'], status: 'ahead', mergeBase: M });
+  await odd.run();
+  assert.deepEqual(readJsonl(join(odd.stateDir, 'sightings.jsonl')), []);
+});
+
 test('a failing sweep is reported and the others still run; a failing tick reports status=error as its last line', async () => {
   const env = setup();
   busyWorld(env);
@@ -669,4 +860,36 @@ test('writer: issue upsert reuses an open issue with the same title; the main CI
   assert.equal(world.writes.filter((x) => x.op === 'issue_create').length, 1);
   await w.dispatchMainCi();
   assert.deepEqual(world.execs.at(-1), ['workflow', 'run', 'CI', '--ref', 'main', '-R', REPO]);
+});
+
+// W06d: the real weekly metrics hook (the other tests stub it).
+test('weekly metrics: posted once through the real tick wiring, in act mode only', async () => {
+  const monday = Date.parse('2026-11-09T14:00:00Z'); // last week, 2026-W45, is due
+  for (const mode of [null, 'shadow']) {
+    const env = setup({ mode });
+    env.world.clock = monday;
+    const s = await env.run({ weekly: undefined });
+    assert.equal(s.sweeps.metrics, 'not_act');
+    assert.deepEqual(env.world.writes, []);
+  }
+  const env = setup({ mode: 'act' });
+  env.world.clock = monday;
+  const s1 = await env.run({ weekly: undefined });
+  assert.equal(s1.sweeps.metrics, 'posted', JSON.stringify(s1.errors));
+  const issue = env.world.issues.find((i) => i.title === METRICS_TITLE);
+  assert.ok(issue, 'the metrics issue was opened');
+  assert.equal(env.writesOf('issue_create').length, 1);
+  const posts = () => env.writesOf('comment_post').filter((x) => x.pr === issue.number);
+  assert.equal(posts().length, 1);
+  assert.ok(posts()[0].body.includes(marker('2026-W45')));
+  assert.equal(env.decisions().filter((d) => d.kind === 'metrics_post').length, 1);
+  assert.equal(env.state().metrics.postedWeek, '2026-W45');
+  // A later tick, and one after state.json was lost, post nothing more.
+  env.world.clock = monday + 10 * MIN;
+  assert.equal((await env.run({ weekly: undefined })).sweeps.metrics, 'posted');
+  writeFileSync(join(env.stateDir, 'state.json'), '{}');
+  env.world.clock = monday + 120 * MIN;
+  assert.equal((await env.run({ weekly: undefined })).sweeps.metrics, 'noop');
+  assert.equal(env.writesOf('issue_create').length, 1);
+  assert.equal(posts().length, 1);
 });

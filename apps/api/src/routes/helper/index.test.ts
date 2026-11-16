@@ -215,6 +215,7 @@ import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
 import { buildHelperConfigUpdate } from '../../services/helperSettings';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
+import { ContextWindowTooSmallError } from '../../services/aiModels/sessionToolExposure';
 import { resolveClientDeclaredTool } from '../../services/clientSessionTools';
 import { storeScreenshot } from '../../services/screenshotStorage';
 import { createBreezeMcpServer } from '../../services/aiAgentSdkTools';
@@ -706,6 +707,36 @@ describe('helper routes permission derivation', () => {
 
   // #6354 W05: a typed caller-verification refusal rides the helper stream as
   // the tool_result `output` string and must not be rewritten on the way out.
+  it('#11396: a model whose window is too small for any tool profile is a 409 context_window_too_small, not a 500', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1', orgId: 'org-1', deviceId: 'device-1', sdkSessionId: null,
+            model: 'qwen', maxTurns: 50, turnCount: 0, status: 'active', title: 't',
+            systemPrompt: 'p', createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+    vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(new ContextWindowTooSmallError('helper', 4_096));
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This model\'s 4,096-token window is too small for Breeze helper tools.',
+      code: 'context_window_too_small',
+    });
+    expect(streamingSessionManager.tryTransitionToProcessing).not.toHaveBeenCalled();
+  });
+
   it('passes a typed caller-verification refusal tool_result through the SSE stream verbatim', async () => {
     mockHelperAuthDevice();
     vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
@@ -779,6 +810,8 @@ describe('helper routes permission derivation', () => {
     expect(call[6]).toBe(model);
     expect(call[1]).not.toHaveProperty('model');
     expect(call[9]).toEqual(expect.objectContaining({ ledgerUserId: null }));
+    // #11395: the built-in per-level factory registers the Breeze registry, so a tool profile narrows it.
+    expect(call[9]).toEqual(expect.objectContaining({ registersBreezeServer: true }));
     expect(reserveAiBudgetMock).toHaveBeenCalledWith(expect.objectContaining({
       billingSource: 'partner_key', binding: turnBindingFrom(model),
     }));

@@ -48,10 +48,11 @@ import {
 } from '../../db/schema';
 import { consumeVerificationToken, generateVerificationToken } from '../../services/emailVerification';
 import { requestPendingEmailChange } from '../../services/pendingEmail';
+import { hashPassword } from '../../services/password';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { createPendingRegistration } from '../../services/pendingRegistration';
 import { handleAuthEmailJob } from '../../jobs/authEmailWorker';
-import { recordAccountFailure } from '../../services/rate-limit';
+import { reserveAccountAttempt } from '../../services/rate-limit';
 import { bootstrapAuthBinding, createPartner, createUser } from './db-utils';
 import { getTestDb, getTestRedis } from './setup';
 
@@ -410,14 +411,19 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
   const STEP1_UA = 'integration-signup/1.0';
   const CLICK_UA = 'mail-scanner/9.9 (link-prefetch)';
 
-  function park(companyName: string, email: string, signupIntent?: { intent: 'cloud' | 'wisp'; offer?: string }) {
+  // Step 2 confirms the password chosen at step 1, so the parked record holds
+  // a real hash of it and every click sends it.
+  const SIGNUP_PASSWORD = 'Sup3rSecure!Passw0rd';
+  let signupHash: Promise<string> | undefined;
+
+  async function park(companyName: string, email: string, signupIntent?: { intent: 'cloud' | 'wisp'; offer?: string }) {
+    signupHash ??= hashPassword(SIGNUP_PASSWORD);
     return createPendingRegistration({
       ...(signupIntent ? { signupIntent } : {}),
       email,
       companyName,
       name: 'New Admin',
-      passwordHash:
-        '$argon2id$v=19$m=65536,t=3,p=4$dGVzdHNhbHR0ZXN0$Zm9vYmFyYmF6Zm9vYmFyYmF6Zm9vYmFyYmF6',
+      passwordHash: await signupHash,
       acceptTerms: true,
       termsVersion: 'v1',
       hostedExpectation: true,
@@ -440,7 +446,7 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     return app.request('/auth/verify-email', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'user-agent': userAgent, cookie: binding.cookie },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, password: SIGNUP_PASSWORD }),
     });
   }
 
@@ -684,8 +690,8 @@ describe('SR2-23 login lockout — real Postgres', () => {
     const redis = getTestRedis();
     let locked = false;
     for (let i = 0; i < 6 && !locked; i++) {
-      const r = await recordAccountFailure(redis, email);
-      locked = r.locked;
+      const r = await reserveAccountAttempt(redis, email);
+      locked = r.reachesLimit;
     }
     expect(locked).toBe(true);
 

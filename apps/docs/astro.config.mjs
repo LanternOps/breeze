@@ -59,6 +59,7 @@ export default defineConfig({
               label: 'Remote Management',
               items: [
                 { slug: 'features/remote-access' },
+                { slug: 'features/end-user-experience' },
                 { slug: 'features/scripts' },
                 { slug: 'scripts/stopping-a-running-script' },
                 { slug: 'features/automations' },
@@ -102,7 +103,7 @@ export default defineConfig({
             },
             {
               label: 'Service Desk',
-              items: [{ slug: 'features/ticketing' }, { slug: 'features/ticket-customer-approval' }],
+              items: [{ slug: 'features/ticketing' }, { slug: 'features/ticket-customer-approval' }, { slug: 'features/ticket-import' }],
             },
             {
               label: 'Billing & Invoicing',
@@ -232,7 +233,10 @@ export default defineConfig({
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
                 { slug: 'features/portal-microsoft-sign-in' },
+                { slug: 'features/portal-google-sign-in' },
                 { slug: 'features/portal-domain-verification' },
+                { slug: 'features/portal-self-registration' },
+                { slug: 'features/portal-directory-deprovisioning' },
                 { slug: 'features/setup-wizard' },
                 { slug: 'features/mobile' },
               ],

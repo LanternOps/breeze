@@ -46,6 +46,7 @@ import { requireEntitlement } from '../../middleware/entitlement';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import type { MemoryBlock } from '../../services/wisp/memoryBroker';
+import { isMemoryBlockLapsed } from '../../services/wisp/standingInstructions';
 import {
   captureStatus,
   confirmInstructionGroup,
@@ -75,6 +76,7 @@ export function toMemoryBlockDto(block: MemoryBlock): MemoryBlockDto {
     content: block.content,
     confidence: block.confidence,
     status: block.status,
+    expired: isMemoryBlockLapsed(block, new Date()),
     authoredByGrantId: block.authoredByGrantId,
     supersededById: block.supersededById,
     sourceSessionId: block.sourceSessionId,

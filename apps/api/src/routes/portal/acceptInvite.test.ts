@@ -66,7 +66,7 @@ function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
   const proven = mode === 'sso_only';
   return {
     orgId, partnerId: 'p-1', entraTenant: proven ? { tenantId: PROVEN_TENANT_ID, provenAt: '2026-11-01T00:00:00.000Z' } : null,
-    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven }),
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven, googleDomainVerified: false }),
   };
 }
 const PROVEN_TENANT_ID = '72f988bf-86f1-41af-91ab-2d7cd011db47';

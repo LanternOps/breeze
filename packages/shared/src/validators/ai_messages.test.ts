@@ -17,6 +17,11 @@ const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000';
 // ============================================
 
 describe('aiPageContextSchema', () => {
+  it("#11673: a device context's web-only displayName is accepted and stripped, never reaching the API", () => {
+    const parsed = aiPageContextSchema.parse({ type: 'device', id: VALID_UUID, hostname: 'nw-42eccf-00001', displayName: 'NW-XRAY-WS' });
+    expect(parsed).toEqual({ type: 'device', id: VALID_UUID, hostname: 'nw-42eccf-00001' });
+  });
+
   it('accepts a ticket record', () => {
     const context = {
       type: 'record', kind: 'ticket', id: VALID_UUID,

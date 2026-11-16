@@ -142,6 +142,12 @@ export default function TicketFocusHeader({
                 <span className="min-w-0 truncate">{requester}</span>
               </>
             )}
+            {ticket.migrationWindowId && (
+              // #8313: imported through a migration window.
+              <span className="shrink-0 rounded-md border bg-muted px-1.5 py-0.5 font-medium" data-testid="ticket-workbench-imported">
+                {t('ticketQueueList.imported')}
+              </span>
+            )}
           </p>
         </div>
 

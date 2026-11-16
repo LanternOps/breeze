@@ -148,7 +148,7 @@
     "headingSingle": "{{name}} silinsin mi?",
     "itemCount": "Öğe Sayısı",
     "moveToTrash": "Çöp Kutusuna Taşı",
-    "recycleBinNotice": "Geri Dönüşüm Kutusu Bildirimi",
+    "recycleBinNotice": "Çöp kutusuna taşınan öğeler geri alınabilir. Kalıcı silme geri alınamaz.",
     "totalSize": "Toplam: {{size}}",
     "itemCount_one": "{{count}} öğe",
     "itemCount_other": "{{count}} öğe"
@@ -464,10 +464,10 @@
       "devices": "Cihazlar",
       "fileManager": "Dosya Yöneticisi"
     },
-    "deviceNotFoundDescription": "Cihaz Bulunamadı Açıklama",
-    "deviceNotFoundTitle": "Cihaz Bulunamadı Başlığı",
+    "deviceNotFoundDescription": "Aradığınız cihaz mevcut değil veya erişiminiz yok.",
+    "deviceNotFoundTitle": "Cihaz bulunamadı",
     "deviceOfflineDescription": "Cihaz şu anda {{status}}. Uzaktan dosya erişimi yalnızca cihaz çevrimiçi olduğunda kullanılabilir.",
-    "deviceOfflineTitle": "Cihaz Çevrimdışı Başlığı",
+    "deviceOfflineTitle": "Cihaz çevrimdışı",
     "errorTitle": "Hata Başlığı",
     "errors": {
       "deviceNotFound": "Cihaz bulunamadı",
@@ -488,6 +488,7 @@
       "connection": "Bağlantı hatası",
       "createSession": "Oturum oluşturulamadı",
       "createTicket": "Bağlantı bileti oluşturulamadı",
+      "endSession": "Oturum sonlandırılamadı",
       "failed": "Bağlantı başarısız oldu",
       "initialize": "Başlatılamadı",
       "invalidTicket": "Geçersiz bağlantı bileti yanıtı",
@@ -507,8 +508,8 @@
     "welcome": "Hoş geldiniz"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Cihaz Bulunamadı Açıklama",
-    "deviceNotFoundTitle": "Cihaz Bulunamadı Başlığı",
+    "deviceNotFoundDescription": "Aradığınız cihaz mevcut değil veya erişiminiz yok.",
+    "deviceNotFoundTitle": "Cihaz bulunamadı",
     "errorTitle": "Hata Başlığı",
     "errors": {
       "deviceNotFound": "Cihaz bulunamadı",
@@ -635,8 +636,8 @@
     },
     "actionBlocked": "İşlem Engellendi",
     "adjustHint": "Aramanızı veya filtrelerinizi değiştirmeyi deneyin.",
-    "agentRestartConfirm": "Temsilciyi Yeniden Başlat Onayla",
-    "agentStopBlocked": "Temsilci Durdurma Engellendi",
+    "agentRestartConfirm": "Breeze temsilcisini yeniden başlatmak bu cihazın Breeze ile bağlantısını kısa süreliğine keser. Devam edilsin mi?",
+    "agentStopBlocked": "Breeze temsilcisi buradan durdurulamaz; durdurmak bu cihazın uzaktan yönetimini keser.",
     "allStatus": "Tüm Durumlar",
     "cannotStopAgent": "Temsilci Durdurulamıyor",
     "changeStartupType": "Başlangıç Türünü Değiştir",
@@ -703,7 +704,6 @@
       "disconnected": "Bağlantı Kesildi",
       "failed": "Başarısız",
       "pending": "Beklemede",
-      "endedByUser": "Kullanıcı tarafından sonlandırıldı",
       "teardownPending": "Sonlandırılıyor (cihaz bekleniyor)"
     },
     "subtitle": "Uzaktan erişim denetim günlüğü",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Ayrıntıları Görüntüle",
-    "yesterdayAt": "Dün {{time}}"
+    "yesterdayAt": "Dün {{time}}",
+    "endReasons": {
+      "endedByUser": "Kullanıcı tarafından sonlandırıldı",
+      "operatorEnded": "Bir teknisyen tarafından sonlandırıldı",
+      "viewerClosed": "Görüntüleyici kapatıldı",
+      "connectionLost": "Görüntüleyiciyle bağlantı kesildi",
+      "peerDisconnected": "Bağlantı kapatıldı",
+      "neverConnected": "Hiç bağlanmadı",
+      "superseded": "Daha yeni bir oturumla değiştirildi",
+      "captureFailed": "Ekran yakalama durdu",
+      "startFailed": "Başlatılamadı",
+      "consentDenied": "Onay reddedildi",
+      "accessRevoked": "Erişim iptal edildi",
+      "maxDuration": "Maksimum oturum süresine ulaşıldı",
+      "deviceRemoved": "Cihaz kaldırıldı veya yeniden yüklendi"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Ayrıntılar Başlığı",
@@ -732,7 +747,8 @@
       "started": "Başlatıldı",
       "userId": "Kullanıcı Kimliği",
       "os": "İşletim Sistemi",
-      "email": "E-posta"
+      "email": "E-posta",
+      "error": "Hata"
     },
     "sections": {
       "recording": "Kaydediliyor",
@@ -740,7 +756,6 @@
       "timeline": "Zaman Çizelgesi"
     },
     "subtitle": "Uzaktan erişim oturumlarını görüntüleyin ve denetleyin",
-    "endedByUser": "Kullanıcı tarafından sonlandırıldı",
     "teardownPending": "Cihaz onayı bekleniyor",
     "title": "Oturum Geçmişi",
     "viewDevice": "Cihazı Görüntüle",
@@ -833,18 +848,24 @@
     },
     "code": {
       "heading": "Bu kodu yardım ettiğiniz kişiye okuyun",
-      "shownOnce": "Bu kodu şimdi kopyalayın. Breeze yalnızca kodun bir özetini (hash) saklar; bu sayfadan ayrıldığınızda veya sayfayı yenilediğinizde kod kurtarılamaz — yeni bir oturum başlatmanız gerekir.",
+      "visibleWhilePending": "Kod, kişi kullanana veya süresi dolana kadar burada kalır. Yalnızca bir kez çalışır.",
       "expires": "Süresi {{time}} tarihinde doluyor",
+      "expiresIn": "Süresi {{time}} içinde doluyor",
+      "expired": "Bu kodun süresi doldu. Bu oturumu kullanmaya devam etmek için yeni bir kod oluşturun.",
       "instructions": "Onlara bağlantıyı gönderin, ardından indirilen istemciyi çalıştırıp kodu yazmalarını sağlayın.",
       "copyCode": "Kodu kopyala",
       "copyLink": "İndirme bağlantısını kopyala",
       "copiedCode": "Kod panoya kopyalandı",
       "copiedLink": "İndirme bağlantısı panoya kopyalandı",
-      "copyFailed": "Panoya kopyalanamadı"
+      "copyFailed": "Panoya kopyalanamadı",
+      "newCode": "Yeni kod",
+      "newCodeSubmitting": "Kod oluşturuluyor…",
+      "newCodeSuccess": "Yeni kod oluşturuldu. Önceki kod artık çalışmıyor.",
+      "newCodeError": "Yeni kod oluşturulamadı"
     },
     "detail": {
       "heading": "Oturum ayrıntısı",
-      "noCode": "Tek kullanımlık kod yalnızca bu oturum oluşturulduğunda gösterildi ve geri alınamıyor. Kişinin başka bir koda ihtiyacı varsa yeni bir oturum başlatın.",
+      "noCode": "Bu oturum için kod gösterilmiyor. Kişinin hâlâ koda ihtiyacı varsa yeni bir kod oluşturun.",
       "attribution": "Referans",
       "close": "Oturum ayrıntısını kapat"
     },

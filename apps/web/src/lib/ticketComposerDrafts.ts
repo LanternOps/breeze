@@ -17,6 +17,13 @@ export type TicketComposerMode = 'reply' | 'internal';
 export interface TicketComposerDraft {
   content: string;
   mode: TicketComposerMode;
+  /**
+   * File NAMES (never contents) of the attachments the draft had. Files cannot
+   * outlive the composer, so a restored draft uses these to tell the user which
+   * attachments to add again instead of posting without them silently. Cleared
+   * with the text on sign-out.
+   */
+  attachmentNames?: string[];
 }
 
 const draftsByKey = new Map<string, TicketComposerDraft>();

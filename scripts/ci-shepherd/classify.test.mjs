@@ -26,7 +26,7 @@ const ctxFor = (fx, history = empty) => ({
   requiredJobs,
 });
 const classify = (fx, history) => classifyRun(fx.facts, ctxFor(fx, history));
-const historyOf = (...names) => History.fromSightings(names.flatMap((n) => ingestRun(fixture(n).facts, { repo: REPO, repoRoot: REPO_ROOT })));
+const historyOf = (...names) => History.fromSightings(names.flatMap((n) => ingestRun(fixture(n).facts, { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() })));
 
 const PSA = 'src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner';
 
@@ -62,10 +62,10 @@ test('11338-psa-fail-fail: unknown on empty history; known_flake once other runs
   assert.equal(v.class, 'known_flake');
   assert.deepEqual(v.testIds, [PSA]);
   // Its own PR's non-queue runs never corroborate it, and neither does the run itself.
-  const self = ingestRun(fixture('psa-fail-pass').facts, { repo: REPO, repoRoot: REPO_ROOT }).map((s) => ({ ...s, pr: fx.source.pr, event: 'pull_request' }));
+  const self = ingestRun(fixture('psa-fail-pass').facts, { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() }).map((s) => ({ ...s, pr: fx.source.pr, event: 'pull_request' }));
   assert.equal(classify(fx, History.fromSightings(self)).class, 'unknown');
   // A sighting after the removal is not evidence at removal time.
-  const later = ingestRun(fixture('11312-web3-disjoint').facts, { repo: REPO, repoRoot: REPO_ROOT }).map((s) => ({ ...s, at: '2026-11-09T00:00:00Z' }));
+  const later = ingestRun(fixture('11312-web3-disjoint').facts, { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() }).map((s) => ({ ...s, at: '2026-11-09T00:00:00Z' }));
   assert.equal(classify(fx, History.fromSightings(later)).class, 'unknown');
 });
 
@@ -173,6 +173,45 @@ test('gate reason not_pinned → gate_fault; api_error → infra/gate_infra', ()
   assert.equal(classify(real).class, 'real');
 });
 
+// W05 (#10749): the thin queue's two failure shapes. In both the entry's own CI
+// is usually green (aggregate_only), which today would read as `unknown` and be
+// re-queued once. Neither is a test failure, and neither may be re-queued.
+test('gate reason thin_skip_unjustified → thin_fault/thin_skip_unjustified, outranking every job verdict', () => {
+  const fx = clone(fixture('synthetic-aggregate-only'));
+  fx.facts.gate = { verdict: 'fail', reason: 'thin_skip_unjustified:test-shared,test-web', run: 9, selection: { mode: 'full', reason: 'anchor_policy_in_p' } };
+  const v = classify(fx);
+  assert.deepEqual([v.class, v.signature, v.testIds, v.jobs], ['thin_fault', 'thin_skip_unjustified', [], []]);
+  assert.match(v.evidence.join('\n'), /^CI Gate reason thin_skip_unjustified:test-shared,test-web$/m);
+  assert.match(v.evidence.join('\n'), /selection mode=full reason=anchor_policy_in_p/);
+  // A gate too old to log a selection line still names the fault.
+  fx.facts.gate = { verdict: 'fail', reason: 'thin_skip_unjustified:test-shared', run: 9, selection: null };
+  assert.deepEqual([classify(fx).class, classify(fx).signature], ['thin_fault', 'thin_skip_unjustified']);
+  assert.match(classify(fx).evidence.join('\n'), /selection line missing or unparsed; shape unconfirmed/);
+  // A real failure beside it (a job the gate does not require) does not hide it.
+  const real = clone(fixture('synthetic-typecheck-dns'));
+  real.facts.jobs[0].failedStep = 'Run typecheck';
+  real.facts.jobs[0].logTail = 'error TS2322';
+  real.facts.gate = { verdict: 'fail', reason: 'thin_skip_unjustified:test-shared' };
+  assert.equal(classify(real).class, 'thin_fault');
+  // Only the exact reason counts: a lookalike is not one.
+  fx.facts.gate = { verdict: 'fail', reason: 'thin_skip_unjustified_soon' };
+  assert.equal(classify(fx).class, 'unknown');
+});
+
+test('a gate re-run that lost attempt 1\'s selection → thin_fault/attempt1_selection_missing; a red verdict is still judged by its jobs', () => {
+  const fx = clone(fixture('synthetic-aggregate-only'));
+  fx.facts.gate = { verdict: 'fail', reason: 'thin_skip_unjustified:test-web', run: 9, selection: { mode: 'full', reason: 'attempt1_selection_missing' } };
+  const v = classify(fx);
+  assert.deepEqual([v.class, v.signature], ['thin_fault', 'attempt1_selection_missing']);
+  assert.match(v.evidence.join('\n'), /attempt 1/);
+  // The fallback beside a red job: the entry failed on its own, so the jobs decide.
+  const real = clone(fixture('synthetic-typecheck-dns'));
+  real.facts.jobs[0].failedStep = 'Run typecheck';
+  real.facts.jobs[0].logTail = 'error TS2322';
+  real.facts.gate = { verdict: 'fail', reason: 'required_jobs_failed:typecheck', selection: { mode: 'full', reason: 'attempt1_selection_missing' } };
+  assert.equal(classify(real).class, 'real');
+});
+
 // ── Guards ───────────────────────────────────────────────────────────────
 
 const vitestJob = (over = {}) => ({
@@ -261,7 +300,7 @@ test('a failed job outside CI Success needs is ignored (Test Agent (race) does n
 });
 
 test('classifyRun takes the most severe job class and unions the test ids', () => {
-  assert.deepEqual(CLASSES, ['gate_fault', 'real', 'unknown', 'timeout', 'suspected_flake', 'known_flake', 'infra']);
+  assert.deepEqual(CLASSES, ['thin_fault', 'gate_fault', 'real', 'unknown', 'timeout', 'suspected_flake', 'known_flake', 'infra']);
   const flake = fixture('11312-web3-disjoint').facts.jobs.find((j) => j.label === 'web-3');
   const lost = fixture('11312-runner-lost').facts.jobs.find((j) => j.label === 'integration-11');
   const facts = { ...clone(fixture('11312-web3-disjoint').facts), jobs: [clone(lost), clone(flake)] };

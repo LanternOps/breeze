@@ -321,8 +321,15 @@ export const scriptExecutions = pgTable('script_executions', {
   // excluded from the device-move re-stamp path, so a real FK would outlive
   // its own tenant.
   aiAgentRunId: uuid('ai_agent_run_id'),
+  // #4342 W2: when the retention job removed stdout/stderr. NULL = never.
+  // The UI shows "output removed" for a set value instead of "no output".
+  outputPurgedAt: timestamp('output_purged_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
+  // #4342 W2: age scan for the script execution retention job.
+  terminalAgeIdx: index('script_executions_terminal_age_idx')
+    .on(sql`(COALESCE(${table.completedAt}, ${table.createdAt}))`)
+    .where(sql`status IN ('completed', 'failed', 'timeout', 'cancelled')`),
   proposalIdx: index('script_executions_proposal_idx')
     .on(table.proposalId)
     .where(sql`proposal_id IS NOT NULL`),

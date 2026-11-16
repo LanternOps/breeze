@@ -41,10 +41,14 @@ import {
   decodeUpstreamBody,
   deviceTargetOrigin,
   dispatchTunnelHttpRequest,
+  runTunnelRequestGates,
   type ReachableTunnel,
   signTunnelCookie,
   verifyTunnelCookie,
 } from './tunnelHttpCore';
+
+import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
+import { PERMISSIONS } from '../services/permissions';
 
 const TUNNEL_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const OTHER_TUNNEL = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
@@ -129,5 +133,25 @@ describe('tunnelHttpCore', () => {
       await dispatchTunnelHttpRequest(TUNNEL_ID, session, request);
       expect(selectWhereMock).toHaveBeenCalledWith({ op: 'eq', a: ['ts.id', TUNNEL_ID] });
     });
+  });
+});
+
+describe('per-request live authority', () => {
+  it('authorizes every proxied request through the shared tunnel continuation and stops on its denial', async () => {
+    vi.mocked(authorizeRemoteSessionContinuation).mockResolvedValueOnce({
+      ok: false, status: 403, reason: 'partner_trust_denied',
+    });
+    sendCommandMock.mockClear();
+    selectWhereMock.mockClear();
+
+    const result = await runTunnelRequestGates(TUNNEL_ID, USER_ID);
+
+    expect(result).toMatchObject({ ok: false, status: 403, reason: 'live_authority' });
+    expect(authorizeRemoteSessionContinuation).toHaveBeenCalledWith(
+      { sessionId: TUNNEL_ID, sessionType: 'tunnel', userId: USER_ID },
+      [PERMISSIONS.REMOTE_ACCESS, PERMISSIONS.DEVICES_EXECUTE],
+    );
+    expect(selectWhereMock).not.toHaveBeenCalled();
+    expect(sendCommandMock).not.toHaveBeenCalled();
   });
 });

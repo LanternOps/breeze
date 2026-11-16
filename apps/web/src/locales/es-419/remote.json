@@ -148,7 +148,7 @@
     "headingSingle": "¿Eliminar {{name}}?",
     "itemCount": "Cantidad de elementos",
     "moveToTrash": "Mover a la papelera",
-    "recycleBinNotice": "Aviso sobre la papelera de reciclaje",
+    "recycleBinNotice": "Al mover a la papelera, los elementos se pueden recuperar. La eliminación permanente no se puede deshacer.",
     "totalSize": "Total: {{size}}",
     "itemCount_one": "artículo {{count}}",
     "itemCount_other": "{{count}} elementos"
@@ -464,10 +464,10 @@
       "devices": "Dispositivos",
       "fileManager": "Gestor de archivos"
     },
-    "deviceNotFoundDescription": "Descripción del dispositivo no encontrado",
-    "deviceNotFoundTitle": "Título del dispositivo no encontrado",
+    "deviceNotFoundDescription": "El dispositivo que busca no existe o no tiene acceso a él.",
+    "deviceNotFoundTitle": "Dispositivo no encontrado",
     "deviceOfflineDescription": "El dispositivo es actualmente {{status}}. El acceso remoto a archivos solo está disponible cuando el dispositivo está en línea.",
-    "deviceOfflineTitle": "Título del dispositivo sin conexión",
+    "deviceOfflineTitle": "El dispositivo está sin conexión",
     "errorTitle": "Título del error",
     "errors": {
       "deviceNotFound": "Dispositivo no encontrado",
@@ -488,6 +488,7 @@
       "connection": "Error de conexión",
       "createSession": "No se pudo crear la sesión",
       "createTicket": "No se pudo crear el ticket de conexión",
+      "endSession": "No se pudo finalizar la sesión",
       "failed": "Conexión fallida",
       "initialize": "No se pudo inicializar",
       "invalidTicket": "Respuesta de ticket de conexión no válida",
@@ -507,8 +508,8 @@
     "welcome": "Bienvenido"
   },
   "remoteTerminalPage": {
-    "deviceNotFoundDescription": "Descripción del dispositivo no encontrado",
-    "deviceNotFoundTitle": "Título del dispositivo no encontrado",
+    "deviceNotFoundDescription": "El dispositivo que busca no existe o no tiene acceso a él.",
+    "deviceNotFoundTitle": "Dispositivo no encontrado",
     "errorTitle": "Título del error",
     "errors": {
       "deviceNotFound": "Dispositivo no encontrado",
@@ -635,8 +636,8 @@
     },
     "actionBlocked": "Acción bloqueada",
     "adjustHint": "Intente ajustar la búsqueda o los filtros.",
-    "agentRestartConfirm": "Reiniciar agente Confirmar",
-    "agentStopBlocked": "Agente detenido bloqueado",
+    "agentRestartConfirm": "Reiniciar el agente de Breeze desconectará brevemente este dispositivo de Breeze. ¿Continuar?",
+    "agentStopBlocked": "El agente de Breeze no se puede detener desde aquí: hacerlo cortaría la administración remota de este dispositivo.",
     "allStatus": "Todo el estado",
     "cannotStopAgent": "No se puede detener al agente",
     "changeStartupType": "Cambiar tipo de inicio",
@@ -703,7 +704,6 @@
       "disconnected": "Desconectado",
       "failed": "Fallido",
       "pending": "Pendiente",
-      "endedByUser": "Finalizada por el usuario",
       "teardownPending": "Finalizando (esperando al dispositivo)"
     },
     "subtitle": "Registro de auditoría de acceso remoto",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Ver detalles",
-    "yesterdayAt": "Ayer {{time}}"
+    "yesterdayAt": "Ayer {{time}}",
+    "endReasons": {
+      "endedByUser": "Finalizada por el usuario",
+      "operatorEnded": "Finalizada por un técnico",
+      "viewerClosed": "Visor cerrado",
+      "connectionLost": "Se perdió la conexión con el visor",
+      "peerDisconnected": "Conexión cerrada",
+      "neverConnected": "Nunca se conectó",
+      "superseded": "Reemplazada por una sesión más reciente",
+      "captureFailed": "La captura de pantalla se detuvo",
+      "startFailed": "No se pudo iniciar",
+      "consentDenied": "Consentimiento rechazado",
+      "accessRevoked": "Acceso revocado",
+      "maxDuration": "Se alcanzó la duración máxima de la sesión",
+      "deviceRemoved": "Dispositivo eliminado o reinstalado"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Detalles Título",
@@ -732,7 +747,8 @@
       "started": "Iniciado",
       "userId": "Usuario ID",
       "os": "OS",
-      "email": "Correo electrónico"
+      "email": "Correo electrónico",
+      "error": "Detalle del error"
     },
     "sections": {
       "recording": "Grabación",
@@ -740,7 +756,6 @@
       "timeline": "Línea de tiempo"
     },
     "subtitle": "Ver y auditar sesiones de acceso remoto",
-    "endedByUser": "Finalizada por el usuario",
     "teardownPending": "Esperando confirmación del dispositivo",
     "title": "Historial de sesiones",
     "viewDevice": "Ver dispositivo",
@@ -833,18 +848,24 @@
     },
     "code": {
       "heading": "Léale este código a la persona que está ayudando",
-      "shownOnce": "Copie este código ahora. Breeze solo almacena un hash del mismo, así que una vez que salga de esta página o la recargue no podrá recuperarlo: tendría que iniciar una nueva sesión.",
+      "visibleWhilePending": "El código permanece aquí hasta que la persona lo use o venza. Solo funciona una vez.",
       "expires": "Vence a las {{time}}",
+      "expiresIn": "Vence en {{time}}",
+      "expired": "Este código venció. Genere un código nuevo para seguir usando esta sesión.",
       "instructions": "Envíele el enlace, pídale que ejecute el cliente descargado y que escriba el código.",
       "copyCode": "Copiar código",
       "copyLink": "Copiar enlace de descarga",
       "copiedCode": "Código copiado al portapapeles",
       "copiedLink": "Enlace de descarga copiado al portapapeles",
-      "copyFailed": "No se pudo copiar al portapapeles"
+      "copyFailed": "No se pudo copiar al portapapeles",
+      "newCode": "Código nuevo",
+      "newCodeSubmitting": "Generando código…",
+      "newCodeSuccess": "Código nuevo generado. El código anterior ya no funciona.",
+      "newCodeError": "No se pudo generar un código nuevo"
     },
     "detail": {
       "heading": "Detalle de la sesión",
-      "noCode": "El código de un solo uso se mostró únicamente al crear esta sesión y no se puede recuperar. Inicie una sesión nueva si la persona necesita otro código.",
+      "noCode": "No se muestra ningún código para esta sesión. Genere un código nuevo si la persona todavía necesita uno.",
       "attribution": "Referencia",
       "close": "Cerrar el detalle de la sesión"
     },

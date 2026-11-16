@@ -92,6 +92,19 @@ describe('sentry service', () => {
     expect(setExtrasMock).not.toHaveBeenCalled();
   });
 
+  it('captureMessage groups under a fixed fingerprint when one is given, and sets none otherwise', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureMessage('portal directory run held', { eventCode: 'portal_directory_held', fingerprint: ['portal_directory_held'] });
+    expect(setFingerprintMock).toHaveBeenCalledWith(['portal_directory_held']);
+    setFingerprintMock.mockClear();
+
+    captureMessage('held a pooled connection', { eventCode: 'db_context_held_too_long' });
+    expect(setFingerprintMock).not.toHaveBeenCalled();
+  });
+
   it('captureMessage retains only bounded allowlisted tags', async () => {
     process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
     const { initSentry, captureMessage } = await import('./sentry');

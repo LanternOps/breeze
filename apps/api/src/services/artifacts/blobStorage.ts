@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { DeleteObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { tolerateUnparseableAbortDate } from '../guardedS3Client';
 import { Upload } from '@aws-sdk/lib-storage';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { breezeRegion } from '../../config/env';
@@ -249,15 +250,20 @@ function clientFor(region: BlobRegion): S3Client {
     );
   }
 
-  const client = new S3Client({
+  const client = tolerateUnparseableAbortDate(new S3Client({
     endpoint,
     region: envFor(region, 'REGION') ?? platformEnv('S3_REGION') ?? 'us-east-1',
     credentials: { accessKeyId, secretAccessKey },
     // Required for MinIO and other path-style S3-compatible providers.
     forcePathStyle: true,
-  });
+  }));
   clients.set(region, client);
   return client;
+}
+
+/** Test seam: the real per-region client (built from env, cached). */
+export function blobClientForTests(region: BlobRegion): S3Client {
+  return clientFor(region);
 }
 
 /** Drop the cached clients so a test (or a config reload) rebuilds them. */

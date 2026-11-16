@@ -967,7 +967,11 @@
       "script.delete": "Script eliminado",
       "automation.create": "Automatización creada",
       "automation.update": "Automatización actualizada",
-      "automation.delete": "Automatización eliminada"
+      "automation.delete": "Automatización eliminada",
+      "unifi.controller.register": "Controlador UniFi registrado",
+      "unifi.controller.remove": "Controlador UniFi eliminado",
+      "unifi.site.map": "Sitio UniFi asignado",
+      "unifi.site.unmap": "Asignación de sitio UniFi eliminada"
     },
     "resourceTypes": {
       "abuse_signal": "Señal de abuso",
@@ -1152,6 +1156,7 @@
       "policy": "Política",
       "portal_access_request": "Solicitud de acceso al portal",
       "portal_auth": "Inicio de sesión del portal",
+      "portal_directory_run": "Ejecución de directorio del portal",
       "portal_user": "Usuario del portal",
       "psa_connection": "Conexión de PSA",
       "psa_ticket_mapping": "Asignación de tickets PSA",

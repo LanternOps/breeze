@@ -255,9 +255,11 @@ while IFS= read -r path; do
     # aiAgentDiagnosisPrompt reads the whole agent/ tree, ...). The cross-area scan
     # in ci-area-gating.test.mjs (which walks agent/**/*.go too) proves the other
     # five areas read nothing under agent/.
-    # The two Go files the helper's Rust tests read (envelope.rs -> message.go,
-    # chat.rs -> chat.go; ci-area-gating re-derives this list) also set rust.
-    agent/internal/ipc/chat.go|agent/internal/ipc/message.go) api=true; agent_code=true; rust=true ;;
+    # The Go files the helper's Rust tests read (envelope.rs -> message.go,
+    # chat.rs -> chat.go) and its vitest identity-pin test (installIdentityPin.test.ts
+    # -> install_windows.go, broker.go); ci-area-gating re-derives this list. They also set rust.
+    agent/internal/ipc/chat.go|agent/internal/ipc/message.go|\
+    agent/internal/helper/install_windows.go|agent/internal/sessionbroker/broker.go) api=true; agent_code=true; rust=true ;;
     agent/*) api=true; agent_code=true ;;
     *) all_areas; agent_code=true ;;
   esac

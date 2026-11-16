@@ -5,7 +5,7 @@ import type { ImportedTicket } from '../../importedTicket';
  * The Zammad module's options (#8313 W5; spec 2026-10-19 §6.3, §6.5, §9
  * decisions 10 and 15), stored on the source and copied onto each run. They
  * hold no org or category id: those are the source's map tables (§5.5).
- * W4b adds the created-contacts option.
+ * W4b added the created-contacts option (§5.13, decision 25).
  */
 export const ZAMMAD_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
 /** importedTicket's final statuses (a type import keeps this file free of the writer's runtime). */
@@ -44,6 +44,21 @@ export const zammadOptionsSchema = z.object({
   timeAccountingNote: z.boolean().default(true),
   /** The note's unit label: which unit an instance's `time_unit` counts is unverified (§11). */
   timeUnitLabel: z.string().trim().min(1).max(32).regex(/^[^\u0000-\u001F\u007F]+$/u).default('minutes'),
+  /**
+   * "Create missing requester contacts" (W4b, spec §5.13, decision 25). Off,
+   * an import creates no contact (#8313 answer 3). On, a requester with an
+   * email and no single contact match in the target org is sent as
+   * `{ createContact }`, and the writer creates it in the ticket's header
+   * transaction. Turn it on before the bulk run: the requester is never
+   * re-applied on resume (§5.9).
+   */
+  createRequesterContacts: z.boolean().default(false),
+  /**
+   * Only with `createRequesterContacts`: create contacts only for tickets
+   * updated in the source on or after this UTC date (`YYYY-MM-DD`). Older
+   * tickets keep a display-only requester.
+   */
+  createRequesterContactsUpdatedSince: z.iso.date().optional(),
 }).strict();
 
 export type ZammadOptions = z.infer<typeof zammadOptionsSchema>;

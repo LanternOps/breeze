@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   validate: vi.fn(),
   consumeByHash: vi.fn(),
   resolvePolicy: vi.fn(),
+  verifiedDomains: vi.fn(),
   audit: vi.fn(),
   capture: vi.fn(),
   dbRows: { current: [] as unknown[] },
@@ -49,6 +50,7 @@ vi.mock('./capabilityTokens', async (importOriginal) => ({
   validatePortalCapability: h.validate,
   consumePortalCapabilityTokenByHash: h.consumeByHash,
 }));
+vi.mock('../../services/portalDomainVerification', () => ({ listVerifiedDomainsForOrg: h.verifiedDomains }));
 vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/portalAccessPolicy')>()),
   resolvePortalAccessPolicy: h.resolvePolicy,
@@ -102,6 +104,7 @@ import { portalRoutes } from './index';
 import { portalEntraProofRuns, portalOidcStates, portalRateLimitBuckets, portalSessions } from './helpers';
 import { createPortalEntraProofRun, peekPortalEntraProofRun } from '../../services/portalOidc/proofRunStore';
 import {
+  PortalAccessPolicyOrgNotFoundError,
   __testOnly as policyTestOnly,
   pickEffectivePortalAccessPolicy,
 } from '../../services/portalAccessPolicy';
@@ -150,7 +153,7 @@ function policyFor(orgId: string, mode: 'allowed' | 'sso_only' | 'both') {
   return {
     orgId, partnerId: 'p-1',
     entraTenant: proven ? { tenantId: TENANT, provenAt: '2027-01-23T10:00:00.000Z' } : null,
-    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven }),
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: proven, googleDomainVerified: false }),
   };
 }
 
@@ -161,6 +164,7 @@ beforeEach(() => {
   h.hostOrg.mockResolvedValue(null);
   h.audit.mockResolvedValue(undefined);
   h.resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
+  h.verifiedDomains.mockResolvedValue([]);
   portalOidcStates.clear();
   portalEntraProofRuns.clear();
   portalRateLimitBuckets.clear();
@@ -238,18 +242,77 @@ describe('GET /auth/methods', () => {
     for (const host of [undefined, 'breeze.example.test']) {
       const res = await app().request('/auth/methods', { headers: host ? { Host: host } : {} });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ password: true, microsoft: true });
+      expect(await res.json()).toEqual({ password: true, microsoft: true, requestAccess: false });
     }
     policyTestOnly.setCapabilities({ entra: false, google: false, selfRegistration: false });
-    expect(await (await app().request('/auth/methods')).json()).toEqual({ password: true, microsoft: false });
+    expect(await (await app().request('/auth/methods')).json()).toEqual({ password: true, microsoft: false, requestAccess: false });
     expect(h.resolvePolicy).not.toHaveBeenCalled();
+  });
+
+  it('/auth/methods: requestAccess is false on the shared host even when the capability is on', async () => {
+    // Decision B (2026-11-11, spec §5.9): the shared host never shows Request
+    // access. Only a verified custom portal domain whose org has the mode on
+    // does. The /request-access page still works by direct URL (uniform 200).
+    policyTestOnly.setCapabilities({ entra: true, google: false, selfRegistration: true });
+    for (const host of [undefined, 'breeze.example.test']) {
+      const res = await app().request('/auth/methods', { headers: host ? { Host: host } : {} });
+      expect(await res.json()).toEqual({ password: true, microsoft: true, requestAccess: false });
+    }
+    // Nothing about any org or domain is read on the shared host — no
+    // deployment-wide "does any org use it" read either.
+    expect(h.resolvePolicy).not.toHaveBeenCalled();
+    expect(h.verifiedDomains).not.toHaveBeenCalled();
+  });
+
+  it('/auth/methods: an unknown org behind a custom host falls back to the shared answer (no Request access)', async () => {
+    policyTestOnly.setCapabilities({ entra: true, google: false, selfRegistration: true });
+    h.hostOrg.mockResolvedValue(ORG);
+    h.resolvePolicy.mockRejectedValue(new PortalAccessPolicyOrgNotFoundError(ORG));
+    const res = await app().request('/auth/methods', { headers: { Host: 'portal.acme.test' } });
+    expect(await res.json()).toEqual({ password: true, microsoft: true, requestAccess: false });
+  });
+
+  it('/auth/methods: on a custom host, requestAccess needs mode != off and a verified domain', async () => {
+    policyTestOnly.setCapabilities({ entra: true, google: false, selfRegistration: true });
+    const caps = { entra: true, google: false, selfRegistration: true };
+    const withMode = (mode: 'off' | 'approval' | 'instant') => ({
+      orgId: ORG, partnerId: 'p-1', entraTenant: null,
+      ...pickEffectivePortalAccessPolicy({ ...NO_ROW, selfRegistrationMode: mode }, null, caps, { entraTenantProven: false, googleDomainVerified: false }),
+    });
+    h.hostOrg.mockImplementation(async (host: string) => (host === 'portal.acme.test' ? ORG : null));
+    const ask = async () => (await (await app().request('/auth/methods', { headers: { Host: 'portal.acme.test' } })).json()) as { requestAccess: boolean };
+
+    h.resolvePolicy.mockResolvedValue(withMode('approval'));
+    h.verifiedDomains.mockResolvedValue([{ domain: 'acme.example.com', orgId: ORG }]);
+    expect((await ask()).requestAccess).toBe(true);
+    expect(h.verifiedDomains).toHaveBeenCalledWith(ORG);
+
+    h.resolvePolicy.mockResolvedValue(withMode('instant'));
+    expect((await ask()).requestAccess).toBe(true);
+
+    h.verifiedDomains.mockResolvedValue([]);
+    expect((await ask()).requestAccess).toBe(false);
+
+    h.verifiedDomains.mockClear();
+    h.verifiedDomains.mockResolvedValue([{ domain: 'acme.example.com', orgId: ORG }]);
+    h.resolvePolicy.mockResolvedValue(withMode('off'));
+    expect((await ask()).requestAccess).toBe(false);
+    expect(h.verifiedDomains).not.toHaveBeenCalled();
+
+    // Capability off: the effective mode is masked to off whatever the row says.
+    policyTestOnly.setCapabilities({ entra: true, google: false, selfRegistration: false });
+    h.resolvePolicy.mockResolvedValue({
+      orgId: ORG, partnerId: 'p-1', entraTenant: null,
+      ...pickEffectivePortalAccessPolicy({ ...NO_ROW, selfRegistrationMode: 'instant' }, null, { ...caps, selfRegistration: false }, { entraTenantProven: false, googleDomainVerified: false }),
+    });
+    expect((await ask()).requestAccess).toBe(false);
   });
 
   it('a verified custom domain answers with that org\'s policy, keyed by the Host header without its port', async () => {
     h.hostOrg.mockImplementation(async (host: string) => (host === 'portal.acme.test' ? ORG : null));
     h.resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
     const res = await app().request('/auth/methods?host=other.test', { headers: { Host: 'Portal.Acme.Test:8443' } });
-    expect(await res.json()).toEqual({ password: false, microsoft: true });
+    expect(await res.json()).toEqual({ password: false, microsoft: true, requestAccess: false });
     expect(h.hostOrg).toHaveBeenCalledWith('portal.acme.test');
     expect(h.resolvePolicy).toHaveBeenCalledWith(ORG);
   });
@@ -452,6 +515,14 @@ describe('link routes (mounted behind the portal session in index.ts)', () => {
     res = await portal().request('/auth/oidc/entra/link-status', { headers: { Authorization: 'Bearer good-session' } });
     expect((await res.json() as { available: boolean }).available).toBe(false);
   });
+
+  it('link status reports a disabled provider as disabled, not linked (W8 D3)', async () => {
+    h.resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'both'));
+    h.dbRows.current = [{ id: 'identity-1', disabledAt: new Date('2027-01-31T00:00:00.000Z') }];
+    const res = await portal().request('/auth/oidc/entra/link-status', { headers: { Authorization: 'Bearer good-session' } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ available: true, linked: false, disabled: true });
+  });
 });
 
 describe('GET /auth/oidc/entra/callback', () => {
@@ -609,6 +680,24 @@ describe('GET /auth/oidc/entra/callback', () => {
     'org_unresolved', 'host_mismatch', 'org_unavailable', 'method_off', 'identity_other_org', 'identity_conflict',
     'account_inactive', 'invited_only', 'invite_invalid', 'link_invalid', 'requests_capped', 'no_address',
   ];
+
+  it('request_conflict (W7 D9) lands on its own result code with no provider parameter; the reason is audited as a denial', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { res } = await signInWith({ kind: 'denied', reason: 'request_conflict', orgId: ORG });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe(`${PORTAL}/login?sso=request_pending`);
+      expectClearsBinding(res);
+      expect(portalSessions.size).toBe(0);
+      expect(h.audit).toHaveBeenCalledTimes(1);
+      expect(h.audit.mock.calls[0]![1]).toMatchObject({
+        action: 'portal.auth.oidc.login', result: 'failure', orgId: ORG,
+        details: { provider: 'entra', outcome: 'denied', reason: 'request_conflict' },
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
   it.each(DENY_REASONS)('callback maps every denied reason to the same redirect and writes the reason only to audit (%s)', async (reason) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

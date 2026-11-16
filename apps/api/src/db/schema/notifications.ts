@@ -63,5 +63,10 @@ export const userNotifications = pgTable('user_notifications', {
   // used here). The migration's index is what makes `dedupeKey` enforceable.
   userDedupeKeyUq: uniqueIndex('user_notifications_user_dedupe_key_uq')
     .on(table.userId, table.dedupeKey)
-    .where(sql`${table.dedupeKey} IS NOT NULL`)
+    .where(sql`${table.dedupeKey} IS NOT NULL`),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): read-notification
+  // age scan (jobs/historyRetention/accessHistory.ts).
+  readAtIdx: index('user_notifications_read_at_idx')
+    .on(table.readAt)
+    .where(sql`${table.read} = true`)
 }));

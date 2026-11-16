@@ -13,6 +13,12 @@ import { hypervOptionsSchema, isAbsoluteRebuildPath } from '../../services/bareM
 import { BACKUP_HEALTH_MAX_LIMIT } from '../../services/backupHealthCursor';
 // Pool-free leaf (secretCrypto only).
 import { findCiphertextShapedValue } from '../../services/backupProviderConfigSealing';
+import {
+  isSupportedLocalStorePath,
+  localDestinationTargetError,
+  LOCAL_STORE_PATH_UNSUPPORTED_MESSAGE,
+  SMB_VAULT_UNSUPPORTED_MESSAGE,
+} from '../../services/localStoreTargets';
 
 const queryBoolean = z.preprocess((value) => {
   if (typeof value === 'boolean') return value;
@@ -163,6 +169,10 @@ export const configSchema = z.object({
     { message: DETAILS_IN_STORED_FORMAT_MESSAGE }
   ).optional()
 }).superRefine((data, ctx) => {
+  const targetError = localDestinationTargetError(data.provider, data.details);
+  if (targetError) {
+    ctx.addIssue({ code: 'custom', message: targetError, path: ['details', 'path'] });
+  }
   if (data.provider !== 's3') return;
   const { error } = validateS3Details(data.details ?? {});
   if (error) {
@@ -731,18 +741,27 @@ export const drExecutionsQuerySchema = z.object({
 
 // ── Local vault schemas ─────────────────────────────────────────────────────
 
+// SMB share vaults and vaults on a network share are not supported (see
+// services/localStoreTargets.ts); the vault service refuses them as well.
+const vaultTypeSchema = z.enum(['local', 'usb'], {
+  error: (issue) => (issue.input === 'smb' ? SMB_VAULT_UNSUPPORTED_MESSAGE : undefined),
+});
+
 export const vaultCreateSchema = z.object({
   deviceId: z.string().guid(),
   vaultPath: z.string().min(1).max(1024)
     .refine(val => !val.includes('..'), { message: 'Path traversal not allowed' })
-    .refine(val => !val.includes('\0'), { message: 'Null bytes not allowed in path' }),
-  vaultType: z.enum(['local', 'smb', 'usb']).default('local'),
+    .refine(val => !val.includes('\0'), { message: 'Null bytes not allowed in path' })
+    .refine(val => isSupportedLocalStorePath(val), { message: LOCAL_STORE_PATH_UNSUPPORTED_MESSAGE }),
+  vaultType: vaultTypeSchema.default('local'),
   retentionCount: z.number().int().min(1).max(100).default(3),
 });
 
 export const vaultUpdateSchema = z.object({
-  vaultPath: z.string().min(1).max(1024).optional(),
-  vaultType: z.enum(['local', 'smb', 'usb']).optional(),
+  vaultPath: z.string().min(1).max(1024)
+    .refine(val => isSupportedLocalStorePath(val), { message: LOCAL_STORE_PATH_UNSUPPORTED_MESSAGE })
+    .optional(),
+  vaultType: vaultTypeSchema.optional(),
   retentionCount: z.number().int().min(1).max(100).optional(),
   isActive: z.boolean().optional(),
 });

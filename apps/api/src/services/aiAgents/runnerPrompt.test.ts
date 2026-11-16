@@ -1400,7 +1400,7 @@ function patchEvidenceFixture(title = 'Cumulative Update KB5041234') {
     rollup: {
       devicesTotal: 12, devicesNonCompliant: 3, devicesCompliant: 9, outstandingPatches: 5,
       outstandingBySeverity: { critical: 2, important: 2, moderate: 1, low: 0, unrated: 0 },
-      oldestOutstandingDays: 45, snapshot: null,
+      oldestOutstandingDays: 45,
     },
     sections: {
       ringPosture: { rows: [{ deviceId: null, hostname: null, fields: { name: 'Pilot', autoApprove: 'off', heldByDeferral: null } }], total: 1 },
@@ -1460,7 +1460,7 @@ describe('patch profile prompts (AI patch agent W01)', () => {
       rollup: {
         devicesTotal: 12, devicesNonCompliant: 3, devicesCompliant: 9, outstandingPatches: 5,
         outstandingBySeverity: { critical: 2, important: 2, moderate: 1, low: 0, unrated: 0 },
-        oldestOutstandingDays: 45, snapshot: null,
+        oldestOutstandingDays: 45,
       },
       sections: {
         ringPosture: { rows: [], total: 0 },

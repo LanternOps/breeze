@@ -23,6 +23,7 @@ import {
   PORTAL_USE_REDIS,
   PORTAL_REDIS_KEYS,
   PORTAL_INVITE_TOKEN_CAP,
+  PORTAL_SELF_REGISTER_TOKEN_CAP,
 } from './schemas';
 import {
   capMapByOldest,
@@ -47,6 +48,8 @@ export const portalSessions = new Map<string, PortalSession>();
 export type PortalTokenEntry = { payload: string; expiresAt: Date; createdAt: Date };
 export const portalResetTokens = new Map<string, PortalTokenEntry>();
 export const portalInviteTokens = new Map<string, PortalTokenEntry>();
+/** Self-registration links (W6, plan D8); same entry shape, 30-minute expiry. */
+export const portalSelfRegisterTokens = new Map<string, PortalTokenEntry>();
 /**
  * In-memory twins (Redis off) of the portal OIDC flow state and the Entra
  * tenant proof-run links (W4), keyed by the sha256 of the raw value, the same
@@ -346,7 +349,7 @@ export function sweepPortalState(nowMs: number = Date.now()) {
     }
   }
 
-  for (const map of [portalOidcStates, portalEntraProofRuns]) {
+  for (const map of [portalOidcStates, portalEntraProofRuns, portalSelfRegisterTokens]) {
     for (const [hash, entry] of map.entries()) {
       if (entry.expiresAt.getTime() <= nowMs) {
         map.delete(hash);
@@ -359,6 +362,7 @@ export function sweepPortalState(nowMs: number = Date.now()) {
   capMapByOldest(portalInviteTokens, PORTAL_INVITE_TOKEN_CAP, (token) => token.createdAt.getTime());
   capMapByOldest(portalOidcStates, PORTAL_OIDC_STATE_CAP, (entry) => entry.createdAt.getTime());
   capMapByOldest(portalEntraProofRuns, PORTAL_ENTRA_PROOF_RUN_CAP, (entry) => entry.createdAt.getTime());
+  capMapByOldest(portalSelfRegisterTokens, PORTAL_SELF_REGISTER_TOKEN_CAP, (entry) => entry.createdAt.getTime());
 }
 
 // ============================================

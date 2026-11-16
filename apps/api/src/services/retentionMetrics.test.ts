@@ -176,6 +176,31 @@ describe('retention/rollup job metrics', () => {
     expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'webhook_delivery_retention' })).toBe(12);
   });
 
+  // #4342 W6.c review: a report-only count that hit its statement timeout.
+  // Yesterday's eligible count must not keep reading as current, and the
+  // timeout must be visible without a log search.
+  it('flags a timed-out count as unavailable and drops the stale eligible count', async () => {
+    recordRetentionRun('audit_baseline_result_retention', { rowsEligible: 40 });
+    recordRetentionRun('audit_baseline_result_retention', { countUnavailable: true });
+
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_count_unavailable'), { job_name: 'audit_baseline_result_retention' })).toBe(1);
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'audit_baseline_result_retention' })).toBeUndefined();
+    // Not a backlog: nothing tried to delete.
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_backlog_incomplete'), { job_name: 'audit_baseline_result_retention' })).toBeUndefined();
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_last_run_timestamp_seconds'), { job_name: 'audit_baseline_result_retention' })).toBeGreaterThan(0);
+
+    // The next count that completes clears the flag.
+    recordRetentionRun('audit_baseline_result_retention', { rowsEligible: 41 });
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_count_unavailable'), { job_name: 'audit_baseline_result_retention' })).toBeUndefined();
+    expect(valueFor(await samplesFor(registry, 'breeze_retention_rows_eligible'), { job_name: 'audit_baseline_result_retention' })).toBe(41);
+  });
+
+  it('publishes no count-unavailable series until a count times out', async () => {
+    recordRetentionRun('audit_retention', { rowsEligible: 5 });
+    recordRetentionRun('audit_retention', { rowsDeleted: 5 });
+    expect(await samplesFor(registry, 'breeze_retention_count_unavailable')).toHaveLength(0);
+  });
+
   it('publishes no rows-eligible series until a report run supplies one', async () => {
     recordRetentionRun('audit_retention', { rowsDeleted: 5 });
     expect(await samplesFor(registry, 'breeze_retention_rows_eligible')).toHaveLength(0);

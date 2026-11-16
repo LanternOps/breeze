@@ -12,7 +12,8 @@ import { REPO_ROOT, main, parseArgs, renderReplay, replay, trimFacts } from './s
 const REPO = 'LanternOps/breeze';
 const ciYml = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8'));
-const ingest = (facts) => ingestRun(facts, { repo: REPO, repoRoot: REPO_ROOT });
+// An empty change set: nothing the run tested was touched by its change.
+const ingest = (facts) => ingestRun(facts, { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() });
 
 // Recorded from the API on 2026-11-08. `real-interaction` is #10287's queue
 // failure on a test it touched (run 40753125135); date-bomb-1/2 are the two
@@ -80,6 +81,32 @@ test('ingestRun drops fork runs', () => {
   assert.deepEqual(ingest(facts), []);
   facts.run.headRepo = null;
   assert.deepEqual(ingest(facts), []);
+});
+
+test('ingestRun drops sightings of tests the change touched, and every sighting when the change is unknown', () => {
+  const facts = fixture('11312-web3-disjoint').facts;
+  const all = ingest(facts);
+  assert.ok(all.length > 0);
+  const psa = all[0];
+  const without = (changed) => ingestRun(facts, { repo: REPO, repoRoot: REPO_ROOT, changed }).filter((s) => s.id === psa.id);
+  assert.equal(without(new Set(['docs/a.md'])).length, 1, 'an unrelated change keeps it');
+  assert.deepEqual(without(new Set([psa.file])), [], 'the test file itself');
+  assert.deepEqual(without(new Set(['apps/web/src/components/psa/PsaConnectionsPage.tsx'])), [], 'its sibling source');
+  // Cannot tell what the change touched: treated as touched.
+  assert.deepEqual(ingestRun(facts, { repo: REPO, repoRoot: REPO_ROOT, changed: null }), []);
+  assert.deepEqual(ingestRun(facts, { repo: REPO, repoRoot: REPO_ROOT }), []);
+});
+
+test('a migration-only or db-only change counts as touching every integration test', () => {
+  const IT = 'src/__tests__/integration/devices.integration.test.ts > devices > lists';
+  const facts = {
+    run: { id: 77, attempt: 1, headRepo: REPO, event: 'pull_request', pr: 900, headSha: 'e'.repeat(40), updatedAt: '2026-11-14T10:00:00Z' },
+    jobs: [{ name: 'Integration Tests (shard 1/16)', runner: 'vitest', label: 'integration-1', completedAt: '2026-11-14T10:00:00Z', report: { schema: 2, flaky: [], first: { failures: [IT] }, second: { failures: [IT] } } }],
+  };
+  const of = (files) => ingestRun(facts, { repo: REPO, repoRoot: REPO_ROOT, changed: new Set(files) });
+  assert.deepEqual(of(['docs/a.md']).map((s) => [s.runner, s.kind, s.untouched]), [['vitest-integration', 'fail_fail', true]]);
+  assert.deepEqual(of(['apps/api/migrations/2026-11-14-000000-x.sql']), []);
+  assert.deepEqual(of(['apps/api/src/db/schema/devices.ts']), []);
 });
 
 test('duplicate sightings collapse', () => {

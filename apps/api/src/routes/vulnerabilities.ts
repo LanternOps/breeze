@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, gt, ilike, inArray, lte, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, ilike, inArray, lte, sql, type SQL } from 'drizzle-orm';
 
 import {
   VULN_STATUS_FILTERS,
@@ -398,7 +398,8 @@ async function readCatalogRows(
 
   const conditions: SQL[] = [inArray(vulnerabilities.id, vulnerabilityIds)];
   if (filters.severity) {
-    conditions.push(eq(vulnerabilities.severity, filters.severity));
+    // Feeds historically stored mixed case ('CRITICAL', 'Critical'); compare case-insensitively (#11902).
+    conditions.push(sql`lower(${vulnerabilities.severity}) = ${filters.severity.toLowerCase()}`);
   }
   if (filters.cve) {
     conditions.push(ilike(vulnerabilities.cveId, `%${filters.cve}%`));

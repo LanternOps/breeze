@@ -346,12 +346,11 @@ func (c *Console) runRecovery(ctx context.Context, ci bool, answers Answers, ser
 	}
 
 	baseOpts := rebuild.Options{
-		SnapshotID:          snapshotID,
-		Provider:            provider,
-		Target:              rebuild.Target{Kind: rebuild.TargetDisk, Path: disk.Path},
-		Identity:            identity,
-		Marker:              marker,
-		RegenerateInitramfs: true,
+		SnapshotID: snapshotID,
+		Provider:   provider,
+		Target:     rebuild.Target{Kind: rebuild.TargetDisk, Path: disk.Path},
+		Identity:   identity,
+		Marker:     marker,
 		// #5412: a system_image snapshot (or one advertising a state
 		// manifest) must apply its OS state; the engine refuses at
 		// preflight when it is missing rather than completing files-only.

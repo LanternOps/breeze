@@ -35,3 +35,12 @@ func TestAppxStackAvailable(t *testing.T) {
 		t.Fatal("want unavailable")
 	}
 }
+
+func TestBuildProvisionArgsQuotesPaths(t *testing.T) {
+	args := buildProvisionArgs("C:\\Users\\O\u2019Brien\\app.msixbundle", `C:\it's\app.xml`, []string{"C:\\\u2018a\u2019\\vclibs.appx"})
+	want := "Add-AppxProvisionedPackage -Online -PackagePath 'C:\\Users\\O\u2019\u2019Brien\\app.msixbundle' " +
+		"-LicensePath 'C:\\it''s\\app.xml' -DependencyPackagePath 'C:\\\u2018\u2018a\u2019\u2019\\vclibs.appx'"
+	if got := args[len(args)-1]; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+}

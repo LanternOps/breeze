@@ -291,7 +291,10 @@ export const listTicketsQuerySchema = z.object({
   // Omitted/any other value returns live tickets (deleted rows excluded).
   deleted: z.enum(['only']).optional(),
   // #8972: merged tombstones are hidden unless `showMerged=true`.
-  showMerged: z.enum(['true', 'false']).transform((v) => v === 'true').optional()
+  showMerged: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
+  // #8313: `imported=true` lists only tickets a migration window imported
+  // (migration_window_id set, served by idx_tickets_migration_window).
+  imported: z.enum(['true', 'false']).transform((v) => v === 'true').optional()
 });
 
 export const ticketCategoryInputSchema = z.object({

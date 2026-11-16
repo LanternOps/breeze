@@ -1263,6 +1263,39 @@
     },
     "troubleshootingLink": "Sorun giderme kılavuzu"
   },
+  "failureCause": {
+    "storage_access_denied": {
+      "hint": "Yedekleme hedefi isteği reddetti. Erişim anahtarının geçerli olduğunu ve yazma yetkisi bulunduğunu, bucket ilkesini ve depolama hesabının durumunu kontrol edin, ardından bağlantıyı test edin."
+    },
+    "storage_not_found": {
+      "hint": "Yedekleme hedefi, bucket'ın veya nesnelerinin bulunmadığını bildiriyor. Bucket'ın hâlâ var olduğunu ve hiçbir yaşam döngüsü kuralının yedek verilerini silmediğini kontrol edin."
+    },
+    "storage_clock_skew": {
+      "hint": "Yedekleme hedefi isteğin zamanını reddetti; bu genellikle saatin çok yanlış olduğu anlamına gelir. Cihazın tarih ve saatini kontrol edin."
+    },
+    "storage_operation_failed": {
+      "hint": "Breeze, hedefle bir depolama işlemini tamamlayamadı. Bu genellikle geçicidir veya sağlayıcı uyumsuzluğundan kaynaklanır. Sorun devam ederse destek ekibiyle iletişime geçin."
+    },
+    "storage_session_expired": {
+      "hint": "Yükleme oturumu çalıştırma bitmeden sona erdi. Sonraki çalıştırma, bunun kaldığı yerden devam eder."
+    },
+    "helper_stopped": {
+      "hint": "Cihazdaki yedekleme işlemi çalıştırmanın ortasında durduruldu; bu genellikle cihazın uyku moduna geçmesi, yeniden başlaması veya kapanması nedeniyle olur. Yedekleme penceresi boyunca cihazı uyanık ve açık tutun."
+    },
+    "run_cancelled_on_device": {
+      "hint": "Çalıştırma cihazda kesintiye uğradı; bu genellikle yeniden başlatma veya kapatma nedeniyle olur."
+    },
+    "never_started": {
+      "hint": "Cihaz bu çalıştırmayı hiç başlatmadı; bu genellikle başka bir yedeklemenin hâlâ sürmesi veya aracının yeniden başlamasından kaynaklanır."
+    },
+    "no_agent_signal": {
+      "hint": "Breeze, çalıştırma sırasında cihazdan haber alamaz oldu."
+    },
+    "destination": {
+      "title": "{{name}}: son yedekleme {{total}} cihazın {{failing}} tanesinde başarısız oldu",
+      "link": "Bağlantıyı test etmek için yedekleme profillerini açın"
+    }
+  },
   "fullRunReason": {
     "no_prior_snapshot": "Bu cihaz ve hedef için ilk yedekleme",
     "base_expired": "Önceki yedeklemenin saklama süresi dolmuştu",

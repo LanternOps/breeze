@@ -133,6 +133,35 @@ describe('WispPost', () => {
     expect(screen.getByTestId('wisp-post-title').textContent).toBe('FS-01 troubleshooting');
   });
 
+  it('#11673: a markdown run report renders bold, lists and code, with no literal ** or backticks', () => {
+    const body = '**Verdict:** spooler crashes.\n\n- **Memory:** 92% at crash\n- Driver `hpcpp.dll` faulted\n\n**Next step:** collect a dump.';
+    render(<WispPost post={post({ kind: 'specialist_result', bodyFormat: 'markdown', body, link: '/ai-agents/runs/r-1', concernId: null })} />);
+    const el = screen.getByTestId('wisp-post-body');
+    expect(el.textContent).not.toContain('**');
+    expect(el.textContent).not.toContain('`');
+    expect(el.textContent).toContain('Next step: collect a dump.');
+    expect(Array.from(el.querySelectorAll('strong')).map((n) => n.textContent)).toEqual(['Verdict:', 'Memory:', 'Next step:']);
+    expect(el.querySelectorAll('li')).toHaveLength(2);
+    expect(el.querySelector('code')?.textContent).toBe('hpcpp.dll');
+  });
+
+  it('#11673: a markdown body renders no raw HTML and no unsafe link', () => {
+    const body = 'See <img src=x onerror="alert(1)"> and [this](javascript:alert(1)) and [docs](https://example.com/a).';
+    render(<WispPost post={post({ kind: 'specialist_result', bodyFormat: 'markdown', body, link: null, concernId: null })} />);
+    const el = screen.getByTestId('wisp-post-body');
+    expect(el.querySelector('img')).toBeNull();
+    const links = Array.from(el.querySelectorAll('a'));
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://example.com/a']);
+    expect(el.textContent).toContain('this');
+  });
+
+  it('#11673: a body without bodyFormat stays literal text (a step outcome, every other post)', () => {
+    render(<WispPost post={post({ kind: 'specialist_result', body: 'Approved step ran: **restart** `spooler`', link: null, concernId: null })} />);
+    const el = screen.getByTestId('wisp-post-body');
+    expect(el.textContent).toBe('Approved step ran: **restart** `spooler`');
+    expect(el.querySelector('strong')).toBeNull();
+  });
+
   it.each(['https://evil.example/x', '//evil', 'javascript:alert(1)', null])(
     'renders no link for unsafe link %s',
     (link) => {

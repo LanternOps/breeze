@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { rateLimiter } from '../services/rate-limit';
 
 const { redisState } = vi.hoisted(() => {
   // A minimal SET NX EX / DEL store standing in for Redis in the webhook replay guard.
@@ -31,6 +32,8 @@ const { permissionGate, mfaGate, permsState, authState } = vi.hoisted(() => ({
     accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'] as string[],
   },
 }));
+
+vi.mock('../services/rate-limit', () => ({ rateLimiter: vi.fn().mockResolvedValue({ allowed: true }) }));
 
 vi.mock('../db', () => ({
   db: {
@@ -213,6 +216,7 @@ describe('huntress routes', () => {
     vi.clearAllMocks();
     redisState.store.clear();
     redisState.available = true;
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as any);
     permissionGate.deny = false;
     mfaGate.deny = false;
     permsState.permissions = undefined;
@@ -349,7 +353,7 @@ describe('huntress routes', () => {
 
     expect(res.status).toBe(401);
     const body = await res.json();
-    expect(String(body.error)).toContain('signature');
+    expect(body.error).toBe('Webhook authentication failed');
   });
 
   it('treats a non-UUID integration header as absent and returns the no-integration response', async () => {
@@ -363,9 +367,9 @@ describe('huntress routes', () => {
       body: JSON.stringify({}),
     });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(401);
     expect(await res.json()).toEqual({
-      error: 'No active Huntress integration found for webhook payload',
+      error: 'Webhook authentication failed',
     });
     expect(db.select).not.toHaveBeenCalled();
     expect(findHuntressIntegrationByAccount).toHaveBeenCalledWith('acct-123');
@@ -397,7 +401,38 @@ describe('huntress routes', () => {
 
     expect(res.status).toBe(401);
     const body = await res.json();
-    expect(String(body.error)).toContain('timestamp');
+    expect(body.error).toBe('Webhook authentication failed');
+  });
+
+  it('refuses a malformed account id with the generic 401, before any lookup, and logs why', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await app.request('/huntress/webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-huntress-account-id': 'not a valid id' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Webhook authentication failed' });
+      expect(findHuntressIntegrationByAccount).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith('[huntress] Webhook authentication refused', expect.objectContaining({ reason: 'invalid_account_id' }));
+    } finally { warn.mockRestore(); }
+  });
+
+  it('logs which integration lookup failed behind the generic 401', async () => {
+    vi.mocked(findHuntressIntegrationByAccount).mockResolvedValueOnce({ status: 'ambiguous' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await app.request('/huntress/webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-huntress-account-id': 'acct-123' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(401);
+      expect(warn).toHaveBeenCalledWith('[huntress] Webhook authentication refused',
+        { reason: 'integration_unavailable', detail: 'ambiguous' });
+    } finally { warn.mockRestore(); }
   });
 
   it('rejects webhook accountId routing when multiple integrations match', async () => {
@@ -412,9 +447,9 @@ describe('huntress routes', () => {
       body: JSON.stringify({}),
     });
 
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(401);
     const body = await res.json();
-    expect(String(body.error)).toContain('integrationId');
+    expect(body.error).toBe('Webhook authentication failed');
   });
 
   it('rejects explicit integrationId when the payload accountId belongs to another Huntress account', async () => {
@@ -441,9 +476,38 @@ describe('huntress routes', () => {
       body: JSON.stringify({ accountId: 'acct-other' }),
     });
 
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(401);
     const body = await res.json();
-    expect(String(body.error)).toContain('account');
+    expect(body.error).toBe('Webhook authentication failed');
+  });
+
+  it('meters delivery before body parsing and integration lookup', async () => {
+    vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false } as any);
+    const read = vi.spyOn(Request.prototype, 'text');
+    try {
+      const res = await app.request('/huntress/webhook', { method: 'POST', body: '{}' });
+      expect(res.status).toBe(429);
+      expect(res.headers.get('Retry-After')).toBe('60');
+      expect(read).not.toHaveBeenCalled();
+      expect(db.select).not.toHaveBeenCalled();
+      expect(findHuntressIntegrationByAccount).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
+  });
+
+  it('accepts a signed delivery', async () => {
+    vi.mocked(findHuntressIntegrationByAccount).mockResolvedValueOnce({ status: 'single', integration: {
+      id: '33333333-3333-4333-8333-333333333333', partnerId: 'partner-1', accountId: 'acct-123',
+      webhookSecretEncrypted: 'enc:webhook',
+    } } as any);
+    const body = JSON.stringify({ accountId: 'acct-123' });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const res = await app.request('/huntress/webhook', { method: 'POST', body, headers: {
+      'Content-Type': 'application/json',
+      'x-huntress-timestamp': timestamp,
+      'x-huntress-signature': buildHuntressWebhookSignature('webhook-secret', body, timestamp),
+    } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).accepted).toBe(true);
   });
 
   describe('POST /webhook Standard Webhooks deliveries (#10335)', () => {
@@ -502,7 +566,7 @@ describe('huntress routes', () => {
         });
 
         expect(res.status).toBe(401);
-        expect(await res.json()).toEqual({ error: 'Invalid Huntress webhook signature' });
+        expect(await res.json()).toEqual({ error: 'Webhook authentication failed' });
         expect(ingestHuntressWebhookPayload).not.toHaveBeenCalled();
 
         const rejected = warn.mock.calls.map((args) => args.map(String).join(' '))
@@ -542,7 +606,7 @@ describe('huntress routes', () => {
       }
     });
 
-    it('answers a test.event with 403 when the integration has no webhook secret', async () => {
+    it('answers a test.event with the generic 401 refusal when the integration has no webhook secret', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn(() => ({
           where: vi.fn(() => ({
@@ -563,7 +627,8 @@ describe('huntress routes', () => {
         body: TEST_EVENT_BODY,
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Webhook authentication failed' });
       expect(ingestHuntressWebhookPayload).not.toHaveBeenCalled();
     });
 

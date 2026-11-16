@@ -29,14 +29,24 @@ on:
   # `ci-success` is the only reporter.
   pull_request:
     branches: [main]
+  # The thin merge queue's backstop (W05, #10749): the full suite on main once a
+  # day. A scheduled run has no diff, so `changes` takes the full-suite path, and
+  # it reads no queue selection, so nothing is thinned whatever CI_THIN_QUEUE
+  # says. A red nightly opens the `ci-red` issue through main-red-alert. GitHub
+  # can delay or drop a scheduled run, so "a completed scheduled run on main in
+  # the last 30 h" is checked separately (docs/agents/testing.md).
+  schedule:
+    - cron: '17 6 * * *'
 
+# The nightly gets its own group, so it and a manual dispatch on main never
+# cancel each other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'schedule' && '-nightly' || '' }}
   cancel-in-progress: true
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.10'
+  GO_VERSION: '1.26.11'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -1235,8 +1245,17 @@ jobs:
       # default branch: `base` is ignored outright for `pull_request`, and a
       # `workflow_dispatch` on main has no base sha and still falls through to
       # `mobile: true` via the job output.
+      #
+      # The nightly `schedule` (W05, #10749) compiles iOS too, but not through the
+      # job output: the pinned CI Gate parses that line byte-for-byte
+      # (ci-gate.mjs MOBILE_OUTPUT), and any other text would make a gate pinned
+      # before the change require the iOS build for every queue entry. A schedule
+      # has no diff (and paths-filter throws without a base), so these two steps
+      # are skipped and the closure step below, with no base sha, reports
+      # `changed=true`. Pinned by mobile-native-ci.test.mjs.
       - name: Resolve the diff base
         id: base
+        if: github.event_name != 'schedule'
         env:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -1257,6 +1276,7 @@ jobs:
 
       - name: Detect mobile build inputs
         id: changes
+        if: github.event_name != 'schedule'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           base: ${{ steps.base.outputs.ref }}
@@ -1285,10 +1305,11 @@ jobs:
       # simulator build (30 queue entries on 2026-09-18, the critical path of
       # each). Now they only count when the `apps/mobile` importer's resolved
       # dependency closure actually differs between base and head. The script
-      # fails CLOSED (missing base, parse error → changed=true).
+      # fails CLOSED (missing base, parse error → changed=true). The nightly
+      # schedule always runs it, with no base, so the nightly compiles iOS.
       - name: Compare the mobile dependency closure
         id: lockfile
-        if: steps.changes.outputs.lockfile == 'true'
+        if: steps.changes.outputs.lockfile == 'true' || github.event_name == 'schedule'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
@@ -2450,6 +2471,33 @@ jobs:
             exit 1
           fi
 
+      # The offline system-state apply enables units with the host's
+      # `systemctl --root=<tree>`. These tests run the real systemctl against
+      # synthetic trees: one whose unit directory or unit file is a link (nothing
+      # outside the tree changes), one whose SysV helper programs leave a marker
+      # when run (no program from the tree runs). They need systemctl (present
+      # on the Ubuntu runner) and opt in with BREEZE_TEST_SYSTEMCTL=1; a skip
+      # must not read as a pass.
+      - name: Offline service enable boundary test (real systemctl)
+        if: runner.os == 'Linux'
+        run: |
+          set -o pipefail
+          command -v systemctl
+          cd agent
+          # Build as the runner user; only the test binary runs as root.
+          go test -c -o /tmp/bmr-offline.test ./internal/backup/bmr/
+          cd internal/backup/bmr
+          sudo env BREEZE_TEST_SYSTEMCTL=1 /tmp/bmr-offline.test -test.count=1 -test.run '^(TestOfflineServiceManagerRootBoundary|TestOfflineServiceEnableRunsNothingFromTheTree)$' -test.v 2>&1 | tee /tmp/offline-systemctl.log
+          if grep -q -- '--- SKIP' /tmp/offline-systemctl.log; then
+            echo "::error::The offline systemctl test was SKIPPED, not proven - see the skip reason logged above."
+            exit 1
+          fi
+          passes=$(grep -cE -- '^--- PASS: (TestOfflineServiceManagerRootBoundary|TestOfflineServiceEnableRunsNothingFromTheTree) ' /tmp/offline-systemctl.log || true)
+          if [ "$passes" -ne 2 ]; then
+            echo "::error::expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this step"
+            exit 1
+          fi
+
       - name: Test build-edition.sh (edition fail-closed matrix + real build)
         run: agent/scripts/build-edition_test.sh
 
@@ -2671,6 +2719,28 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # The local backup store resolves every key through one root handle and
+      # requires a private root. Its Windows behaviour (protected DACLs on the
+      # root and on directories it creates, refusal of junctions inside the
+      # store and of a junction as the root, and of symbolic links, which need a
+      # runner allowed to create them) is exercised only here. Assert that no
+      # test or subtest skipped and that the junction tests passed, rather than
+      # trusting the exit code.
+      - name: Run Windows local backup store tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup/providers -run '^TestLocalStore' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: TestLocalStore').Count
+          if ($skips -ne 0) { throw "$skips local store tests or subtests SKIPPED - the link and junction cases have no Windows coverage" }
+          $junction = @($out | Select-String -Pattern '^--- PASS: TestLocalStoreRefusesJunction(InsideStore|Root) ').Count
+          if ($junction -ne 2) { throw "expected 2 passing junction tests, got $junction" }
+
       # #9253: the YARA-X engine never started under a Windows service because
       # yaraxwasm hands os.Stderr (an invalid handle without a console) to the
       # wasm guest. yarac.EnsureEngine swaps an unusable stderr for NUL. These
@@ -2886,6 +2956,29 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 16) { throw "expected exactly 16 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # Bare-metal rebuild phases after the restore work inside the restored
+      # volume. These plant a junction (securefs.InstallJunction) in the
+      # restored tree and check that the hive path check, the hive fallback,
+      # the identity phase and the post-restore actions writer refuse it and
+      # leave the junction's target unchanged; one more holds a loaded hive's
+      # files without sharing and checks the next hive's path check still
+      # passes. Junction creation fails the test rather than skipping it;
+      # assert PASS counts and zero skips.
+      - name: Run Windows rebuild junction boundary tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup/bmr ./internal/backup/rebuild -run '^Test(TreeHivePathRefusesJunctionsOnWindows|TreeHivePathWithHeldSiblingOnWindows|SelectOfflineHivesRefusesJunctionOnWindows|WinIdentityRefusesJunctionOnWindows|WinEncryptionRefusesJunctionOnWindows)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the rebuild junction boundary tests SKIPPED" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 5) { throw "expected exactly 5 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # Grant-mode diagnostic reads (diag_file_list / diag_file_read) refuse any
       # path whose final, handle-resolved location differs from the requested
@@ -5045,20 +5138,19 @@ jobs:
           EOF
 
       # e2e-tests is deliberately OUTSIDE the pnpm workspace
-      # (pnpm-workspace.yaml covers apps/*, packages/* and ee/* only), so it
-      # installs standalone. It ships no pnpm-lock.yaml — only the
-      # package-lock.json the auth-browser-transition job's `npm ci` uses — and
-      # pnpm's CI frozen-lockfile default is a no-op when no pnpm lockfile
-      # exists, so this resolves fresh rather than failing.
+      # (pnpm-workspace.yaml covers apps/*, packages/* and ee/* only) and ships
+      # no pnpm lockfile, only package-lock.json. `npm ci` installs exactly that
+      # lockfile (and fails on drift) so a half-published upstream release
+      # cannot reach this job (#11197). Guarded by
+      # scripts/security/check-e2e-install-pinned.sh.
       - name: Install e2e-tests dependencies
         working-directory: e2e-tests
-        run: pnpm install --ignore-workspace
+        run: npm ci
 
       # apt 403 guard lives in the composite action (see its description).
       - name: Install Chromium
         uses: ./.github/actions/install-chromium
         with:
-          run-prefix: pnpm exec
           working-directory: e2e-tests
 
       # `pnpm wt-stack up` without a workspace install: the CLI imports nothing
@@ -5576,9 +5668,10 @@ jobs:
     name: Main Red Alert
     runs-on: ubuntu-latest
     needs: [ci-success]
-    # Fires on the emergency lane only (manual dispatch on main after an admin
-    # bypass merge). Queue landings were evaluated before they merged.
-    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    # Fires on the emergency lane (manual dispatch on main after an admin bypass
+    # merge) and on the nightly full run, the thin queue's backstop (W05,
+    # #10749). Queue landings were evaluated before they merged.
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'
     permissions:
       issues: write
     steps:
@@ -5677,7 +5770,7 @@ jobs:
                     } >> "$GITHUB_STEP_SUMMARY"
                   }
               else
-                body=$(printf "CI failed on a main push at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$short_sha" "$RUN_URL")
+                body=$(printf "CI failed on main (%s run) at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$GITHUB_EVENT_NAME" "$short_sha" "$RUN_URL")
                 gh issue create --repo "$GITHUB_REPOSITORY" --label ci-red \
                   --title "CI is red on main" \
                   --body "$body" \

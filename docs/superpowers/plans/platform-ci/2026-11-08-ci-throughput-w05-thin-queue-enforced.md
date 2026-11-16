@@ -328,11 +328,15 @@ Plus the first nightly `schedule` run: started within 2 h of 06:17Z, `changes` t
 
 **Negative leg N3 (Todd's go; mirrors W02's N2):** a throwaway PR whose own `ci.yml` copy hard-codes `thin_skip: ',test-shared,'` in `changes` outputs, enqueued once under `shadow`. Expected: `test-shared` skipped, the candidate's own `CI Success` green (its copy normalizes it), **`CI Gate` red with `thin_skip_unjustified:test-shared`**, entry ejected. The PR touches `ci.yml`, so the gate's list is empty anyway; that is the point. **If it merges, the gate failed open:** set `CI_THIN_QUEUE=off`, revert, report. Close the PR.
 
+*N3, made runnable (G3 prerequisites, 2026-11-10).* The first attempt (PR 11583) changed only `ci.yml` and could not pass its own PR CI: `queue-selection.test.mjs` pins the untampered `thin_skip` output line (two literals, and T6's count of lines reading the consume step). Now `.github/scripts/thin-queue-n3.mjs apply` makes the whole throwaway diff (the `ci.yml` line and those three pins; a full `lint` run on the tampered tree is green apart from one test that needs `pnpm install`), and N3 has two legs. **Automated, every PR:** the `N3 automated` tests in `ci-gate.test.mjs` run the real `select` and `verify` on an entry whose head carries exactly that tamper, under `shadow`, and expect `thin_skip_unjustified:test-shared` and exit 1, with three controls; the `N3 tamper` tests go red if `ci.yml` or its pins move. **Live, once:** the operator steps in `docs/agents/merge-and-deploy.md`, "Thin queue negative leg (N3)". The live leg is still required before G3, because only it proves the ruleset, the pinned checkout and the ejection.
+
 Bar: all of the above. A miss or a failed N3 stops G3; a short consumer wait gets a deadline tweak (a W05b follow-up) first.
 
 ## Gate G3: Todd enables thin
 
 Preconditions: W05a, W05b merged; P1, P2, S1 and N3 posted on #10749; W06 shepherd knows the new reasons (`thin_skip_unjustified`, `attempt1_selection_missing`, `queue-thin` fallbacks) or at least does not misfile them as test failures.
+
+*Shepherd (G3 prerequisites, 2026-11-10).* Class `thin_fault` (limit 0, held on the first removal, never parked in a breaker, paged through the tick's errors), signature `thin_skip_unjustified` or, when the gate's own `ci-gate-selection:` line says so, `attempt1_selection_missing`. A `queue-thin:` fallback runs everything, so its failures stay ordinary. Shadow mode is unchanged: a page writes nothing to GitHub. See `scripts/ci-shepherd/README.md`.
 
 1. **Todd:** `gh variable set CI_THIN_QUEUE --body enforce -R LanternOps/breeze`; confirm with `gh variable get CI_THIN_QUEUE -R LanternOps/breeze`.
 2. **Orchestrator:** watch the next 3 entries: gate `mode=thin` or a named fallback; CI `queue-thin:` with the same list; the listed jobs skipped; `CI Success` and `CI Gate` both green; the ci-success log line names the skipped jobs.
