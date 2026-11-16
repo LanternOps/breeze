@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import QRCode from 'qrcode';
 import {
-  NETWORK_ISOLATION_RELEASE_TOKEN, NETWORK_ISOLATION_TTL, agentAcceptsReleaseToken, isResolvedTerminalIsolationState, isUnresolvedTerminalIsolationState, startNetworkIsolationSchema,
+  NETWORK_ISOLATION_RELEASE_TOKEN, NETWORK_ISOLATION_TTL, agentAcceptsDeadMan, agentAcceptsReleaseToken, isResolvedTerminalIsolationState, isUnresolvedTerminalIsolationState, startNetworkIsolationSchema,
   releaseNetworkIsolationSchema, extendNetworkIsolationSchema,
   type IsolationReleaseKind, type StartNetworkIsolationInput, type ReleaseNetworkIsolationInput,
 } from '@breeze/shared';
@@ -127,7 +127,7 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     // Containment must not wait on policy: without one the device isolates on the fixed permits, and
     // the next heartbeat that can read the policy adds its permits under a new generation.
     let policy = NO_ISOLATION_POLICY;
-    try { policy = await readIsolationPolicy(device); auditRefusedPolicyGroups(device.orgId, policy); }
+    try { policy = await readIsolationPolicy(device, { releaseOptionsBelowPolicyAllow: true }); auditRefusedPolicyGroups(device.orgId, policy); }
     catch (error) {
       console.error('[isolation] policy unavailable', { deviceId: device.id });
       captureException(error, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id });
@@ -165,6 +165,9 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     // The policy asked for token-only release but this episode cannot carry a key, so codes stay usable.
     // Isolation still starts (containment never waits on release options); the downgrade is on record.
     const tokenRequirementNotEnforced = policy.requireSignedReleaseToken && lookup.signer === null ? lookup.reason : null;
+    // Dead-man (#10103): only to an agent that runs it. Any other agent isolates with it off, on record.
+    const deadManSeconds = policy.deadManSeconds > 0 && agentAcceptsDeadMan(device) ? policy.deadManSeconds : 0;
+    const deadManNotEnforced = policy.deadManSeconds > 0 && deadManSeconds === 0;
     let sealedSecret: string | null;
     try { sealedSecret = encryptSecret(secret, { aad: columnAad(ISOLATION_SECRET_COLUMN, id) }); }
     catch (error) { return secretUnavailable(error, device.id, id); }
@@ -174,19 +177,23 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
       result: { commandId }, approvalRef: opts.approvalRef ?? null, executedAt: now });
     const created = await createEpisode(tx, { id, orgId: device.orgId, deviceId: device.id, incidentId, incidentActionId: actionId, commandId,
       requestedByKind: opts.requestedByKind, requestedByUserId: opts.requestedByKind === 'system' ? null : auth.user.id,
-      reason: input.reason, expiresAt, deadManSeconds: 0, remoteRelay, allowSnapshot: allow, allowSnapshotRevision: policy.revision,
+      reason: input.reason, expiresAt, deadManSeconds, remoteRelay, allowSnapshot: allow, allowSnapshotRevision: policy.revision,
       breakGlassSecretEnc: sealedSecret,
       releaseTokenPublicKey: releaseToken?.releaseTokenPublicKey ?? null, releaseTokenRequired: releaseToken?.requireSignedReleaseToken ?? false,
     });
     if (!created.ok) return refuse(created.error);
     await queue(device, 'execute_containment', commandId, { incidentId, actionId, actionType: 'network_isolation', breakGlassSecret: secret,
-      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow, ...(policy.revision ? { policyRevision: policy.revision } : {}), ...(releaseToken ?? {}) } }, auth, expiresAt);
+      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds, remoteRelay, allow, ...(policy.revision ? { policyRevision: policy.revision } : {}), ...(releaseToken ?? {}) } }, auth, expiresAt);
     const prev = toEpisodeSnapshot(created.episode);
     const transition = applyEpisodeEvent(prev, { type: 'dispatched', generation: 1, at: now });
     if (!('next' in transition) || !await writeEpisodeSnapshot(tx, id, prev, transition.next, now)) return refuse('isolation_conflict');
     if (tokenRequirementNotEnforced) {
       console.warn('[isolation] signed-token requirement not enforced', { deviceId: device.id, isolationId: id, reason: tokenRequirementNotEnforced });
       writeRouteAudit({ ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: device.orgId, action: 'device.isolation.release_token_requirement_not_enforced', resourceType: 'device', resourceId: device.id, details: { isolationId: id, reason: tokenRequirementNotEnforced } });
+    }
+    if (deadManNotEnforced) {
+      console.warn('[isolation] dead-man not enforced', { deviceId: device.id, isolationId: id, reason: 'agent_unsupported' });
+      writeRouteAudit({ ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: device.orgId, action: 'device.isolation.dead_man_not_enforced', resourceType: 'device', resourceId: device.id, details: { isolationId: id, reason: 'agent_unsupported' } });
     }
     return { episode: safeEpisode({ ...created.episode, ...transition.next }), commandId };
   });
@@ -284,6 +291,17 @@ export async function listDeviceIsolations(auth: AuthContext, deviceId: string) 
     const unresolved = await findUnresolvedEpisode(tx, device.id);
     if (!reason && unresolved) reason = isUnresolvedTerminalIsolationState(unresolved.state) ? 'isolation_unacknowledged' : 'isolation_already_active';
     if (!reason && await findUnconfirmedTombstone(tx, device.id)) reason = 'isolation_already_active';
-    return { episodes: episodes.map(({ breakGlassSecretEnc: _secret, ...episode }: typeof episodes[number] & { breakGlassSecretEnc?: string }) => ({ ...episode, policyPending: isolationPolicyPending(episode), lastReportedGeneration: episode.lastAgentReport && 'generation' in episode.lastAgentReport ? episode.lastAgentReport.generation : null })), startEligibility: { allowed: reason === null, reason, networkIsolationUnsupportedReason: device.networkIsolationUnsupportedReason ?? null } };
+    const deadManUnsupported = reason === null && !agentAcceptsDeadMan(device) && await policyAsksForDeadMan(device);
+    return { episodes: episodes.map(({ breakGlassSecretEnc: _secret, ...episode }: typeof episodes[number] & { breakGlassSecretEnc?: string }) => ({ ...episode, policyPending: isolationPolicyPending(episode), lastReportedGeneration: episode.lastAgentReport && 'generation' in episode.lastAgentReport ? episode.lastAgentReport.generation : null })), startEligibility: { allowed: reason === null, reason, networkIsolationUnsupportedReason: device.networkIsolationUnsupportedReason ?? null, deadManUnsupported } };
   });
+}
+
+/** Whether the device's containment policy sets a dead-man window. A failed read answers no: this only words the dialog. */
+async function policyAsksForDeadMan(device: { id: string; networkIsolationVersion?: number | null }): Promise<boolean> {
+  try { return (await readIsolationPolicy(device, { releaseOptionsBelowPolicyAllow: true })).deadManSeconds > 0; }
+  catch (error) {
+    console.warn('[isolation] policy unavailable for the start dialog', { deviceId: device.id });
+    captureException(error, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id });
+    return false;
+  }
 }

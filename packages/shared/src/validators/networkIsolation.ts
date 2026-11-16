@@ -6,6 +6,7 @@ import {
   ISOLATION_MECHANISMS,
   NETWORK_ISOLATION_LIMITS,
   NETWORK_ISOLATION_TTL,
+  isValidDeadManSeconds,
   type IsolationOrderingKey,
 } from '../utils/networkIsolation';
 
@@ -104,7 +105,7 @@ const desiredBase = {
   isolationId: z.uuid(),
   generation: z.number().int().min(1),
   expiresAt: timestampSchema,
-  deadManSeconds: z.number().int().min(0),
+  deadManSeconds: z.number().int().refine(isValidDeadManSeconds, 'deadManSeconds must be 0 or inside the dead-man bounds'),
   remoteRelay: z.boolean(),
 };
 

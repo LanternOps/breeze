@@ -452,6 +452,7 @@ export const heartbeatSchema = z.object({
     networkIsolationMechanism: z.enum(ISOLATION_MECHANISMS).optional().catch(undefined),
     networkIsolationUnsupportedReason: truncated(1000).optional().catch(undefined),
     networkIsolationReady: z.boolean().optional().catch(undefined),
+    networkIsolationDeadMan: z.boolean().optional().catch(undefined),
 
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:

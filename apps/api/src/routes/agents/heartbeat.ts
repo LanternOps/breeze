@@ -1196,6 +1196,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     networkIsolationMechanism: data.securityCapabilities?.networkIsolationMechanism ?? null,
     networkIsolationUnsupportedReason: data.securityCapabilities?.networkIsolationUnsupportedReason ?? null,
     networkIsolationReady: data.securityCapabilities?.networkIsolationReady ?? false,
+    networkIsolationDeadMan: data.securityCapabilities?.networkIsolationDeadMan === true,
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
     // #3409 PR4 — same non-sticky contract as the line above: written every
     // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
@@ -2388,8 +2389,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     const { buildContainmentHeartbeatBlock, storedContainmentHeartbeatBlock } = isolation;
     // `device` was read before this beat's capability write, and a capability claim is same-heartbeat
     // truth: an agent that just dropped below level 3 would reject a block carrying policy permits.
-    // The same holds for the agent version the release-token gate reads (#10102).
-    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0, agentVersion: data.agentVersion ?? device.agentVersion };
+    // The same holds for the agent version the release-token gate reads (#10102), and for the dead-man
+    // flag: an agent that stopped reporting it would refuse a block carrying a window (#10103).
+    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0, networkIsolationDeadMan: data.securityCapabilities?.networkIsolationDeadMan === true, agentVersion: data.agentVersion ?? device.agentVersion };
     try {
       // A cached absence needs no block build (and no SAVEPOINT / RELEASE).
       containment = isolationContext.row === null
