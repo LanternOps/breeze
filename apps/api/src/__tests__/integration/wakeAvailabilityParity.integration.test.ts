@@ -99,8 +99,12 @@ async function seedFleet() {
   const dParked = await seedDevice(parkedOrg.id, siteP.id, 'parked');
 
   let groupId = '';
+  // Separate transactions: one that touches org B then org A would take the
+  // partner-export org locks out of UUID order and fail at random.
   await sys(async () => {
     await db.update(devices).set({ deviceRole: 'server' }).where(eq(devices.id, dBServer));
+  });
+  await sys(async () => {
     const [group] = await db.insert(deviceGroups).values({ orgId: orgA.id, name: 'wake parity group' }).returning();
     await db.insert(deviceGroupMemberships).values({ deviceId: dA3, groupId: group!.id, orgId: orgA.id });
     groupId = group!.id;

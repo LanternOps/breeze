@@ -72,11 +72,11 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
   const mutate = async (key: string, request: () => Promise<Response>, successMessage: string) => {
     setBusy(key);
     try {
-      await runAction({ request, errorFallback: t(`${PREFIX}.actionFailed`), successMessage });
+      await runAction({ request, errorFallback: t('configurationPolicies.featureTabs.wakeOnLanTab.panel.actionFailed'), successMessage });
       await load();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
-      if (!(err instanceof ActionError)) showToast({ message: t(`${PREFIX}.actionFailed`), type: 'error' });
+      if (!(err instanceof ActionError)) showToast({ message: t('configurationPolicies.featureTabs.wakeOnLanTab.panel.actionFailed'), type: 'error' });
     } finally {
       setBusy(null);
     }
@@ -86,7 +86,7 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
     mutate(
       `allow-${row.deviceId}`,
       () => fetchWithAuth(`/configuration-policies/${policyId}/wake-status/${row.deviceId}/allow`, { method: 'POST' }),
-      t(`${PREFIX}.allowedAgain`, { host: row.hostname }),
+      t('configurationPolicies.featureTabs.wakeOnLanTab.panel.allowedAgain', { host: row.hostname }),
     );
 
   const testWake = (row: WakeRow) =>
@@ -97,17 +97,17 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
           method: 'POST',
           body: JSON.stringify({ type: 'wake', payload: { testWake: true } }),
         }),
-      t(`${PREFIX}.testWakeSent`, { host: row.hostname }),
+      t('configurationPolicies.featureTabs.wakeOnLanTab.panel.testWakeSent', { host: row.hostname }),
     );
 
   const counts = result?.counts ?? {};
   const totalCount = Object.values(counts).reduce((sum, n) => sum + n, 0);
   const pages = result ? Math.max(1, Math.ceil(result.total / result.limit)) : 1;
 
-  const stateLabel = (s: string) => t(`${PREFIX}.states.${s}`, { defaultValue: s });
-  const reasonLabel = (code: string) => t(`${PREFIX}.reasons.${code}`, { defaultValue: code });
+  const stateLabel = (s: string) => t(/* i18n-dynamic */ `${PREFIX}.states.${s}`, { defaultValue: s });
+  const reasonLabel = (code: string) => t(/* i18n-dynamic */ `${PREFIX}.reasons.${code}`, { defaultValue: code });
   const attemptLabel = (a: NonNullable<WakeRow['lastAttempt']>) => {
-    const base = t(`${PREFIX}.attempts.${a.outcome}`, { defaultValue: a.outcome });
+    const base = t(/* i18n-dynamic */ `${PREFIX}.attempts.${a.outcome}`, { defaultValue: a.outcome });
     const withCode = a.refusalCode ? `${base} (${a.refusalCode})` : base;
     return `${withCode} · ${new Date(a.at).toLocaleString()}`;
   };
@@ -115,8 +115,8 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
   return (
     <section data-testid="wake-status-panel" className="space-y-4 rounded-md border bg-background p-4">
       <div>
-        <h3 className="text-sm font-semibold">{t(`${PREFIX}.title`)}</h3>
-        <p className="text-xs text-muted-foreground">{t(`${PREFIX}.description`)}</p>
+        <h3 className="text-sm font-semibold">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.title')}</h3>
+        <p className="text-xs text-muted-foreground">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.description')}</p>
       </div>
 
       <div
@@ -124,12 +124,12 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
         className="flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs"
       >
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-        <p>{t(`${PREFIX}.advisory`)}</p>
+        <p>{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.advisory')}</p>
       </div>
 
       {result?.capped && (
         <p data-testid="wake-capped-note" className="text-xs text-amber-700">
-          {t(`${PREFIX}.cappedNote`, { scanned: result.scanned })}
+          {t('configurationPolicies.featureTabs.wakeOnLanTab.panel.cappedNote', { scanned: result.scanned })}
         </p>
       )}
 
@@ -140,7 +140,7 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
           onClick={() => { setState(''); setPage(1); }}
           className={`rounded-full border px-3 py-1 text-xs ${state === '' ? 'bg-primary text-primary-foreground' : 'bg-background'}`}
         >
-          {t(`${PREFIX}.chipAll`, { count: totalCount })}
+          {t('configurationPolicies.featureTabs.wakeOnLanTab.panel.chipAll', { count: totalCount })}
         </button>
         {Object.entries(counts).map(([key, n]) => (
           <button
@@ -155,10 +155,10 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
         ))}
       </div>
 
-      {failed && <p className="text-sm text-destructive">{t(`${PREFIX}.loadFailed`)}</p>}
-      {!failed && loading && !result && <p className="text-sm text-muted-foreground">{t(`${PREFIX}.loading`)}</p>}
+      {failed && <p className="text-sm text-destructive">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.loadFailed')}</p>}
+      {!failed && loading && !result && <p className="text-sm text-muted-foreground">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.loading')}</p>}
       {!failed && result && result.data.length === 0 && (
-        <p className="text-sm text-muted-foreground">{t(`${PREFIX}.empty`)}</p>
+        <p className="text-sm text-muted-foreground">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.empty')}</p>
       )}
 
       {result && result.data.length > 0 && (
@@ -166,12 +166,12 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
           <table className="w-full text-left text-sm">
             <thead className="text-xs text-muted-foreground">
               <tr>
-                <th className="py-2 pr-3">{t(`${PREFIX}.columns.device`)}</th>
-                <th className="py-2 pr-3">{t(`${PREFIX}.columns.state`)}</th>
-                <th className="py-2 pr-3">{t(`${PREFIX}.columns.reasons`)}</th>
-                <th className="py-2 pr-3">{t(`${PREFIX}.columns.hardware`)}</th>
-                <th className="py-2 pr-3">{t(`${PREFIX}.columns.lastAttempt`)}</th>
-                <th className="py-2 pr-3">{t(`${PREFIX}.columns.actions`)}</th>
+                <th className="py-2 pr-3">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.columns.device')}</th>
+                <th className="py-2 pr-3">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.columns.state')}</th>
+                <th className="py-2 pr-3">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.columns.reasons')}</th>
+                <th className="py-2 pr-3">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.columns.hardware')}</th>
+                <th className="py-2 pr-3">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.columns.lastAttempt')}</th>
+                <th className="py-2 pr-3">{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.columns.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -188,14 +188,14 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
                       {[row.vendor, row.model].filter(Boolean).join(' ') || '-'}
                     </td>
                     <td className="py-2 pr-3 text-xs">
-                      {row.lastAttempt ? attemptLabel(row.lastAttempt) : t(`${PREFIX}.noAttempts`)}
+                      {row.lastAttempt ? attemptLabel(row.lastAttempt) : t('configurationPolicies.featureTabs.wakeOnLanTab.panel.noAttempts')}
                       {flagged && (
                         <span
                           data-testid={`wake-flagged-${row.deviceId}`}
                           className="mt-1 flex items-center gap-1 text-amber-700"
                         >
                           <AlertTriangle className="h-3 w-3" />
-                          {t(`${PREFIX}.flagged`, { count: row.consecutiveTimeouts })}
+                          {t('configurationPolicies.featureTabs.wakeOnLanTab.panel.flagged', { count: row.consecutiveTimeouts })}
                         </span>
                       )}
                     </td>
@@ -208,7 +208,7 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
                           onClick={() => void testWake(row)}
                           className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
                         >
-                          {t(`${PREFIX}.testWake`)}
+                          {t('configurationPolicies.featureTabs.wakeOnLanTab.panel.testWake')}
                         </button>
                       )}
                       {flagged && (
@@ -219,7 +219,7 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
                           onClick={() => void allowAgain(row)}
                           className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
                         >
-                          {t(`${PREFIX}.allowAgain`)}
+                          {t('configurationPolicies.featureTabs.wakeOnLanTab.panel.allowAgain')}
                         </button>
                       )}
                     </td>
@@ -240,9 +240,9 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             className="rounded-md border px-2 py-1 disabled:opacity-50"
           >
-            {t(`${PREFIX}.previous`)}
+            {t('configurationPolicies.featureTabs.wakeOnLanTab.panel.previous')}
           </button>
-          <span>{t(`${PREFIX}.pageOf`, { page, pages })}</span>
+          <span>{t('configurationPolicies.featureTabs.wakeOnLanTab.panel.pageOf', { page, pages })}</span>
           <button
             type="button"
             data-testid="wake-page-next"
@@ -250,7 +250,7 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
             onClick={() => setPage((p) => p + 1)}
             className="rounded-md border px-2 py-1 disabled:opacity-50"
           >
-            {t(`${PREFIX}.next`)}
+            {t('configurationPolicies.featureTabs.wakeOnLanTab.panel.next')}
           </button>
         </div>
       )}

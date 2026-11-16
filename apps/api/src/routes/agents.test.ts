@@ -1031,6 +1031,8 @@ describe('agent routes', () => {
         // #5511 W02: a resolved absent warranty policy delivers an explicit
         // false (the revoke-on-unassign contract), exactly like patch_source.
         warranty_settings: { hp_cmsl_enabled: false },
+        // #10838: no wake_on_lan policy resolves to an explicit enabled false.
+        wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [] },
         // Security remediation Wave 6, Task 9 — always sent (true or false),
         // mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID. Sending the explicit
         // false is what makes the switch reversible: an omitted key is a no-op
@@ -1155,6 +1157,7 @@ describe('agent routes', () => {
         feature_update_settings: { mode: 'block' },
         hardware_monitoring_settings: { enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 },
         warranty_settings: { hp_cmsl_enabled: false },
+        wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [] },
         require_manifest_signing_key_id: false
       });
       expect(insertValues).toHaveBeenCalledWith(

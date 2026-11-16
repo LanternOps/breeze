@@ -87,12 +87,12 @@ export default function WakeOnLanTab({
             className="flex items-start gap-2 rounded-md border bg-muted/40 px-4 py-3 text-sm"
           >
             <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-            <p>{t(`${prefix}.platformDefaultNote`)}</p>
+            <p>{t('configurationPolicies.featureTabs.wakeOnLanTab.platformDefaultNote')}</p>
           </div>
         )}
 
         <fieldset className="space-y-3">
-          <legend className="text-sm font-medium">{t(`${prefix}.modeTitle`)}</legend>
+          <legend className="text-sm font-medium">{t('configurationPolicies.featureTabs.wakeOnLanTab.modeTitle')}</legend>
           {WAKE_BUTTON_MODES.map((value) => (
             <label
               key={value}
@@ -107,16 +107,16 @@ export default function WakeOnLanTab({
                 className="mt-1"
               />
               <span>
-                <span className="block text-sm font-medium">{t(`${prefix}.mode.${value}`)}</span>
-                <span className="block text-xs text-muted-foreground">{t(`${prefix}.mode.${value}Help`)}</span>
+                <span className="block text-sm font-medium">{t(/* i18n-dynamic */ `${prefix}.mode.${value}`)}</span>
+                <span className="block text-xs text-muted-foreground">{t(/* i18n-dynamic */ `${prefix}.mode.${value}Help`)}</span>
               </span>
             </label>
           ))}
         </fieldset>
 
         <div className="rounded-md border bg-muted/40 px-4 py-3">
-          <p className="text-sm font-medium">{t(`${prefix}.aboutTitle`)}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{t(`${prefix}.aboutBody`)}</p>
+          <p className="text-sm font-medium">{t('configurationPolicies.featureTabs.wakeOnLanTab.aboutTitle')}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t('configurationPolicies.featureTabs.wakeOnLanTab.aboutBody')}</p>
         </div>
 
         {effectiveLink && <WakeStatusPanel policyId={policyId} />}
