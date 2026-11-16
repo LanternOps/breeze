@@ -440,7 +440,15 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
     // W03: what can be checked without the grant (the launcher re-checks with it).
     if (parsed.continueFromRunId) {
       const cont = await analysisContinuationOf({ orgId, runId: parsed.continueFromRunId });
-      if (!cont.ok) return { refused: 'continuation_refused', detail: cont.refusal };
+      if (!cont.ok) {
+        // Without the grant, "another grant" and "not an analysis run" would
+        // describe a run the caller may not be able to see: answer not_found.
+        // The launcher re-checks with the grant and gives the precise code.
+        const detail = cont.refusal === 'analysis_continuation_other_grant' || cont.refusal === 'analysis_continuation_wrong_kind'
+          ? 'analysis_continuation_not_found'
+          : cont.refusal;
+        return { refused: 'continuation_refused', detail };
+      }
     }
     if (resolveAnalysisScope(parsed) !== 'site' || !parsed.siteId) return null;
     if (!(await siteInOrg(orgId, parsed.siteId))) return { refused: 'admission_skipped', detail: 'site_not_in_scope' };

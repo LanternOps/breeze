@@ -119,6 +119,9 @@ export const ANALYSIS_CONTINUATION_SEED_MAX_BYTES = 4096;
 /** Why an inherited handle was not carried into a continuation (W00 C7). */
 export const CHAIN_HANDLE_DROP_REASONS = [
   'expired', 'kind', 'outside_chain', 'other_grant', 'dataset_not_permitted', 'over_cap',
+  // The run that produced the file held export grants (datasets or sensitive
+  // gates) this launch does not, or recorded none readable.
+  'grants_not_covered',
 ] as const;
 export type ChainHandleDropReason = (typeof CHAIN_HANDLE_DROP_REASONS)[number];
 export type ChainHandleDrop = { handle: string; reason: ChainHandleDropReason };

@@ -32,6 +32,7 @@ import {
 } from '../../db/schema/aiAgents';
 import { aiRunArtifacts } from '../../db/schema/aiWorkspace';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
+import { frozenExportGrantsOf } from '../aiToolsExportPermissions';
 import {
   renderAnalysisContinuationSeed,
   type AnalysisManifestEntry,
@@ -176,13 +177,33 @@ type Candidate = {
   producerId: string | null;
   producerGrantId: string | null;
   producerChainRootRunId: string | null;
+  /** The producer run's `staged_inputs`; only its `exportGrants` is read. */
+  producerStagedInputs: unknown;
 };
+
+/**
+ * Were the producer run's frozen export grants (datasets AND sensitive gates)
+ * all held by this launch too? A file a run exported or derived can carry what
+ * its grants let it read, so a launch with a narrower ceiling must not inherit
+ * it. A producer with no readable grants cannot be proven covered: false.
+ */
+function producerGrantsCovered(producerStagedInputs: unknown, launch: AiRunExportGrants): boolean {
+  const recorded = producerStagedInputs && typeof producerStagedInputs === 'object' && !Array.isArray(producerStagedInputs)
+    ? (producerStagedInputs as { exportGrants?: unknown }).exportGrants
+    : undefined;
+  const producer = frozenExportGrantsOf(recorded);
+  if (producer === null) return false;
+  const datasets = new Set(launch.datasets);
+  const gates = new Set<string>(launch.sensitiveGates);
+  return producer.datasets.every((d) => datasets.has(d)) && producer.sensitiveGates.every((g) => gates.has(g));
+}
 
 /** The first reason `c` cannot be carried into the continuation, or null. */
 function dropReason(
   c: Candidate,
   root: string | null,
   grantId: string,
+  exportGrants: AiRunExportGrants,
   permitted: ReadonlySet<string>,
   now: Date,
 ): ChainHandleDropReason | null {
@@ -194,6 +215,7 @@ function dropReason(
   if (c.createdByTool === 'export_dataset' && (c.dataset === null || !permitted.has(c.dataset))) {
     return 'dataset_not_permitted';
   }
+  if (!producerGrantsCovered(c.producerStagedInputs, exportGrants)) return 'grants_not_covered';
   return null;
 }
 
@@ -201,7 +223,10 @@ function dropReason(
  * The handles a continuation of `prior` may stage: what the prior itself was
  * allowed to stage (its chain's earlier files) plus the outputs and dataset
  * exports the prior produced, each re-validated against the chain, the grant,
- * its kind, its expiry and THIS launch's frozen export grants. Never extends
+ * its kind, its expiry and THIS launch's frozen export grants: an export's
+ * dataset must be permitted, and the run that produced any carried file (input
+ * or output) must have held no dataset or sensitive gate this launch lacks
+ * (`grants_not_covered`, fail closed on unreadable grants). Never extends
  * an artifact's lifetime. A handle the chat model named is never an input:
  * everything here is derived server-side from the prior run.
  */
@@ -235,6 +260,7 @@ export async function deriveChainHandles(input: {
       producerId: aiAgentRuns.id,
       producerGrantId: aiAgentRuns.grantId,
       producerChainRootRunId: aiAgentRuns.chainRootRunId,
+      producerStagedInputs: aiAgentRuns.stagedInputs,
     })
     .from(aiRunArtifacts)
     .leftJoin(aiAgentRuns, and(eq(aiAgentRuns.id, aiRunArtifacts.runId), eq(aiAgentRuns.orgId, aiRunArtifacts.orgId)))
@@ -252,7 +278,7 @@ export async function deriveChainHandles(input: {
   for (const c of rows) {
     if (seen.has(c.id)) continue;
     seen.add(c.id);
-    const reason = dropReason(c, root, grantId, permitted, now);
+    const reason = dropReason(c, root, grantId, input.exportGrants, permitted, now);
     if (reason) dropped.push({ handle: c.id, reason });
     else kept.push(c);
   }

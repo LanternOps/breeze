@@ -165,7 +165,9 @@ type RunOverrides = Partial<{
   chainRootRunId: string | null;
   chainDepth: number;
   triggerRef: Record<string, unknown>;
-  stagedInputs: { handles: string[]; deviceIds: string[]; region: 'eu' | 'us' } | null;
+  stagedInputs: { handles: string[]; deviceIds: string[]; region: 'eu' | 'us'; exportGrants?: unknown } | null;
+  /** The run's frozen export grants, written into `staged_inputs.exportGrants`. Default: none held (a subset of any launch). */
+  exportGrants: unknown;
   policySnapshot: Record<string, unknown>;
 }>;
 
@@ -190,7 +192,10 @@ async function insertRun(t: Tenant, orgId: string, o: RunOverrides = {}): Promis
     chainRootRunId: o.chainRootRunId ?? null,
     chainDepth: o.chainDepth ?? 0,
     triggerRef: (o.triggerRef ?? {}) as never,
-    stagedInputs: (o.stagedInputs ?? null) as never,
+    stagedInputs: (o.stagedInputs === null ? null : {
+      ...(o.stagedInputs ?? { handles: [], deviceIds: [], region: 'us' }),
+      exportGrants: 'exportGrants' in o ? o.exportGrants : { datasets: [], sensitiveGates: [] },
+    }) as never,
   } as never).returning({ id: aiAgentRuns.id });
   return row!.id;
 }
@@ -460,6 +465,52 @@ describe('handle derivation', () => {
     expect(none.handles).toEqual([]);
     expect(none.dropped).toHaveLength(3);
     expect(none.dropped.every((x) => x.reason === 'dataset_not_permitted')).toBe(true);
+  });
+});
+
+describe('handle derivation: the producer run\'s frozen export grants', () => {
+  it('a later launch with a narrower gate set does not inherit a file exported or derived under the wider one', async () => {
+    const t = await seedTenant();
+    const g = t.grantG;
+    const WIDE: AiRunExportGrants = { datasets: ['event_logs'], sensitiveGates: ['security_events'] };
+    const NARROW: AiRunExportGrants = { datasets: ['event_logs'], sensitiveGates: [] };
+    // The root ran under the security_events gate and exported event_logs, then derived an output.
+    const root = await insertRun(t, t.orgA, { grant: g, exportGrants: WIDE });
+    const exported = await insertArtifact(t.orgA, root, { kind: 'input_capture', createdByTool: 'export_dataset', dataset: 'event_logs' });
+    const derived = await insertArtifact(t.orgA, root, { kind: 'output', createdByTool: 'workspace_collect' });
+    // A first continuation still held the gate, so it inherited both, and produced its own output.
+    const run2 = await insertRun(t, t.orgA, {
+      grant: g, continuedFromRunId: root, chainRootRunId: root, chainDepth: 1, exportGrants: WIDE,
+      stagedInputs: { handles: [exported, derived], deviceIds: [], region: 'us' },
+    });
+    const own = await insertArtifact(t.orgA, run2, { kind: 'output', createdByTool: 'workspace_collect' });
+    const p = await analysisContinuationOf({ orgId: t.orgA, runId: run2, grantId: g.grantId });
+    if (!p.ok) throw new Error(`prior refused: ${p.refusal}`);
+
+    const wide = await deriveChainHandles({ orgId: t.orgA, prior: p.prior, grantId: g.grantId, exportGrants: WIDE });
+    expect(sorted(wide.handles)).toEqual(sorted([exported, derived, own]));
+    expect(wide.dropped).toEqual([]);
+
+    // The live ceiling has since lost the gate: the same dataset list, no security_events.
+    const narrow = await deriveChainHandles({ orgId: t.orgA, prior: p.prior, grantId: g.grantId, exportGrants: NARROW });
+    expect(narrow.handles).toEqual([]);
+    expect(sorted(narrow.dropped.map((x) => `${x.handle}:${x.reason}`))).toEqual(sorted([
+      `${exported}:grants_not_covered`, `${derived}:grants_not_covered`, `${own}:grants_not_covered`,
+    ]));
+  });
+
+  it('a producer with no frozen grants recorded fails closed', async () => {
+    const t = await seedTenant();
+    const g = t.grantG;
+    const root = await insertRun(t, t.orgA, { grant: g, stagedInputs: null });
+    const out = await insertArtifact(t.orgA, root, { kind: 'output', createdByTool: 'workspace_collect' });
+    const p = await analysisContinuationOf({ orgId: t.orgA, runId: root, grantId: g.grantId });
+    if (!p.ok) throw new Error(`prior refused: ${p.refusal}`);
+    const d = await deriveChainHandles({
+      orgId: t.orgA, prior: p.prior, grantId: g.grantId,
+      exportGrants: { datasets: ['event_logs'], sensitiveGates: ['security_events'] },
+    });
+    expect(d).toEqual({ handles: [], dropped: [{ handle: out, reason: 'grants_not_covered' }] });
   });
 });
 

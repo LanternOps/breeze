@@ -586,6 +586,15 @@ describe('analysis continuation (W03)', () => {
     expect(h.admitAnalysisRun).not.toHaveBeenCalled();
   });
 
+  it.each(['analysis_continuation_other_grant', 'analysis_continuation_wrong_kind'])(
+    'the precheck (no grant) answers %s as not_found, so its answer never depends on a run the caller cannot see',
+    async (refusal) => {
+      h.analysisContinuationOf.mockResolvedValue({ ok: false, refusal });
+      await expect(SPECIALIST_PREREQUISITES.analysis({ orgId: ORG, partnerId: PARTNER, params }))
+        .resolves.toEqual({ refused: 'continuation_refused', detail: 'analysis_continuation_not_found' });
+    },
+  );
+
   it('the precheck passes a continuable prior', async () => {
     h.analysisContinuationOf.mockResolvedValue({ ok: true, prior: priorOf() });
     await expect(SPECIALIST_PREREQUISITES.analysis({ orgId: ORG, partnerId: PARTNER, params })).resolves.toBeNull();

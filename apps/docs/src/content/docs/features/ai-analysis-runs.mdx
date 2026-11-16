@@ -41,6 +41,8 @@ A site or organization is expanded to its active devices when the run starts, an
 
 The datasets a run may export are also fixed when it starts, from what the Wisp grant's owner may read at that moment. Security-category event logs also need `devices:execute`; without it they are left out of the export, and the run is told so.
 
+A run that continues an earlier analysis gets the files that earlier runs in the same chain exported or produced, checked again when it starts. A file is left out, and the run is told how many and why, when it has expired, when its dataset is no longer one this run may export, or when the run that produced it could read a dataset or security category that this run cannot.
+
 ## Configured agent access
 
 An agent's site, device-group, and device-tag restrictions apply to manual runs as well as automatic triggers. Partner and organization filters combine by intersection; non-overlapping filters permit no access. Scope is checked again when a queued run starts and before each tool call.

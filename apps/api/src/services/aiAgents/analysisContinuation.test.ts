@@ -87,7 +87,8 @@ function cand(id: string, over: Record<string, unknown> = {}) {
   return {
     id, kind: 'output', createdByTool: 'workspace_collect', dataset: null, expiresAt: FUTURE,
     createdAt: new Date('2026-11-01T00:00:00Z'), producerId: PRIOR, producerGrantId: GRANT,
-    producerChainRootRunId: null, ...over,
+    producerChainRootRunId: null,
+    producerStagedInputs: { handles: [], deviceIds: [], region: 'eu', exportGrants: GRANTS }, ...over,
   };
 }
 
@@ -177,6 +178,67 @@ describe('analysisContinuationOf', () => {
     h.results.push([priorRow({ triggerRef: { goal: 42, originSessionId: 7 }, stagedInputs: 'garbage' })]);
     const r = await analysisContinuationOf({ orgId: ORG, runId: PRIOR, grantId: GRANT });
     expect(r).toEqual({ ok: true, prior: expect.objectContaining({ goal: '', originSessionId: null, stagedInputs: null }) });
+  });
+});
+
+describe('deriveChainHandles: the producer run\'s frozen export grants', () => {
+  const NARROW = { datasets: ['event_logs'], sensitiveGates: [] as string[] };
+  const WIDE_GATE = { datasets: ['event_logs'], sensitiveGates: ['security_events'] };
+  const derive = (exportGrants: { datasets: string[]; sensitiveGates: string[] } = NARROW) =>
+    deriveChainHandles({ orgId: ORG, prior: prior(), grantId: GRANT, exportGrants: exportGrants as never });
+  const producedUnder = (exportGrants: unknown) => ({ handles: [], deviceIds: [], region: 'eu', exportGrants });
+  const exportOf = (id: string, over: Record<string, unknown> = {}) =>
+    cand(id, { kind: 'input_capture', createdByTool: 'export_dataset', dataset: 'event_logs', ...over });
+
+  it('drops an export made under a sensitive gate this launch does not hold, though its dataset is permitted', async () => {
+    h.results.push([exportOf(h_(1), { producerStagedInputs: producedUnder(WIDE_GATE) })]);
+    expect(await derive()).toEqual({ handles: [], dropped: [{ handle: h_(1), reason: 'grants_not_covered' }] });
+  });
+
+  it('drops an output derived under a sensitive gate this launch does not hold', async () => {
+    h.results.push([cand(h_(1), { producerStagedInputs: producedUnder(WIDE_GATE) })]);
+    expect(await derive()).toEqual({ handles: [], dropped: [{ handle: h_(1), reason: 'grants_not_covered' }] });
+  });
+
+  it('drops an output whose producer could export a dataset this launch cannot', async () => {
+    h.results.push([cand(h_(1), { producerStagedInputs: producedUnder({ datasets: ['event_logs', 'alerts'], sensitiveGates: [] }) })]);
+    expect(await derive()).toEqual({ handles: [], dropped: [{ handle: h_(1), reason: 'grants_not_covered' }] });
+  });
+
+  it.each([
+    ['staged_inputs null', null],
+    ['staged_inputs not an object', 'garbage'],
+    ['exportGrants absent (never read as the legacy set)', { handles: [], deviceIds: [], region: 'eu' }],
+    ['exportGrants null', producedUnder(null)],
+    ['datasets not an array', producedUnder({ datasets: 'event_logs', sensitiveGates: [] })],
+    ['a non-string dataset', producedUnder({ datasets: [1], sensitiveGates: [] })],
+    ['sensitiveGates missing', producedUnder({ datasets: ['event_logs'] })],
+    ['an unknown gate', producedUnder({ datasets: ['event_logs'], sensitiveGates: ['root'] })],
+  ])('fails closed when the producer grants are unreadable: %s', async (_label, stagedInputs) => {
+    h.results.push([cand(h_(1), { producerStagedInputs: stagedInputs })]);
+    expect(await derive()).toEqual({ handles: [], dropped: [{ handle: h_(1), reason: 'grants_not_covered' }] });
+  });
+
+  it('keeps files whose producer grants equal or sit inside this launch\'s grants', async () => {
+    h.results.push([
+      exportOf(h_(1), { producerStagedInputs: producedUnder(WIDE_GATE) }),
+      cand(h_(2), { producerStagedInputs: producedUnder({ datasets: [], sensitiveGates: [] }) }),
+      cand(h_(3), { producerStagedInputs: producedUnder(NARROW) }),
+    ]);
+    const r = await derive({ datasets: ['event_logs', 'metrics'], sensitiveGates: ['security_events'] });
+    expect(r.handles.sort()).toEqual([h_(1), h_(2), h_(3)]);
+    expect(r.dropped).toEqual([]);
+  });
+
+  it('the earlier reasons win: expired and dataset_not_permitted are reported before grants_not_covered', async () => {
+    h.results.push([
+      cand(h_(1), { expiresAt: PAST, producerStagedInputs: null }),
+      exportOf(h_(2), { dataset: 'alerts', producerStagedInputs: null }),
+    ]);
+    expect((await derive()).dropped).toEqual([
+      { handle: h_(1), reason: 'expired' },
+      { handle: h_(2), reason: 'dataset_not_permitted' },
+    ]);
   });
 });
 
