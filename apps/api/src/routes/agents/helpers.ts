@@ -546,9 +546,35 @@ export async function buildPolicyProbeConfigUpdate(
   }
 
   return {
-    policy_registry_state_probes: sortPolicyRegistryProbes(Array.from(registryByKey.values())),
-    policy_config_state_probes: sortPolicyConfigProbes(Array.from(configByKey.values()))
+    policy_registry_state_probes: capPolicyStateProbes(
+      sortPolicyRegistryProbes(Array.from(registryByKey.values())), orgId, 'registry'),
+    policy_config_state_probes: capPolicyStateProbes(
+      sortPolicyConfigProbes(Array.from(configByKey.values())), orgId, 'config')
   };
+}
+
+/**
+ * #11976: the most registry probes, and separately the most config probes, the
+ * heartbeat sends one org's agents. Every active policy the org can own feeds
+ * the list, so it is bounded here rather than by the number of rules authored.
+ */
+export const MAX_POLICY_STATE_PROBES_PER_ORG = 256;
+
+/**
+ * Keeps the first MAX_POLICY_STATE_PROBES_PER_ORG probes of an already-sorted
+ * list, so the kept set is the same on every beat whatever order the rows
+ * were read in. Rules past the cap are not collected and evaluate as "not
+ * found"; the warning names the org so the excess can be traced.
+ */
+function capPolicyStateProbes<T>(sorted: T[], orgId: string, kind: 'registry' | 'config'): T[] {
+  if (sorted.length <= MAX_POLICY_STATE_PROBES_PER_ORG) return sorted;
+  console.warn('[agents/helpers] policy state probe list truncated', {
+    orgId,
+    kind,
+    total: sorted.length,
+    kept: MAX_POLICY_STATE_PROBES_PER_ORG,
+  });
+  return sorted.slice(0, MAX_POLICY_STATE_PROBES_PER_ORG);
 }
 
 // ============================================

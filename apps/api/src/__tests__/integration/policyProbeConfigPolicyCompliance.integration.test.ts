@@ -25,7 +25,7 @@ import {
   configPolicyFeatureLinks,
   configurationPolicies,
 } from '../../db/schema';
-import { buildPolicyProbeConfigUpdate } from '../../routes/agents/helpers';
+import { buildPolicyProbeConfigUpdate, MAX_POLICY_STATE_PROBES_PER_ORG } from '../../routes/agents/helpers';
 import { createOrganization, createPartner } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -155,6 +155,24 @@ describe('buildPolicyProbeConfigUpdate: configuration-policy compliance rules (#
       buildPolicyProbeConfigUpdate(t.orgId, { partnerId: t.partnerId }));
 
     expect(probe?.policy_registry_state_probes).toEqual([{ registry_path: POWER_PATH, value_name: 'ACSettingIndex' }]);
+  });
+
+  runDb('the probe list is capped per org at MAX_POLICY_STATE_PROBES_PER_ORG, keeping the sorted head', async () => {
+    const t = await seedTenant();
+    const total = MAX_POLICY_STATE_PROBES_PER_ORG + 20;
+    const name = (n: number) => `Value${String(n).padStart(4, '0')}`;
+    await seedCompliancePolicy({
+      owner: { orgId: t.orgId, partnerId: null },
+      rules: Array.from({ length: total }, (_, i) => registryRule(POWER_PATH, name(total - 1 - i))),
+    });
+
+    const probe = await withDbAccessContext(agentContext(t.orgId, t.partnerId), () =>
+      buildPolicyProbeConfigUpdate(t.orgId, { partnerId: t.partnerId }));
+
+    const names = (probe?.policy_registry_state_probes ?? []).map((p) => p.value_name);
+    expect(names).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG);
+    expect(names[0]).toBe(name(0));
+    expect(names.at(-1)).toBe(name(MAX_POLICY_STATE_PROBES_PER_ORG - 1));
   });
 
   runDb('ownership predicate: no partner = org-owned only; another partner\'s partner-wide rule never leaks (system scope, RLS cannot mask it)', async () => {
