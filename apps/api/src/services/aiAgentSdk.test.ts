@@ -1429,11 +1429,12 @@ describe('createSessionPreToolUse', () => {
       vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      const pre = await createSessionPreToolUse(session)('execute_command', { commandType: 'list_processes' });
+      const input = { commandType: 'list_processes' }; // one object, as the MCP handler passes it to both hooks (#11989)
+      const pre = await createSessionPreToolUse(session)('execute_command', input);
       expect(pre).toEqual({ allowed: true });
       await createSessionPostToolUse(session)(
         'execute_command',
-        { commandType: 'list_processes' },
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         3,
@@ -1463,11 +1464,12 @@ describe('createSessionPreToolUse', () => {
       vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      const pre = await createSessionPreToolUse(session)('take_screenshot', {});
+      const input = {}; // one object, as the MCP handler passes it to both hooks (#11989)
+      const pre = await createSessionPreToolUse(session)('take_screenshot', input);
       expect(pre).toEqual({ allowed: true });
       await createSessionPostToolUse(session)(
         'take_screenshot',
-        {},
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         3,
@@ -1481,6 +1483,115 @@ describe('createSessionPreToolUse', () => {
         approved: true,
         approvalMethod: 'per_step_user',
       });
+    });
+  });
+
+  // #11989: the approval method is recorded against the CALL (its SDK
+  // tool_use id), not the session. The SDK runs sibling tool calls
+  // concurrently, so two approval-gated calls can both pass the gate before
+  // either one's postToolUse audit runs.
+  describe('#11989: overlapping approval-gated calls each audit their own approval method', () => {
+    const cardCheck = { allowed: true, tier: 2, requiresApproval: false, description: 'Needs a card' };
+    const readOnlyAutoCheck = { allowed: true, tier: 2, requiresApproval: false, readOnly: true, description: 'List processes' };
+
+    // The approval-card path inserts with `.returning()`, the auto-execute
+    // paths await `.values()` directly; one stand-in serves both.
+    function mockInsertForBothPaths() {
+      const values = vi.fn(() =>
+        Object.assign(Promise.resolve(undefined), { returning: vi.fn().mockResolvedValue([{ id: 'exec-card' }]) }),
+      );
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    }
+
+    function auditDetailsFor(toolName: string): Array<Record<string, unknown>> {
+      return mockWriteAuditEvent.mock.calls
+        .filter((c) => (c[1] as any)?.action === `ai.tool.${toolName}`)
+        .map((c) => (c[1] as any).details);
+    }
+
+    beforeEach(() => {
+      mockInsertForBothPaths();
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+    });
+
+    it('two different tools: both pass the gate, then both finish — each keeps its own method', async () => {
+      vi.mocked(checkGuardrails).mockImplementation(((toolName: string) =>
+        toolName === 'take_screenshot' ? cardCheck : readOnlyAutoCheck) as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+      const screenshotInput = { deviceId: 'device-1' };
+      const listInput = { commandType: 'list_processes' };
+
+      expect(await pre('take_screenshot', screenshotInput, undefined, 'toolu_a')).toEqual({ allowed: true });
+      expect(await pre('execute_command', listInput, undefined, 'toolu_b')).toEqual({ allowed: true });
+      await post('take_screenshot', screenshotInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_a');
+      await post('execute_command', listInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_b');
+
+      expect(auditDetailsFor('take_screenshot')).toEqual([
+        expect.objectContaining({ approved: true, approvalMethod: 'per_step_user' }),
+      ]);
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'read_only_auto' }),
+      ]);
+    });
+
+    it('the same tool twice by different paths, finishing in reverse order — each keeps its own method', async () => {
+      vi.mocked(checkGuardrails).mockImplementation(((_toolName: string, input: Record<string, unknown>) =>
+        input.commandType === 'list_processes' ? readOnlyAutoCheck : cardCheck) as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+      const approvedInput = { commandType: 'kill_process', pid: 42 };
+      const autoInput = { commandType: 'list_processes' };
+
+      expect(await pre('execute_command', approvedInput, undefined, 'toolu_card')).toEqual({ allowed: true });
+      expect(await pre('execute_command', autoInput, undefined, 'toolu_auto')).toEqual({ allowed: true });
+      // The auto-executed read finishes first, then the approved call.
+      await post('execute_command', autoInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_auto');
+      await post('execute_command', approvedInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_card');
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'read_only_auto', toolInput: autoInput }),
+        expect.objectContaining({ approved: true, approvalMethod: 'per_step_user', toolInput: approvedInput }),
+      ]);
+    });
+
+    it('without an SDK tool_use id, the call is still matched by its own input object', async () => {
+      vi.mocked(checkGuardrails).mockImplementation(((_toolName: string, input: Record<string, unknown>) =>
+        input.commandType === 'list_processes' ? readOnlyAutoCheck : cardCheck) as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+      const approvedInput = { commandType: 'kill_process', pid: 42 };
+      const autoInput = { commandType: 'list_processes' };
+
+      await pre('execute_command', approvedInput);
+      await pre('execute_command', autoInput);
+      await post('execute_command', autoInput, JSON.stringify({ ok: true }), false, 3);
+      await post('execute_command', approvedInput, JSON.stringify({ ok: true }), false, 3);
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'read_only_auto', toolInput: autoInput }),
+        expect.objectContaining({ approved: true, approvalMethod: 'per_step_user', toolInput: approvedInput }),
+      ]);
+    });
+
+    it('a call the gate recorded nothing for still audits approved:false / unknown', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyAutoCheck as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+      const gatedInput = { commandType: 'list_processes' };
+
+      await pre('execute_command', gatedInput, undefined, 'toolu_gated');
+      // A different call (new id, new input object) that never passed this gate.
+      await post('execute_command', { commandType: 'list_processes' }, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_other');
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'unknown' }),
+      ]);
     });
   });
 
@@ -3009,12 +3120,13 @@ describe('createSessionPreToolUse', () => {
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      const pre = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+      const input = { deviceId: 'd-1' }; // one object, as the MCP handler passes it to both hooks (#11989)
+      const pre = await createSessionPreToolUse(session)('execute_command', input);
       expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
 
       await createSessionPostToolUse(session)(
         'execute_command',
-        { deviceId: 'd-1' },
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         10,
@@ -3080,7 +3192,8 @@ describe('createSessionPreToolUse', () => {
         } as any);
         const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-        const pre = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+        const input = { deviceId: 'd-1' }; // one object, as the MCP handler passes it to both hooks (#11989)
+        const pre = (await createSessionPreToolUse(session)('execute_command', input)) as {
           allowed: boolean;
           error: string;
           handoff?: string;
@@ -3090,7 +3203,7 @@ describe('createSessionPreToolUse', () => {
 
         await createSessionPostToolUse(session)(
           'execute_command',
-          { deviceId: 'd-1' },
+          input,
           JSON.stringify({ status: APPROVED_COMPLETED_STATUS, message: pre.error }),
           false,
           0,
@@ -3136,7 +3249,8 @@ describe('createSessionPreToolUse', () => {
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      const pre = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+      const input = { deviceId: 'd-1' }; // one object, as the MCP handler passes it to both hooks (#11989)
+      const pre = (await createSessionPreToolUse(session)('execute_command', input)) as {
         error: string;
         handoff?: string;
       };
@@ -3144,7 +3258,7 @@ describe('createSessionPreToolUse', () => {
 
       await createSessionPostToolUse(session)(
         'execute_command',
-        { deviceId: 'd-1' },
+        input,
         JSON.stringify({ status: APPROVED_FAILED_STATUS, message: pre.error }),
         true,
         0,
@@ -3182,10 +3296,11 @@ describe('createSessionPreToolUse', () => {
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+      const input = { deviceId: 'd-1' }; // one object, as the MCP handler passes it to both hooks (#11989)
+      await createSessionPreToolUse(session)('execute_command', input);
       await createSessionPostToolUse(session)(
         'execute_command',
-        { deviceId: 'd-1' },
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         10,
