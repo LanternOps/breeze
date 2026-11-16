@@ -38,6 +38,7 @@ const partnerAuth = {
   principal: { kind: 'user_session' },
   scope: 'partner',
   partnerId: PARTNER_ID,
+  partnerOrgAccess: 'all',
   orgId: null,
   user: { id: '11111111-1111-4111-8111-111111111111', email: 'owner@breeze.test' },
 };
@@ -91,19 +92,27 @@ describe('GET /partner/device-capacity', () => {
     capacity.partnerAdmissionStatus.mockResolvedValueOnce({ limit: 110, activeCount: 110 });
     const atLimit = await get(partnerAuth);
     expect(atLimit.status).toBe(200);
-    expect(await atLimit.json()).toEqual({ limit: 110, activeCount: 110, enrollmentPaused: true });
+    expect(await atLimit.json()).toEqual({
+      limit: 110, activeCount: 110, enrollmentPaused: true, paused: true, reason: 'device_limit',
+    });
 
     capacity.partnerAdmissionStatus.mockResolvedValueOnce({ limit: 110, activeCount: 125 });
     const over = await get(partnerAuth);
-    expect(await over.json()).toEqual({ limit: 110, activeCount: 125, enrollmentPaused: true });
+    expect(await over.json()).toEqual({
+      limit: 110, activeCount: 125, enrollmentPaused: true, paused: true, reason: 'device_limit',
+    });
   });
 
   it('is not paused below the limit or when there is no limit', async () => {
     capacity.partnerAdmissionStatus.mockResolvedValueOnce({ limit: 110, activeCount: 109 });
-    expect(await (await get(partnerAuth)).json()).toEqual({ limit: 110, activeCount: 109, enrollmentPaused: false });
+    expect(await (await get(partnerAuth)).json()).toEqual({
+      limit: 110, activeCount: 109, enrollmentPaused: false, paused: false, reason: null,
+    });
 
     capacity.partnerAdmissionStatus.mockResolvedValueOnce({ limit: null, activeCount: 4000 });
-    expect(await (await get(partnerAuth)).json()).toEqual({ limit: null, activeCount: 4000, enrollmentPaused: false });
+    expect(await (await get(partnerAuth)).json()).toEqual({
+      limit: null, activeCount: 4000, enrollmentPaused: false, paused: false, reason: null,
+    });
   });
 
   it("reads only the caller's own partner, in system scope outside the request context", async () => {
@@ -119,6 +128,30 @@ describe('GET /partner/device-capacity', () => {
     capacity.partnerAdmissionStatus.mockResolvedValueOnce({ limit: 10, activeCount: 1 });
     await buildApp(partnerAuth).request('/partner/device-capacity?partnerId=44444444-4444-4444-8444-444444444444');
     expect(capacity.partnerAdmissionStatus).toHaveBeenCalledWith(dbMocks.tx, PARTNER_ID);
+  });
+
+  // Ruling T15: partner-wide counts only for full-partner access
+  // (canManagePartnerWidePolicies); everyone else gets the reason alone.
+  it.each([
+    ['selected', 'selected'],
+    ['none', 'none'],
+    ['undefined (fails closed)', undefined],
+    ['null (fails closed)', null],
+  ])('a %s-access partner user gets the paused reason without counts', async (_label, access) => {
+    capacity.partnerAdmissionStatus.mockResolvedValueOnce({ limit: 110, activeCount: 110 });
+    const paused = await get({ ...partnerAuth, partnerOrgAccess: access });
+    expect(paused.status).toBe(200);
+    expect(await paused.json()).toEqual({ paused: true, reason: 'device_limit' });
+
+    capacity.partnerAdmissionStatus.mockResolvedValueOnce({ limit: 110, activeCount: 12 });
+    const open = await get({ ...partnerAuth, partnerOrgAccess: access });
+    expect(await open.json()).toEqual({ paused: false, reason: null });
+  });
+
+  it('an all-access partner user gets the counts', async () => {
+    capacity.partnerAdmissionStatus.mockResolvedValueOnce({ limit: 110, activeCount: 12 });
+    const body = await (await get(partnerAuth)).json();
+    expect(body).toMatchObject({ limit: 110, activeCount: 12 });
   });
 
   it('a missing partner row is 404', async () => {

@@ -8290,7 +8290,9 @@
     "description": "Was Ihr Tarif umfasst. Gesperrte Funktionen bleiben sichtbar, damit Sie sehen, was ein Upgrade hinzufügt.",
     "currentPlan": "Aktueller Tarif",
     "changePlan": "Tarif ändern",
-    "enrollmentPaused": "Die Registrierung neuer Geräte ist pausiert: {{active}} von {{limit}} Geräten. Ändern Sie Ihren Tarif, um weitere hinzuzufügen.",
+    "enrollmentPaused": "Die Registrierung neuer Geräte ist pausiert: {{active}} von {{limit}} Geräten.",
+    "enrollmentPausedNoCounts": "Die Registrierung neuer Geräte ist pausiert, weil Ihr Konto sein Gerätelimit erreicht hat.",
+    "enrollmentPausedChangePlan": "Ändern Sie Ihren Tarif, um weitere hinzuzufügen.",
     "plans": {
       "free": "Kostenlos",
       "starter": "Starter",

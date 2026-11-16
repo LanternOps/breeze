@@ -8290,7 +8290,9 @@
     "description": "O que seu plano inclui. Recursos bloqueados continuam visíveis para que você veja o que um upgrade acrescenta.",
     "currentPlan": "Plano atual",
     "changePlan": "Alterar plano",
-    "enrollmentPaused": "A inscrição de novos dispositivos está pausada: {{active}} de {{limit}} dispositivos. Altere seu plano para adicionar mais.",
+    "enrollmentPaused": "O registro de novos dispositivos está pausado: {{active}} de {{limit}} dispositivos.",
+    "enrollmentPausedNoCounts": "O registro de novos dispositivos está pausado porque sua conta atingiu o limite de dispositivos.",
+    "enrollmentPausedChangePlan": "Altere seu plano para adicionar mais.",
     "plans": {
       "free": "Gratuito",
       "starter": "Starter",

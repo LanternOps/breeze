@@ -8,6 +8,7 @@ import type { ClientEntitlement } from '../../lib/entitlementsCache';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
+import { useFeaturesStore } from '../../stores/featuresStore';
 import { PageHeader } from '../shared/PageHeader';
 
 /**
@@ -17,21 +18,34 @@ import { PageHeader } from '../shared/PageHeader';
  * grace window, and its limits. Locked features stay listed so the partner can
  * see what an upgrade adds. No mutations live here — grants are platform-admin
  * only (`/admin/partners/:id/entitlements`). Plan changes happen in the billing
- * app (`/billing/plans`), which this page only links to; when the partner is at
- * its device admission limit it also says why new enrollment is paused
- * (`GET /partner/device-capacity`, read-only).
+ * app (`/billing/plans`), which this page only links to — and only when the
+ * billing app is present (`features.billing`; self-hosted has none). When the
+ * partner is at its device admission limit it also says why new enrollment is
+ * paused (`GET /partner/device-capacity`, read-only).
  */
 
-type DeviceCapacity = { limit: number | null; activeCount: number; enrollmentPaused: boolean };
+/**
+ * The capacity read. Full-partner-access users get the counts; everyone else
+ * gets only `{ paused, reason }` from the API, so `counts` is then null and
+ * the message is shown without numbers.
+ */
+type DeviceCapacity = {
+  pausedForDeviceLimit: boolean;
+  counts: { limit: number; activeCount: number } | null;
+};
 
 const CHANGE_PLAN_HREF = '/billing/plans';
 
-function isDeviceCapacity(value: unknown): value is DeviceCapacity {
-  if (!value || typeof value !== 'object') return false;
+function parseDeviceCapacity(value: unknown): DeviceCapacity | null {
+  if (!value || typeof value !== 'object') return null;
   const v = value as Record<string, unknown>;
-  return (v.limit === null || typeof v.limit === 'number')
-    && typeof v.activeCount === 'number'
-    && typeof v.enrollmentPaused === 'boolean';
+  if (typeof v.paused !== 'boolean') return null;
+  return {
+    pausedForDeviceLimit: v.paused && v.reason === 'device_limit',
+    counts: typeof v.limit === 'number' && typeof v.activeCount === 'number'
+      ? { limit: v.limit, activeCount: v.activeCount }
+      : null,
+  };
 }
 
 // Supplemental: on any failure the page simply shows no pause message.
@@ -43,10 +57,11 @@ function useDeviceCapacity(): DeviceCapacity | null {
       try {
         const res = await fetchWithAuth('/partner/device-capacity', { skipOrgIdInjection: true });
         if (!res.ok) return;
-        const body: unknown = await res.json();
-        if (active && isDeviceCapacity(body)) setCapacity(body);
-      } catch {
+        const parsed = parseDeviceCapacity(await res.json());
+        if (active && parsed) setCapacity(parsed);
+      } catch (err) {
         // No pause reason when the capacity read is unavailable.
+        console.warn('[PlanAndFeaturesPage] device capacity read failed:', err instanceof Error ? err.message : err);
       }
     })();
     return () => { active = false; };
@@ -78,6 +93,9 @@ export default function PlanAndFeaturesPage() {
   const { t } = useTranslation('settings');
   const { snapshot, loading, failed, reload } = useEntitlements();
   const capacity = useDeviceCapacity();
+  const billing = useFeaturesStore((s) => s.features.billing);
+  const loadFeatures = useFeaturesStore((s) => s.load);
+  useEffect(() => { void loadFeatures(); }, [loadFeatures]);
 
   const features: Record<EntitlementKey, { label: string; why: string }> = {
     onboarding_supervisor: {
@@ -124,7 +142,7 @@ export default function PlanAndFeaturesPage() {
         icon={<BadgeCheck className="h-5 w-5" />}
         title={t('planAndFeatures.heading')}
         description={t('planAndFeatures.description')}
-        actions={(
+        actions={billing ? (
           <a
             href={CHANGE_PLAN_HREF}
             className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
@@ -132,19 +150,22 @@ export default function PlanAndFeaturesPage() {
           >
             {t('planAndFeatures.changePlan')}
           </a>
-        )}
+        ) : undefined}
       />
 
-      {capacity?.enrollmentPaused && capacity.limit !== null && (
+      {capacity?.pausedForDeviceLimit && (
         <div
           className="rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm"
           role="status"
           data-testid="plan-enrollment-paused"
         >
-          {t('planAndFeatures.enrollmentPaused', {
-            active: formatNumber(capacity.activeCount),
-            limit: formatNumber(capacity.limit),
-          })}
+          {capacity.counts
+            ? t('planAndFeatures.enrollmentPaused', {
+              active: formatNumber(capacity.counts.activeCount),
+              limit: formatNumber(capacity.counts.limit),
+            })
+            : t('planAndFeatures.enrollmentPausedNoCounts')}
+          {billing && ` ${t('planAndFeatures.enrollmentPausedChangePlan')}`}
         </div>
       )}
 

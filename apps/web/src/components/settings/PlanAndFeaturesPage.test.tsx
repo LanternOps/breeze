@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useEntitlements, type UseEntitlementsResult } from '../../hooks/useEntitlement';
 import type { ClientEntitlement } from '../../lib/entitlementsCache';
+import { useFeaturesStore } from '../../stores/featuresStore';
 import PlanAndFeaturesPage from './PlanAndFeaturesPage';
 
 vi.mock('../../hooks/useEntitlement', () => ({ useEntitlements: vi.fn() }));
@@ -13,6 +14,16 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...args: unknown[]) => fet
 function capacityResponse(body: unknown, ok = true): Response {
   return { ok, status: ok ? 200 : 500, json: async () => body } as Response;
 }
+
+// `loaded: true` keeps the store from reading /config; each test picks billing.
+function setBilling(billing: boolean) {
+  useFeaturesStore.setState({
+    features: { ...useFeaturesStore.getState().features, billing },
+    loaded: true,
+  });
+}
+
+const FULL_PAUSED = { limit: 110, activeCount: 110, enrollmentPaused: true, paused: true, reason: 'device_limit' };
 
 const useEntitlementsMock = vi.mocked(useEntitlements);
 
@@ -53,7 +64,10 @@ describe('PlanAndFeaturesPage', () => {
   beforeEach(() => {
     useEntitlementsMock.mockReset();
     fetchMock.mockReset();
-    fetchMock.mockResolvedValue(capacityResponse({ limit: 110, activeCount: 12, enrollmentPaused: false }));
+    fetchMock.mockResolvedValue(capacityResponse({
+      limit: 110, activeCount: 12, enrollmentPaused: false, paused: false, reason: null,
+    }));
+    setBilling(true);
   });
 
   it('renders the plan badge and one row per registry key', () => {
@@ -174,8 +188,16 @@ describe('PlanAndFeaturesPage', () => {
     expect(screen.getByTestId('plan-change-link')).toHaveAttribute('href', '/billing/plans');
   });
 
+  it('hides the Change plan link without billing (self-hosted)', () => {
+    setBilling(false);
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    expect(screen.queryByTestId('plan-change-link')).toBeNull();
+  });
+
   it('shows the paused message with counts', async () => {
-    fetchMock.mockResolvedValue(capacityResponse({ limit: 110, activeCount: 110, enrollmentPaused: true }));
+    fetchMock.mockResolvedValue(capacityResponse(FULL_PAUSED));
     mockResult({ snapshot: proSnapshot() });
     render(<PlanAndFeaturesPage />);
 
@@ -184,6 +206,49 @@ describe('PlanAndFeaturesPage', () => {
       'New device enrollment is paused: 110 of 110 devices. Change your plan to add more.',
     );
     expect(fetchMock).toHaveBeenCalledWith('/partner/device-capacity', { skipOrgIdInjection: true });
+  });
+
+  it('drops the Change your plan wording from the paused message without billing', async () => {
+    setBilling(false);
+    fetchMock.mockResolvedValue(capacityResponse(FULL_PAUSED));
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    const paused = await screen.findByTestId('plan-enrollment-paused');
+    expect(paused).toHaveTextContent('New device enrollment is paused: 110 of 110 devices.');
+    expect(paused.textContent).not.toContain('Change your plan');
+  });
+
+  it('shows the paused reason without counts for the reduced (non-full-access) body', async () => {
+    fetchMock.mockResolvedValue(capacityResponse({ paused: true, reason: 'device_limit' }));
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    const paused = await screen.findByTestId('plan-enrollment-paused');
+    expect(paused).toHaveTextContent(
+      'New device enrollment is paused because your account has reached its device limit. Change your plan to add more.',
+    );
+    expect(paused.textContent).not.toMatch(/\d/);
+  });
+
+  it('reduced body without billing: the reason alone', async () => {
+    setBilling(false);
+    fetchMock.mockResolvedValue(capacityResponse({ paused: true, reason: 'device_limit' }));
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    const paused = await screen.findByTestId('plan-enrollment-paused');
+    expect(paused).toHaveTextContent('New device enrollment is paused because your account has reached its device limit.');
+    expect(paused.textContent).not.toContain('Change your plan');
+  });
+
+  it('reduced body while enrollment is open shows no message', async () => {
+    fetchMock.mockResolvedValue(capacityResponse({ paused: false, reason: null }));
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('plan-enrollment-paused')).toBeNull();
   });
 
   it('shows no paused message while enrollment is open', async () => {

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { authMiddleware, requirePartner, requireScope } from '../middleware/auth';
 import { PartnerDeviceCapacityError, partnerAdmissionStatus } from '../services/partnerDeviceCapacity';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 
 /**
  * GET /partner/device-capacity — read-only: the caller's own partner device
@@ -13,7 +14,14 @@ import { PartnerDeviceCapacityError, partnerAdmissionStatus } from '../services/
  * selects it. The read runs in system scope, outside the request context, so
  * the count covers every org of the partner the way admission counts it — a
  * partner user with `selected` org access would otherwise see a partial count
- * and no pause. Only the partner's own aggregate numbers leave this handler.
+ * and no pause.
+ *
+ * The counts are partner-wide, so only full-partner access
+ * (`canManagePartnerWidePolicies`) receives them:
+ *   { limit, activeCount, enrollmentPaused, paused, reason }
+ * Every other partner user (org access 'selected' or 'none'; an unresolved
+ * membership fails closed) receives only whether enrollment is paused and why:
+ *   { paused, reason }
  */
 export const partnerDeviceCapacityRoutes = new Hono();
 
@@ -28,7 +36,12 @@ partnerDeviceCapacityRoutes.get('/', async (c) => {
       () => db.transaction((tx) => partnerAdmissionStatus(tx, partnerId)),
       'partnerDeviceCapacity.status',
     ));
-    return c.json({ limit, activeCount, enrollmentPaused: limit !== null && activeCount >= limit });
+    const paused = limit !== null && activeCount >= limit;
+    const reason = paused ? 'device_limit' as const : null;
+    if (!canManagePartnerWidePolicies(c.get('auth'))) {
+      return c.json({ paused, reason });
+    }
+    return c.json({ limit, activeCount, enrollmentPaused: paused, paused, reason });
   } catch (err) {
     if (err instanceof PartnerDeviceCapacityError && err.code === 'PARTNER_NOT_FOUND') {
       return c.json({ error: 'partner not found' }, 404);
