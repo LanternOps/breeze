@@ -113,13 +113,16 @@ export async function requestNotifyOptIn(userId: string): Promise<boolean> {
   if (permission === 'default') {
     try {
       permission = (await api.requestPermission()) as AiNotifyPermission;
-    } catch {
+    } catch (err) {
+      console.warn('[aiNotifications] Notification permission request failed:', err);
       return false;
     }
   }
   if (permission !== 'granted') return false;
   setNotifyOptIn(userId, true);
-  return isNotifyOptedIn(userId);
+  const stored = isNotifyOptedIn(userId);
+  if (!stored) console.warn('[aiNotifications] Permission granted but the opt-in could not be saved (browser storage blocked)');
+  return stored;
 }
 
 function documentAttended(): boolean {
@@ -175,18 +178,21 @@ export function notifyAi(kind: AiNotifyKind, surface: AiNotifySurface, opts: AiN
     if (!shouldNotify(kind, opts.surfaceVisible)) return;
 
     const tag = tagFor(kind, surface, opts.sessionId);
+    // The title is the chat's own name (the side panel's heading), never the conversation's.
+    const title = i18n.t('ai:aiChatSidebar.title');
+    const body = bodyFor(kind);
     let n: Notification;
     try {
-      // The title is the chat's own name (the side panel's heading), never the conversation's.
-      n = new api(i18n.t('ai:aiChatSidebar.title'), { body: bodyFor(kind), tag, silent: true });
+      n = new api(title, { body, tag, silent: true });
     } catch (err) {
-      // Android Chrome (and some embedded browsers) only allow service-worker
-      // notifications: stop trying and let the bell hide itself.
-      constructorRefused = true;
+      // Android Chrome (and some embedded browsers) allow only service-worker
+      // notifications and throw a TypeError ("Illegal constructor"): stop
+      // trying and let the bell hide itself. Anything else is not latched.
+      if (err instanceof TypeError) constructorRefused = true;
       console.warn('[aiNotifications] Notification construction refused:', err);
       return;
     }
-    open.get(tag)?.close();
+    closeTag(tag);
     open.set(tag, n);
     const forget = () => { if (open.get(tag) === n) open.delete(tag); };
     n.onclose = forget;

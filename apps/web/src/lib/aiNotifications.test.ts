@@ -21,6 +21,7 @@ import {
   shouldNotify,
   type AiNotifyKind,
 } from './aiNotifications';
+import { runLogoutHooks } from '@/stores/logoutHooks';
 
 /** A stand-in for the browser Notification API: records every construction. */
 class FakeNotification {
@@ -285,6 +286,50 @@ describe('notifyAi', () => {
     FakeNotification.throwOnConstruct = true;
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(() => notifyAi('response_ready', sidebar, { sessionId: 's1', surfaceVisible: false, onOpen })).not.toThrow();
+  });
+
+  it('a TypeError from the constructor latches the feature off (the bell hides)', () => {
+    FakeNotification.throwOnConstruct = true;
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    notifyAi('response_ready', sidebar, { sessionId: 's1', surfaceVisible: false, onOpen });
+    expect(isNotificationSupported()).toBe(false);
+    expect(getNotifyPermission()).toBe('unsupported');
+  });
+
+  it('any other constructor error is not latched: the next notification still shows', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const Throwing = class extends FakeNotification {
+      constructor(title: string, options: NotificationOptions) {
+        if (Throwing.once) { Throwing.once = false; throw new Error('transient'); }
+        super(title, options);
+      }
+      static once = true;
+    };
+    g.Notification = Throwing;
+    notifyAi('response_ready', sidebar, { sessionId: 's1', surfaceVisible: false, onOpen });
+    expect(isNotificationSupported()).toBe(true);
+    notifyAi('response_ready', sidebar, { sessionId: 's1', surfaceVisible: false, onOpen });
+    expect(FakeNotification.instances).toHaveLength(1);
+  });
+
+  it('a newer notification with the same tag replaces (closes) the older one', () => {
+    notifyAi('response_ready', sidebar, { sessionId: 's1', surfaceVisible: false, onOpen });
+    notifyAi('failed', sidebar, { sessionId: 's1', surfaceVisible: false, onOpen });
+    const [older, newer] = FakeNotification.instances;
+    expect(older!.close).toHaveBeenCalled();
+    closeAiNotification(sidebar, 's1');
+    expect(newer!.close).toHaveBeenCalled();
+  });
+
+  it('logout closes every notification and forgets failed turns', () => {
+    notifyAi('response_ready', sidebar, { sessionId: 's1', surfaceVisible: false, onOpen });
+    notifyAi('needs_approval', { kind: 'workspace', tabId: 't1' }, { sessionId: 's2', surfaceVisible: false, onOpen });
+    noteAiTurnEvent('error', { kind: 'workspace', tabId: 't2' }, { sessionId: 's3', surfaceVisible: false, onOpen });
+    runLogoutHooks();
+    for (const n of FakeNotification.instances) expect(n.close).toHaveBeenCalled();
+    FakeNotification.instances = [];
+    noteAiTurnEvent('done', { kind: 'workspace', tabId: 't2' }, { sessionId: 's3', surfaceVisible: false, onOpen });
+    expect(FakeNotification.instances.map((n) => n.options.body)).toEqual(['Response ready']);
   });
 
   it('never throws when the auth store is unavailable', () => {

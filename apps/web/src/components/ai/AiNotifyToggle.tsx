@@ -21,12 +21,13 @@ import {
  */
 export default function AiNotifyToggle() {
   const { t } = useTranslation("ai");
-  // Read on every render (one store read, one localStorage read) so a change
-  // of user shows that user's choice. Not a hook subscription: the chat
-  // headers re-render often, and this keeps the bell out of the auth store's
-  // render path (and of the many tests that stub that store).
+  // Read on every render (one store read, one localStorage read, one property
+  // read) so a change of user, or a permission changed in browser settings,
+  // shows on the next render. Not a hook subscription: the chat headers
+  // re-render often, and this keeps the bell out of the auth store's render
+  // path (and of the many tests that stub that store).
   const userId = currentUserId();
-  const [permission, setPermission] = useState<AiNotifyPermission>(() => getNotifyPermission());
+  const permission: AiNotifyPermission = getNotifyPermission();
   const [, setRevision] = useState(0);
   const optedIn = isNotifyOptedIn(userId);
   const [busy, setBusy] = useState(false);
@@ -51,7 +52,6 @@ export default function AiNotifyToggle() {
     try {
       await requestNotifyOptIn(userId);
     } finally {
-      setPermission(getNotifyPermission());
       setRevision((r) => r + 1);
       setBusy(false);
     }
