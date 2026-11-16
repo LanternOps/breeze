@@ -426,6 +426,16 @@ describe('findArtifactForCaller (A-W05 D13a/Q4) — input validation short-circu
     expect(mocks.calls).toEqual([]);
   });
 
+  it('#11845: returns null without querying when an analysisOutputs id is not a uuid', async () => {
+    const GRANT = '00000000-0000-4000-8000-0000000000b1';
+    // A queued row would come back if the query ran.
+    mocks.selectRows.push([row({ runId: null, sessionId: SESSION })], [row({ runId: null, sessionId: SESSION })]);
+    expect(await findArtifactForCaller(ART, { orgId: ORG, sessionId: SESSION, analysisOutputs: { grantId: 'not-a-uuid', orgIds: [ORG] } })).toBeNull();
+    expect(await findArtifactForCaller(ART, { orgId: ORG, sessionId: SESSION, analysisOutputs: { grantId: GRANT, orgIds: [ORG, 'x'] } })).toBeNull();
+    expect(mocks.selectRows).toHaveLength(2);
+    mocks.selectRows.length = 0;
+  });
+
   it('returns the record when the anchor matches (run-anchored)', async () => {
     mocks.selectRows.push([row({ runId: RUN, sessionId: null })]);
     expect((await findArtifactForCaller(ART, { orgId: ORG, runId: RUN }))?.id).toBe(ART);

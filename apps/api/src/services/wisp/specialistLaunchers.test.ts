@@ -3,9 +3,12 @@
  * sweep schedule merge and the params schemas are real.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const h = vi.hoisted(() => ({
   tables: {} as Record<string, unknown[][]>,
+  wheres: [] as unknown[],
   sweepAdd: vi.fn(),
   admitAnalysisRun: vi.fn(),
   resolveEffectiveAgentSystem: vi.fn(),
@@ -38,7 +41,7 @@ vi.mock('../../db', () => ({
       from: (table: unknown) => {
         const name = String((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')]);
         const b: Record<string, unknown> = {
-          where: () => b,
+          where: (cond: unknown) => { h.wheres.push(cond); return b; },
           limit: () => Promise.resolve().then(() => nextRows(name)),
         };
         return b;
@@ -139,6 +142,7 @@ beforeEach(() => {
   // The agent kill switch is on (agents allowed) unless a case says otherwise.
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   h.tables = {};
+  h.wheres = [];
   for (const k of Object.keys(h.recipeKinds)) delete h.recipeKinds[k];
 });
 
@@ -292,6 +296,67 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'grant_refused' });
     expect(await launchAnalysis(ctx({ params }))).toEqual({ refused: 'admission_skipped', detail: 'grant_refused' });
+  });
+
+  const paramsOf = (cond: unknown) => new PgDialect().sqlToQuery(cond as SQL).params;
+
+  const SESSION = '00000000-0000-4000-8000-0000000000b1';
+  const chatActor = { user: { id: GRANTOR }, wispGrant: { grantId: GRANT, grantRevisionId: REV, sessionId: SESSION } } as never;
+
+  it('a chat launch records its session and attaches the live stream', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'run-1' });
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ sessionId: SESSION }));
+    expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'run-1', sessionId: SESSION, orgId: ORG });
+  });
+
+  it('the run/approval paths carry no session and attach nothing', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-2' });
+    await launchAnalysis(ctx({ params, actorAuth: null }));
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+    expect(h.watchRunForOriginSession).not.toHaveBeenCalled();
+  });
+
+  it('a replay from the same chat re-attaches without a second admission', async () => {
+    h.tables.ai_agent_runs = [[{ id: 'old', status: 'running', errorCode: null }]];
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'old' });
+    expect(h.admitAnalysisRun).not.toHaveBeenCalled();
+    expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'old', sessionId: SESSION, orgId: ORG });
+  });
+
+  it('a raced replay from the same chat re-attaches too', async () => {
+    h.tables.ai_agent_runs = [[], [{ id: 'raced', status: 'queued', errorCode: null }]];
+    h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_rate' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'raced' });
+    expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'raced', sessionId: SESSION, orgId: ORG });
+  });
+
+  it('a refused chat launch attaches nothing', async () => {
+    h.tables.ai_agent_runs = [[], []];
+    h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_rate' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ refused: 'admission_skipped', detail: 'analysis_rate' });
+    expect(h.watchRunForOriginSession).not.toHaveBeenCalled();
+  });
+
+  it('an admitted run stays admitted when the attach throws', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-3' });
+    h.watchRunForOriginSession.mockImplementationOnce(() => { throw new Error('bridge down'); });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'run-3' });
+    expect(h.captureException).toHaveBeenCalled();
+  });
+
+  it('looks a replay up by the stored dedupe key, not the raw request id (both lookups)', async () => {
+    h.tables.ai_agent_runs = [[], []];
+    h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_rate' });
+    await launchAnalysis(ctx({ params }));
+    expect(h.wheres).toHaveLength(2);
+    for (const cond of h.wheres) {
+      expect(paramsOf(cond)).toContain('wisp-specialist-req-1');
+      expect(paramsOf(cond)).not.toContain('req-1');
+    }
   });
 });
 

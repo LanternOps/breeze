@@ -1,8 +1,8 @@
 /**
  * #11671 — a specialist's result reaches the chat that handed the work off.
  *
- * A Wisp hand-off (`launch_specialist` → `launchDeviceTroubleshooting`)
- * records the chat session on the run (`trigger_ref.originSessionId`). The
+ * A Wisp hand-off (`launch_specialist` → `launchDeviceTroubleshooting`, or
+ * `launchAnalysis` since #11845) records the chat session on the run (`trigger_ref.originSessionId`). The
  * run settles seconds or minutes later, after the launching turn has ended.
  * Its result used to reach the model only through the in-memory queue on the
  * live streaming session (chatRunBridge `pendingRunResults`), and every
@@ -19,6 +19,12 @@
  * next one. The key is (run, status): a run that later settles differently
  * (waiting for approval → cancelled) is given again, once.
  *
+ * #11845: `analysis` runs a Wisp chat launched are delivered the same way
+ * (when the workspace is on), with their `submit_analysis` outcome parsed and
+ * only their `output` files listed. Delivery stays per origin session: a
+ * later chat in the same Wisp thread is not given the run; it finds it through
+ * the run-read tools.
+ *
  * Tenancy: the read is pinned to the session's grant and to the orgs of the
  * grant's LIVE ceiling, so a run of an org since removed from the grant is not
  * read into the chat. A paused, revoked or corrupt grant reads nothing.
@@ -28,9 +34,9 @@
  * unreadable Redis set gives the results again rather than drop them.
  */
 import { and, count, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
-import type { AiRunResultArtifactRef } from '@breeze/shared';
+import { analysisOutcomeSchema, type AiAgentRunProfile, type AiRunResultArtifactRef, type AnalysisOutcome } from '@breeze/shared';
 import { AI_SESSION_MAX_AGE_MS } from '@breeze/shared/constants';
-import { wispEnabled } from '../../config/env';
+import { aiWorkspaceEnabled, wispEnabled } from '../../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
@@ -48,7 +54,11 @@ export const MAX_SPECIALIST_RESULTS_PER_TURN = 5;
 /** How many settled runs one read considers, newest first. */
 const CANDIDATE_LIMIT = 50;
 
-const PROFILE = 'device_troubleshooting';
+const TROUBLESHOOTING_PROFILE = 'device_troubleshooting' satisfies AiAgentRunProfile;
+const ANALYSIS_PROFILE = 'analysis' satisfies AiAgentRunProfile;
+/** `analysis` hand-offs exist only while the workspace is on (#11845). */
+const deliveredProfiles = (): AiAgentRunProfile[] =>
+  (aiWorkspaceEnabled() ? [TROUBLESHOOTING_PROFILE, ANALYSIS_PROFILE] : [TROUBLESHOOTING_PROFILE]);
 const SETTLED_STATUSES = ['completed', 'failed', 'awaiting_approval', 'cancelled'] as const;
 type SettledStatus = (typeof SETTLED_STATUSES)[number];
 
@@ -75,7 +85,37 @@ async function deliveredSet(sessionId: string): Promise<Set<string>> {
   }
 }
 
-type RunRow = { id: string; orgId: string; status: string; profile: string; summary: string | null };
+type RunRow = {
+  id: string;
+  orgId: string;
+  status: string;
+  profile: string;
+  summary: string | null;
+  outcome: Record<string, unknown> | null;
+};
+
+/**
+ * An analysis run's stored outcome, or null when it has none or it fails the
+ * schema (never throws; the renderer falls back to the summary column). An
+ * outcome that is present but unreadable is reported, by issue path only
+ * (never the values, which are model-written), so it is not mistaken for a
+ * run that submitted nothing.
+ */
+function parsedAnalysisOutcome(runId: string, outcome: Record<string, unknown> | null): AnalysisOutcome | null {
+  const stored = outcome?.analysis;
+  if (stored === undefined || stored === null) return null;
+  const parsed = analysisOutcomeSchema.safeParse(stored);
+  if (parsed.success) return parsed.data;
+  const paths = parsed.error.issues.slice(0, 10).map((i) => i.path.join('.') || '(root)');
+  console.warn('[wisp] specialist results: an analysis outcome failed its schema; delivering the summary only', { runId, paths });
+  captureException(
+    new Error('analysis outcome failed its schema'),
+    undefined,
+    { runId, paths: paths.join(','), op: 'wisp.analysis_outcome_unreadable' },
+    { fingerprint: ['wisp-specialist-results', 'analysis-outcome-unreadable'] },
+  );
+  return null;
+}
 
 /** This session's settled hand-offs under the grant and its live ceiling, newest first. */
 async function readSettledRuns(input: { grantId: string; sessionId: string; orgIds: string[]; since: Date }): Promise<RunRow[]> {
@@ -88,11 +128,12 @@ async function readSettledRuns(input: { grantId: string; sessionId: string; orgI
           status: aiAgentRuns.status,
           profile: aiAgentRuns.profile,
           summary: aiAgentRuns.summary,
+          outcome: aiAgentRuns.outcome,
         })
         .from(aiAgentRuns)
         .where(and(
           inArray(aiAgentRuns.orgId, input.orgIds),
-          eq(aiAgentRuns.profile, PROFILE),
+          inArray(aiAgentRuns.profile, deliveredProfiles()),
           isNotNull(aiAgentRuns.finishedAt),
           gte(aiAgentRuns.finishedAt, input.since),
           eq(aiAgentRuns.grantId, input.grantId),
@@ -118,6 +159,7 @@ async function readResults(chosen: RunRow[], orgIds: string[]): Promise<Speciali
           name: aiRunArtifacts.name,
           bytes: aiRunArtifacts.bytes,
           contentType: aiRunArtifacts.contentType,
+          kind: aiRunArtifacts.kind,
         })
         .from(aiRunArtifacts)
         .where(and(inArray(aiRunArtifacts.runId, ids), inArray(aiRunArtifacts.orgId, orgIds))),
@@ -134,12 +176,17 @@ async function readResults(chosen: RunRow[], orgIds: string[]): Promise<Speciali
   );
 
   const results = chosen.map((run): PendingRunResult => {
+    const isAnalysis = run.profile === ANALYSIS_PROFILE;
     const refs: AiRunResultArtifactRef[] = artifacts
       .filter((a) => a.runId === run.id)
+      // An analysis run lists only what it produced: its raw input captures
+      // and step scripts/output stay off the chat (spec §4.1).
+      .filter((a) => !isAnalysis || a.kind === 'output')
       // `bytes` is a bigint column: a string on some drivers, a number on the wire.
-      .map(({ runId: _runId, ...a }) => ({ ...a, bytes: Number(a.bytes) }));
+      .map(({ runId: _runId, kind: _kind, ...a }) => ({ ...a, bytes: Number(a.bytes) }));
     const status = run.status as SettledStatus;
     const result: PendingRunResult = { runId: run.id, status, profile: run.profile, summary: run.summary, artifacts: refs };
+    if (isAnalysis) result.analysis = parsedAnalysisOutcome(run.id, run.outcome);
     if (status === 'awaiting_approval') {
       result.pendingIntentCount = Number(pending.find((p) => p.runId === run.id)?.n ?? 0);
     }

@@ -1279,7 +1279,15 @@ function makeToolHandler(
         ? {
           orgId: captureSession.orgId,
           sessionId: captureSession.breezeSessionId,
-          ...(captureSession.wispGrant ? { wispThreadId: captureSession.wispGrant.threadId } : {}),
+          ...(captureSession.wispGrant
+            ? {
+              wispThreadId: captureSession.wispGrant.threadId,
+              // #11845: the grant pin from the ai_sessions row (trusted
+              // session context, never tool input) for read_artifact's
+              // analysis-output arm.
+              wispGrant: { grantId: captureSession.wispGrant.grantId, revisionId: captureSession.wispGrant.revisionId },
+            }
+            : {}),
         }
         : undefined;
       // An absent member means no KEY at all, and an empty bag means no FOURTH

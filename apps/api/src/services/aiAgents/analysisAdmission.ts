@@ -61,7 +61,13 @@ export type AnalysisAdmissionRefusal =
 export interface AdmitAnalysisRunInput {
   orgId: string;
   requestedByUserId: string;
-  /** The CHAT session the technician launched from, or null. */
+  /**
+   * The CHAT session the technician launched from, or null. Also written as
+   * `trigger_ref.originSessionId`: next-turn delivery matches that key exactly
+   * (`wisp/specialistResultsTurn.ts`), and `read_artifact`'s analysis-output
+   * arm requires it to be set (a chat-launched run, not one the coordinator
+   * admitted on the run/approval paths, which have no live chat).
+   */
   sessionId: string | null;
   goal: string;
   deviceIds: string[];
@@ -208,6 +214,7 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
         source: 'chat_analysis',
         goal: input.goal,
         chatSessionId: input.sessionId,
+        originSessionId: input.sessionId,
         siteId,
         requestedByUserId: input.requestedByUserId,
       },

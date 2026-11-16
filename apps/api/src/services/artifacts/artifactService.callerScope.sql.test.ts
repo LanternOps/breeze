@@ -92,11 +92,75 @@ describe('findArtifactForCallerQuery — compiled SQL (vacuous-Drizzle trap)', (
     const BEFORE_RUN = `${cols} where ("ai_run_artifacts"."id" = $1 and "ai_run_artifacts"."org_id" = $2 and "ai_run_artifacts"."run_id" = $3 ${tail}`;
 
     for (const wispThreadId of [undefined, null] as const) {
-      const session = findArtifactForCallerQuery(ART, { orgId: ORG, sessionId: SESSION, ...(wispThreadId === undefined ? {} : { wispThreadId }) }).toSQL();
-      expect(session.sql).toBe(BEFORE_SESSION);
-      expect(session.sql).not.toContain('wisp_thread_attachments');
-      const run = findArtifactForCallerQuery(ART, { orgId: ORG, runId: RUN, ...(wispThreadId === undefined ? {} : { wispThreadId }) }).toSQL();
-      expect(run.sql).toBe(BEFORE_RUN);
+      for (const analysisOutputs of [undefined, null] as const) {
+        const extra = {
+          ...(wispThreadId === undefined ? {} : { wispThreadId }),
+          ...(analysisOutputs === undefined ? {} : { analysisOutputs }),
+        };
+        const session = findArtifactForCallerQuery(ART, { orgId: ORG, sessionId: SESSION, ...extra }).toSQL();
+        expect(session.sql).toBe(BEFORE_SESSION);
+        expect(session.sql).not.toContain('wisp_thread_attachments');
+        expect(session.sql).not.toContain('ai_agent_runs');
+        const run = findArtifactForCallerQuery(ART, { orgId: ORG, runId: RUN, ...extra }).toSQL();
+        expect(run.sql).toBe(BEFORE_RUN);
+      }
     }
+  });
+
+  // Wisp analysis sessions W01 (#11845): an output of a chat-launched analysis
+  // run under the caller's grant is readable from any session of that grant
+  // (the thread rule), in any org of the live ceiling.
+  const GRANT = '00000000-0000-4000-8000-0000000000b1';
+  const ORG2 = '00000000-0000-4000-8000-0000000000b3';
+  const scope = { grantId: GRANT, orgIds: [ORG, ORG2] };
+
+  it('with analysisOutputs a session read also matches an output of a chat-launched analysis run under this grant', () => {
+    const { sql, params } = findArtifactForCallerQuery(ART, { orgId: ORG, sessionId: SESSION, analysisOutputs: scope }).toSQL();
+    expect(sql).toMatch(/"ai_run_artifacts"\."kind" = \$\d+/);
+    expect(sql).toMatch(/"ai_run_artifacts"\."org_id" in \(\$\d+, \$\d+\)/);
+    expect(sql).toMatch(/exists \(select 1 from "ai_agent_runs" "ar" where/);
+    expect(sql).toMatch(/"ar"\."id" = "ai_run_artifacts"\."run_id"/);
+    expect(sql).toMatch(/"ar"\."org_id" = "ai_run_artifacts"\."org_id"/);
+    expect(sql).toMatch(/"ar"\."profile" = \$\d+/);
+    expect(sql).toMatch(/"ar"\."grant_id" = \$\d+/);
+    expect(sql).toMatch(/\("ar"\."trigger_ref"\s*->>\s*'originSessionId'\) is not null/);
+    expect(params).toEqual(expect.arrayContaining(['output', 'analysis', GRANT, ORG, ORG2]));
+    // Thread rule: the arm never binds the caller's session id (the session arm beside it does, once).
+    expect(params.filter((p) => p === SESSION)).toHaveLength(1);
+  });
+
+  it('expiry, export_dataset and redacted-marker terms still bind the analysis arm', () => {
+    const { sql } = findArtifactForCallerQuery(ART, { orgId: ORG, sessionId: SESSION, analysisOutputs: scope }).toSQL();
+    const arm = sql.indexOf('exists (select 1 from "ai_agent_runs"');
+    expect(arm).toBeGreaterThan(-1);
+    expect(sql.indexOf('"ai_run_artifacts"."expires_at" >')).toBeGreaterThan(arm);
+    expect(sql.indexOf('"ai_run_artifacts"."created_by_tool" <>')).toBeGreaterThan(arm);
+    expect(sql).toMatch(/\("ai_run_artifacts"\."kind" <> \$\d+ or "ai_run_artifacts"\."name" like \$\d+\)/);
+    // The handle term sits outside the OR.
+    expect(sql).toMatch(/^select .* where \("ai_run_artifacts"\."id" = \$1 and \(\(/);
+  });
+
+  it('the session-org arm is unchanged beside it', () => {
+    const { sql } = findArtifactForCallerQuery(ART, { orgId: ORG, sessionId: SESSION, analysisOutputs: scope }).toSQL();
+    expect(sql).toMatch(/\(\("ai_run_artifacts"\."org_id" = \$\d+ and "ai_run_artifacts"\."session_id" = \$\d+\) or \(/);
+  });
+
+  it('keeps the thread-attachment arm under the session org when both are set', () => {
+    const THREAD2 = '00000000-0000-4000-8000-0000000000a7';
+    const { sql } = findArtifactForCallerQuery(ART, { orgId: ORG, sessionId: SESSION, wispThreadId: THREAD2, analysisOutputs: scope }).toSQL();
+    expect(sql).toMatch(
+      /\(\("ai_run_artifacts"\."org_id" = \$\d+ and \("ai_run_artifacts"\."session_id" = \$\d+ or exists \(select 1 from "wisp_thread_attachments"/,
+    );
+    expect(sql).toContain('exists (select 1 from "ai_agent_runs" "ar"');
+  });
+
+  it('no arm for a run anchor, a missing session or an empty ceiling', () => {
+    for (const anchor of [
+      { orgId: ORG, runId: RUN, analysisOutputs: scope },
+      { orgId: ORG, runId: RUN, sessionId: SESSION, analysisOutputs: scope },
+      { orgId: ORG, analysisOutputs: scope },
+      { orgId: ORG, sessionId: SESSION, analysisOutputs: { ...scope, orgIds: [] } },
+      { orgId: ORG, sessionId: SESSION, analysisOutputs: null },
+    ]) expect(findArtifactForCallerQuery(ART, anchor).toSQL().sql).not.toContain('ai_agent_runs');
   });
 });

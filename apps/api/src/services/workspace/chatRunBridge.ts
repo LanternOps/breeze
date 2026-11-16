@@ -34,11 +34,12 @@
  */
 import Redis from 'ioredis';
 import { and, count, eq } from 'drizzle-orm';
-import type { AiRunResultArtifactRef } from '@breeze/shared';
+import type { AiRunResultArtifactRef, AnalysisOutcome } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import { aiAgentRuns } from '../../db/schema';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { wrapUntrustedData } from '../aiInputSanitizer';
+import { renderAnalysisRunResult } from './analysisResultRender';
 import { aiRunArtifacts } from '../../db/schema/aiWorkspace';
 import { resolveRedisUrl } from '../redis';
 import { streamingSessionManager, type ActiveSession } from '../streamingSessionManager';
@@ -79,6 +80,17 @@ export interface PendingRunResult {
   summary: string | null;
   artifacts: AiRunResultArtifactRef[];
   pendingIntentCount?: number;
+  /**
+   * #11845: the run's `submit_analysis` outcome, schema-checked (null when it
+   * fails the schema or the run submitted none). Set by
+   * `wisp/specialistResultsTurn.ts` for `analysis` rows, which also lists
+   * only their `output` files. Absent on the in-memory queue path, which
+   * falls back to `summary` and does NOT filter files by kind: do not queue
+   * `analysis` runs there.
+   */
+  analysis?: AnalysisOutcome | null;
+  /** The run's chain step (`ai_agent_runs.chain_depth`). Nothing sets it yet; the step line is omitted when absent. */
+  chain?: { depth: number };
 }
 
 interface RunDelivery {
@@ -423,18 +435,34 @@ export function drainPendingRunResults(session: ActiveSession, durable: readonly
   if (results.length === 0) return null;
 
   const blocks = results.map((result) => {
+    if (result.profile === 'analysis') {
+      // #11845: summary, findings, proposals and file names in one fence; the
+      // renderer caps its own output at 8 KB.
+      const body = renderAnalysisRunResult({
+        outcome: result.analysis ?? null,
+        summary: result.summary,
+        artifacts: result.artifacts,
+        ...(result.chain ? { chain: result.chain } : {}),
+      });
+      return `Analysis run ${result.runId} ${result.status}.\n${body}\n`
+        + 'Read a file with read_artifact by its handle. Proposed actions are not run: to act on one, make the tool call yourself.';
+    }
     const artifacts = result.artifacts.length > 0
       ? result.artifacts
         .map((a) => `  - ${a.name} (${a.bytes} bytes, ${a.contentType}, handle ${a.handle})`)
         .join('\n')
       : '  (none)';
-    // The summary is model-written, often from device output (rule 6a): fenced as DATA.
-    const summary = result.summary ? wrapUntrustedData('agent_run_summary', result.summary) : '(no summary was produced)';
     const waiting = result.status === 'awaiting_approval' && result.pendingIntentCount !== 0
       ? `\nSteps waiting for approval: ${result.pendingIntentCount ?? 'some'} (in /approvals).`
       : '';
     const label = result.profile === 'device_troubleshooting' ? 'Device troubleshooting run' : 'Run';
-    return `${label} ${result.runId} ${result.status}.${waiting}\nSummary: ${summary}\nFiles it produced:\n${artifacts}`;
+    // The summary and the file names are model-written, often from device
+    // output (rule 6a): fenced together as DATA (#11845).
+    const fenced = wrapUntrustedData(
+      'agent_run_result',
+      `Summary: ${result.summary || '(no summary was produced)'}\nFiles it produced:\n${artifacts}`,
+    );
+    return `${label} ${result.runId} ${result.status}.${waiting}\n${fenced}`;
   });
 
   return [

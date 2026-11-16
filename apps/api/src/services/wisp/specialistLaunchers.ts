@@ -458,27 +458,36 @@ export async function launchSweep(ctx: LaunchContext): Promise<LaunchResult> {
   return { admitted: true };
 }
 
-/** A sandbox analysis run (`launch_analysis` — the coordinator-only path, w00). */
+/**
+ * A sandbox analysis run (`launch_analysis` — the coordinator-only path, w00).
+ * Follows the troubleshooting hand-off path (#11084): `originSessionId` is the
+ * chat session that launched it (null on the run/approval paths), recorded on
+ * the run as `trigger_ref.originSessionId`; when set, that chat's bridge
+ * streams the run and the next turn is handed its result.
+ */
 export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> {
   const params = analysisParamsSchema.parse(ctx.params);
-  const prior = await existingRunId(ctx.orgId, ctx.requestId);
-  if (prior) return { admitted: true, runId: prior };
+  const originSessionId = ctx.actorAuth?.wispGrant?.sessionId ?? null;
+  // Both replay lookups use the key admission stores, never the raw request id.
+  const dedupeKey = specialistDedupeKey(ctx.requestId);
+  const prior = await existingRunId(ctx.orgId, dedupeKey);
+  if (prior) return reattach(ctx, { admitted: true, runId: prior }, originSessionId);
   const result = await runOutsideDbContext(() => admitAnalysisRun({
     orgId: ctx.orgId,
     requestedByUserId: ctx.grantorUserId,
-    sessionId: null,
+    sessionId: originSessionId,
     goal: params.goal,
     deviceIds: params.deviceIds ?? [],
     siteId: params.siteId ?? null,
     stagedHandles: [],
-    dedupeKey: specialistDedupeKey(ctx.requestId),
+    dedupeKey,
     grant: { ...ctx.grant },
   }));
-  if (result.created) return { admitted: true, runId: result.runId };
+  if (result.created) return reattach(ctx, { admitted: true, runId: result.runId }, originSessionId);
   if (result.refusal === 'grant_refused') return { refused: 'admission_skipped', detail: 'grant_refused' };
   // `duplicate` collapses into `analysis_rate`; resolve a raced replay first.
-  const raced = await existingRunId(ctx.orgId, ctx.requestId);
-  if (raced) return { admitted: true, runId: raced };
+  const raced = await existingRunId(ctx.orgId, dedupeKey);
+  if (raced) return reattach(ctx, { admitted: true, runId: raced }, originSessionId);
   return { refused: 'admission_skipped', detail: result.refusal };
 }
 

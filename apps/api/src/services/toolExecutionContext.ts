@@ -187,8 +187,19 @@ export type ToolExecutionContext = {
    * `wispThreadId` (Wisp W04, w00 A24) is present only when the chat session
    * is attached to a Wisp thread; it lets the read also match that thread's
    * attachments (see `ArtifactCallerAnchor.wispThreadId`).
+   *
+   * `wispGrant` (#11845) is present only on a `read_artifact` anchor of a
+   * Wisp chat session: the session's grant pin, which the handler resolves
+   * against the live ceiling into `ArtifactCallerAnchor.analysisOutputs` and
+   * never forwards itself.
    */
-  captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null; wispThreadId?: string | null };
+  captureAnchor?: {
+    orgId: string;
+    runId?: string | null;
+    sessionId?: string | null;
+    wispThreadId?: string | null;
+    wispGrant?: { grantId: string; revisionId: string } | null;
+  };
   /**
    * Topology M4-D1 (#6000): the site context the topology gate
    * (`topology/aiToolGate.ts`) issued for THIS call — the pinned site of a
