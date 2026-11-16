@@ -41,6 +41,7 @@ import {
 } from '../portalAccountState';
 import { lockIdentityForAccount, type LockedPortalIdentity } from '../portalUserIdentities';
 import { getRedis } from '../redis';
+import { captureMessage } from '../sentry';
 import type {
   DirectorySource,
   DisableIdentityInput,
@@ -264,9 +265,27 @@ export async function disableIdentityInTransaction(input: DisableIdentityInput):
   return disableInTransaction(input, directorySourceOfBlocker(input.blocker), input.now ?? new Date());
 }
 
-/** After commit: both session stores for one account (W9). Logs and swallows a failure; the epoch is authoritative. */
-export async function purgeIdentitySessions(portalUserId: string, now: Date = new Date()): Promise<void> {
-  await purgeAfterCommit(portalUserId, null, now);
+/**
+ * After commit: both session stores for one account (W9). A failure is logged
+ * and reported, never thrown: the epoch bump already makes both session
+ * stores refuse the sessions on their next request (W8 D2), and a SCIM disable
+ * has no action row for the recovery sweep to retry from (W9 plan OD3).
+ */
+export async function purgeIdentitySessions(portalUserId: string): Promise<void> {
+  try {
+    await purgeSessions(portalUserId);
+  } catch (err) {
+    console.error('[portal-scim] session purge after disable failed; the epoch already ended the sessions', {
+      portalUserId,
+      error: err instanceof Error ? err.name : 'unknown',
+    });
+    captureMessage('portal SCIM session purge failed', {
+      eventCode: 'portal_scim_purge_failed',
+      level: 'warning',
+      fingerprint: ['portal_scim_purge_failed'],
+      tags: { area: 'portal_scim' },
+    });
+  }
 }
 
 async function disableInTransaction(input: DisableIdentityInput, source: DirectorySource | null, now: Date): Promise<DisableCommitted> {

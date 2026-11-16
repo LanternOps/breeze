@@ -8943,6 +8943,8 @@
     "title": "Aprovisionamiento de Microsoft Entra (SCIM)",
     "description": "Permita que el inquilino de Entra del cliente cree cuentas del portal para las personas asignadas a la aplicación Breeze Portal y las deshabilite cuando se vayan.",
     "loading": "Cargando el aprovisionamiento…",
+    "retry": "Volver a intentar",
+    "refreshFailed": "No se pudo actualizar. Es posible que lo que ve no esté al día.",
     "needsTenant": "Compruebe arriba el inquilino de Microsoft de esta organización antes de configurar el aprovisionamiento.",
     "tenantUrl": "URL de inquilino",
     "noBaseUrl": "La dirección pública de la API no está configurada, así que no se puede mostrar la URL de inquilino. Pida a su administrador que configure PUBLIC_API_URL.",

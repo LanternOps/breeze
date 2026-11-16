@@ -8943,6 +8943,8 @@
     "title": "Provisionamento do Microsoft Entra (SCIM)",
     "description": "Deixe o locatário do Entra do cliente criar contas do portal para as pessoas atribuídas ao aplicativo Breeze Portal e desativá-las quando saírem.",
     "loading": "Carregando o provisionamento…",
+    "retry": "Tentar novamente",
+    "refreshFailed": "Não foi possível atualizar. O que você vê pode estar desatualizado.",
     "needsTenant": "Comprove acima o locatário da Microsoft desta organização antes de configurar o provisionamento.",
     "tenantUrl": "URL do locatário",
     "noBaseUrl": "O endereço público da API não está configurado, então a URL do locatário não pode ser exibida. Peça ao seu administrador que defina PUBLIC_API_URL.",

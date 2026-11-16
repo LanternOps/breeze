@@ -148,9 +148,39 @@ describe('ScimProvisioningPanel', () => {
     expect(JSON.stringify(showToastMock.mock.calls)).toMatch(/two active provisioning tokens|portalScim\.errors\.limit/i);
   });
 
-  it('a load failure shows an error state', async () => {
-    fetchWithAuthMock.mockImplementation(() => json({ error: 'boom' }, 500));
+  it('a load failure shows an error state with a retry that reloads', async () => {
+    let calls = 0;
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      calls += 1;
+      if (url === STATUS && calls > 1) return json({ data: view() });
+      return json({ error: 'boom' }, 500);
+    });
     render(<ScimProvisioningPanel orgId={ORG} canEdit />);
     expect(await screen.findByTestId('portal-scim-error')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('portal-scim-retry'));
+    expect(await screen.findByTestId('portal-scim-token-row')).toBeInTheDocument();
+  });
+
+  it('a failed reload after create keeps the one-time secret on screen and the view as it was', async () => {
+    let statusCalls = 0;
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === `${STATUS}/tokens` && init?.method === 'POST') {
+        return json({ data: { token: SECRET, tokenInfo: token(), baseUrl: view().baseUrl } }, 201);
+      }
+      if (url === STATUS) {
+        statusCalls += 1;
+        return statusCalls === 1 ? json({ data: view({ tokens: [] }) }) : json({ error: 'boom' }, 500);
+      }
+      return json({ error: 'unexpected' }, 500);
+    });
+    render(<ScimProvisioningPanel orgId={ORG} canEdit />);
+    fireEvent.click(await screen.findByTestId('portal-scim-create'));
+    fireEvent.change(screen.getByTestId('portal-scim-label'), { target: { value: 'Entra provisioning' } });
+    fireEvent.click(screen.getByTestId('portal-scim-create-submit'));
+    expect(await screen.findByTestId('portal-scim-secret')).toHaveValue(SECRET);
+    await waitFor(() => expect(statusCalls).toBe(2));
+    expect(screen.getByTestId('portal-scim-secret')).toHaveValue(SECRET);
+    expect(screen.queryByTestId('portal-scim-error')).toBeNull();
+    expect(screen.getByTestId('portal-scim-refresh-failed')).toBeInTheDocument();
   });
 });

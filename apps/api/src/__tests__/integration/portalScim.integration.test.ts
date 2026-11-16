@@ -316,7 +316,7 @@ describe('precedence (invariant 12, Review Focus 3)', () => {
   });
 
   it('active true never reactivates an account the MSP disabled', async () => {
-    const { org, token } = await seedOrg();
+    const { token } = await seedOrg();
     const { body } = await create(token);
     const identity = await readIdentity(body.id);
     await admin().update(portalUsers).set({ status: 'disabled', disabledBy: 'msp' }).where(eq(portalUsers.id, identity!.portalUserId));
@@ -324,7 +324,6 @@ describe('precedence (invariant 12, Review Focus 3)', () => {
     await call(token, 'PATCH', `/Users/${body.id}`, patchBody({ op: 'replace', path: 'active', value: true }));
     expect(await readIdentity(body.id)).toMatchObject({ disabledBlockers: [] });
     expect(await readAccount(identity!.portalUserId)).toMatchObject({ status: 'disabled', disabledBy: 'msp' });
-    expect(org.id).toBeTruthy();
   });
 
   it('an MSP Restore clears the scim blocker too', async () => {
@@ -384,5 +383,184 @@ describe('never link by email (invariant 5, Review Focus 4)', () => {
     const { userName } = await create(token);
     const res = await call(token, 'POST', '/Users', userBody(randomUUID(), userName.toUpperCase()));
     expect(res.status).toBe(409);
+  });
+
+  it('PATCH userName to another account\'s address keeps the login address and never touches that account', async () => {
+    const { org, token } = await seedOrg();
+    const { body } = await create(token);
+    const scimAccountBefore = await readAccount((await readIdentity(body.id))!.portalUserId);
+    const [victim] = await admin().insert(portalUsers).values({
+      orgId: org.id, email: 'victim@customer.test', authMethod: 'password', status: 'active', browserAccess: 'granted', passwordHash: 'x',
+    }).returning();
+    const res = await call(token, 'PATCH', `/Users/${body.id}`, patchBody({ op: 'replace', path: 'userName', value: 'VICTIM@customer.test' }));
+    expect(res.status).toBe(200);
+    expect((await readAccount(scimAccountBefore!.id))!.email).toBe(scimAccountBefore!.email);
+    expect(await readAccount(victim!.id)).toEqual(victim);
+    const [audit] = await admin().select().from(auditLogs)
+      .where(and(eq(auditLogs.orgId, org.id), eq(auditLogs.action, 'portal.scim.user.update')));
+    expect(audit!.details).toMatchObject({ emailKept: true });
+  });
+
+  it('PATCH userName on an adopted account never moves its login address', async () => {
+    const { org, tid, token } = await seedOrg();
+    const oid = randomUUID();
+    const [addin] = await admin().insert(portalUsers).values({
+      orgId: org.id, email: 'addin@customer.test', authMethod: 'entra', status: 'active', browserAccess: 'granted', entraTenantId: tid, entraOid: oid,
+    }).returning();
+    await admin().insert(portalUserIdentities).values({
+      orgId: org.id, portalUserId: addin!.id, provider: 'entra', issuer: entraIssuer(tid), subject: oid, entraTenantId: tid, linkedVia: 'jit',
+    });
+    const adopted = await (await call(token, 'POST', '/Users', userBody(oid, 'first@customer.test'))).json() as any;
+    await call(token, 'PATCH', `/Users/${adopted.id}`, patchBody({ op: 'replace', path: 'userName', value: 'second@customer.test' }));
+    expect(await readIdentity(adopted.id)).toMatchObject({ scimUserName: 'second@customer.test' });
+    expect((await readAccount(addin!.id))!.email).toBe('addin@customer.test');
+  });
+
+  it('PATCH userName to another SCIM resource\'s userName is 409, audited, and writes nothing', async () => {
+    const { org, token } = await seedOrg();
+    const first = await create(token);
+    const second = await create(token);
+    const before = await readIdentity(second.body.id);
+    const res = await call(token, 'PATCH', `/Users/${second.body.id}`, patchBody({ op: 'replace', path: 'userName', value: first.userName }));
+    expect(res.status).toBe(409);
+    expect(await readIdentity(second.body.id)).toEqual(before);
+    const conflicts = await admin().select().from(auditLogs).where(and(eq(auditLogs.orgId, org.id), eq(auditLogs.action, 'portal.scim.user.conflict')));
+    expect(conflicts).toHaveLength(1);
+  });
+});
+
+describe('PUT, PATCH atomicity and DELETE aftermath (review)', () => {
+  it('PUT replaces attributes and active; an externalId change is 400 and writes nothing; another org\'s id is 404', async () => {
+    const { token } = await seedOrg();
+    const other = await seedOrg();
+    const { body, oid } = await create(token);
+    const res = await call(token, 'PUT', `/Users/${body.id}`, {
+      schemas: [USER_SCHEMA], externalId: oid, userName: 'put.name@customer.test', active: false, displayName: 'Put Name',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ userName: 'put.name@customer.test', active: false, displayName: 'Put Name' });
+    const identity = await readIdentity(body.id);
+    // An omitted name part is cleared by a PUT.
+    expect(identity).toMatchObject({ scimGivenName: null, scimFamilyName: null, disabledBlockers: ['scim'] });
+    expect(await readAccount(identity!.portalUserId)).toMatchObject({ status: 'disabled', disabledBy: 'scim' });
+
+    const snapshot = await readIdentity(body.id);
+    const bad = await call(token, 'PUT', `/Users/${body.id}`, { externalId: randomUUID(), userName: 'x@customer.test', active: true });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ scimType: 'mutability' });
+    expect(await readIdentity(body.id)).toEqual(snapshot);
+
+    expect((await call(other.token, 'PUT', `/Users/${body.id}`, { externalId: oid, userName: 'y@customer.test' })).status).toBe(404);
+    expect(await readIdentity(body.id)).toEqual(snapshot);
+  });
+
+  it('a PATCH whose later operation is refused applies none of its operations', async () => {
+    const { token } = await seedOrg();
+    const { body } = await create(token);
+    const before = await readIdentity(body.id);
+    const res = await call(token, 'PATCH', `/Users/${body.id}`, patchBody(
+      { op: 'replace', path: 'active', value: false },
+      { op: 'replace', path: 'externalId', value: randomUUID() },
+    ));
+    expect(res.status).toBe(400);
+    expect(await readIdentity(body.id)).toEqual(before);
+    expect(await readAccount(before!.portalUserId)).toMatchObject({ status: 'active' });
+  });
+
+  it('a repeated active:false bumps the epoch once', async () => {
+    const { token } = await seedOrg();
+    const { body } = await create(token);
+    const off = patchBody({ op: 'replace', path: 'active', value: false });
+    await call(token, 'PATCH', `/Users/${body.id}`, off);
+    const accountId = (await readIdentity(body.id))!.portalUserId;
+    const epoch = (await readAccount(accountId))!.authEpoch;
+    expect((await call(token, 'PATCH', `/Users/${body.id}`, off)).status).toBe(200);
+    expect((await readAccount(accountId))!.authEpoch).toBe(epoch);
+  });
+
+  it('DELETE of an already deactivated user still tombstones; a second DELETE is 404', async () => {
+    const { token } = await seedOrg();
+    const { body } = await create(token);
+    await call(token, 'PATCH', `/Users/${body.id}`, patchBody({ op: 'replace', path: 'active', value: false }));
+    expect((await call(token, 'DELETE', `/Users/${body.id}`)).status).toBe(204);
+    expect((await readIdentity(body.id))!.scimDeletedAt).not.toBeNull();
+    expect((await call(token, 'DELETE', `/Users/${body.id}`)).status).toBe(404);
+  });
+
+  it('a re-POST after DELETE never re-enables an account the MSP disabled', async () => {
+    const { token } = await seedOrg();
+    const { body, oid, userName } = await create(token);
+    const accountId = (await readIdentity(body.id))!.portalUserId;
+    await admin().update(portalUsers).set({ status: 'disabled', disabledBy: 'msp' }).where(eq(portalUsers.id, accountId));
+    await call(token, 'DELETE', `/Users/${body.id}`);
+    expect((await create(token, oid, userName)).res.status).toBe(201);
+    expect(await readAccount(accountId)).toMatchObject({ status: 'disabled', disabledBy: 'msp' });
+  });
+
+  it('a legacy entra_* holder in another org: 409 and zero rows in this org (the create rolls back)', async () => {
+    const a = await seedOrg();
+    const b = await seedOrg();
+    const oid = randomUUID();
+    // Org A holds the person on the legacy columns only (no identity row).
+    await admin().insert(portalUsers).values({
+      orgId: a.org.id, email: `legacy-${randomUUID().slice(0, 8)}@customer.test`, authMethod: 'entra', status: 'active',
+      browserAccess: 'none', entraTenantId: b.tid, entraOid: oid,
+    });
+    const res = await call(b.token, 'POST', '/Users', userBody(oid, `pat-${randomUUID().slice(0, 8)}@customer.test`));
+    expect(res.status).toBe(409);
+    expect(await countRows(portalUsers, b.org.id)).toBe(0);
+    expect(await countRows(portalUserIdentities, b.org.id)).toBe(0);
+  });
+});
+
+describe('tenant change (review)', () => {
+  it('an unrevoked token stays 401 after a different tenant is proven, and a fresh token cannot PATCH or DELETE the old tenant\'s identities', async () => {
+    const { org, actor, token } = await seedOrg();
+    const { body } = await create(token);
+    await admin().update(clientAiTenantMappings).set({
+      entraTenantId: randomUUID(), provenAt: new Date(), provenVia: 'proof_run',
+      provenEvidence: { via: 'proof_run', adminOid: randomUUID(), runId: randomUUID() },
+    }).where(eq(clientAiTenantMappings.orgId, org.id));
+    expect((await call(token, 'GET', '/Users')).status).toBe(401);
+
+    const fresh = await mintPortalScimToken({ orgId: org.id, label: 'New tenant', actorUserId: actor.id });
+    const before = await readIdentity(body.id);
+    expect((await call(fresh.token, 'PATCH', `/Users/${body.id}`, patchBody({ op: 'replace', path: 'active', value: false }))).status).toBe(404);
+    expect((await call(fresh.token, 'DELETE', `/Users/${body.id}`)).status).toBe(404);
+    expect(await readIdentity(body.id)).toEqual(before);
+  });
+});
+
+describe('races (review)', () => {
+  it('concurrent active:true and DELETE never leave a deleted-but-enabled identity', async () => {
+    for (let round = 0; round < 6; round += 1) {
+      const { token } = await seedOrg();
+      const { body } = await create(token);
+      await call(token, 'PATCH', `/Users/${body.id}`, patchBody({ op: 'replace', path: 'active', value: false }));
+      await Promise.allSettled([
+        call(token, 'PATCH', `/Users/${body.id}`, patchBody({ op: 'replace', path: 'active', value: true })),
+        call(token, 'DELETE', `/Users/${body.id}`),
+      ]);
+      const identity = await readIdentity(body.id);
+      if (identity!.scimDeletedAt) {
+        expect(identity!.disabledBlockers).toContain('scim');
+        expect(await readAccount(identity!.portalUserId)).toMatchObject({ status: 'disabled' });
+      }
+    }
+  });
+
+  it('two concurrent POSTs of the same person create one account and one identity, never a 500', async () => {
+    for (let round = 0; round < 4; round += 1) {
+      const { org, token } = await seedOrg();
+      const oid = randomUUID();
+      const userName = `race-${randomUUID().slice(0, 8)}@customer.test`;
+      const results = await Promise.all([
+        call(token, 'POST', '/Users', userBody(oid, userName)),
+        call(token, 'POST', '/Users', userBody(oid, userName)),
+      ]);
+      expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+      expect(await countRows(portalUsers, org.id)).toBe(1);
+      expect(await countRows(portalUserIdentities, org.id)).toBe(1);
+    }
   });
 });

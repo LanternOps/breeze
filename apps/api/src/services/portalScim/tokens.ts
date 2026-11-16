@@ -158,10 +158,16 @@ export async function authenticatePortalScimToken(
   if (!active) return refused;
 
   if (!row.lastUsedAt || now.getTime() - row.lastUsedAt.getTime() >= LAST_USED_RESOLUTION_MS) {
-    await withSystemDbAccessContext(
-      () => db.update(portalScimTokens).set({ lastUsedAt: now }).where(eq(portalScimTokens.id, row.id)),
-      'portalScim.touchToken',
-    );
+    // Telemetry only: a failed stamp must never fail a verified request. The
+    // catch is outside this write's own transaction, so nothing is poisoned.
+    try {
+      await withSystemDbAccessContext(
+        () => db.update(portalScimTokens).set({ lastUsedAt: now }).where(eq(portalScimTokens.id, row.id)),
+        'portalScim.touchToken',
+      );
+    } catch (err) {
+      console.warn('[portal-scim] last_used_at stamp failed', { tokenId: row.id, error: err instanceof Error ? err.name : 'unknown' });
+    }
   }
   return { ok: true, token: { tokenId: row.id, orgId: row.orgId, partnerId: active.partnerId, tenantId, issuer: entraIssuer(tenantId) } };
 }

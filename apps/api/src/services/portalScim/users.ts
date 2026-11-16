@@ -13,9 +13,9 @@
  *
  * ONE TRANSACTION PER MUTATION (D6). A create, PATCH, PUT or DELETE runs in one
  * system transaction under one lock order — the `(org, 'entra')` advisory lock
- * (the W8 lock), the address lock (when a userName is written), the account
- * `FOR UPDATE`, the identity `FOR UPDATE`, then the token and the proven tenant
- * `FOR SHARE` (D2) — and writes attributes, blockers, the tombstone and the
+ * (the W8 lock), the address lock (when a userName is written), the token and
+ * the proven tenant `FOR SHARE` (D2), the account `FOR UPDATE`, the identity
+ * `FOR UPDATE` — and writes attributes, blockers, the tombstone and the
  * audit together. A refusal is a thrown {@link ScimError}, which rolls the
  * whole transaction back (including a login `createIdentityOnlyAccount` wrote
  * before it found the identity taken); a uniqueness refusal is then audited in
@@ -143,7 +143,17 @@ async function insertScimAudit(token: VerifiedScimToken, action: string, resourc
     details: { ...details, scimTokenId: token.tokenId },
     result: 'success',
   });
-  // The SCIM request's write is audited by this row (no fallback route audit).
+  // The request is marked audited by the caller only AFTER this transaction
+  // commits (markAuditedAfterCommit), so a rolled-back row never suppresses
+  // the fallback request audit.
+}
+
+/**
+ * After a SCIM mutation's transaction COMMITTED: its writes are audited by the
+ * rows it inserted (this file's and the W8 writer's), so the request needs no
+ * fallback route audit. Never called for a rolled-back transaction.
+ */
+function markAuditedAfterCommit(): void {
   markRequestAuditWritten();
 }
 
@@ -359,10 +369,17 @@ async function applyActive(token: VerifiedScimToken, identity: LockedIdentity, a
       auditDetails: { via: 'scim', scimTokenId: token.tokenId },
       now,
     });
+    // The identity is locked and re-validated by the caller, so any skip other
+    // than "already blocked" means the deprovision did NOT happen: fail the
+    // request (rolling the transaction back) rather than answer 200 (review fix).
+    if (disabled.result.kind === 'skipped' && disabled.result.reason !== 'already_blocked') {
+      throw new Error(`portalScim: the SCIM disable was skipped (${disabled.result.reason})`);
+    }
     return disabled.purge;
   }
   if (active && blocked) {
-    await liftScimBlockerInTransaction({ orgId: token.orgId, identityId: identity.id, scimTokenId: token.tokenId, now });
+    const lifted = await liftScimBlockerInTransaction({ orgId: token.orgId, identityId: identity.id, scimTokenId: token.tokenId, now });
+    if (lifted.kind === 'not_found') throw new Error('portalScim: the SCIM blocker lift found no identity');
   }
   return false;
 }
@@ -390,15 +407,19 @@ async function mutateVisible<T>(
       .where(and(scimVisible(token), eq(portalUserIdentities.id, identityId)))
       .limit(1);
     if (!owner) throw notFound();
+    // D2, BEFORE the row locks: a tenant-proof displacement locks the mapping
+    // FOR UPDATE and then updates portal_users, so taking the account first
+    // and the mapping last would deadlock against it (review fix).
+    if (!(await lockLiveScimToken(token))) throw unauthorized();
     const account = await lockAccount(token.orgId, owner.portalUserId);
     // Re-validated on the locked row: still this org, tenant, account, managed, not deleted.
     const identity = await lockIdentity(and(scimVisible(token), eq(portalUserIdentities.id, identityId), eq(portalUserIdentities.portalUserId, owner.portalUserId))!);
     if (!account || !identity) throw notFound();
-    if (!(await lockLiveScimToken(token))) throw unauthorized();
     const result = await work(account, identity, now);
     return { ...result, portalUserId: account.id };
   }, label);
-  if (out.purge) await purgeIdentitySessions(out.portalUserId, now);
+  markAuditedAfterCommit();
+  if (out.purge) await purgeIdentitySessions(out.portalUserId);
   return out.value;
 }
 
@@ -537,7 +558,8 @@ export async function createScimUser(token: VerifiedScimToken, attrs: ScimUserAt
       if (!record) throw new Error('createScimUser: the created identity is not visible to its own token');
       return { record, adopted: false, purge: false, portalUserId: created.portalUserId };
     }, 'portalScim.createUser');
-    if (out.purge) await purgeIdentitySessions(out.portalUserId, now);
+    markAuditedAfterCommit();
+    if (out.purge) await purgeIdentitySessions(out.portalUserId);
     return { record: out.record, adopted: out.adopted };
   });
 }

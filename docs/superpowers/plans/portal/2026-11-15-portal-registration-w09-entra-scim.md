@@ -54,7 +54,7 @@ Both parts go in one PR if the non-test, non-locale diff stays under ~2500 lines
   - Registration: `CORE_ORG_CASCADE_DELETE_ORDER`; `orgMergeRegistry.ts` **`leave-for-erasure`** (the merge fences the loser org, so its tokens stop authenticating; a merge never re-points a credential); `CORE_TENANT_EXPORT_POLICY` (`secret_hash`, `secret_hint` `excludedSensitive`; the rest `included`); `rls-coverage.integration.test.ts`.
 - **D2: Tenant binding, re-checked per request and under the locks** (inv. 2, 3).
   - Create requires a proven tenant (`409 PORTAL_SCIM_TENANT_NOT_PROVEN`); the token stores it.
-  - Every request re-reads the org's proven tenant before any work, and every mutation re-checks it inside its transaction after the row locks (`FOR SHARE` on the tenant mapping, the W4 `lockProvenEntraTenant` pattern) together with the token's `revoked_at`. A different or missing proof is `401`.
+  - Every request re-reads the org's proven tenant before any work, and every mutation re-checks it inside its transaction, before the account and identity locks (`FOR SHARE` on the tenant mapping, the W4 `lockProvenEntraTenant` pattern) together with the token's `revoked_at`. A different or missing proof is `401`.
   - Removing the proof **suspends** an unrevoked token; proving the same tenant again makes it valid again. Proving a different tenant leaves it permanently invalid for that org (the docs say so; the MSP revokes it).
   - The issuer is always `entraIssuer(token.entra_tenant_id)`; nothing in the request names a tenant or an org.
 - **D3: SCIM state on the identity.** New columns on `portal_user_identities`:
@@ -141,7 +141,7 @@ No disagreement is left open.
 ## Global Constraints
 
 - Invariants: 2 (nothing in a SCIM request names the tenant or org), 4 (a token for org A never reads or writes org B), 5 (no email linking), 9 (a SCIM-disabled identity's sessions die on the next request), 10 (every new account write is a census writer), 12 (never reverses an MSP disable).
-- Lock order: advisory `(org, 'entra')` → address lock (create only) → account → identity → tenant mapping `FOR SHARE`.
+- Lock order: advisory `(org, 'entra')` → address lock (when a userName is written) → token + tenant mapping `FOR SHARE` → account `FOR UPDATE` → identity `FOR UPDATE`. The mapping comes before the account because a tenant-proof displacement locks the mapping `FOR UPDATE` and then updates `portal_users` (PR review: the reverse order deadlocks).
 - Context: the SCIM router holds none; services open `withSystemDbAccessContext`; MSP routes call services through `runOutsideDbContext`.
 - Error codes: `PORTAL_SCIM_TENANT_NOT_PROVEN` (409), `PORTAL_SCIM_TOKEN_LIMIT` (409), `PORTAL_SCIM_TOKEN_NOT_FOUND` (404).
 - Migration: `apps/api/migrations/2027-01-25-130000-portal-entra-scim.sql`, sorted after the newest on `origin/main` at push time; idempotent; no inner `BEGIN`/`COMMIT`; DDL only; then `pnpm db:check-drift`.

@@ -20,6 +20,7 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { getRedis, rateLimiter } from '../services';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
+import { captureException } from '../services/sentry';
 import {
   SCIM_CONTENT_TYPE,
   SCIM_USER_SCHEMA,
@@ -148,7 +149,14 @@ function handleError(err: unknown, c: Context): Response {
     if (err.status === 401) return unauthorized(c);
     return scimError(c, err.status, err.message, err.scimType);
   }
-  console.error('[portal-scim] request failed', { error: err instanceof Error ? err.name : 'unknown' });
+  // This router's onError replaces the app-level handler, so report here. The
+  // response body stays generic; the error goes to logs and Sentry (no PII is
+  // put in these messages — services log ids only).
+  console.error('[portal-scim] request failed', {
+    error: err instanceof Error ? err.name : 'unknown',
+    message: err instanceof Error ? err.message : String(err),
+  });
+  captureException(err instanceof Error ? err : new Error(String(err)), c, { area: 'portal_scim' });
   return scimError(c, 500, 'The request could not be completed.');
 }
 

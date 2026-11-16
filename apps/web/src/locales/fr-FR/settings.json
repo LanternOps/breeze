@@ -8943,6 +8943,8 @@
     "title": "Provisionnement Microsoft Entra (SCIM)",
     "description": "Laissez le tenant Entra du client créer des comptes du portail pour les personnes affectées à l’application Breeze Portal, et les désactiver à leur départ.",
     "loading": "Chargement du provisionnement…",
+    "retry": "Réessayer",
+    "refreshFailed": "Impossible d'actualiser. Les informations affichées ne sont peut-être pas à jour.",
     "needsTenant": "Prouvez ci-dessus le tenant Microsoft de cette organisation avant de configurer le provisionnement.",
     "tenantUrl": "URL du locataire",
     "noBaseUrl": "L’adresse publique de l’API n’est pas configurée, l’URL du tenant ne peut donc pas être affichée. Demandez à votre administrateur de définir PUBLIC_API_URL.",

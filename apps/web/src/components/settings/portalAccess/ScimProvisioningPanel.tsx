@@ -85,6 +85,7 @@ export function ScimProvisioningPanel({ orgId, canEdit }: ScimProvisioningPanelP
   const [secret, setSecret] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<PortalScimTokenView | null>(null);
   const [busy, setBusy] = useState<'create' | 'revoke' | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const seq = useRef(0);
 
   const load = useCallback(async () => {
@@ -98,10 +99,15 @@ export function ScimProvisioningPanel({ orgId, canEdit }: ScimProvisioningPanelP
       if (mine !== seq.current) return;
       if (!isPortalScimStatusView(body.data)) throw new Error('portal scim load returned an unexpected body');
       setState({ status: 'ready', view: body.data });
+      setRefreshFailed(false);
     } catch (err) {
       if (mine !== seq.current) return;
       console.warn('[ScimProvisioningPanel] load failed', err);
-      setState({ status: 'error' });
+      // A failed reload after a mutation keeps the view it had (and, above
+      // all, the one-time secret on screen); only a first load shows the
+      // error state.
+      setState((prev) => (prev.status === 'ready' ? prev : { status: 'error' }));
+      setRefreshFailed(true);
     }
   }, [orgId]);
 
@@ -172,6 +178,14 @@ export function ScimProvisioningPanel({ orgId, canEdit }: ScimProvisioningPanelP
     return (
       <section data-testid="portal-scim" className="rounded-lg border p-4 text-sm">
         <p data-testid="portal-scim-error" className="text-destructive">{t('portalScim.errors.load')}</p>
+        <button
+          type="button"
+          data-testid="portal-scim-retry"
+          onClick={() => { setState({ status: 'loading' }); void load(); }}
+          className="mt-2 rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted/50"
+        >
+          {t('portalScim.retry')}
+        </button>
       </section>
     );
   }
@@ -184,6 +198,9 @@ export function ScimProvisioningPanel({ orgId, canEdit }: ScimProvisioningPanelP
       <div>
         <h3 className="text-sm font-semibold">{t('portalScim.title')}</h3>
         <p className="text-xs text-muted-foreground">{t('portalScim.description')}</p>
+        {refreshFailed && (
+          <p data-testid="portal-scim-refresh-failed" className="mt-1 text-xs text-destructive">{t('portalScim.refreshFailed')}</p>
+        )}
       </div>
 
       {!view.tenant.proven ? (

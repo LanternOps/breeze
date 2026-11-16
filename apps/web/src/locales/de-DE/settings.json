@@ -8943,6 +8943,8 @@
     "title": "Microsoft-Entra-Bereitstellung (SCIM)",
     "description": "Lassen Sie den Entra-Mandanten des Kunden Portalkonten für die Personen anlegen, die der App „Breeze Portal“ zugewiesen sind, und sie deaktivieren, wenn diese ausscheiden.",
     "loading": "Bereitstellung wird geladen…",
+    "retry": "Erneut versuchen",
+    "refreshFailed": "Aktualisierung fehlgeschlagen. Die Anzeige ist möglicherweise nicht aktuell.",
     "needsTenant": "Weisen Sie oben den Microsoft-Mandanten dieser Organisation nach, bevor Sie die Bereitstellung einrichten.",
     "tenantUrl": "Mandanten-URL",
     "noBaseUrl": "Die öffentliche Adresse der API ist nicht konfiguriert, daher kann die Mandanten-URL nicht angezeigt werden. Bitten Sie Ihren Administrator, PUBLIC_API_URL zu setzen.",

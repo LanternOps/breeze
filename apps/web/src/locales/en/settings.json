@@ -8943,6 +8943,8 @@
     "title": "Microsoft Entra provisioning (SCIM)",
     "description": "Let the customer's Entra tenant create portal accounts for the people assigned to the Breeze Portal app, and disable them when they leave.",
     "loading": "Loading provisioning…",
+    "retry": "Try again",
+    "refreshFailed": "Couldn't refresh. What you see may be out of date.",
     "needsTenant": "Prove this organization's Microsoft tenant above before you set up provisioning.",
     "tenantUrl": "Tenant URL",
     "noBaseUrl": "The API's public address is not configured, so the Tenant URL can't be shown. Ask your administrator to set PUBLIC_API_URL.",

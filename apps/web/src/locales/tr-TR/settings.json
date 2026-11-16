@@ -8943,6 +8943,8 @@
     "title": "Microsoft Entra sağlama (SCIM)",
     "description": "Müşterinin Entra kiracısının, Breeze Portal uygulamasına atanan kişiler için portal hesapları oluşturmasına ve ayrıldıklarında bunları devre dışı bırakmasına izin verin.",
     "loading": "Sağlama yükleniyor…",
+    "retry": "Tekrar dene",
+    "refreshFailed": "Yenilenemedi. Gördükleriniz güncel olmayabilir.",
     "needsTenant": "Sağlamayı kurmadan önce yukarıda bu kuruluşun Microsoft kiracısını kanıtlayın.",
     "tenantUrl": "Kiracı URL'si",
     "noBaseUrl": "API'nin genel adresi yapılandırılmadığı için Kiracı URL'si gösterilemiyor. Yöneticinizden PUBLIC_API_URL değerini ayarlamasını isteyin.",
