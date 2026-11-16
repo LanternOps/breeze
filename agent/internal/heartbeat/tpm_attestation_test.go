@@ -27,6 +27,7 @@ func noTPM() (transport.TPMCloser, error) { return nil, tpmattest.ErrNoTPM }
 func TestHardwareReportSaysThereIsNoTPM(t *testing.T) {
 	server, received := captureHardwarePUT(t)
 	h := newMemoryHWTestHeartbeat(server.URL)
+	h.tpmEnabled.Store(true)
 	h.tpmOpen = noTPM
 	h.sendHardwareInventory()
 	got := awaitHardware(t, received)
@@ -38,6 +39,7 @@ func TestHardwareReportSaysThereIsNoTPM(t *testing.T) {
 func TestHardwareReportOmitsTPMAvailableWhenTheProbeCannotTell(t *testing.T) {
 	server, received := captureHardwarePUT(t)
 	h := newMemoryHWTestHeartbeat(server.URL)
+	h.tpmEnabled.Store(true)
 	h.tpmOpen = func() (transport.TPMCloser, error) { return nil, errors.New("permission denied") }
 	h.sendHardwareInventory()
 	got := awaitHardware(t, received)
@@ -48,6 +50,7 @@ func TestHardwareReportOmitsTPMAvailableWhenTheProbeCannotTell(t *testing.T) {
 
 func TestMaybeAttestTPMRunsOnlyForAUsableTPMNotAttestedLately(t *testing.T) {
 	h := NewWithVersion(&config.Config{AgentID: "agent-1", AuthToken: "token", ServerURL: "http://127.0.0.1:1"}, "1.2.3", nil, nil)
+	h.tpmEnabled.Store(true)
 	var opens atomic.Int32
 	h.tpmOpen = func() (transport.TPMCloser, error) { opens.Add(1); return nil, tpmattest.ErrNoTPM }
 	no, yes := false, true
@@ -131,5 +134,107 @@ func TestTPMAttestationAPIReportsARefusalByCode(t *testing.T) {
 	_, err := tpmAttestationAPI{h: h}.Challenge(context.Background(), []byte{1}, []byte{2})
 	if err == nil || !strings.Contains(err.Error(), "TPM_EK_REFUSED ek_policy") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestTheSwitchOffMeansNoTPMIsTouched(t *testing.T) {
+	server, received := captureHardwarePUT(t)
+	h := newMemoryHWTestHeartbeat(server.URL)
+	var opens atomic.Int32
+	h.tpmOpen = func() (transport.TPMCloser, error) { opens.Add(1); return nil, tpmattest.ErrNoTPM }
+	h.sendHardwareInventory()
+	got := awaitHardware(t, received)
+	if _, present := got["tpmAvailable"]; present {
+		t.Fatalf("tpmAvailable sent while the switch is off: %s", got["tpmAvailable"])
+	}
+	yes := true
+	h.tpmAttestedAt.Store(0)
+	h.maybeAttestTPM(&yes)
+	waitIdle(t, h)
+	if n := opens.Load(); n != 0 {
+		t.Fatalf("the TPM was opened %d times while the switch is off", n)
+	}
+}
+
+func TestTheServerSwitchTurnsAttestationOnAndOff(t *testing.T) {
+	h := NewWithVersion(&config.Config{AgentID: "agent-1", AuthToken: "token", ServerURL: "http://127.0.0.1:1"}, "1.2.3", nil, nil)
+	opened := make(chan struct{}, 4)
+	h.tpmOpen = func() (transport.TPMCloser, error) { opened <- struct{}{}; return nil, tpmattest.ErrNoTPM }
+
+	h.applyTPMAttestationConfig("maybe")
+	if h.tpmEnabled.Load() {
+		t.Fatal("an unrecognized payload turned the switch on")
+	}
+	h.applyTPMAttestationConfig(true)
+	if !h.tpmEnabled.Load() {
+		t.Fatal("true did not turn the switch on")
+	}
+	// Turning it on probes right away instead of waiting for the next hardware send.
+	select {
+	case <-opened:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turning the switch on did not probe the TPM")
+	}
+	h.applyTPMAttestationConfig("false")
+	if h.tpmEnabled.Load() {
+		t.Fatal(`"false" did not turn the switch off`)
+	}
+}
+
+func TestAHungTPMIsAbandonedAndNotCalledAgainUntilItReturns(t *testing.T) {
+	restore := tpmProbeTimeout
+	tpmProbeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { tpmProbeTimeout = restore })
+
+	h := NewWithVersion(&config.Config{AgentID: "agent-1", AuthToken: "token", ServerURL: "http://127.0.0.1:1"}, "1.2.3", nil, nil)
+	h.tpmEnabled.Store(true)
+	release := make(chan struct{})
+	var opens atomic.Int32
+	h.tpmOpen = func() (transport.TPMCloser, error) {
+		opens.Add(1)
+		<-release
+		return nil, tpmattest.ErrNoTPM
+	}
+
+	start := time.Now()
+	if got := h.tpmAvailability(); got != nil {
+		t.Fatalf("a hung probe reported %v", *got)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the probe waited %s for a hung TPM", elapsed)
+	}
+	// The stuck call still holds the TPM: nothing new starts.
+	if got := h.tpmAvailability(); got != nil {
+		t.Fatalf("a second probe reported %v", *got)
+	}
+	if n := opens.Load(); n != 1 {
+		t.Fatalf("the TPM was opened %d times while a call was stuck; want 1", n)
+	}
+
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for h.tpmBusy.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the abandoned call never released the TPM")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := h.tpmAvailability(); got == nil || *got {
+		t.Fatalf("after the stuck call returned, the probe = %v; want false", got)
+	}
+}
+
+func TestADeferredRouteCreatesNoKeys(t *testing.T) {
+	h := NewWithVersion(&config.Config{AgentID: "agent-1", AuthToken: "token", ServerURL: "http://127.0.0.1:1"}, "1.2.3", nil, nil)
+	h.tpmEnabled.Store(true)
+	var opens atomic.Int32
+	h.tpmOpen = func() (transport.TPMCloser, error) { opens.Add(1); return nil, tpmattest.ErrNoTPM }
+	h.loopDefer.Record(loopKey("POST", h.attestationURL("challenge")), retryAtErr(time.Now().Add(time.Minute)))
+
+	yes := true
+	h.maybeAttestTPM(&yes)
+	waitIdle(t, h)
+	if n := opens.Load(); n != 0 {
+		t.Fatalf("the TPM was opened %d times for a route the server is deferring", n)
 	}
 }

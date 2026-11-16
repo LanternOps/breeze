@@ -525,6 +525,10 @@ type Heartbeat struct {
 	tpmOpen           tpmattest.Opener
 	tpmAttestedAt     atomic.Int64
 	tpmAttestInFlight atomic.Bool
+	// tpmEnabled is the server's switch (configUpdate.tpm_attestation_enabled,
+	// default off); tpmBusy is held while a TPM call is out, even abandoned.
+	tpmEnabled atomic.Bool
+	tpmBusy    atomic.Bool
 	// eventLogSendInFlight protects the collect/send/ack cycle from overlapping ticks.
 	eventLogSendInFlight atomic.Bool
 	// changeTrackerMu serializes the change tracker's collect → send → commit
@@ -3839,6 +3843,17 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasRMSK {
 		h.applyRequireManifestSigningKeyIDConfig(rmskRaw)
+	}
+
+	// Server-side TPM attestation switch (#8318 T1). Key absent = no change
+	// (an older API: the switch stays off). Must stay above the policy-probe
+	// early return below.
+	tpmRaw, hasTPM := update["tpm_attestation_enabled"]
+	if !hasTPM {
+		tpmRaw, hasTPM = update["tpmAttestationEnabled"]
+	}
+	if hasTPM {
+		h.applyTPMAttestationConfig(tpmRaw)
 	}
 
 	// Server-side ECH kill switch (#8869). Key absent = no change. Must stay
