@@ -12,7 +12,14 @@ vi.mock('../../db', () => {
     return c;
   };
   return {
-    db: { select: () => chain(h.rows.shift() ?? []) },
+    db: {
+      select: () => {
+        // A query this test did not queue fails loudly rather than shifting the data.
+        const rows = h.rows.shift();
+        if (!rows) throw new Error('unexpected db.select: no queued rows');
+        return chain(rows);
+      },
+    },
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
   };

@@ -96,7 +96,8 @@ export const CONTINUATION_NO_REPEAT_LINE = 'Steps listed as already run must not
 export const SEED_SHORTENED_MARK = '[shortened]';
 /** Fixed — never templated. */
 export const CONTINUATION_SHORTENED_LINE =
-  `Text marked ${SEED_SHORTENED_MARK} was cut to fit: it holds only part of the summary or step result.`;
+  `Text marked ${SEED_SHORTENED_MARK} was cut to fit and holds only part of the summary or step result; `
+  + 'a "…" ends a value that was cut, and "and N more." counts entries that were left out.';
 
 /**
  * One step the prior run proposed. `result` is the released step's stored
@@ -133,7 +134,11 @@ function capChars(text: string, max: number): string {
 
 /** One device/model field, single-line, fences neutralized (not capped). */
 function seedLine(value: string): string {
-  return sanitizeUntrustedToolText(value).replace(/\s+/g, ' ').trim();
+  return sanitizeUntrustedToolText(value)
+    .replace(/\s+/g, ' ')
+    // Only the renderer writes the mark: device or model text cannot fake a cut.
+    .replaceAll(SEED_SHORTENED_MARK, '(shortened)')
+    .trim();
 }
 
 /** A field whose whole text is `full`, given `room` chars; marked whenever anything was cut. */
@@ -148,7 +153,11 @@ function fitField(full: string, room: number, render: (max: number) => string = 
 /** A step's outcome text given `room` chars. */
 type StepOutcome = (room: number) => string;
 
-/** Null when the step has no outcome yet (not released, or not decided). */
+/**
+ * Null when the step has no outcome yet (not released, or not decided). A
+ * completed step always has one: with no stored result it says so ("no result
+ * recorded"), and a blank command output reads "no output".
+ */
 function stepOutcome(step: ContinuationStep): StepOutcome | null {
   if (step.status === 'failed') {
     const full = seedLine(step.errorCode ?? '') || 'failed';
