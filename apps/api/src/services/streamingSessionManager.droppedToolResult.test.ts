@@ -98,6 +98,7 @@ vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { recordToolOutcomeForAutoFlag } from './aiSessionAutoFlag';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -363,5 +364,78 @@ describe('dropped tool_result fallback (#3094)', () => {
     // The dropped id was spliced out; the retry id is untouched at the head.
     expect(session.toolUseIdQueue).toEqual(['toolu_retry_02']);
     expect(session.toolUseNames?.get('toolu_retry_02')).toBe('set_device_context');
+  });
+});
+
+// #11968: an input-validation drop is a refusal the model can correct. It is
+// held until the turn ends, and a successful retry of the same tool drops it.
+describe('dropped input-validation refusal and the session auto-flag (#11968)', () => {
+  const flagWrites = () => updateCalls.filter((u) => typeof u.flagReason === 'string');
+
+  /** Yields `before`, runs `between` (the handler's side of the turn), then the result. */
+  function mockSdkQueryWithStep(before: unknown[], between: () => Promise<void>) {
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* before as never[];
+        await between();
+        yield RESULT_MSG as never;
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+  }
+
+  const dropped = [
+    toolUseStreamEvent(TOOL_USE_ID, 'mcp__breeze__set_device_context'),
+    assistantToolUseMessage(TOOL_USE_ID, 'mcp__breeze__set_device_context', PAREN_INPUT),
+    userToolResultMessage(TOOL_USE_ID, VALIDATION_ERROR_TEXT),
+  ];
+
+  it('does not flag when the same tool then succeeds in the turn', async () => {
+    let session: Awaited<ReturnType<StreamingSessionManager['getOrCreate']>> | undefined;
+    mockSdkQueryWithStep(dropped, async () => {
+      // The retry's successful postToolUse (the real handler is mocked out here).
+      await recordToolOutcomeForAutoFlag(session!, 'set_device_context', { isError: false, errorCode: undefined, errorMsg: '' });
+    });
+
+    session = await manager.getOrCreate('sess-corrected', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    // The drop itself is still recorded; only the flag is withheld.
+    expect(insertedRows.filter((r) => r.role === 'tool_result')).toHaveLength(1);
+    expect(flagWrites()).toHaveLength(0);
+  });
+
+  it('holds the flag until the turn ends when the model never corrects the call', async () => {
+    let flagsBeforeResult = -1;
+    mockSdkQueryWithStep(dropped, async () => {
+      flagsBeforeResult = flagWrites().length;
+    });
+
+    const session = await manager.getOrCreate('sess-uncorrected', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    expect(flagsBeforeResult).toBe(0);
+    expect(flagWrites()).toHaveLength(1);
+    expect(flagWrites()[0]!.flagReason).toMatch(/^Tool rejected before execution: set_device_context — /);
+    expect(session.deferredToolFailureFlags?.size ?? 0).toBe(0);
+  });
+
+  it('a drop that is not an input-validation error still flags at once', async () => {
+    let flagsBeforeResult = -1;
+    const id = 'toolu_other_01';
+    mockSdkQueryWithStep([
+      toolUseStreamEvent(id, 'mcp__breeze__set_device_context'),
+      assistantToolUseMessage(id, 'mcp__breeze__set_device_context', PAREN_INPUT),
+      userToolResultMessage(id, 'Tool call was cancelled by the client'),
+    ], async () => {
+      flagsBeforeResult = flagWrites().length;
+    });
+
+    const session = await manager.getOrCreate('sess-other-drop', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    expect(flagsBeforeResult).toBe(1);
+    expect(flagWrites()).toHaveLength(1);
   });
 });
