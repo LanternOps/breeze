@@ -39,7 +39,8 @@ export interface RegistryValue {
 export interface EventLogInfo {
   name: string;
   displayName: string;
-  recordCount: number;
+  /** Absent when the agent did not report a count; 0 means an empty log. */
+  recordCount?: number;
   maxSize: number;
   retentionDays: number;
   lastWriteTime: string;

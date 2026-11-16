@@ -112,39 +112,3 @@ func getEventLogEntryOS(logName string, recordID int64, startTime time.Time) Com
 
 	return NewSuccessResult(entries[0], time.Since(startTime).Milliseconds())
 }
-
-func parseEventLogList(output string) []EventLog {
-	// Basic parsing - in production, use proper JSON parsing
-	var logs []EventLog
-
-	// Parse lines for log names
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "LogName") {
-			// Extract log name
-			parts := strings.Split(line, ":")
-			if len(parts) >= 2 {
-				name := strings.TrimSpace(parts[1])
-				name = strings.Trim(name, `",`)
-				if name != "" {
-					logs = append(logs, EventLog{
-						Name:        name,
-						DisplayName: name,
-					})
-				}
-			}
-		}
-	}
-
-	// Return default logs if parsing failed
-	if len(logs) == 0 {
-		return []EventLog{
-			{Name: "System", DisplayName: "System"},
-			{Name: "Application", DisplayName: "Application"},
-			{Name: "Security", DisplayName: "Security"},
-		}
-	}
-
-	return logs
-}
