@@ -51,6 +51,9 @@ type hostState struct {
 	// ECH-accepted (wire truth for echActive). A flag rather than comparing
 	// the two times: successes can share a timestamp.
 	lastSuccessECH bool
+	// lastEvidence is the last interceptor evidence a failed plain dial
+	// recorded (#8868), or zero.
+	lastEvidence BlockEvidence
 }
 
 func newHostState() *hostState {
@@ -137,6 +140,10 @@ func (s *hostState) NotePlainSuccess() {
 		s.echFailures = 0
 	}
 }
+
+// NoteEvidence records what a failed plain dial learned about an
+// interceptor. It never changes the mode.
+func (s *hostState) NoteEvidence(ev BlockEvidence) { s.lastEvidence = ev }
 
 // LastSignatureAt returns the last signature seen, or the zero time.
 func (s *hostState) LastSignatureAt() time.Time { return s.lastSignatureAt }
