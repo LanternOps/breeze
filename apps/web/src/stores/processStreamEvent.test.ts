@@ -53,6 +53,19 @@ describe('W05 events', () => {
     expect(h.state.error).toBe(message);
     expect(h.state.isStreaming).toBe(false);
   });
+  it('#9428: an error records its code and detail and finalizes the half-streamed reply', () => {
+    const h = harness();
+    h.set(() => ({ messages: [{ id: 'a1', role: 'assistant', content: 'partial', createdAt: new Date(), isStreaming: true }] }));
+    processStreamEvent({ type: 'error', message: 'm', code: 'timeout', detail: 'd' }, h.set, h.get, 'a1');
+    expect(h.state).toMatchObject({ error: 'm', errorCode: 'timeout', errorDetail: 'd', isStreaming: false });
+    expect(h.state.messages[0]!.isStreaming).toBe(false);
+  });
+  it('#9428: an error from an older server (no code) records null code and detail', () => {
+    const h = harness();
+    h.set(() => ({ errorDetail: 'stale' }));
+    processStreamEvent({ type: 'error', message: 'm' }, h.set, h.get, null);
+    expect(h.state).toMatchObject({ error: 'm', errorCode: null, errorDetail: null });
+  });
   it('message_start clears stale refusal suggestions', () => {
     const h = harness();
     h.set(() => ({ refusalAlternatives: ['x'] }));
