@@ -5,8 +5,10 @@
  * Tier 4 means blocked (aiGuardrails.ts header). No core tool is registered at
  * Tier 4, but the extension SDK's `ExtensionAiTool.tier` admits `4`, so an
  * extension can register one. `checkGuardrails`' `baseTier === 4` arm used to
- * return `allowed: true, requiresApproval: true` for it, which sent the call
- * down each surface's approval path instead of refusing it.
+ * return `allowed: true, requiresApproval: true` for it. The chat gate then
+ * entered its Tier-3 approval flow; the agent gate and the MCP route refused
+ * only through their own later checks, with other reasons. The guardrail now
+ * refuses it itself, and each surface carries the guardrail's reason.
  *
  * This file pins the guardrail itself and the agent gate. The two other
  * surfaces that consume the same verdict are pinned beside their harnesses,

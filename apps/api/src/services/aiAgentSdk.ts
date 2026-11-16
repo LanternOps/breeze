@@ -339,12 +339,13 @@ export async function settleBlockedTurnForNewMessage(
  * of createSessionPreToolUse below). Keyed by the ActiveSession object itself
  * rather than added as a field on the ActiveSession type — this keeps the
  * action-intents integration local to this module. At most one Tier-3 tool
- * is ever "executing" for a given session at a time (the same assumption
- * createSessionPostToolUse's existing sessionId+toolName+status='executing'
- * match already makes), so a single pending id per session is sufficient.
+ * is assumed to be "executing" for a given session at a time (the same
+ * assumption createSessionPostToolUse's sessionId+toolName+status='executing'
+ * match makes), so it holds a single pending id per session. Known
+ * limitation (#11994): the SDK can run sibling calls concurrently, so a second
+ * call can replace this entry or consume another call's. The approval-method
+ * record (#11989) is keyed per call and does not share this limitation.
  * WeakMap so an evicted/closed session's entry is GC'd with it.
- * The SDK can run sibling calls concurrently, which breaks that assumption;
- * tracked in #11994 (the approval-method record was made per call in #11989).
  */
 const pendingIntentBySession = new WeakMap<ActiveSession, { intentId: string; orgId: string }>();
 
@@ -384,8 +385,12 @@ interface ApprovalCallKey {
   input: object;
 }
 type ApprovalRecord = { toolName: string; method: ApprovalMethod };
-/** Session-scoped so an evicted/closed session's records are GC'd with it. */
+/**
+ * Id-keyed records, per session so an evicted/closed session's records are
+ * GC'd with it. The post hook takes each call's record on entry.
+ */
 const approvalByToolUseId = new WeakMap<ActiveSession, Map<string, ApprovalRecord>>();
+/** Input-keyed records (no SDK id): GC'd with the call's input object. */
 const approvalByInput = new WeakMap<object, ApprovalRecord>();
 
 function recordApprovalMethod(
@@ -453,13 +458,11 @@ function decidedApprovalMethod(check: { tier: number; approvalScope?: string }):
   return 'per_step_user';
 }
 
-/** Consume this call's recorded approval method for the audit event's details. */
+/** The audit event's approval details from this call's record (see takeApprovalRecord). */
 function approvalAuditDetails(
-  session: ActiveSession,
-  call: ApprovalCallKey,
+  record: ApprovalRecord | undefined,
   toolName: string,
 ): { approved: boolean; approvalMethod: ApprovalMethod | 'unknown' } {
-  const record = takeApprovalRecord(session, call);
   if (record?.toolName === toolName) {
     return { approved: DECIDED_APPROVAL_METHODS.has(record.method), approvalMethod: record.method };
   }
@@ -3675,6 +3678,10 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
 
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed, handoff, sdkToolUseId) => {
+    // #11989: take this call's approval record before any early return, so a
+    // call whose audit below writes no approval detail (a refusal echo, a
+    // topology turn, a post-hook tier below 2) never leaves it behind.
+    const approvalRecord = takeApprovalRecord(session, { toolUseId: sdkToolUseId, input });
     // #10411: the echo of a refusal whose ledger row the pre hook already
     // wrote — no second row, and no UPDATE of a same-name sibling's row.
     const refusalLedgered = takeLedgeredRefusal(session, toolName, output, isError, sdkToolUseId);
@@ -4149,7 +4156,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           // (auto_approve mode, #3130 read-only Tier 2) report approved: false
           // — before #3130 this hard-coded `approved: true` for every
           // tier>=2 execution, which misrepresented auto-approved calls.
-          ...(guardrailCheck.tier >= 2 ? approvalAuditDetails(session, { toolUseId: sdkToolUseId, input }, toolName) : {}),
+          ...(guardrailCheck.tier >= 2 ? approvalAuditDetails(approvalRecord, toolName) : {}),
         },
       });
     }

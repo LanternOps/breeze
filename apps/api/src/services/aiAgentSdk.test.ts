@@ -1578,6 +1578,67 @@ describe('createSessionPreToolUse', () => {
       ]);
     });
 
+    it('a plan step and a card-approved call of the same tool, overlapping — plan_step and per_step_user', async () => {
+      vi.mocked(checkGuardrails).mockImplementation(((_toolName: string, input: Record<string, unknown>) =>
+        input.commandType === 'list_processes' ? readOnlyAutoCheck : cardCheck) as any);
+      const planInput = { command: 'whoami' };
+      const autoInput = { commandType: 'list_processes' };
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        auditSnapshot: {},
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+
+      expect(await pre('execute_command', planInput, undefined, 'toolu_plan')).toEqual({ allowed: true });
+      expect(await pre('execute_command', autoInput, undefined, 'toolu_auto')).toEqual({ allowed: true });
+      // The off-plan call (an approval card under action_plan) finishes first.
+      await post('execute_command', autoInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_auto');
+      await post('execute_command', planInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_plan');
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: true, approvalMethod: 'per_step_user', toolInput: autoInput }),
+        expect.objectContaining({ approved: true, approvalMethod: 'plan_step', toolInput: planInput }),
+      ]);
+    });
+
+    it('a record is never read back under another tool name', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(cardCheck as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const input = { deviceId: 'device-1' };
+
+      await createSessionPreToolUse(session)('take_screenshot', input, undefined, 'toolu_a');
+      await createSessionPostToolUse(session)('execute_command', input, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_a');
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'unknown' }),
+      ]);
+    });
+
+    it('the post hook consumes the record even when it writes no tier>=2 audit detail', async () => {
+      // The gate records at tier 2; the post hook's own re-check resolves
+      // tier 1, so no approval detail is written for that call. Its record
+      // must still be removed, or it would sit in the session map — shown
+      // here by a later call reusing the same id and finding nothing.
+      vi.mocked(checkGuardrails).mockReturnValueOnce(cardCheck as any); // gate
+      vi.mocked(checkGuardrails).mockReturnValueOnce({ allowed: true, tier: 1, requiresApproval: false } as any); // post re-check
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyAutoCheck as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+
+      await pre('take_screenshot', { deviceId: 'device-1' }, undefined, 'toolu_reused');
+      await post('take_screenshot', { deviceId: 'device-1' }, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_reused');
+      await post('take_screenshot', { deviceId: 'device-1' }, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_reused');
+
+      expect(auditDetailsFor('take_screenshot')).toEqual([
+        expect.not.objectContaining({ approvalMethod: expect.anything() }),
+        expect.objectContaining({ approved: false, approvalMethod: 'unknown' }),
+      ]);
+    });
+
     it('a call the gate recorded nothing for still audits approved:false / unknown', async () => {
       vi.mocked(checkGuardrails).mockReturnValue(readOnlyAutoCheck as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
