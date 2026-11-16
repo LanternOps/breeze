@@ -16,9 +16,13 @@ describe('loadProposalGuardrailContext', () => {
   });
 
   it('returns the persisted risk tier and strict hits for a same-org proposal', async () => {
-    stored = { id: 'p1', orgId: 'org-1', status: 'reviewed', riskTier: 'medium', strictHits: ['PowerShell HKLM modification'] };
+    stored = {
+      id: 'p1', orgId: 'org-1', status: 'reviewed', riskTier: 'medium', strictHits: ['PowerShell HKLM modification'],
+      goal: 'Clear the print spooler queue',
+    };
+    // #11979: the goal is what names the script on the approval headline.
     await expect(loadProposalGuardrailContext({ proposalId: 'p1' }, 'org-1')).resolves.toEqual({
-      proposal: { riskTier: 'medium', strictHits: ['PowerShell HKLM modification'] },
+      proposal: { riskTier: 'medium', strictHits: ['PowerShell HKLM modification'], goal: 'Clear the print spooler queue' },
     });
   });
 

@@ -81,6 +81,7 @@ import {
 } from './actionIntents/intentService';
 import { buildActionLabel } from './actionIntents/actionLabel';
 import { argumentTicketId, nameApprovalCardTargets, resolveApprovalTicketContext } from './actionIntents/approvalCardContext';
+import { argumentDeviceId } from './actionIntents/approvalDeviceName';
 import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import {
@@ -2354,7 +2355,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         lastSeenAt?: string;
         activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }>;
       } | undefined;
-      const deviceId = input.deviceId as string | undefined;
+      // #11979: the device the headline's `on device <id>...` stub names —
+      // `deviceId`, or the one entry of a single-device `run_script`.
+      const deviceId = argumentDeviceId(input as Record<string, unknown>) ?? undefined;
       if (deviceId) {
         try {
           const [[dev], sessions] = await withDbAccessContext(
