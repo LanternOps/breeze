@@ -1198,6 +1198,10 @@
         "aboutTitle": "Sobre a Restauração do Sistema",
         "aboutBody": "Aplica-se apenas a dispositivos Windows. A Restauração do Sistema abrange arquivos do sistema, o registro, programas instalados e configurações. Não é um backup e não abrange arquivos pessoais. Por padrão, o Windows limita a criação de pontos de restauração a um a cada 24 horas, e um ponto criado pode ser removido depois pelo Windows ou se tornar inutilizável."
       },
+      "wakeOnLanTab": {
+        "title": "Wake-on-LAN",
+        "description": "Escolha quando o botão Ativar aparece para um dispositivo offline."
+      },
       "containmentTab": {
         "title": "Contenção",
         "description": "Destinos adicionais que um dispositivo isolado ainda pode acessar. O plano de controle do Breeze é sempre permitido.",

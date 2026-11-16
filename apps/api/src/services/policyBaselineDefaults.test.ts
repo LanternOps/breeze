@@ -39,6 +39,13 @@ describe('policyBaselineDefaults', () => {
     });
   });
 
+  it('describes wake on LAN as always showing the button without a policy (#10838)', () => {
+    expect(getPolicyBaselineDefaults().find(entry => entry.featureType === 'wake_on_lan')).toEqual({
+      featureType: 'wake_on_lan', label: 'Wake on LAN', applied: false, inlineSettings: null,
+      behavior: "Not enforced — Wake button shows on every offline device; Breeze doesn't check or change WOL settings.",
+    });
+  });
+
   it('marks patch (and other unenforced features) as not applied', () => {
     const entry = getPolicyBaselineDefaults().find((e) => e.featureType === 'patch')!;
     expect(entry.applied).toBe(false);

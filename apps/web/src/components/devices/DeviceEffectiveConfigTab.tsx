@@ -24,6 +24,7 @@ import {
   Zap,
   type LucideIcon,
   Cpu,
+  Power,
 } from "lucide-react";
 
 import type { ConfigFeatureType } from "@breeze/shared";
@@ -170,6 +171,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
       return i18n.t("policies:configurationPolicies.featureTabs.vendorUpdatesTab.title");
     },
     Icon: Cpu,
+  },
+  wake_on_lan: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.wakeOnLanTab.title");
+    },
+    Icon: Power,
   },
 };
 

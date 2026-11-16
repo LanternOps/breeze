@@ -22,6 +22,7 @@ import {
   workloadInventoryInlineSettingsSchema,
   systemProtectionInlineSettingsSchema,
   containmentInlineSettingsSchema,
+  wakeOnLanInlineSettingsSchema,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -316,6 +317,10 @@ featureLinkRoutes.post(
       return c.json({ error: 'containment is inline-only; featurePolicyId must not be set' }, 400);
     }
 
+    if (data.featureType === 'wake_on_lan' && data.featurePolicyId) {
+      return c.json({ error: 'wake_on_lan is inline-only; featurePolicyId must not be set' }, 400);
+    }
+
     // #11070: arming (against the link in effect: the parent's, for a new
     // override), NULL featurePolicyId, strict settings and closed category
     // gates, in that order — see oemUpdatesLinkWrite.ts.
@@ -528,6 +533,14 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'wake_on_lan') {
+      const parsed = wakeOnLanInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(zodValidationErrorBody('Invalid wake on LAN settings', parsed.error), 400);
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     if (data.featureType === 'system_protection' && data.inlineSettings) {
       const parsed = systemProtectionInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
@@ -736,6 +749,19 @@ featureLinkRoutes.patch(
         const parsed = containmentInlineSettingsSchema.safeParse(data.inlineSettings);
         if (!parsed.success) {
           return c.json(zodValidationErrorBody('Invalid containment settings', parsed.error), 400);
+        }
+        data.inlineSettings = parsed.data;
+      }
+    }
+
+    if (existingLink.featureType === 'wake_on_lan') {
+      if (data.featurePolicyId) {
+        return c.json({ error: 'wake_on_lan is inline-only; featurePolicyId must not be set' }, 400);
+      }
+      if (data.inlineSettings !== undefined) {
+        const parsed = wakeOnLanInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(zodValidationErrorBody('Invalid wake on LAN settings', parsed.error), 400);
         }
         data.inlineSettings = parsed.data;
       }

@@ -1198,6 +1198,10 @@
         "aboutTitle": "About System Restore",
         "aboutBody": "Applies to Windows devices only. System Restore covers system files, the registry, installed programs and settings. It is not a backup and does not cover personal files. Windows limits restore-point creation to once every 24 hours by default, and a created point can later be removed by Windows or become unusable."
       },
+      "wakeOnLanTab": {
+        "title": "Wake on LAN",
+        "description": "Choose when the Wake button shows for an offline device."
+      },
       "containmentTab": {
         "title": "Containment",
         "description": "Extra destinations an isolated device may still reach. The Breeze control plane is always allowed.",

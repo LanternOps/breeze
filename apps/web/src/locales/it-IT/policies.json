@@ -1198,6 +1198,10 @@
         "aboutTitle": "Informazioni su Ripristino configurazione di sistema",
         "aboutBody": "Si applica solo ai dispositivi Windows. Ripristino configurazione di sistema copre file di sistema, registro, programmi installati e impostazioni. Non è un backup e non copre i file personali. Per impostazione predefinita Windows limita la creazione dei punti di ripristino a uno ogni 24 ore, e un punto creato può essere rimosso in seguito da Windows o diventare inutilizzabile."
       },
+      "wakeOnLanTab": {
+        "title": "Wake-on-LAN",
+        "description": "Scegli quando mostrare il pulsante Riattiva per un dispositivo offline."
+      },
       "containmentTab": {
         "title": "Contenimento",
         "description": "Destinazioni aggiuntive che un dispositivo isolato può ancora raggiungere. Il piano di controllo di Breeze è sempre consentito.",

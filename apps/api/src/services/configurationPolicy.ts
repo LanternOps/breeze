@@ -72,6 +72,7 @@ import {
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   systemProtectionInlineSettingsSchema,
   containmentInlineSettingsSchema,
+  wakeOnLanInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -1273,6 +1274,7 @@ async function decomposeInlineSettings(
     case 'system_protection':
     case 'containment':
     case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
@@ -1396,6 +1398,7 @@ async function deleteNormalizedRows(
     case 'system_protection':
     case 'containment':
     case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
@@ -1704,6 +1707,7 @@ async function assembleInlineSettings(
     case 'system_protection':
     case 'containment':
     case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
@@ -2022,6 +2026,11 @@ export async function addFeatureLink(
     inlineSettings = containmentInlineSettingsSchema.parse(inlineSettings);
   }
 
+  if (featureType === 'wake_on_lan') {
+    if (featurePolicyId) throw new Error('wake_on_lan is inline-only; featurePolicyId must not be set');
+    inlineSettings = wakeOnLanInlineSettingsSchema.parse(inlineSettings);
+  }
+
   // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
   // write. There is no stored row yet on this path, so `stored` is null and an
   // enable always stamps fresh.
@@ -2219,6 +2228,13 @@ export async function updateFeatureLink(
       if (updates.featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
       if (updates.inlineSettings !== undefined) {
         updates.inlineSettings = containmentInlineSettingsSchema.parse(updates.inlineSettings);
+      }
+    }
+
+    if (existing.featureType === 'wake_on_lan') {
+      if (updates.featurePolicyId) throw new Error('wake_on_lan is inline-only; featurePolicyId must not be set');
+      if (updates.inlineSettings !== undefined) {
+        updates.inlineSettings = wakeOnLanInlineSettingsSchema.parse(updates.inlineSettings);
       }
     }
 
@@ -3341,6 +3357,8 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'containment',
   // #11065: partner-wide inline settings; featurePolicyId is always refused below.
   'oem_updates',
+  // #10838: partner-wide inline settings; featurePolicyId is always refused.
+  'wake_on_lan',
 ]);
 
 /**

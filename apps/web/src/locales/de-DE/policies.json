@@ -1198,6 +1198,10 @@
         "aboutTitle": "Über die Systemwiederherstellung",
         "aboutBody": "Gilt nur für Windows-Geräte. Die Systemwiederherstellung umfasst Systemdateien, die Registrierung, installierte Programme und Einstellungen. Sie ist keine Sicherung und umfasst keine persönlichen Dateien. Windows erlaubt standardmäßig höchstens einen Wiederherstellungspunkt pro 24 Stunden, und ein erstellter Punkt kann später von Windows entfernt werden oder unbrauchbar werden."
       },
+      "wakeOnLanTab": {
+        "title": "Wake-on-LAN",
+        "description": "Legt fest, wann die Schaltfläche „Aufwecken“ für ein Offline-Gerät angezeigt wird."
+      },
       "containmentTab": {
         "title": "Eindämmung",
         "description": "Zusätzliche Ziele, die ein isoliertes Gerät weiterhin erreichen darf. Die Breeze-Steuerungsebene ist immer erlaubt.",

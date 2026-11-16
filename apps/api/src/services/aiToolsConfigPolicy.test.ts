@@ -1581,6 +1581,38 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
     expect(addFeatureLink).not.toHaveBeenCalled();
   });
 
+  it.each(['add', 'update'])('wake_on_lan %s rejects configureSettings true and unknown keys before mutation (#10838)', async action => {
+    const tools = toolsWithPolicy();
+    if (action === 'update') mockSelectRows([{ featureType: 'wake_on_lan' }]);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'wake_on_lan' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'wake_on_lan' } as any);
+    for (const inlineSettings of [
+      { configureSettings: true, buttonMode: 'always' },
+      { configureSettings: false, buttonMode: 'always', extra: 1 },
+    ]) {
+      if (action === 'update') mockSelectRows([{ featureType: 'wake_on_lan' }]);
+      const output = await tools.get('manage_policy_feature_link')!.handler({
+        action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'wake_on_lan', inlineSettings,
+      }, makeAuth());
+      expect(JSON.parse(output).error).toMatch(/wake_on_lan/);
+    }
+    expect(addFeatureLink).not.toHaveBeenCalled();
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('wake_on_lan add accepts both button modes (#10838)', async () => {
+    const tools = toolsWithPolicy();
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'wake_on_lan' } as any);
+    for (const buttonMode of ['verified', 'always']) {
+      const output = await tools.get('manage_policy_feature_link')!.handler({
+        action: 'add', configPolicyId: POLICY_ID, featureType: 'wake_on_lan',
+        inlineSettings: { configureSettings: false, buttonMode },
+      }, makeAuth());
+      expect(JSON.parse(output).error).toBeUndefined();
+    }
+    expect(addFeatureLink).toHaveBeenCalledTimes(2);
+  });
+
   it('system_protection (#4754): returns a field-level error for an unknown key, not the generic tool error', async () => {
     vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'system_protection' } as any);
 

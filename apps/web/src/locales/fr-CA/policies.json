@@ -1198,6 +1198,10 @@
         "aboutTitle": "À propos de la Restauration du système",
         "aboutBody": "S’applique uniquement aux appareils Windows. La Restauration du système couvre les fichiers système, le registre, les programmes installés et les paramètres. Ce n’est pas une sauvegarde et elle ne couvre pas les fichiers personnels. Par défaut, Windows limite la création de points de restauration à un toutes les 24 heures, et un point créé peut ensuite être supprimé par Windows ou devenir inutilisable."
       },
+      "wakeOnLanTab": {
+        "title": "Wake-on-LAN",
+        "description": "Choisissez quand le bouton Réveiller s’affiche pour un appareil hors ligne."
+      },
       "containmentTab": {
         "title": "Confinement",
         "description": "Destinations supplémentaires qu’un appareil isolé peut encore joindre. Le plan de contrôle Breeze est toujours autorisé.",
