@@ -99,7 +99,7 @@ const reset = (over: Record<string, unknown> = {}) => {
     pendingApproval: null, pendingPlan: null, activePlan: null, approvalMode: 'per_step', isPaused: false,
     sendMessage: vi.fn(), approveExecution: vi.fn(), clearPendingApproval: vi.fn(), approvePlan: vi.fn(), abortPlan: vi.fn(),
     pauseAi: vi.fn(), interruptResponse: vi.fn(), isInterrupting: false, composerDraft: '', setComposerDraft: vi.fn(), clearError: vi.fn(),
-    wisp: null, sessionId: null,
+    wisp: null, sessionId: null, isFlagged: false, flagSession: vi.fn(), unflagSession: vi.fn(),
     switchSession: vi.fn(async (id: string) => { Object.assign(h.state, { sessionId: id }); }),
     enterWispMode: vi.fn(async (w: typeof wisp) => { Object.assign(h.state, { wisp: w, sessionId: 's-new' }); }),
     ...over,
@@ -980,5 +980,36 @@ describe('WispHomeThread check-ins (W05 #10996)', () => {
     expect(loads).toEqual(['/wisp/memory/captures?sessionId=s-live']);
     const ids = (kit.messages.at(-1)?.extras as Array<{ id: string }>).map((e) => e.id);
     expect(ids).toContain('wisp-instruction-i-1');
+  });
+
+  describe('flag conversation', () => {
+    it('the composer offers Flag for the bound session and flags it', async () => {
+      reset({ wisp, sessionId: 's-live' });
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
+      const flag = await screen.findByTestId('wisp-home-thread-flag');
+      expect(flag).toHaveAccessibleName('Flag conversation for review');
+      expect(flag).toHaveAttribute('aria-pressed', 'false');
+      fireEvent.click(flag);
+      expect(h.state.flagSession).toHaveBeenCalledTimes(1);
+      expect(h.state.unflagSession).not.toHaveBeenCalled();
+    });
+
+    it('a flagged session shows as flagged and the button unflags it', async () => {
+      reset({ wisp, sessionId: 's-live', isFlagged: true });
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
+      const flag = await screen.findByTestId('wisp-home-thread-flag');
+      expect(flag).toHaveAccessibleName('Unflag conversation');
+      expect(flag).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(flag);
+      expect(h.state.unflagSession).toHaveBeenCalledTimes(1);
+      expect(h.state.flagSession).not.toHaveBeenCalled();
+    });
+
+    it('stays with the composer when the thread has no linked-items panel', async () => {
+      reset({ wisp, sessionId: 's-live' });
+      render(<WispHomeThread {...extra} links={null} wisp={wisp} lastSessionId="s-old" />);
+      expect(await screen.findByTestId('wisp-home-thread-flag')).toBeInTheDocument();
+      expect(screen.queryByTestId('wisp-composer-link')).toBeNull();
+    });
   });
 });
