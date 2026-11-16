@@ -421,6 +421,46 @@ describe('dropped input-validation refusal and the session auto-flag (#11968)', 
     expect(session.deferredToolFailureFlags?.size ?? 0).toBe(0);
   });
 
+  it('writes the held flag when the turn result is handled, not only when the processor exits', async () => {
+    let flagsAfterResult = -1;
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* dropped as never[];
+        yield RESULT_MSG as never;
+        // Resumed only after the processor has fully handled the result.
+        flagsAfterResult = flagWrites().length;
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+
+    const session = await manager.getOrCreate('sess-result-flush', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    expect(flagsAfterResult).toBe(1);
+    expect(flagWrites()).toHaveLength(1);
+  });
+
+  it('writes the held flag when the turn ends without a result (the SDK stream throws)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* dropped as never[];
+        throw new Error('sdk crashed');
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+
+    const session = await manager.getOrCreate('sess-no-result', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    await session.processorPromise;
+
+    expect(flagWrites()).toHaveLength(1);
+    expect(flagWrites()[0]!.flagReason).toMatch(/^Tool rejected before execution: set_device_context — /);
+    expect(session.deferredToolFailureFlags?.size ?? 0).toBe(0);
+    errSpy.mockRestore();
+  });
+
   it('a drop that is not an input-validation error still flags at once', async () => {
     let flagsBeforeResult = -1;
     const id = 'toolu_other_01';

@@ -13,8 +13,18 @@
  * recovered from. So that refusal is held until the turn ends: a later
  * successful call to the same tool in the turn drops it, and whatever is still
  * held when the turn ends is written then. Any other failure flags at once.
- * Calls made in parallel are matched by arrival order, so a refusal whose
- * sibling succeeded first is still flagged (the conservative side).
+ *
+ * Known trade-offs, accepted because these refusals are model input mistakes
+ * rather than platform failures:
+ *  - A success is matched by tool name only (the corrected retry carries
+ *    different arguments by design). So a later success of the same tool on
+ *    another target or action also drops the hold, and a coordinator
+ *    `invalid_params` the model could not fix is dropped only if a later call
+ *    to that tool succeeds anyway.
+ *  - Calls are matched in arrival order, so a refusal whose parallel sibling
+ *    succeeded first is still flagged.
+ *  - The hold lives in process memory. If the API process dies mid-turn, an
+ *    uncorrected refusal is not flagged.
  *
  * Only the first flag ever lands (`flagged_at IS NULL`), so a session keeps
  * the reason it was first flagged for.
