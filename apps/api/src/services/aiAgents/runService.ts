@@ -244,6 +244,15 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            (researchLimits(), researchProfile.ts): substitute
  *                            for maxBudgetCentsPerRun on a research-profile
  *                            run, keyed by depth; not enforced here.
+ *  - analysisMaxChainDepth — HERE (admission step 4d, analysis only, under the
+ *                            analysis-compute lock): longest continuation
+ *                            chain, in links from the root. Merged with min.
+ *  - analysisMaxChainRuns  — HERE (admission step 4d, analysis only, under the
+ *                            analysis-compute lock): runs per chain, root
+ *                            included. Merged with min.
+ *  - analysisMaxChainBudgetCents — HERE (admission step 4d, analysis only,
+ *                            under the analysis-compute lock): total spend of
+ *                            one chain, in cents. Merged with min.
  */
 
 export interface CreateAgentRunInput {
