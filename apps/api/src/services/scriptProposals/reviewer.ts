@@ -448,9 +448,11 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   // resolved), written to the ledger and rolled into the org totals by
   // settleInvocation — always on THAT hop's binding and reservation (W09 F4/F5).
   // With no attempts (nothing came back) the reservation settles at zero.
-  // #11972: what each settlement billed is added to `spentCents`, so the review
-  // row carries the same cents the ledger holds. Failover hops runWithFailover
-  // settles itself (settleZeroUsageHop) bill nothing and are not counted.
+  // #11972: the cents each settlement priced are added to `spentCents`, so the
+  // review row carries what settleInvocation billed (a deferred settlement
+  // reaches the ledger later; an unrecorded one is reported to Sentry by
+  // settleInvocation). Failover hops runWithFailover settles itself
+  // (settleZeroUsageHop) bill nothing and are not counted.
   let spentCents = 0;
   const settleOn = async (hop: FailoverHop, attempts: MessageAttempt[], dispatchFailed = false) => {
     const settled = await settleInvocation({
@@ -660,8 +662,8 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   // before this call is settled (see below). quoteInvocationCents prices it with
   // the rate selection settleInvocation bills; calls already settled (a parse
   // retry's first attempt) are in `spentCents`. A quote fault leaves the cost
-  // unknown (null) rather than failing a review whose verdict is good: the
-  // ledger still holds the billed cents.
+  // unknown (null) rather than failing a review whose verdict is good; billing
+  // is still settleInvocation's job below, and is not affected by the quote.
   let reviewCostCents: number | null;
   try {
     reviewCostCents = spentCents + await quoteInvocationCents(
@@ -672,7 +674,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   } catch (error) {
     reviewCostCents = null;
     console.error('[scriptReview] could not price the review row; its cost is recorded as unknown', {
-      proposalId: job.proposalId, orgId: job.orgId, reservationId: servedReservationId,
+      proposalId: job.proposalId, orgId: job.orgId, reservationId: servedReservationId, error: safeErrorMessage(error),
     });
     captureException(new Error(safeErrorMessage(error)), undefined, {
       service: 'scriptReview', orgId: job.orgId, area: 'script_review_cost_quote',

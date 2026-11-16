@@ -800,6 +800,8 @@ describe('runScriptReview — summary clamp and parse retry (#10954)', () => {
     expect(shared.insertValues.at(-1)).toMatchObject({
       summary: 'Reviewer returned no parseable JSON verdict (the one retry was not attempted: budget not admitted)',
       inputTokens: 300, outputTokens: 40,
+      // #11972: the one settlement's cents (the mock bills 1), counted once.
+      costCents: '1.0000',
     });
   });
 
@@ -817,6 +819,7 @@ describe('runScriptReview — summary clamp and parse retry (#10954)', () => {
     expectSettledOnce(300, 40);
     expect(shared.insertValues.at(-1)).toMatchObject({
       summary: 'Reviewer returned no parseable JSON verdict (the one retry was not attempted: reservation failed)',
+      costCents: '1.0000',
     });
     expect(shared.captureExceptionMock).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'pool exhausted' }), undefined, expect.objectContaining({ area: 'script_review_parse_retry' }),
@@ -1159,6 +1162,64 @@ describe('runScriptReview — W09 failover (#7607)', () => {
     expect(shared.reserveAiBudgetMock).toHaveBeenCalledTimes(1);
     expect(settles().map((s) => s.reservationId)).toEqual([RESERVATION_ID]);
     expect(shared.insertValues.at(-1)).toMatchObject({ summary: expect.stringContaining('out of AI credits') });
+    // #11972: the zero-usage hop runWithFailover settled billed nothing (the
+    // mock's default 1 cent must not reach the row).
+    expect(shared.insertValues.at(-1)).toMatchObject({ costCents: '0.0000' });
+  });
+
+  it('#11972: a review served by the failover hop is priced on THAT hop: its binding and its reservation', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+    shared.messagesCreateMock
+      .mockRejectedValueOnce(overloaded())
+      .mockResolvedValueOnce({ usage: { input_tokens: 500, output_tokens: 80 }, content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }] });
+    shared.quoteInvocationCentsMock.mockResolvedValueOnce(3.5);
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
+
+    await runScriptReview(JOB);
+
+    expect(shared.quoteInvocationCentsMock).toHaveBeenCalledTimes(1);
+    expect(shared.quoteInvocationCentsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ wireModel: 'claude-backup-wire', offeringId: 'k' }),
+      [expect.objectContaining({ model: 'claude-backup-wire' })],
+      { orgId: ORG_ID, reservationId: HOP1_RESERVATION },
+    );
+    // The failed hop 0 settled at zero is not added on top of the quote.
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      status: 'completed', costCents: '3.5000', budgetReservationId: HOP1_RESERVATION,
+    });
+  });
+
+  it('#11972: a parse retry whose backup hop is not admitted keeps the settled first attempt\'s cents on the failure row', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(
+      makeResolvedModel('platform', { surface: 'script_reviewer', offering: { id: 'p2', displayName: 'P2' }, failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [] }),
+    );
+    // Initial admission, the parse retry's admission, then the backup hop's: denied.
+    shared.checkBudgetDetailedMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+    shared.messagesCreateMock
+      .mockResolvedValueOnce({ usage: { input_tokens: 300, output_tokens: 40 }, stop_reason: 'end_turn', content: [{ type: 'text', text: 'prose, not JSON' }] })
+      .mockRejectedValueOnce(overloaded());
+    shared.settleInvocationMock.mockResolvedValueOnce({ costCents: 2.5, invocationIds: [], deferred: false });
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.messagesCreateMock).toHaveBeenCalledTimes(2);
+    // The first attempt (2.5) and the retry's failed hop (zero usage, settled by runWithFailover).
+    expect(settles().map((s) => [s.reservationId, s.usage.length])).toEqual([[RESERVATION_ID, 1], [HOP1_RESERVATION, 0]]);
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      status: 'failed', inputTokens: 300, outputTokens: 40, costCents: '2.5000',
+      summary: expect.stringContaining('out of AI credits'),
+    });
   });
 });
 
