@@ -68,3 +68,9 @@ export interface AiRetryTarget {
   mode: AiRetryMode;
   error: string;
 }
+
+/** The retry target that still describes the banner's error, else null. */
+export function activeRetryTarget(state: { error: string | null; retryTarget: AiRetryTarget | null }): AiRetryTarget | null {
+  const { error, retryTarget } = state;
+  return retryTarget && error !== null && retryTarget.error === error ? retryTarget : null;
+}

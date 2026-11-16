@@ -9,6 +9,7 @@ import { classifySendRefusal } from './aiSendRefusal';
 import { isChatSessionType } from './aiSessionOpen';
 import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
 import { extractApiError } from '@/lib/apiError';
+import { classifyHttpFailure, isRetryableAiError, retryModeFor, type AiErrorCode, type AiRetryMode, type AiRetryTarget } from '@/lib/aiErrors';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { WISP_GRANT_UNUSABLE, isResumableWispSession, wispSessionOrgId } from '@/lib/wispSession';
@@ -121,6 +122,14 @@ interface AiState {
    * can choose honest copy without parsing `error`. Null on success.
    */
   errorCode: string | null;
+  /** #9428: secondary banner line of the last failed turn (a timeout's gateway reason). */
+  errorDetail: string | null;
+  /**
+   * #9428: the failed turn "Try again" re-sends (retryable failures only;
+   * never a topology turn). Describes the banner only while its `error` still
+   * matches `error` (lib/aiErrors activeRetryTarget). Not persisted.
+   */
+  retryTarget: AiRetryTarget | null;
   /** HTTP status of a failed session create, including auth redirects. */
   errorStatus: number | null;
   /**
@@ -211,7 +220,14 @@ interface AiState {
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
-  sendMessage: (content: string) => Promise<void>;
+  /**
+   * `retry` (#9428): re-send the failed turn's message, whose bubble is already
+   * on screen and whose row the server already stored — no second bubble, and
+   * the POST carries `retry: true` so the server reuses that row.
+   */
+  sendMessage: (content: string, opts?: { retry?: boolean }) => Promise<void>;
+  /** #9428: "Try again" — re-send the failed turn in `retryTarget`, if it still applies. */
+  retryLastTurn: () => Promise<void>;
   approveExecution: (executionId: string, approved: boolean) => Promise<void>;
   /**
    * An inline intent decide (Touch ID self-approve) already POSTed to the
@@ -311,6 +327,8 @@ const CLEARED_SESSION = {
   turnModel: null as AiTurnModel | null,
   refusalAlternatives: [] as string[],
   joinedMidResponse: false,
+  retryTarget: null as AiRetryTarget | null,
+  errorDetail: null as string | null,
 } as const;
 
 /** #9427: turn state that belongs to the chat being switched away from. */
@@ -774,6 +792,8 @@ export const useAiStore = create<AiState>()(
   isLoading: false,
   error: null,
   errorCode: null,
+  errorDetail: null,
+  retryTarget: null,
   errorStatus: null,
   topologySiteId: null,
   topologySelection: null,
@@ -815,7 +835,7 @@ export const useAiStore = create<AiState>()(
     set({ isOpen: true });
   },
   close: () => set({ isOpen: false }),
-  clearError: () => set({ error: null, errorCode: null, errorStatus: null }),
+  clearError: () => set({ error: null, errorCode: null, errorDetail: null, retryTarget: null, errorStatus: null }),
 
   setPageContext: (ctx) =>
     set((s) =>
@@ -829,7 +849,7 @@ export const useAiStore = create<AiState>()(
     // A different chat begins: the previous chat's pick must not ride along.
     // (A pick handed in via opts.model is the one this create commits.)
     if (!opts?.model) useAiModelPickerStore.getState().clearSelection();
-    set({ isLoading: true, error: null, errorCode: null, errorStatus: null });
+    set({ isLoading: true, error: null, errorCode: null, errorDetail: null, retryTarget: null, errorStatus: null });
     const { pageContext: storeContext, selectedM365ConnectionId, approvalMode } = get();
     const pageContext = opts?.pageContext ?? storeContext;
     const topology = pageContext?.type === 'topology';
@@ -981,7 +1001,7 @@ export const useAiStore = create<AiState>()(
     const ownsSession = claimSessionOwnership();
     // Another chat's pick must never ride on this chat's next message.
     if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
-    set({ isLoading: true, error: null });
+    set({ isLoading: true, error: null, errorDetail: null, retryTarget: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
       if (!ownsSession()) return;
@@ -1067,13 +1087,21 @@ export const useAiStore = create<AiState>()(
     }
   },
 
-  sendMessage: async (content: string) => {
+  sendMessage: async (content: string, opts?: { retry?: boolean }) => {
     const trimmedContent = content.trim();
     if (!trimmedContent) return;
 
     const { sessionId, isStreaming, isLoading } = get();
 
     if (isStreaming || isLoading) return;
+
+    // #9428: a retry re-runs the failed turn on its existing bubble (the last
+    // user message, with this exact text). Without one there is nothing to
+    // re-run, and this is an ordinary send.
+    const retriedBubble = opts?.retry === true && sessionId
+      ? [...get().messages].reverse().find((m) => m.role === 'user')
+      : undefined;
+    const retry = retriedBubble !== undefined && retriedBubble.content === trimmedContent;
 
     // W05: the composer's pending choice rides on this message — or, for the
     // first message of a new chat, on the session create.
@@ -1087,7 +1115,7 @@ export const useAiStore = create<AiState>()(
     const currentSessionId = get().sessionId;
     if (!currentSessionId) return;
 
-    const userMsgId = crypto.randomUUID();
+    const userMsgId = retry ? retriedBubble!.id : crypto.randomUUID();
     const userMsg: AiMessage = {
       id: userMsgId,
       role: 'user',
@@ -1096,16 +1124,40 @@ export const useAiStore = create<AiState>()(
     };
 
     set((s) => ({
-      messages: [...s.messages, userMsg],
+      // A retry keeps the failed turn's bubble; a reply it left mid-stream stops spinning.
+      messages: retry ? s.messages.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)) : [...s.messages, userMsg],
       isStreaming: true,
       error: null,
       errorCode: null,
+      errorDetail: null,
+      retryTarget: null,
       pendingApproval: null,
       topologyPhase: null,
       topologyRunId: null,
     }));
     // A topology investigation turn renders only vetted events (see TOPOLOGY_TURN_EVENTS).
     const topologyTurn = get().topologySiteId !== null;
+    /**
+     * #9428: remember a retryable failure of this turn so "Try again" can
+     * re-send it. Never for a topology turn (its panel owns the flow). A turn
+     * that was itself a retry stays a retry: its row is stored.
+     */
+    const rememberFailure = (code: AiErrorCode | string | null, mode?: AiRetryMode) => {
+      const { error } = get();
+      if (topologyTurn || !error || !isRetryableAiError(code)) return;
+      const retryCode = code as AiErrorCode;
+      const failedMode = mode ?? retryModeFor(retryCode);
+      set({
+        retryTarget: {
+          sessionId: currentSessionId,
+          content: trimmedContent,
+          code: retryCode,
+          detail: get().errorDetail ?? null,
+          mode: retry && failedMode === 'resend' ? 'retry' : failedMode,
+          error,
+        },
+      });
+    };
 
     const streamToken = ++activeStreamToken;
     // This send supersedes any attach (#9427): stop its reader now.
@@ -1118,7 +1170,12 @@ export const useAiStore = create<AiState>()(
       const { pageContext } = get();
       const res = await fetchWithAuth(`/ai/sessions/${currentSessionId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content: trimmedContent, pageContext: pageContext ?? undefined, ...(model && !createdNow ? { model } : {}) })
+        body: JSON.stringify({
+          content: trimmedContent,
+          pageContext: pageContext ?? undefined,
+          ...(model && !createdNow ? { model } : {}),
+          ...(retry ? { retry: true } : {}),
+        })
       });
 
       if (!res.ok) {
@@ -1137,7 +1194,9 @@ export const useAiStore = create<AiState>()(
           // (turn_in_progress, or an uncoded 409 from an older API). Join it;
           // the refused text goes back in the composer, no error banner. The
           // pick is kept for the next send (it was never committed).
-          attachAfterTurnInProgress(set, get, { dropMessageId: userMsgId, restoreDraft: trimmedContent });
+          // A refused retry keeps the failed turn's bubble (its row is stored)
+          // and leaves the composer alone.
+          attachAfterTurnInProgress(set, get, retry ? {} : { dropMessageId: userMsgId, restoreDraft: trimmedContent });
           return;
         }
 
@@ -1156,7 +1215,8 @@ export const useAiStore = create<AiState>()(
           // transcript matches the server's.
           void useAiModelPickerStore.getState().load({ sessionId: currentSessionId });
           set((s) => ({
-            messages: s.messages.filter((m) => m.id !== userMsgId),
+            // A refused retry's bubble stays: the failed turn's row is stored.
+            messages: retry ? s.messages : s.messages.filter((m) => m.id !== userMsgId),
             error: extractApiError(data, 'Failed to send message'),
             errorCode: code,
             isStreaming: false,
@@ -1229,7 +1289,7 @@ export const useAiStore = create<AiState>()(
           // the optimistic bubble like the coded 409s and keep the code so the
           // chat can offer a way forward (Buy credits) instead of bare text.
           set((s) => ({
-            messages: s.messages.filter((m) => m.id !== userMsgId),
+            messages: retry ? s.messages : s.messages.filter((m) => m.id !== userMsgId),
             error: extractApiError(data, 'Failed to send message'),
             errorCode: code,
             isStreaming: false,
@@ -1237,19 +1297,23 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
-        // refusal === 'error': the generic failure path (#9428 slots its
-        // classifyHttpFailure in here). The server refused the turn before it
-        // ran (e.g. 503 ai_not_configured), so it never stored the message:
-        // drop the optimistic bubble and give the text back to the composer
-        // (#10108), keeping the error banner.
+        // refusal === 'error': the generic failure path. The server refused the
+        // turn before it ran (e.g. 503 ai_not_configured), so it never stored
+        // the message: drop the optimistic bubble and give the text back to the
+        // composer (#10108), keeping the error banner. (A refused retry keeps
+        // its bubble: the failed turn's row is stored.) #9428: an uncoded
+        // refusal is classified by status, so a 5xx can be re-sent; the
+        // body's own code always wins (surfaces switch on it).
         if (!ownsStream()) return;
+        const failureCode = code ?? classifyHttpFailure(res.status);
         set((s) => ({
-          messages: s.messages.filter((m) => m.id !== userMsgId),
-          composerDraft: trimmedContent,
+          messages: retry ? s.messages : s.messages.filter((m) => m.id !== userMsgId),
+          ...(retry ? {} : { composerDraft: trimmedContent }),
           error: extractApiError(data, 'Failed to send message'),
-          errorCode: code,
+          errorCode: failureCode,
           isStreaming: false,
         }));
+        rememberFailure(failureCode);
         return;
       }
 
@@ -1307,20 +1371,69 @@ export const useAiStore = create<AiState>()(
       if (ownsStream() && get().errorCode === 'turn_limit_reached' && get().wisp) {
         if (await rollWispSession(get)) set({ error: i18n.t('ai:wisp.turnLimitRolled'), errorCode: 'turn_limit_reached' });
       }
+      // #9428: the turn ended on a coded stream error (timeout, provider error,
+      // the route's own stream failure).
+      if (ownsStream()) rememberFailure(get().errorCode);
     } catch (err) {
       // A superseded stream must not raise an error on the session that
       // replaced it — its failure is no longer anything the user can act on.
       if (!ownsStream()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to send message',
+        // #9428: the request or its stream broke; the turn may still have run.
+        errorCode: 'disconnect',
+        errorDetail: null,
         isStreaming: false
       });
+      rememberFailure('disconnect');
     } finally {
       if (heldReader && currentSendReader === heldReader) currentSendReader = null;
       if (activeStreamToken === streamToken && get().isStreaming) {
         set({ isStreaming: false });
       }
     }
+  },
+
+  retryLastTurn: async () => {
+    const state = get();
+    const target = state.retryTarget;
+    // Only the failure the banner still shows, on the chat that failed, with
+    // nothing running (a double click finds isStreaming / isLoading set).
+    if (!target || target.error !== state.error || state.isStreaming || state.isLoading || state.topologySiteId !== null) return;
+    if (target.sessionId !== state.sessionId) {
+      set({ retryTarget: null });
+      return;
+    }
+    if (target.mode === 'retry') {
+      await get().sendMessage(target.content, { retry: true });
+      return;
+    }
+    if (target.mode === 'resend') {
+      // Nothing was stored: an ordinary send. Its text went back to the
+      // composer; empty it unless the technician has since changed it.
+      if (get().composerDraft.trim() === target.content) set({ composerDraft: '' });
+      await get().sendMessage(target.content);
+      return;
+    }
+    // reload_first: the stream broke, so the turn may have finished, still be
+    // running, or never have reached the server. The stored transcript says
+    // which; never re-send a turn that ran (its tools may have, too).
+    set({ retryTarget: null });
+    await get().loadSession(target.sessionId);
+    const after = get();
+    if (after.sessionId !== target.sessionId || after.error) return;
+    const last = after.messages[after.messages.length - 1];
+    if (last?.role === 'user' && last.content === target.content) {
+      // Stored, unanswered: re-run it on that row. A turn still running is
+      // refused 409 and attached to instead.
+      await get().sendMessage(target.content, { retry: true });
+      return;
+    }
+    const lastUser = [...after.messages].reverse().find((m) => m.role === 'user');
+    // Answered: the reloaded transcript shows the reply.
+    if (lastUser?.content === target.content) return;
+    // Never stored: send it as a new message.
+    await get().sendMessage(target.content);
   },
 
   approveExecution: async (executionId: string, approved: boolean) => {

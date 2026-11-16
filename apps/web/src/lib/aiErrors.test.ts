@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyHttpFailure, isRetryableAiError } from './aiErrors';
+import { activeRetryTarget, classifyHttpFailure, isRetryableAiError, retryModeFor } from './aiErrors';
 
 describe('isRetryableAiError (#9428)', () => {
   it.each([
@@ -29,6 +29,28 @@ describe('isRetryableAiError (#9428)', () => {
     [undefined, false],
   ] as const)('%s → %s', (code, retryable) => {
     expect(isRetryableAiError(code)).toBe(retryable);
+  });
+});
+
+describe('activeRetryTarget (#9428)', () => {
+  const target = { sessionId: 's', content: 'c', code: 'timeout', detail: null, mode: 'retry', error: 'timed out' } as const;
+  it('returns the target while the banner still shows its error', () => {
+    expect(activeRetryTarget({ error: 'timed out', retryTarget: target })).toBe(target);
+  });
+  it('a different (later) error or no error retires it', () => {
+    expect(activeRetryTarget({ error: 'Failed to approve', retryTarget: target })).toBeNull();
+    expect(activeRetryTarget({ error: null, retryTarget: target })).toBeNull();
+    expect(activeRetryTarget({ error: 'timed out', retryTarget: null })).toBeNull();
+  });
+});
+
+describe('retryModeFor (#9428)', () => {
+  it.each([
+    ['timeout', 'retry'], ['provider_error', 'retry'],
+    ['disconnect', 'reload_first'], ['stream_error', 'reload_first'],
+    ['http_5xx', 'resend'],
+  ] as const)('%s → %s', (code, mode) => {
+    expect(retryModeFor(code)).toBe(mode);
   });
 });
 
