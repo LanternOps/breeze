@@ -1648,6 +1648,10 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   compute_budget_exceeded: false,
   compute_credits_exhausted: false,
   too_many_input_devices: false,
+  // Wisp analysis sessions W02: analysis frame refusals are policy outcomes.
+  frame_too_large: false,
+  site_not_in_scope: false,
+  frame_empty: false,
   workspace_unavailable: false,
   // AI model registry W03: a configuration gate (the agents' model is
   // unavailable), never a data-integrity bug.

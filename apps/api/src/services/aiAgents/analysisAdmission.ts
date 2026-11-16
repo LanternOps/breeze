@@ -19,6 +19,7 @@
  */
 import { resolveArtifact } from '../artifacts/artifactService';
 import { verifiedAnalysisSiteId } from './analysisRunSite';
+import type { AiRunExportGrants, AnalysisScopeKind } from '../../db/schema/aiAgents';
 import {
   createAndEnqueueAgentRun,
   GrantDepthExceededError,
@@ -49,6 +50,12 @@ export type AnalysisAdmissionRefusal =
   | 'analysis_rate'
   | 'too_many_input_devices'
   | 'device_not_in_org'
+  // Wisp analysis sessions W02 — the site/org frame admission resolved is too
+  // large, names a site the org or the grant does not reach, or is empty. Each
+  // has its own technician sentence (`wisp/specialistRefusalMessages.ts`).
+  | 'frame_too_large'
+  | 'site_not_in_scope'
+  | 'frame_empty'
   | 'artifact_forbidden'
   | 'enqueue_failed'
   // AI model registry W03: the agents' AI model is unusable here right now.
@@ -70,6 +77,8 @@ export interface AdmitAnalysisRunInput {
    */
   sessionId: string | null;
   goal: string;
+  /** Wisp analysis sessions W02: what the run covers. Admission expands `site` / `org`. */
+  scope: AnalysisScopeKind;
   deviceIds: string[];
   siteId: string | null;
   stagedHandles: string[];
@@ -80,6 +89,13 @@ export interface AdmitAnalysisRunInput {
    * Never set from a request body.
    */
   grant?: CreateAgentRunInput['grant'];
+  /**
+   * Wisp analysis sessions W02 — TRUSTED INTERNAL INPUT, same posture as
+   * `grant`: the datasets and sensitive gates the coordinator's analysis
+   * launcher evaluated against the live grant ceiling. Frozen verbatim at
+   * admission. Never set from a request body.
+   */
+  exportGrants?: AiRunExportGrants;
 }
 
 export type AdmitAnalysisRunResult =
@@ -147,6 +163,10 @@ export const SKIP_REASON_REFUSALS = {
   compute_budget_exceeded: 'compute_budget_exceeded',
   compute_credits_exhausted: 'compute_budget_exceeded',
   too_many_input_devices: 'too_many_input_devices',
+  // Wisp analysis sessions W02 — each frame refusal is its own message.
+  frame_too_large: 'frame_too_large',
+  site_not_in_scope: 'site_not_in_scope',
+  frame_empty: 'frame_empty',
   workspace_unavailable: 'analysis_not_available',
   // AI model registry W03 — its own refusal: the setting to change is the AI
   // agents' model, not a budget or the analysis feature.
@@ -218,7 +238,16 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
         siteId,
         requestedByUserId: input.requestedByUserId,
       },
-      analysis: { deviceIds: input.deviceIds, inputHandles: input.stagedHandles },
+      analysis: {
+        scope: input.scope,
+        // The frame's site is the REQUESTED one; admission checks it against
+        // the org and the grant. `trigger_ref.siteId` above stays the verified
+        // visibility site, which is a different question.
+        siteId: input.siteId,
+        deviceIds: input.deviceIds,
+        inputHandles: input.stagedHandles,
+        ...(input.exportGrants ? { exportGrants: input.exportGrants } : {}),
+      },
       ...(input.grant ? { grant: input.grant } : {}),
     });
   } catch (err) {
