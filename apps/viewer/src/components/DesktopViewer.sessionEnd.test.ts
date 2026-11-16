@@ -76,3 +76,31 @@ describe('reconnect announces itself before closing the old peer (#10542)', () =
     expect(body.indexOf('reconnectInFlightRef.current = true')).toBeLessThan(announce);
   });
 });
+
+// #11931: a hang-up records operator_ended instead of peer_disconnected. The
+// End request goes out BEFORE the peer is closed (and the window is closed),
+// so it is not cut off and it lands before the agent reports the peer drop.
+describe('hang-up ends the session as the operator (#11931)', () => {
+  it('handleDisconnect sends End before it closes the transports and the window', () => {
+    const body = callbackBody('handleDisconnect');
+    const end = body.indexOf('hangUpRef.current(');
+    expect(end, 'handleDisconnect must send End').toBeGreaterThan(-1);
+    for (const later of ['rtcSession?.close()', 'vncSession?.close()', 'wsCleanup?.()', 'onDisconnect()']) {
+      const at = body.indexOf(later);
+      expect(at, `${later} not found`).toBeGreaterThan(-1);
+      expect(at, `${later} must run after End is sent`).toBeGreaterThan(end);
+    }
+    // A second click while End is in flight must not tear down twice.
+    expect(body).toContain('hangingUpRef.current');
+  });
+
+  it('closing the window sends End first and never blocks the close on it', () => {
+    const at = source.indexOf('.onCloseRequested(');
+    expect(at, 'the session window must listen for close requests').toBeGreaterThan(-1);
+    const handler = source.slice(at, source.indexOf('\n    });', at));
+    expect(handler).toContain('hangUpRef.current(authRef.current)');
+    // Tauri only destroys the window after the handler resolves; it must not
+    // prevent the close.
+    expect(handler).not.toContain('preventDefault');
+  });
+});

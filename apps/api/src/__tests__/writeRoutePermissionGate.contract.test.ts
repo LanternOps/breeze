@@ -264,6 +264,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/desktop-ws/connect/exchange': 'device credential: one-time connect code exchange, live access re-authorized',
   'POST /api/v1/desktop-ws/:id/viewer/ws-ticket': 'device credential: viewer access token + session access validation',
   'POST /api/v1/desktop-ws/:id/viewer/offer': 'device credential: viewer access token + session access validation',
+  'POST /api/v1/desktop-ws/:id/viewer/end': 'device credential: viewer access token + session access validation (live remote:access re-check)',
   'POST /api/v1/desktop-ws/:id/viewer/ice': 'device credential: viewer access token + session access validation',
   'POST /api/v1/desktop-ws/:id/viewer/lease/renew': 'device credential: viewer access token bound to session owner',
   // routes/devPush.ts

@@ -174,9 +174,9 @@ describe('SessionHistory end reason (#10190)', () => {
     expect(screen.getByText('host-future').closest('tr')!.textContent).not.toMatch(/endReasons|some_future_reason/);
   });
 
-  // #11839 review: the desktop viewer app closes the peer without calling End,
-  // so peer_disconnected is the commonest ending for a normal viewer hang-up.
-  // Its label must not blame the device.
+  // #11839 review: peer_disconnected also covers a viewer that closed without
+  // sending End (app quit or crash, an older viewer; #11931) and the device's
+  // own idle/lifetime/lease stops. Its label must not blame the device.
   it('labels peer_disconnected neutrally, not as a device drop', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({

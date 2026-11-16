@@ -1,7 +1,9 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
+import { createSessionHangUp } from '../lib/sessionHangUp';
 import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
 import {
@@ -267,6 +269,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }
   const reliableInput = reliableInputRef.current;
   const userDisconnectRef = useRef(false);
+  // #11931: sends End once per session, shared by the hang-up and the window close.
+  const hangUpRef = useRef(createSessionHangUp());
+  // Set while handleDisconnect waits for End, so a second click does nothing.
+  const hangingUpRef = useRef(false);
   const reconnectTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectDeadlineRef = useRef<number | null>(null);
   const reconnectInFlightRef = useRef(false);
@@ -1149,6 +1155,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     cancelledRef.current = false;
     webrtcFallbackAttemptedRef.current = false;
     userDisconnectRef.current = false;
+    hangingUpRef.current = false;
     reconnectInFlightRef.current = false;
     authRef.current = null;
     wheelAccRef.current = DEFAULT_WHEEL_ACCUMULATOR;
@@ -2843,16 +2850,43 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }, BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS);
   }, [blockLocalInput.blocked, blockLocalInput.pending]);
 
+  // #11931: closing the window (title-bar close, Close Window, and the close
+  // that handleDisconnect ends with) is how a technician usually hangs up.
+  // Send End first so the session history records the hang-up and not a
+  // dropped connection. Tauri destroys the window once this handler resolves;
+  // the hang-up never rejects and gives up after END_DESKTOP_SESSION_TIMEOUT_MS,
+  // so the close is never blocked. Quitting the app does not come through here
+  // and still ends as `peer_disconnected`.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    getCurrentWebviewWindow().onCloseRequested(async () => {
+      userDisconnectRef.current = true;
+      await hangUpRef.current(authRef.current);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch((err) => {
+      console.warn('Could not listen for the window closing; closing it will end the session as a dropped connection:', err);
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const handleDisconnect = useCallback(() => {
+    if (hangingUpRef.current) return;
+    hangingUpRef.current = true;
     userDisconnectRef.current = true;
     stopReconnect();
     reconnectInFlightRef.current = false;
-	    if (sessionRegisteredRef.current) {
-	      sessionRegisteredRef.current = false;
-	      invoke('unregister_session').catch((err) => {
-	        console.error('Failed to unregister desktop session on disconnect:', err);
-	      });
-	    }
+    if (sessionRegisteredRef.current) {
+      sessionRegisteredRef.current = false;
+      invoke('unregister_session').catch((err) => {
+        console.error('Failed to unregister desktop session on disconnect:', err);
+      });
+    }
     releaseAllKeys();
 
     if (webrtcMouseMoveRafRef.current !== null) {
@@ -2861,8 +2895,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     webrtcMouseMovePendingRef.current = null;
 
-    wsCleanupRef.current?.();
-    wsCleanupRef.current = null;
     // Clean up audio element to release MediaStream resources
     const audioEl = audioElRef.current;
     if (audioEl) {
@@ -2870,23 +2902,33 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       audioEl.srcObject = null;
       audioElRef.current = null;
     }
+    // Detach every transport now, so no more input is sent and nothing
+    // reconnects, but close them only after End below.
     webrtcAttemptsRef.current.invalidate();
+    const wsCleanup = wsCleanupRef.current;
+    wsCleanupRef.current = null;
     const rtcSession = webrtcRef.current;
     webrtcRef.current = null;
-    rtcSession?.close();
-    // Close VNC session and tunnel
     const vncSession = vncSessionRef.current;
     vncSessionRef.current = null;
-    vncSession?.close();
-    if (activeVncTunnelIdRef.current) {
-      const tunnelId = activeVncTunnelIdRef.current;
-      activeVncTunnelIdRef.current = null;
-      const auth = authRef.current;
-      if (auth) {
-        void closeTunnel(tunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+    const vncTunnelId = activeVncTunnelIdRef.current;
+    activeVncTunnelIdRef.current = null;
+    const auth = authRef.current;
+
+    // #11931: tell the API the technician hung up BEFORE closing the peer.
+    // Otherwise the agent reports the peer drop and the row ends as
+    // `peer_disconnected`, the same as a network drop. Bounded and never
+    // rejects (lib/sessionHangUp.ts); a VNC tunnel has no session to end.
+    void hangUpRef.current(auth).then(() => {
+      wsCleanup?.();
+      rtcSession?.close();
+      // Close VNC session and tunnel
+      vncSession?.close();
+      if (vncTunnelId && auth) {
+        void closeTunnel(vncTunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
       }
-    }
-    onDisconnect();
+      onDisconnect();
+    });
   }, [onDisconnect, releaseAllKeys, stopReconnect]);
 
   // ── Render ─────────────────────────────────────────────────────────
