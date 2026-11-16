@@ -3416,11 +3416,10 @@ describe('createSessionPreToolUse', () => {
     });
 
     it('does not touch any intent from postToolUse when this session never won an inline release CAS', async () => {
-      // Tier >= 2 so postToolUse takes the update branch that checks
-      // pendingIntentBySession — but preToolUse was never called on this
-      // session (e.g. a Tier-2 auto-approve execution, or a Tier-3 call that
-      // lost the CAS / timed out earlier), so nothing should have been
-      // tracked for it.
+      // Tier >= 2 so postToolUse takes the update branch that takes this
+      // call's releasedIntents record — but preToolUse was never called for
+      // this call (e.g. a Tier-3 call that lost the CAS / timed out earlier),
+      // so nothing was recorded for it.
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
         tier: 2,
@@ -3554,7 +3553,7 @@ describe('createSessionPreToolUse', () => {
       expect(mockCreateActionIntent).not.toHaveBeenCalled();
     });
 
-    it('does not register the session in pendingIntentBySession, so the postToolUse completion-CAS stays a no-op', async () => {
+    it('does not record a released intent for the call, so the postToolUse completion-CAS stays a no-op', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
         tier: 2,
@@ -4504,15 +4503,15 @@ describe('inline secret-bearing completion (Task 6)', () => {
     );
   });
 
-  it('prefers sealed.intentId over pendingIntentBySession when both are present (genuine tier-3 run, not an empty map)', async () => {
+  it('prefers sealed.intentId over the call\'s released intent when both are present (genuine tier-3 run, not an empty record)', async () => {
     // A prior version of this test called preToolUse with a tool name absent
     // from the TOOL_TIERS mock, so it hit the very first "Unknown tool" guard
-    // and never created an intent — pendingIntentBySession stayed empty and
+    // and never created an intent — no released intent was recorded and
     // the `not.toHaveBeenCalledWith('intent-legacy', ...)` assertion passed
     // trivially, even against the regression it claimed to catch (flipping
     // the `??` precedence). Fixed by registering m365_reset_password as a
     // tier-3 tool in the TOOL_TIERS mock (below) and driving the full tier-3
-    // release-CAS path so the WeakMap is genuinely populated.
+    // release-CAS path so the call's releasedIntents record genuinely exists.
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
@@ -6769,5 +6768,66 @@ describe('#11994: overlapping calls complete their own intent and ledger row', (
     expect(terminal).toHaveLength(1);
     expect(terminal[0]!.values).toMatchObject({ status: 'completed', toolOutput: { processes: [] } });
     expect(JSON.stringify(terminal[0]!.where)).toContain(execA);
+  });
+
+  it('two overlapping helper (PAM) calls of one tool each close their own row, finishing in reverse order', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(cardCheck as any);
+    mockDecideHelperToolAction.mockResolvedValue('pending');
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    const session = makeActiveSession({
+      auth: makeAuth({
+        scope: 'organization',
+        helperDeviceId: 'device-7',
+        user: { id: 'device-7', email: 'helper@host-01', name: 'HOST-01' },
+      } as any),
+      approvalMode: 'per_step',
+    });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const inputA = { deviceId: 'd-a' };
+    const inputB = { deviceId: 'd-b' };
+
+    expect(await pre('take_screenshot', inputA, undefined, 'toolu_a')).toEqual({ allowed: true });
+    expect(await pre('take_screenshot', inputB, undefined, 'toolu_b')).toEqual({ allowed: true });
+    const [execA, execB] = ledgerIds;
+    await post('take_screenshot', inputB, JSON.stringify({ who: 'b' }), false, 5, undefined, undefined, 'toolu_b');
+    await post('take_screenshot', inputA, JSON.stringify({ who: 'a' }), false, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(2);
+    expect(terminal[0]!.values.toolOutput).toEqual({ who: 'b' });
+    expect(JSON.stringify(terminal[0]!.where)).toContain(execB!);
+    expect(terminal[1]!.values.toolOutput).toEqual({ who: 'a' });
+    expect(JSON.stringify(terminal[1]!.where)).toContain(execA!);
+  });
+
+  it('a plan step and an off-plan card-approved call of one tool each close their own row', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(cardCheck as any);
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const planInput = { command: 'whoami' };
+    const autoInput = { command: 'hostname' }; // off-plan: an approval card under action_plan
+
+    expect(await pre('execute_command', planInput, undefined, 'toolu_plan')).toEqual({ allowed: true });
+    expect(await pre('execute_command', autoInput, undefined, 'toolu_auto')).toEqual({ allowed: true });
+    const [planExec, autoExec] = ledgerIds;
+    // The plan-step row was inserted with an id the gate chose (what postToolUse closes).
+    expect(planExec).toMatch(/^[0-9a-f-]{36}$/);
+    expect(autoExec).toBeDefined();
+    await post('execute_command', autoInput, JSON.stringify({ who: 'auto' }), false, 5, undefined, undefined, 'toolu_auto');
+    await post('execute_command', planInput, JSON.stringify({ who: 'plan' }), false, 5, undefined, undefined, 'toolu_plan');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(2);
+    expect(terminal[0]!.values.toolOutput).toEqual({ who: 'auto' });
+    expect(JSON.stringify(terminal[0]!.where)).toContain(autoExec!);
+    expect(terminal[1]!.values.toolOutput).toEqual({ who: 'plan' });
+    expect(JSON.stringify(terminal[1]!.where)).toContain(planExec!);
   });
 });

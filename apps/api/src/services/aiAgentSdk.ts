@@ -447,7 +447,10 @@ function takeApprovalRecord(session: ActiveSession, call: CallKey): ApprovalReco
 
 /** A per-call record, only when it was written under this tool name. */
 function matchingRecord<T extends { toolName: string }>(record: T | undefined, toolName: string): T | undefined {
-  return record?.toolName === toolName ? record : undefined;
+  if (!record) return undefined;
+  if (record.toolName === toolName) return record;
+  console.warn(`[AI-SDK] postToolUse: discarded a per-call record written for ${record.toolName}, not ${toolName}`);
+  return undefined;
 }
 
 /**
@@ -1527,9 +1530,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // was already closed here, and its echo must not touch any row.
     const recordExecutingRow = (executionId: string): void =>
       executingLedgerRows.set(session, { toolUseId, input }, { toolName, executionId });
-    // The tier-3/tier-2 approval branches below leave this call's row
-    // `executing` and fall through to the terminal allowed `return`, which
-    // records it (and the released intent) for postToolUse.
+    // The PAM, auto-execute and plan-step branches record their row at their
+    // own `return`. The tier-3 intent and tier-2 per-step approval branches
+    // set these and fall through to the terminal allowed `return`, which
+    // records the row (and the released intent) for postToolUse.
     let executingRowId: string | undefined;
     let releasedIntent: { intentId: string; orgId: string } | undefined;
     // Set only by the tier-3 branch below when it creates a durable intent;
@@ -2024,7 +2028,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 .where(eq(aiToolExecutions.id, helperExec!.id))
           );
         } catch (err) {
+          // #11994: reported, not just logged (see the tier-3 site below).
           console.error('[AI-SDK] Failed to update helper approval to executing:', helperExec.id, err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
         }
         recordApproval('pam');
         recordExecutingRow(helperExec.id);
@@ -3158,7 +3164,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   .where(eq(aiToolExecutions.id, approvalExec!.id))
             );
           } catch (err) {
+            // #11994: reported, not just logged. The row stays `pending`, so
+            // postToolUse's by-id close (guarded on `executing`) matches nothing.
             console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
+            captureException(err instanceof Error ? err : new Error(String(err)));
           }
           executingRowId = approvalExec.id;
         } catch (err) {
@@ -3529,7 +3538,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 .where(eq(aiToolExecutions.id, approvalExec!.id))
           );
         } catch (err) {
+          // #11994: reported, not just logged (see the tier-3 site above).
           console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
+          captureException(err instanceof Error ? err : new Error(String(err)));
         }
         executingRowId = approvalExec.id;
       }
