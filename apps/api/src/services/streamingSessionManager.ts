@@ -33,6 +33,7 @@ import { presentRefusedToolCallNote } from './aiModels/gateway/openai/translateR
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
+import { SDK_PERMISSION_MODE } from './llm/sdkChildEnvGuards';
 import {
   newSdkTurnObservation,
   observeSdkMessage,
@@ -1492,6 +1493,9 @@ export class StreamingSessionManager {
             resume: resumeSdkSessionId,
             persistSession: true,
             settingSources: [],
+            // #11817: never the SDK's provider-dependent default; after the
+            // queryOptions spread so nothing spread in can override it.
+            permissionMode: SDK_PERMISSION_MODE,
             // Redacted per complete line, never per chunk (see createSdkStderrRedactor).
             stderr: (data: string) => stderrLog.write(data),
           }

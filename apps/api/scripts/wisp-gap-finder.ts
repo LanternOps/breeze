@@ -47,6 +47,7 @@ import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { closeDb, db, withSystemDbAccessContext } from '../src/db';
+import { SDK_PERMISSION_MODE } from '../src/services/llm/sdkChildEnvGuards';
 import { organizations, partners, sites } from '../src/db/schema/orgs';
 import { devices } from '../src/db/schema/devices';
 import { monitorDefinitions } from '../src/db/schema/monitorDefinitions';
@@ -372,6 +373,8 @@ async function askModel(resolved: ResolvedModel, prompt: { system: string; user:
         env: childEnvFor(resolved),
         persistSession: false,
         settingSources: [],
+        // #11817: never the SDK's provider-dependent default.
+        permissionMode: SDK_PERMISSION_MODE,
       },
     });
     let text: string | null = null;

@@ -454,6 +454,7 @@ const realSettle = await vi.importActual<typeof import('../aiModels/settleInvoca
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
 import { BREEZE_MCP_TOOL_NAMES, POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
 import { aiTools } from '../aiToolNames';
+import { SDK_PERMISSION_MODE } from '../llm/sdkChildEnvGuards';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -2481,6 +2482,19 @@ describe('executeAgentRun', () => {
     expect(lastQueryOptions!.model).toBe('claude-sonnet-5-5');
     expect(lastQueryOptions!.persistSession).toBe(false);
     expect(lastQueryOptions!.settingSources).toEqual([]);
+    // #11817: an explicit mode, never the SDK's provider-dependent default.
+    expect(lastQueryOptions!.permissionMode).toBe(SDK_PERMISSION_MODE);
+  });
+
+  it("#11817: a gateway child's extra query options cannot override the permission mode", async () => {
+    seedRows();
+    prepareSdkChild.mockImplementation(async () => ({
+      env: { CI: 'true' }, queryOptions: { permissionMode: 'bypassPermissions' }, revoke: vi.fn(),
+    }));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.permissionMode).toBe(SDK_PERMISSION_MODE);
   });
 
   it('recipients are notified once with dedupeKey agent-run:<id>', async () => {
