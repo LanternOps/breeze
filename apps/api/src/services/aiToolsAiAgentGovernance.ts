@@ -49,7 +49,13 @@ import { db } from '../db';
 import { actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices } from '../db/schema';
 import { listAgents } from './aiAgents/agentService';
 import { buildRunTrace } from './aiAgents/runTrace';
-import { STEP_RESULTS_BUDGET_CHARS, toChatIntentStepResults } from './mcpActionStatus';
+import {
+  isExecutedStep,
+  STEP_RESULTS_BUDGET_CHARS,
+  toChatIntentStepResults,
+  type ChatIntentStepInput,
+  type ChatStepResultWithheldReason,
+} from './mcpActionStatus';
 import { compactToolResultForChat, MAX_TOOL_RESULT_CHARS } from './aiToolOutput';
 import { runSiteScopeCondition } from './aiAgentRunSiteScope';
 import { deviceScopeCondition, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
@@ -59,6 +65,7 @@ import {
   SupervisedKeyGrantError,
 } from './aiAgents/supervisedKeyGrant';
 import type { AiTool, AiToolTier } from './aiTools';
+import type { AuthContext } from '../middleware/auth';
 import {
   canMutateOrgWideGovernance,
   SITE_CEILING_WRITE_DENIED_MESSAGE,
@@ -93,6 +100,48 @@ function stepResultsBudget(trace: unknown): number {
   const fitted = compactToolResultForChat('get_ai_agent_run', traceJson);
   if (isCompactionDigest(fitted)) return STEP_RESULTS_BUDGET_CHARS;
   return Math.max(0, MAX_TOOL_RESULT_CHARS - fitted.length - STEP_RESULTS_ENVELOPE_CHARS);
+}
+
+/**
+ * #11966: reading a run (`ai_agents.read`) is not permission to read what its
+ * steps returned. A step's result is what its own tool returns, so the reader
+ * must pass that tool's RBAC check for the step's stored arguments, the same
+ * check an approver must pass (`requiredPermissionsForTool`). It fails closed:
+ * an AI agent or flow principal is denied by the check itself, and a check
+ * that throws withholds the result rather than failing the read.
+ *
+ * `aiGuardrails` is imported lazily: it imports `aiTools`, which registers
+ * this module, so a static import would close an import cycle.
+ */
+async function withheldStepResults(
+  rows: readonly (ChatIntentStepInput & { arguments: Record<string, unknown> | null })[],
+  auth: AuthContext,
+): Promise<Map<string, ChatStepResultWithheldReason>> {
+  const withheld = new Map<string, ChatStepResultWithheldReason>();
+  const executed = rows.filter(isExecutedStep);
+  if (executed.length === 0) return withheld;
+  const { checkToolPermission } = await import('./aiGuardrails');
+  const verdicts = new Map<string, Promise<ChatStepResultWithheldReason | null>>();
+  for (const row of executed) {
+    const args = row.arguments ?? {};
+    const key = `${row.actionName}\u0000${JSON.stringify(args)}`;
+    let verdict = verdicts.get(key);
+    if (!verdict) {
+      verdict = checkToolPermission(row.actionName, args, auth).then(
+        (denial) => (denial === null ? null : 'not_permitted'),
+        (err: unknown) => {
+          console.warn('[get_ai_agent_run] step result permission check failed; result withheld', {
+            intentId: row.id, actionName: row.actionName, error: err instanceof Error ? err.message : String(err),
+          });
+          return 'permission_check_failed';
+        },
+      );
+      verdicts.set(key, verdict);
+    }
+    const reason = await verdict;
+    if (reason) withheld.set(row.id, reason);
+  }
+  return withheld;
 }
 
 /**
@@ -254,10 +303,11 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
       const allowedDeviceIds = await resolveSiteAllowedDeviceIds(run.orgId, auth);
       // #11966: `result` is read for the step summaries only; it reaches the
       // output through toChatIntentStepResults, never through buildRunTrace.
+      // `arguments` feeds the per-step permission check and is never output.
       const intentRows = await db.select({
         id: actionIntents.id, status: actionIntents.status, actionName: actionIntents.actionName,
         approvalScope: actionIntents.approvalScope, decidedVia: actionIntents.decidedVia,
-        result: actionIntents.result, errorCode: actionIntents.errorCode,
+        result: actionIntents.result, errorCode: actionIntents.errorCode, arguments: actionIntents.arguments,
         executedAt: actionIntents.executedAt, createdAt: actionIntents.createdAt,
       }).from(actionIntents).where(and(
         eq(actionIntents.requestingAgentRunId, run.id), eq(actionIntents.orgId, run.orgId),
@@ -275,7 +325,7 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
       // Step results come FIRST: when even the tightest compaction tier
       // overflows, the digest keeps only the head of the serialized output.
       return JSON.stringify({
-        ...toChatIntentStepResults(intentRows, stepResultsBudget(trace)),
+        ...toChatIntentStepResults(intentRows, stepResultsBudget(trace), await withheldStepResults(intentRows, auth)),
         trace,
       });
     },
