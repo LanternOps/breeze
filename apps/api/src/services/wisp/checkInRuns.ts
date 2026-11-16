@@ -40,9 +40,9 @@
  * reads the grant, so a revision landing between the two checks runs nothing
  * either.
  *
- * Untrusted text: the instruction is model-written and no person has reviewed it
- * and is sanitised (`sanitizeCheckInInstruction`) before it enters the run's
- * trigger_ref; the run's summary is model output over device data and is
+ * Untrusted text: the instruction is model-written and unreviewed (no approval
+ * card), so it is sanitised (`sanitizeCheckInInstruction`) before it enters the
+ * run's trigger_ref and fenced where the run's prompt renders it; the run's summary is model output over device data and is
  * sanitised and capped (`cleanReport`) before it is posted.
  *
  * DB access: every read and write runs in a FRESH system context; every

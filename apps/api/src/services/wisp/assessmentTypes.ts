@@ -28,8 +28,8 @@ import type { CheckInEvidence } from './checkInTriggers';
  * request's id, kept for traceability and never shown to the model.
  *
  * `check_in` (W07 #11496, #10410) is a run-mode check-in firing
- * (wisp/checkInRuns.ts): the person approved, on a card, that Wisp checks on
- * its own when it fires. `instruction` is the check-in's instruction after
+ * (wisp/checkInRuns.ts): Wisp scheduled, with no approval card, that it checks
+ * on its own when it fires. `instruction` is the check-in's instruction after
  * `sanitizeCheckInInstruction`; `evidence` is what the trigger's state showed
  * when it fired (an event check-in), null for a time check-in. `checkInId`
  * links the run back to its row and is never shown to the model.

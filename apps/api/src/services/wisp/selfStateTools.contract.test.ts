@@ -6,7 +6,9 @@
  * device argument, no action multiplexing that could hide a mutating action,
  * no per-action tier escalation, and no read-only classification (which would
  * also change MCP hints and agent allowlists). The tier-3 memory tools and the
- * budget-spending Wisp writes must stay out, and must still require approval.
+ * recurring budget-spending Wisp writes (`create_watch`, specialist launches)
+ * must stay out, and must still require approval. A one-off `run` check-in is
+ * the one budget-spending member, by owner decision (selfStateTools.ts).
  *
  * No vi.mock: the real tool registry and guardrail tables are the subject.
  */

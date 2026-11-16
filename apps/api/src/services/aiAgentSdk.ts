@@ -367,7 +367,7 @@ type ApprovalMethod =
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
   | 'read_only_auto' // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
   | 'wisp_self_state_auto' // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
-  | 'note_write_auto' // append-only Tier-2 note in any chat (aiNoteWrites.ts)
+  | 'note_write_auto' // append-only Tier-2 note in a chat (aiNoteWrites.ts); a Wisp chat with unattended reads on records it as wisp_unattended_read
   | 'wisp_unattended_read'; // #10973 one of the four reads under the grant's unattended-reads switch
 const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; method: ApprovalMethod }>();
 
@@ -1302,9 +1302,10 @@ async function wispSelfStateSkipsCard(
     // grant_id), so the only rows it can touch are this grant's own.
     case 'own_thread':
       return true;
-    // A check-in on this grant's own thread. A `run` one spends grant budget
-    // when it fires, but only inside the grant's budget and the tool's rate
-    // limit, so it no longer asks. An unrecognised mode still does.
+    // A check-in on this grant's own thread. A `run` one admits one capped
+    // assessment when it fires; it no longer asks (bounds and cost:
+    // selfStateTools.ts). Any other mode is refused by input validation
+    // before this; keeping the card here is defense in depth.
     case 'own_check_in':
       return input.mode === undefined || input.mode === 'notify' || input.mode === 'run';
     case 'own_memory':
@@ -1964,13 +1965,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan');
       const readOnlyAutoExec = guardrailCheck.readOnly === true && !session.isPaused && !planInFlight;
       // #10392: Wisp's own bookkeeping writes (wisp/selfStateTools.ts —
-      // memory, concerns, thread links; never a device) skip the card the
-      // same way, with the same two carve-outs, but only for a call that
-      // passed the live Wisp ceiling gate this turn (`wispCall.current`) and
-      // only within the tool's scope (the grantor's own memory, a concern
-      // this grant raised, or a pure add). Tier 2 only, so a Tier-3
-      // resolution never takes this path. Evaluated last so the own-concern
-      // lookup runs only when nothing else already decided the call.
+      // memory, concerns, thread links, check-ins; never a device) skip the
+      // card the same way, with the same two carve-outs, but only for a call
+      // that passed the live Wisp ceiling gate this turn (`wispCall.current`)
+      // and only within the tool's scope (the grantor's own memory, a concern
+      // this grant raised, a pure add, or a check-in on its own thread).
+      // Tier 2 only, so a Tier-3 resolution never takes this path. Evaluated
+      // after the cheaper checks so the own-concern lookup runs only when
+      // nothing else already decided the call.
       const wispSelfStateAutoExec = guardrailCheck.tier === 2
         && effectiveMode !== 'auto_approve'
         && !readOnlyAutoExec
@@ -1981,8 +1983,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && !session.isPaused
         && !planInFlight
         && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
-      // Append-only notes (aiNoteWrites.ts) skip the card in any chat, with
-      // the read-only path's two carve-outs. A tenant or flow tool that
+      // Append-only notes (aiNoteWrites.ts) skip the card in any interactive
+      // chat (a helper session returned above, through PAM), with the
+      // read-only path's two carve-outs. A tenant or flow tool that
       // happens to share the name is someone else's tool and keeps its card.
       const noteWriteAutoExec = guardrailCheck.tier === 2
         && TIER2_NOTE_WRITE_TOOLS.has(toolName)

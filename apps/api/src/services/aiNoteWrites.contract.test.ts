@@ -23,6 +23,7 @@ import {
   TOOL_ACTION_INPUT_KEYS,
 } from './aiGuardrails';
 import { aiTools, getToolTier } from './aiTools';
+import { TOOL_RATE_LIMITS } from './aiToolRateLimits';
 import { HUMAN_ONLY_TOOLS } from './aiToolExposure';
 import { TIER2_NOTE_WRITE_TOOLS } from './aiNoteWrites';
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
@@ -39,6 +40,12 @@ describe('TIER2_NOTE_WRITE_TOOLS contract', () => {
     expect(getToolTier(tool)).toBe(2);
     expect(aiTools.get(tool), `${tool} must be in the aiTools registry`).toBeDefined();
     expect(HUMAN_ONLY_TOOLS.has(tool)).toBe(false);
+  });
+
+  // With no card, the rate limit is the only bound on how many notes a
+  // prompt-injected model can write.
+  it.each(MEMBERS)('%s has its own rate limit', (tool) => {
+    expect(TOOL_RATE_LIMITS[tool]).toEqual({ limit: expect.any(Number), windowSeconds: expect.any(Number) });
   });
 
   it.each(MEMBERS)('%s has no action multiplexing or per-action tier entry', (tool) => {

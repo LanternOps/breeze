@@ -12,7 +12,8 @@
  *   cancel_check_in    (T2)  scheduled | fired → cancelled
  *
  * Neither write shows an approval card under per_step: both are in
- * WISP_SELF_STATE_TOOLS (selfStateTools.ts) — schedule only adds a row, cancel
+ * WISP_SELF_STATE_TOOLS (selfStateTools.ts) — schedule adds a row (a `run` one
+ * also admits one assessment against this grant's budget when it fires), cancel
  * only touches this grant's own rows (`cancelCheckIn` is keyed on the grant).
  * Both keep Tier 2, so the executing audit row, the rate limits
  * (aiToolRateLimits.ts) and the ceiling gate still apply.

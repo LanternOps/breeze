@@ -3,14 +3,16 @@
  * per_step approval card in chat.
  *
  * These Tier-2 tools write only Wisp's own tables under the caller's grant.
- * None of them reaches a device, a customer contact, configuration, billing or
- * a run. Asking the user to approve the narrowest of them adds a card and no
+ * None of them reaches a device, a customer contact, configuration or
+ * billing, and none starts a run except a `run` check-in, which admits one
+ * read-only assessment under this grant when it fires. Asking the user to approve the narrowest of them adds a card and no
  * safety: the Wisp prod test saw a `remember` of the user's own sentence wait
  * 121 s on a card, and the memory page then asked for a second confirmation.
  *
  * But the card is also the human check against a prompt-injected tool result
  * writing SHARED state, so the card-less path is scoped per tool to effects
- * that stay with the grantor or only add a row:
+ * that stay with the grantor, only add a row, or spend this grant's own daily
+ * budget on one read-only assessment:
  *
  *   remember        'own_memory'   only `ownerKind: 'user'` — the grantor's own
  *                                  memory (the handler pins the owner to the
@@ -36,12 +38,22 @@
  *                                  the grantor and runs nothing. `run` (W07
  *                                  #11496) starts ONE assessment when it
  *                                  fires; it used to keep the card for that
- *                                  spend. It no longer does: the spend is
- *                                  bounded by the grant budget and the tool's
- *                                  rate limit (aiToolRateLimits.ts), and a
- *                                  card per "check back later" was the
- *                                  approval fatigue #3088 measured. A mode
- *                                  that is neither still asks.
+ *                                  spend. It no longer does, by owner
+ *                                  decision: each run is one capped
+ *                                  assessment, a thread holds at most five
+ *                                  pending check-ins, and total spend is
+ *                                  capped by the grant's daily budget and
+ *                                  the assessment admission caps. The cost
+ *                                  of that: an injected instruction can use
+ *                                  up the day's budget, which leaves none
+ *                                  for the grant's other background model
+ *                                  work until 00:00 UTC. The instruction is
+ *                                  unreviewed model text and is fenced as
+ *                                  such where a run reads it
+ *                                  (assessmentPrompt.ts). A mode that is
+ *                                  neither is refused by input validation
+ *                                  first; this arm keeps the card as
+ *                                  defense in depth.
  *   cancel_check_in 'own_thread'   only this grant's own check-ins: the
  *                                  service's UPDATE is keyed on the grant, so
  *                                  another grant's id cancels nothing. No

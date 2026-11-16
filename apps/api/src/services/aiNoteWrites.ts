@@ -1,15 +1,23 @@
 /**
- * Tier-2 note writes that run without the per_step approval card in any chat,
- * with or without a Wisp grant.
+ * Tier-2 note writes that run without the per_step approval card in an
+ * interactive chat, with or without a Wisp grant. (A helper session never
+ * reaches this: PAM gates it earlier in the same function.)
  *
  *   set_device_context   appends one note (issue, quirk, follow-up, preference)
- *                        to a device's context. It never edits, hides or
- *                        deletes an existing note and sends nothing to the
- *                        device. Notes come back to a model only through
- *                        get_device_context, which sanitises every field and
- *                        wraps the set as untrusted data, so a note written
- *                        from injected tool output is read as data, not as an
- *                        instruction.
+ *                        to a device's context. The write is a bare insert: it
+ *                        never edits, hides or deletes an existing note and
+ *                        sends nothing to the device.
+ *
+ * Why a note written from injected tool output is still safe to READ: notes
+ * return to a model through get_device_context, the device-page system-prompt
+ * preload (aiAgent.ts buildSystemPrompt) and get_alert_correlations `explain`
+ * (RCA evidence). Each path sanitises the note text and fences it as untrusted
+ * data. A new reader of brain_device_context must do the same.
+ *
+ * What the card used to stop and nothing stops now: notes are org-wide and
+ * persistent, and the readers cap what they load (newest 100; RCA reads 10),
+ * so a run of junk notes can push real ones out of view. The tool's rate limit
+ * (aiToolRateLimits.ts) is the only bound on that today (#11986).
  *
  * `createSessionPreToolUse` (aiAgentSdk.ts) applies this with the read-only
  * path's exclusions (#3130): never on a paused session, never as an unmatched

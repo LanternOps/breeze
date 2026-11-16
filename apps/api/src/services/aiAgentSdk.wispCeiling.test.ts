@@ -1135,11 +1135,10 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
   });
 });
 
-// #10392: Wisp's own bookkeeping writes (memory, concerns, thread links) touch
-// only Wisp's tables, never a device, so under a live grant they run without a
-// per_step approval card — keeping Tier 2 and its executing audit row. Every
-// other Tier-2 write, every Tier-3 resolution, a paused session, a plan
-// deviation and a session without a grant keep the approval they had.
+// A device note (aiNoteWrites.ts) is an append-only Tier-2 write that runs
+// without a per_step card in any interactive chat, grant or no grant. It keeps
+// its executing audit row; a paused session, a plan deviation, a tenant tool
+// of the same name and a Tier-3 resolution still ask.
 describe('createSessionPreToolUse — device notes skip the per_step card', () => {
   const approvalCards = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
     session.eventBus.publish.mock.calls
@@ -1226,6 +1225,40 @@ describe('createSessionPreToolUse — device notes skip the per_step card', () =
     expect(session.currentPlanStepIndex).toBe(0);
   });
 
+  // With no card, these two steps are all that stands between a note and a
+  // session whose access was just withdrawn, or a write with no audit trail.
+  it('a live-authority denial still blocks the note, and nothing is recorded as executing', async () => {
+    const values = mockInsertValues();
+    mockResolveLiveSessionToolAuthority.mockResolvedValueOnce({ ok: false, error: 'Access revoked' });
+    const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+    const result = await createSessionPreToolUse(session)('set_device_context', NOTE);
+
+    expect(result).toMatchObject({ allowed: false });
+    expect(values).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+    expect(approvalCards(session)).toHaveLength(0);
+  });
+
+  it('is denied when its audit row cannot be written', async () => {
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('db down')) } as any);
+    const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+    const result = await createSessionPreToolUse(session)('set_device_context', NOTE);
+
+    expect(result).toEqual({ allowed: false, error: 'Failed to create audit record. Please try again.' });
+  });
+
+  it('keeps the auto_approve_mode label in an auto_approve chat', async () => {
+    mockInsertValues();
+    const session = wispSession({ approvalMode: 'auto_approve' });
+
+    expect(await createSessionPreToolUse(session)('set_device_context', NOTE)).toMatchObject({ allowed: true });
+    await createSessionPostToolUse(session)('set_device_context', NOTE, 'Context recorded.', false, 3);
+
+    const auditCall = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'ai.tool.set_device_context');
+    expect((auditCall![1] as any).details).toMatchObject({ approved: false, approvalMethod: 'auto_approve_mode' });
+  });
+
   // A connected (BYO) tool is someone else's code. One that carries this name
   // must not inherit the built-in note tool's exemption.
   it('a tenant tool that shares the name keeps its card', async () => {
@@ -1255,6 +1288,11 @@ describe('createSessionPreToolUse — device notes skip the per_step card', () =
   });
 });
 
+// #10392: Wisp's own bookkeeping writes (memory, concerns, thread links,
+// check-ins) touch only Wisp's tables, never a device, so under a live grant
+// they run without a per_step approval card — keeping Tier 2 and its executing
+// audit row. A paused session, a plan deviation, a Tier-3 resolution and a
+// session without a grant keep the approval they had.
 describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step card (#10392)', () => {
   const approvalCards = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
     session.eventBus.publish.mock.calls
@@ -1330,8 +1368,8 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
     await expectNoCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode });
   });
 
-  it('schedule_check_in with an unrecognised mode keeps the card (any doubt asks)', async () => {
-    await expectCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'RUN' });
+  it.each([['RUN'], [true], [{}], [null]])('schedule_check_in with an unrecognised mode (%j) keeps the card (any doubt asks)', async (mode) => {
+    await expectCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode });
   });
 
   it('cancel_check_in (only ever this grant\'s own check-ins: the handler keys the cancel on the grant) runs with no card', async () => {
