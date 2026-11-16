@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { ConfirmDialog } from './ConfirmDialog';
 
 /**
@@ -90,6 +90,38 @@ describe('ConfirmDialog — double-click safety (#3705)', () => {
       rerender(<StayOpen onConfirm={onConfirm} isLoading={false} />);
 
       firstPress(screen.getByTestId('confirm'));
+      expect(onConfirm).toHaveBeenCalledTimes(2);
+    });
+
+    it('releases the latch in the same commit that re-enables Confirm', () => {
+      // A render driven by a network response (not by an event) commits the
+      // enabled button, then runs passive effects in a later task. A press that
+      // lands in between used to hit a still-held latch and do nothing. This
+      // probe presses from a layout effect: after the DOM shows Confirm enabled,
+      // before any passive effect has run.
+      function PressWhenSettled({ isLoading }: { isLoading: boolean }) {
+        const wasLoading = useRef(isLoading);
+        useLayoutEffect(() => {
+          if (wasLoading.current && !isLoading) {
+            screen.getByTestId('confirm').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+          }
+          wasLoading.current = isLoading;
+        }, [isLoading]);
+        return null;
+      }
+      const onConfirm = vi.fn();
+      const tree = (isLoading: boolean) => (
+        <>
+          <StayOpen onConfirm={onConfirm} isLoading={isLoading} />
+          <PressWhenSettled isLoading={isLoading} />
+        </>
+      );
+      const { rerender } = render(tree(false));
+
+      firstPress(screen.getByTestId('confirm'));
+      rerender(tree(true));
+      rerender(tree(false));
+
       expect(onConfirm).toHaveBeenCalledTimes(2);
     });
 
