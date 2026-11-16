@@ -142,8 +142,21 @@ func (s *hostState) NotePlainSuccess() {
 }
 
 // NoteEvidence records what a failed plain dial learned about an
-// interceptor. It never changes the mode.
-func (s *hostState) NoteEvidence(ev BlockEvidence) { s.lastEvidence = ev }
+// interceptor. It never changes the mode. Only the first signature of a
+// streak drains the filter's reply; later ones classify crypto/tls's
+// read-ahead, which can be a fragment. So a plaintext_unknown never replaces
+// richer plaintext evidence that is still current (newer than the last plain
+// success): it only advances SeenAt.
+func (s *hostState) NoteEvidence(ev BlockEvidence) {
+	prev := s.lastEvidence
+	if ev.Kind == BlockPlaintextUnknown && prev.Kind.PlaintextSignature() && prev.Kind != BlockPlaintextUnknown &&
+		prev.SeenAt.After(s.lastPlainSuccessAt) {
+		prev.SeenAt = ev.SeenAt
+		s.lastEvidence = prev
+		return
+	}
+	s.lastEvidence = ev
+}
 
 // LastSignatureAt returns the last signature seen, or the zero time.
 func (s *hostState) LastSignatureAt() time.Time { return s.lastSignatureAt }

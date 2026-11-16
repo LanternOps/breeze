@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/atomicrename"
 	"github.com/breeze-rmm/agent/internal/ech"
 )
 
@@ -38,6 +39,12 @@ const (
 	blockUnobservedExpiry = 24 * time.Hour
 	// blockLastSeenPersistEvery throttles writes that only move lastSeenAt.
 	blockLastSeenPersistEvery = 5 * time.Minute
+
+	// blockHoldFreshness bounds how old an episode's last evidence may be for
+	// it to hold watchdog restarts on a failure that is not itself a filter
+	// signature (an ECH timeout, the proxy path). Same window as the
+	// control_plane health component's filter row.
+	blockHoldFreshness = 10 * time.Minute
 
 	blockClearedByPlainSuccess = "plain_success"
 	blockClearedByUnobserved   = "unobserved"
@@ -186,15 +193,23 @@ func (t *blockTracker) load() {
 		log.Warn("control-plane block state corrupt; starting empty", "error", err.Error())
 		return
 	}
-	if f.Active.valid(false) {
-		t.active = f.Active
-		if t.active.LastOutcomeAt.Before(t.active.LastSeenAt) {
-			t.active.LastOutcomeAt = t.active.LastSeenAt
+	if f.Active != nil {
+		if f.Active.valid(false) {
+			t.active = f.Active
+			if t.active.LastOutcomeAt.Before(t.active.LastSeenAt) {
+				t.active.LastOutcomeAt = t.active.LastSeenAt
+			}
+		} else {
+			log.Warn("control-plane block state dropped an invalid episode", "slot", "active")
 		}
 	}
-	if f.Pending.valid(true) {
-		t.pending = f.Pending
-		t.clearedThrough[f.Pending.Host] = f.Pending.ClearedAt
+	if f.Pending != nil {
+		if f.Pending.valid(true) {
+			t.pending = f.Pending
+			t.clearedThrough[f.Pending.Host] = f.Pending.ClearedAt
+		} else {
+			log.Warn("control-plane block state dropped an invalid episode", "slot", "pending")
+		}
 	}
 }
 
@@ -263,11 +278,16 @@ func (t *blockTracker) write(f blockFileV1) error {
 	if _, err := tmp.Write(data); err != nil {
 		return cleanup(err)
 	}
+	// An undelivered cleared episode must survive a power loss.
+	if err := tmp.Sync(); err != nil {
+		return cleanup(err)
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, t.path); err != nil {
+	// POSIX-semantics replace on Windows (AV/indexer handles), as agent.state.
+	if err := atomicrename.Replace(name, t.path); err != nil {
 		_ = os.Remove(name)
 		return err
 	}
@@ -392,6 +412,9 @@ func (t *blockTracker) Observe(host string, st ech.HostStatus) {
 	if ep := t.active; ep != nil && ep.Host == host {
 		if outcome.After(ep.LastOutcomeAt) {
 			ep.LastOutcomeAt = outcome
+			// Persisted (throttled) so a restart after a long ECH-carried
+			// stretch does not expire the episode as unobserved.
+			need = max(need, persistLastSeen)
 		}
 		if st.LastPlainSuccessAt.After(ep.LastSeenAt) {
 			t.clearLocked(blockClearedByPlainSuccess, st.LastPlainSuccessAt)
@@ -450,6 +473,50 @@ func (t *blockTracker) ObserveReached(host string, viaECH bool) {
 	}
 	t.mu.Unlock()
 	t.commit(need)
+}
+
+// ForgetOtherHosts clears (unobserved) an active episode whose host is no
+// longer one of keep (the current primary and backup): after a server URL
+// change its host is never dialed again, and the one-active rule would
+// otherwise ignore the new host's evidence for up to 24 h.
+func (t *blockTracker) ForgetOtherHosts(keep ...string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	need := persistNone
+	if t.active != nil {
+		kept := false
+		for _, k := range keep {
+			if k != "" && ech.SanitizeHost(k) == t.active.Host {
+				kept = true
+			}
+		}
+		if !kept {
+			t.clearLocked(blockClearedByUnobserved, t.now())
+			need = persistNow
+		}
+	}
+	t.mu.Unlock()
+	t.commit(need)
+}
+
+// HoldsRestart reports whether host has an active plaintext-signature
+// episode whose last evidence is fresh (blockHoldFreshness). A failed
+// heartbeat that is not itself a filter signature holds watchdog restarts
+// only then: an episode reloaded from disk, or one the filter stopped
+// refreshing, is not evidence that a restart is pointless. An untrusted
+// certificate never holds.
+func (t *blockTracker) HoldsRestart(host string) bool {
+	if t == nil {
+		return false
+	}
+	host = ech.SanitizeHost(host)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ep := t.active
+	return ep != nil && ep.Host == host && ep.Kind.PlaintextSignature() &&
+		t.now().Sub(ep.LastSeenAt) <= blockHoldFreshness
 }
 
 // Report returns the episode to send: the active one, else the pending

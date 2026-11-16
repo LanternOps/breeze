@@ -94,28 +94,44 @@ func (h *Heartbeat) noteControlPlaneBlockedLiveness() {
 	if h.controlPlaneBlockedWarned.CompareAndSwap(false, true) {
 		log.Warn("control plane blocked by a network filter; recording liveness marker")
 	}
+	// Per-tick failures stay at Debug (a blocked agent fails every tick for
+	// days), but a streak in which neither channel recorded the marker is
+	// warned once: the watchdog would otherwise restart-churn the agent.
+	var fileErr, ipcErr error
+	fileOK := false
 	if h.statePath != "" {
-		if err := state.UpdateControlPlaneBlocked(h.statePath, now); err != nil {
-			log.Debug("failed to update state file control-plane-blocked marker", "error", err.Error())
+		if fileErr = state.UpdateControlPlaneBlocked(h.statePath, now); fileErr != nil {
+			log.Debug("failed to update state file control-plane-blocked marker", "error", fileErr.Error())
+		} else {
+			fileOK = true
 		}
 	}
-	if h.sessionBroker == nil {
-		return
+	ipcOK := false
+	if h.sessionBroker != nil {
+		if sess := h.sessionBroker.PreferredSessionWithScope("watchdog"); sess == nil {
+			log.Debug("no watchdog session for the control-plane-blocked marker")
+		} else if ipcErr = sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
+			// LastHeartbeat stays empty: this must never read as a successful
+			// heartbeat, to this watchdog or to one that predates the field.
+			AgentVersion:          h.agentVersion,
+			Connected:             false,
+			ControlPlaneBlockedAt: now.Format(time.RFC3339),
+			ActiveBackupRuns:      h.sessionBroker.ActiveBackupRunCount(),
+		}); ipcErr != nil {
+			log.Debug("failed to send control-plane-blocked state_sync to watchdog", "error", ipcErr.Error())
+		} else {
+			ipcOK = true
+		}
 	}
-	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
-	if sess == nil {
-		log.Debug("no watchdog session; control-plane-blocked marker written to agent.state only")
-		return
-	}
-	// LastHeartbeat stays empty: this must never read as a successful
-	// heartbeat, to this watchdog or to one that predates the field.
-	if err := sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
-		AgentVersion:          h.agentVersion,
-		Connected:             false,
-		ControlPlaneBlockedAt: now.Format(time.RFC3339),
-		ActiveBackupRuns:      h.sessionBroker.ActiveBackupRunCount(),
-	}); err != nil {
-		log.Debug("failed to send control-plane-blocked state_sync to watchdog", "error", err.Error())
+	if !fileOK && !ipcOK && h.controlPlaneBlockedUnrecordedWarned.CompareAndSwap(false, true) {
+		attrs := []any{"state_path_set", h.statePath != ""}
+		if fileErr != nil {
+			attrs = append(attrs, "state_error", fileErr.Error())
+		}
+		if ipcErr != nil {
+			attrs = append(attrs, "ipc_error", ipcErr.Error())
+		}
+		log.Warn("control-plane-blocked liveness marker not recorded; the watchdog may restart this agent", attrs...)
 	}
 }
 
@@ -123,4 +139,5 @@ func (h *Heartbeat) noteControlPlaneBlockedLiveness() {
 // WARN again. Call on a successful heartbeat.
 func (h *Heartbeat) clearControlPlaneBlockedLatch() {
 	h.controlPlaneBlockedWarned.Store(false)
+	h.controlPlaneBlockedUnrecordedWarned.Store(false)
 }

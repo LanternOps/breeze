@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +30,10 @@ var headerEnd = []byte("\r\n\r\n")
 type captureConn struct {
 	net.Conn
 
+	// off is set once capture can never resume (TLS first byte or cap
+	// reached), so a healthy connection's reads never take mu.
+	off atomic.Bool
+
 	mu        sync.Mutex
 	decided   bool
 	capturing bool
@@ -41,7 +46,7 @@ func newCaptureConn(c net.Conn) *captureConn { return &captureConn{Conn: c} }
 // capturing. The first non-empty read decides whether to capture.
 func (c *captureConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	if n > 0 {
+	if n > 0 && !c.off.Load() {
 		c.mu.Lock()
 		if !c.decided {
 			c.decided = true
@@ -55,6 +60,9 @@ func (c *captureConn) Read(p []byte) (int, error) {
 				}
 				c.buf = append(c.buf, p[:take]...)
 			}
+		}
+		if !c.capturing || len(c.buf) >= captureLimit {
+			c.off.Store(true)
 		}
 		c.mu.Unlock()
 	}

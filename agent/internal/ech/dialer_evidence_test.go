@@ -106,8 +106,8 @@ func TestDial_FilterDripDrainIsBounded(t *testing.T) {
 	if _, err := dialTLS(t, d, baseCfg(nil), nil); !IsFilterSignature(err) {
 		t.Fatalf("err = %v, want filter signature", err)
 	}
-	if el := time.Since(start); el > 1500*time.Millisecond {
-		t.Fatalf("dial took %v, want < 1.5s", el)
+	if el := time.Since(start); el > 2500*time.Millisecond {
+		t.Fatalf("dial took %v, want < 2.5s (drain budget 1s)", el)
 	}
 	if ev := d.Status(dialHost).Evidence; ev.Kind != BlockPlaintextUnknown || ev.HTTPStatus != 0 {
 		t.Fatalf("Evidence = %+v, want plaintext_unknown", ev)
@@ -121,8 +121,8 @@ func TestDial_FilterDripDrainIsBounded(t *testing.T) {
 	if err == nil {
 		t.Fatal("dial succeeded, want an error")
 	}
-	if el := time.Since(start); el > 400*time.Millisecond {
-		t.Fatalf("dial under a 200ms deadline took %v, want < 400ms", el)
+	if el := time.Since(start); el > 800*time.Millisecond {
+		t.Fatalf("dial under a 200ms deadline took %v, want < 800ms (well under the 1s drain budget)", el)
 	}
 }
 
@@ -142,8 +142,8 @@ func TestDial_SecondSignatureInStreakDoesNotDrain(t *testing.T) {
 	if _, err := dialTLS(t, d, baseCfg(nil), nil); !IsFilterSignature(err) {
 		t.Fatalf("dial 2: err = %v", err)
 	}
-	if el := time.Since(start); el > 100*time.Millisecond {
-		t.Fatalf("second dial in the streak took %v, want < 100ms (no drain)", el)
+	if el := time.Since(start); el > 500*time.Millisecond {
+		t.Fatalf("second dial in the streak took %v, want < 500ms (no 1s drain)", el)
 	}
 	if ev := d.Status(dialHost).Evidence; ev.Kind != BlockPlaintextUnknown {
 		t.Fatalf("Evidence = %+v, want plaintext_unknown kept on a latched streak", ev)

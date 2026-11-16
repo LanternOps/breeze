@@ -1008,6 +1008,9 @@ type Heartbeat struct {
 	// WARN to once per blocked streak (#8868). Reset on a successful
 	// heartbeat via clearControlPlaneBlockedLatch.
 	controlPlaneBlockedWarned atomic.Bool
+	// controlPlaneBlockedUnrecordedWarned latches the WARN for a streak in
+	// which neither the state file nor IPC recorded the marker.
+	controlPlaneBlockedUnrecordedWarned atomic.Bool
 	// blocks holds control-plane block episodes (#8868). nil in most test
 	// literals; every blockTracker method is nil-receiver safe.
 	blocks *blockTracker
@@ -5251,9 +5254,12 @@ func serverHost(raw string) string {
 func (h *Heartbeat) observeControlPlane() ech.HostStatus {
 	primary := serverHost(h.serverURL())
 	st := ech.Shared().Status(primary)
-	// Primary first: the tracker keeps one active episode.
+	// Primary first: the tracker keeps one active episode. An episode for a
+	// host that is neither primary nor backup any more is closed first.
+	backup := serverHost(h.backupServerURL())
+	h.blocks.ForgetOtherHosts(primary, backup)
 	h.blocks.Observe(primary, st)
-	if backup := serverHost(h.backupServerURL()); backup != "" && backup != primary {
+	if backup != "" && backup != primary {
 		h.blocks.Observe(backup, ech.Shared().Status(backup))
 	}
 	status, message := controlPlaneComponent(st)
@@ -5849,11 +5855,11 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 		}
 		// #8868: a network filter is answering for the control plane. The
 		// loop is alive and a restart cannot lift the filter (and would drop
-		// the dialer's ECH mode), so hold the watchdog's restart. Only the
-		// plaintext signature holds it; an untrusted certificate does not.
-		if ech.IsFilterSignature(err) {
-			h.noteControlPlaneBlockedLiveness()
-		} else if cur, ok := h.blocks.Current(host); ok && ech.BlockKind(cur.Kind).PlaintextSignature() {
+		// the dialer's ECH mode), so hold the watchdog's restart: on this
+		// failure's own signature, or on another error (an ECH attempt timing
+		// out) while the host's plaintext episode is fresh. An untrusted
+		// certificate never holds.
+		if ech.IsFilterSignature(err) || h.blocks.HoldsRestart(host) {
 			h.noteControlPlaneBlockedLiveness()
 		}
 		return nil, false
