@@ -110,6 +110,8 @@ describe('ConfirmDialog — double-click safety (#3705)', () => {
         return null;
       }
       const onConfirm = vi.fn();
+      // The probe must come AFTER the dialog: layout effects run in tree order,
+      // so the dialog's own release has run by the time the probe presses.
       const tree = (isLoading: boolean) => (
         <>
           <StayOpen onConfirm={onConfirm} isLoading={isLoading} />
