@@ -18,15 +18,36 @@
  * anchor (no attributable org/run/session) refuses rather than reading
  * unscoped.
  *
+ * #11845 (Wisp analysis sessions, spec §4.1, thread rule §4.2): a Wisp chat
+ * session may ALSO read an `output` file of an analysis run launched from a
+ * chat under the same grant, in any org of that grant's live ceiling. Every
+ * term comes from server state: the grant pin from the session's
+ * `ai_sessions` row (`captureAnchor.wispGrant`, threaded by `executeTool`),
+ * the orgs from `resolveGrantCeiling` on THIS call (so a narrowed, paused or
+ * revoked grant stops these reads at once). The run, kind and origin terms
+ * are in the query (`findArtifactForCaller`). An inactive grant drops only
+ * this arm; the session's own files stay readable. The window text and the
+ * file name are fenced and redacted at the `compactToolResultForChat`
+ * chokepoint (an output's name is model-written in the sandbox).
+ *
  * captureExempt: the result already IS a handle/window; running the capture
  * wrapper over it would store a copy of a pointer.
  */
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import type { ToolExecutionContext } from './toolExecutionContext';
-import { aiArtifactCaptureEnabled } from '../config/env';
-import { ARTIFACT_READ_MAX_CHARS, artifactDownloadContentType, findArtifactForCaller, readArtifactWindow } from './artifacts/artifactService';
+import { aiArtifactCaptureEnabled, aiWorkspaceEnabled } from '../config/env';
+import {
+  ARTIFACT_READ_MAX_CHARS,
+  artifactDownloadContentType,
+  findArtifactForCaller,
+  readArtifactWindow,
+  type AnalysisOutputReadScope,
+  type ArtifactCallerAnchor,
+} from './artifacts/artifactService';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { captureException } from './sentry';
+import { GrantInactiveError, resolveGrantCeiling } from './wisp/grantAuthority';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -48,6 +69,32 @@ function storeUnavailable(): string {
   });
 }
 
+type CaptureAnchor = NonNullable<ToolExecutionContext['captureAnchor']>;
+
+/**
+ * The analysis-output read scope for a Wisp chat session's call (#11845), or
+ * null: no grant pin, a run anchor, no session, the workspace off, or an
+ * inactive grant (paused, revoked, expired, Wisp off, corrupt pin). Any other
+ * failure resolving the ceiling (a DB error) propagates to the handler's catch
+ * (`read_artifact_failed`), never an unscoped read.
+ */
+async function analysisOutputScope(anchor: CaptureAnchor): Promise<AnalysisOutputReadScope | null> {
+  const pin = anchor.wispGrant;
+  if (!pin || anchor.runId || !anchor.sessionId || !aiWorkspaceEnabled()) return null;
+  try {
+    // The live ceiling, never allowPaused: a paused grant reads no analysis outputs.
+    const ceiling = await resolveGrantCeiling(pin.grantId, pin.revisionId);
+    return { grantId: pin.grantId, orgIds: [...ceiling.orgIds] };
+  } catch (err) {
+    if (!(err instanceof GrantInactiveError)) throw err;
+    if (err.kind === 'corrupt') {
+      console.error(`[read_artifact] grant ${pin.grantId} has a corrupt ceiling pin; reading without analysis outputs: ${err.message}`);
+      captureException(err, undefined, { grantId: pin.grantId, op: 'wisp.read_artifact_ceiling' }, { fingerprint: ['wisp-read-artifact', 'corrupt-pin'] });
+    }
+    return null;
+  }
+}
+
 export function registerArtifactTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('read_artifact', {
     tier: 1,
@@ -58,7 +105,7 @@ export function registerArtifactTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'read_artifact',
       description:
-        'Read a window of a stored large tool result by its artifact handle (artifact.handle in an earlier result). Returns text from a byte offset with nextOffset and hasMore. Only artifacts from your own session or run.',
+        'Read a window of a stored file by its artifact handle (artifact.handle in an earlier result, or a handle listed in analysis run results). Returns text from a byte offset with nextOffset and hasMore. Only your own session\'s or run\'s files, or output files of analysis runs in this Wisp thread.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -82,7 +129,11 @@ export function registerArtifactTools(aiTools: Map<string, AiTool>): void {
       if (!anchor) return noAnchor();
 
       try {
-        const record = await findArtifactForCaller(handle, anchor);
+        // The grant pin is resolved here and never reaches the lookup itself.
+        const { wispGrant: _pin, ...ownAnchor } = anchor;
+        const analysisOutputs = await analysisOutputScope(anchor);
+        const callerAnchor: ArtifactCallerAnchor = analysisOutputs ? { ...ownAnchor, analysisOutputs } : ownAnchor;
+        const record = await findArtifactForCaller(handle, callerAnchor);
         if (!record) return NOT_FOUND;
 
         const offset = Math.max(0, Math.trunc(Number(input.offset)) || 0);

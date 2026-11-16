@@ -7,10 +7,21 @@ vi.mock('./artifacts/artifactService', async (orig) => ({
   readArtifactWindow: svc.readArtifactWindow,
 }));
 
-const env = vi.hoisted(() => ({ aiArtifactCaptureEnabled: vi.fn(() => true) }));
+const env = vi.hoisted(() => ({ aiArtifactCaptureEnabled: vi.fn(() => true), aiWorkspaceEnabled: vi.fn(() => true) }));
 vi.mock('../config/env', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   aiArtifactCaptureEnabled: env.aiArtifactCaptureEnabled,
+  aiWorkspaceEnabled: env.aiWorkspaceEnabled,
+}));
+
+const g = vi.hoisted(() => ({ ceiling: vi.fn(), captureException: vi.fn() }));
+vi.mock('./wisp/grantAuthority', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  resolveGrantCeiling: g.ceiling,
+}));
+vi.mock('./sentry', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  captureException: g.captureException,
 }));
 
 import { aiTools } from './aiToolNames';
@@ -19,6 +30,7 @@ import { executeTool } from './aiTools';
 import { compactToolResultForChat } from './aiToolOutput';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AuthContext } from '../middleware/auth';
+import { GrantInactiveError } from './wisp/grantAuthority';
 
 const HANDLE = '22222222-2222-4222-8222-222222222222';
 const auth = () =>
@@ -33,8 +45,8 @@ const auth = () =>
 const record = { id: HANDLE, name: 'query_devices.json', contentType: 'application/json', bytes: 40_000 };
 /** The anchor the last `findArtifactForCaller` call received. */
 const lastLookupAnchor = () => svc.findArtifactForCaller.mock.calls.at(-1)![1] as Record<string, unknown>;
-/** Until the handler resolves the pin (Task 8) it reaches the lookup unchanged. */
-const PIN_REACHED = { wispGrant: { grantId: 'g1', revisionId: 'r1' } };
+/** The handler resolves the pin into the analysis-output scope and never forwards it. */
+const PIN_REACHED = { analysisOutputs: { grantId: 'g1', orgIds: ['o1', 'o2'] } };
 
 describe('read_artifact (A-W05 D13a/D13b)', () => {
   const tool = aiTools.get('read_artifact')!;
@@ -205,10 +217,13 @@ describe('read_artifact anchor threading through executeTool (A-W05 Q4)', () => 
   });
 
   it('#11845: a Wisp chat caller carries its grant pin onto the read_artifact anchor only', async () => {
+    g.ceiling.mockResolvedValue({ orgIds: new Set(['o1', 'o2']) });
     await executeTool('read_artifact', { handle: HANDLE }, auth(), {
       capture: { orgId: 'o1', sessionId: 's9', wispThreadId: 't7', wispGrant: { grantId: 'g1', revisionId: 'r1' } },
     });
     expect(lastLookupAnchor()).toMatchObject({ sessionId: 's9', wispThreadId: 't7', ...PIN_REACHED });
+    expect(lastLookupAnchor()).not.toHaveProperty('wispGrant');
+    expect(g.ceiling).toHaveBeenCalledWith('g1', 'r1');
   });
 
   it('#11845: an ordinary chat caller has no grant pin key on its anchor', async () => {
@@ -232,5 +247,94 @@ describe('read_artifact anchor threading through executeTool (A-W05 Q4)', () => 
     const out = JSON.parse(await executeTool('read_artifact', { handle: HANDLE }, bareAuth));
     expect(out).toMatchObject({ error: 'no_capture_anchor' });
     expect(svc.findArtifactForCaller).not.toHaveBeenCalled();
+  });
+});
+
+describe('read_artifact analysis-output scope (#11845)', () => {
+  const tool = aiTools.get('read_artifact')!;
+  const pin = { grantId: 'g1', revisionId: 'r1' };
+  const ctxOf = (a: Record<string, unknown>) => ({ captureAnchor: { orgId: 'o1', sessionId: 's9', ...a } }) as ToolExecutionContext;
+
+  beforeEach(() => {
+    svc.findArtifactForCaller.mockReset();
+    svc.readArtifactWindow.mockReset();
+    g.ceiling.mockReset();
+    g.captureException.mockReset();
+    env.aiArtifactCaptureEnabled.mockReturnValue(true);
+    env.aiWorkspaceEnabled.mockReturnValue(true);
+  });
+
+  it('resolves the analysis-output scope from the session grant and the live ceiling', async () => {
+    g.ceiling.mockResolvedValue({ orgIds: new Set(['o1', 'o2']) });
+    svc.findArtifactForCaller.mockResolvedValue(record);
+    svc.readArtifactWindow.mockResolvedValue({ text: 't', nextOffset: 1, hasMore: false });
+    await tool.handler({ handle: HANDLE }, auth(), ctxOf({ wispGrant: pin }));
+    expect(g.ceiling).toHaveBeenCalledWith('g1', 'r1');
+    const anchor = svc.findArtifactForCaller.mock.calls[0]![1];
+    expect(anchor).toEqual({ orgId: 'o1', sessionId: 's9', analysisOutputs: { grantId: 'g1', orgIds: ['o1', 'o2'] } });
+    expect(anchor).not.toHaveProperty('wispGrant');
+  });
+
+  it('resolves the ceiling on every call, so a narrowed grant narrows the next read', async () => {
+    svc.findArtifactForCaller.mockResolvedValue(null);
+    g.ceiling.mockResolvedValueOnce({ orgIds: new Set(['o1', 'o2']) }).mockResolvedValueOnce({ orgIds: new Set(['o1']) });
+    await tool.handler({ handle: HANDLE }, auth(), ctxOf({ wispGrant: pin }));
+    await tool.handler({ handle: HANDLE }, auth(), ctxOf({ wispGrant: pin }));
+    expect(svc.findArtifactForCaller.mock.calls[1]![1]).toMatchObject({ analysisOutputs: { grantId: 'g1', orgIds: ['o1'] } });
+  });
+
+  it('an inactive grant drops only the analysis arm; the session read still runs', async () => {
+    g.ceiling.mockRejectedValue(new GrantInactiveError('g1', 'revoked'));
+    svc.findArtifactForCaller.mockResolvedValue(null);
+    const out = JSON.parse(await tool.handler({ handle: HANDLE }, auth(), ctxOf({ wispGrant: pin })));
+    expect(out).toEqual({ error: 'Artifact not found', code: 'ARTIFACT_NOT_FOUND' });
+    expect(svc.findArtifactForCaller).toHaveBeenCalledWith(HANDLE, { orgId: 'o1', sessionId: 's9' });
+    expect(g.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a paused grant still reads its own session files', async () => {
+    g.ceiling.mockRejectedValue(new GrantInactiveError('g1', 'paused'));
+    svc.findArtifactForCaller.mockResolvedValue(record);
+    svc.readArtifactWindow.mockResolvedValue({ text: 'own', nextOffset: 3, hasMore: false });
+    const out = JSON.parse(await tool.handler({ handle: HANDLE }, auth(), ctxOf({ wispGrant: pin, wispThreadId: 't7' })));
+    expect(out).toMatchObject({ text: 'own' });
+    expect(svc.findArtifactForCaller).toHaveBeenCalledWith(HANDLE, { orgId: 'o1', sessionId: 's9', wispThreadId: 't7' });
+  });
+
+  it('a corrupt pin drops the arm and is reported once', async () => {
+    g.ceiling.mockRejectedValue(new GrantInactiveError('g1', 'active', 'bad pin', 'corrupt'));
+    svc.findArtifactForCaller.mockResolvedValue(null);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await tool.handler({ handle: HANDLE }, auth(), ctxOf({ wispGrant: pin }));
+    errSpy.mockRestore();
+    expect(svc.findArtifactForCaller).toHaveBeenCalledWith(HANDLE, { orgId: 'o1', sessionId: 's9' });
+    expect(g.captureException).toHaveBeenCalledTimes(1);
+    expect(g.captureException.mock.calls[0]![2]).toMatchObject({ op: 'wisp.read_artifact_ceiling' });
+  });
+
+  it('no grant pin, a run anchor, or the workspace off: no ceiling lookup and no arm', async () => {
+    svc.findArtifactForCaller.mockResolvedValue(null);
+    await tool.handler({ handle: HANDLE }, auth(), ctxOf({}));
+    await tool.handler({ handle: HANDLE }, auth(), { captureAnchor: { orgId: 'o1', runId: 'run-1', wispGrant: pin } } as ToolExecutionContext);
+    env.aiWorkspaceEnabled.mockReturnValue(false);
+    await tool.handler({ handle: HANDLE }, auth(), ctxOf({ wispGrant: pin }));
+    expect(g.ceiling).not.toHaveBeenCalled();
+    expect(svc.findArtifactForCaller).toHaveBeenCalledTimes(3);
+    for (const [, anchor] of svc.findArtifactForCaller.mock.calls) {
+      expect(anchor).not.toHaveProperty('analysisOutputs');
+      expect(anchor).not.toHaveProperty('wispGrant');
+    }
+  });
+
+  it('a DB failure resolving the ceiling is a read_artifact_failed, not an unscoped read', async () => {
+    g.ceiling.mockRejectedValue(new Error('connection reset'));
+    const out = JSON.parse(await tool.handler({ handle: HANDLE }, auth(), ctxOf({ wispGrant: pin })));
+    expect(out).toMatchObject({ error: 'read_artifact_failed' });
+    expect(svc.findArtifactForCaller).not.toHaveBeenCalled();
+  });
+
+  it('names the analysis-output reach in its description, within budget', () => {
+    expect(tool.definition.description).toContain('analysis runs in this Wisp thread');
+    expect(tool.definition.description!.length).toBeLessThanOrEqual(300);
   });
 });

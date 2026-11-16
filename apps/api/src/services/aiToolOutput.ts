@@ -1310,7 +1310,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_script_execution_history: new Set(['stdout', 'stderr', 'errorMessage']),
   // A captured large result is read back window by window: without this the
   // artifact handle would be an unfenced route to the same device bytes.
-  read_artifact: new Set(['text']),
+  // #11845: `name` too, since an analysis run's output file is named by the
+  // model in the sandbox.
+  read_artifact: new Set(['text', 'name']),
   // ── Other device-reported text (#8852 W04) ─────────────────────────────
   // Every remaining tool in a command-dispatching aiTools*.ts file that
   // returns endpoint-authored strings (paths, names, OS error text, raw OS
