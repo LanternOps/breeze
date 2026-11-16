@@ -836,6 +836,8 @@
       "unread_other": "{{count}} non lette",
       "markAllRead": "Segna tutto letto",
       "markAllUnread": "Segna tutto come non letto",
+      "muteSound": "Disattiva suono approvazioni",
+      "unmuteSound": "Attiva suono approvazioni",
       "confirmClear": "Conferma cancellazione",
       "clearAll": "Cancella tutto",
       "loading": "Caricamento notifiche...",

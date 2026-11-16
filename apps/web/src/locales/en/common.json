@@ -836,6 +836,8 @@
       "unread_other": "{{count}} unread",
       "markAllRead": "Mark all read",
       "markAllUnread": "Mark all unread",
+      "muteSound": "Mute approval sound",
+      "unmuteSound": "Unmute approval sound",
       "confirmClear": "Confirm clear",
       "clearAll": "Clear all",
       "loading": "Loading notifications…",

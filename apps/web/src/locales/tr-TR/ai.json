@@ -999,6 +999,7 @@
         "queued": "Sırada",
         "running": "Çalışıyor",
         "awaiting_approval": "Onay bekliyor",
+        "approvals_decided": "Onaylar karara bağlandı",
         "completed": "Tamamlandı",
         "failed": "Başarısız"
       }

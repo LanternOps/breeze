@@ -162,6 +162,9 @@ function row(kind: WispActivityKind, id: string, at: Date, fields: Omit<Activity
     item: {
       id, at: at.toISOString(), kind, orgId: fields.orgId, title: fields.title, detail: fields.detail, href: fields.href, costCents: fields.costCents,
       ...(fields.runStatus ? { runStatus: fields.runStatus } : {}),
+      ...(fields.pendingApprovals !== undefined
+        ? { pendingApprovals: fields.pendingApprovals, pendingIntentId: fields.pendingIntentId ?? null }
+        : {}),
     },
   };
 }
@@ -233,11 +236,17 @@ async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise
     ))
     .orderBy(desc(at), sql`${kind} COLLATE "C" DESC`, desc(aiAgentRuns.id))
     .limit(take);
+  const isSpecialist = (r: (typeof rows)[number]) => r.triggerSource === SPECIALIST_SOURCE && r.profile !== ASSESSMENT_PROFILE;
+  const pending = await pendingApprovalsByRun(
+    rows.filter((r) => isSpecialist(r) && r.status === 'awaiting_approval').map((r) => r.id),
+    readable,
+  );
   return rows.map((r) => {
     const at = r.finishedAt ?? r.queuedAt;
     // Belt: a row is a specialist only when BOTH the source says so and it is
     // not an assessment (the SQL CASE above, re-derived from the row).
-    if (r.triggerSource === SPECIALIST_SOURCE && r.profile !== ASSESSMENT_PROFILE) {
+    if (isSpecialist(r)) {
+      const parked = pending.get(r.id);
       return row('specialist', r.id, at, {
         orgId: r.orgId,
         title: specialistTitle(r.profile, { displayName: r.deviceDisplayName ?? null, hostname: r.deviceHostname ?? null }, r.orgName),
@@ -245,6 +254,7 @@ async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise
         href: `/ai-agents/runs/${r.id}`,
         costCents: r.costCents,
         runStatus: r.status,
+        ...(parked ? { pendingApprovals: parked.count, pendingIntentId: parked.oldestIntentId } : {}),
       });
     }
     return row('assessment', r.id, at, {
@@ -255,6 +265,38 @@ async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise
       costCents: r.costCents,
     });
   });
+}
+
+/**
+ * Steps still waiting on a person, per approval-parked run. `awaiting_approval`
+ * is terminal for a run — nothing moves it once its steps are decided — so the
+ * status alone cannot say whether anyone is still being waited on. Every run id
+ * passed in gets an entry (count 0 when nothing is pending). Runs come from the
+ * ceiling-filtered run query; the org term is repeated here as a belt.
+ */
+async function pendingApprovalsByRun(
+  runIds: string[],
+  readable: string[],
+): Promise<Map<string, { count: number; oldestIntentId: string | null }>> {
+  const byRun = new Map<string, { count: number; oldestIntentId: string | null }>();
+  if (runIds.length === 0) return byRun;
+  for (const id of runIds) byRun.set(id, { count: 0, oldestIntentId: null });
+  const rows = await db
+    .select({ id: actionIntents.id, runId: actionIntents.requestingAgentRunId, status: actionIntents.status })
+    .from(actionIntents)
+    .where(and(
+      inArray(actionIntents.requestingAgentRunId, runIds),
+      eq(actionIntents.status, 'pending_approval'),
+      inArray(actionIntents.orgId, readable),
+    ))
+    .orderBy(asc(actionIntents.createdAt), asc(actionIntents.id));
+  for (const r of rows) {
+    const entry = r.runId ? byRun.get(r.runId) : undefined;
+    if (!entry || r.status !== 'pending_approval') continue;
+    entry.count += 1;
+    entry.oldestIntentId ??= r.id;
+  }
+  return byRun;
 }
 
 async function concernRows({ ceiling, readable, cursor, take, threadId }: SourceArgs): Promise<Row[]> {

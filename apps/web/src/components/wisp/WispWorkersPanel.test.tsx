@@ -98,6 +98,30 @@ describe('WispWorkersPanel', () => {
       expect(h.fetch).toHaveBeenCalledTimes(1);
     });
 
+    // A run stays `awaiting_approval` after its steps are decided, so the raw
+    // status told a technician something was waiting when their inbox was empty.
+    it('says the approvals are decided when an approval-parked run has nothing pending', async () => {
+      h.fetch.mockResolvedValue({
+        items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 0, pendingIntentId: null })],
+        nextCursor: null, current: null,
+      });
+      render(<WispWorkersPanel threadId="t1" />);
+      const status = await screen.findByTestId('wisp-worker-status');
+      expect(status.textContent).toBe('Approvals decided');
+      expect(status.closest('a')).toBeNull();
+    });
+
+    it('links the status to the oldest pending approval while one is waiting', async () => {
+      h.fetch.mockResolvedValue({
+        items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 2, pendingIntentId: 'abc-123' })],
+        nextCursor: null, current: null,
+      });
+      render(<WispWorkersPanel threadId="t1" />);
+      const status = await screen.findByTestId('wisp-worker-status');
+      expect(status.textContent).toBe('Awaiting approval');
+      expect(status.closest('a')?.getAttribute('href')).toBe('/approvals#intent-abc-123');
+    });
+
     it('shows a status label per row', async () => {
       h.fetch.mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'awaiting_approval' })], nextCursor: null, current: null });
       render(<WispWorkersPanel threadId="t1" />);

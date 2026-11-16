@@ -32,6 +32,15 @@ export interface ActivityItem {
    * Workers panel knows whether to keep polling (queued/running) or stop.
    */
   runStatus?: AiAgentRunStatus;
+  /**
+   * Set on `specialist` items whose run is `awaiting_approval` only: how many
+   * of the run's steps are still waiting on a person. That status is terminal
+   * for a run (it never leaves it), so 0 means every step has since been
+   * approved, denied or expired and nothing is waiting any more.
+   */
+  pendingApprovals?: number;
+  /** With `pendingApprovals`: the oldest still-pending step, for a link to it. */
+  pendingIntentId?: string | null;
 }
 
 /** The live "Wisp is checking Greenwood…" line: the queued/running assessment, or null. */

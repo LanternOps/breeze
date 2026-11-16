@@ -999,6 +999,7 @@
         "queued": "Queued",
         "running": "Running",
         "awaiting_approval": "Awaiting approval",
+        "approvals_decided": "Approvals decided",
         "completed": "Completed",
         "failed": "Failed"
       }

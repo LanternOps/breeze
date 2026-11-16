@@ -999,6 +999,7 @@
         "queued": "En file d'attente",
         "running": "En cours",
         "awaiting_approval": "En attente d'approbation",
+        "approvals_decided": "Approbations traitées",
         "completed": "Terminé",
         "failed": "Échec"
       }

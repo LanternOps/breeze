@@ -836,6 +836,8 @@
       "unread_other": "{{count}} okunmamış",
       "markAllRead": "Tümünü okundu olarak işaretle",
       "markAllUnread": "Tümünü okunmadı olarak işaretle",
+      "muteSound": "Onay sesini kapat",
+      "unmuteSound": "Onay sesini aç",
       "confirmClear": "Temizlemeyi onaylayın",
       "clearAll": "Tümünü temizle",
       "loading": "Bildirimler yükleniyor…",

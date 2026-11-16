@@ -141,7 +141,6 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
   const status = run && isSettled(run.status) && !isSettled(polled?.status)
     ? run.status
     : polled?.status ?? run?.status ?? initialStatus;
-  const liveSettled = run !== undefined && isSettled(run.status);
   const runIsTerminal = isTerminal(status);
   /**
    * True only when a `run_result` event actually reached this tab — i.e. a turn
@@ -150,7 +149,11 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
   const deliveredLive = run !== undefined && isTerminal(run.status);
 
   useEffect(() => {
-    if (liveSettled) return;
+    // Only a live TERMINAL result makes the poll redundant. A live
+    // `awaiting_approval` carries a count but not the steps, so the poll must
+    // still run to load them — it stops itself below once the API reports the
+    // run parked with nothing left for this viewer to decide.
+    if (deliveredLive) return;
     // Per-effect flags: a shared ref would be reset by the NEXT effect run while
     // this run's in-flight tick was still pending, letting it re-arm a timer.
     let cancelled = false;
@@ -198,7 +201,7 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [runId, liveSettled, pollNonce]);
+  }, [runId, deliveredLive, pollNonce]);
 
   const summary = polled?.summary ?? run?.summary ?? null;
   const artifacts: PolledArtifact[] = polled?.artifacts

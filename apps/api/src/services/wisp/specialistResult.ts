@@ -48,6 +48,7 @@ import { devices } from '../../db/schema/devices';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
+import { summarizeStepResult } from './stepOutputSummary';
 import { captureException } from '../sentry';
 import { notifyUser, resolveSpecialistPostAudience, SpecialistAudienceRefusedError } from './notifyUser';
 import { specialistResultDedupeKey } from './threadPosts';
@@ -180,19 +181,8 @@ function runPostText(
   return { title, body: waiting ? `${summary}\n\n${waiting}` : summary };
 }
 
-/** A released step's result, as one short line of text (device output: cleaned and capped). */
-function stepOutcomeText(result: unknown, max: number): string {
-  if (result === null || result === undefined) return 'no result recorded';
-  const r = result as Record<string, unknown>;
-  const raw = typeof result === 'string'
-    ? result
-    : typeof r.summary === 'string' ? r.summary
-      : typeof r.stdout === 'string' ? r.stdout
-        : typeof r.message === 'string' ? r.message
-          : JSON.stringify(result);
-  const clean = cleanText(raw ?? '', max);
-  return clean.length > 0 ? clean : 'no output';
-}
+/** A released step's result as readable text: described, cleaned and capped (stepOutputSummary.ts). */
+const stepOutcomeText = summarizeStepResult;
 
 // ---------------------------------------------------------------------------
 // Reads (each its own short system context, opened outside any caller context)
