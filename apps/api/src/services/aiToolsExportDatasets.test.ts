@@ -638,4 +638,50 @@ describe('dataset adapters — analysis run frame', () => {
     // for every chat-path export has to be preserved exactly.
     expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: null });
   });
+  // W02 Task 8: an exact-device set on the auth (a run admitted with no
+  // devices carries `allowedDeviceIds: []`) is "no devices", never "no frame".
+  const req = (over: Record<string, unknown>) => ({
+    auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...over,
+  }) as never;
+
+  it('event_logs exports nothing for a run whose exact-device set is empty and that has no frame', async () => {
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(auth as object), allowedDeviceIds: [] }, runTargets: null }));
+    expect(await pager(null)).toEqual({ rows: [], nextCursor: null });
+    expect(searchFleetLogs).not.toHaveBeenCalled();
+  });
+
+  it('event_logs exports nothing for an empty exact-device set even with an empty frame', async () => {
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(auth as object), allowedDeviceIds: [] }, runTargets: [] }));
+    expect(await pager(null)).toEqual({ rows: [], nextCursor: null });
+    expect(searchFleetLogs).not.toHaveBeenCalled();
+  });
+
+  it('event_logs narrows to the exact-device set when the run carries one and no frame', async () => {
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(auth as object), allowedDeviceIds: ['d1', 'd2'] }, runTargets: null }));
+    await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d1', 'd2'] });
+  });
+
+  it('event_logs intersects the exact-device set with the run frame', async () => {
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(auth as object), allowedDeviceIds: ['d1', 'd2'] }, runTargets: ['d2', 'd3'] }));
+    await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d2'] });
+  });
+
+  it('event_logs intersects the exact-device set with the site axis', async () => {
+    resolveSiteAllowedDeviceIds.mockResolvedValue(['d2', 'd3']);
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(siteAuth as object), allowedDeviceIds: ['d1', 'd2'] }, runTargets: null }));
+    await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d2'] });
+  });
+
+  it('an unrestricted caller (no exact-device set, no site axis, no frame) is still unrestricted', async () => {
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ runTargets: null }));
+    await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: null });
+  });
 });

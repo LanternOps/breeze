@@ -111,14 +111,29 @@ async function siteScopedDeviceIds(req: DatasetRequest): Promise<string[] | null
  *
  * An absent/empty `runTargets` means "no run frame" (direct chat/MCP), not "no
  * devices" — see `ToolExecutionContext.runTargets`.
+ *
+ * Wisp analysis sessions W02: the caller's EXACT-DEVICE axis
+ * (`auth.allowedDeviceIds`) narrows too, whenever it is an array. An empty one
+ * means "no devices", never "no frame": an analysis run admitted with no
+ * devices carries `allowedDeviceIds: []` and no run frame, and without this
+ * the `event_logs` adapter read that as unrestricted and exported the whole
+ * org's non-security logs. It is intersected here directly rather than through
+ * `resolveSiteAllowedDeviceIds`, which only answers the site axis.
+ *
+ * Result: exact-device ∩ run frame ∩ site axis. `[]` = export nothing; `null`
+ * is reserved for a caller restricted on no axis at all.
  */
 async function scopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
-  const siteScoped = await siteScopedDeviceIds(req);
   const frame = req.runTargets && req.runTargets.length > 0 ? req.runTargets : null;
-  if (!frame) return siteScoped;
-  if (!siteScoped) return [...frame];
-  const inSite = new Set(siteScoped);
-  return frame.filter((id) => inSite.has(id));
+  const exact = Array.isArray(req.auth.allowedDeviceIds) ? req.auth.allowedDeviceIds : null;
+  const site = await siteScopedDeviceIds(req);
+  // The result keeps the order of the most specific axis present.
+  const base = frame ?? exact ?? site;
+  if (!base) return null;
+  const others = [frame, exact, site]
+    .filter((axis): axis is readonly string[] => axis !== null && axis !== base)
+    .map((axis) => new Set(axis));
+  return base.filter((id) => others.every((axis) => axis.has(id)));
 }
 
 /** A pager that yields nothing — the shape a zero-in-scope caller gets. */
