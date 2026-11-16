@@ -110,6 +110,9 @@ const limitsFields = z.object({
   analysisMaxConcurrentRuns: z.number().int().min(1).max(5),
   analysisMaxStepTimeoutSeconds: z.number().int().min(10).max(600),
   analysisMaxStepsPerRun: z.number().int().min(1).max(100),
+  // Frame-device cap (W02 analysis sessions, snapshot v17) - see
+  // AiAgentLimits.analysisMaxFrameDevices's docstring.
+  analysisMaxFrameDevices: z.number().int().min(50).max(5000),
   // Sweep act-mode caps (#4442 W05) — see
   // AiAgentLimits.maxUnattendedDevicesPerSweep's docstring. The device cap
   // has no 0-disables value: "unattended on zero devices" is act mode off,
