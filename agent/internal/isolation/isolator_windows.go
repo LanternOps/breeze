@@ -102,10 +102,10 @@ func (i *windowsIsolator) Capability() Capability {
 
 // configureRecoveryReadiness reads the scheduler's trust path, so the probe can
 // report recovery_untrusted and the self-host manifest-hash detail. The
-// distribution PR's production Installer must take the same policy
-// (scheduler trustPolicy()) so EnsureRecovery and Ready() agree.
+// scheduler's production installer (ConfigureRecoverySource) takes the same
+// policy (trustPolicy()), so EnsureRecovery and Ready() agree.
 func (i *windowsIsolator) configureRecoveryReadiness(scheduler RecoveryScheduler, wantVersion string) {
-	i.configureTrustReadiness(func(ctx context.Context) (string, error) { return recoveryinstall.EnsureRecovery(ctx, wantVersion) }, schedulerReadiness(scheduler))
+	i.configureTrustReadiness(recoveryEnsure(scheduler, wantVersion), schedulerReadiness(scheduler))
 }
 
 func (i *windowsIsolator) configureReadiness(ensure func(context.Context) (string, error), scheduler func() (bool, string)) {

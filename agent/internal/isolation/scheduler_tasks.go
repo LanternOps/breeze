@@ -2,6 +2,7 @@ package isolation
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/csv"
 	"encoding/xml"
@@ -301,6 +302,12 @@ type windowsScheduler struct {
 	manifestTrust   atomic.Pointer[recoveryinstall.ManifestTrust]
 	selfTest        func(string) error
 	now             func() time.Time
+	// installDir, runRecovery and source (ConfigureRecoverySource) build the
+	// production recovery installer; without all three, EnsureRecovery keeps
+	// the fail-closed stub. runRecovery honours ctx's deadline.
+	installDir  func() (string, error)
+	runRecovery func(ctx context.Context, path string, args ...string) ([]byte, error)
+	source      atomic.Pointer[RecoverySource]
 }
 
 var _ RecoveryScheduler = (*windowsScheduler)(nil)

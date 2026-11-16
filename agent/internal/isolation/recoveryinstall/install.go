@@ -5,6 +5,7 @@ package recoveryinstall
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,7 @@ type Installer struct {
 	Fetch               func(context.Context, string, io.Writer) error
 	VerifySignature     func(string) error
 	ManifestTrust       ManifestTrust
+	FetchEnvelope       func(context.Context, string) (ManifestEnvelope, error)
 	SupportedSchema     func(context.Context, string) (int, error)
 	SelfTest            func(context.Context, string) error
 	Tasks               func() ([]Task, error)
@@ -69,13 +71,17 @@ func (i *Installer) EnsureRecovery(ctx context.Context, wantVersion string) (str
 		return "", errors.New("incomplete recovery installer dependencies")
 	}
 	path := filepath.Join(i.InstallDir, "isolation-recovery", wantVersion, recoveryExecutableName())
-	trust, err := i.stage(ctx, wantVersion, path)
-	if err != nil {
-		return "", err
+	// The envelope is untrusted input that every check re-verifies, so it is
+	// placed before staging; a failure to place it only matters if Path A
+	// also refuses, and is then reported alongside that refusal.
+	envelopeErr := i.ensureEnvelope(ctx, wantVersion, filepath.Dir(path))
+	trust, stageErr := i.stage(ctx, wantVersion, path)
+	if stageErr != nil && envelopeErr != nil {
+		stageErr = errors.Join(stageErr, fmt.Errorf("place signed release manifest: %w", envelopeErr))
 	}
 	unlock, err := journal.Lock(i.DataDir)
 	if err != nil {
-		return "", err
+		return "", errors.Join(stageErr, err)
 	}
 	defer unlock()
 	if err := ctx.Err(); err != nil {
@@ -85,9 +91,15 @@ func (i *Installer) EnsureRecovery(ctx context.Context, wantVersion string) (str
 	if errors.Is(err, journal.ErrNotFound) {
 		j = journal.New()
 	} else if err != nil {
-		return "", err
+		return "", errors.Join(stageErr, err)
+	}
+	if !unresolved(j) && stageErr != nil {
+		return "", stageErr
 	}
 	if unresolved(j) {
+		// A newer version that failed to stage (an unreachable artifact host,
+		// say) does not make the pinned recovery any less usable; the episode
+		// keeps it, and the next refresh retries staging.
 		// Stage the new version, but retain all existing actions and the episode's
 		// path. Never delete old executables: process references cannot be proven.
 		if _, err := i.check(ctx, j.RecoveryPath); err != nil {
@@ -196,6 +208,67 @@ func (i *Installer) check(ctx context.Context, path string) (TrustPath, error) {
 		return "", err
 	}
 	return trust, nil
+}
+
+// ensureEnvelope places the signed release manifest beside the executable
+// when trust Path B is enabled and none is present yet. It never replaces an
+// existing envelope; Path B re-verifies whatever is there on every check, so a
+// wrong file can only make the executable untrusted, never trusted.
+func (i *Installer) ensureEnvelope(ctx context.Context, version, dir string) error {
+	if i.FetchEnvelope == nil || !i.ManifestTrust.enabled() {
+		return nil
+	}
+	target := filepath.Join(dir, ManifestEnvelopeName)
+	if err := regularFile(target); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	env, err := i.FetchEnvelope(ctx, version)
+	if err != nil {
+		return err
+	}
+	if env.Manifest == "" || env.Signature == "" {
+		return errors.New("served release manifest envelope is missing the manifest or its signature")
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	if len(data) > maxEnvelopeBytes {
+		return errors.New("served release manifest envelope is too large")
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".manifest-*.json")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := serviceinstall.HardenProtectedBinaryACL(name); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	_, writeErr := tmp.Write(data)
+	syncErr := tmp.Sync()
+	closeErr := tmp.Close()
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := publishExclusive(name, target); err != nil {
+		// A concurrent installer placed one first; Path B verifies whichever
+		// envelope is there.
+		if regularFile(target) == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (i *Installer) stage(ctx context.Context, version, path string) (TrustPath, error) {
