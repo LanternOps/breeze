@@ -97,6 +97,9 @@ export function truncated(max: number) {
  */
 const breakGlassSecretSchema = z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'breakGlassSecret must be base64 of 32 bytes');
 
+/** Base64 (standard, padded) of a 32-byte Ed25519 public key; the agent also refuses small-order keys. */
+const releaseTokenPublicKeySchema = z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'releaseTokenPublicKey must be base64 of 32 bytes');
+
 const desiredBase = {
   isolationId: z.uuid(),
   generation: z.number().int().min(1),
@@ -122,9 +125,17 @@ export const networkIsolationDesiredSchema = z.discriminatedUnion('desired', [
     allow: z.array(isolationAllowEntrySchema).min(1).max(NETWORK_ISOLATION_LIMITS.maxAllowEntries),
     breakGlassSecret: breakGlassSecretSchema.optional(),
     policyRevision: z.string().min(1).max(128).regex(/^[\x21-\x7e]+$/).optional(),
+    // Signed offline release token (#10102): only for agents at capability `releaseToken`.
+    releaseTokenPublicKey: releaseTokenPublicKeySchema.optional(),
+    releaseTokenDeviceId: z.uuid().optional(),
+    requireSignedReleaseToken: z.boolean().optional(),
   }).refine((block) => block.allow.some((entry) => entry.scope === 'any') === (block.policyRevision !== undefined), {
     message: 'policyRevision is present exactly when the list has a scope:"any" entry',
     path: ['policyRevision'],
+  }).refine((block) => (block.releaseTokenPublicKey === undefined) === (block.releaseTokenDeviceId === undefined)
+    && (block.requireSignedReleaseToken !== true || block.releaseTokenPublicKey !== undefined), {
+    message: 'releaseTokenPublicKey and releaseTokenDeviceId come together, and requireSignedReleaseToken needs them',
+    path: ['releaseTokenPublicKey'],
   }),
   z.strictObject({
     ...desiredBase,

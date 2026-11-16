@@ -104,7 +104,7 @@ describe('network isolation closed sets (plan "Closed sets")', () => {
 
   it('pins the TTL and capability constants', () => {
     expect(NETWORK_ISOLATION_TTL).toEqual({ defaultHours: 72, maxHours: 720, expiringSoonHours: 12 });
-    expect(NETWORK_ISOLATION_CAPABILITY).toEqual({ base: 1, deadMan: 2, policyAllow: 3 });
+    expect(NETWORK_ISOLATION_CAPABILITY).toEqual({ base: 1, deadMan: 2, policyAllow: 3, releaseToken: 4 });
   });
 });
 

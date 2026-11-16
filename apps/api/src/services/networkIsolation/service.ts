@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
+import QRCode from 'qrcode';
 import {
-  NETWORK_ISOLATION_TTL, isResolvedTerminalIsolationState, isUnresolvedTerminalIsolationState, startNetworkIsolationSchema,
+  NETWORK_ISOLATION_RELEASE_TOKEN, NETWORK_ISOLATION_TTL, agentAcceptsReleaseToken, isResolvedTerminalIsolationState, isUnresolvedTerminalIsolationState, startNetworkIsolationSchema,
   releaseNetworkIsolationSchema, extendNetworkIsolationSchema,
   type IsolationReleaseKind, type StartNetworkIsolationInput, type ReleaseNetworkIsolationInput,
 } from '@breeze/shared';
@@ -17,6 +18,7 @@ import { columnAad } from '../encryptedColumnTransform';
 import { writeRouteAudit, requestLikeFromSnapshot, type AuthContext as AuditContext } from '../auditEvents';
 import { buildIsolationAllowlist, IsolationAllowlistError } from './allowlist';
 import { generateEpisodeSecret, currentBreakGlassCodes } from './breakGlass';
+import { mintReleaseToken, releaseTokenSigner, type ReleaseTokenSigner } from './releaseToken';
 import { createEpisode, findUnresolvedEpisode, findUnconfirmedTombstone, withEpisodeLock, writeEpisodeSnapshot, toEpisodeSnapshot, listEpisodes, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { ISOLATION_SECRET_COLUMN } from './reconcile';
@@ -28,7 +30,8 @@ export interface ApprovalBinding { orgId: string; deviceId: string; isolationId:
 export type IsolationRefusalCode = IsolationStartRefusal
   | 'device_not_found' | 'isolation_not_found' | 'relay_unavailable' | 'invalid_allowlist'
   | 'isolation_conflict' | 'isolation_secret_unavailable' | 'approval_mismatch'
-  | 'device_offline' | 'device_decommissioned' | 'device_pending_assignment' | 'backup_helper_update_required';
+  | 'device_offline' | 'device_decommissioned' | 'device_pending_assignment' | 'backup_helper_update_required'
+  | 'release_token_unavailable' | 'break_glass_code_disabled';
 /** Why the management-plane allowlist could not be built. Fixed vocabulary: never echoes a configured value. */
 export type AllowlistReason = 'server_url_missing' | 'server_url_invalid' | 'backup_url_invalid' | 'relay_config_invalid' | 'policy_invalid' | 'allowlist_invalid';
 export function allowlistReasonOf(error: IsolationAllowlistError, serverUrl: string): AllowlistReason {
@@ -62,6 +65,19 @@ async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: Episod
       return { error: error.code, ...(error.networkIsolationUnsupportedReason ? { networkIsolationUnsupportedReason: error.networkIsolationUnsupportedReason } : {}), ...(error.allowlistReason ? { allowlistReason: error.allowlistReason } : {}) };
     }
     throw error;
+  }
+}
+/**
+ * The configured release-token signer, or null: none configured, or a malformed key (config validation
+ * refuses one at boot, so this is a key changed underneath a running API). Never throws and never logs
+ * the value: a start must not wait on it, and a mint just refuses.
+ */
+function configuredReleaseTokenSigner(phase: string, ids: Record<string, string>): ReleaseTokenSigner | null {
+  try { return releaseTokenSigner(); }
+  catch (error) {
+    console.error('[isolation] release token key unusable', ids);
+    captureException(error, undefined, { phase, ...ids });
+    return null;
   }
 }
 async function loadDevice(tx: EpisodeTx, auth: AuthContext, deviceId: string) {
@@ -137,6 +153,12 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     const id = randomUUID(); const actionId = randomUUID(); const commandId = randomUUID();
     const expiresAt = new Date(now.getTime() + (input.ttlHours ?? NETWORK_ISOLATION_TTL.defaultHours) * 3_600_000);
     const secret = generateEpisodeSecret().toString('base64');
+    // Signed offline release (#10102): only to an agent that takes the fields (an older one decodes the
+    // spec strictly and would refuse the isolation) and only with a key configured. Pinned for the
+    // episode here and on the device; the requirement never stands without the key.
+    const signer = agentAcceptsReleaseToken(device.networkIsolationVersion, device.agentVersion)
+      ? configuredReleaseTokenSigner('isolation_release_token_key', { deviceId: device.id, isolationId: id }) : null;
+    const releaseToken = signer ? { releaseTokenPublicKey: signer.publicKey, releaseTokenDeviceId: device.id, requireSignedReleaseToken: policy.requireSignedReleaseToken } : null;
     let sealedSecret: string | null;
     try { sealedSecret = encryptSecret(secret, { aad: columnAad(ISOLATION_SECRET_COLUMN, id) }); }
     catch (error) { return secretUnavailable(error, device.id, id); }
@@ -148,10 +170,11 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
       requestedByKind: opts.requestedByKind, requestedByUserId: opts.requestedByKind === 'system' ? null : auth.user.id,
       reason: input.reason, expiresAt, deadManSeconds: 0, remoteRelay, allowSnapshot: allow, allowSnapshotRevision: policy.revision,
       breakGlassSecretEnc: sealedSecret,
+      releaseTokenPublicKey: releaseToken?.releaseTokenPublicKey ?? null, releaseTokenRequired: releaseToken?.requireSignedReleaseToken ?? false,
     });
     if (!created.ok) return refuse(created.error);
     await queue(device, 'execute_containment', commandId, { incidentId, actionId, actionType: 'network_isolation', breakGlassSecret: secret,
-      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow, ...(policy.revision ? { policyRevision: policy.revision } : {}) } }, auth, expiresAt);
+      parameters: { isolationId: id, generation: 1, expiresAt: expiresAt.toISOString(), deadManSeconds: 0, remoteRelay, allow, ...(policy.revision ? { policyRevision: policy.revision } : {}), ...(releaseToken ?? {}) } }, auth, expiresAt);
     const prev = toEpisodeSnapshot(created.episode);
     const transition = applyEpisodeEvent(prev, { type: 'dispatched', generation: 1, at: now });
     if (!('next' in transition) || !await writeEpisodeSnapshot(tx, id, prev, transition.next, now)) return refuse('isolation_conflict');
@@ -207,6 +230,8 @@ export async function acknowledgeNetworkIsolation(auth: AuthContext, deviceId: s
 export async function getBreakGlassCodes(auth: AuthContext, deviceId: string, isolationId: string, auditContext?: AuditContext) {
   return locked(auth, deviceId, isolationId, async (_tx, row) => {
     if (isResolvedTerminalIsolationState(row.state)) return refuse('isolation_conflict');
+    // The device refuses codes for this episode (requireSignedReleaseToken); showing them would mislead.
+    if (row.releaseTokenRequired) return refuse('break_glass_code_disabled');
     if (!row.breakGlassSecretEnc) return secretUnavailable(new Error('Isolation secret is missing'), row.deviceId, row.id);
     let secret: string | null;
     try { secret = decryptSecret(row.breakGlassSecretEnc, { aad: columnAad(ISOLATION_SECRET_COLUMN, row.id), strict: true }); }
@@ -215,6 +240,25 @@ export async function getBreakGlassCodes(auth: AuthContext, deviceId: string, is
     const generation = row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : row.generation;
     writeRouteAudit(auditContext ?? { ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: row.orgId, action: 'device.isolation.break_glass_code_view', resourceType: 'device', resourceId: row.deviceId, details: { isolationId: row.id, generation } });
     return { generation, ...currentBreakGlassCodes(Buffer.from(secret, 'base64'), row.id, generation, new Date()) };
+  });
+}
+/**
+ * A signed offline release token for the episode (#10102): for the generation the agent last reported,
+ * valid for NETWORK_ISOLATION_RELEASE_TOKEN.validitySeconds from now. Only when the episode pinned a key
+ * at start and the configured key is still that key (a rotated key cannot sign for older episodes; their
+ * break-glass codes still work unless the policy required tokens). The token is never logged or audited.
+ */
+export async function getReleaseToken(auth: AuthContext, deviceId: string, isolationId: string, auditContext?: AuditContext) {
+  return locked(auth, deviceId, isolationId, async (_tx, row) => {
+    if (isResolvedTerminalIsolationState(row.state)) return refuse('isolation_conflict');
+    if (!row.releaseTokenPublicKey) return refuse('release_token_unavailable');
+    const signer = configuredReleaseTokenSigner('isolation_release_token_mint', { deviceId: row.deviceId, isolationId: row.id });
+    if (!signer || signer.publicKey !== row.releaseTokenPublicKey) return refuse('release_token_unavailable');
+    const generation = row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : row.generation;
+    const minted = mintReleaseToken(signer, { isolationId: row.id, generation, deviceId: row.deviceId, now: new Date(), validitySeconds: NETWORK_ISOLATION_RELEASE_TOKEN.validitySeconds });
+    const qrCodeDataUrl = await QRCode.toDataURL(minted.token, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
+    writeRouteAudit(auditContext ?? { ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: row.orgId, action: 'device.isolation.release_token_issued', resourceType: 'device', resourceId: row.deviceId, details: { isolationId: row.id, generation, expiresAt: minted.expiresAt.toISOString() } });
+    return { generation, token: minted.token, notBefore: minted.notBefore, expiresAt: minted.expiresAt, qrCodeDataUrl };
   });
 }
 export async function listDeviceIsolations(auth: AuthContext, deviceId: string) {

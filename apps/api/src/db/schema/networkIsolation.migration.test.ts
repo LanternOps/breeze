@@ -221,3 +221,25 @@ describe('2027-01-21-140000-isolation-allow-snapshot-revision.sql (#10100)', () 
   });
 });
 
+describe('2027-01-25-120000-isolation-release-token.sql (#10102)', () => {
+  const file = '2027-01-25-120000-isolation-release-token.sql';
+  const text = () => fs.readFileSync(path.join(__dirname, '../../../migrations', file), 'utf8').replace(/\s+/g, ' ');
+
+  it('adds the pinned release-token columns idempotently', () => {
+    const sql = text();
+    expect(sql).toContain('ALTER TABLE device_network_isolations');
+    for (const column of [
+      'ADD COLUMN IF NOT EXISTS release_token_public_key text',
+      'ADD COLUMN IF NOT EXISTS release_token_required boolean NOT NULL DEFAULT false',
+    ]) expect(sql, column).toContain(column);
+    expect(sql).not.toMatch(/\b(BEGIN|COMMIT)\s*;/);
+  });
+
+  it('refuses a malformed key or a requirement without a key', () => {
+    const sql = text();
+    expect(sql).toContain('DROP CONSTRAINT IF EXISTS device_network_isolations_release_token_chk');
+    expect(sql).toContain("release_token_public_key IS NULL OR release_token_public_key ~ '^[A-Za-z0-9+/]{43}=$'");
+    expect(sql).toContain('NOT release_token_required OR release_token_public_key IS NOT NULL');
+  });
+});
+

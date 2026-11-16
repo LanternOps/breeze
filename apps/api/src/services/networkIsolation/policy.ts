@@ -14,11 +14,13 @@ export interface IsolationPolicy {
   refusedGroups: readonly RefusedExecutionGroup[];
   /** The winning policy's stored settings are malformed, so its permits were dropped. */
   invalidStoredSettings: boolean;
+  /** requireSignedReleaseToken: pinned on an episode at start, and only with a token key (#10102). */
+  requireSignedReleaseToken: boolean;
 }
 
 const POLICY_GROUP_REFUSED_ACTION = 'device.isolation.policy_group_refused';
 
-export const NO_ISOLATION_POLICY: IsolationPolicy = Object.freeze({ extras: Object.freeze([]), revision: null, refusedGroups: Object.freeze([]), invalidStoredSettings: false });
+export const NO_ISOLATION_POLICY: IsolationPolicy = Object.freeze({ extras: Object.freeze([]), revision: null, refusedGroups: Object.freeze([]), invalidStoredSettings: false, requireSignedReleaseToken: false });
 
 /**
  * The policy for a device, gated on what its agent accepts. Below `policyAllow` this is no policy and
@@ -33,7 +35,7 @@ export async function readIsolationPolicy(device: { id: string; networkIsolation
   if (!agentAcceptsPolicyAllow(device.networkIsolationVersion)) return NO_ISOLATION_POLICY;
   const policy = await withDbTransaction(() => resolveContainmentPolicy(device.id));
   const extras = containmentExtraAllowToEntries(policy.extraAllow);
-  return { extras, revision: extras.length > 0 ? policy.revision : null, refusedGroups: policy.refusedGroups, invalidStoredSettings: policy.invalidStoredSettings };
+  return { extras, revision: extras.length > 0 ? policy.revision : null, refusedGroups: policy.refusedGroups, invalidStoredSettings: policy.invalidStoredSettings, requireSignedReleaseToken: policy.requireSignedReleaseToken === true };
 }
 
 export function auditRefusedPolicyGroups(orgId: string, policy: IsolationPolicy): void {

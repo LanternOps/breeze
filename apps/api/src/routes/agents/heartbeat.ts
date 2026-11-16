@@ -2388,7 +2388,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     const { buildContainmentHeartbeatBlock, storedContainmentHeartbeatBlock } = isolation;
     // `device` was read before this beat's capability write, and a capability claim is same-heartbeat
     // truth: an agent that just dropped below level 3 would reject a block carrying policy permits.
-    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0 };
+    // The same holds for the agent version the release-token gate reads (#10102).
+    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0, agentVersion: data.agentVersion ?? device.agentVersion };
     try {
       // A cached absence needs no block build (and no SAVEPOINT / RELEASE).
       containment = isolationContext.row === null

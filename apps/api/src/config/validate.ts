@@ -1251,6 +1251,9 @@ const envObjectSchema = z
     AGENT_ECH_ENABLED: z.enum(['true', 'false']).default('true'),
     NETWORK_ISOLATION_ENABLED: z.enum(['true', 'false']).default('false'),
     NETWORK_ISOLATION_ENABLED_PARTNER_IDS: z.string().refine(value => !value.trim() || value.split(',').every(id => z.string().uuid().safeParse(id.trim()).success), 'Expected comma-separated partner UUIDs').optional(),
+    // Signed offline release token key (#10102, Gate B decision 5): base64 of a 32-byte Ed25519 seed,
+    // dedicated to this purpose. Unset = no episode carries a token key. The message never echoes it.
+    NETWORK_ISOLATION_TOKEN_SIGNING_KEY: z.string().refine(value => !value.trim() || (/^[A-Za-z0-9+/]{43}=$/.test(value.trim()) && Buffer.from(value.trim(), 'base64').length === 32), 'Expected base64 of a 32-byte Ed25519 seed').optional(),
 
     // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
     // routing (partner_ai_connections.catalog_entry_id). Off by default so a
