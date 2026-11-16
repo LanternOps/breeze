@@ -44,6 +44,10 @@ describe('policy registry probe safety (#11976)', () => {
     expect(isAllowedPolicyRegistryProbe(' hklm/security ')).toBe(false);
     expect(isAllowedPolicyRegistryProbe('HKLM\\SOFTWARE\\..\\SAM')).toBe(false);
     expect(isAllowedPolicyRegistryProbe('HKLM\\\\SAM')).toBe(false);
+    // Windows compares key names upper-cased: U+017F (long s) and U+0131
+    // (dotless i) upper-case to ASCII S / I, so these open SAM / SECURITY.
+    expect(isAllowedPolicyRegistryProbe('HKLM\\ſam\\SAM')).toBe(false);
+    expect(isAllowedPolicyRegistryProbe('HKLM\\SECURıTY\\Policy')).toBe(false);
     // The agent trims the sub-path, so leading whitespace still opens SAM.
     expect(isAllowedPolicyRegistryProbe('HKLM \\ SAM\\SAM')).toBe(false);
   });
