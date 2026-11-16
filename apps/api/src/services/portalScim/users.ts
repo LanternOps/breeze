@@ -87,16 +87,21 @@ export function scimVisible(token: VerifiedScimToken): SQL {
   )!;
 }
 
-const recordColumns = {
-  id: portalUserIdentities.id,
-  subject: portalUserIdentities.subject,
-  disabledBlockers: portalUserIdentities.disabledBlockers,
-  scimUserName: portalUserIdentities.scimUserName,
-  scimDisplayName: portalUserIdentities.scimDisplayName,
-  scimGivenName: portalUserIdentities.scimGivenName,
-  scimFamilyName: portalUserIdentities.scimFamilyName,
-  scimProvisionedAt: portalUserIdentities.scimProvisionedAt,
-};
+// A function, not a module-level object: reading schema columns at import
+// time breaks every test that mocks ../db/schema without this table and
+// imports a router that pulls this module in (orgs.ts → orgPortalScim).
+function recordColumns() {
+  return {
+    id: portalUserIdentities.id,
+    subject: portalUserIdentities.subject,
+    disabledBlockers: portalUserIdentities.disabledBlockers,
+    scimUserName: portalUserIdentities.scimUserName,
+    scimDisplayName: portalUserIdentities.scimDisplayName,
+    scimGivenName: portalUserIdentities.scimGivenName,
+    scimFamilyName: portalUserIdentities.scimFamilyName,
+    scimProvisionedAt: portalUserIdentities.scimProvisionedAt,
+  };
+}
 
 type RecordRow = {
   id: string;
@@ -125,7 +130,7 @@ function toRecord(row: RecordRow): ScimUserRecord {
 
 async function readVisible(token: VerifiedScimToken, identityId: string): Promise<ScimUserRecord | null> {
   const [row] = await db
-    .select(recordColumns)
+    .select(recordColumns())
     .from(portalUserIdentities)
     .where(and(scimVisible(token), eq(portalUserIdentities.id, identityId)))
     .limit(1);
@@ -219,7 +224,7 @@ export async function listScimUsers(
     const rows = page.count === 0
       ? []
       : await db
-        .select(recordColumns)
+        .select(recordColumns())
         .from(portalUserIdentities)
         .where(where)
         .orderBy(asc(portalUserIdentities.scimProvisionedAt), asc(portalUserIdentities.id))
@@ -267,7 +272,7 @@ async function lockAccount(orgId: string, portalUserId: string): Promise<LockedA
 
 async function lockIdentity(where: SQL): Promise<LockedIdentity | null> {
   const [row] = await db
-    .select({ ...recordColumns, portalUserId: portalUserIdentities.portalUserId, linkedVia: portalUserIdentities.linkedVia })
+    .select({ ...recordColumns(), portalUserId: portalUserIdentities.portalUserId, linkedVia: portalUserIdentities.linkedVia })
     .from(portalUserIdentities)
     .where(where)
     .for('update')

@@ -6,7 +6,7 @@ import { users } from './users';
 /**
  * Portal registration W9 (#11386): the SCIM bearer credential of one org.
  * Plan: docs/superpowers/plans/portal/2026-11-15-portal-registration-w09-entra-scim.md
- * (D1, D2). Migration: 2027-01-25-130000-portal-entra-scim.sql, which is the
+ * (D1, D2). Migration: 2027-01-26-110000-portal-entra-scim.sql, which is the
  * spec of record (CHECKs live there); this file mirrors it.
  *
  * Tenancy shape 1 (direct org_id, RLS enabled + forced, breeze_has_org_access

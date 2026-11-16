@@ -144,7 +144,7 @@ No disagreement is left open.
 - Lock order: advisory `(org, 'entra')` → address lock (when a userName is written) → token + tenant mapping `FOR SHARE` → account `FOR UPDATE` → identity `FOR UPDATE`. The mapping comes before the account because a tenant-proof displacement locks the mapping `FOR UPDATE` and then updates `portal_users` (PR review: the reverse order deadlocks).
 - Context: the SCIM router holds none; services open `withSystemDbAccessContext`; MSP routes call services through `runOutsideDbContext`.
 - Error codes: `PORTAL_SCIM_TENANT_NOT_PROVEN` (409), `PORTAL_SCIM_TOKEN_LIMIT` (409), `PORTAL_SCIM_TOKEN_NOT_FOUND` (404).
-- Migration: `apps/api/migrations/2027-01-25-130000-portal-entra-scim.sql`, sorted after the newest on `origin/main` at push time; idempotent; no inner `BEGIN`/`COMMIT`; DDL only; then `pnpm db:check-drift`.
+- Migration: `apps/api/migrations/2027-01-26-110000-portal-entra-scim.sql`, sorted after the newest on `origin/main` at push time; idempotent; no inner `BEGIN`/`COMMIT`; DDL only; then `pnpm db:check-drift`.
 - PII: logs carry org, token and identity ids only. Tests use `example.com`.
 - Web: `runAction` for mutations; locale keys in all 8 locales; `data-testid` selectors.
 
@@ -160,7 +160,7 @@ No disagreement is left open.
 
 | File | Responsibility |
 |---|---|
-| `apps/api/migrations/2027-01-25-130000-portal-entra-scim.sql`; `db/schema/portalScim.ts` (+ index export); `db/schema/portal.ts` | Token table, identity columns |
+| `apps/api/migrations/2027-01-26-110000-portal-entra-scim.sql`; `db/schema/portalScim.ts` (+ index export); `db/schema/portal.ts` | Token table, identity columns |
 | `services/tenantCascade.ts`, `services/orgMergeRegistry.ts`, `services/tenantExportPolicyRegistry.ts` (+ test), `__tests__/integration/rls-coverage.integration.test.ts` | Registrations |
 | `services/portalAccountState.ts`, `__tests__/portalAccountWriters.contract.test.ts`, `services/portalIdentityAccounts.ts`, `services/portalDirectory/{identityDisable,types,index}.ts` | New writers; transaction-local disable / lift; audit details |
 | `services/portalScim/{tokens,protocol,users,index}.ts` (+ tests) | Token mint/verify/revoke; SCIM parse/filter/patch/serialize; user operations |

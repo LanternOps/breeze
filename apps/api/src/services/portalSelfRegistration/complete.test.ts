@@ -132,7 +132,7 @@ describe('completePortalSelfRegistration — instant (D10)', () => {
     });
     expect(mocks.inserted).toEqual([{
       orgId: ORG, email: 'pat@contoso.example.com', name: 'Pat Doe', passwordHash: null, authMethod: 'password',
-      status: 'invited', browserAccess: 'granted', invitedAt: NOW, invitedBy: null, contactId: 'contact-1',
+      status: 'invited', browserAccess: 'granted', disabledBy: null, invitedAt: NOW, invitedBy: null, contactId: 'contact-1',
     }]);
     // Minted after the write transaction closed.
     expect(mocks.issuePortalCapabilityToken).toHaveBeenCalledWith({ purpose: 'invite', portalUserId: 'new-user', orgId: ORG, email: 'pat@contoso.example.com', authEpoch: 1 });
