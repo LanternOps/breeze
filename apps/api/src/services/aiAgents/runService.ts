@@ -34,6 +34,7 @@ import {
   type AiRunExportGrants, type AnalysisScopeKind,
 } from '../../db/schema/aiAgents';
 import { resolveAnalysisFrame } from './analysisFrame';
+import { chainCommittedCents, chainRootOf } from './analysisContinuation';
 import { aiBudgets } from '../../db/schema/ai';
 import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
@@ -431,6 +432,14 @@ export interface CreateAgentRunInput {
     deviceIds: string[];
     inputHandles: string[];
     exportGrants?: AiRunExportGrants;
+    /**
+     * Wisp analysis sessions W03 — TRUSTED INTERNAL INPUT, like `grant` and
+     * `exportGrants`: this run continues `fromRunId`, whose chain root and
+     * this run's depth the launcher derived. Step 4d re-reads the prior under
+     * the admission locks, refuses a lineage that disagrees with it, enforces
+     * the three chain bounds, and writes the lineage columns.
+     */
+    continuation?: { fromRunId: string; chainRootRunId: string; chainDepth: number };
   };
   /**
    * Wisp W02 (Wisp design §4.3, §4.5) — TRUSTED INTERNAL INPUT, like `task`:
@@ -541,6 +550,12 @@ export type AgentRunSkipReason =
   // site allowlist, or holds no eligible device. Published, like
   // `too_many_input_devices`: each is a policy outcome a technician acts on.
   | 'frame_too_large' | 'site_not_in_scope' | 'frame_empty'
+  // Wisp analysis sessions W03 — a continuation's lineage disagrees with its
+  // prior run (missing, another org/grant/profile, or a different root or
+  // depth than the launcher derived): NOT published, it is a race or a caller
+  // bug, not a policy event. The chain bounds (depth / run count, reserved
+  // spend) ARE published: each names a limit a technician acts on.
+  | 'analysis_continuation_not_found' | 'analysis_chain_too_long' | 'analysis_chain_budget_exceeded'
   // The sandbox backend's circuit breaker is open (R5, spec §9). Published:
   // a technician whose analysis will not start deserves to know the provider
   // is down rather than that they did something wrong.
@@ -875,6 +890,8 @@ const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'too_many_input_devices', 'workspace_unavailable',
   // Wisp analysis sessions W02 — analysis frame refusals.
   'frame_too_large', 'site_not_in_scope', 'frame_empty',
+  // Wisp analysis sessions W03 — the chain bounds.
+  'analysis_chain_too_long', 'analysis_chain_budget_exceeded',
   // AI model registry W03 — a policy event an admin must act on.
   'model_unavailable',
   // Wisp W02 — delegation-ceiling refusals.
@@ -1726,6 +1743,14 @@ export async function createAndEnqueueAgentRun(
     //     BEFORE any counter, so a refused analysis never consumes a slot.
     let analysisReservationCents = 0;
     let stagedInputs: AiAgentRunStagedInputs | null = null;
+    // Wisp analysis sessions W03: the analysis-chain lineage columns. Zeros for
+    // every run that continues nothing (`ai_agent_runs_chain_chk`).
+    let chainLineage: { continuedFromRunId: string | null; chainRootRunId: string | null; chainDepth: number } = {
+      continuedFromRunId: null, chainRootRunId: null, chainDepth: 0,
+    };
+    // Wisp analysis sessions W02 review fix: the trigger_ref written on the
+    // row. A `site` frame records its (verified) site below.
+    let triggerRef: Record<string, unknown> = input.triggerRef ?? {};
     if (profile === 'analysis') {
       const analysis = input.analysis;
       if (!analysis) return skip('analysis_not_available');
@@ -1799,6 +1824,62 @@ export async function createAndEnqueueAgentRun(
           ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxFrameDevices,
       });
       if (!frame.ok) return skip(frame.refusal);
+      // A site frame's site belongs to the org and the grant reaches it (the
+      // frame refuses otherwise), and every frozen device is in it, so it is
+      // the run's visibility site: site-restricted users see its artifacts
+      // through `trigger_ref.siteId`. The caller can only verify a site for an
+      // explicit device list (`verifiedAnalysisSiteId`); for a site frame the
+      // devices are known only here, after expansion.
+      if (frame.scope.kind === 'site' && frame.scope.siteId) {
+        triggerRef = { ...triggerRef, siteId: frame.scope.siteId };
+      }
+
+      // (e) Wisp analysis sessions W03 — a continuation. Re-validated HERE,
+      //     under the (agent, org) and analysis-compute locks and before any
+      //     counter, so two concurrent continuations of one chain serialise
+      //     on the chain sum and a refusal consumes no slot. The launcher
+      //     validated and derived the lineage outside the lock; this re-reads
+      //     the prior and refuses a lineage that disagrees with it.
+      const continuation = analysis.continuation;
+      if (continuation) {
+        const [prior] = await db
+          .select({
+            id: aiAgentRuns.id,
+            profile: aiAgentRuns.profile,
+            grantId: aiAgentRuns.grantId,
+            chainRootRunId: aiAgentRuns.chainRootRunId,
+            chainDepth: aiAgentRuns.chainDepth,
+          })
+          .from(aiAgentRuns)
+          .where(and(eq(aiAgentRuns.id, continuation.fromRunId), eq(aiAgentRuns.orgId, orgId)))
+          .limit(1);
+        if (!prior || prior.profile !== 'analysis' || prior.grantId !== (input.grant?.grantId ?? null)) {
+          return skip('analysis_continuation_not_found');
+        }
+        // A prior whose root was deleted can no longer have its chain counted;
+        // treating it as a new root would silently reset every bound.
+        const root = chainRootOf(prior);
+        if (root === null) return skip('analysis_chain_too_long');
+        if (root !== continuation.chainRootRunId || prior.chainDepth + 1 !== continuation.chainDepth) {
+          return skip('analysis_continuation_not_found');
+        }
+        const limits = effective.limits;
+        if (continuation.chainDepth > (limits.analysisMaxChainDepth ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainDepth)) {
+          return skip('analysis_chain_too_long');
+        }
+        const { committedCents, runCount } = await chainCommittedCents(db, { orgId, chainRootRunId: root });
+        if (runCount >= (limits.analysisMaxChainRuns ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainRuns)) {
+          return skip('analysis_chain_too_long');
+        }
+        const thisRunAllowance = (limits.analysisMaxBudgetCentsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxBudgetCentsPerRun)
+          + (limits.analysisMaxComputeCentsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun);
+        if (committedCents + thisRunAllowance
+          > (limits.analysisMaxChainBudgetCents ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainBudgetCents)) {
+          return skip('analysis_chain_budget_exceeded');
+        }
+        chainLineage = { continuedFromRunId: prior.id, chainRootRunId: root, chainDepth: continuation.chainDepth };
+      }
+
       stagedInputs = {
         handles: [...new Set(analysis.inputHandles)],
         deviceIds: frame.deviceIds,
@@ -2058,7 +2139,7 @@ export async function createAndEnqueueAgentRun(
         scheduleId: input.scheduleId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
-        triggerRef: input.triggerRef ?? {},
+        triggerRef,
         dedupeKey,
         modeAtStart,
         policySnapshot: resolved,
@@ -2074,6 +2155,8 @@ export async function createAndEnqueueAgentRun(
         grantRevisionId: grantCeiling ? input.grant!.grantRevisionId : null,
         // Wisp W07: specialist lineage (`ai_agent_runs_depth_chk`).
         ...lineage,
+        // Wisp analysis sessions W03: analysis-chain lineage (`ai_agent_runs_chain_chk`).
+        ...chainLineage,
         // Stamped by runLoop.ts with the model the run actually used, once
         // resolveModel has bound the offering (spec §6.2). Admission knows only
         // the offering, not a model string (W08: the policy model string is gone).
@@ -2149,7 +2232,7 @@ export async function createAndEnqueueAgentRun(
         correlationGroupId: input.correlationGroupId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
-        triggerRef: input.triggerRef ?? {},
+        triggerRef,
         modeAtStart,
         policySnapshot: resolved,
         status: 'queued',
@@ -2178,6 +2261,8 @@ export async function createAndEnqueueAgentRun(
         grantId: grantCeiling ? input.grant!.grantId : null,
         grantRevisionId: grantCeiling ? input.grant!.grantRevisionId : null,
         ...lineage,
+        // W03: this attempt's own chain lineage (zeros when it continues nothing).
+        ...chainLineage,
       })
       .where(and(
         eq(aiAgentRuns.orgId, orgId),

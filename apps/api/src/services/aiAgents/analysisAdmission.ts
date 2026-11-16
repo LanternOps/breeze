@@ -17,7 +17,10 @@
  * so adding a reason without deciding what a technician should be told is a
  * COMPILE ERROR here, not a blank toast in production.
  */
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { resolveArtifact } from '../artifacts/artifactService';
+import { isChainStageableArtifact } from './analysisContinuation';
+import type { ChainHandleDrop } from './analysisProfile';
 import { verifiedAnalysisSiteId } from './analysisRunSite';
 import type { AiRunExportGrants, AnalysisScopeKind } from '../../db/schema/aiAgents';
 import {
@@ -56,6 +59,13 @@ export type AnalysisAdmissionRefusal =
   | 'frame_too_large'
   | 'site_not_in_scope'
   | 'frame_empty'
+  // Wisp analysis sessions W03 — a continuation whose prior no longer matches
+  // the lineage the launcher derived, and the two chain bounds. Each has its
+  // own technician sentence; the launcher reports the first as
+  // `continuation_refused`, the chain bounds as `admission_skipped`.
+  | 'analysis_continuation_not_found'
+  | 'analysis_chain_too_long'
+  | 'analysis_chain_budget_exceeded'
   | 'artifact_forbidden'
   | 'enqueue_failed'
   // AI model registry W03: the agents' AI model is unusable here right now.
@@ -96,6 +106,21 @@ export interface AdmitAnalysisRunInput {
    * admission. Never set from a request body.
    */
   exportGrants?: AiRunExportGrants;
+  /**
+   * Wisp analysis sessions W03 — TRUSTED INTERNAL INPUT, same posture as
+   * `grant`: the launcher validated `fromRunId` under the live grant, derived
+   * the chain root and this run's depth, rendered the fenced seed, and lists
+   * the inherited handles it did not carry forward. Written as
+   * `trigger_ref.continuation = { fromRunId, seed, dropped }`; the lineage is
+   * re-validated and bounded by admission. Never set from a request body.
+   */
+  continuation?: {
+    fromRunId: string;
+    chainRootRunId: string;
+    chainDepth: number;
+    seed: string;
+    dropped: ChainHandleDrop[];
+  };
 }
 
 export type AdmitAnalysisRunResult =
@@ -167,6 +192,10 @@ export const SKIP_REASON_REFUSALS = {
   frame_too_large: 'frame_too_large',
   site_not_in_scope: 'site_not_in_scope',
   frame_empty: 'frame_empty',
+  // Wisp analysis sessions W03 — each its own message.
+  analysis_continuation_not_found: 'analysis_continuation_not_found',
+  analysis_chain_too_long: 'analysis_chain_too_long',
+  analysis_chain_budget_exceeded: 'analysis_chain_budget_exceeded',
   workspace_unavailable: 'analysis_not_available',
   // AI model registry W03 — its own refusal: the setting to change is the AI
   // agents' model, not a budget or the analysis feature.
@@ -207,14 +236,30 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
   // This check is by organization only. A caller that takes handles from a
   // person must first resolve each one with `findArtifactForAuth`, which also
   // applies that person's site restriction.
-  for (const handle of input.stagedHandles) {
-    const record = await resolveArtifact(handle, { orgId: input.orgId });
-    if (!record) return { created: false, refusal: 'artifact_forbidden' };
-  }
+  //
+  // Wisp analysis sessions W03: the reads run in ONE system DB context. The
+  // launcher calls this outside any request transaction, and a contextless
+  // read under forced RLS sees no rows, so every handle would otherwise come
+  // back `artifact_forbidden`. The resolve itself is pinned to the org. A
+  // handle must also still be stageable (an output or a dataset export, not
+  // expired): a step's stdout or a non-export capture is never an input, and
+  // an expired file would only fail later at `workspace_stage`.
+  const now = new Date();
+  const handlesOk = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    for (const handle of input.stagedHandles) {
+      const record = await resolveArtifact(handle, { orgId: input.orgId });
+      if (!record || !isChainStageableArtifact(record, now)) return false;
+    }
+    return true;
+  }));
+  if (!handlesOk) return { created: false, refusal: 'artifact_forbidden' };
 
   // The recorded site decides which site-restricted users see this run's
-  // artifacts, so it is kept only when it holds every input device.
+  // artifacts, so it is kept only when it holds every input device. A `site`
+  // frame lists no devices here; admission records the frame's site on
+  // `trigger_ref.siteId` after it expands the frame (runService step 4d).
   const siteId = await verifiedAnalysisSiteId(input.orgId, input.siteId, input.deviceIds);
+  const continuation = input.continuation;
 
   let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>>;
   try {
@@ -237,16 +282,31 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
         originSessionId: input.sessionId,
         siteId,
         requestedByUserId: input.requestedByUserId,
+        // W03 (C5): the prior run, the fenced seed and what was not carried forward.
+        ...(continuation
+          ? { continuation: { fromRunId: continuation.fromRunId, seed: continuation.seed, dropped: continuation.dropped } }
+          : {}),
       },
       analysis: {
         scope: input.scope,
         // The frame's site is the REQUESTED one; admission checks it against
-        // the org and the grant. `trigger_ref.siteId` above stays the verified
-        // visibility site, which is a different question.
+        // the org and the grant, and for a `site` frame records it as
+        // `trigger_ref.siteId` once the frame resolves. For a `devices` frame
+        // `trigger_ref.siteId` above stays the site verified to hold every
+        // listed device.
         siteId: input.siteId,
         deviceIds: input.deviceIds,
         inputHandles: input.stagedHandles,
         ...(input.exportGrants ? { exportGrants: input.exportGrants } : {}),
+        ...(continuation
+          ? {
+              continuation: {
+                fromRunId: continuation.fromRunId,
+                chainRootRunId: continuation.chainRootRunId,
+                chainDepth: continuation.chainDepth,
+              },
+            }
+          : {}),
       },
       ...(input.grant ? { grant: input.grant } : {}),
     });

@@ -142,6 +142,14 @@ vi.mock('./analysisFrame', async (importOriginal) => {
   return { ...actual, resolveAnalysisFrame: resolveAnalysisFrameSpy };
 });
 
+// W03: the chain sum is a real-SQL concern (analysisChain.integration.test.ts);
+// here it is a spy, and `chainRootOf` stays real.
+const chainCommittedCents = vi.hoisted(() => vi.fn());
+vi.mock('./analysisContinuation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./analysisContinuation')>()),
+  chainCommittedCents,
+}));
+
 import { WORKSPACE_TOOL_NAMES } from '../aiGuardrails';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import {
@@ -257,6 +265,8 @@ beforeEach(() => {
   resolveAnalysisFrameSpy.mockReset();
   resolveAnalysisFrameSpy.mockImplementation((...a: unknown[]) => realFrame.fn!(...a));
   resolveGrantCeiling.mockReset();
+  chainCommittedCents.mockReset();
+  chainCommittedCents.mockResolvedValue({ committedCents: 0, runCount: 1 });
   seed();
 });
 
@@ -479,5 +489,156 @@ describe('analysis admission — W02 scope frame and frozen export grants', () =
     const result = await createAndEnqueueAgentRun(analysisInput());
     expect(result.created).toBe(true);
     expect(dbMockState.insertValues[0]!.stagedInputs).not.toHaveProperty('exportGrants');
+  });
+});
+
+describe('analysis admission — site visibility (W02 review fix)', () => {
+  const GRANT = { grantId: 'g1', grantRevisionId: 'r1' };
+  const SITE = '00000000-0000-4000-8000-0000000000b1';
+  const GRANTS = { datasets: ['event_logs'], sensitiveGates: [] as AnalysisSensitiveGate[] };
+
+  it('a site frame records its site on trigger_ref so site-restricted users see the run', async () => {
+    resolveGrantCeiling.mockResolvedValue(ceiling());
+    dbMockState.rowQueues.sites = [[{ id: SITE }]];
+    const result = await createAndEnqueueAgentRun(analysisInput({
+      grant: GRANT,
+      triggerRef: { source: 'chat_analysis', goal: 'g', siteId: null },
+      analysis: { scope: 'site', siteId: SITE, deviceIds: [], inputHandles: [], exportGrants: GRANTS },
+    }));
+    expect(result.created).toBe(true);
+    expect(dbMockState.insertValues[0]!.triggerRef).toEqual({ source: 'chat_analysis', goal: 'g', siteId: SITE });
+    expect(dbMockState.insertValues[0]!.stagedInputs).toMatchObject({ scope: { kind: 'site', siteId: SITE, deviceCount: 2 } });
+  });
+
+  it('an org or devices frame leaves trigger_ref.siteId as the caller verified it', async () => {
+    resolveGrantCeiling.mockResolvedValue(ceiling());
+    await createAndEnqueueAgentRun(analysisInput({
+      grant: GRANT,
+      triggerRef: { source: 'chat_analysis', siteId: null },
+      analysis: { scope: 'org', siteId: null, deviceIds: [], inputHandles: [], exportGrants: GRANTS },
+    }));
+    expect(dbMockState.insertValues[0]!.triggerRef).toEqual({ source: 'chat_analysis', siteId: null });
+  });
+});
+
+describe('analysis chain admission (W03)', () => {
+  const PRIOR = '00000000-0000-4000-8000-0000000000f1';
+  const ROOT = '00000000-0000-4000-8000-0000000000f0';
+  const cont = { fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 2 };
+  const priorRow = (over: Record<string, unknown> = {}) => ({
+    id: PRIOR, profile: 'analysis', grantId: null, chainRootRunId: ROOT, chainDepth: 1, ...over,
+  });
+  /** Queue the prior read ahead of the reap / counter reads. */
+  const withPrior = (rows: unknown[]) => { dbMockState.rowQueues.ai_agent_runs!.unshift(rows); };
+  const continuation = (over: Partial<typeof cont> = {}) => analysisInput({
+    analysis: { scope: 'devices', siteId: null, deviceIds: [DEVICE_A, DEVICE_B], inputHandles: [], continuation: { ...cont, ...over } },
+  });
+  const withLimits = (limits: Partial<typeof AI_AGENT_LIMIT_DEFAULTS>) => {
+    const snap = snapshot([...WORKSPACE_TOOL_NAMES]);
+    resolveEffectiveAgentSystem.mockResolvedValue({ ...snap, effective: { ...snap.effective, limits: { ...snap.effective.limits, ...limits } } });
+  };
+
+  it('writes the lineage columns on a continuation and zeros on a fresh run', async () => {
+    withPrior([priorRow()]);
+    await expect(createAndEnqueueAgentRun(continuation())).resolves.toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ continuedFromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 2 });
+    expect(chainCommittedCents).toHaveBeenCalledWith(expect.anything(), { orgId: ORG_ID, chainRootRunId: ROOT });
+    seed();
+    dbMockState.insertValues = [];
+    await createAndEnqueueAgentRun(analysisInput());
+    expect(dbMockState.insertValues[0]).toMatchObject({ continuedFromRunId: null, chainRootRunId: null, chainDepth: 0 });
+  });
+
+  it('a continuation of a root (depth 0) has the prior as its root', async () => {
+    withPrior([priorRow({ id: PRIOR, chainRootRunId: null, chainDepth: 0 })]);
+    await expect(createAndEnqueueAgentRun(continuation({ chainRootRunId: PRIOR, chainDepth: 1 })))
+      .resolves.toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ continuedFromRunId: PRIOR, chainRootRunId: PRIOR, chainDepth: 1 });
+  });
+
+  it('refuses depth over the limit: prior depth + 1 > analysisMaxChainDepth', async () => {
+    withLimits({ analysisMaxChainDepth: 2 });
+    withPrior([priorRow({ chainDepth: 2 })]);
+    await expect(createAndEnqueueAgentRun(continuation({ chainDepth: 3 })))
+      .resolves.toEqual({ created: false, skipped: 'analysis_chain_too_long' });
+    expect(dbMockState.insertValues).toEqual([]);
+  });
+
+  it('admits at exactly the depth limit', async () => {
+    withLimits({ analysisMaxChainDepth: 2 });
+    withPrior([priorRow({ chainDepth: 1 })]);
+    await expect(createAndEnqueueAgentRun(continuation({ chainDepth: 2 }))).resolves.toMatchObject({ created: true });
+  });
+
+  it('refuses the run count at the limit', async () => {
+    withPrior([priorRow()]);
+    chainCommittedCents.mockResolvedValue({ committedCents: 0, runCount: 12 });
+    await expect(createAndEnqueueAgentRun(continuation()))
+      .resolves.toEqual({ created: false, skipped: 'analysis_chain_too_long' });
+    seed();
+    withPrior([priorRow()]);
+    chainCommittedCents.mockResolvedValue({ committedCents: 0, runCount: 11 });
+    await expect(createAndEnqueueAgentRun(continuation())).resolves.toMatchObject({ created: true });
+  });
+
+  it('refuses the budget past the limit and admits at it', async () => {
+    // Defaults: 150 + 25 per run, 600 per chain.
+    withPrior([priorRow()]);
+    chainCommittedCents.mockResolvedValue({ committedCents: 425, runCount: 2 });
+    await expect(createAndEnqueueAgentRun(continuation())).resolves.toMatchObject({ created: true });
+    seed();
+    withPrior([priorRow()]);
+    chainCommittedCents.mockResolvedValue({ committedCents: 426, runCount: 2 });
+    await expect(createAndEnqueueAgentRun(continuation()))
+      .resolves.toEqual({ created: false, skipped: 'analysis_chain_budget_exceeded' });
+  });
+
+  it('a snapshot without the chain limits falls back to the defaults', async () => {
+    const { analysisMaxChainDepth: _d, analysisMaxChainRuns: _r, analysisMaxChainBudgetCents: _b, ...older } = AI_AGENT_LIMIT_DEFAULTS;
+    const snap = snapshot([...WORKSPACE_TOOL_NAMES]);
+    resolveEffectiveAgentSystem.mockResolvedValue({ ...snap, effective: { ...snap.effective, limits: older } });
+    withPrior([priorRow()]);
+    chainCommittedCents.mockResolvedValue({ committedCents: 426, runCount: 2 });
+    await expect(createAndEnqueueAgentRun(continuation()))
+      .resolves.toEqual({ created: false, skipped: 'analysis_chain_budget_exceeded' });
+  });
+
+  it('a prior that lost its root refuses analysis_chain_too_long', async () => {
+    withPrior([priorRow({ chainDepth: 1, chainRootRunId: null })]);
+    await expect(createAndEnqueueAgentRun(continuation()))
+      .resolves.toEqual({ created: false, skipped: 'analysis_chain_too_long' });
+    expect(chainCommittedCents).not.toHaveBeenCalled();
+    expect(dbMockState.insertValues).toEqual([]);
+  });
+
+  it.each([
+    ['a missing prior', [], {}],
+    ['a wrong root', [priorRow({ chainRootRunId: '00000000-0000-4000-8000-0000000000f9' })], {}],
+    ['a wrong depth', [priorRow({ chainDepth: 2 })], {}],
+    ['another grant', [priorRow({ grantId: 'g-other' })], {}],
+    ['another profile', [priorRow({ profile: 'full' })], {}],
+  ] as const)('a lineage that disagrees with the prior refuses analysis_continuation_not_found (%s)', async (_label, rows) => {
+    withPrior([...rows]);
+    await expect(createAndEnqueueAgentRun(continuation()))
+      .resolves.toEqual({ created: false, skipped: 'analysis_continuation_not_found' });
+    expect(chainCommittedCents).not.toHaveBeenCalled();
+    expect(dbMockState.insertValues).toEqual([]);
+  });
+
+  it('the chain gates run before any counter, so a refusal consumes no slot', async () => {
+    withPrior([priorRow()]);
+    chainCommittedCents.mockResolvedValue({ committedCents: 0, runCount: 99 });
+    await createAndEnqueueAgentRun(continuation());
+    // The prior read was consumed; the reap / concurrency / rate / spend reads were not.
+    expect(dbMockState.rowQueues.ai_agent_runs).toHaveLength(5);
+  });
+
+  it('a continuation also stamps the lineage on a reclaimed enqueue_failed row', async () => {
+    withPrior([priorRow()]);
+    dbMockState.insertRows = [];
+    await createAndEnqueueAgentRun(continuation());
+    const { db } = await import('../../db');
+    const setArg = (vi.mocked(db.update).mock.results[0]!.value as { set: ReturnType<typeof vi.fn> }).set.mock.calls[0]![0];
+    expect(setArg).toMatchObject({ continuedFromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 2 });
   });
 });
