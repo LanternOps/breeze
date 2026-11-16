@@ -81,3 +81,46 @@ func (h *Heartbeat) noteServerUnavailableLiveness(status int) {
 		log.Warn("failed to send server-unavailable state_sync to watchdog", "error", err.Error())
 	}
 }
+
+// noteControlPlaneBlockedLiveness tells the watchdog that this agent is running
+// its heartbeat loop but a network filter is blocking its control plane
+// (#8868). A restart cannot lift the filter, and a blocked agent fails every
+// tick for as long as the filter stands, so without this marker the watchdog
+// restart-churns it. Written to agent.state AND sent over IPC, like the
+// server-unavailable marker (#2763). The WARN is logged once per streak (see
+// clearControlPlaneBlockedLatch), not per call.
+func (h *Heartbeat) noteControlPlaneBlockedLiveness() {
+	now := time.Now()
+	if h.controlPlaneBlockedWarned.CompareAndSwap(false, true) {
+		log.Warn("control plane blocked by a network filter; recording liveness marker")
+	}
+	if h.statePath != "" {
+		if err := state.UpdateControlPlaneBlocked(h.statePath, now); err != nil {
+			log.Debug("failed to update state file control-plane-blocked marker", "error", err.Error())
+		}
+	}
+	if h.sessionBroker == nil {
+		return
+	}
+	sess := h.sessionBroker.PreferredSessionWithScope("watchdog")
+	if sess == nil {
+		log.Debug("no watchdog session; control-plane-blocked marker written to agent.state only")
+		return
+	}
+	// LastHeartbeat stays empty: this must never read as a successful
+	// heartbeat, to this watchdog or to one that predates the field.
+	if err := sess.SendNotify("", ipc.TypeStateSync, ipc.StateSync{
+		AgentVersion:          h.agentVersion,
+		Connected:             false,
+		ControlPlaneBlockedAt: now.Format(time.RFC3339),
+		ActiveBackupRuns:      h.sessionBroker.ActiveBackupRunCount(),
+	}); err != nil {
+		log.Debug("failed to send control-plane-blocked state_sync to watchdog", "error", err.Error())
+	}
+}
+
+// clearControlPlaneBlockedLatch ends a blocked streak so the next one logs its
+// WARN again. Call on a successful heartbeat.
+func (h *Heartbeat) clearControlPlaneBlockedLatch() {
+	h.controlPlaneBlockedWarned.Store(false)
+}
