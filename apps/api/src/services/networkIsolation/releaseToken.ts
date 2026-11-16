@@ -2,13 +2,13 @@ import { createPrivateKey, createPublicKey, sign, type KeyObject } from 'node:cr
 import { NETWORK_ISOLATION_RELEASE_TOKEN } from '@breeze/shared';
 
 /**
- * Signed offline release token for a network-isolation episode (#10102, plan W4c, spec OD6 c).
+ * Signed offline release token for a network-isolation episode (#10102).
  *
  *   token     = base64url(payload) "." base64url(signature)              (no padding)
  *   payload   = {"v":1,"iid":"<uuid>","gen":<n>,"dev":"<uuid>","nbf":<unix s>,"exp":<unix s>}
  *   signature = Ed25519(key, RELEASE_TOKEN_DOMAIN || base64url(payload))
  *
- * The key is a dedicated Ed25519 key (NETWORK_ISOLATION_TOKEN_SIGNING_KEY, Gate B decision 5): base64
+ * The key is an Ed25519 key used for nothing else (NETWORK_ISOLATION_TOKEN_SIGNING_KEY): base64
  * of its 32-byte seed. Its public half is pinned on the device when the episode is applied, so the
  * agent verifies a token with no connectivity, and nothing stored in the database can mint one. The
  * agent (agent/internal/isolation/releasetoken.go) accepts only this exact payload encoding;

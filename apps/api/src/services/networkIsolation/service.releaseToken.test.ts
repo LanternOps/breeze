@@ -58,7 +58,7 @@ vi.mock('./episodeStore', async original => ({
   writeEpisodeSnapshot: async (_tx: unknown, _id: string, _prev: unknown, next: any) => { h.row = { ...h.row, ...next }; return true; },
 }));
 import { createPrivateKey, createPublicKey, verify } from 'node:crypto';
-import { startNetworkIsolation, getBreakGlassCodes, getReleaseToken } from './service';
+import { startNetworkIsolation, getBreakGlassCodes, getReleaseToken, listDeviceIsolations } from './service';
 import { RELEASE_TOKEN_DOMAIN } from './releaseToken';
 import type { AuthContext } from '../../middleware/auth';
 // Arbitrary TEST seeds; they protect nothing.
@@ -138,10 +138,62 @@ describe('startNetworkIsolation: release-token pin (#10102)', () => {
       expect(JSON.stringify(error.mock.calls)).not.toContain('not-a-key');
     } finally { error.mockRestore(); }
   });
+
+  const notEnforced = () => h.audit.mock.calls.filter(([, entry]) => entry.action === 'device.isolation.release_token_requirement_not_enforced').map(([, entry]) => entry.details);
+  it.each([
+    ['agent_unsupported', () => { h.device.networkIsolationVersion = 3; vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', SEED_A); }],
+    ['key_not_configured', () => { tokenAgent(); }],
+    ['key_unusable', () => { tokenAgent(); vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', 'not-a-key'); }],
+  ])('records, by reason, a required token it cannot enforce (%s), and still isolates', async (reason, setup) => {
+    setup();
+    h.resolvePolicy.mockResolvedValue({ ...NO_EXTRAS, requireSignedReleaseToken: true });
+    const quiet = [vi.spyOn(console, 'error').mockImplementation(() => {}), vi.spyOn(console, 'warn').mockImplementation(() => {})];
+    try {
+      expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
+      expect(h.row.releaseTokenRequired).toBe(false);
+      expect(notEnforced()).toEqual([{ isolationId: h.row.id, reason }]);
+    } finally { quiet.forEach(spy => spy.mockRestore()); }
+  });
+
+  it('records nothing when the requirement is pinned, or was not asked for', async () => {
+    vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', SEED_A);
+    tokenAgent();
+    h.resolvePolicy.mockResolvedValue({ ...NO_EXTRAS, requireSignedReleaseToken: true });
+    await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' });
+    h.row = null; h.resolvePolicy.mockResolvedValue(NO_EXTRAS); h.device.networkIsolationVersion = 3;
+    await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' });
+    expect(notEnforced()).toEqual([]);
+  });
 });
 
 describe('getReleaseToken (#10102)', () => {
   const pinned = () => episode({ releaseTokenPublicKey: publicKeyOf(SEED_A), releaseTokenRequired: false });
+
+  it('signs for the episode generation when the agent has reported none', async () => {
+    vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', SEED_A);
+    h.row = { ...pinned(), lastAgentReport: null };
+    const result = await getReleaseToken(auth, deviceId, isolationId) as { token: string; generation: number };
+    expect(result.generation).toBe(3);
+    expect(JSON.parse(Buffer.from(result.token.split('.')[0]!, 'base64url').toString('utf8')).gen).toBe(3);
+  });
+
+  it('says why in the log when the signing key changed since the episode started', async () => {
+    vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', SEED_B);
+    h.row = pinned();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await getReleaseToken(auth, deviceId, isolationId)).toEqual({ error: 'release_token_unavailable' });
+      expect(warn).toHaveBeenCalledWith('[isolation] release token unavailable', expect.objectContaining({ reason: 'key_rotated' }));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(SEED_B);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('lists episodes with their token pin and without the secret', async () => {
+    h.row = pinned();
+    const result = await listDeviceIsolations(auth, deviceId) as { episodes: Record<string, unknown>[] };
+    expect(result.episodes[0]).toMatchObject({ releaseTokenPublicKey: publicKeyOf(SEED_A), releaseTokenRequired: false });
+    expect(result.episodes[0]).not.toHaveProperty('breakGlassSecretEnc');
+  });
 
   it('mints a token for the agent generation, signed by the pinned key, and audits without the token', async () => {
     vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', SEED_A);

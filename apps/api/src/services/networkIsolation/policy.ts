@@ -14,7 +14,7 @@ export interface IsolationPolicy {
   refusedGroups: readonly RefusedExecutionGroup[];
   /** The winning policy's stored settings are malformed, so its permits were dropped. */
   invalidStoredSettings: boolean;
-  /** requireSignedReleaseToken: pinned on an episode at start, and only with a token key (#10102). */
+  /** The policy's requireSignedReleaseToken (#10102). Start stores it on the episode only when it also sends a token key. */
   requireSignedReleaseToken: boolean;
 }
 

@@ -13,15 +13,15 @@ import (
 	"time"
 )
 
-// Signed offline release token (#10102, plan W4c, spec OD6 c).
+// Signed offline release token (#10102).
 //
 //	token   = base64url(payload) "." base64url(signature)      (RFC 4648 §5, no padding)
 //	payload = {"v":1,"iid":"<uuid>","gen":<n>,"dev":"<uuid>","nbf":<unix s>,"exp":<unix s>}
 //	signature = Ed25519(key, releaseTokenDomain || base64url(payload))
 //
 // The payload is exactly that object: those keys in that order, no
-// whitespace, lowercase UUIDs. The server signs with a dedicated key
-// (NETWORK_ISOLATION_TOKEN_SIGNING_KEY, Gate B decision 5) whose public half
+// whitespace, lowercase UUIDs. The server signs with a key used for nothing
+// else (NETWORK_ISOLATION_TOKEN_SIGNING_KEY) whose public half
 // the agent pins in its journal when it applies the episode, so verification
 // needs no connectivity and a token cannot be minted from anything in the
 // database. testdata/release_token_vectors.json pins the format to an
@@ -29,8 +29,7 @@ import (
 // file.
 const (
 	releaseTokenDomain = "breeze-isolation-release-token-v1\n"
-	// ReleaseTokenMaxLen bounds the token string. A real token is about 230
-	// characters.
+	// ReleaseTokenMaxLen bounds the token string; a real token is well under it.
 	ReleaseTokenMaxLen = 512
 	// ReleaseTokenMaxValidity is the longest exp − nbf window accepted.
 	ReleaseTokenMaxValidity = 24 * time.Hour
@@ -99,8 +98,8 @@ type releaseTokenPayload struct {
 }
 
 // smallOrderEd25519Keys are the encodings (canonical or not, either sign bit)
-// of the points of order 1, 2, 4 and 8. Under such a key a signature can be
-// made for any message without a private key, so it can never be pinned.
+// of the points of order 1, 2, 4 and 8. Such keys do not bind a signature to a
+// private key, so they are never pinned.
 // Listed in testdata/release_token_vectors.json (smallOrderPublicKeysHex),
 // which was computed independently; the test compares the two.
 var smallOrderEd25519Keys = func() [][]byte {

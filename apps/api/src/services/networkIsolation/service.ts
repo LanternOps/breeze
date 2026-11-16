@@ -72,12 +72,15 @@ async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: Episod
  * refuses one at boot, so this is a key changed underneath a running API). Never throws and never logs
  * the value: a start must not wait on it, and a mint just refuses.
  */
-function configuredReleaseTokenSigner(phase: string, ids: Record<string, string>): ReleaseTokenSigner | null {
-  try { return releaseTokenSigner(); }
-  catch (error) {
+type SignerLookup = { signer: ReleaseTokenSigner } | { signer: null; reason: 'agent_unsupported' | 'key_not_configured' | 'key_unusable' };
+function configuredReleaseTokenSigner(phase: string, ids: Record<string, string>): SignerLookup {
+  try {
+    const signer = releaseTokenSigner();
+    return signer ? { signer } : { signer: null, reason: 'key_not_configured' };
+  } catch (error) {
     console.error('[isolation] release token key unusable', ids);
     captureException(error, undefined, { phase, ...ids });
-    return null;
+    return { signer: null, reason: 'key_unusable' };
   }
 }
 async function loadDevice(tx: EpisodeTx, auth: AuthContext, deviceId: string) {
@@ -156,9 +159,12 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     // Signed offline release (#10102): only to an agent that takes the fields (an older one decodes the
     // spec strictly and would refuse the isolation) and only with a key configured. Pinned for the
     // episode here and on the device; the requirement never stands without the key.
-    const signer = agentAcceptsReleaseToken(device.networkIsolationVersion, device.agentVersion)
-      ? configuredReleaseTokenSigner('isolation_release_token_key', { deviceId: device.id, isolationId: id }) : null;
-    const releaseToken = signer ? { releaseTokenPublicKey: signer.publicKey, releaseTokenDeviceId: device.id, requireSignedReleaseToken: policy.requireSignedReleaseToken } : null;
+    const lookup: SignerLookup = agentAcceptsReleaseToken(device.networkIsolationVersion, device.agentVersion)
+      ? configuredReleaseTokenSigner('isolation_release_token_key', { deviceId: device.id, isolationId: id }) : { signer: null, reason: 'agent_unsupported' };
+    const releaseToken = lookup.signer ? { releaseTokenPublicKey: lookup.signer.publicKey, releaseTokenDeviceId: device.id, requireSignedReleaseToken: policy.requireSignedReleaseToken } : null;
+    // The policy asked for token-only release but this episode cannot carry a key, so codes stay usable.
+    // Isolation still starts (containment never waits on release options); the downgrade is on record.
+    const tokenRequirementNotEnforced = policy.requireSignedReleaseToken && lookup.signer === null ? lookup.reason : null;
     let sealedSecret: string | null;
     try { sealedSecret = encryptSecret(secret, { aad: columnAad(ISOLATION_SECRET_COLUMN, id) }); }
     catch (error) { return secretUnavailable(error, device.id, id); }
@@ -178,6 +184,10 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     const prev = toEpisodeSnapshot(created.episode);
     const transition = applyEpisodeEvent(prev, { type: 'dispatched', generation: 1, at: now });
     if (!('next' in transition) || !await writeEpisodeSnapshot(tx, id, prev, transition.next, now)) return refuse('isolation_conflict');
+    if (tokenRequirementNotEnforced) {
+      console.warn('[isolation] signed-token requirement not enforced', { deviceId: device.id, isolationId: id, reason: tokenRequirementNotEnforced });
+      writeRouteAudit({ ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: device.orgId, action: 'device.isolation.release_token_requirement_not_enforced', resourceType: 'device', resourceId: device.id, details: { isolationId: id, reason: tokenRequirementNotEnforced } });
+    }
     return { episode: safeEpisode({ ...created.episode, ...transition.next }), commandId };
   });
 }
@@ -252,8 +262,12 @@ export async function getReleaseToken(auth: AuthContext, deviceId: string, isola
   return locked(auth, deviceId, isolationId, async (_tx, row) => {
     if (isResolvedTerminalIsolationState(row.state)) return refuse('isolation_conflict');
     if (!row.releaseTokenPublicKey) return refuse('release_token_unavailable');
-    const signer = configuredReleaseTokenSigner('isolation_release_token_mint', { deviceId: row.deviceId, isolationId: row.id });
-    if (!signer || signer.publicKey !== row.releaseTokenPublicKey) return refuse('release_token_unavailable');
+    const { signer } = configuredReleaseTokenSigner('isolation_release_token_mint', { deviceId: row.deviceId, isolationId: row.id });
+    if (!signer || signer.publicKey !== row.releaseTokenPublicKey) {
+      // Not a fault of the request: say which, by fixed reason, so a rotation is visible to operators.
+      console.warn('[isolation] release token unavailable', { deviceId: row.deviceId, isolationId: row.id, reason: signer ? 'key_rotated' : 'key_not_configured' });
+      return refuse('release_token_unavailable');
+    }
     const generation = row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : row.generation;
     const minted = mintReleaseToken(signer, { isolationId: row.id, generation, deviceId: row.deviceId, now: new Date(), validitySeconds: NETWORK_ISOLATION_RELEASE_TOKEN.validitySeconds });
     const qrCodeDataUrl = await QRCode.toDataURL(minted.token, { errorCorrectionLevel: 'M', margin: 2, width: 320 });

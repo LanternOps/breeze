@@ -66,6 +66,10 @@ describe('heartbeat isolation fault containment', () => {
     expect(response.status).toBe(200);
     expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationVersion: 1 });
   });
+  it("gates release-token fields on this beat's agent version, not the stored one (#10102)", async () => {
+    await heartbeat({ agentVersion: '999.0.0', securityCapabilities: { networkIsolationVersion: 4 } });
+    expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationVersion: 4, agentVersion: '999.0.0' });
+  });
   it('a beat that reports no capability counts as level 0, matching what the device row records', async () => {
     await heartbeat();
     expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationVersion: 0 });

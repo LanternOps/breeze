@@ -330,6 +330,51 @@ func TestManagerRejectedTokensJournalBounded(t *testing.T) {
 	}
 }
 
+// Setting the device clock back does not make an expired token valid again:
+// expiry is judged against the journalled high-water time as well.
+func TestManagerReleaseTokenExpiryUsesHighWaterTime(t *testing.T) {
+	h := newHarness(t)
+	key := testTokenKey("a")
+	h.mustIsolateWithToken(key, false)
+	start := h.clock.Now()
+	token := mintTestToken(key, idA, 1, tokenDevice, start.Add(-time.Minute), start.Add(time.Hour))
+	h.clock.Advance(2 * time.Hour)
+	h.m.Tick(context.Background())
+	if hw := h.journal().HighWaterWall; hw.Before(start.Add(time.Hour)) {
+		t.Fatalf("high-water time %v did not pass the token's expiry", hw)
+	}
+	h.clock.SetWall(start)
+	err := h.m.LocalReleaseToken(context.Background(), token)
+	if ReleaseTokenRejectReason(err) != ReleaseTokenExpired {
+		t.Fatalf("clock set back: err = %v, want reason expired", err)
+	}
+	if !h.m.Active() {
+		t.Fatal("an expired token released the isolation")
+	}
+}
+
+// A new episode never inherits the previous episode's pinned key.
+func TestManagerNewEpisodeDoesNotInheritReleaseTokenKey(t *testing.T) {
+	h := newHarness(t)
+	key := testTokenKey("a")
+	h.mustIsolateWithToken(key, true)
+	if err := h.m.LocalReleaseToken(context.Background(), h.goodToken(key, 1)); err != nil {
+		t.Fatal(err)
+	}
+	h.mustIsolate(idB, 1)
+	ep := h.journal().Episode
+	if ep.IsolationID != idB || len(ep.ReleaseTokenPublicKey) != 0 || ep.ReleaseTokenDeviceID != "" || ep.RequireSignedReleaseToken {
+		t.Fatalf("new episode carries the old pin: %+v", ep)
+	}
+	code, err := BreakGlassCode(h.secret, idB, 1, h.clock.Now().Unix()/3600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.LocalRelease(context.Background(), code, false); err != nil {
+		t.Fatalf("code refused on an episode with no requirement: %v", err)
+	}
+}
+
 func TestAdvertisedVersionIncludesReleaseToken(t *testing.T) {
 	if got := (Capability{Version: 1}).AdvertisedVersion(); got != CapabilityReleaseToken {
 		t.Fatalf("advertised %d, want %d", got, CapabilityReleaseToken)

@@ -4,7 +4,7 @@
 --   signing key configured, or the agent does not accept the fields).
 -- release_token_required: the containment policy's requireSignedReleaseToken, as sent at start. The
 --   agent then refuses break-glass codes for the episode. Never true without a key.
--- Both are written once, at start, and re-sent unchanged on every heartbeat, like allow_snapshot.
+-- Both are set when the episode is created and re-sent unchanged on every heartbeat, like allow_snapshot.
 ALTER TABLE device_network_isolations
   ADD COLUMN IF NOT EXISTS release_token_public_key text,
   ADD COLUMN IF NOT EXISTS release_token_required boolean NOT NULL DEFAULT false;

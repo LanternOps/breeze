@@ -1295,9 +1295,9 @@ func (o *op) isolateLocked(spec Spec) {
 			o.noteError("store the break-glass secret: " + err.Error())
 		}
 	}
-	// A late release-token key for the episode held, likewise. Once pinned it
-	// is never replaced: a later block cannot swap the key offline release
-	// trusts.
+	// If the held, active episode has no release-token key yet, pin the one this
+	// spec carries. Once pinned it is never replaced, so a later block cannot
+	// change the key offline release trusts.
 	if o.state.IsolationID == spec.IsolationID && o.j.Episode != nil && len(o.j.Episode.ReleaseTokenPublicKey) == 0 &&
 		len(spec.ReleaseTokenPublicKey) > 0 && activePhase(o.state.Phase) {
 		pinReleaseToken(o.j.Episode, spec)
