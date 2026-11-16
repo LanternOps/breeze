@@ -28,6 +28,9 @@ export const TROUBLESHOOT_PROPOSABLE_TOOLS = [
 
 /** Run caps. `maxActionsPerRun` bounds the approval cards one run can raise. */
 export const TROUBLESHOOT_MAX_TURNS_PER_RUN = 30;
+
+/** Longest goal a hand-off may carry; the launcher schema and the run prompt both honor it (#11973). */
+export const TROUBLESHOOT_GOAL_MAX_CHARS = 2000;
 export const TROUBLESHOOT_MAX_BUDGET_CENTS_PER_RUN = 100;
 export const TROUBLESHOOT_MAX_ACTIONS_PER_RUN = 3;
 
