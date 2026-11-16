@@ -150,8 +150,11 @@ async function changeTrustState(
     return c.json({ error: 'trust state changed since the queue was loaded; refresh and retry' }, 409);
   }
   // Same as an auto-restrict: expire what the partner could still pay on
-  // (#11952). Best effort and bounded by the billing client's timeout; it
-  // never throws and never undoes the restriction.
+  // (#11952). Best effort and bounded by the billing client's 10 s timeout; it
+  // never throws and never undoes the restriction. Like the auto path it acts
+  // only when partner trust is enforcing; in shadow mode it logs and returns,
+  // and billing's checkout gate (which reads trust_state in any mode) still
+  // refuses new sessions.
   if (next === 'restricted') await closeOpenCheckoutsAfterRestrict(partnerId, action);
   return c.json({ success: true, trustState: next });
 }

@@ -207,6 +207,18 @@ describe('breezeBillingClient', () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
+    // #11952: once the endpoint exists, a 404 can also mean the billing service has
+    // no record of the partner. That is a fault to page on, not a deployment state.
+    it('reports failed (not unavailable) on the endpoint\'s own 404 unknown_partner', async () => {
+      const body = JSON.stringify({ error: 'unknown_partner', message: 'no partner or billing record for this id in this region' });
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404, text: async () => body });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      const result = await client.closeOpenCheckouts({ partnerId: 'p1', reason: 'auto:card_testing' });
+      expect(result.status).toBe('failed');
+      expect(result).toMatchObject({ detail: expect.stringContaining('unknown_partner') });
+    });
+
     it('reports failed on a non-2xx response', async () => {
       const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 502, text: async () => 'bad gateway' });
       const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
