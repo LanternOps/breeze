@@ -110,6 +110,13 @@ describe('run_script approval headline', () => {
     expect(check.description).toMatch(/^Run proposed script "Fix the x{72}…" on device 11111111\.\.\.$/);
   });
 
+  it('never lets the goal carry a device stub a label builder would rename', () => {
+    const check = checkGuardrails(
+      'run_script', { proposalId, deviceIds: devices }, withGoal('Fix on device deadbeef... first'),
+    );
+    expect(check.description).toBe('Run proposed script "Fix on device deadbeef… first" on device 11111111...');
+  });
+
   it('falls back to the proposal id stub when the context carries no goal', () => {
     const check = checkGuardrails('run_script', { proposalId, deviceIds: devices }, ctx('low'));
     expect(check.description).toBe('Run proposed script aaaaaaaa... on device 11111111...');

@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
 let stored: Record<string, unknown> | null = null;
+// Returns only the columns the query selects, as Postgres would, so a column
+// dropped from the select (e.g. `goal`, #11979) fails the toEqual below.
+const project = (row: Record<string, unknown>, columns: Record<string, unknown>) =>
+  Object.fromEntries(Object.keys(columns).filter((k) => k in row).map((k) => [k, row[k]]));
 vi.mock('../../db', () => ({
-  db: { select: () => ({ from: () => ({ where: () => ({ limit: async () => (stored ? [stored] : []) }) }) }) },
+  db: {
+    select: (columns: Record<string, unknown>) => ({
+      from: () => ({ where: () => ({ limit: async () => (stored ? [project(stored, columns)] : []) }) }),
+    }),
+  },
   withSystemDbAccessContext: <T,>(fn: () => Promise<T>) => fn(),
   runOutsideDbContext: <T,>(fn: () => T) => fn(),
 }));

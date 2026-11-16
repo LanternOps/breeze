@@ -4618,7 +4618,9 @@ export function describeSpecialistRequest(input: Record<string, unknown>, orgNam
 function describeRunScriptHeadline(input: Record<string, unknown>, context: GuardrailContext | undefined): string {
   let script: string;
   if (isProposalRunScript('run_script', input)) {
-    const goal = context?.proposal?.goal?.replace(/\s+/g, ' ').trim();
+    // `...` becomes `…` so the goal can never carry an `on device <id>...`
+    // stub that a label builder would mistake for the real one and rename.
+    const goal = context?.proposal?.goal?.replace(/\s+/g, ' ').replace(/\.\.\./g, '…').trim();
     script = goal
       ? `Run proposed script "${goal.length > 80 ? `${goal.slice(0, 80)}…` : goal}"`
       : `Run proposed script ${(input.proposalId as string).slice(0, 8)}...`;
