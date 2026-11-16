@@ -115,5 +115,12 @@ func (s *windowsScheduler) recoveryInstaller() (*recoveryinstall.Installer, erro
 			// register reads the task back, so a repoint is confirmed or fails.
 			return s.register(buildPollTask(path, s.dataDir, s.now()))
 		},
+		// readback compares action, principal, settings and trigger kinds, not
+		// the start boundary, so an existing poll task stays as registered and
+		// keeps its 15-minute cadence across readiness re-probes.
+		TaskCurrent: func(task recoveryinstall.Task, path string) bool {
+			return task.Name == pollTaskName && s.readback(buildPollTask(path, s.dataDir, s.now())) == nil
+		},
+		Warn: func(msg string, err error) { log.Warn(msg, "error", err) },
 	}, nil
 }

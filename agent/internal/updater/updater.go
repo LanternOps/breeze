@@ -1539,14 +1539,6 @@ func (u *Updater) VerifySignedPayload(keyID string, payload, signature []byte) e
 	return u.verifyManifestSignature(payload, signature, keyID)
 }
 
-// downloadBinary fetches download info from the API and then downloads the binary.
-// Supports both legacy redirect responses and JSON info responses.
-// downloadBinary returns the temp path of the downloaded binary, the verified
-// single-asset manifest view, and the raw signature-VERIFIED release manifest
-// payload (info.Manifest). The payload is returned so the macOS update path can
-// look up the .pkg asset's signed checksum from the same trust root without a
-// second round-trip; it is safe to use because verifyUpdateManifest has already
-// checked its Ed25519 signature.
 // verifiedDownloadInfo fetches this component's download info for version and
 // verifies its signed release manifest against the trust set. It never
 // downloads the artifact itself.
@@ -1592,6 +1584,14 @@ func (u *Updater) verifiedDownloadInfo(version string) (downloadInfo, updateMani
 	return info, manifest, nil
 }
 
+// downloadBinary fetches download info from the API and then downloads the binary.
+// Supports both legacy redirect responses and JSON info responses.
+// downloadBinary returns the temp path of the downloaded binary, the verified
+// single-asset manifest view, and the raw signature-VERIFIED release manifest
+// payload (info.Manifest). The payload is returned so the macOS update path can
+// look up the .pkg asset's signed checksum from the same trust root without a
+// second round-trip; it is safe to use because verifyUpdateManifest has already
+// checked its Ed25519 signature.
 func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte, error) {
 	// Step 1: Get download URL + checksum from API, signature-verified.
 	info, manifest, err := u.verifiedDownloadInfo(version)

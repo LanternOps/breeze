@@ -177,3 +177,104 @@ func TestEnsureRecoveryIdleFetchFailureStillFails(t *testing.T) {
 		t.Fatal("idle fetch failure reported success")
 	}
 }
+
+// A readiness re-probe of an installed, unchanged recovery must not re-register
+// tasks or rewrite the journal: re-registration resets the poll task's start
+// boundary and churns Task Scheduler on every healthy device.
+func TestEnsureRecoveryIdleReprobeIsNoOp(t *testing.T) {
+	i, _, repointed := installerFixture(t)
+	current := map[string]bool{}
+	i.TaskCurrent = func(task Task, path string) bool { return current[task.Name+"|"+path] }
+	path, err := i.EnsureRecovery(context.Background(), "1.2.3")
+	if err != nil || len(*repointed) != 2 {
+		t.Fatalf("first ensure: %v repoints=%v", err, *repointed)
+	}
+	current["poll|"+path], current["expiry|"+path] = true, true
+	before, err := os.Stat(journal.Path(i.DataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := i.EnsureRecovery(context.Background(), "1.2.3"); err != nil || again != path {
+		t.Fatalf("re-probe: %q %v", again, err)
+	}
+	if len(*repointed) != 2 {
+		t.Fatalf("re-probe repointed current tasks: %v", *repointed)
+	}
+	after, err := os.Stat(journal.Path(i.DataDir))
+	if err != nil || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("re-probe rewrote the journal")
+	}
+	// A task that drifted (deleted, disabled, repointed elsewhere) is repaired.
+	current["expiry|"+path] = false
+	if _, err := i.EnsureRecovery(context.Background(), "1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*repointed) != 4 {
+		t.Fatalf("drifted task not repaired: %v", *repointed)
+	}
+}
+
+// While an episode keeps its pinned recovery, a newer version that failed to
+// stage is reported to Warn instead of disappearing.
+func TestEnsureRecoveryPinnedEpisodeReportsDeferredStage(t *testing.T) {
+	i, _, _ := installerFixture(t)
+	if _, err := i.EnsureRecovery(context.Background(), "1.2.3"); err != nil {
+		t.Fatal(err)
+	}
+	j, err := journal.Load(journal.Path(i.DataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Phase = journal.PhaseCommitted
+	if err := journal.Save(journal.Path(i.DataDir), j); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("artifact host unreachable")
+	i.Fetch = func(context.Context, string, io.Writer) error { return sentinel }
+	var warned []error
+	i.Warn = func(_ string, err error) { warned = append(warned, err) }
+	if _, err := i.EnsureRecovery(context.Background(), "1.2.4"); err != nil {
+		t.Fatal(err)
+	}
+	if len(warned) != 1 || !errors.Is(warned[0], sentinel) {
+		t.Fatalf("deferred stage failure not reported: %v", warned)
+	}
+}
+
+// An envelope that no longer verifies (truncated, a rotated key, an edit) is
+// replaced by a freshly fetched one, so Path B self-heals; a verifying one is
+// never touched.
+func TestEnsureRecoveryReplacesUnverifiableEnvelope(t *testing.T) {
+	for _, stale := range []*ManifestEnvelope{
+		{Manifest: "manifest:1.2.3", Signature: "signed-by-an-old-key"},
+		{Manifest: "manifest:1.2.2", Signature: "signed-by-trust-root"},
+	} {
+		i, _, _ := installerFixture(t)
+		selfHostUnsigned(i)
+		placeEnvelope(t, i, "1.2.3", stale)
+		calls := 0
+		i.FetchEnvelope = func(_ context.Context, version string) (ManifestEnvelope, error) {
+			calls++
+			return *signedEnvelope(version), nil
+		}
+		if _, err := i.EnsureRecovery(context.Background(), "1.2.3"); err != nil {
+			t.Fatalf("stale envelope %+v not repaired: %v", stale, err)
+		}
+		if calls != 1 {
+			t.Fatalf("calls=%d", calls)
+		}
+	}
+	// A garbage file is also replaced.
+	i, _, _ := installerFixture(t)
+	selfHostUnsigned(i)
+	placeEnvelope(t, i, "1.2.3", signedEnvelope("1.2.3"))
+	if err := os.WriteFile(envelopePath(i, "1.2.3"), []byte("{trunc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	i.FetchEnvelope = func(_ context.Context, version string) (ManifestEnvelope, error) {
+		return *signedEnvelope(version), nil
+	}
+	if _, err := i.EnsureRecovery(context.Background(), "1.2.3"); err != nil {
+		t.Fatalf("garbage envelope not repaired: %v", err)
+	}
+}

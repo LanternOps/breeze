@@ -2,7 +2,6 @@ package isolation
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -189,4 +188,27 @@ func contains(list []string, want string) bool {
 	return false
 }
 
-var _ = json.Marshal
+// The poll task is registered once; healthy re-probes only read it back.
+func TestRecoveryEnsureReprobeDoesNotReregister(t *testing.T) {
+	exe := []byte("unsigned self-host recovery")
+	s, _, _, _, _ := sourceScheduler(t, exe, journal.SchemaVersion)
+	fetches := 0
+	ConfigureRecoverySource(s, testSource(exe, &fetches))
+	creates := 0
+	run := s.run
+	s.run = func(args ...string) ([]byte, error) {
+		if args[0] == "/Create" {
+			creates++
+		}
+		return run(args...)
+	}
+	ensure := recoveryEnsure(s, trustTestVersion)
+	for n := 0; n < 3; n++ {
+		if _, err := ensure(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("poll task registered %d times across 3 probes, want 1", creates)
+	}
+}

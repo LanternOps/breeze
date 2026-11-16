@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/isolation"
@@ -43,10 +45,52 @@ func recoveryUpdaterConfig(h *Heartbeat) *updater.Config {
 // an enforced host allowlist is self-host. recoveryinstall re-checks it too.
 func recoverySelfHostEdition() bool { return !hostpolicy.Enforced() }
 
+// recoveryFetchBackoff spaces out retries of a failed recovery download. The
+// readiness probe runs every few minutes on every Windows agent; without this a
+// release whose asset the server never synced would cost a download-info
+// request per device per probe.
+const recoveryFetchBackoff = 30 * time.Minute
+
+// fetchBackoff remembers the last failure per (kind, version) and replays it
+// until the window passes. Success clears it.
+type fetchBackoff struct {
+	mu       sync.Mutex
+	now      func() time.Time
+	failures map[string]fetchFailure
+}
+
+type fetchFailure struct {
+	at  time.Time
+	err error
+}
+
+func (b *fetchBackoff) do(key string, fn func() error) error {
+	b.mu.Lock()
+	if f, ok := b.failures[key]; ok && b.now().Sub(f.at) < recoveryFetchBackoff {
+		b.mu.Unlock()
+		return fmt.Errorf("retrying after %s: %w", f.at.Add(recoveryFetchBackoff).UTC().Format(time.RFC3339), f.err)
+	}
+	b.mu.Unlock()
+	err := fn()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err != nil {
+		b.failures[key] = fetchFailure{at: b.now(), err: err}
+	} else {
+		delete(b.failures, key)
+	}
+	return err
+}
+
 // recoveryDistribution builds the recovery executable's trust Path B and its
 // download adapters. newDownloader is called per use so a rotated pinned key
 // or a changed server URL takes effect without a restart.
 func recoveryDistribution(newDownloader func() recoveryDownloader, selfHost bool) (recoveryinstall.ManifestTrust, isolation.RecoverySource) {
+	return recoveryDistributionWithClock(newDownloader, selfHost, time.Now)
+}
+
+func recoveryDistributionWithClock(newDownloader func() recoveryDownloader, selfHost bool, now func() time.Time) (recoveryinstall.ManifestTrust, isolation.RecoverySource) {
+	backoff := &fetchBackoff{now: now, failures: map[string]fetchFailure{}}
 	trust := recoveryinstall.ManifestTrust{
 		SelfHostEdition: selfHost,
 		ManifestDigest: func(env recoveryinstall.ManifestEnvelope, version, asset string) (string, error) {
@@ -59,9 +103,13 @@ func recoveryDistribution(newDownloader func() recoveryDownloader, selfHost bool
 				return err
 			}
 			// DownloadBinary verifies the manifest signature, the asset entry
-			// and the downloaded SHA-256 before it returns a path.
-			path, err := newDownloader().DownloadBinary(version)
-			if err != nil {
+			// and the downloaded SHA-256 before it returns a path. It takes no
+			// context; the updater client's 5-minute request timeout bounds it.
+			var path string
+			if err := backoff.do("exe "+version, func() (err error) {
+				path, err = newDownloader().DownloadBinary(version)
+				return err
+			}); err != nil {
 				return fmt.Errorf("download isolation recovery %s: %w", version, err)
 			}
 			defer func() { _ = os.Remove(path) }()
@@ -77,8 +125,11 @@ func recoveryDistribution(newDownloader func() recoveryDownloader, selfHost bool
 			if err := ctx.Err(); err != nil {
 				return recoveryinstall.ManifestEnvelope{}, err
 			}
-			env, err := newDownloader().VerifiedDownloadEnvelope(version)
-			if err != nil {
+			var env updater.ReleaseEnvelope
+			if err := backoff.do("envelope "+version, func() (err error) {
+				env, err = newDownloader().VerifiedDownloadEnvelope(version)
+				return err
+			}); err != nil {
 				return recoveryinstall.ManifestEnvelope{}, err
 			}
 			return recoveryinstall.ManifestEnvelope{Manifest: env.Manifest, Signature: env.Signature, SigningKeyID: env.SigningKeyID}, nil
