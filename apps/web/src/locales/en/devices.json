@@ -2818,6 +2818,8 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (an unexpected error occurred; try again)",
       "deviceMovedToSite": "{{hostname}} moved to a new site",
       "bulkWakeResult": "Sent to {{sent}}, skipped {{skipped}}",
+      "bulkWakePolicySkipped": "{{count}} skipped by Wake-on-LAN policy",
+      "bulkWakeAllBlockedByPolicy": "No wake sent: {{count}} blocked by Wake-on-LAN policy",
       "scriptQueuedOneOffline": "Script \"{{script}}\" queued for {{hostname}} — runs when the device reconnects"
     },
     "tryAgain": "Try again",

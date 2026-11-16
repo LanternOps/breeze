@@ -2812,6 +2812,8 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (se produjo un error inesperado; vuelve a intentarlo)",
       "deviceMovedToSite": "{{hostname}} se movió a un nuevo sitio",
       "bulkWakeResult": "Enviado a {{sent}}, omitidos {{skipped}}",
+      "bulkWakePolicySkipped": "{{count}} omitidos por la política de Wake-on-LAN",
+      "bulkWakeAllBlockedByPolicy": "No se envió ningún wake: {{count}} bloqueados por la política de Wake-on-LAN",
       "scriptQueuedOneOffline": "Script \"{{script}}\" en cola para {{hostname}}: se ejecutará cuando el dispositivo se reconecte"
     },
     "tryAgain": "Intentar otra vez",

@@ -21,6 +21,7 @@ import MaintenanceModeDialog from "./MaintenanceModeDialog";
 import MoveDeviceOrgDialog from "./MoveDeviceOrgDialog";
 import { isInMaintenance } from "../../lib/maintenanceResource";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
+import { parseWakeAvailability } from "./deviceRowTransform";
 import type { DeviceActionOptions } from "./DeviceActions";
 import { fetchWithAuth } from "../../stores/auth";
 import { useRecentsStore } from "../../stores/recentsStore";
@@ -224,6 +225,8 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         // #8318 "Reinstalled on <date>" badge. Same whitelist hazard.
         lastReattachedAt:
           typeof data.lastReattachedAt === "string" ? data.lastReattachedAt : null,
+        // #10838: server-decided Wake availability (explicit whitelist).
+        wakeAvailability: parseWakeAvailability(data.wakeAvailability),
         desktopAccess: data.desktopAccess ?? undefined,
         remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
         // #10922 — the Connect button's tool menu. Dropped here, the menu

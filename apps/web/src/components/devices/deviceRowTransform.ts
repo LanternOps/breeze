@@ -1,13 +1,27 @@
 import type { DeviceRole } from '@/lib/deviceRoles';
 import { i18n } from '@/lib/i18n';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
-import type { Device, DeviceStatus, OSType, WarrantyStatus } from './DeviceList';
+import type { Device, DeviceStatus, OSType, WakeAvailability, WarrantyStatus } from './DeviceList';
 
 const WARRANTY_STATUSES: ReadonlySet<string> = new Set<WarrantyStatus>([
   'active', 'expiring', 'expired', 'unknown', 'subscription_active',
 ]);
 function isWarrantyStatus(value: unknown): value is WarrantyStatus {
   return typeof value === 'string' && WARRANTY_STATUSES.has(value);
+}
+
+/** Validates the wire shape; anything else is dropped so older/odd payloads keep Wake (#10838). */
+export function parseWakeAvailability(value: unknown): WakeAvailability | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.show !== 'boolean') return undefined;
+  return {
+    show: v.show,
+    mode: v.mode === 'none' || v.mode === 'verified' || v.mode === 'always' ? v.mode : 'unknown',
+    state: typeof v.state === 'string' ? v.state : 'unknown',
+    testWakeAllowed: v.testWakeAllowed === true,
+    flaggedTimeouts: v.flaggedTimeouts === true,
+  };
 }
 
 /** A device row exactly as `GET /devices` returns it (untyped on the wire). */
@@ -93,6 +107,9 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
       typeof d.possibleReplacementOfDeviceId === 'string'
         ? d.possibleReplacementOfDeviceId
         : null,
+    // #10838: server-decided Wake availability. Explicit whitelist, so omitting
+    // it would silently keep Wake visible on devices the server hid it for.
+    wakeAvailability: parseWakeAvailability(d.wakeAvailability),
     batteryStatus: (d.batteryStatus as Device['batteryStatus']) ?? null,
     activeVpns: (d.activeVpns as Device['activeVpns']) ?? null,
     // Linked multi-boot profiles (#2138): grouping is computed

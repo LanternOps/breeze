@@ -2817,6 +2817,8 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı",
       "bulkWakeResult": "{{sent}} cihaza gönderildi, {{skipped}} cihaz atlandı",
+      "bulkWakePolicySkipped": "{{count}} cihaz Wake-on-LAN ilkesi nedeniyle atlandı",
+      "bulkWakeAllBlockedByPolicy": "Uyandırma gönderilmedi: {{count}} cihaz Wake-on-LAN ilkesi tarafından engellendi",
       "scriptQueuedOneOffline": "\"{{script}}\" betiği {{hostname}} için kuyruğa alındı — cihaz yeniden bağlandığında çalışacak"
     },
     "tryAgain": "Tekrar deneyin",

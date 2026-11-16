@@ -2111,6 +2111,60 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     );
   });
 
+  // #10838 W02: bulk Wake sends only devices the server said may show Wake.
+  describe('bulk wake policy gating (#10838)', () => {
+    const hiddenWake = { show: false, mode: 'verified', state: 'not_configured', testWakeAllowed: false, flaggedTimeouts: false };
+    async function renderWithHiddenWake() {
+      const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [{ deviceId: DEV_1 }], failed: [] }));
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline' },
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline', wakeAvailability: hiddenWake },
+          { ...rawDevice(DEV_3, 'host-gamma'), status: 'offline', wakeAvailability: hiddenWake },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2, DEV_3]);
+      return requestBulkWakeCommand;
+    }
+
+    it('sends only eligible ids and reports how many were skipped for policy', async () => {
+      const { showToast } = await import('../shared/Toast');
+      const requestBulkWakeCommand = await renderWithHiddenWake();
+      vi.mocked(showToast).mockClear();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+      await waitFor(() => expect(vi.mocked(requestBulkWakeCommand)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(requestBulkWakeCommand).mock.calls[0][0]).toEqual([DEV_1]);
+      await waitFor(() => {
+        const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+        expect(messages.some(m => /2/.test(m) && /policy/i.test(m))).toBe(true);
+      });
+    });
+
+    it('sends nothing and says so when every selected device is blocked by policy', async () => {
+      const { showToast } = await import('../shared/Toast');
+      const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(requestBulkWakeCommand).mockReset();
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline', wakeAvailability: hiddenWake },
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline', wakeAvailability: hiddenWake },
+          { ...rawDevice(DEV_3, 'host-gamma'), status: 'offline', wakeAvailability: hiddenWake },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2, DEV_3]);
+      vi.mocked(showToast).mockClear();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+      await waitFor(() => {
+        const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+        expect(messages.some(m => /3/.test(m) && /policy/i.test(m))).toBe(true);
+      });
+      expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
+    });
+  });
+
   it('sends exactly one bulk command when the confirm button is double-clicked', async () => {
     const { sendBulkCommand } = await import('../../services/deviceActions');
     vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}], failed: [], skipped: [] } as never);

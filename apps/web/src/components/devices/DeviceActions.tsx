@@ -433,7 +433,8 @@ export default function DeviceActions({
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
   // UX gate; POST /devices/:id/commands requires devices.execute.
-  const canWake = can("devices", "execute");
+  // #10838: and the server must not have hidden it (wakeAvailability.show).
+  const canWake = can("devices", "execute") && device.wakeAvailability?.show !== false;
   // UX gate; every /system-tools route (including the process, service, file
   // and registry listings) runs a live command on the device and requires
   // devices.execute, so read-only roles are not offered Remote Tools.

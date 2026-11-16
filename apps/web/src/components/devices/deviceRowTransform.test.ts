@@ -77,3 +77,14 @@ describe('toDeviceListRow', () => {
       .toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
   });
 });
+
+describe('toDeviceListRow — wakeAvailability (#10838)', () => {
+  const availability = { show: false, mode: 'verified', state: 'not_configured', testWakeAllowed: false, flaggedTimeouts: false };
+  it('carries the server-decided availability through the explicit whitelist', () => {
+    expect(toDeviceListRow({ ...RAW, wakeAvailability: availability }).wakeAvailability).toEqual(availability);
+  });
+  it('leaves it undefined when absent or malformed, so older APIs keep Wake', () => {
+    expect(toDeviceListRow(RAW).wakeAvailability).toBeUndefined();
+    expect(toDeviceListRow({ ...RAW, wakeAvailability: { show: 'no' } }).wakeAvailability).toBeUndefined();
+  });
+});

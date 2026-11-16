@@ -2813,6 +2813,8 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (ein unerwarteter Fehler ist aufgetreten; bitte erneut versuchen)",
       "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben",
       "bulkWakeResult": "An {{sent}} gesendet, {{skipped}} übersprungen",
+      "bulkWakePolicySkipped": "{{count}} wegen der Wake-on-LAN-Richtlinie übersprungen",
+      "bulkWakeAllBlockedByPolicy": "Kein Wake gesendet: {{count}} durch die Wake-on-LAN-Richtlinie blockiert",
       "scriptQueuedOneOffline": "Skript „{{script}}“ für {{hostname}} eingereiht – wird ausgeführt, sobald das Gerät wieder verbunden ist"
     },
     "tryAgain": "Versuchen Sie es erneut",

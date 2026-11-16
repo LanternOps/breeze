@@ -2002,23 +2002,41 @@ export default function DevicesPage() {
           // and returns per-device outcome. We render one summary toast
           // grouped by failure code so a 50-device bulk doesn't spam 50
           // toasts.
+          // #10838: the server decided which devices may show Wake; a device
+          // with `wakeAvailability.show === false` is never sent, and the toast
+          // says how many were left out for policy.
+          const wakeEligible = selectedDevices.filter(d => d.wakeAvailability?.show !== false);
+          const policySkipped = selectedDevices.length - wakeEligible.length;
+          if (wakeEligible.length === 0) {
+            showToast({
+              type: 'warning',
+              message: t('devicesPage.toasts.bulkWakeAllBlockedByPolicy', { count: policySkipped }),
+            });
+            break;
+          }
           try {
+            const wakeIds = wakeEligible.map(d => d.id);
             const summary = await runAction<BulkWakeSummary>({
-              request: () => requestBulkWakeCommand(deviceIds),
+              request: () => requestBulkWakeCommand(wakeIds),
               onUnauthorized: handleSessionExpired,
               errorFallback: t('devicesPage.toasts.bulkActionFailed', { action: 'wake' }),
             });
-            const message = t('devicesPage.toasts.bulkWakeResult', {
+            const baseMessage = t('devicesPage.toasts.bulkWakeResult', {
               sent: summary.succeeded.length,
               skipped: summary.failed.length,
             });
+            const policyNote = policySkipped > 0
+              ? t('devicesPage.toasts.bulkWakePolicySkipped', { count: policySkipped })
+              : '';
+            const message = summary.failed.length
+              ? `${baseMessage}: ${summarizeBulkWakeFailures(summary.failed)}`
+              : baseMessage;
+            const failedType = summary.failed.some(failure => failure.code !== 'TARGET_ONLINE')
+              ? (summary.succeeded.length ? 'warning' : 'error')
+              : 'success';
             showToast({
-              type: summary.failed.some(failure => failure.code !== 'TARGET_ONLINE')
-                ? (summary.succeeded.length ? 'warning' : 'error')
-                : 'success',
-              message: summary.failed.length
-                ? `${message}: ${summarizeBulkWakeFailures(summary.failed)}`
-                : message,
+              type: failedType === 'success' && policySkipped > 0 ? 'warning' : failedType,
+              message: policyNote ? `${message}. ${policyNote}` : message,
             });
           } catch (err) {
             if (err instanceof ActionError) break; // runAction already handled feedback, including 401.
