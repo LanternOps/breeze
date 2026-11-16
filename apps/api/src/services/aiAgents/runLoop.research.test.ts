@@ -125,6 +125,11 @@ vi.mock('./executionLedger', () => ({
   createAgentRunSession, startToolExecution, completeToolExecution, reconcileHungExecutions, closeAgentRunSession,
   recordRunTaskPrompt: vi.fn(async () => undefined), recordRunAssistantTurn: vi.fn(async () => undefined),
 }));
+// #11971: no hop of these runs was claimed before (the real lookup would read the mocked db).
+vi.mock('./agentRunFailover', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agentRunFailover')>()),
+  hopReservationSessionId: vi.fn(async () => undefined),
+}));
 
 const resolveEffectiveAgentSystem = vi.hoisted(() =>
   vi.fn<(orgId: string, kind: string) => Promise<AiAgentPolicySnapshot | null>>());

@@ -4104,6 +4104,29 @@ describe('W09 run failover', () => {
     ]);
   });
 
+  it('#11971: each hop looks up its OWN key\'s claim; the transcript records the prompt each hop was sent', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    // Hop 0 was claimed sessionless before #11971; hop 1 is a fresh claim.
+    hopReservationSessionId.mockImplementation(async ({ idempotencyKey }) =>
+      (idempotencyKey === `ai-agent-run:${RUN_ID}` ? null : undefined));
+    scriptQueries([
+      [retry(1), retry(2)],
+      [successResult()],
+    ]);
+    await executeAgentRun(RUN_ID);
+
+    expect(hopReservationSessionId.mock.calls.map((c) => c[0].idempotencyKey)).toEqual([
+      `ai-agent-run:${RUN_ID}`, `ai-agent-run:${RUN_ID}:hop:1`,
+    ]);
+    expect(reserveAiBudget.mock.calls.map((c) => (c[0] as { sessionId?: unknown }).sessionId)).toEqual([null, 'session-1']);
+    expect(settleInvocation.mock.calls.map((c) => (c[0] as { sessionId: unknown }).sessionId)).toEqual([null, 'session-1']);
+    // A fresh query per hop is sent the task prompt again, so the transcript holds it once per hop.
+    expect(recordRunTaskPrompt).toHaveBeenCalledTimes(2);
+    expect(finalTransition()!.to).toBe('completed');
+  });
+
   it('each hop prepares its OWN SDK child for its own model, and a hop\'s grants are revoked before the next hop\'s are opened', async () => {
     seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
     const first = primary();
@@ -4570,6 +4593,50 @@ describe('#11971 the run\'s session carries its usage and transcript', () => {
     expect(finalTransition()!.to).toBe('completed');
     expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
     expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+  });
+
+  it('a re-driven hop claimed on another session settles on THAT session, not the run\'s current one', async () => {
+    seedRows();
+    hopReservationSessionId.mockResolvedValueOnce('session-claimed');
+
+    await executeAgentRun(RUN_ID);
+
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-claimed' }));
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-claimed' }));
+  });
+
+  it('a run stopped at a ceiling settles its last hop on the session its reservation was claimed with', async () => {
+    seedRows();
+    hopReservationSessionId.mockResolvedValueOnce(null);
+    scriptQuery({ results: [resultMessage({ subtype: 'error_max_budget_usd', is_error: true, num_turns: 4 })] });
+
+    await executeAgentRun(RUN_ID);
+
+    expect((finalTransition()!.patch.outcome as AgentRunOutcome).budgetExceeded).toBe(true);
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null, turnCount: 4 }));
+  });
+
+  it('a failed claim lookup fails the hop before anything is reserved, rather than guessing a binding', async () => {
+    seedRows();
+    hopReservationSessionId.mockRejectedValueOnce(new Error('connection reset'));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()!.to).toBe('failed');
+  });
+
+  it('a transcript write failure is reported, not only logged', async () => {
+    seedRows();
+    recordRunAssistantTurn.mockRejectedValueOnce(new Error('value too long'));
+
+    await executeAgentRun(RUN_ID);
+
+    const report = captureException.mock.calls.find(([e]) => /transcript/.test(String((e as Error).message)));
+    expect(report).toBeDefined();
+    expect(report![2]).toMatchObject({ org_id: ORG_ID, ai_agent_run_id: RUN_ID });
   });
 
   it('records the task prompt the SDK was sent and every assistant message on the session', async () => {

@@ -1992,11 +1992,17 @@ export function classifyIntentAwaitingApproval(
   return intentIds.some((id) => !decided.has(id));
 }
 
-/** A transcript write is best-effort (#11971): it is logged, and never changes the run. */
-function transcriptWriteFailed(runId: string, what: string): (error: unknown) => void {
+/**
+ * A transcript write is best-effort (#11971): it never changes the run, but it
+ * is reported, so a systematic failure does not pass as runs with empty
+ * transcripts. DB errors are scrubbed before any log or report (S2).
+ */
+function transcriptWriteFailed(run: { id: string; orgId: string }, what: string): (error: unknown) => void {
   return (error) => {
-    console.error(`[aiAgentRunLoop] failed to record the run's ${what} on its session`, {
-      runId, error: safeErrorMessage(error),
+    const message = safeErrorMessage(error);
+    console.error(`[aiAgentRunLoop] failed to record the run's ${what} on its session`, { runId: run.id, error: message });
+    captureException(new Error(`agent run transcript write failed (${what}): ${message}`), undefined, {
+      org_id: run.orgId, ai_agent_run_id: run.id,
     });
   };
 }
@@ -2959,15 +2965,10 @@ async function driveSdkLoop(
       // session carries the run's tokens, cost and turns — the same numbers
       // the run row records. A hop already claimed (a re-drive) keeps the
       // binding it was claimed with: a reservation's session is fixed at claim.
+      // A failed read fails the hop like a failed reserve would: guessing the
+      // binding instead turns a read blip into a misleading claim conflict.
       const hopKey = hopIdempotencyKey(baseReservationKey, hopIndex);
-      let claimedSessionId: string | null | undefined;
-      try {
-        claimedSessionId = await hopReservationSessionId({ orgId: run.orgId, idempotencyKey: hopKey });
-      } catch (error) {
-        console.error('[aiAgentRunLoop] failed to read the hop reservation\'s session binding', {
-          runId: run.id, error: safeErrorMessage(error),
-        });
-      }
+      const claimedSessionId = await hopReservationSessionId({ orgId: run.orgId, idempotencyKey: hopKey });
       const hopSessionId = claimedSessionId !== undefined ? claimedSessionId : (ctx.sessionId ?? null);
 
       const reservation = await reserveAiBudget({
@@ -3027,7 +3028,7 @@ async function driveSdkLoop(
       try {
         await runOutsideDbContext(async () => {
           // #11971: what the run was told, on its session (each hop is sent it afresh).
-          if (transcriptSessionId) await recordRunTaskPrompt(transcriptSessionId, taskPrompt).catch(transcriptWriteFailed(run.id, 'task prompt'));
+          if (transcriptSessionId) await recordRunTaskPrompt(transcriptSessionId, taskPrompt).catch(transcriptWriteFailed(run, 'task prompt'));
           const sdkQuery = query({
             prompt: taskPrompt,
             options: {
@@ -3086,7 +3087,7 @@ async function driveSdkLoop(
               if (message.type === 'assistant') {
                 const text = extractAssistantText(message);
                 if (text) summary = text;
-                if (transcriptSessionId) await recordRunAssistantTurn(transcriptSessionId, message).catch(transcriptWriteFailed(run.id, 'assistant message'));
+                if (transcriptSessionId) await recordRunAssistantTurn(transcriptSessionId, message).catch(transcriptWriteFailed(run, 'assistant message'));
                 continue;
               }
               if (message.type !== 'result') continue;
