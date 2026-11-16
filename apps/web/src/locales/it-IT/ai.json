@@ -1117,5 +1117,15 @@
     "disconnected": "La connessione è stata interrotta prima che la risposta fosse completata.",
     "tryAgain": "Riprova",
     "conversationGone": "Questa conversazione non è più disponibile. Avvia una nuova chat per continuare."
+  },
+  "aiNotifications": {
+    "title": "Breeze AI",
+    "responseReady": "Risposta pronta",
+    "needsApproval": "Serve la tua approvazione",
+    "needsInput": "Serve un tuo intervento",
+    "failed": "Risposta non riuscita",
+    "enable": "Avvisami quando una risposta è pronta",
+    "disable": "Disattiva le notifiche della chat IA",
+    "blocked": "Le notifiche sono bloccate per questo sito. Consentile nelle impostazioni del browser."
   }
 }
