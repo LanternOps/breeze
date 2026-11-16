@@ -15,6 +15,7 @@
     "verificationFailed": "Vérification impossible",
     "failed": "Échec — {{message}}",
     "failedNoMessage": "Échec",
+    "interrupted": "Inconnu — l'agent s'est arrêté avant de pouvoir signaler ce point de restauration",
     "unknown": "Résultat non reconnu par cette version de la console"
   },
   "list": {
