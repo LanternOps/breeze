@@ -30,7 +30,7 @@ import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
 import { takeGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { presentRefusedToolCallNote } from './aiModels/gateway/openai/translateResponse';
-import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
+import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureCode, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
 import { SDK_PERMISSION_MODE } from './llm/sdkChildEnvGuards';
@@ -1052,6 +1052,7 @@ export class StreamingSessionManager {
             existing.eventBus.publish({
               type: 'error',
               message: 'AI provider configuration changed — please resend your message',
+              code: 'config_changed',
             });
             existing.eventBus.publish({ type: 'done' });
           }
@@ -1666,7 +1667,7 @@ export class StreamingSessionManager {
           session.topologyTurnSealed = true;
           // A topology turn never shows gateway text; drop the note so a rebuilt session can't surface it later.
           takeGatewayFailureNote(session.breezeSessionId);
-          session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
+          session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.', code: 'timeout' });
           session.eventBus.publish({ type: 'done' });
           this.remove(session.breezeSessionId);
           return;
@@ -1674,10 +1675,17 @@ export class StreamingSessionManager {
         this.stopThinking(session);
         // #7794: a model-gateway failure behind the timeout (the CLI keeps
         // retrying it) is the actionable part; say it.
+        // #9428: coded so a client can offer "Try again"; the note also rides
+        // as `detail` so a client can headline the timeout and show the reason
+        // under it. The message is unchanged for clients that read only it.
+        // (A retry starts from a fresh query: the next message removes this
+        // session, which closes the still-running SDK turn — routes/ai.ts.)
         const gatewayNote = this.takeTurnGatewayNote(session);
         session.eventBus.publish({
           type: 'error',
           message: gatewayNote ? `AI request timed out. ${gatewayNote}` : 'AI request timed out. Please try again.',
+          code: 'timeout',
+          ...(gatewayNote ? { detail: gatewayNote } : {}),
         });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
@@ -1697,12 +1705,9 @@ export class StreamingSessionManager {
     session.topologyInvestigation = undefined;
     if (!succeeded || session.topologyStopped) {
       await runtime.abort().catch((err) => captureException(err));
-      session.eventBus.publish({
-        type: 'error',
-        message: session.topologyStopped
-          ? 'This investigation reached its limit. Start a new investigation to continue.'
-          : 'The topology explanation could not be completed.',
-      });
+      session.eventBus.publish(session.topologyStopped
+        ? { type: 'error', message: 'This investigation reached its limit. Start a new investigation to continue.', code: 'topology_limit' }
+        : { type: 'error', message: 'The topology explanation could not be completed.', code: 'topology_failed' });
       session.topologyStopped = false;
       return;
     }
@@ -1712,7 +1717,7 @@ export class StreamingSessionManager {
       result = await runtime.complete();
     } catch (err) {
       captureException(err);
-      session.eventBus.publish({ type: 'error', message: 'The topology explanation could not be completed.' });
+      session.eventBus.publish({ type: 'error', message: 'The topology explanation could not be completed.', code: 'topology_failed' });
       return;
     }
     session.eventBus.publish({ type: 'topology_explanation', explanation: result.explanation });
@@ -2167,6 +2172,11 @@ export class StreamingSessionManager {
             const providerMessage = providerFailure?.terminal
               ? providerFailureMessage(providerFailure.cause, sawOutput, { platformKey: turnBinding.connectionKind === 'platform' })
               : null;
+            // #9428: read here for the same reason (the gateway-note read above marked the observation).
+            const failureCode = providerFailureCode(
+              providerFailure?.terminal ? providerFailure.cause : null,
+              session.refusalObservation.contextWindowExceeded === true,
+            );
             let isErrorSuccessMessage: string | null = null;
             // #11676: the technician pressed Stop and the turn ended in the
             // shape an interrupt produces (a non-success result, or a success
@@ -2201,7 +2211,7 @@ export class StreamingSessionManager {
               if (topologyTurn) {
                 // A fixed error was already published; provider error text never reaches a topology turn.
               } else if (resultMsg.subtype === 'error_max_budget_usd') {
-                session.eventBus.publish({ type: 'error', message: 'AI budget limit reached for this query.' });
+                session.eventBus.publish({ type: 'error', message: 'AI budget limit reached for this query.', code: 'budget_exceeded' });
               } else if (resultMsg.subtype === 'error_max_turns') {
                 // Coded: the session's remaining turns ran out mid-loop, so the
                 // next send would be refused too (preflight). Wisp rolls to a
@@ -2214,6 +2224,7 @@ export class StreamingSessionManager {
                 session.eventBus.publish({
                   type: 'error',
                   message: gatewayNote ?? providerMessage ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')),
+                  code: failureCode,
                 });
               }
             } else if (!topologyTurn && !stoppedByUser && isErrorResult) {
@@ -2234,7 +2245,7 @@ export class StreamingSessionManager {
             const turn = await this.settleSdkTurn(session, resultMsg);
 
             if (isErrorSuccessMessage && !turn.outcome.refused) {
-              session.eventBus.publish({ type: 'error', message: isErrorSuccessMessage });
+              session.eventBus.publish({ type: 'error', message: isErrorSuccessMessage, code: failureCode });
             }
 
             // §9.1a: a refused final answer is explained, never a silent empty
@@ -2318,9 +2329,18 @@ export class StreamingSessionManager {
       await this.abortTopologyTurn(session);
       const gatewayNote = this.takeTurnGatewayNote(session);
       workTurnLimitReported = session.workTurnLimitStopped === true;
-      session.eventBus.publish(workTurnLimitReported ? TURN_LIMIT_ERROR : {
+      session.eventBus.publish(workTurnLimitReported ? TURN_LIMIT_ERROR : topologyTurn ? {
         type: 'error',
-        message: topologyTurn ? 'The topology explanation could not be completed.' : gatewayNote ?? sanitizeErrorForClient(err),
+        message: 'The topology explanation could not be completed.',
+        code: 'topology_failed',
+      } : {
+        type: 'error',
+        message: gatewayNote ?? sanitizeErrorForClient(err),
+        // #9428: a crashed query with no terminal provider cause is a retryable provider_error.
+        code: providerFailureCode(
+          session.refusalObservation.providerFailure?.terminal ? session.refusalObservation.providerFailure.cause : null,
+          session.refusalObservation.contextWindowExceeded === true,
+        ),
       });
       session.eventBus.publish({ type: 'done' });
     } finally {
@@ -2869,6 +2889,7 @@ export class StreamingSessionManager {
           message: reason === 'max_age'
             ? 'Session expired (24h limit). Please start a new session.'
             : 'Session expired due to inactivity. Please start a new session.',
+          code: 'session_expired',
         });
         session.eventBus.publish({ type: 'done' });
 
@@ -2930,7 +2951,7 @@ export class StreamingSessionManager {
     console.log(`[StreamingSessionManager] LRU evicting session ${oldest.id}`);
     const session = this.sessions.get(oldest.id);
     if (session) {
-      session.eventBus.publish({ type: 'error', message: 'Session evicted due to server capacity. Please start a new session.' });
+      session.eventBus.publish({ type: 'error', message: 'Session evicted due to server capacity. Please start a new session.', code: 'session_evicted' });
       session.eventBus.publish({ type: 'done' });
     }
     this.remove(oldest.id);

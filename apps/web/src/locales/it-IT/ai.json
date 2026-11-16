@@ -1111,5 +1111,11 @@
       "partnerEnforced_one": "{{display}} conversazione nelle tue organizzazioni è da rimuovere con questo periodo; i suoi messaggi verranno rimossi nella prossima esecuzione notturna.",
       "partnerEnforced_other": "{{display}} conversazioni nelle tue organizzazioni sono da rimuovere con questo periodo; i loro messaggi verranno rimossi nella prossima esecuzione notturna."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Questa risposta è scaduta",
+    "disconnected": "La connessione è stata interrotta prima che la risposta fosse completata.",
+    "tryAgain": "Riprova",
+    "conversationGone": "Questa conversazione non è più disponibile. Avvia una nuova chat per continuare."
   }
 }

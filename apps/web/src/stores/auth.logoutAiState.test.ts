@@ -31,7 +31,7 @@ function tab(over: Partial<TabState>): TabState {
     messages: [], chatRuns: {}, isStreaming: false, isLoading: false, error: null, pendingApproval: null,
     pendingPlan: null, activePlan: null, approvalMode: 'per_step', isPaused: false, isInterrupting: false,
     isFlagged: false, unreadCount: 0, hasApprovalPending: false, orgId: null, deviceId: null, deviceLabel: null,
-    m365ConnectionId: null, composerDraft: '', joinedMidResponse: false, errorAction: null,
+    m365ConnectionId: null, composerDraft: '', joinedMidResponse: false, errorAction: null, errorCode: null, errorDetail: null, retryTarget: null,
     ...over,
   };
 }
