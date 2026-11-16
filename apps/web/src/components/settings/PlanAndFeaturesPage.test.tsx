@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useEntitlements, type UseEntitlementsResult } from '../../hooks/useEntitlement';
@@ -6,6 +6,13 @@ import type { ClientEntitlement } from '../../lib/entitlementsCache';
 import PlanAndFeaturesPage from './PlanAndFeaturesPage';
 
 vi.mock('../../hooks/useEntitlement', () => ({ useEntitlements: vi.fn() }));
+
+const fetchMock = vi.hoisted(() => vi.fn());
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...args: unknown[]) => fetchMock(...args) }));
+
+function capacityResponse(body: unknown, ok = true): Response {
+  return { ok, status: ok ? 200 : 500, json: async () => body } as Response;
+}
 
 const useEntitlementsMock = vi.mocked(useEntitlements);
 
@@ -45,6 +52,8 @@ const proSnapshot = (wisp: Partial<ClientEntitlement> = {}) => ({
 describe('PlanAndFeaturesPage', () => {
   beforeEach(() => {
     useEntitlementsMock.mockReset();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(capacityResponse({ limit: 110, activeCount: 12, enrollmentPaused: false }));
   });
 
   it('renders the plan badge and one row per registry key', () => {
@@ -148,5 +157,50 @@ describe('PlanAndFeaturesPage', () => {
     expect(screen.queryByTestId(/^entitlement-state-/)).toBeNull();
     expect(screen.queryByTestId('plan-badge')).toBeNull();
     expect(screen.getByTestId('plan-features-loading')).toBeInTheDocument();
+  });
+  it('links to /billing/plans', () => {
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    const link = screen.getByTestId('plan-change-link');
+    expect(link).toHaveTextContent('Change plan');
+    expect(link).toHaveAttribute('href', '/billing/plans');
+  });
+
+  it('keeps the Change plan link when the plan fails to load', () => {
+    mockResult({ failed: true });
+    render(<PlanAndFeaturesPage />);
+
+    expect(screen.getByTestId('plan-change-link')).toHaveAttribute('href', '/billing/plans');
+  });
+
+  it('shows the paused message with counts', async () => {
+    fetchMock.mockResolvedValue(capacityResponse({ limit: 110, activeCount: 110, enrollmentPaused: true }));
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    const paused = await screen.findByTestId('plan-enrollment-paused');
+    expect(paused).toHaveTextContent(
+      'New device enrollment is paused: 110 of 110 devices. Change your plan to add more.',
+    );
+    expect(fetchMock).toHaveBeenCalledWith('/partner/device-capacity', { skipOrgIdInjection: true });
+  });
+
+  it('shows no paused message while enrollment is open', async () => {
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('plan-enrollment-paused')).toBeNull();
+  });
+
+  it('shows no paused message when the capacity read fails', async () => {
+    fetchMock.mockResolvedValue(capacityResponse({ error: 'boom' }, false));
+    mockResult({ snapshot: proSnapshot() });
+    render(<PlanAndFeaturesPage />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('plan-enrollment-paused')).toBeNull();
+    expect(screen.getByTestId('plan-change-link')).toBeInTheDocument();
   });
 });

@@ -5,6 +5,7 @@ import {
   admitPartnerDeviceCapacity,
   previewPartnerDeviceCapacity,
   effectivePartnerAdmissionLimit,
+  partnerAdmissionStatus,
 } from './partnerDeviceCapacity';
 
 describe('billing growth admission', () => {
@@ -196,5 +197,76 @@ describe('previewPartnerDeviceCapacity', () => {
       .resolves.toEqual({ allowed: false, partnerId: 'partner-1', maxDevices: 3, activeCount: 3 });
     expect(f.locks).toEqual([]);
     expect(f.tx.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('partnerAdmissionStatus', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  function statusFixture(input: { partner: Record<string, unknown> | null; activeCount: number }) {
+    const locks: string[] = [];
+    const whereArgs: unknown[] = [];
+    let index = 0;
+    const tx = {
+      execute: vi.fn(),
+      select: vi.fn(() => {
+        const i = index++;
+        if (i === 0) {
+          const rows = input.partner ? [input.partner] : [];
+          const limited = Object.assign(Promise.resolve(rows), { for: (mode: string) => { locks.push(mode); return Promise.resolve(rows); } });
+          return { from: () => ({ where: (arg: unknown) => { whereArgs.push(arg); return { limit: () => limited }; } }) };
+        }
+        if (i === 1) return { from: () => ({ where: (arg: unknown) => { whereArgs.push(arg); return {}; } }) };
+        return { from: () => ({ where: async (arg: unknown) => { whereArgs.push(arg); return [{ count: String(input.activeCount) }]; } }) };
+      }),
+    };
+    return { tx: tx as any, locks, whereArgs };
+  }
+
+  it('reports the billing allowance as the limit, with the licensed active count', async () => {
+    const f = statusFixture({
+      partner: { maxDevices: 100, plan: 'community', billingSubscriptionStatus: 'active',
+        billingAdmissionLimit: 110, billingAdmissionExpiresAt: new Date('2026-10-23T00:00:00Z') },
+      activeCount: 110,
+    });
+    await expect(partnerAdmissionStatus(f.tx, 'partner-1', now)).resolves.toEqual({ limit: 110, activeCount: 110 });
+    // Read-only: no row lock and no lock-timeout change.
+    expect(f.locks).toEqual([]);
+    expect(f.tx.execute).not.toHaveBeenCalled();
+  });
+
+  it('counts by the admission rule: this partner only, holding orgs, ephemeral and decommissioned left out', async () => {
+    const f = statusFixture({ partner: { maxDevices: 5 }, activeCount: 2 });
+    await partnerAdmissionStatus(f.tx, 'partner-1', now);
+    const dialect = new PgDialect();
+    const partnerWhere = dialect.sqlToQuery(f.whereArgs[0] as SQL);
+    expect(partnerWhere.params).toEqual(['partner-1']);
+    const orgSubquery = dialect.sqlToQuery(f.whereArgs[1] as SQL);
+    expect(orgSubquery.sql).toContain('"organizations"."partner_id" = $');
+    expect(orgSubquery.params).toContain('partner-1');
+    expect(orgSubquery.params).toContain('unassigned_pool');
+    const count = dialect.sqlToQuery(f.whereArgs[2] as SQL);
+    expect(count.sql).toContain('"devices"."is_ephemeral" = $');
+    expect(count.sql).toContain('"devices"."status" <> $');
+    expect(count.params).toContain('decommissioned');
+  });
+
+  it('an expired allowance falls back to max_devices', async () => {
+    const f = statusFixture({
+      partner: { maxDevices: 100, plan: 'community', billingSubscriptionStatus: 'active',
+        billingAdmissionLimit: 110, billingAdmissionExpiresAt: now },
+      activeCount: 100,
+    });
+    await expect(partnerAdmissionStatus(f.tx, 'partner-1', now)).resolves.toEqual({ limit: 100, activeCount: 100 });
+  });
+
+  it('an unlimited partner has a null limit and still reports its count', async () => {
+    const f = statusFixture({ partner: { maxDevices: null }, activeCount: 42 });
+    await expect(partnerAdmissionStatus(f.tx, 'partner-1', now)).resolves.toEqual({ limit: null, activeCount: 42 });
+  });
+
+  it('a missing partner row throws PARTNER_NOT_FOUND', async () => {
+    const f = statusFixture({ partner: null, activeCount: 0 });
+    await expect(partnerAdmissionStatus(f.tx, 'partner-1', now))
+      .rejects.toEqual(expect.objectContaining({ code: 'PARTNER_NOT_FOUND' }));
   });
 });

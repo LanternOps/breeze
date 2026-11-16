@@ -8289,6 +8289,8 @@
     "heading": "Plan ve özellikler",
     "description": "Planınızın içerdikleri. Kilitli özellikler görünür kalır; böylece bir yükseltmenin neler kattığını görebilirsiniz.",
     "currentPlan": "Mevcut plan",
+    "changePlan": "Planı değiştir",
+    "enrollmentPaused": "Yeni cihaz kaydı duraklatıldı: {{limit}} cihazın {{active}} tanesi kullanımda. Daha fazla eklemek için planınızı değiştirin.",
     "plans": {
       "free": "Ücretsiz",
       "starter": "Starter",

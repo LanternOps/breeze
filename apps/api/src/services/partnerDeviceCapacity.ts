@@ -187,6 +187,52 @@ function licensedDeviceConditions(tx: PartnerDeviceCapacityTx, partnerId?: strin
   ];
 }
 
+/**
+ * Read-only admission status for a partner: the limit admission enforces
+ * right now (the billing allowance when it holds, else max_devices; null =
+ * unlimited) and the number of devices counted against it, by the same rule
+ * admitPartnerDeviceCapacity uses. Takes no row lock, so it is a display
+ * value, never an admission. Run it in system scope so the count covers every
+ * org of the partner, exactly as admission does.
+ */
+export async function partnerAdmissionStatus(
+  tx: PartnerDeviceCapacityTx,
+  partnerId: string,
+  now = new Date(),
+): Promise<{ limit: number | null; activeCount: number }> {
+  const [partner] = await tx
+    .select({ maxDevices: partners.maxDevices, plan: partners.plan,
+      billingSubscriptionStatus: partners.billingSubscriptionStatus,
+      billingAdmissionLimit: partners.billingAdmissionLimit, billingAdmissionExpiresAt: partners.billingAdmissionExpiresAt })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+  if (!partner) {
+    throw new PartnerDeviceCapacityError('PARTNER_NOT_FOUND', 'Partner not found');
+  }
+  return {
+    limit: effectivePartnerAdmissionLimit(partner, now),
+    activeCount: await countLicensedActiveDevices(tx, partnerId),
+  };
+}
+
+async function countLicensedActiveDevices(
+  tx: PartnerDeviceCapacityTx,
+  partnerId: string,
+  excludeDeviceId?: string,
+): Promise<number> {
+  const licensed = licensedDeviceConditions(tx, partnerId);
+  const [countResult] = await tx
+    .select({ count: sql<number>`count(*)` })
+    .from(devices)
+    .where(and(
+      ...licensed,
+      ne(devices.status, 'decommissioned'),
+      ...(excludeDeviceId ? [ne(devices.id, excludeDeviceId)] : []),
+    ));
+  return Number(countResult?.count ?? 0);
+}
+
 async function decideCapacity(
   tx: PartnerDeviceCapacityTx,
   input: { expectedPartnerId: string; excludeDeviceId?: string },
@@ -196,16 +242,7 @@ async function decideCapacity(
     return { allowed: true, partnerId: input.expectedPartnerId, maxDevices: null, activeCount: null };
   }
 
-  const licensed = licensedDeviceConditions(tx, input.expectedPartnerId);
-  const [countResult] = await tx
-    .select({ count: sql<number>`count(*)` })
-    .from(devices)
-    .where(and(
-      ...licensed,
-      ne(devices.status, 'decommissioned'),
-      ...(input.excludeDeviceId ? [ne(devices.id, input.excludeDeviceId)] : []),
-    ));
-  const activeCount = Number(countResult?.count ?? 0);
+  const activeCount = await countLicensedActiveDevices(tx, input.expectedPartnerId, input.excludeDeviceId);
   if (activeCount >= maxDevices) {
     return { allowed: false, partnerId: input.expectedPartnerId, maxDevices, activeCount };
   }

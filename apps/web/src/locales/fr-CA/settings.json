@@ -8289,6 +8289,8 @@
     "heading": "Forfait et fonctionnalités",
     "description": "Ce que comprend votre forfait. Les fonctionnalités verrouillées restent visibles pour que vous voyiez ce qu’une mise à niveau ajoute.",
     "currentPlan": "Forfait actuel",
+    "changePlan": "Changer de forfait",
+    "enrollmentPaused": "L’inscription de nouveaux appareils est suspendue : {{active}} sur {{limit}} appareils. Changez de forfait pour en ajouter d’autres.",
     "plans": {
       "free": "Gratuit",
       "starter": "Starter",

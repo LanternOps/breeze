@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { BadgeCheck } from 'lucide-react';
@@ -5,6 +6,8 @@ import { ENTITLEMENT_KEYS, type EntitlementKey } from '@breeze/shared';
 import { useEntitlements } from '../../hooks/useEntitlement';
 import type { ClientEntitlement } from '../../lib/entitlementsCache';
 import { formatDate } from '@/lib/dateTimeFormat';
+import { formatNumber } from '@/lib/i18n/format';
+import { fetchWithAuth } from '../../stores/auth';
 import { PageHeader } from '../shared/PageHeader';
 
 /**
@@ -13,8 +16,43 @@ import { PageHeader } from '../shared/PageHeader';
  * answer comes from (plan default / billing / licence / manual), its expiry and
  * grace window, and its limits. Locked features stay listed so the partner can
  * see what an upgrade adds. No mutations live here — grants are platform-admin
- * only (`/admin/partners/:id/entitlements`).
+ * only (`/admin/partners/:id/entitlements`). Plan changes happen in the billing
+ * app (`/billing/plans`), which this page only links to; when the partner is at
+ * its device admission limit it also says why new enrollment is paused
+ * (`GET /partner/device-capacity`, read-only).
  */
+
+type DeviceCapacity = { limit: number | null; activeCount: number; enrollmentPaused: boolean };
+
+const CHANGE_PLAN_HREF = '/billing/plans';
+
+function isDeviceCapacity(value: unknown): value is DeviceCapacity {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (v.limit === null || typeof v.limit === 'number')
+    && typeof v.activeCount === 'number'
+    && typeof v.enrollmentPaused === 'boolean';
+}
+
+// Supplemental: on any failure the page simply shows no pause message.
+function useDeviceCapacity(): DeviceCapacity | null {
+  const [capacity, setCapacity] = useState<DeviceCapacity | null>(null);
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth('/partner/device-capacity', { skipOrgIdInjection: true });
+        if (!res.ok) return;
+        const body: unknown = await res.json();
+        if (active && isDeviceCapacity(body)) setCapacity(body);
+      } catch {
+        // No pause reason when the capacity read is unavailable.
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+  return capacity;
+}
 
 function isExpiredWithinGrace(e: ClientEntitlement, now: number): boolean {
   if (!e.expiresAt || !e.graceUntil) return false;
@@ -39,6 +77,7 @@ function limitPairs(limits: unknown, none: string): string[] {
 export default function PlanAndFeaturesPage() {
   const { t } = useTranslation('settings');
   const { snapshot, loading, failed, reload } = useEntitlements();
+  const capacity = useDeviceCapacity();
 
   const features: Record<EntitlementKey, { label: string; why: string }> = {
     onboarding_supervisor: {
@@ -85,7 +124,29 @@ export default function PlanAndFeaturesPage() {
         icon={<BadgeCheck className="h-5 w-5" />}
         title={t('planAndFeatures.heading')}
         description={t('planAndFeatures.description')}
+        actions={(
+          <a
+            href={CHANGE_PLAN_HREF}
+            className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            data-testid="plan-change-link"
+          >
+            {t('planAndFeatures.changePlan')}
+          </a>
+        )}
       />
+
+      {capacity?.enrollmentPaused && capacity.limit !== null && (
+        <div
+          className="rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm"
+          role="status"
+          data-testid="plan-enrollment-paused"
+        >
+          {t('planAndFeatures.enrollmentPaused', {
+            active: formatNumber(capacity.activeCount),
+            limit: formatNumber(capacity.limit),
+          })}
+        </div>
+      )}
 
       {failed && !snapshot ? (
         <div

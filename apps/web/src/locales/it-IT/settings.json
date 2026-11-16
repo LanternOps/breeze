@@ -8289,6 +8289,8 @@
     "heading": "Piano e funzionalità",
     "description": "Cosa include il tuo piano. Le funzionalità bloccate restano visibili, così puoi vedere cosa aggiunge un upgrade.",
     "currentPlan": "Piano attuale",
+    "changePlan": "Cambia piano",
+    "enrollmentPaused": "La registrazione di nuovi dispositivi è sospesa: {{active}} di {{limit}} dispositivi. Cambia il tuo piano per aggiungerne altri.",
     "plans": {
       "free": "Gratuito",
       "starter": "Starter",

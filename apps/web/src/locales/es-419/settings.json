@@ -8289,6 +8289,8 @@
     "heading": "Plan y funciones",
     "description": "Lo que incluye tu plan. Las funciones bloqueadas siguen visibles para que veas lo que agrega una mejora.",
     "currentPlan": "Plan actual",
+    "changePlan": "Cambiar plan",
+    "enrollmentPaused": "La inscripción de nuevos dispositivos está en pausa: {{active}} de {{limit}} dispositivos. Cambia tu plan para agregar más.",
     "plans": {
       "free": "Gratuito",
       "starter": "Starter",
