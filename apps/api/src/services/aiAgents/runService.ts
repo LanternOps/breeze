@@ -31,7 +31,9 @@ import {
 // every partial-mock unit test of those paths to stub the whole schema surface.
 import {
   aiAgents, aiAgentRuns, type AiAgentRunRow, type AiAgentRunStagedInputs,
+  type AiRunExportGrants, type AnalysisScopeKind,
 } from '../../db/schema/aiAgents';
+import { resolveAnalysisFrame } from './analysisFrame';
 import { aiBudgets } from '../../db/schema/ai';
 import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
@@ -58,6 +60,7 @@ import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import {
   assertWithinCeiling,
+  ceilingSiteIdsForOrg,
   CeilingViolationError,
   GrantInactiveError,
   resolveGrantCeiling,
@@ -400,8 +403,26 @@ export interface CreateAgentRunInput {
    * Both are written verbatim to `ai_agent_runs.staged_inputs` and are the
    * ONLY things `workspace_stage` will accept (spec §8 "Data minimisation").
    * Required for an `analysis` run; ignored for every other profile.
+   *
+   * Wisp analysis sessions W02: `scope` says what the frozen set is expanded
+   * from. `devices` freezes `deviceIds` (bounded by
+   * `analysisMaxInputDevicesPerRun`); `site` / `org` expand `siteId` / the
+   * whole org HERE, under the live grant ceiling's site allowlist, bounded by
+   * `analysisMaxFrameDevices` (step 4d). `scope` is required so every producer
+   * chooses one.
+   *
+   * `exportGrants` is TRUSTED INTERNAL INPUT, like `grant` and `task`: the Wisp
+   * analysis launcher computes it from the coordinator's live ceiling and it is
+   * frozen verbatim into `staged_inputs.exportGrants`. Nothing may build it
+   * from a request body.
    */
-  analysis?: { deviceIds: string[]; inputHandles: string[] };
+  analysis?: {
+    scope: AnalysisScopeKind;
+    siteId: string | null;
+    deviceIds: string[];
+    inputHandles: string[];
+    exportGrants?: AiRunExportGrants;
+  };
   /**
    * Wisp W02 (Wisp design §4.3, §4.5) — TRUSTED INTERNAL INPUT, like `task`:
    * the delegation grant and the revision this run is admitted under. Never
@@ -506,6 +527,11 @@ export type AgentRunSkipReason =
   // technician must never see for the entirely benign act of selecting too
   // many of their own devices. Published.
   | 'too_many_input_devices'
+  // Wisp analysis sessions W02 — the site/org frame resolved at step 4d is
+  // over `analysisMaxFrameDevices`, names a site outside the org or the grant's
+  // site allowlist, or holds no eligible device. Published, like
+  // `too_many_input_devices`: each is a policy outcome a technician acts on.
+  | 'frame_too_large' | 'site_not_in_scope' | 'frame_empty'
   // The sandbox backend's circuit breaker is open (R5, spec §9). Published:
   // a technician whose analysis will not start deserves to know the provider
   // is down rather than that they did something wrong.
@@ -838,6 +864,8 @@ const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'analysis_not_available', 'external_processing_disabled', 'workspace_capability_missing',
   'analysis_region_unavailable', 'compute_budget_exceeded', 'compute_credits_exhausted',
   'too_many_input_devices', 'workspace_unavailable',
+  // Wisp analysis sessions W02 — analysis frame refusals.
+  'frame_too_large', 'site_not_in_scope', 'frame_empty',
   // AI model registry W03 — a policy event an admin must act on.
   'model_unavailable',
   // Wisp W02 — delegation-ceiling refusals.
@@ -1724,26 +1752,50 @@ export async function createAndEnqueueAgentRun(
         return skip('analysis_region_unavailable');
       }
 
-      // (d) Freeze the input set. `deviceIds` are frozen here and nowhere
+      // (d) Freeze the input set. The device set is frozen here and nowhere
       //     else — `buildAgentAuthContext` pins `allowedDeviceIds` to exactly
       //     this list at loop start, so a device added to the org afterwards
       //     is not reachable by an already-admitted run.
-      const maxDevices = effective.limits.analysisMaxInputDevicesPerRun
-        ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxInputDevicesPerRun;
-      // Too many of the technician's OWN devices is its own refusal —
-      // `device_not_in_org` is a tenancy signal and must not be reused for it.
-      if (analysis.deviceIds.length > maxDevices) return skip('too_many_input_devices');
-      if (analysis.deviceIds.length > 0) {
-        const rows = await db
-          .select({ id: devices.id })
-          .from(devices)
-          .where(and(inArray(devices.id, analysis.deviceIds), eq(devices.orgId, orgId)));
-        if (rows.length !== new Set(analysis.deviceIds).size) return skip('device_not_in_org');
-      }
+      //
+      //     Wisp analysis sessions W02: a `site` / `org` frame is EXPANDED
+      //     here, under the live ceiling's site allowlist for this org (step
+      //     1d resolved that ceiling from the same pinned grant and revision),
+      //     and bounded by `analysisMaxFrameDevices`; an explicit `devices`
+      //     list stays bounded by `analysisMaxInputDevicesPerRun`. An empty
+      //     frame is refused (`frame_empty`) and never frozen as `[]`. The
+      //     export grants arrive from the launcher, evaluated against the same
+      //     live ceiling, and are frozen verbatim.
+      //
+      //     Fail closed, in order:
+      //     1. a site/org frame needs a grant: without one there is no human
+      //        authority to bound it (`workspace_launch_analysis` stays
+      //        denied, #6086);
+      //     2. a grant-bearing analysis must arrive WITH its export grants,
+      //        never fall back to the legacy set;
+      //     3. export grants without a grant are refused: nothing would
+      //        bound them, and freezing them would give the run authority no
+      //        human ceiling was checked for.
+      if (analysis.scope !== 'devices' && !grantCeiling) return skip('analysis_not_available');
+      if (grantCeiling && !analysis.exportGrants) return skip('analysis_not_available');
+      if (!grantCeiling && analysis.exportGrants) return skip('analysis_not_available');
+      const frame = await resolveAnalysisFrame({
+        orgId,
+        scope: analysis.scope,
+        deviceIds: analysis.deviceIds,
+        siteId: analysis.siteId,
+        allowedSiteIds: grantCeiling ? ceilingSiteIdsForOrg(grantCeiling, orgId) : null,
+        maxInputDevices: effective.limits.analysisMaxInputDevicesPerRun
+          ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxInputDevicesPerRun,
+        maxFrameDevices: effective.limits.analysisMaxFrameDevices
+          ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxFrameDevices,
+      });
+      if (!frame.ok) return skip(frame.refusal);
       stagedInputs = {
         handles: [...new Set(analysis.inputHandles)],
-        deviceIds: [...new Set(analysis.deviceIds)],
+        deviceIds: frame.deviceIds,
         region,
+        scope: frame.scope,
+        ...(analysis.exportGrants ? { exportGrants: analysis.exportGrants } : {}),
       };
       analysisReservationCents = effective.limits.analysisMaxComputeCentsPerRun
         ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun;

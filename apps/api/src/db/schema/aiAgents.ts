@@ -294,14 +294,43 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;
+/** Wisp analysis sessions W02 — what an analysis run's device frame covers. */
+export type AnalysisScopeKind = 'devices' | 'site' | 'org';
+
+/**
+ * Wisp analysis sessions W02 — row classes inside an exportable dataset that
+ * need a permission beyond the dataset's own (spec §4.4 "Permission").
+ */
+export type AnalysisSensitiveGate = 'security_events' | 'user_account_changes';
+
+/**
+ * Wisp analysis sessions W02 — the datasets an analysis run may export and the
+ * sensitive gates it holds, evaluated once against the live grant ceiling when
+ * the run is admitted and frozen into `staged_inputs`. Never re-derived from
+ * the run principal (it has no role).
+ */
+export interface AiRunExportGrants {
+  datasets: string[];
+  sensitiveGates: AnalysisSensitiveGate[];
+}
+
 /**
  * Execution plane W04 — shape of `ai_agent_runs.staged_inputs`: the frozen
  * artifact handles and device set an `analysis` run may reach.
+ *
+ * W02 (Wisp analysis sessions) adds two OPTIONAL fields so a run admitted
+ * before it still executes:
+ * - `scope`: what the frozen `deviceIds` was expanded from. Absent on a
+ *   pre-W02 run, which is read as an explicit device list.
+ * - `exportGrants`: the frozen export authority. ABSENT MEANS LEGACY (the
+ *   original seven datasets, no sensitive gate held), never "everything".
  */
 export interface AiAgentRunStagedInputs {
   handles: string[];
   deviceIds: string[];
   region: 'eu' | 'us';
+  scope?: { kind: AnalysisScopeKind; siteId: string | null; deviceCount: number };
+  exportGrants?: AiRunExportGrants;
 }
 
 export type AiAgentRunRow = typeof aiAgentRuns.$inferSelect;

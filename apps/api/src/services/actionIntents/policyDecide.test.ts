@@ -298,6 +298,7 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       analysisMaxConcurrentRuns: AI_AGENT_LIMIT_DEFAULTS.analysisMaxConcurrentRuns,
       analysisMaxStepTimeoutSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepTimeoutSeconds,
       analysisMaxStepsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepsPerRun,
+      analysisMaxFrameDevices: AI_AGENT_LIMIT_DEFAULTS.analysisMaxFrameDevices,
       maxUnattendedDevicesPerSweep: AI_AGENT_LIMIT_DEFAULTS.maxUnattendedDevicesPerSweep,
       sweepPromoteThreshold: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
       // v15 (recipe library E2, #6167) AI Operator task-wide budgets — same reason again.

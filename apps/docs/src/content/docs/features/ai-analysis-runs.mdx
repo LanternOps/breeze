@@ -27,6 +27,20 @@ The workspace is a per-run virtual machine that is destroyed when the run ends.
 
 Anything the analysis wants *done* comes back as a **proposal**. Proposals are text: turning one into a real action is the same approval you already use, with the same tier gate and the same audit record. The sandbox is not a way around approvals — it cannot reach a device even if it tried.
 
+## What a run covers
+
+An analysis that Wisp launches covers one of three scopes:
+
+- **Listed devices**: up to 50 by default (the `analysisMaxInputDevicesPerRun` agent limit).
+- **One site**: every active device in that site.
+- **The whole organization**: every active device in it.
+
+A launch that names no scope is refused.
+
+A site or organization is expanded to its active devices when the run starts, and that list is fixed: a device added afterwards is not read. If the Wisp grant reaches only some sites, the list holds only devices in those sites. The list is limited to 1000 devices by default (the `analysisMaxFrameDevices` agent limit, 50 to 5000), and a larger one is refused: scope the analysis to a site instead.
+
+The datasets a run may export are also fixed when it starts, from what the Wisp grant's owner may read at that moment. Security-category event logs also need `devices:execute`; without it they are left out of the export, and the run is told so.
+
 ## Configured agent access
 
 An agent's site, device-group, and device-tag restrictions apply to manual runs as well as automatic triggers. Partner and organization filters combine by intersection; non-overlapping filters permit no access. Scope is checked again when a queued run starts and before each tool call.

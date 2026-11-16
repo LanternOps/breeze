@@ -231,6 +231,14 @@ export interface AiAgentLimits {
   analysisMaxStepTimeoutSeconds: number;
   analysisMaxStepsPerRun: number;
   /**
+   * W02 analysis sessions: the device cap on a `site`/`org` frame expanded at
+   * admission. A `devices` scope stays under `analysisMaxInputDevicesPerRun`;
+   * only a frame (a whole site or org the run reasons over) may be this wide.
+   * Merged with `min` (an org may tighten, never loosen, a partner cap).
+   * Snapshot v17.
+   */
+  analysisMaxFrameDevices: number;
+  /**
    * #4442 W05 — hard per-OCCURRENCE cap on how many distinct devices one
    * sweep may touch unattended. Merged with `min` (the default), so an org
    * may tighten it and never widen it. Default 3: a genuine canary, not a
@@ -365,6 +373,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   analysisMaxConcurrentRuns: 2,
   analysisMaxStepTimeoutSeconds: 300,
   analysisMaxStepsPerRun: 40,
+  analysisMaxFrameDevices: 1000,
   // Sweep act-mode caps (#4442 W05) — see
   // AiAgentLimits.maxUnattendedDevicesPerSweep's docstring.
   // maxUnattendedDevicesPerSweep merges with min (the default);
@@ -746,12 +755,17 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * v16 (AI Suggested Fixes W2): the seven research-profile limits. Same rule as
  * every prior bump: a v1-v15 in-flight run's snapshot lacks them and MUST still
  * execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS`.
+ *
+ * v17 (W02 analysis sessions): `analysisMaxFrameDevices` - see
+ * `AiAgentLimits.analysisMaxFrameDevices`'s docstring. Same rule as every
+ * prior bump: a v1-v16 in-flight run's snapshot lacks it and MUST still
+ * execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS`.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 16 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 17 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), 13 (pre-design-wall-clock), 14 (pre-task-limits), 15 (pre-research-limits), or 16 (current). Read sites must tolerate all sixteen. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), 12 (pre-sweep-act-limits), 13 (pre-design-wall-clock), 14 (pre-task-limits), 15 (pre-research-limits), 16 (pre-frame-limit), or 17 (current). Read sites must tolerate all seventeen. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

@@ -522,6 +522,47 @@ describe('the real producer and the real handler (#11845 review)', () => {
     expect((await t.readAs(output, await t.insertSession(), await t.scopeOf(t.grant)))?.id).toBe(output);
   });
 
+  it('W02: an org-scope chat launch freezes the org device frame, its scope and the export grants from the live ceiling', async () => {
+    const t = await seedTenant();
+    const session = await t.insertSession();
+    await sys(() => db.update(organizations).set({ aiExternalProcessing: true } as never).where(eq(organizations.id, t.org.id)));
+    await sys(() => db.update(aiAgents).set({ toolAllowlist: ['query_devices', ...WORKSPACE_TOOL_NAMES] } as never)
+      .where(and(eq(aiAgents.partnerId, t.partner.id), eq(aiAgents.kind, 'triage'))));
+    const requestId = randomUUID();
+    const result = await requestSpecialist(
+      {
+        grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'analysis',
+        params: { goal: 'Which drivers crash most?', scope: 'org' }, requestedByRunId: null,
+      },
+      { requester: { kind: 'user', auth: t.chatAuth(session) }, requestId },
+    );
+    expect(result).toMatchObject({ admitted: true });
+    const [row] = await sys(() => db.select({ stagedInputs: aiAgentRuns.stagedInputs })
+      .from(aiAgentRuns).where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId)))));
+    const staged = row!.stagedInputs!;
+    expect(staged.deviceIds).toContain(t.device.id);
+    expect(staged.scope).toEqual({ kind: 'org', siteId: null, deviceCount: staged.deviceIds.length });
+    expect(staged.exportGrants!.datasets).toContain('event_logs');
+    expect(Array.isArray(staged.exportGrants!.sensitiveGates)).toBe(true);
+  });
+
+  it('W02: a chat launch that names no scope is refused before any run row', async () => {
+    const t = await seedTenant();
+    const session = await t.insertSession();
+    const requestId = randomUUID();
+    const result = await requestSpecialist(
+      {
+        grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'analysis',
+        params: { goal: 'Which drivers crash most?' }, requestedByRunId: null,
+      },
+      { requester: { kind: 'user', auth: t.chatAuth(session) }, requestId },
+    );
+    expect(result).toMatchObject({ refused: 'invalid_params' });
+    const rows = await sys(() => db.select({ id: aiAgentRuns.id })
+      .from(aiAgentRuns).where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId)))));
+    expect(rows).toEqual([]);
+  });
+
   it('a partner-wide session in org A is handed the result of its analysis run in org B', async () => {
     const t = await seedTenant();
     const orgB = await createOrganization({ partnerId: t.partner.id });

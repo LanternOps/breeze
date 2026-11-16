@@ -16,9 +16,9 @@ import { and, desc, gt, lt, or, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { agentLogs, deviceMetrics, devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import type { AiRunExportGrants } from '../db/schema/aiAgents';
 import { isAutomationPrincipal } from '../middleware/principalKind';
 import { searchFleetLogs } from './logSearch';
-import { canReadSensitiveEventLogCategory } from './eventLogSensitivity';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
 import { redactAgentLogRow } from './logRedaction';
 import { readCatalog, readDeviceFindings, readFindingSoftware, normStatus } from './aiToolsVulnerability';
@@ -77,6 +77,20 @@ export interface DatasetRequest {
   runTargets: string[] | null;
   siteId: string | null;
   pageSize: number;
+  /**
+   * Wisp analysis sessions W02 — the run's frozen export grants: always the
+   * effective set, never absent (`LEGACY_EXPORT_GRANTS` for a run admitted
+   * before W02). The handler has already refused a dataset outside
+   * `datasets`; an adapter reads `sensitiveGates` to decide which rows a
+   * sensitive gate withholds.
+   */
+  exportGrants: AiRunExportGrants;
+  /**
+   * Plain sentences an adapter appends for the run's model (rows withheld by a
+   * gate, a filter it could not apply). Created empty by the handler for each
+   * call and copied into the tool result as `notes` when non-empty.
+   */
+  notes: string[];
 }
 
 export interface DatasetAdapter {
@@ -111,14 +125,30 @@ async function siteScopedDeviceIds(req: DatasetRequest): Promise<string[] | null
  *
  * An absent/empty `runTargets` means "no run frame" (direct chat/MCP), not "no
  * devices" — see `ToolExecutionContext.runTargets`.
+ *
+ * Wisp analysis sessions W02: the caller's EXACT-DEVICE axis
+ * (`auth.allowedDeviceIds`) narrows too, whenever it is an array. An empty one
+ * means "no devices", never "no frame": an analysis run admitted before W02
+ * with no devices (W02 now refuses that launch as `frame_empty`) carries
+ * `allowedDeviceIds: []` and no run frame, and without this
+ * the `event_logs` adapter read that as unrestricted and exported the whole
+ * org's non-security logs. It is intersected here directly rather than through
+ * `resolveSiteAllowedDeviceIds`, which only answers the site axis.
+ *
+ * Result: exact-device ∩ run frame ∩ site axis. `[]` = export nothing; `null`
+ * is reserved for a caller restricted on no axis at all.
  */
 async function scopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
-  const siteScoped = await siteScopedDeviceIds(req);
   const frame = req.runTargets && req.runTargets.length > 0 ? req.runTargets : null;
-  if (!frame) return siteScoped;
-  if (!siteScoped) return [...frame];
-  const inSite = new Set(siteScoped);
-  return frame.filter((id) => inSite.has(id));
+  const exact = Array.isArray(req.auth.allowedDeviceIds) ? req.auth.allowedDeviceIds : null;
+  const site = await siteScopedDeviceIds(req);
+  // The result keeps the order of the most specific axis present.
+  const base = frame ?? exact ?? site;
+  if (!base) return null;
+  const axes: Array<readonly string[] | null> = [frame, exact, site];
+  const others: Set<string>[] = [];
+  for (const axis of axes) if (axis !== null && axis !== base) others.push(new Set(axis));
+  return base.filter((id) => others.every((axis) => axis.has(id)));
 }
 
 /** A pager that yields nothing — the shape a zero-in-scope caller gets. */
@@ -190,7 +220,13 @@ const eventLogsAdapter: DatasetAdapter = {
     // it would let a site-restricted tech export the whole org's logs.
     const allowedDeviceIds = await scopedDeviceIds(req);
     if (allowedDeviceIds != null && allowedDeviceIds.length === 0) return emptyPager;
-    const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(req.auth);
+    // W02: the security category reads the run's FROZEN `security_events`
+    // gate. `export_dataset` runs only under an `ai_agent` run principal, which
+    // has no role, so the RBAC check this replaces always answered false.
+    const canReadSensitiveCategory = req.exportGrants.sensitiveGates.includes('security_events');
+    if (!canReadSensitiveCategory) {
+      req.notes.push('Security-category event logs are not in this export: this run does not hold the security_events gate (devices:execute).');
+    }
 
     return async (cursor) => {
       const result = await searchFleetLogs(req.auth, {

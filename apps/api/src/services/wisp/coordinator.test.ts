@@ -101,7 +101,7 @@ function ceiling(o: Partial<GrantCeiling> = {}): GrantCeiling {
 
 const PARAMS: Record<SpecialistKind, Record<string, unknown>> = {
   sweep: {},
-  analysis: { goal: 'Why are backups failing at Greenwood?' },
+  analysis: { goal: 'Why are backups failing at Greenwood?', scope: 'org' },
   operator_recipe: { workflowKey: 'service_recovery', workflowVersion: 1, objective: 'Restart spooler', recipeInput: {} },
   patch_plan: {},
   remediation_research: { deviceId: DEVICE },
@@ -443,6 +443,13 @@ describe('requestSpecialist gating matrix', () => {
     await expect(requestSpecialist(base({ kind: 'analysis', params: { goal: '' } }))).resolves.toEqual({ refused: 'invalid_params' });
     seed();
     await expect(requestSpecialist(base({ kind: 'sweep', params: { extra: 1 } }))).resolves.toEqual({ refused: 'invalid_params' });
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('W02: an analysis that names no scope is refused at gate 6, before any launch', async () => {
+    seed();
+    const r = await requestSpecialist(base({ kind: 'analysis', params: { goal: 'why' } }));
+    expect(r).toMatchObject({ refused: 'invalid_params' });
     expect(launchCalls()).toBe(0);
   });
 

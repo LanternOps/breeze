@@ -10,6 +10,7 @@ import type { VerifiedDrPlan } from './drPlanDefinition';
 import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 import type { WispUnattendedRead } from './wisp/unattendedReads';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
+import type { AiRunExportGrants } from '../db/schema/aiAgents';
 
 /**
  * One `run_script` release, resolved once and verified against the approval's
@@ -122,6 +123,14 @@ export type ToolExecutionContext = {
    * principal (`auth.principal.runId`, `auth.orgId`) — see reconciliation R4.
    */
   runTargets?: readonly string[];
+  /**
+   * Wisp analysis sessions W02 — the datasets and sensitive gates an analysis
+   * run may export, frozen at admission from the live grant ceiling
+   * (`staged_inputs.exportGrants`). `export_dataset` refuses any dataset
+   * outside it. ABSENT means legacy (`LEGACY_EXPORT_GRANTS`: the original
+   * seven datasets, no sensitive gate), never "everything".
+   */
+  exportGrants?: AiRunExportGrants;
   /** Bytes this run may still stage into artifacts. */
   stagedBytesRemaining?: number;
   /**

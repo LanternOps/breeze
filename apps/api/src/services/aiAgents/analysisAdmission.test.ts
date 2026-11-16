@@ -35,6 +35,7 @@ function input(over: Partial<AdmitAnalysisRunInput> = {}): AdmitAnalysisRunInput
     requestedByUserId: 'user-1',
     sessionId: 'chat-1',
     goal: 'why are three devices slow',
+    scope: 'devices',
     deviceIds: ['dev-1'],
     siteId: null,
     stagedHandles: [],
@@ -74,11 +75,28 @@ describe('admitAnalysisRun', () => {
     const call = createAndEnqueueAgentRun.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.profile).toBe('analysis');
     expect(call.deviceId).toBeNull();
-    expect(call.analysis).toEqual({ deviceIds: ['dev-1'], inputHandles: [HANDLE] });
+    expect(call.analysis).toEqual({ scope: 'devices', siteId: null, deviceIds: ['dev-1'], inputHandles: [HANDLE] });
     // The CHAT session belongs in trigger_ref — `ai_agent_runs.session_id` is
     // the agent session the run loop opens, a different thing entirely.
     expect(call.sessionId).toBeUndefined();
     expect(call.triggerRef).toMatchObject({ source: 'chat_analysis', chatSessionId: 'chat-1', originSessionId: 'chat-1' });
+  });
+
+  it('forwards the trusted export grants and scope when given, and no exportGrants key when not', async () => {
+    const grants = { datasets: ['metrics'], sensitiveGates: [] };
+    await admitAnalysisRun(input({ scope: 'org', deviceIds: [], exportGrants: grants }));
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).analysis)
+      .toEqual({ scope: 'org', siteId: null, deviceIds: [], inputHandles: [], exportGrants: grants });
+    await admitAnalysisRun(input());
+    expect((createAndEnqueueAgentRun.mock.calls[1]![0] as any).analysis).not.toHaveProperty('exportGrants');
+  });
+
+  it('forwards the requested site as the frame siteId even when it is not recorded in trigger_ref', async () => {
+    const SITE = '00000000-0000-4000-8000-0000000000b1';
+    verifiedAnalysisSiteId.mockResolvedValueOnce(null);
+    await admitAnalysisRun(input({ scope: 'site', siteId: SITE, deviceIds: [] }));
+    const call = createAndEnqueueAgentRun.mock.calls[0]![0] as any;
+    expect(call.analysis).toMatchObject({ scope: 'site', siteId: SITE });
   });
 
   it('records originSessionId as null (key present) when there is no chat session', async () => {
@@ -116,6 +134,9 @@ describe('admitAnalysisRun', () => {
   it.each([
     ['too_many_input_devices', 'too_many_input_devices'],
     ['device_not_in_org', 'device_not_in_org'],
+    ['frame_too_large', 'frame_too_large'],
+    ['site_not_in_scope', 'site_not_in_scope'],
+    ['frame_empty', 'frame_empty'],
     ['external_processing_disabled', 'external_processing_disabled'],
     ['workspace_capability_missing', 'workspace_capability_missing'],
     ['workspace_unavailable', 'analysis_not_available'],
@@ -145,6 +166,7 @@ describe('admitAnalysisRun', () => {
       'max_concurrent_analysis_runs', 'analysis_rate', 'too_many_input_devices',
       'device_not_in_org', 'artifact_forbidden', 'enqueue_failed', 'model_unavailable',
       'grant_refused',
+      'frame_too_large', 'site_not_in_scope', 'frame_empty',
     ]);
     for (const [skip, refusal] of Object.entries(SKIP_REASON_REFUSALS)) {
       expect(allowed.has(refusal), `${skip} -> ${refusal}`).toBe(true);

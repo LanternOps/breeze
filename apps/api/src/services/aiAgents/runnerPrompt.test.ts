@@ -73,6 +73,81 @@ describe('analysis task handoff', () => {
     expect(task).toContain('Compute 2 + 2');
   });
 
+  describe('scope frame and export grants (W02)', () => {
+    const GRANTS = { datasets: ['event_logs', 'metrics'], sensitiveGates: [] as never[] };
+    const render = (analysis: ReturnType<typeof analysisPromptContext>) =>
+      buildAgentRunTaskPrompt(ctx({ profile: 'analysis', device: null, alert: null, analysis }));
+
+    it('an org frame states scope and count, lists no device ids, and lists the exportable datasets', () => {
+      const analysis = analysisPromptContext({ goal: 'why' }, {
+        handles: [], deviceIds: ['d1', 'd2'], region: 'eu',
+        scope: { kind: 'org', siteId: null, deviceCount: 2 }, exportGrants: GRANTS,
+      });
+      const task = render(analysis);
+      expect(task).toContain('Device scope: the whole organization (2 devices, frozen at launch).');
+      expect(task).not.toContain('d1');
+      expect(task).not.toContain('Admission-frozen device IDs');
+      expect(task).toContain('Datasets you may export with export_dataset (JSON): ["event_logs","metrics"]');
+      expect(task).toContain('Rows withheld from those exports (JSON): ["security_events"]');
+    });
+
+    it('a site frame names the site id', () => {
+      const analysis = analysisPromptContext({ goal: 'why' }, {
+        handles: [], deviceIds: ['d1'], region: 'eu',
+        scope: { kind: 'site', siteId: 'site-1', deviceCount: 1 },
+        exportGrants: { datasets: ['metrics'], sensitiveGates: [] },
+      });
+      const task = render(analysis);
+      expect(task).toContain('Device scope: one site, site-1 (1 devices, frozen at launch).');
+      expect(task).not.toContain('Rows withheld');
+    });
+
+    it('a pre-W02 run (no scope, no grants) renders the device-id list and no dataset line', () => {
+      const analysis = analysisPromptContext({ goal: 'why' }, { handles: [], deviceIds: ['d1'], region: 'eu' });
+      expect(analysis.scope).toBeNull();
+      expect(analysis.exportGrants).toBeNull();
+      const task = render(analysis);
+      expect(task).toContain('Admission-frozen device IDs (JSON): ["d1"]');
+      expect(task).not.toContain('Datasets you may export');
+    });
+
+    it('a devices-kind scope keeps the device-id list', () => {
+      const analysis = analysisPromptContext({ goal: 'why' }, {
+        handles: [], deviceIds: ['d1'], scope: { kind: 'devices', siteId: null, deviceCount: 1 },
+      });
+      expect(render(analysis)).toContain('Admission-frozen device IDs (JSON): ["d1"]');
+    });
+
+    it('scope is read from staged_inputs only, never from trigger_ref', () => {
+      expect(analysisPromptContext({ goal: 'why', scope: { kind: 'org' } }, { handles: [], deviceIds: [], region: 'eu' }).scope).toBeNull();
+      expect(analysisPromptContext({ goal: 'why', exportGrants: GRANTS }, { handles: [], deviceIds: [] }).exportGrants).toBeNull();
+    });
+
+    it.each([
+      { kind: 'galaxy', siteId: null, deviceCount: 1 },
+      { kind: 'org', siteId: null, deviceCount: -1 },
+      { kind: 'org', siteId: null, deviceCount: 1.5 },
+      { kind: 'org', siteId: 7, deviceCount: 1 },
+      { kind: 'org', siteId: null },
+      { kind: 'site', siteId: null, deviceCount: 1 },
+      'org',
+      null,
+    ])('a malformed scope reads as null: %j', (scope) => {
+      expect(analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [], scope }).scope).toBeNull();
+    });
+
+    it.each([
+      { datasets: 'metrics', sensitiveGates: [] },
+      { datasets: [1], sensitiveGates: [] },
+      { datasets: [], sensitiveGates: ['nope'] },
+      { datasets: [], sensitiveGates: 'security_events' },
+      { datasets: [] },
+      [],
+    ])('malformed export grants read as null: %j', (exportGrants) => {
+      expect(analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [], exportGrants }).exportGrants).toBeNull();
+    });
+  });
+
   it.each([null, {}, { goal: 42 }, { goal: '  ' }])('does not invent a fleet task when the goal is missing: %j', (ref) => {
     const task = buildAgentRunTaskPrompt(ctx({ profile: 'analysis', analysis: analysisPromptContext(ref, null) }));
     expect(task).toContain('goal is missing');

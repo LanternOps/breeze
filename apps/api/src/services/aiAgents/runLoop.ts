@@ -234,7 +234,7 @@ import { WorkspaceService } from '../workspace/workspaceService';
 import { WORKSPACE_MEMORY_GB } from '../workspace/workspacePaths';
 import { registerWorkspace, unregisterWorkspace } from '../workspace/workspaceRegistry';
 import { calculateComputeCents, settleComputeCents } from '../aiCostTracker';
-import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
+import type { AiAgentRunStagedInputs, AiRunExportGrants } from '../../db/schema/aiAgents';
 import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
   finalizeAssessment,
@@ -927,11 +927,15 @@ export function createAgentRunPreToolUse(args: {
   patch?: PatchPlanToolRefs;
   /** AI Suggested Fixes W2 — the SAME refs the SDK handler and post-hook receive. */
   research?: ResearchToolRefs;
+  /** Wisp analysis sessions W02 — the export grants frozen at admission
+   *  (`staged_inputs.exportGrants`); undefined for a pre-W02 or non-analysis
+   *  run. See `ToolExecutionContext.exportGrants`. */
+  exportGrants?: AiRunExportGrants;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds,
     sessionId, pairing, actReservation, deadlineMs, design, patch, research,
-    runTargets, stagedBytesRemaining,
+    runTargets, stagedBytesRemaining, exportGrants,
   } = args;
 
   /** Per-invocation run CONSTRAINTS handed to every ALLOWED tool call (W03).
@@ -940,6 +944,7 @@ export function createAgentRunPreToolUse(args: {
   const runFrame: ToolExecutionContext = {
     runTargets,
     stagedBytesRemaining,
+    ...(exportGrants !== undefined ? { exportGrants } : {}),
   };
 
   /**
@@ -2740,6 +2745,13 @@ async function driveSdkLoop(
     stagedBytesRemaining: analysis
       ? (runLimits.analysisMaxStagedBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun)
       : EXPORT_DEFAULT_MAX_BYTES,
+    // W02: the export authority frozen at admission. Absent on a pre-W02 run,
+    // which the handler reads as the legacy set, never as "everything". An
+    // analysis run with no staged_inputs at all (admission always writes
+    // them, so this is a corrupt row) gets NO export grants, not the legacy set.
+    exportGrants: analysis
+      ? (stagedInputs ? stagedInputs.exportGrants : { datasets: [], sensitiveGates: [] })
+      : undefined,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, pairing,

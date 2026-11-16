@@ -65,6 +65,8 @@ function analysisRun(id: string, goal: string, deviceCount: number, handles: str
       goal,
       deviceIds: Array.from({ length: deviceCount }, (_, i) => device(100 + i, 'x').id),
       handles,
+      scope: null,
+      exportGrants: null,
     },
   };
 }
