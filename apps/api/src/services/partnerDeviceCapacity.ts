@@ -22,9 +22,13 @@ const BILLING_ADMISSION_BOUND_FLOOR = 1100;
  * unexpired); an absent or expired allowance always falls back to max_devices.
  *
  * Known limitation: when pending devices exceed commitment - commitment/10
- * (about 90% of the commitment), the allowance passes 2 x max_devices and is
- * ignored, so admission falls back to max_devices. Do not widen the bound
- * further to cover that case.
+ * (about 90% of the commitment), the wanted allowance passes the bound.
+ * Billing clamps it to the bound before writing (the partners CHECK
+ * partners_billing_admission_valid rejects anything larger), so admission is
+ * capped at max(1,100, 2 x max_devices) and the remaining pending devices are
+ * not admitted. Billing alerts ops when it clamps. A stored value above the
+ * bound can only come from outside billing and is ignored here, falling back
+ * to max_devices. Do not widen the bound further to cover that case.
  */
 export function effectivePartnerAdmissionLimit(partner: {
   maxDevices: number | null;
