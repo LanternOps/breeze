@@ -104,6 +104,11 @@ describe('dataset adapters', () => {
     expect(EXPORT_DATASETS).toContain('custom_fields');
   });
 
+  it('EXPORT_DATASET_REQUIREMENTS has exactly one entry per EXPORT_DATASETS member', async () => {
+    const { EXPORT_DATASET_REQUIREMENTS } = await import('./aiToolsExportPermissions');
+    expect(Object.keys(EXPORT_DATASET_REQUIREMENTS).sort()).toEqual([...EXPORT_DATASETS].sort());
+  });
+
   it('every adapter declares the tier of its source tool and never above 2', () => {
     for (const adapter of Object.values(DATASET_ADAPTERS)) {
       expect([1, 2]).toContain(adapter.tier);
