@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildAgentRunSystemPrompt, buildAgentRunTaskPrompt, type AgentRunPromptContext } from './runnerPrompt';
-import { CONTINUATION_NO_REPEAT_LINE, TROUBLESHOOT_MODE_PROMPT, renderContinuationSeed } from './troubleshootProfile';
+import { CONTINUATION_NO_REPEAT_LINE, TROUBLESHOOT_GOAL_MAX_CHARS, TROUBLESHOOT_MODE_PROMPT, renderContinuationSeed } from './troubleshootProfile';
 
 const DEVICE_ID = '00000000-0000-4000-8000-0000000000d1';
 
@@ -27,6 +27,13 @@ function ctx(goal: string | null = 'Outlook crashes on start since Tuesday'): Ag
 }
 
 describe('device_troubleshooting prompts (#11084)', () => {
+  it('renders a long goal whole up to the schema cap, keeping an exact path at its tail (#11973)', () => {
+    const tail = 'HKLM\\SOFTWARE\\Vendor\\Product\\Deep\\Key';
+    const goal = `${'context '.repeat(150)}${tail}`.slice(-TROUBLESHOOT_GOAL_MAX_CHARS);
+    expect(goal.length).toBeGreaterThan(500);
+    expect(buildAgentRunTaskPrompt(ctx(goal))).toContain(tail);
+  });
+
   it('the system prompt carries the fixed troubleshooting mode section, not the generic shadow one', () => {
     const p = buildAgentRunSystemPrompt(ctx());
     expect(p).toContain(TROUBLESHOOT_MODE_PROMPT);

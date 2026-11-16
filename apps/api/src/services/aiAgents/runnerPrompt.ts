@@ -28,7 +28,7 @@ import {
 import { ANALYSIS_WORKSPACE_PROMPT } from './analysisProfile';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { RESEARCH_MODE_PROMPT } from './researchProfile';
-import { TROUBLESHOOT_MODE_PROMPT } from './troubleshootProfile';
+import { TROUBLESHOOT_GOAL_MAX_CHARS, TROUBLESHOOT_MODE_PROMPT } from './troubleshootProfile';
 // Type-only: researchContext.ts imports the db; nothing of it survives into this module's runtime.
 import type { ResearchRunContext } from './researchContext';
 import type { RunProvenFixes } from '../fixMemory/runMemory';
@@ -1808,7 +1808,7 @@ function buildTroubleshootTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('<untrusted_data>');
   if (ctx.device) lines.push(`Hostname: ${quoteData(ctx.device.hostname, 255)}`);
   lines.push(ctx.troubleshoot?.goal
-    ? `Goal (data): ${quoteData(ctx.troubleshoot.goal, 500)}`
+    ? `Goal (data): ${quoteData(ctx.troubleshoot.goal, TROUBLESHOOT_GOAL_MAX_CHARS)}`
     : 'Goal (data): no goal was given');
   lines.push('</untrusted_data>');
   lines.push('');

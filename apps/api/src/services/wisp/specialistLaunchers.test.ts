@@ -105,6 +105,7 @@ import {
   specialistParamsError,
   type LaunchContext,
 } from './specialistLaunchers';
+import { TROUBLESHOOT_GOAL_MAX_CHARS } from '../aiAgents/troubleshootProfile';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
 const PARTNER = '00000000-0000-4000-8000-0000000000a2';
@@ -556,10 +557,17 @@ describe('launchDeviceTroubleshooting (#11084)', () => {
   const SESSION = '00000000-0000-4000-8000-0000000000b1';
   const chatActor = { user: { id: GRANTOR }, wispGrant: { grantId: GRANT, grantRevisionId: REV, sessionId: SESSION } } as never;
 
-  it('validates params: a uuid device and a 5–500 char goal, nothing else', () => {
+  it('accepts a goal that carries exact paths past the old 500-char cap (#11973)', () => {
+    const goal = `Read HKLM\\SOFTWARE\\Vendor\\Product\\Settings\\Deep\\Key ${'context '.repeat(120)}`.trim();
+    expect(goal.length).toBeGreaterThan(900);
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal })).toEqual({ deviceId: DEVICE, goal });
+    expect(TROUBLESHOOT_GOAL_MAX_CHARS).toBe(2000);
+  });
+
+  it('validates params: a uuid device and a 5–2000 char goal, nothing else', () => {
     expect(parseSpecialistParams('device_troubleshooting', params)).toEqual(params);
     expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: 'abc' })).toBeNull();
-    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: 'x'.repeat(501) })).toBeNull();
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: 'x'.repeat(TROUBLESHOOT_GOAL_MAX_CHARS + 1) })).toBeNull();
     expect(parseSpecialistParams('device_troubleshooting', { deviceId: 'nope', goal: 'Outlook crashes' })).toBeNull();
     expect(parseSpecialistParams('device_troubleshooting', { ...params, extra: 1 })).toBeNull();
     expect(specialistParamsError('device_troubleshooting', {})).toMatch(/deviceId/);
