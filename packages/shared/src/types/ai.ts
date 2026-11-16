@@ -251,6 +251,28 @@ export type AiApprovalOutcome = 'approved' | 'not_approved' | 'ended';
  */
 export type AiApprovalWaitingOn = 'you' | 'other_approvers';
 
+/**
+ * #9428: machine codes the server puts on an `error` stream event. A client
+ * decides from the code, never the message text, whether "Try again" can help.
+ * Only `timeout`, `provider_error` and `stream_error` are retryable server
+ * codes; the rest need a new session, a different model, an administrator or
+ * waiting (rate limit). Kept in step with the web classifier (lib/aiErrors.ts).
+ */
+export type AiStreamErrorCode =
+  | 'timeout'
+  | 'provider_error'
+  | 'stream_error'
+  | 'rate_limited'
+  | 'provider_auth'
+  | 'provider_quota'
+  | 'budget_exceeded'
+  | 'turn_limit_reached'
+  | 'config_changed'
+  | 'session_expired'
+  | 'session_evicted'
+  | 'topology_limit'
+  | 'topology_failed';
+
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   /**
@@ -363,8 +385,14 @@ export type AiStreamEvent =
   | { type: 'title_updated'; title: string }
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'warning'; message: string; context?: string }
-  /** `code` names a failure the client can act on; `turn_limit_reached` = the session's turn budget is spent (start a new session). */
-  | { type: 'error'; message: string; code?: 'turn_limit_reached' }
+  /**
+   * `code` names a failure the client can act on (see AiStreamErrorCode);
+   * `turn_limit_reached` = the session's turn budget is spent (start a new
+   * session). Absent on older servers: a client treats a missing or unknown
+   * code as not retryable. `detail` is an optional secondary line (#9428:
+   * the model gateway's reason behind a timeout).
+   */
+  | { type: 'error'; message: string; code?: AiStreamErrorCode; detail?: string }
   // ── Generic client-declared session tools (e.g. Helper chat) — published by
   //    services/clientSessionTools.ts when the model calls a client-declared tool.
   | { type: 'client_tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown> }
