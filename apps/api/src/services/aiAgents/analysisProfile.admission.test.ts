@@ -617,7 +617,7 @@ describe('analysis chain admission (W03)', () => {
     ['a wrong depth', [priorRow({ chainDepth: 2 })], {}],
     ['another grant', [priorRow({ grantId: 'g-other' })], {}],
     ['another profile', [priorRow({ profile: 'full' })], {}],
-  ] as const)('a lineage that disagrees with the prior refuses analysis_continuation_not_found (%s)', async (_label, rows) => {
+  ] as Array<[string, unknown[], Record<string, never>]>)('a lineage that disagrees with the prior refuses analysis_continuation_not_found (%s)', async (_label, rows) => {
     withPrior([...rows]);
     await expect(createAndEnqueueAgentRun(continuation()))
       .resolves.toEqual({ created: false, skipped: 'analysis_continuation_not_found' });

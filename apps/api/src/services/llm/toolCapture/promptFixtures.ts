@@ -38,5 +38,5 @@ export const AGENT_ANALYSIS_CAPTURE_FIXTURE: AgentRunPromptContext = {
   agent: { name: 'capture-fixture-analyst', kind: 'triage' },
   device: null,
   profile: 'analysis',
-  analysis: { goal: 'Summarise CPU utilisation across the fleet for the last 7 days.', deviceIds: [], handles: [], scope: null, exportGrants: null },
+  analysis: { goal: 'Summarise CPU utilisation across the fleet for the last 7 days.', deviceIds: [], handles: [], manifest: [], continuation: null, scope: null, exportGrants: null },
 };

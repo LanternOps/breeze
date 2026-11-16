@@ -219,7 +219,7 @@ describe('spendBreakdownUnderGrant', () => {
   it('the run line sums cost_cents plus settled compute_cents', async () => {
     h.results.push([{ total: '0' }], [{ total: '0' }], [{ total: '0' }]);
     await spendBreakdownUnderGrant(GRANT);
-    const fields = h.db.select.mock.calls[0]![0] as { total: SQL };
+    const fields = (h.db.select.mock.calls[0] as unknown[])[0] as { total: SQL };
     const q = compile(fields.total);
     expect(q.sql).toContain('"ai_agent_runs"."cost_cents"');
     expect(q.sql).toContain('coalesce("ai_agent_runs"."compute_cents", 0)');

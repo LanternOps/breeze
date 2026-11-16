@@ -129,7 +129,7 @@ describe('analysisContinuationOf', () => {
     [{ status: 'running' }, 'analysis_continuation_not_settled', 'running'],
     [{ status: 'queued' }, 'analysis_continuation_not_settled', 'queued'],
     [{ status: 'expired' }, 'analysis_continuation_not_settled', 'expired'],
-  ] as const)('%o → %s (%s)', async (over, refusal) => {
+  ] as Array<[Record<string, unknown> | null, string, string]>)('%o → %s (%s)', async (over, refusal) => {
     h.results.push(over === null ? [] : [priorRow(over)]);
     expect(await analysisContinuationOf({ orgId: ORG, runId: PRIOR, grantId: GRANT }))
       .toEqual({ ok: false, refusal });
