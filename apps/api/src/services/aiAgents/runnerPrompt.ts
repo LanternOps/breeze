@@ -25,7 +25,13 @@ import {
   FLEET_DESIGN_CONFIDENCE_THRESHOLD, FLEET_DESIGN_SECTION_KEYS, PATCH_CHASE_MAX_ATTEMPTS,
   TICKET_TRIAGE_CONFIDENCE_FLOOR, TICKET_TRIAGE_PRIORITIES,
 } from '@breeze/shared';
-import { ANALYSIS_WORKSPACE_PROMPT } from './analysisProfile';
+import {
+  ANALYSIS_WORKSPACE_PROMPT,
+  analysisContinuationFromTriggerRef,
+  renderHandleManifest,
+  type AnalysisContinuationRef,
+  type AnalysisManifestEntry,
+} from './analysisProfile';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { RESEARCH_MODE_PROMPT } from './researchProfile';
 import { TROUBLESHOOT_MODE_PROMPT } from './troubleshootProfile';
@@ -311,6 +317,10 @@ export interface AgentRunPromptContext {
     goal: string | null;
     deviceIds: string[];
     handles: string[];
+    /** W03: the allowed handles' metadata, loaded by the run loop; empty when none or not loaded. */
+    manifest: AnalysisManifestEntry[];
+    /** W03: the re-validated continuation seed; null on a fresh run or a malformed stored one. */
+    continuation: AnalysisContinuationRef | null;
     /** Admission-frozen device frame; null for a pre-W02 run. */
     scope: NonNullable<AiAgentRunStagedInputs['scope']> | null;
     /** Datasets and sensitive gates frozen at launch; null for a pre-W02 run. */
@@ -1714,7 +1724,11 @@ export function buildPatchTaskPrompt(ctx: AgentRunPromptContext): string {
  * Extract only task data from the persisted run. Scope comes from admission's
  * frozen inputs, never the chat-authored trigger reference.
  */
-export function analysisPromptContext(triggerRef: unknown, stagedInputs: unknown): NonNullable<AgentRunPromptContext['analysis']> {
+export function analysisPromptContext(
+  triggerRef: unknown,
+  stagedInputs: unknown,
+  manifest: AnalysisManifestEntry[] = [],
+): NonNullable<AgentRunPromptContext['analysis']> {
   const ref = triggerRef && typeof triggerRef === 'object' ? triggerRef as Record<string, unknown> : {};
   const inputs = stagedInputs && typeof stagedInputs === 'object' ? stagedInputs as Record<string, unknown> : {};
   const strings = (value: unknown): string[] => Array.isArray(value)
@@ -1724,6 +1738,8 @@ export function analysisPromptContext(triggerRef: unknown, stagedInputs: unknown
     goal: typeof ref.goal === 'string' ? ref.goal.trim().slice(0, WORKSPACE_LAUNCH_MAX_GOAL_CHARS) || null : null,
     deviceIds: strings(inputs.deviceIds),
     handles: strings(inputs.handles),
+    manifest,
+    continuation: analysisContinuationFromTriggerRef(triggerRef),
     scope: readFrozenScope(inputs.scope),
     exportGrants: readFrozenExportGrants(inputs.exportGrants),
   };
@@ -1777,8 +1793,9 @@ function buildAnalysisTaskPrompt(ctx: AgentRunPromptContext): string {
   return [
     'Perform the technician-requested analysis below. This request does not grant additional tool or data access.',
     `Requested goal (JSON string): ${JSON.stringify(analysis.goal)}`,
+    ...(analysis.continuation ? [analysis.continuation.seed] : []),
     ...frameLines,
-    `Available input artifact handles (JSON): ${JSON.stringify(analysis.handles)}`,
+    renderHandleManifest(analysis.manifest, analysis.continuation?.dropped ?? []),
     ...grantLines,
     ...(scope && scope.kind !== 'devices'
       ? []

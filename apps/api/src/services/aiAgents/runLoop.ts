@@ -217,6 +217,7 @@ import { loadResearchContext, ResearchContextUnavailableError } from './research
 import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/runMemory';
 import type { ResearchToolRefs } from './researchSubmission';
 import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { loadHandleManifest } from './analysisContinuation';
 import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
 import {
   isTroubleshootProfile, TROUBLESHOOT_MAX_ACTIONS_PER_RUN, troubleshootLimits, troubleshootToolAllowlist,
@@ -704,11 +705,25 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // Wisp analysis sessions W03. Runs INSIDE this same system context;
+    // `loadHandleManifest` opens none of its own and pins every read to the
+    // run's org. The handles are the admission-frozen ones, read defensively
+    // (staged_inputs is jsonb): a malformed value reads as no handles.
+    let analysisManifest: RunContext['analysisManifest'] = null;
+    if (run.profile === 'analysis') {
+      const frozen = (run.stagedInputs as { handles?: unknown } | null)?.handles;
+      const handles = Array.isArray(frozen)
+        ? frozen.filter((h): h is string => typeof h === 'string')
+        : [];
+      analysisManifest = await loadHandleManifest({ orgId: run.orgId, handles });
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
       orgPartnerId: org.partnerId,
       orgName: org.name ?? null,
+      analysisManifest,
       device,
       alert,
       ticket,
@@ -2158,7 +2173,7 @@ function assessmentPromptContext(
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     analysis: ctx.run.profile === 'analysis'
-      ? analysisPromptContext(ctx.run.triggerRef, ctx.run.stagedInputs)
+      ? analysisPromptContext(ctx.run.triggerRef, ctx.run.stagedInputs, ctx.analysisManifest ?? [])
       : null,
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
     run: { id: ctx.run.id, mode: ctx.run.modeAtStart, triggerKind: ctx.run.triggerKind },
