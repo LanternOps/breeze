@@ -1111,5 +1111,10 @@
       "partnerEnforced_one": "{{display}} conversation dans vos organisations est à supprimer avec cette durée ; ses messages seront supprimés lors de la prochaine exécution nocturne.",
       "partnerEnforced_other": "{{display}} conversations dans vos organisations sont à supprimer avec cette durée ; leurs messages seront supprimés lors de la prochaine exécution nocturne."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Cette réponse a expiré",
+    "disconnected": "La connexion a été interrompue avant la fin de la réponse.",
+    "tryAgain": "Réessayer"
   }
 }

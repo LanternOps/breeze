@@ -175,6 +175,30 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
     });
   });
 
+  // #9428
+  describe('try again banner', () => {
+    const retryTarget = { sessionId: 's1', content: 'hi', code: 'timeout', detail: null, mode: 'retry', error: 'Timed out' };
+
+    it('retries the failed turn from the banner', () => {
+      const retryLastTurn = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, retryLastTurn, retryTarget, error: 'Timed out', errorCode: 'timeout',
+      });
+      render(<AiChatSidebar />);
+      fireEvent.click(screen.getByTestId('ai-error-retry'));
+      expect(retryLastTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers no retry while a topology site is bound', () => {
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, retryLastTurn: vi.fn(), retryTarget, error: 'Timed out', errorCode: 'timeout',
+        topologySiteId: 'site-1',
+      });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-error-retry')).toBeNull();
+    });
+  });
+
   // #11609
   describe('session closed elsewhere banner', () => {
     it('offers a new session when the refusal is session_closed, and starts one on click', () => {

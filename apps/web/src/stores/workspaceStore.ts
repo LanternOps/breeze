@@ -8,6 +8,7 @@ import { classifySendRefusal } from './aiSendRefusal';
 import { registerLogoutHook } from './logoutHooks';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
+import { classifyHttpFailure, isRetryableAiError, retryModeFor, type AiErrorCode, type AiRetryMode, type AiRetryTarget } from '@/lib/aiErrors';
 import { i18n } from '@/lib/i18n';
 import { findActiveWispGrant, WISP_GRANT_UNUSABLE, wispSessionOrgId, type WispGrantLookup } from '@/lib/wispSession';
 import { showToast } from '../components/shared/Toast';
@@ -45,6 +46,16 @@ export interface TabState {
   isStreaming: boolean;
   isLoading: boolean;
   error: string | null;
+  /** #9428: machine code of the last failed turn (server code or a client code); null on success. Not persisted. */
+  errorCode: string | null;
+  /** #9428: secondary banner line (a timeout's gateway reason). Not persisted. */
+  errorDetail: string | null;
+  /**
+   * #9428: the failed turn "Try again" re-sends (retryable failures only).
+   * Describes the banner only while its `error` still matches `error`
+   * (lib/aiErrors activeRetryTarget). Not persisted.
+   */
+  retryTarget: AiRetryTarget | null;
   pendingApproval: PendingApproval | null;
   pendingPlan: PendingPlan | null;
   activePlan: ActivePlan | null;
@@ -166,6 +177,9 @@ function createEmptyTab(title?: string): TabState {
     isStreaming: false,
     isLoading: false,
     error: null,
+    errorCode: null,
+    errorDetail: null,
+    retryTarget: null,
     pendingApproval: null,
     pendingPlan: null,
     activePlan: null,
@@ -226,7 +240,14 @@ interface WorkspaceState {
   renameTab: (tabId: string, title: string) => Promise<void>;
 
   // Chat actions (tab-scoped)
-  sendMessage: (tabId: string, content: string) => Promise<void>;
+  /**
+   * `retry` (#9428): re-send the failed turn's message, whose bubble is already
+   * on the tab and whose row the server already stored: no second bubble, and
+   * the POST carries `retry: true` so the server reuses that row.
+   */
+  sendMessage: (tabId: string, content: string, opts?: { retry?: boolean }) => Promise<void>;
+  /** #9428: "Try again" - re-send the tab's failed turn in `retryTarget`, if it still applies. */
+  retryLastTurn: (tabId: string) => Promise<void>;
   approveExecution: (tabId: string, executionId: string, approved: boolean) => Promise<void>;
   /**
    * An inline intent decide (Touch ID self-approve) already POSTed to the
@@ -759,7 +780,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           }
         },
 
-        sendMessage: async (tabId: string, content: string) => {
+        sendMessage: async (tabId: string, content: string, opts?: { retry?: boolean }) => {
           const trimmed = content.trim();
           if (!trimmed) return;
 
@@ -776,7 +797,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           // Create session lazily if needed
           let sessionId = tab.sessionId;
           if (!sessionId) {
-            updateTab(tabId, { isLoading: true, error: null });
+            updateTab(tabId, { isLoading: true, error: null, errorCode: null, errorDetail: null, retryTarget: null });
             // #10142: the session is created under the tab's Wisp grant, so a
             // send that beats the lookup waits for it (or runs it, for a
             // restored tab never checked).
@@ -853,7 +874,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
           if (!sessionId) return;
 
-          const userMsgId = crypto.randomUUID();
+          // #9428: a retry re-runs the failed turn on its existing bubble (the
+          // tab's last user message, with this exact text). Without one there
+          // is nothing to re-run, and this is an ordinary send.
+          const retriedBubble = opts?.retry === true
+            ? [...(getTab(tabId)?.messages ?? [])].reverse().find((m) => m.role === 'user')
+            : undefined;
+          const retry = retriedBubble !== undefined && retriedBubble.content === trimmed;
+
+          const userMsgId = retry ? retriedBubble!.id : crypto.randomUUID();
           const userMsg: AiMessage = {
             id: userMsgId,
             role: 'user',
@@ -862,12 +891,40 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           };
 
           updateTab(tabId, {
-            messages: [...(getTab(tabId)?.messages ?? []), userMsg],
+            // A retry keeps the failed turn's bubble; a reply it left mid-stream stops spinning.
+            messages: retry
+              ? (getTab(tabId)?.messages ?? []).map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m))
+              : [...(getTab(tabId)?.messages ?? []), userMsg],
             isStreaming: true,
             error: null,
+            errorCode: null,
+            errorDetail: null,
+            retryTarget: null,
             errorAction: null,
             pendingApproval: null,
           });
+
+          /**
+           * #9428: remember a retryable failure of this turn so "Try again" can
+           * re-send it. A turn that was itself a retry stays a retry: its row
+           * is stored.
+           */
+          const rememberFailure = (code: AiErrorCode | string | null | undefined, mode?: AiRetryMode) => {
+            const failed = getTab(tabId);
+            if (!failed || !failed.error || !isRetryableAiError(code)) return;
+            const retryCode = code as AiErrorCode;
+            const failedMode = mode ?? retryModeFor(retryCode);
+            updateTab(tabId, {
+              retryTarget: {
+                sessionId: sessionId!,
+                content: trimmed,
+                code: retryCode,
+                detail: failed.errorDetail ?? null,
+                mode: retry && failedMode === 'resend' ? 'retry' : failedMode,
+                error: failed.error,
+              },
+            });
+          };
 
           let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
           // Set when a refusal hands the tab to an attach: the finally must not
@@ -877,7 +934,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             const currentTab = getTab(tabId);
             const res = await fetchWithAuth(`/ai/sessions/${sessionId}/messages`, {
               method: 'POST',
-              body: JSON.stringify({ content: trimmed, pageContext: currentTab?.pageContext ?? undefined }),
+              body: JSON.stringify({ content: trimmed, pageContext: currentTab?.pageContext ?? undefined, ...(retry ? { retry: true } : {}) }),
             });
             if (stale()) return;
 
@@ -896,13 +953,18 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 }));
               };
 
+              // A refused retry's bubble stays: the failed turn's row is stored.
+              const keepBubble = (patch: Partial<TabState>) => updateTab(tabId, patch);
+
               if (refusal === 'attach') {
                 // #9427 (Gate B #7): another turn is running on this
                 // conversation (turn_in_progress, or an uncoded 409 from an
                 // older API). Join it; the refused text goes back in the
                 // composer, no error banner.
                 if (!getTab(tabId)) return;
-                dropBubble({ isStreaming: false, composerDraft: trimmed, error: null, errorAction: null });
+                // A refused retry keeps the failed turn's bubble and leaves the composer alone.
+                if (retry) keepBubble({ isStreaming: false, error: null, errorAction: null });
+                else dropBubble({ isStreaming: false, composerDraft: trimmed, error: null, errorAction: null });
                 handedToAttach = true;
                 void startTabAttach(tabId, { afterClosedOr409: true }).finished;
                 return;
@@ -915,12 +977,19 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               }
               // Any other refusal (e.g. 503 ai_not_configured) came before the
               // turn ran, so the server never stored the message: drop the
-              // bubble and give the text back to the composer (#10108).
-              dropBubble({
+              // bubble and give the text back to the composer (#10108). A refused
+              // retry keeps its bubble (the failed turn's row is stored).
+              // #9428: an uncoded refusal is classified by status, so a 5xx can
+              // be re-sent; the body's own code always wins.
+              const failureCode = code ?? classifyHttpFailure(res.status);
+              const failure: Partial<TabState> = {
                 isStreaming: false,
-                composerDraft: trimmed,
                 error: extractApiError(data, 'Failed to send message'),
-              });
+                errorCode: failureCode,
+              };
+              if (retry) keepBubble(failure);
+              else dropBubble({ ...failure, composerDraft: trimmed });
+              rememberFailure(failureCode);
               return;
             }
 
@@ -956,12 +1025,19 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 }
               }
             }
+            // #9428: the turn ended on a coded stream error (timeout, provider
+            // error, the route's own stream failure).
+            if (!stale()) rememberFailure(getTab(tabId)?.errorCode);
           } catch (err) {
             if (stale()) return;
             updateTab(tabId, {
               error: err instanceof Error ? err.message : 'Failed to send message',
+              // #9428: the request or its stream broke; the turn may still have run.
+              errorCode: 'disconnect',
+              errorDetail: null,
               isStreaming: false,
             });
+            rememberFailure('disconnect');
           } finally {
             // A stale send (logout since it started) writes nothing at all,
             // so the persist middleware has nothing to write back.
@@ -974,6 +1050,53 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               if (reader && readers.get(sessionId) === reader) readers.delete(sessionId);
             }
           }
+        },
+
+        retryLastTurn: async (tabId: string) => {
+          const tab = getTab(tabId);
+          const target = tab?.retryTarget;
+          // Only the failure the banner still shows, on the chat that failed,
+          // with nothing running (a double click finds isStreaming set).
+          if (!tab || !target || target.error !== tab.error || tab.isStreaming || tab.isLoading) return;
+          if (target.sessionId !== tab.sessionId) {
+            updateTab(tabId, { retryTarget: null });
+            return;
+          }
+          if (target.mode === 'retry') {
+            await get().sendMessage(tabId, target.content, { retry: true });
+            return;
+          }
+          if (target.mode === 'resend') {
+            // Nothing was stored: an ordinary send. Its text went back to the
+            // composer; empty it unless the technician has since changed it.
+            if (tab.composerDraft.trim() === target.content) updateTab(tabId, { composerDraft: '' });
+            await get().sendMessage(tabId, target.content);
+            return;
+          }
+          // reload_first: the stream broke, so the turn may have finished, still
+          // be running, or never have reached the server. The stored transcript
+          // says which; never re-send a turn that ran (its tools may have, too).
+          const gen = workspaceGeneration;
+          updateTab(tabId, { retryTarget: null, isLoading: true });
+          const result = await openAiSession(target.sessionId);
+          if (gen !== workspaceGeneration || getTab(tabId)?.sessionId !== target.sessionId) return;
+          if (result.kind !== 'ok') {
+            updateTab(tabId, { isLoading: false, error: 'Could not reload the conversation', errorCode: 'rejected', errorDetail: null });
+            return;
+          }
+          updateTab(tabId, { messages: result.messages, isLoading: false, error: null, errorCode: null, errorDetail: null });
+          const last = result.messages[result.messages.length - 1];
+          if (last?.role === 'user' && last.content === target.content) {
+            // Stored, unanswered: re-run it on that row. A turn still running is
+            // refused 409 and attached to instead.
+            await get().sendMessage(tabId, target.content, { retry: true });
+            return;
+          }
+          const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+          // Answered: the reloaded transcript shows the reply.
+          if (lastUser?.content === target.content) return;
+          // Never stored: send it as a new message.
+          await get().sendMessage(tabId, target.content);
         },
 
         approveExecution: async (tabId: string, executionId: string, approved: boolean) => {
@@ -1200,7 +1323,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         },
 
         clearError: (tabId: string) => {
-          updateTab(tabId, { error: null });
+          updateTab(tabId, { error: null, errorCode: null, errorDetail: null, retryTarget: null });
         },
 
         markTabRead: (tabId: string) => {

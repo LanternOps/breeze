@@ -1111,5 +1111,10 @@
       "partnerEnforced_one": "{{display}} conversa em suas organizações deve ser removida com este período; as mensagens dela serão removidas na próxima execução noturna.",
       "partnerEnforced_other": "{{display}} conversas em suas organizações devem ser removidas com este período; as mensagens delas serão removidas na próxima execução noturna."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Esta resposta excedeu o tempo limite",
+    "disconnected": "A conexão foi interrompida antes de a resposta terminar.",
+    "tryAgain": "Tentar novamente"
   }
 }

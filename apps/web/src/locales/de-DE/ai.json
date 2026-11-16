@@ -1111,5 +1111,10 @@
       "partnerEnforced_one": "{{display}} Unterhaltung in Ihren Organisationen steht unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
       "partnerEnforced_other": "{{display}} Unterhaltungen in Ihren Organisationen stehen unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Diese Antwort hat das Zeitlimit überschritten",
+    "disconnected": "Die Verbindung wurde unterbrochen, bevor die Antwort abgeschlossen war.",
+    "tryAgain": "Erneut versuchen"
   }
 }

@@ -1111,5 +1111,10 @@
       "partnerEnforced_one": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak.",
       "partnerEnforced_other": "Kuruluşlarınızda {{display}} görüşme bu süreye göre kaldırılmalı; mesajları bir sonraki gece çalışmasında kaldırılacak."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Bu yanıt zaman aşımına uğradı",
+    "disconnected": "Yanıt tamamlanmadan bağlantı kesildi.",
+    "tryAgain": "Tekrar dene"
   }
 }

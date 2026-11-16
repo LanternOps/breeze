@@ -1111,5 +1111,10 @@
       "partnerEnforced_one": "{{display}} conversation across your organizations is due for removal under this window; its messages will be removed in the next nightly run.",
       "partnerEnforced_other": "{{display}} conversations across your organizations are due for removal under this window; their messages will be removed in the next nightly run."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "This response timed out",
+    "disconnected": "The connection was interrupted before the response finished.",
+    "tryAgain": "Try again"
   }
 }

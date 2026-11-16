@@ -43,6 +43,7 @@ const store = {
   draftTicketFromChat: vi.fn(),
   saveTicketFromChat: vi.fn(),
   setComposerDraft: vi.fn(),
+  retryLastTurn: vi.fn(),
 };
 
 vi.mock('@/stores/workspaceStore', () => ({ useWorkspaceStore: () => store }));
@@ -65,6 +66,19 @@ const baseTab = (over = {}) => ({
   approvalMode: 'auto',
   isPaused: false,
   ...over,
+});
+
+describe('WorkspaceChatPanel - Try again (#9428)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('retries the failed turn for its own tab', () => {
+    const retryTarget = { sessionId: 's1', content: 'hi', code: 'timeout', detail: null, mode: 'retry', error: 'Timed out' };
+    render(<WorkspaceChatPanel tab={baseTab({ error: 'Timed out', retryTarget }) as any} />);
+    fireEvent.click(screen.getByTestId('ai-error-retry'));
+    expect(store.retryLastTurn).toHaveBeenCalledWith('t');
+  });
 });
 
 describe('WorkspaceChatPanel - Create Ticket button', () => {
