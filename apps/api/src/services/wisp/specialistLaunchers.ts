@@ -461,7 +461,9 @@ export async function launchSweep(ctx: LaunchContext): Promise<LaunchResult> {
 /** A sandbox analysis run (`launch_analysis` — the coordinator-only path, w00). */
 export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> {
   const params = analysisParamsSchema.parse(ctx.params);
-  const prior = await existingRunId(ctx.orgId, ctx.requestId);
+  // Both replay lookups use the key admission stores, never the raw request id.
+  const dedupeKey = specialistDedupeKey(ctx.requestId);
+  const prior = await existingRunId(ctx.orgId, dedupeKey);
   if (prior) return { admitted: true, runId: prior };
   const result = await runOutsideDbContext(() => admitAnalysisRun({
     orgId: ctx.orgId,
@@ -471,13 +473,13 @@ export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> 
     deviceIds: params.deviceIds ?? [],
     siteId: params.siteId ?? null,
     stagedHandles: [],
-    dedupeKey: specialistDedupeKey(ctx.requestId),
+    dedupeKey,
     grant: { ...ctx.grant },
   }));
   if (result.created) return { admitted: true, runId: result.runId };
   if (result.refusal === 'grant_refused') return { refused: 'admission_skipped', detail: 'grant_refused' };
   // `duplicate` collapses into `analysis_rate`; resolve a raced replay first.
-  const raced = await existingRunId(ctx.orgId, ctx.requestId);
+  const raced = await existingRunId(ctx.orgId, dedupeKey);
   if (raced) return { admitted: true, runId: raced };
   return { refused: 'admission_skipped', detail: result.refusal };
 }

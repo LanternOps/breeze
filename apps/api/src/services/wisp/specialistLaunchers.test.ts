@@ -3,9 +3,12 @@
  * sweep schedule merge and the params schemas are real.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const h = vi.hoisted(() => ({
   tables: {} as Record<string, unknown[][]>,
+  wheres: [] as unknown[],
   sweepAdd: vi.fn(),
   admitAnalysisRun: vi.fn(),
   resolveEffectiveAgentSystem: vi.fn(),
@@ -38,7 +41,7 @@ vi.mock('../../db', () => ({
       from: (table: unknown) => {
         const name = String((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')]);
         const b: Record<string, unknown> = {
-          where: () => b,
+          where: (cond: unknown) => { h.wheres.push(cond); return b; },
           limit: () => Promise.resolve().then(() => nextRows(name)),
         };
         return b;
@@ -139,6 +142,7 @@ beforeEach(() => {
   // The agent kill switch is on (agents allowed) unless a case says otherwise.
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   h.tables = {};
+  h.wheres = [];
   for (const k of Object.keys(h.recipeKinds)) delete h.recipeKinds[k];
 });
 
@@ -292,6 +296,19 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'grant_refused' });
     expect(await launchAnalysis(ctx({ params }))).toEqual({ refused: 'admission_skipped', detail: 'grant_refused' });
+  });
+
+  const paramsOf = (cond: unknown) => new PgDialect().sqlToQuery(cond as SQL).params;
+
+  it('looks a replay up by the stored dedupe key, not the raw request id (both lookups)', async () => {
+    h.tables.ai_agent_runs = [[], []];
+    h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_rate' });
+    await launchAnalysis(ctx({ params }));
+    expect(h.wheres).toHaveLength(2);
+    for (const cond of h.wheres) {
+      expect(paramsOf(cond)).toContain('wisp-specialist-req-1');
+      expect(paramsOf(cond)).not.toContain('req-1');
+    }
   });
 });
 
