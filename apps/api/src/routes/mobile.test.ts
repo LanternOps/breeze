@@ -2646,6 +2646,21 @@ describe('mobile routes', () => {
         expect(await res.json()).toEqual({ error: 'Relay agent went offline', code: 'WS_SEND_FAILED' });
       });
 
+      it('surfaces WAKE_NOT_READY as 412 and never passes testWake', async () => {
+        vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([onlineDevice]) as any);
+        dispatchWakeMock.mockResolvedValueOnce({ ok: false, code: 'WAKE_NOT_READY', message: 'not ready' });
+
+        const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'wake', testWake: true })
+        });
+
+        expect(res.status).toBe(412);
+        expect(await res.json()).toEqual({ error: 'not ready', code: 'WAKE_NOT_READY' });
+        expect(dispatchWakeMock.mock.calls.at(-1)![2] ?? {}).not.toHaveProperty('testWake');
+      });
+
       it('returns the device gate result from inside the context without running the action', async () => {
         vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([{ ...onlineDevice, status: 'decommissioned' }]) as any);
 

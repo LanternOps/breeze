@@ -1299,6 +1299,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     { featureType: 'hardware_monitoring', pollIntervalMinutes: 15 },
     { featureType: 'patch', exclusiveWindowsUpdate: true },
     { featureType: 'time_sync', ntpServers: ['time.budget.example'] },
+    { featureType: 'wake_on_lan', inlineSettings: { configureSettings: false, buttonMode: 'always' } },
     { featureType: 'monitors', serviceName: 'BudgetService', checkIntervalSeconds: 90 },
     { featureType: 'onedrive_helper', orgId, filesOnDemand: true, libraryName: 'Budget Docs' },
   ];
@@ -1329,6 +1330,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(body.configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
     expect(body.configUpdate.monitoring_settings).toMatchObject({ check_interval_seconds: 90, watches: [expect.objectContaining({ name: 'BudgetService' })] });
     expect(body.configUpdate.onedrive_helper_settings.libraries).toHaveLength(1);
+    expect(body.configUpdate.wake_on_lan_settings).toEqual({ enabled: true, configure_settings: false, firmware_writes: [] });
 
     expect(steady.transactions).toBe(2);
     expect(steady.buckets.policySetLoad).toBe(1);

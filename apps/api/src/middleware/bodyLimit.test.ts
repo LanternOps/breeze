@@ -280,6 +280,7 @@ describe('bodyLimitForPath', () => {
       'agent-ingest': '/api/v1/agents/agent-1/software',
       'agent-hardware-health': '/api/v1/agents/agent-1/hardware-health',
       'agent-time-status': '/api/v1/agents/agent-1/time-status',
+      'agent-wake-status': '/api/v1/agents/agent-1/wake-status',
       'agent-workloads': '/api/v1/agents/agent-1/workloads',
       'edr-webhook': '/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e',
       'flow-webhook': '/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e',
@@ -422,6 +423,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     paths: ['/api/v1/agents/agent-1/time-status'],
     globalMaxSize: 512 * 1024,
     note: 'Time status route and global gate both enforce 512 KiB.',
+  },
+  'agents/wakeStatus.ts': {
+    paths: ['/api/v1/agents/agent-1/wake-status'],
+    globalMaxSize: 64 * 1024,
+    note: 'Wake status route and global gate both enforce 64 KiB (#10838).',
   },
   'agents/workloads.ts': {
     paths: ['/api/v1/agents/agent-1/workloads'],

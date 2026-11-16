@@ -143,6 +143,13 @@ vi.mock('../../services/wakeOnLan', () => ({
   dispatchWake: vi.fn(),
 }));
 
+vi.mock('../../services/wakeAvailability', () => ({
+  resolveWakeAvailability: vi.fn(async () => new Map()),
+  WAKE_LOOKUP_FAILED_AVAILABILITY: {
+    show: false, mode: 'unknown', state: 'lookup_failed', testWakeAllowed: false, flaggedTimeouts: false,
+  },
+}));
+
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
@@ -204,6 +211,7 @@ import { db, runAfterDbContextCommit, withDbAccessContext } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake, type WakePrepared, type WakeSuccess } from '../../services/wakeOnLan';
+import { resolveWakeAvailability } from '../../services/wakeAvailability';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
 import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
 import { propagateCancelledDeviceCommand, cancelDeviceCommands } from '../../services/commandCancelPropagation';
@@ -977,6 +985,27 @@ describe('device commands routes', () => {
         expect(await res.json()).toEqual({ error: 'Relay agent went offline', code: 'WS_SEND_FAILED' });
       });
 
+      it.each([
+        [{ type: 'wake', payload: { testWake: true } }, true],
+        [{ type: 'wake', payload: { testWake: 'true' } }, false],
+        [{ type: 'wake', payload: { testWake: 1 } }, false],
+        [{ type: 'wake' }, false],
+      ])('passes testWake only for boolean true (%j)', async (body, expected) => {
+        vi.mocked(dispatchWake).mockResolvedValueOnce({ ...prepared, deliver: async () => prepared });
+        const res = await app.request(`/devices/${id}/commands`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        expect(res.status).toBe(202);
+        expect(vi.mocked(dispatchWake).mock.calls.at(-1)![2]).toMatchObject({ testWake: expected });
+      });
+
+      it('returns 412 WAKE_NOT_READY from the gate', async () => {
+        vi.mocked(dispatchWake).mockResolvedValueOnce({ ok: false, code: 'WAKE_NOT_READY', message: 'not ready' });
+        const res = await send();
+        expect(res.status).toBe(412);
+        expect(await res.json()).toEqual({ error: 'not ready', code: 'WAKE_NOT_READY' });
+      });
+
       it('returns 412 without delivering when preparation refuses', async () => {
         vi.mocked(dispatchWake).mockResolvedValueOnce({ ok: false, code: 'TARGET_ONLINE', message: 'Device is online' });
         const res = await send();
@@ -1014,7 +1043,8 @@ describe('device commands routes', () => {
           });
           expect(response.status).toBe(202);
           expect((await response.json()).succeeded).toHaveLength(2);
-          expect(events).toEqual(ids.flatMap(id => ['begin', `prepare:${id}`, 'commit', `send:${id}`]));
+          // The leading begin/commit is the single batch availability lookup.
+          expect(events).toEqual(['begin', 'commit', ...ids.flatMap(id => ['begin', `prepare:${id}`, 'commit', `send:${id}`])]);
         } finally {
           vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => fn());
         }
@@ -1090,6 +1120,35 @@ describe('device commands routes', () => {
         const bulkIds = new Set(calls.map(([, , opts]) => (opts as any).bulkId));
         expect(bulkIds.size).toBe(1);
         expect(bulkIds.has(body.bulkId)).toBe(true);
+      });
+
+      it('resolves wake availability once for all devices and never honours testWake in bulk', async () => {
+        const ids = ['11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'];
+        const verifiedHidden = { show: false, mode: 'verified', state: 'not_configured', testWakeAllowed: false, flaggedTimeouts: false };
+        vi.mocked(resolveWakeAvailability).mockClear();
+        vi.mocked(resolveWakeAvailability).mockResolvedValueOnce(new Map([[ids[0]!, verifiedHidden as never]]));
+        vi.mocked(getDeviceWithOrgCheck).mockImplementation(async id => onlineDevice(id));
+        vi.mocked(dispatchWake).mockImplementation(async (id, _u, opts) => (
+          (opts as { availability?: { show: boolean } }).availability?.show === false
+            ? { ok: false as const, code: 'WAKE_NOT_READY' as const, message: 'not ready' }
+            : { ok: false as const, code: 'NO_RELAY' as const, message: `no relay ${id}` }
+        ));
+        const res = await app.request('/devices/bulk/commands', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceIds: ids, type: 'wake', payload: { testWake: true } }),
+        });
+        expect(res.status).toBe(202);
+        expect(resolveWakeAvailability).toHaveBeenCalledTimes(1);
+        expect(resolveWakeAvailability).toHaveBeenCalledWith(ids);
+        const calls = vi.mocked(dispatchWake).mock.calls;
+        expect(calls[0]![2]).toMatchObject({ availability: verifiedHidden });
+        expect(calls[0]![2]).not.toHaveProperty('testWake');
+        // Missing from the map: fail closed.
+        expect(calls[1]![2]).toMatchObject({ availability: { state: 'lookup_failed', show: false } });
+        const body = await res.json();
+        expect(body.failed).toEqual(expect.arrayContaining([
+          expect.objectContaining({ deviceId: ids[0], code: 'WAKE_NOT_READY' }),
+        ]));
       });
 
       it('returns DECOMMISSIONED for decommissioned devices without calling dispatchWake', async () => {

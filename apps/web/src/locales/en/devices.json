@@ -2866,7 +2866,9 @@
       "relayDisconnected": "had relay disconnect mid-dispatch — retry",
       "missingTarget": "not found or access denied",
       "removed": "removed",
-      "invalidRelay": "with invalid relay override"
+      "invalidRelay": "with invalid relay override",
+      "policyNotReady": "blocked by their Wake-on-LAN policy (not ready)",
+      "policyLookupFailed": "whose Wake-on-LAN policy could not be checked — retry"
     }
   },
   "filterAddDropdown": {

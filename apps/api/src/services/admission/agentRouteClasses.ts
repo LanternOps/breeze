@@ -87,6 +87,7 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'PUT /:id/patches/installed': 'standard',
   'PUT /:id/hardware-health': 'standard',
   'PUT /:id/time-status': 'standard',
+  'PUT /:id/wake-status': 'standard',
   'PUT /:id/peripherals/events': 'standard',
   'POST /:id/boot-performance': 'standard',
   'POST /:id/reliability': 'standard',

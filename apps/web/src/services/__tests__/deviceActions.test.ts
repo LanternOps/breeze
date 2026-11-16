@@ -472,6 +472,8 @@ describe('deviceActions service', () => {
       expect(wakeFriendlyErrorMessage('RELAY_OVERRIDE_INVALID')).toContain('relay');
       expect(wakeFriendlyErrorMessage('WS_SEND_FAILED')).toContain('Try again');
       expect(wakeFriendlyErrorMessage('TARGET_NOT_FOUND')).toContain('Device not found');
+      expect(wakeFriendlyErrorMessage('WAKE_NOT_READY')).toContain('only shows wake for devices that are ready');
+      expect(wakeFriendlyErrorMessage('WAKE_LOOKUP_FAILED')).toContain('Try again');
     });
 
     it('returns null for unknown / undefined codes so callers fall back to the raw server message', () => {
@@ -535,6 +537,15 @@ describe('deviceActions service', () => {
       expect(out).toMatch(/3 with no online peer at their site/);
       expect(out).toMatch(/1 with no MAC on file/);
       expect(out).toMatch(/1 removed/);
+    });
+
+    it('labels the Wake-on-LAN policy codes instead of echoing the server message', () => {
+      const out = summarizeBulkWakeFailures([
+        { deviceId: '1', code: 'WAKE_NOT_READY', message: 'raw server text' },
+        { deviceId: '2', code: 'WAKE_NOT_READY', message: 'raw server text' },
+        { deviceId: '3', code: 'WAKE_LOOKUP_FAILED', message: 'raw server text' },
+      ]);
+      expect(out).toBe('2 blocked by their Wake-on-LAN policy (not ready); 1 whose Wake-on-LAN policy could not be checked — retry');
     });
 
     it('keeps IPv6_ONLY and NO_SUBNET in distinct code buckets', () => {

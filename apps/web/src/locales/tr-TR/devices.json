@@ -2866,7 +2866,9 @@
       "relayDisconnected": "gönderim sırasında aktarıcı bağlantısı kesildi — yeniden deneyin",
       "missingTarget": "bulunamadı veya erişim reddedildi",
       "removed": "kaldırıldı",
-      "invalidRelay": "aktarıcı seçimi geçersiz"
+      "invalidRelay": "aktarıcı seçimi geçersiz",
+      "policyNotReady": "Wake-on-LAN ilkesi tarafından engellendi (hazır değil)",
+      "policyLookupFailed": "Wake-on-LAN ilkesi denetlenemedi — yeniden deneyin"
     }
   },
   "filterAddDropdown": {

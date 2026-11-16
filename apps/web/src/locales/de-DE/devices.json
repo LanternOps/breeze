@@ -2866,7 +2866,9 @@
       "relayDisconnected": "Relay-Verbindung beim Senden getrennt — erneut versuchen",
       "missingTarget": "nicht gefunden oder Zugriff verweigert",
       "removed": "entfernt",
-      "invalidRelay": "mit ungültiger Relay-Auswahl"
+      "invalidRelay": "mit ungültiger Relay-Auswahl",
+      "policyNotReady": "durch ihre Wake-on-LAN-Richtlinie blockiert (nicht bereit)",
+      "policyLookupFailed": "deren Wake-on-LAN-Richtlinie nicht geprüft werden konnte — erneut versuchen"
     }
   },
   "filterAddDropdown": {

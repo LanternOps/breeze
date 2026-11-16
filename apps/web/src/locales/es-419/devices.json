@@ -2866,7 +2866,9 @@
       "relayDisconnected": "conexión del agente de retransmisión interrumpida durante el envío — reintentar",
       "missingTarget": "no encontrados o acceso denegado",
       "removed": "eliminados",
-      "invalidRelay": "con selección de agente de retransmisión no válida"
+      "invalidRelay": "con selección de agente de retransmisión no válida",
+      "policyNotReady": "bloqueados por su política de Wake-on-LAN (no listos)",
+      "policyLookupFailed": "cuya política de Wake-on-LAN no se pudo verificar — reintentar"
     }
   },
   "filterAddDropdown": {

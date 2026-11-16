@@ -65,6 +65,7 @@ import {
   matchesRoleOsFilter,
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { resolveWakeOnLanSettingsForDevice } from '../../services/featureConfigResolver';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
 import { applicableCandidates, candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../../services/devicePolicySet';
 import { devicePolicyCacheOrg, readDevicePolicyCache, writeDevicePolicyCache, type DevicePolicyCacheOpts } from '../../services/devicePolicyCache';
@@ -3804,6 +3805,28 @@ export interface WarrantySettings {
 export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WarrantySettings> {
   const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
   return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
+}
+
+// ============================================
+// Wake-on-LAN readiness collection config (#10838 W02)
+// ============================================
+
+export interface WakeOnLanConfigUpdate {
+  enabled: boolean;
+  configureSettings: false;
+  firmwareWrites: string[];
+}
+
+/**
+ * `enabled` = a wake_on_lan link resolves for the device, which tells the
+ * agent to collect and upload its read-only readiness snapshot. Writes are off
+ * until W06, so configureSettings is always false and firmwareWrites is empty.
+ * Deliberately does NOT catch: the heartbeat omits the block on a resolver
+ * error so a transient failure never stops collection.
+ */
+export async function buildWakeOnLanConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WakeOnLanConfigUpdate> {
+  const settings = await resolveWakeOnLanSettingsForDevice(deviceId, opts);
+  return { enabled: settings !== null, configureSettings: false, firmwareWrites: [] };
 }
 
 // ============================================
