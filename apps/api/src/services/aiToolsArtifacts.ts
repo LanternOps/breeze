@@ -1,6 +1,7 @@
 /**
  * `read_artifact` (A-W05 D13a/D13b, spec execution-plane §5.2, §9) — the
- * model's own way back into a large tool result it just staged.
+ * model's own way back into a stored file: a large tool result it just
+ * staged, a Wisp thread attachment, or an analysis run's output (#11845).
  *
  * Every oversized tool result is captured as an `input_capture` artifact
  * (`artifacts/toolResultCapture.ts`) whose store copy is REDACTED, never raw
@@ -11,7 +12,9 @@
  * SCOPE IS STRICTER THAN THE REST DOWNLOAD (`GET /ai/artifacts/:id`, org-wide
  * for anyone with `ai_agents:read`). `read_artifact` requires the artifact be
  * anchored to THIS call's own agent run or THIS call's own current chat
- * session — never "any session belonging to this user" (Q4). The anchor is
+ * session — never "any session belonging to this user" (Q4) — with two
+ * server-derived exceptions: the Wisp thread's attachments (W04) and analysis
+ * outputs under the session's live grant (#11845, below). The anchor is
  * not derived here: `executeTool` computes it once, with the exact same
  * `captureContextFrom` capture writes use, and threads it through
  * `ToolExecutionContext.captureAnchor` (see `aiTools.ts`). A call with no

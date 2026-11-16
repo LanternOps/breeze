@@ -10,7 +10,7 @@
  * cap, one Breeze-authored line after the fence says what was left out.
  *
  * Pure: no I/O. Called from exactly one place, `drainPendingRunResults`
- * (`chatRunBridge.ts`), which is where `chain` (W03) arrives.
+ * (`chatRunBridge.ts`), which is where `chain` arrives.
  */
 import type { AiRunResultArtifactRef, AnalysisOutcome } from '@breeze/shared';
 import { wrapUntrustedData } from '../aiInputSanitizer';
@@ -29,9 +29,9 @@ export interface RenderAnalysisRunResultInput {
   outcome: AnalysisOutcome | null;
   /** The `summary` column: the fallback when there is no outcome. */
   summary: string | null;
-  /** The run's `output` files. */
+  /** The files to list. The caller passes only `output` files; this function does not filter. */
   artifacts: AiRunResultArtifactRef[];
-  /** W03: the run's position in its chain (`chain_depth`). */
+  /** The run's chain step (`ai_agent_runs.chain_depth`); the step line is omitted when absent. */
   chain?: { depth: number };
 }
 

@@ -226,6 +226,24 @@ describe('read_artifact anchor threading through executeTool (A-W05 Q4)', () => 
     expect(g.ceiling).toHaveBeenCalledWith('g1', 'r1');
   });
 
+  it('#11845: the grant pin never rides on run_flow\'s anchor', async () => {
+    const flow = aiTools.get('run_flow')!;
+    const original = flow.handler;
+    const spy = vi.fn(async () => JSON.stringify({ ok: true }));
+    flow.handler = spy as typeof flow.handler;
+    try {
+      await executeTool('run_flow', { flowId: '33333333-3333-4333-8333-333333333333' }, auth(), {
+        capture: { orgId: 'o1', sessionId: 's9', wispThreadId: 't7', wispGrant: { grantId: 'g1', revisionId: 'r1' } },
+      });
+    } finally {
+      flow.handler = original;
+    }
+    expect(spy).toHaveBeenCalledTimes(1);
+    const context = (spy.mock.calls[0] as unknown[])[2] as ToolExecutionContext;
+    expect(context.captureAnchor).toMatchObject({ orgId: 'o1', sessionId: 's9' });
+    expect(context.captureAnchor).not.toHaveProperty('wispGrant');
+  });
+
   it('#11845: an ordinary chat caller has no grant pin key on its anchor', async () => {
     await executeTool('read_artifact', { handle: HANDLE }, auth(), { capture: { orgId: 'o1', sessionId: 's9' } });
     const anchor = lastLookupAnchor();

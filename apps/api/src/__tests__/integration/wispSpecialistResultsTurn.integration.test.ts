@@ -19,11 +19,15 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 });
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { aiAgentRuns, aiAgents, aiRunArtifacts, aiSessions, devices, wispGrantRevisions, wispGrants } from '../../db/schema';
+import { aiAgentRuns, aiAgents, aiRunArtifacts, aiSessions, devices, organizations, wispGrantRevisions, wispGrants } from '../../db/schema';
+import { WORKSPACE_TOOL_NAMES } from '../../services/workspace/workspaceToolNames';
 import type { AnalysisOutcome } from '@breeze/shared';
 import { findArtifactForCaller, type AnalysisOutputReadScope } from '../../services/artifacts/artifactService';
 import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { drainPendingRunResults } from '../../services/workspace/chatRunBridge';
+import { createMemoryBlobStorage, setBlobStorageForTests } from '../../services/artifacts/blobStorage';
+import { registerArtifactTools } from '../../services/aiToolsArtifacts';
+import type { AiTool } from '../../services/aiTools';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import { registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { requestSpecialist } from '../../services/wisp/coordinator';
@@ -57,6 +61,8 @@ const PERMS = [
   { resource: 'devices', action: 'read' },
   { resource: 'devices', action: 'write' },
   { resource: 'devices', action: 'execute' },
+  // #11845: a sandbox analysis launch needs it in the grant and for the person asking.
+  { resource: 'ai_workspace', action: 'execute' },
 ];
 
 async function seedTenant() {
@@ -205,7 +211,7 @@ async function seedTenant() {
 
   return {
     partner, org, grantor, device: device!, grant, handOff, settle, addRevision, addGrant,
-    insertSession, analysisRun, artifact, scopeOf, readAs,
+    insertSession, analysisRun, artifact, scopeOf, readAs, chatAuth,
   };
 }
 
@@ -480,5 +486,98 @@ describe('read_artifact analysis-output arm against Postgres (#11845)', () => {
     expect((await t.readAs(id, sessionA, scope, partnerCtx))?.id).toBe(id);
     // RLS still applies on top: a context that cannot see org B reads nothing.
     expect(await t.readAs(id, sessionA, scope)).toBeNull();
+  });
+});
+
+describe('the real producer and the real handler (#11845 review)', () => {
+  it('a chat launch through the coordinator writes the row delivery and the read arm match', async () => {
+    const t = await seedTenant();
+    const session = await t.insertSession();
+    // What an MSP turns on for sandbox analysis: the org's external-processing
+    // switch and the workspace tools on the agent.
+    await sys(() => db.update(organizations).set({ aiExternalProcessing: true } as never).where(eq(organizations.id, t.org.id)));
+    await sys(() => db.update(aiAgents).set({ toolAllowlist: ['query_devices', ...WORKSPACE_TOOL_NAMES] } as never)
+      .where(and(eq(aiAgents.partnerId, t.partner.id), eq(aiAgents.kind, 'triage'))));
+    const requestId = randomUUID();
+    const result = await requestSpecialist(
+      {
+        grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'analysis',
+        params: { goal: 'Which drivers crash most?', deviceIds: [t.device.id] }, requestedByRunId: null,
+      },
+      { requester: { kind: 'user', auth: t.chatAuth(session) }, requestId },
+    );
+    expect(result).toMatchObject({ admitted: true });
+    const [row] = await sys(() => db.select({
+      id: aiAgentRuns.id, profile: aiAgentRuns.profile, grantId: aiAgentRuns.grantId, triggerRef: aiAgentRuns.triggerRef,
+    }).from(aiAgentRuns).where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId)))));
+    expect(row).toMatchObject({
+      profile: 'analysis', grantId: t.grant.grantId,
+      triggerRef: expect.objectContaining({ source: 'chat_analysis', originSessionId: session }),
+    });
+
+    await t.settle(row!.id, { status: 'completed', summary: 'Done.', outcome: { analysis: OUTCOME } });
+    const output = await t.artifact(row!.id, 'output');
+    const turn = await specialistResultsForTurn({ grantId: t.grant.grantId, revisionId: t.grant.revisionId, sessionId: session });
+    expect(turn?.results).toEqual([expect.objectContaining({ runId: row!.id, profile: 'analysis', analysis: OUTCOME })]);
+    expect((await t.readAs(output, await t.insertSession(), await t.scopeOf(t.grant)))?.id).toBe(output);
+  });
+
+  it('a partner-wide session in org A is handed the result of its analysis run in org B', async () => {
+    const t = await seedTenant();
+    const orgB = await createOrganization({ partnerId: t.partner.id });
+    const widened = await t.addRevision(t.grant.grantId, 2, [t.org.id, orgB.id]);
+    const sessionA = await t.insertSession(t.org.id);
+    const runB = await t.analysisRun(sessionA, { orgId: orgB.id, revisionId: widened });
+    const output = await t.artifact(runB, 'output', { orgId: orgB.id });
+    const turn = await specialistResultsForTurn({ grantId: t.grant.grantId, revisionId: widened, sessionId: sessionA });
+    expect(turn?.results).toEqual([expect.objectContaining({
+      runId: runB, analysis: OUTCOME, artifacts: [expect.objectContaining({ handle: output })],
+    })]);
+  });
+
+  describe('read_artifact handler end to end (real ceiling, real query, memory blobs)', () => {
+    const blobs = createMemoryBlobStorage();
+    const tools = new Map<string, AiTool>();
+    registerArtifactTools(tools);
+    beforeEach(() => setBlobStorageForTests(blobs));
+    afterEach(() => setBlobStorageForTests(null));
+
+    async function seeded() {
+      const t = await seedTenant();
+      const session = await t.insertSession();
+      const id = await t.artifact(await t.analysisRun(session), 'output');
+      const [art] = await sys(() => db.select({ blobKey: aiRunArtifacts.blobKey }).from(aiRunArtifacts).where(eq(aiRunArtifacts.id, id)));
+      blobs.objects.set(art!.blobKey, { body: Buffer.from('driver,count\nnvlddmkm,14\n'), contentType: 'text/csv' });
+      // A second session of the same thread reads it.
+      const reader = await t.insertSession();
+      const read = async () => JSON.parse(await withDbAccessContext(orgContext(t.org.id, t.partner.id), () =>
+        tools.get('read_artifact')!.handler({ handle: id }, {} as never, {
+          captureAnchor: { orgId: t.org.id, sessionId: reader, wispGrant: { grantId: t.grant.grantId, revisionId: t.grant.revisionId } },
+        })) as string) as Record<string, unknown>;
+      return { t, read };
+    }
+
+    it('reads an output file through the pin', async () => {
+      const { read } = await seeded();
+      expect(await read()).toMatchObject({ name: 'bsod_by_driver.csv', text: expect.stringContaining('nvlddmkm,14') });
+    });
+
+    it('a paused grant reads nothing through the arm', async () => {
+      const { t, read } = await seeded();
+      await sys(() => db.update(wispGrants).set({ status: 'paused', pausedReason: 'user_paused' } as never).where(eq(wispGrants.id, t.grant.grantId)));
+      expect(await read()).toEqual({ error: 'Artifact not found', code: 'ARTIFACT_NOT_FOUND' });
+    });
+
+    it('a revoked grant reads nothing through the arm', async () => {
+      const { t, read } = await seeded();
+      await sys(() => db.update(wispGrants).set({ status: 'revoked' } as never).where(eq(wispGrants.id, t.grant.grantId)));
+      expect(await read()).toEqual({ error: 'Artifact not found', code: 'ARTIFACT_NOT_FOUND' });
+    });
+
+    it('with Wisp off nothing is read through the arm', async () => {
+      const { read } = await seeded();
+      vi.stubEnv('BREEZE_WISP_ENABLED', 'false');
+      expect(await read()).toEqual({ error: 'Artifact not found', code: 'ARTIFACT_NOT_FOUND' });
+    });
   });
 });

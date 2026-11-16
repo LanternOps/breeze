@@ -407,8 +407,9 @@ const analysisRun = alias(aiAgentRuns, 'ar');
  *    partner-wide chat in org A may launch a run in org B and is then handed
  *    its files; RLS under the caller's ceiling-narrowed auth still applies);
  *  - its run, in the same org, is an `analysis` run under the caller's grant;
- *  - that run was launched from a chat (`originSessionId` set), which leaves
- *    out the assessment path.
+ *  - that run was launched from a chat (`originSessionId` set), so a run the
+ *    coordinator admitted with no live chat (the run/approval paths, e.g. a
+ *    request from an assessment run) is excluded.
  * The arm does not compare the run's origin session with the caller's: one
  * grant is one Wisp thread (`wisp_threads_grant_uq`), and every session of a
  * grant belongs to its grantor, so any chat of the thread may read its files.

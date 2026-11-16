@@ -65,7 +65,8 @@ export interface AdmitAnalysisRunInput {
    * The CHAT session the technician launched from, or null. Also written as
    * `trigger_ref.originSessionId`: next-turn delivery matches that key exactly
    * (`wisp/specialistResultsTurn.ts`), and `read_artifact`'s analysis-output
-   * arm requires it to be set (a chat-launched run, not the assessment path).
+   * arm requires it to be set (a chat-launched run, not one the coordinator
+   * admitted on the run/approval paths, which have no live chat).
    */
   sessionId: string | null;
   goal: string;

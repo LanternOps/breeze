@@ -1,8 +1,8 @@
 /**
  * #11671 — a specialist's result reaches the chat that handed the work off.
  *
- * A Wisp hand-off (`launch_specialist` → `launchDeviceTroubleshooting`)
- * records the chat session on the run (`trigger_ref.originSessionId`). The
+ * A Wisp hand-off (`launch_specialist` → `launchDeviceTroubleshooting`, or
+ * `launchAnalysis` since #11845) records the chat session on the run (`trigger_ref.originSessionId`). The
  * run settles seconds or minutes later, after the launching turn has ended.
  * Its result used to reach the model only through the in-memory queue on the
  * live streaming session (chatRunBridge `pendingRunResults`), and every
@@ -94,10 +94,27 @@ type RunRow = {
   outcome: Record<string, unknown> | null;
 };
 
-/** An analysis run's stored outcome, or null when it has none or it fails the schema (never throws). */
-function parsedAnalysisOutcome(outcome: Record<string, unknown> | null): AnalysisOutcome | null {
-  const parsed = analysisOutcomeSchema.safeParse(outcome?.analysis);
-  return parsed.success ? parsed.data : null;
+/**
+ * An analysis run's stored outcome, or null when it has none or it fails the
+ * schema (never throws; the renderer falls back to the summary column). An
+ * outcome that is present but unreadable is reported, by issue path only
+ * (never the values, which are model-written), so it is not mistaken for a
+ * run that submitted nothing.
+ */
+function parsedAnalysisOutcome(runId: string, outcome: Record<string, unknown> | null): AnalysisOutcome | null {
+  const stored = outcome?.analysis;
+  if (stored === undefined || stored === null) return null;
+  const parsed = analysisOutcomeSchema.safeParse(stored);
+  if (parsed.success) return parsed.data;
+  const paths = parsed.error.issues.slice(0, 10).map((i) => i.path.join('.') || '(root)');
+  console.warn('[wisp] specialist results: an analysis outcome failed its schema; delivering the summary only', { runId, paths });
+  captureException(
+    new Error('analysis outcome failed its schema'),
+    undefined,
+    { runId, paths: paths.join(','), op: 'wisp.analysis_outcome_unreadable' },
+    { fingerprint: ['wisp-specialist-results', 'analysis-outcome-unreadable'] },
+  );
+  return null;
 }
 
 /** This session's settled hand-offs under the grant and its live ceiling, newest first. */
@@ -169,7 +186,7 @@ async function readResults(chosen: RunRow[], orgIds: string[]): Promise<Speciali
       .map(({ runId: _runId, kind: _kind, ...a }) => ({ ...a, bytes: Number(a.bytes) }));
     const status = run.status as SettledStatus;
     const result: PendingRunResult = { runId: run.id, status, profile: run.profile, summary: run.summary, artifacts: refs };
-    if (isAnalysis) result.analysis = parsedAnalysisOutcome(run.outcome);
+    if (isAnalysis) result.analysis = parsedAnalysisOutcome(run.id, run.outcome);
     if (status === 'awaiting_approval') {
       result.pendingIntentCount = Number(pending.find((p) => p.runId === run.id)?.n ?? 0);
     }

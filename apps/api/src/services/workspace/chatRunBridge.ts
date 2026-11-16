@@ -83,11 +83,13 @@ export interface PendingRunResult {
   /**
    * #11845: the run's `submit_analysis` outcome, schema-checked (null when it
    * fails the schema or the run submitted none). Set by
-   * `wisp/specialistResultsTurn.ts` for `analysis` rows; absent on the
-   * in-memory queue path, which falls back to `summary`.
+   * `wisp/specialistResultsTurn.ts` for `analysis` rows, which also lists
+   * only their `output` files. Absent on the in-memory queue path, which
+   * falls back to `summary` and does NOT filter files by kind: do not queue
+   * `analysis` runs there.
    */
   analysis?: AnalysisOutcome | null;
-  /** W03: the run's chain step, from `ai_agent_runs.chain_depth`. Unset in W01. */
+  /** The run's chain step (`ai_agent_runs.chain_depth`). Nothing sets it yet; the step line is omitted when absent. */
   chain?: { depth: number };
 }
 
@@ -434,7 +436,8 @@ export function drainPendingRunResults(session: ActiveSession, durable: readonly
 
   const blocks = results.map((result) => {
     if (result.profile === 'analysis') {
-      // #11845: summary, findings, proposals and file names in one fence, 8 KB.
+      // #11845: summary, findings, proposals and file names in one fence; the
+      // renderer caps its own output at 8 KB.
       const body = renderAnalysisRunResult({
         outcome: result.analysis ?? null,
         summary: result.summary,

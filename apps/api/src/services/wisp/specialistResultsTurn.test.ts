@@ -152,11 +152,17 @@ describe('specialistResultsForTurn: analysis runs (#11845)', () => {
   it('an outcome that fails the schema becomes null, never a throw', async () => {
     h.rows.ai_agent_runs = [run('run-a', { profile: 'analysis', outcome: { analysis: { summary: 42 } } })];
     expect((await specialistResultsForTurn(input))?.results[0]).toMatchObject({ analysis: null, summary: 'Summary of run-a' });
+    // An unreadable outcome is reported (paths only, never values), not silently dropped.
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException.mock.calls[0]![2]).toMatchObject({ runId: 'run-a', op: 'wisp.analysis_outcome_unreadable' });
+    expect(JSON.stringify(h.captureException.mock.calls[0])).not.toContain('42');
   });
 
   it('an analysis run with no outcome at all (failed, cancelled) has a null analysis', async () => {
     h.rows.ai_agent_runs = [run('run-a', { profile: 'analysis', status: 'failed', outcome: null })];
     expect((await specialistResultsForTurn(input))?.results[0]).toMatchObject({ analysis: null, status: 'failed' });
+    // No outcome submitted is the normal failed/cancelled case: nothing to report.
+    expect(h.captureException).not.toHaveBeenCalled();
   });
 
   it('troubleshooting runs keep every artifact kind and carry no analysis key', async () => {
