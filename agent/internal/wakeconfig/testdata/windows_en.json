@@ -1,0 +1,1 @@
+{"hiberboot":1,"adapters":[{"name":"Ethernet","mac":"AA-BB-CC-DD-EE-01","magicPacket":"enabled","eee":"1","displayName":"Energy Efficient Ethernet","displayValue":"Enabled"},{"name":"Ethernet 2","mac":"AA-BB-CC-DD-EE-02","magicPacket":"disabled","eee":null}]}
