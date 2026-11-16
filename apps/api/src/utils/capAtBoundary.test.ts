@@ -17,6 +17,19 @@ describe('capAtBoundary', () => {
     expect(capAtBoundary(text, 20)).toBe(`${'a'.repeat(12)}…`);
   });
 
+  it('keeps text of exactly max chars and cuts at max + 1', () => {
+    expect(capAtBoundary('abcd efgh', 9)).toBe('abcd efgh');
+    expect(capAtBoundary('abcd efgh', 8)).toBe('abcd…');
+  });
+
+  it('falls back to a single line break when there is no paragraph break', () => {
+    expect(capAtBoundary('aaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbb', 16)).toBe('aaaaaaaaaa…');
+  });
+
+  it('ignores a boundary in the front half of the budget', () => {
+    expect(capAtBoundary('ab cdefghijklmnopqrstuvwxyz', 16)).toBe('ab cdefghijklmn…');
+  });
+
   it('never splits a surrogate pair', () => {
     const out = capAtBoundary('😀'.repeat(30), 10);
     expect(Array.from(out).length).toBeLessThanOrEqual(10);
