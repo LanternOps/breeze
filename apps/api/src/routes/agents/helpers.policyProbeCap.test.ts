@@ -34,7 +34,13 @@ vi.mock('../../db', () => ({
   db: dbMock,
 }));
 
-import { buildPolicyProbeConfigUpdate, MAX_POLICY_STATE_PROBES_PER_ORG } from './helpers';
+import {
+  buildPolicyProbeConfigUpdate,
+  derivePolicyStateProbesFromRules,
+  MAX_POLICY_STATE_PROBES_PER_ORG,
+  sortPolicyRegistryProbes,
+} from './helpers';
+import { uncollectableComplianceRegistryPaths } from './policyProbeSafety';
 
 const pad = (n: number) => String(n).padStart(4, '0');
 const registryRule = (n: number) => ({
@@ -106,5 +112,55 @@ describe('buildPolicyProbeConfigUpdate per-org cap (#11976)', () => {
     const probe = await buildPolicyProbeConfigUpdate('org-1', { partnerId: null });
     expect(probe!.policy_registry_state_probes).toHaveLength(MAX_POLICY_STATE_PROBES_PER_ORG);
     expect(warn.mock.calls.filter((call) => String(call[0]).includes('probe list truncated'))).toHaveLength(0);
+  });
+});
+
+/**
+ * #11976: the write-time refusal must agree with the probe builder. A path the
+ * builder drops must be refused when written, and a path it probes accepted.
+ */
+describe('uncollectableComplianceRegistryPaths agrees with derivePolicyStateProbesFromRules', () => {
+  const PATHS = [
+    'HKLM\\SOFTWARE\\Policies\\Example',
+    'HKEY_LOCAL_MACHINE/SOFTWARE/Policies/Example',
+    'HKLM\\SAM',
+    'hklm\\sam\\SAM\\Domains',
+    'HKLM\\ SAM',
+    'HKLM\\SOFTWARE\\..\\SAM',
+    'HKEY_LOCAL_MACHINE/SECURITY/Policy/Secrets',
+    '  HKLM\\SECURITY  ',
+    'HKLM\\ſam',
+    'HKCU\\SAM',
+    'HKLM\\SAMPLE\\Key',
+  ];
+
+  it.each(PATHS)('%s', (path) => {
+    const rules = [{ type: 'registry_check', registryPath: path, registryValueName: 'V' }];
+    const probed = derivePolicyStateProbesFromRules(rules).registry.length === 1;
+    const refused = uncollectableComplianceRegistryPaths({ items: [{ name: 'x', rules }] }).length === 1;
+    expect(refused).toBe(!probed);
+  });
+
+  it('reads rules the way the builder does: snake_case path, upper-case type, name fallback, dedupe', () => {
+    const items: Array<{ name: string; rules?: unknown[] }> = [
+      { name: 'a', rules: [{ type: 'REGISTRY_CHECK', registry_path: 'HKLM\\SAM', registry_value_name: 'F' }] },
+      { name: 'b', rules: [{ name: 'registry_check', registryPath: ' HKLM\\SAM ', registryValueName: 'F' }] },
+      { name: 'c' },
+      { name: 'd', rules: [{ type: 'registry_check', registryPath: '' }, { type: 'config_check', registryPath: 'HKLM\\SAM' }] },
+    ];
+    expect(uncollectableComplianceRegistryPaths({ items })).toEqual(['HKLM\\SAM']);
+    expect(derivePolicyStateProbesFromRules(items.flatMap((i) => i.rules ?? [])).registry).toEqual([]);
+  });
+});
+
+describe('probe sort tie-break', () => {
+  it('orders localeCompare ties by code point, whatever the input order', () => {
+    // NFC and NFD spellings of the same text compare equal under localeCompare.
+    const nfc = 'HKLM\\SOFTWARE\\Café';
+    const nfd = 'HKLM\\SOFTWARE\\Café';
+    expect(nfc.localeCompare(nfd)).toBe(0);
+    const a = { registry_path: nfc, value_name: 'V' };
+    const b = { registry_path: nfd, value_name: 'V' };
+    expect(sortPolicyRegistryProbes([a, b])).toEqual(sortPolicyRegistryProbes([b, a]));
   });
 });

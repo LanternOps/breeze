@@ -1853,6 +1853,19 @@ describe('manage_policy_feature_link compliance validation + rejection hints (#6
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });
 
+  it('rejects an uncollectable registry_check path on the UPDATE action too (#11976)', async () => {
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'compliance' } as any);
+    mockSelectRows([{ featureType: 'compliance' }]);
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: { items: [{ name: 'Accounts', rules: [{ type: 'registry_check', registryPath: 'HKLM\\SECURITY', registryValueName: 'F' }] }] },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toContain('never collected');
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
   it('saves a well-formed compliance payload unnormalized (UI-only keys such as remediation survive)', async () => {
     const raw = {
       items: [{

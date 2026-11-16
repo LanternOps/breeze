@@ -374,19 +374,30 @@ export {
 // Policy Probe Processing
 // ============================================
 
+/**
+ * localeCompare, then code points: localeCompare can tie two distinct strings,
+ * and the per-org cap keeps the head of this order, so a tie must not fall
+ * back to the order the rows were read in (#11976).
+ */
+function compareProbeText(left: string, right: string): number {
+  const byLocale = left.localeCompare(right);
+  if (byLocale !== 0) return byLocale;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function sortPolicyRegistryProbes(probes: PolicyRegistryProbeUpdate[]): PolicyRegistryProbeUpdate[] {
   return [...probes].sort((left, right) => {
-    const pathCompare = left.registry_path.localeCompare(right.registry_path);
+    const pathCompare = compareProbeText(left.registry_path, right.registry_path);
     if (pathCompare !== 0) return pathCompare;
-    return left.value_name.localeCompare(right.value_name);
+    return compareProbeText(left.value_name, right.value_name);
   });
 }
 
 export function sortPolicyConfigProbes(probes: PolicyConfigProbeUpdate[]): PolicyConfigProbeUpdate[] {
   return [...probes].sort((left, right) => {
-    const pathCompare = left.file_path.localeCompare(right.file_path);
+    const pathCompare = compareProbeText(left.file_path, right.file_path);
     if (pathCompare !== 0) return pathCompare;
-    return left.config_key.localeCompare(right.config_key);
+    return compareProbeText(left.config_key, right.config_key);
   });
 }
 

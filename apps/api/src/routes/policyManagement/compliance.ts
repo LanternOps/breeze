@@ -736,7 +736,7 @@ complianceRoutes.get(
         });
 
       return c.json({
-        data: rows,
+        data: rows.map((row) => ({ ...row, details: withoutObservedRegistryValues(row.details) })),
         pagination: { page, limit, total },
         overall,
         trend: [],
@@ -962,7 +962,7 @@ complianceRoutes.get(
       });
 
     return c.json({
-      data: configRows,
+      data: configRows.map((row) => ({ ...row, details: withoutObservedRegistryValues(row.details) })),
       pagination: { page, limit, total: configTotal },
       overall: configOverall,
       trend: [],
