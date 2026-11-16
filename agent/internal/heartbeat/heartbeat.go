@@ -275,7 +275,11 @@ type SecurityCapabilities struct {
 	NetworkIsolationMechanism         string `json:"networkIsolationMechanism,omitempty"`
 	NetworkIsolationUnsupportedReason string `json:"networkIsolationUnsupportedReason,omitempty"`
 	NetworkIsolationReady             bool   `json:"networkIsolationReady"`
-	OutboundNetworkPolicyVersion      int    `json:"outboundNetworkPolicyVersion"`
+	// NetworkIsolationDeadMan: this build runs the containment dead-man and
+	// accepts a non-zero deadManSeconds (#10103). Its own flag, not a level
+	// (decision 28); omitted by a build that cannot isolate.
+	NetworkIsolationDeadMan      bool `json:"networkIsolationDeadMan,omitempty"`
+	OutboundNetworkPolicyVersion int  `json:"outboundNetworkPolicyVersion"`
 	// #3409 PR4b — this build decodes `secretEnv`, injects BREEZE_VAR_*, blocks
 	// user-context runs that would drop the credential, and redacts the values
 	// out of stdout/stderr/error. Declared unconditionally: the behavior is

@@ -254,18 +254,19 @@ type Capability struct {
 const (
 	// CapabilityBase can isolate and release.
 	CapabilityBase = 1
-	// CapabilityDeadMan is reserved for the dead-man opt-in (W4d). This build
-	// does not implement it: validateSpec refuses deadManSeconds != 0.
+	// CapabilityDeadMan is the level the plan first reserved for the dead-man
+	// opt-in. No build advertises it: the dead-man shipped after levels 3 and 4,
+	// so it is advertised by its own flag instead (AdvertisesDeadMan,
+	// securityCapabilities.networkIsolationDeadMan; decision 28).
 	CapabilityDeadMan = 2
 	// CapabilityPolicyAllow accepts scope:"any" entries under a policyRevision,
 	// on the heartbeat path as well as the command path. It does not imply
-	// CapabilityDeadMan until W4d ships, so a dead-man gate cannot read this
-	// level as support for it.
+	// dead-man support: a dead-man gate reads only AdvertisesDeadMan.
 	CapabilityPolicyAllow = 3
 	// CapabilityReleaseToken accepts the releaseTokenPublicKey,
 	// releaseTokenDeviceId and requireSignedReleaseToken spec fields and
 	// verifies signed offline release tokens (#10102). It implies
-	// CapabilityPolicyAllow but still not CapabilityDeadMan.
+	// CapabilityPolicyAllow, and nothing about the dead-man.
 	CapabilityReleaseToken = 4
 )
 
@@ -278,6 +279,13 @@ func (c Capability) AdvertisedVersion() int {
 		return 0
 	}
 	return CapabilityReleaseToken
+}
+
+// AdvertisesDeadMan is securityCapabilities.networkIsolationDeadMan: this build
+// accepts a non-zero deadManSeconds and runs the dead-man (deadman.go). Like
+// AdvertisedVersion, a build that cannot isolate advertises nothing.
+func (c Capability) AdvertisesDeadMan() bool {
+	return c.Version >= CapabilityBase
 }
 
 // Digest identifies an installed rule set.
