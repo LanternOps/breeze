@@ -55,6 +55,8 @@ const TOKEN = {
   tenantId: '11111111-2222-4333-8444-555555555555', issuer: 'https://login.microsoftonline.com/11111111-2222-4333-8444-555555555555/v2.0',
 };
 const WIRE = `Bearer brzscim_${'a'.repeat(32)}_${'B'.repeat(43)}`;
+/** The row id parseScimBearer reads out of WIRE. */
+const TOKEN_ROW_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const RECORD = {
   id: IDENT, externalId: OID, userName: 'jane@acme.example', active: true,
   displayName: 'Jane', givenName: null, familyName: null, created: new Date('2027-02-01T12:00:00.000Z'),
@@ -96,21 +98,38 @@ describe('authentication (D9, Review Focus 2)', () => {
       schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'], status: '401', detail: 'Authentication failed.',
     });
     expect(users.listScimUsers).not.toHaveBeenCalled();
-    // Each failure is counted against the client address.
-    expect(limiter.calls).toContain('portal_scim_auth_fail:203.0.113.7');
   });
 
-  it('a malformed token never reaches the token lookup', async () => {
+  it('a malformed token never reaches Redis or the token lookup, and spends no budget', async () => {
     await req('GET', '/Users', { auth: 'Bearer nope' });
     expect(verifyPortalScimToken).not.toHaveBeenCalled();
+    expect(fakeRedis.zcount).not.toHaveBeenCalled();
+    expect(limiter.calls).toEqual([]);
   });
 
-  it('an address over its failure budget gets 429 before any lookup, even with a well-formed token', async () => {
+  it('a refused well-formed token is counted against (token id, client address)', async () => {
+    verify.result = null;
+    await req('GET', '/Users');
+    expect(limiter.calls).toEqual([`portal_scim_auth_fail:${TOKEN_ROW_ID}:203.0.113.7`]);
+  });
+
+  it('a spent (token id, address) budget gets 429 before any lookup', async () => {
     redisState.zcount = 300;
     const res = await req('GET', '/Users');
     expect(res.status).toBe(429);
     expect(res.headers.get('retry-after')).toBe('300');
     expect(verifyPortalScimToken).not.toHaveBeenCalled();
+    expect(fakeRedis.zcount).toHaveBeenCalledWith(`portal_scim_auth_fail:${TOKEN_ROW_ID}:203.0.113.7`, expect.any(Number), '+inf');
+  });
+
+  it('failures against one token id never block another token from the same address (shared egress)', async () => {
+    // Only the guessed id's bucket is full.
+    const byKey = async (key: string) => (key.includes(TOKEN_ROW_ID) ? 300 : 0);
+    fakeRedis.zcount.mockImplementationOnce(byKey).mockImplementationOnce(byKey);
+    users.listScimUsers.mockResolvedValue({ total: 0, records: [] });
+    const other = `Bearer brzscim_${'c'.repeat(32)}_${'B'.repeat(43)}`;
+    expect((await req('GET', '/Users', { auth: other })).status).toBe(200);
+    expect((await req('GET', '/Users')).status).toBe(429);
   });
 
   it('Redis unavailable fails closed (429) for a well-formed token', async () => {

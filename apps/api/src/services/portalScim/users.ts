@@ -230,7 +230,7 @@ interface LockedAccount {
   disabledBy: string | null;
 }
 
-interface LockedIdentity extends RecordRow { portalUserId: string }
+interface LockedIdentity extends RecordRow { portalUserId: string; linkedVia: string }
 
 async function lockAccount(orgId: string, portalUserId: string): Promise<LockedAccount | null> {
   const [row] = await db
@@ -253,7 +253,7 @@ async function lockAccount(orgId: string, portalUserId: string): Promise<LockedA
 
 async function lockIdentity(where: SQL): Promise<LockedIdentity | null> {
   const [row] = await db
-    .select({ ...recordColumns, portalUserId: portalUserIdentities.portalUserId })
+    .select({ ...recordColumns, portalUserId: portalUserIdentities.portalUserId, linkedVia: portalUserIdentities.linkedVia })
     .from(portalUserIdentities)
     .where(where)
     .for('update')
@@ -312,8 +312,10 @@ async function writeAttributes(
 
   let emailKept = false;
   const address = next.userName.toLowerCase();
-  // A password-eligible account's login address never changes from a directory push.
-  if (account.authMethod !== 'password' && account.email.toLowerCase() !== address) {
+  // The login address follows userName only on an account SCIM itself created (identity
+  // linked_via 'scim', identity-only). A password-eligible account, and an account SCIM
+  // adopted, never has its address changed by a directory push (security review).
+  if (identity.linkedVia === 'scim' && account.authMethod !== 'password' && account.email.toLowerCase() !== address) {
     const [other] = await db
       .select({ id: portalUsers.id })
       .from(portalUsers)

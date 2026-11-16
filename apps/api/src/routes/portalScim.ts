@@ -9,7 +9,7 @@
  * partnerGuard skips the path (middleware/partnerGuard.ts) and the global
  * limiter meters it in its own per-IP bucket (middleware/globalRateLimit.ts).
  *
- * ORDER (D9): body limit → well-formedness (no DB) → per-IP failure bucket
+ * ORDER (D9): body limit → well-formedness (no Redis, no DB) → failure bucket per (token id, IP)
  * (over the limit ⇒ 429 before any lookup) → token lookup + compare → tenant
  * and org checks → per-org bucket → handler. Every authentication failure is
  * ONE fixed 401 body, whatever the reason.
@@ -45,7 +45,7 @@ import {
 
 export const PORTAL_SCIM_BASE_PATH = '/api/v1/scim/portal/v2';
 const BODY_LIMIT_BYTES = 64 * 1024;
-/** Failed authentications per normalized client IP before lookups stop (OD4). */
+/** Failed authentications per (token id, normalized client IP) before lookups stop (OD4). */
 const AUTH_FAIL_LIMIT = 300;
 const AUTH_FAIL_WINDOW_S = 300;
 /** Authenticated requests per org (OD4); Entra backs off on 429 + Retry-After. */
@@ -98,23 +98,24 @@ async function failureBudgetSpent(redis: ReturnType<typeof getRedis>, key: strin
 }
 
 const scimAuth: MiddlewareHandler<Env> = async (c, next) => {
-  const redis = getRedis();
-  const ipKey = `portal_scim_auth_fail:${rateLimitIpKey(getTrustedClientIp(c, 'unknown'))}`;
-  const recordFailure = async () => {
-    await rateLimiter(redis, ipKey, AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW_S);
-  };
-
-  // A missing or malformed token never reaches Redis's budget check or the
-  // database: the same 401, and the failure is counted.
+  // A missing or malformed token never reaches Redis or the database: the same
+  // 401. It costs nothing to answer, so it spends no budget.
   const authorization = c.req.header('Authorization');
-  if (!parseScimBearer(authorization)) {
-    await recordFailure();
-    return unauthorized(c);
-  }
+  const parsed = parseScimBearer(authorization);
+  if (!parsed) return unauthorized(c);
 
-  // A well-formed token from an address over the failure budget is refused
-  // before any lookup — this is what bounds lookup load from guessing.
-  if (await failureBudgetSpent(redis, ipKey)) return tooMany(c, AUTH_FAIL_WINDOW_S);
+  // The failure budget is keyed on the token id AND the client address, so
+  // failures from a shared egress address (Microsoft's provisioning service
+  // calls for every tenant) can never lock out another org's token, and a
+  // third party who learns a token id cannot lock out the address Entra uses.
+  // Checked before any lookup; per-address lookup volume is bounded by the
+  // global limiter's isolated 'scim' bucket.
+  const redis = getRedis();
+  const failKey = `portal_scim_auth_fail:${parsed.tokenId}:${rateLimitIpKey(getTrustedClientIp(c, 'unknown'))}`;
+  const recordFailure = async () => {
+    await rateLimiter(redis, failKey, AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW_S);
+  };
+  if (await failureBudgetSpent(redis, failKey)) return tooMany(c, AUTH_FAIL_WINDOW_S);
 
   const token = await verifyPortalScimToken(authorization);
   if (!token) {

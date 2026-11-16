@@ -108,7 +108,7 @@ export function registerOrgPortalScimRoutes(orgRoutes: Hono): void {
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
       const auth = c.get('auth') as AuthContext;
-      const tokenId = c.req.param('tokenId');
+      const tokenId = c.req.param('tokenId') ?? '';
       return mapRefusal(c, async () => {
         await runOutsideDbContext(() => revokePortalScimToken({ orgId: org.id, tokenId, actorUserId: auth.user.id }));
         return c.body(null, 204);
