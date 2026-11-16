@@ -4,10 +4,12 @@
  * `/api/v1/scim/portal/v2` — the Tenant URL an Entra enterprise app is given.
  *
  * No session auth: the caller authenticates with an org's SCIM bearer token
- * (services/portalScim/tokens.ts). Classified as a public router in
- * routerAuthGate.contract.test.ts and writeRoutePermissionGate.contract.test.ts;
- * partnerGuard skips the path (middleware/partnerGuard.ts) and the global
- * limiter meters it in its own per-IP bucket (middleware/globalRateLimit.ts).
+ * (services/portalScim/tokens.ts). It is NOT in the EXEMPT map of
+ * routerAuthGate.contract.test.ts, so that contract exercises it as a protected
+ * router (an unauthenticated request must get 401, which the router's uniform
+ * 401 satisfies); writeRoutePermissionGate.contract.test.ts carries its own
+ * SCIM-token entry. partnerGuard skips the path (middleware/partnerGuard.ts)
+ * and the global limiter meters it in its own per-IP bucket (middleware/globalRateLimit.ts).
  *
  * ORDER (D9): body limit → well-formedness (no Redis, no DB) → failure bucket per (token id, IP)
  * (over the limit ⇒ 429 before any lookup) → token lookup + compare → tenant

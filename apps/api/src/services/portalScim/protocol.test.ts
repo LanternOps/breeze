@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  SCIM_MAX_START_INDEX,
   SCIM_USER_SCHEMA,
   ScimError,
   parseCreateBody,
@@ -56,6 +57,13 @@ describe('parseListParams', () => {
     expect(parseListParams({ startIndex: '0', count: '500' })).toEqual({ startIndex: 1, count: 100 });
     expect(parseListParams({ startIndex: '11', count: '5' })).toEqual({ startIndex: 11, count: 5 });
     expect(parseListParams({ startIndex: 'x', count: '-1' })).toEqual({ startIndex: 1, count: 0 });
+  });
+
+  it('caps a huge startIndex so it can never overflow the SQL OFFSET', () => {
+    expect(parseListParams({ startIndex: '100000000000000000000' }).startIndex).toBe(SCIM_MAX_START_INDEX);
+    expect(parseListParams({ startIndex: '99999999999999' }).startIndex).toBe(SCIM_MAX_START_INDEX);
+    expect(parseListParams({ startIndex: String(SCIM_MAX_START_INDEX) }).startIndex).toBe(SCIM_MAX_START_INDEX);
+    expect(parseListParams({ startIndex: '-5' }).startIndex).toBe(1);
   });
 });
 

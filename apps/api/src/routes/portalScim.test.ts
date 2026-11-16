@@ -195,6 +195,16 @@ describe('endpoints (D8)', () => {
     expect(users.listScimUsers).toHaveBeenCalledWith(TOKEN, { attribute: 'userName', value: OID }, { startIndex: 1, count: 100 });
   });
 
+  it('GET /Users: a huge startIndex is clamped and answers 200 with an empty page', async () => {
+    users.listScimUsers.mockResolvedValue({ total: 3, records: [] });
+    const res = await req('GET', '/Users?startIndex=100000000000000000000');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.Resources).toEqual([]);
+    expect(body.startIndex).toBe(1_000_000);
+    expect(users.listScimUsers).toHaveBeenCalledWith(TOKEN, null, { startIndex: 1_000_000, count: 100 });
+  });
+
   it('GET /Users: an unsupported filter is 400 invalidFilter', async () => {
     const res = await req('GET', `/Users?filter=${encodeURIComponent('title eq "x"')}`);
     expect(res.status).toBe(400);

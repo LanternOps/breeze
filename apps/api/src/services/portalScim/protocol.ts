@@ -216,11 +216,14 @@ export function parseScimFilter(filter: string): { attribute: 'userName' | 'exte
   };
 }
 
+/** Upper bound for startIndex so a hostile value can never overflow the SQL OFFSET. */
+export const SCIM_MAX_START_INDEX = 1_000_000;
+
 export function parseListParams(query: { startIndex?: string; count?: string }): { startIndex: number; count: number } {
   const start = Number.parseInt(query.startIndex ?? '', 10);
   const count = Number.parseInt(query.count ?? '', 10);
   return {
-    startIndex: Number.isFinite(start) && start >= 1 ? start : 1,
+    startIndex: Number.isFinite(start) && start >= 1 ? Math.min(start, SCIM_MAX_START_INDEX) : 1,
     count: Number.isFinite(count) ? Math.min(Math.max(count, 0), SCIM_MAX_PAGE) : SCIM_MAX_PAGE,
   };
 }
