@@ -52,4 +52,11 @@ describe('createSessionHangUp (#11931)', () => {
 
     await expect(hangUp(AUTH)).resolves.toBe('failed');
   });
+
+  it('never rejects even when End throws synchronously', async () => {
+    const end = vi.fn(() => { throw new Error('sync boom'); });
+    const hangUp = createSessionHangUp(end as never);
+
+    await expect(hangUp(AUTH)).resolves.toBe('failed');
+  });
 });

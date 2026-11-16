@@ -85,13 +85,15 @@ describe('hang-up ends the session as the operator (#11931)', () => {
     const body = callbackBody('handleDisconnect');
     const end = body.indexOf('hangUpRef.current(');
     expect(end, 'handleDisconnect must send End').toBeGreaterThan(-1);
-    for (const later of ['rtcSession?.close()', 'vncSession?.close()', 'wsCleanup?.()', 'onDisconnect()']) {
+    for (const later of ['rtcSession.close()', 'vncSession.close()', "closeQuietly('WebSocket session', wsCleanup)", 'onDisconnect()']) {
       const at = body.indexOf(later);
       expect(at, `${later} not found`).toBeGreaterThan(-1);
       expect(at, `${later} must run after End is sent`).toBeGreaterThan(end);
     }
     // A second click while End is in flight must not tear down twice.
     expect(body).toContain('hangingUpRef.current');
+    // A close that throws must not keep the window open.
+    expect(body.slice(body.indexOf('} finally {'))).toContain('onDisconnect()');
   });
 
   it('closing the window sends End first and never blocks the close on it', () => {

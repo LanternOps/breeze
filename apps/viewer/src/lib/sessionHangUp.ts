@@ -24,7 +24,9 @@ export function createSessionHangUp(end: typeof endDesktopSession = endDesktopSe
   return (auth: AuthenticatedConnectionParams | null): Promise<SessionHangUpResult> => {
     if (!auth?.sessionId || !auth.accessToken) return Promise.resolve('skipped');
     if (sent?.sessionId === auth.sessionId) return sent.promise;
-    const promise = end(auth.apiUrl, auth.accessToken, auth.sessionId)
+    // Promise.resolve().then: a synchronous throw from `end` is caught too.
+    const promise = Promise.resolve()
+      .then(() => end(auth.apiUrl, auth.accessToken, auth.sessionId))
       .catch((): SessionHangUpResult => 'failed');
     sent = { sessionId: auth.sessionId, promise };
     return promise;

@@ -2920,14 +2920,26 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // `peer_disconnected`, the same as a network drop. Bounded and never
     // rejects (lib/sessionHangUp.ts); a VNC tunnel has no session to end.
     void hangUpRef.current(auth).then(() => {
-      wsCleanup?.();
-      rtcSession?.close();
-      // Close VNC session and tunnel
-      vncSession?.close();
-      if (vncTunnelId && auth) {
-        void closeTunnel(vncTunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+      // Each close is guarded so one that throws cannot stop the rest, or
+      // leave the window open with hangingUpRef set and no way to retry.
+      const closeQuietly = (what: string, close: () => void) => {
+        try {
+          close();
+        } catch (err) {
+          console.error(`Failed to close the ${what} on disconnect:`, err);
+        }
+      };
+      try {
+        if (wsCleanup) closeQuietly('WebSocket session', wsCleanup);
+        if (rtcSession) closeQuietly('WebRTC session', () => rtcSession.close());
+        // Close VNC session and tunnel
+        if (vncSession) closeQuietly('VNC session', () => vncSession.close());
+        if (vncTunnelId && auth) {
+          void closeTunnel(vncTunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+        }
+      } finally {
+        onDisconnect();
       }
-      onDisconnect();
     });
   }, [onDisconnect, releaseAllKeys, stopReconnect]);
 

@@ -166,8 +166,9 @@ vi.mock('../services/remoteRevocationLease', () => ({
 }));
 
 // #11931: the operator end itself is unit-tested in
-// services/remoteSessionOperatorEnd.test.ts; these cases pin the viewer route's
-// authorization and how it answers.
+// services/remoteSessionOperatorEnd.test.ts (and against a real row in
+// integration/remoteDesktopTerminalIntent.integration.test.ts); these cases pin
+// the viewer route's authorization and how it answers.
 vi.mock('../services/remoteSessionOperatorEnd', () => ({
   endRemoteSessionAsOperator: endRemoteSessionAsOperatorMock,
 }));
@@ -1294,6 +1295,24 @@ describe('POST /:id/viewer/end — the viewer hang-up records operator_ended (#1
     const res = await endRequest();
     expect(res.status).toBe(401);
     expect(endRemoteSessionAsOperatorMock).not.toHaveBeenCalled();
+  });
+
+  // The route must use the live re-check, not just the token: a technician
+  // whose site, role, membership or the device policy changed cannot end it
+  // here (the peer close still ends it, as peer_disconnected).
+  it.each([
+    ['site_denied', 403],
+    ['permission_denied', 403],
+    ['session_not_owned', 403],
+    ['user_inactive', 403],
+    ['policy_denied', 403],
+    ['device_offline', 503],
+  ] as const)('refuses when live authorization denies with %s', async (reason, status) => {
+    authorizeLiveRemoteSessionAccessMock.mockResolvedValue({ ok: false, status, reason });
+    const res = await endRequest();
+    expect(res.status).toBe(status);
+    expect(endRemoteSessionAsOperatorMock).not.toHaveBeenCalled();
+    expect(logSessionAudit).not.toHaveBeenCalled();
   });
 
   it('answers 400 when another terminal writer won the race', async () => {
