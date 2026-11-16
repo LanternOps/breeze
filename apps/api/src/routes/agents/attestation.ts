@@ -1,4 +1,4 @@
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { db } from '../../db';
@@ -9,6 +9,7 @@ import { ownDeviceRowChangedHands } from '../../services/agentOwnDeviceRow';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
+import { tpmAttestationEnabled } from './heartbeatSettingsDecision';
 import {
   CHALLENGES_PER_HOUR,
   challengeRateKey,
@@ -23,6 +24,10 @@ import {
  * Both routes key off the token's device and agent, never the `:id` segment.
  * Main agent only: the watchdog and the helper never attest. Refused for a
  * parked device until wave T2 adds them to the parked allow-list.
+ *
+ * Off unless TPM_ATTESTATION_ENABLED=true (the same switch the heartbeat
+ * pushes to agents): while off both routes answer 403 TPM_ATTESTATION_DISABLED
+ * before reading anything.
  *
  * Nothing here is logged beyond the outcome: no challenge, secret or EK.
  */
@@ -41,11 +46,18 @@ function mainAgent(agent: AgentAuthContext | undefined): AgentAuthContext | 'mis
   return agent.role === 'agent' ? agent : 'role';
 }
 
+async function switchedOn(c: Context, next: Next) {
+  if (!tpmAttestationEnabled()) {
+    return c.json({ error: 'TPM attestation is turned off on this server', code: 'TPM_ATTESTATION_DISABLED' }, 403);
+  }
+  await next();
+}
+
 function refused(c: Context, error: TpmAttestationError) {
   return c.json({ error: error.message, code: error.code, ...(error.reason ? { reason: error.reason } : {}) }, error.status);
 }
 
-attestationRoutes.post('/:id/attestation/challenge', limit, zValidator('json', challengeSchema), async (c) => {
+attestationRoutes.post('/:id/attestation/challenge', switchedOn, limit, zValidator('json', challengeSchema), async (c) => {
   const agent = mainAgent(c.get('agent') as AgentAuthContext | undefined);
   if (agent === 'missing') return c.json({ error: 'Agent context not found' }, 401);
   if (agent === 'role') return c.json({ error: 'This endpoint requires the agent credential' }, 403);
@@ -61,7 +73,7 @@ attestationRoutes.post('/:id/attestation/challenge', limit, zValidator('json', c
   }
 });
 
-attestationRoutes.post('/:id/attestation/complete', limit, zValidator('json', completeSchema), async (c) => {
+attestationRoutes.post('/:id/attestation/complete', switchedOn, limit, zValidator('json', completeSchema), async (c) => {
   const agent = mainAgent(c.get('agent') as AgentAuthContext | undefined);
   if (agent === 'missing') return c.json({ error: 'Agent context not found' }, 401);
   if (agent === 'role') return c.json({ error: 'This endpoint requires the agent credential' }, 403);
@@ -77,12 +89,12 @@ attestationRoutes.post('/:id/attestation/complete', limit, zValidator('json', co
     if (await ownDeviceRowChangedHands(db, agent)) throw staleAgentCredentialRejection();
     return c.json({ error: 'Device not found' }, 404);
   }
-  // A new or a different EK is evidence a later reinstall is compared
-  // against: audited on the device. A refresh of the same key is not.
+  // A first baseline, and a different EK held for review (the baseline is
+  // kept), are audited on the device. A refresh of the same key is not.
   if (result.outcome !== 'refreshed') {
     writeAuditEvent(c, {
       orgId: result.orgId,
-      action: result.outcome === 'recorded' ? 'device.tpm_baseline.recorded' : 'device.tpm_baseline.changed',
+      action: result.outcome === 'recorded' ? 'device.tpm_baseline.recorded' : 'device.tpm_baseline.mismatch',
       resourceType: 'device',
       resourceId: agent.deviceId,
       actorType: 'agent',

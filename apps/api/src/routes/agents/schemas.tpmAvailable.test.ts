@@ -17,8 +17,11 @@ describe('tpmAvailable on the hardware report (#8318 T1, §12.1)', () => {
       serialNumber: 'SN1',
       tpmEkPubSha256: 'a'.repeat(64),
       tpmAttestedAt: '2026-01-01T00:00:00Z',
+      tpmEkMismatchSha256: 'b'.repeat(64),
+      tpmEkMismatchAt: '2026-01-01T00:00:00Z',
     }) as Record<string, unknown>;
-    expect(parsed).not.toHaveProperty('tpmEkPubSha256');
-    expect(parsed).not.toHaveProperty('tpmAttestedAt');
+    for (const key of ['tpmEkPubSha256', 'tpmAttestedAt', 'tpmEkMismatchSha256', 'tpmEkMismatchAt']) {
+      expect(parsed).not.toHaveProperty(key);
+    }
   });
 });

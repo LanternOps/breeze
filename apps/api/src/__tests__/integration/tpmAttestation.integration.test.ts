@@ -10,7 +10,8 @@
  *
  * Proves:
  *   - a round trip records the baseline (the EK's SPKI hash), its time and
- *     tpm_available; the same EK again refreshes it; a different EK changes it;
+ *     tpm_available; the same EK again refreshes it; a different EK never
+ *     replaces it, and is held in tpm_ek_mismatch_* for review;
  *   - a challenge is single use, even after a wrong answer, and bound to the
  *     device and agent that asked for it;
  *   - a row that changed hands since auth records nothing;
@@ -90,16 +91,48 @@ async function hardwareRow(deviceId: string) {
 }
 
 describe('TPM EK collection (real Postgres and Redis, as breeze_app)', () => {
-  runDb('records the baseline, refreshes it for the same EK and changes it for another', async () => {
+  runDb('records the first baseline, refreshes it for the same EK and keeps it against another', async () => {
     const fx = await seed();
     expect(await attest(fx, vectors[0]!)).toEqual({ outcome: 'recorded', orgId: fx.org.id });
     const first = await hardwareRow(fx.device.id);
-    expect(first).toMatchObject({ tpmEkPubSha256: vectors[0]!.ekSpkiSha256, tpmAvailable: true, orgId: fx.org.id });
+    expect(first).toMatchObject({
+      tpmEkPubSha256: vectors[0]!.ekSpkiSha256,
+      tpmAvailable: true,
+      orgId: fx.org.id,
+      tpmEkMismatchSha256: null,
+      tpmEkMismatchAt: null,
+    });
     expect(first!.tpmAttestedAt).toBeInstanceOf(Date);
 
     expect((await attest(fx, vectors[0]!))?.outcome).toBe('refreshed');
-    expect((await attest(fx, vectors[1]!))?.outcome).toBe('changed');
-    expect((await hardwareRow(fx.device.id))!.tpmEkPubSha256).toBe(vectors[1]!.ekSpkiSha256);
+    const refreshed = await hardwareRow(fx.device.id);
+
+    // A different proven EK: held for review, the baseline and its time untouched.
+    expect((await attest(fx, vectors[1]!))?.outcome).toBe('mismatch');
+    const held = await hardwareRow(fx.device.id);
+    expect(held).toMatchObject({
+      tpmEkPubSha256: vectors[0]!.ekSpkiSha256,
+      tpmAttestedAt: refreshed!.tpmAttestedAt,
+      tpmEkMismatchSha256: vectors[1]!.ekSpkiSha256,
+    });
+    expect(held!.tpmEkMismatchAt).toBeInstanceOf(Date);
+
+    // The baseline EK again still refreshes, and the mismatch stays for review.
+    expect((await attest(fx, vectors[0]!))?.outcome).toBe('refreshed');
+    expect(await hardwareRow(fx.device.id)).toMatchObject({
+      tpmEkPubSha256: vectors[0]!.ekSpkiSha256,
+      tpmEkMismatchSha256: vectors[1]!.ekSpkiSha256,
+    });
+  });
+
+  runDb('a mismatch cannot exist without a baseline (CHECK)', async () => {
+    const fx = await seed();
+    await expect(getTestDb().insert(deviceHardware).values({
+      deviceId: fx.device.id,
+      orgId: fx.org.id,
+      tpmEkMismatchSha256: vectors[1]!.ekSpkiSha256,
+      tpmEkMismatchAt: new Date(),
+    })).rejects.toMatchObject({ cause: { constraint_name: 'device_hardware_tpm_ek_mismatch_shape_chk' } });
   });
 
   runDb('a challenge is single use, even after a wrong answer, and bound to its device and agent', async () => {
@@ -143,6 +176,20 @@ describe('TPM EK collection (real Postgres and Redis, as breeze_app)', () => {
     )));
     const after = await hardwareRow(fx.device.id);
     expect(after).toMatchObject({ serialNumber: 'SN-1', tpmEkPubSha256: before!.tpmEkPubSha256, tpmAttestedAt: before!.tpmAttestedAt });
+    await attest(fx, vectors[1]!);
+    const held = await hardwareRow(fx.device.id);
+    await withDbAccessContext(fx.context, () => db.transaction((tx) => writeHardwareReport(
+      tx,
+      { id: fx.device.id, orgId: fx.org.id },
+      { serialNumber: 'SN-2', tpmAvailable: true },
+      null,
+      new Date(),
+    )));
+    expect(await hardwareRow(fx.device.id)).toMatchObject({
+      serialNumber: 'SN-2',
+      tpmEkMismatchSha256: held!.tpmEkMismatchSha256,
+      tpmEkMismatchAt: held!.tpmEkMismatchAt,
+    });
   });
 
   runDb('refuses an EK that is not the default template before anything is stored', async () => {

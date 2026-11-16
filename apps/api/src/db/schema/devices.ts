@@ -494,17 +494,23 @@ export const deviceHardware = pgTable('device_hardware', {
   memoryObservedAt: timestamp('memory_observed_at'),
   // #8318 T1 (§12.2): the TPM endorsement-key baseline. tpmEkPubSha256 is the
   // SHA-256 of the EK's SubjectPublicKeyInfo, written ONLY by the attestation
-  // route after a proof of possession; never by the inventory writer, never
-  // returned by generic reads (DEVICE_HARDWARE_READ_COLUMNS). tpmAvailable is
-  // what the hardware report says. Migration 2027-01-25-110000.
+  // route after a proof of possession, and only as the FIRST baseline: a
+  // different proven EK lands in tpmEkMismatch* for an operator's review and
+  // never replaces it. Never set by the inventory writer, never returned by
+  // generic reads (DEVICE_HARDWARE_READ_COLUMNS). tpmAvailable is what the
+  // hardware report says. Migration 2027-01-25-110000.
   tpmEkPubSha256: varchar('tpm_ek_pub_sha256', { length: 64 }),
   tpmAttestedAt: timestamp('tpm_attested_at', { withTimezone: true }),
+  tpmEkMismatchSha256: varchar('tpm_ek_mismatch_sha256', { length: 64 }),
+  tpmEkMismatchAt: timestamp('tpm_ek_mismatch_at', { withTimezone: true }),
   tpmAvailable: boolean('tpm_available'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 }, (table) => [
   check('device_hardware_tpm_ek_pub_sha256_chk', sql`${table.tpmEkPubSha256} IS NULL OR ${table.tpmEkPubSha256} ~ '^[0-9a-f]{64}$'`),
   check('device_hardware_tpm_baseline_shape_chk', sql`(${table.tpmEkPubSha256} IS NULL) = (${table.tpmAttestedAt} IS NULL)`),
+  check('device_hardware_tpm_ek_mismatch_sha256_chk', sql`${table.tpmEkMismatchSha256} IS NULL OR ${table.tpmEkMismatchSha256} ~ '^[0-9a-f]{64}$'`),
+  check('device_hardware_tpm_ek_mismatch_shape_chk', sql`(${table.tpmEkMismatchSha256} IS NULL) = (${table.tpmEkMismatchAt} IS NULL) AND (${table.tpmEkMismatchSha256} IS NULL OR ${table.tpmEkPubSha256} IS NOT NULL)`),
 ]);
 
 // Resource-specific material fingerprints for reconstruction exports. Deferred

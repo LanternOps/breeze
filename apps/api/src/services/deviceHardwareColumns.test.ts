@@ -21,9 +21,10 @@ function sources(dir: string): string[] {
 }
 
 describe('device_hardware reads (#8318 T1)', () => {
-  it('DEVICE_HARDWARE_READ_COLUMNS has every column but the EK baseline', () => {
+  it('DEVICE_HARDWARE_READ_COLUMNS has every column but the EK hashes', () => {
     expect(Object.keys(DEVICE_HARDWARE_READ_COLUMNS)).not.toContain('tpmEkPubSha256');
-    const { tpmEkPubSha256: _ek, ...all } = getTableColumns(deviceHardware);
+    expect(Object.keys(DEVICE_HARDWARE_READ_COLUMNS)).not.toContain('tpmEkMismatchSha256');
+    const { tpmEkPubSha256: _ek, tpmEkMismatchSha256: _mismatch, ...all } = getTableColumns(deviceHardware);
     expect(Object.keys(DEVICE_HARDWARE_READ_COLUMNS).sort()).toEqual(Object.keys(all).sort());
   });
 

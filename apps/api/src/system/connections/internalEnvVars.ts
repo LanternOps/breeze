@@ -272,6 +272,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // HEARTBEAT_*
   HEARTBEAT_RETAIN_STATE_ENABLED: 'heartbeat retain-state rollout kill switch',
   AGENT_ECH_ENABLED: 'agent ECH (encrypted client hello) kill switch',
+  TPM_ATTESTATION_ENABLED: 'agent TPM EK attestation rollout switch',
   // HELPER_*
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',

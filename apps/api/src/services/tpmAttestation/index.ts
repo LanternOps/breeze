@@ -28,7 +28,13 @@ import {
  *      challenge is consumed (GETDEL) whatever the answer; a right secret
  *      records the baseline.
  *
- * Trust: TOFU on the EK. This proves the same key, not the same physical TPM
+ * Trust: TOFU on the EK, and the first baseline is kept. T1 checks no EK
+ * certificate, so a proof shows possession of a key shaped like the default
+ * EK, not that it lives in a TPM. A different proven EK is therefore never
+ * written over the baseline: it is held in tpm_ek_mismatch_* and audited for
+ * an operator's review (wave T2 adds the accept path, e.g. a replaced
+ * motherboard), so a stolen agent token cannot swap the key a later reattach
+ * is compared against. This proves the same key, not the same physical TPM
  * (cloned virtual TPMs share EKs); the reattach UI says exactly that (§7).
  * Never logged: challenges, secrets and EKs.
  */
@@ -112,7 +118,11 @@ export async function issueAttestationChallenge(
   };
 }
 
-export type BaselineOutcome = 'recorded' | 'refreshed' | 'changed';
+/**
+ * recorded: the first baseline. refreshed: the baseline EK again (its time
+ * moves). mismatch: a different EK, held for review; the baseline is untouched.
+ */
+export type BaselineOutcome = 'recorded' | 'refreshed' | 'mismatch';
 
 /**
  * Step 2. Consumes the challenge whatever the answer. Returns how the
@@ -156,13 +166,24 @@ export async function completeAttestation(
       .where(eq(deviceHardware.deviceId, agent.deviceId))
       .limit(1)
       .for('update');
-    const outcome: BaselineOutcome = !current?.ek ? 'recorded' : current.ek === stored.ekSha256 ? 'refreshed' : 'changed';
-    // A proof of possession also says a TPM is there.
-    const baseline = { tpmEkPubSha256: stored.ekSha256, tpmAttestedAt: now, tpmAvailable: true };
+    const outcome: BaselineOutcome = !current?.ek ? 'recorded' : current.ek === stored.ekSha256 ? 'refreshed' : 'mismatch';
+    // A proof of possession also says a TPM is there. The baseline itself is
+    // written only when there is none: a different EK never replaces it.
+    if (outcome === 'mismatch') {
+      // The row exists (it holds the baseline), so this is a plain UPDATE: an
+      // upsert's proposed INSERT row would carry a mismatch with no baseline
+      // and fail device_hardware_tpm_ek_mismatch_shape_chk before ON CONFLICT.
+      await tx
+        .update(deviceHardware)
+        .set({ tpmEkMismatchSha256: stored.ekSha256, tpmEkMismatchAt: now, tpmAvailable: true })
+        .where(eq(deviceHardware.deviceId, agent.deviceId));
+      return { outcome, orgId: device.orgId };
+    }
+    const set = { tpmEkPubSha256: current?.ek ?? stored.ekSha256, tpmAttestedAt: now, tpmAvailable: true };
     await tx
       .insert(deviceHardware)
-      .values({ deviceId: agent.deviceId, orgId: device.orgId, ...baseline, updatedAt: now })
-      .onConflictDoUpdate({ target: deviceHardware.deviceId, set: baseline });
+      .values({ deviceId: agent.deviceId, orgId: device.orgId, ...set, updatedAt: now })
+      .onConflictDoUpdate({ target: deviceHardware.deviceId, set });
     return { outcome, orgId: device.orgId };
   });
 }

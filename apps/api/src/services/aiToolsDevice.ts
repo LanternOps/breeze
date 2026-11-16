@@ -135,7 +135,7 @@ function projectMemoryModule(row: MemoryModuleRow) {
   };
 }
 
-function summarizeMemory(hardware: Omit<typeof deviceHardware.$inferSelect, 'tpmEkPubSha256'> | null, modules: MemoryModuleRow[]) {
+function summarizeMemory(hardware: Omit<typeof deviceHardware.$inferSelect, 'tpmEkPubSha256' | 'tpmEkMismatchSha256'> | null, modules: MemoryModuleRow[]) {
   // No module rows and no applied memory block = the agent never reported
   // slot inventory (needs an agent update) — not "zero slots".
   if (modules.length === 0 && !hardware?.memoryObservedAt) return { reported: false as const };

@@ -1225,15 +1225,26 @@ Go-generated test vectors and an **independent review before merge** (#8318).
   the device and agent that asked, with the secret kept as its SHA-256 and compared in constant
   time. A device may ask for 6 an hour. Both routes are main-agent only and closed to a parked
   device until T2.
-- **A different EK on the same row** (a board swap, an fTPM reset) replaces the baseline. A first
-  baseline and a change are audited on the device (`device.tpm_baseline.recorded`, `.changed`); a
-  refresh is not.
+- **The first baseline is kept** (changed in review of #11956). T1 checks no EK certificate, so a
+  completed activation shows possession of a key shaped like the default EK, not that it lives in
+  a TPM. A different proven EK on the same row (a board swap, an fTPM reset, or a stolen agent
+  token presenting a software key) therefore never replaces the baseline: it is held in
+  `tpm_ek_mismatch_sha256` / `tpm_ek_mismatch_at` and audited (`device.tpm_baseline.mismatch`) for
+  an operator's review. T2 adds the path that accepts a mismatch as the new baseline (a human
+  action, audited), and a reattach compares against the baseline only. A first baseline is
+  audited (`device.tpm_baseline.recorded`); a refresh of the baseline EK is not, and leaves a held
+  mismatch in place.
+- **A server-side switch** gates the whole feature: `TPM_ATTESTATION_ENABLED` (API env, default
+  `false`), pushed to agents on every heartbeat as `configUpdate.tpm_attestation_enabled`. While
+  off, agents touch no TPM and both routes answer 403 `TPM_ATTESTATION_DISABLED`. It stays off
+  until T2 needs baselines.
 - **`tpm_available`** is a third column, reported by the hardware report (a non-boolean is dropped,
   never a 400). It tells "no TPM" from "not attested yet" for the metric.
-- **Generic reads** never return the EK hash (`DEVICE_HARDWARE_READ_COLUMNS`): device detail, the
-  hardware route and the AI device tool read every other column.
+- **Generic reads** never return either EK hash (`DEVICE_HARDWARE_READ_COLUMNS`): device detail,
+  the hardware route and the AI device tool read every other column.
 - **The coverage metric** is `GET /devices/tpm-coverage[?orgId=]`: `{ devices, attested, noTpm,
-  notAttested }` over the caller's device-list scope, decommissioned and parked devices left out.
+  notAttested, ekMismatch }` over the caller's device-list scope, decommissioned and parked
+  devices left out. `ekMismatch` counts attested devices holding a mismatch for review.
 
 ## 13. Decisions confirmed in review
 

@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const state = vi.hoisted(() => ({
-  row: { devices: 10, attested: 6, noTpm: 1 } as Record<string, number> | undefined,
+  row: { devices: 10, attested: 6, noTpm: 1, ekMismatch: 2 } as Record<string, number> | undefined,
   allowedSiteIds: undefined as string[] | undefined,
   canAccessOrg: true,
   selects: 0,
@@ -52,7 +52,7 @@ const app = new Hono();
 app.route('/devices', deviceRoutes);
 
 beforeEach(() => {
-  state.row = { devices: 10, attested: 6, noTpm: 1 };
+  state.row = { devices: 10, attested: 6, noTpm: 1, ekMismatch: 2 };
   state.allowedSiteIds = undefined;
   state.canAccessOrg = true;
   state.selects = 0;
@@ -62,13 +62,13 @@ describe('GET /devices/tpm-coverage (#8318 T1, §12.2)', () => {
   it('is mounted before core GET /:id and splits the fleet three ways', async () => {
     const res = await app.request('/devices/tpm-coverage');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ coverage: { devices: 10, attested: 6, noTpm: 1, notAttested: 3 } });
+    expect(await res.json()).toEqual({ coverage: { devices: 10, attested: 6, noTpm: 1, notAttested: 3, ekMismatch: 2 } });
   });
 
   it('answers zeros for an empty site allowlist without a query', async () => {
     state.allowedSiteIds = [];
     const res = await app.request('/devices/tpm-coverage');
-    expect(await res.json()).toEqual({ coverage: { devices: 0, attested: 0, noTpm: 0, notAttested: 0 } });
+    expect(await res.json()).toEqual({ coverage: { devices: 0, attested: 0, noTpm: 0, notAttested: 0, ekMismatch: 0 } });
     expect(state.selects).toBe(0);
   });
 

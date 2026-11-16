@@ -20,12 +20,15 @@ import { buildDeviceScope } from './scope';
  *   noTpm        the agent reports no usable TPM: only hints will ever apply
  *   notAttested  everything else: an agent that has not attested yet, or
  *                has not reported (older agents, macOS)
+ *   ekMismatch   of the attested, those that later proved a DIFFERENT EK:
+ *                the baseline is kept and the new key waits for an
+ *                operator's review (a replaced motherboard, or a forged key)
  */
 export const tpmCoverageRoutes = new Hono();
 
 tpmCoverageRoutes.use('/tpm-coverage', authMiddleware);
 
-export type TpmCoverage = { devices: number; attested: number; noTpm: number; notAttested: number };
+export type TpmCoverage = { devices: number; attested: number; noTpm: number; notAttested: number; ekMismatch: number };
 
 tpmCoverageRoutes.get(
   '/tpm-coverage',
@@ -36,7 +39,7 @@ tpmCoverageRoutes.get(
     if (orgId !== undefined && !PG_UUID_REGEX.test(orgId)) return c.json({ error: 'orgId must be a UUID' }, 400);
     const scoped = buildDeviceScope(c.get('auth'), c.get('permissions') as UserPermissions | undefined, orgId);
     if ('forbidden' in scoped) return c.json({ error: 'Access to this organization denied' }, 403);
-    const empty: TpmCoverage = { devices: 0, attested: 0, noTpm: 0, notAttested: 0 };
+    const empty: TpmCoverage = { devices: 0, attested: 0, noTpm: 0, notAttested: 0, ekMismatch: 0 };
     if (!('scope' in scoped)) return c.json({ coverage: empty });
 
     const [row] = await db
@@ -44,6 +47,7 @@ tpmCoverageRoutes.get(
         devices: sql<number>`count(*)::int`,
         attested: sql<number>`count(*) FILTER (WHERE ${deviceHardware.tpmEkPubSha256} IS NOT NULL)::int`,
         noTpm: sql<number>`count(*) FILTER (WHERE ${deviceHardware.tpmEkPubSha256} IS NULL AND ${deviceHardware.tpmAvailable} = false)::int`,
+        ekMismatch: sql<number>`count(*) FILTER (WHERE ${deviceHardware.tpmEkMismatchSha256} IS NOT NULL)::int`,
       })
       .from(devices)
       .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
@@ -51,6 +55,7 @@ tpmCoverageRoutes.get(
     const total = Number(row?.devices ?? 0);
     const attested = Number(row?.attested ?? 0);
     const noTpm = Number(row?.noTpm ?? 0);
-    return c.json({ coverage: { devices: total, attested, noTpm, notAttested: total - attested - noTpm } satisfies TpmCoverage });
+    const ekMismatch = Number(row?.ekMismatch ?? 0);
+    return c.json({ coverage: { devices: total, attested, noTpm, notAttested: total - attested - noTpm, ekMismatch } satisfies TpmCoverage });
   },
 );

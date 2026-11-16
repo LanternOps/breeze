@@ -1249,6 +1249,11 @@ const envObjectSchema = z
     // boot-refuses instead of silently staying on.
     HEARTBEAT_RETAIN_STATE_ENABLED: z.enum(['true', 'false']).default('true'),
     AGENT_ECH_ENABLED: z.enum(['true', 'false']).default('true'),
+    // #8318 T1 — agent TPM EK attestation (routes/agents/heartbeatSettingsDecision.ts
+    // tpmAttestationEnabled). Default OFF until reinstall reattach (wave T2)
+    // needs it; pushed as configUpdate.tpm_attestation_enabled. Strict enum
+    // so a typo boot-refuses.
+    TPM_ATTESTATION_ENABLED: z.enum(['true', 'false']).default('false'),
     NETWORK_ISOLATION_ENABLED: z.enum(['true', 'false']).default('false'),
     NETWORK_ISOLATION_ENABLED_PARTNER_IDS: z.string().refine(value => !value.trim() || value.split(',').every(id => z.string().uuid().safeParse(id.trim()).success), 'Expected comma-separated partner UUIDs').optional(),
 
