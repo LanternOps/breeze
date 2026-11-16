@@ -144,9 +144,9 @@ async function scopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
   // The result keeps the order of the most specific axis present.
   const base = frame ?? exact ?? site;
   if (!base) return null;
-  const others = [frame, exact, site]
-    .filter((axis): axis is readonly string[] => axis !== null && axis !== base)
-    .map((axis) => new Set(axis));
+  const axes: Array<readonly string[] | null> = [frame, exact, site];
+  const others: Set<string>[] = [];
+  for (const axis of axes) if (axis !== null && axis !== base) others.push(new Set(axis));
   return base.filter((id) => others.every((axis) => axis.has(id)));
 }
 

@@ -70,7 +70,7 @@ export const LEGACY_EXPORT_GRANTS: Readonly<AiRunExportGrants> = Object.freeze({
     'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
     'metrics', 'vulnerabilities', 'custom_fields',
   ]) as string[],
-  sensitiveGates: Object.freeze([]) as AnalysisSensitiveGate[],
+  sensitiveGates: Object.freeze([] as AnalysisSensitiveGate[]) as AnalysisSensitiveGate[],
 });
 
 /**

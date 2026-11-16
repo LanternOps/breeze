@@ -374,7 +374,7 @@ describe('dataset adapters', () => {
     };
     mockAgentLogsSelect([row]);
     const pager = await DATASET_ADAPTERS.agent_logs.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 1,
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 1, ...reqDefaults(),
     });
 
     const first = await pager(null);
@@ -465,7 +465,7 @@ describe('dataset adapters', () => {
       ],
     ]);
     const pager = await DATASET_ADAPTERS.metrics.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2,
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2, ...reqDefaults(),
     });
 
     // First call comes back FULL (2 of 2) — more samples may exist for this
@@ -512,7 +512,7 @@ describe('dataset adapters', () => {
       [], // exhaustion signal: a page shorter than pageSize (here, empty)
     ]);
     const pager = await DATASET_ADAPTERS.metrics.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2,
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2, ...reqDefaults(),
     });
 
     const first = await pager(null);
