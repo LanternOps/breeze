@@ -2646,6 +2646,20 @@ describe('mobile routes', () => {
         expect(await res.json()).toEqual({ error: 'Relay agent went offline', code: 'WS_SEND_FAILED' });
       });
 
+      it('surfaces WAKE_LOOKUP_FAILED as 503 (transient), not 412', async () => {
+        vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([onlineDevice]) as any);
+        dispatchWakeMock.mockResolvedValueOnce({ ok: false, code: 'WAKE_LOOKUP_FAILED', message: 'Could not check. Try again.' });
+
+        const res = await app.request(`/mobile/devices/${mobileDeviceId}/actions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'wake' })
+        });
+
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: 'Could not check. Try again.', code: 'WAKE_LOOKUP_FAILED' });
+      });
+
       it('surfaces WAKE_NOT_READY as 412 and never passes testWake', async () => {
         vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([onlineDevice]) as any);
         dispatchWakeMock.mockResolvedValueOnce({ ok: false, code: 'WAKE_NOT_READY', message: 'not ready' });

@@ -4,6 +4,7 @@ import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type Devic
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { policyOwnershipCondition } from './configPolicyOwnership';
 import { reportInvalidStoredSettings } from './invalidStoredSettingsReport';
+import { captureException } from './sentry';
 import {
   candidatesWithLink,
   policySetFor,
@@ -1730,6 +1731,11 @@ function parseWakeOnLanWinner(winner: FeatureLinkWinner): ResolvedWakeOnLanWinne
       configPolicyId: winner.sourcePolicyId,
       issue: parsed.error.issues[0]?.message,
     });
+    captureException(
+      new Error('wake_on_lan link has unparseable settings; resolving as verified'),
+      undefined,
+      { linkId: winner.linkId, configPolicyId: winner.sourcePolicyId },
+    );
   }
   return {
     settings: parsed.success ? parsed.data : WAKE_ON_LAN_UNPARSEABLE_SETTINGS,

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"testing"
 	"time"
@@ -231,7 +232,11 @@ func readFixture(t *testing.T, name string) []byte {
 	return b
 }
 
-func TestNicMatchesByRegistryKeywordNotDisplayName(t *testing.T) {
+// The script emits only keyword-derived values (eee = *EEE RegistryValue,
+// magicPacket = the enum), never localised text; this proves a German-named
+// adapter's state comes from those values. That the script never reads
+// DisplayName/DisplayValue is asserted in TestReadScriptIsReadOnlyAndKeywordMatched.
+func TestGermanAdapterStateComesFromKeywordDerivedValues(t *testing.T) {
 	r, err := ParseWindowsReadings(readFixture(t, "windows_de.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +244,6 @@ func TestNicMatchesByRegistryKeywordNotDisplayName(t *testing.T) {
 	if r.FastStartup != "disabled" || len(r.Adapters) != 1 {
 		t.Fatalf("%+v", r)
 	}
-	// RegistryValue "1" decides; the German DisplayValue "Deaktiviert" is ignored.
 	if r.Adapters[0].EEE != "enabled" || r.Adapters[0].MAC != "aa:bb:cc:dd:ee:03" {
 		t.Fatalf("%+v", r.Adapters[0])
 	}
@@ -278,5 +282,42 @@ func TestParseUnexpectedValuesAreUnknown(t *testing.T) {
 	r, _ = ParseWindowsReadings([]byte(`{"hiberboot":null,"adapters":[]}`))
 	if r.FastStartup != "unknown" {
 		t.Fatalf("missing hiberboot -> %s", r.FastStartup)
+	}
+}
+
+func TestParseCountsSkippedAdapters(t *testing.T) {
+	raw := `{"hiberboot":1,"adapters":[
+	 {"name":"a","mac":"AA-BB-CC-DD-EE-01","magicPacket":"enabled","eee":"0"},
+	 {"name":"b","mac":"","magicPacket":"enabled","eee":"0"},
+	 {"name":"c","mac":"not-a-mac","magicPacket":"enabled","eee":"0"}]}`
+	r, err := ParseWindowsReadings([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Adapters) != 1 || r.SkippedAdapters != 2 {
+		t.Fatalf("adapters=%d skipped=%d", len(r.Adapters), r.SkippedAdapters)
+	}
+}
+
+func TestComputeUnreadableNICIsUnprovenNotNoWired(t *testing.T) {
+	in := winInputs("disabled")
+	in.Windows.SkippedAdapters = 1
+	s := Compute(in)
+	if s.ReadinessState != "unproven" || !hasReason(s, "nic_unreadable") || hasReason(s, "no_wired_adapter") {
+		t.Fatalf("got %s %v", s.ReadinessState, s.ReasonCodes)
+	}
+	re := regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	for _, c := range s.ReasonCodes {
+		if !re.MatchString(c) {
+			t.Fatalf("bad reason code %q", c)
+		}
+	}
+	s = Compute(winInputs("disabled"))
+	if s.ReadinessState != "no_wired_adapter" {
+		t.Fatalf("got %s %v", s.ReadinessState, s.ReasonCodes)
+	}
+	in.Virtual = true
+	if s = Compute(in); s.ReadinessState != "unsupported_vm" {
+		t.Fatalf("got %s", s.ReadinessState)
 	}
 }

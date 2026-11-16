@@ -183,10 +183,19 @@ describe('allowWakeAgain', () => {
   it('resets consecutive_timeouts for a governed device', async () => {
     queue.push([dev(1)]);
     winnersMock.mockResolvedValue(new Map([[id(1), winner(POLICY)]]));
-    const set = vi.fn(() => ({ where: () => Promise.resolve() }));
+    const set = vi.fn(() => ({ where: () => ({ returning: () => Promise.resolve([{ deviceId: id(1) }]) }) }));
     updateMock.mockReturnValue({ set });
     const res = await allowWakeAgain({ policyId: POLICY, deviceId: id(1), allowedSiteIds: undefined });
     expect(res).toEqual({ orgId: 'o1', hostname: 'host-1' });
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ consecutiveTimeouts: 0 }));
+  });
+
+  it('returns null (route 404, no audit) when the UPDATE matched no device_wake_status row', async () => {
+    queue.push([dev(1)]);
+    winnersMock.mockResolvedValue(new Map([[id(1), winner(POLICY)]]));
+    const set = vi.fn(() => ({ where: () => ({ returning: () => Promise.resolve([]) }) }));
+    updateMock.mockReturnValue({ set });
+    expect(await allowWakeAgain({ policyId: POLICY, deviceId: id(1), allowedSiteIds: undefined })).toBeNull();
+    expect(set).toHaveBeenCalled();
   });
 });

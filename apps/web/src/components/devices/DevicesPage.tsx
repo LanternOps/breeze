@@ -2006,12 +2006,16 @@ export default function DevicesPage() {
           // with `wakeAvailability.show === false` is never sent, and the toast
           // says how many were left out for policy.
           const wakeEligible = selectedDevices.filter(d => d.wakeAvailability?.show !== false);
-          const policySkipped = selectedDevices.length - wakeEligible.length;
+          // A device whose policy lookup failed is hidden too, but that is a
+          // transient failure (retry), not a policy decision: count it apart.
+          const lookupFailed = selectedDevices.filter(d => d.wakeAvailability?.state === 'lookup_failed').length;
+          const policySkipped = selectedDevices.length - wakeEligible.length - lookupFailed;
           if (wakeEligible.length === 0) {
-            showToast({
-              type: 'warning',
-              message: t('devicesPage.toasts.bulkWakeAllBlockedByPolicy', { count: policySkipped }),
-            });
+            const blocked = [
+              policySkipped > 0 ? t('devicesPage.toasts.bulkWakeAllBlockedByPolicy', { count: policySkipped }) : '',
+              lookupFailed > 0 ? t('devicesPage.toasts.bulkWakeAllLookupFailed', { count: lookupFailed }) : '',
+            ].filter(Boolean);
+            showToast({ type: 'warning', message: blocked.join('. ') });
             break;
           }
           try {
@@ -2025,9 +2029,10 @@ export default function DevicesPage() {
               sent: summary.succeeded.length,
               skipped: summary.failed.length,
             });
-            const policyNote = policySkipped > 0
-              ? t('devicesPage.toasts.bulkWakePolicySkipped', { count: policySkipped })
-              : '';
+            const policyNote = [
+              policySkipped > 0 ? t('devicesPage.toasts.bulkWakePolicySkipped', { count: policySkipped }) : '',
+              lookupFailed > 0 ? t('devicesPage.toasts.bulkWakeLookupFailedSkipped', { count: lookupFailed }) : '',
+            ].filter(Boolean).join('. ');
             const message = summary.failed.length
               ? `${baseMessage}: ${summarizeBulkWakeFailures(summary.failed)}`
               : baseMessage;
@@ -2035,7 +2040,7 @@ export default function DevicesPage() {
               ? (summary.succeeded.length ? 'warning' : 'error')
               : 'success';
             showToast({
-              type: failedType === 'success' && policySkipped > 0 ? 'warning' : failedType,
+              type: failedType === 'success' && (policySkipped > 0 || lookupFailed > 0) ? 'warning' : failedType,
               message: policyNote ? `${message}. ${policyNote}` : message,
             });
           } catch (err) {

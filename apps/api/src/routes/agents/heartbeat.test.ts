@@ -4901,6 +4901,30 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     });
   });
 
+  it('runs the wake_on_lan builder inside withDbTransaction so a failing fallback query cannot poison the request transaction', async () => {
+    const { buildWakeOnLanConfigUpdate } = await import('./helpers');
+    const { buildWarrantyConfigUpdate } = await import('./helpers');
+    callOrder.length = 0;
+    // Marker immediately before the wake builder's call site, so the adjacent
+    // 'savepoint' entry can only come from the wake builder's own wrapper.
+    vi.mocked(buildWarrantyConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('warranty:ran');
+      return null as never;
+    });
+    vi.mocked(buildWakeOnLanConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('wakeBuilder:ran');
+      return { enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] };
+    });
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    const ran = callOrder.indexOf('wakeBuilder:ran');
+    expect(callOrder.slice(ran - 2, ran + 1)).toEqual(['warranty:ran', 'savepoint', 'wakeBuilder:ran']);
+  });
+
   it('omits wake_on_lan_settings entirely when the resolver throws (agent keeps its state)', async () => {
     const { buildWakeOnLanConfigUpdate } = await import('./helpers');
     vi.mocked(buildWakeOnLanConfigUpdate).mockRejectedValueOnce(new Error('boom'));

@@ -50,6 +50,16 @@ describe('WakeStatusPanel', () => {
     m.toast.mockReset();
   });
 
+  it('logs the error (not a bare catch) when the status load fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    m.fetch.mockImplementation(async () => ({ ok: false, status: 500, json: async () => ({}) }));
+    render(<WakeStatusPanel policyId="p1" />);
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('WakeStatusPanel'), expect.objectContaining({ message: 'status 500' }),
+    ));
+    consoleError.mockRestore();
+  });
+
   it('says "came online", never "woke"', async () => {
     load(page([row({ lastAttempt: { outcome: 'came_online', refusalCode: null, at: '2026-11-15T10:00:00.000Z' } })]));
     render(<WakeStatusPanel policyId="p1" />);

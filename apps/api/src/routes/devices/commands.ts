@@ -38,6 +38,7 @@ import { applyAutomationActionTerminal } from '../../services/automationActionRe
 import { SERVER_TIMEOUT_RESULT_STATUS } from '../../services/commandResultAcceptance';
 import { captureException } from '../../services/sentry';
 import { isNetworkIsolationCommand, USE_NETWORK_ISOLATION_ROUTES } from '../../services/networkIsolation/bypass';
+import { wakeFailureStatus } from '../../services/wakeFailureStatus';
 
 export const commandsRoutes = new Hono();
 
@@ -608,7 +609,7 @@ commandsRoutes.post(
           testWake: data.payload?.testWake === true,
         });
         if (!wake.ok) {
-          return c.json({ error: wake.message, code: wake.code }, 412);
+          return c.json({ error: wake.message, code: wake.code }, wakeFailureStatus(wake.code));
         }
         return wake;
       }
@@ -682,7 +683,7 @@ commandsRoutes.post(
 
     const delivered = await outcome.deliver();
     if (!delivered.ok) {
-      return c.json({ error: delivered.message, code: delivered.code }, 412);
+      return c.json({ error: delivered.message, code: delivered.code }, wakeFailureStatus(delivered.code));
     }
     return c.json({
       id: delivered.commandId,

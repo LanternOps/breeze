@@ -2819,6 +2819,8 @@
       "bulkWakeResult": "Enviado para {{sent}}, ignorados {{skipped}}",
       "bulkWakePolicySkipped": "{{count}} ignorados pela política de Wake-on-LAN",
       "bulkWakeAllBlockedByPolicy": "Nenhum wake enviado: {{count}} bloqueados pela política de Wake-on-LAN",
+      "bulkWakeLookupFailedSkipped": "{{count}} não puderam ser verificados, tente novamente",
+      "bulkWakeAllLookupFailed": "Nenhum wake enviado: {{count}} não puderam ser verificados, tente novamente",
       "scriptQueuedOneOffline": "Script \"{{script}}\" na fila para {{hostname}} — será executado quando o dispositivo se reconectar"
     },
     "tryAgain": "Tentar novamente",

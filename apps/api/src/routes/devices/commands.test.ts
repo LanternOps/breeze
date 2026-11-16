@@ -1006,6 +1006,13 @@ describe('device commands routes', () => {
         expect(await res.json()).toEqual({ error: 'not ready', code: 'WAKE_NOT_READY' });
       });
 
+      it('returns 503 (transient, retryable) for WAKE_LOOKUP_FAILED, not 412', async () => {
+        vi.mocked(dispatchWake).mockResolvedValueOnce({ ok: false, code: 'WAKE_LOOKUP_FAILED', message: 'Could not check. Try again.' });
+        const res = await send();
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: 'Could not check. Try again.', code: 'WAKE_LOOKUP_FAILED' });
+      });
+
       it('returns 412 without delivering when preparation refuses', async () => {
         vi.mocked(dispatchWake).mockResolvedValueOnce({ ok: false, code: 'TARGET_ONLINE', message: 'Device is online' });
         const res = await send();

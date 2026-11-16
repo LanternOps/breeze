@@ -58,7 +58,8 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
       const res = await fetchWithAuth(`/configuration-policies/${policyId}/wake-status?${qs.toString()}`);
       if (!res.ok) throw new Error(`status ${res.status}`);
       setResult((await res.json()) as WakePage);
-    } catch {
+    } catch (err) {
+      console.error('[WakeStatusPanel] failed to load wake status', err);
       setFailed(true);
     } finally {
       setLoading(false);

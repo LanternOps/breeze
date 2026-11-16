@@ -9,8 +9,7 @@ import (
 
 // rawReadings is the JSON the Windows collector's PowerShell emits. Adapters
 // are decided only by magicPacket (the WakeOnMagicPacket enum) and eee (the raw
-// RegistryValue of the *EEE keyword). displayName and displayValue are
-// localised text and are never read.
+// RegistryValue of the *EEE keyword). The script emits no localised text.
 type rawReadings struct {
 	Hiberboot any          `json:"hiberboot"`
 	Adapters  []rawAdapter `json:"adapters"`
@@ -52,6 +51,7 @@ func ParseWindowsReadings(raw []byte) (*WindowsReadings, error) {
 	for _, a := range r.Adapters {
 		mac, ok := normaliseMAC(a.MAC)
 		if !ok {
+			out.SkippedAdapters++
 			continue
 		}
 		reading := AdapterReading{MAC: mac, MagicPacket: "unknown", EEE: "unknown"}
@@ -76,6 +76,9 @@ func ParseWindowsReadings(raw []byte) (*WindowsReadings, error) {
 			}
 		}
 		out.Adapters = append(out.Adapters, reading)
+	}
+	if out.SkippedAdapters > 0 {
+		log.Warn("wired adapters skipped: MAC unparseable", "count", out.SkippedAdapters)
 	}
 	return out, nil
 }

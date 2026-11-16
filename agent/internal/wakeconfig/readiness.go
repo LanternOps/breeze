@@ -37,6 +37,9 @@ type AdapterReading struct {
 type WindowsReadings struct {
 	FastStartup string // enabled|disabled|unknown
 	Adapters    []AdapterReading
+	// SkippedAdapters counts wired adapters dropped because their MAC could
+	// not be parsed; they cannot be tracked, but they do exist.
+	SkippedAdapters int
 }
 
 // AdapterRecord is what the agent remembers about a wired adapter.
@@ -173,6 +176,10 @@ func Compute(in Inputs) Snapshot {
 	case in.Virtual:
 		snap.ReadinessState = StateUnsupportedVM
 		reasons["virtual_machine"] = true
+	case len(macs) == 0 && in.Windows != nil && in.Windows.SkippedAdapters > 0:
+		// A wired adapter exists but could not be read; do not claim none.
+		snap.ReadinessState = StateUnproven
+		reasons["nic_unreadable"] = true
 	case len(macs) == 0:
 		snap.ReadinessState = StateNoWired
 		reasons["no_wired_adapter"] = true

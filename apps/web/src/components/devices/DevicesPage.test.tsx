@@ -2163,6 +2163,56 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
       });
       expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
     });
+
+    // A transient lookup failure is not a policy decision: count it apart so
+    // the operator is told to retry instead of that policy blocked the wake.
+    const lookupFailedWake = { show: false, mode: 'unknown', state: 'lookup_failed', testWakeAllowed: false, flaggedTimeouts: false };
+
+    it('reports lookup-failed devices separately from policy-hidden ones, as retryable', async () => {
+      const { showToast } = await import('../shared/Toast');
+      const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [{ deviceId: DEV_1 }], failed: [] }));
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline' },
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline', wakeAvailability: hiddenWake },
+          { ...rawDevice(DEV_3, 'host-gamma'), status: 'offline', wakeAvailability: lookupFailedWake },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2, DEV_3]);
+      vi.mocked(showToast).mockClear();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+      await waitFor(() => expect(vi.mocked(requestBulkWakeCommand)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(requestBulkWakeCommand).mock.calls[0][0]).toEqual([DEV_1]);
+      await waitFor(() => {
+        const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+        // 1 by policy, 1 could not be checked: never lumped into "2 by policy".
+        expect(messages.some(m => /1 skipped by Wake-on-LAN policy/.test(m) && /1 could not be checked/i.test(m))).toBe(true);
+      });
+    });
+
+    it('sends nothing and says to retry when every selected device failed its policy lookup', async () => {
+      const { showToast } = await import('../shared/Toast');
+      const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(requestBulkWakeCommand).mockReset();
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline', wakeAvailability: lookupFailedWake },
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline', wakeAvailability: lookupFailedWake },
+          { ...rawDevice(DEV_3, 'host-gamma'), status: 'offline', wakeAvailability: lookupFailedWake },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2, DEV_3]);
+      vi.mocked(showToast).mockClear();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+      await waitFor(() => {
+        const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+        expect(messages.some(m => /3 could not be checked/i.test(m) && /try again/i.test(m) && !/blocked by Wake-on-LAN policy/.test(m))).toBe(true);
+      });
+      expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
+    });
   });
 
   it('sends exactly one bulk command when the confirm button is double-clicked', async () => {

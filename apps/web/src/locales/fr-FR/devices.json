@@ -2814,6 +2814,8 @@
       "bulkWakeResult": "Envoyé à {{sent}}, {{skipped}} ignorés",
       "bulkWakePolicySkipped": "{{count}} ignorés par la politique Wake-on-LAN",
       "bulkWakeAllBlockedByPolicy": "Aucun réveil envoyé : {{count}} bloqués par la politique Wake-on-LAN",
+      "bulkWakeLookupFailedSkipped": "{{count}} n'ont pas pu être vérifiés, réessayez",
+      "bulkWakeAllLookupFailed": "Aucun réveil envoyé : {{count}} n'ont pas pu être vérifiés, réessayez",
       "scriptQueuedOneOffline": "Script « {{script}} » mis en file pour {{hostname}} — s'exécutera à la reconnexion de l'appareil"
     },
     "tryAgain": "Réessayer",

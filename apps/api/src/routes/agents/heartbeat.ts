@@ -3019,9 +3019,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
 
       // Wake-on-LAN readiness (#10838 W02): an error only omits the block so
-      // the agent keeps its current collection state.
+      // the agent keeps its current collection state. The builder's no-policy-set
+      // fallback issues a query (a loaded set needs none), so that path runs in
+      // its own transaction: a failure
+      // is caught outside it and cannot poison the request transaction.
       try {
-        policyConfigs.wakeOnLanSettings = await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts);
+        policyConfigs.wakeOnLanSettings = beatPolicySet
+          ? await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts)
+          : await withDbTransaction(() => buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts));
       } catch (err) {
         console.error(`[agents] failed to build wake_on_lan config update for ${agentId}:`, err);
         captureException(err);

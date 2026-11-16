@@ -229,7 +229,8 @@ export async function listWakeStatusForPolicy(input: {
 /**
  * Clears the repeated-timeout block for a device this policy governs.
  * Returns null (route answers 404) for an invisible, site-restricted-out, or
- * ungoverned device, and writes nothing in that case.
+ * ungoverned device, or one with no device_wake_status row yet, and writes
+ * nothing in that case.
  */
 export async function allowWakeAgain(input: {
   policyId: string;
@@ -251,9 +252,13 @@ export async function allowWakeAgain(input: {
   const winner = (await resolveWakeOnLanWinnersForDevices([deviceId])).get(deviceId);
   if (!winner || winner.assignedPolicyId !== policyId) return null;
 
-  await db
+  const updated = await db
     .update(deviceWakeStatus)
     .set({ consecutiveTimeouts: 0, updatedAt: new Date() })
-    .where(eq(deviceWakeStatus.deviceId, deviceId));
+    .where(eq(deviceWakeStatus.deviceId, deviceId))
+    .returning({ deviceId: deviceWakeStatus.deviceId });
+  // No status row yet (the agent has not reported): nothing was cleared, so
+  // the route answers 404 and writes no audit row.
+  if (updated.length === 0) return null;
   return { orgId: device.orgId, hostname: device.hostname };
 }

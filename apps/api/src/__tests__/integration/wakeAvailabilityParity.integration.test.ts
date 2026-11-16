@@ -216,6 +216,58 @@ describe('wake_on_lan resolution on real Postgres (#10838)', () => {
     expect(missing.get('00000000-0000-4000-8000-000000000000')).toBeNull();
   });
 
+  runDb('same-level ties resolve identically on the batch and policy-set paths: lower priority wins, then the older assignment', async () => {
+    const partner = await createPartner();
+    const orgP = await createOrganization({ partnerId: partner.id });
+    const orgT = await createOrganization({ partnerId: partner.id });
+    const siteP = await createSite({ orgId: orgP.id });
+    const siteT = await createSite({ orgId: orgT.id });
+    const dPriority = await seedDevice(orgP.id, siteP.id, 'tie-priority');
+    const dCreated = await seedDevice(orgT.id, siteT.id, 'tie-created');
+
+    // Org P: two org-level assignments with different priority. The loser is
+    // seeded first so insertion order cannot decide it; settings differ so
+    // the settings comparison cannot pass for the wrong policy.
+    const priorityLoser = await seedWakePolicy({
+      owner: { orgId: orgP.id, partnerId: null }, settings: VERIFIED,
+      assignments: [{ level: 'organization', targetId: orgP.id, priority: 5 }],
+    });
+    const priorityWinner = await seedWakePolicy({
+      owner: { orgId: orgP.id, partnerId: null }, settings: ALWAYS,
+      assignments: [{ level: 'organization', targetId: orgP.id, priority: 1 }],
+    });
+    // Org T: equal priority, different assignment created_at. The newer one is seeded first.
+    const createdLoser = await seedWakePolicy({
+      owner: { orgId: orgT.id, partnerId: null }, settings: ALWAYS,
+      assignments: [{ level: 'organization', targetId: orgT.id, priority: 10, createdAt: new Date('2026-06-01T00:00:00.000Z') }],
+    });
+    const createdWinner = await seedWakePolicy({
+      owner: { orgId: orgT.id, partnerId: null }, settings: VERIFIED,
+      assignments: [{ level: 'organization', targetId: orgT.id, priority: 10, createdAt: new Date('2026-01-01T00:00:00.000Z') }],
+    });
+
+    const cases = [
+      { id: dPriority, orgId: orgP.id, winner: priorityWinner, loser: priorityLoser, settings: ALWAYS, label: 'priority' },
+      { id: dCreated, orgId: orgT.id, winner: createdWinner, loser: createdLoser, settings: VERIFIED, label: 'created_at' },
+    ];
+    const batchWinners = await sys(() => resolveWakeOnLanWinnersForDevices(cases.map((c) => c.id)));
+    const batchSettings = await sys(() => resolveWakeOnLanSettingsForDevices(cases.map((c) => c.id)));
+
+    for (const c of cases) {
+      expect(batchWinners.get(c.id)?.assignedPolicyId, `${c.label}: batch winner`).toBe(c.winner);
+      expect(batchWinners.get(c.id)?.assignedPolicyId).not.toBe(c.loser);
+      expect(batchSettings.get(c.id), `${c.label}: batch settings`).toEqual(c.settings);
+      const own = await inOrg(c.orgId, partner.id, () => resolveWakeOnLanSettingsForDevice(c.id));
+      const viaSet = await inOrg(c.orgId, partner.id, async () => {
+        const hierarchy = await loadDeviceHierarchy(c.id);
+        expect(hierarchy, c.label).not.toBeNull();
+        return resolveWakeOnLanSettingsForDevice(c.id, withPolicySet(await loadDevicePolicySet(hierarchy!), hierarchy));
+      });
+      expect(own, `${c.label}: per-device`).toEqual(c.settings);
+      expect(viaSet, `${c.label}: policy set`).toEqual(c.settings);
+    }
+  });
+
   runDb('resolveWakeAvailability follows the resolved policy and the stored status, and RLS hides foreign devices', async () => {
     const f = await seedFleet();
     const A = f.orgA.id;
