@@ -63,7 +63,7 @@ describe('device_troubleshooting prompts (#11084)', () => {
   it('W2 #11085: a continuation renders its seed after the goal fence, with the no-repeat line, and keeps the goal fenced', () => {
     const seed = renderContinuationSeed({
       fromRunId: 'run-0', summary: 'Spooler crashed 3 times.',
-      steps: [{ label: 'Restart the Print Spooler', status: 'completed', outcome: 'Service restarted' }],
+      steps: [{ label: 'Restart the Print Spooler', status: 'completed', result: 'Service restarted' }],
     });
     const base = ctx();
     const p = buildAgentRunTaskPrompt({ ...base, troubleshoot: { goal: base.troubleshoot!.goal, continuation: { fromRunId: 'run-0', chain: 1, seed } } });

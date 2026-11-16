@@ -15,6 +15,7 @@
  */
 import type { AiAgentLimits, AiAgentRunProfile } from '@breeze/shared';
 import { sanitizeUntrustedToolText, wrapUntrustedData } from '../aiInputSanitizer';
+import { summarizeStepResult } from '../wisp/stepOutputSummary';
 
 export const TROUBLESHOOT_READ_TOOLS = [
   'get_device_details', 'get_device_context', 'get_device_health', 'get_device_events', 'get_device_software',
@@ -83,12 +84,26 @@ export const TROUBLESHOOT_MODE_PROMPT = '## Mode: device troubleshooting\n'
 
 /** A continuation of a continuation of … at most this deep (the prior run's chain must be below it). */
 export const TROUBLESHOOT_MAX_CONTINUATION_CHAIN = 3;
-/** The whole rendered seed, in UTF-8 bytes. */
-export const TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES = 4096;
+/**
+ * The whole rendered seed, in UTF-8 bytes (about 3,000 tokens of the task
+ * turn): room for the prior summary and three step results at their full
+ * per-field caps below. At 4 KB a long summary pushed steps out (#11967).
+ */
+export const TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES = 12_288;
 /** Fixed — never templated. */
 export const CONTINUATION_NO_REPEAT_LINE = 'Steps listed as already run must not be proposed again.';
+/** Marks a summary or step outcome that was cut to fit the seed. Fixed. */
+export const SEED_SHORTENED_MARK = '[shortened]';
+/** Fixed — never templated. */
+export const CONTINUATION_SHORTENED_LINE =
+  `Text marked ${SEED_SHORTENED_MARK} was cut to fit: it holds only part of the summary or step result.`;
 
-export type ContinuationStep = { label: string; status: string; outcome: string | null };
+/**
+ * One step the prior run proposed. `result` is the released step's stored
+ * result (described by structure, never pasted); `errorCode` is what a failed
+ * step reports instead.
+ */
+export type ContinuationStep = { label: string; status: string; result?: unknown; errorCode?: string | null };
 
 const STEP_STATUS_PHRASE: Readonly<Record<string, string>> = {
   completed: 'already run',
@@ -102,70 +117,118 @@ const STEP_STATUS_PHRASE: Readonly<Record<string, string>> = {
 };
 
 const SEED_LABEL_MAX_CHARS = 200;
-const SEED_OUTCOME_MAX_CHARS = 600;
+/** Per-field ceilings; the byte budget may cut every field further, to one shared length. */
+const SEED_SUMMARY_MAX_CHARS = 2000;
+const SEED_OUTCOME_MAX_CHARS = 2000;
+const SEED_ERROR_MAX_CHARS = 200;
+/** Below this much room a field is left out (marked), not cut to a stub. */
+const SEED_FIELD_MIN_CHARS = 24;
+/** "No cap" for the summariser: its full description, to tell whether a capped one lost anything. */
+const UNCAPPED = Number.MAX_SAFE_INTEGER;
 
 function capChars(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length <= max ? text : `${chars.slice(0, Math.max(0, max - 1)).join('')}…`;
 }
 
-/** One device/model field, single-line, fences neutralized, capped. */
-function seedField(value: string, max: number): string {
-  return capChars(sanitizeUntrustedToolText(value).replace(/\s+/g, ' ').trim(), max);
+/** One device/model field, single-line, fences neutralized (not capped). */
+function seedLine(value: string): string {
+  return sanitizeUntrustedToolText(value).replace(/\s+/g, ' ').trim();
 }
 
-function renderSeed(fromRunId: string, summary: string, steps: ContinuationStep[], omitted: number): string {
-  const data: string[] = [`Earlier summary: ${summary || '(none)'}`, 'Steps the earlier run proposed (oldest first):'];
-  if (omitted > 0) data.push(`(${omitted} earlier step(s) omitted)`);
+/** A field whose whole text is `full`, given `room` chars; marked whenever anything was cut. */
+function fitField(full: string, room: number, render: (max: number) => string = (max) => capChars(full, max)): string {
+  if (full.length === 0) return '';
+  if (Array.from(full).length <= room) return full;
+  if (room < SEED_FIELD_MIN_CHARS) return SEED_SHORTENED_MARK;
+  const text = render(room);
+  return text === full ? text : `${text} ${SEED_SHORTENED_MARK}`;
+}
+
+/** A step's outcome text given `room` chars. */
+type StepOutcome = (room: number) => string;
+
+/** Null when the step has no outcome yet (not released, or not decided). */
+function stepOutcome(step: ContinuationStep): StepOutcome | null {
+  if (step.status === 'failed') {
+    const full = seedLine(step.errorCode ?? '') || 'failed';
+    return (room) => fitField(full, Math.min(room, SEED_ERROR_MAX_CHARS));
+  }
+  if (step.status !== 'completed') return null;
+  // Described by structure (wisp/stepOutputSummary.ts): an event-log result
+  // leads with its count, log and span, then each event's identifying fields.
+  const full = seedLine(summarizeStepResult(step.result, UNCAPPED));
+  return (room) => fitField(
+    full,
+    Math.min(room, SEED_OUTCOME_MAX_CHARS),
+    (max) => capChars(seedLine(summarizeStepResult(step.result, max)), max),
+  );
+}
+
+type PreparedStep = { header: string; outcome: StepOutcome | null };
+
+function renderSeed(fromRunId: string, summary: string, steps: PreparedStep[], omitted: number, room: number): string {
+  const earlier = fitField(summary, Math.min(room, SEED_SUMMARY_MAX_CHARS)) || '(none)';
+  const data: string[] = [`Earlier summary: ${earlier}`, 'Steps the earlier run proposed (oldest first):'];
+  if (omitted > 0) data.push(`(${omitted} earlier step(s) omitted to fit)`);
   if (steps.length === 0 && omitted === 0) data.push('(none)');
   for (const step of steps) {
-    const phrase = STEP_STATUS_PHRASE[step.status] ?? 'status unknown';
-    const label = seedField(step.label, SEED_LABEL_MAX_CHARS);
-    const outcome = step.outcome ? ` — outcome: ${seedField(step.outcome, SEED_OUTCOME_MAX_CHARS)}` : '';
-    data.push(`- [${phrase}] ${label}${outcome}`);
+    data.push(step.outcome ? `${step.header} — outcome: ${step.outcome(room)}` : step.header);
   }
   return [
     '## Continuation',
     `This run continues an earlier troubleshooting run on the same device (run ${fromRunId}). `
       + 'What it found and what happened to each step it proposed is below.',
     CONTINUATION_NO_REPEAT_LINE,
+    CONTINUATION_SHORTENED_LINE,
     wrapUntrustedData('prior_troubleshoot_run', data.join('\n')),
   ].join('\n');
 }
 
 /**
- * The seed (pure). Capped at TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES: steps
- * drop oldest-first, then the summary shrinks; the fixed lines always stay.
- * `steps` are oldest first.
+ * The seed (pure). Capped at TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES. Every
+ * step stays: when the whole does not fit, the summary and the step outcomes
+ * are cut to one shared length (the largest that fits), and each cut field is
+ * marked. Only if the step lines alone cannot fit are the oldest steps left
+ * out, and counted. The fixed lines always stay. `steps` are oldest first.
  */
 export function renderContinuationSeed(input: { fromRunId: string; summary: string | null; steps: ContinuationStep[] }): string {
-  const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
-  const max = TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES;
-  let summary = input.summary ? sanitizeUntrustedToolText(input.summary).replace(/\s+/g, ' ').trim() : '';
-  // A summary longer than the whole budget can never fit; start from the budget.
-  summary = capChars(summary, max);
-  let steps = [...input.steps];
+  const fits = (s: string) => Buffer.byteLength(s, 'utf8') <= TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES;
+  const summary = input.summary ? seedLine(input.summary) : '';
+  let steps: PreparedStep[] = input.steps.map((step) => ({
+    header: `- [${STEP_STATUS_PHRASE[step.status] ?? 'status unknown'}] ${capChars(seedLine(step.label), SEED_LABEL_MAX_CHARS)}`,
+    outcome: stepOutcome(step),
+  }));
   let omitted = 0;
-  let seed = renderSeed(input.fromRunId, summary, steps, omitted);
-  while (bytes(seed) > max && steps.length > 1) {
+  const widest = Math.max(SEED_SUMMARY_MAX_CHARS, SEED_OUTCOME_MAX_CHARS);
+  for (;;) {
+    const at = (room: number) => renderSeed(input.fromRunId, summary, steps, omitted, room);
+    const whole = at(widest);
+    if (fits(whole)) return whole;
+    const bare = at(0);
+    if (fits(bare)) {
+      // The largest shared length that fits. More room never renders shorter,
+      // so a binary search finds it; only a seed that fits is ever kept.
+      let lo = 0;
+      let hi = widest;
+      let best = bare;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        const seed = at(mid);
+        if (fits(seed)) {
+          lo = mid;
+          best = seed;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return best;
+    }
+    // Fixed lines and an empty list always fit, so this ends.
+    if (steps.length === 0) return bare;
     steps = steps.slice(1);
     omitted += 1;
-    seed = renderSeed(input.fromRunId, summary, steps, omitted);
   }
-  while (bytes(seed) > max && summary.length > 0) {
-    const over = bytes(seed) - max;
-    const chars = Array.from(summary);
-    // At least one char per over-budget byte, plus slack for the cut marker.
-    summary = capChars(summary, Math.max(0, chars.length - over - 2));
-    if (Array.from(summary).length <= 1) summary = '';
-    seed = renderSeed(input.fromRunId, summary, steps, omitted);
-  }
-  while (bytes(seed) > max && steps.length > 0) {
-    steps = steps.slice(1);
-    omitted += 1;
-    seed = renderSeed(input.fromRunId, summary, steps, omitted);
-  }
-  return seed;
 }
 
 export type TroubleshootPromptContext = {

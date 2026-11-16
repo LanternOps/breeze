@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import {
   CONTINUATION_NO_REPEAT_LINE,
+  CONTINUATION_SHORTENED_LINE,
+  SEED_SHORTENED_MARK,
   TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES,
   TROUBLESHOOT_MODE_PROMPT,
   renderContinuationSeed,
@@ -58,8 +60,8 @@ describe('troubleshootProfile', () => {
 describe('continuation seed (W2 #11085)', () => {
   const PRIOR = '00000000-0000-4000-8000-0000000000c1';
   const steps = [
-    { label: 'Restart the Print Spooler service', status: 'completed', outcome: 'Service restarted' },
-    { label: 'Clear the spool folder', status: 'rejected', outcome: null },
+    { label: 'Restart the Print Spooler service', status: 'completed', result: { status: 'completed', exitCode: 0, stdout: 'Service restarted' } },
+    { label: 'Clear the spool folder', status: 'rejected' },
   ];
 
   it('names the released step with its outcome, the rejected one, and the fixed no-repeat line', () => {
@@ -88,16 +90,50 @@ describe('continuation seed (W2 #11085)', () => {
     expect(seed.match(/<\/untrusted_data>/g)).toHaveLength(1);
   });
 
-  it('stays ≤ 4 096 bytes with an oversized summary, keeping the no-repeat line and the newest step', () => {
-    const many = Array.from({ length: 12 }, (_, i) => ({ label: `Step ${i} ${'L'.repeat(150)}`, status: 'completed', outcome: 'O'.repeat(400) }));
+  it('#11967: an oversized summary and outcomes are cut to one shared length, every step kept, each cut marked', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ label: `Step ${i} ${'L'.repeat(150)}`, status: 'completed', result: 'O'.repeat(3000) }));
     const seed = renderContinuationSeed({ fromRunId: PRIOR, summary: 'S'.repeat(20_000), steps: many });
     expect(Buffer.byteLength(seed, 'utf8')).toBeLessThanOrEqual(TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES);
-    expect(TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES).toBe(4096);
+    expect(TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES).toBe(12_288);
     expect(seed).toContain(CONTINUATION_NO_REPEAT_LINE);
-    expect(seed).toContain('Step 11 ');
-    // Oldest first out.
+    expect(seed).toContain(CONTINUATION_SHORTENED_LINE);
+    for (let i = 0; i < 12; i += 1) expect(seed).toContain(`Step ${i} `);
+    expect(seed).not.toMatch(/omitted/);
+    // The summary and all 12 outcomes are marked as cut (plus the fixed line that explains the mark).
+    expect(seed.split(SEED_SHORTENED_MARK).length - 1).toBe(1 + 13);
+    // One shared length: every outcome was cut to the same size.
+    const outcomes = [...seed.matchAll(/outcome: (O+)…/g)].map((m) => m[1]!.length);
+    expect(outcomes).toHaveLength(12);
+    expect(new Set(outcomes).size).toBe(1);
+    // Nearly the whole budget is used: the shared length is the largest that fits.
+    expect(Buffer.byteLength(seed, 'utf8')).toBeGreaterThan(TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES - 200);
+  });
+
+  it('#11967: what fits whole is not marked; a short result next to a long one keeps all of itself', () => {
+    const seed = renderContinuationSeed({
+      fromRunId: PRIOR, summary: 'Short.',
+      steps: [
+        { label: 'Short read', status: 'completed', result: 'ok' },
+        { label: 'Long read', status: 'completed', result: 'X'.repeat(50_000) },
+      ],
+    });
+    expect(seed).toContain('Earlier summary: Short.\n');
+    expect(seed).toContain('Short read — outcome: ok\n');
+    expect(seed).toMatch(/Long read — outcome: X+… \[shortened\]\n/);
+    // The per-step ceiling, not the budget, cut it.
+    expect(seed.match(/X+/)![0].length).toBe(1999);
+  });
+
+  it('only when the step lines alone cannot fit are the oldest steps left out, and counted', () => {
+    const many = Array.from({ length: 80 }, (_, i) => ({ label: `Step ${i} ${'L'.repeat(190)}`, status: 'rejected' }));
+    const seed = renderContinuationSeed({ fromRunId: PRIOR, summary: 'S'.repeat(20_000), steps: many });
+    expect(Buffer.byteLength(seed, 'utf8')).toBeLessThanOrEqual(TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES);
+    expect(seed).toContain(CONTINUATION_NO_REPEAT_LINE);
+    expect(seed).toContain('Step 79 ');
     expect(seed).not.toContain('Step 0 ');
-    expect(seed).toMatch(/earlier step\(s\) omitted/);
+    expect(seed).toMatch(/\(\d+ earlier step\(s\) omitted to fit\)/);
+    // Only as many steps as needed go; what room is left goes to the (marked) summary.
+    expect(seed).toMatch(/Earlier summary: S*…? ?\[shortened\]\n/);
   });
 
   it('multi-byte text is measured in bytes, not characters', () => {
@@ -110,7 +146,7 @@ describe('continuation seed (W2 #11085)', () => {
     expect(troubleshootPromptContextFromTriggerRef({ goal: 'Outlook', continuation: { fromRunId: PRIOR, chain: 1, seed: 'SEED' } }))
       .toEqual({ goal: 'Outlook', continuation: { fromRunId: PRIOR, chain: 1, seed: 'SEED' } });
     for (const continuation of [{ fromRunId: PRIOR, chain: '1', seed: 'S' }, { fromRunId: PRIOR, chain: 1 }, { chain: 1, seed: 'S' },
-      { fromRunId: PRIOR, chain: 1, seed: 'S'.repeat(5000) }]) {
+      { fromRunId: PRIOR, chain: 1, seed: 'S'.repeat(TROUBLESHOOT_CONTINUATION_SEED_MAX_BYTES + 1) }]) {
       expect(troubleshootPromptContextFromTriggerRef({ goal: 'Outlook', continuation })?.continuation).toBeNull();
     }
     expect(troubleshootPromptContextFromTriggerRef({ goal: '  ' })).toBeNull();
