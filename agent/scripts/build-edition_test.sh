@@ -77,6 +77,15 @@ assert_refuses "unknown --component is rejected" \
   --edition self-host --component bogus --goos linux --goarch amd64 \
   --version 0.0.0-test --print-ldflags
 
+# isolation-recovery is a first-class component (Windows release asset).
+if recovery_ldflags="$("${BUILD_EDITION}" \
+  --edition self-host --component isolation-recovery --goos windows --goarch amd64 \
+  --version 0.0.0-test --print-ldflags 2>&1)"; then
+  pass "isolation-recovery component is accepted"
+else
+  fail "isolation-recovery component rejected: ${recovery_ldflags}"
+fi
+
 # --- Happy path: ldflags assembly -----------------------------------------
 
 self_host_ldflags="$("${BUILD_EDITION}" \

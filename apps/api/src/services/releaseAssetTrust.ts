@@ -65,7 +65,9 @@ export const KNOWN_EDITION_VALUES: ReadonlySet<string> = new Set([
 //
 // This list mirrors the assets .github/workflows/release.yml builds without
 // signing — the MSI (built by the "Build unsigned self-host MSI" step) and the
-// four exes it is built from. Keep it in sync when that job's asset set changes.
+// exes the release builds beside it (agent, backup, watchdog, user-helper and
+// the Windows-only isolation-recovery exe; the MSI itself bundles only the first
+// four). Keep it in sync when that job's asset set changes.
 //
 // #3504: the four exes were missing here. #3351 removed Authenticode signing
 // from the public pipeline ("the public pipeline no longer signs these",
@@ -82,6 +84,7 @@ const SELF_HOST_UNSIGNED_ASSET_NAMES: ReadonlySet<string> = new Set([
   'breeze-backup-windows-amd64.exe',
   'breeze-watchdog-windows-amd64.exe',
   'breeze-user-helper-windows-amd64.exe',
+  'breeze-isolation-recovery-windows-amd64.exe',
 ]);
 
 // Raw darwin Mach-O binaries carry Developer ID + notarization even though

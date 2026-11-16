@@ -28,6 +28,7 @@ vi.mock('../../services/binarySource', () => ({
   getGithubAgentPkgUrl: vi.fn(),
   getGithubHelperUrl: vi.fn(),
   getGithubUserHelperUrl: vi.fn(),
+  getGithubIsolationRecoveryUrl: vi.fn(),
   getGithubWatchdogUrl: vi.fn(),
   getGithubBackupUrl: vi.fn(),
   HELPER_FILENAMES: {
@@ -68,7 +69,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { downloadRoutes } from './download';
-import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubIsolationRecoveryUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl, getObjectStream } from '../../services/s3Storage';
 import { getPromotedComponentVersion, getRegisteredComponentVersion } from '../../services/promotedAgentVersion';
 
@@ -258,6 +259,49 @@ describe('public agent binary downloads', () => {
     }
   });
 
+  // breeze-isolation-recovery is a Windows-only release asset: the route must
+  // exist (so the updater is handed a same-origin URL) and refuse any other OS.
+  it('does not disclose AGENT_BINARY_DIR in public isolation-recovery 404 responses', async () => {
+    const res = await downloadRoutes.request('/download/isolation-recovery/windows/amd64');
+    const body = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(body).not.toContain('/tmp/breeze-secret-agent-binaries');
+    expect(console.warn).toHaveBeenCalledWith(
+      '[isolation-recovery-download] Local binary missing',
+      { filename: 'breeze-isolation-recovery-windows-amd64.exe' },
+    );
+  });
+
+  it('redirects isolation-recovery downloads to GitHub in github mode', async () => {
+    vi.mocked(getBinarySource).mockReturnValue('github');
+    vi.mocked(getGithubIsolationRecoveryUrl).mockImplementation(
+      (os: string, arch: string) => `https://github.test/${os}-${arch}/breeze-isolation-recovery`,
+    );
+
+    try {
+      const win = await downloadRoutes.request('/download/isolation-recovery/windows/amd64');
+      expect(win.status).toBe(302);
+      expect(win.headers.get('location')).toBe('https://github.test/windows-amd64/breeze-isolation-recovery');
+      expect(getGithubIsolationRecoveryUrl).toHaveBeenCalledWith('windows', 'amd64', undefined);
+    } finally {
+      vi.mocked(getBinarySource).mockReturnValue('local');
+    }
+  });
+
+  it('rejects non-windows and invalid arch on the isolation-recovery route', async () => {
+    for (const os of ['linux', 'darwin']) {
+      const res = await downloadRoutes.request(`/download/isolation-recovery/${os}/amd64`);
+      expect(res.status).toBe(400);
+    }
+    const arm = await downloadRoutes.request('/download/isolation-recovery/windows/arm64');
+    expect(arm.status).toBe(400);
+    const badOs = await downloadRoutes.request('/download/isolation-recovery/solaris/amd64');
+    expect(badOs.status).toBe(400);
+    const badArch = await downloadRoutes.request('/download/isolation-recovery/windows/sparc');
+    expect(badArch.status).toBe(400);
+  });
+
   it('rejects invalid OS/arch on the user-helper route', async () => {
     const badOs = await downloadRoutes.request('/download/user-helper/solaris/amd64');
     expect(badOs.status).toBe(400);
@@ -311,6 +355,7 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
     vi.mocked(getGithubBackupUrl).mockImplementation(urlFor('backup'));
     vi.mocked(getGithubWatchdogUrl).mockImplementation(urlFor('watchdog'));
     vi.mocked(getGithubUserHelperUrl).mockImplementation(urlFor('user-helper'));
+    vi.mocked(getGithubIsolationRecoveryUrl).mockImplementation(urlFor('isolation-recovery'));
     vi.mocked(getGithubHelperUrl).mockImplementation(
       (os: string, version?: string) =>
         `https://github.test/releases/download/v${version ?? ENV_VERSION}/breeze-helper-${os}`,
@@ -511,6 +556,7 @@ describe('component downloads honour an explicit ?version= pin (issue #5159)', (
     ['watchdog', '/download/watchdog/linux/amd64', 'linux', 'amd64', 'breeze-watchdog-linux-amd64'],
     ['backup', '/download/backup/linux/amd64', 'linux', 'amd64', 'breeze-backup-linux-amd64'],
     ['user-helper', '/download/user-helper/windows/amd64', 'windows', 'amd64', 'breeze-user-helper-windows-amd64'],
+    ['isolation-recovery', '/download/isolation-recovery/windows/amd64', 'windows', 'amd64', 'breeze-isolation-recovery-windows-amd64'],
   ])(
     'pins the %s route to the requested version, resolved for ITS OWN component',
     async (component, path, os, arch, asset) => {
@@ -520,6 +566,7 @@ describe('component downloads honour an explicit ?version= pin (issue #5159)', (
       // still produce a correct-looking Location here.
       vi.mocked(getRegisteredComponentVersion).mockClear();
       vi.mocked(getGithubUserHelperUrl).mockImplementation(urlFor('user-helper'));
+      vi.mocked(getGithubIsolationRecoveryUrl).mockImplementation(urlFor('isolation-recovery'));
 
       const res = await downloadRoutes.request(`${path}?version=${PINNED_VERSION}`);
 
@@ -657,6 +704,7 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
     // its transport-fault/NotFound cases live in the #7576 describe below.
     ['agent', '/download/linux/amd64', '[agent-download]'],
     ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]'],
+    ['isolation-recovery', '/download/isolation-recovery/windows/amd64', '[isolation-recovery-download]'],
     ['backup', '/download/backup/linux/amd64', '[backup-download]'],
   ])('returns 500 for the %s route on a non-NotFound S3 error', async (_name, path, logTag) => {
     const res = await downloadRoutes.request(path);
@@ -674,6 +722,7 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
   it.each([
     ['agent', '/download/linux/amd64', '[agent-download]', 'NotFound'],
     ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]', 'NotFound'],
+    ['isolation-recovery', '/download/isolation-recovery/windows/amd64', '[isolation-recovery-download]', 'NotFound'],
     ['backup', '/download/backup/linux/amd64', '[backup-download]', 'NotFound'],
   ])(
     'still falls back to disk and 404s for the %s route when the S3 object genuinely does not exist',
@@ -844,6 +893,7 @@ describe('watchdog object-storage copies are served on the control-plane origin,
   it.each([
     ['agent', '/download/linux/amd64'],
     ['user-helper', '/download/user-helper/windows/amd64'],
+    ['isolation-recovery', '/download/isolation-recovery/windows/amd64'],
     ['backup', '/download/backup/linux/amd64'],
   ])('leaves the %s route on the presigned redirect (bandwidth offload unchanged)', async (_name, path) => {
     const res = await downloadRoutes.request(path);

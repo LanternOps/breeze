@@ -25,7 +25,7 @@ const collect = () => {
 const RELEASE_FIXTURE = `
           AGENT_FAMILY_WINDOWS_RE = re.compile(
               r"^breeze-agent\\.msi$"
-              r"|^breeze-(agent|backup|watchdog|user-helper)-windows-amd64\\.exe$"
+              r"|^breeze-(agent|backup|watchdog|user-helper|isolation-recovery)-windows-amd64\\.exe$"
           )
 `;
 
@@ -37,6 +37,7 @@ const SELF_HOST_UNSIGNED_ASSET_NAMES: ReadonlySet<string> = new Set([
   'breeze-backup-windows-amd64.exe',
   'breeze-watchdog-windows-amd64.exe',
   'breeze-user-helper-windows-amd64.exe',
+  'breeze-isolation-recovery-windows-amd64.exe',
 ]);
 `;
 
@@ -46,6 +47,7 @@ const EXPECTED = [
   'breeze-backup-windows-amd64.exe',
   'breeze-watchdog-windows-amd64.exe',
   'breeze-user-helper-windows-amd64.exe',
+  'breeze-isolation-recovery-windows-amd64.exe',
 ];
 
 test('splitTopLevel does not split inside a component group', () => {
@@ -58,14 +60,14 @@ test('splitTopLevel respects escaped characters', () => {
   assert.deepEqual(splitTopLevel('^a\\.b$|^c$'), ['^a\\.b$', '^c$']);
 });
 
-test('pipeline regex expands to exactly the five agent-family assets', () => {
+test('pipeline regex expands to exactly the six agent-family assets', () => {
   const { fail, problems } = collect();
   const names = pipelineUnsignedNames(RELEASE_FIXTURE, fail);
   assert.deepEqual(problems, []);
   assert.deepEqual([...names].sort(), [...EXPECTED].sort());
 });
 
-test('API allowlist parses to exactly the five agent-family assets', () => {
+test('API allowlist parses to exactly the six agent-family assets', () => {
   const { fail, problems } = collect();
   const names = apiAllowlistNames(TRUST_FIXTURE, fail);
   assert.deepEqual(problems, []);
@@ -85,13 +87,14 @@ test('reproduces the #3504 outage: pipeline unsigned, allowlist has only the msi
   const api = new Set(['breeze-agent.msi']);
 
   const problems = compareTrustSets(pipeline, api);
-  assert.equal(problems.length, 4, 'all four unsigned exes must be reported');
+  assert.equal(problems.length, 5, 'all five unsigned exes must be reported');
   assert.ok(problems.every((p) => p.code === 'MISSING_FROM_ALLOWLIST'));
   assert.deepEqual(
     problems.map((p) => p.message.split('\n')[0]).sort(),
     [
       'breeze-agent-windows-amd64.exe',
       'breeze-backup-windows-amd64.exe',
+      'breeze-isolation-recovery-windows-amd64.exe',
       'breeze-user-helper-windows-amd64.exe',
       'breeze-watchdog-windows-amd64.exe',
     ]

@@ -8,6 +8,7 @@ import {
   getGithubReleasePageUrl,
   getGithubReleaseRepository,
   getGithubUserHelperUrl,
+  getGithubIsolationRecoveryUrl,
   getGithubViewerUrl,
   getGithubWatchdogUrl,
 } from './binarySource';
@@ -105,6 +106,9 @@ describe('binarySource release-source unification', () => {
       );
       expect(getGithubUserHelperUrl('windows', 'amd64', '0.104.0')).toBe(
         `${base}/breeze-user-helper-windows-amd64.exe`,
+      );
+      expect(getGithubIsolationRecoveryUrl('windows', 'amd64', '0.104.0')).toBe(
+        `${base}/breeze-isolation-recovery-windows-amd64.exe`,
       );
       expect(getGithubHelperUrl('darwin', '0.104.0')).toBe(
         `${base}/breeze-helper-macos.dmg`,

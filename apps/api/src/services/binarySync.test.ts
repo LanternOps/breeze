@@ -1012,6 +1012,80 @@ describe("binarySync", () => {
     });
   });
 
+  // The Windows-only network-isolation recovery binary ships in the same
+  // binaries volume as the agent; local mode must register it as its own
+  // component so the agent updater's component=isolation-recovery lookup
+  // resolves, exactly like the user-helper.
+  describe("local-binary isolation-recovery registration", () => {
+    function setLocalEnv() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      mockReadFileVersionOnly("0.65.9");
+    }
+
+    it("registers a component=isolation-recovery row alongside the agent when the binary is present", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+        "breeze-isolation-recovery-windows-amd64.exe",
+      ] as any);
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+      const recoveryInsert = insertCalls.find(
+        (v) => v.component === "isolation-recovery",
+      );
+      expect(recoveryInsert).toMatchObject({
+        version: "0.65.9",
+        platform: "windows",
+        architecture: "amd64",
+        component: "isolation-recovery",
+        isLatest: true,
+        downloadUrl:
+          "http://localhost:3001/api/v1/agents/download/isolation-recovery/windows/amd64",
+      });
+    });
+
+    it("does not register isolation-recovery for non-windows or non-amd64 file names", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+        "breeze-isolation-recovery-linux-amd64",
+        "breeze-isolation-recovery-windows-arm64.exe",
+      ] as any);
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+      expect(insertCalls.some((v) => v.component === "isolation-recovery")).toBe(false);
+    });
+
+    it("succeeds without an isolation-recovery row when the binary is missing (older volume)", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+      ] as any);
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+      expect(insertCalls.some((v) => v.component === "isolation-recovery")).toBe(false);
+    });
+  });
+
   describe("local-binary helper installer registration (#6872)", () => {
     function setLocalEnv() {
       process.env.BINARY_SOURCE = "local";
@@ -2534,6 +2608,131 @@ describe("binarySync", () => {
         // Restore the hoisted default so later tests don't recurse through
         // the wrapper above.
         dbMocks.transaction.mockImplementation(defaultTxImpl);
+      }
+    });
+  });
+
+  // The Windows-only breeze-isolation-recovery.exe is a discrete release
+  // asset registered as component=isolation-recovery (windows/amd64 only).
+  describe("syncFromGitHub isolation-recovery loop", () => {
+    const RECOVERY = "breeze-isolation-recovery-windows-amd64.exe";
+
+    function stubRelease(
+      signed: { manifest: Buffer; signature: Buffer; release?: string },
+      assets: { name: string; buffer: Buffer }[],
+    ) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: "v1.2.3",
+                body: "release notes",
+                assets: [
+                  ...assets.map((a) => ({
+                    name: a.name,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${a.name}`,
+                    size: a.buffer.length,
+                  })),
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url:
+                      "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json",
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url:
+                      "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519",
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          const hit = assets.find((a) => url.endsWith(a.name));
+          if (hit) return new Response(hit.buffer);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+    }
+
+    it("registers component=isolation-recovery (windows/amd64) with the canonical asset URL", async () => {
+      const agent = { name: "breeze-agent-windows-amd64.exe", buffer: Buffer.from("agent") };
+      const recovery = { name: RECOVERY, buffer: Buffer.from("recovery bytes") };
+      const signed = makeSignedReleaseManifestMulti([agent, recovery]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      stubRelease(signed, [agent, recovery]);
+
+      const result = await syncFromGitHub();
+
+      expect(result.synced).toEqual(
+        expect.arrayContaining(["agent:windows/amd64", "isolation-recovery:windows/amd64"]),
+      );
+      const insert = (dbMocks.insertValues.mock.calls as any[][]).find(
+        (call) => (call[0] as { component: string }).component === "isolation-recovery",
+      );
+      expect(insert).toBeDefined();
+      expect(insert![0]).toMatchObject({
+        version: "1.2.3",
+        platform: "windows",
+        architecture: "amd64",
+        component: "isolation-recovery",
+        checksum: signed.checksums.get(RECOVERY),
+        downloadUrl: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${RECOVERY}`,
+      });
+    });
+
+    it("succeeds without an isolation-recovery row when the release predates the asset", async () => {
+      const agent = { name: "breeze-agent-windows-amd64.exe", buffer: Buffer.from("agent") };
+      const signed = makeSignedReleaseManifestMulti([agent]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      stubRelease(signed, [agent]);
+
+      const result = await syncFromGitHub();
+
+      expect(result.synced).toContain("agent:windows/amd64");
+      expect(result.synced).not.toContain("isolation-recovery:windows/amd64");
+      expect(
+        dbMocks.insertValues.mock.calls.filter(
+          (call: any[]) => (call[0] as { component: string }).component === "isolation-recovery",
+        ),
+      ).toHaveLength(0);
+    });
+
+    it("refuses an isolation-recovery asset the signed manifest labels 'none' without a self-host edition, writing nothing", async () => {
+      const agent = { name: "breeze-agent-windows-amd64.exe", buffer: Buffer.from("agent") };
+      const recovery = { name: RECOVERY, buffer: Buffer.from("recovery bytes") };
+      const base = makeSignedReleaseManifestMulti([agent, recovery]);
+      const parsed = JSON.parse(base.manifest.toString("utf8"));
+      parsed.assets.find((a: { name: string }) => a.name === RECOVERY).platformTrust = "none";
+      const tampered = makeSignedReleaseManifestMultiFrom(parsed);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = tampered.publicKey;
+      stubRelease(tampered, [agent, recovery]);
+
+      await expect(syncFromGitHub()).rejects.toThrow(/platform trust|platformTrust|authenticode/i);
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
+
+    it("refuses an isolation-recovery asset whose manifest entry is missing while the release lists it, writing nothing", async () => {
+      const agent = { name: "breeze-agent-windows-amd64.exe", buffer: Buffer.from("agent") };
+      const recovery = { name: RECOVERY, buffer: Buffer.from("recovery bytes") };
+      // Manifest signs ONLY the agent; the release also carries the recovery exe.
+      const signed = makeSignedReleaseManifestMulti([agent]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      stubRelease(signed, [agent, recovery]);
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(syncFromGitHub()).rejects.toThrow();
+        expect(dbMocks.insertValues).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
       }
     });
   });

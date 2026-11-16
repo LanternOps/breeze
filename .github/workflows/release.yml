@@ -540,6 +540,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-watchdog failed with exit code $LASTEXITCODE" }
           & $winres simply --arch amd64 --no-suffix --icon icon.ico `
             --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
+            --product-name "Breeze RMM Isolation Recovery" --file-description "Breeze RMM Isolation Recovery" `
+            --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-isolation-recovery.exe" `
+            --out ..\cmd\breeze-isolation-recovery\rsrc_windows_amd64.syso
+          if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-isolation-recovery failed with exit code $LASTEXITCODE" }
+          & $winres simply --arch amd64 --no-suffix --icon icon.ico `
+            --file-version $env:BUILD_VERSION --product-version $env:BUILD_VERSION `
             --product-name "Breeze RMM Backup Helper" --file-description "Breeze RMM Backup Helper" `
             --copyright "Copyright (c) Breeze RMM" --original-filename "breeze-backup.exe" `
             --out ..\cmd\breeze-backup\rsrc_windows_amd64.syso
@@ -565,6 +571,11 @@ jobs:
           # Build breeze-watchdog
           bash agent/scripts/build-edition.sh --edition self-host --component watchdog --goos windows --goarch amd64 --version $env:BUILD_VERSION --out ../dist/breeze-watchdog-windows-amd64.exe
           if ($LASTEXITCODE -ne 0) { throw "build-edition.sh (watchdog) failed with exit code $LASTEXITCODE" }
+          # Build breeze-isolation-recovery (Windows-only; the agent updater
+          # fetches it as component "isolation-recovery" for network-isolation
+          # recovery). Console-subsystem, same as backup/watchdog.
+          bash agent/scripts/build-edition.sh --edition self-host --component isolation-recovery --goos windows --goarch amd64 --version $env:BUILD_VERSION --out ../dist/breeze-isolation-recovery-windows-amd64.exe
+          if ($LASTEXITCODE -ne 0) { throw "build-edition.sh (isolation-recovery) failed with exit code $LASTEXITCODE" }
           # Build breeze-user-helper (GUI-subsystem sibling of breeze-agent).
           # Thin cmd/breeze-user-helper wrapper over the same internal/agentapp
           # code as breeze-agent — only the -H windowsgui linker flag and the
@@ -601,7 +612,7 @@ jobs:
       # on the windows runner provides bash + grep. Scans every dist/breeze-*.exe
       # via glob (like the build-agent scan) instead of a hardcoded path list,
       # so a renamed build output cannot silently dodge the scan; also fails if
-      # fewer than the four expected exes (agent, backup, watchdog, user-helper)
+      # fewer than the five expected exes (agent, backup, watchdog, user-helper, isolation-recovery)
       # are present.
       - name: Scan Windows binaries for plaintext threat signatures (#2797)
         shell: bash
@@ -612,8 +623,8 @@ jobs:
             echo "no built Windows exes matched dist/breeze-*.exe — refusing to pass a vacuous scan" >&2
             exit 1
           fi
-          if [ "${#bins[@]}" -lt 4 ]; then
-            echo "only ${#bins[@]} exe(s) matched dist/breeze-*.exe, expected at least 4 (agent, backup, watchdog, user-helper) — a build output was renamed or dropped" >&2
+          if [ "${#bins[@]}" -lt 5 ]; then
+            echo "only ${#bins[@]} exe(s) matched dist/breeze-*.exe, expected at least 5 (agent, backup, watchdog, user-helper, isolation-recovery) — a build output was renamed or dropped" >&2
             exit 1
           fi
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
@@ -661,12 +672,22 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      # Windows-only network-isolation recovery binary, fetched by the agent
+      # updater as component "isolation-recovery".
+      - name: Upload isolation-recovery EXE artifact (canonical name)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: breeze-isolation-recovery-windows-amd64
+          path: dist/breeze-isolation-recovery-windows-amd64.exe
+          overwrite: true
+          retention-days: 30
+
       - name: Stage unsigned Windows exes (BYO signing inputs)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -Path dist-unsigned -ItemType Directory -Force | Out-Null
-          foreach ($component in @("agent", "backup", "watchdog", "user-helper")) {
+          foreach ($component in @("agent", "backup", "watchdog", "user-helper", "isolation-recovery")) {
             $src = "dist\breeze-$component-windows-amd64.exe"
             if (-not (Test-Path $src)) { throw "missing expected build output: $src" }
             Copy-Item $src "dist-unsigned\breeze-$component-windows-amd64-unsigned.exe"
@@ -698,6 +719,13 @@ jobs:
         with:
           name: breeze-user-helper-windows-amd64-unsigned
           path: dist-unsigned/breeze-user-helper-windows-amd64-unsigned.exe
+          retention-days: 30
+
+      - name: Upload unsigned isolation-recovery EXE artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: breeze-isolation-recovery-windows-amd64-unsigned
+          path: dist-unsigned/breeze-isolation-recovery-windows-amd64-unsigned.exe
           retention-days: 30
 
       # The public release no longer Authenticode-signs the agent MSI (see
@@ -2707,7 +2735,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
-          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json,macos-pkg-attestation,breeze-recovery-*,breeze-yara-builtin}'
+          pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-isolation-recovery-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json,macos-pkg-attestation,breeze-recovery-*,breeze-yara-builtin}'
           merge-multiple: false
 
       - name: Download release image metadata
@@ -2790,6 +2818,14 @@ jobs:
           # Copy user-helper binaries (Windows-only sibling of the agent that
           # runs in interactive user sessions). See #816.
           for dir in artifacts/breeze-user-helper-*; do
+            if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
+              cp "$dir"/* release-assets/
+            fi
+          done
+
+          # Copy isolation-recovery binaries (Windows-only; component
+          # "isolation-recovery"). Not matched by breeze-recovery-*.
+          for dir in artifacts/breeze-isolation-recovery-*; do
             if [ -d "$dir" ] && ls "$dir"/* >/dev/null 2>&1; then
               cp "$dir"/* release-assets/
             fi
@@ -2893,7 +2929,7 @@ jobs:
           # breeze-agent-windows-amd64-unsigned.exe would otherwise classify
           # as windows-authenticode-required.
           UNSIGNED_INPUT_RE = re.compile(
-              r"^breeze-(agent|backup|watchdog|user-helper)-windows-amd64-unsigned\.exe$"
+              r"^breeze-(agent|backup|watchdog|user-helper|isolation-recovery)-windows-amd64-unsigned\.exe$"
               r"|^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)-unsigned$"
           )
 
@@ -2913,7 +2949,7 @@ jobs:
           # classify.
           AGENT_FAMILY_WINDOWS_RE = re.compile(
               r"^breeze-agent\.msi$"
-              r"|^breeze-(agent|backup|watchdog|user-helper)-windows-amd64\.exe$"
+              r"|^breeze-(agent|backup|watchdog|user-helper|isolation-recovery)-windows-amd64\.exe$"
           )
 
           def is_agent_family_windows(name):
@@ -3074,6 +3110,7 @@ jobs:
               "breeze-backup-windows-amd64-unsigned.exe",
               "breeze-watchdog-windows-amd64-unsigned.exe",
               "breeze-user-helper-windows-amd64-unsigned.exe",
+              "breeze-isolation-recovery-windows-amd64-unsigned.exe",
               "breeze-agent-darwin-amd64-unsigned",
               "breeze-agent-darwin-arm64-unsigned",
               "breeze-backup-darwin-amd64-unsigned",
@@ -3093,6 +3130,7 @@ jobs:
               "breeze-backup-windows-amd64.exe",
               "breeze-watchdog-windows-amd64.exe",
               "breeze-user-helper-windows-amd64.exe",
+              "breeze-isolation-recovery-windows-amd64.exe",
           }
 
           by_name = {a["name"]: a for a in manifest["assets"]}
@@ -3214,7 +3252,7 @@ jobs:
                       "breeze-yara-builtin.json", "breeze-yara-builtin-report.json"}
           BINARY_NAME_RE = re.compile(
               r"-unsigned"
-              r"|^breeze-(agent|backup|watchdog|user-helper|desktop-helper|viewer|helper|recovery)"
+              r"|^breeze-(agent|backup|watchdog|user-helper|isolation-recovery|desktop-helper|viewer|helper|recovery)"
               r"|\.(msi|pkg|dmg|iso|exe|AppImage)$"
               r"|installer"
           )

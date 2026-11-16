@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # build-edition.sh — edition-aware `go build` driver for the Breeze agent
-# binary family (agent, backup, watchdog, user-helper, desktop-helper).
+# binary family (agent, backup, watchdog, user-helper, desktop-helper,
+# isolation-recovery).
 #
 # Every release/CI go-build call site should route through this script
 # instead of invoking `go build` directly, so the fail-closed edition rules
@@ -29,7 +30,7 @@
 #
 # Usage:
 #   build-edition.sh --edition self-host|hosted-gap|hosted-strict \
-#     --component agent|backup|watchdog|user-helper|desktop-helper \
+#     --component agent|backup|watchdog|user-helper|desktop-helper|isolation-recovery \
 #     --goos GOOS --goarch GOARCH --version VERSION --out PATH \
 #     [--windowsgui] [--print-ldflags]
 #
@@ -46,7 +47,7 @@ AGENT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 usage() {
   cat <<'EOF'
 Usage: build-edition.sh --edition <self-host|hosted-gap|hosted-strict> \
-         --component <agent|backup|watchdog|user-helper|desktop-helper> \
+         --component <agent|backup|watchdog|user-helper|desktop-helper|isolation-recovery> \
          --goos <GOOS> --goarch <GOARCH> --version <VERSION> --out <PATH> \
          [--windowsgui] [--print-ldflags]
 
@@ -159,6 +160,7 @@ component_package() {
     watchdog) echo "./cmd/breeze-watchdog" ;;
     user-helper) echo "./cmd/breeze-user-helper" ;;
     desktop-helper) echo "./cmd/breeze-desktop-helper" ;;
+    isolation-recovery) echo "./cmd/breeze-isolation-recovery" ;;
     *) return 1 ;;
   esac
 }
@@ -169,7 +171,7 @@ if [ -z "$component" ]; then
 fi
 
 pkg_path="$(component_package "$component")" || {
-  echo "build-edition.sh: unknown --component '${component}' (want agent, backup, watchdog, user-helper, or desktop-helper)" >&2
+  echo "build-edition.sh: unknown --component '${component}' (want agent, backup, watchdog, user-helper, desktop-helper, or isolation-recovery)" >&2
   exit 2
 }
 

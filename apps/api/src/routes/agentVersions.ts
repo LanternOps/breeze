@@ -72,6 +72,7 @@ const componentEnum = z.enum([
   "helper",
   "viewer",
   "user-helper",
+  "isolation-recovery",
   "watchdog",
   "backup",
 ]);
@@ -422,6 +423,13 @@ export function canonicalReleaseAssetName(
     return `breeze-user-helper-windows-${architecture}.exe`;
   }
 
+  // breeze-isolation-recovery: Windows/amd64 only (ISOLATION_RECOVERY_TARGETS in
+  // binarySync.ts); no other platform or arch is ever built or registered.
+  if (component === "isolation-recovery") {
+    if (goos !== "windows" || architecture !== "amd64") return null;
+    return "breeze-isolation-recovery-windows-amd64.exe";
+  }
+
   // component="helper" (the Tauri Breeze Assist app) ships as per-OS
   // installers, not raw per-arch binaries: HELPER_TARGETS in
   // services/helperInstallerAssets.ts — windows -> breeze-helper-windows.msi, darwin
@@ -468,7 +476,7 @@ function dbPlatformToRouteOs(dbPlatform: string): string {
 }
 
 // Construct the server-relative download URL the agent should use. Applies to
-// component=agent, helper, user-helper, watchdog, and backup: all are pulled
+// component=agent, helper, user-helper, isolation-recovery, watchdog, and backup: all are pulled
 // by the agent's verified downloader (updater.downloadFromURL), which enforces host
 // equality with the agent's configured ServerURL. Without this rewrite the
 // response would hand back the canonical github.com asset URL, which the agent
@@ -501,6 +509,7 @@ function buildServerRelativeAgentDownloadUrl(
     component !== "agent" &&
     component !== "helper" &&
     component !== "user-helper" &&
+    component !== "isolation-recovery" &&
     component !== "watchdog" &&
     component !== "backup"
   ) {
@@ -517,6 +526,9 @@ function buildServerRelativeAgentDownloadUrl(
   }
   if (component === "user-helper") {
     return `${origin}/api/v1/agents/download/user-helper/${os}/${architecture}${query}`;
+  }
+  if (component === "isolation-recovery") {
+    return `${origin}/api/v1/agents/download/isolation-recovery/${os}/${architecture}${query}`;
   }
   if (component === "watchdog") {
     return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}${query}`;

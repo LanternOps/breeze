@@ -32,6 +32,7 @@ const PUBLIC_AGENT_WINDOWS_ASSETS = [
   'breeze-backup-windows-amd64.exe',
   'breeze-watchdog-windows-amd64.exe',
   'breeze-user-helper-windows-amd64.exe',
+  'breeze-isolation-recovery-windows-amd64.exe',
   'breeze-agent.msi',
 ];
 const SSLCOM_ACTION = 'SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b';
