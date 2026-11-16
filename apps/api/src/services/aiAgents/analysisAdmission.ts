@@ -258,8 +258,13 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
   // artifacts, so it is kept only when it holds every input device. A `site`
   // frame lists no devices here; admission records the frame's site on
   // `trigger_ref.siteId` after it expands the frame (runService step 4d).
-  const siteId = await verifiedAnalysisSiteId(input.orgId, input.siteId, input.deviceIds);
+  // A continuation records none: its seed and inherited files come from
+  // earlier runs that may have covered more than one site (admission enforces
+  // the same).
   const continuation = input.continuation;
+  const siteId = continuation
+    ? null
+    : await verifiedAnalysisSiteId(input.orgId, input.siteId, input.deviceIds);
 
   let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>>;
   try {

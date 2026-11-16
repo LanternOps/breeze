@@ -633,6 +633,20 @@ describe('analysis chain admission (W03)', () => {
     expect(dbMockState.rowQueues.ai_agent_runs).toHaveLength(5);
   });
 
+  it('a continuation records no visibility site, even for a site frame (its seed and files may come from outside the site)', async () => {
+    const SITE = '00000000-0000-4000-8000-0000000000b1';
+    const GRANTS = { datasets: ['event_logs'], sensitiveGates: [] as AnalysisSensitiveGate[] };
+    resolveGrantCeiling.mockResolvedValue(ceiling());
+    dbMockState.rowQueues.sites = [[{ id: SITE }]];
+    withPrior([priorRow({ grantId: 'g1' })]);
+    await expect(createAndEnqueueAgentRun(analysisInput({
+      grant: { grantId: 'g1', grantRevisionId: 'r1' },
+      triggerRef: { source: 'chat_analysis', siteId: SITE },
+      analysis: { scope: 'site', siteId: SITE, deviceIds: [], inputHandles: [], exportGrants: GRANTS, continuation: cont },
+    }))).resolves.toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]!.triggerRef).toEqual({ source: 'chat_analysis', siteId: null });
+  });
+
   it('a continuation also stamps the lineage on a reclaimed enqueue_failed row', async () => {
     withPrior([priorRow()]);
     dbMockState.insertRows = [];

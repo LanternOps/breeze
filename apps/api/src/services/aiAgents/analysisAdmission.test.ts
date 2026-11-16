@@ -262,6 +262,18 @@ describe('admitAnalysisRun', () => {
     expect(call.analysis.continuation).toEqual({ fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 1 });
   });
 
+  it('a continuation records no visibility site, without asking the site check', async () => {
+    const SITE = '00000000-0000-4000-8000-0000000000b1';
+    await admitAnalysisRun(input({
+      siteId: SITE,
+      continuation: { fromRunId: '00000000-0000-4000-8000-0000000000f1', chainRootRunId: '00000000-0000-4000-8000-0000000000f0', chainDepth: 1, seed: 'S', dropped: [] },
+    }));
+    expect(verifiedAnalysisSiteId).not.toHaveBeenCalled();
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).triggerRef.siteId).toBeNull();
+    // The frame still gets the requested site.
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).analysis.siteId).toBe(SITE);
+  });
+
   it('a fresh run carries no continuation key on either side', async () => {
     await admitAnalysisRun(input());
     const call = createAndEnqueueAgentRun.mock.calls[0]![0] as any;

@@ -1830,7 +1830,16 @@ export async function createAndEnqueueAgentRun(
       // through `trigger_ref.siteId`. The caller can only verify a site for an
       // explicit device list (`verifiedAnalysisSiteId`); for a site frame the
       // devices are known only here, after expansion.
-      if (frame.scope.kind === 'site' && frame.scope.siteId) {
+      //
+      // W03: a continuation records NO visibility site. Its seed and inherited
+      // files come from earlier runs of the chain, which may have covered more
+      // than this site, so its outputs stay with unrestricted users (fails
+      // closed; `artifactSiteScopeCondition` already hides a run that staged
+      // files, but a continuation whose inherited files were all dropped
+      // still carries the prior's seed).
+      if (analysis.continuation) {
+        triggerRef = { ...triggerRef, siteId: null };
+      } else if (frame.scope.kind === 'site' && frame.scope.siteId) {
         triggerRef = { ...triggerRef, siteId: frame.scope.siteId };
       }
 
