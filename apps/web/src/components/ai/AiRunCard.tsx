@@ -83,10 +83,12 @@ const TERMINAL_BY_STATUS: Record<AiAgentRunStatus, boolean> = {
 };
 
 /**
- * Statuses after which polling is pointless: terminal ones, plus
- * `awaiting_approval` (the run will not move until a person decides). Kept
- * apart from TERMINAL_BY_STATUS so the status copy and the "open the full run"
- * link still treat an approval-parked run as in flight. Total map for the same
+ * Statuses whose run row never changes again: the terminal ones, plus
+ * `awaiting_approval` (nothing moves a run out of it today, #11965). Polling
+ * can still continue on one of these while this viewer has a step to decide
+ * (see `tick`): the steps change even though the status does not. Kept apart
+ * from TERMINAL_BY_STATUS so the status copy and the "open the full run" link
+ * still treat an approval-parked run as in flight. Total map for the same
  * reason as above.
  */
 const SETTLED_FOR_POLLING: Record<AiAgentRunStatus, boolean> = {

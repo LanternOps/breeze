@@ -28,9 +28,10 @@ import { useTranslation } from 'react-i18next';
 const POLL_INTERVAL_MS = 30000;
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
 const NOTIFICATION_EVENTS = ['notification.created'];
+// = the bell-ring animation in globals.css (0.8s × 2).
 const RING_DURATION_MS = 1600;
-// Per-browser choice, like the theme: a muted office PC should stay muted
-// without silencing the same user's other machines.
+// Per-browser on purpose, unlike the theme (a synced user preference): muting
+// the office PC must not silence the same user's laptop.
 const SOUND_STORAGE_KEY = 'breeze-notification-sound';
 
 const readSoundEnabled = (): boolean => {
@@ -51,6 +52,10 @@ type NotificationItem = {
   createdAt: string;
   read: boolean;
   href?: string;
+  // An approval-type row that reports what happened to a request ("granted",
+  // "denied", "expired", a script proposal's result) rather than asking for a
+  // decision. The API marks those with `metadata.outcome`.
+  isOutcome?: boolean;
   // True when the payload carried no usable timestamp and createdAt fell back to
   // the SSR reference date — so the UI can avoid rendering a misleading
   // "2 years ago" relative time.
@@ -252,6 +257,9 @@ const normalizeNotification = (raw: RawNotification, index: number): Notificatio
     getString(raw.url) ||
     getString(raw.targetUrl) ||
     buildHref(type, raw);
+  const metadata = raw.metadata;
+  const isOutcome =
+    !!metadata && typeof metadata === 'object' && typeof (metadata as Record<string, unknown>).outcome === 'string';
 
   return {
     id,
@@ -261,6 +269,7 @@ const normalizeNotification = (raw: RawNotification, index: number): Notificatio
     createdAt,
     read,
     href,
+    ...(isOutcome ? { isOutcome } : {}),
     timeUnknown
   };
 };
@@ -319,8 +328,9 @@ export default function NotificationCenter() {
     if (ringTimerRef.current) clearTimeout(ringTimerRef.current);
     ringTimerRef.current = setTimeout(() => setIsRinging(false), RING_DURATION_MS);
 
-    // Sound is reserved for approvals: something is blocked on this person.
-    const approval = arrivals.find((item) => item.type === 'approval');
+    // Sound is reserved for approval REQUESTS: something is blocked on this
+    // person. An outcome notice shares the type but asks for nothing.
+    const approval = arrivals.find((item) => item.type === 'approval' && !item.isOutcome);
     if (approval && soundEnabledRef.current) playNotificationChime(approval.id);
   }, []);
 
@@ -424,6 +434,8 @@ export default function NotificationCenter() {
     [notifications]
   );
   const unreadDisplay = unreadCount > 99 ? '99+' : unreadCount.toString();
+  // Two literal calls, not one with a ternary key: the key-usage check reads literals.
+  const soundLabel = soundEnabled ? t('layout.notifications.muteSound') : t('layout.notifications.unmuteSound');
 
   const persistNotificationRead = useCallback(
     async (payload: { ids?: string[]; all?: boolean; read?: boolean }) => {
@@ -549,12 +561,8 @@ export default function NotificationCenter() {
                 type="button"
                 onClick={toggleSound}
                 aria-pressed={!soundEnabled}
-                aria-label={t(
-                  soundEnabled ? 'layout.notifications.muteSound' : 'layout.notifications.unmuteSound'
-                )}
-                title={t(
-                  soundEnabled ? 'layout.notifications.muteSound' : 'layout.notifications.unmuteSound'
-                )}
+                aria-label={soundLabel}
+                title={soundLabel}
                 className="rounded-md border p-1 transition hover:bg-muted"
               >
                 {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}

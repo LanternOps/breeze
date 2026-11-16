@@ -8,7 +8,9 @@
  *   memory      ai_memory_blocks     authored_by_grant_id = G
  *   nudge/brief user_notifications   user_id = grantor AND metadata->>'grantId' = G
  *   specialist  ai_agent_runs        grant_id = G, trigger_ref->>'source' = 'wisp_specialist'
- *                 (#11084; read in the same query as assessments)
+ *                 (#11084; read in the same query as assessments), plus a
+ *                 count of pending_approval action_intents for each one that
+ *                 is awaiting_approval (pendingApprovalsByRun)
  *
  * Every read runs in system context (the caller may be a request, a worker or
  * the brief), pinned to the ceiling's grant / partner / grantor. Isolation is
@@ -268,9 +270,9 @@ async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise
 }
 
 /**
- * Steps still waiting on a person, per approval-parked run. `awaiting_approval`
- * is terminal for a run — nothing moves it once its steps are decided — so the
- * status alone cannot say whether anyone is still being waited on. Every run id
+ * Steps still waiting on a person, per approval-parked run. A run never leaves
+ * `awaiting_approval` (no transitionRunStatus call site starts there; #11965),
+ * so the status alone cannot say whether anyone is still being waited on. Every run id
  * passed in gets an entry (count 0 when nothing is pending). Runs come from the
  * ceiling-filtered run query; the org term is repeated here as a belt.
  */

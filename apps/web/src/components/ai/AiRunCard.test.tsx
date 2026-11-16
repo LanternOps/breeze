@@ -500,6 +500,36 @@ describe('AiRunCard (spec §5.5)', () => {
       await waitFor(() => expect(decideIntentApproval).toHaveBeenCalledWith('req-a', 'deny', undefined, 'supervised'));
     });
 
+    // The decide restarts the poll (pollNonce). Once the last step is decided
+    // the card must go quiet, or every approved run keeps a tab polling for good.
+    it('stops polling after the last step is decided, starting from a live awaiting_approval', async () => {
+      vi.useFakeTimers();
+      try {
+        decideIntentApproval.mockResolvedValue('decided');
+        fetchWithAuth.mockResolvedValueOnce(awaiting([intent('a')]));
+        const { getByTestId, queryAllByTestId } = render(
+          <AiRunCard
+            runId={RUN}
+            initialStatus="running"
+            run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 1 }}
+          />,
+        );
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        fetchWithAuth.mockResolvedValue(awaiting([intent('a', { status: 'approved' })]));
+        await act(async () => {
+          fireEvent.click(getByTestId('ai-run-card-step-approve-a'));
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(queryAllByTestId('ai-run-card-step-approval')).toHaveLength(0);
+        const callsOnceDecided = fetchWithAuth.mock.calls.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+        expect(fetchWithAuth.mock.calls.length).toBe(callsOnceDecided);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('keeps polling while an intent is pending_approval', async () => {
       vi.useFakeTimers();
       try {

@@ -88,6 +88,21 @@ describe('WispWorkersPanel', () => {
       expect(h.fetch).toHaveBeenCalledTimes(1);
     });
 
+    // Otherwise a row the technician just approved from this card keeps saying "Awaiting approval".
+    it('keeps refetching while a listed specialist still has a pending approval, and stops once it is decided', async () => {
+      vi.useFakeTimers();
+      h.fetch
+        .mockResolvedValueOnce({ items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 1, pendingIntentId: 'i1' })], nextCursor: null, current: null })
+        .mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'awaiting_approval', pendingApprovals: 0, pendingIntentId: null })], nextCursor: null, current: null });
+      render(<WispWorkersPanel threadId="t1" />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+    });
+
     it('stops polling on unmount', async () => {
       vi.useFakeTimers();
       h.fetch.mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'queued' })], nextCursor: null, current: null });

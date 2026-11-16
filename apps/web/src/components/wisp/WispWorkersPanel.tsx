@@ -6,17 +6,20 @@ import { fetchWispActivity, safeActivityHref } from './wispActivity';
 
 const MAX_ROWS = 5;
 const FETCH_LIMIT = 50;
-/** Refetch cadence while any listed specialist is still queued or running. */
+/** Refetch cadence while any listed specialist is still queued, running or waiting on an approval. */
 const POLL_INTERVAL_MS = 10_000;
 
 const WORKER_STATUS_KEYS = ['queued', 'running', 'awaiting_approval', 'completed', 'failed'] as const;
-const isLive = (i: ActivityItem) => i.runStatus === 'queued' || i.runStatus === 'running';
+// A row with a pending approval is live too: it flips to "Approvals decided"
+// when someone decides, and nothing else would refetch it.
+const isLive = (i: ActivityItem) =>
+  i.runStatus === 'queued' || i.runStatus === 'running' || (i.runStatus === 'awaiting_approval' && (i.pendingApprovals ?? 0) > 0);
 
 /**
  * The label to show and, while a step is still waiting, where to decide it.
- * A run stays `awaiting_approval` for good, so that status only means "waiting"
- * while the API still counts a pending step. An older API sends no count; the
- * raw status is the best there is then.
+ * A run never leaves `awaiting_approval` today (#11965), so that status only
+ * means "waiting" while the API still counts a pending step. An older API
+ * sends no count; the raw status is the best there is then.
  */
 function workerStatus(item: ActivityItem): { key: string; href: string | null } | null {
   if (!item.runStatus || !(WORKER_STATUS_KEYS as readonly string[]).includes(item.runStatus)) return null;

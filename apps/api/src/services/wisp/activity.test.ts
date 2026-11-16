@@ -367,6 +367,12 @@ describe('listActivity — specialist runs (#11084)', () => {
     // The lookup is pinned to those runs, pending steps only, inside the ceiling's orgs.
     const lookup = h.wheres.action_intents!.map(render).find((q) => q.params.includes(uid(2)));
     expect(lookup?.params).toEqual(expect.arrayContaining([uid(1), uid(2), 'pending_approval', O1]));
+    // Bound to the right columns, all three required. (The mock does not run
+    // ORDER BY, so "oldest first" is pinned only by the fixture order above.)
+    expect(lookup?.sql).toMatch(/"requesting_agent_run_id" in \(/);
+    expect(lookup?.sql).toMatch(/"status" = \$\d+/);
+    expect(lookup?.sql).toMatch(/"org_id" in \(/);
+    expect(lookup?.sql).not.toMatch(/ or /i);
   });
 
   it('makes no pending-approval lookup when no specialist is approval-parked', async () => {

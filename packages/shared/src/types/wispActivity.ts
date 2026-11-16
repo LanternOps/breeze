@@ -34,9 +34,10 @@ export interface ActivityItem {
   runStatus?: AiAgentRunStatus;
   /**
    * Set on `specialist` items whose run is `awaiting_approval` only: how many
-   * of the run's steps are still waiting on a person. That status is terminal
-   * for a run (it never leaves it), so 0 means every step has since been
-   * approved, denied or expired and nothing is waiting any more.
+   * of the run's steps are still waiting on a person. A run never leaves
+   * `awaiting_approval` today (#11965), so 0 means every step has since been
+   * decided (approved or rejected), expired or cancelled, and nothing is
+   * waiting any more.
    */
   pendingApprovals?: number;
   /** With `pendingApprovals`: the oldest still-pending step, for a link to it. */

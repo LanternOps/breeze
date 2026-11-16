@@ -181,9 +181,6 @@ function runPostText(
   return { title, body: waiting ? `${summary}\n\n${waiting}` : summary };
 }
 
-/** A released step's result as readable text: described, cleaned and capped (stepOutputSummary.ts). */
-const stepOutcomeText = summarizeStepResult;
-
 // ---------------------------------------------------------------------------
 // Reads (each its own short system context, opened outside any caller context)
 // ---------------------------------------------------------------------------
@@ -369,7 +366,7 @@ export async function postSpecialistStepOutcome(intentId: string): Promise<Speci
   const ran = intent.status === 'completed';
   const head = `Approved step ${ran ? 'ran' : 'failed'}: ${stepLabel} — `;
   const room = SPECIALIST_STEP_BODY_MAX_CHARS - Array.from(head).length;
-  const outcome = ran ? stepOutcomeText(intent.result, room) : cleanText(intent.errorCode ?? 'error', room) || 'error';
+  const outcome = ran ? summarizeStepResult(intent.result, room) : cleanText(intent.errorCode ?? 'error', room) || 'error';
   return deliver({
     userId: dest.userId,
     threadId: dest.threadId,

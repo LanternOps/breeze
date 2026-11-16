@@ -17,11 +17,12 @@ and stays there for good. Approving, denying or letting the steps expire changes
 the intents and nothing else. The run row, the surfaces that read it, and the
 chat that launched it all keep saying "waiting" after nobody is being waited on.
 
-The delegation plan chose this on purpose (Decision 4: "no in-place resume;
-`awaiting_approval` is terminal for agent runs"). The choice was about not
-resuming the model loop. It also froze the status, which was not the intent.
+The delegation plan (Decision 4) chose a continuation run over resuming in
+place, noting that `awaiting_approval` was already terminal for agent runs
+(#11084). That ruled out resuming the model loop. Nobody decided the status
+should never change.
 
-### What happened in production (one session, 2026-11-16 UTC)
+### What happened in production (one session, evening of 2026-11-15 US, 2026-11-16 UTC)
 
 Verified from the database, read-only:
 
@@ -79,9 +80,9 @@ the fallback if the status change proves too wide at plan time.
 ### 5.1 Settlement
 
 - **Trigger:** every way an intent leaves `pending_approval` — decide (approve or deny), the intent expiry reaper, cancel, and the release worker reaching a final state. `ai.intent.decided` already carries `requestingAgentRunId`; the reapers need the same hook.
-- **Rule:** in one transaction, lock the run; if its status is `awaiting_approval` and it has no intent in `pending_approval`, call `transitionRunStatus(runId, 'awaiting_approval', 'completed')`. Compare-and-set, so two intents decided at once settle the run once.
+- **Rule:** in one system-scope transaction (`transitionRunStatus` opens its own unless the caller is already in system scope, and would otherwise wait on the caller's row lock), lock the run; if its status is `awaiting_approval` and it has no intent in `pending_approval`, call `transitionRunStatus(runId, 'awaiting_approval', 'completed')`. Compare-and-set, so two intents decided at once settle the run once.
 - **Sweep:** a reaper settles any run the trigger missed (a crash between decide and settle). It also back-fills runs parked before this ships.
-- **Outcome:** store the step tally on the run (`approved`, `denied`, `expired`, `failed`). `completed` says the run is over; the tally says how. A run whose steps were all denied is still `completed`, with a tally that says so.
+- **Outcome:** store the step tally on the run, in the intent status vocabulary (`approved`, `rejected`, `expired`, `cancelled`, `failed`). `completed` says the run is over; the tally says how. A run whose steps were all denied is still `completed`, with a tally that says so.
 - **Executing steps:** settle on decision, not on execution. An approved step that is still executing is no longer waiting on a person. The results delivery in §5.2 waits for execution.
 
 ### 5.2 Telling the launcher
@@ -116,7 +117,8 @@ comes from a code trace on main at `c0b4d9d007`; re-grep before planning.
 | `wisp/checkInTriggers.ts`, `checkInRuns.ts` | `awaiting_approval` is settled | not settled until §5.1 |
 | `wisp/troubleshootContinuation.ts` | a parked run can be continued | still allowed; the seed must carry full step results (§6) |
 | `workspace/chatRunBridge.ts` | publishes `run_result` once, at park | publishes again at settlement |
-| `jobs/historyRetention/aiAgentRuns.ts` | parked runs never age out | settled runs age out normally |
+| `jobs/historyRetention/aiAgentRuns.ts` | parked runs never age out | eligible by status; still held while the run has `action_intents` rows (the existing guard) |
+| `wisp/troubleshootContinuation.ts` `SETTLED`, `wisp/specialistResultsTurn.ts` `SETTLED_STATUSES`, `wisp/checkInRuns.ts` `RESULT_STATUSES`, `runFinishedNotify.ts` `TERMINAL_STATUSES` | each lists `awaiting_approval` as settled on its own | each needs the same decision as `AI_AGENT_RUN_SETTLED_STATUSES` |
 | `runFinishedNotify.ts`, eventBus `ai.agent.run.*` | fires at park | new `ai.agent.run.approvals_settled`; assessment runs must not be woken twice |
 | Web: `AiRunCard`, `WispWorkersPanel`, runs page | patched per surface | read the status |
 
@@ -144,6 +146,7 @@ Not part of this design; each is its own issue. The stuck status itself is #1196
 | #11979 | Approval label reads "Run script unknown... on 1 device(s)" |
 | #11971 | Specialist run sessions persist no transcript or token counts |
 | #11980 | Every specialist completion triggers a paid assessment run |
+| #11972 | Script proposal reviews record no cost |
 
 ## 7. Open decisions
 
