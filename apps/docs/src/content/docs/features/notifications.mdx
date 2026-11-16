@@ -368,10 +368,13 @@ without saying so:
   when it is enabled, open a **Sync stalled** incident when there has been no
   successful sync for three sync intervals (at least an hour). This catches a
   sync that is stuck or no longer scheduled. For EDR, either the inventory or
-  the detections sync can stall the connection. QuickBooks and Xero stall when
-  payment reconciliation has not completed a run for an hour while a payment
-  sync switch is on. Xero is allowed three days, because Breeze pauses
-  background reconciliation while a tenant's daily Xero call budget is low.
+  the detections sync can stall the connection. For a ticket mailbox, it means
+  no completed mail check in an hour; a quiet inbox does not count as stalled.
+  QuickBooks and Xero stall when Breeze has not completed a payment
+  reconciliation for an hour, as long as pulling or pushing payments is turned
+  on for the connection. Xero is allowed three days, because Breeze
+  deliberately pauses background reconciliation while a tenant's daily Xero
+  call allowance is nearly used up.
 - **Google Workspace.** Breeze verifies each Google Workspace connection about
   every six hours, with the same Directory call it makes when the connection is
   saved. If Google rejects the service account (for example, domain-wide

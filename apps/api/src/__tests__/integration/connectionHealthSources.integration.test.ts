@@ -224,7 +224,7 @@ describe('broken query covers every broken verdict branch', () => {
       ]);
       await db.insert(ticketMailboxConnections).values([
         { id: box4, partnerId: p, provider: 'gmail', orgId: org, googleAccountSub: `sub-${box4}`, mailboxAddress: `d-${box4}@example.test`, status: 'connected', consecutiveTransientFailures: 4, lastPolledAt: NOW, createdAt: OLD },
-        { id: box5, partnerId: p, provider: 'gmail', orgId: org, googleAccountSub: `sub-${box5}`, mailboxAddress: `e-${box5}@example.test`, status: 'connected', consecutiveTransientFailures: 5, createdAt: OLD },
+        { id: box5, partnerId: p, provider: 'gmail', orgId: org, googleAccountSub: `sub-${box5}`, mailboxAddress: `e-${box5}@example.test`, status: 'connected', consecutiveTransientFailures: 5, lastPolledAt: NOW, createdAt: OLD },
       ]);
     });
     const brokenIds = async (s: HealthSource) => (await observe(s)).filter((o) => o.state === 'broken').map((o) => o.sourceId);

@@ -42,6 +42,14 @@ describe('edr stale arm', () => {
     expect(obs.find((x) => x.sourceId === fresh)).toBeUndefined();
   });
 
+  it('inventory alone stale past three hourly intervals, detections fresh', async () => {
+    const stale = await edr({ lastInventorySyncAt: minAgo(185) });
+    const fresh = await edr({ lastInventorySyncAt: minAgo(175) });
+    const obs = await observe(edrSource);
+    expect(obs.find((x) => x.sourceId === stale)).toMatchObject({ condition: 'sync_stale' });
+    expect(obs.find((x) => x.sourceId === fresh)).toBeUndefined();
+  });
+
   it('a daily inventory interval is stale only past three days', async () => {
     const twoDays = await edr({ effectiveInventoryIntervalMinutes: 1440, lastInventorySyncAt: hoursAgo(48) });
     const fourDays = await edr({ effectiveInventoryIntervalMinutes: 1440, lastInventorySyncAt: hoursAgo(96) });
@@ -179,10 +187,12 @@ describe('ticket_mailbox stale arm', () => {
     const pending = await m365({ status: 'pending_consent', tenantId: null, lastPolledAt: null, createdAt: hoursAgo(24 * 3) });
     const disabled = await m365({ status: 'disabled', lastPolledAt: hoursAgo(24 * 3) });
     const streak = await gmail({ lastPolledAt: hoursAgo(3), consecutiveTransientFailures: 5 });
+    const freshStreak = await gmail({ lastPolledAt: minAgo(2), consecutiveTransientFailures: 5 });
     const obs = await observe(ticketMailboxSource);
     expect(obs.find((x) => x.sourceId === pending)).toBeUndefined();
     expect(obs.find((x) => x.sourceId === disabled)).toBeUndefined();
     expect(obs.find((x) => x.sourceId === streak)).toMatchObject({ condition: 'poll_failing' });
+    expect(obs.find((x) => x.sourceId === freshStreak)).toMatchObject({ condition: 'poll_failing' });
   });
 
   it('tracked: a fresh poll recovers', async () => {

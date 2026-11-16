@@ -13,9 +13,12 @@ import { defineRowSource, staleArm, toHealthObservation } from './observeRows';
 // run in which no item failed (advanceReconcileCursor) or by a pull-off run
 // that held its cursor (stampReconcileRunAt); last_sync_at is never written.
 // The 15-minute sweep reconciles connected rows with either payment switch on,
-// so only those can go stale. The provider lists and the error prefix are
-// literals so this module stays free of provider imports; accounting.test.ts
-// ties each one to the registry or the service.
+// so only those can go stale. A row returning to that set (reconnect, realm
+// change, a switch turned back on) can read stale until its next run. Opening
+// needs two observations, so this shows only when that run is deferred (Xero
+// under a low daily budget); accepted (plan D9). The provider lists and the
+// error prefix are literals so this module stays free of provider imports;
+// accounting.test.ts ties each one to the registry or the service.
 
 const FIX_HREFS = { quickbooks: '/integrations#quickbooks', xero: '/integrations#xero' } as const;
 
@@ -23,9 +26,10 @@ const FIX_HREFS = { quickbooks: '/integrations#quickbooks', xero: '/integrations
 export const RECONCILED_PROVIDERS: readonly AccountingProviderId[] = ['quickbooks', 'xero'];
 /**
  * Providers with a daily call budget (limits.rate.dailyPerConnection). The
- * sweep defers them while under 20% of that budget, and every provider
- * response re-arms the budget window for 24 h, so a busy tenant reconciles
- * about once a day: the threshold is three of those windows.
+ * sweep defers them while under 20% of that budget, and every response that
+ * reports the remaining daily allowance refreshes that reading for 24 h, so a
+ * busy tenant can stay deferred for about a day at a time: the threshold is
+ * three such windows.
  */
 export const DAILY_BUDGET_PROVIDERS: readonly AccountingProviderId[] = ['xero'];
 /** RECONCILE_RUN_ERROR_PREFIX in services/accounting/accountingConnectionService.ts. */
