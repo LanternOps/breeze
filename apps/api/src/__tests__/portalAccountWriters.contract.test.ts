@@ -121,7 +121,12 @@ export function writesDisabledByKey(code: string): boolean {
 }
 
 /** The writers whose plan can cross the `disabled` boundary (W8 D2). */
-const DISABLED_BOUNDARY_WRITERS = ['msp_disable', 'msp_reactivate', 'directory_deprovision'] as const;
+// W9 (#11386, plan D4/D6): the SCIM deactivate / reactivate and the
+// inactive SCIM create also move a row across the boundary.
+const DISABLED_BOUNDARY_WRITERS = [
+  'msp_disable', 'msp_reactivate', 'directory_deprovision',
+  'scim_deprovision', 'scim_reactivate', 'scim_provision_inactive',
+] as const;
 
 /** A file that plans a boundary writer names it as a quoted string literal. */
 function plansBoundaryWriter(code: string): boolean {
@@ -204,7 +209,7 @@ describe('portal_users writers are classified against the account state machine 
     // Not vacuous: the MSP disable / reactivate route is one.
     expect(boundary).toContain('apps/api/src/routes/orgPortalUsers.ts');
     const missing = boundary.filter((file) => !writesDisabledByKey(writers.get(file)!));
-    expect(missing, 'these plan msp_disable / msp_reactivate / directory_deprovision but never write disabledBy').toEqual([]);
+    expect(missing, 'these plan a disabled-boundary writer (msp_disable, msp_reactivate, directory_deprovision, scim_*) but never write disabledBy').toEqual([]);
   });
 
   it('the disabled_by detector catches literal, variable and shorthand writes (not vacuous)', () => {

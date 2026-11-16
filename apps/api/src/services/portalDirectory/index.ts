@@ -18,6 +18,7 @@ export {
 export {
   PortalDirectoryIdentityError,
   disablePortalIdentity,
+  liftScimIdentityBlocker,
   removeDisabledPortalIdentity,
   restorePortalIdentity,
   type PortalDirectoryIdentityErrorCode,

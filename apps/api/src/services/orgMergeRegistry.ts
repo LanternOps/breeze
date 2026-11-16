@@ -550,6 +550,12 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
   portal_access_policies: { kind: 'keep-survivor' }, // verified: portal_access_policies_org_uq partial UNIQUE (org_id); spec §5.3 survivor wins
+  // W9 (#11386, plan D1): a SCIM bearer credential bound to the LOSER org and its
+  // proven tenant. Never re-pointed: the merge fences the loser (status 'merging'
+  // → shell), so its tokens stop authenticating, and the MSP creates a token on
+  // the survivor. The identities those tokens managed repoint with
+  // portal_user_identities and stay reserved by (issuer, subject).
+  portal_scim_tokens: { kind: 'leave-for-erasure', note: 'credential bound to the loser org and its proven tenant; the fenced loser stops authenticating it; the MSP mints a new token on the survivor' },
   portal_access_requests: { kind: 'repoint-dedupe', key: ['email'], keyWhere: "{status} = 'pending'" }, // verified: portal_access_requests_pending_email_uq (org_id, email) WHERE status = 'pending'
   portal_branding: { kind: 'keep-survivor' }, // verified: portal_branding.org_id UNIQUE (portal.ts)
   org_billing_profile_assignments: { kind: 'keep-survivor' }, // org_id UNIQUE

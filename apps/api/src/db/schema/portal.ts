@@ -249,12 +249,27 @@ export const portalUserIdentities = pgTable('portal_user_identities', {
   directoryAbsentSince: timestamp('directory_absent_since', { withTimezone: true }),
   directoryLastRunId: uuid('directory_last_run_id'),
   directoryRearmSince: timestamp('directory_rearm_since', { withTimezone: true }),
+  // W9 (#11386, plan D3, D5): SCIM state of an Entra identity. A SCIM User IS
+  // this identity: its SCIM id is `id`, its externalId is `subject`. Non-null
+  // scim_provisioned_at = SCIM-managed; scim_deleted_at = a SCIM DELETE was
+  // received (404 until a new POST adopts it). Name parts kept as SCIM sent
+  // them. SQL CHECK portal_user_identities_scim_chk; lookup index
+  // portal_user_identities_scim_user_name_idx (deliberately non-unique).
+  scimUserName: text('scim_user_name'),
+  scimDisplayName: text('scim_display_name'),
+  scimGivenName: text('scim_given_name'),
+  scimFamilyName: text('scim_family_name'),
+  scimProvisionedAt: timestamp('scim_provisioned_at', { withTimezone: true }),
+  scimDeletedAt: timestamp('scim_deleted_at', { withTimezone: true }),
 }, (table) => ({
   issuerSubjectUq: uniqueIndex('portal_user_identities_issuer_subject_uq').on(table.issuer, table.subject),
   userProviderUq: uniqueIndex('portal_user_identities_user_provider_uq').on(table.portalUserId, table.provider),
   orgIdx: index('portal_user_identities_org_id_idx').on(table.orgId),
   // Composite-FK target for portal_directory_actions (W8).
   idOrgUq: uniqueIndex('portal_user_identities_id_org_uq').on(table.id, table.orgId),
+  scimUserNameIdx: index('portal_user_identities_scim_user_name_idx')
+    .on(table.orgId, table.issuer, sql`lower(${table.scimUserName})`)
+    .where(sql`${table.scimProvisionedAt} IS NOT NULL AND ${table.scimDeletedAt} IS NULL`),
 }));
 
 // P2-4 (#4191): tickets also gains a composite-FK target unique index,

@@ -157,27 +157,27 @@ describe('planPortalAccountTransition — fail closed on unknown input', () => {
 
 describe('initialPortalAccountState', () => {
   it('an MSP invite starts invited with browser access', () => {
-    expect(initialPortalAccountState('msp_invite')).toEqual({ status: 'invited', browserAccess: 'granted' });
+    expect(initialPortalAccountState('msp_invite')).toEqual({ status: 'invited', browserAccess: 'granted', disabledBy: null });
   });
 
   it('add-in JIT never starts with browser access', () => {
-    expect(initialPortalAccountState('addin_jit')).toEqual({ status: 'active', browserAccess: 'none' });
+    expect(initialPortalAccountState('addin_jit')).toEqual({ status: 'active', browserAccess: 'none', disabledBy: null });
   });
 
   it('an approved SSO request starts active with browser access (identity-only account, D2)', () => {
-    expect(initialPortalAccountState('sso_request_approved')).toEqual({ status: 'active', browserAccess: 'granted' });
+    expect(initialPortalAccountState('sso_request_approved')).toEqual({ status: 'active', browserAccess: 'granted', disabledBy: null });
   });
 
   it('an approved self-registration request starts invited with browser access, like an MSP invite', () => {
-    expect(initialPortalAccountState('self_request_approved')).toEqual({ status: 'invited', browserAccess: 'granted' });
+    expect(initialPortalAccountState('self_request_approved')).toEqual({ status: 'invited', browserAccess: 'granted', disabledBy: null });
   });
 
   it('self_registration_instant yields invited + granted, like an approved self request (W6, inv. 10)', () => {
-    expect(initialPortalAccountState('self_registration_instant')).toEqual({ status: 'invited', browserAccess: 'granted' });
+    expect(initialPortalAccountState('self_registration_instant')).toEqual({ status: 'invited', browserAccess: 'granted', disabledBy: null });
   });
 
   it('an instant-mode SSO account starts active with browser access, like an approved SSO request (W4)', () => {
-    expect(initialPortalAccountState('sso_instant')).toEqual({ status: 'active', browserAccess: 'granted' });
+    expect(initialPortalAccountState('sso_instant')).toEqual({ status: 'active', browserAccess: 'granted', disabledBy: null });
   });
 });
 
@@ -346,5 +346,69 @@ describe('W8 — usable credentials (D3)', () => {
     expect(passwordUsableFor({ hasPasswordHash: true, authMethod: 'password' }, 'sso_only')).toBe(false);
     expect(passwordUsableFor({ hasPasswordHash: false, authMethod: 'password' }, 'allowed')).toBe(false);
     expect(passwordUsableFor({ hasPasswordHash: true, authMethod: 'entra' }, 'allowed')).toBe(false);
+  });
+});
+
+// W9 (#11386, plan D4, D6): the SCIM writers. A SCIM deactivate disables an
+// account as 'scim'; a SCIM activate reactivates ONLY an account SCIM disabled.
+describe('W9 — SCIM writers', () => {
+  const SCIM_ACCOUNT = f({ status: 'active', authMethod: 'entra', hasExternalIdentity: true });
+
+  it('scim_provision starts active + granted with no disabled_by (spec §5.11)', () => {
+    expect(initialPortalAccountState('scim_provision')).toEqual({ status: 'active', browserAccess: 'granted', disabledBy: null });
+  });
+
+  it('scim_provision_inactive starts disabled by scim, with browser access kept for the later activate', () => {
+    expect(initialPortalAccountState('scim_provision_inactive')).toEqual({ status: 'disabled', browserAccess: 'granted', disabledBy: 'scim' });
+  });
+
+  it('every other initial state carries disabled_by null', () => {
+    for (const w of ['msp_invite', 'addin_jit', 'sso_request_approved', 'self_request_approved', 'sso_instant', 'self_registration_instant'] as const) {
+      expect(initialPortalAccountState(w).disabledBy).toBeNull();
+    }
+  });
+
+  it('scim_deprovision disables an active or invited account as scim and bumps the epoch', () => {
+    expect(planPortalAccountTransition(SCIM_ACCOUNT, 'scim_deprovision'))
+      .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: true, disabledBy: 'scim' });
+    expect(planPortalAccountTransition(f(), 'scim_deprovision'))
+      .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: true, disabledBy: 'scim' });
+  });
+
+  it('scim_deprovision on a disabled account is a no-op that keeps disabled_by (an MSP disable stays the MSP\'s)', () => {
+    for (const by of ['msp', 'directory', 'scim'] as const) {
+      expect(planPortalAccountTransition(f({ status: 'disabled', disabledBy: by }), 'scim_deprovision'))
+        .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: false, disabledBy: by });
+    }
+  });
+
+  it('scim_reactivate re-activates only an account disabled by scim that has a usable credential', () => {
+    expect(planPortalAccountTransition(
+      f({ status: 'disabled', authMethod: 'entra', hasExternalIdentity: true, hasUsableExternalIdentity: true, disabledBy: 'scim' }),
+      'scim_reactivate',
+    )).toEqual({ status: 'active', browserAccess: 'granted', bumpEpoch: true, disabledBy: null });
+  });
+
+  it.each(['msp', 'directory'] as const)('scim_reactivate refuses an account disabled by %s (precedence)', (by) => {
+    expect(() => planPortalAccountTransition(
+      f({ status: 'disabled', authMethod: 'entra', hasExternalIdentity: true, hasUsableExternalIdentity: true, disabledBy: by }),
+      'scim_reactivate',
+    )).toThrow(PortalAccountTransitionError);
+  });
+
+  it('scim_reactivate refuses an account with no usable credential, and any non-disabled account', () => {
+    expect(() => planPortalAccountTransition(
+      f({ status: 'disabled', authMethod: 'entra', hasExternalIdentity: true, hasUsableExternalIdentity: false, disabledBy: 'scim' }),
+      'scim_reactivate',
+    )).toThrow(PortalAccountTransitionError);
+    expect(() => planPortalAccountTransition(SCIM_ACCOUNT, 'scim_reactivate')).toThrow(PortalAccountTransitionError);
+  });
+
+  it('scim_grant_browser_access grants an active add-in account without an epoch bump, and refuses disabled or invited', () => {
+    expect(planPortalAccountTransition(ENTRA, 'scim_grant_browser_access'))
+      .toEqual({ status: 'active', browserAccess: 'granted', bumpEpoch: false, disabledBy: null });
+    expect(() => planPortalAccountTransition(DISABLED_ENTRA, 'scim_grant_browser_access')).toThrow(PortalAccountTransitionError);
+    expect(() => planPortalAccountTransition(f({ status: 'invited', authMethod: 'entra', hasExternalIdentity: true }), 'scim_grant_browser_access'))
+      .toThrow(PortalAccountTransitionError);
   });
 });
