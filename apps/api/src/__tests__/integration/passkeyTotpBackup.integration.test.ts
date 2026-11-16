@@ -142,7 +142,7 @@ async function waitForBlockedBackends(
  * The holder and the wait-chain monitor each get a dedicated connection: the
  * shared test pool is not used while a request is parked.
  *
- * `release` is idempotent and every barrier test calls it in a `finally`. A
+ * `release` is idempotent and every barrier test calls `dispose` in a `finally`. A
  * failed case must not leave the holder's transaction open: the next test's
  * TRUNCATE in the shared `beforeEach` would wait on it until the hook timed
  * out (#11997). A `start` that fails releases the barrier itself.
@@ -165,18 +165,24 @@ async function userRowBarrier(userId: string, { noKeyUpdate = false }: { noKeyUp
     locked.resolve();
     await released.promise;
   });
-  await locked.promise;
+  // A holder that fails before taking the lock rejects here instead of hanging.
+  await Promise.race([locked.promise, holder]);
   let parked = 0;
   const inFlight: Promise<void>[] = [];
   let releasing: Promise<void> | undefined;
   const release = () => {
     releasing ??= (async () => {
       released.resolve();
-      await holder;
-      await Promise.all([holderClient.end({ timeout: 1 }), monitor.end({ timeout: 1 })]);
+      try {
+        await holder;
+      } finally {
+        await Promise.all([holderClient.end({ timeout: 1 }), monitor.end({ timeout: 1 })]);
+      }
     })();
     return releasing;
   };
+  // Cleanup path: never let a holder failure replace the error already in flight.
+  const dispose = () => release().catch(() => {});
   return {
     // Returns the in-flight request WRAPPED: an async function that returned the
     // promise itself would adopt it, and awaiting `start` would then wait for a
@@ -184,22 +190,25 @@ async function userRowBarrier(userId: string, { noKeyUpdate = false }: { noKeyUp
     async start(request: () => Promise<Response>): Promise<{ response: Promise<Response> }> {
       const response = request();
       let outcome: string | undefined;
-      inFlight.push(response.then(
-        async (res) => { outcome = `HTTP ${res.status} ${await res.clone().text()}`; },
-        (err: unknown) => { outcome = `threw ${err instanceof Error ? err.message : String(err)}`; },
-      ));
+      // Never rejects: a failed body read is reported as the outcome too.
+      inFlight.push(response
+        .then(async (res) => { outcome = `HTTP ${res.status} ${await res.clone().text()}`; })
+        .catch((err: unknown) => { outcome ??= `threw ${err instanceof Error ? err.message : String(err)}`; }));
       parked += 1;
       try {
         await waitForBlockedBackends(monitor, pid, parked, () => outcome);
       } catch (error) {
         // Unpark the requests and let them finish before the next test's cleanup.
-        await release();
+        await dispose();
         await Promise.all(inFlight);
         throw error;
       }
       return { response };
     },
+    /** Lets the parked requests race; rejects if the holder transaction failed. */
     release,
+    /** For `finally`: releases without masking the error already being thrown. */
+    dispose,
   };
 }
 
@@ -423,7 +432,7 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
       await barrier.release();
       results = await Promise.all([first.response, second.response]);
     } finally {
-      await barrier.release();
+      await barrier.dispose();
     }
 
     expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
@@ -463,7 +472,7 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
       await barrier.release();
       [removal, deletion] = await Promise.all([removalPending.response, deletionPending.response]);
     } finally {
-      await barrier.release();
+      await barrier.dispose();
     }
     expect([removal.status, deletion.status].sort()).toEqual([200, 409]);
 
@@ -574,7 +583,7 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
       await barrier.release();
       res = await disable.response;
     } finally {
-      await barrier.release();
+      await barrier.dispose();
     }
 
     expect(res.status).toBe(409);
