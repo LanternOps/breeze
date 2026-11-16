@@ -63,6 +63,8 @@ const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Recor
   wisp_disabled: { ai_kill_switch: 'AI actions are paused by the AI kill switch. An administrator has to lift it.' },
   org_out_of_ceiling: { site_restricted: 'This Wisp grant is limited to specific sites, and specialists work on a whole organization.' },
   invalid_params: {
+    // W02 analysis sessions: a launch that names no scope.
+    scope_required: 'Choose what the analysis covers: scope "org" for the whole organization, "site" with siteId, or "devices" with deviceIds.',
     unknown_recipe: 'That recipe (workflowKey and workflowVersion) is not a released Operator recipe.',
     actor_required: 'A bulk ticket reply needs a person to approve the exact tickets and message.',
   },
@@ -85,6 +87,11 @@ const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Recor
     analysis_not_available: 'Sandbox analysis is not available on this server.',
     enqueue_failed: 'The run could not be queued. Try again in a minute.',
     grant_refused: 'The Wisp grant no longer allows this run.',
+    // W02 analysis sessions: the scope frame admission resolves.
+    frame_too_large: 'That scope has more devices than one analysis may cover (the AI agent limit analysisMaxFrameDevices, default 1000). Scope the analysis to one site, or ask an administrator to raise the limit.',
+    site_not_in_scope: 'That site is not in this organization, or this Wisp grant does not reach it.',
+    frame_empty: 'There are no active devices in that scope, so the analysis would have nothing to read.',
+    too_many_input_devices: 'That is more devices than one analysis may list (the AI agent limit analysisMaxInputDevicesPerRun, default 50). Use scope "site" or "org" instead of listing devices.',
     // #10406: the on-demand assessment launcher.
     no_open_alerts: 'No organization this Wisp grant can assess has open alerts, so there is nothing to go through.',
     no_assessable_orgs: 'This Wisp grant cannot assess that organization: it reaches it only through specific sites, or a needed permission is missing.',

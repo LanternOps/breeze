@@ -66,3 +66,13 @@ describe('assessment refusal details (#10406)', () => {
     }
   });
 });
+
+describe('W02 analysis scope refusals', () => {
+  it('name the setting to change', () => {
+    expect(specialistRefusalMessage('invalid_params', 'scope_required')).toMatch(/scope "org"/);
+    expect(specialistRefusalMessage('admission_skipped', 'frame_too_large')).toMatch(/analysisMaxFrameDevices/);
+    expect(specialistRefusalMessage('admission_skipped', 'too_many_input_devices')).toMatch(/analysisMaxInputDevicesPerRun/);
+    expect(specialistRefusalMessage('admission_skipped', 'site_not_in_scope')).toMatch(/does not reach it/);
+    expect(specialistRefusalMessage('admission_skipped', 'frame_empty')).toMatch(/no active devices/);
+  });
+});

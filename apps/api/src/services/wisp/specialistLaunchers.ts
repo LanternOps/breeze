@@ -19,8 +19,9 @@ import { AI_SWEEP_KINDS, bulkTicketReplyParamsSchema, type AiAgentKind } from '@
 import { envFlag } from '../../config/env';
 import { captureException } from '../sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
+import { aiAgentRuns, aiAgents, type AnalysisScopeKind } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
+import { sites } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 import { getAiAgentSweepQueue, getSweepOccurrenceJobId } from '../../jobs/aiAgentSweepScheduler';
 import { admitAnalysisRun } from '../aiAgents/analysisAdmission';
@@ -33,7 +34,8 @@ import { resolveEffectiveSchedulesForPartner } from '../aiAgents/scheduleService
 import { RECIPE_AGENT_KINDS } from '../aiOperator/recipeReadiness';
 import { getRecipe } from '../aiOperator/recipes';
 import { admitTask } from '../aiOperator/taskService';
-import type { GrantCeiling } from './grantAuthority';
+import { ceilingHoldsPermission, type GrantCeiling } from './grantAuthority';
+import { resolveExportGrants } from '../aiToolsExportPermissions';
 import type { SpecialistKind } from './specialistPolicy';
 import { assessmentParamsSchema, launchAssessment, type AssessmentLaunchReport } from './specialists/assessmentLaunch';
 import { executeBulkTicketReply, type BulkTicketReplyReport } from './specialists/bulkTicketReply';
@@ -92,10 +94,45 @@ export function specialistDedupeKey(requestId: string): string {
 export const sweepParamsSchema = z.strictObject({
   sweepKinds: z.array(z.enum(AI_SWEEP_KINDS)).min(1).max(AI_SWEEP_KINDS.length).optional(),
 });
+/**
+ * Wisp analysis sessions W02 (W00 C1): what an analysis covers. `scope`
+ * omitted with `deviceIds` means `devices`; omitted with only `siteId` means
+ * `site`; omitted with neither is refused (`scope_required`). Admission
+ * expands `site` / `org` under the live ceiling and freezes the device list.
+ */
+export function resolveAnalysisScope(params: {
+  scope?: AnalysisScopeKind;
+  deviceIds?: string[];
+  siteId?: string;
+}): AnalysisScopeKind | null {
+  if (params.scope) return params.scope;
+  if (params.deviceIds !== undefined) return 'devices';
+  if (params.siteId !== undefined) return 'site';
+  return null;
+}
+
 export const analysisParamsSchema = z.strictObject({
   goal: z.string().trim().min(1).max(2000),
-  deviceIds: z.array(z.uuid()).max(25).optional(),
+  scope: z.enum(['devices', 'site', 'org']).optional(),
+  deviceIds: z.array(z.uuid()).min(1).max(200).optional(),
   siteId: z.uuid().optional(),
+}).superRefine((params, issue) => {
+  // Contradictory params are refused with a readable detail, never silently
+  // dropped: an `org` analysis that quietly ignored a `siteId` would read a
+  // whole customer the technician meant to narrow.
+  const scope = resolveAnalysisScope(params);
+  const has = { deviceIds: params.deviceIds !== undefined, siteId: params.siteId !== undefined };
+  if (scope === null) {
+    issue.addIssue({ code: 'custom', path: [], message: 'scope_required' });
+  } else if (scope === 'devices') {
+    if (!has.deviceIds) issue.addIssue({ code: 'custom', path: ['deviceIds'], message: 'required for scope devices' });
+    if (has.siteId) issue.addIssue({ code: 'custom', path: ['siteId'], message: 'not allowed with scope devices' });
+  } else if (scope === 'site') {
+    if (!has.siteId) issue.addIssue({ code: 'custom', path: ['siteId'], message: 'required for scope site' });
+    if (has.deviceIds) issue.addIssue({ code: 'custom', path: ['deviceIds'], message: 'not allowed with scope site' });
+  } else if (has.deviceIds || has.siteId) {
+    issue.addIssue({ code: 'custom', path: ['scope'], message: 'org takes neither deviceIds nor siteId' });
+  }
 });
 export const operatorRecipeParamsSchema = z.strictObject({
   workflowKey: z.string().trim().min(1).max(100),
@@ -339,6 +376,15 @@ async function resolveRecipeAgent(orgId: string, params: z.infer<typeof operator
   return { ok: true, recipe, agentId: agent.agentId };
 }
 
+async function siteInOrg(orgId: string, siteId: string): Promise<boolean> {
+  const [site] = await systemRead(() => db
+    .select({ id: sites.id })
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
+    .limit(1));
+  return Boolean(site);
+}
+
 async function deviceInOrg(orgId: string, deviceId: string): Promise<boolean> {
   const [device] = await systemRead(() => db
     .select({ id: devices.id })
@@ -375,8 +421,16 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
     if (!(await findSweepSchedule(partnerId, orgId, sweepKinds))) return { refused: 'no_sweep_schedule' };
     return sweepAgentRefusal(orgId);
   },
-  // The sandbox flag is the coordinator's gate (aiWorkspaceEnabled); admission owns the rest.
-  analysis: async () => null,
+  // The sandbox flag is the coordinator's gate (aiWorkspaceEnabled); admission
+  // owns the rest. W02: a site scope naming a site outside the org is refused
+  // here, before an approval card; admission re-checks it (and the grant's
+  // site allowlist) at launch.
+  analysis: async ({ orgId, params }) => {
+    const parsed = analysisParamsSchema.parse(params);
+    if (resolveAnalysisScope(parsed) !== 'site' || !parsed.siteId) return null;
+    if (!(await siteInOrg(orgId, parsed.siteId))) return { refused: 'admission_skipped', detail: 'site_not_in_scope' };
+    return null;
+  },
   operator_recipe: async ({ orgId, params }) => {
     const resolved = await resolveRecipeAgent(orgId, operatorRecipeParamsSchema.parse(params));
     return resolved.ok ? null : resolved.refusal;
@@ -467,21 +521,32 @@ export async function launchSweep(ctx: LaunchContext): Promise<LaunchResult> {
  */
 export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> {
   const params = analysisParamsSchema.parse(ctx.params);
+  // The schema's refine guarantees a scope; a null here is a schema bug.
+  const scope = resolveAnalysisScope(params);
+  if (!scope) return { refused: 'invalid_params', detail: 'scope_required' };
   const originSessionId = ctx.actorAuth?.wispGrant?.sessionId ?? null;
   // Both replay lookups use the key admission stores, never the raw request id.
   const dedupeKey = specialistDedupeKey(ctx.requestId);
   const prior = await existingRunId(ctx.orgId, dedupeKey);
   if (prior) return reattach(ctx, { admitted: true, runId: prior }, originSessionId);
+  // W02 (spec §4.4 "Permission"): the run's export authority, evaluated once
+  // against the live ceiling the coordinator just resolved and gated on, and
+  // frozen at admission. A run principal has no role, so this is the only
+  // place a human permission bounds what `export_dataset` may read.
+  const exportGrants = resolveExportGrants((resource, action) =>
+    ceilingHoldsPermission(ctx.ceiling, ctx.orgId, resource, action));
   const result = await runOutsideDbContext(() => admitAnalysisRun({
     orgId: ctx.orgId,
     requestedByUserId: ctx.grantorUserId,
     sessionId: originSessionId,
     goal: params.goal,
+    scope,
     deviceIds: params.deviceIds ?? [],
     siteId: params.siteId ?? null,
     stagedHandles: [],
     dedupeKey,
     grant: { ...ctx.grant },
+    exportGrants,
   }));
   if (result.created) return reattach(ctx, { admitted: true, runId: result.runId }, originSessionId);
   if (result.refusal === 'grant_refused') return { refused: 'admission_skipped', detail: 'grant_refused' };

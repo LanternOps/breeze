@@ -526,7 +526,7 @@ export function launchSpecialistShapeFor(workspaceEnabled: boolean) {
     // description (aiToolsWisp.ts launchSpecialistDescription): a parameter
     // description is capped at 160 chars (A-W03).
     params: ls.params.describe(
-      'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+      'Keys: sweep {sweepKinds?}; analysis {goal, scope: org|site|devices, siteId|deviceIds}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
     ),
     reason: ls.reason.describe('Why, in one sentence a technician would accept'),
   };

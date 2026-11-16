@@ -73,3 +73,13 @@ describe('launch_specialist text (#10406 item 1)', () => {
     expect(tools.get('launch_specialist')!.definition.description).toBe(launchSpecialistDescription(false));
   });
 });
+
+describe('launch_specialist params text (W02 analysis scope)', () => {
+  it('names the analysis scope and its values within 160 chars', () => {
+    for (const enabled of [false, true]) {
+      const d = launchSpecialistShapeFor(enabled).params.description!;
+      expect(d).toMatch(/analysis \{[^}]*scope[^}]*org\|site\|devices/); // W06 rewrites the wording; pin only the keys
+      expect(d.length).toBeLessThanOrEqual(160);
+    }
+  });
+});
