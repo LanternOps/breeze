@@ -221,8 +221,8 @@ describe('2027-01-21-140000-isolation-allow-snapshot-revision.sql (#10100)', () 
   });
 });
 
-describe('2027-01-25-120000-isolation-release-token.sql (#10102)', () => {
-  const file = '2027-01-25-120000-isolation-release-token.sql';
+describe('2027-01-26-120000-isolation-release-token.sql (#10102)', () => {
+  const file = '2027-01-26-120000-isolation-release-token.sql';
   const text = () => fs.readFileSync(path.join(__dirname, '../../../migrations', file), 'utf8').replace(/\s+/g, ' ');
 
   it('adds the pinned release-token columns idempotently', () => {
