@@ -383,6 +383,7 @@ suite report sources apps/api/src/services/orgMergeRegistry.ts
 suite script tests apps/api/src/__tests__/integration/script[!a-z0-9]*
 suite script tests apps/api/src/jobs/scriptVerifyReconciliation.integration.test.ts
 suite script tests apps/api/src/services/scriptProposals/reviewConcurrency.integration.test.ts
+suite script tests apps/api/src/services/scriptProposals/mcpUnattendedCeilingLock.integration.test.ts
 suite script sources apps/api/src/services/script*
 suite script sources apps/api/src/routes/script*
 suite script sources apps/api/src/jobs/script*

@@ -8071,7 +8071,20 @@
     "saved": "Impostazioni di creazione script salvate.",
     "saveFailed": "Non è stato possibile salvare queste impostazioni.",
     "loading": "Caricamento…",
-    "loadFailed": "Non è stato possibile caricare le impostazioni di creazione script."
+    "loadFailed": "Non è stato possibile caricare le impostazioni di creazione script.",
+    "mcpCeiling": {
+      "title": "Esecuzioni di script MCP non presidiate",
+      "description": "Il rischio revisionato più alto con cui un principal MCP elencato in MCP_UNATTENDED_TIER3_PRINCIPALS può eseguire uno script proposto dall’IA senza approvazione umana. Oltre questo livello, ogni esecuzione richiede approvazione.",
+      "label": "Esegui senza approvazione fino a",
+      "options": {
+        "none": "Mai (richiedi sempre l’approvazione)",
+        "low": "Basso",
+        "medium": "Medio",
+        "high": "Alto",
+        "critical": "Critico"
+      },
+      "stepUpBody": "Alzare questo limite richiede un nuovo controllo di sicurezza. Conferma, poi seleziona di nuovo Salva."
+    }
   },
   "ticketingHubPage": {
     "heading": "Impostazioni ticket",

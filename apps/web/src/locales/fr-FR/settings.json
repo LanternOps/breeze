@@ -8071,7 +8071,20 @@
     "saved": "Paramètres de rédaction de scripts enregistrés.",
     "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
     "loading": "Chargement…",
-    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
+    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés.",
+    "mcpCeiling": {
+      "title": "Exécutions de scripts MCP sans supervision",
+      "description": "Le risque évalué le plus élevé auquel un principal MCP inscrit dans MCP_UNATTENDED_TIER3_PRINCIPALS peut exécuter un script proposé par l’IA sans approbation humaine. Au-delà, chaque exécution nécessite une approbation.",
+      "label": "Exécuter sans approbation jusqu’à",
+      "options": {
+        "none": "Jamais (toujours exiger une approbation)",
+        "low": "Faible",
+        "medium": "Moyen",
+        "high": "Élevé",
+        "critical": "Critique"
+      },
+      "stepUpBody": "Relever ce plafond nécessite une nouvelle vérification de sécurité. Confirmez, puis sélectionnez Enregistrer de nouveau."
+    }
   },
   "ticketingHubPage": {
     "heading": "Paramètres de tickets",

@@ -31,6 +31,7 @@ import {
   executionStatusEnum,
 } from '../db/schema';
 import { eq, and, desc, gte, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
+import { riskWithinMcpUnattendedCeiling, type ScriptApprovalMethod } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
 import { escapeLike } from '../utils/sql';
@@ -40,7 +41,7 @@ import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { aiDispatchScriptToDevice, aiExecuteCommand } from './aiDispatch';
 import { deliverDeferredDispatch } from './scriptDeferredDelivery';
-import { approvalMethodForRelease, assertProposalRunnable, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
+import { approvalMethodForRelease, assertProposalRunnable, consumeProposalForUnattendedMcpRun, lockMcpUnattendedProposalCeiling, mcpUnattendedProposalRefusal, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
 import { loadTenantVariableScope } from './tenantVariableResolution';
@@ -314,6 +315,13 @@ async function loadFrozenGroupTargetArguments(
  * The run_script handler, at module scope so the proposal branch is directly
  * testable through `__testOnly.runScriptHandler`. Registered below.
  */
+/** Carries a refused dispatch out of its transaction so the unattended claim rolls back. */
+class UnattendedClaimRollback extends Error {
+  constructor(readonly result: unknown) {
+    super('unattended claim rolled back: dispatch created no command');
+  }
+}
+
 const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
   // ---- #8600: device-group target — execute the approved, frozen list -------
   if (input.groupId !== undefined && input.groupId !== null) {
@@ -330,7 +338,8 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       return JSON.stringify({ error: 'feature_disabled: AI script authoring is not enabled on this deployment' });
     }
     const proposalId = input.proposalId;
-    const proposalDeviceIds = input.deviceIds as string[];
+    // One dispatch per device: a repeated id never runs the proposal twice.
+    const proposalDeviceIds = [...new Set(input.deviceIds as string[])];
     // #7918 — run_script is self-managed (no per-call transaction), so every
     // read below opens its own short caller-scoped context and the device wait
     // holds none. See `inToolDbPhase`.
@@ -390,7 +399,33 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
     // has nothing to attribute the run to, so the row records null rather
     // than a guess (the W06 "unattended runs" metric and the audit row read
     // this column).
-    const approvalMethod = context?.releaseDecision ? approvalMethodForRelease(context.releaseDecision) : null;
+    let approvalMethod: ScriptApprovalMethod | null = context?.releaseDecision
+      ? approvalMethodForRelease(context.releaseDecision)
+      : null;
+    // An unattended MCP run (routes/mcpServer.ts) has no intent to consume the
+    // proposal, so it claims it, once, with its execution-ledger id. A lost
+    // claim is the same `consumed` refusal an intent release gets.
+    // The route admitted this run against the partner's ceiling; an operator
+    // may have lowered it since. It is re-read here for an early refusal, then
+    // again under a share lock inside each device's command-creating
+    // transaction. The claim is taken in that same transaction with the first
+    // command, so a lowered ceiling neither creates a command nor burns the
+    // proposal. The guarantee is about CREATION: a command created before the
+    // lowering committed is still delivered (after its transaction commits,
+    // #7103), exactly as an already-approved intent's command would be.
+    const unattendedRun = approvalMethod === null ? context?.unattendedMcpProposalRun : undefined;
+    const proposalRisk = runnable.proposal.riskTier;
+    let unattendedClaimed = false;
+    if (unattendedRun) {
+      const refusal = await mcpUnattendedProposalRefusal(proposalId, runnable.proposal.orgId);
+      if (refusal) {
+        return JSON.stringify({
+          error: `proposal_not_runnable: ${refusal === 'risk_above_ceiling' ? 'mcp_unattended_ceiling' : `mcp_unattended_${refusal}`}`,
+          proposalId: input.proposalId,
+        });
+      }
+      approvalMethod = 'unattended_mcp_principal';
+    }
     if (approvalMethod === null) {
       // Unreachable while run_script stays Tier 3 (every proposal run IS an
       // intent release, and both release paths attach the record). Reaching
@@ -414,8 +449,32 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
         // lose the results of devices this call already dispatched.
         const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
         if ('error' in access) { proposalResults[deviceId] = { error: access.error }; continue; }
-        const created = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-          aiDispatchScriptToDevice(auth, 'run_script', {
+        // A proposal runs only in its own org: a target device that has moved
+        // to another org since the review is refused, never sent the content.
+        if (access.device.orgId !== runnable.proposal.orgId) {
+          proposalResults[deviceId] = { error: 'Device not found or access denied' };
+          continue;
+        }
+        // `claimedHere` reports a claim taken in THIS transaction; the flag that
+        // skips later claims is set only once the transaction has committed.
+        let claimedHere = false;
+        let created: 'ceiling' | 'consumed' | Awaited<ReturnType<typeof aiDispatchScriptToDevice>>;
+        try {
+          created = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+          if (unattendedRun) {
+            if (!(proposalRisk && riskWithinMcpUnattendedCeiling(
+              proposalRisk, await lockMcpUnattendedProposalCeiling(runnable.proposal.orgId),
+            ))) {
+              return 'ceiling' as const;
+            }
+            if (!unattendedClaimed) {
+              if (!(await consumeProposalForUnattendedMcpRun(db, proposalId, unattendedRun.claimId))) {
+                return 'consumed' as const;
+              }
+              claimedHere = true;
+            }
+          }
+          const result = await aiDispatchScriptToDevice(auth, 'run_script', {
             device: access.device,
             source: { kind: 'proposal', proposal: runnable.proposal, snapshot },
             triggerType: 'manual',
@@ -431,7 +490,26 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
             },
             // #7103 — the send waits for the system context above to commit.
             deferDelivery: true,
-          })));
+          });
+          // A refusal that created no command must not consume the proposal:
+          // roll the claim back with the rest of this transaction.
+          if (claimedHere && !result.ok) throw new UnattendedClaimRollback(result);
+          return result;
+          }));
+        } catch (err) {
+          if (!(err instanceof UnattendedClaimRollback)) throw err;
+          claimedHere = false;
+          created = err.result as Awaited<ReturnType<typeof aiDispatchScriptToDevice>>;
+        }
+        if (claimedHere) unattendedClaimed = true;
+        if (created === 'ceiling') {
+          proposalResults[deviceId] = { error: 'proposal_not_runnable: mcp_unattended_ceiling' };
+          continue;
+        }
+        if (created === 'consumed') {
+          // Another run claimed the proposal first: nothing more may run.
+          return JSON.stringify({ error: 'proposal_not_runnable: consumed', proposalId: input.proposalId });
+        }
         const dispatch = await deliverDeferredDispatch(created, { deviceId, tool: 'run_script' });
         if (!dispatch.ok) { proposalResults[deviceId] = { error: dispatch.error }; continue; }
         if (!markedExecuted) {

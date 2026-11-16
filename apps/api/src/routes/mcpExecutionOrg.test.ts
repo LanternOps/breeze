@@ -401,3 +401,69 @@ describe('resolveMcpExecutionContext — authoritative device-org resolution', (
     expect(result.orgId).toBe(OWN_ORG);
   });
 });
+
+describe('resolveMcpExecutionContext — proposal org for run_script { proposalId }', () => {
+  const runScriptArgs = deviceArgsFor({ run_script: ['deviceIds'] });
+
+  it('attributes a groupId-only proposal run to the proposal org, not the first accessible org', async () => {
+    const result = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'run_script',
+      toolInput: { proposalId: 'p-1', groupId: 'g-1' },
+      proposalOrgId: SECOND_ORG,
+      deviceArgsForTool: runScriptArgs,
+      resolveDeviceOrg: deviceOrgMap({}),
+    });
+    expect(result.orgId).toBe(SECOND_ORG);
+  });
+
+  it('refuses an explicit orgId that disagrees with the proposal org', async () => {
+    await expect(resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'run_script',
+      toolInput: { proposalId: 'p-1', groupId: 'g-1', orgId: OWN_ORG },
+      proposalOrgId: SECOND_ORG,
+      deviceArgsForTool: runScriptArgs,
+      resolveDeviceOrg: deviceOrgMap({}),
+    })).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('refuses a pinned key whose org is not the proposal org', async () => {
+    await expect(resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: OWN_ORG },
+      toolName: 'run_script',
+      toolInput: { proposalId: 'p-1', groupId: 'g-1' },
+      proposalOrgId: SECOND_ORG,
+      deviceArgsForTool: runScriptArgs,
+      resolveDeviceOrg: deviceOrgMap({}),
+    })).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('refuses a device target outside the proposal org', async () => {
+    await expect(resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'run_script',
+      toolInput: { proposalId: 'p-1', deviceIds: ['dev-a'] },
+      proposalOrgId: SECOND_ORG,
+      deviceArgsForTool: runScriptArgs,
+      resolveDeviceOrg: deviceOrgMap({ 'dev-a': OWN_ORG }),
+    })).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  it('keeps a device target inside the proposal org', async () => {
+    const result = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'run_script',
+      toolInput: { proposalId: 'p-1', deviceIds: ['dev-b'] },
+      proposalOrgId: SECOND_ORG,
+      deviceArgsForTool: runScriptArgs,
+      resolveDeviceOrg: deviceOrgMap({ 'dev-b': SECOND_ORG }),
+    });
+    expect(result.orgId).toBe(SECOND_ORG);
+  });
+});

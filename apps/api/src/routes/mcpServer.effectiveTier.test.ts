@@ -23,6 +23,12 @@ const mocks = vi.hoisted(() => ({
   ledgerBegin: vi.fn(),
   ledgerComplete: vi.fn(),
   writeAuditEvent: vi.fn(),
+  loadProposalContextInReach: vi.fn(),
+}));
+
+vi.mock('../services/scriptProposals', () => ({
+  loadProposalGuardrailContextForCaller: (...args: any[]) => mocks.loadProposalContextInReach(...args),
+  mcpUnattendedProposalRefusal: vi.fn(async () => 'risk_above_ceiling'),
 }));
 
 vi.mock('../services/mcpToolExecutionLedger', () => ({
@@ -212,6 +218,7 @@ beforeEach(() => {
   mocks.ledgerBegin.mockReset().mockResolvedValue({ id: 'ledger-1' });
   mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
   mocks.writeAuditEvent.mockReset();
+  mocks.loadProposalContextInReach.mockReset().mockResolvedValue({ context: undefined, proposalOrgId: null });
 });
 
 afterEach(() => {
@@ -426,6 +433,43 @@ describe('MCP tools/call effective-tier gating (FIX 1)', () => {
     expect(body.result.isError).toBe(true);
     const payload = JSON.parse(body.result.content[0].text);
     expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+  });
+
+  // run_script { proposalId } is tiered from the proposal's reviewed risk. The
+  // route used to call checkGuardrails without that context, so every such
+  // call was refused as proposal_context_missing before reaching the approval
+  // gate, even for a reviewed proposal the caller can reach.
+  it('run_script { proposalId } loads the proposal context in the caller reach and reaches the approval gate', async () => {
+    mocks.loadProposalContextInReach.mockResolvedValue({
+      context: { proposal: { riskTier: 'low', strictHits: [] } },
+      proposalOrgId: 'org-1',
+    });
+    const res = await callTool(['ai:read', 'ai:execute'], 'run_script', { proposalId: 'p-1', deviceIds: ['dev-1'] });
+    const payload = JSON.parse((await res.json()).result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(mocks.loadProposalContextInReach).toHaveBeenCalledTimes(1);
+    const [input, callerAuth] = mocks.loadProposalContextInReach.mock.calls[0] as [Record<string, unknown>, { canAccessOrg: (orgId: string) => boolean }];
+    expect(input).toMatchObject({ proposalId: 'p-1' });
+    // The caller's own auth: its org reach (and site/device axes) bound the lookup.
+    expect(callerAuth.canAccessOrg('org-1')).toBe(true);
+    expect(callerAuth.canAccessOrg('org-elsewhere')).toBe(false);
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('run_script { proposalId } outside the caller reach is still refused before the approval gate', async () => {
+    mocks.loadProposalContextInReach.mockResolvedValue({
+      context: { proposalDenyReason: 'proposal_not_found' },
+      proposalOrgId: null,
+    });
+    const res = await callTool(['ai:read', 'ai:execute'], 'run_script', { proposalId: 'p-2', deviceIds: ['dev-1'] });
+    const payload = JSON.parse((await res.json()).result.content[0].text);
+    expect(payload.error).toMatch(/^proposal_not_found/);
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('run_script { scriptId } does not load a proposal context', async () => {
+    await callTool(['ai:read', 'ai:execute'], 'run_script', { scriptId: 's1' });
+    expect(mocks.loadProposalContextInReach).not.toHaveBeenCalled();
   });
 
   // Reversed 2026-08-02: a flat Tier 3 tool no longer executes over MCP at

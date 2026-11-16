@@ -31,7 +31,9 @@ import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, t
 import { unattendedNoteWriteContext } from '../services/deviceNoteBounds';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
 import { isNetworkIsolationCommand } from '../services/networkIsolation/bypass';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
+import { loadProposalGuardrailContextForCaller, mcpUnattendedProposalRefusal } from '../services/scriptProposals';
+import type { ToolExecutionContext } from '../services/toolExecutionContext';
+import { type GuardrailContext, checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
 import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from '../middleware/mcpTenantToolSelfManagedContext';
@@ -1515,6 +1517,22 @@ async function liveMcpIntentCreation(): Promise<typeof McpIntentCreation> {
 }
 
 /** True when this credential can own an `mcp_api` intent (human API key or OAuth grant). */
+/**
+ * Whether a reviewed proposal may run without approval for a principal on
+ * MCP_UNATTENDED_TIER3_PRINCIPALS: a positive model review and no STRICT hits,
+ * with a reviewed risk at or below the MCP unattended proposal ceiling of the
+ * partner that owns the proposal's org (`mcpUnattendedProposalRefusal`).
+ * Anything unresolved is false, which leaves the call on the approval gate.
+ */
+async function proposalRunsUnattended(
+  context: GuardrailContext | undefined,
+  proposalId: unknown,
+  proposalOrgId: string | null,
+): Promise<boolean> {
+  if (!context?.proposal?.riskTier || !proposalOrgId || typeof proposalId !== 'string') return false;
+  return (await mcpUnattendedProposalRefusal(proposalId, proposalOrgId)) === null;
+}
+
 function canOwnMcpIntents(auth: AuthContext, apiKey: McpApiKeyContext | undefined): boolean {
   return mcpOriginRef(auth.principal) !== null
     && (apiKey as { principalType?: string } | undefined)?.principalType !== 'service'
@@ -2323,7 +2341,18 @@ async function handleToolsCall(
   // no auth-context or DB side effects), so reordering is safe. Without this,
   // a destructive sub-action on a low-base-tier tool would sail past the gates
   // on an ai:read-only key.
-  const guardrailCheck = checkGuardrails(toolName, toolInput);
+  // A proposal-backed run_script is tiered from the proposal's reviewed risk,
+  // so the guardrail needs that context; without it every such call is denied
+  // as proposal_context_missing. Looked up within the caller's org reach
+  // (propose_script files the proposal under the target device's org), the
+  // same lookup the chat gate uses. The handler still re-checks the proposal
+  // and every device under this auth.
+  const isProposalRun = toolName === 'run_script' && typeof toolInput.proposalId === 'string' && toolInput.proposalId.length > 0;
+  const proposalLookup = isProposalRun
+    ? await loadProposalGuardrailContextForCaller(toolInput, auth)
+    : null;
+  const guardrailContext = proposalLookup?.context;
+  const guardrailCheck = checkGuardrails(toolName, toolInput, guardrailContext);
   if (!guardrailCheck.allowed) {
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify({ error: guardrailCheck.reason }) }],
@@ -2361,7 +2390,21 @@ async function handleToolsCall(
   // distinctly). executeTool is never reached for a gated tool/action.
   // Only an effective Tier 3 call can be lifted (isMcpApprovalRequired re-checks
   // this too); checking it here keeps the intent readable at the call site.
-  const unattendedPrincipal = tier === 3 && isUnattendedTier3PrincipalOverMcp(apiKey);
+  //
+  // A reviewed AI proposal is lifted only up to the risk ceiling the operator
+  // set for the proposal's partner (`mcp_unattended_proposal_max_risk`,
+  // default 'none'). Above it, the listed principal gets the normal approval
+  // gate like any other caller.
+  const unattendedPrincipal = tier === 3
+    && isUnattendedTier3PrincipalOverMcp(apiKey)
+    && (!isProposalRun || (
+      // A group target resolves only through an approved intent
+      // (aiToolsScripts `loadFrozenGroupTargetArguments`), so an unattended
+      // proposal run must name its devices; a groupId call keeps the gate.
+      Array.isArray(toolInput.deviceIds) && toolInput.deviceIds.length > 0
+      && (toolInput.groupId === undefined || toolInput.groupId === null)
+      && await proposalRunsUnattended(guardrailContext, toolInput.proposalId, proposalLookup?.proposalOrgId ?? null)
+    ));
   // #10027: with MCP_TIER3_INTENTS_ENABLED on, a READ-ONLY call whose own
   // classification (checkGuardrails, floored for approval extras) is below
   // Tier 3 is not filed for approval: createActionIntent refuses a read below
@@ -2495,7 +2538,9 @@ async function handleToolsCall(
   // BEFORE any ledger or audit mutation. Non-device tools keep prior behavior.
   let executionOrgId: string | null;
   try {
-    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({ auth, apiKey: apiKey ?? null, toolName, toolInput }));
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({
+      auth, apiKey: apiKey ?? null, toolName, toolInput, proposalOrgId: proposalLookup?.proposalOrgId ?? null,
+    }));
   } catch (err) {
     if (err instanceof McpExecutionOrgError) {
       const refusal = mcpExecutionOrgRpcError(err);
@@ -2542,10 +2587,26 @@ async function handleToolsCall(
       // takes the unattended-note bounds (deviceNoteBounds.ts). Name-gated the
       // same way.
       const noteContext = unattendedNoteWriteContext(toolName);
+      // An unattended proposal run has no intent: it claims the proposal with
+      // this ledger's id and records approval_method 'unattended_mcp_principal'.
+      // No ledger means nothing to attribute the run to, so it is refused.
+      let unattendedProposalRun: ToolExecutionContext['unattendedMcpProposalRun'];
+      if (isProposalRun && unattendedPrincipal) {
+        if (!ledger?.executionId || !approvalBypassPrincipal) {
+          return {
+            status: 'failure',
+            error: new Error('unattended proposal run has no execution ledger'),
+            response: jsonRpcError(id, -32000, 'Unable to record the unattended proposal run'),
+          };
+        }
+        unattendedProposalRun = { claimId: ledger.executionId, principalRef: approvalBypassPrincipal };
+      }
       const result = rewritePartnerWideRefusalForMcp(isTopologyAiToolName(toolName)
         ? await executeTool(toolName, toolInput, toolAuth, { topologyBinding: { kind: 'mcp_site_key' } })
-        : noteContext
-          ? await executeTool(toolName, toolInput, toolAuth, { context: noteContext })
+        : unattendedProposalRun
+          ? await executeTool(toolName, toolInput, toolAuth, { context: { unattendedMcpProposalRun: unattendedProposalRun } })
+          : noteContext
+            ? await executeTool(toolName, toolInput, toolAuth, { context: noteContext })
           : await executeTool(toolName, toolInput, toolAuth), auth);
       const safeResult = compactToolResultForChat(toolName, result);
 

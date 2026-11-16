@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { flagMock, runnableMock, dispatchMock, accessMock, waitMock, transitionMock } = vi.hoisted(() => ({
+const { flagMock, runnableMock, dispatchMock, accessMock, waitMock, transitionMock, claimMock, refusalMock, lockCeilingMock } = vi.hoisted(() => ({
+  claimMock: vi.fn(async (_tx: unknown, _proposalId: string, _claimId: string) => true),
+  refusalMock: vi.fn(async (_proposalId: string, _orgId: string) => null as string | null),
+  lockCeilingMock: vi.fn(async (_orgId: string) => 'critical' as string),
   flagMock: vi.fn(() => true),
   transitionMock: vi.fn(async () => true),
   runnableMock: vi.fn(async () => ({ ok: false, reason: 'not_reviewed' as const })),
@@ -22,6 +25,9 @@ vi.mock('./scriptProposals', async () => ({
   assertProposalRunnable: runnableMock,
   proposalDispatchSnapshot: () => ({ proposalId: 'p1', deviceIds: ['d1'] }),
   transitionProposal: transitionMock,
+  consumeProposalForUnattendedMcpRun: claimMock,
+  mcpUnattendedProposalRefusal: refusalMock,
+  lockMcpUnattendedProposalCeiling: lockCeilingMock,
 }));
 vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: dispatchMock }));
 vi.mock('./commandQueue', () => ({ waitForCommandResult: waitMock, executeCommand: vi.fn() }));
@@ -55,7 +61,7 @@ const auth = {
   aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
 } as never;
 
-beforeEach(() => { runnableMock.mockClear(); dispatchMock.mockClear(); transitionMock.mockClear(); flagMock.mockReturnValue(true); });
+beforeEach(() => { runnableMock.mockClear(); dispatchMock.mockClear(); transitionMock.mockClear(); claimMock.mockReset().mockResolvedValue(true); refusalMock.mockReset().mockResolvedValue(null); lockCeilingMock.mockReset().mockResolvedValue('critical'); flagMock.mockReturnValue(true); });
 
 describe('run_script proposal branch', () => {
   it('returns feature_disabled without touching the database when the flag is off', async () => {
@@ -74,7 +80,7 @@ describe('run_script proposal branch', () => {
   it('dispatches with the proposal source kind and echoes the proposalId', async () => {
     runnableMock.mockResolvedValueOnce({
       ok: true,
-      proposal: { id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
+      proposal: { id: 'p1', orgId: 'org-1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
     } as never);
     const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth));
     expect(dispatchMock).toHaveBeenCalledTimes(1);
@@ -97,7 +103,7 @@ describe('run_script proposal branch', () => {
   it('creates the rows inside the system context and sends only after it closed', async () => {
     runnableMock.mockResolvedValueOnce({
       ok: true,
-      proposal: { id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
+      proposal: { id: 'p1', orgId: 'org-1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
     } as never);
     const events: Array<{ kind: string; open: number }> = [];
     dispatchMock.mockImplementationOnce((async (input: { deferDelivery?: boolean }) => {
@@ -124,7 +130,7 @@ describe('run_script proposal branch', () => {
   it('moves a proposal-backed run to executed once the dispatch is accepted', async () => {
     runnableMock.mockResolvedValueOnce({
       ok: true,
-      proposal: { id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
+      proposal: { id: 'p1', orgId: 'org-1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
     } as never);
     await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth);
     expect(transitionMock).toHaveBeenCalledTimes(1);
@@ -136,7 +142,7 @@ describe('run_script proposal branch', () => {
   it('does NOT move the proposal when the dispatch was refused', async () => {
     runnableMock.mockResolvedValueOnce({
       ok: true,
-      proposal: { id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
+      proposal: { id: 'p1', orgId: 'org-1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
     } as never);
     dispatchMock.mockResolvedValueOnce({ ok: false, error: 'maintenance_suppressed' } as never);
     await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth);
@@ -146,19 +152,32 @@ describe('run_script proposal branch', () => {
   it('transitions once for a multi-device call (CAS from reviewed|approved)', async () => {
     runnableMock.mockResolvedValueOnce({
       ok: true,
-      proposal: { id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
+      proposal: { id: 'p1', orgId: 'org-1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
     } as never);
     accessMock.mockResolvedValue([{ id: 'd1', orgId: 'org-1', status: 'online', siteId: null }] as never);
-    await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd1'] }, auth);
+    await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd2'] }, auth);
     expect(dispatchMock).toHaveBeenCalledTimes(2);
     expect(transitionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatches a repeated device id once', async () => {
+    runnableMock.mockResolvedValueOnce({
+      ok: true,
+      proposal: { id: 'p1', orgId: 'org-1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' },
+    } as never);
+    accessMock.mockResolvedValue([{ id: 'd1', orgId: 'org-1', status: 'online', siteId: null }] as never);
+    await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd1', 'd1'] }, auth, {
+      unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+    });
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(runnableMock).toHaveBeenLastCalledWith(auth, expect.objectContaining({ deviceIds: ['d1'] }));
   });
 
   // #5645: `approval_method` is the spec §4.1 provenance snapshot; it is
   // derived from the releasing intent's decision record (§4.6), never a
   // constant. One case per method value.
   describe('approval_method derived from the release decision', () => {
-    const proposal = { id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' };
+    const proposal = { id: 'p1', orgId: 'org-1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low' };
     const methodOf = () =>
       ((dispatchMock.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0].provenance as { approvalMethod: string | null }).approvalMethod;
 
@@ -185,11 +204,161 @@ describe('run_script proposal branch', () => {
       });
       expect(methodOf()).toBe('four_eyes');
     });
+
+    it('unattended_mcp_principal for an unattended MCP run, after claiming the proposal with the ledger id', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      });
+      expect(claimMock).toHaveBeenCalledWith(expect.anything(), 'p1', 'exec-1');
+      expect(methodOf()).toBe('unattended_mcp_principal');
+    });
+
+    it('refuses as consumed, with no dispatch, when the unattended claim is lost', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      claimMock.mockResolvedValueOnce(false);
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      }));
+      expect(out.error).toBe('proposal_not_runnable: consumed');
+      expect(dispatchMock).not.toHaveBeenCalled();
+      expect(transitionMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses before claiming when the ceiling was lowered after the route admitted the run', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal: { ...proposal, riskTier: 'high' } } as never);
+      refusalMock.mockResolvedValue('risk_above_ceiling');
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      }));
+      expect(out.error).toBe('proposal_not_runnable: mcp_unattended_ceiling');
+      expect(refusalMock).toHaveBeenCalledWith('p1', 'org-1');
+      expect(claimMock).not.toHaveBeenCalled();
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses before claiming when the review does not recommend approve', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      refusalMock.mockResolvedValue('verdict_not_approve');
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      }));
+      expect(out.error).toBe('proposal_not_runnable: mcp_unattended_verdict_not_approve');
+      expect(claimMock).not.toHaveBeenCalled();
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('stops dispatching to later devices once the ceiling is lowered mid-run', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      accessMock.mockResolvedValueOnce([{ id: 'd1', orgId: 'org-1', status: 'online', siteId: null }] as never)
+        .mockResolvedValueOnce([{ id: 'd2', orgId: 'org-1', status: 'online', siteId: null }] as never);
+      lockCeilingMock.mockResolvedValueOnce('critical').mockResolvedValue('none');
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd2'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      }));
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+      expect(out.results.d2).toEqual({ error: 'proposal_not_runnable: mcp_unattended_ceiling' });
+    });
+
+    it('reads the locked ceiling inside the same system transaction that creates the command', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      const order: Array<{ kind: string; open: number }> = [];
+      lockCeilingMock.mockImplementationOnce(async () => { order.push({ kind: 'lock', open: txState.open }); return 'critical'; });
+      claimMock.mockImplementationOnce(async () => { order.push({ kind: 'claim', open: txState.open }); return true; });
+      dispatchMock.mockImplementationOnce((async () => {
+        order.push({ kind: 'create', open: txState.open });
+        return { ok: true, commandId: 'c1', executionId: 'e1', runAs: 'system' };
+      }) as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      });
+      expect(order).toEqual([{ kind: 'lock', open: 1 }, { kind: 'claim', open: 1 }, { kind: 'create', open: 1 }]);
+      expect(lockCeilingMock).toHaveBeenCalledWith('org-1');
+    });
+
+    it('does not claim the proposal when the locked ceiling refuses every device', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      lockCeilingMock.mockResolvedValue('none');
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      }));
+      expect(out.results.d1).toEqual({ error: 'proposal_not_runnable: mcp_unattended_ceiling' });
+      expect(claimMock).not.toHaveBeenCalled();
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('claims once for a multi-device unattended run', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      accessMock.mockResolvedValueOnce([{ id: 'd1', orgId: 'org-1', status: 'online', siteId: null }] as never)
+        .mockResolvedValueOnce([{ id: 'd2', orgId: 'org-1', status: 'online', siteId: null }] as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd2'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      });
+      expect(claimMock).toHaveBeenCalledTimes(1);
+      expect(dispatchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('claims again on the next device when the first command transaction rolled back', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      accessMock.mockResolvedValueOnce([{ id: 'd1', orgId: 'org-1', status: 'online', siteId: null }] as never)
+        .mockResolvedValueOnce([{ id: 'd2', orgId: 'org-1', status: 'online', siteId: null }] as never);
+      dispatchMock.mockRejectedValueOnce(new Error('insert failed') as never);
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd2'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      }));
+      expect(claimMock).toHaveBeenCalledTimes(2);
+      expect(out.results.d1.error).toBe('insert failed');
+      expect(out.results.d2.executionId).toBe('e1');
+    });
+
+    it('rolls the claim back when the dispatch is refused without creating a command', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      accessMock.mockResolvedValueOnce([{ id: 'd1', orgId: 'org-1', status: 'online', siteId: null }] as never)
+        .mockResolvedValueOnce([{ id: 'd2', orgId: 'org-1', status: 'online', siteId: null }] as never);
+      dispatchMock.mockResolvedValueOnce({ ok: false, error: 'maintenance window' } as never);
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd2'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      }));
+      expect(out.results.d1).toEqual({ error: 'maintenance window' });
+      // The first claim rolled back with its transaction, so d2 claims again.
+      expect(claimMock).toHaveBeenCalledTimes(2);
+      expect(out.results.d2.executionId).toBe('e1');
+    });
+
+    it('takes no ceiling lock for an intent release', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        actionIntentId: 'i1', releaseDecision: { approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' },
+      });
+      expect(lockCeilingMock).not.toHaveBeenCalled();
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a target device that has moved out of the proposal org', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      accessMock.mockResolvedValueOnce([{ id: 'd1', orgId: 'org-2', status: 'online', siteId: null }] as never);
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        actionIntentId: 'i1', releaseDecision: { approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' },
+      }));
+      expect(out.results.d1).toEqual({ error: 'Device not found or access denied' });
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('never claims for an intent release, even if an unattended context is also present', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        actionIntentId: 'i1',
+        releaseDecision: { approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' },
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      });
+      expect(claimMock).not.toHaveBeenCalled();
+      expect(methodOf()).toBe('four_eyes');
+    });
   });
 
   describe('AI data policy: profile paths in proposal content (#8854)', () => {
     const PROFILE_PROPOSAL = {
-      id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low',
+      id: 'p1', orgId: 'org-1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low',
       content: 'Get-Content C:\\Users\\bob\\Documents\\a.txt',
     };
 
