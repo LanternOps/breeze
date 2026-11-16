@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { AlertOctagon, AlertTriangle } from 'lucide-react';
 import { Dialog } from './Dialog';
 import { useTranslation } from 'react-i18next';
@@ -63,8 +63,13 @@ export function ConfirmDialog({
   // Call sites that keep the dialog mounted across an async action get the
   // latch released when `isLoading` settles back to false, so a failed action
   // is still retryable. Sites that unmount on confirm get a fresh ref anyway.
+  //
+  // The release is a LAYOUT effect so it lands in the same commit that shows
+  // Confirm enabled again. A passive effect runs a task later when the render
+  // came from a network response, and a press in that gap hit a held latch and
+  // did nothing, while the button looked enabled.
   const confirmLatchRef = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !isLoading) confirmLatchRef.current = false;
   }, [open, isLoading]);
 
