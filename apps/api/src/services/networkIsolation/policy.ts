@@ -47,7 +47,7 @@ export async function readIsolationPolicy(device: { id: string; networkIsolation
   if (!permits && !opts.releaseOptionsBelowPolicyAllow) return NO_ISOLATION_POLICY;
   const policy = await withDbTransaction(() => resolveContainmentPolicy(device.id));
   const deadManSeconds = deadManSecondsOf(policy.deadManMinutes);
-  if (!permits) return { ...NO_ISOLATION_POLICY, deadManSeconds };
+  if (!permits) return { ...NO_ISOLATION_POLICY, requireSignedReleaseToken: policy.requireSignedReleaseToken === true, deadManSeconds };
   const extras = containmentExtraAllowToEntries(policy.extraAllow);
   return { extras, revision: extras.length > 0 ? policy.revision : null, refusedGroups: policy.refusedGroups, invalidStoredSettings: policy.invalidStoredSettings, requireSignedReleaseToken: policy.requireSignedReleaseToken === true, deadManSeconds };
 }
