@@ -128,7 +128,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.6.6",
     "@types/nodemailer": "^8.0.2",
-    "@types/oidc-provider": "^9.12.1",
+    "@types/oidc-provider": "^9.13.1",
     "@types/pdfkit": "^0.17.7",
     "@types/pg": "^8.23.1",
     "@types/sanitize-html": "^2.16.2",
