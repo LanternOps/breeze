@@ -270,9 +270,15 @@ export type {
 import { loadSweepEvidence } from './sweepEvidence';
 import { loadNarrativeContext } from './narrativeContext';
 import { designBaselineNumbers, loadDesignEvidence } from './designEvidence';
+import { capAtBoundary } from '../../utils/capAtBoundary';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
-const RUN_SUMMARY_MAX_CHARS = 2000;
+export const RUN_SUMMARY_MAX_CHARS = 2000;
+
+/** Cut at a paragraph/sentence/word boundary with a visible "…" marker (#11977). */
+export function capRunSummary(summary: string): string {
+  return capAtBoundary(summary, RUN_SUMMARY_MAX_CHARS);
+}
 
 /**
  * What the model gets back when a mutation is intercepted. Worded as SUCCESS on
@@ -3343,7 +3349,7 @@ async function driveSdkLoop(
   }
 
   return {
-    summary: summary.slice(0, RUN_SUMMARY_MAX_CHARS),
+    summary: capRunSummary(summary),
     costCents: Math.round(costCents),
     turnCount,
     outcome,
