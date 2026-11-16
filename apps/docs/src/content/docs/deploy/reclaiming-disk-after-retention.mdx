@@ -8,7 +8,7 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Breeze's nightly retention jobs delete old rows from high-volume history tables. PostgreSQL reuses the freed pages for new rows, but it does **not** hand them back to the operating system. On an install that has run for months before retention was enabled, `device_commands` and `device_filesystem_snapshots` can stay large on disk after the backlog is drained, mostly in their TOAST storage.
+Breeze's nightly retention jobs delete old rows from high-volume history tables. PostgreSQL reuses the freed pages for new rows, but it does **not** hand them back to the operating system. On an install that has run for months before retention was enabled, `device_commands` and `device_filesystem_snapshots` can stay large on disk after the backlog is drained.
 
 This page is an **optional, one-time operator task**. Nothing in Breeze requires it. Skip it if disk is not under pressure: the freed space is already reused by new rows.
 
@@ -18,8 +18,9 @@ This page is an **optional, one-time operator task**. Nothing in Breeze requires
 
 ## Prerequisites
 
-- **The drain is done.** The nightly retention run caps the batches it deletes, so a large backlog is cleared over several nights. Wait until the retention backlog warning stops appearing in the API logs.
-- **Free disk headroom.** Per the pg_repack documentation, a full-table repack needs free disk about **twice the size of the target table and its indexes**. `VACUUM FULL` needs room for a second full copy of the table. Measure first (step 1) and make sure the data volume, plus WAL growth and any replicas, can absorb it.
+- **Retention is enforcing.** Both jobs are report-only by default and delete nothing until `DEVICE_COMMAND_RETENTION_ENFORCE=true` and `FILESYSTEM_SNAPSHOT_RETENTION_ENFORCE=true` are set (see [Environment Variables](/deploy/environment/)). A `REPORT-ONLY` log line means no drain has happened yet.
+- **The drain is done.** The nightly retention run caps the batches it deletes, so a large backlog is cleared over several nights. Wait until the API logs stop showing `Hit the N-batch cap on <table> with rows still eligible` for both tables.
+- **Free disk headroom.** Per the pg_repack documentation, a full-table repack needs free disk about **twice the size of the target table and its indexes**. `VACUUM FULL` needs room for a second full copy of the table (and its rebuilt indexes). Measure first (step 1) and make sure the data volume, plus WAL growth and any replicas, can absorb it.
 - **A tested backup.** See the [Upgrade Guide](/deploy/upgrades/) for `./scripts/backup.sh --db`.
 - **The right role.** Run as a superuser, or as the owner of the tables and their indexes with `--no-superuser-check`. The `breeze_app` runtime role is deliberately unprivileged and is not the table owner; use your database owner or admin role.
 - **A primary key.** pg_repack requires each target table to have a primary key or a unique index on a `NOT NULL` column. Both tables have a primary key.
@@ -42,7 +43,8 @@ This page is an **optional, one-time operator task**. Nothing in Breeze requires
           pg_size_pretty(pg_total_relation_size(c.oid)) AS total
    FROM pg_class c
    WHERE c.relname IN ('device_commands', 'device_filesystem_snapshots')
-     AND c.relkind = 'r';
+     AND c.relkind = 'r'
+     AND c.relnamespace = 'public'::regnamespace;
    ```
 
    Record the `total` values and the free space on the data volume.
