@@ -65,6 +65,7 @@ import { auditLogs, portalScimTokens } from '../../db/schema';
 import {
   PORTAL_SCIM_LIVE_TOKEN_CAP,
   PortalScimTokenError,
+  authenticatePortalScimToken,
   hashScimSecret,
   listPortalScimTokens,
   mintPortalScimToken,
@@ -169,6 +170,15 @@ describe('verifyPortalScimToken (D1, D2)', () => {
     proof.tenantId = TID.toUpperCase();
     h.results.push([tokenRow()]);
     expect(await verifyPortalScimToken(wire(), NOW)).not.toBeNull();
+  });
+
+  it('authenticatePortalScimToken tells the router an unknown id from a refused real token (budget keying, D9)', async () => {
+    h.results.push([]);
+    expect(await authenticatePortalScimToken(wire(), NOW)).toEqual({ ok: false, unknownId: true });
+    h.results.push([tokenRow()]);
+    expect(await authenticatePortalScimToken(wire(TOKEN_ID, 'B'.repeat(43)), NOW)).toEqual({ ok: false, unknownId: false });
+    h.results.push([tokenRow({ revokedAt: NOW })]);
+    expect(await authenticatePortalScimToken(wire(), NOW)).toEqual({ ok: false, unknownId: false });
   });
 
   it('a malformed header never touches the database', async () => {

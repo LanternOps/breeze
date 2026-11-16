@@ -112,8 +112,24 @@ function digestsEqual(secret: string, storedHash: string): boolean {
  * answers one identical 401.
  */
 export async function verifyPortalScimToken(authorization: string | undefined | null, now: Date = new Date()): Promise<VerifiedScimToken | null> {
+  const out = await authenticatePortalScimToken(authorization, now);
+  return out.ok ? out.token : null;
+}
+
+/**
+ * {@link verifyPortalScimToken} with the one fact the router's failure budget
+ * needs (D9): whether the token id named no row at all (`unknownId` — id
+ * guessing, budgeted per client address) or named a real token that was
+ * refused (wrong secret, revoked, proof or org changed — budgeted per token id
+ * and address). The HTTP answer is the same 401 either way.
+ */
+export async function authenticatePortalScimToken(
+  authorization: string | undefined | null,
+  now: Date = new Date(),
+): Promise<{ ok: true; token: VerifiedScimToken } | { ok: false; unknownId: boolean }> {
+  const refused = { ok: false as const, unknownId: false };
   const parsed = parseScimBearer(authorization);
-  if (!parsed) return null;
+  if (!parsed) return refused;
 
   const [row] = await withSystemDbAccessContext(
     () => db
@@ -132,13 +148,14 @@ export async function verifyPortalScimToken(authorization: string | undefined | 
   );
   // One compare whether or not the row exists.
   const matches = digestsEqual(parsed.secret, row?.secretHash ?? DUMMY_HASH);
-  if (!row || !matches || row.revokedAt) return null;
+  if (!row) return { ok: false, unknownId: true };
+  if (!matches || row.revokedAt) return refused;
 
   const tenantId = row.entraTenantId.toLowerCase();
   const proven = await findProvenEntraTenantForOrg(row.orgId);
-  if (!proven || proven.tenantId.toLowerCase() !== tenantId) return null;
+  if (!proven || proven.tenantId.toLowerCase() !== tenantId) return refused;
   const active = await getActiveOrgTenant(row.orgId);
-  if (!active) return null;
+  if (!active) return refused;
 
   if (!row.lastUsedAt || now.getTime() - row.lastUsedAt.getTime() >= LAST_USED_RESOLUTION_MS) {
     await withSystemDbAccessContext(
@@ -146,7 +163,7 @@ export async function verifyPortalScimToken(authorization: string | undefined | 
       'portalScim.touchToken',
     );
   }
-  return { tokenId: row.id, orgId: row.orgId, partnerId: active.partnerId, tenantId, issuer: entraIssuer(tenantId) };
+  return { ok: true, token: { tokenId: row.id, orgId: row.orgId, partnerId: active.partnerId, tenantId, issuer: entraIssuer(tenantId) } };
 }
 
 /**

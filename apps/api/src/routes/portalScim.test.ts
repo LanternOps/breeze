@@ -7,12 +7,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const redisState = vi.hoisted(() => ({ zcount: 0, zcountThrows: false, present: true }));
-const fakeRedis = vi.hoisted(() => ({
-  zcount: vi.fn(async () => {
-    if (redisState.zcountThrows) throw new Error('redis down');
-    return redisState.zcount;
-  }),
-}));
+const defaultZcount = vi.hoisted(() => async (_key: string, ..._rest: unknown[]) => {
+  if (redisState.zcountThrows) throw new Error('redis down');
+  return redisState.zcount;
+});
+const fakeRedis = vi.hoisted(() => ({ zcount: vi.fn(defaultZcount) }));
 const limiter = vi.hoisted(() => ({ orgAllowed: true, calls: [] as string[] }));
 
 vi.mock('../services', () => ({
@@ -28,10 +27,10 @@ vi.mock('../services/clientIp', () => ({
   rateLimitIpKey: vi.fn((ip: string) => ip),
 }));
 
-const verify = vi.hoisted(() => ({ result: null as unknown }));
+const verify = vi.hoisted(() => ({ result: null as unknown, unknownId: false }));
 vi.mock('../services/portalScim/tokens', async (orig) => {
   const actual = await orig<typeof import('../services/portalScim/tokens')>();
-  return { ...actual, verifyPortalScimToken: vi.fn(async () => verify.result) };
+  return { ...actual, authenticatePortalScimToken: vi.fn(async () => (verify.result ? { ok: true, token: verify.result } : { ok: false, unknownId: verify.unknownId })) };
 });
 
 const users = vi.hoisted(() => ({
@@ -45,7 +44,7 @@ const users = vi.hoisted(() => ({
 vi.mock('../services/portalScim/users', () => users);
 
 import { ScimError } from '../services/portalScim/protocol';
-import { verifyPortalScimToken } from '../services/portalScim/tokens';
+import { authenticatePortalScimToken as verifyPortalScimToken } from '../services/portalScim/tokens';
 import { createPortalScimRoutes } from './portalScim';
 
 const OID = '66666666-7777-4888-9999-000000000000';
@@ -72,12 +71,14 @@ function req(method: string, path: string, init: { auth?: string | null; body?: 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fakeRedis.zcount.mockImplementation(defaultZcount);
   redisState.zcount = 0;
   redisState.zcountThrows = false;
   redisState.present = true;
   limiter.orgAllowed = true;
   limiter.calls.length = 0;
   verify.result = TOKEN;
+  verify.unknownId = false;
 });
 
 describe('authentication (D9, Review Focus 2)', () => {
@@ -122,10 +123,24 @@ describe('authentication (D9, Review Focus 2)', () => {
     expect(fakeRedis.zcount).toHaveBeenCalledWith(`portal_scim_auth_fail:${TOKEN_ROW_ID}:203.0.113.7`, expect.any(Number), '+inf');
   });
 
+  it('an unknown token id is counted against the address (id guessing), not against a token', async () => {
+    verify.result = null;
+    verify.unknownId = true;
+    await req('GET', '/Users');
+    expect(limiter.calls).toEqual(['portal_scim_unknown_id:203.0.113.7']);
+  });
+
+  it('an address that spent its unknown-id budget gets 429 before any lookup, whatever id it sends next', async () => {
+    fakeRedis.zcount.mockImplementation(async (key: string) => (key.startsWith('portal_scim_unknown_id:') ? 600 : 0));
+    const fresh = `Bearer brzscim_${'d'.repeat(32)}_${'B'.repeat(43)}`;
+    expect((await req('GET', '/Users', { auth: fresh })).status).toBe(429);
+    expect(verifyPortalScimToken).not.toHaveBeenCalled();
+  });
+
   it('failures against one token id never block another token from the same address (shared egress)', async () => {
     // Only the guessed id's bucket is full.
     const byKey = async (key: string) => (key.includes(TOKEN_ROW_ID) ? 300 : 0);
-    fakeRedis.zcount.mockImplementationOnce(byKey).mockImplementationOnce(byKey);
+    fakeRedis.zcount.mockImplementation(byKey);
     users.listScimUsers.mockResolvedValue({ total: 0, records: [] });
     const other = `Bearer brzscim_${'c'.repeat(32)}_${'B'.repeat(43)}`;
     expect((await req('GET', '/Users', { auth: other })).status).toBe(200);

@@ -33,7 +33,7 @@ import {
   scimListResponse,
   toScimUser,
 } from '../services/portalScim/protocol';
-import { parseScimBearer, verifyPortalScimToken, type VerifiedScimToken } from '../services/portalScim/tokens';
+import { authenticatePortalScimToken, parseScimBearer, type VerifiedScimToken } from '../services/portalScim/tokens';
 import {
   createScimUser,
   deleteScimUser,
@@ -48,6 +48,8 @@ const BODY_LIMIT_BYTES = 64 * 1024;
 /** Failed authentications per (token id, normalized client IP) before lookups stop (OD4). */
 const AUTH_FAIL_LIMIT = 300;
 const AUTH_FAIL_WINDOW_S = 300;
+/** Unknown-token-id failures per normalized client IP (id guessing) before lookups stop (OD4). */
+const UNKNOWN_ID_LIMIT = 600;
 /** Authenticated requests per org (OD4); Entra backs off on 429 + Retry-After. */
 const ORG_LIMIT = 3000;
 const ORG_WINDOW_S = 60;
@@ -87,11 +89,11 @@ function retryAfter(resetAt: Date | undefined, fallbackSeconds: number): number 
  * adding to it, so a valid token's requests never consume the failure budget.
  * Redis unavailable or erroring fails closed, like `rateLimiter`.
  */
-async function failureBudgetSpent(redis: ReturnType<typeof getRedis>, key: string): Promise<boolean> {
+async function failureBudgetSpent(redis: ReturnType<typeof getRedis>, key: string, limit: number): Promise<boolean> {
   if (!redis) return true;
   try {
     const n = await redis.zcount(key, Date.now() - AUTH_FAIL_WINDOW_S * 1000, '+inf');
-    return n >= AUTH_FAIL_LIMIT;
+    return n >= limit;
   } catch {
     return true;
   }
@@ -104,24 +106,27 @@ const scimAuth: MiddlewareHandler<Env> = async (c, next) => {
   const parsed = parseScimBearer(authorization);
   if (!parsed) return unauthorized(c);
 
-  // The failure budget is keyed on the token id AND the client address, so
-  // failures from a shared egress address (Microsoft's provisioning service
-  // calls for every tenant) can never lock out another org's token, and a
-  // third party who learns a token id cannot lock out the address Entra uses.
-  // Checked before any lookup; per-address lookup volume is bounded by the
-  // global limiter's isolated 'scim' bucket.
+  // Two failure budgets, both checked before any lookup (D9):
+  //  - per (token id, address): a REAL token refused (wrong secret, revoked,
+  //    proof or org changed). Keyed on the id too, so another tenant's bad
+  //    token on Microsoft's shared egress never locks out this org's token,
+  //    and someone who learns a token id cannot lock out the address Entra uses;
+  //  - per address: token ids that name NO row (id guessing). Rotating random
+  //    ids cannot dodge it. Legitimate traffic never produces unknown ids at
+  //    this rate, so it does not couple tenants on a shared address.
   const redis = getRedis();
-  const failKey = `portal_scim_auth_fail:${parsed.tokenId}:${rateLimitIpKey(getTrustedClientIp(c, 'unknown'))}`;
-  const recordFailure = async () => {
-    await rateLimiter(redis, failKey, AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW_S);
-  };
-  if (await failureBudgetSpent(redis, failKey)) return tooMany(c, AUTH_FAIL_WINDOW_S);
+  const ip = rateLimitIpKey(getTrustedClientIp(c, 'unknown'));
+  const tokenFailKey = `portal_scim_auth_fail:${parsed.tokenId}:${ip}`;
+  const unknownIdKey = `portal_scim_unknown_id:${ip}`;
+  if (await failureBudgetSpent(redis, tokenFailKey, AUTH_FAIL_LIMIT)) return tooMany(c, AUTH_FAIL_WINDOW_S);
+  if (await failureBudgetSpent(redis, unknownIdKey, UNKNOWN_ID_LIMIT)) return tooMany(c, AUTH_FAIL_WINDOW_S);
 
-  const token = await verifyPortalScimToken(authorization);
-  if (!token) {
-    await recordFailure();
+  const auth = await authenticatePortalScimToken(authorization);
+  if (!auth.ok) {
+    await rateLimiter(redis, auth.unknownId ? unknownIdKey : tokenFailKey, auth.unknownId ? UNKNOWN_ID_LIMIT : AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW_S);
     return unauthorized(c);
   }
+  const token = auth.token;
 
   const perOrg = await rateLimiter(redis, `portal_scim_org:${token.orgId}`, ORG_LIMIT, ORG_WINDOW_S, 1, { refundOnReject: true });
   if (!perOrg.allowed) return tooMany(c, retryAfter(perOrg.resetAt, ORG_WINDOW_S));
