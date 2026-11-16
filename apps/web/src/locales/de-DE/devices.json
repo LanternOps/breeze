@@ -4876,6 +4876,7 @@
     "startDescription": "Netzwerkverkehr außer der Breeze-Verwaltung blockieren.",
     "releaseDescription": "Entfernung der Breeze-Isolierungsregeln anfordern. Ein Offline-Gerät erhält die Freigabe beim erneuten Verbinden.",
     "serverWarning": "Dies ist ein Serverbetriebssystem. Die Isolierung kann Dienste für andere Geräte unterbrechen.",
+    "deadManUnsupported": "Die Eindämmungsrichtlinie dieses Geräts legt eine Dead-Man-Freigabe fest, aber die Agent-Version des Geräts unterstützt sie nicht. Das Gerät wird ohne Dead-Man-Freigabe isoliert.",
     "reason": "Begründung",
     "ttlHours": "Dauer (Stunden)",
     "incidentId": "Bestehende Vorfall-ID (optional)",

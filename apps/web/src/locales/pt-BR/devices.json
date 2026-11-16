@@ -4876,6 +4876,7 @@
     "startDescription": "Bloquear o tráfego de rede, exceto as comunicações de gerenciamento do Breeze.",
     "releaseDescription": "Solicitar a remoção das regras de isolamento do Breeze. Um dispositivo offline recebe a liberação ao reconectar.",
     "serverWarning": "Este é um sistema operacional de servidor. O isolamento pode interromper serviços de outros dispositivos.",
+    "deadManUnsupported": "A política de contenção deste dispositivo define uma liberação dead-man, mas a versão do agente dele não a suporta. O dispositivo será isolado sem ela.",
     "reason": "Motivo",
     "ttlHours": "Duração (horas)",
     "incidentId": "ID de incidente existente (opcional)",

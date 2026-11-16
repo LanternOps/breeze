@@ -12,11 +12,12 @@ export interface IsolationActionDialogProps {
   mode: 'start' | 'release' | 'extend';
   serverOs?: boolean;
   offline?: boolean;
+  deadManUnsupported?: boolean;
   onClose: () => void;
   onSuccess: () => void;
 }
 const inputClass = 'mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm';
-export default function IsolationActionDialog({ deviceId, isolationId, mode, serverOs, offline, onClose, onSuccess }: IsolationActionDialogProps) {
+export default function IsolationActionDialog({ deviceId, isolationId, mode, serverOs, offline, deadManUnsupported, onClose, onSuccess }: IsolationActionDialogProps) {
   const { t } = useTranslation('devices');
   const [reason, setReason] = useState('');
   const [ttlHours, setTtlHours] = useState<number>(NETWORK_ISOLATION_TTL.defaultHours);
@@ -53,6 +54,7 @@ export default function IsolationActionDialog({ deviceId, isolationId, mode, ser
       <h2 className="text-lg font-semibold">{title}</h2>
       {mode !== 'extend' && <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `networkIsolation.${mode}Description`)}</p>}
       {mode === 'start' && serverOs && <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm" role="alert" data-testid="isolation-server-warning">{t('networkIsolation.serverWarning')}</p>}
+      {mode === 'start' && deadManUnsupported && <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm" data-testid="isolation-dead-man-unsupported">{t('networkIsolation.deadManUnsupported')}</p>}
       {mode !== 'extend' && <label className="block text-sm">{t('networkIsolation.reason')}<textarea data-testid="isolation-reason" required maxLength={2000} value={reason} onChange={event => setReason(event.target.value)} className={inputClass} disabled={busy} /></label>}
       {mode !== 'release' && <label className="block text-sm">{t('networkIsolation.ttlHours')}<input data-testid="isolation-ttl" type="number" required min={1} max={NETWORK_ISOLATION_TTL.maxHours} step={1} value={ttlHours} onChange={event => setTtlHours(event.target.valueAsNumber)} className={inputClass} disabled={busy} /></label>}
       {mode === 'start' && <>

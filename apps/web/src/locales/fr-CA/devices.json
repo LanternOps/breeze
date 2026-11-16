@@ -4876,6 +4876,7 @@
     "startDescription": "Bloquer le trafic réseau sauf les communications de gestion Breeze.",
     "releaseDescription": "Demander la suppression des règles d’isolement Breeze. Un appareil hors ligne reçoit la demande à sa reconnexion.",
     "serverWarning": "Il s’agit d’un système serveur. L’isolement peut interrompre les services d’autres appareils.",
+    "deadManUnsupported": "La politique de confinement de cet appareil définit une libération automatique (dead-man), mais la version de son agent ne la prend pas en charge. L'appareil sera isolé sans celle-ci.",
     "reason": "Motif",
     "ttlHours": "Durée (heures)",
     "incidentId": "Identifiant d’incident existant (facultatif)",

@@ -4876,6 +4876,7 @@
     "startDescription": "Block network traffic except the Breeze management plane.",
     "releaseDescription": "Request removal of Breeze isolation rules. An offline device receives the release when it reconnects.",
     "serverWarning": "This is a server OS. Isolation can interrupt services for other devices.",
+    "deadManUnsupported": "This device's containment policy sets a dead-man release, but its agent version does not support it. The device will be isolated without one.",
     "reason": "Reason",
     "ttlHours": "Duration (hours)",
     "incidentId": "Existing incident ID (optional)",
