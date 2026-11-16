@@ -8,6 +8,8 @@ export interface IsolationEpisode {
   expiresAt: string;
   generation?: number;
   lastReportedGeneration?: number | null;
+  releaseTokenPublicKey?: string | null;
+  releaseTokenRequired?: boolean;
 }
 export interface IsolationListResponse {
   episodes: IsolationEpisode[];

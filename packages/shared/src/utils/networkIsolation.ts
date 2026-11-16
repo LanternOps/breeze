@@ -22,7 +22,31 @@ export const NETWORK_ISOLATION_MIN_AGENT_VERSION = '999.0.0';
  * ladder of features: an agent at `policyAllow` (3) still refuses `deadManSeconds != 0`, so read each
  * capability through its own predicate below, never with a bare `>=`.
  */
-export const NETWORK_ISOLATION_CAPABILITY = { base: 1, deadMan: 2, policyAllow: 3 } as const;
+export const NETWORK_ISOLATION_CAPABILITY = { base: 1, deadMan: 2, policyAllow: 3, releaseToken: 4 } as const;
+
+/**
+ * First agent release the server may send release-token fields to (#10102). `'999.0.0'` is
+ * the same fail-closed sentinel as NETWORK_ISOLATION_MIN_AGENT_VERSION: no agent satisfies it, so no
+ * episode pins a token key until lab gate L4 passes and the activation PR pins the real release.
+ */
+// TODO(#10102-activation): pin to the agent release that passed lab gate L4. Owner sign-off required.
+export const NETWORK_ISOLATION_RELEASE_TOKEN_MIN_AGENT_VERSION = '999.0.0';
+
+/** Signed offline release token bounds; the agent refuses a window over `maxValiditySeconds`. */
+export const NETWORK_ISOLATION_RELEASE_TOKEN = { version: 1, validitySeconds: 7200, maxValiditySeconds: 86400 } as const;
+
+/**
+ * Whether the server may send an agent the release-token spec fields (`releaseTokenPublicKey`,
+ * `releaseTokenDeviceId`, `requireSignedReleaseToken`). An older agent decodes the spec strictly and
+ * would refuse the whole isolation over them. Needs capability `releaseToken` AND an agent version at
+ * or above NETWORK_ISOLATION_RELEASE_TOKEN_MIN_AGENT_VERSION; fails CLOSED on anything malformed.
+ */
+export function agentAcceptsReleaseToken(capabilityVersion: number | null | undefined, agentVersion: string | null | undefined): boolean {
+  if (typeof capabilityVersion !== 'number' || !Number.isInteger(capabilityVersion) || capabilityVersion < NETWORK_ISOLATION_CAPABILITY.releaseToken) return false;
+  if (typeof agentVersion !== 'string') return false;
+  const cmp = semverCompare(agentVersion.trim(), NETWORK_ISOLATION_RELEASE_TOKEN_MIN_AGENT_VERSION);
+  return cmp !== null && cmp >= 0;
+}
 
 /**
  * Whether an agent accepts containment-policy permits: `scope:"any"` entries under a `policyRevision`,

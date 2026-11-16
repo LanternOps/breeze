@@ -530,6 +530,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'SSO_ENCRYPTION_KEY' },
       { name: 'SESSION_SECRET' },
       { name: 'PARTNER_API_CURSOR_SIGNING_KEY' },
+      { name: 'NETWORK_ISOLATION_TOKEN_SIGNING_KEY' },
       { name: 'ENROLLMENT_KEY_PEPPER' },
       { name: 'MFA_RECOVERY_CODE_PEPPER' },
     ],
