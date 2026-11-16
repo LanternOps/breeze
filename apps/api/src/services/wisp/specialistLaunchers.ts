@@ -28,6 +28,7 @@ import { admitAnalysisRun } from '../aiAgents/analysisAdmission';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { ensureResearchAgent } from '../aiAgents/researchProvisioning';
 import { ensureTroubleshootAgent, TroubleshootBaselineConflictError } from '../aiAgents/troubleshootProvisioning';
+import { TROUBLESHOOT_GOAL_MAX_CHARS } from '../aiAgents/troubleshootProfile';
 import { createAndEnqueueAgentRun, GrantDepthExceededError } from '../aiAgents/runService';
 import { effectiveSchedule } from '../aiAgents/scheduleMerge';
 import { resolveEffectiveSchedulesForPartner } from '../aiAgents/scheduleService';
@@ -153,7 +154,7 @@ export const researchParamsSchema = z.strictObject({
  */
 export const troubleshootParamsSchema = z.strictObject({
   deviceId: z.uuid(),
-  goal: z.string().trim().min(5).max(500),
+  goal: z.string().trim().min(5).max(TROUBLESHOOT_GOAL_MAX_CHARS),
   continueFromRunId: z.uuid().optional(),
 });
 
