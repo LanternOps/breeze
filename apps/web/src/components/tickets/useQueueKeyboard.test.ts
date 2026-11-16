@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { createElement, useState } from 'react';
+import { render, renderHook, waitFor } from '@testing-library/react';
 import { useQueueKeyboard } from './useQueueKeyboard';
 import { QUEUE_SHORTCUTS } from './queueShortcuts';
 import { resetTypingCadence } from '@/lib/keyboard/bareKeyGuard';
@@ -180,5 +181,56 @@ describe('useQueueKeyboard', () => {
     useUiStore.setState({ dirtyFormCount: 1 });
     press('a');
     expect(handlers.onAssignMe).not.toHaveBeenCalled();
+  });
+});
+
+// A key pressed once a render is on screen must act on that render. React runs
+// passive effects after the commit, in a later task when the render is slow, so
+// a listener re-subscribed from useEffect can still hold the previous render's
+// handlers: on a loaded machine the first `j` after the ticket rows appeared
+// moved nothing, because the listener's handlers still saw an empty list.
+describe('useQueueKeyboard handler freshness', () => {
+  const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  let actEnvironment: boolean | undefined;
+  beforeEach(() => {
+    resetTypingCadence();
+    useUiStore.setState({ dirtyFormCount: 0 });
+    actEnvironment = g.IS_REACT_ACT_ENVIRONMENT;
+  });
+  afterEach(() => { g.IS_REACT_ACT_ENVIRONMENT = actEnvironment; });
+
+  it('a key pressed as soon as a render is in the DOM uses that render\'s handlers', async () => {
+    const seen: number[] = [];
+    let bump: () => void = () => {};
+    function Probe() {
+      const [version, setVersion] = useState(1);
+      bump = () => setVersion(2);
+      useQueueKeyboard({
+        onMove: () => { seen.push(version); },
+        onOpen: () => {},
+        onAssignMe: () => {},
+        onFocusReply: () => {},
+        onFocusInternal: () => {},
+        onResolve: () => {},
+        onEscape: () => {},
+      });
+      // A render longer than the scheduler's 5 ms slice: React then commits
+      // it and leaves its passive effects to a later task, as on a loaded box.
+      if (version === 2) { const until = performance.now() + 20; while (performance.now() < until) { /* busy */ } }
+      return createElement('div', { 'data-testid': 'probe', 'data-version': version });
+    }
+    const { getByTestId, unmount } = render(createElement(Probe));
+
+    // Press j the moment version 2 reaches the DOM — what findBy* + a key
+    // press, or a user reacting to the rows appearing, amounts to.
+    const observer = new MutationObserver(() => { observer.disconnect(); press('j'); });
+    observer.observe(getByTestId('probe'), { attributes: true });
+    // Outside act(), so React schedules the update the way a fetch response does.
+    g.IS_REACT_ACT_ENVIRONMENT = false;
+    bump();
+    await waitFor(() => expect(seen).toHaveLength(1));
+
+    expect(seen).toEqual([2]);
+    unmount();
   });
 });
