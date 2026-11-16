@@ -60,8 +60,8 @@ describe('partners.billing_admission_limit database bound', () => {
 
   it('replays the bound migration and the original one without narrowing the bound', async () => {
     const [wide] = await insertAllowance({ maxDevices: 2000, limit: 2500, expiresAt });
-    await replayMigration('2027-01-26-120000-partner-billing-admission-bound.sql');
-    await replayMigration('2027-01-26-120000-partner-billing-admission-bound.sql');
+    await replayMigration('2027-01-27-120000-partner-billing-admission-bound.sql');
+    await replayMigration('2027-01-27-120000-partner-billing-admission-bound.sql');
     // The stored 2,500 row is the real proof: if the original file re-added its
     // 1..1100 CHECK, that ADD would fail to validate this row.
     await replayMigration('2026-12-18-120000-partner-billing-admission.sql');
