@@ -431,7 +431,7 @@ test('changes reads the CI Gate\'s selection in a bounded advisory step after by
   assert.equal(body.match(/^    permissions:\n([\s\S]*?)(?=^    [a-z][\w-]*:)/m)[1], '      contents: read\n      pull-requests: read\n      actions: read\n');
   assert.ok(body.includes("      selection_mode: ${{ steps.queue_thin.outputs.selection_mode || (github.event_name == 'pull_request' && 'pr' || 'full') }}\n"));
   assert.ok(body.includes("      selection_reason: ${{ steps.queue_thin.outputs.selection_reason || (steps.queue_thin.outcome == 'failure' && 'thin_step_failed') || '' }}\n"));
-  assert.ok(body.includes('      thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}\n'));
+  assert.ok(body.includes('      thin_skip: \',test-shared,\'\n'));
   assert.ok(body.indexOf('id: queue_thin') > body.indexOf('id: classify'));
   assert.match(body, /fetch-depth: \$\{\{ github.event_name == 'merge_group' && '0' \|\| '1' \}\}/);
   assert.ok(!workflow.includes('queue_shadow') && !workflow.includes('queue-selection.mjs shadow'), 'the W04 candidate-side shadow step is gone');
@@ -568,7 +568,7 @@ test('T6: only the three outputs read the consume step, classifier gates are pin
       [`      ${key}: \${{ steps.classify.outputs.${key} }}`]);
   }
   const outputLines = workflow.split('\n').filter(line => line.includes('steps.queue_thin.'));
-  assert.equal(outputLines.length, 3);
+  assert.equal(outputLines.length, 2); // N3 throwaway
   for (const line of outputLines) assert.match(line, /^      (selection_mode|selection_reason|thin_skip):/);
   for (const key of ['selection_mode', 'selection_reason']) {
     assert.equal(workflow.split(key).length - 1, 2, key);
@@ -1117,7 +1117,7 @@ test('B2: each thinnable job skips itself only on its own id; no other job reads
   }
   const lines = workflow.split('\n').filter(line => /thin_skip|THIN_SKIP/.test(line) && !line.trim().startsWith('#'));
   assert.deepEqual(lines.filter(line => !line.startsWith('    if: ')), [
-    '      thin_skip: ${{ steps.queue_thin.outputs.thin_skip }}',
+    '      thin_skip: \',test-shared,\'',
     '          THIN_SKIP: ${{ needs.changes.outputs.thin_skip }}',
     '          for thin_job in ${THIN_SKIP//,/ }; do',
     '          if [[ -n "${THIN_SKIP}" ]]; then',
