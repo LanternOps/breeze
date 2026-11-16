@@ -42,10 +42,9 @@ export function useQueueKeyboard(handlers: QueueKeyboardHandlers): void {
   // One window listener for the hook's lifetime, reading the latest handlers
   // from a ref. The ref is refreshed in a layout effect, which runs inside the
   // commit, so a key pressed once a render is in the DOM always acts on that
-  // render. Re-subscribing from useEffect left a gap: passive effects run after
-  // the commit (a task later when the render is slow), and a key pressed in
-  // between reached the previous render's handlers (the first j after the rows
-  // appeared saw an empty list and moved nothing).
+  // render. Re-subscribing from useEffect left a gap: passive effects can run in
+  // a later task than the commit, and a key pressed in between reached the
+  // previous render's handlers.
   const latest = useRef(handlers);
   useLayoutEffect(() => { latest.current = handlers; });
   useEffect(() => {

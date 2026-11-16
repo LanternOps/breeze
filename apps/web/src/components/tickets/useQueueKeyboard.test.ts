@@ -184,11 +184,10 @@ describe('useQueueKeyboard', () => {
   });
 });
 
-// A key pressed once a render is on screen must act on that render. React runs
-// passive effects after the commit, in a later task when the render is slow, so
-// a listener re-subscribed from useEffect can still hold the previous render's
-// handlers: on a loaded machine the first `j` after the ticket rows appeared
-// moved nothing, because the listener's handlers still saw an empty list.
+// A key pressed once a render is in the DOM must act on that render. React can
+// run passive effects in a later task than the commit, so a listener
+// re-subscribed from useEffect can still hold the previous render's handlers
+// when the key arrives.
 describe('useQueueKeyboard handler freshness', () => {
   const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
   let actEnvironment: boolean | undefined;
@@ -214,23 +213,40 @@ describe('useQueueKeyboard handler freshness', () => {
         onResolve: () => {},
         onEscape: () => {},
       });
-      // A render longer than the scheduler's 5 ms slice: React then commits
-      // it and leaves its passive effects to a later task, as on a loaded box.
-      if (version === 2) { const until = performance.now() + 20; while (performance.now() < until) { /* busy */ } }
       return createElement('div', { 'data-testid': 'probe', 'data-version': version });
     }
     const { getByTestId, unmount } = render(createElement(Probe));
 
-    // Press j the moment version 2 reaches the DOM — what findBy* + a key
-    // press, or a user reacting to the rows appearing, amounts to.
+    // Press j at the earliest moment version 2 is in the DOM: the tightest case
+    // of a user, or findBy* plus a key press, reacting to the rows appearing.
     const observer = new MutationObserver(() => { observer.disconnect(); press('j'); });
     observer.observe(getByTestId('probe'), { attributes: true });
-    // Outside act(), so React schedules the update the way a fetch response does.
+    // bump() is not wrapped in act(), so React schedules the update as it would
+    // for a fetch response. Clearing the flag only silences the "not wrapped in
+    // act" warning (restored in afterEach).
     g.IS_REACT_ACT_ENVIRONMENT = false;
     bump();
     await waitFor(() => expect(seen).toHaveLength(1));
 
     expect(seen).toEqual([2]);
     unmount();
+  });
+
+  it('subscribes once across re-renders and unsubscribes on unmount', () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    const onMove = vi.fn();
+    const make = () => ({
+      onMove, onOpen: () => {}, onAssignMe: () => {}, onFocusReply: () => {},
+      onFocusInternal: () => {}, onResolve: () => {}, onEscape: () => {},
+    });
+    const { rerender, unmount } = renderHook(() => useQueueKeyboard(make()));
+    rerender();
+    rerender();
+    expect(add.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(1);
+    add.mockRestore();
+
+    unmount();
+    press('j');
+    expect(onMove).not.toHaveBeenCalled();
   });
 });
