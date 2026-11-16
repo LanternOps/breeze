@@ -19,6 +19,7 @@ import {
 } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
+import { randomUUID } from 'node:crypto';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
@@ -333,21 +334,77 @@ export async function settleBlockedTurnForNewMessage(
 }
 
 /**
- * Tracks the action_intents.id an inline Tier-3 execution is running under,
- * so createSessionPostToolUse can CAS it `executing -> completed|failed` once
- * the tool actually finishes (see the coordination invariant in the T3 block
- * of createSessionPreToolUse below). Keyed by the ActiveSession object itself
- * rather than added as a field on the ActiveSession type — this keeps the
- * action-intents integration local to this module. At most one Tier-3 tool
- * is assumed to be "executing" for a given session at a time (the same
- * assumption createSessionPostToolUse's sessionId+toolName+status='executing'
- * match makes), so it holds a single pending id per session. Known
- * limitation (#11994): the SDK can run sibling calls concurrently, so a second
- * call can replace this entry or consume another call's. The approval-method
- * record (#11989) is keyed per call and does not share this limitation.
- * WeakMap so an evicted/closed session's entry is GC'd with it.
+ * #11989 / #11994: which call a per-call record belongs to. The SDK runs
+ * sibling tool calls concurrently, so two calls in one session can both pass
+ * the gate before either one's postToolUse runs; a single per-session slot
+ * handed the first call to finish the second one's state. The key is the
+ * model's tool_use id, which the MCP handler hands to both hooks from the same
+ * `extra` (see PreToolUseCallback's `toolUseId`). When the SDK sent no id, the
+ * call's own input object is the key: the handler passes that same object to
+ * both hooks.
  */
-const pendingIntentBySession = new WeakMap<ActiveSession, { intentId: string; orgId: string }>();
+interface CallKey {
+  toolUseId: string | undefined;
+  input: object;
+}
+
+/**
+ * State the gate writes for one call and that call's own postToolUse takes
+ * back. Id-keyed records live in a per-session map so an evicted/closed
+ * session's records are GC'd with it; input-keyed records (no SDK id) are
+ * GC'd with the call's input object. Each record carries the tool name it was
+ * written under, and a reader ignores a record written under another name.
+ */
+function createPerCallStore<T extends { toolName: string }>() {
+  const byToolUseId = new WeakMap<ActiveSession, Map<string, T>>();
+  const byInput = new WeakMap<object, T>();
+  return {
+    set(session: ActiveSession, call: CallKey, record: T): void {
+      if (call.toolUseId === undefined) {
+        byInput.set(call.input, record);
+        return;
+      }
+      let byId = byToolUseId.get(session);
+      if (!byId) {
+        byId = new Map();
+        byToolUseId.set(session, byId);
+      }
+      byId.set(call.toolUseId, record);
+    },
+    /** Remove and return this call's record, if the gate wrote one. */
+    take(session: ActiveSession, call: CallKey): T | undefined {
+      if (call.toolUseId === undefined) {
+        const record = byInput.get(call.input);
+        byInput.delete(call.input);
+        return record;
+      }
+      const byId = byToolUseId.get(session);
+      const record = byId?.get(call.toolUseId);
+      byId?.delete(call.toolUseId);
+      return record;
+    },
+  };
+}
+
+/**
+ * The action_intents row an inline Tier-3 execution is running under, so the
+ * same call's postToolUse can CAS it `executing -> completed|failed` once the
+ * tool actually finishes (see the coordination invariant in the T3 block of
+ * createSessionPreToolUse below). `orgId` is the intent's own org (#10384).
+ * Per call (#11994): a per-session slot let a second release replace the
+ * first one's entry, and let any tier>=2 call that finished first complete
+ * the intent with its own output.
+ */
+const releasedIntents = createPerCallStore<{ toolName: string; intentId: string; orgId: string }>();
+
+/**
+ * The ai_tool_executions row the gate left `executing` for an allowed tier>=2
+ * call, so the same call's postToolUse closes that row by id (#11994). Before,
+ * it updated every `executing` row with this session and tool name, so two
+ * overlapping calls of one tool (or a refused sibling's echo) wrote the first
+ * output to arrive into both rows.
+ */
+const executingLedgerRows = createPerCallStore<{ toolName: string; executionId: string }>();
 
 /**
  * How a tier>=2 call was authorized, so the postToolUse audit event can record
@@ -370,59 +427,27 @@ type ApprovalMethod =
   | 'wisp_self_state_auto' // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
   | 'wisp_unattended_read'; // #10973 one of the four reads under the grant's unattended-reads switch
 
-/**
- * #11989: which call an approval record belongs to. The SDK runs sibling tool
- * calls concurrently, so two approval-gated calls in one session can both pass
- * the gate before either one's postToolUse runs; a single per-session slot
- * gave the first call the second one's method, or `unknown`. The key is the
- * model's tool_use id, which the MCP handler hands to both hooks from the same
- * `extra` (see PreToolUseCallback's `toolUseId`). When the SDK sent no id, the
- * call's own input object is the key: the handler passes that same object to
- * both hooks.
- */
-interface ApprovalCallKey {
-  toolUseId: string | undefined;
-  input: object;
-}
 type ApprovalRecord = { toolName: string; method: ApprovalMethod };
-/**
- * Id-keyed records, per session so an evicted/closed session's records are
- * GC'd with it. The post hook takes each call's record on entry.
- */
-const approvalByToolUseId = new WeakMap<ActiveSession, Map<string, ApprovalRecord>>();
-/** Input-keyed records (no SDK id): GC'd with the call's input object. */
-const approvalByInput = new WeakMap<object, ApprovalRecord>();
+/** #11989: the approval path each call took, per call (see CallKey). */
+const approvalRecords = createPerCallStore<ApprovalRecord>();
 
 function recordApprovalMethod(
   session: ActiveSession,
-  call: ApprovalCallKey,
+  call: CallKey,
   toolName: string,
   method: ApprovalMethod,
 ): void {
-  const record: ApprovalRecord = { toolName, method };
-  if (call.toolUseId === undefined) {
-    approvalByInput.set(call.input, record);
-    return;
-  }
-  let byId = approvalByToolUseId.get(session);
-  if (!byId) {
-    byId = new Map();
-    approvalByToolUseId.set(session, byId);
-  }
-  byId.set(call.toolUseId, record);
+  approvalRecords.set(session, call, { toolName, method });
 }
 
 /** Remove and return this call's approval record, if the gate wrote one. */
-function takeApprovalRecord(session: ActiveSession, call: ApprovalCallKey): ApprovalRecord | undefined {
-  if (call.toolUseId === undefined) {
-    const record = approvalByInput.get(call.input);
-    approvalByInput.delete(call.input);
-    return record;
-  }
-  const byId = approvalByToolUseId.get(session);
-  const record = byId?.get(call.toolUseId);
-  byId?.delete(call.toolUseId);
-  return record;
+function takeApprovalRecord(session: ActiveSession, call: CallKey): ApprovalRecord | undefined {
+  return approvalRecords.take(session, call);
+}
+
+/** A per-call record, only when it was written under this tool name. */
+function matchingRecord<T extends { toolName: string }>(record: T | undefined, toolName: string): T | undefined {
+  return record?.toolName === toolName ? record : undefined;
 }
 
 /**
@@ -1497,9 +1522,19 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // postToolUse audit event (approvalAuditDetails).
     const recordApproval = (method: ApprovalMethod): void =>
       recordApprovalMethod(session, { toolUseId, input }, toolName, method);
+    // #11994: the ledger row this call left `executing`, closed by id in its
+    // own postToolUse. Recorded only on an allowed exit: a refused call's row
+    // was already closed here, and its echo must not touch any row.
+    const recordExecutingRow = (executionId: string): void =>
+      executingLedgerRows.set(session, { toolUseId, input }, { toolName, executionId });
+    // The tier-3/tier-2 approval branches below leave this call's row
+    // `executing` and fall through to the terminal allowed `return`, which
+    // records it (and the released intent) for postToolUse.
+    let executingRowId: string | undefined;
+    let releasedIntent: { intentId: string; orgId: string } | undefined;
     // Set only by the tier-3 branch below when it creates a durable intent;
     // carried on the terminal `return` so postToolUse can seal against the
-    // right intent without relying solely on pendingIntentBySession.
+    // right intent (the sealed carrier names it as well as releasedIntents).
     let createdIntentId: string | undefined;
     // #10416: how long this call waited on its approval card (tier-2 or a
     // tier-3 intent). Set whenever such a wait completes; returned only on a
@@ -1992,6 +2027,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           console.error('[AI-SDK] Failed to update helper approval to executing:', helperExec.id, err);
         }
         recordApproval('pam');
+        recordExecutingRow(helperExec.id);
         return { allowed: true };
       }
 
@@ -2049,11 +2085,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         if (unattendedRead && wispCall.current?.ceiling.unattendedReads !== true) {
           return { allowed: false, error: 'Authorization changed before execution; the action was not executed.' };
         }
+        // #11994: the id is chosen here so postToolUse can close this row by id.
+        const autoExecId = randomUUID();
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
             () =>
               db.insert(aiToolExecutions).values({
+                id: autoExecId,
                 sessionId: session.breezeSessionId,
                 toolName,
                 toolInput: redactSensitiveToolInput(input),
@@ -2072,6 +2111,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               ? 'auto_approve_mode'
               : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
         );
+        recordExecutingRow(autoExecId);
         if (unattendedRead) {
           unattendedReadInputs.add(input);
           verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedRead };
@@ -2257,11 +2297,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             stepIndex: match.stepIndex,
             toolName,
           });
+          // #11994: the id is chosen here so postToolUse can close this row by id.
+          const planStepExecId = randomUUID();
           try {
             await withDbAccessContext(
               { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
               () =>
                 db.insert(aiToolExecutions).values({
+                  id: planStepExecId,
                   sessionId: session.breezeSessionId,
                   toolName,
                   toolInput: redactSensitiveToolInput(input),
@@ -2275,6 +2318,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           }
           session.currentPlanStepIndex = match.stepIndex + 1;
           recordApproval('plan_step');
+          recordExecutingRow(planStepExecId);
           return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
         }
         if (match.matches) {
@@ -3082,10 +3126,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             intentSource: intentRow.source,
           };
 
-          // Won the release: track the intent id so createSessionPostToolUse can
-          // CAS it executing -> completed|failed once the inline tool call
-          // actually finishes (see pendingIntentBySession above).
-          pendingIntentBySession.set(session, { intentId: intent.id, orgId: intentOrgId });
+          // Won the release: the terminal `return` records the intent for this
+          // call, so its own createSessionPostToolUse can CAS it executing ->
+          // completed|failed once the tool actually finishes (releasedIntents).
+          releasedIntent = { intentId: intent.id, orgId: intentOrgId };
           createdIntentId = intent.id;
 
           // The step is now genuinely authorized: the intent was approved, we
@@ -3116,6 +3160,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           } catch (err) {
             console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
           }
+          executingRowId = approvalExec.id;
         } catch (err) {
           console.error('[AI-SDK] Unexpected error in tier-3 durable-intent flow:', toolName, err);
           captureException(err instanceof Error ? err : new Error(String(err)));
@@ -3177,8 +3222,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         // throws ActionIntentTierError('tool_not_tier3') for anything below
         // Tier 3 (services/actionIntents/intentService.ts), which is exactly
         // the regression this restores. No entry goes into
-        // pendingIntentBySession here, so the postToolUse completion-CAS
-        // hook (keyed off that map) stays a no-op for this path.
+        // releasedIntents here, so the postToolUse completion-CAS hook
+        // (keyed off that store) stays a no-op for this path.
         //
         // Bridge to mobile-readable approval_requests row.
         // Mobile clients read from /api/v1/mobile/approvals/* (NEVER from
@@ -3486,9 +3531,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         } catch (err) {
           console.error('[AI-SDK] Failed to update approval status to executing:', approvalExec.id, err);
         }
+        executingRowId = approvalExec.id;
       }
     }
 
+    // #11994: hand this call's row and released intent to its own postToolUse.
+    if (executingRowId) recordExecutingRow(executingRowId);
+    if (releasedIntent) releasedIntents.set(session, { toolUseId, input }, { toolName, ...releasedIntent });
     if (guardrailCheck.tier >= 2) {
       // Reaching here inside the tier>=2 block means the call was explicitly
       // decided: the durable tier-3 intent flow (approver via the approvals
@@ -3682,6 +3731,10 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // call whose audit below writes no approval detail (a refusal echo, a
     // topology turn, a post-hook tier below 2) never leaves it behind.
     const approvalRecord = takeApprovalRecord(session, { toolUseId: sdkToolUseId, input });
+    // #11994: likewise this call's own `executing` ledger row and released
+    // intent, so neither can be left for (or taken by) a sibling call.
+    const executingRow = matchingRecord(executingLedgerRows.take(session, { toolUseId: sdkToolUseId, input }), toolName);
+    const releasedIntent = matchingRecord(releasedIntents.take(session, { toolUseId: sdkToolUseId, input }), toolName);
     // #10411: the echo of a refusal whose ledger row the pre hook already
     // wrote — no second row, and no UPDATE of a same-name sibling's row.
     const refusalLedgered = takeLedgeredRefusal(session, toolName, output, isError, sdkToolUseId);
@@ -3845,7 +3898,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           : undefined);
     if (refusalLedgered) {
       // #10411: the pre hook wrote this refused call's one row.
-    } else if (guardrailCheck.tier < 2) {
+    } else if (guardrailCheck.tier < 2 && !executingRow) {
       try {
         await withDbAccessContext(
           { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -3867,28 +3920,34 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         console.error(`[AI-SDK] Failed to save tool execution record for ${toolName}:`, err instanceof Error ? err.message : err);
       }
     } else {
-      try {
-        await withDbAccessContext(
-          { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-          () =>
-            db.update(aiToolExecutions)
-              .set({
-                status: isError ? 'failed' : 'completed',
-                toolOutput: parsedOutput,
-                errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
-                delegantToolCallId,
-                durationMs,
-                completedAt: new Date(),
-              })
-              .where(and(
-                eq(aiToolExecutions.sessionId, sessionId),
-                eq(aiToolExecutions.toolName, toolName),
-                eq(aiToolExecutions.status, 'executing'),
-              ))
-        );
-      } catch (err) {
-        persistenceError = true;
-        console.error(`[AI-SDK] Failed to update approval execution record for ${toolName}:`, err instanceof Error ? err.message : err);
+      // #11994: close the row the gate left `executing` for THIS call, by id.
+      // A call the gate recorded no row for (the echo of a refused call, whose
+      // row the gate already closed) has nothing to close here — matching by
+      // session + tool name instead wrote that echo, or the first sibling
+      // output to arrive, into another call's row.
+      if (executingRow) {
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db.update(aiToolExecutions)
+                .set({
+                  status: isError ? 'failed' : 'completed',
+                  toolOutput: parsedOutput,
+                  errorMessage: isError ? (typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 1000)) : undefined,
+                  delegantToolCallId,
+                  durationMs,
+                  completedAt: new Date(),
+                })
+                .where(and(
+                  eq(aiToolExecutions.id, executingRow.executionId),
+                  eq(aiToolExecutions.status, 'executing'),
+                ))
+          );
+        } catch (err) {
+          persistenceError = true;
+          console.error(`[AI-SDK] Failed to update approval execution record for ${toolName}:`, err instanceof Error ? err.message : err);
+        }
       }
 
       // 2b-i. Complete the durable intent this inline execution won the
@@ -3899,16 +3958,17 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       // execution is authorized would be wrong, since the tool hasn't run
       // yet at that point. A lost CAS here just means a reaper or the worker
       // already terminalized the intent first; nothing more to do.
-      const pending = pendingIntentBySession.get(session);
-      const pendingIntentId = sealed?.intentId ?? pending?.intentId;
+      // #11994: the intent THIS call released (releasedIntents), never a
+      // sibling's — a per-session slot let any tier>=2 call that finished
+      // first complete another call's intent with its own output.
+      const pendingIntentId = sealed?.intentId ?? releasedIntent?.intentId;
       // #10384: the intent's own org (a cross-org run_script proposal's intent
       // lives in the proposal's org), recorded when the pre hook won the
-      // release. A sealed id the map does not hold falls back to the session
+      // release. A sealed id the record does not hold falls back to the session
       // org: `sealed` comes only from secret-bearing tools, never run_script,
       // and every chat intent other than a cross-org proposal run lives there.
-      const pendingIntentOrgId = pending && pending.intentId === pendingIntentId ? pending.orgId : session.orgId;
+      const pendingIntentOrgId = releasedIntent && releasedIntent.intentId === pendingIntentId ? releasedIntent.orgId : session.orgId;
       if (pendingIntentId) {
-        pendingIntentBySession.delete(session);
         // Secret-bearing tools (Task 1/5) hand back a `sealed` result whose
         // credential is already v3/AAD-sealed for action_intents.result — that
         // MUST be what gets persisted, never the plaintext-bearing parsedOutput
