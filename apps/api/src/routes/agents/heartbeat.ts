@@ -62,6 +62,7 @@ import {
   finishOnedriveHelperConfig,
   buildPatchSourceConfigUpdate,
   buildWarrantyConfigUpdate,
+  buildWakeOnLanConfigUpdate,
   getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
   resolvePinnedUpgradeTargets,
@@ -2826,6 +2827,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
     featureUpdateSettings: RingFeatureUpdates | null;
     warrantySettings: { hpCmslEnabled: boolean } | null;
+    wakeOnLanSettings: { enabled: boolean } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
     workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null;
@@ -2837,6 +2839,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings: null,
     featureUpdateSettings: null,
     warrantySettings: null,
+    wakeOnLanSettings: null,
     hardwareMonitoringSettings: null,
     timeSyncSettings: null,
     workloadInventorySettings: null,
@@ -3016,6 +3019,20 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
+      // Wake-on-LAN readiness (#10838 W02): an error only omits the block so
+      // the agent keeps its current collection state. The builder's no-policy-set
+      // fallback issues a query (a loaded set needs none), so that path runs in
+      // its own transaction: a failure
+      // is caught outside it and cannot poison the request transaction.
+      try {
+        policyConfigs.wakeOnLanSettings = beatPolicySet
+          ? await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts)
+          : await withDbTransaction(() => buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts));
+      } catch (err) {
+        console.error(`[agents] failed to build wake_on_lan config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
       // Time sync (index §F.2): an error only omits time_sync_settings.
       try {
         policyConfigs.timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId, policyOpts);
@@ -3150,6 +3167,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings,
     featureUpdateSettings,
     warrantySettings,
+    wakeOnLanSettings,
     hardwareMonitoringSettings,
     timeSyncSettings,
     workloadInventorySettings,
@@ -3187,6 +3205,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // agent's inner parse accepts either spelling.
   if (warrantySettings) {
     policyConfigUpdate.warranty_settings = { hp_cmsl_enabled: warrantySettings.hpCmslEnabled };
+  }
+  if (wakeOnLanSettings) {
+    policyConfigUpdate.wake_on_lan_settings = {
+      enabled: wakeOnLanSettings.enabled,
+      configure_settings: false,
+      firmware_writes: [],
+    };
   }
   const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;
 

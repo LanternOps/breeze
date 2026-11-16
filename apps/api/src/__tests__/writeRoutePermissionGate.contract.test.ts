@@ -140,6 +140,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/agents/:id/storage-sessions/:sessionId/:op': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/timeStatus.ts
   'PUT /api/v1/agents/:id/time-status': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/wakeStatus.ts
+  'PUT /api/v1/agents/:id/wake-status': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/token.ts
   'POST /api/v1/agents/:id/rotate-token': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   'POST /api/v1/agents/:id/rotate-token/confirm': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',

@@ -69,6 +69,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/updater"
+	"github.com/breeze-rmm/agent/internal/wakeconfig"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workerpool"
 	"github.com/breeze-rmm/agent/pkg/api"
@@ -591,6 +592,10 @@ type Heartbeat struct {
 	hwDisabledSnapshot *hwhealth.Snapshot
 	timeSync           *timeSyncRuntime
 	workloads          *workloadsRuntime
+	// wake runs the read-only Wake-on-LAN readiness collector; wakeApply is a
+	// test seam that replaces wake.ApplySettings.
+	wake      *wakeconfig.Manager
+	wakeApply func(wakeconfig.Settings)
 	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
 	// per-org rate limiter) used to leave posture stale for a full scan
 	// interval, because lastPatchUpdate was stamped at dispatch time whether or
@@ -1368,6 +1373,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
 	h.initWorkloads()
+	h.initWake()
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
@@ -2333,6 +2339,7 @@ func (h *Heartbeat) Start() {
 	h.startContainment()
 	h.startTimeSync()
 	h.startWorkloads()
+	h.startWake()
 	h.startPamReconciliationRetryLoop()
 	// #8971: deliver the user's PAM declines to the server (outbox drain).
 	go h.runPamWithdrawDrain()
@@ -2689,6 +2696,7 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopHardwareHealth()
 	h.stopTimeSync()
 	h.stopWorkloads()
+	h.stopWake()
 	log.Info("draining in-flight commands and inventory goroutines")
 	// Both pools share ctx's deadline: their tasks run concurrently, so
 	// draining them in turn still bounds the whole wait by that deadline.
@@ -2720,6 +2728,7 @@ func (h *Heartbeat) Stop() {
 		h.stopHardwareHealth()
 		h.stopTimeSync()
 		h.stopWorkloads()
+		h.stopWake()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
@@ -2905,6 +2914,11 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 	if endpoint == "workloads" {
 		if upload, ok := payload.(workloadsUpload); ok && upload.ctx != nil {
+			parent = upload.ctx
+		}
+	}
+	if endpoint == "wake-status" {
+		if upload, ok := payload.(wakeUpload); ok && upload.ctx != nil {
 			parent = upload.ctx
 		}
 	}
@@ -3884,6 +3898,10 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	if hasWI {
 		h.applyWorkloadInventoryConfig(wiRaw)
 	}
+
+	// Apply wake_on_lan_settings (read-only readiness collection). Same rule:
+	// above the policy-probe early return. An absent block changes nothing.
+	h.applyWakeOnLanFromUpdate(update)
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
 	if !hasRegistry {

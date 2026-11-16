@@ -16,6 +16,7 @@ import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE } from './unassignedPool/deliveryEligibility';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { captureException } from './sentry';
+import { resolveWakeAvailability, WAKE_LOOKUP_FAILED_AVAILABILITY, type WakeAvailability } from './wakeAvailability';
 
 export type WakeFailureCode =
   | 'TARGET_NOT_FOUND'
@@ -32,7 +33,11 @@ export type WakeFailureCode =
    */
   | 'COMMAND_CANCELLED'
   /** Target or relay is parked in a holding org: lifecycle removal only. */
-  | 'DEVICE_PENDING_ASSIGNMENT';
+  | 'DEVICE_PENDING_ASSIGNMENT'
+  /** The device's Wake-on-LAN policy only shows wake for devices that are ready (#10838). */
+  | 'WAKE_NOT_READY'
+  /** The Wake-on-LAN policy lookup failed; nothing was attempted and nothing is recorded. */
+  | 'WAKE_LOOKUP_FAILED';
 
 export interface WakeSuccess {
   ok: true;
@@ -357,6 +362,10 @@ interface DispatchWakeOptions {
    *  details so ops can group N per-device wake audit entries to a single bulk click.
    *  Undefined for single-device wake (audit row carries no bulkId field). */
   bulkId?: string;
+  /** Operator asked for a test wake: honoured only when the device's availability says testWakeAllowed. */
+  testWake?: boolean;
+  /** Pre-resolved by the bulk caller (one lookup for N devices). */
+  availability?: WakeAvailability;
 }
 
 export async function dispatchWake(
@@ -384,6 +393,20 @@ export async function dispatchWake(
     await recordWakeRefusal({ deviceId: target.id, orgId: target.orgId, requestedBy: userId, bulkId: options.bulkId, code: failure.code });
     return failure;
   };
+
+  const avail = options.availability
+    ?? (await resolveWakeAvailability([target.id])).get(target.id)
+    ?? WAKE_LOOKUP_FAILED_AVAILABILITY;
+  if (avail.state === 'lookup_failed') {
+    return { ok: false, code: 'WAKE_LOOKUP_FAILED', message: 'Could not check this device\'s Wake-on-LAN policy. Try again.' };
+  }
+  if (!avail.show && !(options.testWake && avail.testWakeAllowed)) {
+    return refuse({
+      ok: false,
+      code: 'WAKE_NOT_READY',
+      message: 'This device\'s Wake-on-LAN policy only shows wake for devices that are ready. Check the policy\'s Wake-on-LAN status.',
+    });
+  }
 
   const macs = await resolveTargetMacs(target.id, target.orgId);
   if (macs.length === 0) {

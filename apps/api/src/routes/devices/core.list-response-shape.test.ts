@@ -73,6 +73,10 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/wakeAvailability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/wakeAvailability')>()),
+  resolveWakeAvailability: vi.fn(),
+}));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../services/remoteAccessPolicy', () => ({
   resolveRemoteAccessForDevice: vi.fn().mockResolvedValue({ policyId: null, settings: {} }),
@@ -98,6 +102,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { eq, type SQL } from 'drizzle-orm';
 import { deviceHardware, deviceHardwareHealth, devices, deviceWarranty } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
+import { resolveWakeAvailability, WAKE_LOOKUP_FAILED_AVAILABILITY, type WakeAvailability } from '../../services/wakeAvailability';
 
 function rigDeviceListRows(
   rows: unknown[],
@@ -152,6 +157,38 @@ describe('GET /devices — response shape', () => {
     vi.mocked(db.execute).mockReset();
     app = new Hono();
     app.route('/devices', coreRoutes);
+    vi.mocked(resolveWakeAvailability).mockReset();
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map());
+  });
+
+  it('attaches wakeAvailability to every row with ONE batched lookup per page (#10838)', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const second = '22222222-2222-4222-8222-222222222222';
+    const shown: WakeAvailability = { show: true, mode: 'none', state: 'no_data', testWakeAllowed: false, flaggedTimeouts: false };
+    rigDeviceListRows([{ id: first }, { id: second }]);
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map([[first, shown]]));
+    const res = await app.request('/devices');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].wakeAvailability).toEqual(shown);
+    // No map entry for the second device: fail closed.
+    expect(body.data[1].wakeAvailability).toEqual(WAKE_LOOKUP_FAILED_AVAILABILITY);
+    expect(body.data[1].wakeAvailability.show).toBe(false);
+    expect(resolveWakeAvailability).toHaveBeenCalledTimes(1);
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([first, second]);
+  });
+
+  it('resolves wake availability only for the returned page, not the cursor peek row', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    rigDeviceListRows([{ id: first }, { id: '22222222-2222-4222-8222-222222222222' }]);
+    await app.request('/devices?limit=1');
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([first]);
+  });
+
+  it('hands the resolver an empty id list for an empty page (it returns early, no queries)', async () => {
+    rigDeviceListRows([]);
+    await app.request('/devices');
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([]);
   });
 
   it.each(['', '?includeDisks=false'])('skips disk inventory without opting in (%s)', async (query) => {

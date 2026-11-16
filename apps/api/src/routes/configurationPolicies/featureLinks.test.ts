@@ -1433,6 +1433,57 @@ describe('featureLinks routes', () => {
     });
   });
 
+  describe('wake_on_lan inlineSettings validation (#10838)', () => {
+    const STUB_POLICY_WITH_WOL_LINK = {
+      ...STUB_POLICY,
+      featureLinks: [{ id: LINK_ID, featureType: 'wake_on_lan', inlineSettings: { configureSettings: false, buttonMode: 'always' } }],
+    };
+
+    beforeEach(() => {
+      mfaState.satisfied = true;
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'wake_on_lan' });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'wake_on_lan' });
+    });
+
+    const post = (inlineSettings: unknown) => buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'wake_on_lan', inlineSettings }),
+    });
+
+    it('rejects configureSettings true on ADD', async () => {
+      const res = await post({ configureSettings: true, buttonMode: 'always' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'Invalid wake on LAN settings' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects unknown keys and missing settings on ADD', async () => {
+      expect((await post({ configureSettings: false, buttonMode: 'always', extra: 1 })).status).toBe(400);
+      expect((await post(undefined)).status).toBe(400);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts both modes on ADD', async () => {
+      for (const buttonMode of ['verified', 'always']) {
+        const res = await post({ configureSettings: false, buttonMode });
+        expect(res.status).toBe(201);
+      }
+    });
+
+    it('rejects configureSettings true on UPDATE', async () => {
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY_WITH_WOL_LINK);
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { configureSettings: true, buttonMode: 'verified' } }),
+      });
+      expect(res.status).toBe(400);
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('maintenance inlineSettings validation', () => {
     const STUB_POLICY_WITH_MAINTENANCE_LINK = {
       ...STUB_POLICY,

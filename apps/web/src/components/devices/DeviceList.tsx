@@ -173,6 +173,23 @@ export type OSType = "windows" | "macos" | "linux";
 export type WarrantyStatus = "active" | "expiring" | "expired" | "unknown" | "subscription_active";
 
 /**
+ * Server-decided Wake-on-LAN button availability (#10838). The client only
+ * honours an explicit `show: false`; an absent field (older API) keeps Wake.
+ */
+export type WakeAvailability = {
+  show: boolean;
+  mode: "none" | "verified" | "always" | "unknown";
+  state: string;
+  testWakeAllowed: boolean;
+  flaggedTimeouts: boolean;
+};
+
+/** Wake is offered unless the server said otherwise. */
+export function wakeAllowedByServer(device: { wakeAvailability?: WakeAvailability }): boolean {
+  return device.wakeAvailability?.show !== false;
+}
+
+/**
  * Presentation-level discriminator for the unified Devices list (#1322, #4622).
  * `agent` = an enrolled endpoint running the Go agent (devices table).
  * `network` = a discovered network device (printer/router/switch/…) from
@@ -247,6 +264,8 @@ export type Device = {
   helperVersion?: string | null;
   /** Agent-reported Breeze Assist install problem (#6925); null/absent = none. */
   helperInstallIssue?: string | null;
+  /** Server-decided Wake button availability (#10838); absent on older APIs. */
+  wakeAvailability?: WakeAvailability;
   /**
    * Control-plane URL the agent last heartbeated to (devices.agent_server_url,
    * #2288). The opt-in Server column renders only its hostname. Any current
@@ -3837,7 +3856,7 @@ export default function DeviceList({
                                     <RotateCcw className="h-4 w-4" />
                                     {t("deviceList.reboot")}{" "}
                                   </button>
-                                  {canWake && device.status === "offline" && (
+                                  {canWake && device.status === "offline" && wakeAllowedByServer(device) && (
                                     <button
                                       type="button"
                                       onClick={() => {

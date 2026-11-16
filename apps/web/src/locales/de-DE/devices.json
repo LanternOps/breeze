@@ -2813,6 +2813,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (ein unerwarteter Fehler ist aufgetreten; bitte erneut versuchen)",
       "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben",
       "bulkWakeResult": "An {{sent}} gesendet, {{skipped}} übersprungen",
+      "bulkWakePolicySkipped": "{{count}} wegen der Wake-on-LAN-Richtlinie übersprungen",
+      "bulkWakeAllBlockedByPolicy": "Kein Wake gesendet: {{count}} durch die Wake-on-LAN-Richtlinie blockiert",
+      "bulkWakeLookupFailedSkipped": "{{count}} konnten nicht geprüft werden, bitte erneut versuchen",
+      "bulkWakeAllLookupFailed": "Kein Wake gesendet: {{count}} konnten nicht geprüft werden, bitte erneut versuchen",
       "scriptQueuedOneOffline": "Skript „{{script}}“ für {{hostname}} eingereiht – wird ausgeführt, sobald das Gerät wieder verbunden ist"
     },
     "tryAgain": "Versuchen Sie es erneut",
@@ -2866,7 +2870,9 @@
       "relayDisconnected": "Relay-Verbindung beim Senden getrennt — erneut versuchen",
       "missingTarget": "nicht gefunden oder Zugriff verweigert",
       "removed": "entfernt",
-      "invalidRelay": "mit ungültiger Relay-Auswahl"
+      "invalidRelay": "mit ungültiger Relay-Auswahl",
+      "policyNotReady": "durch ihre Wake-on-LAN-Richtlinie blockiert (nicht bereit)",
+      "policyLookupFailed": "deren Wake-on-LAN-Richtlinie nicht geprüft werden konnte — erneut versuchen"
     }
   },
   "filterAddDropdown": {

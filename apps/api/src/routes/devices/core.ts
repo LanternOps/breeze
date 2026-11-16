@@ -6,6 +6,7 @@ import { deviceSearchCondition } from './searchFilter';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { getRedis } from '../../services/redis';
+import { resolveWakeAvailability, WAKE_LOOKUP_FAILED_AVAILABILITY } from '../../services/wakeAvailability';
 import { onboardingServerUrl } from '../../services/onboardingServerUrl';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { CLEARED_AGENT_CREDENTIALS } from '../../services/agentCredentialHashes';
@@ -1266,6 +1267,11 @@ coreRoutes.get(
       }
     }
 
+    // #10838: one batched, never-throwing availability lookup for the page
+    // (the server decides whether Wake shows). Deliberately after the per-page
+    // reads above and not inside a Promise.all: it opens its own transaction.
+    const wakeAvailabilityById = await resolveWakeAvailability(deviceIds);
+
     // Transform to include hardware and latest metrics as nested objects
     const data = deviceList.map(d => {
       const latestMetrics = latestMetricsByDevice.get(d.id);
@@ -1326,6 +1332,7 @@ coreRoutes.get(
         activeVpns: d.activeVpns ?? null,
         linkGroupId: d.linkGroupId ?? null,
         linkGroupRole: d.linkGroupRole ?? null,
+        wakeAvailability: wakeAvailabilityById.get(d.id) ?? WAKE_LOOKUP_FAILED_AVAILABILITY,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
@@ -1593,6 +1600,10 @@ coreRoutes.get(
     // not see (the key is the device id alone). Never throws.
     const promptHost = await readPromptHostObservation(deviceId);
 
+    // #10838: the server decides whether Wake shows; a missing entry fails closed.
+    const wakeAvailability = (await resolveWakeAvailability([deviceId])).get(deviceId)
+      ?? WAKE_LOOKUP_FAILED_AVAILABILITY;
+
     return c.json({
       ...(await projectPublicDeviceForCaller(device, auth)),
       // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
@@ -1602,6 +1613,7 @@ coreRoutes.get(
       // watchdog_install_* columns are not in PUBLIC_DEVICE_FIELDS.
       watchdogInstall: deriveWatchdogInstallBanner(device),
       promptHost,
+      wakeAvailability,
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,

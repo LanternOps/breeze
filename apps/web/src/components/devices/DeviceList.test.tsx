@@ -2004,3 +2004,28 @@ vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
   hasPermission: () => true,
 }));
+
+// #10838 W02 — the row menu honours the server's `wakeAvailability.show`.
+describe('DeviceList — row menu wake availability (#10838)', () => {
+  const wakeItem = () => screen.queryByRole('button', { name: /^wake$/i });
+  const open = () => fireEvent.click(screen.getByRole('button', { name: 'Device actions' }));
+  const off = (extra: Partial<Device>): Device => ({ ...baseDevice, status: 'offline', ...extra });
+
+  it('hides Wake when show is false', () => {
+    render(<DeviceList devices={[off({ wakeAvailability: { show: false, mode: 'verified', state: 'not_configured', testWakeAllowed: false, flaggedTimeouts: false } })]} onAction={vi.fn()} />);
+    open();
+    expect(wakeItem()).toBeNull();
+  });
+
+  it('shows Wake for an offline device with no policy (show true)', () => {
+    render(<DeviceList devices={[off({ wakeAvailability: { show: true, mode: 'none', state: 'no_data', testWakeAllowed: false, flaggedTimeouts: false } })]} onAction={vi.fn()} />);
+    open();
+    expect(wakeItem()).not.toBeNull();
+  });
+
+  it('shows Wake when the API predates wakeAvailability', () => {
+    render(<DeviceList devices={[off({})]} onAction={vi.fn()} />);
+    open();
+    expect(wakeItem()).not.toBeNull();
+  });
+});

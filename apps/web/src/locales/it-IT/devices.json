@@ -2817,6 +2817,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (si è verificato un errore imprevisto; riprova)",
       "deviceMovedToSite": "{{hostname}} spostato in un nuovo sito",
       "bulkWakeResult": "Inviato a {{sent}}, saltati {{skipped}}",
+      "bulkWakePolicySkipped": "{{count}} saltati per la policy Wake-on-LAN",
+      "bulkWakeAllBlockedByPolicy": "Nessun wake inviato: {{count}} bloccati dalla policy Wake-on-LAN",
+      "bulkWakeLookupFailedSkipped": "{{count}} non è stato possibile verificarli, riprova",
+      "bulkWakeAllLookupFailed": "Nessun wake inviato: {{count}} non è stato possibile verificarli, riprova",
       "scriptQueuedOneOffline": "Script \"{{script}}\" in coda per {{hostname}} — verrà eseguito quando il dispositivo si riconnette"
     },
     "tryAgain": "Prova di nuovo",
@@ -2866,7 +2870,9 @@
       "relayDisconnected": "relay disconnesso durante l’invio — riprovare",
       "missingTarget": "non trovati o accesso negato",
       "removed": "rimossi",
-      "invalidRelay": "con selezione del relay non valida"
+      "invalidRelay": "con selezione del relay non valida",
+      "policyNotReady": "bloccati dalla loro policy Wake-on-LAN (non pronti)",
+      "policyLookupFailed": "la cui policy Wake-on-LAN non è stato possibile verificare — riprovare"
     }
   },
   "filterAddDropdown": {

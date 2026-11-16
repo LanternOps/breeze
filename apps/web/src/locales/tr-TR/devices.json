@@ -2817,6 +2817,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı",
       "bulkWakeResult": "{{sent}} cihaza gönderildi, {{skipped}} cihaz atlandı",
+      "bulkWakePolicySkipped": "{{count}} cihaz Wake-on-LAN ilkesi nedeniyle atlandı",
+      "bulkWakeAllBlockedByPolicy": "Uyandırma gönderilmedi: {{count}} cihaz Wake-on-LAN ilkesi tarafından engellendi",
+      "bulkWakeLookupFailedSkipped": "{{count}} cihaz denetlenemedi, tekrar deneyin",
+      "bulkWakeAllLookupFailed": "Uyandırma gönderilmedi: {{count}} cihaz denetlenemedi, tekrar deneyin",
       "scriptQueuedOneOffline": "\"{{script}}\" betiği {{hostname}} için kuyruğa alındı — cihaz yeniden bağlandığında çalışacak"
     },
     "tryAgain": "Tekrar deneyin",
@@ -2866,7 +2870,9 @@
       "relayDisconnected": "gönderim sırasında aktarıcı bağlantısı kesildi — yeniden deneyin",
       "missingTarget": "bulunamadı veya erişim reddedildi",
       "removed": "kaldırıldı",
-      "invalidRelay": "aktarıcı seçimi geçersiz"
+      "invalidRelay": "aktarıcı seçimi geçersiz",
+      "policyNotReady": "Wake-on-LAN ilkesi tarafından engellendi (hazır değil)",
+      "policyLookupFailed": "Wake-on-LAN ilkesi denetlenemedi — yeniden deneyin"
     }
   },
   "filterAddDropdown": {

@@ -79,6 +79,7 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/eventlogs': 'deny',
   'PUT /:id/hardware-health': 'deny',
   'PUT /:id/time-status': 'deny',
+  'PUT /:id/wake-status': 'deny',
   // #11065: a parked device is never sent a vendor update run.
   'PUT /:id/oem-updates/verification': 'deny',
   'PUT /:id/workloads': 'deny',

@@ -2818,6 +2818,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (an unexpected error occurred; try again)",
       "deviceMovedToSite": "{{hostname}} moved to a new site",
       "bulkWakeResult": "Sent to {{sent}}, skipped {{skipped}}",
+      "bulkWakePolicySkipped": "{{count}} skipped by Wake-on-LAN policy",
+      "bulkWakeAllBlockedByPolicy": "No wake sent: {{count}} blocked by Wake-on-LAN policy",
+      "bulkWakeLookupFailedSkipped": "{{count}} could not be checked, try again",
+      "bulkWakeAllLookupFailed": "No wake sent: {{count}} could not be checked, try again",
       "scriptQueuedOneOffline": "Script \"{{script}}\" queued for {{hostname}} — runs when the device reconnects"
     },
     "tryAgain": "Try again",
@@ -2866,7 +2870,9 @@
       "relayDisconnected": "had relay disconnect mid-dispatch — retry",
       "missingTarget": "not found or access denied",
       "removed": "removed",
-      "invalidRelay": "with invalid relay override"
+      "invalidRelay": "with invalid relay override",
+      "policyNotReady": "blocked by their Wake-on-LAN policy (not ready)",
+      "policyLookupFailed": "whose Wake-on-LAN policy could not be checked — retry"
     }
   },
   "filterAddDropdown": {

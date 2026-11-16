@@ -5,6 +5,7 @@ import { featureLinkRoutes } from './featureLinks';
 import { assignmentRoutes } from './assignments';
 import { resolutionRoutes } from './resolution';
 import { patchJobRoutes } from './patchJobs';
+import { wakeStatusRoutes } from './wakeStatus';
 
 export const configPolicyRoutes = new Hono();
 
@@ -15,4 +16,5 @@ configPolicyRoutes.route('/', resolutionRoutes);   // /effective/:deviceId
 configPolicyRoutes.route('/', assignmentRoutes);     // /assignments/target + /:id/assignments
 configPolicyRoutes.route('/', patchJobRoutes);       // /:id/patch-job, /:id/patch-settings, /:id/resolve-patch-config/:deviceId
 configPolicyRoutes.route('/', featureLinkRoutes);    // /:id/features
+configPolicyRoutes.route('/', wakeStatusRoutes);    // /:id/wake-status (WOL tab panel)
 configPolicyRoutes.route('/', crudRoutes);           // / and /:id
