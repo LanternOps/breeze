@@ -8938,5 +8938,44 @@
       "notHeld": "Este lote ya no está esperando una decisión.",
       "enforcementOff": "El desaprovisionamiento está en modo solo informe en este servidor, así que no hay nada que aplicar."
     }
+  },
+  "portalScim": {
+    "title": "Aprovisionamiento de Microsoft Entra (SCIM)",
+    "description": "Permita que el inquilino de Entra del cliente cree cuentas del portal para las personas asignadas a la aplicación Breeze Portal y las deshabilite cuando se vayan.",
+    "loading": "Cargando el aprovisionamiento…",
+    "needsTenant": "Compruebe arriba el inquilino de Microsoft de esta organización antes de configurar el aprovisionamiento.",
+    "tenantUrl": "URL de inquilino",
+    "noBaseUrl": "La dirección pública de la API no está configurada, así que no se puede mostrar la URL de inquilino. Pida a su administrador que configure PUBLIC_API_URL.",
+    "counts": "{{provisioned}} aprovisionadas · {{deactivated}} deshabilitadas por el directorio",
+    "secretOnce": "Copie este token ahora y péguelo en el campo Token secreto de la aplicación de Entra. No se volverá a mostrar.",
+    "secretToken": "Token secreto",
+    "secretDone": "Ya lo copié",
+    "lastUsed": "Último uso {{date}}",
+    "neverUsed": "Aún no se ha usado",
+    "notWorking": "No funciona: el inquilino comprobado de esta organización cambió",
+    "revoke": "Revocar",
+    "label": "Nombre del token",
+    "create": "Crear token de aprovisionamiento",
+    "createSubmit": "Crear",
+    "cancel": "Cancelar",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "copyFailed": "No se pudo copiar al portapapeles.",
+    "revokeConfirm": {
+      "title": "¿Revocar este token de aprovisionamiento?",
+      "message": "Entra deja de aprovisionar con \"{{label}}\" de inmediato. Las personas ya aprovisionadas conservan sus cuentas."
+    },
+    "toasts": {
+      "created": "Token de aprovisionamiento creado.",
+      "revoked": "Token de aprovisionamiento revocado."
+    },
+    "errors": {
+      "load": "No se pudo cargar el aprovisionamiento.",
+      "create": "No se pudo crear el token de aprovisionamiento.",
+      "revoke": "No se pudo revocar el token de aprovisionamiento.",
+      "tenantNotProven": "Compruebe el inquilino de Microsoft de esta organización antes de crear un token de aprovisionamiento.",
+      "limit": "Esta organización ya tiene dos tokens de aprovisionamiento activos. Revoque uno primero.",
+      "notFound": "Ese token de aprovisionamiento ya no existe."
+    }
   }
 }

@@ -1,0 +1,105 @@
+---
+title: Microsoft Entra Provisioning (SCIM) for the Customer Portal
+description: How a customer's Microsoft Entra tenant creates Customer Portal accounts for the people assigned to the Breeze Portal app, and disables them when they leave, over SCIM 2.0.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+With SCIM provisioning, the customer's Microsoft Entra tenant manages who has a Customer Portal account. When the customer assigns a person to the **Breeze Portal** enterprise app, Entra creates their portal account. When the customer disables the person, removes them from the app, or deletes them, Entra turns off their Microsoft sign-in at once. If they have no other way to sign in, their portal account is disabled too, and their browser and Office add-in sessions end on their next request.
+
+SCIM provisions **users only**. Groups are not supported: scope who is provisioned by assigning people (or groups of people) to the enterprise app in Entra.
+
+## Before you start
+
+- The organization's Microsoft tenant must be **proven**. See [Microsoft sign-in for the Customer Portal](/features/portal-microsoft-sign-in/).
+- People sign in to the portal with Microsoft, so turn on **Microsoft** on the organization's **Sign-in & registration** card. Provisioning works without it, but provisioned people cannot sign in to the browser portal until it is on.
+- Your deployment's public API address (`PUBLIC_API_URL`) must be set, so Breeze can show the Tenant URL.
+
+## Create a provisioning token
+
+<Steps>
+
+1. Open **Organization › Customer Portal › Sign-in & registration** and find **Microsoft Entra provisioning (SCIM)**.
+2. Select **Create provisioning token**, give it a name, and select **Create**.
+3. Copy the token. **It is shown once.** Breeze stores only a hash of it and cannot show it again.
+
+</Steps>
+
+The token works only for this organization, and only while the organization's proven tenant is the one it was created for:
+
+- If the tenant proof is removed, the token stops working. It works again if the same tenant is proven again.
+- If a different tenant is proven, the token never works again for this organization. Revoke it and create a new one.
+
+Creating and revoking tokens needs permission to change the organization and multi-factor authentication. Each action is recorded in the audit log.
+
+## Set up the Entra enterprise app
+
+The customer's Entra administrator does this in the customer's tenant.
+
+<Steps>
+
+1. In the Microsoft Entra admin center, create an enterprise application: **Enterprise applications › New application › Create your own application**, name it **Breeze Portal**, and choose **Integrate any other application you don't find in the gallery (Non-gallery)**. If the tenant already has the Breeze Portal app from Microsoft sign-in, use that one.
+2. Open **Provisioning**, set **Provisioning Mode** to **Automatic**, and enter:
+   - **Tenant URL**: the Tenant URL shown on the panel (it ends in `/api/v1/scim/portal/v2`).
+   - **Secret Token**: the token you copied.
+3. Select **Test Connection**. It should succeed.
+4. Under **Mappings**, turn off **Provision Microsoft Entra ID Groups**.
+5. Open **Provision Microsoft Entra ID Users** and change the attribute mappings:
+   - Map **objectId** to **externalId**. (The default mapping uses `mailNickname`; Breeze refuses any `externalId` that is not the Entra object ID.)
+   - Make **externalId** the **only** matching attribute (matching precedence 1), and remove `userName` as a matching attribute.
+   - Keep **userPrincipalName → userName**, **displayName → displayName**, **givenName → name.givenName**, **surname → name.familyName** and the **active** mapping.
+   - You can remove the other mappings. Breeze ignores them.
+6. Under **Settings**, set **Scope** to **Sync only assigned users and groups**.
+7. Assign the people (or groups of people) who should have portal access to the app under **Users and groups**, then turn **Provisioning Status** on.
+
+</Steps>
+
+<Aside type="caution">
+Matching on `externalId` only matters. If `userName` were a matching attribute too, a user principal name that was reused by a new person could match the previous person's portal account.
+</Aside>
+
+## What each Entra action does
+
+| In Entra | In Breeze |
+|---|---|
+| Person assigned to the app | An active portal account with browser access is created for them. It has no password; they sign in with Microsoft. |
+| Person's name or user principal name changes | The name is updated. For accounts SCIM created, the login address follows the user principal name. |
+| Person disabled, or removed from the app | Their Microsoft sign-in is turned off. If they have no other way to sign in, the account is disabled. Sessions end on the next request. |
+| Person re-enabled, or assigned again | Their Microsoft sign-in is turned back on, and an account SCIM disabled is re-enabled. |
+| Person deleted | Same as disabled. The portal account is kept, so their ticket history is kept. |
+
+Breeze never deletes a portal account because of SCIM.
+
+### What SCIM never overrides
+
+- An account **your team disabled** stays disabled. SCIM cannot re-enable it.
+- A sign-in turned off by [directory deprovisioning](/features/portal-directory-deprovisioning/) stays off until your team restores it.
+- **Restore** on the portal users list clears SCIM's block too. If the person is still disabled in Entra, Entra turns their sign-in off again on its next cycle.
+
+### People who already have a portal account
+
+SCIM never links a person to an existing account by email address. What happens depends on the account:
+
+- **The person already signs in with Microsoft** (for example from the Office add-in). SCIM takes over that account. If it had no browser access, it gets browser access. Its login address does not change.
+- **The person has a password account at the same address.** Entra reports a provisioning error for that person. To move them to SCIM, send them a **Microsoft sign-in invite** from the portal users list. Once they accept it, the next provisioning cycle takes over the account.
+
+## Rotate a token
+
+<Steps>
+
+1. Create a second token. An organization can have two active tokens.
+2. Paste it into the Entra app's **Secret Token** field and select **Test Connection**.
+3. When the first token's **Last used** time stops moving, revoke it.
+
+</Steps>
+
+## Troubleshooting
+
+| Entra shows | Why |
+|---|---|
+| Test Connection fails with 401 | The token is wrong or revoked, the organization's tenant proof was removed or changed, or the organization is not active. |
+| `externalId must be the Microsoft Entra objectId` | The attribute mapping still uses `mailNickname`. Map **objectId → externalId**. |
+| 409 for one person | They already have a portal account at that address (send a Microsoft sign-in invite), or their Entra object is already provisioned into another organization. |
+| 429 | Too many requests. Entra backs off and retries on its own. |
+
+Every SCIM change is recorded in the organization's audit log with the token that made it.

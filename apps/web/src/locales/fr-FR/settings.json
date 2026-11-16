@@ -8938,5 +8938,44 @@
       "notHeld": "Ce lot n’attend plus de décision.",
       "enforcementOff": "Le déprovisionnement est en mode rapport uniquement sur ce serveur, il n’y a donc rien à appliquer."
     }
+  },
+  "portalScim": {
+    "title": "Provisionnement Microsoft Entra (SCIM)",
+    "description": "Laissez le tenant Entra du client créer des comptes du portail pour les personnes affectées à l’application Breeze Portal, et les désactiver à leur départ.",
+    "loading": "Chargement du provisionnement…",
+    "needsTenant": "Prouvez ci-dessus le tenant Microsoft de cette organisation avant de configurer le provisionnement.",
+    "tenantUrl": "URL du locataire",
+    "noBaseUrl": "L’adresse publique de l’API n’est pas configurée, l’URL du tenant ne peut donc pas être affichée. Demandez à votre administrateur de définir PUBLIC_API_URL.",
+    "counts": "{{provisioned}} provisionnés · {{deactivated}} désactivés par l’annuaire",
+    "secretOnce": "Copiez ce jeton maintenant et collez-le dans le champ Jeton secret de l’application Entra. Il ne sera plus affiché.",
+    "secretToken": "Jeton secret",
+    "secretDone": "Je l’ai copié",
+    "lastUsed": "Dernière utilisation {{date}}",
+    "neverUsed": "Pas encore utilisé",
+    "notWorking": "Ne fonctionne pas : le tenant prouvé de cette organisation a changé",
+    "revoke": "Révoquer",
+    "label": "Nom du jeton",
+    "create": "Créer un jeton de provisionnement",
+    "createSubmit": "Créer",
+    "cancel": "Annuler",
+    "copy": "Copier",
+    "copied": "Copié",
+    "copyFailed": "Impossible de copier dans le presse-papiers.",
+    "revokeConfirm": {
+      "title": "Révoquer ce jeton de provisionnement ?",
+      "message": "Entra cesse immédiatement de provisionner avec « {{label}} ». Les personnes déjà provisionnées conservent leur compte."
+    },
+    "toasts": {
+      "created": "Jeton de provisionnement créé.",
+      "revoked": "Jeton de provisionnement révoqué."
+    },
+    "errors": {
+      "load": "Impossible de charger le provisionnement.",
+      "create": "Impossible de créer le jeton de provisionnement.",
+      "revoke": "Impossible de révoquer le jeton de provisionnement.",
+      "tenantNotProven": "Prouvez le tenant Microsoft de cette organisation avant de créer un jeton de provisionnement.",
+      "limit": "Cette organisation a déjà deux jetons de provisionnement actifs. Révoquez-en un d’abord.",
+      "notFound": "Ce jeton de provisionnement n’existe plus."
+    }
   }
 }
