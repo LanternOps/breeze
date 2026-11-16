@@ -37,7 +37,7 @@ An analysis that Wisp launches covers one of three scopes:
 
 A launch that names no scope is refused.
 
-A site or organization is expanded to its active devices when the run starts, and that list is fixed: a device added afterwards is not read. If the Wisp grant reaches only some sites, the list holds only devices in those sites. The list is limited to 1000 devices by default (the `analysisMaxFrameDevices` agent limit, 50 to 5000), and a larger one is refused: scope the analysis to a site instead.
+A site or organization is expanded to its active devices when the run starts, and that list is fixed: a device added afterwards is not read. If the Wisp grant, or the organization's membership in it, is limited to certain sites, the launch is refused instead of getting a narrower list. The list is limited to 1000 devices by default (the `analysisMaxFrameDevices` agent limit, 50 to 5000), and a larger one is refused: scope the analysis to a site instead.
 
 The datasets a run may export are also fixed when it starts, from what the Wisp grant's owner may read at that moment. Security-category event logs also need `devices:execute`; without it they are left out of the export, and the run is told so.
 
