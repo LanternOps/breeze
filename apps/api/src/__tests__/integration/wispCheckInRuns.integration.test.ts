@@ -368,9 +368,11 @@ describe('firing a run check-in', () => {
     _resetCheckInTriggerSweepForTests();
     expect(await reconcileCheckInTriggers(new Date())).toMatchObject({ fired: 1 });
     expect(await rowOf(row.id)).toMatchObject({ status: 'running', fireReason: 'event' });
-    const call = h.enqueueAssessment.mock.calls[0]![0] as { reason: { evidence: Record<string, unknown> }; dedupeKey: string };
+    const call = h.enqueueAssessment.mock.calls[0]![0] as { reason: { evidence: Record<string, unknown>; subject?: unknown }; dedupeKey: string };
     expect(call.dedupeKey).toBe(`wisp-check-in-${row.id}`);
     expect(call.reason.evidence).toMatchObject({ kind: 'device_online', status: 'online' });
+    // #11978: the run is told what the check-in waits on.
+    expect(call.reason.subject).toEqual({ kind: 'device_online', id: fx.device.id });
     _resetCheckInTriggerSweepForTests();
     await reconcileCheckInTriggers(new Date());
     expect(h.enqueueAssessment).toHaveBeenCalledTimes(1);
@@ -444,8 +446,9 @@ describe('firing a run check-in', () => {
     await withSystemDbAccessContext(() => db.update(devices).set({ status: 'online', lastSeenAt: new Date() }).where(eq(devices.id, fx.device.id)));
     const row = await scheduleRun(fx, new Date(), { trigger: { kind: 'device_online', subjectId: fx.device.id } });
     expect(row.status).toBe('running');
-    const call = h.enqueueAssessment.mock.calls[0]![0] as { reason: { evidence: Record<string, unknown> } };
+    const call = h.enqueueAssessment.mock.calls[0]![0] as { reason: { evidence: Record<string, unknown>; subject?: unknown } };
     expect(call.reason.evidence).toMatchObject({ kind: 'device_online', status: 'online' });
+    expect(call.reason.subject).toEqual({ kind: 'device_online', id: fx.device.id });
     // Admitted ahead of its deadline: the deadline job is removed.
     expect(h.removeCheckInJob).toHaveBeenCalledWith(row.id);
   });

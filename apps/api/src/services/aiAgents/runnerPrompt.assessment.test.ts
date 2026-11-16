@@ -4,7 +4,7 @@
  * mocks, no DB.
  */
 import { describe, expect, it } from 'vitest';
-import type { Concern } from '@breeze/shared';
+import { WISP_CHECK_IN_TRIGGER_EVENTS, type Concern } from '@breeze/shared';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import {
   AGENT_PROMPT_AUTHORITY_DISCLAIMER,
@@ -16,6 +16,7 @@ import {
   type AgentRunPromptContext,
 } from './runnerPrompt';
 import { ASSESSMENT_ANOMALIES_NOT_READ_LINE, ASSESSMENT_NO_ANOMALIES_LINE } from './assessmentPrompt';
+import { assessmentToolAllowlist } from './assessmentProfile';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000a1';
 const CONCERN_ID = '00000000-0000-4000-8000-0000000000a2';
@@ -389,6 +390,34 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
       expect(line).toContain('Look at WS-01');
       expect(p.split('\n').filter((l) => l.startsWith('## Mode:'))).toHaveLength(1);
       expect(p).not.toContain('check_in_evidence');
+    });
+
+    // #11978: a check-in on an AI agent run told the run neither which run nor how to read it.
+    describe('trigger subject (#11978)', () => {
+      const SUBJECT_ID = '00000000-0000-4000-8000-0000000000d4';
+      const subjectLine = (p: string) => p.split('\n').find((l) => l.startsWith('What the check-in waits on:'));
+
+      it('a run_settled check-in names the run and the tool that reads it', () => {
+        const p = buildAssessmentTaskPrompt(ctx(checkIn({ evidence: null, subject: { kind: 'run_settled', id: SUBJECT_ID } })));
+        const line = subjectLine(p);
+        expect(line).toContain(`AI agent run ${SUBJECT_ID}`);
+        expect(line).toContain('get_ai_agent_run');
+        expect(p.indexOf('Follow-up the user asked for:')).toBeLessThan(p.indexOf('What the check-in waits on:'));
+      });
+
+      it('no subject, no line', () => {
+        expect(subjectLine(buildAssessmentTaskPrompt(ctx(checkIn())))).toBeUndefined();
+      });
+
+      it.each(WISP_CHECK_IN_TRIGGER_EVENTS)('%s: every tool the line names is one the run has', (kind) => {
+        const subject = { kind, id: SUBJECT_ID };
+        const line = subjectLine(buildAssessmentTaskPrompt(ctx(checkIn({ subject }))));
+        expect(line).toContain(SUBJECT_ID);
+        const tools = new Set(assessmentToolAllowlist([], { wisp: { reason: { kind: 'check_in', subject } } }).map((e) => e.split(':')[0]));
+        for (const [name] of line!.matchAll(/\b(?:get|query|list|manage)_[a-z_]+/g)) {
+          expect(tools.has(name), `${kind} line names ${name}, which the run lacks`).toBe(true);
+        }
+      });
     });
   });
 
