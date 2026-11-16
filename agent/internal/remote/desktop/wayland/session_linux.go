@@ -4,13 +4,11 @@ package wayland
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/draw"
-	"image/jpeg"
 	"io"
 	"log/slog"
 	"os"
@@ -19,9 +17,50 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
+	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 )
 
 const shareWait = 60 * time.Second
+
+// ErrShareStopped is returned once a delivered stream ends because the user
+// stopped sharing, the screen locked, or the capture pipeline exited cleanly.
+var ErrShareStopped = errors.New("the user stopped sharing")
+
+// logGate drops repeated lines so a noisy helper cannot flood the agent log.
+type logGate struct {
+	mu         sync.Mutex
+	next       time.Time
+	suppressed int
+}
+
+func (g *logGate) allow() (emit bool, skipped int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	if now.Before(g.next) {
+		g.suppressed++
+		return false, 0
+	}
+	skipped = g.suppressed
+	g.suppressed = 0
+	g.next = now.Add(2 * time.Second)
+	return true, skipped
+}
+
+var (
+	stderrGate logGate
+	jpegGate   logGate
+)
+
+func trimLog(s string) string {
+	const max = 300
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
 
 // Capturer is the Linux Wayland screen capturer. Capture blocks until the
 // user allows the portal dialog, then returns decoded frames.
@@ -103,10 +142,10 @@ func (c *Capturer) Capture() (*image.RGBA, error) {
 	src := c.p.frame
 	fail := c.p.fail
 	c.p.mu.Unlock()
+	if fail != nil {
+		return nil, fail
+	}
 	if src == nil {
-		if fail != nil {
-			return nil, fail
-		}
 		return nil, errors.New("wayland capture produced no frame")
 	}
 	dst := image.NewRGBA(src.Rect)
@@ -137,13 +176,24 @@ func (c *Capturer) GetScreenBounds() (int, int, error) {
 	}
 	c.p.mu.Lock()
 	defer c.p.mu.Unlock()
+	if c.p.fail != nil {
+		return 0, 0, c.p.fail
+	}
 	if c.p.frame == nil {
-		if c.p.fail != nil {
-			return 0, 0, c.p.fail
-		}
 		return 0, 0, errors.New("wayland capture produced no frame")
 	}
 	return c.p.frame.Rect.Dx(), c.p.frame.Rect.Dy(), nil
+}
+
+// LastCaptureError is the terminal failure Capture is now returning, so the
+// no-video watchdog can show it to the technician instead of a generic stall.
+func (c *Capturer) LastCaptureError() error {
+	if c == nil || c.p == nil {
+		return nil
+	}
+	c.p.mu.Lock()
+	defer c.p.mu.Unlock()
+	return c.p.fail
 }
 
 func (p *pipe) waitReady() error {
@@ -178,7 +228,7 @@ func (p *pipe) stop() {
 		_ = p.cmd.Process.Kill()
 	}
 	p.mu.Lock()
-	if p.fail == nil && p.frame == nil {
+	if p.fail == nil {
 		p.fail = errors.New("wayland capture stopped")
 	}
 	p.mu.Unlock()
@@ -207,7 +257,7 @@ func startPipe() (*pipe, error) {
 	if err != nil {
 		bin = "/usr/bin/systemd-run"
 	}
-	cmd := exec.Command(bin,
+	cmd := procspawn.Command(bin,
 		"--user", "-M", sess.name+"@",
 		"--pipe", "--wait", "--collect",
 		"--", exe, "wayland-capture",
@@ -233,20 +283,23 @@ func startPipe() (*pipe, error) {
 		out:   bufio.NewWriter(stdin),
 		ready: make(chan struct{}),
 	}
-	go p.readStderr(stderr)
-	go p.readStdout(stdout)
+	// Wait closes the pipes. Calling it while these readers are still going
+	// drops the helper's final error. The process exit delivers EOF on its
+	// own, so the readers finish first and Wait only reaps the status.
+	var readers sync.WaitGroup
+	readers.Add(2)
 	go func() {
+		defer readers.Done()
+		p.readStderr(stderr)
+	}()
+	go func() {
+		defer readers.Done()
+		p.readStdout(stdout)
+	}()
+	go func() {
+		readers.Wait()
 		err := cmd.Wait()
-		p.dead.Store(true)
-		p.mu.Lock()
-		if p.frame == nil && p.fail == nil {
-			if err != nil {
-				p.fail = fmt.Errorf("wayland capture helper exited: %w", err)
-			} else {
-				p.fail = errors.New("wayland capture helper exited")
-			}
-		}
-		p.mu.Unlock()
+		p.noteExit(err)
 		p.signal()
 	}()
 	return p, nil
@@ -254,15 +307,21 @@ func startPipe() (*pipe, error) {
 
 func (p *pipe) readStderr(r io.Reader) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 4096), 1<<20)
+	sc.Buffer(make([]byte, 4096), 256<<10)
 	for sc.Scan() {
-		line := sc.Text()
-		slog.Info("wayland capture", "stderr", line)
+		line := trimLog(sc.Text())
 		p.mu.Lock()
-		if p.fail == nil && (strings.Contains(line, "wayland-capture:") || strings.HasPrefix(line, "Failed")) {
+		if p.detail == "" && (strings.Contains(line, "wayland-capture:") || strings.HasPrefix(line, "Failed")) {
 			p.detail = line
 		}
 		p.mu.Unlock()
+		if ok, skipped := stderrGate.allow(); ok {
+			if skipped > 0 {
+				slog.Info("wayland capture", "stderr", line, "suppressed", skipped)
+			} else {
+				slog.Info("wayland capture", "stderr", line)
+			}
+		}
 	}
 }
 
@@ -271,36 +330,38 @@ func (p *pipe) readStdout(r io.Reader) {
 	for {
 		kind, payload, err := sr.Next()
 		if err != nil {
-			if p.frame == nil {
+			p.mu.Lock()
+			haveFrame := p.frame != nil
+			p.mu.Unlock()
+			if !haveFrame {
 				time.Sleep(150 * time.Millisecond)
 			}
-			p.mu.Lock()
-			if p.frame == nil && p.fail == nil {
-				if p.detail != "" {
-					p.fail = errors.New(p.detail)
-				} else {
-					p.fail = fmt.Errorf("wayland capture ended: %v", err)
-				}
-			}
-			p.mu.Unlock()
+			p.noteStreamEnd(err)
 			p.signal()
 			return
 		}
 		if kind == msgError {
+			p.dead.Store(true)
 			p.mu.Lock()
-			p.fail = errors.New(string(payload))
+			if p.fail == nil {
+				p.fail = errors.New(trimLog(string(payload)))
+			}
 			p.mu.Unlock()
 			p.signal()
 			return
 		}
-		img, err := jpeg.Decode(bytes.NewReader(payload))
+		rgba, err := decodeFrame(payload)
 		if err != nil {
-			slog.Warn("wayland capture: bad jpeg", "error", err.Error(), "bytes", len(payload))
+			if ok, skipped := jpegGate.allow(); ok {
+				if skipped > 0 {
+					slog.Warn("wayland capture: bad jpeg", "error", err.Error(), "bytes", len(payload), "suppressed", skipped)
+				} else {
+					slog.Warn("wayland capture: bad jpeg", "error", err.Error(), "bytes", len(payload))
+				}
+			}
 			continue
 		}
-		b := img.Bounds()
-		rgba := image.NewRGBA(b)
-		draw.Draw(rgba, b, img, b.Min, draw.Src)
+		b := rgba.Bounds()
 		p.mu.Lock()
 		first := p.frame == nil
 		p.frame = rgba
@@ -310,6 +371,59 @@ func (p *pipe) readStdout(r io.Reader) {
 			p.signal()
 		}
 	}
+}
+
+// noteStreamEnd records a terminal failure as soon as the helper's stdout
+// closes, including when a frame was already delivered. A later noteExit may
+// replace ErrShareStopped with a non-zero helper status.
+func (p *pipe) noteStreamEnd(readErr error) {
+	p.dead.Store(true)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.fail != nil || p.stopped {
+		return
+	}
+	if p.frame == nil && p.detail != "" {
+		p.fail = errors.New(p.detail)
+		return
+	}
+	if p.frame != nil && (readErr == nil || errors.Is(readErr, io.EOF)) {
+		p.fail = ErrShareStopped
+		return
+	}
+	if readErr != nil {
+		p.fail = fmt.Errorf("wayland capture ended: %v", readErr)
+		return
+	}
+	p.fail = errors.New("wayland capture helper exited")
+}
+
+func (p *pipe) noteExit(err error) {
+	p.dead.Store(true)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped {
+		if p.fail == nil {
+			p.fail = errors.New("wayland capture stopped")
+		}
+		return
+	}
+	if err != nil && (p.fail == nil || errors.Is(p.fail, ErrShareStopped)) {
+		p.fail = fmt.Errorf("wayland capture helper exited: %w", err)
+		return
+	}
+	if p.fail != nil {
+		return
+	}
+	if p.frame == nil && p.detail != "" {
+		p.fail = errors.New(p.detail)
+		return
+	}
+	if p.frame != nil {
+		p.fail = ErrShareStopped
+		return
+	}
+	p.fail = errors.New("wayland capture helper exited")
 }
 
 func (p *pipe) send(c inputCmd) error {
@@ -331,14 +445,6 @@ func currentPipe() *pipe {
 		return nil
 	}
 	return live
-}
-
-// Active reports that input should go to the portal session rather than X11.
-func Active() bool {
-	if currentPipe() != nil {
-		return true
-	}
-	return IsGraphical()
 }
 
 func currentSend(c inputCmd) error {
@@ -379,17 +485,19 @@ func Scroll(delta, deltaX int) error {
 	return nil
 }
 
-// Key injects one evdev key down or up.
+// Key injects one key down or up as an X keysym. The portal method is
+// NotifyKeyboardKeysym, so this accepts the same names as the X11 path,
+// including shifted and non-ASCII characters.
 func Key(name string, down bool) error {
-	code, ok := Keycode(name)
-	if !ok {
+	sym, ok := x11.KeysymForName(name)
+	if !ok || sym == 0 {
 		return fmt.Errorf("unknown key %q", name)
 	}
 	state := uint32(0)
 	if down {
 		state = 1
 	}
-	return currentSend(inputCmd{Op: "key", Code: code, State: state})
+	return currentSend(inputCmd{Op: "key", Keysym: sym, State: state})
 }
 
 // KeyPress holds modifiers, taps key, then releases the modifiers.

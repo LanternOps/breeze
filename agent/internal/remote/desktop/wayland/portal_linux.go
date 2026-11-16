@@ -4,6 +4,7 @@ package wayland
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -60,8 +61,8 @@ func (s *portalSession) input(c inputCmd) {
 		err = s.bus.Call("org.freedesktop.portal.RemoteDesktop.NotifyPointerButton", 0,
 			s.session, opts, c.Button, c.State).Err
 	case "key":
-		err = s.bus.Call("org.freedesktop.portal.RemoteDesktop.NotifyKeyboardKeycode", 0,
-			s.session, opts, c.Code, c.State).Err
+		err = s.bus.Call("org.freedesktop.portal.RemoteDesktop.NotifyKeyboardKeysym", 0,
+			s.session, opts, c.Keysym, c.State).Err
 	case "scroll":
 		err = s.bus.Call("org.freedesktop.portal.RemoteDesktop.NotifyPointerAxisDiscrete", 0,
 			s.session, opts, c.Axis, c.Steps).Err
@@ -188,7 +189,7 @@ func handshake(ctx context.Context) (*portalSession, error) {
 		})
 	if err != nil {
 		s.Close()
-		return nil, fmt.Errorf("Start: %w", err)
+		return nil, fmt.Errorf("start: %w", err)
 	}
 	node, err := firstStream(started)
 	if err != nil {
@@ -296,7 +297,7 @@ func objectPathResult(results map[string]dbus.Variant, key string) (dbus.ObjectP
 func firstStream(results map[string]dbus.Variant) (uint32, error) {
 	v, ok := results["streams"]
 	if !ok {
-		return 0, fmt.Errorf("Start returned no streams")
+		return 0, errors.New("start returned no streams")
 	}
 	var streams []struct {
 		NodeID uint32
@@ -306,7 +307,7 @@ func firstStream(results map[string]dbus.Variant) (uint32, error) {
 		return 0, fmt.Errorf("decode streams: %w (%T)", err, v.Value())
 	}
 	if len(streams) == 0 || streams[0].NodeID == 0 {
-		return 0, fmt.Errorf("Start returned an empty stream list")
+		return 0, errors.New("start returned an empty stream list")
 	}
 	return streams[0].NodeID, nil
 }

@@ -3,12 +3,16 @@
 package wayland
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type userSession struct {
@@ -26,11 +30,7 @@ var sessionCache struct {
 }
 
 func loginctl(args ...string) ([]byte, error) {
-	bin, err := exec.LookPath("loginctl")
-	if err != nil {
-		bin = "/usr/bin/loginctl"
-	}
-	return exec.Command(bin, args...).Output()
+	return procspawn.Command(lookBin("loginctl"), args...).Output()
 }
 
 func lookupSession() (userSession, error) {
@@ -121,4 +121,90 @@ func gstInstalled() bool {
 	}
 	_, err := os.Stat("/usr/bin/gst-launch-1.0")
 	return err == nil
+}
+
+func lookBin(name string) string {
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return "/usr/bin/" + name
+}
+
+// CaptureSupported reports that the active Wayland session can use this
+// capture path. It does not open a portal session. A Wayland login whose
+// compositor has no RemoteDesktop portal, whose gstreamer has no pipewiresrc,
+// or whose systemd-run lacks --pipe/--collect is not capturable.
+func CaptureSupported() bool {
+	s, err := cachedSession()
+	if err != nil || !s.wayland || !s.active || s.name == "" || !gstInstalled() {
+		return false
+	}
+	return probeReady(s.name)
+}
+
+var probeCache struct {
+	mu   sync.Mutex
+	at   time.Time
+	user string
+	ok   bool
+}
+
+func probeReady(user string) bool {
+	probeCache.mu.Lock()
+	if probeCache.user == user && time.Since(probeCache.at) < 2*time.Minute {
+		ok := probeCache.ok
+		probeCache.mu.Unlock()
+		return ok
+	}
+	probeCache.mu.Unlock()
+
+	sysOK := systemdPipe()
+	pwOK := pipewireSrc()
+	portalOK := sysOK && pwOK && remoteDesktopPortal(user)
+	ok := sysOK && pwOK && portalOK
+	if !ok {
+		slog.Info("wayland capture unavailable",
+			"systemd_pipe", sysOK, "pipewiresrc", pwOK, "remote_desktop", portalOK)
+	}
+	probeCache.mu.Lock()
+	probeCache.at = time.Now()
+	probeCache.user = user
+	probeCache.ok = ok
+	probeCache.mu.Unlock()
+	return ok
+}
+
+func systemdHelpSupportsPipe(help string) bool {
+	return strings.Contains(help, "--pipe") && strings.Contains(help, "--collect")
+}
+
+func systemdPipe() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := procspawn.CommandContext(ctx, lookBin("systemd-run"), "--help").CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return false
+	}
+	return systemdHelpSupportsPipe(string(out))
+}
+
+func pipewireSrc() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := procspawn.CommandContext(ctx, lookBin("gst-inspect-1.0"), "pipewiresrc").Run()
+	return err == nil
+}
+
+func remoteDesktopPortal(user string) bool {
+	if !validUser(user) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := procspawn.CommandContext(ctx, lookBin("busctl"),
+		"--user", "-M", user+"@", "introspect",
+		"org.freedesktop.portal.Desktop",
+		"/org/freedesktop/portal/desktop",
+		"org.freedesktop.portal.RemoteDesktop").CombinedOutput()
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }

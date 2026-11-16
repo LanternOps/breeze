@@ -22,7 +22,7 @@ type inputCmd struct {
 	State  uint32  `json:"state,omitempty"`
 	Axis   uint32  `json:"axis,omitempty"`
 	Steps  int32   `json:"steps,omitempty"`
-	Code   uint32  `json:"code,omitempty"`
+	Keysym uint32  `json:"keysym,omitempty"`
 }
 
 // RunHelper is `breeze-agent wayland-capture`. systemd-run starts it inside
@@ -59,8 +59,9 @@ func runHelper(out *bufio.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
+	//procspawn:exempt gst-launch runs in the user-session helper, not the agent cgroup
 	cmd := exec.CommandContext(ctx, gst, "-q",
 		"pipewiresrc", "fd=3", fmt.Sprintf("path=%d", session.node), "do-timestamp=true",
 		"!", "videoconvert",
@@ -73,10 +74,10 @@ func runHelper(out *bufio.Writer) error {
 	cmd.Stderr = os.Stderr
 	cmd.ExtraFiles = []*os.File{session.pw}
 	if err := cmd.Start(); err != nil {
-		writer.Close()
+		_ = writer.Close()
 		return fmt.Errorf("gst-launch: %w", err)
 	}
-	writer.Close()
+	_ = writer.Close()
 	// The child inherited a dup. Closing our copy must not close the child's.
 	if session.pw != nil {
 		_ = session.pw.Close()

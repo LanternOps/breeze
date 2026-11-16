@@ -1,29 +1,21 @@
 package wayland
 
-import "testing"
+import (
+	"testing"
 
-func TestKeycode(t *testing.T) {
-	cases := []struct {
-		name string
-		code uint32
-	}{
-		{"a", 30},
-		{"A", 30},
-		{"q", 16},
-		{"enter", 28},
-		{"super", 125},
-		{"win", 125},
-		{"Left", 105},
-		{"f5", 63},
-		{" ", 57},
-	}
-	for _, tc := range cases {
-		got, ok := Keycode(tc.name)
-		if !ok || got != tc.code {
-			t.Errorf("%q: got %d ok=%v, want %d", tc.name, got, ok, tc.code)
+	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
+)
+
+// The portal path sends X keysyms, the same names the X11 injector accepts,
+// including shifted and non-ASCII characters the evdev table could not name.
+func TestKeysymMatchesX11(t *testing.T) {
+	for _, name := range []string{"!", "@", "?", ":", "a", "A", "enter", "é"} {
+		sym, ok := x11.KeysymForName(name)
+		if !ok || sym == 0 {
+			t.Fatalf("%q did not map (%d, %v)", name, sym, ok)
 		}
 	}
-	if _, ok := Keycode("not-a-key"); ok {
+	if _, ok := x11.KeysymForName("not-a-key"); ok {
 		t.Fatal("unknown key should not map")
 	}
 }

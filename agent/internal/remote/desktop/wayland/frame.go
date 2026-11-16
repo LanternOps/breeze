@@ -4,6 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"image"
+	"image/draw"
+	"image/jpeg"
 	"io"
 )
 
@@ -14,7 +18,36 @@ const (
 	msgFrame   uint32 = 0xB712E001
 	msgError   uint32 = 0xB712E002
 	maxPayload        = 12 << 20
+
+	// maxFramePixels bounds the decoded frame accepted from the in-session
+	// helper. maxPayload bounds compressed bytes, not pixels: image/jpeg
+	// allocates from the SOF header before it validates the scan, so a
+	// 25-byte header can ask for a 4 GiB frame. 64 megapixels covers an
+	// 8K desktop.
+	maxFramePixels int64 = 64 << 20
 )
+
+// decodeFrame checks the declared size before image/jpeg allocates it.
+func decodeFrame(payload []byte) (*image.RGBA, error) {
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxFramePixels {
+		return nil, fmt.Errorf("jpeg dimensions %dx%d", cfg.Width, cfg.Height)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	b := img.Bounds()
+	if int64(b.Dx())*int64(b.Dy()) > maxFramePixels {
+		return nil, fmt.Errorf("jpeg dimensions %dx%d", b.Dx(), b.Dy())
+	}
+	rgba := image.NewRGBA(b)
+	draw.Draw(rgba, b, img, b.Min, draw.Src)
+	return rgba, nil
+}
 
 func writeMsg(w *bufio.Writer, kind uint32, payload []byte) error {
 	var hdr [8]byte
