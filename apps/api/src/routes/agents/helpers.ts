@@ -23,6 +23,7 @@ import {
   partners,
   deviceGroupMemberships,
   configPolicyAssignments,
+  configPolicyComplianceRules,
   configurationPolicies,
   configPolicyEffectiveFeatureLinks,
   configPolicyFeatureLinks,
@@ -485,10 +486,50 @@ export async function buildPolicyProbeConfigUpdate(
       )
     );
 
+  // #11976: configuration-policy compliance rules are evaluated against the
+  // same collected state (evaluateDeviceComplianceFromConfigPolicy reads
+  // device_registry_state / device_config_state), so the agent has to collect
+  // their values too. Without this, a configuration-policy registry check
+  // reports "Registry value not found" for a value that exists, forever.
+  //
+  // The list is a per-org SUPERSET, like the automation-policy half above:
+  // every active policy the org can own (its own + its partner's partner-wide),
+  // with no assignment targeting. A probe on a device the rule does not target
+  // costs one read-only registry/file read; per-device targeting would break the
+  // per-org cache. The effective-links view carries links inherited from a
+  // parent policy, exactly as resolveComplianceAssignmentForDevice reads them.
+  const configPolicyOwnership = partnerId
+    ? or(
+        eq(configurationPolicies.orgId, orgId),
+        and(isNull(configurationPolicies.orgId), eq(configurationPolicies.partnerId, partnerId))
+      )
+    : eq(configurationPolicies.orgId, orgId);
+
+  const complianceRows = await db
+    .select({ rules: configPolicyComplianceRules.rules })
+    .from(configPolicyComplianceRules)
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyComplianceRules.featureLinkId, configPolicyEffectiveFeatureLinks.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'compliance')
+      )
+    )
+    .innerJoin(
+      configurationPolicies,
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id)
+    )
+    .where(
+      and(
+        configPolicyOwnership,
+        eq(configurationPolicies.status, 'active')
+      )
+    );
+
   const registryByKey = new Map<string, PolicyRegistryProbeUpdate>();
   const configByKey = new Map<string, PolicyConfigProbeUpdate>();
 
-  for (const row of policyRows) {
+  for (const row of [...policyRows, ...complianceRows]) {
     const probes = derivePolicyStateProbesFromRules(row.rules);
     for (const probe of probes.registry) {
       const key = `${probe.registry_path.toLowerCase()}::${probe.value_name.toLowerCase()}`;
