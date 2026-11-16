@@ -34,7 +34,7 @@
  * unreadable Redis set gives the results again rather than drop them.
  */
 import { and, count, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
-import { analysisOutcomeSchema, type AiRunResultArtifactRef, type AnalysisOutcome } from '@breeze/shared';
+import { analysisOutcomeSchema, type AiAgentRunProfile, type AiRunResultArtifactRef, type AnalysisOutcome } from '@breeze/shared';
 import { AI_SESSION_MAX_AGE_MS } from '@breeze/shared/constants';
 import { aiWorkspaceEnabled, wispEnabled } from '../../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -54,10 +54,10 @@ export const MAX_SPECIALIST_RESULTS_PER_TURN = 5;
 /** How many settled runs one read considers, newest first. */
 const CANDIDATE_LIMIT = 50;
 
-const TROUBLESHOOTING_PROFILE = 'device_troubleshooting';
-const ANALYSIS_PROFILE = 'analysis';
+const TROUBLESHOOTING_PROFILE = 'device_troubleshooting' satisfies AiAgentRunProfile;
+const ANALYSIS_PROFILE = 'analysis' satisfies AiAgentRunProfile;
 /** `analysis` hand-offs exist only while the workspace is on (#11845). */
-const deliveredProfiles = (): string[] =>
+const deliveredProfiles = (): AiAgentRunProfile[] =>
   (aiWorkspaceEnabled() ? [TROUBLESHOOTING_PROFILE, ANALYSIS_PROFILE] : [TROUBLESHOOTING_PROFILE]);
 const SETTLED_STATUSES = ['completed', 'failed', 'awaiting_approval', 'cancelled'] as const;
 type SettledStatus = (typeof SETTLED_STATUSES)[number];
