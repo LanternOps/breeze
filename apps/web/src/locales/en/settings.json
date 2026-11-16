@@ -595,7 +595,7 @@
       "verify": "Verify",
       "verifyQueued": "Model check queued",
       "verifyFailed": "Couldn't queue the model check.",
-      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens).",
+      "verifyGatewayHint": "Runs a tool-calling test against your endpoint. See the cost note above.",
       "remove": "Remove model",
       "removeTitle": "Remove this model?",
       "removeMessage": "“{{model}}” will be deleted from this connection. Past usage and cost history is kept. You can add it again later.",

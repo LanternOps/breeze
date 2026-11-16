@@ -595,7 +595,7 @@
       "verify": "Verifica",
       "verifyQueued": "Verifica del modello in coda",
       "verifyFailed": "Impossibile mettere in coda la verifica del modello.",
-      "verifyGatewayHint": "Esegue un breve test di chiamata degli strumenti sul tuo endpoint (usa alcune migliaia di token).",
+      "verifyGatewayHint": "Esegue un test di chiamata degli strumenti sul tuo endpoint. Vedi la nota sui costi qui sopra.",
       "remove": "Rimuovi modello",
       "removeTitle": "Rimuovere questo modello?",
       "removeMessage": "«{{model}}» verrà eliminato da questa connessione. La cronologia di utilizzo e costi viene conservata. Potrai aggiungerlo di nuovo in seguito.",
