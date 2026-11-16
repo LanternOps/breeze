@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   EXPORT_DATASET_REQUIREMENTS,
   LEGACY_EXPORT_GRANTS,
+  effectiveExportGrants,
   resolveExportGrants,
   withheldSensitiveGates,
 } from './aiToolsExportPermissions';
@@ -70,5 +71,24 @@ describe('withheldSensitiveGates', () => {
   it('deduplicates and ignores names that are not datasets', () => {
     expect(withheldSensitiveGates(['event_logs', 'event_logs', 'not_a_dataset'], LEGACY_EXPORT_GRANTS))
       .toEqual(['security_events']);
+  });
+});
+
+describe('effectiveExportGrants', () => {
+  it('absent (a pre-W02 run) is the legacy seven with no gate, as a fresh copy', () => {
+    const g = effectiveExportGrants(undefined);
+    expect(g).toEqual({ datasets: SEVEN, sensitiveGates: [] });
+    g.datasets.push('widened');
+    expect(LEGACY_EXPORT_GRANTS.datasets).toEqual(SEVEN);
+  });
+  it('a well-formed grant is returned as is', () => {
+    expect(effectiveExportGrants({ datasets: ['metrics'], sensitiveGates: ['security_events'] }))
+      .toEqual({ datasets: ['metrics'], sensitiveGates: ['security_events'] });
+  });
+  it.each([
+    null, 'event_logs', [], { datasets: 'metrics', sensitiveGates: [] }, { datasets: ['metrics'] },
+    { datasets: [1], sensitiveGates: [] }, { datasets: ['metrics'], sensitiveGates: ['root'] },
+  ])('a malformed grant %j permits nothing (never the legacy set)', (value) => {
+    expect(effectiveExportGrants(value)).toEqual({ datasets: [], sensitiveGates: [] });
   });
 });

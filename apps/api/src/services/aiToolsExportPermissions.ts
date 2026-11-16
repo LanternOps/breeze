@@ -106,3 +106,26 @@ export function withheldSensitiveGates(datasets: readonly string[], grants: AiRu
   }
   return [...withheld].sort();
 }
+
+const KNOWN_GATES: ReadonlySet<string> = new Set<AnalysisSensitiveGate>(['security_events', 'user_account_changes']);
+
+/**
+ * The export authority a handler enforces for one call, from the run's frozen
+ * `ToolExecutionContext.exportGrants`:
+ * - absent (a run admitted before W02) → `LEGACY_EXPORT_GRANTS`;
+ * - well-formed → a copy of it;
+ * - present but malformed → NOTHING permitted. A corrupt frozen grant fails
+ *   closed; it never falls back to the legacy set, which could be wider.
+ */
+export function effectiveExportGrants(value: unknown): AiRunExportGrants {
+  if (value === undefined) return { datasets: [...LEGACY_EXPORT_GRANTS.datasets], sensitiveGates: [] };
+  const v = value as Partial<Record<keyof AiRunExportGrants, unknown>> | null;
+  if (
+    v === null || typeof v !== 'object' || Array.isArray(v)
+    || !Array.isArray(v.datasets) || !v.datasets.every((d) => typeof d === 'string')
+    || !Array.isArray(v.sensitiveGates) || !v.sensitiveGates.every((g) => typeof g === 'string' && KNOWN_GATES.has(g))
+  ) {
+    return { datasets: [], sensitiveGates: [] };
+  }
+  return { datasets: [...(v.datasets as string[])], sensitiveGates: [...(v.sensitiveGates as AnalysisSensitiveGate[])] };
+}

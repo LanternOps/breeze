@@ -312,6 +312,9 @@ vi.mock('../workspace/workspaceService', async (importOriginal) => {
 import { __resetWorkspaceRegistry, getWorkspaceForRun } from '../workspace/workspaceRegistry';
 
 import { executeAgentRun } from './runLoop';
+import { deviceSiteDenied } from '../aiToolsSiteScope';
+import type { AuthContext } from '../../middleware/auth';
+import type { ToolExecutionContext } from '../toolExecutionContext';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import { ANALYSIS_TOOL_ALLOWLIST } from './analysisProfile';
 
@@ -395,6 +398,8 @@ function seedRows(options: {
 }
 
 const hooks: Hooks = {};
+/** Every pre-hook verdict the scripted query saw, in order (W02). */
+const verdicts: unknown[] = [];
 let lastQueryOptions: Record<string, unknown> | undefined;
 const closeMock = vi.fn();
 /** Deep snapshots of every `transitionRunStatus` patch, taken at call time. */
@@ -423,6 +428,7 @@ function scriptQuery(script: {
     const generator = (async function* () {
       for (const call of script.toolCalls ?? []) {
         const verdict = await hooks.pre!(call.tool, call.input);
+        verdicts.push(verdict);
         if (verdict.allowed) {
           await hooks.post!(call.tool, call.input, '{"status":"recorded"}', false, 5);
         } else {
@@ -440,6 +446,7 @@ function scriptQuery(script: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  verdicts.length = 0;
   __resetWorkspaceRegistry();
   reserveAiBudget.mockResolvedValue({
     kind: 'unlimited', reservationId: '00000000-0000-4000-8000-0000000000e1',
@@ -638,5 +645,33 @@ describe('sandbox lifecycle + compute settlement (execution plane W04)', () => {
     await executeAgentRun(RUN_ID);
 
     expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 0, 'platform');
+  });
+});
+
+describe('frozen export grants reach the tool context (W02 analysis sessions)', () => {
+  it('hands the frozen export grants to every allowed tool call', async () => {
+    const grants = { datasets: ['event_logs'], sensitiveGates: [] as never[] };
+    seedRows({ effective: policy({ toolAllowlist: ['export_dataset'] }), stagedInputs: { ...STAGED_INPUTS, exportGrants: grants } });
+    scriptQuery({ toolCalls: [{ tool: 'export_dataset', input: { dataset: 'event_logs' } }] });
+    await executeAgentRun(RUN_ID);
+    expect(verdicts[0], JSON.stringify(verdicts[0])).toMatchObject({ allowed: true });
+    expect((verdicts[0] as { context?: ToolExecutionContext }).context?.exportGrants).toEqual(grants);
+  });
+
+  it('a run admitted before W02 (no exportGrants on staged_inputs) passes none', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['export_dataset'] }) });
+    scriptQuery({ toolCalls: [{ tool: 'export_dataset', input: { dataset: 'event_logs' } }] });
+    await executeAgentRun(RUN_ID);
+    expect(verdicts[0]).toMatchObject({ allowed: true });
+    expect((verdicts[0] as { context?: ToolExecutionContext }).context).not.toHaveProperty('exportGrants');
+  });
+
+  it('an org-frame run is pinned to its frozen list: a device added after admission is denied', async () => {
+    // Spec §7. Passes on arrival: pins existing behaviour so the frame change cannot regress it.
+    seedRows({ stagedInputs: { ...STAGED_INPUTS, scope: { kind: 'org', siteId: null, deviceCount: 2 } } });
+    await executeAgentRun(RUN_ID);
+    const runAuth = hooks.getAuth!() as AuthContext;
+    expect(runAuth.allowedDeviceIds).toEqual([DEVICE_A, DEVICE_B]);
+    expect(deviceSiteDenied(runAuth, 'any-site', '00000000-0000-4000-8000-0000000000ff')).toBe(true);
   });
 });

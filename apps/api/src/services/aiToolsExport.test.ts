@@ -215,6 +215,56 @@ describe('export_dataset', () => {
     expect(captured).toContain('a\nb"');
   });
 
+  const SEVEN = ['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields'];
+
+  it('refuses a dataset outside the frozen export grants, before any pager or artifact', async () => {
+    const parsed = JSON.parse(await getTool().handler({ dataset: 'metrics' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: ['event_logs'], sensitiveGates: [] } }) as string);
+    expect(parsed).toMatchObject({ error: 'dataset_not_permitted', dataset: 'metrics', permitted: ['event_logs'] });
+    expect(createPager).not.toHaveBeenCalled();
+    expect(createArtifact).not.toHaveBeenCalled();
+  });
+
+  it('an empty frozen dataset set refuses every dataset', async () => {
+    for (const dataset of SEVEN) {
+      const parsed = JSON.parse(await getTool().handler({ dataset }, auth,
+        { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: [], sensitiveGates: [] } }) as string);
+      expect(parsed.error).toBe('dataset_not_permitted');
+    }
+    expect(createPager).not.toHaveBeenCalled();
+  });
+
+  it('malformed frozen grants fail closed (nothing permitted), never fall back to legacy', async () => {
+    const parsed = JSON.parse(await getTool().handler({ dataset: 'metrics' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: 'metrics' } as never }) as string);
+    expect(parsed).toMatchObject({ error: 'dataset_not_permitted', permitted: [] });
+    expect(createPager).not.toHaveBeenCalled();
+  });
+
+  it('no frozen grants (a run admitted before W02): the original seven, legacy grants on the request, security rows reported withheld', async () => {
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const parsed = JSON.parse(await getTool().handler({ dataset: 'event_logs' }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 }) as string);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.sensitiveRowsWithheld).toEqual(['security_events']);
+    expect(createPager.mock.calls[0]![0]).toMatchObject({ exportGrants: { datasets: SEVEN, sensitiveGates: [] }, notes: [] });
+  });
+
+  it('copies adapter notes into the result; omits notes and sensitiveRowsWithheld when there are none', async () => {
+    createPager.mockImplementationOnce(async (r: { notes: string[] }) => { r.notes.push('a note'); return pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]); });
+    const grants = { datasets: SEVEN, sensitiveGates: ['security_events' as const] };
+    const withNote = JSON.parse(await getTool().handler({ dataset: 'event_logs' }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: grants }) as string);
+    expect(withNote.notes).toEqual(['a note']);
+    expect(withNote.sensitiveRowsWithheld).toBeUndefined();
+    createPager.mockResolvedValueOnce(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const plain = JSON.parse(await getTool().handler({ dataset: 'metrics' }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: grants }) as string);
+    expect(plain).not.toHaveProperty('notes');
+    expect(plain).not.toHaveProperty('sensitiveRowsWithheld');
+  });
+
+  it('states that per-device datasets may truncate on large device sets', () => {
+    expect(getTool().definition.description).toContain('may truncate on large device sets');
+  });
+
   it('rejects an unknown dataset', async () => {
     const tool = getTool();
     const parsed = JSON.parse(await tool.handler({ dataset: 'passwords' }, auth));

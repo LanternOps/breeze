@@ -16,9 +16,9 @@ import { and, desc, gt, lt, or, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { agentLogs, deviceMetrics, devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import type { AiRunExportGrants } from '../db/schema/aiAgents';
 import { isAutomationPrincipal } from '../middleware/principalKind';
 import { searchFleetLogs } from './logSearch';
-import { canReadSensitiveEventLogCategory } from './eventLogSensitivity';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
 import { redactAgentLogRow } from './logRedaction';
 import { readCatalog, readDeviceFindings, readFindingSoftware, normStatus } from './aiToolsVulnerability';
@@ -77,6 +77,20 @@ export interface DatasetRequest {
   runTargets: string[] | null;
   siteId: string | null;
   pageSize: number;
+  /**
+   * Wisp analysis sessions W02 — the run's frozen export grants: always the
+   * effective set, never absent (`LEGACY_EXPORT_GRANTS` for a run admitted
+   * before W02). The handler has already refused a dataset outside
+   * `datasets`; an adapter reads `sensitiveGates` to decide which rows a
+   * sensitive gate withholds.
+   */
+  exportGrants: AiRunExportGrants;
+  /**
+   * Plain sentences an adapter appends for the run's model (rows withheld by a
+   * gate, a filter it could not apply). Created empty by the handler for each
+   * call and copied into the tool result as `notes` when non-empty.
+   */
+  notes: string[];
 }
 
 export interface DatasetAdapter {
@@ -205,7 +219,13 @@ const eventLogsAdapter: DatasetAdapter = {
     // it would let a site-restricted tech export the whole org's logs.
     const allowedDeviceIds = await scopedDeviceIds(req);
     if (allowedDeviceIds != null && allowedDeviceIds.length === 0) return emptyPager;
-    const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(req.auth);
+    // W02: the security category reads the run's FROZEN `security_events`
+    // gate. `export_dataset` runs only under an `ai_agent` run principal, which
+    // has no role, so the RBAC check this replaces always answered false.
+    const canReadSensitiveCategory = req.exportGrants.sensitiveGates.includes('security_events');
+    if (!canReadSensitiveCategory) {
+      req.notes.push('Security-category event logs are not in this export: this run does not hold the security_events gate (devices:execute).');
+    }
 
     return async (cursor) => {
       const result = await searchFleetLogs(req.auth, {
