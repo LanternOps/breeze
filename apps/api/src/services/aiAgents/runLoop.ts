@@ -41,6 +41,7 @@
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { unknownToolArgsHooks } from '../aiSdkToolArgGuard';
+import { SDK_PERMISSION_MODE } from '../llm/sdkChildEnvGuards';
 import type {
   AgentRunVerdict,
   AiAgentKind,
@@ -3002,6 +3003,9 @@ async function driveSdkLoop(
               // and `summary`/`outcome` carry what a reviewer needs (wave 6).
               persistSession: false,
               settingSources: [],
+              // #11817: never the SDK's provider-dependent default; after the
+              // queryOptions spread so nothing spread in can override it.
+              permissionMode: SDK_PERMISSION_MODE,
             },
           });
 

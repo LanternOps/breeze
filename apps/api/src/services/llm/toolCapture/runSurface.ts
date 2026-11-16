@@ -39,7 +39,7 @@ import { buildOutcomeSdkTools } from '../../aiAgents/outcomeTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames, createBreezeMcpServer, type PreToolUseCallback } from '../../aiAgentSdkTools';
 import { createScriptBuilderMcpServer, SCRIPT_BUILDER_MCP_TOOL_NAMES } from '../../scriptBuilderTools';
 import { createStreamObserver, type StreamObservation } from './streamObserver';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from '../sdkChildEnvGuards';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS, SDK_PERMISSION_MODE } from '../sdkChildEnvGuards';
 import { resolveToolSearchPolicy, type ToolSearchOverride, type ToolSearchPolicy } from '../../aiToolSearchPolicy';
 import { buildTenantSdkTools, tenantMcpToolNames } from '../../toolSources/sdkBridge';
 import type { TenantToolDescriptor } from '../../toolSources/resolver';
@@ -228,6 +228,8 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
         resume: opts.resume,
         persistSession: true,
         settingSources: [],
+        // #11817: the production mode, so a capture sees the same allow/deny decisions.
+        permissionMode: SDK_PERMISSION_MODE,
         // #7587, #7599: same per-model thinking/effort as production chat (agentSdkWireOptions).
         ...agentSdkWireOptions(opts.model),
         abortController: abort,

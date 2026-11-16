@@ -44,7 +44,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { createAnthropicClient } from '../aiModels/connectionFactory';
 import { createIsolatedSdkCwd, type IsolatedSdkCwd } from '../aiModels/sdkChildEnv';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from './sdkChildEnvGuards';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS, SDK_PERMISSION_MODE } from './sdkChildEnvGuards';
 
 /**
  * Bump this whenever the harness gets meaningfully stricter — verification
@@ -515,6 +515,8 @@ async function runSdkSubprocessStage(input: FidelityCheckInput, childEnv?: Recor
           }),
         },
         settingSources: [],
+        // #11817: the production mode, so the round-trip sees production's allow/deny decisions.
+        permissionMode: SDK_PERMISSION_MODE,
         persistSession: false,
         // #7587, #7599: same per-model thinking/effort as production chat
         // (agentSdkWireOptions), keyed on the catalog wire id (an id the

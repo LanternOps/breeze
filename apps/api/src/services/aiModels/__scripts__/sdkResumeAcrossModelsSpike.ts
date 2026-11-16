@@ -39,7 +39,7 @@ import {
   type SDKMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from '../../llm/sdkChildEnvGuards';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS, SDK_PERMISSION_MODE } from '../../llm/sdkChildEnvGuards';
 import { SEEDED_PLATFORM_MODELS } from '../__fixtures__/seededPlatformModels';
 
 // ---------------------------------------------------------------- proxy
@@ -338,6 +338,8 @@ function sessionOptions(ctx: Ctx, model: string, thinking: ThinkingOpts, extra: 
     includePartialMessages: true,
     persistSession: true,
     settingSources: [],
+    // #11817: production's mode, so a resume is judged as production would run it.
+    permissionMode: SDK_PERMISSION_MODE,
     env: {
       PATH: process.env.PATH ?? '',
       HOME: process.env.HOME ?? '',

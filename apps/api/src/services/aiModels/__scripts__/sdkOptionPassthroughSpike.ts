@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from '../../llm/sdkChildEnvGuards';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS, SDK_PERMISSION_MODE } from '../../llm/sdkChildEnvGuards';
 import { THINKING_DISPLAY_UPDATES_BETA } from '../wireParams';
 
 const BREEZE_GUARDED_VARIANT = 'breeze-guarded-unset-display';
@@ -200,6 +200,8 @@ async function runVariant(baseUrl: string, configDir: string, variant: Variant):
         maxTurns: 1,
         tools: [],
         settingSources: [],
+        // #11817: production's mode, so the wire captured is production's.
+        permissionMode: SDK_PERMISSION_MODE,
         persistSession: false,
         abortController,
         env: {

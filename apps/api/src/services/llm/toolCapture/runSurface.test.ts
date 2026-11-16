@@ -21,7 +21,7 @@ import { buildHelperSystemPrompt } from '../../helperAiAgent';
 import { getHelperAllowedTools } from '../../helperToolFilter';
 import { buildAgentRunSystemPrompt } from '../../aiAgents/runnerPrompt';
 import { HELPER_CAPTURE_FIXTURE, AGENT_CAPTURE_FIXTURE } from './promptFixtures';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from '../sdkChildEnvGuards';
+import { SDK_CHILD_HOST_CONTEXT_GUARDS, SDK_PERMISSION_MODE } from '../sdkChildEnvGuards';
 
 /** An async generator standing in for the SDK's `query()` return value. */
 async function* messages(items: unknown[]): AsyncGenerator<unknown> {
@@ -170,10 +170,13 @@ describe('runSurfaceCapture', () => {
         resume: 'prior-session',
         systemPrompt: composeStaticSystemPrompt(listChatSurfaceToolNames()),
         settingSources: [],
+        // #11817: the production mode; ToolSearch runs under it without an allow entry.
+        permissionMode: SDK_PERMISSION_MODE,
         thinking: { type: 'disabled' },
         persistSession: true,
       }),
     });
+    expect(queryMock.mock.lastCall![0].options.allowedTools).not.toContain('ToolSearch');
   });
 
   it('sends adaptive thinking + effort medium for a current model, never disabled (#7587)', async () => {
