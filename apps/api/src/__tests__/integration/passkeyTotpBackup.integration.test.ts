@@ -89,9 +89,24 @@ function deferred() {
   return { promise, resolve };
 }
 
-/** Resolves once `expected` backends are waiting (directly or transitively) on `blockerPid`. */
-async function waitForBlockedBackends(monitor: Sql, blockerPid: number, expected: number): Promise<void> {
-  const deadline = Date.now() + 15_000;
+/** How long a request gets to run its pre-checks and park on the users-row lock. */
+const LOCK_WAIT_MS = 30_000;
+/** Per-test timeout for the barrier cases: room for LOCK_WAIT_MS on a loaded runner. */
+const BARRIER_TEST_TIMEOUT_MS = 90_000;
+
+/**
+ * Resolves once `expected` backends are waiting (directly or transitively) on
+ * `blockerPid`. Throws at once when `settled` reports that the request under
+ * test already answered: it never reached the lock (a pre-check turned it
+ * away), so waiting longer cannot park it.
+ */
+async function waitForBlockedBackends(
+  monitor: Sql,
+  blockerPid: number,
+  expected: number,
+  settled: () => string | undefined,
+): Promise<void> {
+  const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     const [row] = await monitor<{ waiting: number }[]>`
       WITH RECURSIVE wait_chain(pid) AS (
@@ -106,7 +121,13 @@ async function waitForBlockedBackends(monitor: Sql, blockerPid: number, expected
       SELECT count(*)::int AS waiting FROM wait_chain
     `;
     if ((row?.waiting ?? 0) >= expected) return;
-    if (Date.now() > deadline) throw new Error(`only ${row?.waiting ?? 0} of ${expected} requests reached the users-row lock`);
+    const outcome = settled();
+    if (outcome !== undefined) {
+      throw new Error(`request ${expected} answered before reaching the users-row lock: ${outcome}`);
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`only ${row?.waiting ?? 0} of ${expected} requests reached the users-row lock within ${LOCK_WAIT_MS}ms`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
@@ -120,6 +141,11 @@ async function waitForBlockedBackends(monitor: Sql, blockerPid: number, expected
  *
  * The holder and the wait-chain monitor each get a dedicated connection: the
  * shared test pool is not used while a request is parked.
+ *
+ * `release` is idempotent and every barrier test calls it in a `finally`. A
+ * failed case must not leave the holder's transaction open: the next test's
+ * TRUNCATE in the shared `beforeEach` would wait on it until the hook timed
+ * out (#11997). A `start` that fails releases the barrier itself.
  *
  * `noKeyUpdate` holds `FOR NO KEY UPDATE` instead — what an UPDATE of the row
  * takes — so the request still parks, but an FK insert referencing the row
@@ -141,21 +167,39 @@ async function userRowBarrier(userId: string, { noKeyUpdate = false }: { noKeyUp
   });
   await locked.promise;
   let parked = 0;
+  const inFlight: Promise<void>[] = [];
+  let releasing: Promise<void> | undefined;
+  const release = () => {
+    releasing ??= (async () => {
+      released.resolve();
+      await holder;
+      await Promise.all([holderClient.end({ timeout: 1 }), monitor.end({ timeout: 1 })]);
+    })();
+    return releasing;
+  };
   return {
     // Returns the in-flight request WRAPPED: an async function that returned the
     // promise itself would adopt it, and awaiting `start` would then wait for a
     // request that cannot finish until `release`.
     async start(request: () => Promise<Response>): Promise<{ response: Promise<Response> }> {
       const response = request();
+      let outcome: string | undefined;
+      inFlight.push(response.then(
+        async (res) => { outcome = `HTTP ${res.status} ${await res.clone().text()}`; },
+        (err: unknown) => { outcome = `threw ${err instanceof Error ? err.message : String(err)}`; },
+      ));
       parked += 1;
-      await waitForBlockedBackends(monitor, pid, parked);
+      try {
+        await waitForBlockedBackends(monitor, pid, parked, () => outcome);
+      } catch (error) {
+        // Unpark the requests and let them finish before the next test's cleanup.
+        await release();
+        await Promise.all(inFlight);
+        throw error;
+      }
       return { response };
     },
-    async release() {
-      released.resolve();
-      await holder;
-      await Promise.all([holderClient.end({ timeout: 1 }), monitor.end({ timeout: 1 })]);
-    },
+    release,
   };
 }
 
@@ -350,7 +394,7 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
     expect(await activePasskeys(fx.user.id)).toHaveLength(0);
   });
 
-  it('4. two concurrent confirmations with distinct grants and codes: exactly one write and one epoch bump', async () => {
+  it('4. two concurrent confirmations with distinct grants and codes: exactly one write and one epoch bump', { timeout: BARRIER_TEST_TIMEOUT_MS }, async () => {
     const fx = await passkeyPrimaryAccount();
     const before = await readUser(fx.user.id);
     const secret = await stageBackup(fx);
@@ -362,16 +406,25 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
     const [cookieA, cookieB] = [await browserBindingCookie(), await browserBindingCookie()];
     // Distinct, step-ordered codes: the replay guard accepts a step only if it
     // is newer than the last accepted one, so A (older) must verify first.
-    const codeA = await generate({ secret, epoch: now - 30 });
-    const codeB = await generate({ secret });
+    // Verify accepts steps S-1..S+1 around its own clock, so take the current
+    // and the NEXT step: both stay valid if a step boundary passes before the
+    // requests verify. With the previous step, a boundary crossing got A
+    // rejected (400) before it reached the lock (#11997).
+    const codeA = await generate({ secret, epoch: now });
+    const codeB = await generate({ secret, epoch: now + 30 });
 
     const barrier = await userRowBarrier(fx.user.id);
-    const first = await barrier.start(() =>
-      post('/auth/mfa/enable', token, { code: codeA, currentPassword: PASSWORD, stepUpGrantId: grantA }, cookieA));
-    const second = await barrier.start(() =>
-      post('/auth/mfa/enable', token, { code: codeB, currentPassword: PASSWORD, stepUpGrantId: grantB }, cookieB));
-    await barrier.release();
-    const results = await Promise.all([first.response, second.response]);
+    let results: Response[];
+    try {
+      const first = await barrier.start(() =>
+        post('/auth/mfa/enable', token, { code: codeA, currentPassword: PASSWORD, stepUpGrantId: grantA }, cookieA));
+      const second = await barrier.start(() =>
+        post('/auth/mfa/enable', token, { code: codeB, currentPassword: PASSWORD, stepUpGrantId: grantB }, cookieB));
+      await barrier.release();
+      results = await Promise.all([first.response, second.response]);
+    } finally {
+      await barrier.release();
+    }
 
     expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
     const loser = results.find((r) => r.status === 409)!;
@@ -383,7 +436,7 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
     expect(decryptMfaSecret(after.mfaSecret)).toBe(secret);
   });
 
-  it('5. concurrent TOTP removal and last-passkey delete under requireMfa: a policy-allowed factor survives', async () => {
+  it('5. concurrent TOTP removal and last-passkey delete under requireMfa: a policy-allowed factor survives', { timeout: BARRIER_TEST_TIMEOUT_MS }, async () => {
     const fx = await passkeyPrimaryAccount();
     const { res } = await addBackup(fx);
     expect(res.status).toBe(200);
@@ -397,15 +450,21 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
     // Both pass every pre-check against the same snapshot (each sees the other
     // factor still present), then race for the users-row lock.
     const barrier = await userRowBarrier(fx.user.id);
-    const removalPending = await barrier.start(() =>
-      post('/auth/mfa/totp/remove', token, { currentPassword: PASSWORD, stepUpGrantId: removeGrant }, cookieA));
-    const deletionPending = await barrier.start(async () => app.request(`/auth/passkeys/${fx.passkeyId}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', cookie: cookieB },
-      body: JSON.stringify({ currentPassword: PASSWORD, stepUpGrantId: deleteGrant }),
-    }));
-    await barrier.release();
-    const [removal, deletion] = await Promise.all([removalPending.response, deletionPending.response]);
+    let removal: Response;
+    let deletion: Response;
+    try {
+      const removalPending = await barrier.start(() =>
+        post('/auth/mfa/totp/remove', token, { currentPassword: PASSWORD, stepUpGrantId: removeGrant }, cookieA));
+      const deletionPending = await barrier.start(async () => app.request(`/auth/passkeys/${fx.passkeyId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', cookie: cookieB },
+        body: JSON.stringify({ currentPassword: PASSWORD, stepUpGrantId: deleteGrant }),
+      }));
+      await barrier.release();
+      [removal, deletion] = await Promise.all([removalPending.response, deletionPending.response]);
+    } finally {
+      await barrier.release();
+    }
     expect([removal.status, deletion.status].sort()).toEqual([200, 409]);
 
     const after = await readUser(fx.user.id);
@@ -491,7 +550,7 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
     expect(after.mfaRecoveryCodes).toEqual(before.mfaRecoveryCodes);
   });
 
-  it('8b. a passkey registered after the /mfa/disable pre-check makes the write lose with 409 and changes nothing', async () => {
+  it('8b. a passkey registered after the /mfa/disable pre-check makes the write lose with 409 and changes nothing', { timeout: BARRIER_TEST_TIMEOUT_MS }, async () => {
     const fx = await passkeyPrimaryAccount();
     const secret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
     // TOTP primary with NO passkey, so the pre-check passes.
@@ -504,14 +563,19 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
     const cookie = await browserBindingCookie();
 
     const barrier = await userRowBarrier(fx.user.id, { noKeyUpdate: true });
-    const disable = await barrier.start(() => post('/auth/mfa/disable', token, { code, currentPassword: PASSWORD }, cookie));
-    // The disable is parked at its write; a passkey lands now.
-    await getTestDb().insert(userPasskeys).values({
-      userId: fx.user.id, credentialId: `cred-late-${randomUUID()}`, publicKey: 'dGVzdC1wdWJsaWMta2V5', counter: 0,
-      deviceType: 'singleDevice', backedUp: false, name: 'late',
-    });
-    await barrier.release();
-    const res = await disable.response;
+    let res: Response;
+    try {
+      const disable = await barrier.start(() => post('/auth/mfa/disable', token, { code, currentPassword: PASSWORD }, cookie));
+      // The disable is parked at its write; a passkey lands now.
+      await getTestDb().insert(userPasskeys).values({
+        userId: fx.user.id, credentialId: `cred-late-${randomUUID()}`, publicKey: 'dGVzdC1wdWJsaWMta2V5', counter: 0,
+        deviceType: 'singleDevice', backedUp: false, name: 'late',
+      });
+      await barrier.release();
+      res = await disable.response;
+    } finally {
+      await barrier.release();
+    }
 
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'factor_removal_required' });
