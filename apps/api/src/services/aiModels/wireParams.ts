@@ -24,6 +24,9 @@
  *
  * Re-verified on 0.3.296 (2026-10-14): D1/D2 passthrough unchanged; resume Q3
  * now compacts on the previous model instead of failing (see W05 findings).
+ *
+ * Re-verified on 0.3.323 (2026-11-12): D1/D2 passthrough unchanged; resume
+ * Q1-Q3, Q5, Q6 unchanged; Q4 fast-on-resume returned 200 (no 429 retry).
  */
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import type { EffortLevel, OfferingOptions, OptionSupport, ThinkingDisplay } from '@breeze/shared';
@@ -32,7 +35,7 @@ import type { ThinkingMode } from './capabilities';
 export const THINKING_DISPLAY_UPDATES_BETA = 'thinking-display-updates-2026-08-18';
 export const FAST_MODE_BETA = 'fast-mode-2026-02-01';
 /** The Agent SDK version the W01 (D1–D3) and W05 (resume, fast) findings were verified on. */
-export const VERIFIED_AGENT_SDK_VERSION = '0.3.296';
+export const VERIFIED_AGENT_SDK_VERSION = '0.3.323';
 
 /**
  * W05 lab gate L1: fast mode reaches the wire on the Agent SDK (W01 D2), but
