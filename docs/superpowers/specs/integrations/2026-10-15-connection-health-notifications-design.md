@@ -292,6 +292,12 @@ A row left in `claimed` for over an hour is marked `failed`, not resent. The mod
 - `google_workspace`: the probe result is stored on the connection (`last_probe_status` `ok`/`failed`/`unavailable`). `unavailable` (rate limit, 5xx, network) is `unknown`. The probe runs in an optional `HealthSource.prepare()` step outside the kind's transaction, at most once per connection per 6 hours.
 - Nudge jobIds are `reconcile-kind-<kind>`: BullMQ rejects `:` in custom ids.
 
+**#9127 amendments (plan `2026-10-18-connection-health-staleness-detection.md`).**
+- `sync_stale` now covers EDR, accounting and ticket mailboxes (PR A, #9127) and DNS filtering and M365 sync (PR B, #10021). The new partner-axis kind `td_synnex_sftp` is PR C. TD SYNNEX EC Express and Digital Bridge stay exempt: neither has a schedule.
+- EDR is stale when either stream has had no success for `max(3 × effective_<stream>_interval_minutes, 60 min)`; 60 min stands in for an unplanned interval. Accounting reads `last_reconcile_at`, only for `connected` rows with a payment switch on; daily-budget providers (Xero) use `staleAfterMinutes(1440)` because the sweep defers them under a low daily budget. Ticket mailboxes read `last_polled_at` while `connected`.
+- The org-axis arms are a leakproof plain-column pre-filter on partial indexes plus an exact interval recheck (PR B deviated from the plan's expression indexes, which RLS never uses as an `Index Cond`).
+- The M365 arm is compiled only with `M365_TENANT_SYNC_ENABLED` on; flag off retires every `m365_sync` observation.
+
 **Backup recovery trap.** `jobs/backupProviderSync.ts:229` clears the error when a retry starts. The backup adapter therefore reports `unknown` while a sync is running, and `healthy` only after `last_sync_status = 'success'`.
 
 **OAuth detail.** Deliberate revocations are `retired`, never `broken`: they set `revoked_by_user_id`, or come from a partner disconnect or the tenant lifecycle. Only `refresh-token-reuse` counts as automatic. `provider-revoke-grant` does not, because oidc-provider's default `revokeGrantPolicy` also writes it for deliberate RP-initiated revocation and `end_session`, so it cannot tell a logout from a break.
