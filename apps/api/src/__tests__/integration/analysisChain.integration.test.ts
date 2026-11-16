@@ -49,10 +49,14 @@ import {
   type CreateAgentRunResult,
 } from '../../services/aiAgents/runService';
 import { analysisContinuationOf, deriveChainHandles } from '../../services/aiAgents/analysisContinuation';
+import { admitAnalysisRun } from '../../services/aiAgents/analysisAdmission';
 import { WORKSPACE_TOOL_NAMES } from '../../services/workspace/workspaceToolNames';
 import { getTestDb } from './setup';
 import { db as appDb, withSystemDbAccessContext } from '../../db';
-import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
+import {
+  assignUserToPartner, createDevice, createOrganization, createPartner, createRole, createSite, createUser,
+  grantRolePermissions,
+} from './db-utils';
 import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
 
 usePlatformAiKeyPlaceholder();
@@ -75,6 +79,21 @@ interface Tenant {
   grantG2: { grantId: string; revisionId: string };
 }
 
+/** What each grantor holds, live and pinned on its revision (the ceiling is their intersection). */
+const GRANTOR_PERMS = [
+  { resource: 'devices', action: 'read' }, { resource: 'ai_workspace', action: 'execute' }, { resource: 'ai_sessions', action: 'use' },
+];
+const GRANTOR_PERMISSION_KEYS = GRANTOR_PERMS.map((p) => `${p.resource}:${p.action}`);
+
+/** A partner member with a live, permissioned partner-wide role: a grant's live term needs one. */
+async function seedGrantor(partnerId: string, tag: string): Promise<string> {
+  const grantor = await createUser({ partnerId, email: `chain-${tag}-${randomUUID()}@chain.test` });
+  const role = await createRole({ scope: 'partner', partnerId });
+  await grantRolePermissions(role.id, GRANTOR_PERMS);
+  await assignUserToPartner(grantor.id, partnerId, role.id, 'all');
+  return grantor.id;
+}
+
 async function seedGrant(partnerId: string, grantorUserId: string, orgIds: string[]) {
   // Through the app pool under system scope, as wispSpecialists.integration
   // does: `wisp_grants_update_guard` lets only the system scope set the
@@ -89,7 +108,7 @@ async function seedGrantRows(partnerId: string, grantorUserId: string, orgIds: s
     expiresAt: new Date(Date.now() + 30 * DAY_MS),
   }).returning({ id: wispGrants.id });
   const snapshot: WispCeilingSnapshot = {
-    version: 1, permissionKeys: [], orgIds, siteIds: null, toolAllowlist: null, deniedTools: [],
+    version: 1, permissionKeys: GRANTOR_PERMISSION_KEYS, orgIds, siteIds: null, toolAllowlist: null, deniedTools: [],
   };
   const [r] = await db.insert(wispGrantRevisions).values({
     grantId: g!.id, partnerId, revision: 1, ceilingSnapshot: snapshot,
@@ -129,10 +148,9 @@ async function seedTenant(limits: Record<string, number> = {}): Promise<Tenant> 
     triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: false },
     recipients: { userIds: [], roleIds: [] }, instructions: null, cooldownSeconds: 0, createdBy: user.id,
   } as never).returning({ id: aiAgents.id });
-  const grantG = await seedGrant(partner.id, user.id, [orgA.id, orgB.id]);
-  // One live grant per (grantor, partner, scope): the second grant has its own grantor.
-  const grantor2 = await createUser({ partnerId: partner.id, email: `chain-g2-${randomUUID()}@chain.test` });
-  const grantG2 = await seedGrant(partner.id, grantor2.id, [orgA.id, orgB.id]);
+  // One live grant per (grantor, partner, scope): each grant has its own grantor.
+  const grantG = await seedGrant(partner.id, await seedGrantor(partner.id, 'g1'), [orgA.id, orgB.id]);
+  const grantG2 = await seedGrant(partner.id, await seedGrantor(partner.id, 'g2'), [orgA.id, orgB.id]);
   return {
     partnerId: partner.id, orgA: orgA.id, orgB: orgB.id, deviceA: device.id, userId: user.id,
     agentId: agent!.id, grantG, grantG2,
@@ -227,6 +245,8 @@ beforeEach(() => {
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   vi.stubEnv('IS_HOSTED', 'true');
   vi.stubEnv('BREEZE_AI_WORKSPACE_ENABLED', 'true');
+  // Grant-bearing admission resolves the live ceiling, which needs Wisp on.
+  vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
   vi.stubEnv('BREEZE_REGION', 'us');
   enqueued = [];
   // Without an enqueuer every admitted run is marked failed/enqueue_failed,
@@ -447,10 +467,13 @@ describe('handle derivation', () => {
 
 describe('chain bounds (real Postgres, real advisory locks)', () => {
   let t: Tenant;
+  const GRANTS: AiRunExportGrants = { datasets: ['event_logs', 'metrics'], sensitiveGates: [] };
 
   const frame = (tt: Tenant) => ({
-    scope: 'devices' as const, siteId: null, deviceIds: [tt.deviceA], inputHandles: [] as string[],
+    scope: 'devices' as const, siteId: null, deviceIds: [tt.deviceA], inputHandles: [] as string[], exportGrants: GRANTS,
   });
+  /** Every chain run is grant-bearing, as in production: a grant-less run is never continued. */
+  const grantRef = (g: { grantId: string; revisionId: string }) => ({ grantId: g.grantId, grantRevisionId: g.revisionId });
   const analysisInput = (over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput => ({
     orgId: t.orgA,
     kind: 'triage',
@@ -458,11 +481,15 @@ describe('chain bounds (real Postgres, real advisory locks)', () => {
     deviceId: null,
     dedupeKey: `manual:chain:${randomUUID()}`,
     profile: 'analysis',
+    triggerRef: { source: 'chat_analysis' },
     analysis: frame(t),
+    grant: grantRef(t.grantG),
     ...over,
   });
-  /** A continuation of `fromRunId` (depth `depth`) of the chain rooted at `root`. */
-  const next = (root: string, fromRunId = root, depth = 1) => createAndEnqueueAgentRun(analysisInput({
+  /** A continuation of `fromRunId` (depth `depth`) of the chain rooted at `root`, as admitAnalysisRun builds it. */
+  const next = (root: string, fromRunId = root, depth = 1, grant = t.grantG) => createAndEnqueueAgentRun(analysisInput({
+    grant: grantRef(grant),
+    triggerRef: { source: 'chat_analysis', continuation: { fromRunId, seed: 'S', dropped: [] } },
     analysis: { ...frame(t), continuation: { fromRunId, chainRootRunId: root, chainDepth: depth } },
   }));
   const admitted = (r: CreateAgentRunResult) => {
@@ -470,31 +497,40 @@ describe('chain bounds (real Postgres, real advisory locks)', () => {
     return r.run;
   };
   const skipped = (r: CreateAgentRunResult) => (r.created ? null : r.skipped);
-  /** Admit the chain root. It stays `queued` (nothing runs it), the unsettled sibling. */
-  const admitRoot = async () => admitted(await createAndEnqueueAgentRun(analysisInput())).id;
+  /** Settle a run directly: only a settled analysis run can be continued. */
+  const settle = (runId: string, costCents = 0, computeCents = 0) => getTestDb().update(aiAgentRuns)
+    .set({ status: 'completed', costCents, computeCents, finishedAt: new Date() } as never)
+    .where(eq(aiAgentRuns.id, runId));
+  /** Admit the chain root under grant G and settle it at `cost` + `compute`. */
+  const admitSettledRoot = async (costCents = 0, computeCents = 0) => {
+    const root = admitted(await createAndEnqueueAgentRun(analysisInput())).id;
+    await settle(root, costCents, computeCents);
+    return root;
+  };
   /** A sibling inserted directly into the chain of `root`, still queued, with the given snapshot. */
   const insertQueuedSibling = (root: string, policySnapshot: Record<string, unknown>) => insertRun(t, t.orgA, {
-    status: 'queued', continuedFromRunId: root, chainRootRunId: root, chainDepth: 1, policySnapshot,
+    status: 'queued', grant: t.grantG, continuedFromRunId: root, chainRootRunId: root, chainDepth: 1, policySnapshot,
   });
 
   it('two continuations at the run-count limit admit exactly one', async () => {
-    // analysisMaxChainRuns: 2. The root is run 1 of 2. Whichever continuation
-    // takes the lock first sees runCount 1 (< 2) and is admitted; the second
-    // sees runCount 2 (>= 2) and is refused analysis_chain_too_long.
+    // analysisMaxChainRuns: 2. The (settled) root is run 1 of 2. Whichever
+    // continuation takes the lock first sees runCount 1 (< 2) and is admitted;
+    // the second sees runCount 2 (>= 2) and is refused analysis_chain_too_long.
     t = await seedTenant({ analysisMaxChainRuns: 2 });
-    const root = await admitRoot();
+    const root = await admitSettledRoot();
     const results = await Promise.all([next(root), next(root)]);
     expect(results.filter((r) => r.created)).toHaveLength(1);
     expect(results.filter((r) => skipped(r) === 'analysis_chain_too_long')).toHaveLength(1);
   });
 
   it('an unsettled sibling counts at its full allowance: two at the budget limit admit exactly one', async () => {
-    // analysisMaxChainBudgetCents: 400; per-run allowance = 150 + 25 = 175 (defaults).
-    // Root queued = 175 reserved. First continuation: 175 + 175 = 350 <= 400,
-    // admitted. Second: committed 175 + 175 = 350, + 175 = 525 > 400, refused.
-    // Counted at actual spend (0) instead, both would admit.
-    t = await seedTenant({ analysisMaxChainBudgetCents: 400 });
-    const root = await admitRoot();
+    // analysisMaxChainBudgetCents: 300; per-run allowance = 150 + 25 = 175 (defaults).
+    // Root settled at 0. First continuation: 0 + 175 = 175 <= 300, admitted
+    // (queued). Second: committed 0 + 175 (queued sibling at its allowance)
+    // = 175, + 175 = 350 > 300, refused. Counted at actual spend (0) instead,
+    // the second would see 0 + 0 + 175 = 175 <= 300 and both would admit.
+    t = await seedTenant({ analysisMaxChainBudgetCents: 300 });
+    const root = await admitSettledRoot();
     const results = await Promise.all([next(root), next(root)]);
     expect(results.filter((r) => r.created)).toHaveLength(1);
     expect(results.filter((r) => skipped(r) === 'analysis_chain_budget_exceeded')).toHaveLength(1);
@@ -509,27 +545,23 @@ describe('chain bounds (real Postgres, real advisory locks)', () => {
     // Counted at its allowance (175) the root would refuse continuation 2
     // (175 + 175 + 175 = 525 > 400), so this pins settled-at-actual.
     t = await seedTenant({ analysisMaxChainBudgetCents: 400 });
-    const root = await admitRoot();
-    await getTestDb().update(aiAgentRuns)
-      .set({ status: 'completed', costCents: 10, computeCents: 5, finishedAt: new Date() } as never)
-      .where(eq(aiAgentRuns.id, root));
+    const root = await admitSettledRoot(10, 5);
     admitted(await next(root));
     admitted(await next(root));
     expect(skipped(await next(root))).toBe('analysis_chain_budget_exceeded');
   });
 
   it('a sibling whose snapshot lacks or garbles the analysis limits counts at the default allowance', async () => {
-    // analysisMaxChainBudgetCents: 700; default allowance 150 + 25 = 175.
-    // Siblings: root (real snapshot) = 175; A (limits are strings) = 175;
-    // B (no `effective` at all) = 175. Committed 525.
-    //   continuation 1: 525 + 175 = 700, not > 700 -> admitted, with no cast
-    //   error from the non-numeric value (admission would 500 otherwise).
-    //   continuation 2: (525 + 175) + 175 = 875 > 700 -> analysis_chain_budget_exceeded.
-    // Had A wrongly counted 0, continuation 1 would still admit but continuation
-    // 2 would see (175 + 0 + 175 + 175) + 175 = 700 <= 700 and admit too; had a
-    // sibling counted above 175, continuation 1 would be refused.
-    t = await seedTenant({ analysisMaxChainBudgetCents: 700 });
-    const root = await admitRoot();
+    // analysisMaxChainBudgetCents: 525; default allowance 150 + 25 = 175.
+    // Root settled at 0. Siblings: A (limits are strings) = 175; B (no
+    // `effective` at all) = 175. Committed 350.
+    //   continuation 1: 350 + 175 = 525, not > 525 -> admitted, with no cast
+    //   error from the non-numeric value (admission would throw otherwise).
+    //   continuation 2: (350 + 175) + 175 = 700 > 525 -> analysis_chain_budget_exceeded.
+    // Had A counted 0, continuation 2 would see (0 + 175 + 175) + 175 = 525
+    // and admit too; had a sibling counted above 175, continuation 1 would be refused.
+    t = await seedTenant({ analysisMaxChainBudgetCents: 525 });
+    const root = await admitSettledRoot();
     await insertQueuedSibling(root, {
       schemaVersion: 1,
       effective: { limits: { analysisMaxBudgetCentsPerRun: 'abc', analysisMaxComputeCentsPerRun: 'xyz' } },
@@ -543,12 +575,15 @@ describe('chain bounds (real Postgres, real advisory locks)', () => {
 
   it('the admitted continuation carries continued_from_run_id, chain_root_run_id and chain_depth', async () => {
     t = await seedTenant();
-    const root = await admitRoot();
+    const root = await admitSettledRoot();
     expect(await readRun(root)).toMatchObject({ continuedFromRunId: null, chainRootRunId: null, chainDepth: 0 });
     const c1 = admitted(await next(root));
     expect(await readRun(c1.id)).toMatchObject({
       orgId: t.orgA, continuedFromRunId: root, chainRootRunId: root, chainDepth: 1,
     });
+    // An unsettled prior cannot be continued, even under the lock.
+    expect(skipped(await next(root, c1.id, 2))).toBe('analysis_continuation_not_found');
+    await settle(c1.id);
     // A continuation of a continuation: pointer to its prior, root stays the
     // chain root, depth is prior depth + 1.
     const c2 = admitted(await next(root, c1.id, 2));
@@ -558,5 +593,66 @@ describe('chain bounds (real Postgres, real advisory locks)', () => {
     // A lineage that disagrees with the prior's is refused and writes no row.
     expect(skipped(await next(c1.id, c1.id, 2))).toBe('analysis_continuation_not_found'); // wrong root (c1 is not the root)
     expect(skipped(await next(root, c1.id, 5))).toBe('analysis_continuation_not_found');  // wrong depth (prior depth 1 + 1 != 5)
+  });
+
+  it('a continuation under another grant than the prior is refused under the lock', async () => {
+    t = await seedTenant();
+    const root = await admitSettledRoot();
+    expect(skipped(await next(root, root, 1, t.grantG2))).toBe('analysis_continuation_not_found');
+    admitted(await next(root, root, 1, t.grantG));
+  });
+
+  it('a prior whose chain root was deleted keeps its depth and refuses analysis_chain_too_long', async () => {
+    // Built directly (no admission rows hang off it), so the root can be deleted.
+    t = await seedTenant();
+    const root = await insertRun(t, t.orgA, { grant: t.grantG });
+    const mid = await insertRun(t, t.orgA, { grant: t.grantG, continuedFromRunId: root, chainRootRunId: root, chainDepth: 1 });
+    await getTestDb().delete(aiAgentRuns).where(eq(aiAgentRuns.id, root));
+    // ON DELETE SET NULL (<pointer>) cleared both pointers; org and depth survive, the CHECK holds.
+    expect(await readRun(mid)).toMatchObject({ orgId: t.orgA, continuedFromRunId: null, chainRootRunId: null, chainDepth: 1 });
+    // Treating it as a new root would reset every chain bound.
+    expect(skipped(await next(root, mid, 2))).toBe('analysis_chain_too_long');
+    expect(skipped(await next(mid, mid, 2))).toBe('analysis_chain_too_long');
+  });
+});
+
+describe('admitAnalysisRun with inherited handles (real forced RLS)', () => {
+  it('resolves staged handles in a system context, so a real derived handle admits', async () => {
+    const t = await seedTenant();
+    const prior = await insertRun(t, t.orgA, { grant: t.grantG });
+    const handle = await insertArtifact(t.orgA, prior, { kind: 'output', createdByTool: 'workspace_collect' });
+    // The launcher calls admission outside any request DB context; a
+    // contextless read under forced RLS would see no artifact rows.
+    const result = await admitAnalysisRun({
+      orgId: t.orgA,
+      requestedByUserId: t.userId,
+      sessionId: null,
+      goal: 'continue',
+      scope: 'devices',
+      deviceIds: [t.deviceA],
+      siteId: null,
+      stagedHandles: [handle],
+      dedupeKey: `chain-it-admit-${randomUUID()}`,
+      grant: { grantId: t.grantG.grantId, grantRevisionId: t.grantG.revisionId },
+      exportGrants: { datasets: ['event_logs'], sensitiveGates: [] },
+      continuation: { fromRunId: prior, chainRootRunId: prior, chainDepth: 1, seed: 'S', dropped: [] },
+    });
+    expect(result).toMatchObject({ created: true });
+    const run = await readRun((result as { runId: string }).runId);
+    expect(run).toMatchObject({ continuedFromRunId: prior, chainRootRunId: prior, chainDepth: 1 });
+    expect((run!.stagedInputs as { handles: string[] }).handles).toEqual([handle]);
+    expect((run!.triggerRef as { continuation: unknown }).continuation).toEqual({ fromRunId: prior, seed: 'S', dropped: [] });
+  });
+
+  it('refuses a handle of another org as artifact_forbidden', async () => {
+    const t = await seedTenant();
+    const foreignRun = await insertRun(t, t.orgB, {});
+    const foreign = await insertArtifact(t.orgB, foreignRun, { kind: 'output', createdByTool: 'workspace_collect' });
+    await expect(admitAnalysisRun({
+      orgId: t.orgA, requestedByUserId: t.userId, sessionId: null, goal: 'g', scope: 'devices',
+      deviceIds: [t.deviceA], siteId: null, stagedHandles: [foreign], dedupeKey: `chain-it-admit-${randomUUID()}`,
+      grant: { grantId: t.grantG.grantId, grantRevisionId: t.grantG.revisionId },
+      exportGrants: { datasets: ['event_logs'], sensitiveGates: [] },
+    })).resolves.toEqual({ created: false, refusal: 'artifact_forbidden' });
   });
 });

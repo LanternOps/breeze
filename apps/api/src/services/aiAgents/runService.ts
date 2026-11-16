@@ -34,7 +34,7 @@ import {
   type AiRunExportGrants, type AnalysisScopeKind,
 } from '../../db/schema/aiAgents';
 import { resolveAnalysisFrame } from './analysisFrame';
-import { chainCommittedCents, chainRootOf } from './analysisContinuation';
+import { ANALYSIS_SETTLED_STATUSES, chainCommittedCents, chainRootOf } from './analysisContinuation';
 import { aiBudgets } from '../../db/schema/ai';
 import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
@@ -1839,8 +1839,12 @@ export async function createAndEnqueueAgentRun(
       // still carries the prior's seed).
       if (analysis.continuation) {
         triggerRef = { ...triggerRef, siteId: null };
-      } else if (frame.scope.kind === 'site' && frame.scope.siteId) {
-        triggerRef = { ...triggerRef, siteId: frame.scope.siteId };
+      } else {
+        // A run that continues nothing never stores a continuation seed.
+        const { continuation: _stray, ...rest } = triggerRef;
+        triggerRef = frame.scope.kind === 'site' && frame.scope.siteId
+          ? { ...rest, siteId: frame.scope.siteId }
+          : rest;
       }
 
       // (e) Wisp analysis sessions W03 — a continuation. Re-validated HERE,
@@ -1856,13 +1860,26 @@ export async function createAndEnqueueAgentRun(
             id: aiAgentRuns.id,
             profile: aiAgentRuns.profile,
             grantId: aiAgentRuns.grantId,
+            status: aiAgentRuns.status,
             chainRootRunId: aiAgentRuns.chainRootRunId,
             chainDepth: aiAgentRuns.chainDepth,
           })
           .from(aiAgentRuns)
           .where(and(eq(aiAgentRuns.id, continuation.fromRunId), eq(aiAgentRuns.orgId, orgId)))
           .limit(1);
-        if (!prior || prior.profile !== 'analysis' || prior.grantId !== (input.grant?.grantId ?? null)) {
+        // The same LIVE grant on both runs, never "both grant-less": a run with
+        // no grant can never be continued (W00 C6). The prior must still be a
+        // settled analysis run, as the launcher checked.
+        const settled = (ANALYSIS_SETTLED_STATUSES as readonly string[]).includes(prior?.status ?? '');
+        if (!prior || prior.profile !== 'analysis' || !grantCeiling || !prior.grantId
+          || prior.grantId !== input.grant!.grantId || !settled) {
+          return skip('analysis_continuation_not_found');
+        }
+        // The stored seed must describe THIS lineage: `trigger_ref.continuation`
+        // is what the run loop renders, so a seed naming another run (or no
+        // seed at all) would put one run's context on another's chain.
+        const refContinuation = (triggerRef as { continuation?: { fromRunId?: unknown } }).continuation;
+        if (!refContinuation || refContinuation.fromRunId !== continuation.fromRunId) {
           return skip('analysis_continuation_not_found');
         }
         // A prior whose root was deleted can no longer have its chain counted;

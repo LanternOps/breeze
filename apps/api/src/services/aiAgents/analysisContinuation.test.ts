@@ -257,6 +257,21 @@ describe('deriveChainHandles classification', () => {
     ] });
   });
 
+  it('refuses to derive for a prior under a different grant than the launch (caller bug)', async () => {
+    await expect(deriveChainHandles({ orgId: ORG, prior: prior({ grantId: OTHER_GRANT }), grantId: GRANT, exportGrants: GRANTS }))
+      .rejects.toThrow(/grant/);
+    expect(h.db.select).not.toHaveBeenCalled();
+  });
+
+  it('warns when the prior\'s staged inputs are unreadable (its inherited files cannot be carried)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.results.push([priorRow({ stagedInputs: { handles: 'garbage' } })]);
+    const r = await analysisContinuationOf({ orgId: ORG, runId: PRIOR, grantId: GRANT });
+    expect(r).toMatchObject({ ok: true, prior: { stagedInputs: null } });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('staged_inputs'), expect.objectContaining({ runId: PRIOR }));
+    warn.mockRestore();
+  });
+
   it('a non-uuid prior handle is dropped expired and never sent to SQL', async () => {
     h.results.push([]);
     const r = await derive(prior({ stagedInputs: { handles: ['nope'], deviceIds: [], region: 'eu' } }));
@@ -279,8 +294,16 @@ describe('chainCommittedCents', () => {
     expect(q.sql).toContain('GREATEST(');
   });
 
-  it('an empty chain is zero', async () => {
-    const tx = { execute: vi.fn(async () => []) };
+  it('fails closed (throws) when the aggregate row is missing or not a finite number', async () => {
+    // An aggregate always returns one row; anything else must never read as "nothing committed".
+    for (const rows of [[], [{ runCount: 1, committedCents: 'NaN' }], [{ runCount: null, committedCents: '5' }]]) {
+      const tx = { execute: vi.fn(async () => rows) };
+      await expect(chainCommittedCents(tx as never, { orgId: ORG, chainRootRunId: ROOT })).rejects.toThrow(/chain sum/);
+    }
+  });
+
+  it('an empty chain sums to zero', async () => {
+    const tx = { execute: vi.fn(async () => [{ runCount: 0, committedCents: '0' }]) };
     await expect(chainCommittedCents(tx as never, { orgId: ORG, chainRootRunId: ROOT }))
       .resolves.toEqual({ committedCents: 0, runCount: 0 });
   });

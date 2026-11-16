@@ -216,7 +216,7 @@ import { isResearchProfile, researchDepthOf, researchLimits, researchToolAllowli
 import { loadResearchContext, ResearchContextUnavailableError } from './researchContext';
 import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/runMemory';
 import type { ResearchToolRefs } from './researchSubmission';
-import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { analysisContinuationFromTriggerRef, analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
 import { loadHandleManifest } from './analysisContinuation';
 import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
 import {
@@ -402,6 +402,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         servedFailoverCause: aiAgentRuns.servedFailoverCause,
         // #7787 — the failover source admission (or a hop) recorded.
         servedFailoverFromOfferingId: aiAgentRuns.servedFailoverFromOfferingId,
+        // W03: a continuation run (lineage stamped by admission).
+        continuedFromRunId: aiAgentRuns.continuedFromRunId,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -716,6 +718,14 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         ? frozen.filter((h): h is string => typeof h === 'string')
         : [];
       analysisManifest = await loadHandleManifest({ orgId: run.orgId, handles });
+      // A continuation (lineage stamped by admission) whose stored seed fails
+      // re-validation runs without it; say so rather than let it pass as a
+      // fresh run.
+      if (run.continuedFromRunId && !analysisContinuationFromTriggerRef(run.triggerRef)) {
+        console.warn('[runLoop] analysis continuation seed unreadable; running without it', {
+          runId: run.id, continuedFromRunId: run.continuedFromRunId,
+        });
+      }
     }
 
     return {

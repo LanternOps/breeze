@@ -525,14 +525,23 @@ describe('analysis chain admission (W03)', () => {
   const PRIOR = '00000000-0000-4000-8000-0000000000f1';
   const ROOT = '00000000-0000-4000-8000-0000000000f0';
   const cont = { fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 2 };
+  const GRANT = { grantId: 'g1', grantRevisionId: 'r1' };
+  const GRANTS = { datasets: ['event_logs'], sensitiveGates: [] as AnalysisSensitiveGate[] };
   const priorRow = (over: Record<string, unknown> = {}) => ({
-    id: PRIOR, profile: 'analysis', grantId: null, chainRootRunId: ROOT, chainDepth: 1, ...over,
+    id: PRIOR, profile: 'analysis', grantId: 'g1', status: 'completed', chainRootRunId: ROOT, chainDepth: 1, ...over,
   });
   /** Queue the prior read ahead of the reap / counter reads. */
   const withPrior = (rows: unknown[]) => { dbMockState.rowQueues.ai_agent_runs!.unshift(rows); };
-  const continuation = (over: Partial<typeof cont> = {}) => analysisInput({
-    analysis: { scope: 'devices', siteId: null, deviceIds: [DEVICE_A, DEVICE_B], inputHandles: [], continuation: { ...cont, ...over } },
+  /** A grant-bearing continuation whose trigger_ref carries the matching seed (what admitAnalysisRun builds). */
+  const continuation = (over: Partial<typeof cont> = {}, fromRunIdOnRef: string = PRIOR) => analysisInput({
+    grant: GRANT,
+    triggerRef: { source: 'chat_analysis', siteId: null, continuation: { fromRunId: fromRunIdOnRef, seed: 'S', dropped: [] } },
+    analysis: {
+      scope: 'devices', siteId: null, deviceIds: [DEVICE_A, DEVICE_B], inputHandles: [], exportGrants: GRANTS,
+      continuation: { ...cont, ...over },
+    },
   });
+  beforeEach(() => { resolveGrantCeiling.mockResolvedValue(ceiling()); });
   const withLimits = (limits: Partial<typeof AI_AGENT_LIMIT_DEFAULTS>) => {
     const snap = snapshot([...WORKSPACE_TOOL_NAMES]);
     resolveEffectiveAgentSystem.mockResolvedValue({ ...snap, effective: { ...snap.effective, limits: { ...snap.effective.limits, ...limits } } });
@@ -641,10 +650,49 @@ describe('analysis chain admission (W03)', () => {
     withPrior([priorRow({ grantId: 'g1' })]);
     await expect(createAndEnqueueAgentRun(analysisInput({
       grant: { grantId: 'g1', grantRevisionId: 'r1' },
-      triggerRef: { source: 'chat_analysis', siteId: SITE },
+      triggerRef: { source: 'chat_analysis', siteId: SITE, continuation: { fromRunId: PRIOR, seed: 'S', dropped: [] } },
       analysis: { scope: 'site', siteId: SITE, deviceIds: [], inputHandles: [], exportGrants: GRANTS, continuation: cont },
     }))).resolves.toMatchObject({ created: true });
-    expect(dbMockState.insertValues[0]!.triggerRef).toEqual({ source: 'chat_analysis', siteId: null });
+    expect(dbMockState.insertValues[0]!.triggerRef).toEqual({
+      source: 'chat_analysis', siteId: null, continuation: { fromRunId: PRIOR, seed: 'S', dropped: [] },
+    });
+  });
+
+  it('a grant-less continuation is refused even when the prior is grant-less too (a run with no grant is never continued)', async () => {
+    withPrior([priorRow({ grantId: null })]);
+    const { grant: _g, ...input } = continuation();
+    const { exportGrants: _e, ...analysis } = input.analysis!;
+    await expect(createAndEnqueueAgentRun({ ...input, analysis }))
+      .resolves.toEqual({ created: false, skipped: 'analysis_continuation_not_found' });
+    expect(dbMockState.insertValues).toEqual([]);
+  });
+
+  it.each(['running', 'queued', 'expired'])('a prior that is %s at admission is refused', async (status) => {
+    withPrior([priorRow({ status })]);
+    await expect(createAndEnqueueAgentRun(continuation()))
+      .resolves.toEqual({ created: false, skipped: 'analysis_continuation_not_found' });
+  });
+
+  it('a trigger_ref seed that names another run than the lineage is refused', async () => {
+    withPrior([priorRow()]);
+    await expect(createAndEnqueueAgentRun(continuation({}, '00000000-0000-4000-8000-0000000000f9')))
+      .resolves.toEqual({ created: false, skipped: 'analysis_continuation_not_found' });
+    expect(chainCommittedCents).not.toHaveBeenCalled();
+  });
+
+  it('a lineage without its trigger_ref seed is refused', async () => {
+    withPrior([priorRow()]);
+    const input = continuation();
+    await expect(createAndEnqueueAgentRun({ ...input, triggerRef: { source: 'chat_analysis' } }))
+      .resolves.toEqual({ created: false, skipped: 'analysis_continuation_not_found' });
+  });
+
+  it('a fresh run never stores a stray trigger_ref.continuation', async () => {
+    await createAndEnqueueAgentRun(analysisInput({
+      triggerRef: { source: 'chat_analysis', continuation: { fromRunId: PRIOR, seed: 'S', dropped: [] } },
+    }));
+    expect(dbMockState.insertValues[0]!.triggerRef).toEqual({ source: 'chat_analysis' });
+    expect(dbMockState.insertValues[0]).toMatchObject({ continuedFromRunId: null, chainDepth: 0 });
   });
 
   it('a continuation also stamps the lineage on a reclaimed enqueue_failed row', async () => {

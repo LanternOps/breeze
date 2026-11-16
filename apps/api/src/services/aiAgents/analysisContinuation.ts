@@ -103,6 +103,15 @@ function stagedInputsOf(value: unknown): AiAgentRunStagedInputs | null {
   return value as AiAgentRunStagedInputs;
 }
 
+/** As `stagedInputsOf`, but a present-and-unreadable value is reported: its files cannot be carried. */
+function stagedInputsOfPrior(runId: string, value: unknown): AiAgentRunStagedInputs | null {
+  const parsed = stagedInputsOf(value);
+  if (parsed === null && value !== null && value !== undefined) {
+    console.warn('[analysisContinuation] prior run staged_inputs unreadable; its inherited files are not carried', { runId });
+  }
+  return parsed;
+}
+
 function triggerRefField(triggerRef: unknown, key: string): unknown {
   return triggerRef && typeof triggerRef === 'object' ? (triggerRef as Record<string, unknown>)[key] : undefined;
 }
@@ -150,7 +159,7 @@ export async function analysisContinuationOf(input: {
       grantId: row.grantId,
       chainRootRunId: row.chainRootRunId ?? null,
       chainDepth: row.chainDepth ?? 0,
-      stagedInputs: stagedInputsOf(row.stagedInputs),
+      stagedInputs: stagedInputsOfPrior(row.id, row.stagedInputs),
       goal: typeof goal === 'string' ? goal : '',
       originSessionId: typeof originSessionId === 'string' ? originSessionId : null,
     },
@@ -203,6 +212,9 @@ export async function deriveChainHandles(input: {
   exportGrants: AiRunExportGrants;
 }): Promise<{ handles: string[]; dropped: ChainHandleDrop[] }> {
   const { orgId, prior, grantId } = input;
+  // `analysisContinuationOf` validated the prior under this grant; deriving
+  // under another would classify every file against the wrong grant.
+  if (prior.grantId !== grantId) throw new Error('deriveChainHandles: prior and launch grant differ');
   const priorHandles = [...new Set(prior.stagedInputs?.handles ?? [])];
   const queryable = priorHandles.filter(isUuid);
   const producedByPrior = and(
@@ -290,8 +302,15 @@ export async function chainCommittedCents(
       AND status <> 'skipped'
       AND NOT (status = 'failed' AND coalesce(error_code, '') = 'enqueue_failed')
   `);
+  // An aggregate always returns exactly one row. Anything unreadable must fail
+  // the admission (closed), never read as "nothing committed" (open).
   const row = (rows as unknown as Array<{ runCount?: unknown; committedCents?: unknown }>)[0];
-  return { committedCents: Number(row?.committedCents ?? 0), runCount: Number(row?.runCount ?? 0) };
+  const committedCents = Number(row?.committedCents ?? Number.NaN);
+  const runCount = Number(row?.runCount ?? Number.NaN);
+  if (!Number.isFinite(committedCents) || !Number.isFinite(runCount)) {
+    throw new Error('chainCommittedCents: unreadable chain sum');
+  }
+  return { committedCents, runCount };
 }
 
 /**

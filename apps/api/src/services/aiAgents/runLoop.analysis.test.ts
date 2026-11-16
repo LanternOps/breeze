@@ -361,6 +361,7 @@ function seedRows(options: {
   triggerRef?: Record<string, unknown>;
   computeReservedCents?: number | null;
   fundingSource?: 'platform' | 'partner_key' | null;
+  continuedFromRunId?: string | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const stagedInputs = options.stagedInputs === undefined ? STAGED_INPUTS : options.stagedInputs;
@@ -388,6 +389,7 @@ function seedRows(options: {
     stagedInputs,
     computeReservedCents,
     fundingSource: options.fundingSource ?? null,
+    continuedFromRunId: options.continuedFromRunId ?? null,
   }]];
   dbMockState.rowQueues.ai_agents = [[{
     id: AGENT_ID,
@@ -711,6 +713,19 @@ describe('analysis manifest reaches the task prompt (W03)', () => {
     expect(ambientAtCall).toEqual({ scope: 'system' });
     const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
     expect(prompt).toContain(`${H1} · bsod.csv · 14000 bytes · text/csv · output · produced by run ${R1} (step 1 of chain)`);
+  });
+
+  it('warns when a continuation run (lineage set) has no readable seed, and still runs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    seedRows({ triggerRef: { goal: 'g', continuation: { fromRunId: R1, seed: '' } }, continuedFromRunId: R1 });
+    await executeAgentRun(RUN_ID);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuation seed unreadable'), expect.objectContaining({ runId: RUN_ID }));
+    expect(queryMock).toHaveBeenCalled();
+    warn.mockClear();
+    seedRows({ triggerRef: { goal: 'g' } });
+    await executeAgentRun(RUN_ID);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('continuation seed unreadable'), expect.anything());
+    warn.mockRestore();
   });
 
   it('reads malformed staged handles defensively and still renders a prompt', async () => {
