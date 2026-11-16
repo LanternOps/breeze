@@ -12,6 +12,7 @@ import { readOfflineClassifierStatus, type OfflineClassifierStatus } from '../..
 import type { IpClassifier } from '../../services/ipClassifyOfflineData';
 import { readPromotionBlockers, type RecordedPromotionBlockers } from '../../services/partnerTrustBlockers';
 import { buildEvidenceCard, type EvidenceCard } from '../../services/partnerTrustEvidenceCard';
+import { closeOpenCheckoutsAfterRestrict } from '../../services/partnerTrustPromotion';
 
 export const trustAdminRoutes = new Hono();
 
@@ -148,6 +149,10 @@ async function changeTrustState(
   if (!landed) {
     return c.json({ error: 'trust state changed since the queue was loaded; refresh and retry' }, 409);
   }
+  // Same as an auto-restrict: expire what the partner could still pay on
+  // (#11952). Best effort and bounded by the billing client's timeout; it
+  // never throws and never undoes the restriction.
+  if (next === 'restricted') await closeOpenCheckoutsAfterRestrict(partnerId, action);
   return c.json({ success: true, trustState: next });
 }
 
