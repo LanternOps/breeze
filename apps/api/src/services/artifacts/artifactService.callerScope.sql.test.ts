@@ -85,7 +85,7 @@ describe('findArtifactForCallerQuery — compiled SQL (vacuous-Drizzle trap)', (
   });
 
   it('without wispThreadId the compiled SQL is byte-identical to before (no wisp_thread_attachments reference)', () => {
-    const cols = 'select "id", "org_id", "run_id", "session_id", "kind", "name", "content_type", "bytes", "sha256", "blob_key", "head_preview", "tail_preview", "source_device_id", "created_by_tool", "expires_at", "created_at" from "ai_run_artifacts"';
+    const cols = 'select "id", "org_id", "run_id", "session_id", "kind", "name", "content_type", "bytes", "sha256", "blob_key", "head_preview", "tail_preview", "source_device_id", "created_by_tool", "dataset", "expires_at", "created_at" from "ai_run_artifacts"';
     const tail = 'and "ai_run_artifacts"."expires_at" > $4 and "ai_run_artifacts"."created_by_tool" <> $5 and ("ai_run_artifacts"."kind" <> $6 or "ai_run_artifacts"."name" like $7)) limit $8';
     // Captured from the pre-W04 builder.
     const BEFORE_SESSION = `${cols} where ("ai_run_artifacts"."id" = $1 and "ai_run_artifacts"."org_id" = $2 and "ai_run_artifacts"."session_id" = $3 ${tail}`;
