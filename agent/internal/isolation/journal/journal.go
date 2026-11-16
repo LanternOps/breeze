@@ -102,6 +102,14 @@ type EpisodeRecord struct {
 	// BreakGlassSecret is the per-episode 32-byte secret behind the offline
 	// release code. Never logged.
 	BreakGlassSecret []byte `json:"breakGlassSecret,omitempty"`
+	// ReleaseTokenPublicKey, ReleaseTokenDeviceID and RequireSignedReleaseToken
+	// are pinned from the first spec of the episode that carries a key, and
+	// never replaced while the episode lasts (#10102). Additive fields: the
+	// recovery binary is always the agent's own version (EnsureRecovery), so
+	// no older binary rewrites the journal during an episode.
+	ReleaseTokenPublicKey     []byte `json:"releaseTokenPublicKey,omitempty"`
+	ReleaseTokenDeviceID      string `json:"releaseTokenDeviceId,omitempty"`
+	RequireSignedReleaseToken bool   `json:"requireSignedReleaseToken,omitempty"`
 	// Resolved is the last-known-good address set per allowlist host (and
 	// the proxy host), as installed.
 	Resolved map[string][]string `json:"resolved,omitempty"`

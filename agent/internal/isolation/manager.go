@@ -49,6 +49,9 @@ var (
 	ErrBreakGlassRateLimited = errors.New("too many break-glass attempts in the last hour; wait, or use --force")
 	// ErrBreakGlassUnavailable: the active episode has no secret on this device.
 	ErrBreakGlassUnavailable = errors.New("this device has no break-glass secret for the active isolation; use --force")
+	// ErrReleaseTokenRequired: the episode's policy accepts only a signed
+	// release token (or --force); --code is refused before any attempt is used.
+	ErrReleaseTokenRequired = errors.New("this isolation accepts only a signed release token (--token) or --force")
 	// errCrashedOp is returned when a test's crash injection stopped an op.
 	errCrashedOp = errors.New("operation stopped before completing")
 )
@@ -1029,12 +1032,35 @@ func validateSpec(s *Spec, now time.Time) error {
 	case s.BreakGlassSecret != nil && len(s.BreakGlassSecret) != breakGlassSecretBytes:
 		return errors.New("breakGlassSecret must be 32 bytes")
 	}
+	if err := validateReleaseTokenFields(s); err != nil {
+		return err
+	}
 	for i := range s.Allow {
 		if err := validateEntry(&s.Allow[i]); err != nil {
 			return fmt.Errorf("allow[%d]: %w", i, err)
 		}
 	}
 	return validatePolicyRevision(s)
+}
+
+// validateReleaseTokenFields: the key and the device id come together, the key
+// is usable, and the requirement never stands without a key (it would leave
+// only --force).
+func validateReleaseTokenFields(s *Spec) error {
+	s.ReleaseTokenDeviceID = strings.ToLower(strings.TrimSpace(s.ReleaseTokenDeviceID))
+	if s.ReleaseTokenPublicKey == nil {
+		if s.ReleaseTokenDeviceID != "" || s.RequireSignedReleaseToken {
+			return errors.New("releaseTokenDeviceId and requireSignedReleaseToken need releaseTokenPublicKey")
+		}
+		return nil
+	}
+	if !ValidReleaseTokenPublicKey(s.ReleaseTokenPublicKey) {
+		return errors.New("releaseTokenPublicKey must be a 32-byte Ed25519 public key")
+	}
+	if !uuidRE.MatchString(s.ReleaseTokenDeviceID) {
+		return errors.New("releaseTokenDeviceId must be a UUID")
+	}
+	return nil
 }
 
 func validateEntry(e *AllowEntry) error {
@@ -1269,6 +1295,17 @@ func (o *op) isolateLocked(spec Spec) {
 			o.noteError("store the break-glass secret: " + err.Error())
 		}
 	}
+	// A late release-token key for the episode held, likewise. Once pinned it
+	// is never replaced: a later block cannot swap the key offline release
+	// trusts.
+	if o.state.IsolationID == spec.IsolationID && o.j.Episode != nil && len(o.j.Episode.ReleaseTokenPublicKey) == 0 &&
+		len(spec.ReleaseTokenPublicKey) > 0 && activePhase(o.state.Phase) {
+		pinReleaseToken(o.j.Episode, spec)
+		o.j.Append(o.now(), "release_token_key_pinned", spec.IsolationID, o.state.Generation, "")
+		if err := o.save(); err != nil {
+			o.noteError("store the release-token key: " + err.Error())
+		}
+	}
 
 	// A block that fails the policy rule changes no rules. Its secret, handled
 	// above, belongs to the episode and is the offline way out, so it is kept.
@@ -1361,7 +1398,18 @@ func (o *op) isolateLocked(spec Spec) {
 	if len(spec.BreakGlassSecret) == 0 {
 		o.newEpisode.BreakGlassSecret = nil
 	}
+	pinReleaseToken(o.newEpisode, spec)
 	o.run(ev)
+}
+
+// pinReleaseToken copies a validated spec's release-token fields into ep.
+func pinReleaseToken(ep *journal.EpisodeRecord, spec Spec) {
+	if len(spec.ReleaseTokenPublicKey) == 0 {
+		return
+	}
+	ep.ReleaseTokenPublicKey = append([]byte(nil), spec.ReleaseTokenPublicKey...)
+	ep.ReleaseTokenDeviceID = spec.ReleaseTokenDeviceID
+	ep.RequireSignedReleaseToken = spec.RequireSignedReleaseToken
 }
 
 func (o *op) refuse(failureCode, detail string) {
@@ -1496,7 +1544,8 @@ func (m *Manager) Reconcile(ctx context.Context, desired *DesiredBlock) {
 			}
 			if snap.Phase == journal.PhaseCommitted && spec.Generation == ep.Generation &&
 				allowEqual(ep.Allow, spec.Allow) && string(spec.PolicyRevision) == ep.PolicyRevision &&
-				(len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) {
+				(len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) &&
+				(len(ep.ReleaseTokenPublicKey) > 0 || len(spec.ReleaseTokenPublicKey) == 0) {
 				return // already applied as desired
 			}
 		}
@@ -1628,6 +1677,9 @@ func (m *Manager) LocalRelease(ctx context.Context, code string, force bool) err
 	}
 	id, gen := o.state.IsolationID, o.state.Generation
 	kind := ReleaseLocalForced
+	if !force && o.j.Episode.RequireSignedReleaseToken {
+		return ErrReleaseTokenRequired
+	}
 	if !force {
 		secret := o.j.Episode.BreakGlassSecret
 		if len(secret) != breakGlassSecretBytes {
@@ -1663,6 +1715,65 @@ func (m *Manager) LocalRelease(ctx context.Context, code string, force bool) err
 		return fmt.Errorf("release did not complete; recovery stays armed (%s)", o.lastError())
 	}
 	return nil
+}
+
+// LocalReleaseToken is `breeze-agent containment release --token <t>`, run by
+// a local administrator. The token must verify under the key pinned for this
+// episode and name this episode, its current generation and this device
+// (VerifyReleaseToken). Tokens are accepted whatever the episode's
+// requireSignedReleaseToken says, and are not rate-limited: a signature
+// cannot be guessed, so a refused token never locks out a valid one. A
+// refusal leaves the rules in place; the first BreakGlassAttemptsPerHour
+// refusals an hour are journalled with their reason, never the token. A
+// release is recorded as released_locally (kind local_code), with a
+// release_token_accepted event before it.
+func (m *Manager) LocalReleaseToken(ctx context.Context, token string) error {
+	o, err := m.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer o.end()
+	o.cap = m.deps.Isolator.Capability()
+	o.cleanupOrphans(false)
+	if !activePhase(o.state.Phase) || o.state.IsolationID == "" || o.j.Episode == nil {
+		return ErrNoActiveIsolation
+	}
+	id, gen, ep := o.state.IsolationID, o.state.Generation, o.j.Episode
+	now := o.now()
+	binding := ReleaseTokenBinding{IsolationID: id, Generation: gen, DeviceID: ep.ReleaseTokenDeviceID}
+	if verr := VerifyReleaseToken(strings.TrimSpace(token), ep.ReleaseTokenPublicKey, binding, now, o.state.HighWaterWall); verr != nil {
+		if o.recentTokenRejections(now) < BreakGlassAttemptsPerHour {
+			o.j.Append(now, "release_token_rejected", id, gen, ReleaseTokenRejectReason(verr))
+			if serr := o.save(); serr != nil {
+				o.noteError("record the refused release token: " + serr.Error())
+			}
+		}
+		return verr
+	}
+	o.j.Append(now, "release_token_accepted", id, gen, "")
+	if err := o.save(); err != nil {
+		return fmt.Errorf("record the release token: %w", err)
+	}
+	o.report = nil
+	o.run(Event{Kind: EvRelease, IsolationID: id, Generation: gen, ReleaseKind: ReleaseLocalCode})
+	if o.crashed {
+		return errCrashedOp
+	}
+	if o.state.Phase != journal.PhaseReleased {
+		return fmt.Errorf("release did not complete; recovery stays armed (%s)", o.lastError())
+	}
+	return nil
+}
+
+// recentTokenRejections counts the journalled token refusals of the last hour.
+func (o *op) recentTokenRejections(now time.Time) int {
+	n := 0
+	for _, e := range o.j.Events {
+		if e.Type == "release_token_rejected" && now.Sub(e.At) < time.Hour && !e.At.After(now.Add(time.Hour)) {
+			n++
+		}
+	}
+	return n
 }
 
 func (o *op) lastError() string {

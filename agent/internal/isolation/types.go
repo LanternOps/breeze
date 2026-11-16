@@ -103,6 +103,19 @@ type Spec struct {
 	// scope:"any" entries. Empty means no policy applies, and then the spec
 	// carries no such entry.
 	PolicyRevision PolicyRevision `json:"policyRevision,omitempty"`
+	// ReleaseTokenPublicKey is the Ed25519 public key (32 bytes, standard
+	// base64 on the wire) that signs this episode's offline release tokens
+	// (#10102). The server sends it, with ReleaseTokenDeviceID, only to an
+	// agent that advertises CapabilityReleaseToken. The first one received for
+	// an episode is pinned in the journal for the episode's life.
+	ReleaseTokenPublicKey []byte `json:"releaseTokenPublicKey,omitempty"`
+	// ReleaseTokenDeviceID is this device's id (devices.id), which a token
+	// must name. Present exactly when ReleaseTokenPublicKey is.
+	ReleaseTokenDeviceID string `json:"releaseTokenDeviceId,omitempty"`
+	// RequireSignedReleaseToken makes `containment release --code` refuse
+	// (the containment policy's requireSignedReleaseToken). Tokens and
+	// --force are always accepted. Needs ReleaseTokenPublicKey.
+	RequireSignedReleaseToken bool `json:"requireSignedReleaseToken,omitempty"`
 }
 
 // PolicyRevision is the opaque identity of one containment policy's content:
@@ -249,6 +262,11 @@ const (
 	// CapabilityDeadMan until W4d ships, so a dead-man gate cannot read this
 	// level as support for it.
 	CapabilityPolicyAllow = 3
+	// CapabilityReleaseToken accepts the releaseTokenPublicKey,
+	// releaseTokenDeviceId and requireSignedReleaseToken spec fields and
+	// verifies signed offline release tokens (#10102). It implies
+	// CapabilityPolicyAllow but still not CapabilityDeadMan.
+	CapabilityReleaseToken = 4
 )
 
 // AdvertisedVersion is the level this build reports on the heartbeat. An isolator
@@ -259,7 +277,7 @@ func (c Capability) AdvertisedVersion() int {
 	if c.Version < CapabilityBase {
 		return 0
 	}
-	return CapabilityPolicyAllow
+	return CapabilityReleaseToken
 }
 
 // Digest identifies an installed rule set.
