@@ -31,6 +31,10 @@ const auth = () =>
     user: { id: 'u1' },
   }) as unknown as AuthContext;
 const record = { id: HANDLE, name: 'query_devices.json', contentType: 'application/json', bytes: 40_000 };
+/** The anchor the last `findArtifactForCaller` call received. */
+const lastLookupAnchor = () => svc.findArtifactForCaller.mock.calls.at(-1)![1] as Record<string, unknown>;
+/** Until the handler resolves the pin (Task 8) it reaches the lookup unchanged. */
+const PIN_REACHED = { wispGrant: { grantId: 'g1', revisionId: 'r1' } };
 
 describe('read_artifact (A-W05 D13a/D13b)', () => {
   const tool = aiTools.get('read_artifact')!;
@@ -198,6 +202,29 @@ describe('read_artifact anchor threading through executeTool (A-W05 Q4)', () => 
     await executeTool('read_artifact', { handle: HANDLE }, auth(), { capture: { orgId: 'o1', sessionId: 'chat-session-9' } });
     const anchor = svc.findArtifactForCaller.mock.calls.at(-1)![1] as Record<string, unknown>;
     expect(Object.keys(anchor)).not.toContain('wispThreadId');
+  });
+
+  it('#11845: a Wisp chat caller carries its grant pin onto the read_artifact anchor only', async () => {
+    await executeTool('read_artifact', { handle: HANDLE }, auth(), {
+      capture: { orgId: 'o1', sessionId: 's9', wispThreadId: 't7', wispGrant: { grantId: 'g1', revisionId: 'r1' } },
+    });
+    expect(lastLookupAnchor()).toMatchObject({ sessionId: 's9', wispThreadId: 't7', ...PIN_REACHED });
+  });
+
+  it('#11845: an ordinary chat caller has no grant pin key on its anchor', async () => {
+    await executeTool('read_artifact', { handle: HANDLE }, auth(), { capture: { orgId: 'o1', sessionId: 's9' } });
+    const anchor = lastLookupAnchor();
+    expect(anchor).not.toHaveProperty('wispGrant');
+    expect(anchor).not.toHaveProperty('analysisOutputs');
+  });
+
+  it('#11845: a caller-supplied read_artifact anchor is dropped when the server computed none', async () => {
+    const bareAuth = { scope: 'system', orgId: null, orgCondition: () => undefined } as unknown as AuthContext;
+    const out = JSON.parse(await executeTool('read_artifact', { handle: HANDLE }, bareAuth, {
+      context: { captureAnchor: { orgId: 'o1', sessionId: 'forged', wispGrant: { grantId: 'g1', revisionId: 'r1' } } },
+    }));
+    expect(out).toMatchObject({ error: 'no_capture_anchor' });
+    expect(svc.findArtifactForCaller).not.toHaveBeenCalled();
   });
 
   it('a caller with no attributable org/run/session gets the typed refusal, never an unscoped lookup', async () => {
