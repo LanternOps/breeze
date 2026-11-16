@@ -96,12 +96,12 @@ func (c *captureConn) drainHeaders(ctx context.Context, max time.Duration) {
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
-	if err := c.Conn.SetReadDeadline(deadline); err != nil {
+	if err := c.SetReadDeadline(deadline); err != nil {
 		return
 	}
-	defer func() { _ = c.Conn.SetReadDeadline(time.Time{}) }()
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
 	// A caller cancellation without a deadline still ends the drain.
-	stop := context.AfterFunc(ctx, func() { _ = c.Conn.SetReadDeadline(time.Now()) })
+	stop := context.AfterFunc(ctx, func() { _ = c.SetReadDeadline(time.Now()) })
 	defer stop()
 	scratch := make([]byte, 1024)
 	for !c.complete() {
