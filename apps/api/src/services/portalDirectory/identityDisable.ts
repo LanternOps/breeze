@@ -198,7 +198,7 @@ async function insertAudit(row: typeof auditLogs.$inferInsert): Promise<void> {
 // Disable
 // ---------------------------------------------------------------------------
 
-type DisableCommitted = {
+export type DisableCommitted = {
   result: DisableIdentityResult;
   /** The epoch moved: purge after commit. */
   purge: boolean;
@@ -248,11 +248,35 @@ export async function disablePortalIdentity(input: DisableIdentityInput): Promis
   return committed.result;
 }
 
+/**
+ * W9 (#11386, plan D6): the disable inside the CALLER's system transaction,
+ * for a SCIM mutation that must update attributes, blockers, the tombstone and
+ * its audit atomically. Same rules and lock order as
+ * {@link disablePortalIdentity}; the caller purges after its commit when
+ * `purge` is true ({@link purgeIdentitySessions}). Re-taking a lock the caller
+ * already holds in this transaction is a no-op.
+ */
+export async function disableIdentityInTransaction(input: DisableIdentityInput): Promise<DisableCommitted> {
+  if (input.actionId !== undefined) throw new Error('disableIdentityInTransaction: run actions go through disablePortalIdentity');
+  if (!UUID_RE.test(input.orgId) || !UUID_RE.test(input.identityId)) {
+    return { result: { kind: 'skipped', reason: 'not_found' }, purge: false };
+  }
+  return disableInTransaction(input, directorySourceOfBlocker(input.blocker), input.now ?? new Date());
+}
+
+/** After commit: both session stores for one account (W9). Logs and swallows a failure; the epoch is authoritative. */
+export async function purgeIdentitySessions(portalUserId: string, now: Date = new Date()): Promise<void> {
+  await purgeAfterCommit(portalUserId, null, now);
+}
+
 async function disableInTransaction(input: DisableIdentityInput, source: DirectorySource | null, now: Date): Promise<DisableCommitted> {
   const skipped = (reason: Extract<DisableIdentityResult, { kind: 'skipped' }>['reason']): DisableCommitted =>
     ({ result: { kind: 'skipped', reason }, purge: false });
 
   if (input.actionId !== undefined && source) await lockPortalDirectorySource(input.orgId, source);
+  // W9 (D6): a SCIM disable serializes with the Entra directory's capture,
+  // apply and Restore on the same advisory lock (taken before any row lock).
+  if (input.blocker === 'scim') await lockPortalDirectorySource(input.orgId, 'entra');
 
   const owner = await readIdentityOwner(input.orgId, input.identityId);
   if (!owner) return skipped('not_found');
@@ -746,63 +770,70 @@ export type LiftScimIdentityBlockerResult =
 export async function liftScimIdentityBlocker(input: LiftScimIdentityBlockerInput): Promise<LiftScimIdentityBlockerResult> {
   assertNoHeldContext('liftScimIdentityBlocker');
   if (!UUID_RE.test(input.orgId) || !UUID_RE.test(input.identityId)) return { kind: 'not_found' };
+  return withSystemDbAccessContext(() => liftScimBlockerInTransaction(input), 'portalScim.liftBlocker');
+}
+
+/**
+ * {@link liftScimIdentityBlocker} inside the CALLER's system transaction (W9
+ * D6): a SCIM mutation updates attributes, lifts the blocker and audits in one
+ * commit. Re-taking a lock the caller already holds is a no-op.
+ */
+export async function liftScimBlockerInTransaction(input: LiftScimIdentityBlockerInput): Promise<LiftScimIdentityBlockerResult> {
+  if (!UUID_RE.test(input.orgId) || !UUID_RE.test(input.identityId)) return { kind: 'not_found' };
   const now = input.now ?? new Date();
+  await lockPortalDirectorySource(input.orgId, 'entra');
+  const owner = await readIdentityOwner(input.orgId, input.identityId);
+  // SCIM manages Entra identities only.
+  if (!owner || owner.provider !== 'entra') return { kind: 'not_found' };
+  const locked = await lockAccountThenIdentity(input.orgId, owner.portalUserId, input.identityId, owner.subject);
+  if (!locked) return { kind: 'not_found' };
+  const { account, identity } = locked;
+  if (!identity.disabledBlockers.includes('scim')) return { kind: 'not_blocked', portalUserId: account.id };
 
-  return withSystemDbAccessContext(async (): Promise<LiftScimIdentityBlockerResult> => {
-    await lockPortalDirectorySource(input.orgId, 'entra');
-    const owner = await readIdentityOwner(input.orgId, input.identityId);
-    // SCIM manages Entra identities only.
-    if (!owner || owner.provider !== 'entra') return { kind: 'not_found' };
-    const locked = await lockAccountThenIdentity(input.orgId, owner.portalUserId, input.identityId, owner.subject);
-    if (!locked) return { kind: 'not_found' };
-    const { account, identity } = locked;
-    if (!identity.disabledBlockers.includes('scim')) return { kind: 'not_blocked', portalUserId: account.id };
+  const remainingBlockers = identity.disabledBlockers.filter((b) => b !== 'scim');
+  const identityEnabled = remainingBlockers.length === 0;
+  await db
+    .update(portalUserIdentities)
+    .set(identityEnabled
+      ? { disabledBlockers: [], disabledAt: null, disabledReason: null }
+      : { disabledBlockers: remainingBlockers })
+    .where(and(eq(portalUserIdentities.id, identity.id), eq(portalUserIdentities.orgId, input.orgId)));
 
-    const remainingBlockers = identity.disabledBlockers.filter((b) => b !== 'scim');
-    const identityEnabled = remainingBlockers.length === 0;
+  let accountReactivated = false;
+  if (identityEnabled && account.status === 'disabled' && account.disabledBy === 'scim') {
+    const target = planPortalAccountTransition({
+      status: account.status,
+      browserAccess: account.browserAccess,
+      authMethod: account.authMethod,
+      hasPasswordHash: Boolean(account.passwordHash),
+      hasExternalIdentity: true,
+      // The identity enabled above, in this transaction.
+      hasUsableExternalIdentity: true,
+      passwordUsable: false,
+      disabledBy: account.disabledBy,
+    }, 'scim_reactivate');
     await db
-      .update(portalUserIdentities)
-      .set(identityEnabled
-        ? { disabledBlockers: [], disabledAt: null, disabledReason: null }
-        : { disabledBlockers: remainingBlockers })
-      .where(and(eq(portalUserIdentities.id, identity.id), eq(portalUserIdentities.orgId, input.orgId)));
+      .update(portalUsers)
+      .set({
+        status: target.status,
+        browserAccess: target.browserAccess,
+        disabledBy: target.disabledBy,
+        ...(target.bumpEpoch ? { authEpoch: sql`${portalUsers.authEpoch} + 1` } : {}),
+        updatedAt: now,
+      })
+      .where(and(eq(portalUsers.id, account.id), eq(portalUsers.orgId, input.orgId)));
+    accountReactivated = true;
+  }
 
-    let accountReactivated = false;
-    if (identityEnabled && account.status === 'disabled' && account.disabledBy === 'scim') {
-      const target = planPortalAccountTransition({
-        status: account.status,
-        browserAccess: account.browserAccess,
-        authMethod: account.authMethod,
-        hasPasswordHash: Boolean(account.passwordHash),
-        hasExternalIdentity: true,
-        // The identity enabled above, in this transaction.
-        hasUsableExternalIdentity: true,
-        passwordUsable: false,
-        disabledBy: account.disabledBy,
-      }, 'scim_reactivate');
-      await db
-        .update(portalUsers)
-        .set({
-          status: target.status,
-          browserAccess: target.browserAccess,
-          disabledBy: target.disabledBy,
-          ...(target.bumpEpoch ? { authEpoch: sql`${portalUsers.authEpoch} + 1` } : {}),
-          updatedAt: now,
-        })
-        .where(and(eq(portalUsers.id, account.id), eq(portalUsers.orgId, input.orgId)));
-      accountReactivated = true;
-    }
-
-    await insertAudit({
-      orgId: input.orgId,
-      actorType: 'system',
-      actorId: ANONYMOUS_ACTOR_ID,
-      action: AUDIT_SCIM_USER_REACTIVATE,
-      resourceType: 'portal_user',
-      resourceId: account.id,
-      details: { identityId: identity.id, scimTokenId: input.scimTokenId, identityEnabled, accountReactivated, remainingBlockers },
-      result: 'success',
-    });
-    return { kind: 'lifted', portalUserId: account.id, identityEnabled, accountReactivated };
-  }, 'portalScim.liftBlocker');
+  await insertAudit({
+    orgId: input.orgId,
+    actorType: 'system',
+    actorId: ANONYMOUS_ACTOR_ID,
+    action: AUDIT_SCIM_USER_REACTIVATE,
+    resourceType: 'portal_user',
+    resourceId: account.id,
+    details: { identityId: identity.id, scimTokenId: input.scimTokenId, identityEnabled, accountReactivated, remainingBlockers },
+    result: 'success',
+  });
+  return { kind: 'lifted', portalUserId: account.id, identityEnabled, accountReactivated };
 }

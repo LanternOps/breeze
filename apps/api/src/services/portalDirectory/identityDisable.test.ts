@@ -317,6 +317,7 @@ describe('disablePortalIdentity', () => {
 
   it('a second blocker is added, not a no-op: blocker_added, first reason kept, no second epoch bump', async () => { // RF4, quorum D9
     const firstAt = new Date('2027-01-30T00:00:00.000Z');
+    h.results.push([]); // W9 (D6): the scim blocker takes the (org, 'entra') advisory lock
     scriptDisable({
       withAction: false,
       account: { status: 'disabled', disabledBy: 'directory' },
@@ -330,8 +331,10 @@ describe('disablePortalIdentity', () => {
     });
     expect(updatesOf(portalUsers)).toEqual([]);
     expect(purgePortalSessionsForUsers).not.toHaveBeenCalled();
-    // W9 passes no run: no advisory lock, no action, audit runId null.
-    expect(h.calls.some((c) => c.op === 'execute')).toBe(false);
+    // W9 passes no run: no action and audit runId null, but the scim blocker
+    // still takes the (org, 'entra') advisory lock (W9 plan D6, quorum).
+    expect(h.calls.filter((c) => c.op === 'execute').map((c) => sqlText(c).params)).toEqual([[`portal-directory:${ORG}:entra`]]);
+    expect(updatesOf(portalDirectoryActions)).toEqual([]);
     expect(firstArg(inserts()[0], 'values').details).toMatchObject({ blocker: 'scim', runId: null });
   });
 
@@ -676,18 +679,18 @@ describe('disablePortalIdentity with the scim blocker (W9 D6)', () => {
   };
 
   it('disables an identity-only account as scim (scim_deprovision), bumps the epoch and purges', async () => {
-    scriptDisable({ withAction: false });
+    h.results.push([]); scriptDisable({ withAction: false });
     const out = await disablePortalIdentity(scimInput);
     expect(out).toEqual({ kind: 'disabled', portalUserId: PU, accountDisabled: true, keepsPassword: false });
-    // No run, no advisory lock: the first statement is the owner read.
-    expect(h.calls[0]!.op).toBe('select');
+    // No run, but the SCIM disable takes the (org, 'entra') advisory lock first (D6).
+    expect(sqlText(h.calls[0]!).params).toEqual([`portal-directory:${ORG}:entra`]);
     expect(firstArg(updatesOf(portalUserIdentities)[0], 'set')).toMatchObject({ disabledBlockers: ['scim'], disabledReason: 'scim_deactivated' });
     expect(firstArg(updatesOf(portalUsers)[0], 'set')).toMatchObject({ status: 'disabled', disabledBy: 'scim' });
     expect(purge.order).toEqual([`portal:${PU}:depth0`, `clientAi:${PU}:depth0`]);
   });
 
   it('merges the caller\'s audit details into the disable row (via scim, token id)', async () => {
-    scriptDisable({ withAction: false });
+    h.results.push([]); scriptDisable({ withAction: false });
     await disablePortalIdentity(scimInput);
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       action: 'portal.directory.identity.disable',
@@ -696,13 +699,13 @@ describe('disablePortalIdentity with the scim blocker (W9 D6)', () => {
   });
 
   it('the caller\'s audit details never override the writer\'s own fields', async () => {
-    scriptDisable({ withAction: false });
+    h.results.push([]); scriptDisable({ withAction: false });
     await disablePortalIdentity({ ...scimInput, auditDetails: { blocker: 'msp', identityId: 'x', via: 'scim' } });
     expect(firstArg(inserts()[0], 'values')).toMatchObject({ details: { blocker: 'scim', identityId: IDENT } });
   });
 
   it('on an account disabled by the MSP it adds the blocker and keeps disabled_by msp', async () => {
-    scriptDisable({ withAction: false, account: { status: 'disabled', disabledBy: 'msp' } });
+    h.results.push([]); scriptDisable({ withAction: false, account: { status: 'disabled', disabledBy: 'msp' } });
     const out = await disablePortalIdentity(scimInput);
     expect(out).toMatchObject({ kind: 'disabled', accountDisabled: false });
     // Only the epoch moves: status and disabled_by are never rewritten, so the MSP's disable stays the MSP's.
