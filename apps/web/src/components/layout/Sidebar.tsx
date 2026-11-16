@@ -1,4 +1,4 @@
-import { Fragment, useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { Fragment, useState, useCallback, useMemo, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   MessageSquare,
@@ -86,6 +86,7 @@ import { getJwtClaims } from '../../lib/authScope';
 import { REOPEN_EVENT } from '../whatsNew/WhatsNewSplash';
 import BrandHeader from './BrandHeader';
 import RailSectionFlyout from './RailSectionFlyout';
+import { tabbableNodes } from '../shared/tabbable';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
 import { useExtensionNavigation } from '../extensions/useExtensionNavigation';
 import '../../lib/i18n';
@@ -890,6 +891,63 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     return () => document.removeEventListener('astro:after-swap', handleNav);
   }, [closeMobileMenu]);
 
+  // The drawer exists only below 768px. Close it when the viewport grows past
+  // that (rotation, window resize) so it does not reappear unasked on the way
+  // back, and the menu button never reports an open drawer nobody can see.
+  useEffect(() => {
+    if (!isMobile && isMobileMenuOpen) closeMobileMenu();
+  }, [isMobile, isMobileMenuOpen, closeMobileMenu]);
+
+  // Mobile drawer is a modal dialog: focus moves in on open (the current page's
+  // link, else the first stop) and returns on close to whatever opened it —
+  // the header's menu button, which a tap on iOS never focuses, so it is also
+  // the fallback.
+  const mobileDrawerOpen = isMobile && isMobileMenuOpen;
+  const mobileDrawerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!mobileDrawerOpen) return;
+    const opener = document.activeElement;
+    const raf = requestAnimationFrame(() => {
+      const panel = mobileDrawerRef.current;
+      if (!panel) return;
+      const stops = tabbableNodes(panel);
+      const current = panel.querySelector<HTMLElement>('nav a[aria-current="page"]');
+      (current && stops.includes(current) ? current : stops[0] ?? panel).focus();
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      const target =
+        opener instanceof HTMLElement && opener !== document.body && opener.isConnected
+          ? opener
+          : document.querySelector<HTMLElement>('[data-testid="mobile-menu-toggle"]');
+      target?.focus();
+    };
+  }, [mobileDrawerOpen]);
+
+  const handleMobileDrawerKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      closeMobileMenu();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const stops = tabbableNodes(event.currentTarget);
+    if (stops.length === 0) return;
+    const first = stops[0]!;
+    const last = stops[stops.length - 1]!;
+    const active = document.activeElement;
+    if (active === event.currentTarget) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   // Compute the effective mode. Mobile renders only the drawer. Tablet ignores
   // the saved desktop mode: the rail stays narrow (a 256px sidebar would eat a
   // quarter of the viewport) and the toggle peeks the labelled sidebar over it.
@@ -1419,34 +1477,47 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   );
 
   // --- Mobile overlay sidebar ----------------------------------------------
-  const mobileOverlay = isMobile && isMobileMenuOpen && (
+  const mobileOverlay = mobileDrawerOpen && (
     <>
       {/* Backdrop */}
       <div
         className="fixed inset-0 z-40 bg-background/80 backdrop-blur-xs"
         onClick={closeMobileMenu}
+        aria-hidden="true"
       />
       {/* Slide-out sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-50 w-64 bg-card border-r shadow-lg overflow-y-auto">
+      <aside
+        ref={mobileDrawerRef}
+        id="mobile-nav-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('layout.header.menu')}
+        tabIndex={-1}
+        onKeyDown={handleMobileDrawerKeyDown}
+        className="fixed inset-y-0 left-0 z-50 w-64 overflow-y-auto border-r bg-card shadow-lg focus:outline-hidden"
+      >
         {sectionAnimCss}
 
         <div className="flex h-16 items-center justify-between border-b px-4">
           <BrandHeader logoUrl={brandLogoUrl} name={brandName} showLabel />
           <div className="flex items-center gap-1">
             <button
+              type="button"
               onClick={collapseAllExceptActive}
               title={t('layout.sidebar.collapseSections')}
               aria-label={t('layout.sidebar.collapseSections')}
               className="rounded-md p-1.5 hover:bg-muted"
             >
-              <ChevronsDownUp className="h-5 w-5" />
+              <ChevronsDownUp className="h-5 w-5" aria-hidden="true" />
             </button>
             <button
+              type="button"
               onClick={closeMobileMenu}
               className="rounded-md p-1.5 hover:bg-muted"
               title={t('layout.sidebar.closeMenu')}
+              aria-label={t('layout.sidebar.closeMenu')}
             >
-              <X className="h-5 w-5" />
+              <X className="h-5 w-5" aria-hidden="true" />
             </button>
           </div>
         </div>
