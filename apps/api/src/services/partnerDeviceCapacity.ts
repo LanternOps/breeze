@@ -8,7 +8,24 @@ export type PartnerDeviceCapacityTx = Parameters<Parameters<typeof db.transactio
 
 export const PARTNER_DEVICE_CAPACITY_LOCK_TIMEOUT_MS = 3_000;
 
-/** A billing allowance can widen admission, never erase the reserved limit. */
+/** Fixed floor of the allowance bound, kept for partners with a small max_devices. */
+const BILLING_ADMISSION_BOUND_FLOOR = 1100;
+
+/**
+ * A billing allowance can widen admission, never erase the reserved limit.
+ *
+ * Billing writes the allowance as ceilingFor(commitment) + pending devices
+ * (commitment + pending while over commitment), so it scales with the
+ * commitment. The sanity bound is max(1,100, 2 x max_devices): a large annual
+ * commitment is honoured, while a corrupt or runaway value is still ignored.
+ * The bound only matters once every other proof holds (community, active,
+ * unexpired); an absent or expired allowance always falls back to max_devices.
+ *
+ * Known limitation: when pending devices exceed commitment - commitment/10
+ * (about 90% of the commitment), the allowance passes 2 x max_devices and is
+ * ignored, so admission falls back to max_devices. Do not widen the bound
+ * further to cover that case.
+ */
 export function effectivePartnerAdmissionLimit(partner: {
   maxDevices: number | null;
   plan?: string;
@@ -20,7 +37,8 @@ export function effectivePartnerAdmissionLimit(partner: {
   const expiry = partner.billingAdmissionExpiresAt ? new Date(partner.billingAdmissionExpiresAt).getTime() : NaN;
   const limit = partner.billingAdmissionLimit;
   if (partner.plan === 'community' && partner.billingSubscriptionStatus === 'active'
-    && typeof limit === 'number' && Number.isInteger(limit) && limit > 0 && limit <= 1100
+    && typeof limit === 'number' && Number.isInteger(limit) && limit > 0
+    && limit <= Math.max(BILLING_ADMISSION_BOUND_FLOOR, partner.maxDevices * 2)
     && Number.isFinite(expiry) && expiry > now.getTime()) return Math.max(partner.maxDevices, limit);
   return partner.maxDevices;
 }

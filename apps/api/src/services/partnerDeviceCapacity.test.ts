@@ -27,6 +27,31 @@ describe('billing growth admission', () => {
   });
 });
 
+describe('annual allowance bound scales with max_devices', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  const annual = { maxDevices: 5000, plan: 'community', billingSubscriptionStatus: 'active',
+    billingAdmissionLimit: 5504, billingAdmissionExpiresAt: new Date('2026-10-23T00:00:00Z') };
+  it('honours 5,504 for max_devices 5,000', () => {
+    expect(effectivePartnerAdmissionLimit(annual, now)).toBe(5504);
+  });
+  it('honours exactly 2 x max_devices and ignores 10,001 for max_devices 5,000', () => {
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionLimit: 10000 }, now)).toBe(10000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionLimit: 10001 }, now)).toBe(5000);
+  });
+  it('keeps the 1,100 floor for small partners', () => {
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 110, billingAdmissionLimit: 1100 }, now)).toBe(1100);
+    expect(effectivePartnerAdmissionLimit({ ...annual, maxDevices: 110, billingAdmissionLimit: 1101 }, now)).toBe(110);
+  });
+  it('a large max_devices never widens an expired, absent, non-active or non-community allowance', () => {
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionExpiresAt: now }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionExpiresAt: null }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingAdmissionLimit: null }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, billingSubscriptionStatus: 'past_due' }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ ...annual, plan: 'free' }, now)).toBe(5000);
+    expect(effectivePartnerAdmissionLimit({ maxDevices: 5000 }, now)).toBe(5000);
+  });
+});
+
 describe('beta offers: admission limit pinned', () => {
   const now = new Date('2026-10-22T12:00:00Z');
   const betaPartner = { plan: 'community', billingSubscriptionStatus: 'active',
