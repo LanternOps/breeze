@@ -1115,6 +1115,7 @@
   "aiErrorBanner": {
     "timedOut": "This response timed out",
     "disconnected": "The connection was interrupted before the response finished.",
-    "tryAgain": "Try again"
+    "tryAgain": "Try again",
+    "conversationGone": "This conversation is no longer available. Start a new chat to continue."
   }
 }

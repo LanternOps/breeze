@@ -1115,6 +1115,7 @@
   "aiErrorBanner": {
     "timedOut": "Esta respuesta agotó el tiempo de espera",
     "disconnected": "La conexión se interrumpió antes de que terminara la respuesta.",
-    "tryAgain": "Intentar de nuevo"
+    "tryAgain": "Intentar de nuevo",
+    "conversationGone": "Esta conversación ya no está disponible. Inicia un chat nuevo para continuar."
   }
 }

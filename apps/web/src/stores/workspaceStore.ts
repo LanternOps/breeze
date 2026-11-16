@@ -1077,11 +1077,21 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           // be running, or never have reached the server. The stored transcript
           // says which; never re-send a turn that ran (its tools may have, too).
           const gen = workspaceGeneration;
-          updateTab(tabId, { retryTarget: null, isLoading: true });
+          updateTab(tabId, { isLoading: true });
           const result = await openAiSession(target.sessionId);
-          if (gen !== workspaceGeneration || getTab(tabId)?.sessionId !== target.sessionId) return;
+          if (gen !== workspaceGeneration) return;
+          if (getTab(tabId)?.sessionId !== target.sessionId) {
+            updateTab(tabId, { isLoading: false, retryTarget: null });
+            return;
+          }
+          if (result.kind === 'error') {
+            // The reload failed too: say so, and keep offering the retry.
+            updateTab(tabId, { isLoading: false, error: result.message, retryTarget: { ...target, error: result.message } });
+            return;
+          }
           if (result.kind !== 'ok') {
-            updateTab(tabId, { isLoading: false, error: 'Could not reload the conversation', errorCode: 'rejected', errorDetail: null });
+            // Gone or closed elsewhere: nothing left to retry here.
+            updateTab(tabId, { isLoading: false, error: i18n.t('ai:aiErrorBanner.conversationGone'), errorCode: 'session_closed', errorDetail: null, retryTarget: null });
             return;
           }
           updateTab(tabId, { messages: result.messages, isLoading: false, error: null, errorCode: null, errorDetail: null });

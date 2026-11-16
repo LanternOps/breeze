@@ -1115,6 +1115,7 @@
   "aiErrorBanner": {
     "timedOut": "Cette réponse a expiré",
     "disconnected": "La connexion a été interrompue avant la fin de la réponse.",
-    "tryAgain": "Réessayer"
+    "tryAgain": "Réessayer",
+    "conversationGone": "Cette conversation n’est plus disponible. Démarrez une nouvelle discussion pour continuer."
   }
 }

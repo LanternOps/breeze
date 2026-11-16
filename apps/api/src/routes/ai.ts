@@ -181,18 +181,21 @@ function generateSessionTitle(content: string): string {
 }
 
 /**
- * #9428: the id of the session's latest message when it is a user row with
- * exactly this text — the row a "Try again" re-runs — else null. Caller-scoped:
- * runs inside the request's own DB context (RLS applies as for the insert).
+ * #9428: the id of the session's most recent USER row when it has exactly this
+ * text — the failed turn's message a "Try again" re-runs — else null. Rows the
+ * failed turn wrote after it (partial assistant text, tool_use rows, the fixed
+ * provider-failure reply) are skipped: they belong to that same turn. Whether
+ * the turn failed is the client's call (it sends `retry` only for one).
+ * Caller-scoped: runs inside the request's own DB context, as the insert does.
  */
-async function trailingUserRowId(sessionId: string, content: string): Promise<string | null> {
+async function lastUserRowIdWithContent(sessionId: string, content: string): Promise<string | null> {
   const [latest] = await db
-    .select({ id: aiMessages.id, role: aiMessages.role, content: aiMessages.content })
+    .select({ id: aiMessages.id, content: aiMessages.content })
     .from(aiMessages)
-    .where(eq(aiMessages.sessionId, sessionId))
+    .where(and(eq(aiMessages.sessionId, sessionId), eq(aiMessages.role, 'user')))
     .orderBy(desc(aiMessages.createdAt))
     .limit(1);
-  return latest && latest.role === 'user' && latest.content === content ? latest.id : null;
+  return latest && latest.content === content ? latest.id : null;
 }
 
 type AiTurnBudgetDispatch = { reservationId: string; maxBudgetUsd?: number };
@@ -1195,11 +1198,12 @@ aiRoutes.post(
       try {
         // #9428: "Try again" re-sends the failed turn's message. Its row was
         // already saved by the failed POST, so re-use it (and anchor on it)
-        // rather than persisting the same message twice. Only an exact,
-        // still-trailing user row qualifies: if the turn did answer after all,
-        // or the text differs, this is a new message. The lookup runs in this
-        // same caller-scoped context as the insert.
-        const retriedRowId = body.retry === true ? await trailingUserRowId(sessionId, sanitizedContent) : null;
+        // rather than persisting the same message twice. Only the session's
+        // most recent user row with exactly this text qualifies (rows the
+        // failed turn wrote after it are skipped); otherwise this is a new
+        // message. The lookup runs in this same caller-scoped context as the
+        // insert.
+        const retriedRowId = body.retry === true ? await lastUserRowIdWithContent(sessionId, sanitizedContent) : null;
         const [userRow] = retriedRowId
           ? [{ id: retriedRowId }]
           : await db.insert(aiMessages).values({

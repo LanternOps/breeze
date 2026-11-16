@@ -1115,6 +1115,7 @@
   "aiErrorBanner": {
     "timedOut": "Esta resposta excedeu o tempo limite",
     "disconnected": "A conexão foi interrompida antes de a resposta terminar.",
-    "tryAgain": "Tentar novamente"
+    "tryAgain": "Tentar novamente",
+    "conversationGone": "Esta conversa não está mais disponível. Inicie um novo chat para continuar."
   }
 }

@@ -64,6 +64,9 @@ vi.mock('../db/schema', () => ({
   aiMessages: {
     id: 'aiMessages.id',
     sessionId: 'aiMessages.sessionId',
+    role: 'aiMessages.role',
+    content: 'aiMessages.content',
+    createdAt: 'aiMessages.createdAt',
   },
   aiToolExecutions: {
     id: 'aiToolExecutions.id',
@@ -416,11 +419,28 @@ describe('POST /ai/sessions/:id/messages — "Try again" (#9428)', () => {
     insertValues = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: USER_ROW_ID }]) });
     vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
     latestRows = [];
-    const limit = vi.fn(async () => latestRows);
+    // The session's rows, oldest first; the query's role filter (if any) is honoured.
     vi.mocked(db.select).mockReturnValue({
-      from: vi.fn(() => ({ where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit })) })) })),
+      from: vi.fn(() => ({
+        where: vi.fn((cond: unknown) => {
+          const rows = sqlMentions(cond, 'aiMessages.role') ? latestRows.filter((r) => r.role === 'user') : latestRows;
+          return { orderBy: vi.fn(() => ({ limit: vi.fn(async () => rows.slice(-1)) })) };
+        }),
+      })),
     } as any);
   });
+
+  /** Whether a drizzle condition references this (mocked, string) column. */
+  function sqlMentions(cond: unknown, column: string): boolean {
+    const seen = new WeakSet<object>();
+    return JSON.stringify(cond, (_k, v: unknown) => {
+      if (v && typeof v === 'object') {
+        if (seen.has(v)) return undefined;
+        seen.add(v);
+      }
+      return v;
+    }).includes(column);
+  }
 
   afterEach(() => {
     vi.mocked(runPreFlightChecks).mockReset();
@@ -440,7 +460,22 @@ describe('POST /ai/sessions/:id/messages — "Try again" (#9428)', () => {
     expect(active.turnUserMessageId).toBe(EXISTING_USER_ROW);
   });
 
-  it('retry after the turn already answered (trailing row is assistant) inserts as usual', async () => {
+  it('retry after a turn that failed partway (its assistant and tool rows follow the user row) reuses that row', async () => {
+    latestRows = [
+      { id: 'u0', role: 'user', content: 'earlier' },
+      { id: 'a0', role: 'assistant', content: 'ok' },
+      { id: EXISTING_USER_ROW, role: 'user', content: 'hi' },
+      { id: 'a1', role: 'assistant', content: 'Checking the server…' },
+      { id: 't1', role: 'tool_use', content: '' },
+      { id: 'a2', role: 'assistant', content: 'The AI model provider returned a server error.' },
+    ];
+    const active = activeThatFinishes();
+    await (await postBody({ content: 'hi', retry: true })).text();
+    expect(userInserts()).toHaveLength(0);
+    expect(active.turnUserMessageId).toBe(EXISTING_USER_ROW);
+  });
+
+  it('retry with no stored user row for it inserts as usual', async () => {
     latestRows = [{ id: 'a1', role: 'assistant', content: 'hello' }];
     activeThatFinishes();
     await (await postBody({ content: 'hi', retry: true })).text();

@@ -1115,6 +1115,7 @@
   "aiErrorBanner": {
     "timedOut": "Bu yanıt zaman aşımına uğradı",
     "disconnected": "Yanıt tamamlanmadan bağlantı kesildi.",
-    "tryAgain": "Tekrar dene"
+    "tryAgain": "Tekrar dene",
+    "conversationGone": "Bu konuşma artık kullanılamıyor. Devam etmek için yeni bir sohbet başlatın."
   }
 }

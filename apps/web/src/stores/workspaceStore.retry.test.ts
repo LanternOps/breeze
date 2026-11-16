@@ -261,6 +261,36 @@ describe('workspaceStore.retryLastTurn (#9428)', () => {
       expect(postBodies()[1]!.retry).toBeUndefined();
       expect(userBubbles().map((m) => m.content)).toEqual(['earlier', 'hello']);
     });
+
+    it('a reload that fails keeps the tab and keeps offering the retry', async () => {
+      await disconnect();
+      fetchMock.mockRejectedValueOnce(new TypeError('still offline'));
+      await store().retryLastTurn(TAB);
+      expect(tabOf()).toMatchObject({ isLoading: false, error: 'still offline', sessionId: SID });
+      expect(userBubbles().map((m) => m.content)).toEqual(['hello']);
+      expect(tabOf().retryTarget).toMatchObject({ mode: 'reload_first', error: 'still offline' });
+    });
+
+    it('a conversation closed elsewhere ends the retry with a plain explanation', async () => {
+      await disconnect();
+      fetchMock.mockResolvedValueOnce(json({ session: { ...session, status: 'closed' }, messages: [] }));
+      await store().retryLastTurn(TAB);
+      expect(tabOf()).toMatchObject({ isLoading: false, errorCode: 'session_closed', retryTarget: null });
+      expect(postBodies()).toHaveLength(1);
+    });
+  });
+
+  it('a retry refused 503 stays a retry (the row is stored), so the next try still sends retry:true', async () => {
+    await failWithTimeout();
+    fetchMock.mockResolvedValueOnce(json({ error: 'Unavailable' }, 503));
+    await store().retryLastTurn(TAB);
+    expect(userBubbles()).toHaveLength(1);
+    expect(tabOf()).toMatchObject({ composerDraft: '', errorCode: 'http_5xx' });
+    expect(tabOf().retryTarget).toMatchObject({ mode: 'retry' });
+    fetchMock.mockResolvedValueOnce(okTurn());
+    await store().retryLastTurn(TAB);
+    expect(postBodies()[2]).toMatchObject({ retry: true });
+    expect(userBubbles()).toHaveLength(1);
   });
 });
 

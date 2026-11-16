@@ -1115,6 +1115,7 @@
   "aiErrorBanner": {
     "timedOut": "Questa risposta è scaduta",
     "disconnected": "La connessione è stata interrotta prima che la risposta fosse completata.",
-    "tryAgain": "Riprova"
+    "tryAgain": "Riprova",
+    "conversationGone": "Questa conversazione non è più disponibile. Avvia una nuova chat per continuare."
   }
 }

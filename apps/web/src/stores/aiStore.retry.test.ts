@@ -217,7 +217,6 @@ describe('aiStore.retryLastTurn (#9428)', () => {
     it('the stored transcript still ends with the message: re-sends with retry:true and no new bubble', async () => {
       await disconnect();
       fetchMock.mockResolvedValueOnce(json({ session, messages: [row('u1', 'user', 'hello')] }));
-      fetchMock.mockResolvedValueOnce(idleAttach());
       fetchMock.mockResolvedValueOnce(okTurn());
       await useAiStore.getState().retryLastTurn();
       expect(fetchMock).toHaveBeenCalledWith(`/ai/sessions/${SID}`);
@@ -228,7 +227,6 @@ describe('aiStore.retryLastTurn (#9428)', () => {
     it('the turn finished server-side: shows the answer and sends nothing', async () => {
       await disconnect();
       fetchMock.mockResolvedValueOnce(json({ session, messages: [row('u1', 'user', 'hello'), row('a1', 'assistant', 'Hi!')] }));
-      fetchMock.mockResolvedValueOnce(idleAttach());
       await useAiStore.getState().retryLastTurn();
       expect(postBodies()).toHaveLength(1);
       expect(useAiStore.getState().messages.map((m) => m.content)).toEqual(['hello', 'Hi!']);
@@ -237,13 +235,52 @@ describe('aiStore.retryLastTurn (#9428)', () => {
     it('the message never reached the server: sends it as a new message', async () => {
       await disconnect();
       fetchMock.mockResolvedValueOnce(json({ session, messages: [row('u0', 'user', 'earlier'), row('a0', 'assistant', 'ok')] }));
-      fetchMock.mockResolvedValueOnce(idleAttach());
       fetchMock.mockResolvedValueOnce(okTurn());
       await useAiStore.getState().retryLastTurn();
       expect(postBodies()[1]).toEqual(expect.objectContaining({ content: 'hello' }));
       expect(postBodies()[1]!.retry).toBeUndefined();
       expect(userBubbles().map((m) => m.content)).toEqual(['earlier', 'hello']);
     });
+  });
+
+  it('a reload that fails keeps the chat and keeps offering the retry', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('network error'));
+    await useAiStore.getState().sendMessage('hello');
+    fetchMock.mockRejectedValueOnce(new TypeError('still offline'));
+    await useAiStore.getState().retryLastTurn();
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBe(SID);
+    expect(userBubbles().map((m) => m.content)).toEqual(['hello']);
+    expect(s.isLoading).toBe(false);
+    expect(s.error).toBe('still offline');
+    expect(activeRetryTarget(s)).toMatchObject({ mode: 'reload_first', content: 'hello' });
+  });
+
+  it('a retry refused 503 keeps its bubble and stays a retry (the row is stored), so the next try still sends retry:true', async () => {
+    await failWithTimeout();
+    fetchMock.mockResolvedValueOnce(json({ error: 'Unavailable' }, 503));
+    await useAiStore.getState().retryLastTurn();
+    let s = useAiStore.getState();
+    expect(userBubbles()).toHaveLength(1);
+    expect(s.composerDraft).toBe('');
+    expect(s.errorCode).toBe('http_5xx');
+    expect(s.retryTarget).toMatchObject({ mode: 'retry' });
+    fetchMock.mockResolvedValueOnce(okTurn());
+    await useAiStore.getState().retryLastTurn();
+    expect(postBodies()[2]).toMatchObject({ content: 'Why is the server slow?', retry: true });
+    s = useAiStore.getState();
+    expect(userBubbles()).toHaveLength(1);
+  });
+
+  it('a retry refused 403 keeps its bubble and the composer alone, with no retry offered', async () => {
+    await failWithTimeout();
+    fetchMock.mockResolvedValueOnce(json({ error: 'Forbidden' }, 403));
+    await useAiStore.getState().retryLastTurn();
+    const s = useAiStore.getState();
+    expect(userBubbles()).toHaveLength(1);
+    expect(s.composerDraft).toBe('');
+    expect(s.errorCode).toBe('rejected');
+    expect(s.retryTarget).toBeNull();
   });
 
   it('clearError and loading a session clear the target and detail', async () => {

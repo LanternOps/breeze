@@ -6,7 +6,7 @@ import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
 import { pageContextAnchorsOrg } from './aiPageContext';
 import { classifySendRefusal } from './aiSendRefusal';
-import { isChatSessionType } from './aiSessionOpen';
+import { isChatSessionType, openAiSession } from './aiSessionOpen';
 import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
 import { extractApiError } from '@/lib/apiError';
 import { classifyHttpFailure, isRetryableAiError, retryModeFor, type AiErrorCode, type AiRetryMode, type AiRetryTarget } from '@/lib/aiErrors';
@@ -1418,10 +1418,27 @@ export const useAiStore = create<AiState>()(
     // reload_first: the stream broke, so the turn may have finished, still be
     // running, or never have reached the server. The stored transcript says
     // which; never re-send a turn that ran (its tools may have, too).
-    set({ retryTarget: null });
-    await get().loadSession(target.sessionId);
+    // Read without touching the chat (loadSession's failure path would clear
+    // it); isLoading holds off a second click meanwhile.
+    set({ isLoading: true });
+    const reloaded = await openAiSession(target.sessionId);
+    if (get().sessionId !== target.sessionId) {
+      set({ isLoading: false });
+      return;
+    }
+    if (reloaded.kind === 'error') {
+      // The reload failed too: say so, and keep offering the retry.
+      set({ isLoading: false, error: reloaded.message, retryTarget: { ...target, error: reloaded.message } });
+      return;
+    }
+    if (reloaded.kind !== 'ok') {
+      // Gone or closed elsewhere: the ordinary load shows that state.
+      set({ isLoading: false, retryTarget: null });
+      await get().loadSession(target.sessionId);
+      return;
+    }
+    set({ isLoading: false, messages: reloaded.messages, error: null, errorCode: null, errorDetail: null, retryTarget: null });
     const after = get();
-    if (after.sessionId !== target.sessionId || after.error) return;
     const last = after.messages[after.messages.length - 1];
     if (last?.role === 'user' && last.content === target.content) {
       // Stored, unanswered: re-run it on that row. A turn still running is

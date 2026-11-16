@@ -1115,6 +1115,7 @@
   "aiErrorBanner": {
     "timedOut": "Diese Antwort hat das Zeitlimit überschritten",
     "disconnected": "Die Verbindung wurde unterbrochen, bevor die Antwort abgeschlossen war.",
-    "tryAgain": "Erneut versuchen"
+    "tryAgain": "Erneut versuchen",
+    "conversationGone": "Diese Unterhaltung ist nicht mehr verfügbar. Starten Sie einen neuen Chat, um fortzufahren."
   }
 }
