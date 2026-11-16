@@ -526,16 +526,19 @@ func (o *op) exec(e Effect) Event {
 	case EffReleaseRules:
 		if err := iso.Release(o.ctx); err != nil {
 			o.cleanupFailed = true
+			log.Warn("isolation release failed; retried on the next tick", "kind", o.state.Release.Kind, "error", err.Error())
 			return Event{Kind: EvReleaseFailed, Err: err.Error()}
 		}
 	case EffConfirmAbsent:
 		owned, err := iso.Owned(o.ctx)
 		if err != nil {
 			o.cleanupFailed = true
+			log.Warn("isolation release not confirmed; retried on the next tick", "kind", o.state.Release.Kind, "error", err.Error())
 			return Event{Kind: EvReleaseFailed, Err: "confirm absence: " + err.Error()}
 		}
 		if owned {
 			o.cleanupFailed = true
+			log.Warn("isolation rules still installed after release; retried on the next tick", "kind", o.state.Release.Kind)
 			return Event{Kind: EvReleaseFailed, Err: "Breeze-owned rules are still installed"}
 		}
 		o.cleanupFailed = false

@@ -34,9 +34,9 @@ const (
 	// containment policy's deadManMinutes (15..1440) times 60.
 	DeadManMinSeconds = 15 * 60
 	DeadManMaxSeconds = 1440 * 60
-	// DeadManWakeGrace is how long the agent must have run since it started or
-	// woke before the dead-man may fire, so a device that slept through its
-	// window first gets a chance to reconnect.
+	// DeadManWakeGrace is how long the count must have run since it began or
+	// since the last gap before the dead-man may fire, so a device that slept
+	// through its window first gets a chance to reconnect.
 	DeadManWakeGrace = 5 * time.Minute
 	// deadManMaxTickGap is the most one tick may add to the count. Ticks run
 	// every minute; anything longer is treated as sleep or a stall.

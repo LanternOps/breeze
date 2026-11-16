@@ -61,8 +61,8 @@ export function storedContainmentHeartbeatBlock(row?: DeviceNetworkIsolation | n
   if (!row || (row.desiredState === 'released' && row.releaseConfirmedAt)) return { networkIsolation: null };
   const base = { isolationId: row.id, generation: row.generation, expiresAt: row.expiresAt.toISOString(), deadManSeconds: 0, remoteRelay: row.remoteRelay };
   if (row.desiredState === 'released') return { networkIsolation: { ...base, desired: 'released', allow: [] } };
-  // The window fixed at start (#10103), re-sent only to an agent that runs the dead-man on this beat:
-  // any other agent refuses a block carrying one.
+  // The window fixed at start (#10103), re-sent only to an agent that reports the dead-man flag on this
+  // beat and passes the dead-man version gate: any other agent refuses a block carrying one.
   if (agentAcceptsDeadMan(device)) base.deadManSeconds = row.deadManSeconds;
   const revision = agentAcceptsPolicyAllow(device?.networkIsolationVersion) ? row.allowSnapshotRevision : null;
   const allow = revision ? row.allowSnapshot : row.allowSnapshot.filter(entry => entry.scope !== 'any');

@@ -3,15 +3,17 @@ const h = vi.hoisted(() => ({
   device: {} as any, incident: {} as any, row: null as any, active: null as any, tombstone: null as any,
   writes: [] as any[], order: [] as string[], dispatch: vi.fn(), trust: vi.fn(), audit: vi.fn(),
   txDepth: 0, seal: vi.fn(), decrypt: vi.fn(), resolvePolicy: vi.fn(), auditRefused: vi.fn(),
-  acceptsToken: vi.fn(), acceptsDeadMan: vi.fn(),
+  acceptsToken: vi.fn(), acceptsDeadMan: vi.fn(), supportsIsolation: vi.fn(),
 }));
 // The real gates, observed: the version gates are the same sentinel, so a test cannot fail one alone.
 vi.mock('@breeze/shared', async original => {
   const real = await original<typeof import('@breeze/shared')>();
   h.acceptsToken.mockImplementation(real.agentAcceptsReleaseToken);
   h.acceptsDeadMan.mockImplementation(real.agentAcceptsDeadMan);
+  h.supportsIsolation.mockImplementation(real.agentSupportsNetworkIsolation);
   return {
     ...real,
+    agentSupportsNetworkIsolation: (...args: Parameters<typeof real.agentSupportsNetworkIsolation>) => h.supportsIsolation(...args),
     agentAcceptsReleaseToken: (...args: Parameters<typeof real.agentAcceptsReleaseToken>) => h.acceptsToken(...args),
     agentAcceptsDeadMan: (...args: Parameters<typeof real.agentAcceptsDeadMan>) => h.acceptsDeadMan(...args),
   };
@@ -65,6 +67,7 @@ vi.mock('./episodeStore', async original => ({
 import { startNetworkIsolation, listDeviceIsolations } from './service';
 import type { AuthContext } from '../../middleware/auth';
 import { NETWORK_ISOLATION_DEAD_MAN_MIN_AGENT_VERSION } from '@breeze/shared';
+const realSupportsIsolation = (await vi.importActual<typeof import('@breeze/shared')>('@breeze/shared')).agentSupportsNetworkIsolation;
 const deviceId = '11111111-1111-4111-8111-111111111111';
 const orgId = '22222222-2222-4222-8222-222222222222';
 const auth = { user: { id: '55555555-5555-4555-8555-555555555555' }, canAccessOrg: (id: string) => id === orgId, canAccessSite: () => true } as unknown as AuthContext;
@@ -72,6 +75,7 @@ const input = { createIncident: { title: 'Containment investigation', severity: 
 const NO_EXTRAS = { extraAllow: [], revision: 'c1:defaults', refusedGroups: [], requireSignedReleaseToken: false, deadManMinutes: 0 };
 beforeEach(() => {
   vi.clearAllMocks(); vi.unstubAllEnvs();
+  h.supportsIsolation.mockImplementation(realSupportsIsolation);
   vi.stubEnv('NETWORK_ISOLATION_ENABLED', 'true'); vi.stubEnv('NETWORK_ISOLATION_ENABLED_PARTNER_IDS', undefined);
   vi.stubEnv('TURN_HOST', undefined); vi.stubEnv('TURN_TLS_HOST', undefined);
   h.device = { id: deviceId, orgId, siteId: 'site-1', osType: 'windows', agentVersion: '999.0.0', networkIsolationVersion: 1, networkIsolationReady: true, status: 'online', agentServerUrl: 'https://control.example.test' };
@@ -116,7 +120,8 @@ describe('startNetworkIsolation: dead-man window (#10103)', () => {
   it.each([
     ['no dead-man flag (a v1 agent)', () => { h.device.networkIsolationVersion = 1; h.device.networkIsolationDeadMan = false; }],
     ['flag absent', () => { h.device.networkIsolationVersion = 4; delete h.device.networkIsolationDeadMan; }],
-    ['below the dead-man version gate', () => { deadManAgent(); h.acceptsDeadMan.mockReturnValueOnce(false); }],
+    // The isolation gate is the same sentinel, so it is held open here to reach the real dead-man gate.
+    ['below the dead-man version gate', () => { deadManAgent(); h.device.agentVersion = '998.0.0'; h.supportsIsolation.mockReturnValue(true); }],
   ])('never sends a non-zero window to an agent that cannot run it (%s); isolates with 0 and records why', async (_name, setup) => {
     setup();
     h.resolvePolicy.mockResolvedValue({ ...NO_EXTRAS, deadManMinutes: 30 });

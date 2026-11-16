@@ -112,7 +112,7 @@ Weigh the trade-off before turning it on. Anything that cuts the device off from
 
 How the window is counted:
 
-- Only time the agent is running counts. Time asleep or hibernating does not, and after waking the device gets five minutes to reconnect before the dead-man can release it.
+- Only time the agent is running counts. A sleep, hibernation or stall of more than a few minutes is left out, and after one the device gets five minutes to reconnect before the dead-man can release it.
 - The count uses the system's monotonic clock, so changing the device's date or time neither triggers nor delays it.
 - Restarting the agent starts the count again. Expiry still applies without the agent.
 - The window is fixed when the episode starts. Changing the policy affects later episodes.

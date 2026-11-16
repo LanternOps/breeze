@@ -94,7 +94,7 @@ describe('heartbeat isolation fault containment', () => {
       throw new Error('block failed');
     });
     await heartbeat({ securityCapabilities: { networkIsolationVersion: 2 } });
-    expect(vi.mocked(storedContainmentHeartbeatBlock).mock.calls.at(-1)?.[1]).toMatchObject({ networkIsolationVersion: 2 });
+    expect(vi.mocked(storedContainmentHeartbeatBlock).mock.calls.at(-1)?.[1]).toMatchObject({ networkIsolationVersion: 2, networkIsolationDeadMan: false });
   });
   it('keeps heartbeat 200 and the stored containment block when decrypt/build throws', async () => {
     vi.mocked(buildContainmentHeartbeatBlock).mockImplementationOnce(async (_tx, _device, context) => {

@@ -151,7 +151,9 @@ var releaseTokenB64 = base64.RawURLEncoding.Strict()
 // now is the device clock; highWater is the journal's highest trusted wall
 // time (zero if none). Validity is judged against the later of the two, so a
 // clock set back cannot revive an expired token and a slow one cannot refuse a
-// current one.
+// current one. A high-water time once pushed ahead by a fast clock can admit a
+// token up to that far before its nbf; the signature and the device, episode
+// and generation binding still hold, and the window stays capped at 24 h.
 // Every refusal wraps ErrReleaseTokenInvalid and carries a closed reason.
 func VerifyReleaseToken(token string, publicKey []byte, want ReleaseTokenBinding, now, highWater time.Time) error {
 	if !ValidReleaseTokenPublicKey(publicKey) {

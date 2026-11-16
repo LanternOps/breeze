@@ -3,6 +3,7 @@ package isolation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -217,6 +218,59 @@ func TestDeadManMonotonicGoingBackwardsIsAGap(t *testing.T) {
 	h.tickFor(DeadManWakeGrace-time.Minute, time.Minute)
 	if h.selfReleased() {
 		t.Fatal("a monotonic step backwards fired the dead-man")
+	}
+	// The step added nothing: 14 + 4 minutes counted, then the grace ends.
+	h.tickFor(2*time.Minute, time.Minute)
+	if !h.selfReleased() {
+		t.Fatal("no release once the grace passed")
+	}
+}
+
+// With the control plane unreachable, re-verify keeps trying to refresh the
+// rules (the addresses moved) and every refresh fails its round trip. The
+// failed refreshes neither count as contact nor hold the dead-man off.
+func TestDeadManFiresThroughFailingRefreshes(t *testing.T) {
+	h := newHarness(t)
+	h.isolateDeadMan(idA, 1, deadManWindow)
+	h.verify.set(func(v *fakeVerify) { v.err = errors.New("control plane unreachable") })
+	before := h.log.count("verify ")
+	for i := 0; i < 20 && !h.selfReleased(); i++ {
+		h.lookup.set(controlHost, fmt.Sprintf("192.0.2.%d", 20+i), fmt.Sprintf("2001:db8::%x", 0x20+i))
+		h.tickFor(time.Minute, time.Minute)
+	}
+	if h.log.count("verify ") == before {
+		t.Fatal("no refresh round trip was attempted")
+	}
+	if !h.selfReleased() {
+		j := h.journal()
+		t.Fatalf("no dead-man release through failing refreshes: phase %s events %v", j.Phase, eventTypes(j))
+	}
+}
+
+// The count runs only while no attempt is in flight: an attempt that the
+// previous process left pending is rolled back, never released as dead-man.
+func TestDeadManNotCountedWhileAnAttemptIsPending(t *testing.T) {
+	h := newHarness(t)
+	h.isolateDeadMan(idA, 1, deadManWindow)
+	j := h.journal()
+	j.AttemptID = "attempt-in-flight"
+	if err := journal.Save(journal.Path(h.dir), j); err != nil {
+		t.Fatal(err)
+	}
+	h.m = h.newManager()
+	op, err := h.m.begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.state.Phase, op.state.AttemptID = journal.PhaseCommitted, "attempt-in-flight"
+	h.m.deadMan = deadManCount{running: true, isolationID: idA, lastMono: h.clock.Mono() - time.Minute, noContact: time.Hour, sinceWake: time.Hour}
+	due := op.deadManDue()
+	op.end()
+	if due {
+		t.Fatal("dead-man due while an attempt is in flight")
+	}
+	if h.m.deadMan.running {
+		t.Fatal("the count kept running across an attempt")
 	}
 }
 

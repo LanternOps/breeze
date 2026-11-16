@@ -34,12 +34,13 @@ export interface ReadIsolationPolicyOptions {
 }
 
 /**
- * The policy for a device, gated on what its agent accepts. Below `policyAllow` this is no policy and
- * no query: an older agent would reject the whole block over one `scope:"any"` entry, while the fixed
- * permits alone are a narrowing it applies. Malformed stored settings and an unknown device resolve to
+ * The policy for a device, gated on what its agent accepts. Below `policyAllow` it never carries
+ * permits: an older agent would reject the whole block over one `scope:"any"` entry, while the fixed
+ * permits alone are a narrowing it applies. Such an agent makes no query unless the caller opts in
+ * with `releaseOptionsBelowPolicyAllow` (start and the console), which reads only the release options. Malformed stored settings and an unknown device resolve to
  * the W1 defaults (no extras), which arrive here as no policy.
  *
- * Reads in its own savepoint, so a failure leaves the caller's transaction usable; it then throws. A
+ * Reads inside `withDbTransaction`, so a failure leaves the caller's transaction usable; it then throws. A
  * caller with no earlier answer isolates on the fixed permits, and one holding a snapshot keeps it.
  */
 export async function readIsolationPolicy(device: { id: string; networkIsolationVersion?: number | null }, opts: ReadIsolationPolicyOptions = {}): Promise<IsolationPolicy> {
