@@ -30,6 +30,7 @@ import { db, hasDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { auditLogs, portalUserIdentities, portalUsers } from '../../db/schema';
 import type { PortalIdentityBlocker } from '../../db/schema/portal';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
+import { markRequestAuditWritten } from '../auditRequestTracking';
 import { lockPortalInviteAddresses } from '../contacts/portalInvite';
 import {
   disableIdentityInTransaction,
@@ -142,6 +143,8 @@ async function insertScimAudit(token: VerifiedScimToken, action: string, resourc
     details: { ...details, scimTokenId: token.tokenId },
     result: 'success',
   });
+  // The SCIM request's write is audited by this row (no fallback route audit).
+  markRequestAuditWritten();
 }
 
 /** D10: a refusal's audit, in its own transaction AFTER the refused one rolled back. */
@@ -160,6 +163,7 @@ async function auditConflict(token: VerifiedScimToken, conflict: ScimConflict): 
       }),
       'portalScim.auditConflict',
     );
+    markRequestAuditWritten();
   } catch (err) {
     // The refusal stands either way; ids only.
     console.error('[portal-scim] conflict audit failed', { orgId: token.orgId, tokenId: token.tokenId, error: err instanceof Error ? err.name : 'unknown' });

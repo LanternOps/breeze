@@ -333,6 +333,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     note: string;
   }
 > = {
+  'portalScim.ts': {
+    paths: ['/api/v1/scim/portal/v2/Users'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 64 KiB SCIM User / PatchOp body (portal registration W9 #11386); the SCIM error body answers 413.',
+  },
   'devPush.ts': {
     paths: ['/api/v1/dev/push'],
     globalMaxSize: 150 * MB,
