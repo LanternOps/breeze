@@ -14,6 +14,12 @@ describe('containment heartbeat contract', () => {
     expect(parsed).toHaveProperty('containment');
     expect(parsed.containment?.networkIsolation).toBeUndefined();
   });
+  it('accepts the dead-man flag and drops a malformed one without rejecting the beat (#10103)', () => {
+    expect(heartbeatSchema.parse({ ...beat, securityCapabilities: { networkIsolationDeadMan: true } }).securityCapabilities?.networkIsolationDeadMan).toBe(true);
+    for (const flag of ['true', 1, null, {}]) {
+      expect(heartbeatSchema.parse({ ...beat, securityCapabilities: { networkIsolationVersion: 4, networkIsolationDeadMan: flag } }).securityCapabilities).toMatchObject({ networkIsolationVersion: 4, networkIsolationDeadMan: undefined });
+    }
+  });
   it('truncates unsupported reason and drops unknown mechanisms', () => {
     const parsed = heartbeatSchema.parse({ ...beat, securityCapabilities: { networkIsolationUnsupportedReason: 'x'.repeat(1001), networkIsolationMechanism: 'invented' } });
     expect(parsed.securityCapabilities?.networkIsolationUnsupportedReason).toHaveLength(1000);
@@ -70,6 +76,14 @@ describe('heartbeat isolation fault containment', () => {
     await heartbeat({ agentVersion: '999.0.0', securityCapabilities: { networkIsolationVersion: 4 } });
     expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationVersion: 4, agentVersion: '999.0.0' });
   });
+  it("gates the dead-man window on this beat's flag, not the stored one (#10103)", async () => {
+    await heartbeat({ agentVersion: '999.0.0', securityCapabilities: { networkIsolationVersion: 4, networkIsolationDeadMan: true } });
+    expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationDeadMan: true, agentVersion: '999.0.0' });
+  });
+  it('a beat without the dead-man flag counts as no dead-man (#10103)', async () => {
+    await heartbeat({ agentVersion: '999.0.0', securityCapabilities: { networkIsolationVersion: 4 } });
+    expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationDeadMan: false });
+  });
   it('a beat that reports no capability counts as level 0, matching what the device row records', async () => {
     await heartbeat();
     expect(vi.mocked(buildContainmentHeartbeatBlock).mock.calls[0]?.[1]).toMatchObject({ networkIsolationVersion: 0 });
@@ -80,7 +94,7 @@ describe('heartbeat isolation fault containment', () => {
       throw new Error('block failed');
     });
     await heartbeat({ securityCapabilities: { networkIsolationVersion: 2 } });
-    expect(vi.mocked(storedContainmentHeartbeatBlock).mock.calls.at(-1)?.[1]).toMatchObject({ networkIsolationVersion: 2 });
+    expect(vi.mocked(storedContainmentHeartbeatBlock).mock.calls.at(-1)?.[1]).toMatchObject({ networkIsolationVersion: 2, networkIsolationDeadMan: false });
   });
   it('keeps heartbeat 200 and the stored containment block when decrypt/build throws', async () => {
     vi.mocked(buildContainmentHeartbeatBlock).mockImplementationOnce(async (_tx, _device, context) => {

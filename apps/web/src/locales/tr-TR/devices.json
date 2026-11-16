@@ -4882,6 +4882,7 @@
     "startDescription": "Breeze yönetim iletişimi dışındaki ağ trafiğini engelleyin.",
     "releaseDescription": "Breeze yalıtım kurallarının kaldırılmasını isteyin. Çevrimdışı cihaz yeniden bağlandığında isteği alır.",
     "serverWarning": "Bu bir sunucu işletim sistemidir. Yalıtım diğer cihazların hizmetlerini kesintiye uğratabilir.",
+    "deadManUnsupported": "Bu cihazın kısıtlama ilkesi bir dead-man serbest bırakma tanımlıyor, ancak aracı sürümü bunu desteklemiyor. Cihaz bu olmadan yalıtılacak.",
     "reason": "Gerekçe",
     "ttlHours": "Süre (saat)",
     "incidentId": "Mevcut olay kimliği (isteğe bağlı)",

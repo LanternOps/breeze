@@ -10,13 +10,23 @@ import FeatureTabShell from './FeatureTabShell';
 import '@/lib/i18n';
 
 // Inline settings for the `containment` feature (#10100): extra destinations an
-// isolated device may still reach. The tab edits `extraAllow` only. The other
-// stored keys (defaultTtlHours, deadManMinutes, remoteRelay,
-// requireSignedReleaseToken) belong to later waves and are written back
+// isolated device may still reach, and the opt-in dead-man release window. The
+// tab edits `extraAllow` and `deadManMinutes`. The other stored keys
+// (defaultTtlHours, remoteRelay, requireSignedReleaseToken) are written back
 // untouched. The shared schema is the only validator: rows are checked with
 // it, and containmentIssueKey turns its refusals into localised messages.
 
 const EXTRA_ALLOW = containmentInlineSettingsSchema.shape.extraAllow;
+const DEAD_MAN = containmentInlineSettingsSchema.shape.deadManMinutes;
+const DEAD_MAN_PRESETS = [0, 15, 30, 60, 240, 1440] as const;
+const DEAD_MAN_LABEL_KEYS: Record<(typeof DEAD_MAN_PRESETS)[number], string> = {
+  0: 'deadManOff',
+  15: 'deadMan15',
+  30: 'deadMan30',
+  60: 'deadMan60',
+  240: 'deadMan240',
+  1440: 'deadMan1440',
+};
 type Issue = z.core.$ZodIssue;
 
 type Kind = 'host' | 'cidr';
@@ -58,6 +68,11 @@ function readRows(settings: unknown, nextKey: () => number): Row[] {
       label: typeof entry.label === 'string' ? entry.label : '',
     };
   });
+}
+
+function readDeadMan(settings: unknown): number {
+  const raw = isRecord(settings) ? settings.deadManMinutes : undefined;
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
 }
 
 function toEntry(row: Row): Record<string, unknown> {
@@ -114,10 +129,12 @@ export default function ContainmentTab({
   const nextKey = () => ++keyCounter.current;
   const source = (existingLink ?? parentLink)?.inlineSettings;
   const [rows, setRows] = useState<Row[]>(() => readRows(source, nextKey));
+  const [deadMan, setDeadMan] = useState<number>(() => readDeadMan(source));
   const [touched, setTouched] = useState<Set<string>>(() => new Set());
   const [attempted, setAttempted] = useState(false);
   useEffect(() => {
     setRows(readRows((existingLink ?? parentLink)?.inlineSettings, nextKey));
+    setDeadMan(readDeadMan((existingLink ?? parentLink)?.inlineSettings));
     setTouched(new Set());
     setAttempted(false);
     // nextKey only bumps a ref, so it is not a dependency.
@@ -128,7 +145,8 @@ export default function ContainmentTab({
   const atLimit = rows.length >= MAX_ROWS;
   // Rows are checked one at a time for their messages; the whole list decides what may be saved.
   const list = EXTRA_ALLOW.safeParse(rows.map(toEntry));
-  const invalid = !list.success;
+  const deadManValid = DEAD_MAN.safeParse(deadMan).success;
+  const invalid = !list.success || !deadManValid;
   const listIssue = list.success ? undefined : list.error.issues.find((issue) => issue.path.length === 0);
   // A parent's rows cannot be edited from here, so Override cannot produce a valid link.
   const parentInvalid = inherited && invalid;
@@ -140,13 +158,18 @@ export default function ContainmentTab({
 
   const persist = async (id: string | null) => {
     setAttempted(true);
-    if (!list.success) return;
+    if (!list.success || !deadManValid) return;
     clearError();
     const stored = isRecord(source) ? source : {};
     const result = await save(id, {
       featureType: 'containment',
       featurePolicyId: null,
-      inlineSettings: { ...stored, version: 1, extraAllow: list.data },
+      inlineSettings: {
+        ...stored,
+        version: 1,
+        extraAllow: list.data,
+        ...('deadManMinutes' in stored || deadMan !== 0 ? { deadManMinutes: deadMan } : {}),
+      },
     });
     if (result) onLinkChanged(result, 'containment');
   };
@@ -195,6 +218,31 @@ export default function ContainmentTab({
           </p>
         </div>
       )}
+
+      <div className="mb-4">
+        <label className="text-xs font-medium text-muted-foreground">
+          {k('deadManLabel')}
+          <select
+            data-testid="containment-dead-man"
+            className={`mt-1 sm:max-w-xs ${controlClass}`}
+            value={String(deadMan)}
+            disabled={locked}
+            onChange={(e) => setDeadMan(Number(e.target.value))}
+          >
+            {DEAD_MAN_PRESETS.map((minutes) => (
+              <option key={minutes} value={minutes}>
+                {k(DEAD_MAN_LABEL_KEYS[minutes])}
+              </option>
+            ))}
+            {!(DEAD_MAN_PRESETS as readonly number[]).includes(deadMan) && (
+              <option value={deadMan}>{k('deadManCustom', { minutes: deadMan })}</option>
+            )}
+          </select>
+        </label>
+        <p data-testid="containment-dead-man-help" className="mt-1 text-xs text-muted-foreground">
+          {k('deadManHelp')}
+        </p>
+      </div>
 
       {rows.length === 0 && (
         <p data-testid="containment-empty" className="text-sm text-muted-foreground">

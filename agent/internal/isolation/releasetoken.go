@@ -149,7 +149,11 @@ var releaseTokenB64 = base64.RawURLEncoding.Strict()
 // VerifyReleaseToken checks token against the pinned public key and the
 // journalled binding. The signature is checked before the payload is parsed.
 // now is the device clock; highWater is the journal's highest trusted wall
-// time (zero if none), so a clock set back cannot revive an expired token.
+// time (zero if none). Validity is judged against the later of the two, so a
+// clock set back cannot revive an expired token and a slow one cannot refuse a
+// current one. A high-water time once pushed ahead by a fast clock can admit a
+// token up to that far before its nbf; the signature and the device, episode
+// and generation binding still hold, and the window stays capped at 24 h.
 // Every refusal wraps ErrReleaseTokenInvalid and carries a closed reason.
 func VerifyReleaseToken(token string, publicKey []byte, want ReleaseTokenBinding, now, highWater time.Time) error {
 	if !ValidReleaseTokenPublicKey(publicKey) {
@@ -204,13 +208,18 @@ func VerifyReleaseToken(token string, publicKey []byte, want ReleaseTokenBinding
 	if !equalBinding(*p.Dev, want.DeviceID) {
 		return rejectToken(ReleaseTokenWrongDevice)
 	}
-	if time.Duration(exp-nbf)*time.Second > ReleaseTokenMaxValidity {
+	// In whole seconds: exp − nbf converted to a Duration can overflow and wrap.
+	if exp-nbf > int64(ReleaseTokenMaxValidity/time.Second) {
 		return rejectToken(ReleaseTokenValidityTooLong)
 	}
-	if now.Add(ReleaseTokenClockSkew).Unix() < nbf {
+	// Both bounds use the later of the device clock and the journalled
+	// high-water time: a slow clock cannot refuse a current token, and a clock
+	// set back cannot revive an expired one.
+	ref := laterOf(now, highWater)
+	if ref.Add(ReleaseTokenClockSkew).Unix() < nbf {
 		return rejectToken(ReleaseTokenNotYetValid)
 	}
-	if laterOf(now, highWater).Unix() >= exp {
+	if ref.Unix() >= exp {
 		return rejectToken(ReleaseTokenExpired)
 	}
 	return nil

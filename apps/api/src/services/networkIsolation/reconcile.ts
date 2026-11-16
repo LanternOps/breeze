@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
-  ISOLATION_RELEASE_JOURNAL_TYPES, agentAcceptsPolicyAllow, agentAcceptsReleaseToken, failureCodeFromJournalType, isUnresolvedTerminalIsolationState, networkIsolationReportSchema,
+  ISOLATION_RELEASE_JOURNAL_TYPES, agentAcceptsDeadMan, agentAcceptsPolicyAllow, agentAcceptsReleaseToken, failureCodeFromJournalType, isUnresolvedTerminalIsolationState, networkIsolationReportSchema,
   type ContainmentDesiredBlock, type IsolationAllowEntry, type NetworkIsolationReport, type IsolationFailureCode, type SafeAgentReport,
 } from '@breeze/shared';
 import { deviceNetworkIsolations, incidents, type DeviceNetworkIsolation } from '../../db/schema';
@@ -13,7 +13,7 @@ import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { synchronizeEpisodeOutcome } from './outcome';
 import { auditRefusedPolicyGroups, hasUnreadPolicyEvents, readIsolationPolicy, readPolicyEvents, type IsolationPolicy } from './policy';
 
-interface IsolationDevice { id: string; orgId: string; agentServerUrl?: string | null; networkIsolationVersion?: number | null; agentVersion?: string | null }
+interface IsolationDevice { id: string; orgId: string; agentServerUrl?: string | null; networkIsolationVersion?: number | null; networkIsolationDeadMan?: boolean | null; agentVersion?: string | null }
 export const ISOLATION_SECRET_COLUMN = {
   table: 'device_network_isolations', column: 'break_glass_secret_enc', kind: 'text', aadBinding: 'row', description: 'Per-episode offline release secret',
 } as const;
@@ -57,10 +57,13 @@ export function noteIsolationReportDropped(deviceId: string, raw: unknown): void
  * go out under the revision the snapshot was built with, because the agent rejects `scope:"any"`
  * entries without one. An agent that cannot take them gets the rest, which is a narrowing it applies.
  */
-export function storedContainmentHeartbeatBlock(row?: DeviceNetworkIsolation | null, device?: Pick<IsolationDevice, 'networkIsolationVersion' | 'agentVersion'> | null): ContainmentDesiredBlock {
+export function storedContainmentHeartbeatBlock(row?: DeviceNetworkIsolation | null, device?: Pick<IsolationDevice, 'networkIsolationVersion' | 'networkIsolationDeadMan' | 'agentVersion'> | null): ContainmentDesiredBlock {
   if (!row || (row.desiredState === 'released' && row.releaseConfirmedAt)) return { networkIsolation: null };
-  const base = { isolationId: row.id, generation: row.generation, expiresAt: row.expiresAt.toISOString(), deadManSeconds: row.deadManSeconds, remoteRelay: row.remoteRelay };
+  const base = { isolationId: row.id, generation: row.generation, expiresAt: row.expiresAt.toISOString(), deadManSeconds: 0, remoteRelay: row.remoteRelay };
   if (row.desiredState === 'released') return { networkIsolation: { ...base, desired: 'released', allow: [] } };
+  // The window fixed at start (#10103), re-sent only to an agent that reports the dead-man flag on this
+  // beat and passes the dead-man version gate: any other agent refuses a block carrying one.
+  if (agentAcceptsDeadMan(device)) base.deadManSeconds = row.deadManSeconds;
   const revision = agentAcceptsPolicyAllow(device?.networkIsolationVersion) ? row.allowSnapshotRevision : null;
   const allow = revision ? row.allowSnapshot : row.allowSnapshot.filter(entry => entry.scope !== 'any');
   // The key and requirement pinned at start (#10102), re-sent unchanged so a heartbeat-first apply
@@ -86,7 +89,7 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
     policy = await readIsolationPolicy(device);
   } catch (err) {
     // No new answer, so the held one stands: a read fault must not look like a policy removal.
-    policy = { extras: desired.allow.filter(entry => entry.scope === 'any'), revision: desired.policyRevision ?? null, refusedGroups: [], invalidStoredSettings: false, requireSignedReleaseToken: row.releaseTokenRequired };
+    policy = { extras: desired.allow.filter(entry => entry.scope === 'any'), revision: desired.policyRevision ?? null, refusedGroups: [], invalidStoredSettings: false, requireSignedReleaseToken: row.releaseTokenRequired, deadManSeconds: row.deadManSeconds };
     throttled(`policy:${row.id}`, () => {
       console.error('[isolation] policy unavailable', { deviceId: device.id, isolationId: row.id });
       captureException(err, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id, isolationId: row.id });

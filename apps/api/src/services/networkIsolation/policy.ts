@@ -1,4 +1,4 @@
-import { agentAcceptsPolicyAllow, containmentExtraAllowToEntries, type IsolationAllowEntry, type NetworkIsolationReport } from '@breeze/shared';
+import { agentAcceptsPolicyAllow, containmentExtraAllowToEntries, isValidDeadManSeconds, type IsolationAllowEntry, type NetworkIsolationReport } from '@breeze/shared';
 import { withDbTransaction } from '../../db';
 import type { DeviceNetworkIsolation } from '../../db/schema';
 import { auditRefusedExecutionGroups, type RefusedExecutionGroup } from '../executionTargetGating';
@@ -16,26 +16,47 @@ export interface IsolationPolicy {
   invalidStoredSettings: boolean;
   /** The policy's requireSignedReleaseToken (#10102). Start stores it on the episode only when it also sends a token key. */
   requireSignedReleaseToken: boolean;
+  /** The policy's dead-man window in seconds, 0 when off (#10103). Start sends it only to an agent that runs the dead-man. */
+  deadManSeconds: number;
 }
 
 const POLICY_GROUP_REFUSED_ACTION = 'device.isolation.policy_group_refused';
 
-export const NO_ISOLATION_POLICY: IsolationPolicy = Object.freeze({ extras: Object.freeze([]), revision: null, refusedGroups: Object.freeze([]), invalidStoredSettings: false, requireSignedReleaseToken: false });
+export const NO_ISOLATION_POLICY: IsolationPolicy = Object.freeze({ extras: Object.freeze([]), revision: null, refusedGroups: Object.freeze([]), invalidStoredSettings: false, requireSignedReleaseToken: false, deadManSeconds: 0 });
+
+export interface ReadIsolationPolicyOptions {
+  /**
+   * Resolve the policy's release options even for an agent below `policyAllow`, still with no permits:
+   * the start path and the console need to know what the policy asked for, to send what the agent can
+   * take and record the rest. The heartbeat path leaves this off and makes no query for such an agent.
+   */
+  releaseOptionsBelowPolicyAllow?: boolean;
+}
 
 /**
- * The policy for a device, gated on what its agent accepts. Below `policyAllow` this is no policy and
- * no query: an older agent would reject the whole block over one `scope:"any"` entry, while the fixed
- * permits alone are a narrowing it applies. Malformed stored settings and an unknown device resolve to
+ * The policy for a device, gated on what its agent accepts. Below `policyAllow` it never carries
+ * permits: an older agent would reject the whole block over one `scope:"any"` entry, while the fixed
+ * permits alone are a narrowing it applies. Such an agent makes no query unless the caller opts in
+ * with `releaseOptionsBelowPolicyAllow` (start and the console), which reads only the release options. Malformed stored settings and an unknown device resolve to
  * the W1 defaults (no extras), which arrive here as no policy.
  *
- * Reads in its own savepoint, so a failure leaves the caller's transaction usable; it then throws. A
+ * Reads inside `withDbTransaction`, so a failure leaves the caller's transaction usable; it then throws. A
  * caller with no earlier answer isolates on the fixed permits, and one holding a snapshot keeps it.
  */
-export async function readIsolationPolicy(device: { id: string; networkIsolationVersion?: number | null }): Promise<IsolationPolicy> {
-  if (!agentAcceptsPolicyAllow(device.networkIsolationVersion)) return NO_ISOLATION_POLICY;
+export async function readIsolationPolicy(device: { id: string; networkIsolationVersion?: number | null }, opts: ReadIsolationPolicyOptions = {}): Promise<IsolationPolicy> {
+  const permits = agentAcceptsPolicyAllow(device.networkIsolationVersion);
+  if (!permits && !opts.releaseOptionsBelowPolicyAllow) return NO_ISOLATION_POLICY;
   const policy = await withDbTransaction(() => resolveContainmentPolicy(device.id));
+  const deadManSeconds = deadManSecondsOf(policy.deadManMinutes);
+  if (!permits) return { ...NO_ISOLATION_POLICY, requireSignedReleaseToken: policy.requireSignedReleaseToken === true, deadManSeconds };
   const extras = containmentExtraAllowToEntries(policy.extraAllow);
-  return { extras, revision: extras.length > 0 ? policy.revision : null, refusedGroups: policy.refusedGroups, invalidStoredSettings: policy.invalidStoredSettings, requireSignedReleaseToken: policy.requireSignedReleaseToken === true };
+  return { extras, revision: extras.length > 0 ? policy.revision : null, refusedGroups: policy.refusedGroups, invalidStoredSettings: policy.invalidStoredSettings, requireSignedReleaseToken: policy.requireSignedReleaseToken === true, deadManSeconds };
+}
+
+/** The policy's deadManMinutes as a wire window; anything outside the bounds is off. */
+function deadManSecondsOf(minutes: unknown): number {
+  const seconds = typeof minutes === 'number' ? minutes * 60 : 0;
+  return isValidDeadManSeconds(seconds) ? seconds : 0;
 }
 
 export function auditRefusedPolicyGroups(orgId: string, policy: IsolationPolicy): void {

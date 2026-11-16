@@ -544,11 +544,11 @@ describe('POST /agents/:id/heartbeat — ECH (#8869)', () => {
   it('persists all four capability fields non-sticky on consecutive heartbeats', async () => {
     const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
     updateMock.mockReturnValue({ set: setSpy });
-    await beat({ securityCapabilities: { networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true } });
-    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true }));
+    await beat({ securityCapabilities: { networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true, networkIsolationDeadMan: true } });
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true, networkIsolationDeadMan: true }));
     selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
     await beat();
-    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 0, networkIsolationMechanism: null, networkIsolationUnsupportedReason: null, networkIsolationReady: false }));
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 0, networkIsolationMechanism: null, networkIsolationUnsupportedReason: null, networkIsolationReady: false, networkIsolationDeadMan: false }));
   });
 
   it('always returns containment at top level, tolerating a malformed report', async () => {

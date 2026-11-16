@@ -245,6 +245,8 @@ export const devices = pgTable('devices', {
   networkIsolationMechanism: text('network_isolation_mechanism').$type<IsolationMechanism>(),
   networkIsolationUnsupportedReason: text('network_isolation_unsupported_reason'),
   networkIsolationReady: boolean('network_isolation_ready').notNull().default(false),
+  // securityCapabilities.networkIsolationDeadMan (#10103): its own flag, not a level. Same non-sticky contract.
+  networkIsolationDeadMan: boolean('network_isolation_dead_man').notNull().default(false),
   // #3409 PR4 — agent capability for encrypted secret-env delivery. 0 for every
   // agent build predating PR4b and for any heartbeat omitting the field; only
   // the recognized integer version 1 is written as anything else. Non-sticky

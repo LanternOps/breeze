@@ -110,6 +110,11 @@ type Manager struct {
 	// adopted, for dedupe (bounded by maxPolicyRejections). Guarded by opMu.
 	policyRejections map[string]struct{}
 
+	// contactSeq counts authenticated control-plane contacts (lock-free);
+	// deadMan is the dead-man count over them (deadman.go). Guarded by opMu.
+	contactSeq atomic.Uint64
+	deadMan    deadManCount
+
 	// Test seams.
 	beforeEffect func(Effect) error
 	onPersist    func(*journal.Journal)
@@ -521,16 +526,19 @@ func (o *op) exec(e Effect) Event {
 	case EffReleaseRules:
 		if err := iso.Release(o.ctx); err != nil {
 			o.cleanupFailed = true
+			log.Warn("isolation release failed; retried on the next tick", "kind", o.state.Release.Kind, "error", err.Error())
 			return Event{Kind: EvReleaseFailed, Err: err.Error()}
 		}
 	case EffConfirmAbsent:
 		owned, err := iso.Owned(o.ctx)
 		if err != nil {
 			o.cleanupFailed = true
+			log.Warn("isolation release not confirmed; retried on the next tick", "kind", o.state.Release.Kind, "error", err.Error())
 			return Event{Kind: EvReleaseFailed, Err: "confirm absence: " + err.Error()}
 		}
 		if owned {
 			o.cleanupFailed = true
+			log.Warn("isolation rules still installed after release; retried on the next tick", "kind", o.state.Release.Kind)
 			return Event{Kind: EvReleaseFailed, Err: "Breeze-owned rules are still installed"}
 		}
 		o.cleanupFailed = false
@@ -603,6 +611,7 @@ func (m *Manager) probe(ctx context.Context, spec ResolvedSpec) (time.Time, erro
 	if err != nil {
 		return time.Time{}, errPositive("%v", err)
 	}
+	m.NoteControlPlaneContact()
 	return serverTime, nil
 }
 
@@ -1024,9 +1033,8 @@ func validateSpec(s *Spec, now time.Time) error {
 		return errors.New("expiresAt must be in the future")
 	case s.ExpiresAt.After(now.Add(MaxTTL + expirySlack)):
 		return errors.New("expiresAt is more than 720 h away")
-	case s.DeadManSeconds != 0:
-		// Dead-man needs capability v2 (Gate B decision 4 v); v1 refuses it.
-		return errors.New("deadManSeconds is not supported by this agent")
+	case !validDeadManSeconds(s.DeadManSeconds):
+		return fmt.Errorf("deadManSeconds must be 0 or %d to %d", DeadManMinSeconds, DeadManMaxSeconds)
 	case len(s.Allow) == 0 || len(s.Allow) > maxAllowEntries:
 		return fmt.Errorf("allow must have 1 to %d entries", maxAllowEntries)
 	case s.BreakGlassSecret != nil && len(s.BreakGlassSecret) != breakGlassSecretBytes:
@@ -1606,6 +1614,10 @@ func (o *op) tick() {
 	force := o.m.forceReverify.Swap(false)
 	if o.state.Phase == journal.PhaseCommitted && (force || !o.now().Before(o.m.lastReverify.Add(o.m.reverifyInterval))) {
 		o.reverify()
+	}
+	// After re-verify: a refresh it ran is a verified round trip, which is contact.
+	if !o.crashed && !o.lockLost && o.deadManDue() {
+		o.deadManRelease()
 	}
 }
 

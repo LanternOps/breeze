@@ -17,5 +17,6 @@ export interface IsolationListResponse {
     allowed: boolean;
     reason: string | null;
     networkIsolationUnsupportedReason?: string | null;
+    deadManUnsupported?: boolean;
   };
 }

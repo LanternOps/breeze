@@ -59,18 +59,40 @@ export function agentAcceptsPolicyAllow(capabilityVersion: number | null | undef
     && capabilityVersion >= NETWORK_ISOLATION_CAPABILITY.policyAllow;
 }
 
-/** What an agent reports about dead-man support. No agent sends this today; see agentAcceptsDeadMan. */
-export interface NetworkIsolationDeadManCapability { networkIsolationDeadMan?: boolean | null }
+/**
+ * First agent release the server may send a non-zero `deadManSeconds` to (#10103). `'999.0.0'` is
+ * the same fail-closed sentinel as NETWORK_ISOLATION_MIN_AGENT_VERSION: no agent satisfies it, so
+ * every episode isolates with the dead-man off until lab gate L5 passes and the activation PR pins
+ * the real release.
+ */
+// TODO(#10103-activation): pin to the agent release that passed lab gate L5. Owner sign-off required.
+export const NETWORK_ISOLATION_DEAD_MAN_MIN_AGENT_VERSION = '999.0.0';
+
+/** A non-zero dead-man window: the containment policy's deadManMinutes (15..1440) times 60. */
+export const NETWORK_ISOLATION_DEAD_MAN = { minSeconds: 900, maxSeconds: 86_400 } as const;
+
+/** 0 (off) or a whole number of seconds inside NETWORK_ISOLATION_DEAD_MAN. The agent applies the same rule. */
+export function isValidDeadManSeconds(seconds: number): boolean {
+  return typeof seconds === 'number' && Number.isInteger(seconds)
+    && (seconds === 0 || (seconds >= NETWORK_ISOLATION_DEAD_MAN.minSeconds && seconds <= NETWORK_ISOLATION_DEAD_MAN.maxSeconds));
+}
+
+/** What a device reports about dead-man support: `securityCapabilities.networkIsolationDeadMan`, stored per beat. */
+export interface NetworkIsolationDeadManCapability { networkIsolationDeadMan?: boolean | null; agentVersion?: string | null }
 
 /**
- * Whether an agent can run a dead-man timer. Decision 28 gates dead-man on its OWN flag, because
- * policy permits shipped at level 3 before dead-man exists, so `>= deadMan` would claim support no
- * agent has. The contract for W4d: the agent build that implements dead-man reports
- * `securityCapabilities.networkIsolationDeadMan: true`, and the server stores it and passes it here.
- * Until then nothing supplies the flag, so this is false for every device. Only a literal `true` counts.
+ * Whether the server may send this agent a non-zero `deadManSeconds`. Decision 28 gates dead-man on its
+ * OWN flag, because policy permits shipped at level 3 before dead-man existed, so `>= deadMan` would claim
+ * support no agent has. The agent build that runs the dead-man reports
+ * `securityCapabilities.networkIsolationDeadMan: true`; the server stores it each beat (non-sticky) and
+ * passes it here with the agent version, which must also reach NETWORK_ISOLATION_DEAD_MAN_MIN_AGENT_VERSION.
+ * Only a literal `true` counts; anything malformed fails closed.
  */
 export function agentAcceptsDeadMan(capability: NetworkIsolationDeadManCapability | null | undefined): boolean {
-  return capability?.networkIsolationDeadMan === true;
+  if (capability?.networkIsolationDeadMan !== true) return false;
+  if (typeof capability.agentVersion !== 'string') return false;
+  const cmp = semverCompare(capability.agentVersion.trim(), NETWORK_ISOLATION_DEAD_MAN_MIN_AGENT_VERSION);
+  return cmp !== null && cmp >= 0;
 }
 
 /** TTL policy (OD5): 72 h default, 30 days maximum, a 12 h expiring-soon alert. */

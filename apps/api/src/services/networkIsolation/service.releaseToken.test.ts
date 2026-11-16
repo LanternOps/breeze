@@ -142,6 +142,9 @@ describe('startNetworkIsolation: release-token pin (#10102)', () => {
   const notEnforced = () => h.audit.mock.calls.filter(([, entry]) => entry.action === 'device.isolation.release_token_requirement_not_enforced').map(([, entry]) => entry.details);
   it.each([
     ['agent_unsupported', () => { h.device.networkIsolationVersion = 3; vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', SEED_A); }],
+    // Below policyAllow the policy sends no permits, but its token requirement is still recorded (#10103).
+    ['agent_unsupported', () => { h.device.networkIsolationVersion = 1; vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', SEED_A); }],
+    ['agent_unsupported', () => { h.device.networkIsolationVersion = 2; }],
     ['key_not_configured', () => { tokenAgent(); }],
     ['key_unusable', () => { tokenAgent(); vi.stubEnv('NETWORK_ISOLATION_TOKEN_SIGNING_KEY', 'not-a-key'); }],
   ])('records, by reason, a required token it cannot enforce (%s), and still isolates', async (reason, setup) => {
