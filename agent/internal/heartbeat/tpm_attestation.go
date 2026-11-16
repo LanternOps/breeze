@@ -87,22 +87,23 @@ type tpmCompleteRequest struct {
 	Secret      []byte `json:"secret"`
 }
 
-func (a tpmAttestationAPI) post(ctx context.Context, action string, payload any) ([]byte, error) {
+func (a tpmAttestationAPI) postAttestation(ctx context.Context, action string, payload any) ([]byte, error) {
+	h := a.h
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("%s/api/v1/agents/%s/attestation/%s", a.h.serverURL(), a.h.config.AgentID, action)
-	if !a.h.loopReady("POST", url) {
+	url := fmt.Sprintf("%s/api/v1/agents/%s/attestation/%s", h.serverURL(), h.config.AgentID, action)
+	if !h.loopReady("POST", url) {
 		return nil, ErrDeferred
 	}
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
-		"Authorization": {a.h.authHeader()},
+		"Authorization": {h.authHeader()},
 	}
-	resp, err := httputil.Do(ctx, a.h.httpClient(), "POST", url, body, headers, a.h.retryCfg)
+	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
-		a.h.noteLoopAnswer("POST", url, err)
+		h.noteLoopAnswer("POST", url, err)
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -123,7 +124,7 @@ func (a tpmAttestationAPI) post(ctx context.Context, action string, payload any)
 }
 
 func (a tpmAttestationAPI) Challenge(ctx context.Context, ekPublic, akPublic []byte) (*tpmattest.Challenge, error) {
-	data, err := a.post(ctx, "challenge", tpmChallengeRequest{EKPublic: ekPublic, AKPublic: akPublic})
+	data, err := a.postAttestation(ctx, "challenge", tpmChallengeRequest{EKPublic: ekPublic, AKPublic: akPublic})
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +139,6 @@ func (a tpmAttestationAPI) Challenge(ctx context.Context, ekPublic, akPublic []b
 }
 
 func (a tpmAttestationAPI) Complete(ctx context.Context, challengeID string, secret []byte) error {
-	_, err := a.post(ctx, "complete", tpmCompleteRequest{ChallengeID: challengeID, Secret: secret})
+	_, err := a.postAttestation(ctx, "complete", tpmCompleteRequest{ChallengeID: challengeID, Secret: secret})
 	return err
 }

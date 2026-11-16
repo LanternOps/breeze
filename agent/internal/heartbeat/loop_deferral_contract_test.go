@@ -36,6 +36,7 @@ var gatedHTTPFuncs = []string{
 	"sendBootPerformance",
 	"sendReliabilityMetrics",
 	"postMessageEvent", // POST message-events (standard; receipts are re-reported)
+	"postAttestation",  // POST attestation/challenge|complete (standard; #8318 T1)
 }
 
 type doCall struct {

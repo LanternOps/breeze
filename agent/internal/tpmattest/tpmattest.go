@@ -121,7 +121,7 @@ func Attest(ctx context.Context, open Opener, api API) error {
 	if err != nil {
 		return err
 	}
-	defer t.Close()
+	defer func() { _ = t.Close() }()
 
 	ek, err := createPrimary(t, tpm2.RSAEKTemplate)
 	if err != nil {
@@ -171,7 +171,7 @@ func Available(open Opener) (available bool, ok bool) {
 	if err != nil {
 		return false, false
 	}
-	defer t.Close()
+	defer func() { _ = t.Close() }()
 	if _, err := (tpm2.GetCapability{
 		Capability:    tpm2.TPMCapTPMProperties,
 		Property:      uint32(tpm2.TPMPTFamilyIndicator),
