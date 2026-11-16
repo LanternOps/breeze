@@ -257,6 +257,7 @@ describe('buildWispOverview', () => {
     // spend mirrors budget.ts spentUnderGrant: skipped runs cost nothing
     const spent = compile(fields.spentCents);
     expect(spent.sql).toContain('"ai_agent_runs"."cost_cents"');
+    expect(spent.sql).toContain('coalesce("ai_agent_runs"."compute_cents", 0)');
     expect(spent.sql).toContain('"ai_agent_runs"."status" <> $');
     expect(spent.params).toContain('skipped');
   });
