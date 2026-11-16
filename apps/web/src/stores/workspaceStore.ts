@@ -23,6 +23,14 @@ import {
   type ChatRunState,
   alreadyDecidedOutcome,
 } from './processStreamEvent';
+import {
+  closeAiNotification,
+  noteAiStreamFailure,
+  noteAiTurnEvent,
+  resetAiTurnNotify,
+  type AiNotifyContext,
+  type AiNotifySurface,
+} from '@/lib/aiNotifications';
 
 export const MAX_TABS = 5;
 
@@ -309,6 +317,28 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       };
       const tabGetFor = (tabId: string) => (): TabState => getTab(tabId) ?? createEmptyTab();
 
+      /**
+       * #9429: a tab's notification steps. Each is guarded: a notification
+       * problem must never reach a stream loop. A click switches to the tab,
+       * if it is still open.
+       */
+      const tabSurface = (tabId: string): AiNotifySurface => ({ kind: 'workspace', tabId });
+      const notifySafely = (step: () => void): void => {
+        try {
+          step();
+        } catch (err) {
+          console.warn('[Workspace] Chat notification step failed:', err);
+        }
+      };
+      const tabNotifyContext = (tabId: string): AiNotifyContext => ({
+        sessionId: getTab(tabId)?.sessionId ?? null,
+        surfaceVisible: get().activeTabId === tabId,
+        onOpen: () => { if (getTab(tabId)) get().switchTab(tabId); },
+      });
+      const resetTabTurnNotify = (tabId: string) => notifySafely(() => resetAiTurnNotify(tabSurface(tabId)));
+      const closeTabNotifications = (tabId: string, sessionId: string | null | undefined) =>
+        notifySafely(() => closeAiNotification(tabSurface(tabId), sessionId ?? null));
+
       /** #10142: one grant lookup per sessionless tab; a send waits on it. */
       const wispLookups = new Map<string, Promise<WispGrantLookup['kind'] | 'skipped'>>();
       /** The header org each tab's last answered lookup was for, so a send after a header switch looks again. */
@@ -424,12 +454,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           }
         }
 
-        return processStreamEvent(
+        const nextAssistantId = processStreamEvent(
           event,
           tabSetFor(tabId) as (fn: (s: any) => Partial<any>) => void,
           tabGetFor(tabId) as () => any,
           currentAssistantId,
         );
+        // #9429: ready / failed / needs approval, for a tab that is still open.
+        if (getTab(tabId)) notifySafely(() => noteAiTurnEvent(event.type, tabSurface(tabId), tabNotifyContext(tabId)));
+        return nextAssistantId;
       };
 
       /**
@@ -476,6 +509,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         }
         const gen = workspaceGeneration;
         abortTabAttach(tabId);
+        // #9429: the turn this attach follows starts with no failure reported.
+        resetTabTurnNotify(tabId);
         const controller = new AbortController();
         get()._attachControllers.set(tabId, controller);
         const untrack = trackAttach(controller);
@@ -712,6 +747,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
           // Stop this tab's attach now: its later events must write nothing.
           abortTabAttach(tabId);
+          closeTabNotifications(tabId, tab.sessionId);
+          resetTabTurnNotify(tabId);
 
           // Cancel any active stream
           const reader = _readers.get(tab.sessionId ?? '');
@@ -738,6 +775,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           set({ activeTabId: tabId });
           // Clear unread when switching to tab
           updateTab(tabId, { unreadCount: 0, hasApprovalPending: false });
+          closeTabNotifications(tabId, getTab(tabId)?.sessionId);
         },
 
         renameTab: async (tabId: string, title: string) => {
@@ -930,6 +968,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           // Set when a refusal hands the tab to an attach: the finally must not
           // touch isStreaming then (the attach owns it).
           let handedToAttach = false;
+          // #9429: a new turn starts with no failure reported (a route-level
+          // stream failure sends `error` with no `done`).
+          resetTabTurnNotify(tabId);
           try {
             const currentTab = getTab(tabId);
             const res = await fetchWithAuth(`/ai/sessions/${sessionId}/messages`, {
@@ -1038,6 +1079,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               isStreaming: false,
             });
             rememberFailure('disconnect');
+            if (getTab(tabId)) notifySafely(() => noteAiStreamFailure(tabSurface(tabId), tabNotifyContext(tabId)));
           } finally {
             // A stale send (logout since it started) writes nothing at all,
             // so the persist middleware has nothing to write back.
@@ -1338,6 +1380,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
         markTabRead: (tabId: string) => {
           updateTab(tabId, { unreadCount: 0, hasApprovalPending: false });
+          closeTabNotifications(tabId, getTab(tabId)?.sessionId);
         },
 
         restoreWorkspace: async () => {
