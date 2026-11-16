@@ -228,12 +228,13 @@ export async function runSurfaceCapture(opts: RunSurfaceOptions): Promise<Surfac
         resume: opts.resume,
         persistSession: true,
         settingSources: [],
-        // #11817: the production mode, so a capture sees the same allow/deny decisions.
-        permissionMode: SDK_PERMISSION_MODE,
         // #7587, #7599: same per-model thinking/effort as production chat (agentSdkWireOptions).
         ...agentSdkWireOptions(opts.model),
         abortController: abort,
         stderr: (data: string) => observer.onStderr(data),
+        // #11817: the production mode, so a capture sees the same allow/deny
+        // decisions. Last, after every spread.
+        permissionMode: SDK_PERMISSION_MODE,
       },
     });
     for await (const message of session) observer.onMessage(message);

@@ -200,8 +200,6 @@ async function runVariant(baseUrl: string, configDir: string, variant: Variant):
         maxTurns: 1,
         tools: [],
         settingSources: [],
-        // #11817: production's mode, so the wire captured is production's.
-        permissionMode: SDK_PERMISSION_MODE,
         persistSession: false,
         abortController,
         env: {
@@ -215,6 +213,9 @@ async function runVariant(baseUrl: string, configDir: string, variant: Variant):
           ...variant.env,
         },
         ...variant.options,
+        // #11817: production's mode, so the wire captured is production's.
+        // Last, so a variant cannot change it.
+        permissionMode: SDK_PERMISSION_MODE,
       },
     });
     for await (const _message of session) {

@@ -42,9 +42,11 @@ export const SDK_CHILD_HOST_CONTEXT_GUARDS: Readonly<Record<string, string>> = O
  * The permission mode every Agent SDK `query()` runs with (#11817).
  *
  * Pinned, never left to the SDK: with no `permissionMode` the CLI picks its
- * own starting mode, and that choice has depended on the provider (first-party
- * vs a gateway), on settings and on the SDK version (0.3.302 changed it).
- * Breeze wants one behaviour on every connection and every SDK version.
+ * own starting mode — a `permissions.defaultMode` from loaded settings, else
+ * `auto` where auto mode is available, else `default` (`Options.permissionMode`
+ * in sdk.d.ts). Which one that is has varied with the provider (first-party vs
+ * a gateway) and the SDK release (#11817). Breeze wants one behaviour on every
+ * connection and every SDK version.
  *
  * `dontAsk` turns each call that would prompt into a denial, without calling
  * `canUseTool` (Breeze passes none). What still runs: the tools named in
@@ -54,8 +56,9 @@ export const SDK_CHILD_HOST_CONTEXT_GUARDS: Readonly<Record<string, string>> = O
  * approval gate does not live in the SDK: each tool handler runs its own
  * guardrail and approval check.
  *
- * Callers put it after any spread of extra query options, so nothing spread
- * in can override it. sdkPermissionMode.contract.test.ts fails if a `query()`
- * site does not pass it.
+ * Callers put it after every spread of variable query options (a gateway
+ * child's `queryOptions`, a spike variant's options), so nothing spread in can
+ * override it. sdkPermissionMode.contract.test.ts fails if a `query()` call
+ * does not pass it, and checks that order at the two production sites.
  */
 export const SDK_PERMISSION_MODE = 'dontAsk' as const satisfies PermissionMode;

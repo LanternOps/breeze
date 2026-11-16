@@ -338,8 +338,6 @@ function sessionOptions(ctx: Ctx, model: string, thinking: ThinkingOpts, extra: 
     includePartialMessages: true,
     persistSession: true,
     settingSources: [],
-    // #11817: production's mode, so a resume is judged as production would run it.
-    permissionMode: SDK_PERMISSION_MODE,
     env: {
       PATH: process.env.PATH ?? '',
       HOME: process.env.HOME ?? '',
@@ -354,6 +352,9 @@ function sessionOptions(ctx: Ctx, model: string, thinking: ThinkingOpts, extra: 
     },
     ...thinking,
     ...extra,
+    // #11817: production's mode, so a resume is judged as production would
+    // run it. Last, so `extra` cannot change it.
+    permissionMode: SDK_PERMISSION_MODE,
   };
 }
 

@@ -85,6 +85,11 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (input: Record<string, unknown>) => input,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+// The real prepareSdkChild, wrapped so one test can add a gateway child's queryOptions (#11817).
+vi.mock('./aiModels/connectionFactory', async (orig) => {
+  const actual = await orig<typeof import('./aiModels/connectionFactory')>();
+  return { ...actual, prepareSdkChild: vi.fn(actual.prepareSdkChild) };
+});
 
 // Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
@@ -96,6 +101,7 @@ import { settleInvocation } from './aiModels/settleInvocation';
 import { lookupWispGrant, wispSessionToolFilter } from './wisp/chatCeiling';
 import { createBreezeMcpServer } from './aiAgentSdkTools';
 import { SDK_PERMISSION_MODE } from './llm/sdkChildEnvGuards';
+import { prepareSdkChild } from './aiModels/connectionFactory';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -294,6 +300,22 @@ describe('tool-search policy wiring (A-W04)', () => {
     expect(optionsOfLastQuery().tools).toEqual([]);
     expect(optionsOfLastQuery().env.ENABLE_TOOL_SEARCH).toBe('false');
     // #11817: the same mode on a gateway connection as on a first-party one.
+    expect(optionsOfLastQuery().permissionMode).toBe(SDK_PERMISSION_MODE);
+  });
+
+  it("#11817: a gateway child's extra query options cannot override the permission mode", async () => {
+    const actual = await vi.importActual<typeof import('./aiModels/connectionFactory')>('./aiModels/connectionFactory');
+    vi.mocked(prepareSdkChild).mockImplementationOnce(async (...args) => ({
+      ...(await actual.prepareSdkChild(...args)),
+      queryOptions: { permissionMode: 'bypassPermissions' },
+    }));
+    mockSdkQuery([RESULT_MSG]);
+    const session = await manager.getOrCreate(
+      'sess-override', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(prepareSdkChild).toHaveBeenCalled();
     expect(optionsOfLastQuery().permissionMode).toBe(SDK_PERMISSION_MODE);
   });
 

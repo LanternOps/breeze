@@ -515,8 +515,6 @@ async function runSdkSubprocessStage(input: FidelityCheckInput, childEnv?: Recor
           }),
         },
         settingSources: [],
-        // #11817: the production mode, so the round-trip sees production's allow/deny decisions.
-        permissionMode: SDK_PERMISSION_MODE,
         persistSession: false,
         // #7587, #7599: same per-model thinking/effort as production chat
         // (agentSdkWireOptions), keyed on the catalog wire id (an id the
@@ -525,6 +523,9 @@ async function runSdkSubprocessStage(input: FidelityCheckInput, childEnv?: Recor
         abortController,
         env: childEnv ?? buildFidelityChildEnv(input),
         ...(isolatedCwd ? { cwd: isolatedCwd.cwd } : {}),
+        // #11817: the production mode, so the round-trip sees production's
+        // allow/deny decisions. Last, after every spread.
+        permissionMode: SDK_PERMISSION_MODE,
       },
     } as Parameters<typeof sdk.query>[0]);
 
