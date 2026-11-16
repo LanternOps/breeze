@@ -15,6 +15,7 @@
     "verificationFailed": "Could not be verified",
     "failed": "Failed — {{message}}",
     "failedNoMessage": "Failed",
+    "interrupted": "Unknown — the agent stopped before it could report this restore point",
     "unknown": "Outcome not recognised by this version of the console"
   },
   "list": {
