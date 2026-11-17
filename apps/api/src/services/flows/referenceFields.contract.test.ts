@@ -109,6 +109,9 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   // device/site authorization of the survivor, as ticketId does for the source.
   // system_cleanup cancel reuses the already-listed cleanupRunId: verifyDeviceAccess
   // gates the device, then cancelSystemCleanupRun scopes the run by device/org/kind.
+  // #11861 declared manage_monitors.assetId (a retired create/update argument the
+  // registry still advertises): the handler never reads it, every write action
+  // returns retirement guidance, so there is no reference to authorize.
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
@@ -351,6 +354,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_monitor_definitions.attachmentId",
         "manage_monitor_definitions.configPolicyId",
         "manage_monitor_definitions.monitorId",
+        "manage_monitors.assetId",
         "manage_monitors.monitorId",
         "manage_monitors.orgId",
         "manage_notification_channels.channelId",

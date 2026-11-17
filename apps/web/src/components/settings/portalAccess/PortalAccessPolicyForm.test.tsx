@@ -40,7 +40,8 @@ describe('PortalAccessPolicyForm', () => {
   it('sso_only option is disabled with a hint while no SSO method is on', () => {
     renderForm(makePolicyView());
     expect(radio('portal-access-policy-password-sso_only').disabled).toBe(true);
-    expect(screen.getByText('Available once Microsoft or Google sign-in is turned on.')).toBeInTheDocument();
+    // No Google capability: the hint names Microsoft only (W7 ships dark).
+    expect(screen.getByText('Available once Microsoft sign-in is turned on.')).toBeInTheDocument();
   });
 
   it('sso_only option is enabled once the draft turns an available SSO method on', () => {
@@ -49,7 +50,7 @@ describe('PortalAccessPolicyForm', () => {
   });
 
   it('an inherited SSO method also enables sso_only', () => {
-    renderForm(makePolicyView({ capabilities: { google: true }, inherited: { googleEnabled: true } }));
+    renderForm(makePolicyView({ capabilities: { google: true }, inherited: { googleEnabled: true }, verifiedDomains: ['acme.example.com'] }));
     expect(radio('portal-access-policy-password-sso_only').disabled).toBe(false);
   });
 
@@ -61,7 +62,7 @@ describe('PortalAccessPolicyForm', () => {
   it('shows the fallback notice', () => {
     renderForm(makePolicyView({ values: { passwordMode: 'sso_only' }, passwordModeFallback: true }));
     expect(screen.getByTestId('portal-access-policy-fallback')).toHaveTextContent(
-      'Password sign-in is on because no Microsoft or Google sign-in is enabled.',
+      'Password sign-in is on because Microsoft sign-in is not enabled.',
     );
   });
 
@@ -221,6 +222,53 @@ describe('PortalAccessPolicyForm', () => {
       renderForm(makePolicyView({ kind: 'partner', capabilities: selfReg, values: { selfRegistrationMode: 'approval' } }));
       expect(screen.getByTestId('portal-access-policy-self-registration')).toBeInTheDocument();
       expect(screen.queryByTestId(NO_DOMAIN)).toBeNull();
+    });
+  });
+
+  describe('W7 (#11384): Google row and provider-conditional copy', () => {
+    it('renders the google slot under the Google row only when the row is visible', () => {
+      renderForm(makePolicyView({ capabilities: { entra: true } }), {}, { googleSlot: <div data-testid="gslot">domains</div> });
+      expect(screen.queryByTestId('gslot')).toBeNull();
+      cleanup();
+      renderForm(makePolicyView({ capabilities: { google: true } }), {}, { googleSlot: <div data-testid="gslot">domains</div> });
+      expect(within(screen.getByTestId('portal-access-policy-google-row')).getByTestId('gslot')).toBeInTheDocument();
+    });
+
+    it('an inherited Google method with no verified domain does not enable sso_only (D6 mask)', () => {
+      renderForm(makePolicyView({ capabilities: { google: true }, inherited: { googleEnabled: true }, verifiedDomains: [] }));
+      expect(radio('portal-access-policy-password-sso_only').disabled).toBe(true);
+    });
+
+    it('with Google not available, no Google word renders anywhere on the form', () => {
+      const { container } = render(
+        <PortalAccessPolicyForm
+          view={makePolicyView({ capabilities: { entra: true, selfRegistration: true }, values: { passwordMode: 'sso_only' }, passwordModeFallback: true })}
+          draft={{}}
+          onChange={vi.fn()}
+        />,
+      );
+      const text = container.textContent ?? '';
+      expect(text).not.toMatch(/google/i);
+      expect(text).toContain('Off — Microsoft only');
+      expect(text).toContain('First Microsoft sign-in');
+      expect(text).toContain('Microsoft session length (hours)');
+      expect(text).toContain('Password sign-in is on because Microsoft sign-in is not enabled.');
+    });
+
+    it('with only Google available the copy names Google, and with both it names both', () => {
+      const { container, unmount } = render(
+        <PortalAccessPolicyForm view={makePolicyView({ capabilities: { google: true }, passwordModeFallback: true })} draft={{}} onChange={vi.fn()} />,
+      );
+      expect(container.textContent).toContain('Off — Google only');
+      expect(container.textContent).toContain('Available once Google sign-in is turned on.');
+      expect(container.textContent).toContain('First Google sign-in');
+      expect(container.textContent).not.toMatch(/microsoft/i);
+      unmount();
+      const both = render(
+        <PortalAccessPolicyForm view={makePolicyView({ capabilities: { entra: true, google: true } })} draft={{}} onChange={vi.fn()} />,
+      );
+      expect(both.container.textContent).toContain('Off — Microsoft/Google only');
+      expect(both.container.textContent).toContain('Available once Microsoft or Google sign-in is turned on.');
     });
   });
 });

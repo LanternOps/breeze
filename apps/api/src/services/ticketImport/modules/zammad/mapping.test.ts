@@ -204,6 +204,48 @@ describe('people (§6.4)', () => {
     expect(mapRequester(ticket(111), people, { contactIdByEmail: contacts })).toEqual({ requester: { name: 'Eve Nomail' }, withoutContact: true });
   });
 
+  describe('"create missing requester contacts" (W4b, §5.13)', () => {
+    const contacts = new Map([['dana@acme.example.test', DANA]]);
+    const on = { enabled: true };
+
+    it('off (the default): nothing changes, an unmatched requester stays display-only', () => {
+      expect(mapRequester(ticket(103), people, { contactIdByEmail: contacts })).toEqual(
+        mapRequester(ticket(103), people, { contactIdByEmail: contacts }, { enabled: false }),
+      );
+      expect(mapRequester(ticket(103), people, { contactIdByEmail: contacts }, { enabled: false }).requester).not.toHaveProperty('createContact');
+    });
+
+    it('on: an unmatched requester with an email asks for a contact, named from firstname lastname, keyed by the customer id', () => {
+      expect(mapRequester(ticket(103), people, { contactIdByEmail: contacts }, on)).toEqual({
+        requester: { createContact: { name: 'Frank Shared', email: 'frank@globex.example.test', sourceUserKey: '12' } },
+        withoutContact: false,
+      });
+    });
+
+    it('on: a single match is still that contact, and a requester without an email stays display-only', () => {
+      expect(mapRequester(ticket(101), people, { contactIdByEmail: contacts }, on)).toEqual({ requester: { contactId: DANA }, withoutContact: false });
+      expect(mapRequester(ticket(111), people, { contactIdByEmail: contacts }, on)).toEqual({ requester: { name: 'Eve Nomail' }, withoutContact: true });
+    });
+
+    it('on: a customer with no first or last name sends no name, and the system user never asks', () => {
+      const nameless = { ...people, '12': { ...people['12']!, firstname: '-', lastname: '' } };
+      expect(mapRequester(ticket(103), nameless, { contactIdByEmail: contacts }, on).requester).toEqual({
+        createContact: { email: 'frank@globex.example.test', sourceUserKey: '12' },
+      });
+      const system = { ...people, '1': person({ id: 1, email: 'system@zammad.example.test' }) };
+      expect(mapRequester({ ...ticket(103), customer_id: 1 }, system, { contactIdByEmail: contacts }, on).requester).not.toHaveProperty('createContact');
+    });
+
+    it('"updated since": only tickets updated in the source on or after the UTC date ask for a contact', () => {
+      // Ticket 103 was updated 2026-04-10T13:20Z.
+      expect(mapRequester(ticket(103), people, { contactIdByEmail: contacts }, { enabled: true, updatedSince: '2026-04-10' }).requester)
+        .toHaveProperty('createContact');
+      expect(mapRequester(ticket(103), people, { contactIdByEmail: contacts }, { enabled: true, updatedSince: '2026-04-11' })).toEqual({
+        requester: { name: 'Frank Shared', email: 'frank@globex.example.test' }, withoutContact: true,
+      });
+    });
+  });
+
   it('names: full name, else login, else email, else a placeholder; user 1 is Zammad (system)', () => {
     expect(personName(person({ firstname: 'Ann', lastname: 'Lee' }), 7)).toBe('Ann Lee');
     expect(personName(person({ login: 'ann.l' }), 7)).toBe('ann.l');

@@ -65,6 +65,14 @@ function analysisRun(id: string, goal: string, deviceCount: number, handles: str
       goal,
       deviceIds: Array.from({ length: deviceCount }, (_, i) => device(100 + i, 'x').id),
       handles,
+      // W03: the run loop lists each staged handle in a fenced manifest.
+      manifest: handles.map((handle, i) => ({
+        handle, name: `input-${i + 1}.log`, bytes: 1_048_576, contentType: 'text/plain', kind: 'output',
+        producedByRunId: null, producerChainDepth: null,
+      })),
+      continuation: null,
+      scope: null,
+      exportGrants: null,
     },
   };
 }

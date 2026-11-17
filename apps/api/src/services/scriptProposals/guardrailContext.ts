@@ -97,6 +97,7 @@ async function loadGuardrailRow(proposalId: string) {
       status: scriptProposals.status,
       riskTier: scriptProposals.riskTier,
       strictHits: scriptProposals.strictHits,
+      goal: scriptProposals.goal,
     })
       .from(scriptProposals)
       .where(eq(scriptProposals.id, proposalId))
@@ -107,7 +108,11 @@ async function loadGuardrailRow(proposalId: string) {
 /** `row` is undefined both for a missing id and for one outside the caller's scope. */
 function classifyProposalRow(row: Awaited<ReturnType<typeof loadGuardrailRow>>): GuardrailContext {
   if (!row) return { proposalDenyReason: 'proposal_not_found' };
-  if (row.riskTier) return { proposal: { riskTier: row.riskTier, strictHits: row.strictHits ?? [] } };
+  if (row.riskTier) {
+    // `goal` names the script on the approval headline (#11979). The row is
+    // already cut to the caller's org / reach, so it reveals nothing new.
+    return { proposal: { riskTier: row.riskTier, strictHits: row.strictHits ?? [], goal: row.goal } };
+  }
   if (row.status === 'proposed') return { proposalDenyReason: 'proposal_review_pending' };
   if (row.status === 'scan_rejected' || row.status === 'review_failed') {
     return { proposalDenyReason: 'proposal_review_failed' };

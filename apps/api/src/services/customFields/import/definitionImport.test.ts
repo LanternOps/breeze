@@ -431,6 +431,16 @@ describe('commitCustomFieldDefinitionImport', () => {
     expect(s.errors[0]!.error).toMatch(/do not have access/i);
   });
 
+  // Postgres 18 reports a RESTRICT refusal as 23001, not 23503 (#11624).
+  it.each(['23503', '23001'])('gives a foreign-key refusal (%s) the no-longer-exists copy', async (code) => {
+    seed([]);
+    insertImpl.current = () => {
+      throw Object.assign(new Error('violates foreign key constraint'), { code });
+    };
+    const s = await commitCustomFieldDefinitionImport([{ ...row(), expectedAnnotation: 'create' }], ctx, actor);
+    expect(s.errors[0]!.error).toBe('The organization this custom field refers to no longer exists');
+  });
+
   it('never serializes `cause` onto the wire, on any error entry', async () => {
     seed([]);
     insertImpl.current = () => {

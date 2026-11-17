@@ -21,6 +21,7 @@ import { FULL_IDENTITY_FINGERPRINT, type ToolProfileFacts } from './toolProfileF
 import {
   CURATED_PROFILES,
   PROFILE_PREFIX_TOKENS,
+  STALE_WINDOW_AUTO_FLOOR,
   isProfiledSurface,
   type ProfilePrefixTokens,
 } from './toolProfiles';
@@ -147,6 +148,15 @@ export function effectiveToolProfile(
   if (facts.toolProfile !== 'auto') return { profile: facts.toolProfile, tooSmall: false };
   if (facts.effectiveWindow === null) return { profile: 'full', tooSmall: false };
   const picked = pickAutoProfile(facts.effectiveWindow, surface, opts.prefixTokens);
+  if (facts.windowStale === true) {
+    // #11393: a stale observed floor never refuses up front. Below the
+    // surface's lowest serviceable profile, that profile goes to the
+    // endpoint, which serves it (disproof) or rejects it (a fresh
+    // observation, which may then refuse while fresh).
+    const floor = STALE_WINDOW_AUTO_FLOOR[surface];
+    const below = picked === 'too_small' || (picked === 'minimal' && floor === 'standard');
+    return { profile: below ? floor : picked, tooSmall: false };
+  }
   return picked === 'too_small' ? { profile: 'minimal', tooSmall: true } : { profile: picked, tooSmall: false };
 }
 

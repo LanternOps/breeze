@@ -28,6 +28,8 @@ export const WORKSPACE_ERROR_CODES = [
   'collect_path_rejected',
   /** Resolve returned null: not found OR another org's. Never distinguished. */
   'artifact_forbidden',
+  /** The artifact's TTL passed after admission froze it into `staged_inputs`. */
+  'artifact_expired',
   'artifact_store_unavailable',
   'step_cap_reached',
   /** The run's region is not this deployment's (spec §8 "Residency"). */

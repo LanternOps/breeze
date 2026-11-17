@@ -3,9 +3,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    // Echo `count` so assertions can pin the number, not just the key.
-    t: (key: string, opts?: unknown) =>
-      opts && typeof opts === 'object' && 'count' in opts ? `${key}:${(opts as { count: number }).count}` : key,
+    // Echo `count` so assertions can pin the number, not just the key; W06
+    // also echoes `step` and `goal` so the step number and goal text are pinned.
+    t: (key: string, opts?: unknown) => {
+      if (!opts || typeof opts !== 'object') return key;
+      const o = opts as { count?: number; step?: number; goal?: string };
+      if ('count' in o) return `${key}:${o.count}`;
+      if ('step' in o) return `${key}:step=${o.step}`;
+      if ('goal' in o) return `${key}:goal=${o.goal}`;
+      return key;
+    },
   }),
 }));
 
@@ -537,5 +544,120 @@ describe('AiRunCard (spec §5.5)', () => {
       await act(async () => { await Promise.resolve(); });
       expect(c.queryByTestId('ai-run-card-continue')).toBeNull();
     });
+  });
+});
+
+describe('analysis chain surface (W06)', () => {
+  const chain = [{ id: 'r0', step: 1 }, { id: 'r1', step: 2 }, { id: RUN, step: 3 }];
+
+  it('shows the step only when the run is in a chain', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', chainDepth: 2, chain }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-step')).textContent).toContain('aiRunCard.chainStep:step=3');
+  });
+
+  it('omits the step for an unchained run and for an API that predates the field', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', chainDepth: 0, chain: null }));
+    const a = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    await a.findByTestId('ai-run-card-summary');
+    expect(a.queryByTestId('ai-run-card-step')).toBeNull();
+    a.unmount();
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis' })); // no chain keys at all
+    const b = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    await b.findByTestId('ai-run-card-summary');
+    expect(b.queryByTestId('ai-run-card-step')).toBeNull();
+  });
+
+  it('shows the goal, the findings count with the high count, and the settled cost', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', analysisGoal: 'correlate BSODs',
+      analysis: { summary: 's', artifactHandles: [], proposedActions: [],
+        findings: [{ severity: 'high' }, { severity: 'low' }, { severity: 'info' }] } }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-goal')).textContent).toContain('aiRunCard.goal:goal=correlate BSODs');
+    const findings = (await findByTestId('ai-run-card-findings')).textContent!;
+    expect(findings).toContain('aiRunCard.findings:3');
+    expect(findings).toContain('aiRunCard.findingsHigh:1');
+    expect((await findByTestId('ai-run-card-cost')).textContent).toMatch(/0\.19/); // (12 + 7) cents
+  });
+
+  it('shows no cost before the first poll lands, and none for a non-analysis run', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'device_troubleshooting', costCents: 40 }));
+    const a = render(<AiRunCard runId={RUN} initialStatus="completed" run={undefined} />);
+    await a.findByTestId('ai-run-card-summary');
+    expect(a.queryByTestId('ai-run-card-cost')).toBeNull();
+    a.unmount();
+    // The poll never resolves: the stream says completed, but no cost is known yet.
+    fetchWithAuth.mockReturnValue(new Promise(() => {}));
+    const b = render(<AiRunCard runId={RUN} initialStatus="completed" run={undefined} />);
+    expect(b.queryByTestId('ai-run-card-cost')).toBeNull();
+  });
+
+  it('does not show a mid-run poll cost as final when run_result arrives live; re-polls once for the settled cost', async () => {
+    fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'running', costCents: 5, computeCents: 0 }));
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', status: 'completed', costCents: 12, computeCents: 7 }));
+    const live = (status: string) => ({ runId: RUN, status, summary: null, artifacts: [], progress: [] }) as never;
+    const { queryByTestId, rerender } = render(
+      <AiRunCard runId={RUN} initialStatus="queued" run={live('running')} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    // The stream reports completion while the last poll is still the partial one.
+    fetchWithAuth.mockImplementationOnce(() => new Promise(() => {})); // hold the re-poll open
+    rerender(<AiRunCard runId={RUN} initialStatus="queued" run={live('completed')} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
+    expect(queryByTestId('ai-run-card-cost')).toBeNull(); // 5c partial must not appear
+  });
+
+  it('shows the settled cost after the single re-poll and does not poll again', async () => {
+    fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'running', costCents: 5, computeCents: 0 }));
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', status: 'completed', costCents: 12, computeCents: 7 }));
+    const live = (status: string) => ({ runId: RUN, status, summary: null, artifacts: [], progress: [] }) as never;
+    const { findByTestId, queryByTestId, rerender } = render(
+      <AiRunCard runId={RUN} initialStatus="queued" run={live('running')} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    rerender(<AiRunCard runId={RUN} initialStatus="queued" run={live('completed')} />);
+    expect((await findByTestId('ai-run-card-cost')).textContent).toMatch(/0\.19/);
+    expect(queryByTestId('ai-run-card-cost')!.textContent).not.toMatch(/0\.05/);
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists no files from the live stream before the first poll lands', () => {
+    fetchWithAuth.mockReturnValue(new Promise(() => {}));
+    const { queryByTestId } = render(
+      <AiRunCard runId={RUN} initialStatus="running"
+        run={{ runId: RUN, status: 'completed', summary: null, progress: [],
+          artifacts: [{ handle: 'h1', name: 'live.csv', bytes: 1, contentType: 'text/csv' }] } as never} />);
+    expect(queryByTestId('ai-run-card-artifact-h1')).toBeNull();
+    expect(queryByTestId('ai-run-card-files')).toBeNull();
+  });
+
+  it('keeps an output file whose expiry it cannot parse rather than hiding it', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', artifacts: [
+      { id: 'o3', name: 'x.csv', bytes: 1, contentType: 'text/csv', kind: 'output', expiresAt: 'not-a-date', downloadPath: '/api/v1/ai/artifacts/o3' },
+    ] }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect(await findByTestId('ai-run-card-artifact-o3')).toBeTruthy();
+  });
+
+  it('omits the high count when no finding is high', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis',
+      analysis: { summary: 's', artifactHandles: [], proposedActions: [], findings: [{ severity: 'low' }] } }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-findings')).textContent).not.toContain('findingsHigh');
+  });
+
+  it('lists only unexpired output files for an analysis run', async () => {
+    const future = '2099-01-01T00:00:00.000Z'; const past = '2020-01-01T00:00:00.000Z';
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', artifacts: [
+      { id: 'o1', name: 'bsod_by_driver.csv', bytes: 14336, contentType: 'text/csv', kind: 'output', expiresAt: future, downloadPath: '/api/v1/ai/artifacts/o1' },
+      { id: 'o2', name: 'old.csv', bytes: 10, contentType: 'text/csv', kind: 'output', expiresAt: past, downloadPath: '/api/v1/ai/artifacts/o2' },
+      { id: 'x1', name: 'export.jsonl', bytes: 10, contentType: 'application/jsonl', kind: 'input_capture', expiresAt: future, downloadPath: '/api/v1/ai/artifacts/x1' },
+      { id: 's1', name: 'step-1.py', bytes: 10, contentType: 'text/x-python', kind: 'step_script', expiresAt: future, downloadPath: '/api/v1/ai/artifacts/s1' },
+    ] }));
+    const { findByTestId, queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-artifact-o1')).getAttribute('href')).toBe('/api/v1/ai/artifacts/o1');
+    for (const id of ['o2', 'x1', 's1']) expect(queryByTestId(`ai-run-card-artifact-${id}`)).toBeNull();
+    expect(queryByTestId('ai-run-card-files')).not.toBeNull();
   });
 });

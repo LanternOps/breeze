@@ -388,6 +388,7 @@ describe('columnVisibility', () => {
       expect(COLUMN_GROUPS.wanIp).toBe('network');
       expect(COLUMN_GROUPS.serial).toBe('inventory');
       expect(COLUMN_GROUPS.productSku).toBe('inventory');
+      expect(COLUMN_GROUPS.hardwareModel).toBe('inventory');
       expect(COLUMN_GROUPS.status).toBe('health');
       expect(COLUMN_GROUPS.os).toBe('platform');
     });

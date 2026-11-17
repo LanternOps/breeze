@@ -1465,6 +1465,19 @@
         "unknown": "ein unbekannter Fehler ist aufgetreten"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Von einem Netzwerkfilter blockiert",
+      "titleUntrustedCertificate": "Serverzertifikat nicht vertrauenswürdig",
+      "webFilter": "Ein Netzwerk-Sicherheitsfilter im Netzwerk dieses Geräts antwortet anstelle des Breeze-Servers ({{locationHost}}). Meist ist das eine Sicherheitsfunktion des Routers des Internetanbieters, ein Webfilter der Firewall oder eine Anmeldeseite des Netzwerks.",
+      "captivePortal": "Das Netzwerk dieses Geräts hält Verbindungen auf einer Anmeldeseite (Captive Portal) fest.",
+      "plaintextUnknown": "Etwas im Netzwerk dieses Geräts hat die Breeze-Verbindung mit unverschlüsseltem HTTP statt TLS beantwortet.",
+      "untrustedCertificate": "Die Verbindung zum Breeze-Server hat ein Zertifikat vorgelegt, dem dieses Gerät nicht vertraut (ausgestellt von {{certIssuer}}). Meist ist das eine TLS-Prüfung durch eine Firewall oder einen Proxy, ein Zertifikatsproblem auf einem selbst gehosteten Server oder ein veralteter Speicher vertrauenswürdiger Stammzertifikate auf diesem Gerät. Breeze umgeht dies nicht.",
+      "viaEch": "Derzeit über Encrypted Client Hello erreichbar.",
+      "cleared": "War von {{from}} bis {{to}} blockiert.",
+      "lastKnown": "Zuletzt gemeldet: {{time}}. Das Gerät hat sich seitdem nicht gemeldet, daher trifft dies möglicherweise nicht mehr zu.",
+      "howToFix": "So beheben Sie das Problem",
+      "noDetail": "keine Angabe"
+    },
     "logShipping": {
       "label": "Log-Übertragung",
       "state": {
@@ -1661,6 +1674,12 @@
     }
   },
   "deviceList": {
+    "diskUsage": "Festplattenbelegung",
+    "diskUsageScope": "Angezeigte Datenträger",
+    "allDisks": "Alle Datenträger",
+    "osDiskOnly": "Nur OS-Disk",
+    "sortByDiskUsage": "Nach Festplattenbelegung sortieren (höchste angezeigte Belegung)",
+    "osDiskUsageUnavailable": "Der Agent hat das Systemlaufwerk noch nicht erkannt.",
     "selectedComposition": "{{agent}} Agent, {{network}} Netzwerk",
     "agentOnlyBulkAction": "Gilt nur für Agent-Geräte",
     "eligibleOfSelected": "{{count}} von {{total}}",
@@ -1682,6 +1701,7 @@
       "lastSeen": "Zuletzt gesehen",
       "serial": "Seriennummer",
       "productSku": "Produktnummer",
+      "hardwareModel": "Modell",
       "assetTag": "Asset-Tag",
       "location": "Standort",
       "source": "Quelle"
@@ -1700,6 +1720,7 @@
       "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit",
       "serial": "Nach Seriennummer sortieren",
       "productSku": "Nach Produktnummer sortieren",
+      "hardwareModel": "Nach Modell sortieren",
       "assetTag": "Nach Asset-Tag sortieren",
       "location": "Nach Standort sortieren",
       "source": "Nach Quelle sortieren"
@@ -1857,6 +1878,9 @@
       "unmanagedInstall": "Breeze Assist wurde nicht von Breeze installiert und die Bereitstellung ist aus, daher lässt der Agent es unverändert.",
       "unknown": "Breeze Assist ist aktiviert, aber nicht installiert."
     },
+    "controlPlaneBlockBadge": "Netzwerkfilter",
+    "controlPlaneBlockBadgeCertificate": "Zertifikat nicht vertrauenswürdig",
+    "controlPlaneBlockLastKnownTooltip": "Zuletzt gemeldet: {{time}}; das Gerät hat sich seitdem nicht gemeldet.",
     "agentVersionRelation": {
       "equalTooltip": "Entspricht der effektiven Version {{version}}",
       "aheadTooltip": "Vor dem Pin {{version}}",
@@ -2807,6 +2831,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (ein unerwarteter Fehler ist aufgetreten; bitte erneut versuchen)",
       "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben",
       "bulkWakeResult": "An {{sent}} gesendet, {{skipped}} übersprungen",
+      "bulkWakePolicySkipped": "{{count}} wegen der Wake-on-LAN-Richtlinie übersprungen",
+      "bulkWakeAllBlockedByPolicy": "Kein Wake gesendet: {{count}} durch die Wake-on-LAN-Richtlinie blockiert",
+      "bulkWakeLookupFailedSkipped": "{{count}} konnten nicht geprüft werden, bitte erneut versuchen",
+      "bulkWakeAllLookupFailed": "Kein Wake gesendet: {{count}} konnten nicht geprüft werden, bitte erneut versuchen",
       "scriptQueuedOneOffline": "Skript „{{script}}“ für {{hostname}} eingereiht – wird ausgeführt, sobald das Gerät wieder verbunden ist"
     },
     "tryAgain": "Versuchen Sie es erneut",
@@ -2860,7 +2888,9 @@
       "relayDisconnected": "Relay-Verbindung beim Senden getrennt — erneut versuchen",
       "missingTarget": "nicht gefunden oder Zugriff verweigert",
       "removed": "entfernt",
-      "invalidRelay": "mit ungültiger Relay-Auswahl"
+      "invalidRelay": "mit ungültiger Relay-Auswahl",
+      "policyNotReady": "durch ihre Wake-on-LAN-Richtlinie blockiert (nicht bereit)",
+      "policyLookupFailed": "deren Wake-on-LAN-Richtlinie nicht geprüft werden konnte — erneut versuchen"
     }
   },
   "filterAddDropdown": {
@@ -3780,6 +3810,7 @@
     "deleteTitle": "„{{name}}“ löschen",
     "empty": "Noch keine gespeicherten Ansichten. Erstellen Sie einen Filter und speichern Sie ihn dann als Ansicht.",
     "manageAll": "Alle Ansichten verwalten",
+    "ownerOrgHint": "Ansichten gehören zu genau einer Organisation. Wählen Sie, welcher Organisation diese Ansicht gehört.",
     "saveCurrent": "Aktuelle Ansicht speichern…",
     "saveCurrentTitle": "Speichern Sie den aktuellen Filter als Ansicht",
     "setDefaultTitle": "Als Standardansicht festlegen",
@@ -3838,7 +3869,11 @@
     "oldDeviceUnavailable": "Der alte Geräteeintrag ist nicht mehr verfügbar.",
     "title": "Mögliche doppelte Registrierung",
     "unknownDevice": "das vorherige Gerät",
-    "viewOldDevice": "Altes Gerät anzeigen"
+    "viewOldDevice": "Altes Gerät anzeigen",
+    "reattach": "Neu verknüpfen",
+    "reattachPending": "Eine Neuverknüpfung mit dem alten Eintrag steht aus: Die neue Installation schließt sie ab, sobald sich ihr Agent meldet. Die Anfrage läuft am {{expiresAt}} ab.",
+    "reviewPending": "Eine mögliche Neuinstallation wartet auf die Prüfung durch den Partner.",
+    "reattachPendingOther": "Eine Neuverknüpfung dieses Geräts steht aus. Die Anfrage läuft am {{expiresAt}} ab."
   },
   "fleetPosture": {
     "securityUnavailable": "Sicherheitsbefunde zum Fernzugriff konnten für diese Ansicht nicht geladen werden.",
@@ -4271,7 +4306,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Gerätelimit erreicht",
       "STEP_UP_REQUIRED": "Bestätigung erforderlich",
       "ASSIGNMENT_FAILED": "Fehlgeschlagen"
-    }
+    },
+    "modeLegend": "Was mit diesem Gerät geschehen soll",
+    "modeAssign": "Als neues Gerät zuweisen",
+    "modeReattach": "Mit {{hostname}} neu verknüpfen (Neuinstallation eines vorhandenen Eintrags)",
+    "reattachPending": "Eine Neuverknüpfung dieses Geräts steht aus: Die neue Installation schließt sie ab, sobald sich ihr Agent meldet. Die Anfrage läuft am {{expiresAt}} ab.",
+    "cancelReattachConfirm": "Wenn dieses Gerät als neues Gerät zugewiesen wird, wird seine ausstehende Neuverknüpfung abgebrochen. Ich habe verstanden."
   },
   "timeFleet": {
     "title": "Zeitsynchronisierung",
@@ -4860,6 +4900,7 @@
     "startDescription": "Netzwerkverkehr außer der Breeze-Verwaltung blockieren.",
     "releaseDescription": "Entfernung der Breeze-Isolierungsregeln anfordern. Ein Offline-Gerät erhält die Freigabe beim erneuten Verbinden.",
     "serverWarning": "Dies ist ein Serverbetriebssystem. Die Isolierung kann Dienste für andere Geräte unterbrechen.",
+    "deadManUnsupported": "Die Eindämmungsrichtlinie dieses Geräts legt eine Dead-Man-Freigabe fest, aber die Agent-Version des Geräts unterstützt sie nicht. Das Gerät wird ohne Dead-Man-Freigabe isoliert.",
     "reason": "Begründung",
     "ttlHours": "Dauer (Stunden)",
     "incidentId": "Bestehende Vorfall-ID (optional)",
@@ -4883,6 +4924,20 @@
     "codeNext": "Code für die nächste Stunde",
     "codeValidUntil": "Aktueller Code gültig bis {{date}}",
     "codeError": "Notfallcodes konnten nicht geladen werden. Versuchen Sie es erneut.",
+    "tabCode": "Notfallcode",
+    "tabToken": "Freigabe-Token",
+    "issueToken": "Freigabe-Token ausstellen",
+    "hideToken": "Token ausblenden",
+    "tokenLabel": "Freigabe-Token",
+    "copyToken": "Token kopieren",
+    "tokenCopied": "Kopiert",
+    "tokenCopyError": "Das Token konnte nicht kopiert werden. Markieren und manuell kopieren.",
+    "tokenQrAlt": "QR-Code mit dem Freigabe-Token",
+    "tokenValidUntil": "Token gültig bis {{date}}",
+    "tokenCommandHint": "Führen Sie auf dem isolierten Gerät diesen Befehl als Administrator oder root aus und ersetzen Sie <token> durch das Token:",
+    "tokenError": "Es konnte kein Freigabe-Token ausgestellt werden. Versuchen Sie es erneut.",
+    "tokenUnavailable": "Für diese Isolierung ist kein Freigabe-Token verfügbar.",
+    "codesDisabledNote": "Notfallcodes sind für dieses Gerät deaktiviert. Verwenden Sie stattdessen ein signiertes Freigabe-Token.",
     "incidentHeading": "Netzwerkisolierung",
     "retry": "Isolierungsstatus erneut laden",
     "filterLabel": "Isoliert",
@@ -5046,5 +5101,86 @@
       "previousPage": "Zurück",
       "nextPage": "Weiter"
     }
+  },
+  "reinstalledBadge": {
+    "label": "Neu installiert am {{date}}",
+    "title": "Dieser Eintrag hat am {{at}} eine neu installierte Maschine übernommen. Die neue Installation hat das Inventar neu aufgebaut."
+  },
+  "reattachDialog": {
+    "title": "Mit {{target}} neu verknüpfen",
+    "description": "Den vorhandenen Eintrag {{target}} für die neue Installation {{source}} verwenden und dabei Verlauf, Richtlinien und Konfiguration behalten.",
+    "newInstall": "Neue Installation",
+    "existingRecord": "Vorhandener Eintrag",
+    "holdingArea": "Wartebereich",
+    "fields": {
+      "hostname": "Rechnername",
+      "os": "Betriebssystem",
+      "model": "Hersteller und Modell",
+      "serial": "Seriennummer",
+      "systemUuid": "System-UUID",
+      "agentVersion": "Agent-Version",
+      "place": "Organisation / Standort",
+      "enrolledAt": "Registriert",
+      "lastSeenAt": "Zuletzt gesehen"
+    },
+    "matchedOn": "Übereinstimmung bei: {{evidence}}",
+    "evidence": {
+      "systemUuid": "System-UUID",
+      "serial": "Seriennummer und Hersteller",
+      "hostname": "nur Rechnername",
+      "other": "gemeldete Kennungen"
+    },
+    "evidenceNoticeHint": "Vom Gerät gemeldete Hardwarekennungen. Nicht überprüft.",
+    "evidenceNoticeTpm": "Derselbe TPM-Endorsement-Key, dessen Besitz die alte Installation nachgewiesen hat. Das belegt die Kontinuität des Schlüssels, nicht dasselbe physische TPM; geklonte virtuelle TPMs teilen Schlüssel.",
+    "consequences": "Die neue Installation baut das Inventar von {{target}} neu auf. Ausstehende Aufgaben, Berechtigungen und Sitzungen der alten Installation werden abgebrochen, und der Eintrag {{source}} wird stillgelegt.",
+    "possession": "Ich habe außerhalb von Breeze bestätigt, dass die neue Installation auf der von {{target}} beschriebenen Maschine läuft.",
+    "acknowledgeOsChange": "Die neue Installation meldet {{sourceOs}}, der vorhandene Eintrag {{targetOs}}. Ich bestätige, dass sich das Betriebssystem geändert hat.",
+    "restoreDecommissioned": "{{target}} wurde entfernt. Im Rahmen dieser Neuverknüpfung wiederherstellen.",
+    "confirmNameLabel": "Zur Bestätigung {{hostname}} eingeben",
+    "stepUpHeading": "Bestätigen Sie Ihre Identität",
+    "stepUpIntro": "Eine Neuverknüpfung legt einen Geräteeintrag still. Bestätigen Sie mit Ihrem zweiten Faktor, um fortzufahren.",
+    "stepUpPasskeyNote": "Ihr Browser fragt nach Ihrem Passkey, wenn Sie fortfahren.",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "stepUpRetry": "Diese Bestätigung ist abgelaufen oder passt nicht mehr. Geben Sie einen neuen Code ein.",
+    "noStepUpFactor": "Für eine Neuverknüpfung brauchen Sie einen Passkey oder eine Authenticator-App. Richten Sie eines davon in Ihrem Profil ein und versuchen Sie es erneut.",
+    "genericError": "Die Neuverknüpfung konnte nicht angefordert werden. Versuchen Sie es erneut.",
+    "cancel": "Abbrechen",
+    "close": "Schließen",
+    "submit": "Mit {{hostname}} neu verknüpfen",
+    "submitting": "Wird angefordert…",
+    "submitStepUp": "Bestätigen und neu verknüpfen",
+    "requestedToast": "Neuverknüpfung mit {{hostname}} angefordert",
+    "pendingTitle": "Neuverknüpfung angefordert",
+    "pendingMessage": "{{source}} übernimmt {{target}}, sobald sich ihr Agent das nächste Mal meldet; hier ist nichts weiter zu tun. Die Anfrage läuft am {{expiresAt}} ab.",
+    "refusals": {
+      "device_not_found": "Eines der Geräte existiert nicht mehr oder liegt außerhalb Ihres Zugriffs.",
+      "not_partner_user": "Nur Partnerbenutzer können Geräte neu verknüpfen.",
+      "user_inactive": "Ihr Konto ist nicht aktiv.",
+      "permission_denied": "Sie benötigen die Berechtigung, Geräte in den Organisationen beider Geräte zu bearbeiten und zu entfernen.",
+      "org_access_denied": "Sie haben keinen Zugriff auf die Organisationen beider Geräte.",
+      "full_admin_required": "Die Neuverknüpfung eines Geräts aus dem Wartebereich anhand gemeldeter Kennungen erfordert einen vollständigen Partneradministrator.",
+      "partner_mismatch": "Die Geräte gehören nicht mehr zu Ihrem Partner.",
+      "MFA_REQUIRED": "Für eine Neuverknüpfung ist eine mit Zwei-Faktor-Authentifizierung angemeldete Sitzung nötig. Melden Sie sich erneut mit Ihrem zweiten Faktor an.",
+      "target_alive": "{{hostname}} wird noch verwendet: Die Installation hat sich kürzlich authentifiziert. Eine Neuverknüpfung setzt voraus, dass die alte Installation inaktiv ist.",
+      "liveness_unknown": "Ob {{hostname}} noch verwendet wird, konnte nicht geprüft werden. Versuchen Sie es gleich noch einmal.",
+      "os_changed": "Die Betriebssysteme unterscheiden sich. Bestätigen Sie den Betriebssystemwechsel und versuchen Sie es erneut.",
+      "target_changed": "{{hostname}} hat sich seit der Anzeige geändert (neu registriert oder neu verknüpft). Öffnen Sie die Neuverknüpfung erneut, um den aktuellen Stand zu sehen.",
+      "rebind_unsupported": "Der Agent der neuen Installation ist zu alt für eine Neuverknüpfung. Aktualisieren Sie zuerst den Agent.",
+      "source_decommissioned": "Der Eintrag der neuen Installation wurde entfernt.",
+      "source_ineligible": "Dieses Gerät kann nicht neu verknüpft werden: Quick-Support-Geräte sind ausgeschlossen.",
+      "target_ephemeral": "{{hostname}} ist ein temporäres Gerät und kann nicht Ziel einer Neuverknüpfung sein.",
+      "target_decommissioned": "{{hostname}} wurde entfernt. Wählen Sie die Wiederherstellung, um damit neu zu verknüpfen.",
+      "target_ineligible": "{{hostname}} ist kein verwalteter Eintrag.",
+      "target_retired": "{{hostname}} wurde bereits durch eine frühere Neuverknüpfung stillgelegt.",
+      "device_quarantined": "Eines der Geräte ist in Quarantäne.",
+      "device_suspended": "Bei einem der Geräte sind die Agent-Anmeldedaten gesperrt.",
+      "org_draining": "Die Organisation eines der Geräte ist nicht aktiv.",
+      "device_in_open_intent": "Eines der Geräte ist bereits Teil einer ausstehenden Neuverknüpfung.",
+      "confirm_target_name_required": "Geben Sie zur Bestätigung den Namen des vorhandenen Geräts ein.",
+      "confirm_target_name_mismatch": "Der eingegebene Name stimmt nicht mit {{hostname}} überein.",
+      "same_device": "Ein Gerät kann nicht mit sich selbst neu verknüpft werden.",
+      "invalid_target_version": "Die Version des vorhandenen Eintrags fehlt. Öffnen Sie die Neuverknüpfung erneut."
+    },
+    "stepUpHeld": "Ihre Bestätigung gilt weiterhin für diese Neuverknüpfung."
   }
 }

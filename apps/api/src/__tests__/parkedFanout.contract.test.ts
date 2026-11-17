@@ -118,6 +118,8 @@ function discovered(): string[] {
 
 /** What a human sees (listings, reports, read models, billing counts). */
 const VISIBILITY_MODULES: Record<string, string> = {
+  'services/aiToolsExportShared.ts': 'read model: export_dataset device set — reads only devices already frozen into an analysis run frame, under the caller ceiling; selects no fan-out targets',
+  'services/aiToolsExportDatasets/customFields.ts': 'read model: custom_fields export — pages the custom field values of devices exportDeviceSet already resolved in the run org; selects no fan-out targets',
   'services/partnerGroupPreview.ts': 'read-only partner-group preview; eligible org discovery excludes Quick Support/holding orgs and evaluation intersects the caller accessible orgs',
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
@@ -125,7 +127,10 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/mappableOrgs.ts': 'listing: orgs an external tenant/customer may be mapped onto (EDR, backup and Pax8 mapping and name suggestions); excludes hidden and unassigned-pool orgs, never reads devices',
   'services/partnerVisibleOrgs.ts': 'listing: the partner org-list population, shared with the partner settings inheritance counts (#9170); excludes hidden orgs, never reads devices',
   'services/aiToolsBackupRecoveryReads.ts': 'caller read: joins devices only to apply the site ceiling to a recovery row',
+  'services/wakeStatusPanel.ts': 'read model + one scoped write (#10838): lists the devices a policy governs from the policy\'s own assignments (capped scan, caller RLS + site allowlist) and clears one device\'s timeout block; dispatches nothing and selects no wake targets',
+  'services/wakeAvailability.ts': 'read model (#10838): whether the Wake button shows for the device ids a listing or detail page already holds; selects no targets and dispatches nothing',
   'services/backupHealthReadModel.ts': 'read model: backup health',
+  'services/connectionHealth/sources/backupDestination.ts': 'read model: the backup_destination health verdict (#11772) counts the job outcomes of devices on one backup config; reads backup_jobs.device_id only to group them, selects no device targets and runs nothing',
   'services/contractQuantities.ts': 'billing: contract quantities',
   'services/endpointMessaging/history.ts': 'read model: endpoint message send history and per-device delivery detail (#8742); lists existing deliveries, selects no targets',
   'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
@@ -145,6 +150,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/portal/vulnerabilityDetailReadModel.ts': 'read model: portal vulnerability detail',
   'services/portal/securityReadModel.ts': 'read model: portal security',
   'services/reportGenerationService.ts': 'report: per-org report builders',
+  'services/securityComplianceReport.ts': 'report: the posture report counts the org\'s managed devices (managedDeviceConditions, parked excluded) to state how many its site filter left out (#12044); selects no targets',
   'services/reportScope.ts': 'report: scope (already excludes the holding org)',
   'services/reportSeries/combine.ts': 'report: multi-org series Combine candidates, series-eligible orgs only (hidden org types excluded)',
   'services/reportSeries/reconcile.ts': 'report: multi-org series repair sweep, mirrors the targets.ts eligibility rule in SQL',
@@ -163,6 +169,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/workloads/imageCompliance.ts': 'report: container image term of patch compliance (W06); the org-scope form excludes parked and Quick Support devices like the report it feeds',
   // --- examined device readers (jobs, services, ee) ---
   'services/aiAgentRunSiteScope.ts': 'site-allowlist filter for AI run listings shown to a person',
+  'services/artifacts/artifactService.ts': 'site-allowlist filter for AI artifact reads shown to a person',
   'services/aiOriginSummary.ts': 'label for one command/execution a person is already viewing',
   'services/aiToolsAiAgentGovernance.ts': 'joins devices only to show hostnames on an AI run listing',
   'services/aiToolsCompliance.ts': 'compliance report joins; device-targeted actions go through the central device gate',
@@ -215,6 +222,8 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/aiAgents/analysisFrame.ts': 'analysis frame (W02 analysis sessions): expands one customer org or site the coordinator already checked against GrantCeiling.orgIds, which never contains a holding org, so a parked device cannot match; selects read scope for a run that cannot act',
+  'services/aiAgents/analysisRunSite.ts': 'checks that the input devices an analysis run already names sit in its recorded site; selects no targets',
   'services/oemUpdates/revalidation.ts': 'vendor update claim recheck (#11065): reads the partner of the one device being claimed; selects no targets. A parked device is cancelled by partitionClaimable first',
   'services/oemUpdates/alerts.ts': 'vendor update alerts (#11065): reads the hostname of one device the monitor, a sweep or a result already named; selects no targets',
   'services/oemUpdates/results.ts': 'vendor update results (#11065): applies an agent report to the one device that sent it; selects no targets',
@@ -268,7 +277,8 @@ const EXEMPT: Record<string, string> = {
   'jobs/deviceGroupJobs.ts': 'device groups are org-owned; the holding org has none',
   'jobs/dnsSyncJob.ts': 'syncs org-owned DNS integrations; the holding org owns none',
   'jobs/hardwareHealthRetention.ts': 'retention, not target selection',
-  'jobs/huntressSync.ts': 'partner-scoped integration; devices are matched only inside orgs named by huntress_org_mappings, which only a person sets (PATCH /huntress/mappings, gated on canAccessOrg, never true for the holding org outside system scope)',
+  'jobs/ipClassifyBackfill.ts': 'one-off re-classification of stored enrollment IPs (#11698): writes only the device\'s own enrollment_ip_class, sends nothing to the device; a parked device\'s enrollment IP still counts toward its partner\'s trust gate (gatherPromotionFacts reads every device), so it must be reached',
+  'jobs/huntressSync.ts':'partner-scoped integration; devices are matched only inside orgs named by huntress_org_mappings, which only a person sets (PATCH /huntress/mappings, gated on canAccessOrg, never true for the holding org outside system scope)',
   'jobs/offlineDetector.ts': 'status transition only; its event and alert effects are gated in services/offlineEffectsStore.ts',
   'jobs/patchJobExecutor.ts': 'executes patch jobs already created for selected devices; command delivery refuses parked devices',
   'jobs/patchSchedulerWorker.ts': 'selects no targets itself: assignment devices come from services/configPolicyAssignmentDevices.ts (a FANOUT module, #8442); its only devices read loads scheduling context for those resolved ids',
@@ -505,6 +515,8 @@ const EXEMPT: Record<string, string> = {
   'services/reinstallCandidates/clearLinks.ts': 'reinstall hints (#8318 §7.3): clears other devices\' links to ONE retired record (named by id) across its partner, parked sources included on purpose; selects no targets and dispatches nothing',
   'services/reinstallCandidates/ranking.ts': 'reinstall hints (#8318 §7.3): the pure target-qualification rule that leaves hidden-org targets out; selects and dispatches nothing',
   'services/deviceReattach/requestIntent.ts': 'reinstall reattach (#8318): eligibility of the ONE target a human named (a hidden-org target is refused); selects no targets and dispatches nothing',
+  'services/deviceReattach/reachability.ts': 'reinstall reattach (#8318 §8): reads where the TWO devices a human named are (by id) to decide reachability before any lock; selects no targets and dispatches nothing',
+  'services/reinstallCandidates/viewer.ts': 'reinstall hints (#8318 §7.3): the read-only candidates view for ONE source (by id), ranked by ranking.ts so hidden-org targets stay out; parked sources only to full partner admins; selects no targets for work and dispatches nothing',
   'services/unassignedPool/parkedDeviceReads.ts': 'the parked-device list itself, shown only to full partner admins through the pre-assignment routes; reads, never selects work',
   'services/flows/triggerScope.ts': "org-pinned: enriches a flow trigger with the one device its event payload names, only when that device is in the run's own org (#5219); selects no targets and dispatches nothing",
   'services/devicePolicySet.ts': 'derived: every candidate policy assignment of the one device a heartbeat already identified (loaded in its org-scoped context); selects no work',
@@ -517,6 +529,7 @@ const EXEMPT: Record<string, string> = {
   'ee/workspace/src/services/deviceSummaryService.ts': 'request path: summarize(orgId, deviceId) takes both ids from the calling route, RLS-backed',
   'services/wisp/checkInRuns.ts': "Wisp run check-ins W07 (#11496): reads the ONE device a check-in's context names, by id, only to learn whether it was deleted; admits one org-level assessment run through enqueueAssessment (org in the live GrantCeiling, which excludes hidden orgs); selects no device targets and dispatches nothing to a device",
   'services/managedDeviceScope.ts': 'report population (#11562): builds the managed-device predicate (org, non-ephemeral, notParkedDeviceCondition, not decommissioned) callers apply; selects nothing itself',
+  'jobs/historyRetention/patchAndPosture.ts': 'retention, not target selection (#4342 W5): reads devices.pending_reboot only to KEEP a patch result row; dispatches nothing to a device',
 };
 
 describe('contract: background selectors leave parked devices out', () => {

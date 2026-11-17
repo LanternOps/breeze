@@ -267,6 +267,10 @@ var sensitiveReadPatterns = []string{
 	"/programdata/breeze",                 // Windows default
 	"/etc/breeze",                         // Linux default
 	"/library/application support/breeze", // macOS default (also covers the data dir under it)
+	// The agent's data folder on Linux, which holds keys/ (the PAM rule cache
+	// key) beside its state stores. On Windows and macOS the data folder sits
+	// inside the configuration folder listed above.
+	"/var/lib/breeze",
 }
 
 // sensitiveReadBasenames are lowercased filenames that are credential stores
@@ -346,6 +350,28 @@ func isSensitiveNormalizedForm(norm string, configForms []string) bool {
 		}
 	}
 
+	if matchesSensitiveFileName(norm) {
+		return true
+	}
+
+	// The agent's own config/secrets directory at its actual configured
+	// location (covers a non-default install path; the well-known defaults
+	// are also covered statically in sensitiveReadPatterns above so this
+	// still denies even if ConfigDir() cannot be resolved for some reason).
+	for _, configForm := range configForms {
+		if matchesPathFragment(norm, configForm) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchesSensitiveFileName applies the rules that identify a credential
+// store by its own name (browser password and cookie databases, SSH private
+// keys, cloud CLI credentials, keychain files) to one lowercased,
+// forward-slashed spelling of a path, wherever it sits.
+func matchesSensitiveFileName(norm string) bool {
 	base := norm
 	if i := strings.LastIndex(norm, "/"); i >= 0 {
 		base = norm[i+1:]
@@ -382,16 +408,6 @@ func isSensitiveNormalizedForm(norm string, configForms []string) bool {
 	// "/library/keychains" entry in sensitiveReadPatterns.
 	if strings.HasSuffix(base, ".keychain") || strings.HasSuffix(base, ".keychain-db") {
 		return true
-	}
-
-	// The agent's own config/secrets directory at its actual configured
-	// location (covers a non-default install path; the well-known defaults
-	// are also covered statically in sensitiveReadPatterns above so this
-	// still denies even if ConfigDir() cannot be resolved for some reason).
-	for _, configForm := range configForms {
-		if matchesPathFragment(norm, configForm) {
-			return true
-		}
 	}
 
 	return false
@@ -477,7 +493,14 @@ func resolvedConfigDir(configDir string) (string, bool) {
 // reachable through this toolset (nothing here creates links) and requires a
 // hard link already present on the target filesystem; it is called out so the
 // next reader does not mistake the symlink handling for complete link coverage.
+//
+// The path must also be an absolute local path (localPathFormError): network
+// shares, device namespaces and relative spellings are refused first, for
+// every operation that comes through here.
 func EnforcePathContainment(verb, cleanPath string) error {
+	if err := localPathFormError(cleanPath); err != nil {
+		return err
+	}
 	if isSensitiveReadPath(cleanPath) {
 		return errorCodef(wire.ErrCodeSensitivePathDenied, "%s denied on sensitive path: %s", verb, cleanPath)
 	}
@@ -538,6 +561,9 @@ func beforeTrashCopy(path string) {
 // junction, symlink, mount point, short name and alias, and it cannot be raced
 // because the caller goes on to use this same handle.
 func checkOpenedForContainment(verb, displayPath string, f *os.File) error {
+	if err := requireDiskHandle(f); err != nil {
+		return err
+	}
 	final, err := containmentFinalPathOfFile(f)
 	if err != nil {
 		if handleCheckMandatory {
@@ -547,6 +573,12 @@ func checkOpenedForContainment(verb, displayPath string, f *os.File) error {
 	}
 	if isSensitiveReadPath(final) {
 		return withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, displayPath))
+	}
+	// A hard link is another name for the same file, which no path names:
+	// a file with more than one link is compared with the protected files by
+	// identity.
+	if isOtherNameOfProtectedFile(f, nil, protectedIdentitiesCached, func() protectedIdentitySet { return volumeIdentitiesOfHandle(f, final) }) {
+		return withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (another name of a protected file): %s", verb, displayPath))
 	}
 	return nil
 }
@@ -1876,6 +1908,12 @@ func MakeDirectory(payload map[string]any) CommandResult {
 	// Check against denied system paths
 	if isDeniedSystemPath(cleanPath) {
 		return NewErrorResult(errorCodef(wire.ErrCodeSystemPathDenied, "operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
+	}
+
+	// Same rules as every other write: an absolute local path outside the
+	// protected locations (agent configuration, credential stores).
+	if err := enforceWriteContainment(cleanPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
 	// Create directory and any necessary parents

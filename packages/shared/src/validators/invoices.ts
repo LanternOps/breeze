@@ -222,6 +222,19 @@ export const orgBillingSettingsSchema = z.object({
   }
 });
 
+/**
+ * The org billing-settings fields that change the org's billing contact, the default recipient of its invoices,
+ * quotes and autopay notices. A patch that carries any of them (an explicit null included) needs billing:manage on top
+ * of invoices:write, on PATCH /orgs/:orgId/billing-settings and on the AI tool that writes the same settings.
+ */
+export const ORG_BILLING_CONTACT_SETTINGS_KEYS = ['billingContactEmail', 'billingContactName'] as const satisfies
+  ReadonlyArray<keyof z.infer<typeof orgBillingSettingsSchema>>;
+
+/** True when an org billing-settings patch changes the billing contact (see ORG_BILLING_CONTACT_SETTINGS_KEYS). */
+export function changesOrgBillingContact(patch: Readonly<Record<string, unknown>>): boolean {
+  return ORG_BILLING_CONTACT_SETTINGS_KEYS.some((key) => patch[key] !== undefined);
+}
+
 export const orgCurrencyImpactQuerySchema = z.object({ currencyCode: currencyCodeSchema }).strict();
 
 export const bulkInvoiceIdsSchema = z.object({

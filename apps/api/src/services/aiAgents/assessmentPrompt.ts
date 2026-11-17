@@ -20,7 +20,7 @@
  * safe: both sides read each other's bindings only inside function bodies,
  * never at module evaluation.
  */
-import type { Concern } from '@breeze/shared';
+import type { Concern, WispCheckInTriggerEvent } from '@breeze/shared';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { wrapUntrustedData } from '../aiInputSanitizer';
 import type { AssessmentDigest, AssessmentReason, OrgReadiness, WatchHitSummary } from '../wisp/assessmentTypes';
@@ -169,6 +169,20 @@ const CHECK_IN_ANSWER_LINE =
   + 'plainly when you could not tell. Record a concern, nudge or proposal only if what you found calls for one.';
 
 /**
+ * #11978: the subject line of an event check-in, by trigger event. A tool is
+ * named only where this run has it: `get_device_details` is on the
+ * assessment floor and `get_ai_agent_run` is added for a `run_settled`
+ * check-in (assessmentProfile.ts CHECK_IN_SUBJECT_READ_TOOLS). A script's or
+ * a command's result reaches the run as the trigger's evidence below.
+ */
+const CHECK_IN_SUBJECT_LINE: Readonly<Record<WispCheckInTriggerEvent, (id: string) => string>> = {
+  device_online: (id) => `device ${id} (read it with get_device_details).`,
+  script_finished: (id) => `script execution ${id} (its result is in the evidence below).`,
+  command_finished: (id) => `device command ${id} (its result is in the evidence below).`,
+  run_settled: (id) => `AI agent run ${id} (read it with get_ai_agent_run: its steps, findings and pending approvals).`,
+};
+
+/**
  * W07 (#11496): the follow-up a run-mode check-in asked for. The instruction
  * was approved by the person on a card when it was scheduled, and was
  * sanitised when the run was admitted; it is single-lined again here so it
@@ -177,6 +191,9 @@ const CHECK_IN_ANSWER_LINE =
  */
 function checkInLines(reason: Extract<AssessmentReason, { kind: 'check_in' }>): string[] {
   const lines = [`Follow-up the user asked for: ${sanitizeSweepText(reason.instruction, CHECK_IN_INSTRUCTION_MAX) || '(empty)'}`];
+  // #11978: name what the check-in waits on, so the run knows what to look at.
+  // The id is a uuid (parseCheckInSubject), so it needs no fence.
+  if (reason.subject) lines.push(`What the check-in waits on: ${CHECK_IN_SUBJECT_LINE[reason.subject.kind](reason.subject.id)}`);
   const e = reason.evidence;
   if (e) {
     const head = [

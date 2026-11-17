@@ -27,7 +27,7 @@ import { createAuditLog } from '../auditService';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import {
   MEMORY_CONTENT_MAX_BYTES, MEMORY_SUBJECT_KEY_MAX_LENGTH, toMemoryBlock,
-  memoryKeyLock, type MemoryBlock, type MemoryBlockType, type MemoryOwner,
+  memoryKeyLock, redactMemoryContent, type MemoryBlock, type MemoryBlockType, type MemoryOwner,
 } from './memoryBroker';
 
 export type MemoryServiceErrorCode =
@@ -351,7 +351,8 @@ async function resolveOwner(auth: AuthContext, owner: HumanMemoryOwner): Promise
  * provenance, and stamps no grant revision (no agent wrote it). In one
  * transaction it supersedes the live (non-retracted, non-superseded) block with
  * the same (tenant, owner, block_type, subject_key). Request context: RLS also
- * refuses any owner the gates below missed.
+ * refuses any owner the gates below missed. Content is stored redacted, with
+ * the broker's rule (memoryBroker.redactMemoryContent).
  */
 export async function recordHumanBlock(auth: AuthContext, input: RecordHumanBlockInput): Promise<MemoryBlock> {
   assertHuman(auth);
@@ -374,7 +375,7 @@ export async function recordHumanBlock(auth: AuthContext, input: RecordHumanBloc
       ...owner,
       blockType: input.blockType,
       subjectKey: input.subjectKey,
-      content: input.content,
+      content: redactMemoryContent(input.content).content,
       confidence: input.confidence ?? 'medium',
       status: 'confirmed',
       authoredByGrantId: input.authoredByGrantId ?? null,

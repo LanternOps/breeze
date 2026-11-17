@@ -11,6 +11,10 @@ import {
 } from './securityComplianceReportProducts';
 import { edrReportEvidenceAllowed } from './portal/edrVisibility';
 import { loadPostureEvidence, postureEvidencePolicyFromReportConfig } from './postureEvidence';
+import { and, sql } from 'drizzle-orm';
+import { db } from '../db';
+import { devices } from '../db/schema';
+import { managedDeviceConditions } from './managedDeviceScope';
 
 const pct = (num: number, denom: number): number =>
   denom === 0 ? 0 : Math.round((num / denom) * 100);
@@ -54,6 +58,7 @@ function emptySummary(
       edrUnknownCount: 0,
       anyAvCoveragePct: null,
       anyAvUnknownCount: 0,
+      avAssessedCount: 0,
       unprotectedCount: 0,
       encryptionPct: null,
       encryptionUnknownCount: 0,
@@ -89,6 +94,26 @@ function emptySummary(
     securityProducts: [],
     ...(includeOrgWideEvidence ? { postureScore: null } : {}),
   } satisfies PostureSummary;
+}
+
+/**
+ * Managed devices of the org that the report's site filter left out, so the
+ * PDF's "N devices in scope" reconciles with the org's other reports (#12044).
+ * Only for an org-wide caller with a site filter: a site-restricted caller is
+ * never told how many devices exist outside its sites.
+ */
+async function countExcludedBySiteFilter(
+  orgId: string,
+  inScopeCount: number,
+  siteFilter: string[],
+  authority: OrgReportExecutionAuthority,
+): Promise<number | undefined> {
+  if (siteFilter.length === 0 || authority.scope.kind !== 'unrestricted') return undefined;
+  const [row] = await db
+    .select({ managedDeviceCount: sql<number>`count(*)::int` })
+    .from(devices)
+    .where(and(...managedDeviceConditions(orgId)));
+  return Math.max(0, Number(row?.managedDeviceCount ?? 0) - inScopeCount);
 }
 
 export async function generateSecurityCompliancePostureReport(
@@ -133,18 +158,23 @@ export async function generateSecurityCompliancePostureReport(
   );
   const orgRow = evidence.org ?? undefined;
   const deviceCount = evidence.deviceCount;
+  const excludedBySiteFilterCount = await countExcludedBySiteFilter(orgId, deviceCount, cfg.sites, authority);
+  const excludedField = excludedBySiteFilterCount === undefined ? {} : { excludedBySiteFilterCount };
   if (deviceCount === 0) {
     return {
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(
-        orgRow,
-        generatedAt,
-        cfg.includeCis,
-        cfg.backupRequired,
-        authority.scope.kind === 'unrestricted',
-      )
+      summary: {
+        ...emptySummary(
+          orgRow,
+          generatedAt,
+          cfg.includeCis,
+          cfg.backupRequired,
+          authority.scope.kind === 'unrestricted',
+        ),
+        ...excludedField,
+      } satisfies PostureSummary,
     };
   }
 
@@ -175,6 +205,8 @@ export async function generateSecurityCompliancePostureReport(
       openVulnCritical: vuln.critical,
       openVulnHigh: vuln.high,
       cisPassRate: d.cisPassRate,
+      // Lets the PDF tell apart two devices that share a hostname (#12044).
+      lastSeenAt: d.lastSeenAt ? new Date(d.lastSeenAt).toISOString() : null,
       posture: null
     } satisfies Record<PostureDeviceRowKey, unknown>;
   });
@@ -190,13 +222,18 @@ export async function generateSecurityCompliancePostureReport(
       org: { id: orgRow?.id ?? orgId, name: orgRow?.name ?? 'Unknown' },
       generatedAt,
       deviceCount,
+      ...excludedField,
       controls: {
         // EDR/AV denominators are the ASSESSED devices (spec §19.7): a device
         // Breeze has no evidence about is an explicit unknown, not a failure.
-        edrCoveragePct: pctOrNull(c.edr_coverage.passing, c.edr_coverage.assessed),
+        // EDR counts a self-reported EDR product too, as the inventory does;
+        // AV needs protection evidence, so a device that checked in without
+        // reporting protection is not assessed rather than unprotected (#12044).
+        edrCoveragePct: pctOrNull(evidence.report.edrProtected, c.edr_coverage.assessed),
         edrUnknownCount: evidence.report.edrUnknown,
-        anyAvCoveragePct: pctOrNull(c.endpoint_protection.passing, c.endpoint_protection.assessed),
+        anyAvCoveragePct: pctOrNull(evidence.report.avProtected, evidence.report.avAssessed),
         anyAvUnknownCount: evidence.report.anyAvUnknown,
+        avAssessedCount: evidence.report.avAssessed,
         unprotectedCount: evidence.report.unprotected,
         encryptionPct: pctOrNull(c.disk_encryption.passing, c.disk_encryption.assessed),
         encryptionUnknownCount: deviceCount - c.disk_encryption.assessed,

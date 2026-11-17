@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {

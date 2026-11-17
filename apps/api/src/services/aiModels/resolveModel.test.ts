@@ -64,6 +64,7 @@ vi.mock('./wireParams', () => ({
 }));
 
 import { resolveModel, unavailableMessage } from './resolveModel';
+import { effectiveToolProfile } from './toolExposure';
 
 describe('unavailableMessage', () => {
   it('#7793: tools_unsupported tells the admin what to do, not only what is wrong', () => {
@@ -316,6 +317,35 @@ describe('resolveModel — transport carriage (W01 adapters refuse what they can
     m.loadPartnerFacts.mockResolvedValue({ plan: 'pro', residencyRequired: true });
     candidates.def = cand('def', {}, { inferenceGeo: 'eu' });
     expect(await resolveModel(BASE)).toMatchObject({ ok: false, reason: 'residency_unavailable' });
+  });
+});
+
+describe('resolveModel — known context windows (#11396)', () => {
+  it('auto with a fresh 8,192 observation: facts, limits and window seed pass through; the fallback carries its own', async () => {
+    const facts = { toolProfile: 'auto' as const, toolAllowlist: null, effectiveWindow: 8_192, transport: 'gateway' as const };
+    candidates.def = cand('def', {
+      refusalFallbackOfferingId: 'fb',
+      toolProfileFacts: facts,
+      contextWindow: { window: 8_192, source: 'observed' },
+      limits: { maxInputTokens: 8_192, maxOutputTokens: null },
+    });
+    candidates.fb = cand('fb', { contextWindow: { window: 32_768, source: 'discovered' } });
+    const r = await resolveModel({ ...BASE, transport: 'messages_api' });
+    expect(r).toMatchObject({
+      ok: true,
+      toolProfileFacts: facts,
+      contextWindow: { window: 8_192, source: 'observed' },
+      limits: { maxInputTokens: 8_192 },
+      refusalFallback: { offeringId: 'fb', contextWindow: { window: 32_768, source: 'discovered' } },
+    });
+    if (!r.ok) throw new Error('unreachable');
+    expect(effectiveToolProfile(r.toolProfileFacts!, 'chat').profile).toBe('minimal');
+  });
+
+  it('an unknown window adds no field (byte-identical resolution)', async () => {
+    candidates.def = cand('def');
+    const r = await resolveModel(BASE);
+    expect(r).not.toHaveProperty('contextWindow');
   });
 });
 

@@ -8,8 +8,10 @@
  *
  * `safeFetch()` closes that window: it resolves the hostname ONCE, filters out
  * private/loopback/link-local addresses, and dials the request with a custom
- * `lookup` function that always returns the validated IP. The hostname is
- * preserved as SNI. `safeFetch` derives the `Host` header from the URL and
+ * `lookup` function that always returns the validated IP. When the connection
+ * to that IP fails or stalls before it is established, the request moves on to
+ * the next validated IP from the SAME resolution (a bounded number of times);
+ * nothing is resolved again. The hostname is preserved as SNI. `safeFetch` derives the `Host` header from the URL and
  * ignores caller-supplied Host values so tenant-controlled headers cannot
  * redirect virtual-host routing. Certificate chain validation is NEVER disabled.
  */
@@ -17,7 +19,7 @@ import { lookup as dnsLookup } from 'dns/promises';
 import type { LookupAddress } from 'dns';
 import https from 'https';
 import http from 'http';
-import type { LookupFunction } from 'net';
+import type { LookupFunction, Socket } from 'net';
 import type { Duplex } from 'stream';
 import { assertOutsideHeldDbContext } from '../db';
 import {
@@ -81,6 +83,23 @@ export class ResponseTooLargeError extends Error {
 }
 
 /**
+ * The whole exchange — resolution, connect, headers and body — outlasted the
+ * caller's `deadlineMs`. `timeoutMs` measures inactivity; `deadlineMs` bounds
+ * total duration.
+ */
+export class ResponseDeadlineError extends Error {
+  constructor(public readonly deadlineMs: number) {
+    super(`request did not complete within ${deadlineMs}ms`);
+    this.name = 'ResponseDeadlineError';
+  }
+}
+
+/** The error an aborted request settles with: the deadline's own, or the caller's plain abort. */
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof ResponseDeadlineError ? signal.reason : new Error('aborted');
+}
+
+/**
  * The response headers did not arrive within the caller's `headersTimeoutMs`
  * (measured from the call, so it covers DNS, connect and the wait for the
  * status line). The request is destroyed.
@@ -104,6 +123,26 @@ let lookupImpl: LookupAllFn = (hostname) =>
 /** Test hook — override DNS resolution. Pass `null` to restore default. */
 export function __setLookupForTests(fn: LookupAllFn | null): void {
   lookupImpl = fn ?? ((hostname) => dnsLookup(hostname, { all: true, verbatim: true }));
+}
+
+/**
+ * At most this many validated addresses are tried for one request. A host
+ * that resolves to more is still served by its first few; the cap only bounds
+ * how long a request can spend on addresses that do not answer.
+ */
+const MAX_CONNECT_ATTEMPTS = 3;
+
+/**
+ * How long one address gets to establish a connection (TCP connect, plus the
+ * TLS handshake for https) before the next validated address is tried. Never
+ * applied to the last address, which is governed by `timeoutMs` as before.
+ */
+const DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS = 10_000;
+let connectAttemptTimeoutMs = DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
+
+/** Test hook — override the per-address connect timeout. Pass `null` to restore default. */
+export function __setConnectAttemptTimeoutForTests(ms: number | null): void {
+  connectAttemptTimeoutMs = ms ?? DEFAULT_CONNECT_ATTEMPT_TIMEOUT_MS;
 }
 
 export interface SsrfGuardOptions {
@@ -317,10 +356,15 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    */
   maxBytes?: number;
   /**
-   * Optional callback invoked once with the validated IP `safeFetch` has
-   * pinned for this request, before the socket is dialed. Exists so callers
-   * that need to audit/record which address was actually contacted (e.g. the
-   * LLM egress recorder) don't have to duplicate `resolveSafeRecords`.
+   * Optional callback invoked with the validated IP `safeFetch` has pinned
+   * for this request, before the socket is dialed. Exists so callers that
+   * need to audit/record which address was actually contacted (e.g. the LLM
+   * egress recorder) don't have to duplicate `resolveSafeRecords`.
+   *
+   * Normally called once. When the connection to that address cannot be
+   * established and the request moves on to another validated address from
+   * the same resolution, it is called again before each further dial, so the
+   * last call names the address the request ended on.
    *
    * Fire-and-forget: a throwing `onConnect` is swallowed and never fails the
    * request or surfaces to the caller. Backward compatible — omitting it is a
@@ -360,6 +404,14 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * no headers deadline (existing behaviour).
    */
   headersTimeoutMs?: number;
+  /**
+   * Total deadline, from the moment `safeFetch` is called, for the whole
+   * exchange: resolution, connect, headers and the body. `timeoutMs` measures
+   * inactivity; `deadlineMs` bounds total duration. On expiry the request is
+   * destroyed and the call (or, with `streamResponse`, the body) fails with
+   * `ResponseDeadlineError`. Unset = no total deadline (existing behaviour).
+   */
+  deadlineMs?: number;
 }
 
 /**
@@ -380,7 +432,7 @@ function boundPreDial<T>(
   return new Promise<T>((resolve, reject) => {
     const timers: NodeJS.Timeout[] = [];
     let done = false;
-    const onAbort = (): void => finish(() => reject(new Error('aborted')));
+    const onAbort = (): void => finish(() => reject(abortError(signal!)));
     function finish(settle: () => void): void {
       if (done) return;
       done = true;
@@ -542,10 +594,53 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   // it (Huntress/Pax8/SSO/DNS/SentinelOne/webhooks/PSA/log-forwarding). Note:
   // modules that call global `fetch()` directly bypass safeFetch and are NOT
   // covered by this guard — instrumenting those is out of scope for this slice.
-  // Warn-only in prod; throws in CI (strict) so a new violation fails the build
-  // instead of surfacing only in Sentry after an incident.
-  assertOutsideHeldDbContext('safeFetch');
+  // Warn-only by default; throws when DB_CONTEXT_TRIPWIRE_STRICT is set (the
+  // suites that exercise the tripwire set it), so a test that runs a new
+  // violation under it fails instead of only logging.
+  //
+  // `includeOuterTransaction`: runOutsideDbContext only re-routes queries, so a
+  // fetch inside it while an outer context is still open pins that context's
+  // connection just the same.
+  assertOutsideHeldDbContext('safeFetch', { includeOuterTransaction: true });
 
+  const deadlineMs = init.deadlineMs !== undefined && init.deadlineMs > 0 ? init.deadlineMs : undefined;
+  if (deadlineMs === undefined) return safeFetchWithin(urlStr, init, init.signal, () => {});
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new ResponseDeadlineError(deadlineMs)), deadlineMs);
+  timer.unref?.();
+  const signal = init.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal;
+  return safeFetchWithin(urlStr, init, signal, () => clearTimeout(timer));
+}
+
+/**
+ * `safeFetch` after its deadline is armed. `signal` is the caller's signal
+ * combined with the deadline; `release` clears the deadline once the request
+ * is over (or never started).
+ */
+async function safeFetchWithin(
+  urlStr: string,
+  init: SafeFetchInit,
+  signal: AbortSignal | undefined,
+  release: () => void,
+): Promise<Response> {
+  let started = false;
+  try {
+    const response = await safeFetchRequest(urlStr, init, signal, () => {
+      started = true;
+    }, release);
+    return response;
+  } finally {
+    if (!started) release();
+  }
+}
+
+async function safeFetchRequest(
+  urlStr: string,
+  init: SafeFetchInit,
+  signal: AbortSignal | undefined,
+  onRequestStarted: () => void,
+  release: () => void,
+): Promise<Response> {
   const u = new URL(urlStr);
 
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {
@@ -568,53 +663,39 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       allowPrivateNetwork: init.allowPrivateNetwork,
       allowCarrierNat: init.allowCarrierNat
     }),
-    { signal: init.signal, timeoutMs: init.timeoutMs, headersTimeoutMs }
+    { signal, timeoutMs: init.timeoutMs, headersTimeoutMs }
   );
-  const safeRecord = safe[0]!;
+  const firstRecord = safe[0]!;
 
-  if (init.onConnect) {
+  const notifyConnect = (ip: string): void => {
+    if (!init.onConnect) return;
     try {
-      init.onConnect(safeRecord.address);
+      init.onConnect(ip);
     } catch {
       // Fire-and-forget by contract — a caller's audit hook must never be
       // able to fail the request it's merely observing.
     }
-  }
+  };
+
+  notifyConnect(firstRecord.address);
 
   // Cleartext is only conceded for the on-LAN hop the operator owns. Checked
-  // against the pinned record specifically, so it cannot drift from the address
-  // actually dialed.
-  if (init.requirePrivateForCleartext && u.protocol === 'http:' && !isRfc1918OrUla(safeRecord.address)) {
+  // against the first pinned record specifically, so it cannot drift from the
+  // address actually dialed; any further address the request may fall back to
+  // must pass the same test (below).
+  const cleartextNeedsPrivate = init.requirePrivateForCleartext === true && u.protocol === 'http:';
+  if (cleartextNeedsPrivate && !isRfc1918OrUla(firstRecord.address)) {
     throw new SsrfBlockedError(
-      `cleartext http is only permitted to private (RFC1918/ULA) addresses; ${hostname} resolves to ${safeRecord.address}`,
+      `cleartext http is only permitted to private (RFC1918/ULA) addresses; ${hostname} resolves to ${firstRecord.address}`,
       { hostname, resolvedIps: allIps }
     );
   }
 
-  // Build a `lookup` that always hands back the validated record, so a DNS
-  // rebind between now and the TCP connect cannot redirect us.
-  const pinnedLookup: LookupFunction = (_hn, opts, cb) => {
-    const callback = (typeof opts === 'function' ? opts : cb) as
-      | ((e: NodeJS.ErrnoException | null, addr: string, family: number) => void)
-      | ((e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)
-      | undefined;
-
-    // Unreachable via Node's connect path (it always supplies a callback), but
-    // if it ever happened, silently returning would hang the request forever
-    // when no timeoutMs is set — throw so it surfaces as a connection error.
-    if (!callback) throw new Error('pinnedLookup invoked without a callback');
-
-    if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all === true) {
-      (callback as (e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)(null, [safeRecord]);
-      return;
-    }
-
-    (callback as (e: NodeJS.ErrnoException | null, addr: string, family: number) => void)(
-      null,
-      safeRecord.address,
-      safeRecord.family
-    );
-  };
+  // The addresses this request may dial, in resolver order. Every one passed
+  // the policy above in this single resolution; nothing is resolved again
+  // before or between attempts, so a rebind cannot add an address.
+  const candidates = (cleartextNeedsPrivate ? safe.filter((r) => isRfc1918OrUla(r.address)) : safe)
+    .slice(0, MAX_CONNECT_ATTEMPTS);
 
   const port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80;
   const method = (init.method || 'GET').toUpperCase();
@@ -664,8 +745,102 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     }
   }
 
+  const attempt: DialContext = {
+    url: u, hostname, port, method, headers, bodyBuf, init, signal,
+    headersTimeoutMs, startedAt, onRequestStarted, release
+  };
+
+  // Try the candidates in order. Only an attempt that could not establish its
+  // connection hands over to the next address (see `dialPinned`); anything
+  // else, and every outcome of the last attempt, is returned or thrown as is.
+  for (let i = 0; ; i++) {
+    const record = candidates[i]!;
+    if (i > 0) notifyConnect(record.address);
+    try {
+      return await dialPinned(attempt, record, i === candidates.length - 1);
+    } catch (err) {
+      if (!(err instanceof ConnectAttemptFailed)) throw err;
+      // Logged here because only the LAST attempt's error reaches the caller.
+      const code = (err.attemptError as NodeJS.ErrnoException).code;
+      console.warn(
+        `safeFetch: could not connect to ${hostname} at ${record.address} `
+          + `(${code ? `${code}: ` : ''}${err.attemptError.message}); `
+          + `trying the next resolved address (${i + 2}/${candidates.length})`
+      );
+    }
+  }
+}
+
+/** Everything one dial attempt needs from `safeFetchRequest`; shared by every attempt. */
+interface DialContext {
+  url: URL;
+  hostname: string;
+  port: number;
+  method: string;
+  headers: Record<string, string>;
+  bodyBuf: Buffer | undefined;
+  init: SafeFetchInit;
+  signal: AbortSignal | undefined;
+  headersTimeoutMs: number | undefined;
+  startedAt: number;
+  onRequestStarted: () => void;
+  release: () => void;
+}
+
+/**
+ * One validated address could not establish its connection, and the request
+ * may try the next. Internal to `safeFetch`: the last address never raises it,
+ * so it never reaches a caller.
+ */
+class ConnectAttemptFailed extends Error {
+  constructor(public readonly attemptError: Error) {
+    super(attemptError.message);
+    this.name = 'ConnectAttemptFailed';
+  }
+}
+
+/**
+ * One request, pinned to one validated `record`. When the connection to it
+ * fails or stalls before it is established, and this is not the last
+ * candidate, the attempt rejects with `ConnectAttemptFailed` so the caller can
+ * move on. At that point no request byte has reached the peer: Node holds
+ * cleartext writes until the TCP connect, and TLS application data until the
+ * handshake completes. A TLS handshake that FAILS (as opposed to stalling) is
+ * final, as is anything after the connection is established.
+ */
+function dialPinned(ctx: DialContext, record: LookupAddress, isLast: boolean): Promise<Response> {
+  const {
+    url: u, hostname, port, method, headers, bodyBuf, init, signal,
+    headersTimeoutMs, startedAt, onRequestStarted, release
+  } = ctx;
   const isHttps = u.protocol === 'https:';
   const requester = isHttps ? https.request : http.request;
+  const timeoutMs = init.timeoutMs;
+
+  // Build a `lookup` that always hands back the validated record, so a DNS
+  // rebind between now and the TCP connect cannot redirect us.
+  const pinnedLookup: LookupFunction = (_hn, opts, cb) => {
+    const callback = (typeof opts === 'function' ? opts : cb) as
+      | ((e: NodeJS.ErrnoException | null, addr: string, family: number) => void)
+      | ((e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)
+      | undefined;
+
+    // Unreachable via Node's connect path (it always supplies a callback), but
+    // if it ever happened, silently returning would hang the request forever
+    // when no timeoutMs is set — throw so it surfaces as a connection error.
+    if (!callback) throw new Error('pinnedLookup invoked without a callback');
+
+    if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all === true) {
+      (callback as (e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)(null, [record]);
+      return;
+    }
+
+    (callback as (e: NodeJS.ErrnoException | null, addr: string, family: number) => void)(
+      null,
+      record.address,
+      record.family
+    );
+  };
 
   const reqOptions: https.RequestOptions = {
     method,
@@ -686,8 +861,6 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     // original hostname — so SNI and cert hostname check both work correctly.
   };
 
-  const timeoutMs = init.timeoutMs;
-
   return new Promise<Response>((resolve, reject) => {
     // Set once the body has been handed to the caller as a live stream. From
     // that moment a transport error can no longer `reject` (the promise is
@@ -697,6 +870,21 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     const clearHeadersTimer = (): void => {
       if (headersTimer !== undefined) clearTimeout(headersTimer);
       headersTimer = undefined;
+    };
+
+    // Connection progress of this attempt (see `dialPinned`).
+    let tcpConnected = false;
+    let established = false;
+    let stalled = false;
+    let handedOff = false;
+    let attemptTimer: NodeJS.Timeout | undefined;
+    const clearAttemptTimer = (): void => {
+      if (attemptTimer !== undefined) clearTimeout(attemptTimer);
+      attemptTimer = undefined;
+    };
+    const markEstablished = (): void => {
+      established = true;
+      clearAttemptTimer();
     };
 
     /**
@@ -727,6 +915,7 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     const req = requester(reqOptions, (res) => {
       responded = true;
       clearHeadersTimer();
+      markEstablished();
       // Follow no redirects by default — caller gets the raw response and can
       // re-invoke safeFetch if they want to trust the Location header.
       const status = res.statusCode ?? 0;
@@ -818,6 +1007,16 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       if (!responded) reject(new Error('connection closed before a response was received'));
     });
 
+    req.on('socket', (socket: Socket) => {
+      const onTcpConnect = (): void => {
+        tcpConnected = true;
+        if (!isHttps) markEstablished();
+      };
+      if (socket.connecting) socket.once('connect', onTcpConnect);
+      else onTcpConnect();
+      if (isHttps) socket.once('secureConnect', markEstablished);
+    });
+
     req.on('error', (err) => {
       // Includes TLS verification failures — propagate without suppression.
       // Once the body is streaming the promise is already settled, so the only
@@ -829,13 +1028,39 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
         failStream(err);
         return;
       }
+      // The connect to this address failed, or stalled before the connection
+      // was established: let the next validated address have a go. Never after
+      // the caller's own abort, deadline or headers timeout.
+      if (
+        !isLast && !responded && !established && (!tcpConnected || stalled)
+        && !signal?.aborted && !(err instanceof ResponseHeadersTimeoutError)
+      ) {
+        handedOff = true;
+        reject(new ConnectAttemptFailed(err));
+        return;
+      }
       reject(err);
     });
 
     if (timeoutMs && timeoutMs > 0) {
       req.setTimeout(timeoutMs, () => {
+        if (!established) stalled = true;
         req.destroy(new Error(`request timed out after ${timeoutMs}ms`));
       });
+    }
+
+    if (!isLast) {
+      // Bound how long this address may take to establish the connection, so
+      // one that never answers costs seconds rather than the whole timeoutMs.
+      const attemptMs = timeoutMs && timeoutMs > 0
+        ? Math.min(connectAttemptTimeoutMs, timeoutMs)
+        : connectAttemptTimeoutMs;
+      attemptTimer = setTimeout(() => {
+        attemptTimer = undefined;
+        stalled = true;
+        req.destroy(new Error(`connection to ${record.address} was not established within ${attemptMs}ms`));
+      }, attemptMs);
+      req.once('close', clearAttemptTimer);
     }
 
     if (headersTimeoutMs !== undefined) {
@@ -848,19 +1073,26 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       req.once('close', clearHeadersTimer);
     }
 
-    if (init.signal) {
+    // The request owns the deadline from here: it is cleared when the request
+    // is over, which for a streamed body is when the body ends or is cancelled.
+    // An attempt that handed over to the next address passes it on instead.
+    onRequestStarted();
+    req.once('close', () => {
+      if (!handedOff) release();
+    });
+
+    if (signal) {
       // Abort settles the promise directly: an already-closed request emits no
       // further 'error', so relying on destroy() alone could leave it pending.
       // Once a response is out, a live body is failed through req's 'error'.
       const onAbort = (): void => {
-        const err = new Error('aborted');
+        const err = abortError(signal);
         if (!responded) reject(err);
         req.destroy(err);
       };
-      if (init.signal.aborted) {
+      if (signal.aborted) {
         onAbort();
       } else {
-        const signal = init.signal;
         signal.addEventListener('abort', onAbort, { once: true });
         // Drop the listener once the request is finished with, so a long-lived
         // caller signal does not accumulate one closure per completed request.
@@ -938,6 +1170,8 @@ export async function safeFetchFollowingRedirects(
 ): Promise<Response> {
   let currentUrl = urlStr;
   let currentInit: SafeFetchInit = init;
+  // One deadline for the whole chain, not a fresh one per hop.
+  const endsAt = init.deadlineMs !== undefined && init.deadlineMs > 0 ? Date.now() + init.deadlineMs : undefined;
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
     if (options.allowHost) {
@@ -946,7 +1180,20 @@ export async function safeFetchFollowingRedirects(
         throw new HostNotAllowedError(target.hostname);
       }
     }
-    const response = await safeFetch(currentUrl, currentInit);
+    if (endsAt !== undefined) {
+      const remaining = endsAt - Date.now();
+      if (remaining <= 0) throw new ResponseDeadlineError(init.deadlineMs!);
+      currentInit = { ...currentInit, deadlineMs: remaining };
+    }
+    let response: Response;
+    try {
+      response = await safeFetch(currentUrl, currentInit);
+    } catch (err) {
+      // A hop runs on what is left of the chain's deadline; report the
+      // caller's own deadline, not the remainder.
+      if (err instanceof ResponseDeadlineError && init.deadlineMs !== undefined) throw new ResponseDeadlineError(init.deadlineMs);
+      throw err;
+    }
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
     const location = response.headers.get('location');

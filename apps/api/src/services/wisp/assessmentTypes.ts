@@ -5,7 +5,7 @@
  * (`wisp/readiness.ts`, Task 15) all speak these shapes, so they live in one
  * module none of them owns and none of them imports at runtime.
  */
-import type { Concern, Watch, WatchKind } from '@breeze/shared';
+import type { Concern, Watch, WatchKind, WispCheckInTriggerEvent } from '@breeze/shared';
 import type { CheckInEvidence } from './checkInTriggers';
 
 /**
@@ -33,6 +33,11 @@ import type { CheckInEvidence } from './checkInTriggers';
  * `sanitizeCheckInInstruction`; `evidence` is what the trigger's state showed
  * when it fired (an event check-in), null for a time check-in. `checkInId`
  * links the run back to its row and is never shown to the model.
+ * `subject` (#11978) is an event check-in's trigger subject (the device,
+ * script execution, command or AI agent run it waits on): its id IS shown, so
+ * the run knows what to look at, and a `run_settled` subject widens the run's
+ * reads (assessmentProfile.ts CHECK_IN_SUBJECT_READ_TOOLS). Absent for a time
+ * check-in and on runs admitted before it existed.
  */
 export type AssessmentReason =
   | {
@@ -47,7 +52,16 @@ export type AssessmentReason =
   | { kind: 'watch'; watchId: string; hits?: WatchHitSummary }
   | { kind: 'onboarding' }
   | { kind: 'on_demand'; requestId: string }
-  | { kind: 'check_in'; checkInId: string; instruction: string; evidence: CheckInEvidence | null };
+  | {
+    kind: 'check_in';
+    checkInId: string;
+    instruction: string;
+    evidence: CheckInEvidence | null;
+    subject?: CheckInSubject;
+  };
+
+/** An event check-in's trigger subject (#11978): what kind of thing it waits on, and its id. */
+export type CheckInSubject = { kind: WispCheckInTriggerEvent; id: string };
 
 /**
  * #11424 — what the wake scheduler's in-code evaluation of a watch found, sent
@@ -127,7 +141,8 @@ export type AssessmentDigest = {
    * detector's raw score: an unbounded magnitude, not 0–1.
    *
    * null = not read: the grantor lacks `devices:read`, or the read failed
-   * (reported to Sentry). That is distinct from `[]` (read, none open).
+   * (reported to Sentry; `AssessmentRunContext.anomaliesReadFailed` tells the
+   * two apart). That is distinct from `[]` (read, none open).
    */
   anomalies: {
     id: string;
@@ -140,6 +155,16 @@ export type AssessmentDigest = {
     status: string;
   }[] | null;
 };
+
+/**
+ * #11513: the assessment finalizer's `error_code` for a run that applied
+ * cleanly but could not read the metric anomalies. The run still advances the
+ * digest watermark (the anomalies are current state, read again whatever the
+ * window), but it is not an anchor for the no-changes gate: it did not see the
+ * anomalies, so a change to them since the previous anchor must still wake the
+ * next tick or watch.
+ */
+export const ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE = 'assessment_anomalies_unread';
 
 /** One watch kind's serviceability for an org (Task 15, w00 A33). */
 export type ReadinessCheck = { watchKind: WatchKind; serviceable: boolean; reason: string | null };
@@ -178,6 +203,13 @@ export interface AssessmentRunContext {
    */
   noEarlierAssessment: boolean;
   digest: AssessmentDigest;
+  /**
+   * #11513: the grantor may read the metric anomalies but the read failed, so
+   * `digest.anomalies` is null for a failure, not by design. The finalizer
+   * then returns ASSESSMENT_ANOMALIES_UNREAD_ERROR_CODE, which keeps the run
+   * from anchoring the no-changes gate.
+   */
+  anomaliesReadFailed: boolean;
   /** Set when the run was requested by a watch (`reason.kind === 'watch'`) and the watch still exists. */
   watch: Watch | null;
   reason: AssessmentReason;

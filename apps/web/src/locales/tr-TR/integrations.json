@@ -289,11 +289,9 @@
     "unableToSendTestNotification": "Test bildirimi gönderilemiyor.",
     "failedToLoadCommunicationSettings": "İletişim ayarları yüklenemedi",
     "slackSettingsSaved": "Slack ayarlar kaydedildi.",
-    "slackTestNotificationQueued": "Slack test bildirimi sıraya alındı.",
     "teamsSettingsSaved": "Teams ayarları kaydedildi.",
-    "teamsTestNotificationQueued": "Teams test bildirimi sıraya alındı.",
     "discordSettingsSaved": "Discord ayarlar kaydedildi.",
-    "discordTestNotificationQueued": "Discord test bildirimi sıraya alındı.",
+    "discordTestNotificationSent": "Discord test bildirimi gönderildi.",
     "loadingCommunicationIntegrations": "İletişim entegrasyonları yükleniyor...",
     "communicationIntegrations": "İletişim entegrasyonları",
     "connectChatToolsRouteAlertsBySeverityAnd": "Sohbet araçlarını bağlayın, uyarıları önem derecesine göre yönlendirin ve mesajlaşma şablonlarını özelleştirin. ",
@@ -374,6 +372,9 @@
       "delivery_failed": "Teslimatlar başarısız",
       "sync_stale": "Eşitleme durdu",
       "verification_failed": "Doğrulama başarısız",
+      "destination_access_denied": "Hedef erişimi reddetti",
+      "destination_not_found": "Hedef bulunamadı",
+      "destination_failing": "Hedef başarısız oluyor",
       "unknown": "İlgilenilmesi gerekiyor"
     }
   },

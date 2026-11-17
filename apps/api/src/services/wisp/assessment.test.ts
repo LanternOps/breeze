@@ -97,7 +97,11 @@ vi.mock('../aiAgents/runService', () => ({
   createAndEnqueueAgentRun: h.createAndEnqueueAgentRun,
   transitionRunStatus: h.transitionRunStatus,
 }));
-vi.mock('../aiAgents/assessmentProfile', () => ({ ASSESSMENT_BUDGET_CENTS_PER_RUN: 25 }));
+vi.mock('../aiAgents/assessmentProfile', async (importOriginal) => ({
+  ASSESSMENT_BUDGET_CENTS_PER_RUN: 25,
+  // #11978: the real trigger-subject parser (parseReason uses it).
+  parseCheckInSubject: (await importOriginal<typeof import('../aiAgents/assessmentProfile')>()).parseCheckInSubject,
+}));
 vi.mock('./budget', async () => ({
   chargeableUnderGrant: h.chargeableUnderGrant,
   notifyBudgetExhaustedOnce: h.notifyBudgetExhaustedOnce,
@@ -493,6 +497,9 @@ describe('no-changes gate (#11423)', () => {
     expect(text).toMatch(/"grant_id" = \$\d+/);
     expect(text).toMatch(/"org_id" = \$\d+/);
     expect(params).toEqual(expect.arrayContaining([GRANT, ORG, 'assessment', 'completed', 'awaiting_approval', 'assessment_partially_applied']));
+    // #11513: a run that could not read the metric anomalies is not an anchor either.
+    expect(text).toMatch(/"error_code" is null or "ai_agent_runs"\."error_code" not in \(\$\d+, \$\d+\)/);
+    expect(params).toContain('assessment_anomalies_unread');
     const fields = (h.db.select.mock.calls[2] as unknown[])[0] as { at: SQL };
     expect(compile(fields.at).sql).toMatch(/max\("ai_agent_runs"\."finished_at"\)/);
   });
@@ -860,6 +867,10 @@ describe('lastAssessmentWatermark', () => {
     const { sql: text, params } = compile(h.queries[0]!.where[0]);
     expect(text).toMatch(/"error_code" is null or "ai_agent_runs"\."error_code" <> \$\d+/);
     expect(params).toContain('assessment_partially_applied');
+    // #11513: a failed anomaly read still advances the watermark. The
+    // anomalies are current state, not a since-window, so the next run reads
+    // them whatever the watermark; only the no-changes anchor holds back.
+    expect(params).not.toContain('assessment_anomalies_unread');
   });
 
   it('is null when there is no completed assessment', async () => {
@@ -1447,6 +1458,7 @@ describe('loadAssessmentContext', () => {
       expect(text).not.toMatch(/"metric_anomaly_incidents"\."id" = /);
       expect(text).toMatch(/"metric_anomaly_episodes"\."status" = \$\d+/);
       expect(ctx!.digest.anomalies).toEqual([]);
+      expect(ctx!.anomaliesReadFailed).toBe(false);
     });
 
     it('is gated on devices:read (the anomalies route): without it no anomaly query runs and the section is null (not read)', async () => {
@@ -1455,6 +1467,9 @@ describe('loadAssessmentContext', () => {
       const ctx = await loadAssessmentContext(anomalyRun());
       expect(tablesQueried().has(metricAnomalyIncidents)).toBe(false);
       expect(ctx!.digest.anomalies).toBeNull();
+      // Not read by design, not a failure (#11513): the gate does not probe
+      // anomalies for this grant either, so the run is still an anchor.
+      expect(ctx!.anomaliesReadFailed).toBe(false);
     });
 
     it("the org's own membership term narrows the gate too: no devices:read in the org term → no anomaly query", async () => {
@@ -1491,6 +1506,7 @@ describe('loadAssessmentContext', () => {
       const ctx = await loadAssessmentContext(anomalyRun());
       expect(ctx).not.toBeNull();
       expect(ctx!.digest.anomalies).toBeNull();
+      expect(ctx!.anomaliesReadFailed).toBe(true);
       expect(ctx!.digest.alerts.map((r) => r.id)).toEqual(['a1']);
       expect(ctx!.digest.intents.map((r) => r.id)).toEqual(['x1']);
       expect(h.captureException).toHaveBeenCalledWith(
@@ -1605,6 +1621,16 @@ describe('check_in reason (W07)', () => {
     }
     expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, checkInId: 'not-a-uuid' } } })).toBeNull();
     expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, instruction: '' } } })).toBeNull();
+  });
+
+  // #11978: the trigger subject round-trips; a malformed one is dropped, never the reason.
+  it('round-trips the trigger subject; a malformed subject is dropped, not the reason', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    const subject = { kind: 'run_settled' as const, id: 'abababab-abab-4bab-8bab-abababababab' };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, subject } } })).toEqual({ ...base, reason: { ...reason, subject } });
+    for (const bad of [{ kind: 'run_settled' }, { kind: 'run_settled', id: 'not-a-uuid' }, { kind: 'time', id: subject.id }, { kind: 'bogus', id: subject.id }, 'text', null]) {
+      expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, subject: bad } } })).toEqual({ ...base, reason });
+    }
   });
 
   it('a check_in run is never a first look, even with no earlier assessment', async () => {

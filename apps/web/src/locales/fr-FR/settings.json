@@ -123,7 +123,15 @@
     "retentionKeepDays": "Conserver pendant (jours)",
     "retentionKeepForever": "Conserver indéfiniment",
     "retentionBreezeDefault": "Valeur par défaut de Breeze : {{days}} jours",
-    "partnerRetentionHelp": "Choisissez la durée de conservation des sorties des outils d'IA, ou conservez-les indéfiniment. Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit."
+    "partnerRetentionHelp": "Choisissez la durée de conservation des sorties des outils d'IA, ou conservez-les indéfiniment. Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit.",
+    "transcriptLabel": "Conserver les conversations de l’IA des techniciens pendant (jours)",
+    "transcriptHelp": "Une fois l’application de la conservation activée, les conversations plus anciennes perdent leurs messages, titres et détails d’outils lors de l’exécution nocturne ; l’enregistrement de session conserve le coût, le modèle et le nombre de tours. Les conversations signalées sont conservées. Vide = hériter.",
+    "transcriptAuditNote": "Les entrées du journal d’audit concernant une session de technicien, y compris les entrées d’outils, suivent la durée de conservation de l’audit, pas celle-ci.",
+    "transcriptClientNote": "Les conversations de l’IA client (AI for Office) ont leur propre durée.",
+    "transcriptClientLink": "Paramètres de conservation de l’IA client",
+    "transcriptAboveCeiling": "Votre partenaire conserve les conversations de l’IA des techniciens au plus {{days}} jours.",
+    "partnerTranscriptHelp": "Choisissez combien de temps les conversations de l’IA des techniciens sont conservées, ou conservez-les indéfiniment. Les organisations peuvent seulement raccourcir cette durée. Une fois l’application de la conservation activée, les conversations plus anciennes perdent leurs messages, titres et détails d’outils lors de l’exécution nocturne.",
+    "invalidDays": "Saisissez un nombre entier de jours."
   },
   "partnerServicePrincipals": {
     "title": "Principaux de service",
@@ -587,12 +595,79 @@
       "verify": "Vérifier",
       "verifyQueued": "Vérification du modèle mise en file d'attente",
       "verifyFailed": "Impossible de mettre la vérification du modèle en file d'attente.",
-      "verifyGatewayHint": "Exécute un court test d'appel d'outils sur votre point de terminaison (consomme quelques milliers de jetons).",
+      "verifyGatewayHint": "Exécute un test d'appel d'outils sur votre point de terminaison. Voir la note sur les coûts ci-dessus.",
       "remove": "Retirer le modèle",
       "removeTitle": "Retirer ce modèle ?",
       "removeMessage": "« {{model}} » sera supprimé de cette connexion. L’historique d’utilisation et de coûts est conservé. Vous pourrez le rajouter plus tard.",
       "removed": "Modèle retiré",
-      "removeFailed": "Impossible de retirer le modèle. Réessayez."
+      "removeFailed": "Impossible de retirer le modèle. Réessayez.",
+      "tools": {
+        "title": "Outils et contexte",
+        "partnerOnly": "Défini par le partenaire sur le modèle. Les organisations choisissent des modèles ; elles ne peuvent pas modifier ce réglage.",
+        "profileLabel": "Profil d’outils",
+        "profile": {
+          "auto": "Auto (adapté à la fenêtre de contexte)",
+          "full": "Complet (tous les outils)",
+          "standard": "Standard",
+          "minimal": "Minimal (lecture seule)",
+          "custom": "Personnalisé"
+        },
+        "profileHint": {
+          "auto": "Breeze choisit le plus grand profil qui tient dans la fenêtre de contexte connue du modèle. Tant que la fenêtre est inconnue, tous les outils restent disponibles.",
+          "full": "Tous les outils que chaque fonctionnalité propose aujourd’hui.",
+          "standard": "Outils de support courants et une invite plus courte (environ 40 outils dans le chat, moins dans le Helper, le générateur de scripts et Office).",
+          "minimal": "Une douzaine d’outils en lecture seule et un prompt court, pour les petits modèles locaux.",
+          "custom": "Uniquement les domaines d’outils et les outils que vous indiquez, sur chaque fonctionnalité qui utilise ce modèle."
+        },
+        "appliesWhen": "Lorsqu’une modification change ce qu’utilise une fonctionnalité, les conversations ouvertes avec ce modèle relancent leur session d’IA au message suivant et demandent à l’utilisateur de le renvoyer.",
+        "domainsLabel": "Domaines d’outils",
+        "domainCore": "Outils de contexte de base",
+        "toolsLabel": "Outils individuels",
+        "toolsHint": "Noms d’outils, séparés par des virgules ou des sauts de ligne. Breeze vérifie chaque nom à l’enregistrement.",
+        "droppedTools": "Ces outils n’existent plus et sont ignorés : {{tools}}.",
+        "underpowered": "Cette modification retirerait des outils dont a besoin une fonctionnalité utilisant ce modèle :",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Capacité inconnue : rien n’est limité. Auto conserve tous les outils jusqu’à ce que le point de terminaison indique ou signale une fenêtre de contexte, ou que vous en définissiez une ci-dessous.",
+        "windowNotLearned": "Breeze ne détecte les fenêtres de contexte que sur vos propres points de terminaison compatibles OpenAI ; Auto conserve donc tous les outils sur ce modèle.",
+        "windowKnown": "Fenêtre de contexte : {{tokens}} jetons ({{source}}).",
+        "windowSource": {
+          "override": "définie ici",
+          "discovered": "indiquée par le point de terminaison"
+        },
+        "windowObserved": "Fenêtre de contexte : {{tokens}} jetons (signalée par le point de terminaison {{age}}).",
+        "observedStale": "Le point de terminaison a signalé {{tokens}} jetons pour la dernière fois {{age}}. Une configuration ultérieure du point de terminaison ou la liste des modèles a remplacé ce signalement ; il ne limite donc plus rien.",
+        "overrideLabel": "Remplacement de la fenêtre de contexte (jetons)",
+        "overrideHint": "Pour les modèles de votre propre point de terminaison compatible OpenAI uniquement. Laissez vide pour utiliser ce que le point de terminaison indique ou signale. Les nouvelles conversations utilisent la valeur modifiée ; les conversations ouvertes conservent leur limite actuelle, sauf si le profil qu’elles utilisent change.",
+        "surfacesTitle": "Ce qu’utilise actuellement chaque fonctionnalité",
+        "reason": {
+          "explicit": "choisi ici",
+          "auto_window": "auto, selon la fenêtre de contexte",
+          "auto_unknown_window": "auto, fenêtre inconnue",
+          "auto_unmeasured": "auto ; cette fonctionnalité n’est pas encore restreinte"
+        },
+        "missingRequired": "Refuse ce modèle : il lui manquerait {{tools}}.",
+        "tooSmall": "Fenêtre trop petite",
+        "tooSmallHint": "Aucun profil ne tient dans cette fenêtre ; cette fonctionnalité refuse donc le modèle.",
+        "fitSuggestion": "À {{tokens}} jetons, Auto choisirait {{profile}} ici ; ce profil risque de ne pas convenir.",
+        "readiness": {
+          "tokens": "{{tokens}} jetons de prompt",
+          "passed": "L’aller-retour d’outil a réussi.",
+          "failed": "L’aller-retour d’outil a échoué ; cette fonctionnalité refuse donc le modèle. {{summary}}",
+          "inconclusive": "Non concluant : c’est le point de terminaison qui a échoué, pas le modèle. Rien n’est refusé. {{summary}}",
+          "stale": "Périmé : le point de terminaison ou le profil d’outils a changé depuis. Revérifiez pour contrôler à nouveau.",
+          "absent": "Aucun aller-retour d’outil pour l’instant. La vérification en lance un pour chaque fonctionnalité à laquelle ce modèle est affecté.",
+          "absentVerified": "Vérifié (de base). Revérifiez pour contrôler un véritable aller-retour d’outil sur {{surface}}.",
+          "officeNotChecked": "Non contrôlé : la vérification ne lance pas d’aller-retour Office."
+        },
+        "verifyCost": "La vérification envoie de vraies requêtes à votre point de terminaison, facturées par votre fournisseur : un contrôle de base, puis un aller-retour d’outil pour chaque fonctionnalité à laquelle ce modèle est affecté. Un aller-retour peut compter jusqu’à 4 tours de modèle, chacun renvoyant l’invite complète : sur le chat avec le profil Complet, une requête compte environ 128 000 jetons, donc une vérification du chat peut approcher 500 000.",
+        "invalidCustom": "Choisissez au moins un domaine d’outils ou un outil pour un profil personnalisé.",
+        "invalidWindow": "Saisissez un nombre entier de jetons compris entre {{min}} et {{max}}, ou laissez le champ vide.",
+        "ageMinutes": "il y a {{n}} min",
+        "ageHours": "il y a {{n}} h",
+        "ageDays": "il y a {{n}} j",
+        "missingRequiredTroubleshooting": "Les exécutions de dépannage d’appareils refusent ce modèle : il leur manquerait {{tools}}. Les autres exécutions d’agents ne sont pas concernées.",
+        "underpoweredTooSmall": "{{surface}} : aucun profil d’outils ne tient dans cette fenêtre de contexte"
+      }
     },
     "defaults": {
       "title": "Valeurs par défaut par fonctionnalité",
@@ -703,12 +778,14 @@
       "groupBy": {
         "model": "Modèle",
         "surface": "Fonctionnalité",
-        "prompt_profile": "Famille de modèles"
+        "prompt_profile": "Famille de modèles",
+        "tool_profile": "Profil d'outils"
       },
       "columns": {
         "conversations": "Conversations",
         "costPerConversation": "Coût / conversation",
         "refusalRate": "Taux de refus",
+        "refusedToolBatches": "Appels d'outils inutilisables",
         "failoverRate": "Taux de basculement",
         "flagRate": "Taux de signalement",
         "leftRate": "Passées à un autre modèle",
@@ -719,6 +796,7 @@
         "conversations": "Sessions de chat et exécutions d'agent dont le dernier appel de modèle de la période concernait cette ligne.",
         "costPerConversation": "Dépense moyenne sur cette ligne pour chaque conversation qui l'a utilisée.",
         "refusalRate": "Appels de modèle refusés par le modèle, par appel.",
+        "refusedToolBatches": "Appels au modèle dans un tour où le modèle a demandé d'exécuter un outil sous une forme que Breeze ne pouvait pas utiliser (un outil qui ne lui était pas proposé ou des entrées non conformes), par appel. Rien n'a été exécuté.",
         "failoverRate": "Appels passés à un modèle de secours parce que celui-ci a échoué ou était indisponible.",
         "flagRate": "Sessions signalées par une personne. Les signalements automatiques après une erreur d'outil sont comptés séparément.",
         "leftRate": "Conversations passées à un autre modèle, ou poursuivies dans une nouvelle session sur un autre modèle.",
@@ -730,6 +808,12 @@
         "claude-standard": "Claude standard",
         "claude-small": "Claude léger",
         "generic": "Autres modèles"
+      },
+      "toolProfiles": {
+        "full": "Ensemble complet",
+        "standard": "Ensemble standard",
+        "minimal": "Ensemble minimal",
+        "custom": "Personnalisé"
       },
       "unrecorded": "Non enregistré",
       "unattributed": "Non attribué à un modèle",
@@ -743,6 +827,8 @@
       "leftBreakdown": "{{switched}} passées, {{continued}} poursuivies",
       "resolvedCount_one": "{{count}} résolue",
       "resolvedCount_other": "{{count}} résolues",
+      "refusedToolBatchCount_one": "{{count}} refusé",
+      "refusedToolBatchCount_other": "{{count}} refusés",
       "loading": "Chargement de la qualité…",
       "empty": "Aucun appel de modèle sur cette période.",
       "error": "Impossible de charger la vue Qualité.",
@@ -924,6 +1010,7 @@
     "noLogo": "Pas de logo",
     "uploadImage": "Télécharger l’image",
     "imageHelp": "PNG, JPEG ou WebP, jusqu’à 400 Ko après encodage ; les grandes images sont réduites à 800 px.",
+    "logoLowRes": "Ce logo fait {{width}} × {{height}} px. Les rapports, devis et factures l’impriment jusqu’à environ 64 mm (2,5 po) de large ; il paraîtra donc flou à l’impression. Importez une version d’au moins 600 px sur son côté le plus long.",
     "invalidSavedLogo": "Les données du logo enregistré sont invalides. Supprimez le logo ou téléversez-en un nouveau.",
     "pasteUrl": "Ou coller une image URL",
     "customCss": "Personnalisé CSS",
@@ -1880,7 +1967,8 @@
     },
     "issues": {
       "range": "Entrez un nombre entier de jours entre 1 et 3650."
-    }
+    },
+    "aiStubsHelp": "Les conversations d’IA vidées par la conservation des transcriptions gardent un enregistrement de session réduit (coût, modèle, nombre de tours) jusqu’à ce que leur dernière activité soit plus ancienne que cette durée. Une organisation sans politique de conservation d’audit enregistrée garde ces enregistrements."
   },
   "orgBrandingEditor": {
     "title": "Image de marque",
@@ -3261,7 +3349,8 @@
           "turnCount": "Tours",
           "summary": "Résumé",
           "computeCost": "Calcul",
-          "computeEstimated": "(estimé)"
+          "computeEstimated": "(estimé)",
+          "scope": "Périmètre"
         },
         "flags": {
           "budgetExceeded": "Budget dépassé",
@@ -3347,6 +3436,24 @@
           "partialNote": "Comptabilisation partielle tant que l'autorisation de politique sans surveillance est désactivée — l'exposition réelle peut être sous-estimée.",
           "unavailable": "Aucune politique d'agent active pour l'organisation de cette exécution.",
           "loading": "Chargement du budget…"
+        },
+        "scope": {
+          "org_one": "Toute l'organisation ({{count}} appareil au lancement)",
+          "org_other": "Toute l'organisation ({{count}} appareils au lancement)",
+          "site_one": "Site {{name}} ({{count}} appareil au lancement)",
+          "site_other": "Site {{name}} ({{count}} appareils au lancement)",
+          "siteUnnamed_one": "Un site ({{count}} appareil au lancement)",
+          "siteUnnamed_other": "Un site ({{count}} appareils au lancement)",
+          "devices_one": "{{count}} appareil sélectionné",
+          "devices_other": "{{count}} appareils sélectionnés"
+        },
+        "chain": {
+          "title": "Cette investigation",
+          "description": "Chaque étape prolongeait une étape précédente et pouvait utiliser les fichiers produits par les étapes antérieures.",
+          "step": "Étape {{step}}",
+          "current": "Cette exécution",
+          "open": "Ouvrir l'exécution",
+          "noGoal": "Aucun objectif enregistré"
         }
       },
       "triage": {
@@ -7084,7 +7191,7 @@
   },
   "orgDomains": {
     "title": "Domaines",
-    "description": "Domaines de messagerie qui appartiennent à ce client. Un domaine déclaré achemine les e-mails entrants vers cette organisation. Un domaine vérifié prouve que le client en est propriétaire ; l’inscription autonome au portail et la connexion Google s’appuient dessus.",
+    "description": "Domaines de messagerie qui appartiennent à ce client. Un domaine déclaré achemine les e-mails entrants vers cette organisation. Un domaine vérifié prouve que le client en est propriétaire ; des fonctionnalités comme l’inscription autonome au portail s’appuient dessus.",
     "forbidden": "La gestion des domaines clients nécessite un rôle d’administrateur ayant accès à toutes les organisations.",
     "partnerOnly": "Les domaines clients sont gérés par votre prestataire de services.",
     "checkingAccess": "Vérification de l’accès…",
@@ -7186,7 +7293,7 @@
       "resultUnavailable": "La vérification n’a pas pu se terminer. {{reason}}",
       "removeVerification": "Supprimer la vérification",
       "removeTitle": "Supprimer la vérification de {{domain}} ?",
-      "removeMessage": "Le domaine reste rattaché à cette organisation pour l’acheminement des e-mails. L’inscription autonome et la connexion Google cessent de lui faire confiance tant qu’il n’est pas de nouveau vérifié."
+      "removeMessage": "Le domaine reste rattaché à cette organisation pour l’acheminement des e-mails. Les fonctionnalités qui reposent sur des domaines vérifiés, comme l’inscription autonome, cessent de lui faire confiance tant qu’il n’est pas de nouveau vérifié."
     },
     "actions": {
       "verify": "Vérifier",
@@ -8202,6 +8309,10 @@
     "heading": "Offre et fonctionnalités",
     "description": "Ce que comprend votre offre. Les fonctionnalités verrouillées restent visibles pour que vous voyiez ce qu’une montée en gamme apporte.",
     "currentPlan": "Offre actuelle",
+    "changePlan": "Changer d’offre",
+    "enrollmentPaused": "L’inscription de nouveaux appareils est suspendue : {{active}} sur {{limit}} appareils.",
+    "enrollmentPausedNoCounts": "L’inscription de nouveaux appareils est suspendue, car votre compte a atteint sa limite d’appareils.",
+    "enrollmentPausedChangePlan": "Changez d’offre pour en ajouter davantage.",
     "plans": {
       "free": "Gratuite",
       "starter": "Starter",
@@ -8437,6 +8548,7 @@
     "pickUser": "Sélectionner un technicien",
     "pickPrompt": "Faites un choix ci-dessus pour voir sa mémoire.",
     "showContent": "Afficher le contenu",
+    "subjectFallback": "Consigne permanente",
     "hideContent": "Masquer le contenu",
     "conversationUnavailable": "Cette conversation n'est plus disponible.",
     "usersLoadFailed": "Impossible de charger les techniciens."
@@ -8471,15 +8583,28 @@
       "label": "Connexion Microsoft"
     },
     "google": {
-      "label": "Connexion Google"
+      "label": "Connexion Google",
+      "domainNotVerified": "Vérifiez l’un des domaines de cette organisation dans Organisation › Domaines avant d’activer la connexion Google.",
+      "domains": {
+        "verified": "Domaines vérifiés : {{domains}}",
+        "none": "Aucun domaine vérifié —",
+        "verify": "vérifiez-en un dans Organisation › Domaines",
+        "partner": "Activée partout où un domaine est vérifié"
+      }
     },
     "password": {
       "label": "Connexion par mot de passe",
       "allowed": "Autorisée",
       "ssoOnly": "Désactivée — Microsoft/Google uniquement",
-      "ssoOnlyNeedsSso": "Disponible une fois la connexion Microsoft ou Google activée."
+      "ssoOnlyMicrosoft": "Désactivée — Microsoft uniquement",
+      "ssoOnlyGoogle": "Désactivée — Google uniquement",
+      "ssoOnlyNeedsSso": "Disponible une fois la connexion Microsoft ou Google activée.",
+      "ssoOnlyNeedsSsoMicrosoft": "Disponible une fois la connexion Microsoft activée.",
+      "ssoOnlyNeedsSsoGoogle": "Disponible une fois la connexion Google activée."
     },
     "fallback": "La connexion par mot de passe est activée, car aucune connexion Microsoft ou Google n’est activée.",
+    "fallbackMicrosoft": "La connexion par mot de passe est activée, car la connexion Microsoft n’est pas activée.",
+    "fallbackGoogle": "La connexion par mot de passe est activée, car la connexion Google n’est pas activée.",
     "invites": {
       "label": "Invitations du MSP",
       "value": "Toujours activées"
@@ -8494,6 +8619,8 @@
     },
     "ssoNewPerson": {
       "label": "Première connexion Microsoft / Google",
+      "labelMicrosoft": "Première connexion Microsoft",
+      "labelGoogle": "Première connexion Google",
       "invitedOnly": "Personnes invitées seulement",
       "approval": "Approbation requise",
       "instant": "Immédiate"
@@ -8504,6 +8631,8 @@
       "save": "Impossible d’enregistrer les paramètres de connexion.",
       "methodUnavailable": "Cette méthode de connexion n’est pas encore disponible sur ce déploiement de Breeze.",
       "ssoOnlyNeedsSso": "Activez la connexion Microsoft ou Google avant de désactiver la connexion par mot de passe.",
+      "ssoOnlyNeedsSsoMicrosoft": "Activez la connexion Microsoft avant de désactiver la connexion par mot de passe.",
+      "ssoOnlyNeedsSsoGoogle": "Activez la connexion Google avant de désactiver la connexion par mot de passe.",
       "tenantNotProven": "Prouvez le tenant Microsoft de cette organisation avant d’activer la connexion Microsoft.",
       "sessionHours": "Saisissez un nombre entier d’heures compris entre 1 et 168."
     },
@@ -8512,7 +8641,11 @@
     },
     "sessionHours": {
       "label": "Durée de session Microsoft / Google (heures)",
-      "help": "Les connexions Microsoft et Google prennent fin après ce nombre d’heures, quelle que soit l’activité de la personne. De 1 à 168."
+      "labelMicrosoft": "Durée de session Microsoft (heures)",
+      "labelGoogle": "Durée de session Google (heures)",
+      "help": "Les connexions Microsoft et Google prennent fin après ce nombre d’heures, quelle que soit l’activité de la personne. De 1 à 168.",
+      "helpMicrosoft": "Les connexions Microsoft prennent fin après ce nombre d’heures, quelle que soit l’activité de la personne. De 1 à 168.",
+      "helpGoogle": "Les connexions Google prennent fin après ce nombre d’heures, quelle que soit l’activité de la personne. De 1 à 168."
     },
     "entraTenant": {
       "title": "Tenant Microsoft",
@@ -8586,6 +8719,8 @@
       "intro": "L’enregistrement désactive la connexion par mot de passe pour les organisations ci-dessous.",
       "partnerIntro": "L’enregistrement de cette valeur par défaut du partenaire désactive la connexion par mot de passe pour ces organisations. La page de chaque organisation liste les comptes qui ne peuvent pas encore se connecter.",
       "explain": "Les personnes déjà connectées à Microsoft perdent leur mot de passe et sont déconnectées. Les personnes sans connexion Microsoft ne peuvent pas se connecter tant qu’elles n’ont pas accepté une invitation de connexion Microsoft.",
+      "explainGoogle": "Les personnes déjà connectées à Google perdent leur mot de passe et sont déconnectées. Les personnes sans connexion Google ne peuvent pas se connecter tant qu’elles n’ont pas accepté une invitation de connexion Google.",
+      "explainBoth": "Les personnes déjà connectées à Microsoft ou Google perdent leur mot de passe et sont déconnectées. Les personnes sans connexion Microsoft ou Google ne peuvent pas se connecter tant qu’elles n’ont pas accepté une invitation de connexion.",
       "columns": {
         "org": "Organisation",
         "passwordsToClear": "Mots de passe supprimés",
@@ -8596,24 +8731,38 @@
       "strandedMore": "et {{count}} de plus",
       "strandedLoadError": "Impossible de charger les noms de ces comptes.",
       "sendInvites": "Envoyer des invitations de connexion Microsoft à ces comptes après l’enregistrement",
+      "sendInvitesGoogle": "Envoyer des invitations de connexion Google à ces comptes après l’enregistrement",
+      "sendInvitesBoth": "Envoyer des invitations de connexion à ces comptes après l’enregistrement",
       "confirm": "Désactiver la connexion par mot de passe",
       "changed": "L’impact a changé depuis l’ouverture. Vérifiez les nouveaux chiffres."
     },
     "stranded": {
       "title": "Ne peuvent pas encore se connecter ({{count}})",
       "description": "Ces comptes n’ont aucune connexion Microsoft, ils ne peuvent donc pas se connecter tant que la connexion par mot de passe est désactivée. Envoyez à chacun une invitation de connexion Microsoft.",
+      "descriptionGoogle": "Ces comptes n’ont aucune connexion Google, ils ne peuvent donc pas se connecter tant que la connexion par mot de passe est désactivée. Envoyez à chacun une invitation de connexion Google.",
+      "descriptionBoth": "Ces comptes n’ont aucune connexion Microsoft ou Google, ils ne peuvent donc pas se connecter tant que la connexion par mot de passe est désactivée. Envoyez à chacun une invitation de connexion.",
       "loadError": "Impossible de charger les comptes qui ne peuvent pas se connecter.",
       "invite": "Envoyer une invitation de connexion Microsoft",
+      "inviteGoogle": "Envoyer une invitation de connexion Google",
+      "inviteBoth": "Envoyer une invitation de connexion",
       "inviteAll": "Inviter tout le monde",
       "more": "{{shown}} affichés sur {{count}}.",
       "toasts": {
         "invited": "Invitations de connexion Microsoft envoyées : {{count}}.",
+        "invitedGoogle": "Invitations de connexion Google envoyées : {{count}}.",
+        "invitedBoth": "Invitations de connexion envoyées : {{count}}.",
         "partial": "Invitations de connexion Microsoft envoyées : {{invited}} sur {{total}}. Les autres étaient déjà connectés ou n’ont pas pu être invités.",
+        "partialGoogle": "Invitations de connexion Google envoyées : {{invited}} sur {{total}}. Les autres étaient déjà connectés ou n’ont pas pu être invités.",
+        "partialBoth": "Invitations de connexion envoyées : {{invited}} sur {{total}}. Les autres étaient déjà connectés ou n’ont pas pu être invités.",
         "emailFailed": "{{count}} compte(s) sont passés à « invité », mais l'e-mail d'invitation n'a pas pu être envoyé. Utilisez Renvoyer dans la liste des utilisateurs du portail."
       },
       "errors": {
         "invite": "Impossible d’envoyer les invitations de connexion Microsoft.",
-        "unavailable": "La connexion Microsoft n’est pas disponible pour cette organisation, il n’y a donc rien avec quoi inviter."
+        "inviteGoogle": "Impossible d’envoyer les invitations de connexion Google.",
+        "inviteBoth": "Impossible d’envoyer les invitations de connexion.",
+        "unavailable": "La connexion Microsoft n’est pas disponible pour cette organisation, il n’y a donc rien avec quoi inviter.",
+        "unavailableGoogle": "La connexion Google n’est pas disponible pour cette organisation, il n’y a donc rien avec quoi inviter.",
+        "unavailableBoth": "Ni la connexion Microsoft ni la connexion Google ne sont activées pour cette organisation, il n’y a donc rien avec quoi inviter."
       }
     },
     "domains": {
@@ -8635,6 +8784,7 @@
       "self": "Inscription autonome",
       "entra": "Connexion Microsoft",
       "google": "Connexion Google",
+      "googleWithDomain": "Google · domaine {{domain}}",
       "addin_user": "Complément AI for Office"
     },
     "selectAll": "Sélectionner toutes les demandes",
@@ -8655,7 +8805,8 @@
       "identityLinked": "Connexion déjà liée à un autre compte",
       "failed": "Impossible de traiter cette demande",
       "entraTenantNotProven": "Le tenant Microsoft de cette organisation n’est plus prouvé",
-      "domainNotVerified": "Le domaine e-mail n’est plus vérifié"
+      "domainNotVerified": "Le domaine e-mail n’est plus vérifié",
+      "googleDomainNotVerified": "Le domaine Google Workspace n’est plus vérifié"
     },
     "denyDialog": {
       "title": "Refuser la demande d’accès",
@@ -8674,7 +8825,8 @@
       "load": "Impossible de charger les demandes d’accès.",
       "action": "Impossible de mettre à jour la demande d’accès.",
       "bulk": "Impossible de traiter les demandes sélectionnées.",
-      "domainNotVerified": "Le domaine e-mail de cette personne n’est plus vérifié pour cette organisation. Invitez-la directement si elle doit avoir accès."
+      "domainNotVerified": "Le domaine e-mail de cette personne n’est plus vérifié pour cette organisation. Invitez-la directement si elle doit avoir accès.",
+      "googleDomainNotVerified": "Le domaine Google Workspace de cette demande n’est plus vérifié pour cette organisation. Vérifiez-le à nouveau ou invitez la personne directement."
     },
     "summary": {
       "title": "Demandes d’accès en attente",
@@ -8687,5 +8839,169 @@
     },
     "refreshFailed": "Impossible d’actualiser les demandes d’accès : cette liste n’est peut-être plus à jour.",
     "more": "Affichage des {{count}} premières demandes. Traitez-les pour voir les suivantes."
+  },
+  "portalDirectory": {
+    "title": "Déprovisionnement via l’annuaire",
+    "descriptionMicrosoft": "Lorsque votre client désactive ou supprime quelqu’un dans Microsoft Entra, la connexion Microsoft de cette personne est désactivée ici. Seules les lectures complètes de l’annuaire comptent.",
+    "descriptionGoogle": "Lorsque votre client suspend ou supprime quelqu’un dans Google Workspace, la connexion Google de cette personne est désactivée ici. Seules les lectures complètes de l’annuaire comptent.",
+    "descriptionBoth": "Lorsque votre client désactive, suspend ou supprime quelqu’un dans Microsoft Entra ou Google Workspace, la connexion via l’annuaire de cette personne est désactivée ici. Seules les lectures complètes de l’annuaire comptent.",
+    "loading": "Chargement du déprovisionnement via l’annuaire…",
+    "empty": "L’annuaire ne signale personne.",
+    "mode": {
+      "report": "Rapport uniquement : personne n’est encore désactivé automatiquement. La liste ci-dessous montre ce qui se produirait.",
+      "enforce": "Activé : les personnes que l’annuaire désactive ou supprime perdent leur connexion via l’annuaire. Le premier lot de chaque annuaire attend votre décision."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "Aucune lecture de l’annuaire pour l’instant.",
+      "lastRead": "Dernière lecture {{when}}",
+      "evaluated_one": "Lecture complète : {{count}} personne dans l’annuaire.",
+      "evaluated_other": "Lecture complète : {{count}} personnes dans l’annuaire.",
+      "suspectShrink": "L’annuaire a fortement diminué depuis la lecture précédente, donc rien n’a été modifié. Une seconde lecture doit d’abord le confirmer.",
+      "nothingChanged": "Rien n’a changé.",
+      "tenantLink": "Prouver votre tenant Microsoft"
+    },
+    "runReasons": {
+      "tenant_not_proven": "Le tenant Microsoft de cette organisation n’est pas prouvé.",
+      "tenant_mismatch": "La connexion Microsoft 365 lit un autre tenant que celui prouvé pour cette organisation.",
+      "connection_inactive": "La connexion à l’annuaire n’est pas active.",
+      "org_inactive": "Cette organisation ou son partenaire n’est pas actif.",
+      "sync_incomplete": "La dernière lecture de l’annuaire était incomplète, donc rien n’a été modifié.",
+      "directory_too_large": "Cet annuaire dépasse la limite de synchronisation ; le déprovisionnement n’est pas disponible. Utilisez plutôt le provisionnement SCIM lorsqu’il sera disponible.",
+      "scope_missing": "Il manque le périmètre admin.directory.user à la délégation à l’échelle du domaine de la connexion Google.",
+      "access_denied": "Google a refusé l’accès à l’annuaire.",
+      "unavailable": "L’annuaire est injoignable.",
+      "connection_invalid": "Les identifiants de la connexion Google n’ont pas pu être utilisés.",
+      "admin_not_admin": "Le compte administrateur de la connexion Google n’est plus un administrateur actif.",
+      "mixed_customer": "La liste Google mélangeait des utilisateurs d’un autre Workspace.",
+      "malformed": "L’annuaire a renvoyé des utilisateurs illisibles.",
+      "unknown": "La lecture n’a pas été utilisée."
+    },
+    "holdReasons": {
+      "first_enforcement": "première fois pour cet annuaire",
+      "threshold": "plus de personnes que d’habitude"
+    },
+    "held": {
+      "summary_one": "{{source}} : {{count}} personne attend votre décision.",
+      "summary_other": "{{source}} : {{count}} personnes attendent votre décision.",
+      "because": "Mis en attente : {{reason}}.",
+      "apply": "Appliquer",
+      "dismiss": "Ignorer"
+    },
+    "confirm": {
+      "applyTitle": "Désactiver ces connexions ?",
+      "applyMessage_one": "Cela désactive la connexion via l’annuaire de {{count}} personne et désactive son compte si elle n’a aucun autre moyen de se connecter. Mis en attente : {{reason}}. Vous pouvez restaurer chaque personne depuis la liste des utilisateurs.",
+      "applyMessage_other": "Cela désactive la connexion via l’annuaire de {{count}} personnes et désactive chaque compte qui n’a aucun autre moyen de se connecter. Mis en attente : {{reason}}. Vous pouvez restaurer chaque personne depuis la liste des utilisateurs.",
+      "dismissTitle": "Ignorer ce lot ?",
+      "dismissMessage_one": "Rien ne change. {{count}} personne reste exemptée jusqu’à ce qu’une lecture plus récente de l’annuaire la montre activée. Mis en attente : {{reason}}.",
+      "dismissMessage_other": "Rien ne change. {{count}} personnes restent exemptées jusqu’à ce qu’une lecture plus récente de l’annuaire les montre activées. Mis en attente : {{reason}}."
+    },
+    "columns": {
+      "person": "Personne",
+      "provider": "Annuaire",
+      "reason": "Ce que dit l’annuaire",
+      "effect": "Effet"
+    },
+    "actionReasons": {
+      "account_disabled": "Désactivée dans l’annuaire",
+      "absent": "Supprimée de l’annuaire",
+      "suspended": "Suspendue dans l’annuaire",
+      "archived": "Archivée dans l’annuaire"
+    },
+    "effects": {
+      "identity_and_account": "Désactive le compte",
+      "identityEntra": "Désactive uniquement la connexion Microsoft",
+      "identityGoogle": "Désactive uniquement la connexion Google"
+    },
+    "tags": {
+      "keepsPassword": "Conserve l’accès par mot de passe",
+      "rearmed": "Restaurée ou ignorée par votre équipe ; l’annuaire signale toujours cette personne comme désactivée"
+    },
+    "blockers": {
+      "entra_directory": "l’annuaire Microsoft",
+      "google_directory": "l’annuaire Google",
+      "scim": "le provisionnement SCIM",
+      "msp": "votre équipe",
+      "unknown": "une autre source"
+    },
+    "users": {
+      "disabledEntra": "Connexion Microsoft désactivée par {{blockers}}",
+      "disabledGoogle": "Connexion Google désactivée par {{blockers}}",
+      "restore": "Restaurer",
+      "remove": "Retirer la connexion",
+      "disabledBy": {
+        "msp": "Désactivée par votre équipe",
+        "directory": "Désactivée par l’annuaire",
+        "scim": "Désactivée par le provisionnement SCIM"
+      }
+    },
+    "restore": {
+      "title": "Restaurer cette méthode de connexion ?",
+      "message": "Réactive la connexion {{provider}} pour {{email}} et lève tous les blocages : {{blockers}}.",
+      "rearmNote": "L’annuaire ne la désactivera plus tant qu’une lecture plus récente de l’annuaire ne montre pas cette personne comme activée.",
+      "reactivate": "Réactiver aussi le compte",
+      "confirmMsp": "Votre équipe a désactivé ce compte. Je veux le réactiver."
+    },
+    "remove": {
+      "title": "Retirer cette méthode de connexion ?",
+      "message": "Retire la connexion {{provider}} désactivée de {{email}}. À utiliser lorsque la personne a été supprimée puis recréée dans l’annuaire. S’il s’agissait de sa seule méthode de connexion, réactivez le compte et envoyez une invitation."
+    },
+    "toasts": {
+      "applying": "Application du lot en cours. Les changements apparaîtront ici sous peu.",
+      "dismissed": "Lot ignoré",
+      "restored": "Méthode de connexion restaurée",
+      "removed": "Méthode de connexion retirée"
+    },
+    "errors": {
+      "load": "Impossible de charger le déprovisionnement via l’annuaire.",
+      "decide": "Impossible d’enregistrer votre décision.",
+      "stale": "Ce lot a changé depuis que vous l’avez ouvert. Consultez la liste actualisée et réessayez.",
+      "notHeld": "Ce lot n’attend plus de décision.",
+      "enforcementOff": "Le déprovisionnement est en mode rapport uniquement sur ce serveur, il n’y a donc rien à appliquer."
+    }
+  },
+  "portalScim": {
+    "title": "Provisionnement Microsoft Entra (SCIM)",
+    "description": "Laissez le tenant Entra du client créer des comptes du portail pour les personnes affectées à l’application Breeze Portal, et les désactiver à leur départ.",
+    "loading": "Chargement du provisionnement…",
+    "retry": "Réessayer",
+    "refreshFailed": "Impossible d'actualiser. Les informations affichées ne sont peut-être pas à jour.",
+    "needsTenant": "Prouvez ci-dessus le tenant Microsoft de cette organisation avant de configurer le provisionnement.",
+    "tenantUrl": "URL du locataire",
+    "noBaseUrl": "L’adresse publique de l’API n’est pas configurée, l’URL du tenant ne peut donc pas être affichée. Demandez à votre administrateur de définir PUBLIC_API_URL.",
+    "counts": "{{provisioned}} provisionnés · {{deactivated}} désactivés par l’annuaire",
+    "secretOnce": "Copiez ce jeton maintenant et collez-le dans le champ Jeton secret de l’application Entra. Il ne sera plus affiché.",
+    "secretToken": "Jeton secret",
+    "secretDone": "Je l’ai copié",
+    "lastUsed": "Dernière utilisation {{date}}",
+    "neverUsed": "Pas encore utilisé",
+    "notWorking": "Ne fonctionne pas : le tenant prouvé de cette organisation a changé",
+    "revoke": "Révoquer",
+    "label": "Nom du jeton",
+    "create": "Créer un jeton de provisionnement",
+    "createSubmit": "Créer",
+    "cancel": "Annuler",
+    "copy": "Copier",
+    "copied": "Copié",
+    "copyFailed": "Impossible de copier dans le presse-papiers.",
+    "revokeConfirm": {
+      "title": "Révoquer ce jeton de provisionnement ?",
+      "message": "Entra cesse immédiatement de provisionner avec « {{label}} ». Les personnes déjà provisionnées conservent leur compte."
+    },
+    "toasts": {
+      "created": "Jeton de provisionnement créé.",
+      "revoked": "Jeton de provisionnement révoqué."
+    },
+    "errors": {
+      "load": "Impossible de charger le provisionnement.",
+      "create": "Impossible de créer le jeton de provisionnement.",
+      "revoke": "Impossible de révoquer le jeton de provisionnement.",
+      "tenantNotProven": "Prouvez le tenant Microsoft de cette organisation avant de créer un jeton de provisionnement.",
+      "limit": "Cette organisation a déjà deux jetons de provisionnement actifs. Révoquez-en un d’abord.",
+      "notFound": "Ce jeton de provisionnement n’existe plus."
+    }
   }
 }

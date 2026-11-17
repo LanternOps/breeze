@@ -366,7 +366,17 @@ A proxy session stays alive as long as it's actively used: each request slides t
 - **Source IP restrictions** limit which users or networks can open proxy sessions.
 - Idle timeout and an absolute 12-hour session cap apply to prevent long-lived, unattended sessions.
 - A built-in SSRF-safe blocklist prevents proxying to internal metadata endpoints and loopback addresses.
+- When partner trust enforcement restricts a partner's remote control, its open tunnels end at their next authorization check: the next proxied request for Network Proxy, and the next 30-second check for a VNC tunnel.
 - Each proxy session is associated with a specific user and fully audit logged.
+
+**Allowlist rule format:**
+
+- **Destination rules** are `address-or-CIDR:port-range`. The address is IPv4 or IPv6, and the port part is a single port, a range, or `*`. Examples: `192.168.1.0/24:80-443`, `10.0.5.20:8080`, `2001:db8::/32:443`, `2001:db8::20:*`. The port is read after the last colon, so IPv6 addresses need no brackets.
+- **Source rules** contain only the address or CIDR, for example `198.51.100.0/24` or `2001:db8::/48`. A rule written as a single address with no prefix length matches only that address.
+- An IPv6 rule never matches an IPv4 address, and an IPv4 rule never matches an IPv6 address. An IPv4-mapped address such as `::ffff:192.0.2.10` counts as IPv4, so `::/0` does not cover IPv4 clients or targets.
+- Write an IPv6 CIDR as its network address (`2001:db8::/32`, not `2001:db8::5/32`). Use `/128` or a bare address for a single IPv6 host.
+- Breeze refuses to save a rule it cannot parse, and refuses to re-enable an older stored rule that does not parse. You can still disable or delete such a rule.
+- The blocklist cannot be overridden by a rule. It covers loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`), the unspecified addresses, and the IPv6 cloud metadata addresses. The agent checks every address a host name resolves to and connects to an address it checked. VNC tunnels reach only the device's local VNC service at `127.0.0.1:5900`.
 
 ### Wake-on-LAN
 
@@ -475,7 +485,7 @@ Quick Support connects you to a machine that runs **no permanently enrolled agen
 
 1. On **Remote Access → Quick Support**, create a session. Optionally attribute it to a customer organization and add a label (e.g. "Contoso — CFO laptop"). Attribution is for reporting only; it does not grant or change access to that customer's data.
 
-2. Breeze returns a one-time code (`234-567-892`) and a link. Codes are digits only (2–9, with no 0 or 1) and displayed in groups of three so they read cleanly over the phone. **The code is shown once and cannot be retrieved again.** It expires in 15 minutes. Codes issued before v0.105.0 that contain letters remain redeemable.
+2. Breeze returns a one-time code (`234-567-892`) and a link. Codes are digits only (2–9, with no 0 or 1) and displayed in groups of three so they read cleanly over the phone. The code works once and expires in 15 minutes; a countdown shows the time left. Codes issued before v0.105.0 that contain letters remain redeemable.
 
 3. Send the link or read the code out. The end user opens the link, downloads the client, and runs it. The code is embedded in the download's filename, so they normally never type it — the landing page also accepts manual code entry if they arrive without one.
 
@@ -485,7 +495,13 @@ Quick Support connects you to a machine that runs **no permanently enrolled agen
 
 </Steps>
 
-Clicking a row in the session history re-opens a live detail panel for that session — you can connect to (or end) a still-active session from history; only the one-time code stays create-time-only.
+Clicking a row in the session history re-opens a live detail panel for that session — you can connect to (or end) a still-active session from history.
+
+**The code stays visible while the session waits.** Until the end user redeems it, the code stays on the session's row in the Quick Support list, and the detail panel shows it with the link and copy buttons for both, so reloading or leaving the page no longer means starting over. The code disappears as soon as the end user redeems it, you end the session, or it expires. Only technicians who can create Quick Support sessions for your partner see it (the `remote:access` permission, with partner scope).
+
+**New code.** If the 15 minutes run out before the end user gets to it, or you want to stop the current code working, click **New code** on the session. Breeze replaces the code and its link and restarts the 15-minute timer on the same session; the previous code stops working at once. New code is available until the end user redeems a code, you end the session, or the eight-hour hard cap passes. Sessions created before this change have no stored code, so they show **New code** instead of a code.
+
+Breeze stores the code encrypted while the session is pending and deletes the stored copy when the session leaves that state. Redemption still looks codes up by hash, and the per-IP rate limits and failed-guess budget on the public code endpoints are unchanged.
 
 <Aside type="caution">
   Quick Support requires **partner scope**. An organization-scoped login cannot create these sessions. Sessions are visible to all technicians at your partner, not only their creator.
@@ -531,6 +547,30 @@ pending → connecting → active → disconnected / failed / denied
 A session ended by the lease recheck (see [Session lease and revocation](#session-lease-and-revocation)) becomes `disconnected` with a recorded reason such as `revoked:membership_removed`, `revoked:permissions_changed`, `revoked:site_scope_lost` or `revoked:hard_deadline`, which appears in the session's history entry.
 
 When a session ends (`disconnected` or `failed`), the platform records `durationSeconds` (calculated from start time). The `bytesTransferred` field is available but must be supplied by the caller when ending the session via `POST /remote/sessions/:id/end`.
+
+---
+
+## Why a session ended
+
+Every remote session that ends records a reason, shown under its status in **Remote Access → Session History** and in the session's details panel (which also shows the recorded error text, when there is one). The reason is part of the CSV export (`End Reason`) and of `GET /remote/sessions/history` (`endReason`, `errorMessage`).
+
+| Reason | What happened |
+|--------|---------------|
+| Ended by the user | The person at the device ended it from the on-screen indicator. |
+| Ended by a technician | A technician ended it: closed the session window in the Breeze Viewer, cancelled a reconnect, or ended it from the web console, for example with the terminal's **Disconnect** button. |
+| Viewer closed | The viewer's connection closed normally (WebSocket desktop or terminal). |
+| Connection to the viewer lost | The viewer's connection failed, stopped answering heartbeats, or the API server holding it went away. |
+| Connection closed | The device reported that the peer connection closed without the viewer ending the session first: a dropped network connection, the Breeze Viewer quit or crashed, or the viewer could not reach the API in time when you closed the window. Older viewer versions show every hang-up this way. When the viewer was reconnecting, Breeze first waits a short grace period. |
+| Never connected | The session was still pending or connecting when it timed out. A device whose sessions keep ending this way is worth checking for a connection that cannot be established between viewer and device. |
+| Replaced by a newer session | A new session to the same device replaced it. |
+| Screen capture stopped | The device stopped producing video mid-session and ended it; the details panel shows the device's reason. |
+| Failed to start | The device or the API could not start the session; the details panel shows the error. |
+| Consent declined | The person at the device declined the consent prompt. |
+| Access revoked | The technician's access ended: a live access check failed (role, membership, MFA or the remote access policy changed), or their account was changed (password or MFA reset, deactivation). |
+| Maximum session duration reached | The session reached the policy's maximum duration, or the 24-hour server limit. |
+| Device removed or reinstalled | The device was decommissioned, reinstalled, or had its credentials revoked. |
+
+Sessions that ended before this was recorded show no reason. Some stops the device makes on its own (its idle timeout, lifetime limit or an expired revocation lease) are also reported today as **Connection closed**.
 
 ---
 
@@ -798,14 +838,19 @@ This is webkit2gtk's DMA-BUF renderer failing, most often on the NVIDIA driver. 
 The host's webkit2gtk build does not expose `RTCPeerConnection`, so the viewer skips WebRTC and uses the WebSocket (JPEG) transport. The session window shows a notice saying so, and the browser console logs `WebRTC is unavailable in this WebView (no RTCPeerConnection global)`. Installing the GStreamer plugin sets usually restores it — see [WebRTC needs webkit2gtk built with the GStreamer plugins](#webrtc-needs-webkit2gtk-built-with-the-gstreamer-plugins). This is a property of the host, not of the device you are connecting to.
 
 **Session stuck in `connecting`.**
-WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
+WebRTC signalling has not completed. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:
 
 - **TURN not configured** — Verify `TURN_HOST` and `TURN_SECRET` are set in `.env` and the coturn container is running (`docker compose logs coturn`). If using an external TURN server, check its status via SSH.
 - **Firewall blocking TURN ports** — Coturn needs TCP and UDP port 3478, plus UDP ports in the relay range (default 49152–65535, or tightened to 49152–49252). Verify the ports are reachable with `nc -z -w 3 TURN_IP 3478` (TCP) and `nc -u -z -w 3 TURN_IP 3478` (UDP).
 - **Wrong `TURN_HOST`** — Must be the TURN server's public IP, not a private address. If Breeze is behind Cloudflare Tunnel, TURN must run on a separate host with its own public IP — see [TURN Server](/deploy/turn-server/).
 - **Shared secret mismatch** — `TURN_SECRET` in `.env` must exactly match `static-auth-secret` in the coturn config.
 
-The viewer should automatically fall back to the WebSocket transport after a timeout.
+The viewer falls back to the WebSocket transport only when WebRTC signalling itself fails (no answer from the agent). Once the agent has answered, a session that has never connected reports a failure to find a network path as the error below rather than retrying indefinitely. A session that connected at least once and then lost its path keeps reconnecting as before. A device whose agent runs as a service (the normal Windows install) refuses the WebSocket transport, so WebRTC is its only path.
+
+**"Remote desktop could not connect. This viewer received only local network addresses from the device…"**
+The agent answered, but every address the viewer received from it was on the device's own network: no server-reflexive or relay candidate arrived. The likely cause is that the device reached neither the STUN server nor the TURN relay, typically because a firewall on the device's network drops outbound UDP and does not allow TCP to the relay port. A candidate lost on the way can look the same, which is why this is a likely cause and not a certainty. The viewer retries once (about 20 seconds per attempt) and then stops with this message instead of re-offering indefinitely. On a macOS device it hands off to VNC instead, as it does when a reconnect times out. Allow outbound UDP, and TCP to `TURN_PORT` (3478 by default), from the device to the TURN server, or offer [TURN over TLS](/deploy/turn-server/) (`TURN_TLS_HOST`, `TURN_TLS_PORT`) on a port the site allows. The agent logs `ICE gathering complete with no relay candidates` in **Agent Logs** for the same session.
+
+If the message names **this computer's network** instead, the viewer received a non-local address from the device but gathered only local ones itself: check the firewall on the technician's side. If it says **no connection between them worked**, both sides had non-local addresses and still could not connect; check the firewalls on both networks.
 
 **Poor video quality, high latency, or stalls — where are the WebRTC diagnostics?**
 While a desktop session is live, the device emits two periodic diagnostic lines: `Viewer WebRTC stats` (RTT, jitter, packet loss, frame drops as reported by the viewer) and `Desktop WebRTC metrics` (`captureMs`, `convertMs`, `encodeMs`, frames captured/encoded/sent, bandwidth). Both are shipped to **Devices → Select Device → Agent Logs** for the duration of the session regardless of `log_shipping_level`, so you do not need to lower the level to see them. Read `captureMs` against `encodeMs`: a high `captureMs` with a low `encodeMs` means the screen capturer is the bottleneck, not the encoder.

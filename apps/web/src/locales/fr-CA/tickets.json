@@ -86,7 +86,8 @@
     "checklistProgress": "{{done}}/{{total}} étapes",
     "checklistTitle": "Liste de vérification : {{done}} étapes sur {{total}} terminées",
     "merged": "Fusionné",
-    "ageTitle": "Ouvert le {{created}} · Mis à jour le {{updated}}"
+    "ageTitle": "Ouvert le {{created}} · Mis à jour le {{updated}}",
+    "imported": "Importé"
   },
   "ticketArchivedList": {
     "emptyTitle": "Aucun billet archivé.",
@@ -378,6 +379,7 @@
       "triage": "Ordre de triage",
       "newest": "Les plus récents d’abord",
       "oldest": "Les plus anciens d’abord",
+      "updated": "Mis à jour récemment",
       "due": "Date d’échéance"
     },
     "priority": {
@@ -445,7 +447,9 @@
         "paused": "SLA en pause, temps restant {{relative}}",
         "breached": "SLA en violation"
       }
-    }
+    },
+    "importTickets": "Importer des billets",
+    "importedOnly": "Importés seulement"
   },
   "ticketWorkbench": {
     "notFound": "Billet non trouvé. Il se peut qu’il ait été supprimé, ou que vous n’y ayez peut-être pas accès.",

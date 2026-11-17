@@ -86,7 +86,8 @@
     "checklistProgress": "{{done}}/{{total}} pasos",
     "checklistTitle": "Lista de verificación: {{done}} de {{total}} pasos completados",
     "merged": "Fusionado",
-    "ageTitle": "Abierto {{created}} · Actualizado {{updated}}"
+    "ageTitle": "Abierto {{created}} · Actualizado {{updated}}",
+    "imported": "Importado"
   },
   "ticketArchivedList": {
     "emptyTitle": "No hay tickets archivados.",
@@ -378,6 +379,7 @@
       "triage": "orden de triaje",
       "newest": "Lo nuevo primero",
       "oldest": "El más viejo primero",
+      "updated": "Actualizados recientemente",
       "due": "Fecha de vencimiento"
     },
     "priority": {
@@ -445,7 +447,9 @@
         "paused": "SLA en pausa, quedan {{relative}}",
         "breached": "SLA violado"
       }
-    }
+    },
+    "importTickets": "Importar tickets",
+    "importedOnly": "Solo importados"
   },
   "ticketWorkbench": {
     "notFound": "No se encontró el ticket. Es posible que se haya eliminado o que usted no tenga acceso.",

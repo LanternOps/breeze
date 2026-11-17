@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // winMountTree mounts root and Recovery at folder mount points under the
@@ -90,14 +92,8 @@ func winRestoreTree(ctx context.Context, r *run) error {
 			return err
 		}
 	}
-	workRoot := r.opts.WorkRoot
-	if workRoot == "" {
-		// disk: (WinPE) target: X: is a ≤512 MB RAM drive, too small for
-		// restore scratch (Global Constraint "Work dir"); winValidate
-		// removes this directory before release.
-		workRoot = filepath.Join(r.rootVolume, "$breeze-rebuild-work")
-	}
-	if err := os.MkdirAll(workRoot, 0o700); err != nil {
+	workRoot, err := winRestoreWorkRoot(r)
+	if err != nil {
 		return fmt.Errorf("create restore work root: %w", err)
 	}
 	res, err := restoreSnapshotFiles(ctx, r.opts.Provider, backup.RestoreConfig{
@@ -126,4 +122,26 @@ func winRestoreTree(ctx context.Context, r *run) error {
 		return recordErr
 	}
 	return applyWindowsSystemState(ctx, r)
+}
+
+// winRestoreWorkDir is the default restore work directory on the root volume.
+const winRestoreWorkDir = "$breeze-rebuild-work"
+
+// winRestoreWorkRoot returns the restore's scratch directory. An operator
+// work root is created as given; the default one lives on the rebuilt root
+// volume (disk: targets under WinPE, whose X: RAM drive is too small for
+// restore scratch; winValidate removes it before release) and is created
+// beneath the volume without following a link, so a resumed run cannot
+// place restore scratch outside the volume.
+func winRestoreWorkRoot(r *run) (string, error) {
+	if r.opts.WorkRoot != "" {
+		return r.opts.WorkRoot, os.MkdirAll(r.opts.WorkRoot, 0o700)
+	}
+	if r.rootVolume == "" {
+		return "", errors.New("no root volume recorded for this run")
+	}
+	if err := securefs.InstallDir(r.rootVolume, winRestoreWorkDir, 0o700, true, nil, time.Time{}); err != nil {
+		return "", err
+	}
+	return filepath.Join(r.rootVolume, winRestoreWorkDir), nil
 }

@@ -80,4 +80,35 @@ describe('trust page subprocessors, FAQ and history (real database)', () => {
     await sys(() => refreshPublishedPage(page.id));
     expect((await read()).subprocessors).toHaveLength(2);
   });
+
+  it('one snapshot with a non-integer controlsMet does not break publish or refresh', async () => {
+    const s = await seed();
+    const page = await sys(() => ensureTrustPage(s.orgId, s.userId));
+    const insertOld = (daysAgo: number, met: unknown, tag: string) => sys(() => db.insert(trustPageSnapshots).values({
+      trustPageId: page.id, orgId: s.orgId, isCurrent: false, publicationRevision: 0, catalogVersion: 'test',
+      payloadSha256: tag.padStart(64, '0'),
+      generatedAt: new Date(Date.now() - daysAgo * 86_400_000),
+      payload: { summary: { catalogTotal: 16, controlsShown: 16, controlsMet: met, deviceCount: null } } as never,
+    }));
+    await sys(() => db.update(trustPages).set({ showHistory: true }).where(eq(trustPages.id, page.id)));
+    // A good baseline, a malformed point and a good in-window point: the good ones must survive the bad one.
+    await insertOld(120, 5, '120');
+    await insertOld(60, 3.5, '60');
+    await insertOld(30, 8, '30');
+
+    // Before the fix the SQL `::int` cast raised `invalid input syntax for type integer: "3.5"` and failed the publish.
+    expect(await publish(s, page.publicationRevision)).toBeTruthy();
+    const read = async () => {
+      const [cur] = await sys(() => db.select().from(trustPageSnapshots).where(sql`${trustPageSnapshots.trustPageId} = ${page.id} AND ${trustPageSnapshots.isCurrent}`));
+      return (cur!.payload as { history: Array<{ met: number; shown: number }> }).history;
+    };
+    expect((await read()).map((p) => [p.met, p.shown])).toEqual([[5, 16], [8, 16]]);
+
+    // Another malformed snapshot written after publish must not break the hourly refresh either.
+    await insertOld(20, 'x', '20');
+    await sys(() => refreshPublishedPage(page.id)); // rejected before the fix (same cast error)
+    const after = await read();
+    expect(after.slice(0, 2).map((p) => [p.met, p.shown])).toEqual([[5, 16], [8, 16]]);
+    expect(after.every((p) => Number.isSafeInteger(p.met) && Number.isSafeInteger(p.shown))).toBe(true);
+  });
 });

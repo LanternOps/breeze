@@ -926,11 +926,14 @@ describe('B-W04: Tier-3 tools/call files an approval intent (MCP_TIER3_INTENTS_E
     expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
   });
 
+  // #11989: denied by checkGuardrails itself, before the approval gate (it
+  // used to reach that gate as MCP_APPROVAL_REQUIRED / not_tier3).
   it('Tier 4 stays unlisted and denied', async () => {
     useTools([{ name: 'wipe_everything', tier: 4 }]);
     expect((await (await listTools()).json()).result.tools.map((t: any) => t.name)).not.toContain('wipe_everything');
     const body = await (await callTool('wipe_everything', {})).json();
-    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED', reason: 'not_tier3' });
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toEqual({ error: 'Tool "wipe_everything" is registered at Tier 4 and is not available' });
     expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
   });
 

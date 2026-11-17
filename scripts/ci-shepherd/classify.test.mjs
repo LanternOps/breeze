@@ -26,7 +26,7 @@ const ctxFor = (fx, history = empty) => ({
   requiredJobs,
 });
 const classify = (fx, history) => classifyRun(fx.facts, ctxFor(fx, history));
-const historyOf = (...names) => History.fromSightings(names.flatMap((n) => ingestRun(fixture(n).facts, { repo: REPO, repoRoot: REPO_ROOT })));
+const historyOf = (...names) => History.fromSightings(names.flatMap((n) => ingestRun(fixture(n).facts, { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() })));
 
 const PSA = 'src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner';
 
@@ -62,10 +62,10 @@ test('11338-psa-fail-fail: unknown on empty history; known_flake once other runs
   assert.equal(v.class, 'known_flake');
   assert.deepEqual(v.testIds, [PSA]);
   // Its own PR's non-queue runs never corroborate it, and neither does the run itself.
-  const self = ingestRun(fixture('psa-fail-pass').facts, { repo: REPO, repoRoot: REPO_ROOT }).map((s) => ({ ...s, pr: fx.source.pr, event: 'pull_request' }));
+  const self = ingestRun(fixture('psa-fail-pass').facts, { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() }).map((s) => ({ ...s, pr: fx.source.pr, event: 'pull_request' }));
   assert.equal(classify(fx, History.fromSightings(self)).class, 'unknown');
   // A sighting after the removal is not evidence at removal time.
-  const later = ingestRun(fixture('11312-web3-disjoint').facts, { repo: REPO, repoRoot: REPO_ROOT }).map((s) => ({ ...s, at: '2026-11-09T00:00:00Z' }));
+  const later = ingestRun(fixture('11312-web3-disjoint').facts, { repo: REPO, repoRoot: REPO_ROOT, changed: new Set() }).map((s) => ({ ...s, at: '2026-11-09T00:00:00Z' }));
   assert.equal(classify(fx, History.fromSightings(later)).class, 'unknown');
 });
 

@@ -169,7 +169,9 @@ describe('enforceWispCeiling — a chat tool call stays inside the grant (real P
   it('the same user without a grant keeps the ungated path: createSessionPreToolUse never consults the ceiling and allows the read', async () => {
     const t = await seed();
     const pre = createSessionPreToolUse(chatSession(t, null));
-    const r = await pre('get_device_details', deviceRead(t.orgB.id));
+    // No orgId here: get_device_details defines only deviceId, and since #11861
+    // an argument a tool does not define is refused by input validation.
+    const r = await pre('get_device_details', deviceRead());
     expect(r).toEqual({ allowed: true });
   });
 

@@ -74,6 +74,8 @@ const TARGET_GLOBS = [
   'src/components/settings/BusinessHoursApplyDialog.tsx',
   // #8330: saved-filter create/edit/delete surface the API's error text.
   'src/components/filters/SavedFilterList.tsx',
+  // #11879: the Devices toolbar "Views" save/delete go through runAction.
+  'src/components/devices/SavedViewsMenu.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
   'src/lib/endpointMessages.ts',
   'src/components/endpointMessages/SendMessageDialog.tsx',
@@ -131,6 +133,8 @@ const TARGET_GLOBS = [
   // runAction from birth.
   'src/components/devices/AssignParkedDeviceDialog.tsx',
   'src/components/devices/UnassignedDevicesPage.tsx',
+  // #8318 wave 2-3: the reattach request (POST /devices/:id/reattach) goes through runAction from birth.
+  'src/components/devices/ReattachDeviceForm.tsx',
   'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
@@ -636,6 +640,17 @@ const TARGET_GLOBS = [
   'src/components/settings/orgDomains/OrgDomainsTab.tsx',
   'src/components/settings/orgDomains/AddDomainForm.tsx',
   'src/components/settings/orgDomains/DomainVerificationPanel.tsx',
+  // Ticket import W6 (#8313): the wizard's every mutation (sources, preflight, mappings, runs,
+  // windows, created contacts) goes through runAction; the API module only reads.
+  'src/components/ticketImport/ticketImportApi.ts',
+  'src/components/ticketImport/ConnectStep.tsx',
+  'src/components/ticketImport/PreflightStep.tsx',
+  'src/components/ticketImport/MappingsStep.tsx',
+  'src/components/ticketImport/RunStep.tsx',
+  'src/components/ticketImport/WindowStep.tsx',
+  'src/components/ticketImport/MigrationWindows.tsx',
+  'src/components/ticketImport/CreatedContactsPanel.tsx',
+  'src/components/ticketImport/TicketImportPage.tsx',
 ];
 
 // Ratchet floor, not a total: adding an entry above never touches this line.

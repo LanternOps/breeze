@@ -23,6 +23,10 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+vi.mock('../db', () => ({
+  withDbTransactionIfHeld: vi.fn((fn: () => Promise<unknown>) => fn()),
+}));
+
 vi.mock('../services/packageSearch', () => ({
   DEFAULT_SEARCH_LIMIT: 25,
   searchWingetIndex: vi.fn(),
@@ -124,7 +128,7 @@ describe('GET /software/package-search — windows (winget)', () => {
     expect(res.status).toBe(200);
     expect(searchWingetIndex).toHaveBeenCalledWith('chrome', 25);
     expect(searchHomebrew).not.toHaveBeenCalled();
-    expect(body).toEqual({ results: [WINGET_ROW] });
+    expect(body).toEqual({ results: [WINGET_ROW], indexUpdatedAt: '2026-08-16T00:00:00.000Z' });
     expect(body.degraded).toBeUndefined();
   });
 
@@ -147,7 +151,7 @@ describe('GET /software/package-search — windows (winget)', () => {
 
     const res = await app.request('/software/package-search?platform=windows&q=chrome');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ results: [WINGET_ROW] });
+    expect(await res.json()).toMatchObject({ results: [WINGET_ROW] });
   });
 });
 
@@ -215,11 +219,23 @@ describe('GET /software/package-search — winget index freshness (#3602)', () =
     expect('degraded' in body).toBe(false);
   });
 
-  it('does not probe the index when the search returned hits', async () => {
+  it('reports indexUpdatedAt on a search WITH hits so the picker can show freshness (#12052)', async () => {
     (searchWingetIndex as any).mockResolvedValue([WINGET_ROW]);
 
     const res = await app.request('/software/package-search?platform=windows&q=chrome');
     expect(res.status).toBe(200);
-    expect(getWingetIndexFreshness).not.toHaveBeenCalled();
+    expect(await res.json()).toEqual({
+      results: [WINGET_ROW],
+      indexUpdatedAt: '2026-08-16T00:00:00.000Z',
+    });
+  });
+
+  it('still returns hits (without indexUpdatedAt) when the freshness probe fails', async () => {
+    (searchWingetIndex as any).mockResolvedValue([WINGET_ROW]);
+    (getWingetIndexFreshness as any).mockRejectedValue(new Error('db down'));
+
+    const res = await app.request('/software/package-search?platform=windows&q=chrome');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ results: [WINGET_ROW] });
   });
 });

@@ -18,6 +18,8 @@ import {
 } from './deviceCredentialLifecycle';
 import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
 import { checkAgentStorageSessionRateLimit } from '../services/agentStorageSessionRateLimit';
+import { checkAgentTunnelResultRateLimit } from '../services/agentTunnelResultRateLimit';
+import { isTunnelHttpCommandId } from '../services/tunnelHttpCommandId';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../services/drainClaimAllowlist';
 import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
@@ -842,6 +844,28 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     }
   }
 
+  // #11464 — an older agent's REST acknowledgement of a Network Proxy
+  // `http_request` (`commands/http-req-…/result`, a no-op on the route) is
+  // metered by its own bounded windows INSTEAD of the general buckets below,
+  // so a proxied page load cannot get the agent's heartbeats refused. Why and
+  // the bounds: services/agentTunnelResultRateLimit.ts. Anchored like the
+  // storage path: exact core shape, POST only, proxy command id prefix only.
+  const isTunnelResultPath =
+    c.req.method === 'POST'
+    && isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 3)
+    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'commands'
+    && pathSegments[CORE_AGENT_ACTION_INDEX + 2] === 'result'
+    && isTunnelHttpCommandId(pathSegments[CORE_AGENT_ACTION_INDEX + 1] ?? '');
+  if (isTunnelResultPath) {
+    const tunnelResultCheck = await checkAgentTunnelResultRateLimit(redis, { orgId: device.orgId, deviceId: device.id });
+    if (!tunnelResultCheck.allowed) {
+      c.header('Retry-After', String(tunnelResultCheck.retryAfterSeconds));
+      return c.json({ error: 'tunnel_result_rate_limit_exceeded' }, 429);
+    }
+  }
+  /** Metered above by a dedicated limiter, so it skips the general agent buckets below. */
+  const meteredSeparately = isStorageSessionPath || isTunnelResultPath;
+
   // Task 19: per-(agent, source-IP) rate limit. A stolen token used from a
   // second IP can't drain the legit agent's per-agent quota — each IP gets
   // its own 30/min bucket. Runs BEFORE the per-agent limit so a spraying
@@ -852,7 +876,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // so a stolen token can't mint a fresh per-IP bucket per request by walking
     // the low 64 bits of a subnet it already owns. `sourceIp` below stays raw —
     // the IP-change audit signal needs the real address.
-    if (!isStorageSessionPath) {
+    if (!meteredSeparately) {
       const perIpKey = `agent_rate_ip:${device.id}:${rateLimitIpKey(sourceIp)}`;
       // refundOnReject: a refused request is taken back out of the window, so
       // an agent that retries while throttled does not keep itself throttled
@@ -936,9 +960,10 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     }
   }
 
-  // General agent buckets (per agent, then per org). Storage-session calls
-  // were already metered above and never draw on these.
-  if (!isStorageSessionPath) {
+  // General agent buckets (per agent, then per org). Storage-session calls and
+  // proxy result acknowledgements were already metered above and never draw
+  // on these.
+  if (!meteredSeparately) {
     // Rate limiting per agent
     const rateKey = `agent_rate:${agentId}`;
     // refundOnReject, as for the per-IP bucket above.
@@ -1190,6 +1215,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // list, delete), which must never run inside a held transaction — the
   // handlers open one short org-scoped context per database phase
   // (routes/agents/storageSessions.ts).
+  // Proxy result acknowledgements (isTunnelResultPath, above): the result route
+  // answers a non-UUID id from the id alone, before the body is parsed and with
+  // no database access (routes/agents/commands.ts answerRowlessCommandResult),
+  // so it needs no request-long transaction — otherwise one BEGIN/COMMIT per
+  // proxied request from an older agent.
   if (
     (
       isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
@@ -1197,6 +1227,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     )
     || isSelfManagedTwoSegmentAction
     || isStorageSessionPath
+    || isTunnelResultPath
   ) {
     await next();
     return;

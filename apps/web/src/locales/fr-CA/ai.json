@@ -20,6 +20,30 @@
     "urgentWarning": "Moins de 30 secondes restantes. Cette demande sera automatiquement rejetée.",
     "progressLabel": "Temps restant avant refus automatique",
     "showParameters": "Paramètres de présentation",
+    "ticketComment": {
+      "publicTo": "Réponse visible par le client à {{recipient}}",
+      "publicNoRecipient": "Réponse visible par le client (envoyée par courriel au demandeur)",
+      "publicNoEmail": "Réponse visible par le client (aucun courriel du demandeur au dossier, donc aucun courriel n'est envoyé)",
+      "internal": "Note interne (non visible par le client)"
+    },
+    "memory": {
+      "heading": "Wisp retiendra",
+      "subjectKey": "Clé : {{key}} (remplace tout souvenir antérieur ayant cette clé)",
+      "moreInParameters": "D'autres champs se trouvent seulement sous Paramètres de présentation.",
+      "scope": {
+        "user": "Vous seulement",
+        "org": "Ce client",
+        "partner": "Tout votre MSP"
+      },
+      "types": {
+        "preference": "Préférence",
+        "standing_instruction": "Instruction permanente",
+        "fact": "Fait",
+        "decision": "Décision",
+        "concern_outcome": "Résultat de préoccupation",
+        "work_summary": "Résumé du travail"
+      }
+    },
     "approve": "Approuver",
     "reject": "Refuser",
     "approveVerify": "Vérifier et approuver",
@@ -61,6 +85,7 @@
   "aiChatMessages": {
     "title": "Breeze AI",
     "description": "Demandez des informations sur vos appareils, alertes, indicateurs ou dépannez les problèmes.",
+    "stopped": "Arrêté",
     "unknownTool": "Outil inconnu",
     "toolResult": "Résultat de l’outil",
     "unattendedRelease": "Vérifié par le réviseur de scripts de l'IA et publié sans carte d'approbation.",
@@ -313,8 +338,10 @@
     "noLimit": "Aucune limite",
     "messagesPerMinute": "Messages/min par utilisateur",
     "messagesPerHour": "Messages/heure par organisation",
-    "retentionDays": "Conservation des relevés de notes (jours)",
+    "retentionDays": "Conservation des transcriptions de l’IA client (jours)",
     "keepForever": "Garde pour toujours",
+    "retentionScope": "S’applique aux conversations de l’IA client (AI for Office). Vide = conservation illimitée. Les conversations de l’IA des techniciens ont leur propre durée.",
+    "retentionTechnicianLink": "Paramètres de conservation de l’IA des techniciens",
     "brandingDescription": "Illustré dans le pied de page : « Gouverné par votre fournisseur informatique » — le crochet en marque blanche (spec §11).",
     "displayName": "Nom d’affichage",
     "mspNamePlaceholder": "Votre nom MSP",
@@ -594,7 +621,12 @@
       "waitingForApprover": "En attente d'un approbateur"
     },
     "continue": "Continuer",
-    "continueMessage": "Poursuivre le dépannage de l'exécution {{runId}}."
+    "continueMessage": "Poursuivre le dépannage de l'exécution {{runId}}.",
+    "chainStep": "Étape {{step}} de cette enquête",
+    "goal": "Objectif : {{goal}}",
+    "findings": "Constats : {{count}}",
+    "findingsHigh": "({{count}} de gravité élevée)",
+    "files": "Fichiers :"
   },
   "aiModelPicker": {
     "chooseModel": "Choisir un modèle",
@@ -920,6 +952,12 @@
       "runNow": "Exécuter maintenant",
       "runNowMessage": "Lance le suivi planifié",
       "scheduledAt": "Wisp fera un suivi à {{time}}",
+      "waitingFor": {
+        "deviceOnline": "En attente de la connexion de l'appareil · abandonne à {{time}}",
+        "scriptFinished": "En attente de la fin du script · abandonne à {{time}}",
+        "commandFinished": "En attente de la fin de la commande · abandonne à {{time}}",
+        "runSettled": "En attente de la fin de l'exécution · abandonne à {{time}}"
+      },
       "cancel": "Annuler le suivi planifié",
       "cancelled": "Suivi planifié annulé",
       "cancelFailed": "Impossible d’annuler le suivi planifié."
@@ -1059,5 +1097,39 @@
     "feedbackGivenUseful": "Vous avez jugé ceci utile",
     "feedbackGivenNotUseful": "Vous avez jugé ceci pas utile",
     "feedbackSaved": "Merci. Wisp s'en souviendra."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transcription supprimée par la conservation le {{date}}",
+    "removedLabel": "Supprimée par la conservation",
+    "removedHelp": "Les messages, le titre et les détails des outils ont été supprimés selon la durée de conservation des transcriptions. Le coût, le modèle et le nombre de tours sont conservés.",
+    "preview": {
+      "counting": "Comptage des conversations plus anciennes que cette durée…",
+      "unavailable": "Impossible de compter les conversations plus anciennes que cette durée.",
+      "noneEnforced": "Aucune conversation n’est à supprimer avec cette durée.",
+      "nonePending": "Aucune conversation n’est à supprimer avec cette durée. L’application de la conservation est désactivée : rien n’est encore supprimé.",
+      "orgPending_one": "{{display}} conversation est à supprimer avec cette durée. Rien n’est encore supprimé : l’application de la conservation est désactivée, et ses messages seront supprimés une fois l’application activée.",
+      "orgPending_other": "{{display}} conversations sont à supprimer avec cette durée. Rien n’est encore supprimé : l’application de la conservation est désactivée, et leurs messages seront supprimés une fois l’application activée.",
+      "orgEnforced_one": "{{display}} conversation est à supprimer avec cette durée ; ses messages seront supprimés lors de la prochaine exécution nocturne.",
+      "orgEnforced_other": "{{display}} conversations sont à supprimer avec cette durée ; leurs messages seront supprimés lors de la prochaine exécution nocturne.",
+      "partnerPending_one": "{{display}} conversation dans vos organisations est à supprimer avec cette durée. Rien n’est encore supprimé : l’application de la conservation est désactivée, et ses messages seront supprimés une fois l’application activée.",
+      "partnerPending_other": "{{display}} conversations dans vos organisations sont à supprimer avec cette durée. Rien n’est encore supprimé : l’application de la conservation est désactivée, et leurs messages seront supprimés une fois l’application activée.",
+      "partnerEnforced_one": "{{display}} conversation dans vos organisations est à supprimer avec cette durée ; ses messages seront supprimés lors de la prochaine exécution nocturne.",
+      "partnerEnforced_other": "{{display}} conversations dans vos organisations sont à supprimer avec cette durée ; leurs messages seront supprimés lors de la prochaine exécution nocturne."
+    }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Cette réponse a expiré",
+    "disconnected": "La connexion a été interrompue avant la fin de la réponse.",
+    "tryAgain": "Réessayer",
+    "conversationGone": "Cette conversation n’est plus disponible. Démarrez une nouvelle discussion pour continuer."
+  },
+  "aiNotifications": {
+    "responseReady": "Réponse prête",
+    "needsApproval": "Votre approbation est requise",
+    "needsInput": "Votre intervention est requise",
+    "failed": "Échec de la réponse",
+    "enable": "M’avertir quand une réponse est prête",
+    "disable": "Désactiver les notifications de Breeze AI",
+    "blocked": "Les notifications sont bloquées pour ce site. Autorisez-les dans les paramètres du navigateur."
   }
 }

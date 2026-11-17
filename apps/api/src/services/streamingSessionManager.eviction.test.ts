@@ -671,6 +671,23 @@ describe('StreamingSessionManager eviction (#4514)', () => {
       expectExpiredWrite(0, ['aged'], 'org-a');
     });
 
+    it('tells the client why, with a code no "Try again" is offered for (#9428)', async () => {
+      const idled = seed(manager, 'idled-coded', 'org-a', { idleFor: 3 * HOUR, ageFor: 4 * HOUR, state: 'idle' });
+      const aged = seed(manager, 'aged-coded', 'org-a', { idleFor: 1 * MINUTE, ageFor: 25 * HOUR, state: 'idle' });
+      const idledPublish = vi.spyOn(idled.eventBus, 'publish');
+      const agedPublish = vi.spyOn(aged.eventBus, 'publish');
+      internals(manager).evictStaleSessions();
+      await settle();
+      expect(idledPublish).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', code: 'session_expired' }));
+      expect(agedPublish).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', code: 'session_expired' }));
+
+      const victim = seed(manager, 'victim-coded', 'org-a', { idleFor: 5 * MINUTE, state: 'idle' });
+      const victimPublish = vi.spyOn(victim.eventBus, 'publish');
+      internals(manager).evictLeastRecentlyActive();
+      await settle();
+      expect(victimPublish).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', code: 'session_evicted' }));
+    });
+
     it('LRU eviction does NOT expire the row — a capacity drop stays resumable', async () => {
       seed(manager, 'victim', 'org-a', { idleFor: 5 * MINUTE, state: 'idle' });
 

@@ -1444,10 +1444,11 @@ export async function seedDefaultAdmin() {
       name: admin.name,
       passwordHash,
       status: 'active',
-      // Dev/E2E seed only: pre-verify the bootstrap admin's email so dev/E2E
-      // flows that require a verified recipient (e.g. sending-domain test
-      // sends) aren't blocked on a manual verification step for a seeded
-      // account. Production signup paths are untouched.
+      // Pre-verify the bootstrap admin's email (dev, E2E and the production
+      // first-boot seed alike): the operator chose this address in the
+      // environment, so it needs no e-mailed proof. Flows that require a
+      // verified recipient (sending-domain test sends) and the
+      // BREEZE_PLATFORM_ADMINS bootstrap rely on it. Signup paths are untouched.
       emailVerifiedAt: new Date(),
       preferences: { bootstrapSetupRequired: true },
     })

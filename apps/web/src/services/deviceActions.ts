@@ -125,7 +125,9 @@ export type WakeFailureCode =
   | 'RELAY_OVERRIDE_INVALID'
   | 'WS_SEND_FAILED'
   | 'COMMAND_CANCELLED'
-  | 'DEVICE_PENDING_ASSIGNMENT';
+  | 'DEVICE_PENDING_ASSIGNMENT'
+  | 'WAKE_NOT_READY'
+  | 'WAKE_LOOKUP_FAILED';
 
 export interface WakeResponse {
   id: string;
@@ -164,6 +166,10 @@ export function wakeFriendlyErrorMessage(code: string | undefined): string | nul
       return 'Relay agent dropped connection during dispatch. Try again.';
     case 'TARGET_NOT_FOUND':
       return 'Device not found.';
+    case 'WAKE_NOT_READY':
+      return 'This device’s Wake-on-LAN policy only shows wake for devices that are ready. Check the policy’s Wake-on-LAN status.';
+    case 'WAKE_LOOKUP_FAILED':
+      return 'Could not check this device’s Wake-on-LAN policy. Try again.';
     default:
       return null;
   }
@@ -332,6 +338,10 @@ function bulkWakeFailureLabel(failure: BulkWakeFailed): string {
       return i18n.t('devices:devicesPage.wakeSkipReasons.removed');
     case 'RELAY_OVERRIDE_INVALID':
       return i18n.t('devices:devicesPage.wakeSkipReasons.invalidRelay');
+    case 'WAKE_NOT_READY':
+      return i18n.t('devices:devicesPage.wakeSkipReasons.policyNotReady');
+    case 'WAKE_LOOKUP_FAILED':
+      return i18n.t('devices:devicesPage.wakeSkipReasons.policyLookupFailed');
     default:
       return failure.message;
   }

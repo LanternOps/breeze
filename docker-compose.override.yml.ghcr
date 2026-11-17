@@ -33,7 +33,7 @@ services:
 
   # Disable local coturn — using external DO droplet
   coturn:
-    image: alpine:3.19
+    image: alpine:3.20
     entrypoint: ["true"]
     restart: "no"
     network_mode: bridge

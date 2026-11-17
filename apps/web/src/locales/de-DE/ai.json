@@ -20,6 +20,30 @@
     "urgentWarning": "Weniger als 30 Sekunden verbleiben. Diese Anfrage wird automatisch abgelehnt.",
     "progressLabel": "Verbleibende Zeit, bevor dies automatisch abgelehnt wird",
     "showParameters": "Parameter anzeigen",
+    "ticketComment": {
+      "publicTo": "Für den Kunden sichtbare Antwort an {{recipient}}",
+      "publicNoRecipient": "Für den Kunden sichtbare Antwort (per E-Mail an den Anfragenden)",
+      "publicNoEmail": "Für den Kunden sichtbare Antwort (keine E-Mail-Adresse des Anfragenden hinterlegt, daher wird keine E-Mail gesendet)",
+      "internal": "Interne Notiz (für den Kunden nicht sichtbar)"
+    },
+    "memory": {
+      "heading": "Wisp merkt sich",
+      "subjectKey": "Schlüssel: {{key}} (ersetzt eine frühere Erinnerung mit diesem Schlüssel)",
+      "moreInParameters": "Weitere Felder stehen nur unter „Parameter anzeigen“.",
+      "scope": {
+        "user": "Nur Sie",
+        "org": "Dieser Kunde",
+        "partner": "Ihr gesamter MSP"
+      },
+      "types": {
+        "preference": "Präferenz",
+        "standing_instruction": "Dauerhafte Anweisung",
+        "fact": "Fakt",
+        "decision": "Entscheidung",
+        "concern_outcome": "Ergebnis eines Anliegens",
+        "work_summary": "Arbeitszusammenfassung"
+      }
+    },
     "approve": "Genehmigen",
     "reject": "Ablehnen",
     "approveVerify": "Bestätigen & genehmigen",
@@ -61,6 +85,7 @@
   "aiChatMessages": {
     "title": "Breeze AI",
     "description": "Fragen zu Geräten, Warnmeldungen und Metriken stellen oder Probleme beheben.",
+    "stopped": "Angehalten",
     "unknownTool": "Unbekanntes Tool",
     "toolResult": "Tool-Ergebnis",
     "unattendedRelease": "Vom KI-Skriptprüfer geprüft und ohne Genehmigungskarte freigegeben.",
@@ -313,8 +338,10 @@
     "noLimit": "Kein Limit",
     "messagesPerMinute": "Nachrichten/Minute je Benutzer",
     "messagesPerHour": "Nachrichten/Stunde je Organisation",
-    "retentionDays": "Aufbewahrung von Transkripten (Tage)",
+    "retentionDays": "Aufbewahrung von Client-KI-Transkripten (Tage)",
     "keepForever": "Unbegrenzt aufbewahren",
+    "retentionScope": "Gilt für Client-KI-Unterhaltungen (AI for Office). Leer bewahrt sie unbegrenzt auf. Techniker-KI-Unterhaltungen haben einen eigenen Zeitraum.",
+    "retentionTechnicianLink": "Aufbewahrungseinstellungen für Techniker-KI",
     "brandingDescription": "Wird in der Fußzeile des Add-Ins angezeigt: „Verwaltet von Ihrem IT-Dienstleister“ – die White-Label-Option (Spezifikation §11).",
     "displayName": "Anzeigename",
     "mspNamePlaceholder": "Name Ihres MSP",
@@ -594,7 +621,12 @@
       "waitingForApprover": "Wartet auf einen Genehmiger"
     },
     "continue": "Fortsetzen",
-    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen."
+    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen.",
+    "chainStep": "Schritt {{step}} dieser Untersuchung",
+    "goal": "Ziel: {{goal}}",
+    "findings": "Ergebnisse: {{count}}",
+    "findingsHigh": "({{count}} hoch)",
+    "files": "Dateien:"
   },
   "aiModelPicker": {
     "chooseModel": "Modell auswählen",
@@ -920,6 +952,12 @@
       "runNow": "Jetzt ausführen",
       "runNowMessage": "Führe die Nachkontrolle jetzt durch",
       "scheduledAt": "Wisp prüft um {{time}} erneut",
+      "waitingFor": {
+        "deviceOnline": "Wartet, bis das Gerät online ist · gibt um {{time}} auf",
+        "scriptFinished": "Wartet, bis das Skript fertig ist · gibt um {{time}} auf",
+        "commandFinished": "Wartet, bis der Befehl fertig ist · gibt um {{time}} auf",
+        "runSettled": "Wartet, bis der Lauf fertig ist · gibt um {{time}} auf"
+      },
       "cancel": "Nachkontrolle abbrechen",
       "cancelled": "Nachkontrolle abgebrochen",
       "cancelFailed": "Die Nachkontrolle konnte nicht abgebrochen werden."
@@ -1059,5 +1097,39 @@
     "feedbackGivenUseful": "Sie haben dies als nützlich markiert",
     "feedbackGivenNotUseful": "Sie haben dies als nicht nützlich markiert",
     "feedbackSaved": "Danke. Wisp merkt sich das."
+  },
+  "transcriptRetention": {
+    "removedOn": "Transkript am {{date}} durch Aufbewahrungsrichtlinie entfernt",
+    "removedLabel": "Durch Aufbewahrung entfernt",
+    "removedHelp": "Nachrichten, Titel und Tool-Details wurden gemäß dem Aufbewahrungszeitraum für Transkripte entfernt. Kosten, Modell und Anzahl der Runden bleiben erhalten.",
+    "preview": {
+      "counting": "Unterhaltungen, die älter als dieser Zeitraum sind, werden gezählt…",
+      "unavailable": "Die Unterhaltungen, die älter als dieser Zeitraum sind, konnten nicht gezählt werden.",
+      "noneEnforced": "Unter diesem Zeitraum steht keine Unterhaltung zur Entfernung an.",
+      "nonePending": "Unter diesem Zeitraum steht keine Unterhaltung zur Entfernung an. Die Durchsetzung der Aufbewahrung ist aus, daher wird noch nichts entfernt.",
+      "orgPending_one": "{{display}} Unterhaltung steht unter diesem Zeitraum zur Entfernung an. Noch wird nichts entfernt: Die Durchsetzung der Aufbewahrung ist aus; ihre Nachrichten werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "orgPending_other": "{{display}} Unterhaltungen stehen unter diesem Zeitraum zur Entfernung an. Noch wird nichts entfernt: Die Durchsetzung der Aufbewahrung ist aus; ihre Nachrichten werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "orgEnforced_one": "{{display}} Unterhaltung steht unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
+      "orgEnforced_other": "{{display}} Unterhaltungen stehen unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
+      "partnerPending_one": "{{display}} Unterhaltung in Ihren Organisationen steht unter diesem Zeitraum zur Entfernung an. Noch wird nichts entfernt: Die Durchsetzung der Aufbewahrung ist aus; ihre Nachrichten werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "partnerPending_other": "{{display}} Unterhaltungen in Ihren Organisationen stehen unter diesem Zeitraum zur Entfernung an. Noch wird nichts entfernt: Die Durchsetzung der Aufbewahrung ist aus; ihre Nachrichten werden entfernt, sobald die Durchsetzung aktiviert ist.",
+      "partnerEnforced_one": "{{display}} Unterhaltung in Ihren Organisationen steht unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
+      "partnerEnforced_other": "{{display}} Unterhaltungen in Ihren Organisationen stehen unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt."
+    }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Diese Antwort hat das Zeitlimit überschritten",
+    "disconnected": "Die Verbindung wurde unterbrochen, bevor die Antwort abgeschlossen war.",
+    "tryAgain": "Erneut versuchen",
+    "conversationGone": "Diese Unterhaltung ist nicht mehr verfügbar. Starten Sie einen neuen Chat, um fortzufahren."
+  },
+  "aiNotifications": {
+    "responseReady": "Antwort bereit",
+    "needsApproval": "Benötigt Ihre Genehmigung",
+    "needsInput": "Benötigt Ihre Eingabe",
+    "failed": "Antwort fehlgeschlagen",
+    "enable": "Benachrichtigen, wenn eine Antwort bereit ist",
+    "disable": "Breeze AI-Benachrichtigungen ausschalten",
+    "blocked": "Benachrichtigungen sind für diese Website blockiert. Erlauben Sie sie in den Browsereinstellungen."
   }
 }

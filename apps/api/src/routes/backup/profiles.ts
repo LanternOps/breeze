@@ -23,7 +23,7 @@ import { requireMfa, requirePermission } from '../../middleware/auth';
 import type { AuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   canManagePartnerWidePolicies,
@@ -296,7 +296,7 @@ profilesRoutes.delete(
     } catch (err) {
       // A policy can link this profile between the check above and here; the
       // RESTRICT FK then fires. Re-read and return the same friendly 409.
-      if (pgErrorCode(err) === '23503') {
+      if (isPgForeignKeyViolationCode(pgErrorCode(err))) {
         const stillReferencing = await referencingPolicies(id);
         return c.json(
           {

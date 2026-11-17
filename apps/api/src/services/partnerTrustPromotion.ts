@@ -1,5 +1,6 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 
+import { activeIpClassifier } from '../config/env';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, partnerAbuseSignals, partners } from '../db/schema';
@@ -7,6 +8,8 @@ import type { IpClass, PartnerTrustState } from '../db/schema/orgs';
 import { loadSignalConfig } from './abuseSignals/config';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { createAuditLogAsync } from './auditService';
+import { isOfflineBaselineClear, type IpClassifier } from './ipClassifyOfflineData';
+import { recordPromotionBlockers } from './partnerTrustBlockers';
 import { getBreezeBillingClient, type CloseOpenCheckoutsResult } from './breezeBillingClient';
 import { sendOpsAlert } from './opsAlerts';
 import { readTrust } from './partnerTrust.repo';
@@ -84,6 +87,16 @@ export interface PromotionFacts {
   emailVerified: boolean;
   settledCard: { chargeId: string; settledAt: Date } | null;
   signupIpClass: IpClass;
+  /**
+   * Which classifier produced signupIpClass (partners.signup_ip_class_source):
+   * a keyed provider name, 'offline', 'offline-partial', 'none', or null for a
+   * row classified before the source was recorded.
+   */
+  signupIpClassSource: string | null;
+  /** When signupIpClass was last written; an offline clear only counts while recent. */
+  signupIpClassifiedAt: Date | null;
+  /** The classifier in effect when the facts were gathered. */
+  ipClassifier: IpClassifier;
   deviceIpClasses: IpClass[];
   unresolvedAlerts: number;
   billingHold: boolean;
@@ -426,8 +439,18 @@ export function promotionDecision(
   const blockers: PromotionBlocker[] = [];
   if (!facts.settledCard) blockers.push('card_not_settled');
   else if (now.getTime() - facts.settledCard.settledAt.getTime() < DAY_MS) blockers.push('settled_too_recent');
-  if (facts.signupIpClass === 'unknown') blockers.push('signup_ip_unclassified');
-  else if (['hosting', 'vpn', 'tor'].includes(facts.signupIpClass)) blockers.push('signup_ip_hosting');
+  // `unknown` blocks unless it is the offline baseline's "checked, nothing
+  // found" from fresh data, checked within OFFLINE_CLEAR_MAX_AGE_MS, AND no
+  // keyed provider is configured (#11698). Never classified, a partial or
+  // stale-data check, an expired clear, a private address, and a keyed
+  // provider's own `unknown` all still block.
+  if (facts.signupIpClass === 'unknown') {
+    if (!isOfflineBaselineClear(
+      facts.signupIpClass, facts.signupIpClassSource, facts.ipClassifier, facts.signupIpClassifiedAt, now,
+    )) {
+      blockers.push('signup_ip_unclassified');
+    }
+  } else if (['hosting', 'vpn', 'tor'].includes(facts.signupIpClass)) blockers.push('signup_ip_hosting');
   if (facts.deviceIpClasses.includes('tor')) blockers.push('device_on_tor');
   if (facts.unresolvedAlerts > 0) blockers.push('unresolved_alert');
   if (facts.billingHold) blockers.push(facts.billingHoldUnknown ? 'billing_hold_unknown' : 'billing_hold');
@@ -445,6 +468,8 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
         createdAt: partners.createdAt,
         emailVerifiedAt: partners.emailVerifiedAt,
         signupIpClass: partners.signupIpClass,
+        signupIpClassSource: partners.signupIpClassSource,
+        signupIpClassifiedAt: partners.signupIpClassifiedAt,
       }).from(partners).where(eq(partners.id, partnerId)).limit(1),
       db.select({ ipClass: devices.enrollmentIpClass }).from(devices)
         .innerJoin(organizations, eq(devices.orgId, organizations.id))
@@ -460,6 +485,9 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
       createdAt: partner.createdAt,
       emailVerified: partner.emailVerifiedAt !== null,
       signupIpClass: partner.signupIpClass,
+      signupIpClassSource: partner.signupIpClassSource ?? null,
+      signupIpClassifiedAt: partner.signupIpClassifiedAt ?? null,
+      ipClassifier: activeIpClassifier(),
       deviceIpClasses: deviceRows.map((row) => row.ipClass),
       unresolvedAlerts: alertRow?.count ?? 0,
     };
@@ -620,7 +648,15 @@ export async function tryAutoPromote(partnerId: string): Promise<boolean> {
   if (await restrictOnHardDeny(partnerId)) return false;
   const facts = await gatherPromotionFacts(partnerId);
   const decision = promotionDecision(facts, new Date());
-  if (!decision.promote) return false;
+  if (!decision.promote) {
+    try {
+      await recordPromotionBlockers(partnerId, decision.blockers);
+    } catch (error) {
+      // Display-only (the admin trust queue); never affects the decision.
+      console.warn(`[partnerTrustPromotion] could not record promotion blockers for partner ${partnerId}`, error);
+    }
+    return false;
+  }
   // setTrustState's writeTrust performs the actual UPDATE under
   // `AND trust_state = 'probation'` (expectedFrom), so this is an atomic
   // compare-and-swap: an admin restriction (or a second, concurrent

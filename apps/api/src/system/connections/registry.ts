@@ -530,6 +530,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'SSO_ENCRYPTION_KEY' },
       { name: 'SESSION_SECRET' },
       { name: 'PARTNER_API_CURSOR_SIGNING_KEY' },
+      { name: 'NETWORK_ISOLATION_TOKEN_SIGNING_KEY' },
       { name: 'ENROLLMENT_KEY_PEPPER' },
       { name: 'MFA_RECOVERY_CODE_PEPPER' },
     ],
@@ -581,6 +582,17 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'PORTAL_ENTRA_CLIENT_ID', secret: false, required: true },
       { name: 'PORTAL_ENTRA_CLIENT_SECRET', required: true },
       { name: 'PORTAL_ENTRA_CALLBACK_BASE_URL' },
+    ],
+  }),
+  defineEntry({
+    id: 'portal-google',
+    group: 'identity-sso',
+    label: 'Customer portal: Sign in with Google (OAuth client)',
+    docsUrl: '/deploy/environment/',
+    vars: [
+      { name: 'PORTAL_GOOGLE_CLIENT_ID', secret: false, required: true },
+      { name: 'PORTAL_GOOGLE_CLIENT_SECRET', required: true },
+      { name: 'PORTAL_GOOGLE_CALLBACK_BASE_URL' },
     ],
   }),
   defineEntry({
@@ -761,6 +773,11 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     vars: [
       { name: 'IP_CLASSIFY_PROVIDER', secret: false, required: true },
       { name: 'IP_CLASSIFY_API_KEY' },
+      // Offline baseline sources (#11698); unset uses the public defaults.
+      // Left secret: a private mirror URL can carry credentials.
+      { name: 'IP_CLASSIFY_TOR_LIST_URL' },
+      { name: 'IP_CLASSIFY_HOSTING_ASN_URL' },
+      { name: 'IP_CLASSIFY_ASN_DB_URL' },
     ],
   }),
   defineEntry({

@@ -68,6 +68,7 @@ import {
   reconcileCheckInTriggers,
   _resetCheckInTriggerSweepForTests,
 } from '../../services/wisp/checkIns';
+import { CHECK_IN_REPLY_LINE } from '../../services/wisp/checkInPost';
 import { loadTriggerSubject } from '../../services/wisp/checkInTriggers';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 
@@ -118,7 +119,9 @@ async function seed() {
   const user = await createUser({ partnerId: partner.id, email: `wisp-trigger-${randomUUID()}@wisp.test` });
   const { grantId, revisionId } = await seedGrant(partner.id, user.id, [org.id]);
   const thread = await getOrCreateThread(grantId);
-  const device = await createDevice({ orgId: org.id, siteId: site.id });
+  // #11675: the fired post names the device by its hostname.
+  const hostname = `WS-${randomUUID().slice(0, 8)}`;
+  const device = { ...(await createDevice({ orgId: org.id, siteId: site.id, hostname })), hostname };
   const ceiling = {
     grantId, revisionId, partnerId: partner.id, grantorUserId: user.id, scopeOrgId: null, partnerWide: false,
     orgIds: new Set([org.id]), siteIds: null,
@@ -238,7 +241,15 @@ describe('scheduling an event check-in', () => {
     expect(h.enqueueCheckIn).toHaveBeenCalledWith(row.id, DAY);
     expect(row).toMatchObject({ status: 'fired', fireReason: 'event' });
     const [post] = await postsFor(fx.thread.id);
-    expect(post).toMatchObject({ kind: 'check_in', body: INSTRUCTION, dedupeKey: `wisp.check_in:${row.id}` });
+    expect(post).toMatchObject({
+      kind: 'check_in',
+      title: `Back online: ${fx.device.hostname}`,
+      body: `${fx.device.hostname} is back online. ${CHECK_IN_REPLY_LINE}`,
+      dedupeKey: `wisp.check_in:${row.id}`,
+    });
+    // #11675: the instruction is Wisp's note to itself; it is never posted.
+    expect(post!.body).not.toContain(INSTRUCTION);
+    expect(post!.title).not.toMatch(/^check-in due/i);
     // Fired on the event path: the deadline job is removed.
     expect(h.removeCheckInJob).toHaveBeenCalledWith(row.id);
   });
@@ -269,7 +280,10 @@ describe('the event fast path (handleCheckInTriggerEvent)', () => {
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', fireReason: 'event' });
     expect(h.removeCheckInJob).toHaveBeenCalledWith(row.id);
     expect(notifyUser).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(notifyUser).mock.calls[0]![0]).toMatchObject({ kind: 'check_in', body: INSTRUCTION, checkIn: { id: row.id, orgId: fx.org.id } });
+    expect(vi.mocked(notifyUser).mock.calls[0]![0]).toMatchObject({
+      kind: 'check_in', title: `Back online: ${fx.device.hostname}`, body: `${fx.device.hostname} is back online. ${CHECK_IN_REPLY_LINE}`,
+      checkIn: { id: row.id, orgId: fx.org.id },
+    });
   });
 
   runDb('device.online for ANOTHER device fires nothing and resolves no ceiling', async () => {
@@ -390,7 +404,7 @@ describe('the tick reconcile (reconcileCheckInTriggers)', () => {
 });
 
 describe('the deadline (the delayed job at due_at)', () => {
-  runDb('a pending predicate posts "Did not happen by HH:MM UTC: <state line>. <instruction>" with fire_reason deadline', async () => {
+  runDb('a pending predicate posts "Did not happen by HH:MM UTC: <state line>." (never the instruction) with fire_reason deadline', async () => {
     const fx = await seed();
     const now = new Date();
     const row = await schedule(fx, now, { kind: 'device_online', subjectId: fx.device.id }, { deadlineMs: 30 * MIN });
@@ -398,7 +412,9 @@ describe('the deadline (the delayed job at due_at)', () => {
     expect(await fireCheckIn(row.id, new Date(dueAt.getTime() + 1000))).toBe('fired');
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', fireReason: 'deadline' });
     const [post] = await postsFor(fx.thread.id);
-    expect(post!.body).toBe(`Did not happen by ${dueAt.toISOString().slice(11, 16)} UTC: the device is still offline. ${INSTRUCTION}`);
+    const clock = `${dueAt.toISOString().slice(11, 16)} UTC`;
+    expect(post!.title).toBe(`Still offline at ${clock}: ${fx.device.hostname}`);
+    expect(post!.body).toBe(`Did not happen by ${clock}: the device is still offline. ${CHECK_IN_REPLY_LINE}`);
     expect(h.removeCheckInJob).not.toHaveBeenCalled();
   });
 
@@ -409,7 +425,7 @@ describe('the deadline (the delayed job at due_at)', () => {
     await setDevice(fx.device.id, { status: 'online' });
     expect(await fireCheckIn(row.id, new Date(row.dueAt.getTime() + 1000))).toBe('fired');
     expect(await rowOf(row.id)).toMatchObject({ fireReason: 'event' });
-    expect((await postsFor(fx.thread.id))[0]!.body).toBe(INSTRUCTION);
+    expect((await postsFor(fx.thread.id))[0]!.body).toBe(`${fx.device.hostname} is back online. ${CHECK_IN_REPLY_LINE}`);
   });
 
   runDb('a deadline job that runs before due_at (clock skew) fires nothing; the orphan reconcile retries it', async () => {
@@ -498,7 +514,7 @@ describe('the fire claim and the event / deadline race', () => {
     });
     expect(await fireCheckIn(row.id, at, { path: 'event' })).toBe('skipped');
     expect(jobOutcome).toBe('fired');
-    for (const call of vi.mocked(notifyUser).mock.calls) expect(call[0].body).toBe(INSTRUCTION);
+    for (const call of vi.mocked(notifyUser).mock.calls) expect(call[0].body).toBe(`${fx.device.hostname} is back online. ${CHECK_IN_REPLY_LINE}`);
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', fireReason: 'event' });
     expect(await postsFor(fx.thread.id)).toHaveLength(1);
     expect(await notificationsFor(fx.user.id)).toHaveLength(1);
@@ -511,7 +527,7 @@ describe('the fire claim and the event / deadline race', () => {
     expect(await claimCheckInFire(row.id, 'event')).toBe(true);
     expect(await reconcileCheckInTriggers(new Date())).toEqual({ fired: 1, cancelled: 0 });
     expect(await rowOf(row.id)).toMatchObject({ status: 'fired', fireReason: 'event' });
-    expect((await postsFor(fx.thread.id))[0]!.body).toBe(INSTRUCTION);
+    expect((await postsFor(fx.thread.id))[0]!.body).toBe(`${fx.device.hostname} is back online. ${CHECK_IN_REPLY_LINE}`);
 
     // A deadline claim is the job path's: the tick leaves it to the orphan reconcile.
     const row2 = await schedule(fx, new Date(), { kind: 'device_online', subjectId: fx.device.id }, { deadlineMs: 30 * MIN });

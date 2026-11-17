@@ -17,8 +17,8 @@ type SecurityProvider = (typeof securityStatus.$inferSelect)['provider'];
  * Huntress) takes precedence over status-row presence and native AV state. An
  * absent `security_status` row, or a row whose `realTimeProtection` is null
  * (the agent's AV collector failed, #8043/#8252), is 'unknown' — the caller
- * decides how to bucket that (the posture report folds it into "unprotected"
- * to preserve its existing public contract). Deliberately does NOT consume `updatedAt`, `now`,
+ * decides how to bucket that (the posture report counts it as not assessed,
+ * never unprotected — #12044). Deliberately does NOT consume `updatedAt`, `now`,
  * or `maxSecurityStatusAgeDays`: this rule has no freshness gate.
  */
 export function classifyDeviceProtection(input: {

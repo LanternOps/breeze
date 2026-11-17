@@ -58,3 +58,17 @@ it('extends through runAction with the shared TTL bounds', async () => {
   await waitFor(() => expect(runAction).toHaveBeenCalledTimes(1));
   expect(fetchWithAuth).toHaveBeenCalledWith('/devices/device-1/network-isolation/episode-1/extend', expect.objectContaining({ method: 'POST', body: JSON.stringify({ ttlHours: 720 }) }));
 });
+
+it('notes an unsupported dead-man release in start mode only when flagged', () => {
+  const { unmount } = render(<IsolateDialog deviceId="device-1" deadManUnsupported onClose={vi.fn()} onSuccess={vi.fn()} />);
+  const note = screen.getByTestId('isolation-dead-man-unsupported');
+  expect(note).toHaveTextContent(/does not support it/i);
+  expect(note).not.toHaveAttribute('role', 'alert');
+  unmount();
+  render(<IsolateDialog deviceId="device-1" deadManUnsupported={false} onClose={vi.fn()} onSuccess={vi.fn()} />);
+  expect(screen.queryByTestId('isolation-dead-man-unsupported')).not.toBeInTheDocument();
+});
+it('omits the dead-man note when the flag is missing', () => {
+  render(<IsolateDialog deviceId="device-1" onClose={vi.fn()} onSuccess={vi.fn()} />);
+  expect(screen.queryByTestId('isolation-dead-man-unsupported')).not.toBeInTheDocument();
+});

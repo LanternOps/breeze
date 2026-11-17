@@ -91,7 +91,7 @@ services:
       - breeze
 
   loki:
-    image: ${LOKI_IMAGE_REF:-grafana/loki:3.6.20@sha256:be040ec94865dabe4821ce1c0f109452bd4b5acb566ae376672696eb43caedb7}
+    image: ${LOKI_IMAGE_REF:-grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28}
     container_name: breeze-loki
     restart: unless-stopped
     command: -config.file=/etc/loki/config.yml

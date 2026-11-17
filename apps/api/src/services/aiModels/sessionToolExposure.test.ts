@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ToolProfileUnderpoweredError, allowedToolsUnder, bareToolName, finalizeSessionToolExposure, type SessionToolExposureInput } from './sessionToolExposure';
+import { ContextWindowTooSmallError, ToolProfileUnderpoweredError, allowedToolsUnder, bareToolName, chatPromptExposure, finalizeSessionToolExposure, toolExposureRefusal, type SessionToolExposureInput } from './sessionToolExposure';
 import { FULL_IDENTITY_FINGERPRINT, type ToolProfileFacts } from './toolExposure';
 import { CHAT_MINIMAL_TOOLS } from './toolProfiles';
+import { resolvedLiveQueryKey } from './sessionToolExposure';
+import { liveQueryKey, turnBindingFrom } from './turnBinding';
+import { makeResolvedModel } from './__fixtures__/resolvedModel';
 
 const REGISTRY = [...CHAT_MINIMAL_TOOLS, 'set_device_context', 'execute_command', 'manage_alerts', 'get_cis_device_report'];
 const facts = (over: Partial<ToolProfileFacts> = {}): ToolProfileFacts => ({
@@ -99,5 +102,116 @@ describe('finalizeSessionToolExposure (#11394)', () => {
       expect(err).toMatchObject({ code: 'tool_profile_underpowered', status: 409, surface: 'script_builder', missing: ['execute_script_on_device'] });
       expect((err as Error).message).toContain('script builder');
     }
+  });
+});
+
+describe('too_small: a window that cannot hold even minimal refuses at session start (#11396)', () => {
+  it('chat with a 4,096-token window throws ContextWindowTooSmallError naming the window and the surface', () => {
+    const run = () => finalizeSessionToolExposure(input({ facts: facts({ toolProfile: 'auto', effectiveWindow: 4_096, transport: 'gateway' }) }));
+    expect(run).toThrow(ContextWindowTooSmallError);
+    try { run(); } catch (err) {
+      expect(err).toMatchObject({ code: 'context_window_too_small', status: 409, surface: 'chat', contextWindow: 4_096 });
+      expect((err as Error).message).toBe('This model\'s 4,096-token window is too small for Breeze chat tools.');
+    }
+  });
+
+  it('control: the same chat at 8,192 resolves minimal and does not throw', () => {
+    const r = finalizeSessionToolExposure(input({ facts: facts({ toolProfile: 'auto', effectiveWindow: 8_192, transport: 'gateway' }) }));
+    expect(r.exposure).toMatchObject({ profile: 'minimal', tooSmall: false });
+  });
+
+  it('the helper names its own surface', () => {
+    const run = () => finalizeSessionToolExposure(input({
+      surface: 'helper', allowedTools: ['mcp__breeze__get_device_details'], extraTools: [],
+      facts: facts({ toolProfile: 'auto', effectiveWindow: 4_096, transport: 'gateway' }),
+    }));
+    expect(run).toThrow(/too small for Breeze helper tools/);
+  });
+
+  it('toolExposureRefusal maps both refusals to a 409 body and ignores anything else', () => {
+    expect(toolExposureRefusal(new ContextWindowTooSmallError('chat', 4_096)))
+      .toEqual({ error: 'This model\'s 4,096-token window is too small for Breeze chat tools.', code: 'context_window_too_small' });
+    expect(toolExposureRefusal(new ToolProfileUnderpoweredError('script_builder', ['x'])))
+      .toMatchObject({ code: 'tool_profile_underpowered' });
+    expect(toolExposureRefusal(new Error('boom'))).toBeNull();
+    expect(toolExposureRefusal({ code: 'context_window_too_small' })).toBeNull();
+  });
+});
+
+describe('a STALE observed floor never refuses up front (#11393)', () => {
+  // Every surface that answers `too_small` as a 409 at session start. A
+  // stale floor (an observation past the memo TTL, nothing listed) cannot be
+  // disproven by a refusal that never reaches the endpoint, so it narrows to
+  // `minimal` and lets the endpoint serve or reject the request.
+  // Each surface starts on its lowest serviceable profile: script builder's
+  // `minimal` lacks execute_script_on_device, so it starts on `standard`.
+  const surfaces: Array<[string, Partial<SessionToolExposureInput>, string]> = [
+    ['chat', {}, 'minimal'],
+    ['helper', { surface: 'helper', allowedTools: ['mcp__breeze__get_device_details'], extraTools: [] }, 'minimal'],
+    ['script_builder', {
+      surface: 'script_builder', breezeServer: false, extraTools: [],
+      allowedTools: ['mcp__script_builder__apply_script_code', 'mcp__script_builder__execute_script_on_device'],
+    }, 'standard'],
+  ];
+
+  it.each(surfaces)('%s: a stale 4,096-token floor starts the session (on %s), no refusal', (_label, over, profile) => {
+    const r = finalizeSessionToolExposure(input({ ...over, facts: facts({ toolProfile: 'auto', effectiveWindow: 4_096, windowStale: true }) }));
+    expect(r.exposure).toMatchObject({ profile, tooSmall: false });
+  });
+
+  it('script_builder: a stale floor in minimal\'s range is not refused as underpowered either; a fresh one is (control)', () => {
+    const sb = surfaces[2]![1];
+    const r = finalizeSessionToolExposure(input({ ...sb, facts: facts({ toolProfile: 'auto', effectiveWindow: 8_192, windowStale: true }) }));
+    expect(r.exposure.profile).toBe('standard');
+    expect(r.allowedTools).toContain('mcp__script_builder__execute_script_on_device');
+    expect(() => finalizeSessionToolExposure(input({ ...sb, facts: facts({ toolProfile: 'auto', effectiveWindow: 8_192 }) })))
+      .toThrow(ToolProfileUnderpoweredError);
+  });
+
+  it.each(surfaces)('%s: a FRESH 4,096-token observation still refuses context_window_too_small (control)', (label, over) => {
+    const run = () => finalizeSessionToolExposure(input({ ...over, facts: facts({ toolProfile: 'auto', effectiveWindow: 4_096 }) }));
+    expect(run).toThrow(ContextWindowTooSmallError);
+    try { run(); } catch (err) {
+      expect(err).toMatchObject({ code: 'context_window_too_small', status: 409, surface: label, contextWindow: 4_096 });
+    }
+  });
+
+  it('the stale and fresh exposures key differently, so a fresh rejection rotates a warm stale-floor session', () => {
+    const stale = facts({ toolProfile: 'auto', effectiveWindow: 4_096, windowStale: true });
+    const fresh = facts({ toolProfile: 'auto', effectiveWindow: 4_096 });
+    const key = (f: ToolProfileFacts) => resolvedLiveQueryKey(makeResolvedModel('openai_compatible', { surface: 'chat', toolProfileFacts: f }));
+    expect(key(stale)).not.toBe(key(fresh));
+  });
+});
+
+describe('chatPromptExposure (#11395)', () => {
+  const deps = { registryNames: () => REGISTRY, domainOf: () => undefined };
+  it.each([
+    ['identity', facts()],
+    ['minimal', facts({ toolProfile: 'minimal' })],
+    ['standard', facts({ toolProfile: 'standard' })],
+    ['custom', facts({ toolProfile: 'custom', toolAllowlist: { domains: ['integrations'], tools: ['query_devices', 'execute_command'] } })],
+    ['minimal on anthropic', facts({ toolProfile: 'minimal', transport: 'anthropic' })],
+  ] as const)('%s: names, promptMode and fingerprint-free fields equal the session exposure the query registers', (_label, f) => {
+    const prompt = chatPromptExposure(f, deps);
+    const session = finalizeSessionToolExposure(input({ facts: f })).exposure;
+    expect(prompt.names).toEqual(session.names);
+    expect(prompt.promptMode).toBe(session.promptMode);
+    expect(prompt.profile).toBe(session.profile);
+  });
+
+  it('never reads the registry for the identity exposure', () => {
+    const registryNames = () => { throw new Error('read'); };
+    expect(chatPromptExposure(facts(), { registryNames, domainOf: () => undefined }).names).toBeNull();
+  });
+});
+
+describe('resolvedLiveQueryKey (#11395)', () => {
+  it('the identity exposure keeps the one-argument key; a constrained profile appends its segment', () => {
+    const plain = makeResolvedModel('platform');
+    expect(resolvedLiveQueryKey(plain)).toBe(liveQueryKey(turnBindingFrom(plain)));
+    const minimal = makeResolvedModel('platform', { toolProfileFacts: facts({ toolProfile: 'minimal' }) });
+    expect(resolvedLiveQueryKey(minimal)).not.toBe(liveQueryKey(turnBindingFrom(minimal)));
+    expect(resolvedLiveQueryKey(minimal).startsWith(`${liveQueryKey(turnBindingFrom(minimal))}|tx:`)).toBe(true);
   });
 });

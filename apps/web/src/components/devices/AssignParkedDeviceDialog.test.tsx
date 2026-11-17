@@ -27,6 +27,8 @@ vi.mock('../../lib/mfaStepUp', () => ({
   StepUpMintError: class StepUpMintError extends Error {},
 }));
 vi.mock('../shared/Toast', () => ({ showToast: toastMock }));
+// #8318: the reattach gate reads the auth store, which this file mocks away.
+vi.mock('../../lib/reattachCapability', () => ({ useCanReattachDevice: () => false }));
 
 import AssignParkedDeviceDialog, { type ParkedDeviceSummary } from './AssignParkedDeviceDialog';
 

@@ -104,12 +104,11 @@ jobs:
 
       - name: Install e2e-tests dependencies
         working-directory: e2e-tests
-        run: pnpm install --ignore-workspace
+        run: npm ci
 
       - name: Install Chromium
         uses: ./.github/actions/install-chromium
         with:
-          run-prefix: pnpm exec
           working-directory: e2e-tests
 
       - name: Bring up the dev-mode stack

@@ -16,6 +16,9 @@
  *     [--tenant-tools none|a|b]      chat only: synthetic BYO MCP tools via buildTenantSdkTools (default none)
  *     [--tenant-count N]             tools in that set (default: the set's 12 named tools)
  *     [--out apps/api/tool-capture.jsonl]
+ *     [--profile minimal|standard|full]  #11395: capture as a gateway offering on that tool profile
+ *                                    (exposure, compact prompt and descriptions, no tool search);
+ *                                    rows carry advertisedPrefixTokens (what PROFILE_PREFIX_TOKENS pins)
  */
 import { appendFile } from 'node:fs/promises';
 import { closeDb } from '../../../db';
@@ -24,6 +27,7 @@ import { buildClaudeSdkChildEnv } from '../../streamingSessionManager';
 import { platformLlmConfig } from '../llmConfigResolver';
 import { startCaptureProxy, type CaptureProxy } from '../toolCapture/captureProxy';
 import { getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
+import { advertisedRequest, type MeasuredProfile } from '../toolCapture/advertisedPrefix';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
 import { CAPTURE_TENANT_SET_IDS, MAX_CAPTURE_TENANT_TOOLS, captureTenantDescriptors, type CaptureTenantSetId } from '../toolCapture/tenantFixtures';
 
@@ -31,7 +35,7 @@ class UsageError extends Error {}
 
 function parseArgs(args: string[]) {
   const values = new Map<string, string>();
-  const valueFlags = new Set(['--surface', '--tool-search', '--turns', '--prompt', '--model', '--base-url', '--auth-token', '--api-key', '--out', '--tenant-tools', '--tenant-count']);
+  const valueFlags = new Set(['--surface', '--tool-search', '--turns', '--prompt', '--model', '--base-url', '--auth-token', '--api-key', '--out', '--tenant-tools', '--tenant-count', '--profile']);
   let proxy = false;
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]!;
@@ -75,7 +79,14 @@ function parseArgs(args: string[]) {
   if (tenantSet !== 'none' && surface !== 'chat') {
     throw new UsageError('--tenant-tools needs --surface chat (not all): no other surface resolves tenant tools');
   }
-  return { values, surface, toolSearch, turns: Number(turns), proxy, baseUrl, tenantSet: tenantSet as CaptureTenantSetId, tenantCount };
+  const profile = values.get('--profile');
+  if (profile !== undefined && !['minimal', 'standard', 'full'].includes(profile)) {
+    throw new UsageError('--profile must be minimal, standard or full');
+  }
+  return {
+    values, surface, toolSearch, turns: Number(turns), proxy, baseUrl, tenantSet: tenantSet as CaptureTenantSetId, tenantCount,
+    profile: profile as MeasuredProfile | undefined,
+  };
 }
 
 async function main(): Promise<void> {
@@ -116,6 +127,7 @@ async function main(): Promise<void> {
         const requestStart = proxy?.records().length ?? 0;
         const result = await runSurfaceCapture({
           surface, model, env, resume, toolSearchOverride, tenantTools,
+          ...(args.profile ? { profile: args.profile } : {}),
           prompt: turn === 1
             ? args.values.get('--prompt') ?? 'Which Windows devices in the fleet are offline right now?'
             : 'Thanks. And how many of those are servers?',
@@ -129,7 +141,10 @@ async function main(): Promise<void> {
           tenantSet: args.tenantSet, tenantToolCount: tenantTools.length,
           host: new URL(env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').host,
           label, upstreamHost, toolSearchForcedByProxy: args.proxy,
-          systemPromptBytes: Buffer.byteLength(getCaptureSystemPrompt(surface), 'utf8'), proxyRequests,
+          systemPromptBytes: Buffer.byteLength(args.profile
+            ? advertisedRequest(surface, args.profile, { tenantTools }).system
+            : getCaptureSystemPrompt(surface), 'utf8'),
+          proxyRequests,
         }) + '\n');
         const usage = observation.apiCalls.reduce((sum, call) => ({
           input: sum.input + call.inputTokens,
@@ -152,6 +167,7 @@ async function main(): Promise<void> {
           'ttft ms': observation.ttftMs,
           'ToolSearch seen': `uses=${observation.toolSearchUses}, blocks=${observation.toolSearchResultBlocks}, refs=${observation.toolReferenceNames.length}, stderr=${observation.stderrToolSearchLines.length}`,
           'first tool': observation.toolUses[0]?.name ?? null,
+          ...(result.profile ? { profile: result.profile, 'prefix tokens': result.advertisedPrefixTokens ?? null } : {}),
           'result subtype': observation.result?.subtype ?? null,
         });
         if (turn < args.turns) {

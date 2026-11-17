@@ -4,7 +4,7 @@ import { ERROR_CODES } from '@breeze/shared';
 import { jsonError } from '../../lib/jsonError';
 import { z } from 'zod';
 import { and, eq, sql, desc, gte, lte, inArray, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
+import { db, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import {
   remoteSessions,
   devices,
@@ -16,7 +16,6 @@ import {
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { sendCommandToAgent, sendDesktopIceCandidateToAgent } from '../agentWs';
 import { submitViewerIceCandidate } from '../../services/remoteDesktopIceTrickle';
-import { dispatchCommandToAgent } from '../../services/agentCommandRelay';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
 import { getTrustedClientIp, getTrustedClientIpOrUndefined } from '../../services/clientIp';
@@ -58,10 +57,10 @@ import {
   startIntentDenialMessage,
 } from '../../services/remoteDesktopStartIntent';
 import { releaseDesktopStartInFlight } from '../../services/desktopStartInFlight';
-import { revokeViewerSession } from '../../services/viewerTokenRevocation';
-import { captureException, captureMessage } from '../../services/sentry';
+import { captureException } from '../../services/sentry';
 import { ACTIVE_REMOTE_SESSION_STATUSES, teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
+import { endRemoteSessionAsOperator } from '../../services/remoteSessionOperatorEnd';
 import { resolveDesktopIcePlan } from './desktopRelayPolicy';
 import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
 import {
@@ -75,7 +74,7 @@ import { trustDenyBody } from '../../services/partnerTrust';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 import {
-  buildStopDesktopCommand,
+  runTerminalWrite,
   terminalIntentSet,
   terminalSessionReturning,
   toTerminalSessionRow,
@@ -206,11 +205,11 @@ sessionRoutes.delete(
     // One UPDATE both rechecks and claims the exact stale rows. Splitting this
     // into SELECT ids + UPDATE ids lets a session become fresh/active or be
     // replaced after validation but before teardown.
-    const result = (await db
+    const result = (await runTerminalWrite(() => db
       .update(remoteSessions)
-      .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
+      .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'never_connected' }, 'pending'))
       .where(and(...conditions))
-      .returning(terminalSessionReturning())).map(toTerminalSessionRow);
+      .returning(terminalSessionReturning()))).map(toTerminalSessionRow);
 
     // Revoke viewer tokens AND signal each agent to stop the peer-to-peer
     // WebRTC stream / terminal PTY. Marking the row + revoking the token alone
@@ -316,10 +315,10 @@ sessionRoutes.post(
       // Savepoint around the UPDATE so a failed statement rolls back and the
       // request transaction survives the catch below (#11203). Teardown runs
       // outside it in its own system context.
-      const revoked = await withDbTransaction(async () => {
+      const revoked = await withDbTransaction(() => runTerminalWrite(async () => {
         const staleUpdate = db
           .update(remoteSessions)
-          .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
+          .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date(), endReason: 'superseded' }, 'pending'))
           .where(
             and(
               eq(remoteSessions.deviceId, data.deviceId),
@@ -342,7 +341,7 @@ sessionRoutes.post(
         }
         await staleUpdate;
         return null;
-      });
+      }));
       // Revoke viewer tokens AND push the agent stop so a stale row for a
       // still-live desktop/terminal doesn't leave the stream running.
       if (revoked) await teardownDisconnectedSessions(revoked);
@@ -507,6 +506,7 @@ sessionRoutes.get(
         status: remoteSessions.status,
         terminationPhase: remoteSessions.terminationPhase,
         endReason: remoteSessions.endReason,
+        errorMessage: remoteSessions.errorMessage,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -533,8 +533,9 @@ sessionRoutes.get(
         type: s.type,
         status: s.status,
         terminationPhase: s.terminationPhase ?? 'none',
-        // #10190 W06: why it ended, when known ('ended_by_user'); else null.
+        // Why it ended (#11839, REMOTE_SESSION_END_REASONS); null on rows that predate it.
         endReason: s.endReason ?? null,
+        errorMessage: s.errorMessage ?? null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -670,6 +671,7 @@ sessionRoutes.get(
         status: remoteSessions.status,
         terminationPhase: remoteSessions.terminationPhase,
         endReason: remoteSessions.endReason,
+        errorMessage: remoteSessions.errorMessage,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -697,8 +699,9 @@ sessionRoutes.get(
         type: s.type,
         status: s.status,
         terminationPhase: s.terminationPhase ?? 'none',
-        // #10190 W06: why it ended, when known ('ended_by_user'); else null.
+        // Why it ended (#11839, REMOTE_SESSION_END_REASONS); null on rows that predate it.
         endReason: s.endReason ?? null,
+        errorMessage: s.errorMessage ?? null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -777,7 +780,7 @@ sessionRoutes.get(
       // the agent has not yet acknowledged the stop. The web UI must not
       // render such a session as connected.
       terminationPhase: session.terminationPhase ?? 'none',
-      // #10190 W06: 'ended_by_user' when the person at the keyboard ended it.
+      // Why it ended (#11839, REMOTE_SESSION_END_REASONS); null on rows that predate it.
       endReason: session.endReason ?? null,
       webrtcOffer: session.webrtcOffer,
       webrtcAnswer: session.webrtcAnswer,
@@ -1384,10 +1387,6 @@ sessionRoutes.post(
       }, 400);
     }
 
-    const endedAt = new Date();
-    const startedAt = session.startedAt || session.createdAt;
-    const durationSeconds = Math.round((endedAt.getTime() - startedAt.getTime()) / 1000);
-
     let recordingUrl: string | null;
     try {
       recordingUrl = normalizeRecordingUrl(body.recordingUrl, {
@@ -1397,130 +1396,27 @@ sessionRoutes.post(
       return c.json({ error: error instanceof Error ? error.message : 'Invalid recordingUrl' }, 400);
     }
 
-    // The status read above is a TOCTOU snapshot: a concurrent terminal writer
-    // (agent `failed` result, stale sweep, teardown, lease revocation) can land
-    // between the SELECT and this UPDATE. Without a status predicate the End
-    // overwrites that terminal row — turning a recorded `failed` with its
-    // errorMessage into a clean operator-initiated `disconnected`, and
-    // resetting endedAt/durationSeconds. Guard on the live states so the
-    // already-terminal case loses the write and is reported, not silently
-    // clobbered.
-    //
-    // Through the terminal-intent contract: the same guarded
-    // UPDATE also bumps the generation every start bumps, records it as the
-    // terminal one, and moves the phase to 'pending' until the agent's stop
-    // result lands. The live-status guard is the contract's own.
-    const [updated] = await db
-      .update(remoteSessions)
-      .set(terminalIntentSet({
-        status: 'disconnected',
-        endedAt,
-        durationSeconds,
-        bytesTransferred: body.bytesTransferred !== undefined ? BigInt(body.bytesTransferred) : session.bytesTransferred,
-        recordingUrl: recordingUrl ?? session.recordingUrl
-      }, 'pending'))
-      .where(and(
-        eq(remoteSessions.id, sessionId),
-        inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
-      ))
-      .returning();
-
-    if (!updated) {
-      // Lost the race (or the row went away). Re-read to answer with the same
-      // shape the pre-UPDATE guard above uses, so a client sees one contract
-      // regardless of which side of the race it landed on.
-      const [current] = await db
-        .select({ status: remoteSessions.status })
-        .from(remoteSessions)
-        .where(eq(remoteSessions.id, sessionId))
-        .limit(1);
-      if (!current) {
+    // The status-guarded terminal write, viewer token revocation and agent
+    // stop are shared with the desktop viewer's hang-up route (#11931).
+    const ended = await endRemoteSessionAsOperator({
+      session,
+      device,
+      bytesTransferred: body.bytesTransferred,
+      recordingUrl,
+      logTag: 'remote/sessions',
+    });
+    if (!ended.ok) {
+      if (ended.reason === 'not_found') {
         return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'Session not found');
       }
+      // Lost the race: same shape as the pre-UPDATE guard above, so a client
+      // sees one contract regardless of which side of the race it landed on.
       return c.json({
         error: 'Session is already ended',
-        status: current.status
+        status: ended.status
       }, 400);
     }
-
-    // Revoke the viewer token immediately on End. Without this, a minted viewer
-    // token stays valid for its full lifetime (VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS
-    // in services/jwt.ts — not a hard-coded "2h" here so the two can't drift)
-    // and could be replayed to reconnect after the operator clicked End.
-    let viewerRevocationError: unknown;
-    try {
-      await revokeViewerSession(sessionId);
-    } catch (error) {
-      viewerRevocationError = error;
-    }
-
-    // Tell the agent to tear down the live stream. Revoking the viewer token
-    // only blocks NEW/reconnecting viewers and the legacy WS path; the WebRTC
-    // (Flow B) media + input + clipboard flow peer-to-peer to the agent's
-    // capture helper with the server out of the loop, so without an explicit
-    // stop the operator keeps screen + input + clipboard control after "End".
-    // The agent's handleStopDesktop tears down both the direct and the
-    // SYSTEM-helper sessions. Finding #2.
-    //
-    // Durable relay, NOT the socket-local send: the agent's command socket very
-    // often lives on a DIFFERENT API instance, where `sendCommandToAgent`
-    // silently returns false — leaving the live WebRTC stream running against a
-    // session the operator has already ended. `remoteSessionTeardown` has used
-    // the relay for exactly this reason; End was the last stop_desktop sender
-    // still on the socket-local path.
-    //
-    // NOT awaited. `dispatchCommandToAgent`'s relay branch polls Redis for the
-    // delivery ack for up to RELAY_DELIVERY_DEADLINE_MS (5 s), and this handler
-    // runs inside the auth middleware's ambient request transaction — awaiting
-    // it would pin a pooled connection idle-in-transaction across that wait on
-    // an operator-triggerable route, the #1105 pool-poison class the
-    // `db_operation_inside_held_context` tripwire exists to catch. The row is
-    // already terminal and the viewer token already revoked, so delivery is
-    // best-effort by design; the trade is that the outcome cannot be reported
-    // synchronously in the response, only logged and captured.
-    // The contract always writes the terminal generation with the terminal
-    // status; a null here would mean the UPDATE above bypassed it.
-    const terminalGeneration = toTerminalSessionRow(updated).terminalGeneration;
-    if (session.type === 'desktop' && device.agentId) {
-      // `dispatchCommandToAgent` RESOLVES with a status — it does not throw on
-      // a failed delivery (see DispatchOutcome in services/agentCommandRelay).
-      // A bare catch would therefore have been silent for every real
-      // non-delivery, so branch on the status explicitly.
-      //
-      // Outside the request's DB context: the relay refuses to run inside a
-      // held one (#4142), and this send does not wait on the commit (the row
-      // update is already final). Nothing here touches the database.
-      const stopAgentId = device.agentId;
-      void runOutsideDbContext(() => dispatchCommandToAgent(
-        stopAgentId,
-        buildStopDesktopCommand(sessionId, terminalGeneration),
-      )).then((outcome) => {
-        if (outcome.status === 'sent') return;
-        const detail = outcome.status === 'infrastructure_error' ? ` (${outcome.message})` : '';
-        console.warn(
-          `[remote/sessions] stop_desktop not delivered for session ${sessionId} `
-          + `(device ${device.id}, agent ${device.agentId}): ${outcome.status}${detail}`
-        );
-        // Two literal call sites, not one with a computed code: the BREEZE-18
-        // scanner (sentryEventCodes.test.ts) requires `eventCode` be a plain
-        // string literal, and the two branches are separately actionable —
-        // one points at the relay, the other at the device.
-        if (outcome.status === 'infrastructure_error') {
-          captureMessage('remote desktop stop_desktop dispatch faulted after End', {
-            eventCode: 'remote_desktop_stop_dispatch_failed',
-            level: 'warning',
-          });
-        } else {
-          captureMessage('remote desktop stop_desktop was not delivered after End', {
-            eventCode: 'remote_desktop_stop_undelivered',
-            level: 'warning',
-          });
-        }
-      }).catch((err) => {
-        console.error(`[remote/sessions] Failed to dispatch stop_desktop for session ${sessionId}:`, err);
-        captureException(err, undefined, { event_code: 'remote_desktop_stop_dispatch_failed' });
-      });
-    }
+    const { updated, terminalGeneration, durationSeconds, viewerRevocationError } = ended;
 
     // Log audit event
     await logSessionAudit(

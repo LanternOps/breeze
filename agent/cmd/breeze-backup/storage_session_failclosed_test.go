@@ -62,7 +62,7 @@ func expiredStorageSession() map[string]any {
 // entry) into a LocalProvider rooted at dir and returns the provider.
 func seedLocalSnapshot(t *testing.T, dir, snapshotID string, files map[string][]byte) *providers.LocalProvider {
 	t.Helper()
-	provider := providers.NewLocalProvider(dir)
+	provider := privateTestLocalProvider(t, dir)
 	prefix := path.Join("snapshots", snapshotID)
 	manifest := backup.Snapshot{ID: snapshotID, Timestamp: time.Now().UTC()}
 	src := t.TempDir()

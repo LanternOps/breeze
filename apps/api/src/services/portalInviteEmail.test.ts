@@ -139,3 +139,108 @@ describe('buildPortalInviteTemplate — sign-in methods', () => {
     expect(password.html).toContain(`Start here: ${inviteUrl}<`);
   });
 });
+
+// Portal registration W7 (#11384) D12: Google in the invite. Both SSO methods →
+// two primary buttons (Microsoft, then Google); one → that one; a password stays
+// the secondary link and disappears under sso_only. The subject never changes.
+describe('buildPortalInviteTemplate — Google (W7)', () => {
+  const inviteUrl = 'https://us.2breeze.app/portal/accept-invite?token=abc';
+  const microsoftUrl = `${inviteUrl}&method=microsoft`;
+  const googleUrl = `${inviteUrl}&method=google`;
+  const microsoftHref = `href="${inviteUrl}&amp;method=microsoft"`;
+  const googleHref = `href="${inviteUrl}&amp;method=google"`;
+  const passwordHref = `href="${inviteUrl}"`;
+  const base = { to: 'c@a.example', inviteUrl, orgName: 'Acme Co', inviterName: 'Tess', partnerId: null } as const;
+  const SUBJECT = "You're invited to the Acme Co support portal";
+
+  beforeEach(() => { vi.stubEnv('EMAIL_SUPPORT_ADDRESS', ''); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('invite email offers Google when only Google is effective, with a password as the secondary option', () => {
+    const t = buildPortalInviteTemplate({ ...base, googleUrl, passwordAllowed: true });
+    expect(t.subject).toBe(SUBJECT);
+    expect(t.html).toContain('>Sign in with Google</a>');
+    expect(t.html).toContain('>Or set a password</a>');
+    expect(t.html.indexOf(googleHref)).toBeGreaterThan(-1);
+    expect(t.html.indexOf(googleHref)).toBeLessThan(t.html.indexOf(passwordHref));
+    expect(t.html).toContain('Sign in with Google to access your support portal.');
+    expect(t.html).not.toContain('Microsoft');
+    expect(t.html).not.toContain('>Set your password</a>');
+    expect(t.text).toBe([
+      "You're invited to the Acme Co support portal.",
+      `Sign in with Google: ${googleUrl}`,
+      `Or set a password: ${inviteUrl}`,
+      'This invite link expires in 7 days.',
+    ].join('\n'));
+  });
+
+  it('invite email hides the password option under sso_only with only Google', () => {
+    const t = buildPortalInviteTemplate({ ...base, googleUrl, passwordAllowed: false });
+    expect(t.subject).toBe(SUBJECT);
+    expect(t.html).toContain('>Sign in with Google</a>');
+    expect(t.html).toContain(googleHref);
+    expect(t.html).not.toContain(passwordHref);
+    expect(t.html).not.toMatch(/password/i);
+    expect(t.text).not.toMatch(/password/i);
+    expect(t.text).toBe([
+      "You're invited to the Acme Co support portal.",
+      `Sign in with Google: ${googleUrl}`,
+      'This invite link expires in 7 days.',
+    ].join('\n'));
+  });
+
+  it('both SSO methods: two primary buttons, Microsoft then Google, then the password link', () => {
+    const t = buildPortalInviteTemplate({ ...base, microsoftUrl, googleUrl, passwordAllowed: true });
+    expect(t.subject).toBe(SUBJECT);
+    expect(t.html).toContain('>Sign in with Microsoft</a>');
+    expect(t.html).toContain('>Sign in with Google</a>');
+    expect(t.html).toContain('>Or set a password</a>');
+    const ms = t.html.indexOf(microsoftHref);
+    const gg = t.html.indexOf(googleHref);
+    expect(ms).toBeGreaterThan(-1);
+    expect(gg).toBeGreaterThan(ms);
+    expect(t.html.indexOf(passwordHref)).toBeGreaterThan(gg);
+    // Both are buttons (same element and style), not a button and a link.
+    const buttonStyle = (href: string) => t.html.slice(t.html.indexOf(href), t.html.indexOf('>', t.html.indexOf(href)));
+    expect(buttonStyle(googleHref).replace(googleHref, '')).toBe(buttonStyle(microsoftHref).replace(microsoftHref, ''));
+    expect(t.html).toContain('Sign in with Microsoft or Google to access your support portal.');
+    expect(t.text).toBe([
+      "You're invited to the Acme Co support portal.",
+      `Sign in with Microsoft: ${microsoftUrl}`,
+      `Sign in with Google: ${googleUrl}`,
+      `Or set a password: ${inviteUrl}`,
+      'This invite link expires in 7 days.',
+    ].join('\n'));
+  });
+
+  it('both SSO methods under sso_only: two buttons and no password anywhere', () => {
+    const t = buildPortalInviteTemplate({ ...base, microsoftUrl, googleUrl, passwordAllowed: false });
+    expect(t.html).toContain(microsoftHref);
+    expect(t.html).toContain(googleHref);
+    expect(t.html).not.toContain(passwordHref);
+    expect(t.html).not.toMatch(/password/i);
+    expect(t.text).not.toMatch(/password/i);
+    expect(t.text).toContain(`Sign in with Microsoft: ${microsoftUrl}`);
+    expect(t.text).toContain(`Sign in with Google: ${googleUrl}`);
+  });
+
+  it("a partner's custom button label never relabels the Google button; invite_url is the link that works", () => {
+    const custom = { subject: null, heading: null, buttonLabel: 'Create your login', html: '<p>Start here: {{invite_url}}</p>' };
+    const sso = buildPortalInviteTemplate({ ...base, custom, googleUrl, passwordAllowed: false });
+    expect(sso.html).toContain('>Sign in with Google</a>');
+    expect(sso.html).not.toContain('Create your login');
+    expect(sso.html).toContain(`Start here: ${inviteUrl}&amp;method=google`);
+  });
+
+  it('invite email is unchanged when no SSO method is effective (an empty googleUrl is absent)', () => {
+    for (const passwordAllowed of [true, false]) {
+      for (const extra of [{}, { microsoftUrl }]) {
+        const without = buildPortalInviteTemplate({ ...base, ...extra, passwordAllowed });
+        expect(buildPortalInviteTemplate({ ...base, ...extra, googleUrl: '', passwordAllowed })).toEqual(without);
+        expect(buildPortalInviteTemplate({ ...base, ...extra, googleUrl: undefined, passwordAllowed })).toEqual(without);
+        expect(without.html).not.toContain('Google');
+        expect(without.text).not.toContain('Google');
+      }
+    }
+  });
+});

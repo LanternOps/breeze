@@ -23,7 +23,7 @@ function req(id: string, over: Partial<PortalAccessRequestListItem> = {}): Porta
     id, email: `${id}@acme.test`, name: `Name ${id}`, source: 'self', status: 'pending',
     requestedAt: '2026-11-01T00:00:00.000Z', lastRequestedAt: '2026-11-02T00:00:00.000Z',
     expiresAt: '2026-12-01T00:00:00.000Z', decidedAt: null, decidedBy: null, portalUserId: null,
-    accountExists: false, domainVerified: true, ...over,
+    accountExists: false, domainVerified: true, googleHostedDomain: null, ...over,
   };
 }
 
@@ -261,6 +261,64 @@ describe('PortalAccessRequestsList', () => {
       fireEvent.click(await screen.findByLabelText('Select all requests'));
       fireEvent.click(screen.getByTestId('portal-access-requests-bulk-approve'));
       expect(await screen.findByTestId('portal-access-request-error-r1')).toHaveTextContent('Email domain no longer verified');
+    });
+  });
+
+  describe('W7 (#11384): Google requests', () => {
+    const google = (id: string, over: Partial<PortalAccessRequestListItem> = {}) =>
+      req(id, { source: 'google', googleHostedDomain: 'acme.example.com', domainVerified: true, ...over });
+
+    it('a google request shows its Workspace domain', async () => {
+      mockApi([[google('g1')]]);
+      render(<PortalAccessRequestsList orgId={ORG} />);
+      const row = await screen.findByTestId('portal-access-request-row-g1');
+      expect(within(row).getByTestId('portal-access-request-source-g1')).toHaveTextContent('Google · acme.example.com');
+      expect(screen.getByTestId('portal-access-request-approve-g1')).not.toBeDisabled();
+      expect(within(row).queryByTestId('access-request-domain-unverified')).toBeNull();
+    });
+
+    it('an unverified google request has the badge and a disabled Approve with the reason', async () => {
+      mockApi([[google('g1', { domainVerified: false })]]);
+      render(<PortalAccessRequestsList orgId={ORG} />);
+      const approve = await screen.findByTestId('portal-access-request-approve-g1');
+      expect(approve).toBeDisabled();
+      expect(approve).toHaveAttribute('aria-describedby', 'portal-access-request-domain-reason-g1');
+      const row = screen.getByTestId('portal-access-request-row-g1');
+      expect(within(row).getByTestId('access-request-domain-unverified')).toHaveTextContent('Domain no longer verified');
+      expect(row).toHaveTextContent('Approve is unavailable: invite this person directly if they should have access.');
+      expect(screen.getByTestId('portal-access-request-deny-g1')).not.toBeDisabled();
+    });
+
+    it('an approve refused because the Google domain lapsed (409) shows the Google reason', async () => {
+      mockApi([[google('g1')], [google('g1', { domainVerified: false })]], () => res({
+        error: 'server wording', code: 'PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED',
+      }, 409));
+      render(<PortalAccessRequestsList orgId={ORG} />);
+      fireEvent.click(await screen.findByTestId('portal-access-request-approve-g1'));
+      await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error',
+        message: "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly.",
+      })));
+      expect(await screen.findByTestId('access-request-domain-unverified')).toBeInTheDocument();
+    });
+
+    it('bulk domain_not_verified on a google row names the Workspace domain, on a self row the email domain', async () => {
+      mockApi([[google('g1'), req('s1')]], () => res({ data: [
+        { requestId: 'g1', result: 'domain_not_verified' },
+        { requestId: 's1', result: 'domain_not_verified' },
+      ] }));
+      render(<PortalAccessRequestsList orgId={ORG} />);
+      fireEvent.click(await screen.findByLabelText('Select all requests'));
+      fireEvent.click(screen.getByTestId('portal-access-requests-bulk-approve'));
+      expect(await screen.findByTestId('portal-access-request-error-g1')).toHaveTextContent('Google Workspace domain no longer verified');
+      expect(screen.getByTestId('portal-access-request-error-s1')).toHaveTextContent('Email domain no longer verified');
+    });
+
+    it('ships dark: a queue of self and Microsoft requests never says Google', async () => {
+      mockApi([[req('s1', { domainVerified: false }), req('e1', { source: 'entra', domainVerified: null })]]);
+      const { container } = render(<PortalAccessRequestsList orgId={ORG} />);
+      await screen.findByTestId('portal-access-request-row-e1');
+      expect(container.textContent ?? '').not.toMatch(/google/i);
     });
   });
 

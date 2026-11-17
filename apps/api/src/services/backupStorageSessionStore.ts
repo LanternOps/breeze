@@ -8,7 +8,6 @@
 import { and, eq, inArray, isNull, max, ne, sql, count } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
-  backupSnapshotFiles,
   backupSnapshotOrigins,
   backupSnapshots,
   backupStorageSessions,
@@ -24,6 +23,7 @@ import {
   snapshotPredatesDeviceIncarnationSql,
 } from './backupRestoreIntegrity';
 import { evaluateStorageSessionBudget } from './backupStorageSessionBudget';
+import { snapshotIndexEntries } from './backupSnapshotIndexEntries';
 import { loadOriginKeyRootRows, type KeyRootPair } from './backupOriginKeyRoots';
 import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import type { BrokeredReadStore, StorageSessionRow, StorageSnapshotRow } from './backupStorageSessions';
@@ -136,10 +136,11 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
   async countIndexedFiles(snapshotDbId) {
     // Storage keys only: a content-less row (a directory or symlink entry,
     // backup_path '', #11235) authorizes no object, so it sizes no budget.
+    const entries = snapshotIndexEntries(snapshotDbId);
     const [row] = await db
       .select({ n: count() })
-      .from(backupSnapshotFiles)
-      .where(and(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId), ne(backupSnapshotFiles.backupPath, '')));
+      .from(entries)
+      .where(ne(entries.backupPath, ''));
     return Number(row?.n ?? 0);
   },
 
@@ -202,16 +203,16 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
     // The index's state is re-read in the same statement as its rows: rows of
     // an index being rebuilt (status 'hydrating') or rebuilt from other bytes
     // since the caller checked it never count.
+    const entries = snapshotIndexEntries(snapshotDbId);
     const rows = await db
-      .select({ backupPath: backupSnapshotFiles.backupPath })
-      .from(backupSnapshotFiles)
-      .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
+      .select({ backupPath: entries.backupPath })
+      .from(entries)
+      .innerJoin(backupSnapshots, eq(backupSnapshots.id, entries.snapshotDbId))
       .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
       .where(and(
-        eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
-        inArray(backupSnapshotFiles.backupPath, keys),
+        inArray(entries.backupPath, keys),
         // A content-less row (#11235) names no object, whatever key is asked.
-        ne(backupSnapshotFiles.backupPath, ''),
+        ne(entries.backupPath, ''),
         boundIndexCondition(boundManifestSha256),
       ));
     return new Set(rows.map((r) => r.backupPath));

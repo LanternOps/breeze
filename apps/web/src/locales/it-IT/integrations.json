@@ -289,11 +289,9 @@
     "unableToSendTestNotification": "Impossibile inviare la notifica di test.",
     "failedToLoadCommunicationSettings": "Impossibile caricare le impostazioni di comunicazione",
     "slackSettingsSaved": "Impostazioni Slack salvate.",
-    "slackTestNotificationQueued": "Notifica di test Slack accodata.",
     "teamsSettingsSaved": "Impostazioni Teams salvate.",
-    "teamsTestNotificationQueued": "Notifica di test Teams accodata.",
     "discordSettingsSaved": "Impostazioni Discord salvate.",
-    "discordTestNotificationQueued": "Notifica di test Discord accodata.",
+    "discordTestNotificationSent": "Notifica di test Discord inviata.",
     "loadingCommunicationIntegrations": "Caricamento integrazioni di comunicazione...",
     "communicationIntegrations": "Integrazioni di comunicazione",
     "connectChatToolsRouteAlertsBySeverityAnd": "Connetti strumenti di chat, instrada gli avvisi per severità e personalizza i template dei messaggi. ",
@@ -374,6 +372,9 @@
       "delivery_failed": "Consegne non riuscite",
       "sync_stale": "Sincronizzazione bloccata",
       "verification_failed": "Verifica non riuscita",
+      "destination_access_denied": "La destinazione ha rifiutato l’accesso",
+      "destination_not_found": "Destinazione non trovata",
+      "destination_failing": "La destinazione non funziona",
       "unknown": "Richiede attenzione"
     }
   },

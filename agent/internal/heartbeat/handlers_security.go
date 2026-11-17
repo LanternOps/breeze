@@ -62,6 +62,13 @@ func handleSecurityScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	if scanType == "custom" && len(paths) == 0 {
 		return tools.NewErrorResult(fmt.Errorf("custom scan requires one or more paths"), time.Since(start).Milliseconds())
 	}
+	// Refuse a custom root the scanner would refuse before preparing rule
+	// sets for it (the scanner applies the same check).
+	if scanType == "custom" {
+		if err := security.CheckCustomScanRoots(paths); err != nil {
+			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		}
+	}
 
 	scanner := *h.securityScanner // shallow copy: per-scan settings never mutate the shared scanner
 	scanner.Exclusions = exclusions
@@ -171,12 +178,18 @@ func handleSecurityThreatQuarantine(_ *Heartbeat, cmd Command) tools.CommandResu
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
-	quarantineDir := tools.GetPayloadString(cmd.Payload, "quarantineDir", security.DefaultQuarantineDir())
+	quarantineDir := tools.GetPayloadString(cmd.Payload, "quarantineDir", "")
 
-	// quarantineDir is caller-supplied: gate the destination too, or quarantine
-	// implants the file's content wherever the caller points it.
-	if err := tools.EnforcePathContainment("write", filepath.Clean(quarantineDir)); err != nil {
-		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	// A caller-supplied quarantineDir is gated too, or quarantine implants the
+	// file's content wherever the caller points it. The agent's own default
+	// quarantine folder is not checked: it lives inside the agent's data
+	// folder, which is a protected location for every other operation.
+	if quarantineDir != "" {
+		if err := tools.EnforcePathContainment("write", filepath.Clean(quarantineDir)); err != nil {
+			return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+		}
+	} else {
+		quarantineDir = security.DefaultQuarantineDir()
 	}
 
 	dest, err := security.QuarantineThreat(security.Threat{
@@ -243,9 +256,12 @@ func handleSecurityThreatRestore(_ *Heartbeat, cmd Command) tools.CommandResult 
 	// content to an operator-chosen path) and the destination is write-gated
 	// (otherwise this is a credential-implant primitive) — the same policy
 	// tools.TrashRestore applies.
+	// A source inside the agent's own quarantine folder is the agent's own
+	// payload, and that folder sits inside the protected data folder; any
+	// other source is checked.
 	cleanSource := filepath.Clean(source)
 	cleanOriginal := filepath.Clean(originalPath)
-	if err := tools.EnforcePathContainment("restore", cleanSource); err != nil {
+	if err := security.CheckQuarantineSource(cleanSource); err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 	if err := tools.EnforcePathContainment("write", cleanOriginal); err != nil {

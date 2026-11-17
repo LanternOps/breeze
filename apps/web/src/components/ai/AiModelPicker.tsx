@@ -29,7 +29,7 @@ export default function AiModelPicker({ disabled }: { disabled?: boolean }) {
           aria-haspopup="listbox"
           aria-expanded={open}
           data-testid="ai-model-picker-button"
-          className="flex items-center gap-1 rounded border px-2 py-1 hover:bg-muted disabled:opacity-50"
+          className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
         >
           {chosen?.displayName ?? t('aiModelPicker.chooseModel')}
           <ChevronDown className="h-3 w-3" />
@@ -88,7 +88,7 @@ export default function AiModelPicker({ disabled }: { disabled?: boolean }) {
             value={options.effort ?? ''}
             onChange={(e) => setOption('effort', (e.target.value || undefined) as EffortLevel | undefined)}
             data-testid="ai-model-effort"
-            className="rounded border bg-background px-1 py-0.5"
+            className="cursor-pointer rounded border bg-background px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           >
             <option value="">{t('aiModelPicker.effortDefault')}</option>
             {EFFORT_LEVELS.filter((e) => chosen.options.effort.includes(e)).map((e) => (

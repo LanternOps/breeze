@@ -24,6 +24,7 @@ import AiModelPicker from "./AiModelPicker";
 import AiThinkingIndicator, { approvalWaitFromPending } from "./AiThinkingIndicator";
 import AiTurnModelBadge from "./AiTurnModelBadge";
 import AiContinuationPrompt from "./AiContinuationPrompt";
+import AiNotifyToggle from "./AiNotifyToggle";
 import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerStore";
 import { useOrgStore } from "@/stores/orgStore";
 import AiContextBadge from "./AiContextBadge";
@@ -40,6 +41,8 @@ import WispChatWelcome from "../wisp/WispChatWelcome";
 import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 import { wispSessionOrgId } from "@/lib/wispSession";
 import { useTranslation } from "react-i18next";
+import AiErrorBanner from "./AiErrorBanner";
+import { activeRetryTarget } from "@/lib/aiErrors";
 import { RIGHT_DOCK_BACKDROP_CLASS, RIGHT_DOCK_PANEL_CLASS } from "../layout/rightDockPanel";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -89,6 +92,8 @@ export default function AiChatSidebar() {
     isLoading,
     error,
     errorCode,
+    retryTarget,
+    retryLastTurn,
     pageContext,
     pendingApproval,
     pendingPlan,
@@ -113,6 +118,7 @@ export default function AiChatSidebar() {
     interruptResponse,
     isInterrupting,
     isFlagged,
+    transcriptPurgedAt,
     flagSession,
     unflagSession,
     m365Connections,
@@ -427,6 +433,7 @@ export default function AiChatSidebar() {
                 />
               </button>
             )}
+            <AiNotifyToggle />
             <button
               onClick={close}
               className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -524,8 +531,17 @@ export default function AiChatSidebar() {
 
             {/* Error banner */}
             {error && (
-              <div className="flex items-center justify-between border-b border-red-800/50 bg-red-900/20 px-4 py-2">
-                <span className="text-xs text-red-400">{error}</span>
+              <AiErrorBanner
+                error={error}
+                retryTarget={topologySiteId !== null ? null : activeRetryTarget({ error, retryTarget })}
+                busy={isStreaming || isLoading}
+                onRetry={() => void retryLastTurn()}
+                onDismiss={clearError}
+                dismissLabel={t("aiChatSidebar.dismiss")}
+                className="flex items-center justify-between border-b border-red-800/50 bg-red-900/20 px-4 py-2"
+                textClassName="text-xs text-red-400"
+                buttonClassName="text-xs text-red-400 hover:text-red-300"
+              >
                 {errorCode === "credits_exhausted" && (
                   <BuyCreditsLink className="ml-2 shrink-0 text-xs font-medium text-red-300 underline underline-offset-2 hover:text-red-200" />
                 )}
@@ -539,13 +555,7 @@ export default function AiChatSidebar() {
                     {t("sessionClosed.startNew")}
                   </button>
                 )}
-                <button
-                  onClick={clearError}
-                  className="text-xs text-red-400 hover:text-red-300"
-                >
-                  {t("aiChatSidebar.dismiss")}
-                </button>
-              </div>
+              </AiErrorBanner>
             )}
 
             {/* #9427: attached to a running turn whose replay was too large to send. */}
@@ -571,6 +581,7 @@ export default function AiChatSidebar() {
               onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
+              transcriptPurgedAt={transcriptPurgedAt}
               assistantLabel={wisp ? t("wisp.title") : undefined}
               emptyState={
                 wisp ? (

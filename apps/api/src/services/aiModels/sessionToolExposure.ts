@@ -13,7 +13,9 @@ import {
   TOOL_PROFILE_UNDERPOWERED,
   checkSurfaceCoverage,
 } from './surfaceRequiredTools';
-import { effectiveToolProfile, resolveToolExposure, type ExtraToolInput, type ToolExposure, type ToolProfileFacts } from './toolExposure';
+import { DEFAULT_TOOL_PROFILE_FACTS, effectiveToolProfile, resolveToolExposure, toolProfileKey, type ExtraToolInput, type ToolExposure, type ToolProfileFacts } from './toolExposure';
+import { liveQueryKey, turnBindingFrom } from './turnBinding';
+import type { ResolvedModel } from './resolveModel';
 
 const MCP_NAME = /^mcp__.+?__(.+)$/;
 
@@ -37,6 +39,39 @@ export class ToolProfileUnderpoweredError extends Error {
     super(SURFACE_UNDERPOWERED_MESSAGE(SURFACE_LABELS[surface] ?? surface));
     this.name = 'ToolProfileUnderpoweredError';
   }
+}
+
+export const CONTEXT_WINDOW_TOO_SMALL = 'context_window_too_small' as const;
+
+/** The spec §3.3 session-start message: the window is named, no provider call is made. */
+export function contextWindowTooSmallMessage(surfaceLabel: string, contextWindow: number): string {
+  return `This model's ${contextWindow.toLocaleString('en-US')}-token window is too small for Breeze ${surfaceLabel} tools.`;
+}
+
+/**
+ * #11396: `auto` found no profile, not even `minimal`, that fits the model's
+ * known window. Thrown at session start, before any provider call; the
+ * routes answer it as a 409 like `ToolProfileUnderpoweredError`.
+ */
+export class ContextWindowTooSmallError extends Error {
+  readonly code = CONTEXT_WINDOW_TOO_SMALL;
+  readonly status = 409;
+  constructor(readonly surface: AiSurface, readonly contextWindow: number) {
+    super(contextWindowTooSmallMessage(SURFACE_LABELS[surface] ?? surface, contextWindow));
+    this.name = 'ContextWindowTooSmallError';
+  }
+}
+
+/**
+ * The 409 body a route answers for a tool-exposure refusal (an underpowered
+ * profile or a window too small for any profile), or null for any other
+ * error. One mapping for every `getOrCreate` caller.
+ */
+export function toolExposureRefusal(err: unknown): { error: string; code: string } | null {
+  if (err instanceof ContextWindowTooSmallError || err instanceof ToolProfileUnderpoweredError) {
+    return { error: err.message, code: err.code };
+  }
+  return null;
 }
 
 export interface SessionToolExposureInput {
@@ -66,9 +101,11 @@ export interface SessionToolExposure {
 }
 
 /**
- * Throws `ToolProfileUnderpoweredError` when the exposure drops a tool the
- * surface requires — before any provider call. Never called for `ai_agents`
- * (the run loop checks its run-specific floor itself).
+ * Throws `ContextWindowTooSmallError` when `auto` finds no profile that fits
+ * the model's known window (#11396), and `ToolProfileUnderpoweredError` when
+ * the exposure drops a tool the surface requires — both before any provider
+ * call. The coverage check is never run for `ai_agents` (the run loop checks
+ * its run-specific floor itself).
  */
 export function finalizeSessionToolExposure(input: SessionToolExposureInput): SessionToolExposure {
   const { surface, facts, allowedTools, extraTools, approvalMode, breezeServer } = input;
@@ -90,6 +127,11 @@ export function finalizeSessionToolExposure(input: SessionToolExposureInput): Se
       : extraTools,
     ...(approvalMode ? { approvalMode } : {}),
   }, { domainOf: input.domainOf });
+  // #11396: no profile fits the known window. Refuse now, naming the window,
+  // rather than fail on the first request (spec §3.3).
+  if (exposure.tooSmall && facts.effectiveWindow !== null) {
+    throw new ContextWindowTooSmallError(surface, facts.effectiveWindow);
+  }
   if (exposure.names === null) {
     return { exposure, allowedTools: allowedTools ? [...allowedTools] : undefined, onlyTools: undefined, keepsExtra: () => true };
   }
@@ -106,6 +148,40 @@ export function finalizeSessionToolExposure(input: SessionToolExposureInput): Se
     onlyTools: breezeServer ? new Set(exposure.names.filter((n) => registry.has(n))) : undefined,
     keepsExtra: (name) => keptExtras.has(name),
   };
+}
+
+/**
+ * The chat exposure the system prompt is built from (#11395). Chat's prompt
+ * is composed in the turn preflight, before `getOrCreate` finalizes the
+ * session's exposure, so it re-runs the SAME resolver over the SAME inputs
+ * the chat query registers (the Breeze registry, no caller list): names and
+ * prompt mode match the registration by construction
+ * (sessionToolExposure.test.ts pins it). Extras are left out: tenant and
+ * flow tools never appear in the prompt's tool lines, and the approval mode
+ * only ever adds `propose_action_plan`, which chat always keeps.
+ */
+export function chatPromptExposure(
+  facts: ToolProfileFacts,
+  deps: { registryNames: () => readonly string[]; domainOf: (name: string) => AiToolDomain | undefined },
+): ToolExposure {
+  const constrained = effectiveToolProfile(facts, 'chat').profile !== 'full';
+  return resolveToolExposure({
+    surface: 'chat',
+    facts,
+    surfaceBaseSet: constrained ? deps.registryNames() : [],
+    extraTools: [],
+  }, { domainOf: deps.domainOf });
+}
+
+/**
+ * The live-query key `getOrCreate` uses for this resolved model, including
+ * the tool profile's segment (#11395). The topology answer cache keys on it,
+ * so an answer computed under one tool exposure is never served under
+ * another. The identity exposure keeps the one-argument key byte-identical.
+ */
+export function resolvedLiveQueryKey(resolved: ResolvedModel): string {
+  const facts = resolved.toolProfileFacts ?? DEFAULT_TOOL_PROFILE_FACTS;
+  return liveQueryKey(turnBindingFrom(resolved), toolProfileKey(facts, resolved.surface));
 }
 
 /**

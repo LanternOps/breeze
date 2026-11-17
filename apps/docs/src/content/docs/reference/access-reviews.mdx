@@ -325,6 +325,10 @@ The API enforces the following rules before allowing completion:
 | Review not found | `404` | `Access review not found` |
 | Review already completed | `400` | `Review is already completed` |
 | Pending items remain | `400` | `Cannot complete review with pending items` |
+| A decision changed while completion was running | `409` | `Review decisions changed. Reload it before completing.` |
+| Another completion of the same review finished first | `409` | `Review changed. Reload it before completing.` |
+
+Completion applies exactly the decisions the review holds when it is marked completed. Decisions and completion on the same review are processed one at a time, so a decision recorded while a completion is in progress either is included or makes the completion return `409` with nothing applied. Reload the review and complete it again.
 
 ---
 
@@ -373,6 +377,7 @@ All endpoints may return the following common errors:
 | `400` | Validation error, cannot modify completed review, or pending items remain |
 | `403` | Missing partner/organisation context, insufficient organisation access, or a reviewer deciding their own item (`ACCESS_REVIEW_SELF_DECISION`) |
 | `404` | Review or review item not found |
+| `409` | The review's decisions changed, or it was completed, while a completion was in progress |
 | `500` | Internal server error (e.g. transaction failure) |
 
 ---

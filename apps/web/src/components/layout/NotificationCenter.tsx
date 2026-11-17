@@ -605,7 +605,8 @@ export default function NotificationCenter() {
                           )}
                         </div>
                         {notification.message && (
-                          <p className="text-xs text-muted-foreground">
+                          // Clamped: a Wisp run report's body is the whole report (#11673); the thread shows it in full.
+                          <p className="line-clamp-3 break-words text-xs text-muted-foreground">
                             {notification.message}
                           </p>
                         )}

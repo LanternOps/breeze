@@ -227,6 +227,7 @@ vi.mock('./helpers', () => ({
   // that does not care about warranty still exercises the delivery merge rather
   // than the builder-throws path.
   buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
+  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat
   // test silently exercise only the builder-throws path (undefined is not a
@@ -1052,7 +1053,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
         helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
-        helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
+        helpers.buildWakeOnLanConfigUpdate, helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
         helpers.buildWorkloadInventoryConfigUpdate, buildFeatureUpdateConfigUpdate,
       ]) {
         expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
@@ -1138,7 +1139,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         for (const builder of [
           helpers.buildEventLogConfigUpdate, helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
           helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate, helpers.buildTimeSyncConfigUpdate,
-          helpers.buildHelperConfigUpdate, helpers.buildPolicyProbeConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
+          helpers.buildWakeOnLanConfigUpdate, helpers.buildHelperConfigUpdate, helpers.buildPolicyProbeConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
           buildFeatureUpdateConfigUpdate,
         ]) {
           expect(vi.mocked(builder)).not.toHaveBeenCalled();
@@ -4867,6 +4868,77 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(configUpdate?.warranty_settings).toBeUndefined();
   });
 
+  it('delivers wake_on_lan_settings enabled=false with no wake_on_lan policy (configure off, no firmware writes)', async () => {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.wake_on_lan_settings).toEqual({
+      enabled: false,
+      configure_settings: false,
+      firmware_writes: [],
+    });
+  });
+
+  it('delivers wake_on_lan_settings enabled=true when a wake_on_lan policy resolves', async () => {
+    const { buildWakeOnLanConfigUpdate } = await import('./helpers');
+    vi.mocked(buildWakeOnLanConfigUpdate).mockResolvedValueOnce({ enabled: true, configureSettings: false, firmwareWrites: [] });
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.wake_on_lan_settings).toEqual({
+      enabled: true,
+      configure_settings: false,
+      firmware_writes: [],
+    });
+  });
+
+  it('runs the wake_on_lan builder inside withDbTransaction so a failing fallback query cannot poison the request transaction', async () => {
+    const { buildWakeOnLanConfigUpdate } = await import('./helpers');
+    const { buildWarrantyConfigUpdate } = await import('./helpers');
+    callOrder.length = 0;
+    // Marker immediately before the wake builder's call site, so the adjacent
+    // 'savepoint' entry can only come from the wake builder's own wrapper.
+    vi.mocked(buildWarrantyConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('warranty:ran');
+      return null as never;
+    });
+    vi.mocked(buildWakeOnLanConfigUpdate).mockImplementationOnce(async () => {
+      callOrder.push('wakeBuilder:ran');
+      return { enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] };
+    });
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    const ran = callOrder.indexOf('wakeBuilder:ran');
+    expect(callOrder.slice(ran - 2, ran + 1)).toEqual(['warranty:ran', 'savepoint', 'wakeBuilder:ran']);
+  });
+
+  it('omits wake_on_lan_settings entirely when the resolver throws (agent keeps its state)', async () => {
+    const { buildWakeOnLanConfigUpdate } = await import('./helpers');
+    vi.mocked(buildWakeOnLanConfigUpdate).mockRejectedValueOnce(new Error('boom'));
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.wake_on_lan_settings).toBeUndefined();
+  });
+
   it('delivers onedrive_helper_settings: plan inside the policy context, Graph phase after it commits (#8142)', async () => {
     const helpers = await import('./helpers');
     const settings = {
@@ -6765,6 +6837,21 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
       resourceType: 'device',
       resourceId: 'device-1',
     });
+  });
+
+  it('logs only the start of a long mismatched ipHistoryUpdate.deviceId', async () => {
+    arrange();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const resp = await beat({ ...minimalHeartbeatBody, ipHistoryUpdate: { deviceId: 'd'.repeat(1_000_000) } });
+      expect(resp.status).toBe(200);
+      const lines = warn.mock.calls.map((call) => call.map(String).join(' '));
+      const mismatch = lines.find((line) => line.includes('mismatched ipHistoryUpdate.deviceId'));
+      expect(mismatch).toBeDefined();
+      expect(mismatch!.length).toBeLessThan(1_000);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('hostname change emits a state_change audit with before/after', async () => {

@@ -75,7 +75,8 @@ vi.mock('../../services/featureConfigResolver', async (importOriginal) => {
   };
 });
 
-import { withDbAccessContext, type DbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { computeEffectDigestForRelease } from '../../services/actionIntents/effectDigest';
 import {
   backupConfigs,
   backupJobs,
@@ -285,6 +286,24 @@ async function run(f: Fixture, who: Who, tool: string, input: Record<string, unk
   const handler = registry().get(tool)!.handler;
   const orgId = who === 'otherOrg' ? f.orgB : f.orgA;
   const raw = await withDbAccessContext(orgCtx(orgId, f), () => handler(input, f[who]));
+  return JSON.parse(raw) as Record<string, any>;
+}
+
+/**
+ * execute_dr_plan as the release of an approved intent: the release path
+ * recomputes the approval digest in a system context and hands the handler the
+ * plan definition it read (jobs/intentReleaseWorker.ts).
+ */
+async function releaseExecuteDrPlan(f: Fixture, who: Who, input: Record<string, unknown>) {
+  const released = await withSystemDbAccessContext(() => computeEffectDigestForRelease('execute_dr_plan', input, db));
+  return runReleased(f, who, input, released.context ?? {});
+}
+
+async function runReleased(f: Fixture, who: Who, input: Record<string, unknown>, context: Record<string, unknown>) {
+  const handler = registry().get('execute_dr_plan')!.handler;
+  const orgId = who === 'otherOrg' ? f.orgB : f.orgA;
+  const raw = await withDbAccessContext(orgCtx(orgId, f), () =>
+    handler(input, f[who], { ...context, actionIntentId: randomUUID() }));
   return JSON.parse(raw) as Record<string, any>;
 }
 
@@ -584,7 +603,7 @@ describe('W03 DR plan tools — site axis, org axis and W03-D10 (real Postgres, 
     runDb('an in-site plan executes for the restricted caller; the unrestricted caller executes the site-B plan', async () => {
       const inSite = await seedPlan(f.orgA);
       await seedGroup(inSite, [f.devA], { sourceSnapshotId: f.fileSnapA });
-      const ok = await run(f, 'restricted', 'execute_dr_plan', { planId: inSite, executionType: 'rehearsal' });
+      const ok = await releaseExecuteDrPlan(f, 'restricted', { planId: inSite, executionType: 'rehearsal' });
       expect(ok.error).toBeUndefined();
       expect(ok.success).toBe(true);
       expect(enqueueReconcileMock).toHaveBeenCalledTimes(1);
@@ -592,9 +611,38 @@ describe('W03 DR plan tools — site axis, org axis and W03-D10 (real Postgres, 
       const siteBPlan = await seedPlan(f.orgA);
       await seedGroup(siteBPlan, [f.devB], { sourceSnapshotId: f.fileSnapB });
       expect(await run(f, 'restricted', 'execute_dr_plan', { planId: siteBPlan, executionType: 'rehearsal' })).toEqual({ error: PLAN_DENIED });
-      const wide = await run(f, 'unrestricted', 'execute_dr_plan', { planId: siteBPlan, executionType: 'rehearsal' });
+      const wide = await releaseExecuteDrPlan(f, 'unrestricted', { planId: siteBPlan, executionType: 'rehearsal' });
       expect(wide.error).toBeUndefined();
       expect(wide.success).toBe(true);
+    });
+
+    runDb('runs only as an approved release, and stores the approved definition', async () => {
+      const planId = await seedPlan(f.orgA);
+      const groupId = await seedGroup(planId, [f.devA], { sourceSnapshotId: f.fileSnapA });
+      const input = { planId, executionType: 'rehearsal' };
+
+      expect(await run(f, 'unrestricted', 'execute_dr_plan', input)).toEqual({ error: 'approved_definition_required' });
+      expect(await getTestDb().select({ id: drExecutions.id }).from(drExecutions)).toHaveLength(0);
+
+      const ok = await releaseExecuteDrPlan(f, 'unrestricted', input);
+      expect(ok.success).toBe(true);
+      const [execution] = await getTestDb().select().from(drExecutions).where(eq(drExecutions.id, ok.executionId));
+      const definition = (execution!.results as { definition: { groups: Array<{ id: string; devices: string[] }> } }).definition;
+      expect(definition.groups.map((group) => [group.id, group.devices])).toEqual([[groupId, [f.devA]]]);
+    });
+
+    runDb('refuses when a group changed after the approval digest was checked', async () => {
+      const planId = await seedPlan(f.orgA);
+      const groupId = await seedGroup(planId, [f.devA], { sourceSnapshotId: f.fileSnapA });
+      const input = { planId, executionType: 'rehearsal' };
+      const released = await withSystemDbAccessContext(() => computeEffectDigestForRelease('execute_dr_plan', input, db));
+
+      // A write that landed between the release check and execution creation.
+      await getTestDb().update(drPlanGroups).set({ devices: [f.devA, f.devB] }).where(eq(drPlanGroups.id, groupId));
+
+      expect(await runReleased(f, 'unrestricted', input, released.context ?? {})).toEqual({ error: 'dr_plan_changed' });
+      expect(await getTestDb().select({ id: drExecutions.id }).from(drExecutions)).toHaveLength(0);
+      expect(enqueueReconcileMock).not.toHaveBeenCalled();
     });
   });
 });

@@ -88,6 +88,8 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
   withDbTransaction: (fn: () => Promise<unknown>) => fn(),
+  // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+  withDbTransactionIfHeld: (fn: () => Promise<unknown>) => fn(),
   // remoteDesktopStartIntent.ts (real impl, not mocked in this file) throws
   // unless this reports an open db access context.
   hasDbAccessContext: vi.fn(() => true),
@@ -287,7 +289,7 @@ vi.mock('../../services/desktopStartInFlight', () => ({
 
 import { sessionRoutes } from './sessions';
 import { db, runOutsideDbContext } from '../../db';
-import { buildRemoteSessionPromptPayload } from './helpers';
+import { buildRemoteSessionPromptPayload, logSessionAudit } from './helpers';
 import { RemoteSessionPromptPolicyError } from './consentGate';
 
 const ORG_ID = 'org-111';
@@ -2190,6 +2192,22 @@ describe('POST /remote/sessions/:id/end', () => {
       { event_code: 'remote_desktop_stop_dispatch_failed' }
     );
     error.mockRestore();
+  });
+
+  // The viewer token must not stay replayable behind a 200: a failed
+  // revocation is audited, the agent is still stopped, and End answers 500.
+  it('fails (after audit and the agent stop) when the viewer token cannot be revoked', async () => {
+    const update = rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null, ...endTerminalFields }]);
+    revokeViewerSession.mockRejectedValueOnce(new Error('viewer session revocation unavailable'));
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(500);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logSessionAudit)).toHaveBeenCalledWith(
+      'session_ended', 'user-1', ORG_ID, expect.objectContaining({ sessionId: SESSION_ID }), '10.0.0.1',
+    );
+    expect(dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({ type: 'stop_desktop' }));
   });
 
   it('refuses to overwrite a `denied` row — both End guards share one live-status list', async () => {

@@ -1,25 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST,
   PORTAL_ACCOUNT_TRANSITION_REFUSED,
   PORTAL_USER_IDENTITY_MANAGED,
   PortalAccountTransitionError,
   initialPortalAccountState,
   isBulkInviteEligible,
   isPasswordEligible,
+  passwordUsableFor,
   planPortalAccountTransition,
   type PortalAccountFacts,
   type PortalAccountWriter,
 } from './portalAccountState';
 
 /** Facts of a password-method row awaiting setup (the common invite shape). */
-const f = (over: Partial<PortalAccountFacts> = {}): PortalAccountFacts => ({
-  status: 'invited',
-  browserAccess: 'granted',
-  authMethod: 'password',
-  hasPasswordHash: false,
-  hasExternalIdentity: false,
-  ...over,
-});
+const f = (over: Partial<PortalAccountFacts> = {}): PortalAccountFacts => {
+  const base = { status: 'invited', browserAccess: 'granted', authMethod: 'password', hasPasswordHash: false, hasExternalIdentity: false, ...over };
+  // W8 (D3): the usable-credential facts default to the pre-W8 reading (every
+  // identity enabled, a password-method hash usable under `allowed`) unless a
+  // case sets them.
+  return {
+    hasUsableExternalIdentity: base.hasExternalIdentity,
+    passwordUsable: base.hasPasswordHash && base.authMethod === 'password',
+    ...base,
+  };
+};
 
 const ACTIVE_WITH_HASH = f({ status: 'active', hasPasswordHash: true });
 const ACTIVE_CREDENTIAL_LESS = f({ status: 'active', hasPasswordHash: false });
@@ -29,7 +34,7 @@ const ENTRA = f({ status: 'active', authMethod: 'entra', browserAccess: 'none', 
 const DISABLED_ENTRA = f({ status: 'disabled', authMethod: 'entra', browserAccess: 'none', hasExternalIdentity: true });
 const PASSWORD_WITH_IDENTITY = f({ status: 'invited', hasExternalIdentity: true });
 
-type Allowed = [string, PortalAccountFacts, PortalAccountWriter, { status: string; browserAccess: string; bumpEpoch: boolean }];
+type Allowed = [string, PortalAccountFacts, PortalAccountWriter, { status: string; browserAccess: string; bumpEpoch: boolean; disabledBy?: string | null }];
 type Refused = [string, PortalAccountFacts, PortalAccountWriter, { code: string; httpStatus: number; message: string }];
 
 // One row per line of the transition table in the W2 plan (Task 5).
@@ -101,7 +106,10 @@ const REFUSED: Refused[] = [
 
 describe('planPortalAccountTransition — allowed transitions', () => {
   it.each(ALLOWED)('%s', (_name, facts, writer, target) => {
-    expect(planPortalAccountTransition(facts, writer)).toEqual(target);
+    // W8 (D2): every target names who disabled the account; in the W2 table
+    // only msp_disable lands on disabled, so the default is 'msp' or null.
+    const disabledBy = target.disabledBy !== undefined ? target.disabledBy : target.status === 'disabled' ? 'msp' : null;
+    expect(planPortalAccountTransition(facts, writer)).toEqual({ ...target, disabledBy });
   });
 });
 
@@ -149,27 +157,27 @@ describe('planPortalAccountTransition — fail closed on unknown input', () => {
 
 describe('initialPortalAccountState', () => {
   it('an MSP invite starts invited with browser access', () => {
-    expect(initialPortalAccountState('msp_invite')).toEqual({ status: 'invited', browserAccess: 'granted' });
+    expect(initialPortalAccountState('msp_invite')).toEqual({ status: 'invited', browserAccess: 'granted', disabledBy: null });
   });
 
   it('add-in JIT never starts with browser access', () => {
-    expect(initialPortalAccountState('addin_jit')).toEqual({ status: 'active', browserAccess: 'none' });
+    expect(initialPortalAccountState('addin_jit')).toEqual({ status: 'active', browserAccess: 'none', disabledBy: null });
   });
 
   it('an approved SSO request starts active with browser access (identity-only account, D2)', () => {
-    expect(initialPortalAccountState('sso_request_approved')).toEqual({ status: 'active', browserAccess: 'granted' });
+    expect(initialPortalAccountState('sso_request_approved')).toEqual({ status: 'active', browserAccess: 'granted', disabledBy: null });
   });
 
   it('an approved self-registration request starts invited with browser access, like an MSP invite', () => {
-    expect(initialPortalAccountState('self_request_approved')).toEqual({ status: 'invited', browserAccess: 'granted' });
+    expect(initialPortalAccountState('self_request_approved')).toEqual({ status: 'invited', browserAccess: 'granted', disabledBy: null });
   });
 
   it('self_registration_instant yields invited + granted, like an approved self request (W6, inv. 10)', () => {
-    expect(initialPortalAccountState('self_registration_instant')).toEqual({ status: 'invited', browserAccess: 'granted' });
+    expect(initialPortalAccountState('self_registration_instant')).toEqual({ status: 'invited', browserAccess: 'granted', disabledBy: null });
   });
 
   it('an instant-mode SSO account starts active with browser access, like an approved SSO request (W4)', () => {
-    expect(initialPortalAccountState('sso_instant')).toEqual({ status: 'active', browserAccess: 'granted' });
+    expect(initialPortalAccountState('sso_instant')).toEqual({ status: 'active', browserAccess: 'granted', disabledBy: null });
   });
 });
 
@@ -188,5 +196,219 @@ describe('isPasswordEligible / isBulkInviteEligible', () => {
     expect(isBulkInviteEligible(ACTIVE_WITH_HASH)).toBe(false);
     expect(isBulkInviteEligible(f({ hasPasswordHash: true }))).toBe(false);
     expect(isBulkInviteEligible(f({ status: 'pending' }))).toBe(false);
+  });
+});
+
+// ===========================================================================
+// W8 (#11385, plan D2/D3): directory_deprovision, disabled_by and the
+// usable-credential facts. Appended; every case above is unchanged.
+// ===========================================================================
+
+describe('W8 — directory_deprovision and disabled_by', () => {
+  it('directory_deprovision is in the writer census and yields disabled + disabled_by directory + bumpEpoch', () => {
+    // inv. 10: the state module plans it; browser access is left as it is.
+    expect(planPortalAccountTransition(ACTIVE_WITH_HASH, 'directory_deprovision'))
+      .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: true, disabledBy: 'directory' });
+    expect(planPortalAccountTransition(f(), 'directory_deprovision'))
+      .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: true, disabledBy: 'directory' });
+    expect(planPortalAccountTransition(ENTRA, 'directory_deprovision'))
+      .toEqual({ status: 'disabled', browserAccess: 'none', bumpEpoch: true, disabledBy: 'directory' });
+  });
+
+  it('directory_deprovision on a disabled account is a no-op that keeps disabled_by', () => {
+    // RF4: an MSP disable stays the MSP's; nothing in W8 overwrites it.
+    for (const by of ['msp', 'directory', 'scim'] as const) {
+      expect(planPortalAccountTransition(f({ status: 'disabled', disabledBy: by }), 'directory_deprovision'))
+        .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: false, disabledBy: by });
+    }
+  });
+
+  it('directory_deprovision on a disabled account whose disabled_by is unknown fails closed', () => {
+    expect(() => planPortalAccountTransition(f({ status: 'disabled' }), 'directory_deprovision')).toThrow(PortalAccountTransitionError);
+    expect(() => planPortalAccountTransition(f({ status: 'disabled', disabledBy: null }), 'directory_deprovision')).toThrow(PortalAccountTransitionError);
+    expect(() => planPortalAccountTransition(f({ status: 'disabled', disabledBy: 'nobody' as never }), 'directory_deprovision')).toThrow(PortalAccountTransitionError);
+  });
+
+  it('msp_disable always sets disabled_by msp, also over a directory disable', () => {
+    expect(planPortalAccountTransition(f({ status: 'disabled', disabledBy: 'directory' }), 'msp_disable'))
+      .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: true, disabledBy: 'msp' });
+  });
+
+  it('every transition out of disabled clears disabled_by', () => {
+    const writers: PortalAccountWriter[] = [
+      'msp_invite', 'msp_bulk_invite', 'msp_resend_invite', 'msp_disable', 'msp_reactivate', 'accept_invite',
+      'access_request_approve', 'sso_invite_accept', 'sso_instant_grant', 'msp_grant_browser_access', 'msp_sso_invite',
+      'directory_deprovision',
+    ];
+    const rows: PortalAccountFacts[] = [];
+    for (const status of ['invited', 'active', 'disabled']) {
+      for (const browserAccess of ['granted', 'none']) {
+        for (const authMethod of ['password', 'entra']) {
+          for (const hasPasswordHash of [false, true]) {
+            for (const hasExternalIdentity of [false, true]) {
+              for (const usable of [false, true]) {
+                rows.push(f({
+                  status, browserAccess, authMethod, hasPasswordHash, hasExternalIdentity,
+                  hasUsableExternalIdentity: hasExternalIdentity && usable,
+                  passwordUsable: hasPasswordHash && usable,
+                  ...(status === 'disabled' ? { disabledBy: 'directory' as const } : {}),
+                }));
+              }
+            }
+          }
+        }
+      }
+    }
+    let planned = 0;
+    let leftDisabled = 0;
+    for (const writer of writers) {
+      for (const facts of rows) {
+        let target;
+        try {
+          target = planPortalAccountTransition(facts, writer);
+        } catch (error) {
+          expect(error).toBeInstanceOf(PortalAccountTransitionError);
+          continue;
+        }
+        planned++;
+        // portal_users_disabled_by_status_chk, as a property of every plan.
+        expect(target.disabledBy !== null, `${writer} from ${facts.status}`).toBe(target.status === 'disabled');
+        if (facts.status === 'disabled' && target.status !== 'disabled') {
+          leftDisabled++;
+          expect(target.disabledBy).toBeNull();
+        }
+        // Only these writers cross the disabled boundary, so only they must write disabled_by.
+        if ((facts.status === 'disabled') !== (target.status === 'disabled')) {
+          expect(['msp_disable', 'msp_reactivate', 'directory_deprovision']).toContain(writer);
+        }
+      }
+    }
+    expect(planned).toBeGreaterThan(100);
+    expect(leftDisabled).toBeGreaterThan(0);
+  });
+});
+
+describe('W8 — usable credentials (D3)', () => {
+  it('msp_reactivate of an account whose only identity is disabled refuses: restore the sign-in method first', () => {
+    // Review fix (#11884): `invited` would be a dead end for an
+    // identity-managed account — invites refuse it, sign-in refuses a
+    // non-active account, and Restore only reactivates `disabled`.
+    const onlyDisabledIdentity = f({
+      status: 'disabled', disabledBy: 'directory', authMethod: 'entra', browserAccess: 'none',
+      hasExternalIdentity: true, hasUsableExternalIdentity: false,
+    });
+    expect(() => planPortalAccountTransition(onlyDisabledIdentity, 'msp_reactivate')).toThrow(expect.objectContaining({
+      code: PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST,
+      httpStatus: 409,
+      writer: 'msp_reactivate',
+      message: expect.stringMatching(/restore .*sign-in method first/i),
+    }));
+    // The same for a password row whose hash cannot sign in (sso_only) and whose only identity is disabled.
+    const ssoOnlyHashDisabledIdentity = f({
+      status: 'disabled', disabledBy: 'directory', hasPasswordHash: true, passwordUsable: false,
+      hasExternalIdentity: true, hasUsableExternalIdentity: false,
+    });
+    expect(() => planPortalAccountTransition(ssoOnlyHashDisabledIdentity, 'msp_reactivate'))
+      .toThrow(expect.objectContaining({ code: PORTAL_ACCOUNT_RESTORE_SIGN_IN_FIRST }));
+  });
+
+  it('msp_reactivate of an account with no identity rows and no password still returns it to invited (spec §5.1)', () => {
+    const noIdentityNoPassword = f({ status: 'disabled', disabledBy: 'msp', hasPasswordHash: false, hasExternalIdentity: false });
+    expect(planPortalAccountTransition(noIdentityNoPassword, 'msp_reactivate'))
+      .toEqual({ status: 'invited', browserAccess: 'granted', bumpEpoch: true, disabledBy: null });
+  });
+
+  it('msp_reactivate of an account with a hash under sso_only and no usable identity returns it to invited', () => {
+    // quorum D1: a hash that cannot sign in is not a credential.
+    const ssoOnlyHash = f({ status: 'disabled', disabledBy: 'msp', hasPasswordHash: true, passwordUsable: false, hasExternalIdentity: false });
+    expect(planPortalAccountTransition(ssoOnlyHash, 'msp_reactivate'))
+      .toEqual({ status: 'invited', browserAccess: 'granted', bumpEpoch: true, disabledBy: null });
+  });
+
+  it('msp_reactivate with a usable identity or a usable password returns to active', () => {
+    expect(planPortalAccountTransition(f({ status: 'disabled', disabledBy: 'msp', hasExternalIdentity: true, hasUsableExternalIdentity: true }), 'msp_reactivate'))
+      .toMatchObject({ status: 'active', disabledBy: null });
+    expect(planPortalAccountTransition(f({ status: 'disabled', disabledBy: 'directory', hasPasswordHash: true, passwordUsable: true, hasExternalIdentity: true, hasUsableExternalIdentity: false }), 'msp_reactivate'))
+      .toMatchObject({ status: 'active', disabledBy: null });
+  });
+
+  it('msp_reactivate refuses (fail closed) when the caller did not supply the usable-credential facts', () => {
+    const missing: PortalAccountFacts = { status: 'disabled', browserAccess: 'granted', authMethod: 'password', hasPasswordHash: true, hasExternalIdentity: false };
+    expect(() => planPortalAccountTransition(missing, 'msp_reactivate')).toThrow(PortalAccountTransitionError);
+  });
+
+  it('bulk invite still skips an account whose only identity is disabled (the any-identity fact)', () => {
+    expect(isBulkInviteEligible(f({ hasExternalIdentity: true, hasUsableExternalIdentity: false }))).toBe(false);
+  });
+
+  it('passwordUsableFor: a hash, password-eligible, and an effective allowed mode', () => {
+    expect(passwordUsableFor({ hasPasswordHash: true, authMethod: 'password' }, 'allowed')).toBe(true);
+    expect(passwordUsableFor({ hasPasswordHash: true, authMethod: 'password' }, 'sso_only')).toBe(false);
+    expect(passwordUsableFor({ hasPasswordHash: false, authMethod: 'password' }, 'allowed')).toBe(false);
+    expect(passwordUsableFor({ hasPasswordHash: true, authMethod: 'entra' }, 'allowed')).toBe(false);
+  });
+});
+
+// W9 (#11386, plan D4, D6): the SCIM writers. A SCIM deactivate disables an
+// account as 'scim'; a SCIM activate reactivates ONLY an account SCIM disabled.
+describe('W9 — SCIM writers', () => {
+  const SCIM_ACCOUNT = f({ status: 'active', authMethod: 'entra', hasExternalIdentity: true });
+
+  it('scim_provision starts active + granted with no disabled_by (spec §5.11)', () => {
+    expect(initialPortalAccountState('scim_provision')).toEqual({ status: 'active', browserAccess: 'granted', disabledBy: null });
+  });
+
+  it('scim_provision_inactive starts disabled by scim, with browser access kept for the later activate', () => {
+    expect(initialPortalAccountState('scim_provision_inactive')).toEqual({ status: 'disabled', browserAccess: 'granted', disabledBy: 'scim' });
+  });
+
+  it('every other initial state carries disabled_by null', () => {
+    for (const w of ['msp_invite', 'addin_jit', 'sso_request_approved', 'self_request_approved', 'sso_instant', 'self_registration_instant'] as const) {
+      expect(initialPortalAccountState(w).disabledBy).toBeNull();
+    }
+  });
+
+  it('scim_deprovision disables an active or invited account as scim and bumps the epoch', () => {
+    expect(planPortalAccountTransition(SCIM_ACCOUNT, 'scim_deprovision'))
+      .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: true, disabledBy: 'scim' });
+    expect(planPortalAccountTransition(f(), 'scim_deprovision'))
+      .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: true, disabledBy: 'scim' });
+  });
+
+  it('scim_deprovision on a disabled account is a no-op that keeps disabled_by (an MSP disable stays the MSP\'s)', () => {
+    for (const by of ['msp', 'directory', 'scim'] as const) {
+      expect(planPortalAccountTransition(f({ status: 'disabled', disabledBy: by }), 'scim_deprovision'))
+        .toEqual({ status: 'disabled', browserAccess: 'granted', bumpEpoch: false, disabledBy: by });
+    }
+  });
+
+  it('scim_reactivate re-activates only an account disabled by scim that has a usable credential', () => {
+    expect(planPortalAccountTransition(
+      f({ status: 'disabled', authMethod: 'entra', hasExternalIdentity: true, hasUsableExternalIdentity: true, disabledBy: 'scim' }),
+      'scim_reactivate',
+    )).toEqual({ status: 'active', browserAccess: 'granted', bumpEpoch: true, disabledBy: null });
+  });
+
+  it.each(['msp', 'directory'] as const)('scim_reactivate refuses an account disabled by %s (precedence)', (by) => {
+    expect(() => planPortalAccountTransition(
+      f({ status: 'disabled', authMethod: 'entra', hasExternalIdentity: true, hasUsableExternalIdentity: true, disabledBy: by }),
+      'scim_reactivate',
+    )).toThrow(PortalAccountTransitionError);
+  });
+
+  it('scim_reactivate refuses an account with no usable credential, and any non-disabled account', () => {
+    expect(() => planPortalAccountTransition(
+      f({ status: 'disabled', authMethod: 'entra', hasExternalIdentity: true, hasUsableExternalIdentity: false, disabledBy: 'scim' }),
+      'scim_reactivate',
+    )).toThrow(PortalAccountTransitionError);
+    expect(() => planPortalAccountTransition(SCIM_ACCOUNT, 'scim_reactivate')).toThrow(PortalAccountTransitionError);
+  });
+
+  it('scim_grant_browser_access grants an active add-in account without an epoch bump, and refuses disabled or invited', () => {
+    expect(planPortalAccountTransition(ENTRA, 'scim_grant_browser_access'))
+      .toEqual({ status: 'active', browserAccess: 'granted', bumpEpoch: false, disabledBy: null });
+    expect(() => planPortalAccountTransition(DISABLED_ENTRA, 'scim_grant_browser_access')).toThrow(PortalAccountTransitionError);
+    expect(() => planPortalAccountTransition(f({ status: 'invited', authMethod: 'entra', hasExternalIdentity: true }), 'scim_grant_browser_access'))
+      .toThrow(PortalAccountTransitionError);
   });
 });

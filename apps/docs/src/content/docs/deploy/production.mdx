@@ -32,7 +32,7 @@ The `pgvector` extension is required **only if you enable the Workspace built-in
 
 If you are already running on a stock image and want Workspace, either:
 
-- dump and restore into a freshly-initialized volume on the new image, or
+- dump and restore into a freshly-initialized volume on the new image (roles are not part of a database dump; see [Restoring into a new Postgres cluster](/security/backup/#restoring-into-a-new-postgres-cluster)), or
 - after the first start on the new image, run `REINDEX DATABASE <dbname>;` followed by `ALTER DATABASE <dbname> REFRESH COLLATION VERSION;`.
 
 If you do not need Workspace, keep the Postgres image you are already running.

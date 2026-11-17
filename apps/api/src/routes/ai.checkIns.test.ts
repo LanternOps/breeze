@@ -249,6 +249,7 @@ vi.mock('../services/aiModels/modelTransition', async (orig) => ({
 import { aiRoutes } from './ai';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { ContextWindowTooSmallError } from '../services/aiModels/sessionToolExposure';
 import { runPreFlightChecks } from '../services/aiAgentSdk';
 import { AiBudgetSessionBusyError, reserveAiBudget } from '../services/aiBudgetReservations';
 import { captureException } from '../services/sentry';
@@ -499,6 +500,17 @@ describe('POST /ai/sessions/:id/messages — fired Wisp check-ins (#10995)', () 
     vi.mocked(reserveAiBudget).mockRejectedValueOnce(new AiBudgetSessionBusyError('busy'));
     const res = await post(app);
     expect(res.status).toBe(409);
+    expect(ci.consume).not.toHaveBeenCalled();
+  });
+
+  it('#11396: a window too small for any tool profile is a 409 context_window_too_small, consuming nothing', async () => {
+    vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(new ContextWindowTooSmallError('chat', 4_096));
+    const res = await post(app);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This model\'s 4,096-token window is too small for Breeze chat tools.',
+      code: 'context_window_too_small',
+    });
     expect(ci.consume).not.toHaveBeenCalled();
   });
 

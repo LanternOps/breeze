@@ -280,6 +280,8 @@ describe('portal user invite→accept — end-to-end + tenant isolation', () => 
         email: 'disabled@acme.example',
         passwordHash: null,
         status: 'disabled',
+        // W8: CHECK portal_users_disabled_by_status_chk (an MSP disable).
+        disabledBy: 'msp',
       })
       .returning();
 

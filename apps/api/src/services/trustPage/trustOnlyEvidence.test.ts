@@ -9,7 +9,7 @@ import { loadTrustOnlyEvidence } from './trustOnlyEvidence';
 
 function selectChain(rows: unknown) {
   const p: any = Promise.resolve(rows);
-  for (const m of ['from', 'where', 'orderBy', 'limit']) p[m] = () => p;
+  for (const m of ['from', 'innerJoin', 'where', 'orderBy', 'limit']) p[m] = () => p;
   return p;
 }
 const ORG = '00000000-0000-0000-0000-000000000001';
@@ -31,7 +31,14 @@ function mockQueries(sync: unknown[], policies: unknown[] = []) {
   let i = 0;
   (db.select as any).mockImplementation(() => selectChain(seq[i++] ?? []));
 }
-const syncRow = (lastCompleteSnapshotAt: Date | null) => ({ lastCompleteSnapshotAt });
+type SyncOpts = { lastStatus?: string | null; connectionStatus?: string; connectionErrorCode?: string | null };
+/** One ca_policies sync row joined to its m365_connections row (healthy by default). */
+const syncRow = (lastCompleteSnapshotAt: Date | null, o: SyncOpts = {}) => ({
+  lastCompleteSnapshotAt,
+  lastStatus: o.lastStatus === undefined ? 'success' : o.lastStatus,
+  connectionStatus: o.connectionStatus ?? 'active',
+  connectionErrorCode: o.connectionErrorCode ?? null,
+});
 
 async function finalStatus() {
   const trustOnly = await loadTrustOnlyEvidence(ORG, AS_OF, TRUST_PAGE_EVIDENCE_POLICY);
@@ -85,5 +92,58 @@ describe('loadTrustOnlyEvidence (mfa_enforced_m365)', () => {
   it('several connections: the newest complete snapshot decides freshness', async () => {
     mockQueries([syncRow(STALE), syncRow(FRESH), syncRow(null)], [enforcing]);
     expect(await finalStatus()).toMatchObject({ status: 'met' });
+  });
+
+  describe('connection health gates the claim (#9087)', () => {
+    const NOT_ASSESSED = { eligible: 0, assessed: 0, passing: 0, aggregatePct: null, newestEvidenceAt: null };
+    async function evidenceFor(sync: unknown[]) {
+      mockQueries(sync, [enforcing]);
+      return (await loadTrustOnlyEvidence(ORG, AS_OF, TRUST_PAGE_EVIDENCE_POLICY)).mfa_enforced_m365;
+    }
+
+    it('a suspended connection reports no data even with a fresh CA snapshot', async () => {
+      expect(await evidenceFor([syncRow(FRESH, { connectionStatus: 'suspended' })])).toEqual(NOT_ASSESSED);
+      mockQueries([syncRow(FRESH, { connectionStatus: 'suspended' })], [enforcing]);
+      expect(await finalStatus()).toMatchObject({ status: 'not_assessed', reason: 'no_data' });
+    });
+
+    it('a degraded connection with a consent error code reports no data', async () => {
+      expect(await evidenceFor([syncRow(FRESH, { connectionStatus: 'degraded', connectionErrorCode: 'grant_missing' })])).toEqual(NOT_ASSESSED);
+    });
+
+    it('ca_policies needs_consent reports no data', async () => {
+      expect(await evidenceFor([syncRow(FRESH, { lastStatus: 'needs_consent' })])).toEqual(NOT_ASSESSED);
+    });
+
+    it('a revoked connection whose sync rows survived reports no data', async () => {
+      expect(await evidenceFor([syncRow(FRESH, { connectionStatus: 'revoked' })])).toEqual(NOT_ASSESSED);
+    });
+
+    it('a stale revoked row beside a healthy reconnected row keeps the healthy evidence', async () => {
+      const NEWER = new Date(FRESH.getTime() + 3_600_000);
+      const out = await evidenceFor([
+        syncRow(NEWER, { connectionStatus: 'revoked' }),
+        syncRow(FRESH, { connectionStatus: 'active' }),
+      ]);
+      // The revoked row is newer but filtered out; the healthy row decides the date.
+      expect(out).toEqual({ eligible: 1, assessed: 1, passing: 1, aggregatePct: null, newestEvidenceAt: FRESH.toISOString() });
+    });
+
+    it('a degraded connection with a transient error keeps the last snapshot', async () => {
+      expect(await evidenceFor([syncRow(FRESH, { connectionStatus: 'degraded', connectionErrorCode: 'graph_unavailable' })]))
+        .toMatchObject({ assessed: 1, passing: 1 });
+    });
+
+    it('throttled keeps the last snapshot', async () => {
+      expect(await evidenceFor([syncRow(FRESH, { lastStatus: 'throttled' })])).toMatchObject({ assessed: 1, passing: 1 });
+    });
+
+    it('an erroring sync keeps the last snapshot (freshness still bounds it)', async () => {
+      expect(await evidenceFor([syncRow(FRESH, { lastStatus: 'error' })])).toMatchObject({ assessed: 1, passing: 1 });
+    });
+
+    it('consent in progress (unknown verdict) keeps the last snapshot', async () => {
+      expect(await evidenceFor([syncRow(FRESH, { connectionStatus: 'verifying' })])).toMatchObject({ assessed: 1, passing: 1 });
+    });
   });
 });

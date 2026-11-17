@@ -79,8 +79,41 @@ volume with `agent_versions`. When everything is registered it writes nothing.
 When a row would change, it logs one warning, sets `"binarySyncPending": true`
 on `/health/ready` (informational; `ready` is unaffected) and re-checks every
 60 s. The first check that finds the database writable runs the normal sync and
-clears the flag. Sessions opened while the database was read-only keep that
-default until they reconnect, so recovery can wait on pool recycling.
+clears the flag.
+
+With `BINARY_SOURCE=github` (where a binary-sync failure is not fatal), a boot
+sync whose writes the read-only database refuses waits the same way: one
+warning, `"binarySyncPending": true`, a check every 60 s, and the sync runs
+again once the database accepts writes (#11741). Before this it re-synced only
+on the next restart. If that later sync fails on the network, it moves to the
+bounded network retry; a network retry that reaches a read-only database waits
+for writes instead.
+
+Shutdown stops all of these retries, including the deferred worker-startup
+writes below, so none runs against a closing pool.
+
+Sessions opened while the database was read-only keep that default after it
+becomes writable (`ALTER DATABASE ... SET` applies at session start). Each API
+and worker process watches for this (#11741): once a pooled session reports
+read-only, it checks a fresh session every 30 s (every 5 min once the
+database has been read-only for 30 min, so a standby stays cheap), and when that one accepts
+writes it terminates the idle request-pool sessions opened before that moment
+(same role, same database, the pool's `application_name`). The pool reconnects
+them with the current default. Busy sessions are left alone and handled on a
+later pass once idle. After 35 minutes the pool's own `max_lifetime` has
+retired any that are left.
+
+Worker initializers that write at startup (the CIS check catalog seed, the
+patch-settings repair) log one warning on a read-only database, start their
+worker anyway, and retry the write every 60 s until the database accepts it.
+An enabled built-in extension (`BREEZE_WORKSPACE_ENABLED`) loads from the state
+the last writable boot recorded: its migrations are only verified, and
+`installed_extensions` is not updated until the next writable boot. A pending
+extension migration or a first boot still exits with a `ReadOnlyDatabaseError`.
+
+While the database is read-only, each log source writes one line per minute
+for SQLSTATE 25006, with a count of what it suppressed, instead of a stack per
+failed write.
 
 The maximum supported readiness failure and recovery visibility threshold is
 10 seconds. `READINESS_CACHE_TTL_MS` defaults to 5,000 ms and

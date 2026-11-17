@@ -25,6 +25,7 @@ import { closeModelGateway, getModelGateway } from '.';
 import { prepareSdkChild } from '../connectionFactory';
 import { makeResolvedModel } from '../__fixtures__/resolvedModel';
 import { getLlmEgressProxy } from '../../llm/llmEgressProxy';
+import { SDK_PERMISSION_MODE } from '../../llm/sdkChildEnvGuards';
 
 const upstreamCalls: Array<{ model: string; messages: Array<{ role: string; content?: unknown }> }> = [];
 const upstreamAuth: Array<string | undefined> = [];
@@ -88,7 +89,7 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
         options: {
           model: r.wireModel, maxTurns: 4, tools: [], allowedTools: ['mcp__fidelity__get_weather'],
           mcpServers: { fidelity: createSdkMcpServer({ name: 'fidelity', version: '1.0.0', tools: [weather] }) },
-          settingSources: [], persistSession: false, env: child.env,
+          settingSources: [], permissionMode: SDK_PERMISSION_MODE, persistSession: false, env: child.env,
           // Exactly what both spawn sites pass for a gateway connection.
           ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
           stderr: (d: string) => { stderr.push(d); },
@@ -162,7 +163,7 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
         for await (const _m of query({
           prompt: 'hi',
           options: {
-            model: r.wireModel, maxTurns: 1, tools: [], settingSources: [], persistSession: false, env,
+            model: r.wireModel, maxTurns: 1, tools: [], settingSources: [], permissionMode: SDK_PERMISSION_MODE, persistSession: false, env,
             ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
           },
         })) { /* drain */ }
@@ -194,7 +195,7 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
         for await (const m of query({
           prompt,
           options: {
-            model: r.wireModel, maxTurns: 1, tools: [], settingSources: [], persistSession: true,
+            model: r.wireModel, maxTurns: 1, tools: [], settingSources: [], permissionMode: SDK_PERMISSION_MODE, persistSession: true,
             env: { ...child.env, CLAUDE_CONFIG_DIR: configDir },
             ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
             ...(resume ? { resume } : {}),

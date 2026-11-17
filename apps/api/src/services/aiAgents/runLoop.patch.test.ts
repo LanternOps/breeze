@@ -134,6 +134,12 @@ const closeAgentRunSession = vi.hoisted(() =>
   vi.fn<(sessionId: string, status: 'completed' | 'failed') => Promise<void>>());
 vi.mock('./executionLedger', () => ({
   createAgentRunSession, startToolExecution, completeToolExecution, reconcileHungExecutions, closeAgentRunSession,
+  recordRunTaskPrompt: vi.fn(async () => undefined), recordRunAssistantTurn: vi.fn(async () => undefined),
+}));
+// #11971: no hop of these runs was claimed before (the real lookup would read the mocked db).
+vi.mock('./agentRunFailover', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agentRunFailover')>()),
+  hopReservationSessionId: vi.fn(async () => undefined),
 }));
 
 const resolveEffectiveAgentSystem = vi.hoisted(() =>
@@ -302,7 +308,7 @@ function patchRaw(overrides: Partial<RawPatchEvidence['sections']> = {}): RawPat
     rollup: {
       devicesTotal: 3, devicesNonCompliant: 1, devicesCompliant: 2, outstandingPatches: 1,
       outstandingBySeverity: { critical: 1, important: 0, moderate: 0, low: 0, unrated: 0 },
-      oldestOutstandingDays: 30, snapshot: null,
+      oldestOutstandingDays: 30,
     },
     sections: {
       ringPosture: { rows: [], total: 0 },

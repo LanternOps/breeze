@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { ensureAppRole } from './ensureAppRole';
+import { ensureClusterRoles } from './ensureClusterRoles';
 import { ReadOnlyDatabaseError } from './readOnlyDatabase';
 import {
   acquireMigrationAdvisoryLock,
@@ -1001,6 +1002,13 @@ async function runCoreMigrations(
     assertAppRoleBootstrapped(roleEnsured, Boolean(roleRow[0]?.exists));
   }
 
+  // ── 6c. Roles only migrations create (breeze_audit_admin, breeze_search)
+  //        and breeze_app's membership. A database-only restore into a new
+  //        cluster loses them while the ledger still says the migrations ran
+  //        (#11929). Before the loop, so a pending migration that GRANTs to
+  //        them can apply. Never fatal; see ensureClusterRoles.ts.
+  await ensureClusterRoles(client, { phase: 'pre-migration' });
+
   // ── 7. Apply pending migrations ──────────────────────────────────────
   let appliedCount = 0;
   for (const migration of migrationPlan) {
@@ -1063,6 +1071,9 @@ async function runCoreMigrations(
   // ── 7b. Re-run ensureAppRole so any tables created in step 7 receive
   //        the standard privilege grants. Idempotent.
   await ensureAppRole();
+  // Then the object privileges a role-less restore drops for the
+  // migration-created roles (#11929).
+  await ensureClusterRoles(client, { phase: 'post-migration' });
 
   // ── 8. Auto-seed if no users exist ───────────────────────────────────
   if (!(await hasAnyUser(client))) {

@@ -2915,6 +2915,50 @@ describe('waitForIntentDecision', () => {
     const result = await waitForIntentDecision('missing-intent', 5000);
     expect(result).toBe('pending_approval');
   });
+
+  // #12098: a decision made during the last sleep (after the last poll)
+  // used to come back as pending_approval.
+  it('reads once more when the time runs out, returning a decision made during the last sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      // Polls at t=0 and t=500, then the 750 ms sleep outlasts the 1200 ms
+      // budget: the third read is the closing one.
+      dbState.selectActionIntentsResults.push(
+        [{ status: 'pending_approval' }],
+        [{ status: 'pending_approval' }],
+        [{ status: 'approved' }],
+      );
+      const promise = waitForIntentDecision('intent-1', 1200);
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(promise).resolves.toBe('approved');
+      expect(dbState.selectActionIntentsResults).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the one closing read on a zero budget', async () => {
+    dbState.selectActionIntentsResults.push([{ status: 'rejected' }]);
+    await expect(waitForIntentDecision('intent-1', 0)).resolves.toBe('rejected');
+    expect(dbState.selectActionIntentsResults).toHaveLength(0);
+  });
+
+  it('skips the closing read when the wait is settled during a sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      dbState.selectActionIntentsResults.push([{ status: 'pending_approval' }], [{ status: 'approved' }]);
+      const promise = waitForIntentDecision('intent-1', 5000, controller.signal);
+      await vi.advanceTimersByTimeAsync(100);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(promise).resolves.toBe('pending_approval');
+      // The queued second read was never taken.
+      expect(dbState.selectActionIntentsResults).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

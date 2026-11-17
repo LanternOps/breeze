@@ -989,6 +989,8 @@ export interface CaptureMessageOptions {
   eventCode: SentryEventCode;
   level?: 'info' | 'warning' | 'error';
   tags?: Record<string, string>;
+  /** Group every event of this call site under fixed, BOUNDED literals (never an id), as `captureException` does. */
+  fingerprint?: readonly string[];
 }
 
 // There is deliberately NO `extra` field. The old one was dead twice over: this
@@ -1006,11 +1008,12 @@ export function captureMessage(message: string, options: CaptureMessageOptions):
     return;
   }
 
-  const { eventCode, level = 'warning', tags } = options;
+  const { eventCode, level = 'warning', tags, fingerprint } = options;
 
   Sentry.withScope((scope) => {
     scope.setLevel(level);
     setCallerTags(scope, tags);
+    if (fingerprint) scope.setFingerprint([...fingerprint]);
     // Set AFTER the caller's tags so a `tags: { event_code: ... }` bag can never
     // override the call site's own code, and guarded so an unregistered value
     // arriving from untyped JS degrades to a named sentinel rather than an

@@ -15,8 +15,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // fullManifestFixture returns a manifest with every serialized Snapshot field
@@ -267,10 +265,10 @@ func TestDownloadVerifiedManifestLargeManifestBoundedMemory(t *testing.T) {
 		entries = 100_000
 		dirs    = 1_000
 	)
-	baseDir := t.TempDir()
+	baseDir := privateStoreTempDir(t)
 	snapshotID := "big-manifest"
 	size := writeLargeManifest(t, baseDir, snapshotID, entries, dirs)
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 	selected := []string{"/data/dir-0007"}
 	// The sampler must run while the decode does. With one P (go test
 	// -cpu 1, a single-vCPU runner) the decoding goroutine holds it and only

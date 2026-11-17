@@ -1,15 +1,19 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db } from '../db';
 import { actionIntents, intentOutbox } from '../db/schema/actionIntents';
 import type { ActionIntentSource } from '../db/schema/actionIntents';
-import { approvalRequests } from '../db/schema/approvals';
 import { aiToolExecutions } from '../db/schema/ai';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
-import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
+import { recordActionIntentMetric } from '../services/actionIntents/metrics';
+import {
+  extractRows,
+  recordIntentExpiries,
+  type ExpiredIntentRow,
+} from '../services/actionIntents/intentExpiry';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { scheduleFlowRunWake } from '../services/flows/wake';
 import { attachWorkerObservability } from './workerObservability';
@@ -128,24 +132,6 @@ function getQueue(): Queue<ReaperJobData> {
   return reaperQueue;
 }
 
-// `type` (not `interface`) so TS's implicit index signature for object type
-// literals applies — `db.execute<T>`'s constraint is `Record<string,
-// unknown>`, which a plain `interface` declaration does not structurally
-// satisfy without an explicit `[key: string]: unknown` member (TS2344).
-type ExpiredIntentRow = {
-  id: string;
-  org_id: string;
-  action_name: string;
-  argument_digest: string;
-  source: string;
-  requested_by_user_id: string | null;
-  expires_at: Date;
-  /** #5205 W05 (#5210): non-null iff this is an AI Operator task-linked intent. */
-  task_id: string | null;
-  /** Tool catalog W04 (#5219): non-null iff this is a flow-origin intent. */
-  requesting_flow_run_id: string | null;
-};
-
 type StaleExecutingIntentRow = {
   id: string;
   org_id: string;
@@ -159,11 +145,6 @@ type StaleExecutingIntentRow = {
   /** Tool catalog W04 (#5219): non-null iff this is a flow-origin intent. */
   requesting_flow_run_id: string | null;
 };
-
-function extractRows<T>(result: unknown): T[] {
-  const rows = (result as { rows?: T[] }).rows ?? (result as T[]);
-  return Array.isArray(rows) ? rows : [];
-}
 
 /**
  * Flips `pending_approval` intents past `approval_expires_at` and `approved`
@@ -214,89 +195,13 @@ export async function reapExpiredIntents(): Promise<number> {
     return 0;
   }
 
-  const intentIds = rows.map((r) => r.id);
-
-  // Expire any still-pending approval rows fanned out for these intents —
-  // approval does not stop the clock, so an approved intent can still have
-  // sibling rows sitting `pending` when it times out.
-  //
-  // NOTE ON ERROR HANDLING IN THIS FUNCTION. The whole pass runs inside ONE
-  // Postgres transaction (`runWithSystemDbAccess(reapExpiredIntents)` ->
-  // withSystemDbAccessContext -> baseDb.transaction). Catching a database error
-  // in JS does NOT un-abort that transaction: the backend is left in 25P02,
-  // every later statement fails, and the final COMMIT is silently converted to
-  // ROLLBACK without raising. So a swallowed failure here does not "carry on
-  // without the approval rows" — it discards the intent expiry too, while the
-  // caller still returns rows.length and logs "Expired N intents", and the
-  // fire-and-forget audit event records an expiry that never committed.
-  //
-  // Both statements below therefore PROPAGATE. Failing the pass is the honest
-  // outcome: nothing commits, the worker logs and reports it, and the next tick
-  // retries the same rows. This catch used to swallow, which is why it is
-  // called out rather than quietly deleted.
-  await db
-    .update(approvalRequests)
-    .set({ status: 'expired', decidedAt: new Date() })
-    .where(and(eq(approvalRequests.status, 'pending'), inArray(approvalRequests.intentId, intentIds)));
-
-  // Record the outcome so the requester can be told. The reaper previously
-  // mutated intent and approval rows and wrote an audit event, but no outbox
-  // row — so an intent that timed out simply went quiet on the person who asked
-  // for it.
-  //
-  // Atomic with the expiry above, and propagating for the reason in the note:
-  // an expiry that commits without its outbox row is an intent nobody is ever
-  // told about, and there is no repair path because the reaper will not see
-  // those rows again (their status is no longer pending_approval/approved).
-  await db.insert(intentOutbox).values(
-    rows.map((row) => ({
-      intentId: row.id,
-      eventType: 'intent_expired' as const,
-      // Ids only, matching the approve/deny rows — no argument content.
-      payload: { intentId: row.id, orgId: row.org_id },
-    })),
-  );
-
-  // #5205 W05 (#5210), spec §6.3: task-linked rows also need the task_outbox
-  // wake, atomically with the expiry above (same transaction as the CTE
-  // UPDATE and the intentOutbox insert — this whole pass runs inside ONE
-  // Postgres transaction, see the file-header note on why errors here must
-  // propagate rather than be swallowed).
-  for (const row of rows) {
-    if (row.task_id) {
-      await enqueueTaskOutbox(db, {
-        orgId: row.org_id,
-        taskId: row.task_id,
-        sourceKind: 'intent',
-        sourceId: row.id,
-        transitionSeq: INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ.intent_expired,
-      });
-    }
-    // Tool catalog W04 (#5219): this writer bypasses publishIntentTerminalOutbox,
-    // so it wakes a parked flow run itself — registered in THIS transaction,
-    // run only after it commits (services/flows/wake.ts).
-    if (row.requesting_flow_run_id) scheduleFlowRunWake(row.requesting_flow_run_id);
-  }
-
-  for (const row of rows) {
-    try {
-      recordActionIntentEvent({
-        orgId: row.org_id,
-        intentId: row.id,
-        actionName: row.action_name,
-        argumentDigest: row.argument_digest,
-        source: row.source as ActionIntentSource,
-        outcome: 'expired',
-        details: {
-          requestedByUserId: row.requested_by_user_id,
-          expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : row.expires_at,
-        },
-      });
-    } catch (err) {
-      console.error('[IntentExpiryReaper] Failed to write audit event:', err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
-    }
-  }
+  // The approval-row expiry, outbox rows, wakes and audit events, shared with
+  // the chat's own close-out (#12098) so both expiry writers leave the same
+  // rows. Its database writes propagate on purpose: this whole pass runs in
+  // ONE transaction (`runWithSystemDbAccess(reapExpiredIntents)`), and a
+  // swallowed error there would silently roll the intent expiry back while
+  // this pass still reported it. Failing the pass lets the next tick retry.
+  await recordIntentExpiries(rows);
 
   if (rows.length === MAX_REAP_PER_RUN) {
     console.warn(`[IntentExpiryReaper] Hit ${MAX_REAP_PER_RUN}-item cap — backlog may be growing`);

@@ -21,6 +21,7 @@
  * group of its own organization.
  */
 import { and, asc, eq, ne, or, sql, type SQL } from 'drizzle-orm';
+import { isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import { db } from '../db';
 import { pamOrgConfig, pamRules, pamSignerGroups } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
@@ -391,7 +392,7 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
 
   // delete_signer_group: refused while any rule references it (route parity), so matching never changes.
   // The group row is locked FOR UPDATE, so a rule insert referencing it (FK KEY SHARE) waits for this
-  // transaction and the reference count is current; the FK is RESTRICT, so a lost race is a 23503, not a dangling rule.
+  // transaction and the reference count is current; the FK is RESTRICT, so a lost race is a foreign-key refusal (23503, or 23001 on Postgres 18), not a dangling rule.
   try {
     const removed = await db.transaction(async (tx) => {
       const [existing] = await tx.select().from(pamSignerGroups).where(eq(pamSignerGroups.id, groupId)).limit(1).for('update');
@@ -405,7 +406,7 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
     return json({ deleted: true, signerGroupId: removed.id });
   } catch (error) {
     if (error instanceof Refusal) return error.result;
-    if (pgErrorCode(error) === '23503') return jsonError('Signer group is used by a rule; remove that reference first', 'IN_USE');
+    if (isPgForeignKeyViolationCode(pgErrorCode(error))) return jsonError('Signer group is used by a rule; remove that reference first', 'IN_USE');
     throw error;
   }
 }

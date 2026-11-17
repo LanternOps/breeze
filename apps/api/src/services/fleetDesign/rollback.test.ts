@@ -26,6 +26,7 @@ vi.mock('../deviceFunction', () => deviceFunctionMock);
 
 const groupMembershipMock = vi.hoisted(() => ({
   addManualGroupMemberships: vi.fn(async () => ({ added: [], skipped: 0 })),
+  removeManualGroupMemberships: vi.fn(async () => ({ removed: [], notMember: [] })),
   validateManualMembershipDevices: vi.fn(async () => ({ ok: true })),
 }));
 vi.mock('../groupMembership', () => groupMembershipMock);
@@ -523,7 +524,8 @@ describe('rollbackFleetDesign — function row (group + assessments)', () => {
 
     const result = await rollbackFleetDesign(makeAuth(), RUN);
 
-    expect(dbHolder.deletes).toContainEqual({ table: deviceGroupMemberships, where: expect.anything() });
+    // Removed through the shared manual writer (export lock before the rows).
+    expect(groupMembershipMock.removeManualGroupMemberships).toHaveBeenCalledWith({ groupId: 'g1', deviceIds: ['d1'] });
     expect(groupMembershipMock.addManualGroupMemberships).toHaveBeenCalledWith({ groupId: 'g1', orgId: ORG, deviceIds: ['d3'] });
     expect(deviceGroupDeleteMock.deleteDeviceGroup).not.toHaveBeenCalled();
     expect(result.rolledBack).toEqual(['functions:file_server']);

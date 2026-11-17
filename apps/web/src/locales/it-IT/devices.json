@@ -1465,6 +1465,19 @@
         "unknown": "si è verificato un errore non riconosciuto"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bloccato da un filtro di rete",
+      "titleUntrustedCertificate": "Certificato del server non attendibile",
+      "webFilter": "Un filtro di sicurezza sulla rete di questo dispositivo sta rispondendo al posto del server Breeze ({{locationHost}}). Di solito si tratta di una funzione di sicurezza del router del provider, di un filtro web del firewall o di una pagina di accesso alla rete.",
+      "captivePortal": "La rete di questo dispositivo trattiene le connessioni su una pagina di accesso (captive portal).",
+      "plaintextUnknown": "Qualcosa sulla rete di questo dispositivo ha risposto alla connessione Breeze in HTTP non cifrato invece che in TLS.",
+      "untrustedCertificate": "La connessione al server Breeze ha presentato un certificato che questo dispositivo non considera attendibile (emesso da {{certIssuer}}). Di solito si tratta di un'ispezione TLS da parte di un firewall o di un proxy, di un problema di certificato su un server self-hosted o di un archivio dei certificati radice obsoleto su questo dispositivo. Breeze non lo aggirerà.",
+      "viaEch": "Attualmente raggiungibile tramite Encrypted Client Hello.",
+      "cleared": "Bloccato dal {{from}} al {{to}}.",
+      "lastKnown": "Ultima segnalazione: {{time}}. Da allora il dispositivo non ha più inviato segnalazioni, quindi potrebbe non essere più valido.",
+      "howToFix": "Come risolvere",
+      "noDetail": "nessun dettaglio"
+    },
     "logShipping": {
       "label": "Invio dei log",
       "state": {
@@ -1661,6 +1674,12 @@
     "online": "Online"
   },
   "deviceList": {
+    "diskUsage": "Utilizzo dei dischi",
+    "diskUsageScope": "Dischi da visualizzare",
+    "allDisks": "Tutti i dischi",
+    "osDiskOnly": "Solo il disco di sistema",
+    "sortByDiskUsage": "Ordina per utilizzo dei dischi (valore più alto visualizzato)",
+    "osDiskUsageUnavailable": "L’agente non ha ancora identificato il disco di sistema.",
     "selectedComposition": "{{agent}} con agente, {{network}} di rete",
     "agentOnlyBulkAction": "Si applica solo ai dispositivi con agente",
     "eligibleOfSelected": "{{count}} di {{total}}",
@@ -1682,6 +1701,7 @@
       "lastSeen": "Ultimo contatto",
       "serial": "Seriale",
       "productSku": "Numero di prodotto",
+      "hardwareModel": "Modello",
       "assetTag": "Tag risorsa",
       "location": "Posizione",
       "source": "Origine"
@@ -1700,6 +1720,7 @@
       "lastSeen": "Ordina per ultimo rilevamento",
       "serial": "Ordina per numero di serie",
       "productSku": "Ordina per numero di prodotto",
+      "hardwareModel": "Ordina per modello",
       "assetTag": "Ordina per tag risorsa",
       "location": "Ordina per posizione",
       "source": "Ordina per origine"
@@ -1857,6 +1878,9 @@
       "unmanagedInstall": "Breeze Assist non è stato installato da Breeze e la distribuzione è disattivata, quindi l’agente lo lascia invariato.",
       "unknown": "Breeze Assist è abilitato ma non installato."
     },
+    "controlPlaneBlockBadge": "Filtro di rete",
+    "controlPlaneBlockBadgeCertificate": "Certificato non attendibile",
+    "controlPlaneBlockLastKnownTooltip": "Ultima segnalazione: {{time}}; da allora il dispositivo non ha più inviato segnalazioni.",
     "agentVersionRelation": {
       "equalTooltip": "Corrisponde alla versione effettiva {{version}}",
       "aheadTooltip": "In anticipo rispetto al pin {{version}}",
@@ -2811,6 +2835,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (si è verificato un errore imprevisto; riprova)",
       "deviceMovedToSite": "{{hostname}} spostato in un nuovo sito",
       "bulkWakeResult": "Inviato a {{sent}}, saltati {{skipped}}",
+      "bulkWakePolicySkipped": "{{count}} saltati per la policy Wake-on-LAN",
+      "bulkWakeAllBlockedByPolicy": "Nessun wake inviato: {{count}} bloccati dalla policy Wake-on-LAN",
+      "bulkWakeLookupFailedSkipped": "{{count}} non è stato possibile verificarli, riprova",
+      "bulkWakeAllLookupFailed": "Nessun wake inviato: {{count}} non è stato possibile verificarli, riprova",
       "scriptQueuedOneOffline": "Script \"{{script}}\" in coda per {{hostname}} — verrà eseguito quando il dispositivo si riconnette"
     },
     "tryAgain": "Prova di nuovo",
@@ -2860,7 +2888,9 @@
       "relayDisconnected": "relay disconnesso durante l’invio — riprovare",
       "missingTarget": "non trovati o accesso negato",
       "removed": "rimossi",
-      "invalidRelay": "con selezione del relay non valida"
+      "invalidRelay": "con selezione del relay non valida",
+      "policyNotReady": "bloccati dalla loro policy Wake-on-LAN (non pronti)",
+      "policyLookupFailed": "la cui policy Wake-on-LAN non è stato possibile verificare — riprovare"
     }
   },
   "filterAddDropdown": {
@@ -3780,6 +3810,7 @@
     "deleteTitle": "Elimina \"{{name}}\"",
     "empty": "Non ci sono ancora viste salvate. Crea un filtro, quindi salvalo come vista.",
     "manageAll": "Gestisci tutte le viste",
+    "ownerOrgHint": "Le viste appartengono a una sola organizzazione. Scegli quella a cui appartiene questa vista.",
     "saveCurrent": "Salva filtro corrente come vista...",
     "saveCurrentTitle": "Salva il filtro corrente come vista",
     "setDefaultTitle": "Imposta come vista predefinita",
@@ -3838,7 +3869,11 @@
     "oldDeviceUnavailable": "La scheda del vecchio dispositivo non è più disponibile.",
     "title": "Possibile registrazione duplicata",
     "unknownDevice": "il dispositivo precedente",
-    "viewOldDevice": "Visualizza il vecchio dispositivo"
+    "viewOldDevice": "Visualizza il vecchio dispositivo",
+    "reattach": "Ricollega",
+    "reattachPending": "Un ricollegamento al vecchio record è in sospeso: la nuova installazione lo completa quando il suo agente si collega. La richiesta scade il {{expiresAt}}.",
+    "reviewPending": "Una possibile reinstallazione attende la revisione del partner.",
+    "reattachPendingOther": "Un ricollegamento di questo dispositivo è in sospeso. La richiesta scade il {{expiresAt}}."
   },
   "fleetPosture": {
     "securityUnavailable": "Impossibile caricare i rilievi di sicurezza sull'accesso remoto per questa vista.",
@@ -4271,7 +4306,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Limite di dispositivi raggiunto",
       "STEP_UP_REQUIRED": "Conferma richiesta",
       "ASSIGNMENT_FAILED": "Non riuscito"
-    }
+    },
+    "modeLegend": "Cosa fare con questo dispositivo",
+    "modeAssign": "Assegna come nuovo dispositivo",
+    "modeReattach": "Ricollega a {{hostname}} (reinstallazione di un record esistente)",
+    "reattachPending": "Un ricollegamento di questo dispositivo è in sospeso: la nuova installazione lo completa quando il suo agente si collega. La richiesta scade il {{expiresAt}}.",
+    "cancelReattachConfirm": "Assegnare questo dispositivo come nuovo annulla il ricollegamento in sospeso. Ho capito."
   },
   "timeFleet": {
     "title": "Sincronizzazione dell’ora",
@@ -4860,6 +4900,7 @@
     "startDescription": "Blocca il traffico di rete tranne le comunicazioni di gestione Breeze.",
     "releaseDescription": "Richiedi la rimozione delle regole di isolamento Breeze. Un dispositivo offline riceve la richiesta alla riconnessione.",
     "serverWarning": "Questo è un sistema operativo server. L’isolamento può interrompere i servizi per altri dispositivi.",
+    "deadManUnsupported": "La policy di contenimento di questo dispositivo imposta un rilascio dead-man, ma la versione del suo agent non lo supporta. Il dispositivo verrà isolato senza di esso.",
     "reason": "Motivo",
     "ttlHours": "Durata (ore)",
     "incidentId": "ID incidente esistente (facoltativo)",
@@ -4883,6 +4924,20 @@
     "codeNext": "Codice della prossima ora",
     "codeValidUntil": "Codice attuale valido fino a {{date}}",
     "codeError": "Impossibile caricare i codici di emergenza. Riprova.",
+    "tabCode": "Codice di emergenza",
+    "tabToken": "Token di rilascio",
+    "issueToken": "Emetti token di rilascio",
+    "hideToken": "Nascondi token",
+    "tokenLabel": "Token di rilascio",
+    "copyToken": "Copia token",
+    "tokenCopied": "Copiato",
+    "tokenCopyError": "Impossibile copiare il token. Selezionalo e copialo manualmente.",
+    "tokenQrAlt": "Codice QR contenente il token di rilascio",
+    "tokenValidUntil": "Token valido fino a {{date}}",
+    "tokenCommandHint": "Sul dispositivo isolato, esegui questo comando come amministratore o root, sostituendo <token> con il token:",
+    "tokenError": "Impossibile emettere un token di rilascio. Riprova.",
+    "tokenUnavailable": "Nessun token di rilascio è disponibile per questo isolamento.",
+    "codesDisabledNote": "I codici di emergenza sono disattivati per questo dispositivo. Usa invece un token di rilascio firmato.",
     "incidentHeading": "Isolamento di rete",
     "retry": "Riprova lo stato di isolamento",
     "filterLabel": "Isolato",
@@ -5046,5 +5101,86 @@
       "previousPage": "Precedente",
       "nextPage": "Successivo"
     }
+  },
+  "reinstalledBadge": {
+    "label": "Reinstallato il {{date}}",
+    "title": "Questo record ha preso in carico una macchina reinstallata il {{at}}. La nuova installazione ne ha ricostruito l’inventario."
+  },
+  "reattachDialog": {
+    "title": "Ricollega a {{target}}",
+    "description": "Usa il record esistente {{target}} per la nuova installazione {{source}}, mantenendone cronologia, criteri e configurazione.",
+    "newInstall": "Nuova installazione",
+    "existingRecord": "Record esistente",
+    "holdingArea": "Area di attesa",
+    "fields": {
+      "hostname": "Nome host",
+      "os": "Sistema operativo",
+      "model": "Produttore e modello",
+      "serial": "Numero di serie",
+      "systemUuid": "UUID di sistema",
+      "agentVersion": "Versione dell’agente",
+      "place": "Organizzazione / sito",
+      "enrolledAt": "Registrato il",
+      "lastSeenAt": "Ultima attività"
+    },
+    "matchedOn": "Corrispondenza su: {{evidence}}",
+    "evidence": {
+      "systemUuid": "UUID di sistema",
+      "serial": "numero di serie e produttore",
+      "hostname": "solo nome host",
+      "other": "identificatori segnalati"
+    },
+    "evidenceNoticeHint": "Identificatori hardware segnalati dal dispositivo. Non verificati.",
+    "evidenceNoticeTpm": "Stessa chiave di approvazione TPM di cui la vecchia installazione ha dimostrato il possesso. Ciò dimostra la continuità della chiave, non lo stesso TPM fisico; i TPM virtuali clonati condividono le chiavi.",
+    "consequences": "La nuova installazione ricostruisce l’inventario di {{target}}. Il lavoro in coda, le autorizzazioni e le sessioni della vecchia installazione vengono annullati e il record {{source}} viene ritirato.",
+    "possession": "Ho confermato, al di fuori di Breeze, che la nuova installazione è in esecuzione sulla macchina descritta da {{target}}.",
+    "acknowledgeOsChange": "La nuova installazione segnala {{sourceOs}} e il record esistente {{targetOs}}. Confermo che il sistema operativo è cambiato.",
+    "restoreDecommissioned": "{{target}} è stato rimosso. Ripristinalo nell’ambito di questo ricollegamento.",
+    "confirmNameLabel": "Digita {{hostname}} per confermare",
+    "stepUpHeading": "Conferma la tua identità",
+    "stepUpIntro": "Il ricollegamento ritira un record di dispositivo. Verifica con il secondo fattore per continuare.",
+    "stepUpPasskeyNote": "Il browser chiederà la tua passkey quando continui.",
+    "stepUpCodeLabel": "Codice dell’autenticatore",
+    "stepUpRetry": "Questa verifica è scaduta o non corrisponde più. Inserisci un nuovo codice.",
+    "noStepUpFactor": "Il ricollegamento richiede una passkey o un’app di autenticazione. Configurane una nel profilo, poi riprova.",
+    "genericError": "Impossibile richiedere il ricollegamento. Riprova.",
+    "cancel": "Annulla",
+    "close": "Chiudi",
+    "submit": "Ricollega a {{hostname}}",
+    "submitting": "Richiesta in corso…",
+    "submitStepUp": "Verifica e ricollega",
+    "requestedToast": "Ricollegamento a {{hostname}} richiesto",
+    "pendingTitle": "Ricollegamento richiesto",
+    "pendingMessage": "{{source}} prende il posto di {{target}} alla prossima connessione del suo agente; qui non serve altro. La richiesta scade il {{expiresAt}}.",
+    "refusals": {
+      "device_not_found": "Uno dei dispositivi non esiste più o è fuori dal tuo accesso.",
+      "not_partner_user": "Solo gli utenti del partner possono ricollegare i dispositivi.",
+      "user_inactive": "Il tuo account non è attivo.",
+      "permission_denied": "Ti serve l’autorizzazione a modificare e rimuovere i dispositivi nelle organizzazioni di entrambi i dispositivi.",
+      "org_access_denied": "Non hai accesso alle organizzazioni di entrambi i dispositivi.",
+      "full_admin_required": "Ricollegare un dispositivo dall’area di attesa in base a identificatori segnalati richiede un amministratore completo del partner.",
+      "partner_mismatch": "I dispositivi non appartengono più al tuo partner.",
+      "MFA_REQUIRED": "Il ricollegamento richiede una sessione con autenticazione a due fattori. Accedi di nuovo con il secondo fattore.",
+      "target_alive": "{{hostname}} è ancora in uso: la sua installazione si è autenticata di recente. Il ricollegamento richiede che la vecchia installazione sia inattiva.",
+      "liveness_unknown": "Impossibile verificare se {{hostname}} è ancora in uso. Riprova tra poco.",
+      "os_changed": "I sistemi operativi sono diversi. Conferma il cambio di sistema operativo e riprova.",
+      "target_changed": "{{hostname}} è cambiato da quando è stato mostrato (nuova registrazione o ricollegamento). Riapri il ricollegamento per vederne lo stato attuale.",
+      "rebind_unsupported": "L’agente della nuova installazione è troppo vecchio per il ricollegamento. Aggiorna prima l’agente.",
+      "source_decommissioned": "Il record della nuova installazione è stato rimosso.",
+      "source_ineligible": "Questo dispositivo non può essere ricollegato: i dispositivi di Supporto rapido non possono.",
+      "target_ephemeral": "{{hostname}} è un dispositivo temporaneo e non può ricevere un ricollegamento.",
+      "target_decommissioned": "{{hostname}} è stato rimosso. Scegli di ripristinarlo per ricollegarvi il dispositivo.",
+      "target_ineligible": "{{hostname}} non è un record gestito.",
+      "target_retired": "{{hostname}} è già stato ritirato da un ricollegamento precedente.",
+      "device_quarantined": "Uno dei dispositivi è in quarantena.",
+      "device_suspended": "Uno dei dispositivi ha le credenziali dell’agente sospese.",
+      "org_draining": "L’organizzazione di uno dei dispositivi non è attiva.",
+      "device_in_open_intent": "Uno dei dispositivi è già in un ricollegamento in sospeso.",
+      "confirm_target_name_required": "Digita il nome del dispositivo esistente per confermare.",
+      "confirm_target_name_mismatch": "Il nome digitato non corrisponde a {{hostname}}.",
+      "same_device": "Un dispositivo non può essere ricollegato a sé stesso.",
+      "invalid_target_version": "Manca la versione del record esistente. Riapri il ricollegamento."
+    },
+    "stepUpHeld": "La tua verifica è ancora valida per questo ricollegamento."
   }
 }

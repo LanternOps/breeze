@@ -26,6 +26,7 @@
  * conditional access: it is the section an auditor opens the document to read.
  */
 import type { jsPDF } from 'jspdf';
+import type { ReportFormatChrome } from './reportLocale';
 import { autoTable } from 'jspdf-autotable';
 import type {
   AdminSigninRow,
@@ -50,7 +51,7 @@ export type PdfChrome = {
   drawFooter: (doc: jsPDF) => void;
   drawTitleBlock: (doc: jsPDF, title: string, subtitle: string, meta: string, top: number) => number;
   drawSectionHeading: (doc: jsPDF, text: string, y: number) => number;
-};
+} & ReportFormatChrome;
 
 export type IdentityAccessPdfOpts = {
   generatedAt: string;
@@ -69,13 +70,14 @@ const NA = 'N/A';
  *  generator already capped and disclosed the underlying set. */
 const ADMIN_TABLE_MAX = 500;
 
-function dateOnly(value: string | null | undefined): string {
-  return value ? value.slice(0, 10) : NA;
+/** A date in the report's one format (#12048), or N/A. */
+function dateOnly(chrome: PdfChrome, value: string | null | undefined): string {
+  return chrome.formatDate(value) ?? NA;
 }
 
-function dateTime(value: string | null | undefined): string {
-  if (!value) return NA;
-  return `${value.slice(0, 10)} ${value.slice(11, 16)}`;
+/** A date and time with its timezone, in the report's format, or N/A. */
+function dateTime(chrome: PdfChrome, value: string | null | undefined): string {
+  return chrome.formatDateTime(value) ?? NA;
 }
 
 /** A measured count, or `N/A` — the whole point of the type's nullable counts. */
@@ -143,12 +145,10 @@ function bucketLine(counts: Record<string, number> | null | undefined, emptyText
     .join('   ·   ');
 }
 
-function coverageMeta(coverage: SigninCoverage | undefined, generatedAt: string): string {
-  const period = coverage?.periodStart && coverage?.periodEnd
-    ? `${dateOnly(coverage.periodStart)} to ${dateOnly(coverage.periodEnd)}`
-    : 'an unstated period';
+function coverageMeta(chrome: PdfChrome, coverage: SigninCoverage | undefined, generatedAt: string): string {
+  const period = chrome.formatPeriod(coverage?.periodStart, coverage?.periodEnd) ?? 'an unstated period';
   // "interactive sign-ins" on the face of the report, never widened to "all".
-  return `Interactive sign-ins for ${period}   ·   Prepared ${generatedAt}`;
+  return [`Interactive sign-ins for ${period}`, `Prepared ${generatedAt}`].join(chrome.metaSeparator);
 }
 
 function mfaWord(value: boolean | null): string {
@@ -178,7 +178,7 @@ export function renderIdentityAccessReport(
     doc,
     'Identity & Access Review',
     summary.orgName ?? '',
-    coverageMeta(coverage, opts.generatedAt),
+    coverageMeta(chrome, coverage, opts.generatedAt),
     PAGE.bandH + 14,
   );
 
@@ -202,8 +202,8 @@ export function renderIdentityAccessReport(
   y = drawProse(
     doc,
     chrome,
-    `Interactive sign-in events held from ${dateOnly(coverage?.coveredFrom)} to ${dateOnly(coverage?.coveredTo)}`
-    + `   ·   Last complete Microsoft 365 snapshot ${dateOnly(coverage?.asOf)}`
+    `Interactive sign-in events held from ${dateOnly(chrome, coverage?.coveredFrom)} to ${dateOnly(chrome, coverage?.coveredTo)}`
+    + `   ·   Last complete Microsoft 365 snapshot ${dateOnly(chrome, coverage?.asOf)}`
     + `${coverage?.lastStatus ? ` (${coverage.lastStatus})` : ''}`
     + '   ·   Non-interactive, service-principal and managed-identity sign-ins are not collected.',
     y,
@@ -313,7 +313,7 @@ export function renderIdentityAccessReport(
       margin: { left: PAGE.mx, right: PAGE.mx, top: PAGE.bandH + 8, bottom: 14 },
       head: [['When', 'Account', 'Application', 'Client', 'From', 'Location', 'Cond. access', 'Result', 'Risk']],
       body: adminRows.slice(0, ADMIN_TABLE_MAX).map((r) => [
-        dateTime(r.signedInAt),
+        dateTime(chrome, r.signedInAt),
         r.userPrincipalName ?? NA,
         r.appDisplayName ?? NA,
         r.clientAppUsed ?? NA,
@@ -373,7 +373,7 @@ export function renderIdentityAccessReport(
         r.displayName ?? NA,
         // A NULL last sign-in means NEVER OBSERVED — a different fact from
         // "a long time ago", and the one a reader most needs spelled out.
-        r.lastSuccessfulSignInAt ? dateOnly(r.lastSuccessfulSignInAt) : 'Never observed',
+        r.lastSuccessfulSignInAt ? dateOnly(chrome, r.lastSuccessfulSignInAt) : 'Never observed',
         r.isAdmin ? 'Yes' : 'No',
         mfaWord(r.mfaRegistered),
       ]),

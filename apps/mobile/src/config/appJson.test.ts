@@ -71,3 +71,26 @@ describe('app.json URL scheme (Wisp W06)', () => {
     expect(expo.scheme).toBe('breeze');
   });
 });
+
+// Play review flags permissions an app cannot justify. SYSTEM_ALERT_WINDOW
+// ("display over other apps") comes from the React Native template for the dev
+// overlay and READ_EXTERNAL_STORAGE from expo-image-picker's library manifest;
+// the app needs neither (the photo library opens the system Photo Picker).
+// WRITE_EXTERNAL_STORAGE is deliberately NOT blocked: expo-image-picker's
+// camera path requires it below API 29, and minSdk is 24.
+describe('app.json Android blocked permissions', () => {
+  it('blocks SYSTEM_ALERT_WINDOW and READ_EXTERNAL_STORAGE', () => {
+    expect(expo.android.blockedPermissions).toEqual(
+      expect.arrayContaining([
+        'android.permission.SYSTEM_ALERT_WINDOW',
+        'android.permission.READ_EXTERNAL_STORAGE',
+      ])
+    );
+  });
+
+  it('keeps WRITE_EXTERNAL_STORAGE, which camera capture needs on API 24-28', () => {
+    expect(expo.android.blockedPermissions ?? []).not.toContain(
+      'android.permission.WRITE_EXTERNAL_STORAGE'
+    );
+  });
+});

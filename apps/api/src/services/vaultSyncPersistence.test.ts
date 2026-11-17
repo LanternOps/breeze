@@ -75,7 +75,7 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
-import { applyVaultSyncCommandResult } from './vaultSyncPersistence';
+import { applyVaultSyncCommandResult, failVaultSyncWithoutResult } from './vaultSyncPersistence';
 
 describe('applyVaultSyncCommandResult', () => {
   beforeEach(() => {
@@ -155,5 +155,29 @@ describe('applyVaultSyncCommandResult', () => {
       .set.mock.calls[0]![0] as { lastSyncError: string };
     expect(setArg.lastSyncError).toContain('[PRIVATE_KEY_REDACTED]');
     expect(setArg.lastSyncError).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+});
+
+describe('failVaultSyncWithoutResult (#11905)', () => {
+  beforeEach(() => {
+    selectMock.mockClear();
+    updateMock.mockClear();
+  });
+
+  it.each([
+    ['a null payload', null],
+    ['a payload with no vault id', { snapshotId: 'snap-1' }],
+    ['a vault id that is not a uuid', { vaultId: 'not-a-uuid' }],
+  ])('writes nothing and does not throw for %s', async (_label, payload) => {
+    await expect(failVaultSyncWithoutResult({
+      commandId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payload: payload as Record<string, unknown> | null,
+      reason: 'Server-side timeout',
+      completedAt: new Date(),
+    })).resolves.toBe(false);
+    // A non-uuid would fail the uuid cast in Postgres and, on the cancel
+    // path, roll the caller's cancel back: it must never reach a query.
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 });

@@ -307,6 +307,17 @@ describe('a revision change takes a new generation (#10100)', () => {
     expect(call[5]).toMatchObject({ allowSnapshotRevision: 'c1:policy' });
     expect(timelineTypes().join()).toContain('isolation_policy_changed');
   });
+  it('a policy change mid-episode never changes the dead-man window fixed at start (#10103)', async () => {
+    store.row = { ...store.row!, deadManSeconds: 900 };
+    store.resolvePolicy.mockResolvedValue({ ...WITH_EXTRAS, deadManMinutes: 60 });
+    const deadManAgent = { ...level3, networkIsolationVersion: 4, networkIsolationDeadMan: true, agentVersion: '999.0.0' };
+    const block = await buildContainmentHeartbeatBlock(tx, deadManAgent, { row: { ...store.row } });
+    expect(store.row).toMatchObject({ generation: 3, deadManSeconds: 900 });
+    expect(block.networkIsolation).toMatchObject({ generation: 3, deadManSeconds: 900 });
+    store.row = { ...row(), deadManSeconds: 0 };
+    const off = await buildContainmentHeartbeatBlock(tx, deadManAgent, { row: { ...store.row } });
+    expect(off.networkIsolation).toMatchObject({ deadManSeconds: 0 });
+  });
   it('a changed revision takes a new generation', async () => {
     holding();
     const block = await buildContainmentHeartbeatBlock(tx, level3);

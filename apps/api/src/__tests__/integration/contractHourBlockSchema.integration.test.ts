@@ -18,6 +18,7 @@ import { sql } from 'drizzle-orm';
 import { CONTRACT_LINE_TYPES } from '@breeze/shared';
 import { db, withDbAccessContext } from '../../db';
 import { splitSqlStatements } from '../../db/autoMigrate';
+import { FOREIGN_KEY_VIOLATION_SQLSTATES } from '../../utils/pgErrors';
 import { getTestDb } from './setup';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { replayMigration } from './replayMigration';
@@ -108,13 +109,15 @@ function pgErrorFields(error: unknown): { code?: string; constraint?: string } {
 /** The operation must fail with `code`, and the constraint that fired must be one of `constraints`.
  *  Postgres evaluates CHECKs in name order, so a row that violates two reports the earlier name. */
 async function expectConstraint(
-  op: () => Promise<unknown>, code: string, constraints: string[], label: string,
+  op: () => Promise<unknown>, code: string | readonly string[], constraints: string[], label: string,
 ): Promise<void> {
   let raised: unknown;
   try { await op(); } catch (error) { raised = error; }
-  if (raised === undefined) throw new Error(`expected ${code} on ${constraints.join(' | ')}: ${label}`);
+  if (raised === undefined) throw new Error(`expected ${String(code)} on ${constraints.join(' | ')}: ${label}`);
   const f = pgErrorFields(raised);
-  expect(f.code, label).toBe(code);
+  // A list means any of them (FOREIGN_KEY_VIOLATION_SQLSTATES for a RESTRICT refusal).
+  if (typeof code === 'string') expect(f.code, label).toBe(code);
+  else expect(code, label).toContain(f.code);
   expect(constraints, label).toContain(f.constraint);
 }
 
@@ -318,10 +321,11 @@ describe('contract_hour_periods (real DB) #4547 W01', () => {
   it('deleting a block line that has a ledger row is refused (RESTRICT), and allowed once the ledger row is gone', async () => {
     const f = await seedLedger();
     await insertPeriod({ lineId: f.lineA, contractId: f.contractA, orgId: f.orgA });
-    // Postgres reports RESTRICT as foreign_key_violation (23503).
+    // Postgres 18 reports a RESTRICT refusal as restrict_violation (23001);
+    // older versions report it as foreign_key_violation (23503).
     await expectConstraint(
       () => getTestDb().execute(sql`DELETE FROM contract_lines WHERE id = ${f.lineA}::uuid`),
-      '23503', ['contract_hour_periods_line_org_fk'], 'delete block with history');
+      FOREIGN_KEY_VIOLATION_SQLSTATES, ['contract_hour_periods_line_org_fk'], 'delete block with history');
     await getTestDb().execute(sql`DELETE FROM contract_hour_periods WHERE contract_line_id = ${f.lineA}::uuid`);
     await expect(getTestDb().execute(sql`DELETE FROM contract_lines WHERE id = ${f.lineA}::uuid`)).resolves.toBeDefined();
   });

@@ -27,8 +27,9 @@
  * `routes/agentWs.ts` or `services/agentCommandAwait.ts`:
  *
  *   - `'global'`       — safe to run on a process with no agent sockets.
- *   - `'socket-owner'` — reaches socket-local dispatch and must stay on a
- *                        process that can own agent WebSocket connections
+ *   - `'socket-owner'` — reaches socket-local dispatch, or has a process-local
+ *                        reason recorded in `KEEP_SOCKET_OWNER`, and must stay
+ *                        on a process that can own agent WebSocket connections
  *                        (today, every `BREEZE_ROLE=all`/`api` process).
  *
  * This first-pass classification was produced mechanically (a transitive
@@ -48,6 +49,14 @@
  * reaches socket-local dispatch must flip to `socket-owner`, and a clean
  * `socket-owner` entry must flip to `global` or carry a `KEEP_SOCKET_OWNER`
  * reason in `workerEntrypointClosure.contract.test.ts`.
+ *
+ * End state after the dispatch facade pass (#4142): every entry is `global`
+ * unless its closure pins it or `KEEP_SOCKET_OWNER` names a process-local
+ * reason (files on the api container's own disk). Services reach agent
+ * sockets only through the role-safe facades (`services/agentCommandRelay.ts`,
+ * `services/agentCommandRelayEvict.ts`, `services/remoteSessionSocketLocal.ts`),
+ * so no entry's closure pins it today. New code that needs an agent socket
+ * goes through a facade, never `routes/agentWs.ts` directly.
  *
  * DO NOT relitigate placement values by guessing — see CLAUDE.md and the plan
  * doc: run the closure tool (`pnpm --filter @breeze/api worker:closure`),
@@ -316,6 +325,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiToolOutputRetention');
       return { init: m.initializeAiToolOutputRetention, shutdown: m.shutdownAiToolOutputRetention };
+    },
+  },
+  {
+    // #4342 W4 (#11591): nightly AI transcript retention (stub sessions past
+    // their window, delete stubs past the audit window). Report-only until
+    // AI_TRANSCRIPT_RETENTION_ENFORCE. `global`: db + services only; the SDK
+    // transcript delete is best effort, as aiToolOutputRetention's.
+    name: 'aiTranscriptRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiTranscriptRetention');
+      return { init: m.initializeAiTranscriptRetention, shutdown: m.shutdownAiTranscriptRetention };
     },
   },
   {
@@ -837,8 +858,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Global since #4142 W3: its closure no longer reaches agentWs
+    // (workerEntrypointClosure.contract.test.ts). Session end evicts the agent
+    // socket through the relay facade (services/quickSupportEnd.ts).
     name: 'quickSupportReaper',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/quickSupportReaper');
       return { init: m.initializeQuickSupportReaper, shutdown: m.shutdownQuickSupportReaper };
@@ -925,11 +949,12 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // #2787: async bulk permanent delete of removed devices.
     //
-    // socket-owner because the closure contract test says so, not by judgement:
-    // deviceBulkPurge -> services/deviceLifecycle -> services/deviceDeletion
-    // reaches routes/agentWs.ts and services/agentCommandAwait.ts. Do NOT flip this to 'global' without re-running
-    // workerEntrypointClosure.contract.test.ts — it is the mechanical authority
-    // and it fails the build on a wrong placement.
+    // socket-owner for a recorded process-local reason, not the closure (clean
+    // since #4142 W3): it unlinks each purged device's screenshot files under
+    // SCREENSHOT_DIR, which defaults to the api container's own /tmp tmpfs and
+    // is not shared with the worker container. KEEP_SOCKET_OWNER in
+    // workerEntrypointClosure.contract.test.ts records the reason; drop both
+    // once screenshots live on shared storage.
     name: 'deviceBulkPurge',
     placement: 'socket-owner',
     load: async () => {
@@ -941,11 +966,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // #2787 item 4: daily purge of removed devices past their org's
     // device_lifecycle retention window.
     //
-    // socket-owner because the closure contract test says so, not by judgement:
-    // removedDevicePurge -> services/deviceLifecycle -> services/deviceDeletion
-    // reaches routes/agentWs.ts and services/agentCommandAwait.ts — the same
-    // chain that puts deviceBulkPurge above in this class. Do NOT flip this to
-    // 'global' without re-running workerEntrypointClosure.contract.test.ts.
+    // socket-owner for the same recorded process-local reason as
+    // deviceBulkPurge above (screenshot files on the api container's /tmp);
+    // its closure is clean since #4142 W3.
     name: 'removedDevicePurge',
     placement: 'socket-owner',
     load: async () => {
@@ -955,10 +978,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // Pre-assignment holding area: hourly expiry of devices parked past the
-    // window. socket-owner: it disconnects the expired agent's socket
-    // (routes/agentWs.ts), so it must run where the sockets live.
+    // window. Global since #4142 W3: it evicts the expired agent's socket
+    // through the relay facade, which reaches the owning instance from any role.
     name: 'parkedDeviceExpiry',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/parkedDeviceExpiry');
       return { init: m.initializeParkedDeviceExpiry, shutdown: m.shutdownParkedDeviceExpiry };
@@ -966,11 +989,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // Pre-assignment holding area: daily hard purge of expired parked
-    // devices. socket-owner for the same reason as removedDevicePurge above:
-    // services/deviceLifecycle -> services/deviceDeletion reaches
-    // routes/agentWs.ts.
+    // devices. Global since #4142 W3: services/deviceLifecycle ->
+    // services/deviceDeletion no longer reaches routes/ (the device cascade
+    // lists moved to services/deviceCascadeTables.ts).
     name: 'parkedDevicePurge',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/parkedDevicePurge');
       return { init: m.initializeParkedDevicePurge, shutdown: m.shutdownParkedDevicePurge };
@@ -1610,6 +1633,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Portal registration W8 (#11385, plan D10): directory deprovisioning —
+    // apply-run, the daily Google pass and the hourly recovery sweep.
+    name: 'portalDirectoryWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('./portalDirectory/worker');
+      return { init: m.initializePortalDirectoryWorker, shutdown: m.shutdownPortalDirectoryWorker };
+    },
+  },
+  {
     // #9075 W4a (OD8 B): automatic agreement-request reminders (hourly sweep).
     name: 'agreementRequestAutoReminder',
     placement: 'global',
@@ -1799,6 +1832,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4342 W5 — report-only history retention sweep (twelve targets).
+    name: 'historyRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/historyRetention');
+      return {
+        init: m.initializeHistoryRetention,
+        shutdown: m.shutdownHistoryRetention,
+      };
+    },
+  },
+  {
     // #7608 W10: daily AI chargeback close. Its closure is db + services only
     // (no route graph, no socket import) — `global`, like the retention workers.
     name: 'aiChargebackWorker',
@@ -1937,6 +1982,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/scriptVerifyWorker');
       return { init: m.initializeScriptVerifyWorker, shutdown: m.shutdownScriptVerifyWorker };
+    },
+  },
+  {
+    // #4342 W2 — report-only retention sweep (scriptExecutionRetention).
+    name: 'scriptExecutionRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/scriptExecutionRetention');
+      return {
+        init: m.initializeScriptExecutionRetention,
+        shutdown: m.shutdownScriptExecutionRetention,
+      };
     },
   },
   {
@@ -2130,6 +2187,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('./portalSelfRegistration/worker');
       return { init: m.initializePortalSelfRegistrationWorker, shutdown: m.shutdownPortalSelfRegistrationWorker };
+    },
+  },
+  // #11737 — hourly report-first retention for agent health and software
+  // inventory observation history. `global`: its closure is db + the
+  // retention runner, nothing socket-local.
+  {
+    name: 'observationRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/observationRetention');
+      return { init: m.initializeObservationRetention, shutdown: m.shutdownObservationRetention };
     },
   },
   {

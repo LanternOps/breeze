@@ -157,8 +157,9 @@ function validateEnrollmentWriteRestrictions(
  * so whoever grants a scope (creating the principal, adding the scope, or
  * issuing, rotating or re-enabling a key that carries it) must hold the
  * permission the staff UI requires for the same data
- * (services/partnerServicePrincipalDelegation.ts). On the MCP endpoint the
- * owner's live role is also re-checked on every request.
+ * (services/partnerServicePrincipalDelegation.ts). The owner's live role and
+ * org access are also re-checked on every request, on the Partner API and
+ * the MCP endpoint (services/partnerServicePrincipalOwnerAuthority.ts).
  */
 function scopeDelegationDenial(
   c: any,

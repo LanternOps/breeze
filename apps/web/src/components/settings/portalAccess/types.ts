@@ -39,10 +39,14 @@ export interface PortalAccessRequestListItem {
   /**
    * W6 D11 (#11383): for a `self` request, whether the address's domain is
    * still verified for this org (approve refuses with
-   * PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED when it is not). Null for every
-   * other source.
+   * PORTAL_ACCESS_REQUEST_DOMAIN_NOT_VERIFIED when it is not). W7 (#11384):
+   * for a `google` request, whether its Workspace domain (`googleHostedDomain`)
+   * is (approve refuses with PORTAL_ACCESS_REQUEST_GOOGLE_DOMAIN_NOT_VERIFIED).
+   * Null for every other source.
    */
   domainVerified: boolean | null;
+  /** W7 D8: the Google Workspace domain (`hd`) a `google` request asserted; null for every other source. */
+  googleHostedDomain: string | null;
 }
 
 /** One row of `POST …/portal-access-requests/decide`: 'approved' | 'denied' | an error code. */
@@ -185,10 +189,182 @@ export function withDraftField<K extends PortalAccessPolicyField>(
  * the server's write check for `passwordMode: 'sso_only'`.
  */
 export function draftHasSsoMethod(view: PortalAccessPolicyView, draft: PortalAccessPolicyDraft): boolean {
+  const { microsoft, google } = effectiveSsoProviders(view, draft);
+  return microsoft || google;
+}
+
+/** Which SSO providers are on, or which the deployment can run. */
+export interface SsoProviders { microsoft: boolean; google: boolean }
+
+/**
+ * Which provider names a piece of SSO copy uses (W7 #11384). Copy never names
+ * Google unless Google is in the set, so a deployment without the Google
+ * capability (`capabilities.google`) never shows the word.
+ */
+export type SsoProviderSet = 'microsoft' | 'google' | 'both';
+
+/** Only Google → 'google', both → 'both', otherwise (including neither) the Microsoft wording. */
+export function ssoProviderSet({ microsoft, google }: SsoProviders): SsoProviderSet {
+  if (google) return microsoft ? 'both' : 'google';
+  return 'microsoft';
+}
+
+/** The wording for what the deployment can run (form labels, hints, the fallback notice). */
+export function capabilityProviderSet(capabilities: PortalAccessPolicyView['capabilities']): SsoProviderSet {
+  return ssoProviderSet({ microsoft: capabilities.entra, google: capabilities.google });
+}
+
+/**
+ * Which SSO methods the policy, with the draft applied, has on: the own value
+ * or the inherited one, masked by what the deployment can run and by the org's
+ * evidence. Mirrors the server's write check for `passwordMode: 'sso_only'`.
+ */
+export function effectiveSsoProviders(view: PortalAccessPolicyView, draft: PortalAccessPolicyDraft): SsoProviders {
   // W4 D2: Microsoft counts only where the org's tenant is proven. A partner
   // view carries `null` (the default applies wherever a tenant is proven).
-  const entra = (ownValue(view, draft, 'entraEnabled') ?? view.inherited.entraEnabled.value) && view.capabilities.entra
+  const microsoft = (ownValue(view, draft, 'entraEnabled') ?? view.inherited.entraEnabled.value) && view.capabilities.entra
     && view.entraTenantProven !== false;
-  const google = (ownValue(view, draft, 'googleEnabled') ?? view.inherited.googleEnabled.value) && view.capabilities.google;
-  return entra || google;
+  // W7 D6: Google counts only where the org has a verified domain. A partner
+  // view carries `null` (the default applies wherever a domain is verified).
+  const google = (ownValue(view, draft, 'googleEnabled') ?? view.inherited.googleEnabled.value) && view.capabilities.google
+    && view.verifiedDomainCount !== 0;
+  return { microsoft: !!microsoft, google: !!google };
+}
+
+/**
+ * The wording for the `sso_only` dialog, the stranded list and its invites:
+ * the providers that are on, or, with none on, what the deployment can run.
+ */
+export function effectiveProviderSet(view: PortalAccessPolicyView, draft: PortalAccessPolicyDraft): SsoProviderSet {
+  const providers = effectiveSsoProviders(view, draft);
+  return providers.microsoft || providers.google ? ssoProviderSet(providers) : capabilityProviderSet(view.capabilities);
+}
+
+// ---------------------------------------------------------------------------
+// Directory deprovisioning (portal registration W8, #11385). The API defines
+// these in `apps/api/src/services/portalDirectory/status.ts` and
+// `services/portalUserIdentities.ts`; they are not shared.
+// ---------------------------------------------------------------------------
+
+export type PortalDirectorySource = 'entra' | 'google';
+export type PortalDirectoryRunOutcome = 'evaluated' | 'incomplete' | 'suspect_shrink' | 'skipped';
+export type PortalDirectoryRunReason =
+  | 'tenant_not_proven' | 'tenant_mismatch' | 'connection_inactive' | 'org_inactive'
+  | 'sync_incomplete' | 'directory_too_large' | 'scope_missing' | 'access_denied' | 'unavailable'
+  | 'connection_invalid' | 'admin_not_admin' | 'mixed_customer' | 'malformed';
+export type PortalDirectoryRunDisposition =
+  | 'none' | 'reported' | 'applying' | 'applied' | 'held' | 'held_applied' | 'held_dismissed' | 'superseded';
+export type PortalDirectoryHoldReason = 'threshold' | 'first_enforcement';
+export type PortalDirectoryActionReason = 'account_disabled' | 'absent' | 'suspended' | 'archived';
+export type PortalDirectoryActionEffect = 'identity' | 'identity_and_account';
+export type PortalDirectoryActionStatus = 'reported' | 'held' | 'pending' | 'applied' | 'skipped' | 'superseded' | 'restored';
+export type PortalIdentityBlocker = 'entra_directory' | 'google_directory' | 'scim' | 'msp';
+export type PortalAccountDisabledBy = 'msp' | 'directory' | 'scim';
+
+export interface PortalDirectoryRunSummary {
+  id: string;
+  outcome: PortalDirectoryRunOutcome;
+  reason: PortalDirectoryRunReason | null;
+  disposition: PortalDirectoryRunDisposition;
+  holdReason: PortalDirectoryHoldReason | null;
+  directoryUserCount: number | null;
+  usableCount: number;
+  affectedCount: number;
+  impactDigest: string | null;
+  createdAt: string;
+}
+
+/** A row of the panel; a rearmed identity with no action on the latest run has null action fields. */
+export interface PortalDirectoryActionRow {
+  id: string | null;
+  runId: string | null;
+  identityId: string;
+  portalUserId: string;
+  email: string;
+  name: string | null;
+  provider: PortalDirectorySource;
+  reason: PortalDirectoryActionReason | null;
+  effect: PortalDirectoryActionEffect | null;
+  keepsPassword: boolean;
+  status: PortalDirectoryActionStatus | null;
+  rearmed: boolean;
+}
+
+export interface PortalDirectorySourceStatus {
+  source: PortalDirectorySource;
+  lastRun: PortalDirectoryRunSummary | null;
+  lastEvaluatedRun: PortalDirectoryRunSummary | null;
+}
+
+export interface PortalDirectoryStatusView {
+  mode: 'report' | 'enforce';
+  sources: PortalDirectorySourceStatus[];
+  openActions: PortalDirectoryActionRow[];
+}
+
+export function isPortalDirectoryStatusView(value: unknown): value is PortalDirectoryStatusView {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (v.mode === 'report' || v.mode === 'enforce')
+    && Array.isArray(v.sources)
+    && v.sources.every((s) => {
+      const source = s && typeof s === 'object' ? (s as { source?: unknown }).source : undefined;
+      return source === 'entra' || source === 'google';
+    })
+    && Array.isArray(v.openActions);
+}
+
+/** One identity of a portal-users list row with its directory state (`listIdentityStatesByUser`). */
+export interface PortalUserIdentityState {
+  id: string;
+  provider: PortalDirectorySource;
+  disabledAt: string | null;
+  disabledBlockers: PortalIdentityBlocker[];
+  disabledReason: string | null;
+  rearmSince: string | null;
+}
+
+const DIRECTORY_BLOCKERS: ReadonlySet<PortalIdentityBlocker> = new Set(['entra_directory', 'google_directory']);
+
+/** Whether the MSP may remove this sign-in method (OD3): disabled by the customer's directory. */
+export function isDirectoryDisabled(identity: Pick<PortalUserIdentityState, 'disabledAt' | 'disabledBlockers'>): boolean {
+  return identity.disabledAt !== null && identity.disabledBlockers.some((b) => DIRECTORY_BLOCKERS.has(b));
+}
+
+// ---------------------------------------------------------------------------
+// Entra SCIM provisioning (portal registration W9 #11386, API routes/orgPortalScim.ts)
+// ---------------------------------------------------------------------------
+
+/** One SCIM token, never with its secret (only the create response carries it). */
+export interface PortalScimTokenView {
+  id: string;
+  label: string;
+  /** The secret's last characters, to tell tokens apart. */
+  hint: string;
+  tenantId: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  /** Not revoked and bound to the org's current proven tenant: it would authenticate now. */
+  usable: boolean;
+}
+
+export interface PortalScimStatusView {
+  tenant: { proven: boolean; tenantId: string | null };
+  /** The Tenant URL for the Entra enterprise app, or null when the API's public URL is not configured. */
+  baseUrl: string | null;
+  tokens: PortalScimTokenView[];
+  counts: { provisioned: number; deactivated: number };
+}
+
+export function isPortalScimStatusView(value: unknown): value is PortalScimStatusView {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  const tenant = v.tenant as Record<string, unknown> | undefined;
+  const counts = v.counts as Record<string, unknown> | undefined;
+  return !!tenant && typeof tenant.proven === 'boolean'
+    && (v.baseUrl === null || typeof v.baseUrl === 'string')
+    && Array.isArray(v.tokens)
+    && v.tokens.every((tk) => !!tk && typeof tk === 'object' && typeof (tk as { id?: unknown }).id === 'string')
+    && !!counts && typeof counts.provisioned === 'number' && typeof counts.deactivated === 'number';
 }

@@ -8,6 +8,14 @@ describe('AiContextBadge', () => {
     render(<AiContextBadge context={context} />);
     expect(screen.getByText('Context')).toBeInTheDocument();
   });
+  it('#11673: a device badge shows its display name, the hostname only as a fallback', () => {
+    const { unmount } = render(<AiContextBadge context={{ type: 'device', id: 'd1', hostname: 'nw-42eccf-00001', displayName: 'NW-XRAY-WS' }} />);
+    expect(screen.getByText('NW-XRAY-WS')).toBeInTheDocument();
+    expect(screen.queryByText('nw-42eccf-00001')).toBeNull();
+    unmount();
+    render(<AiContextBadge context={{ type: 'device', id: 'd1', hostname: 'nw-42eccf-00001', displayName: ' ' }} />);
+    expect(screen.getByText('nw-42eccf-00001')).toBeInTheDocument();
+  });
   it('badge shows the record label', () => {
     render(<AiContextBadge context={{ type: 'record', kind: 'ticket', id: 't1', label: 'T-42 Printer offline' }} />);
     expect(screen.getByText('T-42 Printer offline')).toBeInTheDocument();

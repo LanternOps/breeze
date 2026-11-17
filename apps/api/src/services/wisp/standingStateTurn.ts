@@ -44,6 +44,12 @@ const FACTS_CACHE_MAX_ENTRIES = 500;
 type TurnFacts = StandingStateFacts | 'paused' | null;
 type CachedFacts = { readAt: number; facts: TurnFacts };
 const factsCache = new Map<string, CachedFacts>();
+/**
+ * Per grant, how many times its facts were forgotten. A read caches its
+ * result only if this did not move while it ran. Bounded like the cache: a
+ * grant evicted here can at worst re-cache one read from before the action.
+ */
+const forgetGeneration = new Map<string, number>();
 
 /** What a dispatched turn records with `markStandingStateSent`. */
 export type StandingStateTurn = { block: string; hash: string };
@@ -53,6 +59,29 @@ const errText = (err: unknown): string => (err instanceof Error ? err.message : 
 /** Tests only: forget every cached fact read. */
 export function clearStandingStateCache(): void {
   factsCache.clear();
+  forgetGeneration.clear();
+}
+
+/**
+ * Forget this process's cached facts for one grant (every revision and
+ * viewer), so the next turn reads them fresh. Called after a user acts on the
+ * grant's check-ins or concerns (#11611): without it, a question asked right
+ * after the action is answered from facts read before it. Another API
+ * process still serves its copy until the 60 s TTL ends.
+ */
+export function forgetStandingStateFacts(grantId: string): void {
+  const prefix = `${grantId}:`;
+  for (const key of factsCache.keys()) {
+    if (key.startsWith(prefix)) factsCache.delete(key);
+  }
+  // A read already in flight saw the pre-action rows: it must not re-cache them.
+  forgetGeneration.delete(grantId);
+  forgetGeneration.set(grantId, (forgetGeneration.get(grantId) ?? 0) + 1);
+  while (forgetGeneration.size > FACTS_CACHE_MAX_ENTRIES) {
+    const oldest = forgetGeneration.keys().next().value;
+    if (oldest === undefined) break;
+    forgetGeneration.delete(oldest);
+  }
 }
 
 /** Spend counts as changed only when it crosses one of these steps of the daily budget. */
@@ -62,6 +91,8 @@ export const STANDING_SPEND_STEPS = 10;
  * The facts' identity, minus what only says time has passed (concern ages),
  * with spend coarsened to tenths of the budget: every chat turn costs a few
  * cents, and an exact figure would re-send the block on nearly every turn.
+ * A user action (#11611) is part of the identity: a new one re-sends the block;
+ * one ageing out of the window does too, which is a change the model should see.
  * The loader builds the object in a fixed key order, and Dates serialise as
  * ISO strings, so equal facts hash equal.
  */
@@ -86,6 +117,7 @@ async function cachedFacts(input: { grantId: string; revisionId: string; auth: A
   const hit = factsCache.get(key);
   if (hit && now.getTime() - hit.readAt < STANDING_FACTS_TTL_MS) return hit.facts;
 
+  const generation = forgetGeneration.get(input.grantId) ?? 0;
   let facts: TurnFacts;
   try {
     // The live ceiling only: a paused one is reserved for history reads
@@ -104,6 +136,8 @@ async function cachedFacts(input: { grantId: string; revisionId: string; auth: A
     }
     facts = err.kind === 'paused' ? 'paused' : null;
   }
+  // Forgotten while this read ran (a user action, #11611): use it for this turn, never cache it.
+  if ((forgetGeneration.get(input.grantId) ?? 0) !== generation) return facts;
   factsCache.delete(key);
   factsCache.set(key, { readAt: now.getTime(), facts });
   while (factsCache.size > FACTS_CACHE_MAX_ENTRIES) {

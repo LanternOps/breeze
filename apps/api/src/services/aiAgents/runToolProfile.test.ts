@@ -41,6 +41,43 @@ describe('applyRunToolProfile (#11394)', () => {
     });
   });
 
+  it('#11396: auto with a window too small for any profile blocks tool_profile_underpowered, naming the window', () => {
+    let caught: unknown;
+    const analysis = input({
+      run: { profile: 'analysis' } as never, facts: facts({ effectiveWindow: 4_096 }),
+      exposedNames: ['mcp__breeze__get_device_details'], onlyTools: new Set(['get_device_details']),
+    });
+    try { applyRunToolProfile(analysis); } catch (err) { caught = err; }
+    expect(caught).toBeInstanceOf(AgentRunBlockedError);
+    expect(caught).toMatchObject({
+      errorCode: 'tool_profile_underpowered',
+      message: 'This model\'s 4,096-token window is too small for Breeze AI agent tools.',
+      outcome: { blockedReason: 'tool_profile_underpowered', offeringId: 'off-1', contextWindow: 4_096 },
+    });
+  });
+
+  it('#11393: the same 4,096 window as a STALE observed floor is not blocked', () => {
+    const analysis = input({
+      run: { profile: 'analysis' } as never, facts: facts({ effectiveWindow: 4_096, windowStale: true }),
+      exposedNames: ['mcp__breeze__get_device_details'], onlyTools: new Set(['get_device_details']),
+    });
+    expect(applyRunToolProfile(analysis).exposure).toMatchObject({ tooSmall: false });
+  });
+
+  it('#11393: a troubleshoot run on a STALE floor in minimal\'s range is not blocked underpowered; a fresh one is (control)', () => {
+    const stale = applyRunToolProfile(input({ facts: facts({ effectiveWindow: 8_192, windowStale: true }) }));
+    expect(stale.exposure.profile).toBe('standard');
+    expect(() => applyRunToolProfile(input({ facts: facts({ effectiveWindow: 8_192 }) }))).toThrow(AgentRunBlockedError);
+  });
+
+  it('control: the same run at a 131,072 window is not blocked', () => {
+    const analysis = input({
+      run: { profile: 'analysis' } as never, facts: facts({ effectiveWindow: 131_072 }),
+      exposedNames: ['mcp__breeze__get_device_details'], onlyTools: new Set(['get_device_details']),
+    });
+    expect(() => applyRunToolProfile(analysis)).not.toThrow();
+  });
+
   it('troubleshoot run under standard keeps its floor and narrows the rest', () => {
     const r = applyRunToolProfile(input({ facts: facts({ toolProfile: 'standard' }) }));
     expect(new Set(r.onlyTools)).toEqual(new Set(['get_device_details', 'search_logs', 'list_scripts', 'execute_command', 'run_script']));

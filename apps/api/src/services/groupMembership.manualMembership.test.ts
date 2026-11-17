@@ -10,6 +10,15 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Membership writers take the org export lock first; it is a database call
+// this file's mocked db cannot run. Each writer's lock order is checked on
+// real Postgres by its own race in groupMembershipWriteOrder.integration.test.ts.
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  acquireMembershipExportOrgLock: vi.fn(async () => {}),
+}));
+
+
 const { mockSelect, mockInsert, mockSchedulePeripheralPolicyDevice } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
@@ -79,10 +88,11 @@ let insertedRows: unknown[][];
 beforeEach(() => {
   vi.clearAllMocks();
   insertedRows = [];
+  // The membership insert is `.values(rows).onConflictDoNothing().returning()`.
   mockInsert.mockImplementation(() => ({
-    values: (rows: unknown[]) => {
+    values: (rows: Array<{ deviceId: string }>) => {
       insertedRows.push(rows);
-      return Promise.resolve(undefined);
+      return { onConflictDoNothing: () => ({ returning: async () => rows.map(({ deviceId }) => ({ deviceId })) }) };
     },
   }));
 });
@@ -236,13 +246,34 @@ describe('addManualGroupMemberships', () => {
   });
 });
 
+describe('addManualGroupMemberships with a concurrent add', () => {
+  it('skips a row another writer added after the read, instead of failing', async () => {
+    mockSelect.mockReturnValueOnce(whereChain([]));
+    // The insert's RETURNING omits D2: another writer added it meanwhile.
+    mockInsert.mockImplementationOnce(() => ({
+      values: (rows: Array<{ deviceId: string }>) => {
+        insertedRows.push(rows);
+        return { onConflictDoNothing: () => ({ returning: async () => [{ deviceId: D1 }] }) };
+      },
+    }));
+
+    const result = await addManualGroupMemberships({
+      groupId: GROUP_ID, group: { id: GROUP_ID, orgId: ORG_ID }, orgId: ORG_ID, deviceIds: [D1, D2],
+    });
+
+    expect(result).toEqual({ added: [D1], skipped: 1 });
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(D1, 'manual_membership_changed');
+    expect(mockSchedulePeripheralPolicyDevice).not.toHaveBeenCalledWith(D2, expect.anything());
+  });
+});
+
 describe('explicit membership executor', () => {
   it('validates and inserts on the supplied savepoint without ambient queries', async () => {
     const tx = {
       select: vi.fn()
         .mockReturnValueOnce(whereChain([{ id: D1, orgId: ORG_ID, siteId: SITE_ID }]))
         .mockReturnValueOnce(whereChain([])),
-      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+      insert: vi.fn().mockReturnValue({ values: vi.fn((rows: Array<{ deviceId: string }>) => ({ onConflictDoNothing: () => ({ returning: async () => rows.map(({ deviceId }) => ({ deviceId })) }) })) }),
       update: vi.fn(), delete: vi.fn(),
     };
     const executor = tx as unknown as NonNullable<Parameters<typeof addManualGroupMemberships>[1]>;

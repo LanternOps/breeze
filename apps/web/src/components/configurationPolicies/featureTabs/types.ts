@@ -153,4 +153,13 @@ export const FEATURE_META: Record<FeatureType, {
       return i18n.t('policies:configurationPolicies.featureTabs.vendorUpdatesTab.description');
     },
   },
+  wake_on_lan: {
+    get label() {
+      return i18n.t('policies:configurationPolicies.featureTabs.wakeOnLanTab.title');
+    },
+    fetchUrl: null,
+    get description() {
+      return i18n.t('policies:configurationPolicies.featureTabs.wakeOnLanTab.description');
+    },
+  },
 };

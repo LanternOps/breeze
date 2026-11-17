@@ -45,6 +45,17 @@ vi.mock('../services/flows/runService', () => ({ createFlowRun: vi.fn() }));
 vi.mock('./aiAgentSweepScheduler', () => ({ loadPartnerOrgIds: vi.fn() }));
 vi.mock('../services/flows/flowTriggerMetrics', () => ({ recordFlowScheduleAdmissionRefused: vi.fn(), recordFlowChainDepthRefused: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+const { cronDue } = vi.hoisted(() => ({ cronDue: { calls: 0 } }));
+vi.mock('../services/cronDue', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../services/cronDue')>();
+  return {
+    ...real,
+    isCronDue: (...args: Parameters<typeof real.isCronDue>) => {
+      cronDue.calls += 1;
+      return real.isCronDue(...args);
+    },
+  };
+});
 // #5221 B5: the parent claim is mocked; the preference functions stay real.
 vi.mock('../services/flows/conversion/claims', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/flows/conversion/claims')>()),
@@ -93,6 +104,8 @@ beforeEach(() => {
   vi.mocked(captureException).mockReset();
   vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
   vi.mocked(newestParentScheduleClaim).mockReset().mockResolvedValue(null);
+  __testOnly.resetOccurrenceCache();
+  cronDue.calls = 0;
 });
 
 describe('processFlowScheduleTick', () => {
@@ -589,5 +602,70 @@ describe('processFlowScheduleTick — converted flows (#5221 B5)', () => {
     expect(cas()).toHaveLength(0);
     expect(vi.mocked(captureException).mock.calls[0]![2]).toMatchObject({ flow_id: FLOW, flow_site: 'schedule_tick.fire_flow' });
     err.mockRestore();
+  });
+});
+
+describe('processFlowScheduleTick — cost per tick', () => {
+  // A schedule with no occurrence in the lookback window of these ticks.
+  const rare = { type: 'schedule', cron: '0 0 29 2 *', timezone: 'UTC' };
+  const manyFlows = (n: number) => Array.from({ length: n }, (_, i) =>
+    flow({ id: `33333333-3333-4333-8333-${String(i).padStart(12, '0')}`, trigger: rare }));
+
+  it('searches one schedule shared by many flows once per tick, then only the new minutes', async () => {
+    selects.push(manyFlows(200));
+    const first = await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(first).toEqual({ fired: 0, skipped: 200 });
+    expect(cronDue.calls).toBeLessThanOrEqual(24 * 60 + 1);
+
+    cronDue.calls = 0;
+    selects.push(manyFlows(200));
+    const second = await processFlowScheduleTick(new Date('2026-10-25T10:01:20Z'));
+    expect(second).toEqual({ fired: 0, skipped: 200 });
+    expect(cronDue.calls).toBeLessThanOrEqual(2);
+  });
+
+  it('reads enabled schedule flows in pages by id and reaches every page', async () => {
+    const firstPage = manyFlows(__testOnly.FLOW_PAGE_SIZE);
+    const lastId = firstPage[firstPage.length - 1]!.id;
+    selects.push(firstPage, [flow({ id: '44444444-4444-4444-8444-444444444444' })], LIVE);
+    updates.push([{ id: '44444444-4444-4444-8444-444444444444' }]);
+    const r = await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(r).toEqual({ fired: 1, skipped: __testOnly.FLOW_PAGE_SIZE });
+    const flowReads = calls.filter((c) => c.kind === 'select' && c.ops.some((o) => o.op === 'innerJoin'));
+    expect(flowReads).toHaveLength(2);
+    for (const read of flowReads) {
+      expect(read.ops.find((o) => o.op === 'limit')?.args).toEqual([__testOnly.FLOW_PAGE_SIZE]);
+    }
+    // The second page starts after the last id of the first.
+    const mentions = (value: unknown, target: string, seen = new Set<unknown>()): boolean => {
+      if (value === target) return true;
+      if (!value || typeof value !== 'object' || seen.has(value)) return false;
+      seen.add(value);
+      return Object.values(value).some((v) => mentions(v, target, seen));
+    };
+    expect(mentions(flowReads[0]!.ops.find((o) => o.op === 'where')?.args, lastId)).toBe(false);
+    expect(mentions(flowReads[1]!.ops.find((o) => o.op === 'where')?.args, lastId)).toBe(true);
+  });
+
+  it('forgets schedules the tick did not reach when a page read fails', async () => {
+    const hourly = { type: 'schedule', cron: '0 * * * *', timezone: 'UTC' };
+    selects.push([flow({ trigger: hourly, scheduleLastOccurrenceKey: '2026-10-25T10:00@UTC' })]);
+    await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(__testOnly.occurrenceCacheSize()).toBe(1);
+
+    // A full first page of another schedule, then the next page read fails.
+    selects.push(manyFlows(__testOnly.FLOW_PAGE_SIZE), new Error('page read failed'));
+    await expect(processFlowScheduleTick(new Date('2026-10-25T10:01:20Z'))).rejects.toThrow('page read failed');
+    // The hourly schedule was not asked about in that pass and is dropped.
+    expect(__testOnly.occurrenceCacheSize()).toBe(1);
+  });
+
+  it('lets other work run while it walks a long list of flows', async () => {
+    selects.push(manyFlows(200));
+    let otherWorkRan = false;
+    setImmediate(() => { otherWorkRan = true; });
+    let ranBeforeTickEnded = false;
+    await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z')).then(() => { ranBeforeTickEnded = otherWorkRan; });
+    expect(ranBeforeTickEnded).toBe(true);
   });
 });

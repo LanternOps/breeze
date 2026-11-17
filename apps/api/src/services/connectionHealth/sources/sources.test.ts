@@ -21,6 +21,7 @@ import { dnsFilterObservation, dnsFilterSource } from './dnsFilter';
 import { m365ConnectionObservation, m365ConnectionSource } from './m365Connection';
 import { m365SyncObservation, m365SyncSource } from './m365Sync';
 import { ticketMailboxObservation, ticketMailboxSource } from './ticketMailbox';
+import { tdSynnexSftpObservation, tdSynnexSftpSource } from './tdSynnexSftp';
 
 const NOW = new Date('2026-10-16T12:00:00Z');
 const OLD = new Date('2026-09-01T00:00:00Z');
@@ -90,7 +91,7 @@ describe('sync staleness (W4)', () => {
 
   const sqlOf = (q: unknown) => new PgDialect().sqlToQuery((q as { getSQL(): SQL }).getSQL());
   it.each([
-    [huntressSource, 60], [sentinelOneSource, 60], [pax8Source, 4320], [unifiSource, 90],
+    [huntressSource, 60], [sentinelOneSource, 60], [pax8Source, 4320], [unifiSource, 90], [ticketMailboxSource, 60],
   ] as const)('%#: the broken query carries the stale arm (%s minutes)', (source, minutes) => {
     const q = sqlOf(source.brokenQuery(NOW));
     expect(q.sql).toContain(`make_interval(mins => ${minutes})`);
@@ -99,6 +100,7 @@ describe('sync staleness (W4)', () => {
   it.each([
     ['pax8', pax8Source, true], ['backupProvider', backupProviderSource, true],
     ['huntress', huntressSource, false], ['sentinelOne', sentinelOneSource, false], ['unifi', unifiSource, false],
+    ['edr', edrSource, true], ['accounting', accountingSource, true], ['ticketMailbox', ticketMailboxSource, true],
   ] as const)('%s: stale arm casts the NOW param to the column type (timestamptz=%s)', (_n, source, tz) => {
     const text = sqlOf(source.brokenQuery(NOW)).sql;
     if (tz) {
@@ -110,6 +112,37 @@ describe('sync staleness (W4)', () => {
   });
   it('backup: the stale threshold follows each row\'s own interval', () => {
     expect(sqlOf(backupProviderSource.brokenQuery(NOW)).sql).toMatch(/make_interval\(mins => GREATEST\(3 \* "backup_provider_connections"\."sync_interval_minutes", 60\)\)/);
+  });
+
+  // #9127 PR A.
+  it('edr: each stream is stale past three of its own effective intervals, 60 minutes when unplanned', () => {
+    const text = sqlOf(edrSource.brokenQuery(NOW)).sql;
+    expect(text).toContain('COALESCE("edr_connections"."last_inventory_sync_at", "edr_connections"."created_at")');
+    expect(text).toContain('make_interval(mins => GREATEST(3 * COALESCE("edr_connections"."effective_inventory_interval_minutes", 60), 60))');
+    expect(text).toContain('COALESCE("edr_connections"."last_detection_sync_at", "edr_connections"."created_at")');
+    expect(text).toContain('make_interval(mins => GREATEST(3 * COALESCE("edr_connections"."effective_detection_interval_minutes", 60), 60))');
+    expect(text).toContain(`"edr_connections"."status" = 'connected'`);
+  });
+  it('accounting: only reconciled, connected connections with a payment switch on; daily-budget providers get 72 hours', () => {
+    const text = sqlOf(accountingSource.brokenQuery(NOW)).sql;
+    expect(text).toContain(`"accounting_connections"."provider" IN ('quickbooks', 'xero')`);
+    expect(text).toContain('("accounting_connections"."pull_payments" OR "accounting_connections"."push_payments")');
+    expect(text).toContain(`make_interval(mins => CASE WHEN "accounting_connections"."provider" IN ('xero') THEN 4320 ELSE 60 END)`);
+    expect(text).toContain('COALESCE("accounting_connections"."last_reconcile_at", "accounting_connections"."created_at")');
+  });
+  it('edr, accounting and mailbox: a stale connection is sync_stale with no stale error text', () => {
+    const edrRow = { id: ID, partnerId: P, name: 'GZ', provider: 'gravityzone', isActive: true, status: 'connected', lastInventorySyncStatus: 'success', lastInventorySyncError: 'an old error', lastDetectionSyncStatus: 'success', lastDetectionSyncError: null, createdAt: OLD, stale: true };
+    expect(edrObservation(edrRow, NOW)).toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null });
+    expect(edrObservation({ ...edrRow, lastDetectionSyncStatus: 'running' }, NOW).condition).toBe('sync_stale');
+    const acct = { id: ID, partnerId: P, provider: 'quickbooks', status: 'connected', lastError: null, createdAt: OLD, stale: true };
+    expect(accountingObservation(acct, NOW)).toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null });
+    expect(ticketMailboxObservation({ id: ID, partnerId: P, mailboxAddress: 'support@example.com', status: 'connected', consecutiveTransientFailures: 0, createdAt: OLD, stale: true }, NOW))
+      .toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null });
+  });
+  it('accounting: a stale connection reports its current reconcile-run error, and no other text', () => {
+    const acct = { id: ID, partnerId: P, provider: 'quickbooks', status: 'connected', createdAt: OLD, stale: true };
+    expect(accountingObservation({ ...acct, lastError: 'Payment pull: 2 of 9 items failed' }, NOW).detail).toBe('Payment pull: 2 of 9 items failed');
+    expect(accountingObservation({ ...acct, lastError: 'QuickBooks refresh token expired' }, NOW).detail).toBeNull();
   });
 });
 
@@ -131,7 +164,7 @@ describe('vendor sources', () => {
     expect(backupProviderObservation({ ...backup, lastSyncStatus: 'running', lastSyncError: null }, NOW).state).toBe('unknown');
   });
 
-  const edr = { id: ID, partnerId: P, name: '', provider: 'gravityzone', isActive: true, status: 'connected', lastInventorySyncStatus: 'success', lastInventorySyncError: null, lastDetectionSyncStatus: 'error', lastDetectionSyncError: 'detections: 503 upstream', createdAt: OLD };
+  const edr = { id: ID, partnerId: P, name: '', provider: 'gravityzone', isActive: true, status: 'connected', lastInventorySyncStatus: 'success', lastInventorySyncError: null, lastDetectionSyncStatus: 'error', lastDetectionSyncError: 'detections: 503 upstream', createdAt: OLD, stale: false };
   it('edr: reports the errored stream text and falls back to the provider label', () => {
     expect(edrObservation(edr, NOW)).toMatchObject({ state: 'broken', detail: 'detections: 503 upstream', fixHref: '/integrations#edr' });
     expect(edrObservation(edr, NOW).displayName).not.toBe('');
@@ -140,7 +173,7 @@ describe('vendor sources', () => {
 
 describe('accounting and mailbox', () => {
   it('accounting: the fix link follows the provider; billing:manage repairs', () => {
-    const r = { id: ID, partnerId: P, provider: 'xero', status: 'reauth_required', lastError: 'Xero refresh token expired', createdAt: OLD };
+    const r = { id: ID, partnerId: P, provider: 'xero', status: 'reauth_required', lastError: 'Xero refresh token expired', createdAt: OLD, stale: false };
     expect(accountingObservation(r, NOW)).toMatchObject({
       state: 'broken', severity: 'permanent', condition: 'reauth_required', displayName: 'Xero', fixHref: '/integrations#xero',
       viewPermission: { resource: 'accounting', action: 'read' }, repairPermission: { resource: 'billing', action: 'manage' },
@@ -148,7 +181,7 @@ describe('accounting and mailbox', () => {
     expect(accountingObservation({ ...r, provider: 'quickbooks' }, NOW)).toMatchObject({ displayName: 'QuickBooks', fixHref: '/integrations#quickbooks' });
   });
 
-  const box = { id: ID, partnerId: P, mailboxAddress: 'support@example.com', status: 'error', consecutiveTransientFailures: 0, createdAt: OLD };
+  const box = { id: ID, partnerId: P, mailboxAddress: 'support@example.com', status: 'error', consecutiveTransientFailures: 0, createdAt: OLD, stale: false };
   it('mailbox: never surfaces raw upstream text and links to the mailbox card', () => {
     expect(ticketMailboxObservation(box, NOW)).toMatchObject({
       state: 'broken', condition: 'mailbox_error', detail: null, orgId: null, fixHref: '/settings/ticketing#email',
@@ -199,5 +232,48 @@ describe('org sources', () => {
 
   it('m365 sync: unknown while the connection itself is degraded', () => {
     expect(m365SyncObservation({ connectionId: ID, orgId: O, partnerId: P, connectionStatus: 'degraded', connectionCreatedAt: OLD, domains: [{ domain: 'users', lastStatus: 'error', lastError: null, stale: false }] }, NOW).state).toBe('unknown');
+  });
+});
+
+// #9127 PR C: the nightly TD SYNNEX price file.
+describe('td_synnex_sftp', () => {
+  const CATALOG = { viewPermission: { resource: 'catalog', action: 'read' }, repairPermission: { resource: 'catalog', action: 'write' } };
+  const row = { id: ID, partnerId: P, enabled: true, lastSyncStatus: 'error', lastSyncError: 'download failed: password=hunter2secret', createdAt: OLD, stale: false };
+  const sqlOf = (q: unknown) => new PgDialect().sqlToQuery((q as { getSQL(): SQL }).getSQL());
+
+  it('registers one partner-axis source, hourly, with the distributor sub-tab fix link', () => {
+    expect(tdSynnexSftpSource).toMatchObject({
+      kind: 'td_synnex_sftp', intervalMinutes: 60, tables: ['td_synnex_sftp_integrations'], fixHrefs: ['/integrations#tdsynnex-sftp'],
+    });
+  });
+
+  it('a failed nightly run is a partner-wide transient sync_failed with a sanitized detail and catalog permissions', () => {
+    expect(tdSynnexSftpObservation(row, NOW)).toEqual({
+      sourceKind: 'td_synnex_sftp', sourceId: ID, partnerId: P, orgId: null, ownerUserId: null,
+      state: 'broken', severity: 'transient', condition: 'sync_failed',
+      detail: 'download failed: password=[REDACTED]',
+      displayName: 'TD SYNNEX price file', fixHref: '/integrations#tdsynnex-sftp', ownerFixHref: null, ...CATALOG, observedAt: NOW,
+    });
+  });
+
+  it('stale is sync_stale with no detail (the last error may be old); disabled is retired; ok is healthy', () => {
+    expect(tdSynnexSftpObservation({ ...row, lastSyncStatus: 'ok', stale: true }, NOW)).toMatchObject({ state: 'broken', condition: 'sync_stale', detail: null });
+    expect(tdSynnexSftpObservation({ ...row, lastSyncStatus: 'running', stale: true }, NOW).condition).toBe('sync_stale');
+    expect(tdSynnexSftpObservation({ ...row, enabled: false }, NOW).state).toBe('retired');
+    expect(tdSynnexSftpObservation({ ...row, lastSyncStatus: 'ok' }, NOW).state).toBe('healthy');
+  });
+
+  it('failed and stale is sync_failed and keeps the sanitized error text', () => {
+    expect(tdSynnexSftpObservation({ ...row, stale: true }, NOW)).toMatchObject({ condition: 'sync_failed', detail: 'download failed: password=[REDACTED]' });
+  });
+
+  it('the broken query reads enabled rows that failed or whose last attempt or config change is past three nights', () => {
+    const q = sqlOf(tdSynnexSftpSource.brokenQuery(NOW));
+    expect(q.sql).toContain('"td_synnex_sftp_integrations"."enabled" AND');
+    expect(q.sql).toContain(`"td_synnex_sftp_integrations"."last_sync_status" = 'error'`);
+    expect(q.sql).toContain('COALESCE(GREATEST("td_synnex_sftp_integrations"."last_sync_at", "td_synnex_sftp_integrations"."updated_at"), "td_synnex_sftp_integrations"."created_at")');
+    expect(q.sql).toContain('::timestamp - make_interval(mins => 4320)');
+    expect(q.sql).not.toContain('::timestamptz');
+    expect(q.params).toContain(NOW.toISOString());
   });
 });

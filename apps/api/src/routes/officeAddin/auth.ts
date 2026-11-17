@@ -1,7 +1,7 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { getRedis } from '../../services/redis';
-import { rateLimiter } from '../../services/rate-limit';
+import { mfaLimiter, rateLimiter, reserveAccountAttempt, releaseAccountAttempt } from '../../services/rate-limit';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { writeAuditEvent, type RequestLike } from '../../services/auditEvents';
 import { withSystemDbAccessContext } from '../../db';
@@ -27,10 +27,13 @@ import { resolveAndMintClientSession } from '../../services/clientAiExchange';
 import { exchangeSchema, EXCHANGE_RATE_LIMIT, bindSchema, BIND_RATE_LIMIT } from './schemas';
 import { verifyPassword, hashPassword } from '../../services/password';
 import { consumeMFAToken } from '../../services/mfa';
-import { decryptMfaSecretForMigration } from '../auth/helpers';
+import { authResponseFloorPromise, decryptMfaSecretForMigration } from '../auth/helpers';
 import { hasActiveTotpFactor } from '../auth/mfaFactorPredicates';
 import { ENABLE_2FA } from '../auth/schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { notifyAccountLocked } from '../auth/login';
+import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from '../auth/ssoPolicy';
+import { enforceIpAllowlist, isBlocked } from '../../services/ipAllowlist';
 
 /**
  * POST /office-addin/auth/exchange — neutral Entra ID token → persona
@@ -285,7 +288,19 @@ officeAddinAuthRoutes.post('/exchange', zValidator('json', exchangeSchema), asyn
  * checked on every future exchange; the email is not read again after bind.
  */
 // '/bind' under the './index.ts' '/auth' mount -> POST /office-addin/auth/bind.
-officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) => {
+// Same minimum response time as /auth/login: every answer waits until the
+// shared floor has elapsed, so an unknown account, a suspended partner or an
+// SSO-only partner cannot be told apart from the others by timing.
+async function withAuthResponseFloor(_c: Context, next: Next): Promise<void> {
+  const floorPromise = authResponseFloorPromise();
+  try {
+    await next();
+  } finally {
+    await floorPromise;
+  }
+}
+
+officeAddinAuthRoutes.post('/bind', withAuthResponseFloor, zValidator('json', bindSchema), async (c) => {
   if (!CLIENT_AI_ENTRA_CLIENT_ID) {
     return c.json({ error: 'not_enabled' }, 404);
   }
@@ -331,26 +346,47 @@ officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) =>
   }
 
   type Outcome =
-    | { deny: 401 | 403 | 409; error: string }
+    | { deny: 401 | 403 | 409 | 429; error: string; reason?: string }
     | { bindingId: string; userId: string; userEmail: string; partnerId: string };
+
+  // Every refusal up to and including the account and tenant checks answers
+  // with this one body, as /auth/login answers its generic 401: the real
+  // reason goes to the audit row only. MFA state and the IP allowlist are
+  // revealed only after the same checks /auth/login makes first.
+  const invalidCredentials = (reason: string): Outcome => ({ deny: 401, error: 'invalid_credentials', reason });
 
   const outcome: Outcome = await withSystemDbAccessContext(async (): Promise<Outcome> => {
     const user = await findUserForBind(email);
 
-    if (!user || user.status !== 'active') {
+    if (!user || user.status !== 'active' || !user.passwordHash) {
       // Constant-time: run a real argon2 verify against a dummy hash so this
       // branch's latency matches the found-user path below, blunting email
-      // enumeration via timing (mirrors routes/auth/login.ts:79-84).
+      // enumeration via timing (mirrors routes/auth/login.ts). An unknown,
+      // inactive or passwordless account is never counted toward a lockout.
       await verifyPassword(await getDummyPasswordHash(), password).catch(() => false);
-      return { deny: 401, error: 'invalid_credentials' };
+      return invalidCredentials(user ? 'password_auth_not_available' : 'invalid_credentials');
     }
 
-    if (!user.passwordHash || !(await verifyPassword(user.passwordHash, password))) {
-      return { deny: 401, error: 'invalid_credentials' };
+    // Same per-account lockout as /auth/login: the attempt is reserved before
+    // the password is checked, the check runs on every branch (equal work),
+    // and a locked account gets the same 401 even with the right password.
+    const normalizedEmail = user.email.toLowerCase();
+    const reservation = await reserveAccountAttempt(redis, normalizedEmail);
+    const validPassword = await verifyPassword(user.passwordHash, password);
+    if (!reservation.allowed) {
+      return invalidCredentials('account_locked');
     }
+    if (!validPassword) {
+      if (reservation.reachesLimit) {
+        void notifyAccountLocked(c, user, reservation.count);
+      }
+      return invalidCredentials('invalid_credentials');
+    }
+    // Correct password: give the attempt back (failed passwords only count).
+    void releaseAccountAttempt(redis, normalizedEmail);
 
     if (!user.partnerId) {
-      return { deny: 403, error: 'not_a_technician' };
+      return invalidCredentials('not_a_technician');
     }
 
     // Tenant status (mirrors the exchange route and officeAddinTechAuth.ts): a
@@ -361,9 +397,36 @@ officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) =>
       await assertActiveTenantContext({ scope: 'partner', partnerId: user.partnerId, orgId: null });
     } catch (err) {
       if (err instanceof TenantInactiveError) {
-        return { deny: 403, error: 'tenant_inactive' };
+        return invalidCredentials('tenant_inactive');
       }
       throw err;
+    }
+
+    // As /auth/login: a partner that requires SSO does not accept a password,
+    // and the partner IP allowlist applies before any MFA state is revealed.
+    try {
+      await assertPasswordAuthAllowedBySso({ scope: 'partner', partnerId: user.partnerId, orgId: null });
+    } catch (err) {
+      if (err instanceof SsoPasswordAuthRequiredError) {
+        return invalidCredentials('sso_required');
+      }
+      throw err;
+    }
+
+    let ipDecision;
+    try {
+      ipDecision = await enforceIpAllowlist(c, {
+        partnerId: user.partnerId,
+        isPlatformAdmin: user.isPlatformAdmin === true,
+        actorId: user.id,
+        actorEmail: user.email,
+      });
+    } catch (err) {
+      console.error('[office-addin] IP allowlist check failed during bind:', err);
+      return invalidCredentials('ip_check_failed');
+    }
+    if (isBlocked(ipDecision)) {
+      return { deny: 403, error: 'ip_not_allowed' };
     }
 
     if (ENABLE_2FA) {
@@ -381,6 +444,12 @@ officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) =>
       }, { failClosedMethods: true });
       if (!policy.allowedMethods.totp) {
         return { deny: 403, error: 'mfa_method_not_allowed' };
+      }
+      // The same per-account limit on verification codes as sign-in
+      // (routes/auth/mfa.ts, routes/auth/passkeys.ts), before the code is checked.
+      const mfaRate = await rateLimiter(redis, `mfa:${user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+      if (!mfaRate.allowed) {
+        return { deny: 429, error: 'rate_limited' };
       }
       const { plaintext: secret } = decryptMfaSecretForMigration(user.mfaSecret);
       if (!secret || !(await consumeMFAToken(secret, mfaCode, user.id))) {
@@ -409,7 +478,7 @@ officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) =>
   if ('deny' in outcome) {
     auditBind(c, {
       result: 'denied',
-      details: { reason: outcome.error, tid: claims.tid, oid: claims.oid },
+      details: { reason: outcome.reason ?? outcome.error, tid: claims.tid, oid: claims.oid },
     });
     return c.json({ error: outcome.error }, outcome.deny);
   }

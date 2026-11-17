@@ -488,6 +488,7 @@
       "connection": "Erreur de connexion",
       "createSession": "Impossible de créer une session",
       "createTicket": "Impossible de créer le ticket de connexion",
+      "endSession": "Impossible de mettre fin à la session",
       "failed": "Échec de la connexion",
       "initialize": "Impossible d’initialiser",
       "invalidTicket": "Réponse de ticket de connexion invalide",
@@ -703,7 +704,6 @@
       "disconnected": "Déconnecté",
       "failed": "Échec",
       "pending": "En attente",
-      "endedByUser": "Terminée par l’utilisateur",
       "teardownPending": "En cours de fin (en attente de l’appareil)"
     },
     "subtitle": "Journal d’audit d’accès à distance",
@@ -715,7 +715,22 @@
       "terminal": "Terminal"
     },
     "viewDetails": "Voir les détails",
-    "yesterdayAt": "Hier {{time}}"
+    "yesterdayAt": "Hier {{time}}",
+    "endReasons": {
+      "endedByUser": "Terminée par l’utilisateur",
+      "operatorEnded": "Terminée par un technicien",
+      "viewerClosed": "Visionneuse fermée",
+      "connectionLost": "Connexion à la visionneuse perdue",
+      "peerDisconnected": "Connexion fermée",
+      "neverConnected": "Jamais connectée",
+      "superseded": "Remplacée par une session plus récente",
+      "captureFailed": "Capture d’écran arrêtée",
+      "startFailed": "Échec du démarrage",
+      "consentDenied": "Consentement refusé",
+      "accessRevoked": "Accès révoqué",
+      "maxDuration": "Durée maximale de session atteinte",
+      "deviceRemoved": "Appareil retiré ou réinstallé"
+    }
   },
   "sessionHistoryPage": {
     "detailsTitle": "Détails Titre",
@@ -732,7 +747,8 @@
       "started": "Démarré",
       "userId": "Utilisateur ID",
       "os": "OS",
-      "email": "Courriel"
+      "email": "Courriel",
+      "error": "Erreur"
     },
     "sections": {
       "recording": "Enregistrement",
@@ -740,7 +756,6 @@
       "timeline": "Chronologie"
     },
     "subtitle": "Consultez et auditez les sessions d’accès à distance",
-    "endedByUser": "Terminée par l’utilisateur",
     "teardownPending": "En attente de la confirmation de l’appareil",
     "title": "Historique des sessions",
     "viewDevice": "Dispositif de vue",
@@ -833,18 +848,24 @@
     },
     "code": {
       "heading": "Transmettez ce code à la personne que vous dépannez",
-      "shownOnce": "Copiez ce code maintenant. Breeze n’en conserve qu’une empreinte; dès que vous quittez ou rechargez cette page, il est irrécupérable — vous devriez démarrer une nouvelle session.",
+      "visibleWhilePending": "Le code reste ici jusqu'à ce que la personne l'utilise ou qu'il expire. Il ne fonctionne qu'une seule fois.",
       "expires": "Expire à {{time}}",
+      "expiresIn": "Expire dans {{time}}",
+      "expired": "Ce code a expiré. Générez un nouveau code pour continuer à utiliser cette séance.",
       "instructions": "Envoyez-lui le lien, puis demandez-lui de lancer le client téléchargé et d'entrer le code.",
       "copyCode": "Copier le code",
       "copyLink": "Copier le lien de téléchargement",
       "copiedCode": "Code copié dans le presse-papiers",
       "copiedLink": "Lien de téléchargement copié dans le presse-papiers",
-      "copyFailed": "Impossible de copier dans le presse-papiers"
+      "copyFailed": "Impossible de copier dans le presse-papiers",
+      "newCode": "Nouveau code",
+      "newCodeSubmitting": "Génération du code…",
+      "newCodeSuccess": "Nouveau code généré. L'ancien code ne fonctionne plus.",
+      "newCodeError": "Impossible de générer un nouveau code"
     },
     "detail": {
       "heading": "Détail de la séance",
-      "noCode": "Le code à usage unique n'a été affiché qu'à la création de cette séance et ne peut pas être récupéré. Démarrez une nouvelle séance si la personne a besoin d'un autre code.",
+      "noCode": "Aucun code n'est affiché pour cette séance. Générez un nouveau code si la personne en a encore besoin.",
       "attribution": "Référence",
       "close": "Fermer le détail de la séance"
     },

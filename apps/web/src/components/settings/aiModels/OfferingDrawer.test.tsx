@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { AiOfferingDto } from '@breeze/shared';
 import { jsonRes, CONN } from './testFixtures';
-import { OFF, RATES, offeringRow as row } from './offeringFixtures';
+import { NO_SURFACE_TURNS, OFF, RATES, offeringRow as row } from './offeringFixtures';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -185,9 +185,11 @@ describe('OfferingDrawer', () => {
   });
 
   it('explains the tool-calling test for a gateway offering only', () => {
-    const gw = row({ id: OFF, connectionId: CONN, funding: 'partner_key', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null } });
+    const gw = row({ id: OFF, connectionId: CONN, funding: 'partner_key', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null, surfaces: NO_SURFACE_TURNS } });
     const { unmount } = render(<OfferingDrawer offering={gw} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByTestId('ai-offering-verify-hint').textContent).toMatch(/tool-calling test/i);
+    // The cost note (verifyCost) owns the token figure; the hint must not contradict it.
+    expect(screen.getByTestId('ai-offering-verify-hint').textContent).not.toMatch(/few thousand|\d[\d,]*\s*tokens/i);
     unmount();
     render(<OfferingDrawer offering={row({ id: OFF, connectionId: CONN, funding: 'partner_key' })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.queryByTestId('ai-offering-verify-hint')).toBeNull();

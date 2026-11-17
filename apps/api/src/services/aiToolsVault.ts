@@ -14,8 +14,9 @@ import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
-import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from './vaultDeviceCommands';
-import { updateVaultWithinCurrentSite } from './localVaultUpdate';
+import { buildVaultConfigurePayload, resolveVaultSyncSource } from './vaultDeviceCommands';
+import { createLocalVault, updateVaultOnDevice, updateVaultWithinCurrentSite } from './localVaultUpdate';
+import { UnsupportedLocalStoreTargetError } from './localStoreTargets';
 import {
   deviceScopeCondition,
   deviceSiteDenied,
@@ -42,6 +43,10 @@ function safeHandler(toolName: string, fn: VaultHandler): VaultHandler {
     try {
       return await fn(input, auth);
     } catch (err) {
+      // A refused vault target is an answer for the caller, not a server fault.
+      if (err instanceof UnsupportedLocalStoreTargetError) {
+        return JSON.stringify({ error: err.message });
+      }
       const message = err instanceof Error ? err.message : 'Internal error';
       console.error(`[vault:${toolName}] ${err?.constructor?.name ?? 'Error'}:`, message, err);
       return JSON.stringify({ error: 'Operation failed. Check server logs for details.' });
@@ -325,13 +330,17 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       }
 
       // The helper requires a snapshot id; default to the device's newest
-      // file-backup snapshot (#8385).
-      const snapshotId = typeof input.snapshotId === 'string'
-        ? input.snapshotId
-        : await resolveLatestVaultSyncSnapshotId(vault.deviceId, vault.orgId);
-      if (!snapshotId) {
-        return JSON.stringify({ error: 'No backup snapshot to sync yet: run a file backup on this device first' });
+      // file-backup snapshot (#8385). The command also names the destination
+      // that snapshot was written to (#11858).
+      const source = await resolveVaultSyncSource(
+        vault.deviceId,
+        vault.orgId,
+        typeof input.snapshotId === 'string' ? input.snapshotId : null,
+      );
+      if (!source.ok) {
+        return JSON.stringify({ error: source.error });
       }
+      const { snapshotId, destination } = source;
 
       // Repeat the tenant and device axes the checks above authorized: the
       // vault was read in a separate statement, so `id` alone would leave a
@@ -354,7 +363,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         'trigger_vault_sync',
         vault.deviceId,
         CommandTypes.VAULT_SYNC,
-        { vaultId: vault.id, vaultPath: vault.vaultPath, snapshotId },
+        { vaultId: vault.id, vaultPath: vault.vaultPath, snapshotId, ...destination },
         { userId: auth.user?.id, expectedOrgId: vault.orgId }
       );
 
@@ -408,8 +417,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           vaultPath: { type: 'string', description: 'Vault path' },
           vaultType: {
             type: 'string',
-            enum: ['local', 'smb', 'usb'],
-            description: 'Vault storage type',
+            enum: ['local', 'usb'],
+            description: 'Vault storage type: a local or USB disk attached to the device. SMB and NAS shares are not supported.',
           },
           retentionCount: { type: 'number', description: 'Retention count to keep in the vault' },
           isActive: { type: 'boolean', description: 'Whether the vault should be active' },
@@ -449,19 +458,16 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         }
 
         const now = new Date();
-        const [vault] = await db
-          .insert(localVaults)
-          .values({
-            orgId: device.orgId,
-            deviceId,
-            vaultPath,
-            vaultType: (input.vaultType as string) ?? 'local',
-            retentionCount: Number(input.retentionCount) || 3,
-            isActive: typeof input.isActive === 'boolean' ? input.isActive : true,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
+        const vault = await createLocalVault({
+          orgId: device.orgId,
+          deviceId,
+          vaultPath,
+          vaultType: (input.vaultType as string) ?? 'local',
+          retentionCount: Number(input.retentionCount) || 3,
+          isActive: typeof input.isActive === 'boolean' ? input.isActive : true,
+          createdAt: now,
+          updatedAt: now,
+        });
 
         const deviceConfig = await pushDeviceVaultConfig(auth, deviceId, device.orgId);
         return JSON.stringify({ success: true, vault, deviceConfig });
@@ -497,17 +503,9 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         // sites), so a concurrent site move cannot land between the check
         // above and this write. Unrestricted callers keep the CAS-bound update.
         const allowedSites = siteAllowlistOf(auth);
-        const [vault] = allowedSites !== undefined
-          ? [await updateVaultWithinCurrentSite(existing.orgId, vaultId, updateData, allowedSites)]
-          : await db
-            .update(localVaults)
-            .set(updateData)
-            .where(and(
-              eq(localVaults.id, vaultId),
-              eq(localVaults.orgId, existing.orgId),
-              eq(localVaults.deviceId, existing.deviceId),
-            ))
-            .returning();
+        const vault = allowedSites !== undefined
+          ? await updateVaultWithinCurrentSite(existing.orgId, vaultId, updateData, allowedSites)
+          : await updateVaultOnDevice(existing.orgId, vaultId, existing.deviceId, updateData);
 
         if (!vault) return JSON.stringify({ error: 'Vault not found or access denied' });
         const deviceConfig = await pushDeviceVaultConfig(auth, existing.deviceId, existing.orgId);

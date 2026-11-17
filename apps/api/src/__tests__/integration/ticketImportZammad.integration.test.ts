@@ -39,6 +39,7 @@ vi.mock('../../services/ticketEvents', async (orig) => {
 });
 
 import {
+  contactExternalLinks,
   contacts,
   migrationWindows,
   ticketAttachments,
@@ -47,7 +48,9 @@ import {
   ticketExternalRefs,
   ticketImportItems,
   ticketImportRunIssues,
+  ticketLinks,
   tickets,
+  users,
 } from '../../db/schema';
 import { createSourceClient } from '../../services/ticketImport/sourceFetch';
 import { ticketImportLimits } from '../../services/ticketImport/importLimits';
@@ -65,6 +68,11 @@ import {
 import { createUser } from './db-utils';
 import { drive, ledger, openWindow, runRow, seedImportBase, setMappings, startImportRun, type ImportBase } from './ticketImportFixtures';
 import { getTestDb } from './setup';
+
+/** The links a window wrote in import mode (#8313 W2). */
+async function importedLinks(windowId: string) {
+  return getTestDb().select().from(ticketLinks).where(eq(ticketLinks.migrationWindowId, windowId));
+}
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const CASE_TIMEOUT = 240_000;
@@ -199,7 +207,8 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(counters.customAttributes).toEqual({ cf_billable: 1, cf_customer_reference: 1 });
     // Raised: 1011 and 1012 on 106, 1018 and 1019 on 109 (moved in, older than their survivor).
     expect(counters.moduleCounts).toEqual({ article_time_raised: 4, body_rendering_error: 1, state_removed: 1 });
-    // The merged pair and the chain: three links, notes until W2 writes links.
+    // The merged pair and the chain: three links. A dry run writes nothing, so
+    // it counts them as notes; the import writes them (W2, below).
     expect(counters.linksAsNotes).toBe(3);
     expect(counters.ownersUnmatched).toBe(1);
     expect(await issuesOf(run.id)).toEqual(['owner_unmatched:103:5', 'skipped_no_org:110:', 'skipped_no_org:116:']);
@@ -260,6 +269,55 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     }
   }, CASE_TIMEOUT);
 
+  runDb('an unreadable list row of a ticket already imported keeps it imported and only lists it, run after run (#11296 follow-up)', async () => {
+    const fx = await seedZammad();
+    const window = await openWindow(fx);
+    const data = loadZammadFixtures('base');
+    data.tickets = data.tickets.filter((t) => [101, 104].includes(t.id));
+    fake.use(data);
+    const first = await startImportRun(fx, 'import', window.id);
+    await drive(fx, first.id, { deps });
+    expect((await ledger(fx.sourceId)).get('104')).toMatchObject({ state: 'imported' });
+    const importedVersion = (await ledger(fx.sourceId)).get('104')!.importedVersion;
+    const ticketBefore = (await importedTickets(fx)).get('104');
+    expect(ticketBefore).toBeDefined();
+
+    // 104's row now lists with an id but is otherwise unreadable, on two runs in a row.
+    const broken = loadZammadFixtures('base');
+    broken.tickets = [
+      broken.tickets.find((t) => t.id === 101)!,
+      { ...broken.tickets.find((t) => t.id === 104)!, customer_id: 'not a user' } as never,
+    ];
+    fake.use(broken);
+    for (let pass = 0; pass < 2; pass += 1) {
+      fake.requests.length = 0;
+      const run = await startImportRun(fx, 'import', window.id);
+      await drive(fx, run.id, { deps });
+      const row = await runRow(run.id);
+      expect(row).toMatchObject({ state: 'completed', stopReason: null });
+      // Before: failed source_shape_invalid on every run until the row read again.
+      expect(normalizeCounters(row.counters).tickets).toMatchObject({ failed: 0, skipped: 1, unchanged: 1 });
+      expect(await issuesOf(run.id)).toEqual(['row_unreadable:104:source_shape_invalid']);
+      expect((await ledger(fx.sourceId)).get('104')).toMatchObject({ state: 'imported', importedVersion, failureCode: null, attempts: 0 });
+      // Seen by the run: the deletions phase does not probe it, and it is never loaded.
+      expect(requested('/api/v1/tickets/104')).toEqual([]);
+      expect(requested('/api/v1/ticket_articles/by_ticket/104')).toEqual([]);
+    }
+    expect((await importedTickets(fx)).get('104')).toEqual(ticketBefore);
+
+    // A row that was never imported still fails as before.
+    const fresh = loadZammadFixtures('base');
+    fresh.tickets = [
+      ...broken.tickets,
+      { ...fresh.tickets.find((t) => t.id === 113)!, id: 150, number: '31050', customer_id: 'not a user' } as never,
+    ];
+    fake.use(fresh);
+    const last = await startImportRun(fx, 'import', window.id);
+    await drive(fx, last.id, { deps });
+    expect((await ledger(fx.sourceId)).get('150')).toMatchObject({ state: 'failed', failureCode: 'source_shape_invalid' });
+    expect(await issuesOf(last.id)).toEqual(['failed:150:source_shape_invalid', 'row_unreadable:104:source_shape_invalid']);
+  }, CASE_TIMEOUT);
+
   runDb('a page that shifts between two slices skips no ticket: the runner resumes after the last row, not at a position (review 8)', async () => {
     const fx = await seedZammad();
     const window = await openWindow(fx);
@@ -316,10 +374,16 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(c1.tickets).toMatchObject({ seen: 19, created: 19, failed: 0, skipped: 0 });
     expect(c1.attachments).toMatchObject({ written: 4, skipped: 2, bytes: 70 + 53 + 70 + 70, alternativesIgnored: 1 });
     expect(c1.comments.systemSkipped).toBe(4);
-    expect(c1.linksAsNotes).toBe(3);
+    // The merged pair and the chain: three links, written in import mode (W2).
+    expect(c1).toMatchObject({ linksWritten: 3, linksAsNotes: 0 });
 
     const t = await importedTickets(fx);
     expect([...t.keys()].sort()).toEqual(Array.from({ length: 19 }, (_, i) => String(101 + i)));
+    // 105 was merged into 106: linked as its duplicate, at the source's time, by the window (§6.6).
+    const links = await importedLinks(window.id);
+    expect(links).toHaveLength(3);
+    expect(links.every((l) => l.linkType === 'duplicate_of')).toBe(true);
+    expect(links.map((l) => [l.sourceTicketId, l.targetTicketId])).toContainEqual([t.get('105')!.id, t.get('106')!.id]);
     const status = Object.fromEntries([...t].map(([k, v]) => [k, v.status]));
     expect(status).toEqual({
       101: 'open', 102: 'closed', 103: 'pending', 104: 'resolved', 105: 'closed', 106: 'open', 107: 'closed',
@@ -385,7 +449,8 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     // 112 is deleted and 115 hidden: the list shows 17; eight of them changed.
     expect(c2.tickets).toMatchObject({ seen: 17, unchanged: 9, resumed: 8, created: 0, failed: 0 });
     expect(c2).toMatchObject({ deletedInSource: 1, hiddenInSource: 1, commentsMissingInSource: 0, commentsChangedInSource: 2 });
-    expect(c2.linksAsNotes).toBe(2);
+    // The two merges between the passes (113 into 106, 118 into 119) are linked too.
+    expect(c2).toMatchObject({ linksWritten: 2, linksAsNotes: 0 });
     // Only the changed tickets were loaded; the rest cost their list row.
     expect(requested('/api/v1/ticket_articles/by_ticket/').sort()).toEqual([
       '/api/v1/ticket_articles/by_ticket/101', '/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_articles/by_ticket/103', '/api/v1/ticket_articles/by_ticket/104',
@@ -443,6 +508,10 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(c119.map((c) => c.sourceId).sort()).toEqual(['article:1043', 'article:1046']);
     expect(c119.find((c) => c.sourceId === 'article:1046')!.content).toBe(c119Before.find((c) => c.sourceId === 'article:1046')!.content);
     expect(t2.get('118')).toMatchObject({ status: 'closed', description: '' });
+    // Both merges between the passes are links now (W2), beside the bulk pass's three.
+    const deltaLinks = (await importedLinks(window.id)).map((l) => [l.sourceTicketId, l.targetTicketId]);
+    expect(deltaLinks).toHaveLength(5);
+    expect(deltaLinks).toEqual(expect.arrayContaining([[t2.get('113')!.id, t2.get('106')!.id], [t2.get('118')!.id, t2.get('119')!.id]]));
     expect((await commentsOf(t2.get('118')!.id)).map((c) => c.sourceId).sort()).toEqual(['article:1044', 'note:118:merged:119']);
     const once = await getTestDb().select({ sourceId: ticketComments.importSourceId }).from(ticketComments)
       .where(inArray(ticketComments.importSourceId, ['article:1043', 'article:1044', 'article:1045', 'article:1046']));
@@ -455,5 +524,69 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(items.get('113')).toMatchObject({ state: 'imported', importedVersion: '2026-09-03T10:00:00.000Z' });
     // No file was downloaded again.
     expect(requested('/api/v1/ticket_attachment/')).toEqual([]);
+  }, CASE_TIMEOUT);
+
+  // W4b (spec 2026-10-19 §5.13, §6.4): "create missing requester contacts" on.
+  runDb('with created contacts on: one contact per requester and org across the bulk and delta passes; shared and empty addresses stay display-only; no owner becomes a user', async () => {
+    const fx = await seedZammad();
+    // Dana has no contact this time; Frank's address is still shared by two Globex contacts.
+    await getTestDb().delete(contacts).where(eq(contacts.id, fx.dana));
+    const options = { ...ZAMMAD_OPTIONS, createRequesterContacts: true };
+    await setMappings(fx, {
+      orgs: [
+        { sourceOrgKey: '2', sourceOrgName: 'Acme Ltd', orgId: fx.orgA.id },
+        { sourceOrgKey: '3', sourceOrgName: 'Globex Inc', orgId: fx.orgB.id },
+        { sourceOrgKey: null, sourceOrgName: null, orgId: fx.orgA.id },
+      ],
+      categories: [{ sourceGroupKey: '2', sourceGroupName: 'Support', categoryId: fx.categoryId }],
+    }, options);
+    const usersBefore = await getTestDb().select({ id: users.id }).from(users).where(eq(users.partnerId, fx.partner.id));
+
+    // The dry run predicts Dana, Grace (110, the fallback) and Ivan (116, the fallback), once each, in Acme.
+    const dry = await startImportRun(fx, 'dry_run');
+    await drive(fx, dry.id, { deps });
+    expect(normalizeCounters((await runRow(dry.id)).counters).predicted.contactsToCreate).toEqual({ [fx.orgA.id]: 3 });
+
+    const window = await openWindow(fx);
+    const bulk = await startImportRun(fx, 'import', window.id);
+    await drive(fx, bulk.id, { deps });
+    const c1 = normalizeCounters((await runRow(bulk.id)).counters);
+    expect(c1.tickets).toMatchObject({ created: 19, failed: 0 });
+    expect(c1.contactsCreated).toBe(3);
+
+    const created = await getTestDb()
+      .select({ id: contacts.id, orgId: contacts.orgId, name: contacts.name, email: contacts.email, roles: contacts.roles, key: contactExternalLinks.externalId })
+      .from(contactExternalLinks)
+      .innerJoin(contacts, eq(contacts.id, contactExternalLinks.contactId))
+      .where(eq(contactExternalLinks.system, `ticket-import:${fx.sourceId}`));
+    expect(created.map((c) => [c.key, c.orgId, c.name, c.email, c.roles]).sort()).toEqual([
+      ['10', fx.orgA.id, 'Dana Customer', 'dana@acme.example.test', []],
+      ['13', fx.orgA.id, 'Grace Solo', 'grace@solo.example.org', []],
+      ['14', fx.orgA.id, 'Ivan Foundation', 'ivan@foundation.example.test', []],
+    ]);
+    const dana = created.find((c) => c.key === '10')!;
+    const t = await importedTickets(fx);
+    for (const key of ['101', '102', '104', '107', '108', '109', '112', '113', '114', '115', '117', '118', '119']) {
+      expect(t.get(key)!.requesterContactId, key).toBe(dana.id);
+    }
+    // Frank: two contacts share the address, so display-only; Eve has no address.
+    expect(t.get('103')).toMatchObject({ requesterContactId: null, submitterEmail: 'frank@globex.example.test', assignedTo: null });
+    expect(t.get('111')).toMatchObject({ requesterContactId: null, submitterEmail: null, submitterName: 'Eve Nomail' });
+    expect(await getTestDb().select().from(contacts).where(eq(contacts.email, 'frank@globex.example.test'))).toHaveLength(2);
+    // Carol, 103's owner, matches no user: the ticket is unassigned with the note, and no user is created.
+    const c103 = await commentsOf(t.get('103')!.id);
+    expect(c103.find((c) => c.sourceId === 'note:103:owner:5')!.content).toBe('Owner in Zammad: Carol Gone <carol.gone@former.example.test>');
+    expect(await getTestDb().select({ id: users.id }).from(users).where(eq(users.partnerId, fx.partner.id))).toEqual(usersBefore);
+    expect(await getTestDb().select().from(contacts).where(eq(contacts.email, 'carol.gone@former.example.test'))).toEqual([]);
+
+    // The delta pass resumes the changed tickets and creates nothing.
+    fake.use('delta');
+    const delta = await startImportRun(fx, 'import', window.id);
+    await drive(fx, delta.id, { deps });
+    const c2 = normalizeCounters((await runRow(delta.id)).counters);
+    expect(c2.tickets).toMatchObject({ resumed: 8, created: 0, failed: 0 });
+    expect(c2.contactsCreated).toBe(0);
+    expect(await getTestDb().select().from(contactExternalLinks).where(eq(contactExternalLinks.system, `ticket-import:${fx.sourceId}`))).toHaveLength(3);
+    expect(await getTestDb().select().from(contacts).where(eq(contacts.email, 'dana@acme.example.test'))).toHaveLength(1);
   }, CASE_TIMEOUT);
 });

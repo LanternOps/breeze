@@ -4,6 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 const m = vi.hoisted(() => ({
   countEligibleRows: vi.fn(),
+  countEligibleRowsBounded: vi.fn(),
   pruneInCtidBatches: vi.fn(),
   updateInCtidBatches: vi.fn(),
   warnOnRetentionBacklog: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock('./retentionBatch', async (importOriginal) => ({
   // Keep the real utcWallTime so predicates render as they will in production.
   ...(await importOriginal<typeof import('./retentionBatch')>()),
   countEligibleRows: (...a: unknown[]) => m.countEligibleRows(...a),
+  countEligibleRowsBounded: (...a: unknown[]) => m.countEligibleRowsBounded(...a),
   pruneInCtidBatches: (...a: unknown[]) => m.pruneInCtidBatches(...a),
   updateInCtidBatches: (...a: unknown[]) => m.updateInCtidBatches(...a),
   warnOnRetentionBacklog: (...a: unknown[]) => m.warnOnRetentionBacklog(...a),
@@ -27,7 +29,15 @@ vi.mock('../services/sentry', () => ({
 }));
 
 import { utcWallTime } from './retentionBatch';
-import { runRetentionTarget, runRetentionTargets, type RetentionKnobs, type RetentionTarget } from './retentionTarget';
+import {
+  REPORT_ONLY_COUNT_TIMEOUT_MS,
+  enforceRetentionAction,
+  runRetentionTarget,
+  runRetentionTargets,
+  type RetentionAction,
+  type RetentionKnobs,
+  type RetentionTarget,
+} from './retentionTarget';
 
 const dialect = new PgDialect();
 const render = (q: SQL) => {
@@ -64,6 +74,7 @@ describe('runRetentionTarget', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     m.countEligibleRows.mockResolvedValue({ eligible: 7, capped: false });
+    m.countEligibleRowsBounded.mockResolvedValue({ timedOut: false, eligible: 7, capped: false });
     m.pruneInCtidBatches.mockResolvedValue({ deleted: 40, batches: 1, hasMore: false });
     m.updateInCtidBatches.mockResolvedValue({ deleted: 12, batches: 1, hasMore: false });
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -198,6 +209,119 @@ describe('runRetentionTarget', () => {
     expect(m.pruneInCtidBatches).not.toHaveBeenCalled();
   });
 
+  // #4342 W6.c: a target whose action is `reportOnly` has no enforce path at
+  // all. Even a caller that passes enforce: true only gets a count.
+  it('a reportOnly target only counts, even when enforce is true', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await runRetentionTarget(
+      target({ table: 'sso_sessions', action: { kind: 'reportOnly' } }),
+      knobs({ enforce: true }),
+      { ...opts, enforceVar: undefined },
+    );
+    expect(m.countEligibleRowsBounded).toHaveBeenCalledTimes(1);
+    expect(m.pruneInCtidBatches).not.toHaveBeenCalled();
+    expect(m.updateInCtidBatches).not.toHaveBeenCalled();
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('webhook_delivery_retention', { rowsEligible: 7 });
+    expect(result).toMatchObject({ mode: 'report', table: 'sso_sessions', eligible: 7 });
+    const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes('REPORT-ONLY'));
+    expect(line).toContain('7 sso_sessions rows eligible');
+    // No variable turns this target on, so the line must not point at one.
+    expect(line).not.toContain('_RETENTION_ENFORCE');
+    expect(line).toContain('no enforce switch');
+  });
+
+  // #4342 W6.c review: a report-only predicate may have no supporting index,
+  // so its count is bounded in time as well as in rows.
+  it('a reportOnly target counts under the report-only statement timeout, with the same cap and predicate', async () => {
+    const result = await runRetentionTarget(
+      target({ table: 'audit_baseline_results', action: { kind: 'reportOnly' } }),
+      knobs({ batchSize: 100, maxBatches: 5 }),
+      opts,
+    );
+    expect(REPORT_ONLY_COUNT_TIMEOUT_MS).toBeGreaterThanOrEqual(1000);
+    expect(REPORT_ONLY_COUNT_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
+    expect(m.countEligibleRows).not.toHaveBeenCalled();
+    expect(m.countEligibleRowsBounded).toHaveBeenCalledTimes(1);
+    const args = m.countEligibleRowsBounded.mock.calls[0]?.[0];
+    expect(args).toMatchObject({
+      table: 'audit_baseline_results',
+      cap: 500,
+      label: 'testRetention',
+      statementTimeoutMs: REPORT_ONLY_COUNT_TIMEOUT_MS,
+    });
+    expect(render(args.where)).toEqual(render(whereSpy.mock.results[0]!.value as SQL));
+    expect(result).toMatchObject({ mode: 'report', eligible: 7, eligibleCapped: false });
+  });
+
+  // Targets that can enforce keep the unbounded-in-time count: their report is
+  // the evidence for an enforce flip, and nothing about them changed here.
+  it('a delete target in report mode keeps the plain capped count', async () => {
+    await runRetentionTarget(target(), knobs({ enforce: false }), opts);
+    expect(m.countEligibleRows).toHaveBeenCalledTimes(1);
+    expect(m.countEligibleRowsBounded).not.toHaveBeenCalled();
+  });
+
+  it('a timed-out reportOnly count is reported as unavailable, not as a failure or a zero', async () => {
+    m.countEligibleRowsBounded.mockResolvedValueOnce({ timedOut: true });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await runRetentionTarget(
+      target({ table: 'audit_baseline_results', action: { kind: 'reportOnly' } }),
+      knobs({ enforce: true }),
+      { ...opts, enforceVar: undefined },
+    );
+
+    expect(result).toMatchObject({
+      mode: 'reportUnavailable',
+      table: 'audit_baseline_results',
+      retentionDays: 30,
+      reason: 'timeout',
+      timeoutMs: REPORT_ONLY_COUNT_TIMEOUT_MS,
+    });
+    expect(result).not.toHaveProperty('eligible');
+    const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes('REPORT-ONLY'));
+    expect(line).toContain('[TestRetention]');
+    expect(line).toContain('audit_baseline_results count unavailable (timed out');
+    expect(line).toContain(`${REPORT_ONLY_COUNT_TIMEOUT_MS} ms`);
+    // Exactly: no rowsEligible (a 0 would read as "nothing eligible"), no
+    // incomplete (that gauge means "an enforce run left rows behind").
+    expect(m.recordRetentionRun).toHaveBeenCalledTimes(1);
+    expect(m.recordRetentionRun.mock.calls[0]?.[1]).toEqual({ countUnavailable: true });
+    expect(m.pruneInCtidBatches).not.toHaveBeenCalled();
+    expect(m.updateInCtidBatches).not.toHaveBeenCalled();
+  });
+
+  // Fail closed: the enforcing branch handles each action kind it knows and
+  // throws on anything else. Before, every kind but `scrub` reached a delete.
+  it('an action kind the runner does not know throws under enforce instead of deleting', async () => {
+    const unknown = { kind: 'archive' } as unknown as RetentionAction;
+    await expect(runRetentionTarget(target({ action: unknown }), knobs({ enforce: true }), opts)).rejects.toThrow(/archive/);
+    expect(m.pruneInCtidBatches).not.toHaveBeenCalled();
+    expect(m.updateInCtidBatches).not.toHaveBeenCalled();
+    expect(m.recordRetentionRun).not.toHaveBeenCalled();
+  });
+
+  // A hand-built call that skips runRetentionTarget's early return still
+  // cannot delete a reportOnly target's rows.
+  it('enforceRetentionAction refuses a reportOnly action without touching the table', async () => {
+    const batchArgs = { table: 'audit_baseline_results', where: sql`true`, batchSize: 100, maxBatches: 5, label: 't' };
+    await expect(enforceRetentionAction({ kind: 'reportOnly' }, batchArgs)).rejects.toThrow(/reportOnly/);
+    expect(m.pruneInCtidBatches).not.toHaveBeenCalled();
+    expect(m.updateInCtidBatches).not.toHaveBeenCalled();
+  });
+
+  it('enforceRetentionAction routes delete to prune and scrub to update', async () => {
+    const batchArgs = { table: 'webhook_deliveries', where: sql`true`, batchSize: 100, maxBatches: 5, label: 't' };
+    await expect(enforceRetentionAction({ kind: 'delete' }, batchArgs)).resolves.toEqual({ deleted: 40, batches: 1, hasMore: false });
+    expect(m.pruneInCtidBatches).toHaveBeenCalledTimes(1);
+    expect(m.updateInCtidBatches).not.toHaveBeenCalled();
+    const set = sql`stdout = NULL`;
+    await expect(enforceRetentionAction({ kind: 'scrub', set }, batchArgs)).resolves.toEqual({ deleted: 12, batches: 1, hasMore: false });
+    expect(m.updateInCtidBatches).toHaveBeenCalledTimes(1);
+    expect(m.updateInCtidBatches.mock.calls[0]?.[0].set).toBe(set);
+    expect(m.pruneInCtidBatches).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates a failing batch without recording a run', async () => {
     m.pruneInCtidBatches.mockRejectedValueOnce(new Error('statement timeout'));
 
@@ -261,6 +385,25 @@ describe('runRetentionTargets', () => {
     expect(m.captureException).toHaveBeenCalledTimes(1);
     // Only the bounded literal table name is tagged.
     expect(m.captureException.mock.calls[0]?.[2]).toEqual({ retentionTarget: 't1' });
+  });
+
+  it('a timed-out report-only count fails neither the other targets nor the run', async () => {
+    m.countEligibleRowsBounded.mockResolvedValueOnce({ timedOut: true });
+
+    const results = await runRetentionTargets(
+      [
+        { target: target({ table: 'audit_baseline_results', metricName: 'audit_baseline_result_retention', action: { kind: 'reportOnly' } }), knobs: knobs() },
+        { target: target({ table: 't2', metricName: 'snmp_retention' }), knobs: knobs() },
+      ],
+      opts,
+    );
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ mode: 'reportUnavailable', table: 'audit_baseline_results', reason: 'timeout' });
+    expect(results[0]).not.toHaveProperty('error');
+    expect(results[1]).toMatchObject({ mode: 'report', table: 't2', eligible: 3 });
+    expect(m.captureException).not.toHaveBeenCalled();
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('audit_baseline_result_retention', { countUnavailable: true });
   });
 
   // Without a metric, a failed target's backlog gauge keeps its last value
@@ -331,5 +474,22 @@ describe('runRetentionTargets', () => {
 
     expect(seen).toHaveLength(2);
     expect(seen[0]).toBe(seen[1]);
+  });
+
+  // #4342 W5: one job, one flag per target. Each REPORT-ONLY line must name
+  // the flag that turns ITS target on, not a job-wide one.
+  it('names each entry\'s own enforce variable in its REPORT-ONLY line, falling back to the run option', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await runRetentionTargets(
+      [
+        { target: target({ table: 'a', metricName: 'audit_retention' }), knobs: knobs(), enforceVar: 'A_RETENTION_ENFORCE' },
+        { target: target({ table: 'b', metricName: 'snmp_retention' }), knobs: knobs() },
+      ],
+      { ...opts, enforceVar: 'JOB_RETENTION_ENFORCE' },
+    );
+    const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('REPORT-ONLY'));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('set A_RETENTION_ENFORCE=true');
+    expect(lines[1]).toContain('set JOB_RETENTION_ENFORCE=true');
   });
 });

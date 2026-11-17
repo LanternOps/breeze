@@ -1,11 +1,11 @@
 // W02b (#10746): the gate's verdict core. Base revision decides, API results are
 // the evidence, and nothing from the candidate tree is ever executed.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync as execFileSyncUnbounded } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
-import { after, test } from 'node:test';
+import { after, test as nodeTest } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as gate from './ci-gate.mjs';
@@ -16,6 +16,16 @@ import * as n3 from './thin-queue-n3.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const realCi = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8');
+
+// #12058: a hung self-test once held a merge-queue entry for the whole gate
+// deadline with the hung test unnamed. Every test gets a timeout, and every child
+// a kill timeout, so a hang fails in minutes and the failure names its test.
+// (A synchronous child is the case a test timeout cannot interrupt.)
+const TEST_TIMEOUT_MS = 120_000;
+const CHILD_TIMEOUT_MS = 90_000;
+const test = (name, fn, options = {}) => nodeTest(name, { timeout: TEST_TIMEOUT_MS, ...options }, fn);
+const execFileSync = (command, args, options = {}) =>
+  execFileSyncUnbounded(command, args, { timeout: CHILD_TIMEOUT_MS, killSignal: 'SIGKILL', ...options });
 
 const temps = [];
 after(() => temps.forEach(dir => rmSync(dir, { recursive: true, force: true })));

@@ -16,8 +16,8 @@ import { pgErrorCode } from '@breeze/shared/pgErrors';
  * raw 25006 so the operator reads what is wrong and what to do about it.
  */
 export class ReadOnlyDatabaseError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'ReadOnlyDatabaseError';
   }
 }
@@ -44,6 +44,46 @@ export function isReadOnlyProbeResult(result: unknown): boolean {
     throw new Error('transaction_read_only probe returned an unexpected result shape');
   }
   return ro === 'on';
+}
+
+/**
+ * #11741: "the pool itself has been observed read-only", process-wide.
+ *
+ * SQLSTATE 25006 alone does not mean the database went read-only: an
+ * intentional `SET TRANSACTION READ ONLY` (withArchivedOrgReadContext) raises
+ * it for any write that leaks in, and that is a code bug whose stack must reach
+ * the log. So the read-only log throttle acts only while this flag is set, and
+ * the flag is set only from evidence about the SESSION DEFAULT, never from a
+ * statement failing:
+ *   - the readiness probe (`observeReadOnlyProbeResult`) and the session
+ *     recovery monitor's pooled probe read `transaction_read_only` in an
+ *     ordinary transaction, which reflects `default_transaction_read_only` (or
+ *     a standby);
+ *   - the recovery monitor clears it when a pooled session reads writable while
+ *     it is watching, and when it has finished recycling the sessions opened
+ *     while the database was read-only.
+ * A writable readiness answer does not clear it: during recovery one pooled
+ * session can be writable while others are still stale.
+ */
+let poolObservedReadOnly = false;
+
+export function notePoolReadOnly(): void {
+  poolObservedReadOnly = true;
+}
+
+export function notePoolWritable(): void {
+  poolObservedReadOnly = false;
+}
+
+export function isPoolObservedReadOnly(): boolean {
+  return poolObservedReadOnly;
+}
+
+/** `isReadOnlyProbeResult`, and a read-only answer sets the pool flag. */
+export function observeReadOnlyProbeResult(result: unknown): boolean {
+  const readOnly = isReadOnlyProbeResult(result);
+  if (readOnly) notePoolReadOnly();
+  return readOnly;
 }
 
 /**

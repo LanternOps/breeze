@@ -10,11 +10,13 @@ import { clientAiTenantMappings, organizations, portalAccessPolicies, portalUser
 import {
   getPortalSignInCapabilities,
   isSignInMethodAllowed,
+  listOrgVerifiedDomains,
+  pickedGoogleEnabled,
   pickEffectivePortalAccessPolicy,
   resolvePortalAccessPolicy,
   toPortalAccessPolicyRowValues,
 } from './portalAccessPolicy';
-import { portalUserHasIdentitySql } from './portalUserIdentities';
+import { portalUserHasUsableIdentitySql } from './portalUserIdentities';
 
 /**
  * `password_mode = sso_only` as a complete save flow (portal registration W4
@@ -34,6 +36,15 @@ import { portalUserHasIdentitySql } from './portalUserIdentities';
  * - {@link listSsoOnlyStranded}: the accounts with no identity, which keep their
  *   hash and cannot sign in until they link or are re-invited.
  *
+ * W8 (#11385, plan D3): "an identity" here means a USABLE one
+ * (`portalUserHasUsableIdentitySql`, `disabled_at IS NULL`). An account whose
+ * only identity was disabled by a directory has no credential under sso_only:
+ * it is counted and listed as stranded, and its hash is NEVER cleared (that
+ * would leave it no way back once the identity is restored or password sign-in
+ * returns). The SSO-invite route's own target check ({@link isSsoOnlyStranded}
+ * over the ANY-identity fact) still refuses such an account: an invite cannot
+ * bind a second identity of a reserved provider.
+ *
  * Why the lock: a self-link inserts an identity (its FK check takes `FOR KEY
  * SHARE` on the account row; accountResolution also locks the row first) and
  * does not bump `auth_epoch`. Without the lock, a link committing between the
@@ -45,6 +56,12 @@ import { portalUserHasIdentitySql } from './portalUserIdentities';
  * tenant proof or a deploy-time capability change clears nothing: W3's refusal
  * at use is the control there (inv. 11), and the Entra sign-in sheds hashes
  * lazily (D12).
+ *
+ * W7 (#11384, plan D6): Google counts as an SSO method only for an org with a
+ * currently verified email domain. That fact comes from W5's read API, which
+ * throws inside a request transaction, so it is read BEFORE the save's write
+ * transaction ({@link readSsoOnlyGoogleFacts}, or the org save's own domain
+ * read) and handed to {@link lockSsoOnlyImpact}; the preview reads it itself.
  *
  * Every read and write runs under the CALLER'S DB context, never a system one:
  * the impact must be computed over exactly the rows the save can clear, and the
@@ -93,13 +110,21 @@ function definedOnly(patch: PolicyPatch): PolicyPatch {
   return Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as PolicyPatch;
 }
 
-/** Inputs for one org: its own row, and whether its Entra tenant is proven (W4 D2). */
+/** Inputs for one org: its own row, whether its Entra tenant is proven (W4 D2), whether it has a verified domain (W7 D6). */
 export interface SsoOnlyFlipCandidate {
   orgId: string;
   orgName: string;
   orgRow: PortalAccessPolicyRowValues | null;
   entraTenantProven: boolean;
+  googleDomainVerified: boolean;
 }
+
+/**
+ * The orgs (of a save's scope) that have at least one currently verified email
+ * domain, for the orgs whose picked Google is on before or after the patch.
+ * Any org not in the set is judged with Google masked off (fail closed).
+ */
+export type SsoOnlyGoogleFacts = ReadonlySet<string>;
 
 /**
  * Pure: the candidates whose effective passwordMode goes `allowed` → `sso_only`
@@ -116,7 +141,7 @@ export function selectSsoOnlyFlips(
 ): SsoOnlyFlipCandidate[] {
   const delta = definedOnly(patch);
   return candidates.filter((c) => {
-    const facts = { entraTenantProven: c.entraTenantProven };
+    const facts = { entraTenantProven: c.entraTenantProven, googleDomainVerified: c.googleDomainVerified };
     const before = pickEffectivePortalAccessPolicy(c.orgRow, partnerRow, caps, facts);
     const after = owner.kind === 'org'
       ? pickEffectivePortalAccessPolicy({ ...(c.orgRow ?? BLANK_ROW), ...delta }, partnerRow, caps, facts)
@@ -125,7 +150,14 @@ export function selectSsoOnlyFlips(
   });
 }
 
-/** Password-eligible, browser-granted, not disabled, and no external identity. */
+/**
+ * Password-eligible, browser-granted, not disabled, and no external identity —
+ * the SSO-invite route's TARGET rule, over the caller's ANY-identity fact
+ * (`hasExternalIdentity`, portalUserHasIdentitySql): an identity-managed
+ * account, even one whose only identity is disabled, is never re-invited
+ * (msp_sso_invite refuses it as identity-managed). {@link strandedWhere} (the
+ * list and the counts) uses the usable fact instead (W8 D3).
+ */
 export function isSsoOnlyStranded(facts: {
   status: string;
   browserAccess: string;
@@ -138,19 +170,26 @@ export function isSsoOnlyStranded(facts: {
     && !facts.hasExternalIdentity;
 }
 
-/** SQL twin of {@link isSsoOnlyStranded} over the outer `portal_users` row. */
+/**
+ * The stranded accounts over the outer `portal_users` row: active or invited,
+ * browser-granted, password-eligible, and no USABLE identity (W8 D3: a
+ * disabled identity is no way to sign in).
+ */
 function strandedWhere(): SQL {
   return and(
     inArray(portalUsers.status, ['active', 'invited']),
     eq(portalUsers.browserAccess, 'granted'),
     eq(portalUsers.authMethod, 'password'),
-    sql`not ${portalUserHasIdentitySql()}`,
+    sql`not ${portalUserHasUsableIdentitySql()}`,
   )!;
 }
 
-/** The accounts a save clears: a hash to drop and an identity to sign in with instead. */
+/**
+ * The accounts a save clears: a hash to drop and a USABLE identity to sign in
+ * with instead. W8 D3: never an account whose only identity is disabled.
+ */
 function clearableWhere(): SQL {
-  return and(isNotNull(portalUsers.passwordHash), portalUserHasIdentitySql())!;
+  return and(isNotNull(portalUsers.passwordHash), portalUserHasUsableIdentitySql())!;
 }
 
 /**
@@ -195,7 +234,8 @@ function toImpacts(flipped: FlippedOrg[], countsByOrg: Map<string, OrgCounts>): 
  * which counts the same predicates over the rows it locked.
  */
 export async function computeSsoOnlyFlips(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<SsoOnlyOrgImpact[]> {
-  const flipped = await selectFlippedOrgs(owner, patch);
+  // The preview holds no write transaction: it reads the Google facts itself (W7 D6).
+  const flipped = await selectFlippedOrgs(owner, patch, null);
   if (flipped.length === 0) return [];
 
   const counts = await db.select({
@@ -232,9 +272,17 @@ export interface LockedSsoOnlyImpact {
  * The caller compares the digest of `flips` with the acknowledgement, then
  * hands `clearableUserIds` to {@link clearPasswordsForSsoOnly}. A refusal rolls
  * the caller's savepoint back, which releases the locks.
+ *
+ * `googleFacts` (W7 D6) were read BEFORE this transaction (W5's read API
+ * cannot run inside it): {@link readSsoOnlyGoogleFacts}, or the org save's own
+ * verified-domain read.
  */
-export async function lockSsoOnlyImpact(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<LockedSsoOnlyImpact> {
-  const flipped = await selectFlippedOrgs(owner, patch);
+export async function lockSsoOnlyImpact(
+  owner: SsoOnlyPolicyOwner,
+  patch: PolicyPatch,
+  googleFacts: SsoOnlyGoogleFacts,
+): Promise<LockedSsoOnlyImpact> {
+  const flipped = await selectFlippedOrgs(owner, patch, googleFacts);
   if (flipped.length === 0) return { flips: [], clearableUserIds: [] };
 
   const candidates = and(inArray(portalUsers.orgId, flipped.map((f) => f.orgId)), impactCandidateWhere());
@@ -270,23 +318,20 @@ export async function lockSsoOnlyImpact(owner: SsoOnlyPolicyOwner, patch: Policy
   return { flips: toImpacts(flipped, countsByOrg), clearableUserIds };
 }
 
-/**
- * The orgs a save of `patch` on `owner` moves from effective `allowed` to
- * effective `sso_only`, with their names. Shared by the preview and the save.
- */
-async function selectFlippedOrgs(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<FlippedOrg[]> {
-  const delta = definedOnly(patch);
-  if (!SSO_ONLY_INPUT_FIELDS.some((f) => f in delta)) return [];
-  const caps = getPortalSignInCapabilities();
-  // Neither SSO method can run here: nothing can become effectively sso_only.
-  if (!caps.entra && !caps.google) return [];
+interface FlipInputs {
+  orgs: Array<{ id: string; name: string }>;
+  partnerRow: PortalAccessPolicyRowValues | null;
+  orgRowById: Map<string, PortalAccessPolicyRowValues>;
+}
 
+/** The orgs in `owner`'s scope with their own rows and the partner default, under the caller's context. */
+async function loadFlipInputs(owner: SsoOnlyPolicyOwner): Promise<FlipInputs> {
   const orgs = await db.select({ id: organizations.id, name: organizations.name })
     .from(organizations)
     .where(owner.kind === 'org'
       ? eq(organizations.id, owner.orgId)
       : and(eq(organizations.partnerId, owner.partnerId), isNull(organizations.deletedAt)));
-  if (orgs.length === 0) return [];
+  if (orgs.length === 0) return { orgs, partnerRow: null, orgRowById: new Map() };
   const orgIds = orgs.map((o) => o.id);
 
   // Every org override in scope plus the partner default, in one read.
@@ -308,17 +353,76 @@ async function selectFlippedOrgs(owner: SsoOnlyPolicyOwner, patch: PolicyPatch):
   const partnerRow = partnerRaw ? toPortalAccessPolicyRowValues(partnerRaw) : null;
   const orgRowById = new Map(policyRows.filter((r) => r.orgId !== null)
     .map((r): [string, PortalAccessPolicyRowValues] => [r.orgId as string, toPortalAccessPolicyRowValues(r)]));
+  return { orgs, partnerRow, orgRowById };
+}
+
+/**
+ * W7 D6: one W5 read per org whose picked Google is on before or after `delta`
+ * lands on `owner`, sequentially (never a Promise.all of reads). A W5 failure
+ * propagates: it never reads as "no domain", which would mask Google off.
+ */
+async function readGoogleFactsFor(owner: SsoOnlyPolicyOwner, delta: PolicyPatch, inputs: FlipInputs): Promise<Set<string>> {
+  const verified = new Set<string>();
+  for (const o of inputs.orgs) {
+    const orgRow = inputs.orgRowById.get(o.id) ?? null;
+    const before = pickedGoogleEnabled(orgRow, inputs.partnerRow);
+    const after = owner.kind === 'org'
+      ? pickedGoogleEnabled({ ...(orgRow ?? BLANK_ROW), ...delta }, inputs.partnerRow)
+      : pickedGoogleEnabled(orgRow, { ...(inputs.partnerRow ?? BLANK_ROW), ...delta });
+    if (!before && !after) continue;
+    if ((await listOrgVerifiedDomains(o.id)).length > 0) verified.add(o.id);
+  }
+  return verified;
+}
+
+/**
+ * The Google facts a save of `patch` on `owner` is judged with (W7 D6), for
+ * {@link lockSsoOnlyImpact}. Call it BEFORE the write transaction, under the
+ * caller's request context (W5's read runs through runOutsideDbContext). Empty
+ * when the patch cannot move a password mode or the deployment cannot run Google.
+ */
+export async function readSsoOnlyGoogleFacts(owner: SsoOnlyPolicyOwner, patch: PolicyPatch): Promise<SsoOnlyGoogleFacts> {
+  const delta = definedOnly(patch);
+  if (!SSO_ONLY_INPUT_FIELDS.some((f) => f in delta)) return new Set();
+  if (!getPortalSignInCapabilities().google) return new Set();
+  const inputs = await loadFlipInputs(owner);
+  return readGoogleFactsFor(owner, delta, inputs);
+}
+
+/**
+ * The orgs a save of `patch` on `owner` moves from effective `allowed` to
+ * effective `sso_only`, with their names. Shared by the preview and the save.
+ * `googleFacts` null: read them here (the preview only; never inside a write
+ * transaction).
+ */
+async function selectFlippedOrgs(
+  owner: SsoOnlyPolicyOwner,
+  patch: PolicyPatch,
+  googleFacts: SsoOnlyGoogleFacts | null,
+): Promise<FlippedOrg[]> {
+  const delta = definedOnly(patch);
+  if (!SSO_ONLY_INPUT_FIELDS.some((f) => f in delta)) return [];
+  const caps = getPortalSignInCapabilities();
+  // Neither SSO method can run here: nothing can become effectively sso_only.
+  if (!caps.entra && !caps.google) return [];
+
+  const inputs = await loadFlipInputs(owner);
+  const { orgs, partnerRow, orgRowById } = inputs;
+  if (orgs.length === 0) return [];
+  const orgIds = orgs.map((o) => o.id);
 
   const proven = await db.select({ orgId: clientAiTenantMappings.orgId })
     .from(clientAiTenantMappings)
     .where(and(inArray(clientAiTenantMappings.orgId, orgIds), isNotNull(clientAiTenantMappings.provenAt)));
   const provenOrgIds = new Set(proven.map((p) => p.orgId));
+  const google = googleFacts ?? (caps.google ? await readGoogleFactsFor(owner, delta, inputs) : new Set<string>());
 
   return selectSsoOnlyFlips(owner, delta, partnerRow, orgs.map((o) => ({
     orgId: o.id,
     orgName: o.name,
     orgRow: orgRowById.get(o.id) ?? null,
     entraTenantProven: provenOrgIds.has(o.id),
+    googleDomainVerified: google.has(o.id),
   })), caps).map((f) => ({ orgId: f.orgId, orgName: f.orgName }));
 }
 
@@ -327,7 +431,7 @@ function compareIds(a: string, b: string): number {
   return a < b ? -1 : 1;
 }
 
-/** status IN (active, invited), browser granted, password-eligible, no identity. */
+/** status IN (active, invited), browser granted, password-eligible, no usable identity (W8 D3). */
 export async function listSsoOnlyStranded(
   orgId: string,
   limit: number = STRANDED_LIST_LIMIT,
@@ -381,13 +485,22 @@ export function ssoOnlyImpactDigest(flips: SsoOnlyOrgImpact[]): string {
   return createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
+/** The sign-in methods an invite email offers. */
+export type InviteSignInMethods = { microsoft: boolean; google: boolean; password: boolean };
+
 /**
- * Which sign-in methods an invite email offers (spec §5.5): Microsoft when it is
- * effective for the org, a password when password sign-in is allowed. Read in a
- * savepoint of the held context, so a caller that catches a failure here leaves
- * its own transaction usable (#11203).
+ * Which sign-in methods an invite email offers (spec §5.5, W7 D12): Microsoft
+ * and Google each when effective for the org, a password when password sign-in
+ * is allowed. Google is effective only while the org has a verified domain
+ * (W7 D6): the resolver reads W5 outside the request transaction itself. Read
+ * in a savepoint of the held context, so a caller that catches a failure here
+ * leaves its own transaction usable (#11203).
  */
-export async function resolveInviteSignInMethods(orgId: string): Promise<{ microsoft: boolean; password: boolean }> {
+export async function resolveInviteSignInMethods(orgId: string): Promise<InviteSignInMethods> {
   const policy = await withDbTransactionIfHeld(() => resolvePortalAccessPolicy(orgId));
-  return { microsoft: isSignInMethodAllowed(policy, 'entra'), password: isSignInMethodAllowed(policy, 'password') };
+  return {
+    microsoft: isSignInMethodAllowed(policy, 'entra'),
+    google: isSignInMethodAllowed(policy, 'google'),
+    password: isSignInMethodAllowed(policy, 'password'),
+  };
 }

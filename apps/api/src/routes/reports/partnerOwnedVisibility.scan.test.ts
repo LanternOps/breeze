@@ -315,6 +315,10 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
     ['archiveCollidingSeriesChildren', pinned(8, 'org merge (platform admin, system context): every statement keys on t.org_id = <loser> and s.org_id = <survivor> with series_id IS NOT NULL; series children are org-owned (reports_series_child_shape_chk), so a partner-owned definition is never archived or joined', AUD_SYSTEM)],
     ['reports', pinned(1, 'org merge preview counter: SELECT count(*) FROM reports t WHERE t.org_id = <loser> — a NULL-org partner-owned row never matches, and only a count is returned to the admin', AUD_SYSTEM)],
   ])],
+  // Report-run retention (#4342 W5): system-context nightly sweep, never a caller read.
+  ['src/jobs/historyRetention/runHistory.ts', new Map([
+    ['where', pinned(1, 'REPORT_RUN_RETENTION_TARGET predicate, run by retentionBatch in system context (report-only until REPORT_RUN_RETENTION_ENFORCE): the one raw site is the keep-newest probe FROM report_runs n WHERE n.report_id = report_runs.report_id, so it only compares runs of the SAME definition and never crosses owners; it reads no org_id or partner_id, so partner-owned (NULL-org) and org-owned runs age out under one window, and only a count / the expired rows leave the job', AUD_SYSTEM)],
+  ])],
 ]);
 
 /**
@@ -877,7 +881,11 @@ describe('partner-owned report visibility is mechanical (#3198 W01, per-site sin
 
   it('finds raw-SQL sites in template text (guards against a vacuous raw arm)', () => {
     const raw = files.flatMap((f) => querySiteMatches(code(f)).filter((h) => h.text.startsWith('sql`')).map(() => rel(f)));
-    expect(new Set(raw)).toEqual(new Set(['src/services/orgMergeCustomExecutors.ts', 'src/services/reportSeries/reconcile.ts']));
+    expect(new Set(raw)).toEqual(new Set([
+      'src/jobs/historyRetention/runHistory.ts',
+      'src/services/orgMergeCustomExecutors.ts',
+      'src/services/reportSeries/reconcile.ts',
+    ]));
   });
 
   it('every guard entrypoint reaches the helper', () => {

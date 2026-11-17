@@ -7,6 +7,7 @@ import {
 } from '../db';
 import {
   deviceVulnerabilities,
+  osVulnerabilities,
   vulnerabilities,
   vulnerabilitySources,
 } from '../db/schema';
@@ -192,6 +193,44 @@ export async function loadFeedFreshness(): Promise<VulnerabilityFeedFreshness[]>
   }));
 }
 
+/**
+ * vulnerabilityId → the platforms it has an OS-level fact for
+ * (`os_vulnerabilities`, today written only by the macOS SOFA feed). The
+ * #12047 report uses it to name an OS finding only when it is PROVEN to be
+ * one: a NULL software link alone also means "inventory row replaced since
+ * correlation", which is a software finding. Global, system-only table, read
+ * with the same elevation and batching as the catalog.
+ */
+export async function loadOsFactPlatforms(
+  vulnerabilityIds: string[],
+): Promise<Map<string, Set<string>>> {
+  const ids = [...new Set(vulnerabilityIds)];
+  const result = new Map<string, Set<string>>();
+  if (ids.length === 0) return result;
+
+  await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      for (let offset = 0; offset < ids.length; offset += CATALOG_BATCH_SIZE) {
+        const batch = ids.slice(offset, offset + CATALOG_BATCH_SIZE);
+        const rows = await db
+          .select({
+            vulnerabilityId: osVulnerabilities.vulnerabilityId,
+            platform: osVulnerabilities.platform,
+          })
+          .from(osVulnerabilities)
+          .where(inArray(osVulnerabilities.vulnerabilityId, batch));
+        for (const row of rows ?? []) {
+          const platforms = result.get(row.vulnerabilityId) ?? new Set<string>();
+          platforms.add(row.platform);
+          result.set(row.vulnerabilityId, platforms);
+        }
+      }
+    }),
+  );
+
+  return result;
+}
+
 /** One enriched device finding, joined to the global catalog. */
 export type OpenVulnerabilityFinding = {
   deviceId: string;
@@ -204,6 +243,10 @@ export type OpenVulnerabilityFinding = {
   epssScore: number | null;
   riskScore: number | null;
   patchAvailable: boolean;
+  /** The installed-software row this finding was matched against; null for an
+   *  OS-level finding (or, transiently, a software finding whose inventory row
+   *  was deleted — the FK is ON DELETE SET NULL). */
+  softwareInventoryId: string | null;
   acceptedBy: string | null;
   acceptedUntil: string | null;
   resolvedAt: string | null;
@@ -234,6 +277,7 @@ export async function loadOpenFindings(
       vulnerabilityId: deviceVulnerabilities.vulnerabilityId,
       status: deviceVulnerabilities.status,
       riskScore: deviceVulnerabilities.riskScore,
+      softwareInventoryId: deviceVulnerabilities.softwareInventoryId,
       acceptedBy: deviceVulnerabilities.acceptedBy,
       acceptedUntil: deviceVulnerabilities.acceptedUntil,
       resolvedAt: deviceVulnerabilities.resolvedAt,
@@ -285,6 +329,7 @@ export async function loadOpenFindings(
       epssScore: record.epssScore,
       riskScore: toNumberOrNull(row.riskScore),
       patchAvailable: record.patchAvailable,
+      softwareInventoryId: row.softwareInventoryId ?? null,
       acceptedBy: row.acceptedBy ?? null,
       acceptedUntil: toIso(row.acceptedUntil),
       resolvedAt: toIso(row.resolvedAt),

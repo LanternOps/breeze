@@ -47,7 +47,8 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations } from '../../db/schema/orgs';
-import { organizationUsers, permissions, rolePermissions, users } from '../../db/schema/users';
+import { organizationUsers, users } from '../../db/schema/users';
+import { getRolesPermissionGrants } from '../roleInheritance';
 import { wispEnabled } from '../../config/env';
 import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
 import type { WispCeilingSnapshot, WispGrantStatus } from '../../db/schema/wisp';
@@ -222,6 +223,35 @@ export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck):
  */
 export function assertReadWithinCeiling(ceiling: GrantCeiling, check: { orgId: string | null; siteId?: string | null }): void {
   assertTermsWithinCeiling(ceiling, check);
+}
+
+/**
+ * Wisp analysis sessions W02: the sites of `orgId` the ceiling reaches — the
+ * ceiling-wide allowlist ∩ the grantor's membership allowlist for that org —
+ * sorted. `null` = unrestricted on the site axis (NOT "no sites"); `[]` = no
+ * site at all. Admission feeds it to the analysis device frame so a
+ * site-limited grantor never gets a wider frame than they could see.
+ */
+export function ceilingSiteIdsForOrg(ceiling: Pick<GrantCeiling, 'siteIds' | 'orgTerms'>, orgId: string): string[] | null {
+  const sites = intersectSiteAllowlists(ceiling.siteIds, ceiling.orgTerms.get(orgId)?.siteIds ?? null);
+  return sites === null ? null : [...sites].sort();
+}
+
+/**
+ * Wisp analysis sessions W02: whether the ceiling holds `resource:action` for
+ * `orgId`, through the single comparator (`assertWithinCeiling`). A paused or
+ * ended ceiling, an org outside the ceiling and a site-restricted ceiling (the
+ * check names no site) all answer false: fail closed. Only a
+ * `CeilingViolationError` means "not held"; anything else is a bug and rethrows.
+ */
+export function ceilingHoldsPermission(ceiling: GrantCeiling, orgId: string, resource: string, action: string): boolean {
+  try {
+    assertWithinCeiling(ceiling, { orgId, permission: `${resource}:${action}` });
+    return true;
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return false;
+    throw err;
+  }
 }
 
 /**
@@ -584,7 +614,8 @@ function normalizeMembershipSites(raw: unknown): string[] | null {
 
 /**
  * The grantor's `organization_users` rows for `orgIds`, with their role keys
- * (the role → permissions read of permissions.ts buildPerms, batched). The
+ * (each role's runtime grants, inherited ones included, via
+ * services/roleInheritance.ts #11702 — what permissions.ts buildPerms resolves, batched). The
  * table has no (org_id, user_id) unique key; the resolver would pick one row
  * arbitrarily, so several rows for one org INTERSECT here (fail closed).
  * Must run inside the caller's system context.
@@ -600,16 +631,12 @@ async function readOrgMemberships(userId: string, orgIds: string[]): Promise<Liv
   if (withRole.length === 0) return [];
 
   const roleIds = [...new Set(withRole.map((r) => r.roleId))];
-  const rolePerms = await db
-    .select({ roleId: rolePermissions.roleId, resource: permissions.resource, action: permissions.action })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(inArray(rolePermissions.roleId, roleIds));
+  // Each role's runtime grants INCLUDING inherited ones (services/roleInheritance.ts,
+  // #11702) — the same set getUserPermissions resolves for that role.
+  const grantsByRole = await getRolesPermissionGrants(roleIds);
   const keysByRole = new Map<string, string[]>();
-  for (const p of rolePerms) {
-    const keys = keysByRole.get(p.roleId) ?? [];
-    keys.push(`${p.resource}:${p.action}`);
-    keysByRole.set(p.roleId, keys);
+  for (const [roleId, grants] of grantsByRole) {
+    keysByRole.set(roleId, grants.map((g) => `${g.resource}:${g.action}`));
   }
 
   const byOrg = new Map<string, LiveOrgMembership>();

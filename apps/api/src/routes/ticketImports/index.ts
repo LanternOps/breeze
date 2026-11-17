@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../../middleware/auth';
+import { ticketImportCreatedContactRoutes } from './createdContacts';
 import { ticketImportRunRoutes } from './runs';
+import { ticketImportSourceUserRoutes } from './sourceUsers';
 import { ticketImportSourceRoutes } from './sources';
 
 /**
@@ -15,3 +17,5 @@ export const ticketImportRoutes = new Hono();
 ticketImportRoutes.use('*', authMiddleware);
 ticketImportRoutes.route('/', ticketImportSourceRoutes);
 ticketImportRoutes.route('/', ticketImportRunRoutes);
+ticketImportRoutes.route('/', ticketImportCreatedContactRoutes);
+ticketImportRoutes.route('/', ticketImportSourceUserRoutes);

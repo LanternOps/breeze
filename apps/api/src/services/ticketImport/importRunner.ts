@@ -3,13 +3,14 @@ import type { PendingLink, TicketImportRunPhase } from '../../db/schema';
 import { createAuditLogAsync } from '../auditService';
 import { captureException } from '../sentry';
 import { MigrationWindowError } from '../migrationWindows';
-import { parseImportedTicket, type ImportedTicket } from './importedTicket';
+import { parseImportedTicket, requestsContact, type ImportedTicket } from './importedTicket';
+import { predictImportRequester } from './importPeople';
 import { ticketImportLimits, type TicketImportLimits } from './importLimits';
 import { ImportAttachmentFetchError, importErrorTicketId, importTicket, type FetchImportAttachment } from './importWriter';
 import { contactLookupContext, eligibleUsersByEmail, keysWithRef, singleContactsByEmail } from './conversionLookups';
 import type { AnyTicketImportModule, ConversionContext, ImportedLink, LoadedTicket, SourceHandle, SourceRow } from './moduleContract';
 import { getTicketImportModule } from './moduleRegistry';
-import { normalizeCursor, SOURCE_FAILURE_LIMIT, type RunCursor } from './runCursor';
+import { normalizeCursor, PREDICTED_CONTACT_KEYS_MAX, SOURCE_FAILURE_LIMIT, type RunCursor } from './runCursor';
 import {
   claimSlice,
   commitSlice,
@@ -33,6 +34,8 @@ import {
   conversionIdentityViolation,
   importedTicketBytes,
   isInfrastructureError,
+  keepImportedOnUnreadableRow,
+  predictRequesterContact,
   predictTicket,
   recordImportResult,
   SOURCE_SHAPE_INVALID,
@@ -56,7 +59,7 @@ import { readWindowDescriptor, type WindowDescriptor } from './windowLock';
  *
  * The passes (§5.9): scan, one source page at a time (no org, unchanged,
  * removed or merged in Breeze, else load / convert / importTicket); links
- * (only with an import-mode link writer, W2); deletions (probe each imported
+ * (with an import-mode link writer, W2); deletions (probe each imported
  * ticket this run did not see; only after a complete scan); done. A dry run
  * is the scan with every conversion and `parseImportedTicket`, with no
  * window, no ticket writes, no downloads and no ledger writes.
@@ -70,7 +73,10 @@ import { readWindowDescriptor, type WindowDescriptor } from './windowLock';
  * `merged_in_breeze` by the writer and stays final.
  */
 
-/** The import-mode link writer of W2 (`importTicketLink`), behind an interface until it ships. */
+/**
+ * The import-mode link writer (W2: `importLinkWriter` in importLinks.ts, which
+ * the worker wires). Behind an interface so runner tests can fake it.
+ */
 export type ImportLinkWriter = {
   writeLink(
     windowId: string,
@@ -85,7 +91,10 @@ export type SliceDeps = {
   now?: () => Date;
   limits?: TicketImportLimits;
   importTicket?: typeof importTicket;
-  /** W2's writer; absent until then, so every link stays the conversion's note. */
+  /**
+   * The link writer. Absent or null, every link stays the conversion's note
+   * and the links phase is skipped; the worker passes `importLinkWriter`.
+   */
   linkWriter?: ImportLinkWriter | null;
   /** Tests inject a client per base URL. */
   httpFor?: (baseUrl: string) => SourceClient;
@@ -173,6 +182,8 @@ class SliceRunner {
   private window: WindowDescriptor | null = null;
   private principalId!: string;
   private contactOrgIds: string[] = [];
+  /** A dry run's (org, email) digests already predicted (W4b), saved in the cursor at each commit. */
+  private readonly predictedContacts: Set<string>;
 
   constructor(
     private readonly input: SliceInput,
@@ -185,6 +196,7 @@ class SliceRunner {
     this.limits = deps.limits ?? ticketImportLimits();
     this.startedAt = this.now().getTime();
     this.cursor = normalizeCursor(run.cursor);
+    this.predictedContacts = new Set(this.cursor.predictedContacts ?? []);
     this.counters = normalizeCounters(run.counters);
     this.issues = new IssueBuffer(this.counters, this.limits.maxIssuesPerRun);
     this.dryRun = run.kind === 'dry_run';
@@ -277,6 +289,7 @@ class SliceRunner {
     this.pending = [];
     const ownerIssues = this.ownerIssues;
     this.ownerIssues = [];
+    if (this.predictedContacts.size > 0) this.cursor.predictedContacts = [...this.predictedContacts];
     const result = await withDbAccessContext(runContext(this.input.partnerId), () => commitSlice(this.input.partnerId, this.input.runId, this.input.seq, this.claimToken, {
       sourceId: this.run.sourceId,
       phase: this.phase,
@@ -414,8 +427,14 @@ class SliceRunner {
       this.stage({ ...item, ...seen });
       return { kind: 'done', slow: false };
     }
-    // A row the module could key but not read: this ticket fails, never the page.
-    if (row.failure) return this.failItem(row, item, target, row.failure.code);
+    // A row the module could key but not read: this ticket fails, never the
+    // page; one already imported stays so and is only listed (#11296 follow-up).
+    if (row.failure) {
+      const kept = keepImportedOnUnreadableRow(item, row.failure.code, seen, this.counters, this.issues, target);
+      if (!kept) return this.failItem(row, item, target, row.failure.code);
+      this.stage(kept);
+      return { kind: 'done', slow: false };
+    }
     const orgId = this.resolveOrg(row.orgKey);
     if (!orgId) {
       this.counters.tickets.skipped += 1;
@@ -552,6 +571,7 @@ class SliceRunner {
         partnerId: this.input.partnerId,
         isSourceArticleId: (id) => this.module.isSourceArticleId(id, loaded),
         fetchAttachment: this.attachmentFetcher(row.key),
+        people: { sourceId: this.run.sourceId, runId: this.input.runId },
       });
     } catch (error) {
       // The ticket the writer had when it failed, if any (review #2).
@@ -623,6 +643,16 @@ class SliceRunner {
     }
     const resumes = (refs ?? await keysWithRef(this.principalId, [row.key])).has(row.key);
     predictTicket(ticket, this.counters, resumes);
+    // W4b: the contact an import would create, once per (org, email). A
+    // resume never re-applies the requester (§5.9), so it predicts none.
+    if (!resumes && requestsContact(ticket.requester)) {
+      const request = ticket.requester.createContact;
+      const prediction = await predictImportRequester(
+        contactLookupContext(this.input.partnerId, this.contactOrgIds),
+        { orgId: ticket.orgId, sourceId: this.run.sourceId, request },
+      );
+      predictRequesterContact(prediction, this.input.runId, ticket.orgId, request.email, this.counters, this.predictedContacts, PREDICTED_CONTACT_KEYS_MAX);
+    }
     this.counters.linksAsNotes += links;
     return { kind: 'done', slow: true };
   }
@@ -766,7 +796,11 @@ class SliceRunner {
       if (this.timeUp()) return { kind: 'yield' };
       // Final for this version once every link is written, or known impossible
       // (§6.6); a link worth another try leaves the item to be reloaded.
+      // Counted only once the item's links all answered: a stop or a defer
+      // partway leaves the item queued, and its next attempt answers the links
+      // already written as `already`, so nothing is counted twice.
       let final = true;
+      const answers: Array<Awaited<ReturnType<ImportLinkWriter['writeLink']>>> = [];
       for (const link of item.pendingLinks ?? []) {
         let result: Awaited<ReturnType<ImportLinkWriter['writeLink']>>;
         try {
@@ -776,10 +810,22 @@ class SliceRunner {
             { partnerId: this.input.partnerId },
           );
         } catch (error) {
-          if (isInfrastructureError(error)) throw error;
-          this.reportTicketFault(error, item.sourceTicketKey, 'link');
-          result = { outcome: 'not_written', code: 'internal_error', retry: true };
+          // As for a ticket (processRow): a closed window stops the run, a
+          // throughput limit defers it, a refusal is this link's alone.
+          const failure = classifyImportError(error);
+          if (failure.kind === 'stop') return { kind: 'stop', reason: failure.reason };
+          if (failure.kind === 'defer') return { kind: 'defer', delayMs: failure.delayMs, reason: 'window_rate_limited' };
+          if (failure.kind === 'failed') {
+            result = { outcome: 'not_written', code: failure.code };
+          } else {
+            if (isInfrastructureError(error)) throw error;
+            this.reportTicketFault(error, item.sourceTicketKey, 'link');
+            result = { outcome: 'not_written', code: 'internal_error', retry: true };
+          }
         }
+        answers.push(result);
+      }
+      for (const result of answers) {
         if (result.outcome === 'not_written') {
           this.counters.linksAsNotes += 1;
           this.issues.add({ sourceTicketKey: item.sourceTicketKey, sourceTicketNumber: null, kind: 'link_not_written', code: result.code ?? null });

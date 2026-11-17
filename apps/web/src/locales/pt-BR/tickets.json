@@ -86,7 +86,8 @@
     "checklistProgress": "{{done}}/{{total}} etapas",
     "checklistTitle": "Checklist: {{done}} de {{total}} etapas concluídas",
     "merged": "Mesclado",
-    "ageTitle": "Aberto em {{created}} · Atualizado em {{updated}}"
+    "ageTitle": "Aberto em {{created}} · Atualizado em {{updated}}",
+    "imported": "Importado"
   },
   "ticketArchivedList": {
     "emptyTitle": "Nenhum chamado arquivado.",
@@ -378,6 +379,7 @@
       "triage": "Ordem de triagem",
       "newest": "Mais recentes primeiro",
       "oldest": "Mais antigos primeiro",
+      "updated": "Atualizados recentemente",
       "due": "Data de vencimento"
     },
     "priority": {
@@ -445,7 +447,9 @@
         "paused": "SLA pausado, restam {{relative}}",
         "breached": "SLA violado"
       }
-    }
+    },
+    "importTickets": "Importar chamados",
+    "importedOnly": "Somente importados"
   },
   "ticketWorkbench": {
     "notFound": "Chamado não encontrado. Ele pode ter sido excluído ou você pode não ter acesso a ele.",

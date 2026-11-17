@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/psscript"
 )
 
 const (
@@ -117,10 +119,6 @@ func buildWinEventXPath(selection string, bookmark *eventLogBookmark, seed, now 
 	return "*[System[" + clause + " and " + selection + "]]", floorApplied
 }
 
-func psSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-}
-
 func buildWinEventCommand(logName, xpath string) string {
 	return fmt.Sprintf(`try { $ev = @(Get-WinEvent -LogName %s -FilterXPath %s -Oldest -MaxEvents %d -ErrorAction SilentlyContinue -ErrorVariable gwe) } `+
 		`catch { [Console]::Error.WriteLine($_.Exception.Message); exit 3 }; `+
@@ -128,7 +126,7 @@ func buildWinEventCommand(logName, xpath string) string {
 		`if ($ev.Count -eq 0 -and $errs.Count -gt 0) { [Console]::Error.WriteLine($errs[0].Exception.Message); exit 3 }; `+
 		`if ($errs.Count -gt 0) { [Console]::Error.WriteLine($errs[0].Exception.Message) }; `+
 		`$ev | Select-Object RecordId, LogName, Level, Keywords, @{N='TimeCreated';E={$_.TimeCreated.ToString('o')}}, @{N='TimeCreatedUtc';E={$_.TimeCreated.ToUniversalTime().ToString('o')}}, ProviderName, Id, Message, @{N='InsertionText';E={ if ([string]::IsNullOrWhiteSpace($_.Message)) { ($_.Properties.Value -join ' ') } else { $null } }} | ConvertTo-Json -Depth 2 -Compress; exit 0`,
-		psSingleQuote(logName), psSingleQuote(xpath), perQueryCap)
+		psscript.Quote(logName), psscript.Quote(xpath), perQueryCap)
 }
 
 // winEventQueryOutput never accepts partial output from a failed command.

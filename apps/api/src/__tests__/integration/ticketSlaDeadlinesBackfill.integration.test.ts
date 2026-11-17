@@ -93,6 +93,19 @@ function newBreachDue(target: 'response' | 'resolution'): string {
         AND now() >= ${due}`;
 }
 
+// #12106: the plan assertions below guard "the partial index exists and CAN
+// serve this query", not "the planner prefers it on today's statistics". Which
+// plan wins on a small table depends on what ran earlier in the shard, so take
+// the cost-based alternatives off the table: with seq scan, bitmap scan and an
+// explicit sort disabled, an ORDER BY ... LIMIT can only be answered by an
+// ordered index scan, and the index is usable only if its predicate is implied
+// by the query's WHERE.
+async function forceIndexOrderedPlan(tx: { execute: (q: ReturnType<typeof sql.raw>) => PromiseLike<unknown> }) {
+  for (const guc of ['enable_seqscan', 'enable_bitmapscan', 'enable_sort']) {
+    await tx.execute(sql.raw(`SET LOCAL ${guc} = off`));
+  }
+}
+
 type Sets = { atRisk: string[]; response: string[]; resolution: string[] };
 
 async function readSets(kind: 'old' | 'new', orgId: string): Promise<Sets> {
@@ -297,8 +310,7 @@ describe('ticket SLA deadline backfill (#8973 W3)', () => {
     const db = getTestDb();
     const plan = async (target: 'response' | 'resolution') => {
       const rows = await db.transaction(async (tx) => {
-        await tx.execute(sql.raw('SET LOCAL enable_seqscan = off'));
-        await tx.execute(sql.raw('SET LOCAL enable_bitmapscan = off'));
+        await forceIndexOrderedPlan(tx);
         return tx.execute<{ 'QUERY PLAN': string }>(sql.raw(`
           EXPLAIN SELECT id FROM tickets
            WHERE ${newBreachDue(target)}
@@ -414,7 +426,7 @@ describe('ticket SLA deadline backfill (#8973 W3)', () => {
     await applyNoTransaction(CALENDAR_REVISION);
     const db = getTestDb();
     const rows = await db.transaction(async (tx) => {
-      await tx.execute(sql.raw('SET LOCAL enable_seqscan = off'));
+      await forceIndexOrderedPlan(tx);
       return tx.execute<{ 'QUERY PLAN': string }>(sql.raw(`
         EXPLAIN SELECT id FROM tickets
          WHERE sla_calendar_revision_id IS NULL

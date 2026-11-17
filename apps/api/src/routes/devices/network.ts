@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, inArray, isNull, ilike, or, sql, desc, type SQL } from 'drizzle-orm';
 import { db, withDbTransaction } from '../../db';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import {
   discoveredAssets,
   snmpDevices,
@@ -446,7 +446,7 @@ networkRoutes.post(
       // Defence in depth for a TOCTOU race (org/site deleted between the
       // site-in-org check above and this insert) — the check above handles
       // the common case, this catches what slips past it.
-      if (code === '23503') {
+      if (isPgForeignKeyViolationCode(code)) {
         return c.json({ error: 'Organization or site not found' }, 400);
       }
       throw err;

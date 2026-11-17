@@ -157,19 +157,47 @@ export const CURATED_PROFILES: Readonly<Record<ProfiledSurface, Readonly<Record<
 });
 
 /**
- * Measured fixed prefix (system prompt + advertised schemas, bytes/3) per
- * surface and profile, used by `auto`. PLACEHOLDER until W03 measures the
- * advertised upstream request (`ai:tool-capture --profile`): `null` means
- * "not measured". If ANY of a surface's three prefixes is unmeasured,
- * `pickAutoProfile` answers `full` for that surface (nothing is constrained on
- * a guess), so no constrained profile is auto-picked before W03 measures all
- * three and W02 supplies a window.
+ * #11393: the lowest profile `auto` resolves to from a STALE observed window
+ * (an endpoint's rejection past the memo TTL, kept as a floor). A stale
+ * window narrows tools but never into an up-front refusal: neither
+ * `too_small` nor `tool_profile_underpowered` makes a provider call, so
+ * nothing could ever disprove the floor. Each value is the smallest curated
+ * profile that keeps the surface's required tools (`SURFACE_REQUIRED_TOOLS`;
+ * for `ai_agents`, the widest run floor, device troubleshooting's
+ * execute_command / run_script). toolExposure.test.ts pins each one.
+ */
+export const STALE_WINDOW_AUTO_FLOOR: Readonly<Record<ProfiledSurface, ConstrainedProfile>> = Object.freeze({
+  chat: 'minimal',
+  helper: 'minimal',
+  office_chat: 'minimal',
+  script_builder: 'standard',
+  ai_agents: 'standard',
+});
+
+/**
+ * Measured fixed prefix (system prompt + advertised tool schemas) per surface
+ * and profile, in tokens (bytes / 3), used by `auto` (#11395 W03). Measured
+ * on a gateway connection, the transport `auto` is live on: the translated
+ * upstream request, compacted when the exposure says so
+ * (llm/toolCapture/advertisedPrefix.ts `measureProfilePrefixes`). A surface
+ * with variants (helper level, agent run profile) pins its largest.
+ * toolProfiles.prefix.contract.test.ts re-measures every pin and fails when
+ * one drifts by more than 10 %: re-measure and update the numbers then.
+ *
+ * `null` means "not measured": if ANY of a surface's three prefixes is null,
+ * `pickAutoProfile` answers `full` for it (nothing is constrained on a
+ * guess). Office is not measured yet. Measured 2026-11-11 on origin/main
+ * 0616d40358 + W03.
+ *
+ * Note for W02: chat `full` is ~128k tokens on a gateway (tool search is off
+ * there, so every schema is inline), so a 131,072-token window resolves to
+ * `standard`, not the plan's worked-example `full` (which assumed 68,000).
  */
 export type ProfilePrefixTokens = Readonly<Record<ProfiledSurface, Readonly<Record<'minimal' | 'standard' | 'full', number | null>>>>;
 export const PROFILE_PREFIX_TOKENS: ProfilePrefixTokens = Object.freeze({
-  chat: { minimal: null, standard: null, full: null },
-  helper: { minimal: null, standard: null, full: null },
-  script_builder: { minimal: null, standard: null, full: null },
-  ai_agents: { minimal: null, standard: null, full: null },
+  chat: { minimal: 3320, standard: 11037, full: 128300 },
+  helper: { minimal: 2789, standard: 4600, full: 8562 },
+  script_builder: { minimal: 3419, standard: 4238, full: 6372 },
+  ai_agents: { minimal: 2995, standard: 10292, full: 79071 },
   office_chat: { minimal: null, standard: null, full: null },
 });

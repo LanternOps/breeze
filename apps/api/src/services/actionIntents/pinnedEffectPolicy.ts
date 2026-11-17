@@ -22,6 +22,10 @@ const PINNED_EFFECT_DIGEST_REQUIRED: ReadonlySet<string> = new Set([
   // one episode generation; an unbound release would un-contain whatever the
   // episode has become by the time it runs.
   'release_containment',
+  // A DR execution runs the plan definition its approval pinned (devices,
+  // order and restore configuration of every group); without that pin there
+  // is nothing to run.
+  'execute_dr_plan',
 ]);
 
 /**

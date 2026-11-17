@@ -15,8 +15,8 @@ import { useUiStore } from '../../stores/uiStore';
 // Mutable grant set the mocked auth store reads from. usePermissions() reads
 // `user.permissions` via the selector form; assignMe reads `getState().user.id`.
 type Perm = { resource: string; action: string };
-const authState = vi.hoisted(() => ({ permissions: [] as Perm[] }));
-const userState = () => ({ id: 'user-1', permissions: authState.permissions });
+const authState = vi.hoisted(() => ({ permissions: [] as Perm[], canManagePartnerWide: undefined as boolean | undefined }));
+const userState = () => ({ id: 'user-1', permissions: authState.permissions, canManagePartnerWide: authState.canManagePartnerWide });
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
@@ -46,6 +46,7 @@ import type { JwtClaims } from '../../lib/authScope';
 const mockGetJwtClaims = vi.fn((): JwtClaims => ({ scope: 'partner', orgId: null, partnerId: 'p-1' }));
 vi.mock('../../lib/authScope', () => ({
   getJwtClaims: () => mockGetJwtClaims(),
+  useJwtClaims: () => ({ status: 'resolved', claims: mockGetJwtClaims() }),
   loginPathWithNext: () => '/login?next=%2F'
 }));
 
@@ -200,6 +201,33 @@ describe('TicketsPage', () => {
     fetchConfigMock.mockResolvedValue(null);
     // Focus is in place at every width; a wide window keeps the old fixtures honest.
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
+  });
+
+  it('shows "Import tickets" only to a partner-scope, partner-wide admin (#8313)', async () => {
+    mockListApi([healthy]);
+    authState.canManagePartnerWide = true;
+    const { unmount } = render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(screen.getByTestId('tickets-import-button')).toHaveAttribute('href', '/tickets/import');
+    unmount();
+
+    // A partner user with selected-org access: no button.
+    authState.canManagePartnerWide = false;
+    const second = render(<TicketsPage />);
+    await screen.findAllByTestId('ticket-row-tk-healthy');
+    expect(screen.queryByTestId('tickets-import-button')).toBeNull();
+    second.unmount();
+
+    // A system or organization session: no button, whatever the flag says.
+    authState.canManagePartnerWide = true;
+    for (const scope of ['system', 'organization'] as const) {
+      mockGetJwtClaims.mockReturnValue({ scope, orgId: scope === 'organization' ? 'org-1' : null, partnerId: null });
+      const view = render(<TicketsPage />);
+      await screen.findAllByTestId('ticket-row-tk-healthy');
+      expect(screen.queryByTestId('tickets-import-button')).toBeNull();
+      view.unmount();
+    }
+    authState.canManagePartnerWide = undefined;
   });
 
   it('breaching tab requests slaState=breaching from the API', async () => {
@@ -374,6 +402,15 @@ describe('TicketsPage', () => {
       // With a ticket in focus, the sort coexists with the focus key.
       fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
       await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&sort=newest'));
+    });
+
+    it('Recently updated sort passes sort=updated to the API and persists in the hash (#12064)', async () => {
+      mockListApi([healthy, atRisk, breached]);
+      render(<TicketsPage />);
+      await screen.findByTestId('ticket-row-tk-healthy');
+      fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'updated' } });
+      await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('sort=updated'));
+      expect(window.location.hash).toBe('#sort=updated');
     });
 
     it('restores sort and selection from a combined hash on load', async () => {
@@ -1484,6 +1521,53 @@ describe('TicketsPage — merged tickets (#8972)', () => {
     fireEvent.click(screen.getByTestId('ticket-list-show-merged'));
     await waitFor(() => expect(ticketFetchUrls().at(-1)).not.toContain('showMerged'));
     expect(window.location.hash).toBe('#T-2026-0001');
+  });
+
+  it('"Imported only" sends imported=true and carries imported=1 in the hash; off removes both (#8313)', async () => {
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    const toggle = screen.getByTestId('ticket-list-imported-only');
+    expect(toggle).not.toBeChecked();
+    expect(ticketFetchUrls().every((u) => !u.includes('imported'))).toBe(true);
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('imported=true'));
+    expect(window.location.hash).toBe('#imported=1');
+
+    // Other hash writers keep the segment, and it composes with merged=1.
+    fireEvent.click(screen.getByTestId('ticket-list-show-merged'));
+    await waitFor(() => expect(window.location.hash).toBe('#merged=1&imported=1'));
+    fireEvent.click(screen.getByTestId('ticket-row-tk-healthy'));
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&merged=1&imported=1'));
+
+    fireEvent.click(screen.getByTestId('ticket-list-imported-only'));
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).not.toContain('imported'));
+    expect(window.location.hash).toBe('#T-2026-0001&merged=1');
+  });
+
+  it('"Imported only" counts as a filter, and clearing the filters turns it off (#8313)', async () => {
+    window.location.hash = '#imported=1';
+    mockListApi((url) => (url.includes('imported=true') ? [] : [healthy]));
+    render(<TicketsPage />);
+    await screen.findByTestId('tickets-queue-empty');
+    // Filtered-empty, not onboarding: filtersActive counts it.
+    expect(screen.queryByTestId('tickets-empty')).toBeNull();
+    fireEvent.click(screen.getByTestId('tickets-filters-clear'));
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(ticketFetchUrls().at(-1)).not.toContain('imported');
+    expect(window.location.hash).not.toContain('imported=');
+    expect(screen.getByTestId('ticket-list-imported-only')).not.toBeChecked();
+  });
+
+  it('a reload with #imported=1 restores the filter and is not read as a selection (#8313)', async () => {
+    window.location.hash = '#imported=1';
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('imported=true'));
+    expect(screen.getByTestId('ticket-list-imported-only')).toBeChecked();
+    expect(screen.queryByTestId('tickets-focus')).toBeNull();
   });
 
   it('applies on every tab (closed included)', async () => {

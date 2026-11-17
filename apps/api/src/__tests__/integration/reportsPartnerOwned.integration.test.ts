@@ -709,7 +709,7 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
     // The read side stays answerable and empty.
     const list = await call(app, fixture.adminToken, 'GET', `/reports/${created.id}/recipients`);
     expect(list.status).toBe(200);
-    expect(await list.json()).toEqual({ data: [] });
+    expect(await list.json()).toEqual({ data: [], ruleContactIds: null });
 
     const stored = await getTestDb()
       .select({ id: reportScheduleRecipients.id })

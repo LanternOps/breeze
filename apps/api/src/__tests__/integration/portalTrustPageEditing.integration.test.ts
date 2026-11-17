@@ -65,8 +65,9 @@ async function seedPortalUser(orgId: string, opts: { flag?: boolean; role?: 'org
     INSERT INTO contacts (org_id, name, email) VALUES (${orgId}, 'Customer Admin', ${`admin-${suffix}@example.com`}) RETURNING id
   `)) as unknown as Array<{ id: string }>;
   const [pu] = (await admin().execute(sql`
-    INSERT INTO portal_users (org_id, email, name, contact_id, status)
-    VALUES (${orgId}, ${`admin-${suffix}@example.com`}, 'Customer Admin', ${contact!.id}, ${opts.status ?? 'active'}) RETURNING id
+    INSERT INTO portal_users (org_id, email, name, contact_id, status, disabled_by)
+    VALUES (${orgId}, ${`admin-${suffix}@example.com`}, 'Customer Admin', ${contact!.id}, ${opts.status ?? 'active'},
+            ${opts.status === 'disabled' ? 'msp' : null}) RETURNING id
   `)) as unknown as Array<{ id: string }>;
   if (opts.flag !== undefined) {
     await admin().execute(sql`

@@ -77,6 +77,40 @@ function scan(): Violation[] {
   return violations;
 }
 
+/** End index (exclusive) of the balanced `(...)` that opens at `openAt`, or -1. */
+function balancedCallEnd(source: string, openAt: number): number {
+  let depth = 0;
+  for (let i = openAt; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * #11839: every `terminalIntentSet(` call must sit inside the argument span of
+ * a `runTerminalWrite(` call, so a database without the widened end-reason
+ * CHECK still lets the session end (the retry rebuilds the set clause without
+ * the reason). Returns the `terminalIntentSet(` calls that do not.
+ */
+function unwrappedTerminalIntentSets(source: string): number[] {
+  const spans: Array<[number, number]> = [];
+  for (let at = source.indexOf('runTerminalWrite('); at !== -1; at = source.indexOf('runTerminalWrite(', at + 1)) {
+    const open = at + 'runTerminalWrite'.length;
+    const end = balancedCallEnd(source, open);
+    if (end !== -1) spans.push([open, end]);
+  }
+  const unwrapped: number[] = [];
+  for (let at = source.indexOf('terminalIntentSet('); at !== -1; at = source.indexOf('terminalIntentSet(', at + 1)) {
+    if (!spans.some(([open, end]) => at > open && at < end)) unwrapped.push(at);
+  }
+  return unwrapped;
+}
+
 describe('every remote_sessions terminal writer goes through the contract', () => {
   it('finds no update(remoteSessions).set({status: <terminal>}) outside terminalIntentSet', () => {
     const violations = scan();
@@ -88,6 +122,34 @@ describe('every remote_sessions terminal writer goes through the contract', () =
         + 'src/__tests__/integration/remoteDesktopTerminalIntent.integration.test.ts:\n'
         + violations.map((v) => `  ${v.file}:${v.line}  .set(${v.set})`).join('\n'),
     ).toEqual([]);
+  });
+
+  it('#11839: every terminalIntentSet(...) call runs inside runTerminalWrite(...)', () => {
+    const violations: string[] = [];
+    for (const file of walk(SRC_ROOT)) {
+      const rel = relative(SRC_ROOT, file);
+      if (rel === CONTRACT_FILE) continue;
+      const source = readFileSync(file, 'utf8');
+      for (const at of unwrappedTerminalIntentSets(source)) {
+        violations.push(`${rel}:${source.slice(0, at).split('\n').length}`);
+      }
+    }
+    expect(
+      violations,
+      'A terminal write builds terminalIntentSet(...) outside runTerminalWrite(...). On a database '
+        + 'without the widened remote_sessions_end_reason_check it would fail with 23514 and the session '
+        + 'would stay live. Wrap the whole UPDATE: runTerminalWrite(() => db.update(remoteSessions).set(terminalIntentSet(...))...):\n'
+        + violations.map((v) => `  ${v}`).join('\n'),
+    ).toEqual([]);
+  });
+
+  it('the runTerminalWrite scan discriminates: a bare set clause is reported, a wrapped one is not', () => {
+    const bare = "await db.update(remoteSessions).set(terminalIntentSet({ status: 'disconnected' }, 'pending')).returning();";
+    const wrapped = "await runTerminalWrite(() => db.update(remoteSessions).set(terminalIntentSet({ status: 'disconnected' }, 'pending')).returning());";
+    const after = "await runTerminalWrite(() => other()); await db.update(remoteSessions).set(terminalIntentSet({}, 'pending'));";
+    expect(unwrappedTerminalIntentSets(bare)).toHaveLength(1);
+    expect(unwrappedTerminalIntentSets(wrapped)).toHaveLength(0);
+    expect(unwrappedTerminalIntentSets(after)).toHaveLength(1);
   });
 
   it('the scan itself discriminates: a bare terminal write is reported', () => {
