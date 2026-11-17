@@ -16,5 +16,6 @@ export const EXPORT_DATASETS = [
   'reliability_events',
   'boot_performance',
   'hardware_events',
+  'service_checks',
 ] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];

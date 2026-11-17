@@ -66,7 +66,7 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'export_dataset',
       description:
-        "Export a complete dataset as a file handle without read-tool compaction. Datasets: event_logs, agent_logs, device_inventory, software_inventory, metrics, vulnerabilities, custom_fields, reliability_scores, reliability_history, reliability_events, boot_performance, hardware_events. Stage the handle with workspace_stage. Per-device datasets may truncate on large device sets.",
+        "Export to a file handle: event_logs, agent_logs, device_inventory, software_inventory, metrics, vulnerabilities, custom_fields, reliability_scores, reliability_history, reliability_events, boot_performance, hardware_events, service_checks. Per-device datasets may truncate on large device sets.",
       input_schema: {
         type: 'object' as const,
         properties: {
