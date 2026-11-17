@@ -65,6 +65,13 @@ const ROWS: Row[] = [
   { route: 'routes/huntress.ts', method: 'post', path: '/sync', tool: 'sync_huntress_data', actions: [undefined] },
   { route: 'routes/c2c/jobs.ts', method: 'post', path: '/configs/:id/run', tool: 'trigger_c2c_sync', actions: [undefined] },
   { route: 'routes/userRisk.ts', method: 'post', path: '/assign-training', tool: 'assign_security_training', actions: [undefined] },
+  { route: 'routes/patches/operations.ts', method: 'post', path: '/scan', tool: 'manage_patches', actions: ['scan'] },
+  { route: 'routes/backup/sla.ts', method: 'post', path: '/configs', tool: 'configure_backup_sla', actions: ['create'] },
+  { route: 'routes/backup/sla.ts', method: 'patch', path: '/configs/:id', tool: 'configure_backup_sla', actions: ['update'] },
+  { route: 'routes/dr.ts', method: 'post', path: '/plans', tool: 'manage_dr_plan', actions: ['create_plan'] },
+  { route: 'routes/dr.ts', method: 'patch', path: '/plans/:id', tool: 'manage_dr_plan', actions: ['update_plan'] },
+  { route: 'routes/dr.ts', method: 'post', path: '/plans/:id/groups', tool: 'manage_dr_plan', actions: ['add_group'] },
+  { route: 'routes/dr.ts', method: 'patch', path: '/plans/:id/groups/:gid', tool: 'manage_dr_plan', actions: ['update_group'] },
 ];
 
 /** The middleware chain of `<x>Routes.<method>('<path>', ...mw, async (c) =>`. */
@@ -119,5 +126,40 @@ describe('AI tool actions mirroring a requireMfa() route are MFA-gated', () => {
       output = JSON.stringify({ error: String(err) });
     }
     expect(JSON.parse(output).error).toMatch(/^MFA required/);
+  });
+
+  // The gate must stay as narrow as the routes: reads, and actions whose route
+  // twin carries no requireMfa() (or is not enrolled here), pass the gate and
+  // reach the handler body (here: the stubbed database).
+  const ungated: [string, string][] = [
+    ['manage_patches', 'list'],
+    ['manage_patches', 'compliance'],
+    ['manage_backup_profiles', 'list'],
+    ['manage_backup_configs', 'get'],
+    ['manage_dr_plan', 'delete_group'],
+  ];
+
+  it.each(ungated)('%s action=%s is not MFA-gated and passes the gate', async (tool, action) => {
+    expect(isMfaGatedToolAction(tool, action)).toBe(false);
+    let output: string;
+    try {
+      output = await aiTools.get(tool)!.handler({ action }, apiKeyAuth);
+    } catch (err) {
+      output = JSON.stringify({ error: String(err) });
+    }
+    expect(String(JSON.parse(output).error ?? '')).not.toMatch(/MFA required/);
+  });
+
+  it('a human session that cleared MFA passes the gate on an enrolled action', async () => {
+    let output: string;
+    try {
+      output = await aiTools.get('configure_backup_sla')!.handler(
+        { action: 'create' },
+        { ...apiKeyAuth, principal: { kind: 'user_session' }, token: { mfa: true } },
+      );
+    } catch (err) {
+      output = JSON.stringify({ error: String(err) });
+    }
+    expect(String(JSON.parse(output).error ?? '')).not.toMatch(/MFA required/);
   });
 });

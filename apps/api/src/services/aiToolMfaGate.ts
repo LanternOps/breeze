@@ -91,13 +91,19 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   // to its route by aiToolMfaGate.routeParity.contract.test.ts.
   manage_backup_configs: Object.freeze(['create', 'update']),
   manage_backup_profiles: Object.freeze(['create', 'update', 'delete']),
-  manage_patches: Object.freeze(['approve', 'decline', 'defer', 'bulk_approve']),
+  // POST /patches/scan, /patches/:id/{approve,decline,defer} and /patches/bulk-approve.
+  // All Tier 2, so this is their only MFA check over MCP.
+  manage_patches: Object.freeze(['scan', 'approve', 'decline', 'defer', 'bulk_approve']),
   revoke_elevation: '*',
   configure_vault: '*',
   trigger_vault_sync: '*',
   sync_huntress_data: '*',
   trigger_c2c_sync: '*',
   assign_security_training: '*',
+  // Tier 2 backup-SLA and DR-plan writes: POST/PATCH /backup/sla/configs and the
+  // /dr/plans create, update and group add/update routes. (delete_group is Tier 3.)
+  configure_backup_sla: Object.freeze(['create', 'update']),
+  manage_dr_plan: Object.freeze(['create_plan', 'update_plan', 'add_group', 'update_group']),
 });
 
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';

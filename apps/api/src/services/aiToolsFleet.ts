@@ -69,7 +69,6 @@ import { alertSiteScopeByDeviceIds, alertSiteScopeCondition } from '../routes/al
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
 import { mfaGatedToolError } from './aiToolMfaGate';
-import { isAiAgentPrincipal } from '../middleware/auth';
 
 async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly string[]): Promise<void> {
   await Promise.all([...new Set(deviceIds)].map((deviceId) =>

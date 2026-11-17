@@ -196,7 +196,7 @@ function partnerAuth(fx: Fixture): AuthContext {
   return {
     principal: { kind: 'user_session' },
     user: { id: fx.userId, email: 'tech@example.com', name: 'Tech', isPlatformAdmin: false },
-    token: {} as AuthContext['token'],
+    token: { mfa: true } as AuthContext['token'], // an MFA-satisfied interactive session, as the requireMfa() route twin needs
     partnerId: fx.partnerId,
     orgId: null,
     scope: 'partner',
