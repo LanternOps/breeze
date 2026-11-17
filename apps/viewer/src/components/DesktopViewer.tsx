@@ -5,6 +5,7 @@ import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
 import { createSessionHangUp } from '../lib/sessionHangUp';
 import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { IceFailureBudget, neverConnectedStopStep } from '../lib/iceFailure';
 import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
 import {
   startRevocationLeaseRenewal,
@@ -277,6 +278,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const reconnectDeadlineRef = useRef<number | null>(null);
   const reconnectInFlightRef = useRef(false);
   const startReconnectRef = useRef<() => void>(() => {});
+  // #11838: whether this session has connected, and the count of peers in a
+  // row that failed before connecting while it never has. New session on
+  // every connect effect run; failures reset on a transport switch and on a
+  // manual Retry.
+  const iceBudgetRef = useRef(new IceFailureBudget());
+  // handlePeerFailed is defined after connectWebRTC; the ref breaks the TDZ,
+  // like startReconnectRef.
+  const handlePeerFailedRef = useRef<(wrapper: WebRTCSessionWrapper) => void>(() => {});
   const switchTransportRef = useRef<(target: Transport, reason?: 'user' | 'auto') => Promise<void>>(async () => {});
   const lastUserTransportChoiceAtRef = useRef<number>(0);
   const sessionRegisteredRef = useRef(false);
@@ -624,6 +633,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     const auth = authRef.current;
     if (!auth) return;
+    // #11838: a switch starts a new run of attempts. A leftover never-connected
+    // count would make the next failure stop with no retry. A manual choice
+    // also lets the automatic VNC→WebRTC handoff run again.
+    if (reason === 'user') iceBudgetRef.current.userChoseTransport();
+    else iceBudgetRef.current.resetFailures();
 
     // Stop any pending reconnect so attemptReconnect can't fire mid-switch.
     if (reconnectTimerRef.current) {
@@ -776,6 +790,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onConnected: () => {
           // Guard: ignore stale session events after the ref has moved on
           if (webrtcRef.current !== sessionWrapper) return;
+          iceBudgetRef.current.peerConnected();
           setStatus('connected');
           setConnectedAt(new Date());
           setErrorMessage(null);
@@ -790,7 +805,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onFailed: () => {
           if (webrtcRef.current !== sessionWrapper) return;
           if (userDisconnectRef.current) return;
-          startReconnectRef.current();
+          // #11838: an answer is not a connection. A session that has
+          // connected reconnects at once, as before; one that never has stops
+          // after a retry instead of re-offering forever.
+          if (sessionWrapper) handlePeerFailedRef.current(sessionWrapper);
         },
         onClosed: () => {
           if (webrtcRef.current !== sessionWrapper) return;
@@ -956,6 +974,47 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     reconnectDeadlineRef.current = null;
     setReconnectSecondsLeft(0);
   }, []);
+
+  // #11838: a WebRTC peer failed. A session that has connected reconnects at
+  // once (synchronously, as before). One that never has reads the candidates
+  // each side offered, then retries once or stops with a reason the operator
+  // can act on, instead of re-offering forever.
+  const handlePeerFailed = useCallback((wrapper: WebRTCSessionWrapper) => {
+    void iceBudgetRef.current.peerFailed(
+      wrapper.pc,
+      // The owner may have moved on during the stats read. A superseded peer's
+      // failure must not spend the current owner's budget.
+      () => webrtcRef.current === wrapper && !userDisconnectRef.current && !cancelledRef.current,
+      {
+        reconnect: () => startReconnectRef.current(),
+        stop: (decision) => {
+          stopReconnect();
+          // Same handoff the reconnect deadline takes: a macOS device may
+          // still be reachable over VNC.
+          const step = neverConnectedStopStep({
+            remoteOs,
+            deviceId: authRef.current?.deviceId,
+            currentTransport: transportRef.current,
+            userJustSwitchedAt: lastUserTransportChoiceAtRef.current,
+          });
+          if (step === 'handoff_to_vnc') {
+            console.warn(`WebRTC never connected; handing off to VNC. ${decision.message}`);
+            // Keeps the VNC poll from switching straight back (that would cycle).
+            iceBudgetRef.current.handedOffToVnc();
+            void switchTransportRef.current('vnc', 'auto');
+            return;
+          }
+          webrtcRef.current = null;
+          wrapper.close();
+          setStatus('error');
+          setConnectedAt(null);
+          setErrorMessage(decision.message);
+          onError(decision.message);
+        },
+      },
+    );
+  }, [stopReconnect, onError, remoteOs]);
+  handlePeerFailedRef.current = handlePeerFailed;
 
   // #10421: the session is over for good — the agent said so on the control
   // channel (idle timeout, max length, revoked lease) or the server 401'd a
@@ -1154,6 +1213,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     let cancelled = false;
     cancelledRef.current = false;
     webrtcFallbackAttemptedRef.current = false;
+    // #11838: a new session, or this window reused for a new deep link.
+    iceBudgetRef.current.newSession();
     userDisconnectRef.current = false;
     hangingUpRef.current = false;
     reconnectInFlightRef.current = false;
@@ -1717,7 +1778,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // this saves a stray backstop log per login transition rather than one
       // per 2s tick — but it keeps the decision where the other gates live
       // instead of relying on the backstop to clean up (issue #3410).
-      if (webrtcUsableRef.current && shouldAutoHandoffToWebRTC({
+      // #11838: not after a never-connected WebRTC stop handed off to VNC.
+      if (webrtcUsableRef.current && iceBudgetRef.current.autoWebRTCHandoffAllowed && shouldAutoHandoffToWebRTC({
         remoteOs,
         deviceId,
         currentTransport: transportRef.current,
@@ -3221,6 +3283,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
                   onClick={() => {
                     setErrorMessage(null);
                     userDisconnectRef.current = false;
+                    iceBudgetRef.current.resetFailures();
                     startReconnectRef.current();
                   }}
                   className="px-4 py-2 bg-accent hover:bg-accent-hover rounded text-white"
