@@ -1010,6 +1010,7 @@
     "noLogo": "No logo",
     "uploadImage": "Upload image",
     "imageHelp": "PNG, JPEG, or WebP, up to 400 KB after encoding; large images are scaled down to 800 px.",
+    "logoLowRes": "This logo is {{width}} × {{height}} px. Reports, quotes and invoices print it up to about 2.5 in (64 mm) wide, so it will look soft in print. Upload a version at least 600 px on its long side.",
     "invalidSavedLogo": "Saved logo data is invalid. Remove it or upload a new one.",
     "pasteUrl": "Or paste an image URL",
     "customCss": "Custom CSS",

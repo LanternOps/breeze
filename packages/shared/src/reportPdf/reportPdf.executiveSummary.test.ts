@@ -111,9 +111,9 @@ describe('Executive Summary cover (#12045)', () => {
   });
 
   it('prints the reporting period the alert figures cover', () => {
-    expect(executiveSummaryPeriodLabel(reported.period, 'UTC')).toBe('Oct 10, 2026 – Nov 9, 2026');
-    expect(executiveSummaryPeriodLabel({ start: null, end: null }, 'UTC')).toBe('All recorded alerts');
-    expect(executiveSummaryPeriodLabel(undefined, 'UTC')).toBeNull();
+    expect(executiveSummaryPeriodLabel(reported.period)).toBe('Oct 10, 2026 – Nov 9, 2026 (UTC)');
+    expect(executiveSummaryPeriodLabel({ start: null, end: null })).toBe('All recorded alerts');
+    expect(executiveSummaryPeriodLabel(undefined)).toBeNull();
     expect(drawnText(reported).join('\n')).toContain('Oct 10, 2026 – Nov 9, 2026');
   });
 
@@ -185,8 +185,8 @@ describe('Executive Summary cover (#12045)', () => {
   });
 
   it('labels half-open and open periods without claiming none was configured', () => {
-    expect(executiveSummaryPeriodLabel({ start: '2026-10-10T12:00:00.000Z', end: null }, 'UTC')).toBe('Since Oct 10, 2026');
-    expect(executiveSummaryPeriodLabel({ start: null, end: '2026-11-09T12:00:00.000Z' }, 'UTC')).toBe('Through Nov 9, 2026');
+    expect(executiveSummaryPeriodLabel({ start: '2026-10-10T12:00:00.000Z', end: null })).toBe('Since Oct 10, 2026 (UTC)');
+    expect(executiveSummaryPeriodLabel({ start: null, end: '2026-11-09T12:00:00.000Z' })).toBe('Through Nov 9, 2026 (UTC)');
     const open = drawnText({ ...reported, period: { start: null, end: null } }).join('\n');
     expect(open).toContain('Alert figures cover all recorded alerts.');
     expect(open).not.toMatch(/no reporting period configured/);

@@ -1010,6 +1010,7 @@
     "noLogo": "Logo yok",
     "uploadImage": "Resim yükle",
     "imageHelp": "PNG, JPEG veya WebP, kodlamadan sonra en fazla 400 KB; büyük görseller 800 piksele küçültülür.",
+    "logoLowRes": "Bu logo {{width}} × {{height}} piksel. Raporlar, teklifler ve faturalar logoyu en fazla yaklaşık 64 mm (2,5 inç) genişliğinde yazdırır, bu nedenle baskıda bulanık görünür. Uzun kenarı en az 600 piksel olan bir sürüm yükleyin.",
     "invalidSavedLogo": "Kaydedilen logo verileri geçersiz. Kaldırın veya yenisini yükleyin.",
     "pasteUrl": "Veya bir resim URL'si yapıştırın",
     "customCss": "Özel CSS",

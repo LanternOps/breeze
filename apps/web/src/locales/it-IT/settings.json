@@ -1010,6 +1010,7 @@
     "noLogo": "Nessun logo",
     "uploadImage": "Carica immagine",
     "imageHelp": "PNG, JPEG o WebP, fino a 400 KB dopo la codifica; le immagini grandi vengono ridotte a 800 px.",
+    "logoLowRes": "Questo logo è di {{width}} × {{height}} px. Report, preventivi e fatture lo stampano con una larghezza fino a circa 64 mm (2,5 in), quindi in stampa risulterà sfocato. Carica una versione di almeno 600 px sul lato più lungo.",
     "invalidSavedLogo": "I dati del logo salvato non sono validi. Rimuovilo o caricane uno nuovo.",
     "pasteUrl": "Oppure incolla un URL immagine",
     "customCss": "CSS personalizzato",

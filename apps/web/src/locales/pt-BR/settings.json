@@ -1010,6 +1010,7 @@
     "noLogo": "Sem logotipo",
     "uploadImage": "Enviar imagem",
     "imageHelp": "PNG, JPEG ou WebP, até 400 KB após a codificação; imagens grandes são reduzidas para 800 px.",
+    "logoLowRes": "Este logotipo tem {{width}} × {{height}} px. Relatórios, orçamentos e faturas o imprimem com até cerca de 64 mm (2,5 pol) de largura, então ele ficará borrado na impressão. Envie uma versão com pelo menos 600 px no lado maior.",
     "invalidSavedLogo": "Os dados salvos do logotipo são inválidos. Remova-os ou envie uma nova imagem.",
     "pasteUrl": "Ou cole a URL de uma imagem",
     "customCss": "CSS personalizado",

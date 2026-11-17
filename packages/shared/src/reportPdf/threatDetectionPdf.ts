@@ -20,6 +20,7 @@
  *    carried one. Only the named columns below are ever drawn.
  */
 import type { jsPDF } from 'jspdf';
+import type { ReportFormatChrome } from './reportLocale';
 import { autoTable } from 'jspdf-autotable';
 import type {
   ThreatCoverage,
@@ -52,7 +53,7 @@ export type PdfChrome = {
   drawFooter: (doc: jsPDF) => void;
   drawTitleBlock: (doc: jsPDF, title: string, subtitle: string, meta: string, top: number) => number;
   drawSectionHeading: (doc: jsPDF, text: string, y: number) => number;
-};
+} & ReportFormatChrome;
 
 export type ThreatDetectionPdfOpts = {
   generatedAt: string;
@@ -83,8 +84,8 @@ function severityColor(C: PdfChrome['C'], severity: string | null): RGB {
  *  may have been closed at the source without the closure reaching Breeze. */
 const LONG_OPEN_DAYS = 90;
 
-function dateOnly(value: string | null | undefined): string {
-  return value ? value.slice(0, 10) : NA;
+function dateOnly(chrome: PdfChrome, value: string | null | undefined): string {
+  return chrome.formatDate(value) ?? NA;
 }
 
 /** A measured count, or `N/A` — the whole point of the type's nullable counts. */
@@ -171,12 +172,12 @@ function bucketLine(
   return [...merged.entries()].map(([word, count]) => `${word}: ${count}`).join('   ·   ');
 }
 
-/** Same shape as the other service-plan reports' title meta (#12046). */
-function coverageMeta(coverage: ThreatCoverage | undefined, generatedAt: string): string {
-  const period = coverage?.periodStart && coverage?.periodEnd
-    ? `Reporting period ${dateOnly(coverage.periodStart)} to ${dateOnly(coverage.periodEnd)}`
-    : 'Reporting period not stated';
-  return `${period}  |  Generated ${generatedAt}  |  Automatically generated review evidence`;
+/** Same shape, words and separator as the other service-plan reports' title
+ *  meta (#12046, #12048). */
+function coverageMeta(chrome: PdfChrome, coverage: ThreatCoverage | undefined, generatedAt: string): string {
+  const range = chrome.formatPeriod(coverage?.periodStart, coverage?.periodEnd);
+  const period = range ? `Reporting period ${range}` : 'Reporting period not stated';
+  return [period, `Generated ${generatedAt}`, 'Automatically generated review evidence'].join(chrome.metaSeparator);
 }
 
 /** Statuses that close a detection even when the source sent no closure date
@@ -194,8 +195,8 @@ function isLongOpen(row: ThreatIncidentRow | undefined, asOf: string | undefined
 }
 
 /** The Resolved cell: a date, or how long the detection has been open. */
-function resolvedCell(row: ThreatIncidentRow, asOf: string | undefined): string {
-  if (row.resolvedAt) return dateOnly(row.resolvedAt);
+function resolvedCell(chrome: PdfChrome, row: ThreatIncidentRow, asOf: string | undefined): string {
+  if (row.resolvedAt) return dateOnly(chrome, row.resolvedAt);
   if (isClosedWithoutDate(row)) return 'Not recorded';
   const days = openForDays(row.reportedAt, asOf);
   if (days === null) return 'Not resolved';
@@ -220,7 +221,7 @@ export function renderThreatDetectionReport(
     doc,
     'Threat Detection Review',
     summary.orgName ?? '',
-    coverageMeta(coverage, opts.generatedAt),
+    coverageMeta(chrome, coverage, opts.generatedAt),
     PAGE.bandH + 8,
   );
 
@@ -228,7 +229,8 @@ export function renderThreatDetectionReport(
   // First, before any number: the reader must know the window before they read
   // a count over it. `note` is printed verbatim — it is the one sentence the
   // shared `coverageGapLine` produced at generation time.
-  y = chrome.drawSectionHeading(doc, 'What this covers', y + 6);
+  // 3 mm under the title block, as on the other service-plan reports (#12048).
+  y = chrome.drawSectionHeading(doc, 'What this covers', y + 3);
   const note = coverage?.note?.trim();
   y = drawProse(
     doc,
@@ -243,7 +245,10 @@ export function renderThreatDetectionReport(
   y = drawProse(
     doc,
     chrome,
-    `Detection data held from ${dateOnly(coverage?.coveredFrom)} to ${dateOnly(coverage?.coveredTo)}   ·   Last sync ${dateOnly(coverage?.lastSyncAt)}${coverage?.lastSyncStatus ? ` (${coverage.lastSyncStatus})` : ''}`,
+    [
+      `Detection data held from ${dateOnly(chrome, coverage?.coveredFrom)} to ${dateOnly(chrome, coverage?.coveredTo)}`,
+      `Last sync ${chrome.formatDateTime(coverage?.lastSyncAt) ?? NA}${coverage?.lastSyncStatus ? ` (${coverage.lastSyncStatus})` : ''}`,
+    ].join(chrome.metaSeparator),
     y,
     8,
     C.muted,
@@ -343,19 +348,19 @@ export function renderThreatDetectionReport(
       head: [head],
       body: rows.map((r) => {
         const cells = [
-          dateOnly(r.reportedAt),
+          dateOnly(chrome, r.reportedAt),
           r.hostname ?? 'Unattributed',
           threatSeverityLabel(r.severity),
           [clientDetectionTitle(r.title, summary.orgName), r.carriedIn ? '(opened before this period)' : '']
             .filter(Boolean).join(' '),
           threatStatusLabel(r.status),
-          resolvedCell(r, asOf),
+          resolvedCell(chrome, r, asOf),
         ];
         if (hasAdvice) cells.push(clientDetectionAdvice(r.recommendation));
         return cells;
       }),
       styles: { font: 'helvetica', fontSize: 7.4, cellPadding: 1.8, textColor: C.ink, lineColor: C.rule, lineWidth: 0.1 },
-      headStyles: { fillColor: C.panel, textColor: C.ink, fontStyle: 'bold' },
+      headStyles: { fillColor: C.primary, textColor: C.white, fontStyle: 'bold' },
       alternateRowStyles: { fillColor: C.zebra },
       columnStyles: {
         0: { cellWidth: 20 }, 1: { cellWidth: 32 }, 2: { cellWidth: 18 },

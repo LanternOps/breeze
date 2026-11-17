@@ -264,6 +264,8 @@ runsRoutes.post(
           scope,
           config,
           executionAuthority,
+          // "Generate now" on a saved definition: see ReportRunOrigin (#12048).
+          { origin: 'on_demand' },
         );
         const previous = await previousBaselineFor(
           report.id,

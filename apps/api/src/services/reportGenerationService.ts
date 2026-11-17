@@ -987,6 +987,17 @@ export type EvidenceRunContext = {
 };
 
 /**
+ * How a run with no `EvidenceRunContext` was started (#12048). Only
+ * `on_demand` (a person pressed Generate) lets vulnerability management use
+ * the shared ad-hoc window, so it prints the same period as a threat detection
+ * review run beside it. A scheduled run, an auto-evidence run of a user
+ * definition, and any caller that does not say keep the one-calendar-month
+ * window they always had.
+ */
+export type ReportRunOrigin = 'on_demand' | 'scheduled';
+export type ReportRunOptions = { origin?: ReportRunOrigin };
+
+/**
  * ONE dispatcher for both execution paths. The 14-arm switch this replaced is
  * now `REPORT_GENERATORS` (#3198 spec §6); exhaustiveness is preserved because
  * the record is keyed by the closed `ReportType` union — a missing key is a
@@ -1012,6 +1023,7 @@ async function dispatchReportGeneration(
   config: Record<string, unknown>,
   authority: ReportGenerationAuthority,
   evidence?: EvidenceRunContext,
+  options?: ReportRunOptions,
 ): Promise<ReportResult> {
   const def = reportTypeDef(type);
 
@@ -1052,7 +1064,7 @@ async function dispatchReportGeneration(
     return zeroSafeReport(type, authority.scope.orgId);
   }
 
-  return def.generate(scope, config, authority, evidence);
+  return def.generate(scope, config, authority, evidence, options);
 }
 
 /** Dispatch to the matching report generator by type (request path).
@@ -1060,14 +1072,16 @@ async function dispatchReportGeneration(
  *  #3198 W02 (spec §3.2, ruling P10): the second parameter is a `ReportScope`,
  *  not an org id. Org-scope call sites read
  *  `generateReport(type, organizationScope(orgId), config, authority)`; a
- *  partner scope comes only from `reportScopeFromAuthority`. */
+ *  partner scope comes only from `reportScopeFromAuthority`. `options.origin`
+ *  is `'on_demand'` only on the Generate routes (see `ReportRunOrigin`). */
 export async function generateReport(
   type: ReportType,
   scope: ReportScope,
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
+  options?: ReportRunOptions,
 ): Promise<ReportResult> {
-  return dispatchReportGeneration(type, scope, config, authority);
+  return dispatchReportGeneration(type, scope, config, authority, undefined, options);
 }
 
 /**
