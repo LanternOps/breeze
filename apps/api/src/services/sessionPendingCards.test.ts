@@ -133,6 +133,12 @@ vi.mock('./actionIntents/intentService', () => ({
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
+// #12098: the past-deadline close-out. Default: it expired the intent.
+const mockCloseOutUndecidedIntent = vi.fn(async (_intentId: string): Promise<unknown> => ({ kind: 'expired' }));
+vi.mock('./actionIntents/intentExpiry', () => ({
+  closeOutUndecidedIntent: (intentId: string) => mockCloseOutUndecidedIntent(intentId),
+}));
+
 const mockRequiresDurableRelease = vi.fn(() => false);
 vi.mock('./actionIntents/durableRelease', () => ({
   requiresDurableRelease: (...args: unknown[]) => mockRequiresDurableRelease(...(args as [])),
@@ -655,6 +661,31 @@ describe('approval_resolved at the tier-3 intent-backed card (#9431)', () => {
     expect(result).toMatchObject({ allowed: false });
     expect(mockTransitionIntent).not.toHaveBeenCalled();
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome: 'expired' }]);
+  });
+
+  // #12098: past the intent's deadline the card reports what the close-out
+  // settled, not the wait's possibly stale `pending_approval` read.
+  it.each([
+    [{ kind: 'expired' }, 'expired'],
+    [{ kind: 'decided', status: 'approved' }, 'approved'],
+    [{ kind: 'decided', status: 'rejected' }, 'not_approved'],
+    [{ kind: 'unknown' }, 'ended'],
+  ])('past the deadline, a close-out of %j shows %s', async (closeOut, outcome) => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-3' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-3', expiresAt: new Date(Date.now() - 1_000) }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+    mockCloseOutUndecidedIntent.mockResolvedValueOnce(closeOut);
+    mockTransitionIntent.mockResolvedValue(false); // the release worker won the claim
+    const session = makeActiveSession() as ActiveSession;
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' }).catch(() => undefined);
+
+    expect(mockCloseOutUndecidedIntent).toHaveBeenCalledWith('intent-3');
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome }]);
   });
 
   it('maps an approved decision to approved', async () => {
