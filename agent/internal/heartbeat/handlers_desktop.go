@@ -576,6 +576,14 @@ func parseRevocationLease(payload map[string]any) *desktop.RevocationLease {
 	if v, ok := raw["hardDeadline"].(float64); ok {
 		wire.HardDeadlineUnixMs = int64(v)
 	}
+	// The clock-independent form (#11840); absent from an older API, which
+	// leaves the absolute fields above in charge.
+	if v, ok := raw["expiresInMs"].(float64); ok {
+		wire.ExpiresInMs = int64(v)
+	}
+	if v, ok := raw["hardDeadlineInMs"].(float64); ok {
+		wire.HardDeadlineInMs = int64(v)
+	}
 	if v, ok := raw["renewEverySec"].(float64); ok {
 		wire.RenewEverySec = int64(v)
 	}

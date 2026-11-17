@@ -291,6 +291,15 @@ type RevocationLeaseMessage struct {
 	Reason             string
 	ExpiresAtUnixMs    int64
 	HardDeadlineUnixMs int64
+	// ExpiresInMs and HardDeadlineInMs are the same deadlines as the time
+	// remaining when the server sent the answer; zero from an older API
+	// (#11840). Resolve them with desktop.LeaseExpiry / LeaseHardDeadline
+	// against ReceivedAt, never against the device's wall clock.
+	ExpiresInMs      int64
+	HardDeadlineInMs int64
+	// ReceivedAt is the time.Now() reading taken when the frame was read: the
+	// monotonic anchor the remaining durations are measured from.
+	ReceivedAt time.Time
 	// StartGeneration is the session's current desktop_start_generation as a
 	// canonical decimal string, empty from a pre-W05 API. The
 	// agent's durable start fence resyncs from it.
@@ -1475,11 +1484,14 @@ func (c *Client) SendTerminalOutput(sessionId string, data []byte) error {
 // treated as a revocation: only an explicit `revocation_lease_revoked` stops a
 // session, so a decode bug can never disconnect the fleet.
 func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
+	receivedAt := time.Now()
 	var frame struct {
-		SessionID    string  `json:"sessionId"`
-		Reason       string  `json:"reason"`
-		ExpiresAt    float64 `json:"expiresAt"`
-		HardDeadline float64 `json:"hardDeadline"`
+		SessionID        string  `json:"sessionId"`
+		Reason           string  `json:"reason"`
+		ExpiresAt        float64 `json:"expiresAt"`
+		HardDeadline     float64 `json:"hardDeadline"`
+		ExpiresInMs      float64 `json:"expiresInMs"`
+		HardDeadlineInMs float64 `json:"hardDeadlineInMs"`
 		// Fence fields. Generations are STRINGS on the wire: they are
 		// bigint on the server and would round above 2^53 through a float.
 		StartGeneration    string `json:"startGeneration"`
@@ -1501,6 +1513,9 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 		Reason:             frame.Reason,
 		ExpiresAtUnixMs:    int64(frame.ExpiresAt),
 		HardDeadlineUnixMs: int64(frame.HardDeadline),
+		ExpiresInMs:        int64(frame.ExpiresInMs),
+		HardDeadlineInMs:   int64(frame.HardDeadlineInMs),
+		ReceivedAt:         receivedAt,
 		StartGeneration:    frame.StartGeneration,
 		TerminationPhase:   frame.TerminationPhase,
 		TerminalGeneration: frame.TerminalGeneration,

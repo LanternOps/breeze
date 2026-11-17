@@ -7553,7 +7553,8 @@ describe('agent websocket revocation_lease_renew', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     renewRevocationLeaseMock.mockResolvedValue({
-      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+      status: 'renewed', expiresAt: 111, expiresInMs: 60_000, hardDeadline: 222, hardDeadlineInMs: 3_600_000,
+      renewEverySec: 25, graceSec: 90,
     });
   });
 
@@ -7577,6 +7578,10 @@ describe('agent websocket revocation_lease_renew', () => {
       sessionId: SESSION_ID,
       expiresAt: 111,
       hardDeadline: 222,
+      // #11840: the agent measures these from receipt, so its clock skew
+      // cannot shorten or stretch the lease.
+      expiresInMs: 60_000,
+      hardDeadlineInMs: 3_600_000,
       renewEverySec: 25,
       graceSec: 90,
     });

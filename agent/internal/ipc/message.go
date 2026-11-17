@@ -551,6 +551,14 @@ type RevocationLease struct {
 	HardDeadlineUnixMs int64  `json:"hardDeadlineUnixMs"`
 	RenewEverySec      int64  `json:"renewEverySec"`
 	GraceSec           int64  `json:"graceSec"`
+	// ExpiresInMs and HardDeadlineInMs carry the same two deadlines as the
+	// time remaining when the server sent them (#11840). They need no clock
+	// agreement, and when set they win over the absolute fields. Only the
+	// server-payload decoder fills them: the agent hands its helper deadlines
+	// already resolved to this machine's clock, in the absolute fields, so an
+	// older helper reads them correctly too.
+	ExpiresInMs      int64 `json:"expiresInMs,omitempty"`
+	HardDeadlineInMs int64 `json:"hardDeadlineInMs,omitempty"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the

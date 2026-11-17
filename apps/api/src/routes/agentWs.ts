@@ -3599,6 +3599,11 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               sessionId: leaseSessionId,
               expiresAt: leaseResult.expiresAt,
               hardDeadline: leaseResult.hardDeadline,
+              // The same deadlines as time remaining (#11840). A current agent
+              // measures these from receipt, so its own clock skew cannot cut
+              // the lease short or stretch it; an older agent ignores them.
+              expiresInMs: leaseResult.expiresInMs,
+              hardDeadlineInMs: leaseResult.hardDeadlineInMs,
               renewEverySec: leaseResult.renewEverySec,
               graceSec: leaseResult.graceSec,
               // The agent's durable start fence resyncs from these.
