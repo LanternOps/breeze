@@ -7553,7 +7553,8 @@ describe('agent websocket revocation_lease_renew', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     renewRevocationLeaseMock.mockResolvedValue({
-      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+      status: 'renewed', expiresAt: 111, expiresInMs: 60_000, hardDeadline: 222, hardDeadlineInMs: 3_600_000,
+      renewEverySec: 25, graceSec: 90,
     });
   });
 
@@ -7577,6 +7578,10 @@ describe('agent websocket revocation_lease_renew', () => {
       sessionId: SESSION_ID,
       expiresAt: 111,
       hardDeadline: 222,
+      // #11840: the agent measures these from receipt, so its clock skew
+      // cannot shorten or stretch the lease.
+      expiresInMs: 60_000,
+      hardDeadlineInMs: 3_600_000,
       renewEverySec: 25,
       graceSec: 90,
     });
@@ -7695,6 +7700,40 @@ describe('agent websocket revocation_lease_renew', () => {
       expect(answer.syncNonce).toBe('nonce-1');
     }
   });
+
+  // #11840: the agent measures a renewed lease from when it ASKED, using the
+  // anchor it sent. Only the renewed answer carries deadlines, so only it
+  // needs the echo.
+  it('echoes the renew anchor verbatim on a renewed answer', async () => {
+    const ws = await sendRenew({
+      type: 'revocation_lease_renew',
+      sessionId: SESSION_ID,
+      renewAnchor: 123_456,
+    });
+    const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(answer.type).toBe('revocation_lease');
+    expect(answer.renewAnchor).toBe(123_456);
+  });
+
+  it('sends no renew anchor to an agent that sent none (older agent)', async () => {
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+    const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(answer).not.toHaveProperty('renewAnchor');
+  });
+
+  // A bad anchor must not cost the agent its renewal (it would then ride the
+  // grace window to a stop): it is dropped, and the agent measures from
+  // receipt instead.
+  it.each([[-1], [1.5], ['123'], [Number.MAX_SAFE_INTEGER + 2]])(
+    'still renews, without an echo, when the renew anchor is %s',
+    async (renewAnchor) => {
+      const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID, renewAnchor });
+      expect(renewRevocationLeaseMock).toHaveBeenCalled();
+      const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+      expect(answer.type).toBe('revocation_lease');
+      expect(answer).not.toHaveProperty('renewAnchor');
+    },
+  );
 
   it('drops a renew whose sync nonce is not a short opaque string', async () => {
     const ws = await sendRenew({

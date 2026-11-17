@@ -1705,6 +1705,18 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// hits the disk.
 	h.enqueueDesktopFenceAnswer(msg)
 
+	// Resolve the deadlines ONCE (#11840). A current API sends them as time
+	// remaining, measured here from when this agent asked for the renewal
+	// (LeaseClockAnchor), so neither the device's wall clock nor any delay on
+	// the way can make the lease outlast what the server granted. An older API
+	// sends only absolute timestamps, read against the wall clock as before.
+	// Everything below, including the copy forwarded to a helper, uses these
+	// resolved values.
+	anchor := msg.LeaseClockAnchor()
+	expiresAt := desktop.LeaseExpiry(anchor, msg.ExpiresInMs, msg.ExpiresAtUnixMs)
+	hardDeadline := desktop.LeaseHardDeadline(anchor, msg.HardDeadlineInMs, msg.HardDeadlineUnixMs)
+	msg = withResolvedLeaseDeadlines(msg, expiresAt, hardDeadline)
+
 	// "I cannot answer right now" is not a renewal and not a revocation. It
 	// ends a session whose FIRST renewal it is (owner decision 2) and is
 	// otherwise the silence the grace window budgets for.
@@ -1730,16 +1742,12 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	go h.forwardRevocationLeaseToHelper(msg)
 
 	if !msg.Revoked {
-		// Deadlines are converted to the monotonic clock at receipt so an NTP
-		// step cannot extend a live lease (desktop.MonotonicDeadline).
-		h.desktopMgr.ApplyRevocationLease(msg.SessionID,
-			desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
-			desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		// The resolved deadlines are on the monotonic clock, so an NTP step
+		// after receipt cannot extend a live lease either.
+		h.desktopMgr.ApplyRevocationLease(msg.SessionID, expiresAt, hardDeadline)
 		// A WebSocket fallback stream keeps the same lease (desktop/ws_lease.go).
 		if h.wsDesktopMgr != nil {
-			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID,
-				desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
-				desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID, expiresAt, hardDeadline)
 		}
 		return
 	}
@@ -1776,10 +1784,34 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	}()
 }
 
+// withResolvedLeaseDeadlines rewrites an answer's absolute deadlines to the
+// resolved ones, in THIS device's wall clock, and drops the remaining-time
+// form that has now been consumed. The helper reads the absolute fields
+// against the same machine clock (desktop.MonotonicDeadline), so they land on
+// the same instants; an older helper that knows nothing of #11840 reads them
+// correctly too. A zero deadline stays absent.
+//
+// UnixMilli takes the deadline's WALL reading, so this is only right because
+// every anchor carries the wall clock as of receipt: ReceivedAt is a plain
+// time.Now(), and RequestedAt is derived from it by the request's monotonic
+// age (websocket.leaseRequestedAt), never from the agent's start time.
+func withResolvedLeaseDeadlines(msg websocket.RevocationLeaseMessage, expiresAt, hardDeadline time.Time) websocket.RevocationLeaseMessage {
+	msg.ExpiresAtUnixMs, msg.HardDeadlineUnixMs = 0, 0
+	if !expiresAt.IsZero() {
+		msg.ExpiresAtUnixMs = expiresAt.UnixMilli()
+	}
+	if !hardDeadline.IsZero() {
+		msg.HardDeadlineUnixMs = hardDeadline.UnixMilli()
+	}
+	msg.ExpiresInMs, msg.HardDeadlineInMs = 0, 0
+	return msg
+}
+
 // forwardRevocationLeaseToHelper relays a lease answer over IPC to the helper
-// that owns the session, if any. A failure is logged, not escalated: the
-// helper's own watchdog is authoritative and stops the session at
-// expiresAt+grace once answers stop arriving.
+// that owns the session, if any. Its deadlines must already be resolved to
+// this device's clock (withResolvedLeaseDeadlines). A failure is logged, not
+// escalated: the helper's own watchdog is authoritative and stops the session
+// at expiresAt+grace once answers stop arriving.
 func (h *Heartbeat) forwardRevocationLeaseToHelper(msg websocket.RevocationLeaseMessage) {
 	defer func() {
 		if r := recover(); r != nil {

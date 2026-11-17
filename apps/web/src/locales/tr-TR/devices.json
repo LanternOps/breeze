@@ -1465,6 +1465,18 @@
         "unknown": "tanınmayan bir hata oluştu"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bir ağ filtresi tarafından engellendi",
+      "titleUntrustedCertificate": "Sunucu sertifikasına güvenilmiyor",
+      "webFilter": "Bu cihazın ağındaki bir ağ güvenlik filtresi Breeze sunucusu yerine yanıt veriyor ({{locationHost}}). Bu genellikle internet sağlayıcısının modemindeki bir güvenlik özelliği, bir güvenlik duvarı web filtresi veya bir ağ oturum açma sayfasıdır.",
+      "captivePortal": "Bu cihazın ağı, bağlantıları bir oturum açma sayfasında (captive portal) tutuyor.",
+      "plaintextUnknown": "Bu cihazın ağındaki bir şey, Breeze bağlantısına TLS yerine şifrelenmemiş HTTP ile yanıt verdi.",
+      "untrustedCertificate": "Breeze sunucusuna yapılan bağlantı, bu cihazın güvenmediği bir sertifika sundu (veren: {{certIssuer}}). Bu genellikle bir güvenlik duvarı veya proxy tarafından yapılan TLS denetimi, kendi barındırılan bir sunucudaki bir sertifika sorunu ya da bu cihazdaki güncel olmayan güvenilir kök sertifika deposudur. Breeze bunu atlamaz.",
+      "viaEch": "Şu anda Encrypted Client Hello üzerinden erişilebilir.",
+      "cleared": "{{from}} ile {{to}} arasında engellendi.",
+      "howToFix": "Nasıl düzeltilir",
+      "noDetail": "ayrıntı yok"
+    },
     "logShipping": {
       "label": "Günlük gönderimi",
       "state": {
@@ -1688,6 +1700,7 @@
       "lastSeen": "Son Görülme",
       "serial": "Seri No",
       "productSku": "Ürün Numarası",
+      "hardwareModel": "Model",
       "assetTag": "Varlık Etiketi",
       "location": "Konum",
       "source": "Kaynak"
@@ -1706,6 +1719,7 @@
       "lastSeen": "Son görülme zamanına göre sırala",
       "serial": "Seri numarasına göre sırala",
       "productSku": "Ürün numarasına göre sırala",
+      "hardwareModel": "Modele göre sırala",
       "assetTag": "Varlık etiketine göre sırala",
       "location": "Konuma göre sırala",
       "source": "Kaynağa göre sırala"
@@ -1863,6 +1877,8 @@
       "unmanagedInstall": "Breeze Assist, Breeze tarafından yüklenmedi ve dağıtım kapalı, bu nedenle ajan ona dokunmuyor.",
       "unknown": "Breeze Assist etkin ancak yüklü değil."
     },
+    "controlPlaneBlockBadge": "Ağ filtresi",
+    "controlPlaneBlockBadgeCertificate": "Sertifikaya güvenilmiyor",
     "agentVersionRelation": {
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
       "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",

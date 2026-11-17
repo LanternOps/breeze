@@ -218,6 +218,11 @@ export const heartbeatSchema = z.object({
   // services/watchdogInstallHealth.parseWatchdogInstall strict-parses it
   // separately (a bad value is `invalid`: no state change, never coerced).
   watchdogInstall: z.unknown().optional(),
+  // #8868 — control-plane block episode. OPTIONAL (old agents omit it) and
+  // z.unknown() so a malformed object can never reject the beat;
+  // services/controlPlaneBlockHealth.parseControlPlaneBlock strict-parses it
+  // separately (a bad value is `invalid`: no change, never clears).
+  controlPlaneBlock: z.unknown().optional(),
   metrics: z.object({
     cpuPercent: z.number(),
     ramPercent: z.number(),

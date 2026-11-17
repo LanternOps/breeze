@@ -108,20 +108,53 @@ export type RevocationReason =
   | 'partner_suspended'
   | 'policy_denied';
 
-/** The lease block shipped to the agent inside the `start_desktop` payload. */
-export interface RevocationLeaseGrant {
-  token: string;
+/**
+ * The lease deadlines, each sent twice (#11840):
+ *
+ * - `expiresAt` / `hardDeadline` are absolute epoch ms on THIS server's clock.
+ *   Agents built before #11840 read only these, against their own wall clock,
+ *   so a device clock running ~2 min fast lost every session within seconds
+ *   and one running slow kept a silent session alive for the full lag.
+ * - `expiresInMs` / `hardDeadlineInMs` are the same deadlines as time
+ *   remaining as of the decision (`now`, taken before the recheck's queries).
+ *   A current agent measures them on its monotonic clock from when it queued
+ *   the renew request (the `renewAnchor` echoed by agentWs), which precedes
+ *   the decision, so neither its wall clock nor any delay on the way can make
+ *   the lease outlast what was granted. The start grant answers no request:
+ *   the agent measures it from receipt until the first renewal lands.
+ */
+export interface RevocationLeaseDeadlines {
   expiresAt: number;
+  expiresInMs: number;
   hardDeadline: number;
+  hardDeadlineInMs: number;
+}
+
+/**
+ * Builds both forms of the deadlines from one `now`. `hardDeadlineInMs` is
+ * never below 1: the agent reads 0 as "field absent" and would fall back to
+ * the absolute deadline, and so to its own clock; 1 ms ends the session at
+ * once instead.
+ */
+export function revocationLeaseDeadlines(now: number, hardDeadline: number): RevocationLeaseDeadlines {
+  return {
+    expiresAt: now + REVOCATION_LEASE_TTL_MS,
+    expiresInMs: REVOCATION_LEASE_TTL_MS,
+    hardDeadline,
+    hardDeadlineInMs: Math.max(1, hardDeadline - now),
+  };
+}
+
+/** The lease block shipped to the agent inside the `start_desktop` payload. */
+export interface RevocationLeaseGrant extends RevocationLeaseDeadlines {
+  token: string;
   renewEverySec: number;
   graceSec: number;
 }
 
 export type RenewRevocationLeaseResult =
-  | {
+  | (RevocationLeaseDeadlines & {
       status: 'renewed';
-      expiresAt: number;
-      hardDeadline: number;
       renewEverySec: number;
       graceSec: number;
       /**
@@ -135,7 +168,7 @@ export type RenewRevocationLeaseResult =
       startGeneration?: string;
       /** The session's `termination_phase` at the same snapshot. */
       terminationPhase?: 'none' | 'pending' | 'confirmed';
-    }
+    })
   | {
       status: 'revoked';
       reason: RevocationReason;
@@ -625,8 +658,7 @@ export async function issueRevocationLease(input: {
   }
   return {
     token,
-    expiresAt: now + REVOCATION_LEASE_TTL_MS,
-    hardDeadline,
+    ...revocationLeaseDeadlines(now, hardDeadline),
     renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
     graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
   };
@@ -768,8 +800,7 @@ export async function renewRevocationLease(
   if (verdict.ok) {
     return {
       status: 'renewed',
-      expiresAt: now + REVOCATION_LEASE_TTL_MS,
-      hardDeadline,
+      ...revocationLeaseDeadlines(now, hardDeadline),
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
       // Fence resync: this same row snapshot, not a second query.

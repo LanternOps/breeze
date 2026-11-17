@@ -118,6 +118,10 @@ A curated **package catalog** standardises metadata for known third-party applic
 
 Each catalog entry pairs a winget package ID with a vendor, friendly name, category, and a default severity. When a device reports an available third-party update, Breeze matches it to the catalog so the patch shows the correct vendor and a sensible severity even before any vulnerability data is available. Updates from applications not in the catalog still appear in the patches list, but without this enrichment.
 
+<Aside type="note">
+The catalog is not the list of apps Breeze keeps up to date, and neither is the **Software Library** (which holds packages you deploy on demand). Which third-party apps are upgraded is decided by the configuration policy's patch sources (`third_party`), an update ring, and what winget, Chocolatey or Homebrew reports on each device. Apps missing from the catalog are still upgraded; apps in it are not upgraded unless those conditions are met. Per-user winget installs are detected but never upgraded.
+</Aside>
+
 To add or edit an entry:
 
 <Steps>

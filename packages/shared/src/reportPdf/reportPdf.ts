@@ -505,6 +505,20 @@ export function postureScoreBand(
 
 type ScoreStat = { label: string; value: string; tone: RGB };
 
+/**
+ * Horizontal layout of the scorecard panel for a content box starting at `x`,
+ * `w` wide. The right rail is anchored to the right edge, so on the 17.6 mm
+ * narrower Letter page the meter shrinks to stop 4 mm short of the rail's
+ * divider instead of running under it (#12048); on A4 it keeps its designed
+ * 88 mm. Exported for tests.
+ */
+export function scorecardLayout(x: number, w: number, hasStats: boolean): { meterX: number; meterW: number; captionW: number; railX: number } {
+  const meterX = x + 74;
+  const railX = x + w - 92;
+  const limit = hasStats ? railX - 7 - 4 : x + w - 6;
+  return { meterX, meterW: Math.min(88, limit - meterX), captionW: limit - meterX, railX };
+}
+
 function drawScorecard(
   doc: jsPDF,
   score: number,
@@ -564,14 +578,21 @@ function drawScorecard(
   }
 
   // Meter: caption above, track + filled portion, 0/50/100 ticks below.
-  const meterX = x + 74;
-  const meterW = 88;
+  const { meterX, meterW, captionW, railX } = scorecardLayout(x, w, stats.length > 0);
   const meterY = top + 15;
   if (caption) {
     set.text(doc, C.muted);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
-    doc.text(caption, meterX, top + 9);
+    // On the narrower Letter page a long caption wraps to two lines rather
+    // than running into the right rail.
+    const lines = (doc.splitTextToSize(caption, captionW) as string[]).slice(0, 2);
+    if (lines.length > 1) {
+      doc.text(lines[0]!, meterX, top + 6.2);
+      doc.text(lines[1]!, meterX, top + 9.6);
+    } else {
+      doc.text(caption, meterX, top + 9);
+    }
   }
   set.fill(doc, C.rule);
   doc.roundedRect(meterX, meterY, meterW, 3, 1.5, 1.5, 'F');
@@ -589,7 +610,6 @@ function drawScorecard(
 
   // Right rail: 2-3 risk stats that drive the score.
   if (stats.length > 0) {
-    const railX = x + w - 92;
     set.draw(doc, C.rule);
     doc.setLineWidth(0.25);
     doc.line(railX - 7, top + 5, railX - 7, top + h - 5);
@@ -1210,23 +1230,140 @@ function drawPostureProducts(flow: PostureFlow, products: PostureProduct[]): voi
 // actions — driven by the ExecutiveSummary snapshot instead of posture data.
 // ----------------------------------------------------------------------------
 
-function buildExecRecommendations(summary: ExecutiveSummary): Recommendation[] {
+const EXEC_STATUS_LABELS: Record<string, string> = {
+  maintenance: 'In maintenance',
+  updating: 'Updating',
+  quarantined: 'Quarantined',
+  pending: 'Pending enrollment',
+};
+
+/** Headline figure for the cover: the share of managed devices seen in the
+ * recent window (#12045) or, for a snapshot written before that field
+ * existed, the legacy share online when the report ran. */
+function execHeadline(d: NonNullable<ExecutiveSummary['devices']>): { score: number; windowed: boolean; windowDays: number } | null {
+  // No managed devices: the snapshot's 100 is a divide-by-zero default, not a
+  // measurement, so there is no score to headline.
+  if ((d.total ?? 0) === 0) return null;
+  if (d.recentlySeenPercentage != null) {
+    return { score: d.recentlySeenPercentage, windowed: true, windowDays: d.recentWindowDays ?? 7 };
+  }
+  if (d.healthPercentage != null) return { score: d.healthPercentage, windowed: false, windowDays: 0 };
+  return null;
+}
+
+/** Date-only label in the report timezone and the partner's date format,
+ *  e.g. "Nov 9, 2026" (#12048). */
+function execDate(iso: string, timezone: string): string | null {
+  return formatReportDate(iso, { dateFormat: L.dateFormat, timeZone: timezone });
+}
+
+const EXEC_ALL_ALERTS_LABEL = 'All recorded alerts';
+
+/**
+ * The period the alert figures cover, printed on the cover (#12045). Null
+ * for a legacy snapshot that did not record it, so the caller keeps the old
+ * wording instead of claiming a period it does not know.
+ */
+export function executiveSummaryPeriodLabel(period: ExecutiveSummary['period'], timezone: string): string | null {
+  if (!period) return null;
+  const start = period.start ? execDate(period.start, timezone) : null;
+  const end = period.end ? execDate(period.end, timezone) : null;
+  if (start && end) return `${start} – ${end}`;
+  if (start) return `Since ${start}`;
+  if (end) return `Through ${end}`;
+  return EXEC_ALL_ALERTS_LABEL;
+}
+
+/**
+ * The cover's two metric columns. Left: where every managed device stands —
+ * online, offline and every other status, so the rows add up to the managed
+ * total — then the windowed figure the score is built on. Right: alert
+ * activity. The point-in-time status counts are informational; only the
+ * windowed figure carries a pass/fail colour, so one fact is never shown in
+ * two severities (#12045).
+ */
+export function buildExecutiveSummaryMetrics(summary: ExecutiveSummary): { deviceMetrics: Metric[]; alertMetrics: Metric[] } {
   const d = summary.devices ?? {};
   const a = summary.alerts ?? {};
+  const total = d.total ?? 0;
+  const online = d.online ?? 0;
+  const offline = d.offline ?? 0;
+
+  const deviceMetrics: Metric[] = [
+    { label: 'Managed devices', value: String(total), status: 'neutral' },
+    { label: 'Online now', value: String(online), status: 'neutral' },
+    { label: 'Offline now', value: String(offline), status: 'neutral' },
+  ];
+  if (d.otherStatuses) {
+    for (const [status, count] of Object.entries(d.otherStatuses).sort(([, x], [, z]) => z - x)) {
+      if (!count) continue;
+      deviceMetrics.push({ label: EXEC_STATUS_LABELS[status] ?? titleCase(status), value: String(count), status: 'neutral' });
+    }
+  } else {
+    // Legacy snapshot: no breakdown was stored, but the remainder still exists.
+    const other = total - online - offline;
+    if (other > 0) deviceMetrics.push({ label: 'Other status', value: String(other), status: 'neutral' });
+  }
+  const headline = execHeadline(d);
+  deviceMetrics.push(headline?.windowed
+    ? {
+        label: `Seen in last ${headline.windowDays} days`,
+        value: `${d.recentlySeen ?? 0} · ${headline.score}%`,
+        status: pctStatus(headline.score),
+        target: 'target >=90%',
+      }
+    : !headline && d.recentlySeenPercentage != null
+      // A new-format snapshot of an empty fleet: same wording, no figure.
+      ? {
+          label: `Seen in last ${d.recentWindowDays ?? 7} days`,
+          value: 'N/A',
+          status: pctStatus(null),
+          target: 'target >=90%',
+        }
+      : {
+        label: 'Online when report ran',
+        value: headline ? `${headline.score}%` : 'N/A',
+        status: pctStatus(headline?.score),
+        target: 'target >=90%',
+      });
+
+  const alertMetrics: Metric[] = [
+    { label: 'Alerts in period', value: String(a.total ?? 0), status: 'neutral' },
+    { label: 'Critical', value: String(a.critical ?? 0), status: (a.critical ?? 0) > 0 ? 'bad' : 'good', target: 'target 0' },
+    { label: 'High severity', value: String(a.high ?? 0), status: (a.high ?? 0) > 0 ? 'warn' : 'good', target: 'target 0' },
+    { label: 'Resolution rate', value: a.resolutionRate == null ? 'N/A' : `${a.resolutionRate}%`, status: pctStatus(a.resolutionRate, 80, 50), target: 'target >=80%' },
+  ];
+  return { deviceMetrics, alertMetrics };
+}
+
+export function buildExecRecommendations(summary: ExecutiveSummary): Recommendation[] {
+  const d = summary.devices ?? {};
+  const a = summary.alerts ?? {};
+  const total = d.total ?? 0;
   const recs: Recommendation[] = [];
-  if ((d.offline ?? 0) > 0) {
-    recs.push({ severity: 'bad', text: `Investigate ${d.offline} offline device${d.offline === 1 ? '' : 's'} — offline endpoints are unmonitored and unpatched.` });
+  if (d.recentlySeenPercentage != null) {
+    const days = d.recentWindowDays ?? 7;
+    const unseen = Math.max(0, total - (d.recentlySeen ?? 0));
+    if (unseen > 0) {
+      // The device may simply be switched off or away. What is certain is
+      // that its monitoring and patch data has not refreshed (#12045).
+      const subject = unseen === 1
+        ? `1 device has not reported in for ${days} days — its monitoring and patch status is out of date until it reconnects.`
+        : `${unseen} devices have not reported in for ${days} days — their monitoring and patch status is out of date until they reconnect.`;
+      recs.push({ severity: pctStatus(d.recentlySeenPercentage) === 'bad' ? 'bad' : 'warn', text: `Follow up: ${subject}` });
+    }
+  } else if ((d.offline ?? 0) > 0) {
+    // Legacy snapshot: only the instant is known, so claim only that.
+    const n = d.offline!;
+    recs.push({ severity: 'warn', text: `Confirm the ${n} device${n === 1 ? '' : 's'} offline when this report ran ${n === 1 ? 'is' : 'are'} expected to be switched off.` });
   }
   if ((a.critical ?? 0) > 0) {
     // The snapshot's `resolved` count spans all severities, so we can't claim
     // anything about *critical* resolution status — just flag the criticals.
-    recs.push({ severity: 'bad', text: `Triage the ${a.critical} critical alert${a.critical === 1 ? '' : 's'} raised in this reporting window.` });
+    recs.push({ severity: 'bad', text: `Triage the ${a.critical} critical alert${a.critical === 1 ? '' : 's'} raised in this reporting period.` });
   }
   if (a.resolutionRate != null && a.resolutionRate < 80 && (a.total ?? 0) > 0) {
     recs.push({ severity: 'warn', text: `Raise the alert resolution rate — ${a.resolutionRate}% of alerts were resolved against an 80% target.` });
-  }
-  if (d.healthPercentage != null && d.healthPercentage < 90 && (d.total ?? 0) > 0) {
-    recs.push({ severity: 'warn', text: `Restore fleet health to 90%+ — ${d.healthPercentage}% of devices are currently online.` });
   }
   if ((a.high ?? 0) > 0) {
     recs.push({ severity: 'warn', text: `Review ${a.high} high-severity alert${a.high === 1 ? '' : 's'} for recurring patterns worth automating away.` });
@@ -1234,39 +1371,139 @@ function buildExecRecommendations(summary: ExecutiveSummary): Recommendation[] {
   return [...recs.filter((r) => r.severity === 'bad'), ...recs.filter((r) => r.severity === 'warn')];
 }
 
+// Characters jsPDF's built-in helvetica (WinAnsi / cp1252) can draw beyond
+// Latin-1; anything else renders as garbage with a wrong measured width.
+const CP1252_EXTRA = new Set('\u20ac\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u017d\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u017e\u0178');
+const WINANSI_FOLDS: Record<string, string> = {
+  '\u2265': '>=', '\u2264': '<=', '\u2260': '!=', '\u2192': '->', '\u2190': '<-', '\u2194': '<->',
+  '\u2212': '-', '\u2010': '-', '\u2011': '-', '\u2009': ' ', '\u202f': ' ',
+};
+
+/** Make free text (alert titles, hostnames) drawable in the standard font:
+ * common symbols fold to ASCII, accented letters outside Latin-1 lose their
+ * accent, anything else becomes "?". */
+function toWinAnsi(text: string): string {
+  let out = '';
+  for (const ch of text.normalize('NFC')) {
+    if (ch.codePointAt(0)! <= 0xff || CP1252_EXTRA.has(ch)) {
+      out += ch;
+    } else if (WINANSI_FOLDS[ch]) {
+      out += WINANSI_FOLDS[ch];
+    } else {
+      const base = ch.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+      out += base && [...base].every((c) => c.codePointAt(0)! <= 0xff) ? base : '?';
+    }
+  }
+  return out;
+}
+
+/** Truncate `text` to fit `maxW` at the current font, with an ellipsis. */
+function execFit(doc: jsPDF, text: string, maxW: number): string {
+  if (doc.getTextWidth(text) <= maxW) return text;
+  let s = text;
+  while (s.length > 1 && doc.getTextWidth(`${s}…`) > maxW) s = s.slice(0, -1);
+  return `${s.trimEnd()}…`;
+}
+
+const EXEC_ROW_H = 5.2;
+const EXEC_ALERT_TITLE_MAX_CHARS = 160;
+
+/** Named critical/high alerts, at most `maxRows`. Returns the y after them. */
+function drawExecNotableAlerts(
+  doc: jsPDF,
+  alerts: NonNullable<ExecutiveSummary['notableAlerts']>,
+  criticalHighTotal: number,
+  maxRows: number,
+  top: number,
+  timezone: string,
+): number {
+  const shown = alerts.slice(0, maxRows);
+  let y = drawSectionHeading(doc, 'Notable alerts', top);
+  const x = PAGE.mx;
+  const w = PAGE.w - PAGE.mx * 2;
+  const col = { sev: x + 1, title: x + 18, device: x + w - 112, date: x + w - 62, status: x + w - 26 };
+  for (const alert of shown) {
+    doc.setFontSize(9);
+    set.text(doc, alert.severity === 'critical' ? C.danger : C.warning);
+    doc.setFont('helvetica', 'bold');
+    doc.text(alert.severity === 'critical' ? 'Critical' : 'High', col.sev, y);
+    set.text(doc, C.ink);
+    doc.setFont('helvetica', 'normal');
+    // Alert titles and hostnames come from the stored snapshot: flatten to
+    // one line and bound them before they reach the page.
+    doc.text(execFit(doc, toWinAnsi(sanitizeNarrativeText(alert.title, EXEC_ALERT_TITLE_MAX_CHARS)), col.device - col.title - 4), col.title, y);
+    set.text(doc, C.muted);
+    doc.text(execFit(doc, toWinAnsi(sanitizeNarrativeText(alert.device, 80)) || '—', col.date - col.device - 4), col.device, y);
+    doc.text(execDate(alert.triggeredAt, timezone) ?? '—', col.date, y);
+    doc.text(titleCase(toWinAnsi(sanitizeNarrativeText(alert.status, 24))), col.status, y);
+    set.draw(doc, C.rule);
+    doc.setLineWidth(0.1);
+    doc.line(x, y + 2.1, x + w, y + 2.1);
+    y += EXEC_ROW_H;
+  }
+  const more = criticalHighTotal - shown.length;
+  if (more > 0) {
+    set.text(doc, C.muted);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.text(`+ ${more} further critical/high alert${more === 1 ? '' : 's'} in this period, listed in Breeze`, PAGE.mx + 1, y);
+    y += 4;
+  }
+  return y;
+}
+
 function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts: RenderOpts): void {
   const d = summary.devices ?? {};
   const a = summary.alerts ?? {};
   const total = d.total ?? 0;
+  const period = executiveSummaryPeriodLabel(summary.period, opts.timezone);
 
-  let y = drawTitleBlock(
-    doc,
-    'Executive Summary',
-    summary.org?.name ?? '',
-    `Generated ${opts.generatedAt}   ·   ${total} managed device${total === 1 ? '' : 's'}`,
-    PAGE.bandH + 8,
-  );
+  const meta = [
+    period ? `Reporting period ${period}` : null,
+    `Generated ${opts.generatedAt}`,
+    `${total} managed device${total === 1 ? '' : 's'}`,
+  ].filter(Boolean).join(REPORT_META_SEPARATOR);
+  let y = drawTitleBlock(doc, 'Executive Summary', summary.org?.name ?? '', meta, PAGE.bandH + 8);
 
-  if (d.healthPercentage != null) {
-    const offline = d.offline ?? 0;
+  const headline = execHeadline(d);
+  if (headline) {
     const stats: ScoreStat[] = [
-      { label: 'Devices online', value: `${d.online ?? 0}/${total}`, tone: offline > 0 ? C.warning : C.success },
+      headline.windowed
+        ? { label: `Seen in last ${headline.windowDays} days`, value: `${d.recentlySeen ?? 0}/${total}`, tone: STATUS_COLOR[pctStatus(headline.score)] }
+        : { label: 'Online when report ran', value: `${d.online ?? 0}/${total}`, tone: STATUS_COLOR[pctStatus(headline.score)] },
       { label: 'Critical alerts', value: String(a.critical ?? 0), tone: (a.critical ?? 0) > 0 ? C.danger : C.success },
       { label: 'Alerts resolved', value: a.resolutionRate == null ? 'N/A' : `${a.resolutionRate}%`, tone: (a.resolutionRate ?? 100) >= 80 ? C.success : C.warning },
     ];
+    // Trend only against a previous run that measured the same thing: a
+    // windowed score is never compared with a point-in-time one, and a run
+    // with no devices stored a default 100, not a measurement.
+    const prevFigure = (key: 'recentlySeenPercentage' | 'healthPercentage') => (s: Record<string, unknown>) => {
+      const prev = (s as { devices?: { total?: unknown; recentlySeenPercentage?: unknown; healthPercentage?: unknown } }).devices ?? {};
+      return prev.total === 0 ? undefined : prev[key];
+    };
+    const trend = trendFor(opts, headline.score, prevFigure(headline.windowed ? 'recentlySeenPercentage' : 'healthPercentage'));
     y = drawScorecard(
       doc,
-      d.healthPercentage,
-      'Fleet health — share of managed devices online',
+      headline.score,
+      headline.windowed
+        ? `Fleet availability — managed devices seen in the last ${headline.windowDays} days`
+        : 'Fleet health — share of managed devices online when the report ran',
       stats,
       y,
-      trendFor(opts, d.healthPercentage, (s) => ((s as { devices?: { healthPercentage?: unknown } }).devices ?? {}).healthPercentage),
+      trend,
     );
+    const alertScope = period == null
+      ? 'Alert figures cover the configured reporting window.'
+      : period === EXEC_ALL_ALERTS_LABEL
+        ? 'Alert figures cover all recorded alerts.'
+        : `Alert figures cover ${period}.`;
     set.text(doc, C.faint);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7);
     doc.text(
-      'Fleet health: percentage of managed devices reporting online. Alert figures cover the configured reporting window.',
+      headline.windowed
+        ? `Fleet availability: managed devices online or last seen in the ${headline.windowDays} days before this report ran. ${alertScope}`
+        : `Fleet health: percentage of managed devices online when this report ran. ${alertScope}`,
       PAGE.mx,
       y - 2.5,
     );
@@ -1276,76 +1513,100 @@ function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts
   const overviewHeadingY = y + 2;
   y = drawSectionHeading(doc, 'Fleet & alert overview', overviewHeadingY);
   drawLegend(doc, overviewHeadingY);
-  // Left column: device availability. Right column: alert activity.
-  // Column-major fill, so array order = reading order per column.
-  const deviceMetrics: Metric[] = [
-    { label: 'Managed devices', value: String(total), status: 'neutral' },
-    { label: 'Online now', value: String(d.online ?? 0), status: pctStatus(d.healthPercentage) },
-    { label: 'Offline', value: String(d.offline ?? 0), status: (d.offline ?? 0) > 0 ? 'warn' : 'good', target: 'none' },
-    { label: 'Fleet health', value: d.healthPercentage == null ? 'N/A' : `${d.healthPercentage}%`, status: pctStatus(d.healthPercentage), target: '>=90%' },
-  ];
-  const alertMetrics: Metric[] = [
-    { label: 'Alerts in window', value: String(a.total ?? 0), status: 'neutral' },
-    { label: 'Critical', value: String(a.critical ?? 0), status: (a.critical ?? 0) > 0 ? 'bad' : 'good', target: 'none' },
-    { label: 'High severity', value: String(a.high ?? 0), status: (a.high ?? 0) > 0 ? 'warn' : 'good', target: 'none' },
-    { label: 'Resolution rate', value: a.resolutionRate == null ? 'N/A' : `${a.resolutionRate}%`, status: pctStatus(a.resolutionRate, 80, 50), target: '>=80%' },
-  ];
-  y = drawMetricGrid(doc, [...deviceMetrics, ...alertMetrics], y);
+  // Column-major fill: pad the shorter column so each theme keeps its own.
+  const padTo = (arr: Metric[], rows: number): Metric[] =>
+    arr.concat(Array.from({ length: rows - arr.length }, () => ({ label: '', value: '', status: 'na' as MetricStatus })));
+  const { deviceMetrics, alertMetrics } = buildExecutiveSummaryMetrics(summary);
+  const gridRows = Math.max(deviceMetrics.length, alertMetrics.length);
+  y = drawMetricGrid(doc, [...padTo(deviceMetrics, gridRows), ...padTo(alertMetrics, gridRows)], y);
 
-  // OS + site composition, side by side via the same two-column grid: left
-  // column = OS distribution, right column = largest sites. Pad the shorter
-  // list so column-major fill keeps each theme in its own column.
-  const osEntries = Object.entries(summary.osDistribution ?? {});
+  const recs = buildExecRecommendations(summary);
+  const notable = summary.notableAlerts ?? [];
+  const maxY = PAGE.footY - 4;
+  const sectionHead = 2.5 + 5; // gap above a section heading + the heading itself
+  const moreLineH = 4;
+
+  // OS + site composition, side by side: left = OS, right = largest sites.
+  // Skipped when there is nothing to break down (one OS and one site): two
+  // rows repeating the managed total add nothing (#12045). It is the least
+  // important section, so it gets only the space left after room for the top
+  // two notable alerts and two recommended actions; longer lists fold their
+  // tail into one "other" row.
+  const osEntries = Object.entries(summary.osDistribution ?? {}).sort(([, x], [, z]) => z - x);
   const sites = summary.siteBreakdown ?? [];
-  if (osEntries.length > 0 || sites.length > 0) {
+  const reserveFor = (items: number) => (items > 0 ? sectionHead + Math.min(items, 2) * EXEC_ROW_H + moreLineH : 0);
+  const compositionRows = Math.min(
+    5,
+    Math.floor((maxY - y - sectionHead - 3 - reserveFor(notable.length) - reserveFor(recs.length)) / 6),
+  );
+  if ((osEntries.length > 1 || sites.length > 1) && compositionRows >= 2) {
     y = drawSectionHeading(doc, 'Fleet composition', y + 2.5);
-    const MAX_COMPOSITION_ROWS = 5;
-    const osMetrics: Metric[] = osEntries
-      .sort(([, x], [, z]) => z - x)
-      .slice(0, MAX_COMPOSITION_ROWS)
-      .map(([os, count]) => ({
-        label: OS_LABELS[os.toLowerCase()] ?? titleCase(os),
-        value: `${count} device${count === 1 ? '' : 's'}`,
-        status: 'neutral' as MetricStatus,
-      }));
-    const shownSites = sites.slice(0, MAX_COMPOSITION_ROWS);
-    const siteMetrics: Metric[] = shownSites.map((s) => ({
-      label: s.site,
-      value: `${s.count} device${s.count === 1 ? '' : 's'}`,
-      status: 'neutral' as MetricStatus,
-    }));
-    if (sites.length > MAX_COMPOSITION_ROWS) {
-      const rest = sites.slice(MAX_COMPOSITION_ROWS).reduce((acc, s) => acc + s.count, 0);
-      siteMetrics[MAX_COMPOSITION_ROWS - 1] = {
-        label: `${shownSites[MAX_COMPOSITION_ROWS - 1]!.site} + ${sites.length - MAX_COMPOSITION_ROWS} more`,
-        value: `${(shownSites[MAX_COMPOSITION_ROWS - 1]!.count) + rest} devices`,
-        status: 'neutral',
-      };
-    }
+    const devicesLabel = (n: number) => `${n} device${n === 1 ? '' : 's'}`;
+    const fold = (entries: Array<[string, number]>, otherLabel: (n: number) => string): Metric[] => {
+      const shown = entries.length > compositionRows ? entries.slice(0, compositionRows - 1) : entries;
+      const metrics: Metric[] = shown.map(([label, count]) => ({ label, value: devicesLabel(count), status: 'neutral' }));
+      if (entries.length > compositionRows) {
+        const rest = entries.slice(compositionRows - 1);
+        metrics.push({ label: otherLabel(rest.length), value: devicesLabel(rest.reduce((acc, [, n]) => acc + n, 0)), status: 'neutral' });
+      }
+      return metrics;
+    };
+    const osMetrics = fold(
+      osEntries.map(([os, count]): [string, number] => [OS_LABELS[os.toLowerCase()] ?? titleCase(os), count]),
+      (n) => `${n} other operating system${n === 1 ? '' : 's'}`,
+    );
+    const siteMetrics = fold(sites.map((st): [string, number] => [st.site, st.count]), (n) => `${n} other site${n === 1 ? '' : 's'}`);
     const rows = Math.max(osMetrics.length, siteMetrics.length);
-    const pad = (arr: Metric[]): Metric[] =>
-      arr.concat(Array.from({ length: rows - arr.length }, () => ({ label: '', value: '', status: 'na' as MetricStatus })));
-    y = drawMetricGrid(doc, [...pad(osMetrics), ...pad(siteMetrics)], y);
+    y = drawMetricGrid(doc, [...padTo(osMetrics, rows), ...padTo(siteMetrics, rows)], y);
+  }
+
+
+  // Name the critical/high alerts the counts summarise (#12045), in the space
+  // left after reserving room for the recommended actions below.
+  const criticalHigh = (a.critical ?? 0) + (a.high ?? 0);
+  if (notable.length > 0) {
+    // Rows that fit after reserving the recommended actions: all of them
+    // first, else room for only the top two, so a dense cover still names its
+    // worst alerts (the actions below then say what they had to cut).
+    const rowsWith = (reservedRecs: number) => {
+      const reserve = reservedRecs > 0 ? sectionHead + reservedRecs * EXEC_ROW_H + moreLineH : 0;
+      return Math.min(notable.length, Math.floor((maxY - reserve - y - sectionHead - moreLineH) / EXEC_ROW_H));
+    };
+    let alertRows = rowsWith(Math.min(recs.length, 5));
+    if (alertRows < 1) alertRows = rowsWith(Math.min(recs.length, 2));
+    if (alertRows > 0) {
+      y = drawExecNotableAlerts(doc, notable, criticalHigh, alertRows, y + 2.5, opts.timezone);
+    } else if (y + 2.5 + moreLineH <= maxY) {
+      set.text(doc, C.muted);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.text(`${criticalHigh} critical/high alert${criticalHigh === 1 ? '' : 's'} in this period, listed in Breeze`, PAGE.mx + 1, y + 2.5);
+      y += 2.5 + moreLineH;
+    }
   }
 
   // Recommended actions close the page — the reader leaves with next steps.
-  const recs = buildExecRecommendations(summary);
-  if (recs.length > 0) {
-    const rowH = 5.2;
-    const maxY = PAGE.footY - 4;
-    if (y + 5 + rowH <= maxY) {
-      const fit = Math.min(recs.length, 5, Math.floor((maxY - y - 5) / rowH));
-      y = drawSectionHeading(doc, 'Recommended actions', y + 2.5);
-      doc.setFontSize(9);
-      recs.slice(0, fit).forEach((rec, i) => {
-        set.text(doc, rec.severity === 'bad' ? C.danger : C.warning);
-        doc.setFont('helvetica', 'bold');
-        doc.text(`${i + 1}.`, PAGE.mx + 1, y);
-        set.text(doc, C.ink);
-        doc.setFont('helvetica', 'normal');
-        doc.text(rec.text, PAGE.mx + 6.5, y);
-        y += rowH;
-      });
+  if (recs.length > 0 && y + sectionHead + EXEC_ROW_H <= maxY) {
+    let fit = Math.min(recs.length, 5, Math.floor((maxY - y - sectionHead) / EXEC_ROW_H));
+    // Keep a line to say what was cut rather than dropping it unannounced.
+    if (fit < recs.length && fit > 1 && y + sectionHead + fit * EXEC_ROW_H + moreLineH > maxY) fit -= 1;
+    y = drawSectionHeading(doc, 'Recommended actions', y + 2.5);
+    doc.setFontSize(9);
+    recs.slice(0, fit).forEach((rec, i) => {
+      set.text(doc, rec.severity === 'bad' ? C.danger : C.warning);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`${i + 1}.`, PAGE.mx + 1, y);
+      set.text(doc, C.ink);
+      doc.setFont('helvetica', 'normal');
+      doc.text(rec.text, PAGE.mx + 6.5, y);
+      y += EXEC_ROW_H;
+    });
+    const cut = recs.length - fit;
+    if (cut > 0) {
+      set.text(doc, C.muted);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.text(`+ ${cut} further recommendation${cut === 1 ? '' : 's'} available in Breeze`, PAGE.mx + 6.5, y);
     }
   }
 }
@@ -1447,7 +1708,7 @@ function renderNarrativeReport(doc: jsPDF, narrative: NarrativeSnapshot, opts: R
   if (period) metaParts.push(period);
   if (agentName) metaParts.push(`Agent: ${agentName}`);
 
-  let y = drawTitleBlock(doc, 'Weekly AI Operations Narrative', orgName, metaParts.join('   ·   '), PAGE.bandH + 8);
+  let y = drawTitleBlock(doc, 'Weekly AI Operations Narrative', orgName, metaParts.join(REPORT_META_SEPARATOR), PAGE.bandH + 8);
 
   const headline = sanitizeNarrativeText(narrative.headline, NARRATIVE_HEADLINE_MAX_CHARS);
   if (headline) {
@@ -1833,7 +2094,7 @@ function renderFleetDesignReport(doc: jsPDF, fd: FleetDesignSnapshot, opts: Rend
   if (agentName) metaParts.push(`Agent: ${agentName}`);
   if (siteName) metaParts.push(`Site: ${siteName}`);
 
-  let y = drawTitleBlock(doc, 'Fleet Design', orgName, metaParts.join('   ·   '), PAGE.bandH + 8);
+  let y = drawTitleBlock(doc, 'Fleet Design', orgName, metaParts.join(REPORT_META_SEPARATOR), PAGE.bandH + 8);
 
   // Provenance line: a section whose loader failed was never measured, so a
   // reader must not take a 0 in the baseline as a finding.

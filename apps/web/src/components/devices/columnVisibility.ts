@@ -52,6 +52,8 @@ export const COLUMN_IDS = [
   // #9593 — SMBIOS system SKU (the HP product number). Opt-in, agent rows only:
   // manual assets and discovered devices have no such field.
   'productSku',
+  // #11332 - SMBIOS model exactly as the device reports it. Opt-in, agent rows only.
+  'hardwareModel',
   // #9863 — warranty end date + status from device_warranty. Opt-in: most
   // fleets have no warranty data for part of their devices.
   'warranty',
@@ -105,6 +107,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   vpn: 'VPN',
   serial: 'Serial',
   productSku: 'Product Number',
+  hardwareModel: 'Model',
   warranty: 'Warranty Ends',
   assetTag: 'Asset Tag',
   location: 'Location',
@@ -167,6 +170,7 @@ export const COLUMN_GROUPS: Record<ColumnId, ColumnGroup> = {
   diskUsage: 'health',
   serial: 'inventory',
   productSku: 'inventory',
+  hardwareModel: 'inventory',
   warranty: 'inventory',
   assetTag: 'inventory',
   location: 'inventory',

@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { deflateSync } from 'node:zlib';
-import { buildReportPdf, type BuildOpts, type ReportBranding } from './reportPdf';
+import { buildReportPdf, scorecardLayout, type BuildOpts, type ReportBranding } from './reportPdf';
 import type { ExecutiveSummary, PostureSummary } from '../types';
 import type { ThreatDetectionSummary } from '../types/threatDetectionReport';
 import type { VulnerabilityManagementSummary } from '../types/vulnerabilityManagementReport';
@@ -70,6 +70,7 @@ const exec: ExecutiveSummary = {
   alerts: { total: 18, critical: 2, high: 5, resolved: 12, resolutionRate: 67 },
   osDistribution: { windows: 12 },
   siteBreakdown: [{ site: 'Main Office', count: 12 }],
+  period: { start: '2026-10-10T17:06:00.000Z', end: '2026-11-09T17:06:00.000Z' },
 };
 
 const posture: PostureSummary = {
@@ -178,12 +179,27 @@ describe.each(REPORTS)('$name PDF (#12048)', (report) => {
   });
 });
 
+describe('scorecard layout on both page sizes (#12048)', () => {
+  it.each([['a4', 297], ['letter', 279.4]] as const)('%s: the meter and its caption stop before the right rail', (_size, pageW) => {
+    const contentW = pageW - 28;
+    const l = scorecardLayout(14, contentW, true);
+    // The rail's divider sits 7 mm left of the rail; keep 4 mm clear of it.
+    expect(l.meterX + l.meterW).toBeLessThanOrEqual(l.railX - 7 - 4);
+    expect(l.captionW).toBeLessThanOrEqual(l.railX - 7 - 4 - l.meterX);
+    expect(l.meterW).toBeGreaterThan(50);
+  });
+
+  it('keeps the A4 meter at its designed 88 mm', () => {
+    expect(scorecardLayout(14, 269, true).meterW).toBe(88);
+  });
+});
+
 describe('reporting period line (#12048)', () => {
-  it('prints the threat detection and vulnerability periods in the same words and format', () => {
-    const t = text(build(REPORTS[2]!));
-    const v = text(build(REPORTS[3]!));
-    expect(t).toContain('Reporting period Oct 10, 2026 – Nov 9, 2026');
-    expect(v).toContain('Reporting period Oct 10, 2026 – Nov 9, 2026');
+  it('prints the executive, threat detection and vulnerability periods in the same words and format', () => {
+    for (const report of [REPORTS[0]!, REPORTS[2]!, REPORTS[3]!]) {
+      expect(text(build(report))).toContain('Reporting period Oct 10, 2026 – Nov 9, 2026');
+      expect(text(build(report, { ...usPartner, dateFormat: 'DD/MM/YYYY' }))).toContain('Reporting period 10 Oct 2026 – 9 Nov 2026');
+    }
   });
 });
 

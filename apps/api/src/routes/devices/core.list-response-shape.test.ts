@@ -581,6 +581,16 @@ describe('GET /devices — response shape', () => {
     });
   });
 
+  it.each(['VMware20,1', null])('includes hardware model %s in list rows (#11332)', async model => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', model }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.model', model);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      model: deviceHardware.model,
+    });
+  });
+
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {
     const { leftJoin } = rigDeviceListRows([{
       id: '11111111-1111-4111-8111-111111111111', hostname: 'hardware-host',
@@ -704,6 +714,38 @@ describe('GET /devices — response shape', () => {
     expect(row).not.toHaveProperty('watchdogInstallErrorClass');
     expect(row).not.toHaveProperty('watchdogInstallSince');
     expect(row).not.toHaveProperty('watchdogInstall');
+  });
+
+  // Control-plane block (#8868): the list badge reads the closed-enum kind off
+  // the row. The jsonb episode (network-supplied host/issuer text) is a
+  // DETAIL-only derived view and never reaches list rows.
+  it('carries controlPlaneBlockKind and never the episode jsonb on list rows', async () => {
+    const base = {
+      orgId: 'org-1', siteId: 'site-1', agentId: 'a', hostname: 'h', displayName: null,
+      osType: 'linux', status: 'online',
+    };
+    rigDeviceListRows([
+      {
+        ...base, id: '11111111-1111-4111-8111-111111111111',
+        controlPlaneBlockKind: 'web_filter',
+        controlPlaneBlock: {
+          kind: 'web_filter', host: 'cp.example', firstSeenAt: '2026-10-18T09:00:00.000Z',
+          lastSeenAt: '2026-10-18T09:03:00.000Z', locationHost: 'warn.filter-a.example',
+          reachableViaEch: true, reportedAt: '2026-10-18T09:03:00.000Z',
+        },
+      },
+      { ...base, id: '22222222-2222-4222-8222-222222222222', controlPlaneBlockKind: null, controlPlaneBlock: null },
+    ]);
+    const res = await app.request('/devices?limit=50', { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()).data;
+    expect(rows[0]).toHaveProperty('controlPlaneBlockKind', 'web_filter');
+    expect(Object.prototype.hasOwnProperty.call(rows[1], 'controlPlaneBlockKind')).toBe(true);
+    expect(rows[1].controlPlaneBlockKind).toBeNull();
+    for (const row of rows) {
+      expect(row).not.toHaveProperty('controlPlaneBlock');
+      expect(JSON.stringify(row)).not.toContain('warn.filter-a.example');
+    }
   });
 
   // Filtering on hardware health goes through the shared filter engine

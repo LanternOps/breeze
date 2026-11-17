@@ -1964,6 +1964,7 @@
       "loadingSoftwareCatalog": "Yazılım kataloğu yükleniyor...",
       "softwareLibrary": "Yazılım Kitaplığı",
       "browseAndDeployApprovedSoftwarePackages": "Onaylanmış yazılım paketlerine göz atın ve dağıtın.",
+      "libraryScopeNote": "Bu kitaplık, cihazlara isteğe bağlı olarak dağıtabileceğiniz paketleri listeler. Breeze'in güncel tuttuğu yazılımların listesi değildir. Yüklü uygulamaların güncellemeleri, bir yapılandırma ilkesinin yama kaynaklarından, bir güncelleme halkasından ve winget, Chocolatey veya Homebrew'un her cihazda bildirdiklerinden gelir.",
       "addPackage": "Paket Ekle",
       "bulkDeploy": "Toplu Dağıtım",
       "dismiss": "Kapat",

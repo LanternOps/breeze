@@ -76,6 +76,8 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
     watchdogVersion: (d.watchdogVersion ?? null) as string | null,
     helperVersion: (d.helperVersion ?? null) as string | null,
     helperInstallIssue: (d.helperInstallIssue ?? null) as string | null,
+    // #8868 — closed-enum kind on the wire; anything but a string is null.
+    controlPlaneBlockKind: typeof d.controlPlaneBlockKind === 'string' ? d.controlPlaneBlockKind : null,
     agentServerUrl: (d.agentServerUrl ?? null) as string | null,
     // Opt-in WAN/LAN IP columns (#2503). Both are string-or-null on the
     // wire; anything else degrades to null so a malformed value renders
@@ -129,6 +131,7 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
       diskTotalGb: typeof hardware.diskTotalGb === 'number' ? hardware.diskTotalGb : undefined,
       serialNumber: typeof hardware.serialNumber === 'string' ? hardware.serialNumber : undefined,
       productSku: typeof hardware.productSku === 'string' ? hardware.productSku : undefined,
+      model: typeof hardware.model === 'string' ? hardware.model : undefined,
     } : undefined,
     // Reliability column (#1720): score is null until the reliability
     // worker has computed one for the device; the column renders a dash

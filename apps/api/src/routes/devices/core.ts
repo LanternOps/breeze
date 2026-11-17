@@ -122,6 +122,7 @@ import { notParkedDeviceCondition } from '../../services/unassignedPool/selector
 import { deriveLogShipping } from '../../services/logShippingHealth';
 import { logsNotArriving as checkLogsNotArriving } from '../../services/logsNotArriving';
 import { deriveWatchdogInstallBanner } from '../../services/watchdogInstallHealth';
+import { deriveControlPlaneBlockNotice } from '../../services/controlPlaneBlockHealth';
 import { readPromptHostObservation } from '../../services/promptHostObservation';
 
 // The device cascade registration lists (CORE_DEVICE_CASCADE_DELETE_TABLES,
@@ -1054,6 +1055,8 @@ coreRoutes.get(
         diskTotalGb: deviceHardware.diskTotalGb,
         serialNumber: deviceHardware.serialNumber,
         productSku: deviceHardware.productSku,
+        // #11332 - SMBIOS model exactly as reported; opt-in Model column.
+        model: deviceHardware.model,
         // Reliability headline score (#1720) — surfaced as a sortable list
         // column. device_reliability is org-scoped (RLS shape #1), so the
         // leftJoin stays tenant-safe; null when no score computed yet.
@@ -1085,6 +1088,10 @@ coreRoutes.get(
         // #6925 — agent-reported Breeze Assist install problem; drives the
         // "Assist enabled but not installed" list badge (#7023).
         helperInstallIssue: devices.helperInstallIssue,
+        // #8868 — closed-enum kind, non-null only while a control-plane block
+        // episode is active; drives the list badge. The jsonb episode stays
+        // detail-only.
+        controlPlaneBlockKind: devices.controlPlaneBlockKind,
         // #8608 — raw log-shipping columns, consumed ONLY by deriveLogShipping
         // below; they are never forwarded in the response.
         logShippingState: devices.logShippingState,
@@ -1344,7 +1351,8 @@ coreRoutes.get(
           ramTotalMb: d.ramTotalMb,
           diskTotalGb: d.diskTotalGb,
           serialNumber: d.serialNumber,
-          productSku: d.productSku
+          productSku: d.productSku,
+          model: d.model
         },
         // Reliability column (#1720): null when the device has no computed
         // score yet (no device_reliability row) — the list renders a dash.
@@ -1365,6 +1373,7 @@ coreRoutes.get(
         updateAttemptStartedAt: d.updateAttemptStartedAt ?? null,
         updateAttemptLastAt: d.updateAttemptLastAt ?? null,
         helperInstallIssue: d.helperInstallIssue ?? null,
+        controlPlaneBlockKind: d.controlPlaneBlockKind ?? null,
         logShipping: deriveLogShipping(d, new Date()),
         lastLogAt: d.lastLogAt ?? null,
         metrics: latestMetrics
@@ -1612,6 +1621,9 @@ coreRoutes.get(
       // #8620 — banner view only (terminal states, closed vocab); the raw
       // watchdog_install_* columns are not in PUBLIC_DEVICE_FIELDS.
       watchdogInstall: deriveWatchdogInstallBanner(device),
+      // #8868 — derived notice only (clamped times, no server bookkeeping);
+      // the raw control_plane_block* columns are not in PUBLIC_DEVICE_FIELDS.
+      controlPlaneBlock: deriveControlPlaneBlockNotice(device, new Date()),
       promptHost,
       wakeAvailability,
       hardware: hardware || null,

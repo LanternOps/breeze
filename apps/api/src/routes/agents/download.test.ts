@@ -1400,6 +1400,11 @@ describe('GET /install.ps1 — generated Windows installer', () => {
       expect(script.indexOf('Get-FileHash')).toBeLessThan(script.indexOf('& $exe @enrollArgs'));
       expect(script.indexOf('& $exe @enrollArgs')).toBeLessThan(script.indexOf('& $exe service install'));
       expect(script.match(/if \(\$LASTEXITCODE\) \{\s+throw/g)).toHaveLength(2);
+      // #8868: the metadata fetch failure keeps the underlying exception
+      // (e.g. a TLS handshake answered by a web filter) and names the likely cause.
+      expect(script).toContain(
+        'Breeze: could not fetch release integrity metadata from $serverUrl ($($_.Exception.GetBaseException().Message)) - a captive portal or web filter may be intercepting this network; refusing to install without a trusted checksum',
+      );
       expect(script).toContain('Breeze: release metadata did not include a valid SHA-256 checksum - refusing to install');
       expect(script).toContain('Breeze: release metadata did not include a version - refusing to install without a pinned download');
       expect(script).toContain('Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network');

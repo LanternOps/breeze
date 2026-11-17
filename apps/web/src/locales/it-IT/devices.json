@@ -1465,6 +1465,18 @@
         "unknown": "si è verificato un errore non riconosciuto"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bloccato da un filtro di rete",
+      "titleUntrustedCertificate": "Certificato del server non attendibile",
+      "webFilter": "Un filtro di sicurezza sulla rete di questo dispositivo sta rispondendo al posto del server Breeze ({{locationHost}}). Di solito si tratta di una funzione di sicurezza del router del provider, di un filtro web del firewall o di una pagina di accesso alla rete.",
+      "captivePortal": "La rete di questo dispositivo trattiene le connessioni su una pagina di accesso (captive portal).",
+      "plaintextUnknown": "Qualcosa sulla rete di questo dispositivo ha risposto alla connessione Breeze in HTTP non cifrato invece che in TLS.",
+      "untrustedCertificate": "La connessione al server Breeze ha presentato un certificato che questo dispositivo non considera attendibile (emesso da {{certIssuer}}). Di solito si tratta di un'ispezione TLS da parte di un firewall o di un proxy, di un problema di certificato su un server self-hosted o di un archivio dei certificati radice obsoleto su questo dispositivo. Breeze non lo aggirerà.",
+      "viaEch": "Attualmente raggiungibile tramite Encrypted Client Hello.",
+      "cleared": "Bloccato dal {{from}} al {{to}}.",
+      "howToFix": "Come risolvere",
+      "noDetail": "nessun dettaglio"
+    },
     "logShipping": {
       "label": "Invio dei log",
       "state": {
@@ -1688,6 +1700,7 @@
       "lastSeen": "Ultimo contatto",
       "serial": "Seriale",
       "productSku": "Numero di prodotto",
+      "hardwareModel": "Modello",
       "assetTag": "Tag risorsa",
       "location": "Posizione",
       "source": "Origine"
@@ -1706,6 +1719,7 @@
       "lastSeen": "Ordina per ultimo rilevamento",
       "serial": "Ordina per numero di serie",
       "productSku": "Ordina per numero di prodotto",
+      "hardwareModel": "Ordina per modello",
       "assetTag": "Ordina per tag risorsa",
       "location": "Ordina per posizione",
       "source": "Ordina per origine"
@@ -1863,6 +1877,8 @@
       "unmanagedInstall": "Breeze Assist non è stato installato da Breeze e la distribuzione è disattivata, quindi l’agente lo lascia invariato.",
       "unknown": "Breeze Assist è abilitato ma non installato."
     },
+    "controlPlaneBlockBadge": "Filtro di rete",
+    "controlPlaneBlockBadgeCertificate": "Certificato non attendibile",
     "agentVersionRelation": {
       "equalTooltip": "Corrisponde alla versione effettiva {{version}}",
       "aheadTooltip": "In anticipo rispetto al pin {{version}}",
