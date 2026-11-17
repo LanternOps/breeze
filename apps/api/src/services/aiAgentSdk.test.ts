@@ -213,9 +213,11 @@ vi.mock('./actionIntents/intentService', () => ({
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
-// #12098: the close-out a past-deadline undecided wait settles the intent
-// with before calling it expired. Default: this close-out expired it.
-const mockCloseOutUndecidedIntent = vi.fn(async (_intentId: string): Promise<unknown> => ({ kind: 'expired' }));
+// #12098: the close-out every undecided wait is settled with. Default: still
+// undecided before its deadline (database clock).
+const mockCloseOutUndecidedIntent = vi.fn(
+  async (_intentId: string): Promise<unknown> => ({ kind: 'decided', status: 'pending_approval' }),
+);
 vi.mock('./actionIntents/intentExpiry', () => ({
   closeOutUndecidedIntent: (intentId: string) => mockCloseOutUndecidedIntent(intentId),
 }));
@@ -2537,9 +2539,12 @@ describe('createSessionPreToolUse', () => {
           approvalRequestIds: ['appr-5-expired'],
           // Deadline already in the past — the sweep just hasn't caught up yet.
           expiresAt: new Date(Date.now() - 1_000),
+          approvalExpiresAt: new Date(Date.now() - 1_000),
         }),
       );
       mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+      // #12098: the close-out expired it (database clock past the deadline).
+      mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'expired' });
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const result = await createSessionPreToolUse(session)('execute_command', {});
@@ -2574,6 +2579,7 @@ describe('createSessionPreToolUse', () => {
             id: 'intent-12098',
             approvalRequestIds: ['appr-12098'],
             expiresAt: new Date(Date.now() - 1_000),
+            approvalExpiresAt: new Date(Date.now() - 1_000),
           }),
         );
         mockWaitForIntentDecision.mockResolvedValue('pending_approval');
@@ -2654,10 +2660,33 @@ describe('createSessionPreToolUse', () => {
         expect(mockTransitionIntent).not.toHaveBeenCalled();
       });
 
-      it('is not consulted before the deadline', async () => {
+      it('a failed close-out before the deadline is still pending, not unconfirmed', async () => {
         mockCreateActionIntent.mockResolvedValue(
           makeIntentSnapshot({ id: 'intent-12098', approvalRequestIds: ['appr-12098'] }),
         );
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'unknown' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toEqual({
+          allowed: false,
+          error: 'Approval still pending; this action will complete once approved.',
+        });
+      });
+
+      it('an intent row that vanished mid-wait is refused, not left as pending', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'missing' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+        expect(mockTransitionIntent).not.toHaveBeenCalled();
+      });
+
+      it('a decision the wait itself saw is not closed out again', async () => {
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
         const session = makeActiveSession({ approvalMode: 'per_step' });
 
         await createSessionPreToolUse(session)('execute_command', {});

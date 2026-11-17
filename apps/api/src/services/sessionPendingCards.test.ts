@@ -133,8 +133,11 @@ vi.mock('./actionIntents/intentService', () => ({
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
-// #12098: the past-deadline close-out. Default: it expired the intent.
-const mockCloseOutUndecidedIntent = vi.fn(async (_intentId: string): Promise<unknown> => ({ kind: 'expired' }));
+// #12098: the close-out every undecided wait is settled with. Default: still
+// undecided before its deadline (database clock).
+const mockCloseOutUndecidedIntent = vi.fn(
+  async (_intentId: string): Promise<unknown> => ({ kind: 'decided', status: 'pending_approval' }),
+);
 vi.mock('./actionIntents/intentExpiry', () => ({
   closeOutUndecidedIntent: (intentId: string) => mockCloseOutUndecidedIntent(intentId),
 }));
@@ -670,6 +673,7 @@ describe('approval_resolved at the tier-3 intent-backed card (#9431)', () => {
     [{ kind: 'decided', status: 'approved' }, 'approved'],
     [{ kind: 'decided', status: 'rejected' }, 'not_approved'],
     [{ kind: 'unknown' }, 'ended'],
+    [{ kind: 'missing' }, 'ended'],
   ])('past the deadline, a close-out of %j shows %s', async (closeOut, outcome) => {
     tier3Guardrail('supervised');
     mockInsertReturning({ id: 'exec-3' });

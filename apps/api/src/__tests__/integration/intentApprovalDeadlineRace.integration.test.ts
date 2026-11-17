@@ -25,7 +25,7 @@
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 const h = vi.hoisted(() => {
@@ -269,6 +269,53 @@ async function auditActions(intentId: string, want: string, timeoutMs = 3_000): 
 }
 
 const POLL_SLEEPS = new Set([500, 750, 1125, 1687.5, 2531.25, 3000]);
+/** Shorter than the first 500 ms sleep, so that sleep is the last one. */
+const WAIT_MS = 50;
+
+/**
+ * Runs `fn` with a temporary deferred constraint trigger on `intent_outbox`
+ * that RAISEs on `intent_expired` rows AT COMMIT — a genuine database fault
+ * after every statement of the close-out has run (installed with the
+ * superuser test client, so it fires whatever role inserts). With `failures`,
+ * only the first N commits fail (a sequence counts them; nextval is not rolled
+ * back with the failing transaction). Dropped in `finally`.
+ */
+async function withIntentExpiredOutboxFault<T>(failures: number | 'always', fn: () => Promise<T>): Promise<T> {
+  const sdb = getTestDb();
+  const limit = failures === 'always' ? 2147483647 : failures;
+  await sdb.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_block_intent_expired_trg ON intent_outbox'));
+  await sdb.execute(sql.raw('DROP SEQUENCE IF EXISTS breeze_test_intent_expired_fault_seq'));
+  await sdb.execute(sql.raw('CREATE SEQUENCE breeze_test_intent_expired_fault_seq'));
+  await sdb.execute(
+    sql.raw(`
+      CREATE OR REPLACE FUNCTION breeze_test_block_intent_expired() RETURNS trigger
+      LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.event_type = 'intent_expired'
+           AND nextval('breeze_test_intent_expired_fault_seq') <= ${limit} THEN
+          RAISE EXCEPTION 'injected fault: intent_expired outbox insert blocked';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$;
+    `),
+  );
+  await sdb.execute(
+    sql.raw(`
+      CREATE CONSTRAINT TRIGGER breeze_test_block_intent_expired_trg
+        AFTER INSERT ON intent_outbox
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION breeze_test_block_intent_expired();
+    `),
+  );
+  try {
+    return await fn();
+  } finally {
+    await sdb.execute(sql.raw('DROP TRIGGER IF EXISTS breeze_test_block_intent_expired_trg ON intent_outbox'));
+    await sdb.execute(sql.raw('DROP FUNCTION IF EXISTS breeze_test_block_intent_expired()'));
+    await sdb.execute(sql.raw('DROP SEQUENCE IF EXISTS breeze_test_intent_expired_fault_seq'));
+  }
+}
 
 /**
  * Runs `decide` at the moment `waitForIntentDecision` goes into the sleep that
@@ -311,11 +358,11 @@ describe('#12098 — Tier-3 decision in the last seconds before the approval dea
     const { intentId, approvalRowId } = await createIntent(s);
 
     let routeStatus = 0;
-    const hook = decideDuringLastSleep(1, async () => {
+    const hook = decideDuringLastSleep(WAIT_MS, async () => {
       routeStatus = (await decideViaRoute(s, approvalRowId, 'approve')).status;
     });
 
-    const status = await waitForIntentDecision(intentId, 1);
+    const status = await waitForIntentDecision(intentId, WAIT_MS);
 
     expect(hook.fired()).toBe(true);
     expect(routeStatus).toBe(200);
@@ -327,11 +374,11 @@ describe('#12098 — Tier-3 decision in the last seconds before the approval dea
     const { intentId, approvalRowId } = await createIntent(s);
 
     let routeStatus = 0;
-    const hook = decideDuringLastSleep(1, async () => {
+    const hook = decideDuringLastSleep(WAIT_MS, async () => {
       routeStatus = (await decideViaRoute(s, approvalRowId, 'deny')).status;
     });
 
-    const status = await waitForIntentDecision(intentId, 1);
+    const status = await waitForIntentDecision(intentId, WAIT_MS);
 
     expect(hook.fired()).toBe(true);
     expect(routeStatus).toBe(200);
@@ -355,18 +402,27 @@ describe('#12098 — Tier-3 decision in the last seconds before the approval dea
     expect(after.status).toBe('approved');
     expect(await outboxEvents(intentId)).not.toContain('intent_expired');
 
-    // Both releasers race for it; exactly one claim wins and it runs once.
-    await releaseApprovedIntent(intentId);
-    const inlineClaim = await transitionIntent(
-      intentId,
-      'approved',
-      'executing',
-      { executedAt: null, executionStartedAt: new Date() },
-      { requireNotExpired: 'release' },
-    );
-    expect(inlineClaim).toBe(false);
-    expect(h.usersUpdate).toHaveBeenCalledTimes(1);
-    expect((await readIntent(intentId)).status).toBe('completed');
+    // The chat's inline claim and the release worker race for it at once;
+    // the approved -> executing CAS lets exactly one run it.
+    const [inlineClaim] = await Promise.all([
+      transitionIntent(
+        intentId,
+        'approved',
+        'executing',
+        { executedAt: null, executionStartedAt: new Date() },
+        { requireNotExpired: 'release' },
+      ),
+      releaseApprovedIntent(intentId),
+    ]);
+    const after2 = await readIntent(intentId);
+    if (inlineClaim) {
+      // The inline claim won: the worker must not have run the tool.
+      expect(h.usersUpdate).not.toHaveBeenCalled();
+      expect(after2.status).toBe('executing');
+    } else {
+      expect(h.usersUpdate).toHaveBeenCalledTimes(1);
+      expect(after2.status).toBe('completed');
+    }
   });
 
   runDb('denied just before the deadline: reported rejected, not expired', async () => {
@@ -423,5 +479,43 @@ describe('#12098 — Tier-3 decision in the last seconds before the approval dea
     expect(await closeOutUndecidedIntent(intentId)).toEqual({ kind: 'decided', status: 'pending_approval' });
     expect((await readIntent(intentId)).status).toBe('pending_approval');
     expect(await outboxEvents(intentId)).not.toContain('intent_expired');
+  });
+
+  runDb('a close-out whose COMMIT fails rolls back whole: still pending, no outbox or audit row, reported unknown', async () => {
+    const s = await seedScenario();
+    const { intentId, approvalRowId } = await createIntent(s);
+    await setApprovalDeadline(intentId, -1_000);
+
+    const closeOut = await withIntentExpiredOutboxFault('always', () => closeOutUndecidedIntent(intentId));
+
+    expect(closeOut).toEqual({ kind: 'unknown' });
+    expect((await readIntent(intentId)).status).toBe('pending_approval');
+    expect(await readApprovalRowStatus(approvalRowId)).toBe('pending');
+    expect(await outboxEvents(intentId)).not.toContain('intent_expired');
+    // The audit write is deferred to commit, so an expiry that never
+    // committed leaves no audit row (it runs on its own connection).
+    expect(await auditActions(intentId, 'action_intent.expired', 1_500)).not.toContain('action_intent.expired');
+  });
+
+  runDb('a close-out whose first COMMIT fails is retried and expires the intent exactly once, with one audit row', async () => {
+    const s = await seedScenario();
+    const { intentId, approvalRowId } = await createIntent(s);
+    await setApprovalDeadline(intentId, -1_000);
+
+    const closeOut = await withIntentExpiredOutboxFault(1, () => closeOutUndecidedIntent(intentId));
+
+    expect(closeOut).toEqual({ kind: 'expired' });
+    expect((await readIntent(intentId)).status).toBe('expired');
+    expect(await readApprovalRowStatus(approvalRowId)).toBe('expired');
+    expect((await outboxEvents(intentId)).filter((e) => e === 'intent_expired')).toHaveLength(1);
+    const audits = await auditActions(intentId, 'action_intent.expired');
+    expect(audits.filter((a) => a === 'action_intent.expired')).toHaveLength(1);
+  });
+
+  runDb('an intent row that no longer exists is reported missing, without retries', async () => {
+    const started = Date.now();
+    expect(await closeOutUndecidedIntent(randomUUID())).toEqual({ kind: 'missing' });
+    // No retry backoff (250 ms + 500 ms).
+    expect(Date.now() - started).toBeLessThan(700);
   });
 });

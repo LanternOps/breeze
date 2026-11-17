@@ -2747,17 +2747,18 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // a supervised intent's own chat expiry is the same window, #6475)
           // elapses, OR the wait is settled early (session teardown, a new user
           // message, or interrupt — see settleApprovalWaits, #3089). Unlike the
-          // old waitForApproval, this NEVER mutates the intent on timeout: giving
-          // up here leaves it pending_approval so an approver can still decide it
-          // — and the durable release worker (jobs/intentReleaseWorker.ts) will
-          // execute it — after this session has moved on or died. This is the
-          // new durable capability the design adds (spec §6.1).
+          // old waitForApproval, giving up before the intent's own deadline
+          // NEVER mutates it: it stays pending_approval so an approver can
+          // still decide it — and the durable release worker
+          // (jobs/intentReleaseWorker.ts) will execute it — after this session
+          // has moved on or died. This is the new durable capability the
+          // design adds (spec §6.1). Only an intent already past its deadline
+          // is expired here (#12098, below), as the sweep would.
           let decisionStatus: Awaited<ReturnType<typeof waitForIntentDecision>>;
           // #9431: how the card's wait ended, for every other listener.
           let intentOutcome: AiApprovalOutcome = 'ended';
-          // #12098: set only when the wait ended undecided past the intent's
-          // own deadline (see below).
-          let deadlineCloseOut: IntentCloseOut | null = null;
+          // #12098: how an undecided wait was settled (see below).
+          let closeOut: IntentCloseOut | null = null;
           try {
             const approvalWait = beginApprovalWait(session);
             try {
@@ -2770,23 +2771,24 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             } finally {
               approvalWait.end();
             }
-            // #12098: past the deadline, an undecided read is not yet an
-            // expiry. A decision can land after the wait's last read (approve
-            // and deny stay open until the approval row's own deadline), and
-            // the intent stays `pending_approval` until the 30 s sweep runs —
-            // so "expired" told now could describe an intent the release
-            // worker then runs. Settle it first: `closeOutUndecidedIntent`
-            // either expires it in one conditional statement (final: it can
-            // no longer be approved or released) or loses to the decision and
-            // returns it. The card and the tool result below both report what
-            // that returned.
-            if (decisionStatus === 'pending_approval' && Date.now() >= intent.expiresAt.getTime()) {
-              deadlineCloseOut = await closeOutUndecidedIntent(intent.id);
-              if (deadlineCloseOut.kind === 'decided') decisionStatus = deadlineCloseOut.status;
+            // #12098: an undecided read is not yet an outcome. A decision can
+            // land after the wait's last read (approve and deny stay open
+            // until the approval row's own deadline), and past the deadline
+            // the intent stays `pending_approval` until the 30 s sweep runs, so
+            // "expired" told now could describe an intent the release worker
+            // then runs. Settle it first, on the database clock:
+            // `closeOutUndecidedIntent` expires it in one conditional
+            // statement if its deadline has passed (final: it can no longer be
+            // approved or released), or returns what it is now (a decision
+            // that won, or still pending before the deadline). The card and
+            // the tool result below both report what it returned.
+            if (decisionStatus === 'pending_approval') {
+              closeOut = await closeOutUndecidedIntent(intent.id);
+              if (closeOut.kind === 'decided') decisionStatus = closeOut.status;
             }
-            intentOutcome = deadlineCloseOut?.kind === 'expired'
+            intentOutcome = closeOut?.kind === 'expired'
               ? 'expired'
-              : deadlineCloseOut?.kind === 'unknown'
+              : closeOut?.kind === 'unknown' || closeOut?.kind === 'missing'
                 ? 'ended'
                 : intentDecisionOutcome(decisionStatus);
           } finally {
@@ -2797,7 +2799,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // #12098: the close-out expired it, so it is final — no later
           // approval can release it — and a re-issue cannot run it twice.
           // (#3090: past the deadline this is never "still pending".)
-          if (deadlineCloseOut?.kind === 'expired') {
+          if (closeOut?.kind === 'expired') {
             return await failMatchedPlanStep(
               {
                 allowed: false,
@@ -2807,11 +2809,21 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               ' The plan has been stopped.',
             );
           }
-          // #12098: the close-out failed, so the intent may still be pending
-          // and an approval in its final seconds may still run through the
-          // release worker. Saying "not executed, re-issue it" could run it
-          // twice; say only what is known.
-          if (deadlineCloseOut?.kind === 'unknown') {
+          // The intent row is gone (its org was deleted mid-wait): nothing
+          // can release it.
+          if (closeOut?.kind === 'missing') {
+            return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+          }
+          // #12098: the close-out failed after the deadline, so the intent may
+          // still be pending and an approval in its final seconds may still
+          // run through the release worker. Saying "not executed, re-issue
+          // it" could run it twice; say only what is known. Before the
+          // deadline a failed close-out changes nothing: it is still pending
+          // (the branch below).
+          if (
+            closeOut?.kind === 'unknown'
+            && Date.now() >= (intent.approvalExpiresAt ?? intent.expiresAt).getTime()
+          ) {
             return await failMatchedPlanStep(
               {
                 allowed: false,
@@ -2852,12 +2864,11 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             // Do not add a notification path here — it would become a second,
             // divergent source of truth the inbox then has to reconcile.
             //
-            // Past the intent's own deadline this branch is reached only when
-            // the close-out above found it still undecided by the database
-            // clock (a deadline a moment ahead of this host's clock): it is
-            // then genuinely pending, and an approval before the sweep
-            // expires it would still run. Otherwise a past-deadline wait has
-            // already been answered above (#3090, #12098).
+            // Reached only when the close-out above found the intent still
+            // undecided before its deadline on the database clock (or failed
+            // before the deadline): it is genuinely pending, and an approval
+            // would still run. A past-deadline wait is answered above
+            // (#3090, #12098).
             return await failMatchedPlanStep(
               {
                 allowed: false,

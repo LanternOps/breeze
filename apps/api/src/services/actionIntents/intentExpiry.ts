@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents, intentOutbox } from '../../db/schema/actionIntents';
 import type { ActionIntentSource, ActionIntentStatus } from '../../db/schema/actionIntents';
 import { approvalRequests } from '../../db/schema/approvals';
@@ -49,8 +49,8 @@ export function extractRows<T>(result: unknown): T[] {
  * in JS does not un-abort the transaction (the backend is left in 25P02 and
  * the COMMIT silently becomes a ROLLBACK), so a swallowed failure would throw
  * away the expiry while the caller believes it landed. Failing the whole
- * transaction is the honest outcome. Only the audit write (fire-and-forget,
- * after the database writes) is caught.
+ * transaction is the honest outcome. The audit event is deferred until the
+ * transaction commits, and only its own failure is caught.
  */
 export async function recordIntentExpiries(rows: ExpiredIntentRow[]): Promise<void> {
   if (rows.length === 0) return;
@@ -95,24 +95,29 @@ export async function recordIntentExpiries(rows: ExpiredIntentRow[]): Promise<vo
     if (row.requesting_flow_run_id) scheduleFlowRunWake(row.requesting_flow_run_id);
   }
 
+  // The audit event and metric only once the expiry has committed: the audit
+  // write runs on its own connection, so emitted here it would record an
+  // expiry that a failed COMMIT (or a retried close-out attempt) never kept.
   for (const row of rows) {
-    try {
-      recordActionIntentEvent({
-        orgId: row.org_id,
-        intentId: row.id,
-        actionName: row.action_name,
-        argumentDigest: row.argument_digest,
-        source: row.source as ActionIntentSource,
-        outcome: 'expired',
-        details: {
-          requestedByUserId: row.requested_by_user_id,
-          expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : row.expires_at,
-        },
-      });
-    } catch (err) {
-      console.error('[intentExpiry] Failed to write audit event:', err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
-    }
+    runAfterDbContextCommit(`intent-expired-audit:${row.id}`, () => {
+      try {
+        recordActionIntentEvent({
+          orgId: row.org_id,
+          intentId: row.id,
+          actionName: row.action_name,
+          argumentDigest: row.argument_digest,
+          source: row.source as ActionIntentSource,
+          outcome: 'expired',
+          details: {
+            requestedByUserId: row.requested_by_user_id,
+            expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : row.expires_at,
+          },
+        });
+      } catch (err) {
+        console.error('[intentExpiry] Failed to write audit event:', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
   }
 }
 
@@ -127,12 +132,15 @@ export async function recordIntentExpiries(rows: ExpiredIntentRow[]): Promise<vo
  *   or already executing), or the database clock says the deadline has not
  *   passed yet (`pending_approval`). `status` is a fresh read taken after the
  *   close-out lost, so it includes any decision that committed first.
+ * - `missing`: the intent row no longer exists (e.g. its org was deleted), so
+ *   nothing can release it. Not retried.
  * - `unknown`: the close-out failed on every attempt. The intent may still be
  *   pending, and an approval could still land before the sweep expires it.
  */
 export type IntentCloseOut =
   | { kind: 'expired' }
   | { kind: 'decided'; status: ActionIntentStatus }
+  | { kind: 'missing' }
   | { kind: 'unknown' };
 
 const CLOSE_OUT_ATTEMPTS = 3;
@@ -190,9 +198,7 @@ export async function closeOutUndecidedIntent(intentId: string): Promise<IntentC
             .from(actionIntents)
             .where(eq(actionIntents.id, intentId))
             .limit(1);
-          // A missing row is not an outcome anyone decided; treat it as a
-          // failed close-out rather than inventing one.
-          if (!row) throw new Error(`intent ${intentId} not found at close-out`);
+          if (!row) return { kind: 'missing' };
           return { kind: 'decided', status: row.status };
         }),
       );
