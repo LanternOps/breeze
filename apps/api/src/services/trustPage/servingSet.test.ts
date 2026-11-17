@@ -212,7 +212,7 @@ describe('serving set', () => {
     dbRows.reader = async () => { throw new Error('db down'); };
     scheduleServingRefreshForPartner('p1', 'test');
     await expect(Promise.resolve(afterCommit[1]!())).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('hourly rebuild will repair'), expect.objectContaining({ reason: 'test' }), expect.any(Error));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropping the built marker'), expect.objectContaining({ reason: 'test' }), expect.any(Error));
     warn.mockRestore();
   });
   describe('self-heal: scheduleServingSetRebuild', () => {
@@ -375,6 +375,46 @@ describe('serving set', () => {
       await expect(refreshServingForPartner('p1')).resolves.toBe('degraded');
       expect(await r().exists(TRUST_SERVING_BUILT_KEY)).toBe(0);
       expect(await isServing('nw/acme')).toBeNull();
+      warn.mockRestore();
+    });
+
+    it('a degraded reconcile schedules the self-heal, so a set that kept its marker is rebuilt within the minute', async () => {
+      await markBuilt();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      r().eval.mockRejectedValueOnce(new Error('ETIMEDOUT'));
+      r().del.mockRejectedValueOnce(new Error('ETIMEDOUT')); // the marker drop fails too: the marker survives
+      dbRows.rows = [ACME];
+      await expect(refreshServingForPartner('p1')).resolves.toBe('degraded');
+      await servingSetRebuildSettled();
+      expect(r()._set.has('nw/acme')).toBe(true); // the scheduled full rebuild re-read the DB and added it
+      expect(rebuilds()).toBe(1);
+      warn.mockRestore(); info.mockRestore();
+    });
+
+    it('a failed marker drop is reported, not only logged', async () => {
+      sentry.captureException.mockClear();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      r().eval.mockRejectedValueOnce(new Error('READONLY'));
+      r().del.mockRejectedValueOnce(new Error('READONLY'));
+      r().set.mockResolvedValueOnce(null as never); // the self-heal lock is held elsewhere
+      dbRows.rows = [ACME];
+      await refreshServingForPartner('p1');
+      await servingSetRebuildSettled();
+      expect(sentry.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'READONLY' }), undefined, { component: 'trustPage.servingSetDropMarker' });
+      warn.mockRestore();
+    });
+
+    it('a post-commit refresh that fails on the DB drops the built marker and reports it (no hidden page until the hourly rebuild)', async () => {
+      afterCommit.length = 0;
+      sentry.captureException.mockClear();
+      await markBuilt();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      dbRows.reader = async () => { throw new Error('db down'); };
+      scheduleServingRefreshForPartner('p1', 'test');
+      await afterCommit[0]!();
+      expect(await r().exists(TRUST_SERVING_BUILT_KEY)).toBe(0);
+      expect(sentry.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, { component: 'trustPage.servingRefreshAfterCommit' });
       warn.mockRestore();
     });
 

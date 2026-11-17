@@ -216,7 +216,13 @@ export function applyServingSnapshot(args: { epoch: string | null; members: stri
 export async function dropServingBuiltMarker(): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
-  try { await redis.del(TRUST_SERVING_BUILT_KEY); } catch (err) { console.warn('[trustPage] could not drop the serving-set built marker', err); }
+  try {
+    await redis.del(TRUST_SERVING_BUILT_KEY);
+  } catch (err) {
+    // The marker survives on a set that may lack a live member; the scheduled self-heal is the remaining repair.
+    console.warn('[trustPage] could not drop the serving-set built marker', err);
+    captureException(err, undefined, { component: 'trustPage.servingSetDropMarker' });
+  }
 }
 
 /** Tags a Redis failure so the reconcile loop can tell it from a DB failure (which propagates). */
@@ -258,6 +264,9 @@ async function reconcile(
     console.warn('[trustPage] serving-set reconcile failed; dropping the built marker so pages fall through', { label }, err.redisError);
     captureException(err.redisError, undefined, { component: 'trustPage.servingSetReconcile' });
     await dropServingBuiltMarker();
+    // If the drop failed too, the marker may sit on a set missing a live member, and isServing would never notice.
+    // The self-heal (lock-limited to one per minute cluster-wide) re-reads the DB once Redis answers again.
+    scheduleServingSetRebuild(`reconcile_degraded:${label}`);
     return 'degraded';
   }
 }
@@ -295,14 +304,17 @@ export async function refreshServingForPartner(partnerId: string): Promise<Servi
  * Ruling 26 (I11): an org/partner slug or status change can make trust pages appear or vanish. Refreshing
  * inside the request would read the PRE-change rows (the request's write is not committed yet, and the
  * refresh reads on its own system context), so this runs only after the outermost transaction COMMITS, outside
- * any context. Best-effort: a failure is logged and the hourly full rebuild repairs the set.
+ * any context. Redis failures degrade inside the reconcile; any other failure (the DB read) drops the built marker,
+ * so a page the change made live falls through to the live resolve instead of 404ing until the hourly rebuild.
  */
 export function scheduleServingRefreshForPartner(partnerId: string, reason: string): void {
   runAfterDbContextCommit(`trustPage.servingRefresh:${reason}`, async () => {
     try {
       await refreshServingForPartner(partnerId);
     } catch (err) {
-      console.warn('[trustPage] serving-set refresh after a tenant change failed; the hourly rebuild will repair it', { partnerId, reason }, err);
+      console.warn('[trustPage] serving-set refresh after a tenant change failed; dropping the built marker', { partnerId, reason }, err);
+      captureException(err, undefined, { component: 'trustPage.servingRefreshAfterCommit' });
+      await dropServingBuiltMarker();
     }
   });
 }

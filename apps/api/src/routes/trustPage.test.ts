@@ -255,6 +255,12 @@ describe('trust page routes', () => {
       svc.serveCommittedPublication.mockResolvedValueOnce(outcome);
       expect((await publish()).status).toBe(200);
     });
+    it('unpublish still answers 200 when the reconcile is degraded', async () => {
+      dbm.rows.push([ctxRow]);
+      svc.unpublishTrustPage.mockResolvedValueOnce({ ...PAGE, publicationRevision: 2 });
+      svc.serveCommittedPublication.mockResolvedValueOnce('degraded');
+      expect((await app.request(`/orgs/${ORG}/trust-page/unpublish`, { method: 'POST', headers: H({ 'x-mfa': '1' }) })).status).toBe(200);
+    });
     it('an org outside the caller\'s access is a 404 and never reaches the service or the reconcile', async () => {
       const res = await app.request(`/orgs/${OTHER}/trust-page/publish`, { method: 'POST', headers: H({ 'x-mfa': '1' }), body: JSON.stringify({ expectedRevision: 0 }) });
       expect(res.status).toBe(404);
