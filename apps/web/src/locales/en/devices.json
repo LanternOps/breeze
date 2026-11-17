@@ -1474,6 +1474,7 @@
       "untrustedCertificate": "The connection to the Breeze server presented a certificate this device does not trust (issued by {{certIssuer}}). This is usually TLS inspection by a firewall or proxy, a certificate problem on a self-hosted server, or an out-of-date trusted-root store on this device. Breeze will not bypass it.",
       "viaEch": "Currently reachable via Encrypted Client Hello.",
       "cleared": "Was blocked from {{from}} to {{to}}.",
+      "lastKnown": "Last reported {{time}}. The device has not reported since, so this may no longer apply.",
       "howToFix": "How to fix",
       "noDetail": "no detail"
     },
@@ -1879,6 +1880,7 @@
     },
     "controlPlaneBlockBadge": "Network filter",
     "controlPlaneBlockBadgeCertificate": "Certificate not trusted",
+    "controlPlaneBlockLastKnownTooltip": "Last reported {{time}}; the device has not reported since.",
     "agentVersionRelation": {
       "equalTooltip": "Matches the effective version {{version}}",
       "aheadTooltip": "Ahead of pin {{version}}",

@@ -1474,6 +1474,7 @@
       "untrustedCertificate": "La connexion au serveur Breeze a présenté un certificat que cet appareil n'approuve pas (émis par {{certIssuer}}). Il s'agit généralement d'une inspection TLS par un pare-feu ou un proxy, d'un problème de certificat sur un serveur auto-hébergé ou d'un magasin de certificats racines obsolète sur cet appareil. Breeze ne le contournera pas.",
       "viaEch": "Actuellement joignable via Encrypted Client Hello.",
       "cleared": "A été bloqué du {{from}} au {{to}}.",
+      "lastKnown": "Dernier signalement : {{time}}. L'appareil ne s'est pas signalé depuis, cela pourrait donc ne plus s'appliquer.",
       "howToFix": "Comment corriger",
       "noDetail": "aucun détail"
     },
@@ -1879,6 +1880,7 @@
     },
     "controlPlaneBlockBadge": "Filtre réseau",
     "controlPlaneBlockBadgeCertificate": "Certificat non approuvé",
+    "controlPlaneBlockLastKnownTooltip": "Dernier signalement : {{time}} ; l'appareil ne s'est pas signalé depuis.",
     "agentVersionRelation": {
       "equalTooltip": "Correspond à la version effective {{version}}",
       "aheadTooltip": "En avance sur l'épinglage {{version}}",

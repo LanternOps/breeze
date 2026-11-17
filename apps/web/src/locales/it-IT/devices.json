@@ -1474,6 +1474,7 @@
       "untrustedCertificate": "La connessione al server Breeze ha presentato un certificato che questo dispositivo non considera attendibile (emesso da {{certIssuer}}). Di solito si tratta di un'ispezione TLS da parte di un firewall o di un proxy, di un problema di certificato su un server self-hosted o di un archivio dei certificati radice obsoleto su questo dispositivo. Breeze non lo aggirerà.",
       "viaEch": "Attualmente raggiungibile tramite Encrypted Client Hello.",
       "cleared": "Bloccato dal {{from}} al {{to}}.",
+      "lastKnown": "Ultima segnalazione: {{time}}. Da allora il dispositivo non ha più inviato segnalazioni, quindi potrebbe non essere più valido.",
       "howToFix": "Come risolvere",
       "noDetail": "nessun dettaglio"
     },
@@ -1879,6 +1880,7 @@
     },
     "controlPlaneBlockBadge": "Filtro di rete",
     "controlPlaneBlockBadgeCertificate": "Certificato non attendibile",
+    "controlPlaneBlockLastKnownTooltip": "Ultima segnalazione: {{time}}; da allora il dispositivo non ha più inviato segnalazioni.",
     "agentVersionRelation": {
       "equalTooltip": "Corrisponde alla versione effettiva {{version}}",
       "aheadTooltip": "In anticipo rispetto al pin {{version}}",

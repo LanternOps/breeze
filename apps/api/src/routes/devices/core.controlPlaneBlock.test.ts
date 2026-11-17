@@ -174,6 +174,21 @@ describe('GET /devices/:id — control-plane block notice (#8868)', () => {
     expect(body.controlPlaneBlock).not.toHaveProperty('reportedAt');
   });
 
+  it('an active episode on a device that stopped reporting 4 h ago is last_known, with the report time', async () => {
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      ...BASE_DEVICE,
+      status: 'offline',
+      controlPlaneBlockKind: 'web_filter',
+      controlPlaneBlock: {
+        kind: 'web_filter', host: 'cp.example', firstSeenAt: fourHoursAgo, lastSeenAt: fourHoursAgo,
+        reachableViaEch: true, reportedAt: fourHoursAgo,
+      },
+    } as never);
+    const body = await (await get()).json() as Record<string, unknown>;
+    expect(body.controlPlaneBlock).toMatchObject({ state: 'last_known', lastReportedAt: fourHoursAgo });
+  });
+
   it('a stale episode is not surfaced', async () => {
     const old = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({

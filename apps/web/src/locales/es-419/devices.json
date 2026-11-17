@@ -1474,6 +1474,7 @@
       "untrustedCertificate": "La conexión al servidor de Breeze presentó un certificado en el que este dispositivo no confía (emitido por {{certIssuer}}). Por lo general se debe a la inspección TLS de un firewall o proxy, a un problema de certificado en un servidor autoalojado o a un almacén de certificados raíz de confianza desactualizado en este dispositivo. Breeze no lo omitirá.",
       "viaEch": "Actualmente accesible mediante Encrypted Client Hello.",
       "cleared": "Estuvo bloqueado desde {{from}} hasta {{to}}.",
+      "lastKnown": "Último reporte: {{time}}. El dispositivo no ha reportado desde entonces, así que es posible que esto ya no aplique.",
       "howToFix": "Cómo solucionarlo",
       "noDetail": "sin detalles"
     },
@@ -1879,6 +1880,7 @@
     },
     "controlPlaneBlockBadge": "Filtro de red",
     "controlPlaneBlockBadgeCertificate": "Certificado no confiable",
+    "controlPlaneBlockLastKnownTooltip": "Último reporte: {{time}}; el dispositivo no ha reportado desde entonces.",
     "agentVersionRelation": {
       "equalTooltip": "Coincide con la versión efectiva {{version}}",
       "aheadTooltip": "Por delante del pin {{version}}",
