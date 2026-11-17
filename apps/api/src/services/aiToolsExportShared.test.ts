@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { deviceChangeLog, devices } from '../db/schema';
 
@@ -303,6 +304,9 @@ describe('exportKey', () => {
     expect(exportKey(id(2), 'service|c:/users/jdoe/x.exe')).not.toBe(k);
     // The separator keeps org and text from running together.
     expect(exportKey('ab', 'c')).not.toBe(exportKey('a', 'bc'));
+    // Keyed, not just org-salted: knowing the org id does not let a holder
+    // recompute the key from a guessed input.
+    expect(k).not.toBe(createHash('sha256').update(`${id(1)}\0service|c:/users/jdoe/x.exe`).digest('hex').slice(0, 32));
     expect(exportKey(id(1), null)).toBeNull();
     expect(exportKey(id(1), undefined)).toBeNull();
   });
