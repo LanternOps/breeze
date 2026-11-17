@@ -1790,6 +1790,11 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 // against the same machine clock (desktop.MonotonicDeadline), so they land on
 // the same instants; an older helper that knows nothing of #11840 reads them
 // correctly too. A zero deadline stays absent.
+//
+// UnixMilli takes the deadline's WALL reading, so this is only right because
+// every anchor carries the wall clock as of receipt: ReceivedAt is a plain
+// time.Now(), and RequestedAt is derived from it by the request's monotonic
+// age (websocket.leaseRequestedAt), never from the agent's start time.
 func withResolvedLeaseDeadlines(msg websocket.RevocationLeaseMessage, expiresAt, hardDeadline time.Time) websocket.RevocationLeaseMessage {
 	msg.ExpiresAtUnixMs, msg.HardDeadlineUnixMs = 0, 0
 	if !expiresAt.IsZero() {

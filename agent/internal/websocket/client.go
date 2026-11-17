@@ -336,41 +336,47 @@ func (m RevocationLeaseMessage) LeaseClockAnchor() time.Time {
 
 // leaseAnchorBase is the origin of renewAnchor values: renewal requests carry
 // milliseconds elapsed since it, measured on the monotonic clock. The server
-// treats the value as opaque and echoes it on its answer.
+// treats the value as opaque and echoes it on its answer. Only elapsed time
+// is ever taken from it, never its wall reading (see leaseRequestedAt).
 var leaseAnchorBase = time.Now()
+
+// leaseAnchorElapsed is the monotonic time from leaseAnchorBase to t. A
+// variable only so tests can simulate a wall-clock step, or a sleep the
+// monotonic clock did not count, since the agent started.
+var leaseAnchorElapsed = func(t time.Time) time.Duration { return t.Sub(leaseAnchorBase) }
 
 // leaseAnchorNow is the renewAnchor for a request queued now.
 func leaseAnchorNow() int64 {
-	return time.Since(leaseAnchorBase).Milliseconds()
+	return leaseAnchorElapsed(time.Now()).Milliseconds()
 }
 
 // leaseRequestedAt recovers the request time from an echoed renewAnchor. An
 // absent, negative or non-finite echo, or one later than the frame's own
 // receipt, is unusable: the caller then measures from receipt instead.
+//
+// The result is receivedAt moved back by the request's age, where the age is
+// the monotonic time between the request and the receipt. It is NOT
+// leaseAnchorBase plus the echo: that value's wall reading is "process start
+// plus elapsed monotonic time", which drifts from the real wall clock by every
+// clock step since the agent started (and, where the monotonic clock pauses,
+// by every sleep). The deadline forwarded to a helper is that wall reading,
+// read against the helper's current clock, so the drift would end sessions
+// early or stretch the lease (#11840 review). Anchored to receivedAt, the wall
+// reading is the clock as of receipt.
+//
+// The echo is whole milliseconds, rounded down from the request's elapsed
+// time, so the recovered age is never shorter than the real one: the request
+// instant is never placed later than it was.
 func leaseRequestedAt(echo *float64, receivedAt time.Time) time.Time {
 	if echo == nil || math.IsNaN(*echo) || *echo < 0 {
 		return time.Time{}
 	}
-	if *echo > float64(receivedAt.Sub(leaseAnchorBase).Milliseconds()) {
+	elapsedAtReceipt := leaseAnchorElapsed(receivedAt)
+	if *echo > float64(elapsedAtReceipt.Milliseconds()) {
 		return time.Time{}
 	}
-	return leaseAnchorBase.Add(time.Duration(int64(*echo)) * time.Millisecond)
-}
-
-// jsonMillis converts a JSON millisecond count to int64. A non-positive or
-// non-finite value is 0 (absent). A huge one saturates instead of wrapping:
-// the float-to-int conversion of an out-of-range value is undefined in Go and
-// can come out negative, which would read as "absent" and fall back to the
-// device's wall clock.
-func jsonMillis(v float64) int64 {
-	const maxMillis = 1 << 53
-	if !(v > 0) {
-		return 0
-	}
-	if v > maxMillis {
-		return maxMillis
-	}
-	return int64(v)
+	age := elapsedAtReceipt - time.Duration(int64(*echo))*time.Millisecond
+	return receivedAt.Add(-age)
 }
 
 // New creates a new WebSocket client
@@ -1536,6 +1542,32 @@ func (c *Client) SendTerminalOutput(sessionId string, data []byte) error {
 	}
 }
 
+// optionalNumber is an optional JSON number that never fails a decode: null,
+// a missing key or a non-number (a string, object, array or bool) all read as
+// absent. Use it only for fields whose absence has a safe fallback.
+type optionalNumber struct {
+	value float64
+	set   bool
+}
+
+func (n *optionalNumber) UnmarshalJSON(b []byte) error {
+	var v float64
+	if string(b) != "null" && json.Unmarshal(b, &v) == nil {
+		n.value, n.set = v, true
+	} else {
+		*n = optionalNumber{}
+	}
+	return nil
+}
+
+// ptr is the value, or nil when absent.
+func (n optionalNumber) ptr() *float64 {
+	if !n.set {
+		return nil
+	}
+	return &n.value
+}
+
 // handleRevocationLeaseMessage decodes a revocation-lease answer and hands it to
 // the registered hook. A malformed frame is dropped with a log rather than
 // treated as a revocation: only an explicit `revocation_lease_revoked` stops a
@@ -1543,15 +1575,18 @@ func (c *Client) SendTerminalOutput(sessionId string, data []byte) error {
 func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 	receivedAt := time.Now()
 	var frame struct {
-		SessionID        string  `json:"sessionId"`
-		Reason           string  `json:"reason"`
-		ExpiresAt        float64 `json:"expiresAt"`
-		HardDeadline     float64 `json:"hardDeadline"`
-		ExpiresInMs      float64 `json:"expiresInMs"`
-		HardDeadlineInMs float64 `json:"hardDeadlineInMs"`
+		SessionID    string  `json:"sessionId"`
+		Reason       string  `json:"reason"`
+		ExpiresAt    float64 `json:"expiresAt"`
+		HardDeadline float64 `json:"hardDeadline"`
+		// The #11840 additions are optional and lenient: a malformed value
+		// reads as absent (the absolute fields above then govern) instead of
+		// failing the decode and dropping a renewal.
+		ExpiresInMs      optionalNumber `json:"expiresInMs"`
+		HardDeadlineInMs optionalNumber `json:"hardDeadlineInMs"`
 		// RenewAnchor is the server's echo of the value this agent sent on
-		// the request; a pointer because 0 is a valid anchor.
-		RenewAnchor *float64 `json:"renewAnchor"`
+		// the request. 0 is a valid anchor, so absence is tracked apart.
+		RenewAnchor optionalNumber `json:"renewAnchor"`
 		// Fence fields. Generations are STRINGS on the wire: they are
 		// bigint on the server and would round above 2^53 through a float.
 		StartGeneration    string `json:"startGeneration"`
@@ -1573,10 +1608,10 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 		Reason:             frame.Reason,
 		ExpiresAtUnixMs:    int64(frame.ExpiresAt),
 		HardDeadlineUnixMs: int64(frame.HardDeadline),
-		ExpiresInMs:        jsonMillis(frame.ExpiresInMs),
-		HardDeadlineInMs:   jsonMillis(frame.HardDeadlineInMs),
+		ExpiresInMs:        wire.JSONMillis(frame.ExpiresInMs.value),
+		HardDeadlineInMs:   wire.JSONMillis(frame.HardDeadlineInMs.value),
 		ReceivedAt:         receivedAt,
-		RequestedAt:        leaseRequestedAt(frame.RenewAnchor, receivedAt),
+		RequestedAt:        leaseRequestedAt(frame.RenewAnchor.ptr(), receivedAt),
 		StartGeneration:    frame.StartGeneration,
 		TerminationPhase:   frame.TerminationPhase,
 		TerminalGeneration: frame.TerminalGeneration,

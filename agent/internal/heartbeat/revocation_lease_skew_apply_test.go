@@ -103,6 +103,15 @@ func TestRevocationLeaseRenewalIgnoresDeviceClockSkew(t *testing.T) {
 // clock as the agent, so the agent forwards them already resolved to this
 // device's wall clock. That keeps an older helper correct too: it reads the
 // absolute fields it always has.
+//
+// The answer echoes the request's anchor (RequestedAt set), as a current API's
+// does, so this covers the anchor the helper path actually uses: the
+// forwarded deadlines are measured from the request, on the device's current
+// wall clock, and never end later than the server granted. That RequestedAt
+// itself carries the current wall clock after a clock step since the agent
+// started is pinned in the websocket package
+// (TestRenewedLeaseForwardedToTheHelperIsOnTheCurrentWallClock), the only
+// place such a stale reading could come from.
 func TestLeaseAnswerForwardedToTheHelperIsResolvedToTheDeviceClock(t *testing.T) {
 	session, received := newLeaseBridgeHelper(t, "helper-skew")
 	h := &Heartbeat{
@@ -113,8 +122,10 @@ func TestLeaseAnswerForwardedToTheHelperIsResolvedToTheDeviceClock(t *testing.T)
 	h.rememberDesktopOwner("desk-skew", session.SessionID)
 
 	const skew = 10 * time.Minute
+	const roundTrip = 40 * time.Second
 	serverNow := time.Now().Add(-skew)
 	receivedAt := time.Now()
+	requestedAt := receivedAt.Add(-roundTrip)
 	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
 		SessionID:          "desk-skew",
 		ExpiresAtUnixMs:    serverNow.Add(time.Minute).UnixMilli(),
@@ -122,6 +133,7 @@ func TestLeaseAnswerForwardedToTheHelperIsResolvedToTheDeviceClock(t *testing.T)
 		HardDeadlineUnixMs: serverNow.Add(time.Hour).UnixMilli(),
 		HardDeadlineInMs:   time.Hour.Milliseconds(),
 		ReceivedAt:         receivedAt,
+		RequestedAt:        requestedAt,
 	})
 
 	env := awaitEnvelope(t, received, ipc.TypeDesktopLeaseUpdate)
@@ -129,11 +141,22 @@ func TestLeaseAnswerForwardedToTheHelperIsResolvedToTheDeviceClock(t *testing.T)
 	if err := json.Unmarshal(env.Payload, &update); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if want := receivedAt.Add(time.Minute).UnixMilli(); update.ExpiresAtUnixMs != want {
-		t.Fatalf("forwarded expiresAtUnixMs = %d, want %d (off by %v)",
-			update.ExpiresAtUnixMs, want, time.Duration(update.ExpiresAtUnixMs-want)*time.Millisecond)
-	}
-	if want := receivedAt.Add(time.Hour).UnixMilli(); update.HardDeadlineUnixMs != want {
-		t.Fatalf("forwarded hardDeadlineUnixMs = %d, want %d", update.HardDeadlineUnixMs, want)
+	for _, f := range []struct {
+		name string
+		got  int64
+		in   time.Duration
+	}{
+		{"expiresAtUnixMs", update.ExpiresAtUnixMs, time.Minute},
+		{"hardDeadlineUnixMs", update.HardDeadlineUnixMs, time.Hour},
+	} {
+		if want := requestedAt.Add(f.in).UnixMilli(); f.got != want {
+			t.Fatalf("forwarded %s = %d, want %d: measured from the request (off by %v)",
+				f.name, f.got, want, time.Duration(f.got-want)*time.Millisecond)
+		}
+		// On the current wall clock: within the round trip of
+		// now + granted remaining, never later.
+		if hi := time.Now().Add(f.in).UnixMilli(); f.got > hi || f.got < hi-roundTrip.Milliseconds()-time.Second.Milliseconds() {
+			t.Fatalf("forwarded %s = %d is not within the round trip of now+%v (%d)", f.name, f.got, f.in, hi)
+		}
 	}
 }

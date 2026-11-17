@@ -13,6 +13,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 const (
@@ -561,52 +562,36 @@ func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
 // validator also call. Keeping the rules in one place is what stops the two
 // paths from disagreeing about what a valid lease is — they already did once,
 // and the looser side accepted an all-zero block, i.e. an unrevokable session.
-// leaseMillis converts a JSON millisecond count. A non-positive value is 0
-// (absent); a huge one saturates rather than wrapping, because Go's
-// float-to-int conversion of an out-of-range value is undefined and can come
-// out negative, which would read as absent and fall back to the device's wall
-// clock. NormalizeRevocationLease caps the result.
-func leaseMillis(v float64) int64 {
-	const maxMillis = 1 << 53
-	if !(v > 0) {
-		return 0
-	}
-	if v > maxMillis {
-		return maxMillis
-	}
-	return int64(v)
-}
-
 func parseRevocationLease(payload map[string]any) *desktop.RevocationLease {
 	raw, ok := payload["revocationLease"].(map[string]any)
 	if !ok {
 		return nil
 	}
-	var wire ipc.RevocationLease
+	var wireLease ipc.RevocationLease
 	if v, ok := raw["token"].(string); ok {
-		wire.Token = v
+		wireLease.Token = v
 	}
 	if v, ok := raw["expiresAt"].(float64); ok {
-		wire.ExpiresAtUnixMs = int64(v)
+		wireLease.ExpiresAtUnixMs = int64(v)
 	}
 	if v, ok := raw["hardDeadline"].(float64); ok {
-		wire.HardDeadlineUnixMs = int64(v)
+		wireLease.HardDeadlineUnixMs = int64(v)
 	}
 	// The clock-independent form (#11840); absent from an older API, which
 	// leaves the absolute fields above in charge.
 	if v, ok := raw["expiresInMs"].(float64); ok {
-		wire.ExpiresInMs = leaseMillis(v)
+		wireLease.ExpiresInMs = wire.JSONMillis(v)
 	}
 	if v, ok := raw["hardDeadlineInMs"].(float64); ok {
-		wire.HardDeadlineInMs = leaseMillis(v)
+		wireLease.HardDeadlineInMs = wire.JSONMillis(v)
 	}
 	if v, ok := raw["renewEverySec"].(float64); ok {
-		wire.RenewEverySec = int64(v)
+		wireLease.RenewEverySec = int64(v)
 	}
 	if v, ok := raw["graceSec"].(float64); ok {
-		wire.GraceSec = int64(v)
+		wireLease.GraceSec = int64(v)
 	}
-	lease, err := desktop.NormalizeRevocationLease(&wire)
+	lease, err := desktop.NormalizeRevocationLease(&wireLease)
 	if err != nil {
 		log.Warn("dropping unusable revocationLease block from start_desktop", "error", err.Error())
 		return nil
