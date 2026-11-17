@@ -317,6 +317,10 @@ vi.mock('../workspace/workspaceService', async (importOriginal) => {
 // `finalize` was invoked.
 import { __resetWorkspaceRegistry, getWorkspaceForRun } from '../workspace/workspaceRegistry';
 
+const loadHandleManifest = vi.hoisted(() =>
+  vi.fn<(input: { orgId: string; handles: string[] }) => Promise<unknown[]>>(async () => []));
+vi.mock('./analysisContinuation', () => ({ loadHandleManifest }));
+
 import { executeAgentRun } from './runLoop';
 import { deviceSiteDenied } from '../aiToolsSiteScope';
 import type { AuthContext } from '../../middleware/auth';
@@ -360,8 +364,10 @@ const STAGED_INPUTS: AiAgentRunStagedInputs = { handles: [], deviceIds: [DEVICE_
 function seedRows(options: {
   effective?: AiAgentPolicy;
   stagedInputs?: AiAgentRunStagedInputs | null;
+  triggerRef?: Record<string, unknown>;
   computeReservedCents?: number | null;
   fundingSource?: 'platform' | 'partner_key' | null;
+  continuedFromRunId?: string | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const stagedInputs = options.stagedInputs === undefined ? STAGED_INPUTS : options.stagedInputs;
@@ -382,13 +388,14 @@ function seedRows(options: {
     profile: 'analysis',
     correlationGroupId: null,
     scheduleId: null,
-    triggerRef: {},
+    triggerRef: options.triggerRef ?? {},
     taskId: null,
     taskStepKey: null,
     taskAttemptOrdinal: null,
     stagedInputs,
     computeReservedCents,
     fundingSource: options.fundingSource ?? null,
+    continuedFromRunId: options.continuedFromRunId ?? null,
   }]];
   dbMockState.rowQueues.ai_agents = [[{
     id: AGENT_ID,
@@ -693,5 +700,43 @@ describe('frozen export grants reach the tool context (W02 analysis sessions)', 
     const runAuth = hooks.getAuth!() as AuthContext;
     expect(runAuth.allowedDeviceIds).toEqual([DEVICE_A, DEVICE_B]);
     expect(deviceSiteDenied(runAuth, 'any-site', '00000000-0000-4000-8000-0000000000ff')).toBe(true);
+  });
+});
+
+describe('analysis manifest reaches the task prompt (W03)', () => {
+  const H1 = '00000000-0000-4000-8000-0000000000a1';
+  const R1 = '00000000-0000-4000-8000-0000000000b1';
+
+  it('loads the manifest for the frozen handles inside the run context system block', async () => {
+    seedRows({ triggerRef: { goal: 'find bsod causes' }, stagedInputs: { ...STAGED_INPUTS, handles: [H1] } });
+    let ambientAtCall: unknown;
+    loadHandleManifest.mockImplementation(async () => {
+      ambientAtCall = dbMockState.ambientContext;
+      return [{ handle: H1, name: 'bsod.csv', bytes: 14000, contentType: 'text/csv', kind: 'output', producedByRunId: R1, producerChainDepth: 0 }];
+    });
+    await executeAgentRun(RUN_ID);
+    expect(loadHandleManifest).toHaveBeenCalledWith({ orgId: ORG_ID, handles: [H1] });
+    expect(ambientAtCall).toEqual({ scope: 'system' });
+    const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+    expect(prompt).toContain(`${H1} · bsod.csv · 14000 bytes · text/csv · output · produced by run ${R1} (step 1 of chain)`);
+  });
+
+  it('warns when a continuation run (lineage set) has no readable seed, and still runs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    seedRows({ triggerRef: { goal: 'g', continuation: { fromRunId: R1, seed: '' } }, continuedFromRunId: R1 });
+    await executeAgentRun(RUN_ID);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuation seed unreadable'), expect.objectContaining({ runId: RUN_ID }));
+    expect(queryMock).toHaveBeenCalled();
+    warn.mockClear();
+    seedRows({ triggerRef: { goal: 'g' } });
+    await executeAgentRun(RUN_ID);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('continuation seed unreadable'), expect.anything());
+    warn.mockRestore();
+  });
+
+  it('reads malformed staged handles defensively and still renders a prompt', async () => {
+    seedRows({ stagedInputs: { ...STAGED_INPUTS, handles: 'nope' as never } });
+    await executeAgentRun(RUN_ID);
+    expect(loadHandleManifest).toHaveBeenCalledWith({ orgId: ORG_ID, handles: [] });
   });
 });

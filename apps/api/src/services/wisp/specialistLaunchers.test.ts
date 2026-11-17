@@ -27,6 +27,10 @@ const h = vi.hoisted(() => ({
   chargeableUnderGrant: vi.fn(),
   requestAssessment: vi.fn(),
   captureException: vi.fn(),
+  // W03 analysis continuation
+  analysisContinuationOf: vi.fn(),
+  deriveChainHandles: vi.fn(),
+  buildAnalysisContinuationSeed: vi.fn(),
 }));
 
 function nextRows(table: string): unknown[] {
@@ -58,6 +62,12 @@ vi.mock('../../jobs/aiAgentSweepScheduler', () => ({
     `sweep-occ-${scheduleId}-${occurrenceKey.replace(/[^A-Za-z0-9]/g, '')}`,
 }));
 vi.mock('../aiAgents/analysisAdmission', () => ({ admitAnalysisRun: h.admitAnalysisRun }));
+vi.mock('../aiAgents/analysisContinuation', async (orig) => ({
+  ...(await orig<typeof import('../aiAgents/analysisContinuation')>()),
+  analysisContinuationOf: h.analysisContinuationOf,
+  deriveChainHandles: h.deriveChainHandles,
+  buildAnalysisContinuationSeed: h.buildAnalysisContinuationSeed,
+}));
 vi.mock('../aiAgents/effectivePolicy', () => ({ resolveEffectiveAgentSystem: h.resolveEffectiveAgentSystem }));
 vi.mock('../aiAgents/researchProvisioning', () => ({ ensureResearchAgent: h.ensureResearchAgent }));
 vi.mock('../aiAgents/troubleshootProvisioning', () => ({
@@ -452,6 +462,142 @@ describe('launchAnalysis', () => {
       expect(paramsOf(cond)).toContain('wisp-specialist-req-1');
       expect(paramsOf(cond)).not.toContain('req-1');
     }
+  });
+});
+
+describe('analysis continuation (W03)', () => {
+  const PRIOR = '00000000-0000-4000-8000-0000000000c1';
+  const ROOT = '00000000-0000-4000-8000-0000000000c0';
+  const H1 = '00000000-0000-4000-8000-0000000000d1';
+  const H2 = '00000000-0000-4000-8000-0000000000d2';
+  const S1 = '00000000-0000-4000-8000-0000000000e1';
+  const S2 = '00000000-0000-4000-8000-0000000000e2';
+  const params = { goal: 'dig deeper', scope: 'org', continueFromRunId: PRIOR };
+  const priorOf = (o: Record<string, unknown> = {}) => ({
+    id: PRIOR, orgId: ORG, grantId: GRANT, chainRootRunId: ROOT, chainDepth: 1,
+    stagedInputs: { handles: [H1], deviceIds: [], region: 'eu' }, goal: 'first', originSessionId: S1, ...o,
+  });
+  const derived = { handles: [H1, H2], dropped: [{ handle: '00000000-0000-4000-8000-0000000000d9', reason: 'expired' }] };
+  const arm = (prior = priorOf()) => {
+    h.tables.ai_agent_runs = [[]];
+    h.analysisContinuationOf.mockResolvedValue({ ok: true, prior });
+    h.deriveChainHandles.mockResolvedValue(derived);
+    h.buildAnalysisContinuationSeed.mockResolvedValue('SEED');
+    h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-c' });
+  };
+
+  it('params accept an optional uuid continueFromRunId and nothing handle-shaped', () => {
+    expect(parseSpecialistParams('analysis', { goal: 'g', scope: 'org', continueFromRunId: PRIOR })).not.toBeNull();
+    expect(parseSpecialistParams('analysis', { goal: 'g', scope: 'org', handles: [PRIOR] })).toBeNull();
+    expect(parseSpecialistParams('analysis', { goal: 'g', scope: 'org', stagedHandles: [PRIOR] })).toBeNull();
+    expect(parseSpecialistParams('analysis', { goal: 'g', scope: 'org', continueFromRunId: 'nope' })).toBeNull();
+  });
+
+  it('validates with the grant only, then admits with derived handles and the seed', async () => {
+    arm();
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ admitted: true, runId: 'run-c' });
+    expect(h.analysisContinuationOf).toHaveBeenCalledWith({ orgId: ORG, runId: PRIOR, grantId: GRANT });
+    expect(h.deriveChainHandles).toHaveBeenCalledWith({
+      orgId: ORG, prior: priorOf(), grantId: GRANT, exportGrants: expect.objectContaining({ datasets: expect.any(Array) }),
+    });
+    const exportGrants = h.admitAnalysisRun.mock.calls[0]![0].exportGrants;
+    expect(h.deriveChainHandles.mock.calls[0]![0].exportGrants).toEqual(exportGrants);
+    expect(h.buildAnalysisContinuationSeed).toHaveBeenCalledWith({ orgId: ORG, prior: priorOf() });
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({
+      stagedHandles: [H1, H2],
+      continuation: { fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 2, seed: 'SEED', dropped: derived.dropped },
+      dedupeKey: 'wisp-specialist-req-1',
+    }));
+  });
+
+  it('a continuation of a chain root makes the prior the root at depth 1', async () => {
+    arm(priorOf({ chainRootRunId: null, chainDepth: 0 }));
+    await launchAnalysis(ctx({ params }));
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({
+      continuation: expect.objectContaining({ fromRunId: PRIOR, chainRootRunId: PRIOR, chainDepth: 1 }),
+    }));
+  });
+
+  it('thread rule: a second chat session under the same grant continues a run launched from another session, and records itself as origin', async () => {
+    arm(priorOf({ originSessionId: S1 }));
+    h.watchRunForOriginSession.mockResolvedValue(undefined);
+    const actorAuth = { wispGrant: { sessionId: S2 } } as unknown as LaunchContext['actorAuth'];
+    await expect(launchAnalysis(ctx({ params, actorAuth }))).resolves.toMatchObject({ admitted: true, runId: 'run-c' });
+    expect(h.analysisContinuationOf.mock.calls[0]![0]).not.toHaveProperty('sessionId');
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ sessionId: S2 }));
+  });
+
+  it.each([
+    'analysis_continuation_other_grant', 'analysis_continuation_not_found',
+    'analysis_continuation_wrong_kind', 'analysis_continuation_not_settled',
+  ])('maps a validation refusal %s to continuation_refused with the code as detail', async (refusal) => {
+    h.tables.ai_agent_runs = [[]];
+    h.analysisContinuationOf.mockResolvedValue({ ok: false, refusal });
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'continuation_refused', detail: refusal });
+    expect(h.deriveChainHandles).not.toHaveBeenCalled();
+    expect(h.admitAnalysisRun).not.toHaveBeenCalled();
+  });
+
+  it('two continuations of the same prior under different request ids both admit', async () => {
+    arm();
+    h.tables.ai_agent_runs = [[], []];
+    h.admitAnalysisRun.mockResolvedValueOnce({ created: true, runId: 'run-a' }).mockResolvedValueOnce({ created: true, runId: 'run-b' });
+    await expect(launchAnalysis(ctx({ params, requestId: 'req-a' }))).resolves.toEqual({ admitted: true, runId: 'run-a' });
+    await expect(launchAnalysis(ctx({ params, requestId: 'req-b' }))).resolves.toEqual({ admitted: true, runId: 'run-b' });
+    expect(h.admitAnalysisRun.mock.calls.map((c) => c[0].dedupeKey)).toEqual(['wisp-specialist-req-a', 'wisp-specialist-req-b']);
+  });
+
+  it('a prior whose root was deleted refuses admission_skipped analysis_chain_too_long without admitting', async () => {
+    arm(priorOf({ chainRootRunId: null, chainDepth: 2 }));
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'admission_skipped', detail: 'analysis_chain_too_long' });
+    expect(h.deriveChainHandles).not.toHaveBeenCalled();
+    expect(h.admitAnalysisRun).not.toHaveBeenCalled();
+  });
+
+  it('an admission refusal analysis_continuation_not_found is continuation_refused; the chain bounds stay admission_skipped', async () => {
+    arm();
+    h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_continuation_not_found' });
+    h.tables.ai_agent_runs = [[], []];
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'continuation_refused', detail: 'analysis_continuation_not_found' });
+    h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_chain_budget_exceeded' });
+    h.tables.ai_agent_runs = [[], []];
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'admission_skipped', detail: 'analysis_chain_budget_exceeded' });
+  });
+
+  it('a replayed request reattaches before validating the continuation again', async () => {
+    h.tables.ai_agent_runs = [[{ id: 'run-old' }]];
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ admitted: true, runId: 'run-old' });
+    expect(h.analysisContinuationOf).not.toHaveBeenCalled();
+  });
+
+  it('a fresh analysis carries no continuation', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
+    await launchAnalysis(ctx({ params: { goal: 'g', scope: 'org' } }));
+    expect(h.analysisContinuationOf).not.toHaveBeenCalled();
+    expect(h.admitAnalysisRun.mock.calls[0]![0]).not.toHaveProperty('continuation');
+  });
+
+  it('the precheck refuses a not-settled prior before any card, without a grant', async () => {
+    h.analysisContinuationOf.mockResolvedValue({ ok: false, refusal: 'analysis_continuation_not_settled' });
+    await expect(SPECIALIST_PREREQUISITES.analysis({ orgId: ORG, partnerId: PARTNER, params }))
+      .resolves.toEqual({ refused: 'continuation_refused', detail: 'analysis_continuation_not_settled' });
+    expect(h.analysisContinuationOf).toHaveBeenCalledWith({ orgId: ORG, runId: PRIOR });
+    expect(h.admitAnalysisRun).not.toHaveBeenCalled();
+  });
+
+  it.each(['analysis_continuation_other_grant', 'analysis_continuation_wrong_kind'])(
+    'the precheck (no grant) answers %s as not_found, so its answer never depends on a run the caller cannot see',
+    async (refusal) => {
+      h.analysisContinuationOf.mockResolvedValue({ ok: false, refusal });
+      await expect(SPECIALIST_PREREQUISITES.analysis({ orgId: ORG, partnerId: PARTNER, params }))
+        .resolves.toEqual({ refused: 'continuation_refused', detail: 'analysis_continuation_not_found' });
+    },
+  );
+
+  it('the precheck passes a continuable prior', async () => {
+    h.analysisContinuationOf.mockResolvedValue({ ok: true, prior: priorOf() });
+    await expect(SPECIALIST_PREREQUISITES.analysis({ orgId: ORG, partnerId: PARTNER, params })).resolves.toBeNull();
   });
 });
 

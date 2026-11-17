@@ -23,6 +23,18 @@ vi.mock('../artifacts/artifactService', () => ({ resolveArtifact }));
 const verifiedAnalysisSiteId = vi.hoisted(() => vi.fn());
 vi.mock('./analysisRunSite', () => ({ verifiedAnalysisSiteId }));
 
+// W03: the handle pre-check runs in a system DB context (Review Focus 4).
+const dbCtx = vi.hoisted(() => ({
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../../db', () => ({
+  db: {},
+  runOutsideDbContext: dbCtx.runOutsideDbContext,
+  withSystemDbAccessContext: dbCtx.withSystemDbAccessContext,
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+}));
+
 import { admitAnalysisRun, SKIP_REASON_REFUSALS, type AdmitAnalysisRunInput } from './analysisAdmission';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000a1';
@@ -46,7 +58,10 @@ function input(over: Partial<AdmitAnalysisRunInput> = {}): AdmitAnalysisRunInput
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resolveArtifact.mockResolvedValue({ id: HANDLE, orgId: ORG_ID });
+  resolveArtifact.mockResolvedValue({
+    id: HANDLE, orgId: ORG_ID, kind: 'output', createdByTool: 'workspace_collect',
+    expiresAt: new Date(Date.now() + 86_400_000),
+  });
   verifiedAnalysisSiteId.mockImplementation(async (_orgId: string, siteId: string | null) => siteId);
   createAndEnqueueAgentRun.mockResolvedValue({
     created: true, run: { id: RUN_ID, status: 'queued', errorCode: null },
@@ -167,6 +182,7 @@ describe('admitAnalysisRun', () => {
       'device_not_in_org', 'artifact_forbidden', 'enqueue_failed', 'model_unavailable',
       'grant_refused',
       'frame_too_large', 'site_not_in_scope', 'frame_empty',
+      'analysis_continuation_not_found', 'analysis_chain_too_long', 'analysis_chain_budget_exceeded',
     ]);
     for (const [skip, refusal] of Object.entries(SKIP_REASON_REFUSALS)) {
       expect(allowed.has(refusal), `${skip} -> ${refusal}`).toBe(true);
@@ -198,5 +214,70 @@ describe('admitAnalysisRun', () => {
     expect(createAndEnqueueAgentRun.mock.calls[0]![0]).toMatchObject({ grant });
     await admitAnalysisRun(input());
     expect(createAndEnqueueAgentRun.mock.calls[1]![0]).not.toHaveProperty('grant');
+  });
+
+  // Wisp analysis sessions W03.
+  it.each([['analysis_chain_too_long'], ['analysis_chain_budget_exceeded'], ['analysis_continuation_not_found']])(
+    'maps %s onto itself', async (skipped) => {
+      createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped });
+      await expect(admitAnalysisRun(input())).resolves.toMatchObject({ created: false, refusal: skipped });
+    });
+
+  it.each([
+    ['an expired output', { kind: 'output', createdByTool: 'workspace_collect', expiresAt: new Date(Date.now() - 1) }],
+    ['a step_stdout artifact', { kind: 'step_stdout', createdByTool: 'workspace_run', expiresAt: new Date(Date.now() + 86_400_000) }],
+    ['a non-export capture', { kind: 'input_capture', createdByTool: 'search_logs', expiresAt: new Date(Date.now() + 86_400_000) }],
+  ])('refuses %s as artifact_forbidden, without admitting', async (_label, record) => {
+    resolveArtifact.mockResolvedValueOnce({ id: HANDLE, orgId: ORG_ID, ...record });
+    await expect(admitAnalysisRun(input({ stagedHandles: [HANDLE] })))
+      .resolves.toEqual({ created: false, refusal: 'artifact_forbidden' });
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('admits an unexpired export_dataset capture', async () => {
+    resolveArtifact.mockResolvedValueOnce({
+      id: HANDLE, orgId: ORG_ID, kind: 'input_capture', createdByTool: 'export_dataset',
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await expect(admitAnalysisRun(input({ stagedHandles: [HANDLE] }))).resolves.toMatchObject({ created: true });
+  });
+
+  it('reads every handle inside a system DB context', async () => {
+    await admitAnalysisRun(input({ stagedHandles: [HANDLE] }));
+    expect(dbCtx.runOutsideDbContext).toHaveBeenCalled();
+    expect(dbCtx.withSystemDbAccessContext).toHaveBeenCalled();
+    expect(resolveArtifact.mock.invocationCallOrder[0])
+      .toBeGreaterThan(dbCtx.withSystemDbAccessContext.mock.invocationCallOrder[0]!);
+    expect(resolveArtifact).toHaveBeenCalledWith(HANDLE, { orgId: ORG_ID });
+  });
+
+  it('writes trigger_ref.continuation and forwards the lineage to admission', async () => {
+    const PRIOR = '00000000-0000-4000-8000-0000000000f1';
+    const ROOT = '00000000-0000-4000-8000-0000000000f0';
+    const dropped = [{ handle: '00000000-0000-4000-8000-0000000000e1', reason: 'expired' as const }];
+    await admitAnalysisRun(input({ continuation: { fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 1, seed: 'S', dropped } }));
+    const call = createAndEnqueueAgentRun.mock.calls[0]![0] as any;
+    expect(call.triggerRef.continuation).toEqual({ fromRunId: PRIOR, seed: 'S', dropped });
+    expect(call.triggerRef.originSessionId).toBe('chat-1');
+    expect(call.analysis.continuation).toEqual({ fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 1 });
+  });
+
+  it('a continuation records no visibility site, without asking the site check', async () => {
+    const SITE = '00000000-0000-4000-8000-0000000000b1';
+    await admitAnalysisRun(input({
+      siteId: SITE,
+      continuation: { fromRunId: '00000000-0000-4000-8000-0000000000f1', chainRootRunId: '00000000-0000-4000-8000-0000000000f0', chainDepth: 1, seed: 'S', dropped: [] },
+    }));
+    expect(verifiedAnalysisSiteId).not.toHaveBeenCalled();
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).triggerRef.siteId).toBeNull();
+    // The frame still gets the requested site.
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as any).analysis.siteId).toBe(SITE);
+  });
+
+  it('a fresh run carries no continuation key on either side', async () => {
+    await admitAnalysisRun(input());
+    const call = createAndEnqueueAgentRun.mock.calls[0]![0] as any;
+    expect(call.triggerRef).not.toHaveProperty('continuation');
+    expect(call.analysis).not.toHaveProperty('continuation');
   });
 });

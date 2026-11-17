@@ -11,18 +11,18 @@ import {
   type AlertVerdictSuggestedAction,
 } from './aiAgents';
 
-describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v17, analysis frame-device cap — W02 analysis sessions)', () => {
-  it('is the literal 17', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(17);
+describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v18, analysis chain limits — W02 analysis sessions)', () => {
+  it('is the literal 18', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(18);
   });
 
-  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-17', () => {
+  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-18', () => {
     // Type-level assertion: this only compiles if `schemaVersion` is widened
-    // to `1 | … | 17`. If a future bump forgets to widen the union, `tsc`
+    // to `1 | … | 18`. If a future bump forgets to widen the union, `tsc`
     // fails this assignment, not a runtime check.
     const versions: Array<AiAgentPolicySnapshot['schemaVersion']> =
-      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
   });
 });
 
@@ -88,9 +88,15 @@ describe('AI_AGENT_RUN_PROFILES (analysis profile, execution plane W04 #5715; as
 });
 
 describe('analysis profile limits (execution plane W04, spec §5.4)', () => {
-  it('W02 analysis sessions: the frame cap defaults to 1000 and the snapshot is v17', () => {
+  it('carries the chain bounds (Wisp analysis sessions W03)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainDepth).toBe(8);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainRuns).toBe(12);
+    expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxChainBudgetCents).toBe(600);
+  });
+
+  it('W02 analysis sessions: the frame cap defaults to 1000 and the snapshot is no longer v17', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.analysisMaxFrameDevices).toBe(1000);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(17);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(18);
   });
 
   it('carries the spec §5.4 defaults', () => {

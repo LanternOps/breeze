@@ -62,6 +62,8 @@ export interface ArtifactRecord {
   tailPreview: string;
   sourceDeviceId: string | null;
   createdByTool: string;
+  /** `export_dataset` dataset name; null for every other producer. */
+  dataset: string | null;
   expiresAt: Date;
   createdAt: Date;
 }
@@ -78,6 +80,8 @@ export interface CreateArtifactInput {
   maxBytes: number;
   sourceDeviceId?: string | null;
   createdByTool: string;
+  /** Set by `export_dataset` only; defaults to NULL. */
+  dataset?: string | null;
   region: BlobRegion;
   ttlDays?: number;
 }
@@ -97,6 +101,7 @@ const ARTIFACT_COLUMNS = {
   tailPreview: aiRunArtifacts.tailPreview,
   sourceDeviceId: aiRunArtifacts.sourceDeviceId,
   createdByTool: aiRunArtifacts.createdByTool,
+  dataset: aiRunArtifacts.dataset,
   expiresAt: aiRunArtifacts.expiresAt,
   createdAt: aiRunArtifacts.createdAt,
 } as const;
@@ -214,6 +219,7 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
         tailPreview,
         sourceDeviceId: input.sourceDeviceId ?? null,
         createdByTool: input.createdByTool.slice(0, 128),
+        dataset: input.dataset ?? null,
         expiresAt: new Date(Date.now() + ttlDays * 86_400_000),
       })
       .returning(ARTIFACT_COLUMNS);

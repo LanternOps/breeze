@@ -81,4 +81,48 @@ describe('CommunicationIntegrations', () => {
     expect(screen.queryByText('Not connected')).not.toBeInTheDocument();
     expect(screen.queryByText(/Pending connection/)).not.toBeInTheDocument();
   });
+
+  // #12054: the test button reported "queued" for a dispatch that never
+  // happened, and replaced the API's failure reason with a generic string.
+  async function clickDiscordTest() {
+    render(<CommunicationIntegrations />);
+    await screen.findByLabelText('Webhook URL');
+    const enabledToggles = screen.getAllByLabelText('Enabled');
+    fireEvent.click(enabledToggles[enabledToggles.length - 1]);
+    expect(screen.getByLabelText('Webhook URL')).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Webhook URL'), {
+      target: { value: 'https://discord.com/api/webhooks/1/token' },
+    });
+    const testButtons = screen.getAllByRole('button', { name: 'Test notification' });
+    const discordTest = testButtons[testButtons.length - 1];
+    expect(discordTest).toBeEnabled();
+    fireEvent.click(discordTest);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+  }
+
+  it('reports a delivered Discord test as sent, not queued', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({ success: true, message: 'Discord test notification sent.' }),
+    );
+
+    await clickDiscordTest();
+
+    expect(await screen.findByText('Discord test notification sent.')).toBeInTheDocument();
+    expect(screen.queryByText(/queued/i)).not.toBeInTheDocument();
+    const [endpoint, init] = fetchWithAuthMock.mock.calls[1]!;
+    expect(endpoint).toBe('/integrations/discord');
+    expect(JSON.parse(String(init?.body))).toMatchObject({ test: true });
+  });
+
+  it('shows the API reason when the Discord test fails', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({ success: false, error: 'Discord rejected the webhook (HTTP 404)' }, 400),
+    );
+
+    await clickDiscordTest();
+
+    expect(await screen.findByText('Discord rejected the webhook (HTTP 404)')).toBeInTheDocument();
+  });
 });

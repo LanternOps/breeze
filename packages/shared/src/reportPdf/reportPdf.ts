@@ -393,11 +393,39 @@ function drawTitleBlock(doc: jsPDF, title: string, subtitle: string, meta: strin
   return y + 4;
 }
 
-function scoreBand(score: number): { label: string; color: RGB } {
+type ScoreBand = { label: string; color: RGB };
+
+// Both passing bands use the status green: the brand primary is not a status
+// colour, and a dark-blue "GOOD" chip read as a fifth status (#12044).
+function scoreBand(score: number): ScoreBand {
   if (score >= 80) return { label: 'STRONG', color: C.success };
-  if (score >= 60) return { label: 'GOOD', color: C.primary };
+  if (score >= 60) return { label: 'GOOD', color: C.success };
   if (score >= 40) return { label: 'FAIR', color: C.warning };
   return { label: 'AT RISK', color: C.danger };
+}
+
+/** One-line meaning of the posture bands, printed under the scorecard. */
+const POSTURE_BAND_KEY =
+  'Bands: Strong 80+, Good 60\u201379, Fair 40\u201359, At risk under 40; capped at Fair while critical patches or vulnerabilities are open or a device is unprotected.';
+
+/**
+ * The posture cover's band. The score averages per-device factors, so a fleet
+ * can score in the passing range while carrying many critical vulnerabilities;
+ * a passing band beside open criticals or an unprotected device contradicts the
+ * page, so the band is capped at FAIR until they are cleared. It never raises a
+ * lower band.
+ * Exported for tests.
+ */
+export function postureScoreBand(
+  score: number,
+  risk: { criticalFindings: number; unprotected: number },
+): ScoreBand {
+  const band = scoreBand(score);
+  const passing = band.label === 'STRONG' || band.label === 'GOOD';
+  if (passing && (risk.criticalFindings > 0 || risk.unprotected > 0)) {
+    return { label: 'FAIR', color: C.warning };
+  }
+  return band;
 }
 
 type ScoreStat = { label: string; value: string; tone: RGB };
@@ -409,11 +437,12 @@ function drawScorecard(
   stats: ScoreStat[],
   top: number,
   trend?: { delta: number; sinceLabel: string } | null,
+  bandOverride?: ScoreBand,
 ): number {
   const x = PAGE.mx;
   const w = PAGE.w - PAGE.mx * 2; // full content width — no dead right half
   const h = 32;
-  const band = scoreBand(score);
+  const band = bandOverride ?? scoreBand(score);
 
   set.fill(doc, C.panel);
   doc.roundedRect(x, top, w, h, 2.5, 2.5, 'F');
@@ -499,7 +528,16 @@ function drawScorecard(
       set.text(doc, C.muted);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
-      doc.text(st.label, cx, top + 23, { align: 'center' });
+      // A long label (e.g. "AV protected · 1 not assessed") wraps inside its
+      // cell instead of running into the neighbouring stat; at most two lines
+      // fit above the panel edge, so labels are kept short enough for that.
+      // Prefer breaking at the " · " qualifier over mid-phrase.
+      const labelLines = doc.getTextWidth(st.label) <= cellW - 3
+        ? [st.label]
+        : st.label.split(' · ').flatMap((part) => doc.splitTextToSize(part, cellW - 3) as string[]);
+      labelLines.slice(0, 2).forEach((line, li) => {
+        doc.text(line, cx, top + 23 + li * 3.2, { align: 'center' });
+      });
       if (i > 0) {
         set.draw(doc, C.rule);
         doc.setLineWidth(0.15);
@@ -614,7 +652,7 @@ function drawLegend(doc: jsPDF, y: number): void {
     [C.warning, 'Needs attention'],
     [C.danger, 'At risk'],
     [C.faint, 'Not assessed'],
-    [null, 'Informational'], // hollow ring — matches neutral metric dots
+    [null, 'Not scored'], // hollow ring — matches neutral metric dots
   ];
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
@@ -693,7 +731,7 @@ export function buildPostureBackupMetric(controls: PostureControls, products: Po
     ? `${yesNo(controls.backupConfigured)}${controls.backupConfigured && controls.backupEncrypted ? ' (encrypted)' : ''}`
     : controls.backupConfigured
       ? 'Optional; configured'
-      : 'Not required';
+      : 'Not in scope';
   return {
     label: 'Backup',
     value: backupValue,
@@ -702,15 +740,19 @@ export function buildPostureBackupMetric(controls: PostureControls, products: Po
 }
 
 /**
- * Ruling 23: a coverage % is over ASSESSED devices, so it must not take a
- * pass colour when the not-assessed share exceeds 20% (mirrors the trust page
- * coverage floor). Every unknown count here is deviceCount − assessed, so
- * unknown / (unknown + assessed) = unknown / deviceCount.
+ * Colour for a control whose % is over ASSESSED devices while `unknown` in-scope
+ * devices were not assessed. One rule for every such row (#12044), replacing
+ * the 20% share floor (Ruling 23), which painted 100%-with-1-unknown green,
+ * 100%-with-2-unknown grey and 83%-against-a-10%-target grey on one page:
+ *  - nothing assessed (value null)        → grey, "Not assessed";
+ *  - a measured shortfall (warn / bad)    → keeps its colour, whatever the share;
+ *  - a pass with any device not assessed  → amber, "Needs attention" — green is
+ *    reserved for a control met across every in-scope device.
+ * Stricter than Ruling 23: a pass never shows green beside unassessed devices.
  */
-const NOT_ASSESSED_SHARE_MAX = 0.2;
-function coverageShareStatus(base: MetricStatus, unknown: number | undefined, deviceCount: number): MetricStatus {
-  if (base === 'na' || unknown == null || unknown <= 0 || deviceCount <= 0) return base;
-  return unknown / deviceCount > NOT_ASSESSED_SHARE_MAX ? 'na' : base;
+function coverageShareStatus(base: MetricStatus, unknown: number | undefined): MetricStatus {
+  if (base !== 'good' || unknown == null || unknown <= 0) return base;
+  return 'warn';
 }
 
 /** The posture cover's control-coverage grid, column-major (left: device
@@ -718,31 +760,56 @@ function coverageShareStatus(base: MetricStatus, unknown: number | undefined, de
 export function buildPostureCoverageMetrics(summary: PostureSummary): Metric[] {
   const c = summary.controls ?? {};
   const deviceCount = summary.deviceCount ?? 0;
+  const pctRow = (
+    label: string,
+    pct: number | null | undefined,
+    unknown: number | undefined,
+    target: string,
+    good = 90,
+    warn = 60,
+  ): Metric => ({
+    label,
+    value: withNotAssessed(pctStr(pct), unknown),
+    status: coverageShareStatus(pctStatus(pct, good, warn), unknown),
+    target,
+  });
+  const { unprotected, notAssessed: avUnknown } = postureProtectionCounts(summary);
   const protectionMetrics: Metric[] = [
-    { label: 'Managed EDR coverage', value: withNotAssessed(pctStr(c.edrCoveragePct), c.edrUnknownCount), status: coverageShareStatus(pctStatus(c.edrCoveragePct), c.edrUnknownCount, deviceCount), target: '>=90%' },
-    { label: 'AV + real-time protection', value: withNotAssessed(pctStr(c.anyAvCoveragePct), c.anyAvUnknownCount), status: coverageShareStatus(pctStatus(c.anyAvCoveragePct), c.anyAvUnknownCount, deviceCount), target: '>=95%' },
+    pctRow('EDR coverage', c.edrCoveragePct, c.edrUnknownCount, '90%+'),
+    pctRow('AV + real-time protection', c.anyAvCoveragePct, c.anyAvUnknownCount, '95%+'),
     {
       label: 'Unprotected devices',
-      value: String(c.unprotectedCount ?? 0),
-      status: (c.unprotectedCount ?? 0) > 0 ? 'bad' : 'good',
+      // Devices with no protection evidence are not assessed, never counted
+      // here as unprotected; say how many there are so 0 isn't read as all-clear.
+      value: withNotAssessed(String(unprotected), avUnknown),
+      status: unprotected > 0 ? 'bad' : avUnknown > 0 ? 'warn' : 'good',
       target: 'none', // "0" beside a value of 0 read as a duplicated numeral
     },
-    { label: 'AV definitions current', value: pctStr(c.avDefinitionsCurrentPct), status: pctStatus(c.avDefinitionsCurrentPct), target: '>=95%' },
-    { label: 'Disk encryption', value: withNotAssessed(pctStr(c.encryptionPct), c.encryptionUnknownCount), status: coverageShareStatus(pctStatus(c.encryptionPct), c.encryptionUnknownCount, deviceCount), target: '>=90%' },
-    { label: 'Patch current (no critical pending)', value: withNotAssessed(pctStr(c.patchCurrentPct), c.patchUnknownCount), status: coverageShareStatus(pctStatus(c.patchCurrentPct, 90, 70), c.patchUnknownCount, deviceCount), target: '>=90%' },
+    { label: 'AV definitions current', value: pctStr(c.avDefinitionsCurrentPct), status: pctStatus(c.avDefinitionsCurrentPct), target: '95%+' },
+    pctRow('Disk encryption', c.encryptionPct, c.encryptionUnknownCount, '90%+'),
+    pctRow('Patch current (no critical pending)', c.patchCurrentPct, c.patchUnknownCount, '90%+', 90, 70),
   ];
   if (c.cisIncluded !== false) {
     const cisVal =
       c.cisAvgPassRate == null
         ? 'Not assessed'
         : `${c.cisAvgPassRate}% (${c.cisAssessedCount ?? 0}/${deviceCount})`;
-    protectionMetrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '>=90%' });
+    protectionMetrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '90%+' });
   }
   const backupMetric = buildPostureBackupMetric(c, summary.securityProducts ?? []);
+  // Exposure is a "lower is better" %, so it is graded on its complement.
+  const adminExposure = c.localAdminExposurePct;
   const accessMetrics: Metric[] = [
-    { label: 'Host firewall', value: withNotAssessed(pctStr(c.firewallPct), c.firewallUnknownCount), status: coverageShareStatus(pctStatus(c.firewallPct), c.firewallUnknownCount, deviceCount), target: '>=95%' },
-    { label: 'Password complexity', value: withNotAssessed(pctStr(c.passwordComplexityPct), c.passwordUnknownCount), status: coverageShareStatus(pctStatus(c.passwordComplexityPct), c.passwordUnknownCount, deviceCount), target: '>=90%' },
-    { label: 'Local-admin exposure', value: withNotAssessed(pctStr(c.localAdminExposurePct), c.localAdminUnknownCount), status: coverageShareStatus(pctStatus(c.localAdminExposurePct == null ? null : 100 - c.localAdminExposurePct), c.localAdminUnknownCount, deviceCount), target: '<=10%' },
+    pctRow('Host firewall', c.firewallPct, c.firewallUnknownCount, '95%+'),
+    // Minimum length + account lockout (postureEvidence passwordComplexityResult),
+    // not character-class complexity, so it is not labelled "complexity".
+    pctRow('Password policy', c.passwordComplexityPct, c.passwordUnknownCount, '90%+'),
+    {
+      label: 'Local-admin exposure',
+      value: withNotAssessed(pctStr(adminExposure), c.localAdminUnknownCount),
+      status: coverageShareStatus(pctStatus(adminExposure == null ? null : 100 - adminExposure), c.localAdminUnknownCount),
+      target: 'max 10%',
+    },
     { label: 'Identity provider connected', value: yesNo(c.identityProviderConnected), status: boolStatus(c.identityProviderConnected) },
     backupMetric,
     { label: 'DNS filtering active', value: yesNo(c.dnsFilteringActive), status: boolStatus(c.dnsFilteringActive) },
@@ -750,36 +817,110 @@ export function buildPostureCoverageMetrics(summary: PostureSummary): Metric[] {
   return [...protectionMetrics, ...accessMetrics];
 }
 
-type PostureAggregates = { criticalCount: number; unprotectedCount: number };
+type PostureAggregates = {
+  criticalPatchCount: number;
+  criticalVulnCount: number;
+  /** Row-derived fallback for legacy snapshots without controls.unprotectedCount. */
+  unprotectedCount: number;
+};
+
+/**
+ * Protection figures the hero, grid and recommendations share, so they agree:
+ * a device with no protection evidence is NOT ASSESSED, never unprotected
+ * (#12044), and "protected" is counted over the assessed devices only.
+ * A legacy snapshot (no `avAssessedCount`) folded unassessed devices into
+ * `unprotectedCount`; it keeps its original figures (everything over the full
+ * device count, nothing disclosed as not assessed) rather than subtracting the
+ * unassessed devices twice. `legacyUnprotected` is the row-derived fallback
+ * for snapshots that predate `unprotectedCount` itself.
+ */
+function postureProtectionCounts(summary: PostureSummary, legacyUnprotected = 0) {
+  const c = summary.controls ?? {};
+  const deviceCount = summary.deviceCount ?? 0;
+  if (c.avAssessedCount == null) {
+    const unprotected = c.unprotectedCount ?? legacyUnprotected;
+    return { unprotected, notAssessed: 0, assessed: deviceCount, protectedCount: Math.max(0, deviceCount - unprotected) };
+  }
+  const assessed = Math.min(deviceCount, Math.max(0, c.avAssessedCount));
+  const unprotected = Math.min(assessed, c.unprotectedCount ?? 0);
+  return { unprotected, notAssessed: deviceCount - assessed, assessed, protectedCount: assessed - unprotected };
+}
+
+// Page 1 keeps clear of the acronym glossary pinned above the footer rule;
+// continuation pages have no glossary.
+const POSTURE_COVER_BOTTOM = PAGE.footY - 9;
+const POSTURE_CONTINUED_BOTTOM = PAGE.footY - 5;
+// Room the per-device table needs to start on a partly used page: section
+// heading, the two-tier column header and a few device rows.
+const POSTURE_TABLE_MIN_SPACE = 45;
+const POSTURE_REC_ROW_HEIGHT = 5.2;
+
+/**
+ * Cursor for the posture content that follows the fixed cover sections
+ * (recommendations, product inventory, device table). Content flows onto
+ * continuation pages instead of being clipped or given a near-empty page of
+ * its own (#12043). `chromePending` marks a page whose header band and footer
+ * are not drawn yet.
+ */
+type PostureFlow = {
+  doc: jsPDF;
+  opts: BuildOpts;
+  y: number;
+  bottom: number;
+  onCover: boolean;
+  chromePending: boolean;
+};
+
+function finishPosturePage(flow: PostureFlow): void {
+  if (!flow.chromePending) return;
+  drawHeaderBand(flow.doc, flow.opts);
+  drawFooter(flow.doc, flow.opts);
+  flow.chromePending = false;
+}
+
+function newPostureContinuationPage(flow: PostureFlow): void {
+  finishPosturePage(flow);
+  flow.doc.addPage('a4', 'landscape');
+  flow.y = drawTitleBlock(flow.doc, 'Security & Compliance Posture', '', 'Continued from the posture summary', PAGE.bandH + 8);
+  flow.bottom = POSTURE_CONTINUED_BOTTOM;
+  flow.onCover = false;
+  flow.chromePending = true;
+}
 
 function renderPostureCover(
   doc: jsPDF,
   summary: PostureSummary,
   opts: BuildOpts,
   agg: PostureAggregates,
-): PostureProduct[] {
-  const c = summary.controls ?? {};
+): PostureFlow {
   const p = summary.privilegedAccess ?? {};
   const deviceCount = summary.deviceCount ?? 0;
+  const plural = (n: number) => (n === 1 ? '' : 's');
 
-  let y = drawTitleBlock(
-    doc,
-    'Security & Compliance Posture',
-    summary.org?.name ?? '',
-    `Generated ${opts.generatedAt}   ·   ${deviceCount} device${deviceCount === 1 ? '' : 's'} assessed`,
-    PAGE.bandH + 8,
-  );
+  // "in scope", not "assessed": many controls leave some of these devices
+  // unassessed. A site filter can leave managed devices out; say how many, so
+  // the count reconciles with the org's other reports (#12044).
+  const excluded = summary.excludedBySiteFilterCount ?? 0;
+  const meta =
+    `Generated ${opts.generatedAt}   ·   ${deviceCount} device${plural(deviceCount)} in scope` +
+    (excluded > 0 ? `   ·   ${excluded} managed device${plural(excluded)} at other sites not included` : '');
+  let y = drawTitleBlock(doc, 'Security & Compliance Posture', summary.org?.name ?? '', meta, PAGE.bandH + 8);
 
   if (summary.postureScore != null) {
     // The meter must be captioned with what it plots (the composite score) —
     // captioning it with the AV-coverage % made the bar read as coverage.
     const caption = 'Overall posture score across assessed controls';
-    const unprotected = c.unprotectedCount ?? agg.unprotectedCount;
-    const protectedCount = Math.max(0, deviceCount - unprotected);
+    const prot = postureProtectionCounts(summary, agg.unprotectedCount);
+    // Critical patches and critical vulnerabilities are separate figures: one
+    // combined tile read as contradicting the "no critical pending" patch row.
     const stats: ScoreStat[] = [
-      { label: 'AV protected', value: `${protectedCount}/${deviceCount}`, tone: unprotected > 0 ? C.warning : C.success },
-      { label: 'Critical patches/vulns', value: String(agg.criticalCount), tone: agg.criticalCount > 0 ? C.danger : C.success },
-      { label: 'Unprotected', value: String(unprotected), tone: unprotected > 0 ? C.danger : C.success },
+      {
+        label: prot.notAssessed > 0 ? `AV protected · ${prot.notAssessed} not assessed` : 'AV protected',
+        value: `${prot.protectedCount}/${prot.assessed}`,
+        tone: prot.unprotected > 0 || prot.notAssessed > 0 ? C.warning : C.success,
+      },
+      { label: 'Critical patches', value: String(agg.criticalPatchCount), tone: agg.criticalPatchCount > 0 ? C.danger : C.success },
+      { label: 'Critical vulnerabilities', value: String(agg.criticalVulnCount), tone: agg.criticalVulnCount > 0 ? C.danger : C.success },
     ];
     y = drawScorecard(
       doc,
@@ -788,8 +929,12 @@ function renderPostureCover(
       stats,
       y,
       trendFor(opts, summary.postureScore, (s) => (s as { postureScore?: unknown }).postureScore),
+      postureScoreBand(summary.postureScore, {
+        criticalFindings: agg.criticalPatchCount + agg.criticalVulnCount,
+        unprotected: prot.unprotected,
+      }),
     );
-    // Methodology in one muted line, so "79 — GOOD" is auditable rather than oracular.
+    // Methodology and band meaning in muted lines, so "64 — FAIR" is auditable rather than oracular.
     set.text(doc, C.faint);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7);
@@ -798,7 +943,8 @@ function renderPostureCover(
       PAGE.mx,
       y - 2.5,
     );
-    y += 1.5;
+    doc.text(POSTURE_BAND_KEY, PAGE.mx, y + 0.7);
+    y += 4.7;
   }
 
   const ccHeadingY = y + 2;
@@ -822,43 +968,8 @@ function renderPostureCover(
   ];
   y = drawMetricGrid(doc, pamMetrics, y);
 
-  // Recommendations come before the product inventory: the reader's next step
-  // matters more than the tooling list. Reserve one product line of space so
-  // the inventory is never squeezed off the page entirely.
-  const products = summary.securityProducts ?? [];
-  const productReserve = products.length > 0 ? 13.5 : 0;
-  y = drawRecommendedActions(doc, summary, agg, y + 2.5, productReserve);
-
-  let overflow: PostureProduct[] = [];
-  if (products.length > 0) {
-    y = drawSectionHeading(doc, 'Security products in use', y + 2.5);
-    const bottomY = PAGE.footY - 9;
-    const fullCapacity = Math.max(0, Math.floor((bottomY - y) / POSTURE_PRODUCT_ROW_HEIGHT) + 1);
-    const needsContinuation = products.length > fullCapacity;
-    // When products overflow, leave a full line below the rendered rows for
-    // the explicit continuation notice instead of silently clipping a name.
-    const coverCapacity = needsContinuation
-      ? Math.max(0, Math.floor((bottomY - POSTURE_PRODUCT_CONTINUATION_SPACE - y) / POSTURE_PRODUCT_ROW_HEIGHT))
-      : products.length;
-    const coverProducts = products.slice(0, coverCapacity);
-    for (const product of coverProducts) {
-      y = drawPostureProductRow(doc, product, y);
-    }
-    overflow = products.slice(coverProducts.length);
-    if (overflow.length > 0) {
-      set.text(doc, C.muted);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(7.5);
-      doc.text(
-        `+ ${overflow.length} product${overflow.length === 1 ? '' : 's'} continued on the next page`,
-        PAGE.mx + 5,
-        y,
-      );
-    }
-  }
-
   // Plain-language key for the acronyms a non-technical client will hit above,
-  // pinned just over the footer rule.
+  // pinned just over the footer rule of page 1.
   set.text(doc, C.faint);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
@@ -867,13 +978,20 @@ function renderPostureCover(
     PAGE.mx,
     PAGE.footY - 2,
   );
-  return overflow;
+
+  // Recommendations come before the product inventory: the reader's next step
+  // matters more than the tooling list. Both flow onto a continuation page
+  // rather than being truncated (#12043).
+  const flow: PostureFlow = { doc, opts, y, bottom: POSTURE_COVER_BOTTOM, onCover: true, chromePending: true };
+  drawRecommendedActions(flow, buildRecommendations(summary, agg));
+  drawPostureProducts(flow, summary.securityProducts ?? []);
+  return flow;
 }
 
 // ----------------------------------------------------------------------------
 // Recommended actions: plain-language next steps derived from failing controls.
-// Bridges the gap between "score 79 GOOD" and the red rows beneath it — the
-// reader leaves with a plan instead of a contradiction.
+// Bridges the gap between the score and the red rows beneath it — the reader
+// leaves with a plan instead of a contradiction.
 // ----------------------------------------------------------------------------
 
 type Recommendation = { severity: 'bad' | 'warn'; text: string };
@@ -882,12 +1000,19 @@ function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): 
   const c = summary.controls ?? {};
   const p = summary.privilegedAccess ?? {};
   const recs: Recommendation[] = [];
-  const unprotected = c.unprotectedCount ?? agg.unprotectedCount;
-  if (unprotected > 0) {
-    recs.push({ severity: 'bad', text: `Deploy protection to the ${unprotected} unprotected device${unprotected === 1 ? '' : 's'} — these are the fleet's most exposed endpoints.` });
+  const { unprotected, notAssessed } = postureProtectionCounts(summary, agg.unprotectedCount);
+  if (unprotected === 1) {
+    recs.push({ severity: 'bad', text: 'Deploy protection to the unprotected device — it is the fleet\'s most exposed endpoint.' });
+  } else if (unprotected > 1) {
+    recs.push({ severity: 'bad', text: `Deploy protection to the ${unprotected} unprotected devices — these are the fleet's most exposed endpoints.` });
   }
-  if (agg.criticalCount > 0) {
-    recs.push({ severity: 'bad', text: `Remediate ${agg.criticalCount} critical patch/vulnerability finding${agg.criticalCount === 1 ? '' : 's'} (see per-device detail).` });
+  const vulns = agg.criticalVulnCount;
+  if (vulns > 0) {
+    recs.push({ severity: 'bad', text: `Remediate ${vulns} critical vulnerabilit${vulns === 1 ? 'y' : 'ies'} (see per-device detail).` });
+  }
+  const patches = agg.criticalPatchCount;
+  if (patches > 0) {
+    recs.push({ severity: 'bad', text: `Install ${patches} pending critical patch${patches === 1 ? '' : 'es'} (see per-device detail).` });
   }
   if (c.backupRequired !== false && c.backupConfigured === false) {
     recs.push({ severity: 'bad', text: 'Configure backups — no backup solution is currently detected for this organization.' });
@@ -896,7 +1021,7 @@ function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): 
     recs.push({ severity: 'bad', text: 'Enforce MFA step-up so privileged actions require a second factor.' });
   }
   if (c.localAdminExposurePct != null && c.localAdminExposurePct > 10) {
-    recs.push({ severity: 'bad', text: `Reduce local administrator rights — ${c.localAdminExposurePct}% of devices exceed the 10% exposure target.` });
+    recs.push({ severity: 'bad', text: `Reduce local administrator rights — ${c.localAdminExposurePct}% of assessed devices have more administrators than allowed (target: 10% or fewer).` });
   }
   if (c.identityProviderConnected === false) {
     recs.push({ severity: 'warn', text: 'Connect an identity provider to centralize account and access control.' });
@@ -908,7 +1033,7 @@ function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): 
     recs.push({ severity: 'warn', text: `Encrypt remaining disks — ${c.encryptionPct}% of devices are encrypted against a 90% target.` });
   }
   if (c.edrCoveragePct != null && c.edrCoveragePct < 90) {
-    recs.push({ severity: 'warn', text: `Extend managed EDR coverage (currently ${c.edrCoveragePct}%, target 90%).` });
+    recs.push({ severity: 'warn', text: `Extend EDR coverage (currently ${c.edrCoveragePct}%, target 90%).` });
   }
   if (c.patchCurrentPct != null && c.patchCurrentPct < 90) {
     recs.push({ severity: 'warn', text: `Bring pending patches current — ${c.patchCurrentPct}% of devices are patch-current against a 90% target.` });
@@ -919,50 +1044,89 @@ function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): 
   if (c.firewallPct != null && c.firewallPct < 95) {
     recs.push({ severity: 'warn', text: `Enable the host firewall on remaining devices (currently ${c.firewallPct}%).` });
   }
+  if (c.passwordComplexityPct != null && c.passwordComplexityPct < 90) {
+    recs.push({ severity: 'warn', text: `Set a minimum password length and account lockout on remaining devices (currently ${c.passwordComplexityPct}% meet the policy).` });
+  }
   if (p.uacInterceptionEnabled === false) {
     recs.push({ severity: 'warn', text: 'Enable UAC interception so admin elevations are governed and auditable.' });
+  }
+  // A device with no protection evidence is not assessed, not a failure — but
+  // it still needs a next step, or the gap stays invisible.
+  if (notAssessed > 0) {
+    recs.push({
+      severity: 'warn',
+      text: notAssessed === 1
+        ? 'Restore security reporting on the device that has not reported protection status, so it can be assessed.'
+        : `Restore security reporting on the ${notAssessed} devices that have not reported protection status, so they can be assessed.`,
+    });
   }
   return [...recs.filter((r) => r.severity === 'bad'), ...recs.filter((r) => r.severity === 'warn')];
 }
 
 /**
- * Numbered, priority-ordered next steps; renders only what fits above the
- * glossary/footer. Returns the y after the drawn content (or `top` if skipped).
+ * Numbered, priority-ordered next steps. Every recommendation is drawn: what
+ * does not fit on the current page continues on the next one, under a
+ * "(continued)" heading — a heading never ends a page on its own.
  */
-function drawRecommendedActions(
-  doc: jsPDF,
-  summary: PostureSummary,
-  agg: PostureAggregates,
-  top: number,
-  reservedBelow = 0,
-): number {
-  const all = buildRecommendations(summary, agg);
-  if (all.length === 0) return top;
-  const rowH = 5.2;
-  // Keep clear of the glossary line above the footer, plus any space the
-  // caller has reserved for content that must follow this section.
-  const maxY = PAGE.footY - 9 - reservedBelow;
-  if (top + 5 + rowH > maxY) return top; // no room for even one item — skip cleanly
-  const fit = Math.min(all.length, 5, Math.floor((maxY - top - 5) / rowH));
-  let y = drawSectionHeading(doc, 'Recommended actions', top);
-  const recs = all.slice(0, fit);
-  doc.setFontSize(9);
+function drawRecommendedActions(flow: PostureFlow, recs: Recommendation[]): void {
+  if (recs.length === 0) return;
+  const { doc } = flow;
+  const headingSpace = 2.5 + 5;
+  if (flow.y + headingSpace + POSTURE_REC_ROW_HEIGHT > flow.bottom) newPostureContinuationPage(flow);
+  flow.y = drawSectionHeading(doc, 'Recommended actions', flow.y + 2.5);
   recs.forEach((rec, i) => {
+    if (flow.y > flow.bottom) {
+      newPostureContinuationPage(flow);
+      flow.y = drawSectionHeading(doc, 'Recommended actions (continued)', flow.y + 2.5);
+    }
+    doc.setFontSize(9);
     set.text(doc, rec.severity === 'bad' ? C.danger : C.warning);
     doc.setFont('helvetica', 'bold');
-    doc.text(`${i + 1}.`, PAGE.mx + 1, y);
+    doc.text(`${i + 1}.`, PAGE.mx + 1, flow.y);
     set.text(doc, C.ink);
     doc.setFont('helvetica', 'normal');
-    doc.text(rec.text, PAGE.mx + 6.5, y);
-    y += rowH;
+    doc.text(rec.text, PAGE.mx + 6.5, flow.y);
+    flow.y += POSTURE_REC_ROW_HEIGHT;
   });
-  if (all.length > recs.length) {
-    set.text(doc, C.muted);
-    doc.setFontSize(7.5);
-    doc.text(`+ ${all.length - recs.length} further recommendation${all.length - recs.length === 1 ? '' : 's'} available in Breeze`, PAGE.mx + 6.5, y);
-    y += 4;
+}
+
+/**
+ * The security-product inventory. The whole section moves to the next page
+ * when its heading, one product row and the continuation-notice line don't fit
+ * (#12043), so the heading never stands alone; a split list says how many rows
+ * continue.
+ */
+function drawPostureProducts(flow: PostureFlow, products: PostureProduct[]): void {
+  if (products.length === 0) return;
+  const { doc } = flow;
+  const headingSpace = 2.5 + 5;
+  if (flow.y + headingSpace + POSTURE_PRODUCT_ROW_HEIGHT + POSTURE_PRODUCT_CONTINUATION_SPACE > flow.bottom) {
+    newPostureContinuationPage(flow);
   }
-  return y;
+  flow.y = drawSectionHeading(doc, 'Security products in use', flow.y + 2.5);
+  let next = 0;
+  while (next < products.length) {
+    const remaining = products.length - next;
+    // Rows whose baseline stays above the bottom; when the rest won't all fit,
+    // leave a line for the continuation notice instead of clipping a name.
+    const fullCapacity = Math.floor((flow.bottom - flow.y) / POSTURE_PRODUCT_ROW_HEIGHT) + 1;
+    const take = remaining <= fullCapacity
+      ? remaining
+      : Math.max(1, Math.floor((flow.bottom - POSTURE_PRODUCT_CONTINUATION_SPACE - flow.y) / POSTURE_PRODUCT_ROW_HEIGHT));
+    for (const product of products.slice(next, next + take)) {
+      flow.y = drawPostureProductRow(doc, product, flow.y);
+    }
+    next += take;
+    if (next < products.length) {
+      const left = products.length - next;
+      set.text(doc, C.muted);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.text(`+ ${left} product${left === 1 ? '' : 's'} continued on the next page`, PAGE.mx + 5, flow.y);
+      newPostureContinuationPage(flow);
+      flow.y = drawSectionHeading(doc, 'Security products in use (continued)', flow.y + 2.5);
+    }
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -1754,35 +1918,6 @@ function drawPostureProductRow(doc: jsPDF, product: PostureProduct, y: number): 
   return y + POSTURE_PRODUCT_ROW_HEIGHT;
 }
 
-function renderPostureProductContinuation(
-  doc: jsPDF,
-  products: PostureProduct[],
-  opts: BuildOpts,
-): void {
-  let remaining = [...products];
-  while (remaining.length > 0) {
-    doc.addPage('a4', 'landscape');
-    let y = drawTitleBlock(
-      doc,
-      'Security products in use',
-      '',
-      'Continued from the posture summary',
-      PAGE.bandH + 8,
-    );
-    const rowsPerPage = Math.max(
-      1,
-      Math.floor((PAGE.footY - 12 - y) / POSTURE_PRODUCT_ROW_HEIGHT),
-    );
-    const pageProducts = remaining.slice(0, rowsPerPage);
-    for (const product of pageProducts) {
-      y = drawPostureProductRow(doc, product, y);
-    }
-    remaining = remaining.slice(pageProducts.length);
-    drawHeaderBand(doc, opts);
-    drawFooter(doc, opts);
-  }
-}
-
 /** Colour for a posture body cell, keyed by column. null = inherit default ink. */
 function postureCellColor(key: string, raw: unknown): RGB | null {
   const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
@@ -1843,9 +1978,28 @@ type HeadCell = {
   styles?: { halign?: 'left' | 'center'; valign?: 'middle' };
 };
 
-function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: BuildOpts): void {
-  doc.addPage();
-  drawTitleBlock(doc, 'Per-device detail', '', `${rows.length} device${rows.length === 1 ? '' : 's'}`, PAGE.bandH + 8);
+/** "Oct 2, 2026" in the report timezone, or null for a missing/invalid timestamp. */
+function formatLastSeen(raw: unknown, timezone: string): string | null {
+  if (typeof raw !== 'string' && !(raw instanceof Date)) return null;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat('en-US', { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+}
+
+/**
+ * Per-device evidence table. With `startY` it starts under a section heading on
+ * the current (partly used) page instead of a page of its own (#12043).
+ */
+function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: BuildOpts, startY?: number): void {
+  const countLabel = `${rows.length} device${rows.length === 1 ? '' : 's'}`;
+  let tableTop: number;
+  if (startY == null) {
+    doc.addPage();
+    drawTitleBlock(doc, 'Per-device detail', '', countLabel, PAGE.bandH + 8);
+    tableTop = PAGE.bandH + 16;
+  } else {
+    tableTop = drawSectionHeading(doc, `Per-device detail \u00b7 ${countLabel}`, startY + 2.5) - 1;
+  }
 
   // Drop the CIS column when no device was assessed — a full column of dashes
   // is noise, and its absence matches the cover's "Not assessed" line.
@@ -1880,7 +2034,19 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
   }
   const head = [headTop, headSub];
 
-  const body = rows.map((row) => cols.map((col) => formatPostureCell(col.key, row[col.key])));
+  // Two records can share a hostname (a re-enrolment or a stale duplicate);
+  // give the reader the last check-in so the rows can be told apart (#12044).
+  const hostKey = (row: Record<string, unknown>) => String(row.hostname ?? '').trim().toLowerCase();
+  const hostCounts = new Map<string, number>();
+  for (const row of rows) hostCounts.set(hostKey(row), (hostCounts.get(hostKey(row)) ?? 0) + 1);
+  const body = rows.map((row) => cols.map((col) => {
+    const cell = formatPostureCell(col.key, row[col.key]);
+    if (col.key !== 'hostname' || (hostCounts.get(hostKey(row)) ?? 0) < 2) return cell;
+    // Legacy rows carry no lastSeenAt key at all; a null one never checked in.
+    if (!('lastSeenAt' in row)) return cell;
+    const seen = formatLastSeen(row.lastSeenAt, opts.timezone);
+    return `${cell}\n${seen ? `last seen ${seen}` : 'never checked in'}`;
+  }));
   const columnStyles: Record<number, { cellWidth: number; halign: 'left' | 'center' }> = {};
   cols.forEach((col, i) => {
     columnStyles[i] = { cellWidth: col.w * scale, halign: col.halign };
@@ -1919,7 +2085,7 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
   ];
 
   autoTable(doc, {
-    startY: PAGE.bandH + 16,
+    startY: tableTop,
     margin: { top: PAGE.bandH + 6, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
     head,
     body,
@@ -2071,23 +2237,27 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     // Aggregate the per-device rows for the scorecard right-rail risk stats.
     const agg: PostureAggregates = records.reduce<PostureAggregates>(
       (acc, r) => {
-        const crit = (num(r.criticalPatches) ?? 0) + (num(r.openVulnCritical) ?? 0);
-        acc.criticalCount += crit;
+        acc.criticalPatchCount += num(r.criticalPatches) ?? 0;
+        acc.criticalVulnCount += num(r.openVulnCritical) ?? 0;
+        // Legacy fallback only (current snapshots carry controls.unprotectedCount):
+        // a row counts as unprotected on evidence — no product detected, or
+        // real-time protection reported off. A "No data" row is not assessed.
         const prot = typeof r.protection === 'string' ? r.protection.trim().toLowerCase() : '';
-        if (r.protectionManaged === false && (prot === '' || prot === 'no data')) {
+        if (r.protectionManaged !== true && (prot === 'none detected' || r.realTimeProtection === false)) {
           acc.unprotectedCount += 1;
         }
         return acc;
       },
-      { criticalCount: 0, unprotectedCount: 0 },
+      { criticalPatchCount: 0, criticalVulnCount: 0, unprotectedCount: 0 },
     );
-    const overflowProducts = renderPostureCover(doc, opts.summary as PostureSummary, opts, agg);
-    // Draw chrome on the cover page (no autotable runs on it).
-    drawHeaderBand(doc, opts);
-    drawFooter(doc, opts);
-    renderPostureProductContinuation(doc, overflowProducts, opts);
-    if (records.length > 0) {
-      renderPostureTable(doc, records, opts);
+    const flow = renderPostureCover(doc, opts.summary as PostureSummary, opts, agg);
+    if (records.length > 0 && !flow.onCover && flow.y + POSTURE_TABLE_MIN_SPACE <= flow.bottom) {
+      // Share the continuation page; autotable's didDrawPage draws its chrome.
+      flow.chromePending = false;
+      renderPostureTable(doc, records, opts, flow.y);
+    } else {
+      finishPosturePage(flow);
+      if (records.length > 0) renderPostureTable(doc, records, opts);
     }
   } else if (opts.reportType === 'executive_summary' && opts.summary && 'devices' in (opts.summary as object)) {
     renderExecutiveSummaryCover(doc, opts.summary as ExecutiveSummary, opts);

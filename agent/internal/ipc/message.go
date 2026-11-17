@@ -835,6 +835,13 @@ type StateSync struct {
 	// stale heartbeat (#8934). Same compatibility contract as AuthRejectedAt:
 	// older watchdogs ignore it and LastHeartbeat stays empty.
 	ServerUnavailableAt string `json:"serverUnavailableAt,omitempty"`
+	// ControlPlaneBlockedAt (RFC3339) is set instead of LastHeartbeat when the
+	// agent's heartbeat loop is alive but a network filter is blocking its
+	// control plane (#8868). The watchdog treats a fresh value as "running,
+	// blocked by the network" and does not restart the agent for its stale
+	// heartbeat. Same compatibility contract as ServerUnavailableAt: older
+	// watchdogs ignore it and LastHeartbeat stays empty.
+	ControlPlaneBlockedAt string `json:"controlPlaneBlockedAt,omitempty"`
 }
 
 // IntegrityCheck asks the agent to verify the integrity of the given targets.

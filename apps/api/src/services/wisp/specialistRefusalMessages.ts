@@ -41,7 +41,7 @@ const MESSAGES: Readonly<Record<SpecialistRefusal, string>> = Object.freeze({
   grant_inactive: 'This Wisp grant is paused, revoked or expired. Turn Wisp back on for this scope, then ask again.',
   org_out_of_ceiling: 'That organization is outside what this Wisp grant covers.',
   depth_exceeded: 'A specialist cannot launch another specialist.',
-  budget_exhausted: "This Wisp grant has used today's AI budget. Try again tomorrow.",
+  budget_exhausted: "This Wisp grant has used today's AI budget. Try again tomorrow, or raise the grant's daily budget on its thread page.",
   permission_missing: 'This specialist needs a permission that the Wisp grant or the person asking does not hold.',
   workspace_execute_required: 'Sandbox analysis needs the ai_workspace:execute permission, in the Wisp grant and for the person asking.',
   unknown_kind: 'That is not a specialist kind. Use sweep, analysis, operator_recipe, patch_plan, remediation_research, bulk_ticket_reply, device_troubleshooting or assessment.',
@@ -53,7 +53,7 @@ const MESSAGES: Readonly<Record<SpecialistRefusal, string>> = Object.freeze({
   admission_skipped: 'The agent did not accept the run (see detail): a limit, cooldown, maintenance window or budget stopped it. Try again later.',
   too_many_requests: 'An assessment can request only a few specialists at a time.',
   bulk_reply_incomplete: 'The bulk reply stopped part-way or sent nothing. Check the report before sending again.',
-  continuation_refused: 'That earlier troubleshooting run cannot be continued from here (see detail). Start a new run instead.',
+  continuation_refused: 'That earlier run cannot be continued from here (see detail). Start a new run instead.',
 });
 
 /** Sentences for the `detail` a code carries, where the detail changes the next step. */
@@ -77,6 +77,11 @@ const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Recor
     other_grant: 'That earlier run was started under a different Wisp grant.',
     not_settled: 'That earlier run is still running. Wait for it to finish, then continue it.',
     chain_limit: 'That run has already been continued as far as allowed. Start a new run instead.',
+    // Wisp analysis sessions W03: why an analysis run cannot be continued.
+    analysis_continuation_not_found: 'That earlier analysis run was not found. Start a new analysis instead.',
+    analysis_continuation_wrong_kind: 'Only a sandbox analysis run can be continued as an analysis. Start a new analysis instead.',
+    analysis_continuation_other_grant: 'That earlier analysis ran under a different Wisp grant. Start a new analysis under this one.',
+    analysis_continuation_not_settled: 'That earlier analysis has not finished. Wait for it to finish, then continue it.',
   },
   // Admission skips (runService AgentRunSkipReason) that a person can act on.
   admission_skipped: {
@@ -91,6 +96,10 @@ const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Recor
     frame_too_large: 'That scope has more devices than one analysis may cover (the AI agent limit analysisMaxFrameDevices, default 1000). Scope the analysis to one site, or ask an administrator to raise the limit.',
     site_not_in_scope: 'That site is not in this organization, or this Wisp grant does not reach it.',
     frame_empty: 'There are no active devices in that scope, so the analysis would have nothing to read.',
+    // W03 analysis sessions: the chain bounds, and the hourly analysis rate.
+    analysis_chain_too_long: `This investigation has reached its length limit (analysisMaxChainDepth and analysisMaxChainRuns in the AI agent limits, ${AGENTS_SETTINGS}). The chain is finished: start a new analysis to keep going.`,
+    analysis_chain_budget_exceeded: `This investigation has reached its spend limit (analysisMaxChainBudgetCents in the AI agent limits, ${AGENTS_SETTINGS}). The chain is finished: start a new analysis to keep going.`,
+    analysis_rate: `This organization has started as many analyses as allowed this hour (analysisMaxRunsPerHour in the AI agent limits, ${AGENTS_SETTINGS}). Try again later.`,
     too_many_input_devices: 'That is more devices than one analysis may list (the AI agent limit analysisMaxInputDevicesPerRun, default 50). Use scope "site" or "org" instead of listing devices.',
     // #10406: the on-demand assessment launcher.
     no_open_alerts: 'No organization this Wisp grant can assess has open alerts, so there is nothing to go through.',

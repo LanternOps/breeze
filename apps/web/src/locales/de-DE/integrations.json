@@ -293,7 +293,7 @@
     "teamsSettingsSaved": "Teams-Einstellungen gespeichert.",
     "teamsTestNotificationQueued": "Teams-Testbenachrichtigung in der Warteschlange.",
     "discordSettingsSaved": "Discord-Einstellungen gespeichert.",
-    "discordTestNotificationQueued": "Discord-Testbenachrichtigung in der Warteschlange.",
+    "discordTestNotificationSent": "Discord-Testbenachrichtigung gesendet.",
     "loadingCommunicationIntegrations": "Kommunikationsintegrationen werden geladen...",
     "communicationIntegrations": "Kommunikationsintegrationen",
     "connectChatToolsRouteAlertsBySeverityAnd": "Verbinden Sie Chat-Tools, leiten Sie Warnungen nach Schweregrad weiter und passen Sie Nachrichtenvorlagen an.",
