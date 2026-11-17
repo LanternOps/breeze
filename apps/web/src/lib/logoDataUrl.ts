@@ -26,6 +26,30 @@ function encodeLogo(img: HTMLImageElement, maxSide: number): string {
   return canvas.toDataURL('image/png');
 }
 
+// Below this long side a logo prints soft in report/quote/invoice headers (#12041).
+export const PRINT_LOGO_MIN_LONG_SIDE = 600;
+
+/** Natural pixel size of an image source; null when it cannot be measured. Never rejects. */
+export function logoPixelSize(src: string): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    if (typeof document === 'undefined') {
+      resolve(null);
+      return;
+    }
+    try {
+      const img = new Image();
+      img.onload = () => {
+        const { naturalWidth: width, naturalHeight: height } = img;
+        resolve(width > 0 && height > 0 ? { width, height } : null);
+      };
+      img.onerror = () => resolve(null);
+      img.src = src;
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
 export function resizeToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);

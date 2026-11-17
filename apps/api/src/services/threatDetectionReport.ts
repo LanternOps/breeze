@@ -73,7 +73,7 @@ import {
   type ReportResult,
 } from './reportGenerationService';
 import type { OrgReportGenerationAuthority } from './siteScope';
-import { reportDateRangePresetDays } from './reportDateRange';
+import { resolveAdHocEvidenceWindow } from './reportDateRange';
 
 /** A sync older than this makes the source `stale`: the artifact still prints
  *  what it holds, but says plainly that anything after the last sync is not in
@@ -135,20 +135,11 @@ function resolveWindow(
       periodEnd: evidence.periodEnd,
     };
   }
-  const range = (rawConfig?.dateRange ?? {}) as { start?: string; end?: string };
-  const end = range.end ? endOfDay(range.end) : new Date(generatedAt);
-  const start = range.start
-    ? startOfDay(range.start)
-    // #9562: a rolling preset (last_7/30/90_days, what every template saves)
-    // sets the trailing length; only a config with neither bounds nor a
-    // preset gets the 30-day default.
-    : new Date(end.getTime() - (reportDateRangePresetDays(rawConfig?.dateRange) ?? 30) * 24 * 60 * 60 * 1000);
-  return {
-    start,
-    end,
-    periodStart: start.toISOString().slice(0, 10),
-    periodEnd: end.toISOString().slice(0, 10),
-  };
+  // #9562: a rolling preset (last_7/30/90_days, what every template saves)
+  // sets the trailing length; only a config with neither bounds nor a preset
+  // gets the 30-day default. Shared with vulnerability management so the two
+  // print the same period (#12048).
+  return resolveAdHocEvidenceWindow(rawConfig?.dateRange, generatedAt);
 }
 
 /**

@@ -2718,6 +2718,8 @@ describe('reports routes', () => {
       const body = await res.json();
       expect(body.data.rows).toHaveLength(4);
       expect(body.data.rowCount).toBe(4);
+      // An ad-hoc generate is an on-demand run (#12048: VM's ad-hoc window).
+      expect(vi.mocked(generateReport).mock.lastCall?.[4]).toEqual({ origin: 'on_demand' });
     });
   });
 });
@@ -2956,6 +2958,8 @@ describe('report run immutable scope enforcement', () => {
         capturedAt: CAPTURED_AT,
         fingerprint: 'a'.repeat(64),
       }),
+      // "Generate now" is an on-demand run (#12048: VM's ad-hoc window).
+      { origin: 'on_demand' },
     );
   });
 
