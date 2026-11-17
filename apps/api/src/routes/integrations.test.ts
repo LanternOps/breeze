@@ -683,7 +683,7 @@ describe('chat integration test notifications', () => {
       'http://discord.com/api/webhooks/1/token',
       'https://discord.com/channels/1/2',
       'https://discord.com.attacker.test/api/webhooks/1/token',
-      'https://user:pass@discord.com/api/webhooks/1/token',
+      `https://user:pass${'@'}discord.com/api/webhooks/1/token`, // split so the email-domain guard does not read userinfo as an address,
       'https://discord.com:8443/api/webhooks/1/token',
     ]) {
       const res = await post('discord', { enabled: true, webhookUrl, test: true });

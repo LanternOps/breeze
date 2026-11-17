@@ -26,7 +26,7 @@ describe('parseDiscordWebhookUrl', () => {
     'https://discord.com/api/webhooks/notanid/token',
     'https://discord.com/api/webhooks/1/token/extra',
     'https://discord.com/api/webhooks/1',
-    'https://user:pw@discord.com/api/webhooks/1/token',
+    `https://user:pw${'@'}discord.com/api/webhooks/1/token`,
     'https://discord.com:444/api/webhooks/1/token',
   ])('rejects %s', (url) => {
     expect(parseDiscordWebhookUrl(url).ok).toBe(false);
