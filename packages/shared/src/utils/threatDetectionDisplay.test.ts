@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clientDetectionAdvice,
   clientDetectionTitle,
   endpointCoverageCounts,
   openForDays,
@@ -74,6 +75,86 @@ describe('clientDetectionTitle (#12046)', () => {
   it('falls back to a word when the title is empty or only a prefix', () => {
     expect(clientDetectionTitle(null, 'Acme')).toBe('Detection');
     expect(clientDetectionTitle('MEDIUM - ', 'Acme')).toBe('Detection');
+  });
+});
+
+describe('length cap before the email scrub (#12046 follow-up)', () => {
+  it('caps a very long title, quickly, instead of running the address pattern over all of it', () => {
+    // One 200k-character token with no address in it: the address pattern
+    // retries from every start position, so an uncapped scrub is quadratic.
+    const started = Date.now();
+    const title = clientDetectionTitle(`Detection ${'x'.repeat(200_000)}`, 'Acme');
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(title.length).toBeLessThanOrEqual(303);
+  });
+
+  it('never leaves half an address behind when the cap cuts through one', () => {
+    // 291 characters of words, then an address across the 300-character cap.
+    const raw = `${'Sign-in '.repeat(36)}xx jane.doe@example.com and more text after it`;
+    expect(raw.indexOf('jane.doe@')).toBe(291);
+    expect(raw.indexOf('example.com') + 'example.com'.length).toBeGreaterThan(300);
+    const title = clientDetectionTitle(raw, 'Acme');
+    expect(title).not.toMatch(/jane|@|example/);
+    expect(title.endsWith('...')).toBe(true);
+  });
+
+  it('falls back to "Detection", not a bare ellipsis, when the title is one huge word', () => {
+    expect(clientDetectionTitle('x'.repeat(5_000), 'Acme')).toBe('Detection');
+    expect(clientDetectionAdvice('y'.repeat(5_000))).toBe('');
+  });
+
+  it('keeps a word that ends exactly at the cap, and scrubs an address that does', () => {
+    const word = `${'abcd '.repeat(59)}wxyz`; // 299 characters, last word ends at the cap
+    // A space at index 299 (just before the cap) and at 300 (the cap) both keep the word.
+    expect(clientDetectionTitle(`${word} more`, 'Acme')).toBe(`${word}...`);
+    expect(clientDetectionTitle(`${word}z more`, 'Acme')).toBe(`${word}z...`);
+    // A word that crosses the cap is dropped whole.
+    expect(clientDetectionTitle(`${word}zz more`, 'Acme')).toBe(`${'abcd '.repeat(59).trimEnd()}...`);
+    const addr = `${'abcd '.repeat(56)}jane.doe@example.com`; // 300 characters, address ends at the cap
+    expect(addr.length).toBe(300);
+    expect(clientDetectionTitle(`${addr} more`, 'Acme')).toBe(`${'abcd '.repeat(56)}a user account...`);
+  });
+
+  it('still drops the trailing org name from a title longer than the cap', () => {
+    // "(Acme Corp)" runs from 295 to 306, across the cap: cutting first would
+    // leave "(Acme..." behind.
+    const raw = `Detection ${'word '.repeat(57)}(Acme Corp)`;
+    expect(raw.indexOf('(Acme')).toBe(295);
+    const title = clientDetectionTitle(raw, 'Acme Corp');
+    expect(title).not.toMatch(/Acme/);
+    expect(title).toBe(`Detection ${'word '.repeat(57).trimEnd()}`);
+  });
+
+  it('leaves a title under the cap untouched apart from the usual rewrites', () => {
+    const raw = `Suspicious sign-in ${'a'.repeat(250)}`;
+    expect(clientDetectionTitle(raw, 'Acme')).toBe(raw);
+  });
+});
+
+describe('clientDetectionAdvice (#12046 follow-up)', () => {
+  it('replaces an email address in the advice with a neutral phrase', () => {
+    expect(clientDetectionAdvice('Reset the password for jane.doe@example.com and review sign-ins.'))
+      .toBe('Reset the password for a user account and review sign-ins.');
+  });
+
+  it('keeps advice without an address as written', () => {
+    expect(clientDetectionAdvice('Isolate the host and reimage.')).toBe('Isolate the host and reimage.');
+  });
+
+  it('returns an empty string for absent advice, so the cell stays blank', () => {
+    expect(clientDetectionAdvice(null)).toBe('');
+    expect(clientDetectionAdvice('   ')).toBe('');
+  });
+
+  it('caps very long advice without leaving half an address', () => {
+    // The address runs from character 986 to 1006, across the 1000 cap.
+    const raw = `${'Review the account. '.repeat(49)}Reset jane.doe@example.com`;
+    expect(raw.indexOf('jane.doe@')).toBe(986);
+    const started = Date.now();
+    const advice = clientDetectionAdvice(`${raw}${'y'.repeat(200_000)}`);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(advice.length).toBeLessThanOrEqual(1_003);
+    expect(advice).not.toMatch(/jane|@/);
   });
 });
 

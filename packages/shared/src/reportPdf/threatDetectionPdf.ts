@@ -29,7 +29,9 @@ import type {
 } from '../types/threatDetectionReport';
 import { SEVERITY_ORDER } from '../utils/threatDetection';
 import {
+  clientDetectionAdvice,
   clientDetectionTitle,
+  deviceCountSourcesNote,
   endpointCoverageCounts,
   openForDays,
   threatSeverityLabel,
@@ -263,13 +265,19 @@ export function renderThreatDetectionReport(
     { value: measured(fleet.managed), label: 'Devices Breeze manages', unmeasured: fleet.managed == null },
     { value: measured(fleet.withAgent), label: 'Managed devices with a detection agent', unmeasured: fleet.withAgent == null },
     { value: measured(fleet.withoutAgent), label: 'Managed devices with no detection agent', unmeasured: fleet.withoutAgent == null },
-    { value: measured(agents?.agentsOffline), label: 'Detection agents not reporting in', unmeasured: agents?.agentsOffline == null },
+    // Huntress-only, unlike the device tiles beside it: say so on the tile.
+    { value: measured(agents?.agentsOffline), label: 'Huntress agents not reporting in', unmeasured: agents?.agentsOffline == null },
   ], y + 2);
-  if (fleet.agentsReported != null && fleet.unmatchedAgents != null && fleet.unmatchedAgents > 0) {
+  // #12046 follow-up: Huntress was not measured, so the device pair came from
+  // the other products alone; the reader is told which.
+  const sourcesNote = deviceCountSourcesNote(agents, coverage?.sourceStatus);
+  if (sourcesNote) {
+    y = drawProse(doc, chrome, sourcesNote, y - 4, 8.4, C.muted) + 4;
+  } else if (fleet.agentsReported != null && fleet.unmatchedAgents != null && fleet.unmatchedAgents > 0) {
     y = drawProse(
       doc,
       chrome,
-      `${fleet.unmatchedAgents} of the ${fleet.agentsReported} detection agents reported for this organization are not matched to a device Breeze manages, so they are not counted in the tiles above.`,
+      `${fleet.unmatchedAgents} of the ${fleet.agentsReported} Huntress agents reported for this organization are not matched to a device Breeze manages, so they are not counted in the tiles above.`,
       y - 4,
       8.4,
       C.muted,
@@ -348,7 +356,7 @@ export function renderThreatDetectionReport(
           threatStatusLabel(r.status),
           resolvedCell(chrome, r, asOf),
         ];
-        if (hasAdvice) cells.push(r.recommendation ?? '');
+        if (hasAdvice) cells.push(clientDetectionAdvice(r.recommendation));
         return cells;
       }),
       styles: { font: 'helvetica', fontSize: 7.4, cellPadding: 1.8, textColor: C.ink, lineColor: C.rule, lineWidth: 0.1 },
