@@ -91,7 +91,7 @@
     "drizzle-orm": "^0.45.4",
     "fast-xml-parser": "^5.9.3",
     "firebase-admin": "^14.5.0",
-    "google-auth-library": "^11.0.2",
+    "google-auth-library": "^11.3.4",
     "hono": "^4.13.14",
     "i18next": "^26.3.6",
     "ioredis": "^5.11.1",
