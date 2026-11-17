@@ -1279,11 +1279,14 @@ const EXEC_ALL_ALERTS_LABEL = 'All recorded alerts';
  * #12048 review), so the cover and a threat detection review run beside it
  * print the same days even when it is already tomorrow in UTC.
  */
-export function executiveSummaryPeriodLabel(period: ExecutiveSummary['period']): string | null {
+export function executiveSummaryPeriodLabel(
+  period: ExecutiveSummary['period'],
+  locale: Pick<ReportLocale, 'dateFormat'> = L,
+): string | null {
   if (!period) return null;
-  const start = period.start ? formatReportPeriodDay(period.start, L) : null;
-  const end = period.end ? formatReportPeriodDay(period.end, L) : null;
-  if (start && end) return formatReportPeriod(period.start, period.end, L);
+  const start = period.start ? formatReportPeriodDay(period.start, locale) : null;
+  const end = period.end ? formatReportPeriodDay(period.end, locale) : null;
+  if (start && end) return formatReportPeriod(period.start, period.end, locale);
   if (start) return `Since ${start} ${REPORT_PERIOD_ZONE_LABEL}`;
   if (end) return `Through ${end} ${REPORT_PERIOD_ZONE_LABEL}`;
   return EXEC_ALL_ALERTS_LABEL;
@@ -2548,16 +2551,12 @@ function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: 
  * band + footer) is applied to every page.
  */
 export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
-  try {
-    C = paletteForBranding(opts.branding);
-    L = resolveReportLocale(opts.branding, opts.timezone);
-    PAGE = reportPageGeometry(L.pageSize);
-    return buildReportPdfWithPalette(rows, { ...opts, generatedAt: generatedAtLabel(opts.generatedAt) });
-  } finally {
-    C = BASE_C;
-    PAGE = DEFAULT_PAGE;
-    L = DEFAULT_LOCALE;
-  }
+  // Restores whatever was active before (the defaults, or an enclosing
+  // build's state), even when the build throws.
+  const locale = resolveReportLocale(opts.branding, opts.timezone);
+  const state: BuildState = { C: paletteForBranding(opts.branding), PAGE: reportPageGeometry(locale.pageSize), L: locale };
+  return withBuildState(state, () =>
+    buildReportPdfWithPalette(rows, { ...opts, generatedAt: generatedAtLabel(opts.generatedAt) }));
 }
 
 /** The palette, page geometry and locale one build renders with. */

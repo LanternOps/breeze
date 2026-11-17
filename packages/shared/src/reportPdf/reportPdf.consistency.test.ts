@@ -328,6 +328,17 @@ describe('reporting period line (#12048)', () => {
     }
   });
 
+  it('prints the executive cover period in the partner date format, half-open too', () => {
+    const dd = { ...usPartner, dateFormat: 'DD/MM/YYYY' as const };
+    const cover = (period: ExecutiveSummary['period']) => plainText(buildReportPdf([], {
+      reportType: 'executive_summary', summary: { ...exec, period }, generatedAt: GENERATED, timezone: 'America/New_York', branding: dd,
+    }));
+    expect(cover(exec.period)).toContain('Reporting period 10 Oct 2026 – 9 Nov 2026 (UTC)');
+    expect(cover({ start: '2026-10-10T17:06:00.000Z', end: null })).toContain('Since 10 Oct 2026 (UTC)');
+    // Called outside a build, the label takes the locale it is given.
+    expect(executiveSummaryPeriodLabel(exec.period, { dateFormat: 'YYYY-MM-DD' })).toBe('2026-10-10 – 2026-11-09 (UTC)');
+  });
+
   it('prints the executive, threat detection and vulnerability periods in the same words and format', () => {
     for (const report of [REPORTS[0]!, REPORTS[2]!, REPORTS[3]!]) {
       expect(text(build(report))).toContain('Reporting period Oct 10, 2026 – Nov 9, 2026');

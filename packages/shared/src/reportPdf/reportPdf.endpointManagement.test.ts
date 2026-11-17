@@ -163,7 +163,7 @@ describe('endpoint management PDF', () => {
       summary: SUMMARY,
       branding: { name: 'Example MSP', logoDataUrl: null, logoAspect: null, dateFormat: 'DD/MM/YYYY', timeFormat: '24h' },
     }));
-    expect(text).toContain('Reporting period 1 Sep 2026');
+    expect(text).toMatch(/Reporting period 1 Sep 2026 . 30 Sep 2026 \\?\(UTC\\?\)/);
     expect(text).toContain('Generated 30 Sep 2026, 09:00 UTC');
     expect(text).not.toContain('2026-09-01');
     expect(text).not.toContain(' to 2026');

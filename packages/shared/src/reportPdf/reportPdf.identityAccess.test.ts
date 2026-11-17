@@ -225,7 +225,7 @@ describe('buildReportPdf: identity_access_review', () => {
       summary: SUMMARY,
       branding: { name: 'Example MSP', logoDataUrl: null, logoAspect: null, dateFormat: 'MM/DD/YYYY', timeFormat: '12h' },
     }));
-    expect(text).toContain('Interactive sign-ins for Sep 1, 2026');
+    expect(text).toMatch(/Interactive sign-ins for Sep 1, 2026 . Sep 30, 2026 \\?\(UTC\\?\)/);
     // 09:00 UTC printed in the report zone, with its abbreviation (the table
     // cell may wrap, so the date and the zone are matched separately).
     expect(text).toContain('Sep 10, 2026,');
