@@ -9,7 +9,7 @@
  * function that also calls `exportDeviceSet`. Do not extract the query.
  */
 import { createHash } from 'node:crypto';
-import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, lte, sql, type AnyColumn } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceReliabilityHistory } from '../../db/schema';
 import { reliabilityEventKey, reliabilityExportPageQuery } from '../reliabilityScoring';
@@ -103,7 +103,7 @@ async function createReliabilityHistoryPager(req: DatasetRequest) {
       const t = deviceReliabilityHistory;
       // A bare `jsonb_array_length` raises on a non-array: a malformed row
       // counts 0 instead of failing the page.
-      const count = (col: typeof t.crashEvents) =>
+      const count = (col: AnyColumn) =>
         sql<number>`CASE WHEN jsonb_typeof(${col}) = 'array' THEN jsonb_array_length(${col}) ELSE 0 END`;
       return await runExportQuery(
         db
