@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { flushDeferredToolFailureFlags } from './aiSessionAutoFlag';
 import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
 import { aiToolExecutions } from '../db/schema';
@@ -6561,5 +6562,101 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     const rows = await ledgerInserts();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: 'refused', errorMessage: 'Guardrails check failed' });
+  });
+});
+
+// #11968: an input refusal the model corrects on its next call must not flag
+// the whole session; one it never corrects within the turn still does.
+describe('createSessionPostToolUse — auto-flag on a correctable input refusal (#11968)', () => {
+  let flagSets: Array<Record<string, unknown>>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
+    mockInsertValues();
+    flagSets = [];
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn((payload: Record<string, unknown>) => {
+        if ('flagReason' in payload) flagSets.push(payload);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    } as any);
+  });
+
+  const refusal = JSON.stringify({ error: 'invalid_params', detail: 'params.goal: Too big' });
+  const success = JSON.stringify({ requestId: 'req-1', status: 'queued' });
+
+  it('does not flag when the same tool succeeds after an invalid_params refusal in the same turn', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('launch_specialist', { kind: 'x' }, success, false, 10);
+
+    expect(flagSets).toEqual([]);
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toEqual([]);
+  });
+
+  it('does not flag when the same tool succeeds after a schema refusal (Invalid input: …)', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('query_devices', {}, JSON.stringify({ error: 'Invalid input: limit: Too big' }), true, 0);
+    await callback('query_devices', {}, JSON.stringify({ devices: [] }), false, 5);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toEqual([]);
+  });
+
+  it('holds an uncorrected invalid_params refusal until the turn ends, then flags with the same reason', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    expect(flagSets).toEqual([]);
+
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toEqual([
+      expect.objectContaining({ flagReason: 'Tool failed: launch_specialist — invalid_params', flaggedAt: expect.any(Date) }),
+    ]);
+  });
+
+  it('a success of a DIFFERENT tool does not clear the held refusal', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('query_devices', {}, JSON.stringify({ devices: [] }), false, 5);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toHaveLength(1);
+    expect(flagSets[0]!.flagReason).toBe('Tool failed: launch_specialist — invalid_params');
+  });
+
+  it('a refusal after the correcting success is held again and flagged if the turn ends on it', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2', 'tu-3'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('launch_specialist', { kind: 'x' }, success, false, 10);
+    await callback('launch_specialist', { kind: 'y' }, refusal, true, 0);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toHaveLength(1);
+  });
+
+  it('any other tool failure still flags the session at once', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('execute_command', { deviceId: 'd-1' }, JSON.stringify({ error: 'Device is offline' }), true, 3);
+
+    expect(flagSets).toEqual([
+      expect.objectContaining({ flagReason: 'Tool failed: execute_command — Device is offline' }),
+    ]);
+    // Nothing was held, so the turn end adds no second write.
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toHaveLength(1);
   });
 });

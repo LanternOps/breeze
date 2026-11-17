@@ -291,6 +291,71 @@ describe('evaluateConfigPolicyComplianceRule', () => {
       expect(result.status).toBe('non_compliant');
     });
 
+    it('registry_check mismatch records the outcome and expected value, never the observed value (#11976)', () => {
+      // These details are stored verbatim (ruleResults) and returned to
+      // devices:read callers; reading a registry value live needs more than
+      // that, so the stored detail must not carry what the device reported.
+      const rule = makeRule({
+        rules: [{
+          type: 'registry_check',
+          registryPath: 'HKLM\\SOFTWARE\\Test',
+          registryValueName: 'Enabled',
+          registryExpectedValue: '1',
+        }],
+      });
+      const ctx = makeContext({
+        registryState: [{
+          registryPath: 'HKLM\\SOFTWARE\\Test',
+          valueName: 'Enabled',
+          valueData: 'observed-0xBEEF',
+          valueType: 'REG_SZ',
+        }],
+      });
+      const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx);
+      expect(result.status).toBe('non_compliant');
+      expect(result.details).toHaveLength(1);
+      expect(result.details[0]).toMatchObject({
+        ruleType: 'registry_check',
+        passed: false,
+        data: { outcome: 'mismatched', expectedValue: '1' },
+      });
+      expect(result.details[0]?.data).not.toHaveProperty('actualValue');
+      expect(result.details[0]?.data).not.toHaveProperty('valueType');
+      expect(JSON.stringify(result.details)).not.toContain('observed-0xBEEF');
+      expect(JSON.stringify(result.details)).not.toContain('REG_SZ');
+    });
+
+    it('registry_check not found records outcome not_found (#11976)', () => {
+      const rule = makeRule({
+        rules: [{ type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Test', registryValueName: 'Enabled', registryExpectedValue: '1' }],
+      });
+      const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', makeContext());
+      expect(result.details[0]).toMatchObject({ passed: false, data: { outcome: 'not_found', expectedValue: '1' } });
+    });
+
+    it('registry_check match records outcome matched (#11976)', () => {
+      const rule = makeRule({
+        rules: [{ type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Test', registryValueName: 'Enabled', registryExpectedValue: '1' }],
+      });
+      const ctx = makeContext({
+        registryState: [{ registryPath: 'HKLM\\SOFTWARE\\Test', valueName: 'Enabled', valueData: '1', valueType: 'REG_DWORD' }],
+      });
+      const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx);
+      expect(result.details[0]).toMatchObject({ passed: true, data: { outcome: 'matched', expectedValue: '1' } });
+      expect(JSON.stringify(result.details)).not.toContain('REG_DWORD');
+    });
+
+    it('config_check mismatch still records the observed value (allow-listed, non-secret keys only)', () => {
+      const rule = makeRule({
+        rules: [{ type: 'config_check', configFilePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configExpectedValue: 'no' }],
+      });
+      const ctx = makeContext({
+        configState: [{ filePath: '/etc/ssh/sshd_config', configKey: 'PermitRootLogin', configValue: 'yes' }],
+      });
+      const result = evaluateConfigPolicyComplianceRule(rule, 'dev-1', ctx);
+      expect(result.details[0]?.data).toEqual({ expectedValue: 'no', actualValue: 'yes' });
+    });
+
     it('evaluates config_check rule — pass', () => {
       const rule = makeRule({
         rules: [{

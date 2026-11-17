@@ -184,6 +184,7 @@ import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
 import { partnerTrustRoutes } from './routes/partnerTrust';
 import { partnerSendingDomainsRoutes } from './routes/partnerSendingDomains';
+import { partnerDeviceCapacityRoutes } from './routes/partnerDeviceCapacity';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
@@ -1135,6 +1136,8 @@ api.route('/partner/ai/data-policy', partnerAiDataPolicyRoutes);
 // mount below, the same ordering `/partner/trust` relies on — Hono matches in
 // registration order, so a later specific mount is never reached.
 api.route('/partner/sending-domains', partnerSendingDomainsRoutes);
+// Read-only device admission status for Settings → Plan. Also above `/partner`.
+api.route('/partner/device-capacity', partnerDeviceCapacityRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);

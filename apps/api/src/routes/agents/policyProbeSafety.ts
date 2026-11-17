@@ -1,3 +1,5 @@
+import { isDeniedRegistryTarget } from '../systemTools/sensitiveTargets';
+
 const REDACTED_POLICY_CONFIG_VALUE = '[redacted]';
 
 const ALLOWED_CONFIG_KEYS_BY_PATH = new Map<string, Set<string>>([
@@ -134,4 +136,64 @@ export function sanitizePolicyConfigStateEntries<T extends IncomingPolicyConfigS
       configValue: redactSensitivePolicyConfigValue(configKey, entry.configValue),
     } as T];
   });
+}
+
+/**
+ * #11976: a compliance registry_check now reaches the agent's probe list, and
+ * the agent reads it as LocalSystem and uploads the value. Refuse the same
+ * credential stores (HKLM\\SAM, HKLM\\SECURITY incl. LSA secrets) that the
+ * registry browser tools refuse, whatever the hive spelling or separator.
+ * The hive is the first path segment, as the agent's probe resolver splits it.
+ */
+export function isAllowedPolicyRegistryProbe(registryPath: string): boolean {
+  const normalized = registryPath.trim().replace(/\//g, '\\');
+  const separator = normalized.indexOf('\\');
+  const hive = separator === -1 ? normalized : normalized.slice(0, separator);
+  // The agent TrimSpaces the sub-path too, so `HKLM\ SAM` opens SAM.
+  const subPath = separator === -1 ? '' : normalized.slice(separator + 1).trim();
+  return !isDeniedRegistryTarget(hive, subPath);
+}
+
+export type IncomingPolicyRegistryStateEntry = {
+  registryPath: string;
+  valueName: string;
+};
+
+/** Ingest-side twin of the probe filter: drop credential-store values an agent reports anyway. */
+export function sanitizePolicyRegistryStateEntries<T extends IncomingPolicyRegistryStateEntry>(entries: T[]): T[] {
+  return entries.filter((entry) => isAllowedPolicyRegistryProbe(entry.registryPath));
+}
+
+/**
+ * #11976: registry paths in compliance inline settings that the probe builder
+ * (derivePolicyStateProbesFromRules) drops, so the agent never collects them
+ * and the rule would report "Registry value not found" on every evaluation.
+ * The write paths refuse these up front instead: the feature-link routes with
+ * a 400, the AI tool with a readable error, and the service as the backstop.
+ * Reads each rule the way the probe builder does (type, then the camelCase or
+ * snake_case path, trimmed). Returns distinct paths in first-seen order.
+ */
+export function uncollectableComplianceRegistryPaths(settings: unknown): string[] {
+  if (!settings || typeof settings !== 'object') return [];
+  const items = (settings as { items?: unknown }).items;
+  if (!Array.isArray(items)) return [];
+  const refused = new Set<string>();
+  for (const item of items) {
+    const rules = item && typeof item === 'object' ? (item as { rules?: unknown }).rules : undefined;
+    if (!Array.isArray(rules)) continue;
+    for (const rule of rules) {
+      if (!rule || typeof rule !== 'object') continue;
+      const raw = rule as Record<string, unknown>;
+      const type = raw.type ?? raw.name;
+      if (typeof type !== 'string' || type.trim().toLowerCase() !== 'registry_check') continue;
+      const path = raw.registryPath ?? raw.registry_path;
+      if (typeof path !== 'string' || path.trim() === '') continue;
+      if (!isAllowedPolicyRegistryProbe(path.trim())) refused.add(path.trim());
+    }
+  }
+  return [...refused];
+}
+
+export function uncollectableComplianceRegistryPathMessage(path: string): string {
+  return `The registry path "${path}" cannot be used in a compliance rule: values under it are never collected from devices, so the rule would always report "Registry value not found". Choose a different key.`;
 }

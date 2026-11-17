@@ -8289,6 +8289,10 @@
     "heading": "Plan & features",
     "description": "What your plan includes. Locked features stay visible so you can see what an upgrade adds.",
     "currentPlan": "Current plan",
+    "changePlan": "Change plan",
+    "enrollmentPaused": "New device enrollment is paused: {{active}} of {{limit}} devices.",
+    "enrollmentPausedNoCounts": "New device enrollment is paused because your account has reached its device limit.",
+    "enrollmentPausedChangePlan": "Change your plan to add more.",
     "plans": {
       "free": "Free",
       "starter": "Starter",

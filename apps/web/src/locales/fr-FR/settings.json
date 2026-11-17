@@ -8289,6 +8289,10 @@
     "heading": "Offre et fonctionnalités",
     "description": "Ce que comprend votre offre. Les fonctionnalités verrouillées restent visibles pour que vous voyiez ce qu’une montée en gamme apporte.",
     "currentPlan": "Offre actuelle",
+    "changePlan": "Changer d’offre",
+    "enrollmentPaused": "L’inscription de nouveaux appareils est suspendue : {{active}} sur {{limit}} appareils.",
+    "enrollmentPausedNoCounts": "L’inscription de nouveaux appareils est suspendue, car votre compte a atteint sa limite d’appareils.",
+    "enrollmentPausedChangePlan": "Changez d’offre pour en ajouter davantage.",
     "plans": {
       "free": "Gratuite",
       "starter": "Starter",

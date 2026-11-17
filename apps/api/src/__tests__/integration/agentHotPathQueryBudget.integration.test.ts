@@ -200,8 +200,12 @@ const COLD_TX = 7;
 // #7268: each heartbeat claim adds exactly one revalidation prepare read (bucket
 // revalidationPrepare), no savepoint while no prepared-type row is pending:
 // cold 52 -> 53, caches-miss 22 -> 23, configured 23 -> 24.
-const COLD_STATEMENTS = 53;
-const CACHES_MISS_STATEMENTS = 23;
+// #11976: the per-org policy-probe fill also reads configuration-policy
+// compliance rules (bucket compliancePolicyProbe), one statement inside the
+// probe's existing savepoint, on a probe cache miss only: cold 53 -> 54,
+// caches-miss 23 -> 24; warm, steady and configured unchanged.
+const COLD_STATEMENTS = 54;
+const CACHES_MISS_STATEMENTS = 24;
 const CONFIGURED_STEADY_STATEMENTS = 24;
 
 // Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
@@ -224,6 +228,9 @@ const BUCKET_MATCHERS = {
   orgHelperSettings: (s: string) => s.startsWith('select "settings" from "organizations"'),
   pamOrgConfig: (s: string) => s.includes('from "pam_org_config"'),
   automationPolicies: (s: string) => s.includes('from "automation_policies"'),
+  // #11976: the probe fill's config-policy compliance read (same savepoint and
+  // cache as automationPolicies; zero on a probe cache hit).
+  compliancePolicyProbe: (s: string) => s.includes('from "config_policy_compliance_rules"'),
   // #8190: the workload-inventory resolver's single policy read. It rides the
   // passed hierarchy (no device/org/group reads of its own) and runs only on a
   // workload settings-cache miss. Not yet folded into the #8142 policy set, so
@@ -898,6 +905,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // The sibling's beat warmed the org's probe, helper-legacy and PAM caches,
     // so this beat reads none of them.
     expect(steady.buckets.automationPolicies).toBe(0);
+    expect(steady.buckets.compliancePolicyProbe).toBe(0);
     expect(steady.buckets.orgHelperSettings).toBe(0);
     expect(steady.buckets.pamOrgConfig).toBe(0);
     expect(steady.buckets.agentVersions).toBe(1);
@@ -934,6 +942,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(missed.status).toBe(200);
     expect(missed.transactions).toBe(2);
     expect(missed.buckets.automationPolicies).toBe(1);
+    expect(missed.buckets.compliancePolicyProbe).toBe(1);
     expect(missed.buckets.orgHelperSettings).toBe(1);
     expect(missed.buckets.pamOrgConfig).toBe(1);
     expect(missed.buckets.policySetLoad).toBe(1);
