@@ -32,6 +32,6 @@ export type ExportDataset = (typeof EXPORT_DATASETS)[number];
  * in full, in the notes each adapter adds to its result.
  */
 export const EXPORT_DATASET_PARAM_DESCRIPTION =
-  'Which dataset. Left-out rows and dedupe keys come back as notes in the result. service_checks: non-running only; per-device datasets may truncate.';
+  'Which dataset. Left-out rows and dedupe keys come back as notes in the result. service_checks: non-running only; capped exports set truncated.';
 export const EXPORT_FILTERS_PARAM_DESCRIPTION =
   'As the read tool. timeRange {start,end} ISO on newer datasets: default 30 d, max 180 d, ignored by current state. patch_state status[]; change_log changeType[].';
