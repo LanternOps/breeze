@@ -88,6 +88,28 @@ describe('ReportPreview: threat_detection_review', () => {
     expect(note).not.toHaveTextContent(/\bno incidents\b/i);
   });
 
+  // #12046: "8 endpoints with an agent / 12 managed / 8 without" did not add
+  // up — the first tile counted agents (matched or not), not devices.
+  it('shows device coverage tiles that add up to the managed count', () => {
+    render(<ReportPreview
+      data={previewData({
+        ...MEASURED,
+        agentCoverage: {
+          huntressAgents: 8, breezeDevices: 12, agentsOffline: 0, devicesWithoutAgent: 8,
+          devicesWithDetectionAgent: 7, devicesWithoutDetectionAgent: 5, unmatchedAgents: 4,
+        },
+      })}
+      timezone="UTC"
+    />);
+    const panel = screen.getByTestId('threat-detection-summary');
+    expect(within(panel).queryByText('Endpoints with a detection agent')).toBeNull();
+    const withTile = within(panel).getByText('Managed devices with a detection agent').parentElement!;
+    expect(withTile).toHaveTextContent('7');
+    const withoutTile = within(panel).getByText('Managed devices with no detection agent').parentElement!;
+    expect(withoutTile).toHaveTextContent('5');
+    expect(within(panel).getByText('12')).toBeInTheDocument();
+  });
+
   it('omits the coverage panel entirely when nothing is missing', () => {
     render(<ReportPreview data={previewData(MEASURED)} timezone="UTC" />);
     expect(screen.queryByTestId('threat-detection-coverage-note')).toBeNull();

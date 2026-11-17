@@ -300,17 +300,19 @@ describe('generateThreatDetectionReport', () => {
     queueSelects(ORG_ROW, [], ACTIVE_INTEGRATION, [], [], [], [], [], []);
     await generateThreatDetectionReport(ORG_ID, {}, authority('restricted', [SITE_A]), PERIOD_SEP);
     // org, devices, integration, agents, window metrics, unattributable count,
-    // rows, carried-in, earliest, then the two EDR coverage queries (#8164)
-    expect(whereCalls).toHaveLength(11);
+    // rows, carried-in, earliest, the two EDR coverage queries (#8164), then
+    // the SentinelOne and EDR device-coverage queries (#12046)
+    expect(whereCalls).toHaveLength(13);
     // Every branch except the org lookup, the integration lookup and the
     // unattributable COUNT filters by site itself — including the device count
     // that runs before the source check. The count query is deliberately not
     // site-scoped: it exists to count the rows the site predicate drops, so
     // applying that predicate to it would make it report 0 forever.
     const siteScopedBranches = whereCalls.filter((_, i) => i !== 0 && i !== 2 && i !== 5);
-    // 6 Huntress-path branches + the two EDR coverage branches (#8164), which
-    // push their own site predicate too.
-    expect(siteScopedBranches).toHaveLength(8);
+    // 6 Huntress-path branches + the two EDR coverage branches (#8164) + the
+    // SentinelOne and EDR device-coverage branches (#12046), which push their
+    // own site predicate too.
+    expect(siteScopedBranches).toHaveLength(10);
     siteScopedBranches.forEach((call, index) => {
       expect(containsValue(call, SITE_A), `site-scoped branch ${index + 1} lost its filter`).toBe(true);
     });
@@ -386,8 +388,9 @@ describe('generateThreatDetectionReport', () => {
       await generateThreatDetectionReport(ORG_ID, { includeCarriedIn: false }, authority(), PERIOD_SEP),
     );
     expect(s.incidents?.carriedIn).toBeNull();
-    // 7 pre-existing queries + the two EDR coverage queries (#8164)
-    expect(whereCalls).toHaveLength(9);
+    // 7 pre-existing queries + the two EDR coverage queries (#8164) + the
+    // SentinelOne and EDR device-coverage queries (#12046)
+    expect(whereCalls).toHaveLength(11);
   });
 
   // STALE_SYNC_MS is 48h, deliberately not 24h, so one missed nightly run does
@@ -442,7 +445,61 @@ describe('generateThreatDetectionReport', () => {
       breezeDevices: 3,
       agentsOffline: 1,
       devicesWithoutAgent: 1,
+      devicesWithDetectionAgent: 2,
+      devicesWithoutDetectionAgent: 1,
+      unmatchedAgents: 0,
     });
+  });
+
+  // #12046: the tiles printed "8 with an agent / 12 managed / 8 without",
+  // because the first counted Huntress agents (matched or not) and only
+  // Huntress counted as a detection agent at all.
+  it('reconciles device coverage across Huntress, SentinelOne and EDR, and counts unmatched agents', async () => {
+    const D = (n: number) => `d0000000-0000-4000-8000-00000000000${n}`;
+    queueSelects(
+      ORG_ROW,
+      [{ id: D(1) }, { id: D(2) }, { id: D(3) }, { id: D(4) }, { id: D(5) }],
+      ACTIVE_INTEGRATION,
+      [
+        { deviceId: D(1), status: 'online' },
+        { deviceId: null, status: 'online' }, // never matched to a Breeze device
+        { deviceId: D(9), status: 'offline' }, // matched to a device outside the managed fleet
+      ],
+      [], [], [], [{ earliest: null }],
+      /* edr endpoint count */ [{ total: 2 }],
+      /* edr open detections */ [],
+      /* s1 agent devices */ [{ deviceId: D(2) }],
+      /* edr endpoint devices */ [{ deviceId: D(1) }, { deviceId: D(3) }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.agentCoverage).toMatchObject({
+      huntressAgents: 3,
+      breezeDevices: 5,
+      agentsOffline: 1,
+      // Huntress-only, kept for legacy readers.
+      devicesWithoutAgent: 4,
+      // d1 (Huntress + EDR), d2 (SentinelOne), d3 (EDR); d4 and d5 have none.
+      devicesWithDetectionAgent: 3,
+      devicesWithoutDetectionAgent: 2,
+      unmatchedAgents: 2,
+    });
+    const a = s.agentCoverage!;
+    expect(a.devicesWithDetectionAgent! + a.devicesWithoutDetectionAgent!).toBe(a.breezeDevices);
+  });
+
+  it('pushes the managed-fleet and site predicates into the SentinelOne and EDR coverage queries', async () => {
+    queueSelects(ORG_ROW, [], ACTIVE_INTEGRATION, [], [], [], [], [], [], []);
+    await generateThreatDetectionReport(ORG_ID, {}, authority('restricted', [SITE_A]), PERIOD_SEP);
+    const dialect = new PgDialect();
+    // ... 8 earliest, 9/10 EDR coverage (#8164), 11 SentinelOne devices, 12 EDR devices (#12046)
+    for (const idx of [11, 12]) {
+      const q = dialect.sqlToQuery(whereCalls[idx]![0] as never);
+      expect(q.params).toContain(SITE_A);
+      expect(q.params).toContain(ORG_ID);
+      expect(q.params).toContain('decommissioned');
+    }
+    expect(dialect.sqlToQuery(whereCalls[11]![0] as never).sql).toMatch(/"s1_agents"\."org_id" = /);
+    expect(dialect.sqlToQuery(whereCalls[12]![0] as never).sql).toMatch(/"edr_endpoints"\."org_id" = /);
   });
 
   it('excludes decommissioned devices from the fleet and from agent coverage (#11562)', async () => {

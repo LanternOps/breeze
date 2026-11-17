@@ -49,6 +49,7 @@ import {
   huntressIncidents,
   huntressIntegrations,
   organizations,
+  s1Agents,
 } from '../db/schema';
 import { threatDetectionConfigSchema } from './reportConfigSchemas';
 import type {
@@ -240,6 +241,40 @@ async function loadEdrCoverage(orgId: string, filter: SiteFilter): Promise<EdrCo
     bySeverity[bucket] = totals.get(bucket) as number;
   }
   return { edrEndpoints: endpointTotal, edrDetections: { open, bySeverity } };
+}
+
+/**
+ * Managed devices that carry a detection agent from a source OTHER than
+ * Huntress (#12046): a SentinelOne agent, or — when the run may use EDR
+ * evidence — an EDR-framework endpoint. "Carries an agent" is presence, not
+ * health, the same rule the Huntress agent count follows (an offline agent is
+ * still an installed one).
+ *
+ * Each query joins `devices` and pushes the managed-fleet conditions and its
+ * OWN site predicates, like every other branch here. An s1 row the console no
+ * longer returns has its `device_id` nulled by the sync, so the INNER JOIN
+ * drops it.
+ */
+async function otherDetectionAgentDeviceIds(
+  orgId: string,
+  filter: SiteFilter,
+  includeEdr: boolean,
+): Promise<string[]> {
+  const s1Rows = await db
+    .select({ deviceId: s1Agents.deviceId })
+    .from(s1Agents)
+    .innerJoin(devices, eq(s1Agents.deviceId, devices.id))
+    .where(and(eq(s1Agents.orgId, orgId), ...managedDeviceConditions(orgId), ...sitePredicates(filter)));
+  const edrRows = includeEdr
+    ? await db
+      .select({ deviceId: edrEndpoints.breezeDeviceId })
+      .from(edrEndpoints)
+      .innerJoin(devices, eq(edrEndpoints.breezeDeviceId, devices.id))
+      .where(and(eq(edrEndpoints.orgId, orgId), ...managedDeviceConditions(orgId), ...sitePredicates(filter)))
+    : [];
+  return [...s1Rows, ...edrRows]
+    .map((r) => r.deviceId)
+    .filter((id): id is string => typeof id === 'string');
 }
 
 /** Folds EDR coverage into a summary; a no-op (same object) when there is none. */
@@ -640,12 +675,33 @@ export async function generateThreatDetectionReport(
 
   // Last query on this path so the Huntress query order is untouched.
   const edr = await edrCoverageFor();
+
+  // --- 8. Device coverage across every integrated source (#12046) -------------
+  // The tiles must add up: "with an agent" + "without" = managed devices. So
+  // both are counted in DEVICES (a device with two agents counts once), from
+  // any source, and the Huntress agents matched to no managed device — which
+  // used to inflate the first tile — are counted separately and disclosed.
+  // Computed only on this path: on the data-gap paths Huntress is unmeasured,
+  // so "no detection agent" cannot be claimed for any device.
+  const managedIds = new Set(deviceRows.map((d) => d.id));
+  const coveredIds = new Set<string>();
+  for (const id of agentDeviceIds) if (managedIds.has(id)) coveredIds.add(id);
+  for (const id of await otherDetectionAgentDeviceIds(orgId, filter, includeEdr)) {
+    if (managedIds.has(id)) coveredIds.add(id);
+  }
+  const fullAgentCoverage = {
+    ...agentCoverage,
+    devicesWithDetectionAgent: coveredIds.size,
+    devicesWithoutDetectionAgent: managedIds.size - coveredIds.size,
+    unmatchedAgents: agentRows.filter((a) => !a.deviceId || !managedIds.has(a.deviceId)).length,
+  };
+
   const summary: ThreatDetectionSummary = withEdr({
     orgId,
     orgName,
     generatedAt,
     coverage,
-    agentCoverage,
+    agentCoverage: fullAgentCoverage,
     incidents: {
       opened: attributable.length,
       resolved: resolvedCount,
