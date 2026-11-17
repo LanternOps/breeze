@@ -58,6 +58,7 @@ export const EXPORT_DATASET_REQUIREMENTS: Readonly<Record<ExportDataset, ExportD
   custom_fields: Object.freeze({ permission: DEVICES_READ }),
   reliability_scores: Object.freeze({ permission: DEVICES_READ }),
   reliability_history: Object.freeze({ permission: DEVICES_READ }),
+  reliability_events: Object.freeze({ permission: DEVICES_READ }),
 });
 
 /**

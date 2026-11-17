@@ -849,6 +849,23 @@ function hardwareErrorKey(event: HistoryRow['hardwareErrors'][number]): string {
   return eventKeyOrJson('hardware', [event.source, event.eventId, event.timestamp, event.type], event);
 }
 
+/**
+ * The dedup key scoring uses for one event, by class. Exported so the
+ * `reliability_events` export carries the same key and a consumer can drop the
+ * duplicates that overlapping agent windows write (#1904).
+ */
+export function reliabilityEventKey(
+  eventClass: 'crash' | 'app_hang' | 'service_failure' | 'hardware_error',
+  event: unknown,
+): string {
+  switch (eventClass) {
+    case 'crash': return crashEventKey(event as HistoryRow['crashEvents'][number]);
+    case 'app_hang': return appHangKey(event as HistoryRow['appHangs'][number]);
+    case 'service_failure': return serviceFailureKey(event as HistoryRow['serviceFailures'][number]);
+    case 'hardware_error': return hardwareErrorKey(event as HistoryRow['hardwareErrors'][number]);
+  }
+}
+
 // Issue #1967 follow-up: agents at v0.84.0 and earlier hard-tagged the entire
 // System log Category="hardware", sweeping Service Control Manager, DCOM,
 // Bluetooth and macOS IOKit-plugin chatter into `hardwareErrors`. The v0.85.0+

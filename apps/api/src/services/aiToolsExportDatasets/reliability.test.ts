@@ -24,7 +24,7 @@ vi.mock('../aiToolsExportShared', async (importOriginal) => {
   };
 });
 
-import { reliabilityScoresAdapter, reliabilityHistoryAdapter } from './reliability';
+import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter } from './reliability';
 
 const NOW = new Date('2026-11-13T12:00:00.000Z');
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -215,5 +215,98 @@ describe('reliability_history', () => {
     await expect(reliabilityHistoryAdapter.createPager(r)).rejects.toMatchObject({ code: 'invalid_time_range' });
     expect(exportDeviceSet).not.toHaveBeenCalled();
     expect(runExportQuery).not.toHaveBeenCalled();
+  });
+});
+
+const EVENT_KEYS = [
+  'historyId', 'deviceId', 'hostname', 'collectedAt', 'eventClass', 'eventType', 'timestamp', 'name',
+  'severity', 'errorCode', 'eventId', 'duration', 'recovered', 'detail', 'eventKey',
+];
+const H1 = id(201);
+const H2 = id(202);
+const eventsHistory = (hid: string, over: Record<string, unknown> = {}) => ({
+  id: hid, deviceId: D1, collectedAt: new Date('2026-11-10T00:00:00Z'), collectedAtText: '2026-11-10 00:00:00',
+  crashEvents: [{ type: 'bsod', timestamp: '2026-11-09T01:00:00Z', details: { dump: 'C:\\Users\\jdoe\\x.dmp', token: 't' } }],
+  appHangs: [{ processName: 'C:\\Users\\jdoe\\app.exe', timestamp: '2026-11-09T02:00:00Z', duration: 30, resolved: true }],
+  serviceFailures: [{ serviceName: 'Spooler', timestamp: 'garbage', errorCode: 'password=hunter2', recovered: false }],
+  hardwareErrors: { not: 'an array' },
+  ...over,
+});
+
+describe('reliability_events', () => {
+  it('flattens every class with one key set, in order', async () => {
+    const rows = await allRows(reliabilityEventsAdapter, [
+      eventsHistory(H1, { hardwareErrors: [{ type: 'disk', severity: 'error', timestamp: '2026-11-09T03:00:00Z', source: 'disk0', eventId: '7' }] }),
+    ]);
+    expect(rows.map((r) => r.eventClass)).toEqual(['crash', 'app_hang', 'service_failure', 'hardware_error']);
+    for (const r of rows) expect(Object.keys(r)).toEqual(EVENT_KEYS);
+    const hw = rows[3]!;
+    expect(hw).toMatchObject({ eventType: 'disk', severity: 'error', name: 'disk0', eventId: '7', historyId: H1 });
+  });
+
+  it('skips non-array classes and non-object elements without throwing', async () => {
+    const rows = await allRows(reliabilityEventsAdapter, [
+      eventsHistory(H1, { crashEvents: 'nope', appHangs: [null, 4, 'x'], serviceFailures: [] }),
+    ]);
+    expect(rows).toEqual([]);
+  });
+
+  it('redacts each free-text column', async () => {
+    const [crash, hang, svc] = await allRows(reliabilityEventsAdapter, [eventsHistory(H1)]);
+    expect(crash!.detail).not.toContain('jdoe');
+    expect(crash!.detail).not.toContain('"t"');
+    expect(hang!.name).not.toContain('jdoe');
+    expect(svc!.errorCode).not.toContain('hunter2');
+    expect(svc!.timestamp).toBeNull();
+  });
+
+  it('wrong-typed enumerated and numeric columns become null', async () => {
+    const [, hang] = await allRows(reliabilityEventsAdapter, [
+      eventsHistory(H1, { appHangs: [{ processName: 'a', timestamp: '2026-11-09T02:00:00Z', duration: 'long', resolved: 'yes' }] }),
+    ]);
+    expect(hang).toMatchObject({ duration: null, recovered: null });
+  });
+
+  it('drops an event outside the window by its own timestamp', async () => {
+    const rows = await allRows(reliabilityEventsAdapter, [
+      eventsHistory(H1, { crashEvents: [{ type: 'bsod', timestamp: '2026-01-01T00:00:00Z' }], appHangs: [], serviceFailures: [] }),
+    ]);
+    expect(rows).toEqual([]);
+  });
+
+  it('carries the scoring dedup key and notes it', async () => {
+    const r = req({});
+    const rows = await allRows(reliabilityEventsAdapter, [eventsHistory(H1), eventsHistory(H2)], r);
+    expect(rows).toHaveLength(6);
+    expect(rows[0]!.eventKey).toBe(rows[3]!.eventKey);
+    expect(rows[0]!.eventKey).not.toBe(rows[1]!.eventKey);
+    expect(r.notes).toContain('reliability_events can list one event more than once; drop duplicates on eventKey.');
+  });
+
+  it('reads pageSize/10 history rows per page (limit 51 at pageSize 500), desc keyset on collected_at', async () => {
+    const { sql, params } = await firstQuery(reliabilityEventsAdapter, req({}));
+    expect(params).toContain(51);
+    expect(sql).toMatch(/order by .*"collected_at" desc, .*"id" desc/i);
+    expect(sql).toMatch(/"device_id" = ANY\(\$\d+::uuid\[\]\)/);
+  });
+
+  it('pages on the history row cursor', async () => {
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValueOnce([eventsHistory(H1), eventsHistory(H2)]).mockResolvedValueOnce([]);
+    const pager = await reliabilityEventsAdapter.createPager(req({}, { pageSize: 10 }));
+    const first = await pager(null);
+    expect(first.nextCursor).not.toBeNull();
+    await pager(first.nextCursor);
+    expect(compiled(1).params).toContain('2026-11-10 00:00:00');
+  });
+
+  it('empty device set and a bad range behave like the history dataset', async () => {
+    exportDeviceSet.mockResolvedValue(scope([]));
+    expect(await (await reliabilityEventsAdapter.createPager(req({})))(null)).toEqual({ rows: [], nextCursor: null });
+    expect(runExportQuery).not.toHaveBeenCalled();
+    exportDeviceSet.mockClear();
+    const bad = req({ timeRange: { start: '2026-01-01T00:00:00Z', end: '2026-11-01T00:00:00Z' } });
+    await expect(reliabilityEventsAdapter.createPager(bad)).rejects.toMatchObject({ code: 'invalid_time_range' });
+    expect(exportDeviceSet).not.toHaveBeenCalled();
   });
 });

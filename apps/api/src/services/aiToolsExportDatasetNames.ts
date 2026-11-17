@@ -13,5 +13,6 @@ export const EXPORT_DATASETS = [
   'metrics', 'vulnerabilities', 'custom_fields',
   'reliability_scores',
   'reliability_history',
+  'reliability_events',
 ] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
