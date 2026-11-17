@@ -21,6 +21,7 @@ import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import { breezeRegion } from '../config/env';
 import { emitRunProgress } from './aiAgents/runProgress';
 import { DATASET_ADAPTERS, EXPORT_DATASETS, type ExportDataset } from './aiToolsExportDatasets';
+import { EXPORT_DATASET_PARAM_DESCRIPTION, EXPORT_FILTERS_PARAM_DESCRIPTION } from './aiToolsExportDatasetNames';
 import { SensitiveEventLogAccessError } from './eventLogSensitivity';
 import { ExportFilterError } from './aiToolsExportShared';
 import { effectiveExportGrants, withheldSensitiveGates } from './aiToolsExportPermissions';
@@ -57,7 +58,7 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('export_dataset', {
     tier: 1,
     domain: 'admin',
-    searchHint: 'dataset file exports: logs, device and software inventory, metrics, vulnerabilities and custom fields',
+    searchHint: 'dataset file exports: logs, inventory, metrics, vulnerabilities, reliability, boot, hardware, service checks',
     captureExempt: true,
     // The central gate runs org+site verifyDeviceAccess on every id here
     // BEFORE this handler is entered. The run-target check below is a second,
@@ -66,13 +67,15 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'export_dataset',
       description:
-        "Export to a file handle: event_logs, agent_logs, device_inventory, software_inventory, metrics, vulnerabilities, custom_fields, reliability_scores, reliability_history, reliability_events, boot_performance, hardware_events, service_checks. Per-device datasets may truncate on large device sets.",
+        // ≤ 300 chars (description-budget contract): the names fill it, so the
+        // per-dataset rules live on the `dataset` and `filters` parameters.
+        "Export a dataset to a file handle for workspace_stage: event_logs, agent_logs, device_inventory, software_inventory, metrics, vulnerabilities, custom_fields, reliability_scores, reliability_history, reliability_events, boot_performance, hardware_events, service_checks. Rules: see dataset, filters.",
       input_schema: {
         type: 'object' as const,
         properties: {
-          dataset: { type: 'string', enum: [...EXPORT_DATASETS], description: 'Which dataset to export' },
+          dataset: { type: 'string', enum: [...EXPORT_DATASETS], description: EXPORT_DATASET_PARAM_DESCRIPTION },
           format: { type: 'string', enum: ['jsonl', 'csv'], description: 'Output format (default jsonl)' },
-          filters: { type: 'object', description: 'Dataset-specific filters, same shape as the corresponding read tool' },
+          filters: { type: 'object', description: EXPORT_FILTERS_PARAM_DESCRIPTION },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Restrict to these device UUIDs' },
           siteId: { type: 'string', description: 'Restrict to one site UUID' },
           maxRows: { type: 'number', description: `Row cap (default ${EXPORT_DEFAULT_MAX_ROWS}, max ${EXPORT_HARD_MAX_ROWS})` },

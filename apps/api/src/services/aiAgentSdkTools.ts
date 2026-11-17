@@ -48,7 +48,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShapeFor, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
-import { EXPORT_DATASETS } from './aiToolsExportDatasetNames';
+import { EXPORT_DATASETS, EXPORT_DATASET_PARAM_DESCRIPTION, EXPORT_FILTERS_PARAM_DESCRIPTION } from './aiToolsExportDatasetNames';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
@@ -3706,9 +3706,9 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       'export_dataset',
       registryDescription('export_dataset'),
       {
-        dataset: z.enum(EXPORT_DATASETS),
+        dataset: z.enum(EXPORT_DATASETS).describe(EXPORT_DATASET_PARAM_DESCRIPTION),
         format: z.enum(['jsonl', 'csv']).optional(),
-        filters: z.record(z.string(), z.unknown()).optional(),
+        filters: z.record(z.string(), z.unknown()).optional().describe(EXPORT_FILTERS_PARAM_DESCRIPTION),
         deviceIds: z.array(z.string()).optional(),
         siteId: z.string().optional(),
         maxRows: z.number().optional(),

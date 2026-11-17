@@ -450,6 +450,8 @@ The eight actions beyond reset and disable are new in v0.124.0 and are **four-ey
 
 `export_dataset` pages a dataset to completion without the ordinary 8,000-character response compaction. Use the returned artifact handle with `workspace_stage`. Supported datasets are `event_logs`, `agent_logs`, `device_inventory`, `software_inventory`, `metrics`, `vulnerabilities`, `custom_fields`, `reliability_scores`, `reliability_history`, `reliability_events`, `boot_performance`, `hardware_events`, and `service_checks`.
 
+The six reliability datasets read only the devices fixed into the analysis run when it started, and never the whole organization. Their `filters.timeRange` takes ISO `start` and `end`; the default is the last 30 days and the maximum span is 180 days. `reliability_scores` is current state, so it ignores the time range and says so. `service_checks` lists checks that were not running (stopped, not found, or in error); running checks are not exported. `reliability_events` can list one event more than once, because agents re-send overlapping windows, so drop duplicates on its `eventKey` column. `metrics`, `vulnerabilities` and `custom_fields` read device by device and may end truncated on a large device set.
+
 `delete_tenant` only affects the tenant owning the API key. Its `confirmation_phrase` must exactly equal `delete <tenant_name> permanently` (lowercase and trimmed). Soft deletion retains devices, users, and data for 30 days; contact support to restore during that window. Data is permanently removed afterward.
 
 ## AI agents
