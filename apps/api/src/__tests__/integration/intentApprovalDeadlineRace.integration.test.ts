@@ -720,7 +720,11 @@ describe('#12098 — Tier-3 decision in the last seconds before the approval dea
       }
 
       expect(await closeOut).toEqual({ kind: 'expired' });
-      expect((await approve).status).not.toBe(200);
+      // The route read its row as pending before queueing on the lock, then
+      // found the decision gone once it got the lock: a lost race.
+      const refused = await approve;
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ error: 'Already decided', finalStatus: 'expired' });
       expect((await readIntent(intentId)).status).toBe('expired');
       expect(await readApprovalRowStatus(approvalRowId)).toBe('expired');
       expect((await outboxEvents(intentId)).filter((e) => e === 'intent_expired')).toHaveLength(1);

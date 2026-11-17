@@ -2789,8 +2789,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               closeOut = await closeOutUndecidedIntent(intent.id);
               if (closeOut.kind === 'decided') decisionStatus = closeOut.status;
             }
-            // Read after the close-out, so an end that arrived while it ran
-            // counts too.
+            // Read after the close-out, so a teardown that arrived while it
+            // ran counts too. (A new message or interrupt settles only waits
+            // still counted in flight; this one ended above.)
             waitEndedEarly = approvalWait.signal.aborted;
             intentOutcome = closeOut?.kind === 'expired'
               ? 'expired'

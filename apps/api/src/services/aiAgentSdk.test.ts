@@ -2705,17 +2705,29 @@ describe('createSessionPreToolUse', () => {
       // the tool, so a claimed intent would sit in `executing`; on a new
       // message the tool would run in a turn the user has moved past. The
       // release worker runs it instead.
+      const teardown = (s: ReturnType<typeof makeActiveSession>) => s.abortController.abort();
+      const settle = (s: ReturnType<typeof makeActiveSession>) => { settleApprovalWaits(s as any); };
       it.each([
-        ['session teardown', (s: ReturnType<typeof makeActiveSession>) => s.abortController.abort()],
-        ['a new user message / interrupt', (s: ReturnType<typeof makeActiveSession>) => settleApprovalWaits(s as any)],
-      ])('an approval found after the wait was ended early (%s) is handed off, never claimed inline', async (_label, endWait) => {
-        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'approved' });
+        // [label, how the wait ends, close-out status, when the end arrives]
+        ['session teardown', teardown, 'approved', 'wait'],
+        ['a new user message / interrupt', settle, 'approved', 'wait'],
+        // The worker already claimed or finished it: still the dying turn's handoff.
+        ['session teardown, worker claimed', teardown, 'executing', 'wait'],
+        ['a new user message, worker finished', settle, 'completed', 'wait'],
+        // Teardown while the close-out itself runs still counts. (A new
+        // message then does not settle anything: the wait has already ended.)
+        ['session teardown during the close-out', teardown, 'approved', 'closeOut'],
+      ] as const)('an approval found after the wait was ended early (%s) is handed off, never claimed inline', async (_label, endWait, status, endsDuring) => {
         mockTransitionIntent.mockResolvedValue(true);
         mockWaitForIntentTerminalOutcome.mockResolvedValueOnce(null);
         const session = makeActiveSession({ approvalMode: 'per_step' });
         mockWaitForIntentDecision.mockImplementationOnce(async () => {
-          endWait(session);
+          if (endsDuring === 'wait') endWait(session);
           return 'pending_approval';
+        });
+        mockCloseOutUndecidedIntent.mockImplementationOnce(async () => {
+          if (endsDuring === 'closeOut') endWait(session);
+          return { kind: 'decided', status };
         });
 
         const result = await createSessionPreToolUse(session)('execute_command', {});
