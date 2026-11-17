@@ -37,6 +37,11 @@ vi.mock("../../lib/authScope", () => ({
   getJwtClaims: () => mockClaims,
 }));
 
+const showToastMock = vi.hoisted(() => vi.fn());
+vi.mock("../shared/Toast", () => ({
+  showToast: (...args: unknown[]) => showToastMock(...args),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const monitoringResponse = (): Response =>
@@ -210,5 +215,66 @@ describe("MonitoringIntegration — org-scope users are never gated by header co
     expect(
       screen.queryByText(/configured per organization/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+// #12102: test actions are throttled per user and per org on the API.
+describe("MonitoringIntegration — connection test outcome", () => {
+  const testResponse = (payload: unknown, status: number): Response =>
+    ({
+      ok: status < 300,
+      status,
+      json: async () => payload,
+    }) as unknown as Response;
+
+  async function clickPrometheusTest(response: Response) {
+    fetchWithAuthMock.mockImplementation(async (url) =>
+      url === "/integrations/monitoring/test" ? response : monitoringResponse(),
+    );
+    render(<MonitoringIntegration />);
+    const buttons = await screen.findAllByRole("button", { name: /Test connection/ });
+    fireEvent.click(buttons[0]!);
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        "/integrations/monitoring/test",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  }
+
+  it("toasts and shows the rate-limit message when the test is throttled", async () => {
+    await clickPrometheusTest(
+      testResponse(
+        { success: false, code: "RATE_LIMITED", error: "Too many test requests. Try again in 42 seconds." },
+        429,
+      ),
+    );
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    const toast = showToastMock.mock.calls[0]![0] as { type: string; message: string };
+    expect(toast.type).toBe("error");
+    expect(toast.message).toMatch(/too many requests/i);
+    expect(await screen.findByText(toast.message)).toBeInTheDocument();
+  });
+
+  it("shows a failed test beside the button without a toast", async () => {
+    await clickPrometheusTest(
+      testResponse({ success: false, error: "Prometheus rejected the request (HTTP 401)" }, 502),
+    );
+
+    expect(
+      await screen.findByText("Prometheus rejected the request (HTTP 401)"),
+    ).toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it("returns to idle without a message when the session expired", async () => {
+    await clickPrometheusTest(testResponse({ error: "Unauthorized" }, 401));
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /Test connection/ })[0]).toBeEnabled(),
+    );
+    expect(screen.queryByText("Unauthorized")).not.toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 });

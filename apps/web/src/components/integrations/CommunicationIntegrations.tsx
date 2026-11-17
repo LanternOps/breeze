@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link2, MessageSquare, Save, Send, Users, Webhook } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
+import { ActionError, runAction } from "@/lib/runAction";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
@@ -128,28 +129,34 @@ const saveIntegration = async (
   }
 };
 
+/**
+ * Runs a test (`test: true` — the API sends it without saving the settings)
+ * and returns the API's success message, if any. A failure throws an
+ * ActionError carrying the API's reason (rejected webhook, unreachable host, no
+ * deliverable destination), which the caller shows beside the button. Only a
+ * throttled test (#12102) is also toasted: it is not a result of the test.
+ */
 const sendTest = async (
   endpoint: string,
   payload: Record<string, unknown>,
   errorMessage: string,
-) => {
-  const response = await fetchWithAuth(endpoint, {
-    method: "POST",
-    body: JSON.stringify({ ...payload, test: true }),
+): Promise<string | undefined> => {
+  const data = await runAction<{ message?: unknown }>({
+    request: () =>
+      fetchWithAuth(endpoint, {
+        method: "POST",
+        body: JSON.stringify({ ...payload, test: true }),
+      }),
+    errorFallback: errorMessage,
+    suppressErrorToast: (status) => status !== 429,
   });
+  return typeof data?.message === "string" && data.message ? data.message : undefined;
+};
 
-  if (!response.ok) {
-    // The API says why a test failed (rejected webhook, unreachable host, no
-    // deliverable destination); show that rather than a generic message.
-    let reason: string | undefined;
-    try {
-      const data = await response.json();
-      if (data && typeof data.error === "string" && data.error) reason = data.error;
-    } catch {
-      // Non-JSON error body: fall back to the generic message.
-    }
-    throw new Error(reason ?? errorMessage);
-  }
+/** Status-line text for a failed test, or null for a 401 (the auth redirect handles it). */
+const testFailureMessage = (err: unknown, fallback: string): string | null => {
+  if (err instanceof ActionError && err.status === 401) return null;
+  return err instanceof Error && err.message ? err.message : fallback;
 };
 
 export default function CommunicationIntegrations() {
@@ -334,7 +341,9 @@ export default function CommunicationIntegrations() {
     setSlackTesting(true);
     setSlackStatus(null);
     try {
-      await sendTest(
+      // The API answers 422 for a Slack test (nothing here can deliver one);
+      // if it ever succeeds, its own message says what happened.
+      const message = await sendTest(
         "/integrations/slack",
         {
           enabled: slackEnabled,
@@ -346,18 +355,13 @@ export default function CommunicationIntegrations() {
         },
         t("communicationIntegrations.unableToSendTestNotification"),
       );
-      setSlackStatus({
-        tone: "success",
-        message: t("communicationIntegrations.slackTestNotificationQueued"),
-      });
+      setSlackStatus(message ? { tone: "success", message } : null);
     } catch (err) {
-      setSlackStatus({
-        tone: "error",
-        message:
-          err instanceof Error
-            ? err.message
-            : t("communicationIntegrations.slackTestNotificationFailed"),
-      });
+      const message = testFailureMessage(
+        err,
+        t("communicationIntegrations.slackTestNotificationFailed"),
+      );
+      setSlackStatus(message ? { tone: "error", message } : null);
     } finally {
       setSlackTesting(false);
     }
@@ -400,7 +404,9 @@ export default function CommunicationIntegrations() {
     setTeamsTesting(true);
     setTeamsStatus(null);
     try {
-      await sendTest(
+      // The API answers 422 for a Teams test (nothing here can deliver one);
+      // if it ever succeeds, its own message says what happened.
+      const message = await sendTest(
         "/integrations/teams",
         {
           enabled: teamsEnabled,
@@ -412,18 +418,13 @@ export default function CommunicationIntegrations() {
         },
         t("communicationIntegrations.unableToSendTestNotification"),
       );
-      setTeamsStatus({
-        tone: "success",
-        message: t("communicationIntegrations.teamsTestNotificationQueued"),
-      });
+      setTeamsStatus(message ? { tone: "success", message } : null);
     } catch (err) {
-      setTeamsStatus({
-        tone: "error",
-        message:
-          err instanceof Error
-            ? err.message
-            : t("communicationIntegrations.teamsTestNotificationFailed"),
-      });
+      const message = testFailureMessage(
+        err,
+        t("communicationIntegrations.teamsTestNotificationFailed"),
+      );
+      setTeamsStatus(message ? { tone: "error", message } : null);
     } finally {
       setTeamsTesting(false);
     }
@@ -479,13 +480,11 @@ export default function CommunicationIntegrations() {
         message: t("communicationIntegrations.discordTestNotificationSent"),
       });
     } catch (err) {
-      setDiscordStatus({
-        tone: "error",
-        message:
-          err instanceof Error
-            ? err.message
-            : t("communicationIntegrations.discordTestNotificationFailed"),
-      });
+      const message = testFailureMessage(
+        err,
+        t("communicationIntegrations.discordTestNotificationFailed"),
+      );
+      setDiscordStatus(message ? { tone: "error", message } : null);
     } finally {
       setDiscordTesting(false);
     }
