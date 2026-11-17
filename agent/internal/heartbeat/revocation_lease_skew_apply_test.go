@@ -66,6 +66,35 @@ func TestRevocationLeaseRenewalFromAnOlderAPIUsesTheAbsoluteDeadlines(t *testing
 	}
 }
 
+// An older API's answer on a device whose clock is 10 min slow reads as an
+// 11 min lease. The fallback is capped at receipt + MaxRevocationLeaseTTL, so
+// the slow clock cannot stretch the lease. (The fast-clock side, where the
+// absolute deadline must be kept as it is, is pinned in the desktop package:
+// TestAbsoluteFallbackIsNeverExtendedOnAFastDevice.)
+func TestRevocationLeaseRenewalFromAnOlderAPIIsCappedOnASlowDevice(t *testing.T) {
+	h, mgr := startSkewTestStream(t, "ws-old-slow")
+	const skew = -10 * time.Minute
+	receivedAt := time.Now()
+	serverNow := receivedAt.Add(-skew)
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
+		SessionID:          "ws-old-slow",
+		ExpiresAtUnixMs:    serverNow.Add(time.Minute).UnixMilli(),
+		HardDeadlineUnixMs: serverNow.Add(desktop.MaxSessionDurationCap).UnixMilli(),
+		ReceivedAt:         receivedAt,
+	})
+	st, ok := mgr.LeaseStatus("ws-old-slow")
+	if !ok || st.Revoked {
+		t.Fatalf("renewal must leave the stream live: %+v", st)
+	}
+	capAt := receivedAt.Add(desktop.MaxRevocationLeaseTTL)
+	assertNear(t, "expiresAt", st.ExpiresAt, capAt, capAt)
+	// The stream's hard deadline only ever moves earlier, so the most this
+	// answer can do is leave it at or before the 12 h cap.
+	if hardCap := receivedAt.Add(desktop.MaxSessionDurationCap); st.HardDeadline.After(hardCap) {
+		t.Fatalf("hardDeadline = +%v, want at most +%v", st.HardDeadline.Sub(receivedAt), desktop.MaxSessionDurationCap)
+	}
+}
+
 // A renewal answer applied to a live stream must be measured from receipt.
 func TestRevocationLeaseRenewalIgnoresDeviceClockSkew(t *testing.T) {
 	for _, skew := range leaseSkews {
@@ -153,10 +182,15 @@ func TestLeaseAnswerForwardedToTheHelperIsResolvedToTheDeviceClock(t *testing.T)
 			t.Fatalf("forwarded %s = %d, want %d: measured from the request (off by %v)",
 				f.name, f.got, want, time.Duration(f.got-want)*time.Millisecond)
 		}
-		// On the current wall clock: within the round trip of
-		// now + granted remaining, never later.
-		if hi := time.Now().Add(f.in).UnixMilli(); f.got > hi || f.got < hi-roundTrip.Milliseconds()-time.Second.Milliseconds() {
-			t.Fatalf("forwarded %s = %d is not within the round trip of now+%v (%d)", f.name, f.got, f.in, hi)
+		// On the current wall clock: never later than receipt + granted
+		// remaining, and no earlier than that minus the round trip. Both
+		// bounds come from the receipt reading taken before the answer was
+		// applied, not from a clock read after awaitEnvelope, so a slow IPC
+		// delivery on a loaded race run cannot move them.
+		hi := receivedAt.Add(f.in).UnixMilli()
+		if lo := hi - roundTrip.Milliseconds(); f.got > hi || f.got < lo {
+			t.Fatalf("forwarded %s = %d is not within [%d, %d]: the round trip before receipt+%v",
+				f.name, f.got, lo, hi, f.in)
 		}
 	}
 }

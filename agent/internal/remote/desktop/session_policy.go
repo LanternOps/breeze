@@ -181,11 +181,12 @@ const MaxRevocationLeaseTTL = 5 * time.Minute
 //
 // expiresInMs > 0 is the lease's remaining lifetime as of the server's
 // decision: the clock-independent form, measured from anchor on the monotonic
-// clock and capped at MaxRevocationLeaseTTL. Otherwise (an older API) it
-// falls back to the absolute expiresAtUnixMs, read against this device's wall
-// clock exactly as before. The absolute form cut a lease short by the
-// device's full clock lead and stretched it by the full lag, without bound
-// (#11840).
+// clock and capped at MaxRevocationLeaseTTL. Otherwise (an older API, or a
+// missing or malformed field) it falls back to the absolute expiresAtUnixMs,
+// read against this device's wall clock. The absolute form cuts a lease short
+// by the device's full clock lead and would stretch it by the full lag, so the
+// fallback is capped at the same anchor + MaxRevocationLeaseTTL: a slow clock
+// can stretch a lease to at most that, never past it (#11840).
 //
 // Which anchor bounds what:
 //   - A renewal answer is measured from when this agent queued the request it
@@ -204,8 +205,8 @@ func LeaseExpiry(anchor time.Time, expiresInMs, expiresAtUnixMs int64) time.Time
 	return resolveLeaseDeadline(anchor, expiresInMs, expiresAtUnixMs, MaxRevocationLeaseTTL)
 }
 
-// LeaseHardDeadline is LeaseExpiry for the session's hard deadline, with the
-// remaining time capped at MaxSessionDurationCap.
+// LeaseHardDeadline is LeaseExpiry for the session's hard deadline, with
+// either form capped at anchor + MaxSessionDurationCap.
 func LeaseHardDeadline(anchor time.Time, hardDeadlineInMs, hardDeadlineUnixMs int64) time.Time {
 	return resolveLeaseDeadline(anchor, hardDeadlineInMs, hardDeadlineUnixMs, MaxSessionDurationCap)
 }
@@ -222,7 +223,15 @@ func resolveLeaseDeadline(anchor time.Time, remainingMs, unixMs int64, ceiling t
 		}
 		return anchor.Add(time.Duration(remainingMs) * time.Millisecond)
 	}
-	return monotonicFromUnixMs(anchor, unixMs)
+	// The absolute fallback is bounded by the same ceiling, so a device whose
+	// clock is behind the server's cannot stretch the lease past it (#11840).
+	// It is only ever a cap: a deadline the absolute field puts earlier, such
+	// as one already past on a device whose clock is ahead, is kept as is.
+	deadline := monotonicFromUnixMs(anchor, unixMs)
+	if limit := anchor.Add(ceiling); !deadline.IsZero() && deadline.After(limit) {
+		return limit
+	}
+	return deadline
 }
 
 // revocationLeaseToIPC is the inverse, used when the service hands a start over
