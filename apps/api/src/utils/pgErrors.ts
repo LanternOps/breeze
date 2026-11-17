@@ -1,6 +1,14 @@
 // Shared with extensions so every Drizzle caller unwraps the same error shapes.
 import { pgErrorCode } from '@breeze/shared/pgErrors';
-export { isPgForeignKeyViolation, isPgUniqueViolation, pgErrorCode, pgErrorNode, pgErrorConstraint } from '@breeze/shared/pgErrors';
+export {
+  FOREIGN_KEY_VIOLATION_SQLSTATES,
+  isPgForeignKeyViolation,
+  isPgForeignKeyViolationCode,
+  isPgUniqueViolation,
+  pgErrorCode,
+  pgErrorNode,
+  pgErrorConstraint,
+} from '@breeze/shared/pgErrors';
 
 /**
  * SQLSTATE class 22 (data exception: 22P05 untranslatable character, 22P02

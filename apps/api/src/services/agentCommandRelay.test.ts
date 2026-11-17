@@ -13,6 +13,10 @@ vi.mock('../routes/agentWs', () => ({
 }));
 vi.mock('./agentPresence', () => ({
   readAgentPresence: vi.fn(),
+  probeAgentPresence: vi.fn(),
+}));
+vi.mock('../db', () => ({
+  hasDbAccessContext: vi.fn(() => false),
 }));
 vi.mock('./bullmqQueue', () => ({
   createInstrumentedQueue: vi.fn(),
@@ -35,7 +39,9 @@ import {
   agentCommandRelayQueueName,
   awaitRelayAck,
   claimRelaySend,
+  agentReachability,
   dispatchCommandToAgent,
+  dispatchDisposition,
   getAgentCommandRelayQueue,
   isAgentConnectedAnywhere,
   isRelayShardLive,
@@ -45,14 +51,17 @@ import {
   openRelayCommand,
   RELAY_DELIVERY_DEADLINE_MS,
   RELAY_QUEUE_EVENTS_MAX_LEN,
+  RELAY_TRANSPORT_DEADLINE_MS,
   relayQueueOwner,
+  releaseRelaySendClaim,
   relayShardOwnerKey,
   sealRelayCommand,
   shutdownAgentCommandRelayQueue,
   writeRelayAck,
 } from './agentCommandRelay';
 import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
-import { readAgentPresence } from './agentPresence';
+import { probeAgentPresence, readAgentPresence } from './agentPresence';
+import { hasDbAccessContext } from '../db';
 import { createInstrumentedQueue } from './bullmqQueue';
 import { breezeRole } from '../config/env';
 
@@ -182,6 +191,18 @@ describe('acks', () => {
   it('awaitRelayAck polls GET until the ack appears', async () => {
     redisMock.get.mockResolvedValueOnce(null).mockResolvedValueOnce(JSON.stringify({ status: 'offline' }));
     await expect(awaitRelayAck('r-1', 1_000)).resolves.toEqual({ status: 'offline' });
+  });
+
+  // #4142: an ack this build cannot read says nothing it can trust about the
+  // send. Callers that branch on `status` directly must see `indeterminate`.
+  it('awaitRelayAck maps an unknown ack status to indeterminate', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({ status: 'evicted' }));
+    await expect(awaitRelayAck('r-1', 1_000)).resolves.toEqual({ status: 'indeterminate' });
+  });
+
+  it('awaitRelayAck treats a null ack body as unknown (indeterminate)', async () => {
+    redisMock.get.mockResolvedValueOnce('null');
+    await expect(awaitRelayAck('r-1', 1_000)).resolves.toEqual({ status: 'indeterminate' });
   });
 
   it('awaitRelayAck returns indeterminate at the deadline', async () => {
@@ -314,14 +335,163 @@ describe('dispatchCommandToAgent facade', () => {
     expect(fakeQueue.add.mock.calls[0]?.[2].priority).toBe(10);
   });
 
-  it('queue.add throws → infrastructure_error (not offline)', async () => {
+  it('queue.add throws synchronously (never issued) → infrastructure_error, no ack wait', async () => {
     vi.mocked(isAgentConnected).mockReturnValue(false);
     vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
-    fakeQueue.add.mockRejectedValueOnce(new Error('redis down'));
+    fakeQueue.add.mockImplementationOnce(() => { throw new Error('redis down'); });
 
     const result = await dispatchCommandToAgent('agent-1', command);
     expect(result.status).toBe('infrastructure_error');
     expect((result as { message: string }).message).toContain('redis down');
+    expect(redisMock.get).not.toHaveBeenCalled();
+  });
+
+  // #4142 W1.T2: Redis may have stored the job before the reply was lost, so a
+  // consumer can still send it. Releasing the caller's claim then could deliver
+  // the command twice.
+  it('an enqueue that rejects after being issued is indeterminate, not infrastructure_error', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+    fakeQueue.add.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(dispatchCommandToAgent('agent-1', command)).resolves.toEqual({ status: 'indeterminate' });
+    expect(redisMock.get).not.toHaveBeenCalled();
+  });
+
+  it('an enqueue that never settles returns indeterminate within RELAY_TRANSPORT_DEADLINE_MS', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(isAgentConnected).mockReturnValue(false);
+      vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+      fakeQueue.add.mockReturnValueOnce(new Promise(() => {}));
+      let settled: unknown;
+      const pending = dispatchCommandToAgent('agent-1', command).then((r) => { settled = r; });
+
+      await vi.advanceTimersByTimeAsync(RELAY_TRANSPORT_DEADLINE_MS - 1);
+      expect(settled).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(settled).toEqual({ status: 'indeterminate' });
+      expect(redisMock.get).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an ack wait that outruns the budget answers indeterminate at the absolute deadline, not later', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(isAgentConnected).mockReturnValue(false);
+      vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+      // Every ack read hangs: only the absolute budget can end the wait.
+      redisMock.get.mockReturnValue(new Promise(() => {}));
+      let settled: unknown;
+      const pending = dispatchCommandToAgent('agent-1', command).then((r) => { settled = r; });
+
+      await vi.advanceTimersByTimeAsync(RELAY_TRANSPORT_DEADLINE_MS);
+      await pending;
+      expect(settled).toEqual({ status: 'indeterminate' });
+    } finally {
+      redisMock.get.mockReset();
+      vi.useRealTimers();
+    }
+  });
+
+  it('presence reads that hang past the budget answer infrastructure_error: nothing was enqueued', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(isAgentConnected).mockReturnValue(false);
+      vi.mocked(readAgentPresence).mockReturnValueOnce(new Promise(() => {}));
+      let settled: { status: string } | undefined;
+      const pending = dispatchCommandToAgent('agent-1', command).then((r) => { settled = r; });
+
+      await vi.advanceTimersByTimeAsync(RELAY_TRANSPORT_DEADLINE_MS);
+      await pending;
+      expect(settled?.status).toBe('infrastructure_error');
+      expect(fakeQueue.add).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a shard check that hangs past the budget answers infrastructure_error: nothing was enqueued', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(isAgentConnected).mockReturnValue(false);
+      vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+      redisMock.exists.mockReturnValueOnce(new Promise(() => {}));
+      let settled: { status: string; message?: string } | undefined;
+      const pending = dispatchCommandToAgent('agent-1', command).then((r) => { settled = r as typeof settled; });
+
+      await vi.advanceTimersByTimeAsync(RELAY_TRANSPORT_DEADLINE_MS);
+      await pending;
+      expect(settled?.status).toBe('infrastructure_error');
+      expect(settled?.message).toMatch(/shard check/);
+      expect(fakeQueue.add).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a held-DB-context refusal is logged (rate-limited), so a silent heartbeat fallback is visible', async () => {
+    __resetRelayRedisFailureLogForTests();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(hasDbAccessContext).mockReturnValue(true);
+    try {
+      await dispatchCommandToAgent('agent-1', command);
+      await dispatchCommandToAgent('agent-1', command);
+      const refusals = warn.mock.calls.filter((c) => String(c[0]).includes('held DB context'));
+      expect(refusals).toHaveLength(1);
+    } finally {
+      vi.mocked(hasDbAccessContext).mockReturnValue(false);
+      warn.mockRestore();
+    }
+  });
+
+  it('refuses to relay inside a held DB context: infrastructure_error, no presence read, no enqueue, no ack wait', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(hasDbAccessContext).mockReturnValueOnce(true);
+    vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+
+    const result = await dispatchCommandToAgent('agent-1', command);
+
+    expect(result.status).toBe('infrastructure_error');
+    expect((result as { message: string }).message).toMatch(/held DB context/);
+    expect(readAgentPresence).not.toHaveBeenCalled();
+    expect(fakeQueue.add).not.toHaveBeenCalled();
+    expect(redisMock.get).not.toHaveBeenCalled();
+  });
+
+  it('a held DB context does not block the local-first send (no Redis, no wait)', async () => {
+    vi.mocked(hasDbAccessContext).mockReturnValue(true);
+    try {
+      vi.mocked(isAgentConnected).mockReturnValue(true);
+      vi.mocked(sendCommandToAgent).mockReturnValue(true);
+      await expect(dispatchCommandToAgent('agent-1', command)).resolves.toEqual({ status: 'sent', via: 'local' });
+    } finally {
+      vi.mocked(hasDbAccessContext).mockReturnValue(false);
+    }
+  });
+
+  it('never rejects: an unexpected throw before enqueue is infrastructure_error', async () => {
+    vi.mocked(isAgentConnected).mockImplementationOnce(() => { throw new Error('socket map exploded'); });
+
+    const result = await dispatchCommandToAgent('agent-1', command);
+    expect(result.status).toBe('infrastructure_error');
+    expect((result as { message: string }).message).toContain('socket map exploded');
+  });
+
+  it('never rejects: an unexpected throw after the enqueue was issued is indeterminate', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+    // The ack poll cannot even get a client: a throw its own catch cannot absorb.
+    const realGetRedis = (await import('./redis')).getRedis;
+    vi.mocked(realGetRedis).mockImplementationOnce(() => redisMock as never) // isRelayShardLive
+      .mockImplementationOnce(() => { throw new Error('redis client gone'); }); // awaitRelayAck
+
+    await expect(dispatchCommandToAgent('agent-1', command)).resolves.toEqual({ status: 'indeterminate' });
+    expect(fakeQueue.add).toHaveBeenCalledTimes(1);
   });
 
   it('sealRelayCommand throws (no APP_ENCRYPTION_KEY_ID) → infrastructure_error, not offline, no enqueue', async () => {
@@ -431,5 +601,82 @@ describe('dispatchCommandToAgent facade', () => {
       await expect(isAgentConnectedAnywhere('agent-1')).resolves.toBe(true);
       expect(isAgentConnected).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('dispatchDisposition (#4142 W1.T2)', () => {
+  it.each([
+    [{ status: 'sent', via: 'local' } as const, 'delivered'],
+    [{ status: 'sent', via: 'relay' } as const, 'delivered'],
+    [{ status: 'indeterminate' } as const, 'uncertain'],
+    [{ status: 'offline' } as const, 'not_delivered'],
+    [{ status: 'expired' } as const, 'not_delivered'],
+    [{ status: 'owner_mismatch' } as const, 'not_delivered'],
+    [{ status: 'infrastructure_error', message: 'x' } as const, 'not_delivered'],
+  ])('%j → %s', (outcome, expected) => {
+    expect(dispatchDisposition(outcome)).toBe(expected);
+  });
+
+  it('a status this build does not know is uncertain: the frame may have gone out', () => {
+    expect(dispatchDisposition({ status: 'evicted' } as never)).toBe('uncertain');
+  });
+});
+
+describe('agentReachability (#4142 W1.T2)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(breezeRole).mockReturnValue('all');
+  });
+
+  it('local socket → connected, no presence read', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+    await expect(agentReachability('agent-1')).resolves.toBe('connected');
+    expect(probeAgentPresence).not.toHaveBeenCalled();
+  });
+
+  it('no local socket + a live lease (another instance) → connected', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(probeAgentPresence).mockResolvedValue({ present: true });
+    await expect(agentReachability('agent-1')).resolves.toBe('connected');
+  });
+
+  it('no local socket + lease read OK and absent → absent', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(probeAgentPresence).mockResolvedValue({ present: false });
+    await expect(agentReachability('agent-1')).resolves.toBe('absent');
+  });
+
+  it('no local socket + Redis could not answer → unknown (never collapsed into absent)', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(probeAgentPresence).mockResolvedValue({ unavailable: true });
+    await expect(agentReachability('agent-1')).resolves.toBe('unknown');
+  });
+
+  it('worker role never touches the socket map', async () => {
+    vi.mocked(breezeRole).mockReturnValue('worker');
+    vi.mocked(probeAgentPresence).mockResolvedValue({ present: true });
+    await expect(agentReachability('agent-1')).resolves.toBe('connected');
+    expect(isAgentConnected).not.toHaveBeenCalled();
+  });
+});
+
+describe('releaseRelaySendClaim (#4142 W1.T2)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('deletes only a held claim, never a sent marker (compare-and-delete in Lua)', async () => {
+    redisMock.eval.mockResolvedValueOnce(1);
+    await releaseRelaySendClaim('agent-1', 'cmd-1');
+    const [script, numKeys, key] = redisMock.eval.mock.calls[0]!;
+    expect(numKeys).toBe(1);
+    expect(key).toBe('agent-relay-claim:agent-1:cmd-1');
+    expect(script).toContain("== 'claimed'");
+    expect(script).toContain('DEL');
+  });
+
+  it('a Redis failure is swallowed: the claim expires on its own TTL', async () => {
+    redisMock.eval.mockRejectedValueOnce(new Error('down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(releaseRelaySendClaim('agent-1', 'cmd-1')).resolves.toBeUndefined();
+    warn.mockRestore();
   });
 });

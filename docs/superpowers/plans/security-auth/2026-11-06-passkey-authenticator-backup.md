@@ -3,7 +3,8 @@ anchor_issue: 10650
 related: [10650, 2153, 10671, 5038, 4934, 4018, 4045, 7369]
 baseline_commit: bef484ca8b
 spec: none (track:plan; design is inline below, sections "Design" and "Decisions")
-status: draft-for-approval
+status: approved
+tracking_issue: 11420
 ---
 
 # Authenticator App as a Backup Factor for Passkey-Primary Accounts: Implementation Plan

@@ -818,34 +818,37 @@ function evaluateRegistryCheckRule(
     && normalizeComparable(entry.valueName) === normalizedValueName
   );
 
+  // #11976: the result records the outcome and the value the rule's author
+  // wrote, never the value the device reported. These details are stored and
+  // returned to devices:read callers, while reading a registry value live
+  // needs devices:execute; the stored detail must not widen that.
+  const data = (outcome: 'matched' | 'mismatched' | 'not_found') =>
+    expectedValue === null ? { outcome } : { outcome, expectedValue };
+
   if (!matched) {
     return {
       ruleType: rule.type,
       passed: false,
       message: `Registry value not found: ${registryPath}\\${valueName}.`,
+      data: data('not_found'),
     };
   }
 
-  if (expectedValue !== null) {
-    const actualValue = matched.valueData ?? '';
-    if (normalizeComparable(actualValue) !== normalizeComparable(expectedValue)) {
-      return {
-        ruleType: rule.type,
-        passed: false,
-        message: `Registry value mismatch for ${registryPath}\\${valueName}.`,
-        data: {
-          expectedValue,
-          actualValue,
-          valueType: matched.valueType,
-        },
-      };
-    }
+  if (expectedValue !== null
+    && normalizeComparable(matched.valueData ?? '') !== normalizeComparable(expectedValue)) {
+    return {
+      ruleType: rule.type,
+      passed: false,
+      message: `Registry value mismatch for ${registryPath}\\${valueName}.`,
+      data: data('mismatched'),
+    };
   }
 
   return {
     ruleType: rule.type,
     passed: true,
     message: `Registry value matches for ${registryPath}\\${valueName}.`,
+    data: data('matched'),
   };
 }
 

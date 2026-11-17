@@ -8,6 +8,7 @@ import WispSpendMeter from '../wisp/WispSpendMeter';
 import WispGrantSettingsPanel from './WispGrantSettingsPanel';
 import WispThreadHeaderCompact from './WispThreadHeaderCompact';
 import { useWispGrantControls, type WispGrantControls } from './useWispGrantControls';
+import { utcClockTime } from '../wisp/wispSpend';
 
 export type WispThreadHeaderProps = {
   wisp: NonNullable<WispState>;
@@ -77,7 +78,7 @@ export type WispGrantDetailsProps = {
 export function WispGrantDetails({ wisp, wideningAvailable, controls }: WispGrantDetailsProps) {
   const { t } = useTranslation('ai');
   const {
-    updateWisp, openSettings, settings, showRefreshHint, startNewConversation, dismissRefreshHint, dialogs,
+    updateWisp, openSettings, settings, showRefreshHint, startNewConversation, dismissRefreshHint, budgetReached, dialogs,
   } = controls;
 
   return (
@@ -114,10 +115,20 @@ export function WispGrantDetails({ wisp, wideningAvailable, controls }: WispGran
         <WispSpendMeter
           spentCents={wisp.spentTodayCents}
           budgetCents={wisp.budgetCentsPerDay}
+          backgroundCents={wisp.backgroundCents}
+          chatCents={wisp.chatCents}
           resetsAt={wisp.budgetResetsAt}
           budgetMax={settings.budgetMax}
           onRaise={wisp.pausedReason === 'partner_disabled' ? undefined : () => openSettings(true)}
         />
+      )}
+      {budgetReached && (
+        <p className="text-amber-600 dark:text-amber-400" data-testid="wisp-budget-warning">
+          {(() => {
+            const time = utcClockTime(wisp.budgetResetsAt);
+            return time === null ? t('wisp.paused.system.budgetExhaustedNoTime') : t('wisp.paused.system.budgetExhausted', { time });
+          })()}
+        </p>
       )}
 
       <WispGrantPauseControl wisp={wisp} onChange={updateWisp} />

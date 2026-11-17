@@ -534,9 +534,17 @@ describe('storage-destination delivery refreshers', () => {
       'mssql_verify',
       'hyperv_backup',
       'hyperv_restore',
+      'vault_sync',
     ]) {
       expect(typeof deliveryRefreshers[type], type).toBe('function');
     }
+  });
+
+  // #11858: vault_sync persists a destination reference; only the plain
+  // destination refresher resolves it (no storage session, no integrity gate).
+  it('resolves a vault sync destination reference with the destination refresher', async () => {
+    const { materializeBackupStorageCredentials } = await import('./backupCommandCredentials');
+    expect(deliveryRefreshers.vault_sync).toBe(materializeBackupStorageCredentials);
   });
 
   it('routes the eight restore-shaped types through the storage-session refresher and writes through the write-session refresher', async () => {

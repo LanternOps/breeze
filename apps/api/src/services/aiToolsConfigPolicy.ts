@@ -6,7 +6,7 @@ import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignment
 import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { mfaGatedToolError } from './aiToolMfaGate';
-import type { AiTool } from './aiTools';
+import type { AiTool, PreFilingVerdict } from './aiTools';
 import {
   complianceInlineSettingsSchema,
   maintenanceInlineSettingsSchema,
@@ -14,6 +14,7 @@ import {
   securityAgentsInlineSettingsSchema,
   systemProtectionInlineSettingsSchema,
   containmentInlineSettingsSchema,
+  wakeOnLanInlineSettingsSchema,
   oemUpdatesInlineSettingsSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -27,11 +28,17 @@ import {
 } from '../routes/configurationPolicies/oemUpdatesGate';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { withoutObservedRegistryValues } from './complianceRuleResults';
+import {
+  uncollectableComplianceRegistryPaths,
+  uncollectableComplianceRegistryPathMessage,
+} from '../routes/agents/policyProbeSafety';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import { INLINE_SETTINGS_EXAMPLES } from './aiToolsConfigPolicyExamples';
-import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { CONFIG_POLICY_ORG_ID_DESCRIPTION, CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION } from './aiToolSchemas';
+import { resolveWritableToolOrgId, withOwnerScopeOption } from './aiToolWriteOrg';
 import { describeMaintenanceSchedule } from './maintenanceWindowProjection';
 import {
   resolveEffectiveConfig,
@@ -120,6 +127,8 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   // #11070: strict. Arming, featurePolicyId and closed gates are refused
   // earlier, by oemUpdatesToolRefusal.
   oem_updates: { schema: oemUpdatesInlineSettingsSchema, normalize: true },
+  // #10838: strict; configureSettings must be false until writes ship.
+  wake_on_lan: { schema: wakeOnLanInlineSettingsSchema, normalize: true },
 };
 
 /**
@@ -270,7 +279,7 @@ function validateInlineSettingsForFeature(
   }
 
   const entry = featureType ? VALIDATED_INLINE_SETTINGS[featureType] : undefined;
-  if (!entry || (featureType !== 'containment' && (raw === undefined || raw === null))) return { value: raw };
+  if (!entry || ((featureType !== 'containment' && featureType !== 'wake_on_lan') && (raw === undefined || raw === null))) return { value: raw };
 
   const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
@@ -280,6 +289,12 @@ function validateInlineSettingsForFeature(
     const described = describeFirstZodIssue(parsed.error);
     if (!described) return { error: `Invalid ${featureType} inline settings.` };
     return { error: `Invalid ${featureType} inline settings — ${described}` };
+  }
+  // #11976: same refusal as the HTTP route; left to the service backstop it
+  // would reach the model as the generic tool error.
+  if (featureType === 'compliance') {
+    const uncollectable = uncollectableComplianceRegistryPaths(raw);
+    if (uncollectable.length > 0) return { error: uncollectableComplianceRegistryPathMessage(uncollectable[0]!) };
   }
   return { value: entry.normalize ? parsed.data : raw };
 }
@@ -336,6 +351,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   workload_inventory: `{ enabled: false, dockerEnabled: true, podmanEnabled: true, hypervEnabled: true, proxmoxEnabled: true, intervalMinutes: 60 } — inline-only workload inventory settings. enabled defaults to false (opt-in): runtimes are always detected, but containers and VMs are listed only when enabled is true and the runtime's own flag is true. Turning a runtime off deletes its listed workloads. intervalMinutes is an integer in 15..1440. Collection is read-only.`,
   security_agents: `{ version: 1, agents: [{ vendor: "huntress"|"sentinelone"|"controld"|"nextdns"|"bitdefender", enabled: boolean, platforms?: ["windows"|"macos"|"linux"] }] } — inline-only third-party security agent selection. Strict: no keys, tokens or other fields (per-customer keys come from the vendor integration). Each vendor at most once; agents: [] opts the assigned devices out. No featurePolicyId. This tool cannot enable a vendor (enabling installs software, which needs a person with devices.execute); it can only list vendors as disabled.`,
   oem_updates: `{ version: 1, enabled: false, schedule: { weekOfMonth: "first"|"second"|"third"|"fourth"|"last", dayOfWeek: "sun".."sat", windowStart: "HH:MM", windowHours: 1..8 }, catchUpNights: 0..14, reboot: "overnight"|"never", vendors: { dell?|surface?|hp?|lenovo?: { enabled: boolean, categories: { bios?, firmware?, driver?, application?: boolean }, blockedUpdateIds: [] (at most 200 unique IDs) } } } — inline-only vendor (Dell, Surface, HP, Lenovo) update schedule. Strict; every field but blockedUpdateIds is required. An absent vendor or category is off. A category whose rollout gate is still closed cannot be set true. No featurePolicyId. This tool cannot turn vendor updates on (on, a new category, overnight reboot, unblocking an update, assigning or activating a policy that has them on all need a person with devices.execute); it can turn them off, remove a category or block an update.`,
+  wake_on_lan: `{ configureSettings: false, buttonMode: "verified"|"always" } — strict inline-only Wake-on-LAN setting. buttonMode "always" shows the Wake button on every offline device; "verified" shows it only where wake readiness is proven. configureSettings must be false (Breeze does not change WOL settings yet). No featurePolicyId.`,
   containment: `{ version: 1, extraAllow: [], defaultTtlHours: 72, deadManMinutes: 0, remoteRelay: true, requireSignedReleaseToken: false } — strict inline-only containment configuration (not consumed yet); version is required, other fields default as shown. No featurePolicyId. defaultTtlHours: integer 1..720; deadManMinutes: 0 or integer 15..1440. extraAllow: at most 32 strict { host? (DNS name), cidr?, proto: "tcp"|"udp"|"udp+tcp", ports: 1..16 unique integers 1..65535, label: trimmed 1..100 characters }; exactly one of host/cidr, no wildcard or localhost hosts, loopback networks, IPv4 prefixes shorter than /8, or IPv6 prefixes shorter than /32.`,
   system_protection: `{ beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' } — inline-only Windows System Restore checkpoint toggles. Strict: unknown keys are rejected, so there is no onFailure/abort setting. beforePatching defaults to true (matches existing agent behaviour); the other two default to false (opt-in). labelPrefix is 1..64 characters with no control characters. A checkpoint is best-effort and not a backup: Windows may throttle or later remove it.`,
 };
@@ -347,6 +363,43 @@ const FEATURE_POLICY_ID_HINTS: Partial<Record<ConfigFeatureType, string>> = {
   software_policy: 'featurePolicyId → existing software policy UUID',
   peripheral_control: 'featurePolicyId → existing peripheral policy UUID',
 };
+
+/** Who owns a configuration policy a create would write (#1724, #6667). */
+type ConfigPolicyCreateOwner = { partnerId: string } | { orgId: string };
+
+/**
+ * The owner of a `manage_configuration_policy` create, or the refusal its
+ * handler returns. Shared by the handler and `validateBeforeFiling` (#11432),
+ * so a create filed for approval resolves the same owner when it runs.
+ *
+ * A partner-owned ("all orgs") policy is owned by the caller's OWN partner,
+ * never a client-supplied value, and needs full partner org access
+ * (orgAccess 'all', or system scope): it pushes config to every org under the
+ * partner, the same gate the HTTP route enforces. Otherwise the owner org comes
+ * from `resolveWritableToolOrgId`, which never guesses one (#6667); its
+ * ambiguous refusal names both owners the model can choose.
+ */
+function resolveConfigPolicyCreateOwner(input: Record<string, unknown>, auth: AuthContext): ConfigPolicyCreateOwner | { error: string } {
+  if (!canMutateOrgWideGovernance(auth)) return { error: SITE_CEILING_WRITE_DENIED_MESSAGE };
+  if (!input.name) return { error: 'name is required for create' };
+  if (input.ownerScope === 'partner') {
+    if (!auth.partnerId) return { error: 'Partner-wide policies require partner scope' };
+    if (!canManagePartnerWidePolicies(auth)) {
+      return { error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' };
+    }
+    return { partnerId: auth.partnerId };
+  }
+  const resolved = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
+  if (!resolved.orgId) return { error: withOwnerScopeOption(resolved.error ?? 'Organization context required') };
+  return { orgId: resolved.orgId };
+}
+
+/** `validateBeforeFiling` for manage_configuration_policy: only a create's owner is judged. */
+function validateConfigPolicyBeforeFiling(input: Record<string, unknown>, auth: AuthContext): PreFilingVerdict {
+  if (input.action !== 'create') return { ok: true };
+  const owner = resolveConfigPolicyCreateOwner(input, auth);
+  return 'error' in owner ? { ok: false, error: owner.error } : { ok: true };
+}
 
 function retiredFeatureRefusal(featureType: string): string {
   return JSON.stringify({
@@ -802,8 +855,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           name: { type: 'string', description: 'Policy name (required for create)' },
           description: { type: 'string', description: 'Policy description' },
           status: { type: 'string', enum: ['active', 'inactive', 'archived'], description: 'Policy status (for create/update)' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'Create only. Ownership: organization (default, one org) or partner (unassigned library policy; requires full partner org access). Not accepted on update.' },
-          orgId: { type: 'string', description: 'Create only. Org UUID to own the policy; required unless you access exactly one org. Ignored for ownerScope "partner". Cannot be set on update.' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION },
+          orgId: { type: 'string', description: CONFIG_POLICY_ORG_ID_DESCRIPTION },
         },
         required: ['action'],
       },
@@ -819,27 +872,18 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'create') {
-        if (!input.name) return JSON.stringify({ error: 'name is required for create' });
+        // The same owner `validateBeforeFiling` judged before any approval card.
+        const owner = resolveConfigPolicyCreateOwner(input, auth);
+        if ('error' in owner) return JSON.stringify({ error: owner.error });
 
-        // Partner-wide ("all orgs") policy (#1724). The partner is ALWAYS derived
-        // from the caller's own token — never a client-supplied value — so a
-        // caller cannot create a policy owned by another partner. A partner-wide
-        // policy pushes config to EVERY org under the partner, so only callers
-        // with full partner org access (orgAccess='all', or system scope) may
-        // create one — the same gate the HTTP route enforces.
-        if (input.ownerScope === 'partner') {
-          if (!auth.partnerId) {
-            return JSON.stringify({ error: 'Partner-wide policies require partner scope' });
-          }
-          if (!canManagePartnerWidePolicies(auth)) {
-            return JSON.stringify({ error: 'Partner-wide policies require full partner org access (orgAccess must be "all")' });
-          }
-
+        // Partner-wide ("all orgs") policy (#1724), owned by the caller's own
+        // partner (see resolveConfigPolicyCreateOwner).
+        if ('partnerId' in owner) {
           // Duplicate-name check within the partner's own partner-wide policies.
           const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
             .from(configurationPolicies)
             .where(and(
-              eq(configurationPolicies.partnerId, auth.partnerId),
+              eq(configurationPolicies.partnerId, owner.partnerId),
               eq(configurationPolicies.name, input.name as string),
             ))
             .limit(1);
@@ -849,7 +893,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
             });
           }
 
-          const policy = await createConfigPolicy({ partnerId: auth.partnerId }, {
+          const policy = await createConfigPolicy({ partnerId: owner.partnerId }, {
             name: input.name as string,
             description: input.description as string | undefined,
             status: (input.status as 'active' | 'inactive' | 'archived') ?? 'active',
@@ -864,16 +908,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ success: true, policy });
         }
 
-        // Never `accessibleOrgIds[0]` (#6667): for a multi-org caller that is an
-        // arbitrary customer org. The resolver refuses rather than guesses.
-        const resolvedOrg = resolveWritableToolOrgId(
-          auth,
-          typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined,
-        );
-        if (!resolvedOrg.orgId) {
-          return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
-        }
-        const orgId = resolvedOrg.orgId;
+        // Never `accessibleOrgIds[0]` (#6667): the resolver refused rather than guessed.
+        const orgId = owner.orgId;
 
         // Check for duplicate name in same org
         const [existing] = await db.select({ id: configurationPolicies.id, status: configurationPolicies.status })
@@ -967,6 +1003,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
     }),
+    validateBeforeFiling: validateConfigPolicyBeforeFiling,
   });
 
   // 8. configuration_policy_compliance — Tier 1 (read)
@@ -1100,7 +1137,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({
           policyId,
           policyName: policy.name,
-          devices: rows,
+          devices: rows.map((row) => ({ ...row, details: withoutObservedRegistryValues(row.details) })),
           showing: rows.length,
         });
       }
@@ -1253,6 +1290,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
         }
 
+        if (featureType === 'wake_on_lan' && input.featurePolicyId) {
+          return JSON.stringify({ error: 'wake_on_lan is inline-only; featurePolicyId must not be set' });
+        }
+
         if (featureType === 'security_agents') {
           const refusal = securityAgentsToolRefusal(input.featurePolicyId ?? null, input.inlineSettings ?? null);
           if (refusal) return refusal;
@@ -1312,6 +1353,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
         if (existingFeatureType === 'containment' && input.featurePolicyId) {
           return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
+        }
+
+        if (existingFeatureType === 'wake_on_lan' && input.featurePolicyId) {
+          return JSON.stringify({ error: 'wake_on_lan is inline-only; featurePolicyId must not be set' });
         }
 
         if (existingFeatureType === 'security_agents') {

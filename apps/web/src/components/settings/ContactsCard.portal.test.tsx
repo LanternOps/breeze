@@ -39,7 +39,7 @@ const CONTACTS = [
 
 function login(id: string, contactId: string, email: string, effectiveStatus: string) {
   return { id, email, name: null, status: 'active', effectiveStatus, receiveNotifications: true,
-    lastLoginAt: null, invitedAt: null, contactId, authMethod: 'password' };
+    lastLoginAt: null, invitedAt: null, contactId, authMethod: 'password', browserAccess: 'granted' };
 }
 
 const LOGINS = [
@@ -61,6 +61,7 @@ type Opts = {
   invite?: () => Promise<Response>;
   bulk?: () => Promise<Response>;
   createdContact?: unknown;
+  requests?: unknown[];
 };
 
 function mockApi(o: Opts = {}) {
@@ -82,6 +83,9 @@ function mockApi(o: Opts = {}) {
       return (o.invite ?? (() => jsonResponse({
         data: { id: 'p-new', email: 'x', status: 'invited', contactLink: 'linked' }, emailSent: true,
       })))();
+    }
+    if (url.startsWith(`/orgs/organizations/${ORG}/portal-access-requests`)) {
+      return jsonResponse({ data: o.requests ?? [], hasMore: false });
     }
     if (url.startsWith(PORTAL)) {
       return o.portalStatus && o.portalStatus !== 200
@@ -109,6 +113,13 @@ function portalListCalls() {
   ).length;
 }
 
+/** GETs of the contacts list (the Roles cell's source). */
+function contactListCalls() {
+  return fetchWithAuthMock.mock.calls.filter(
+    (c) => typeof c[0] === 'string' && c[0].startsWith(`/orgs/organizations/${ORG}/contacts?`) && !(c[1] as RequestInit | undefined)?.method,
+  ).length;
+}
+
 async function renderCard() {
   render(<ContactsCard orgId={ORG} />);
   await waitFor(() => expect(screen.getByTestId('org-contacts-table')).toBeInTheDocument());
@@ -128,6 +139,14 @@ describe('ContactsCard portal access', () => {
     expect(screen.getByTestId('org-contacts-portal-status-c-inv')).toHaveTextContent('Invited');
     expect(screen.getByTestId('org-contacts-portal-status-c-act')).toHaveTextContent('Active');
     expect(screen.getByTestId('org-contacts-portal-status-c-dis')).toHaveTextContent('Disabled');
+  });
+
+  it('shows Requested (and no give/resend) for a contact with a pending access request', async () => {
+    mockApi({ requests: [{ id: 'r1', email: 'NORA@acme.test', status: 'pending' }] });
+    await renderCard();
+    await waitFor(() => expect(screen.getByTestId('org-contacts-portal-status-c-none')).toHaveTextContent('Requested'));
+    expect(screen.queryByTestId('org-contacts-portal-give-c-none')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-contacts-portal-resend-c-none')).not.toBeInTheDocument();
   });
 
   it('hides the Portal column, checkboxes and create checkbox when portal-users returns 403, with no toast', async () => {
@@ -155,12 +174,43 @@ describe('ContactsCard portal access', () => {
     await waitFor(() => expect(portalListCalls()).toBe(before + 1));
   });
 
+  it('Give portal access refetches the contacts list so the Roles cell shows the stamped portal role (#11599)', async () => {
+    mockApi();
+    await renderCard();
+    const btn = await screen.findByTestId('org-contacts-portal-give-c-none');
+    const before = contactListCalls();
+    fireEvent.click(btn);
+    await waitFor(() => expect(postsTo('/invite')).toHaveLength(1));
+    await waitFor(() => expect(contactListCalls()).toBe(before + 1));
+  });
+
+  it('bulk Give portal access refetches the contacts list (#11599)', async () => {
+    mockApi();
+    await renderCard();
+    fireEvent.click(await screen.findByTestId('org-contacts-select-c-none'));
+    const before = contactListCalls();
+    fireEvent.click(screen.getByTestId('org-contacts-portal-bulk-give'));
+    await waitFor(() => expect(postsTo('/invite-contacts')).toHaveLength(1));
+    await waitFor(() => expect(contactListCalls()).toBe(before + 1));
+  });
+
   it('Resend invite posts the same contact-bound invite', async () => {
     mockApi();
     await renderCard();
     fireEvent.click(await screen.findByTestId('org-contacts-portal-resend-c-inv'));
     await waitFor(() => expect(postsTo('/invite')).toHaveLength(1));
     expect(postsTo('/invite')[0].body).toEqual({ email: 'ivy@acme.test', name: 'Ivy Invited', contactId: 'c-inv' });
+  });
+
+  it('Resend invite that cannot send the email warns with resend-specific copy', async () => {
+    mockApi({ invite: () => jsonResponse({ data: { id: 'p-inv' }, emailSent: false }) });
+    await renderCard();
+    fireEvent.click(await screen.findByTestId('org-contacts-portal-resend-c-inv'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+    const toast = showToastMock.mock.calls[0][0];
+    expect(toast.type).toBe('warning');
+    expect(toast.message).not.toMatch(/login created/i);
+    expect(toast.message).toMatch(/resend/i);
   });
 
   it('offers no portal action for active or disabled contacts, or for a contact without email', async () => {

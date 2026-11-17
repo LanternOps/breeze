@@ -47,7 +47,7 @@ function chainMock(resolvedValue: unknown = []) {
 }
 
 /** The file rows of one batch statement: its one JSON parameter (#11026). */
-function batchRows(statement: unknown): Array<{ source_path: string; backup_path: string; size: number | null; modified_at: string | null }> {
+function batchRows(statement: unknown): Array<{ source_path: string; backup_path: string; size: number | null; modified_at: string | null; kind: string | null }> {
   const json = (statement as { queryChunks: unknown[] }).queryChunks.find((c): c is string => typeof c === 'string' && c.startsWith('['));
   return json ? JSON.parse(json) : [];
 }
@@ -121,7 +121,7 @@ vi.mock('./recoveryBootstrap', () => ({
   asRecord: (value: unknown) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {}),
 }));
 
-import { redactIndexFailureReason, hydrateSnapshotFileIndex, readSnapshotFileIndexState } from './backupSnapshotFileIndex';
+import { MAX_REDACTED_REASON_INPUT_LENGTH, redactIndexFailureReason, hydrateSnapshotFileIndex, readSnapshotFileIndexState } from './backupSnapshotFileIndex';
 import { BackupObjectTooLargeError } from './backupSnapshotStorage';
 import { setBackupMetricsRecorder } from './backupMetrics';
 
@@ -251,7 +251,19 @@ describe('hydrateSnapshotFileIndex', () => {
     expect((outcome as { reason: string }).reason).toContain('snapshots/snap-current/../x');
   });
 
-  it('hydrates a REAL agent manifest (D-W09-1 + D-W09-2): empty backupPath on dir/symlink entries is skipped, a backslash in a systemd unit key is admitted', async () => {
+  it('quotes at most 256 characters of an unparseable backupPath in the failure reason', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const longKey = `snapshots/snap-current/../${'a-'.repeat(50_000)}`;
+    const deps = { openManifest: openOf(manifestBytes([{ sourcePath: '/a', backupPath: longKey }])) };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_key_invalid', retryable: false });
+    const reason = (outcome as { reason: string }).reason;
+    expect(reason.startsWith('unparseable backupPath: snapshots/snap-current/../a-a-')).toBe(true);
+    expect(reason.length).toBeLessThan(400);
+  });
+
+  it('hydrates a REAL agent manifest (D-W09-1 + D-W09-2, #11235): dir/symlink entries with an empty backupPath become rows with their kind, a backslash in a systemd unit key is admitted', async () => {
     const bytes = readFileSync(REAL_MANIFEST_FIXTURE);
     const manifest = JSON.parse(bytes.toString('utf8')) as { files: Array<{ backupPath: string; kind?: string }> };
     const contentless = manifest.files.filter((f) => f.backupPath === '');
@@ -273,7 +285,7 @@ describe('hydrateSnapshotFileIndex', () => {
 
     expect(outcome).toMatchObject({
       status: 'complete',
-      entryCount: external.length + own.length,
+      entryCount: manifest.files.length,
       externalCount: external.length,
       originSnapshotIds: [REAL_MANIFEST_BASE_ID],
     });
@@ -281,7 +293,10 @@ describe('hydrateSnapshotFileIndex', () => {
     const insertedRows = executeMock.mock.calls.flatMap((c) => batchRows(c[0]));
     const insertedKeys = new Set(insertedRows.map((r) => r.backup_path));
     for (const f of [...external, ...own]) expect(insertedKeys.has(f.backupPath)).toBe(true);
-    for (const f of contentless) expect(insertedKeys.has('')).toBe(false);
+    expect(insertedRows.filter((r) => r.backup_path !== '').every((r) => r.kind === null)).toBe(true);
+    // Every content-less entry is a row too, with the kind the agent recorded.
+    const contentlessRows = insertedRows.filter((r) => r.backup_path === '');
+    expect(contentlessRows.map((r) => r.kind)).toEqual(contentless.map((f) => f.kind));
   });
 
   it('still fails manifest_invalid when a CONTENT entry (no kind) has an empty backupPath — the relaxation is by kind, not blanket — and the reason names the entry, not a zod dump', async () => {
@@ -570,6 +585,26 @@ describe('hydrateSnapshotFileIndex', () => {
     expect(redactIndexFailureReason('file.tar.gz missing')).toBe('file.tar.gz missing');
     expect(redactIndexFailureReason('manifest.json is not valid')).toBe('manifest.json is not valid');
     expect(redactIndexFailureReason('x'.repeat(500)).length).toBeLessThanOrEqual(200);
+  });
+
+  it('redactIndexFailureReason runs in bounded time', () => {
+    const reason = `unparseable backupPath: ${'a-'.repeat(40_000)}`;
+    const started = performance.now();
+    const stored = redactIndexFailureReason(reason);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(stored.length).toBeLessThanOrEqual(200);
+    expect(stored.startsWith('unparseable backupPath:')).toBe(true);
+  });
+
+  it('redactIndexFailureReason never keeps part of a host cut off at the input bound', () => {
+    // URLs collapse to "[redacted]", so the stored text can reach the bound;
+    // whatever straddles it must be dropped, not stored half-redacted.
+    const filler = `https://u.example/${'p'.repeat(300)} `;
+    for (let shift = 0; shift < 40; shift += 1) {
+      const head = filler.repeat(Math.ceil(MAX_REDACTED_REASON_INPUT_LENGTH / filler.length)).slice(0, MAX_REDACTED_REASON_INPUT_LENGTH - 30 + shift);
+      const stored = redactIndexFailureReason(`${head} db-primary.internal.example.com tail`);
+      expect(stored).not.toMatch(/db-|primary|internal|\.example\.com/);
+    }
   });
 
   it('stores a provider connection failure as its code with the host and port redacted (#11280)', async () => {

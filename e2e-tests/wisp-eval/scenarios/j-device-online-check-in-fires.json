@@ -1,0 +1,77 @@
+{
+  "id": "device-online-check-in-fires",
+  "title": "A device-online check-in fires when the device reconnects",
+  "expect": "pass",
+  "door": "wisp",
+  "steps": [
+    {
+      "name": "ask",
+      "type": "say",
+      "approve": "approve",
+      "maxSec": 120,
+      "text": "One of the partners at Harbor Legal says her MacBook has been off the network all afternoon. Which one is it? Schedule a check-in that fires when that device comes back online, so I hear the moment it's back.",
+      "note": "the prompt names the check-in on purpose: asked only to 'tell me the moment it's back online', Wisp set a 15-minute watch instead in 5 of 11 runs on 2026-11-10/11 (#11685), and this scenario is about what happens after a check-in exists. The tool choice has its own scenario (back-online-uses-event-check-in)"
+    },
+    {
+      "name": "scheduled",
+      "type": "wait_sql",
+      "timeoutSec": 30,
+      "sql": "select (count(*) > 0)::text from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online' and status = 'scheduled'",
+      "equals": "true"
+    },
+    {
+      "name": "reconnect",
+      "type": "shell",
+      "argv": [
+        "sim.sh",
+        "restart",
+        "hlmac"
+      ]
+    },
+    {
+      "name": "fired",
+      "type": "wait_sql",
+      "timeoutSec": 150,
+      "sql": "select (count(*) > 0)::text from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online' and fired_at is not null",
+      "equals": "true"
+    },
+    {
+      "type": "sleep",
+      "sec": 5
+    },
+    {
+      "name": "offline-again",
+      "type": "shell",
+      "argv": [
+        "sim.sh",
+        "stop",
+        "hlmac"
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "kind": "tool_called",
+      "tool": "schedule_check_in",
+      "step": "ask"
+    },
+    {
+      "kind": "reply_matches",
+      "step": "ask",
+      "pattern": "HL-PARTNER-MBP",
+      "note": "it named the right device"
+    },
+    {
+      "kind": "sql_equals",
+      "equals": "event",
+      "sql": "select coalesce(max(fire_reason), 'not fired') from wisp_check_ins where created_at > {{since}} and trigger_kind = 'device_online'",
+      "note": "fired by the reconnect, not by the deadline"
+    },
+    {
+      "kind": "sql_equals",
+      "equals": "true",
+      "sql": "select (count(*) > 0)::text from wisp_thread_posts where kind = 'check_in' and created_at > {{since}}",
+      "note": "the technician got a post in the thread"
+    }
+  ]
+}

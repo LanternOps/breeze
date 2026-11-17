@@ -14,7 +14,7 @@ const testResultStyles: Record<string, string> = {
   pass: 'bg-green-100 text-green-800',
   fail: 'bg-red-100 text-red-800',
   inconclusive: 'bg-yellow-100 text-yellow-800',
-  skipped: 'bg-gray-100 text-gray-700',
+  skipped: 'bg-muted text-foreground',
 };
 
 type CatalogEntry = {
@@ -43,7 +43,7 @@ const severityStyles: Record<string, string> = {
   important: 'bg-orange-100 text-orange-800',
   moderate: 'bg-yellow-100 text-yellow-800',
   low: 'bg-green-100 text-green-800',
-  unknown: 'bg-gray-100 text-gray-700',
+  unknown: 'bg-muted text-foreground',
 };
 
 type PendingTest = {
@@ -247,16 +247,19 @@ export default function ThirdPartyCatalog() {
           <h1 className="text-2xl font-semibold flex items-center gap-2">
             <Package className="w-6 h-6" /> {t('admin.thirdPartyCatalog.title')}
           </h1>
-          <p className="text-sm text-gray-600 mt-1">
+          <p className="text-sm text-muted-foreground mt-1">
             {t('admin.thirdPartyCatalog.description')}{' '}
             {t('admin.thirdPartyCatalog.totalEntries')} <span data-testid="catalog-total">{total}</span>
+          </p>
+          <p data-testid="catalog-scope-note" className="text-xs text-muted-foreground mt-1 max-w-3xl">
+            {t('admin.thirdPartyCatalog.scopeNote')}
           </p>
         </div>
         <div className="flex gap-2">
           <button
             data-testid="catalog-refresh"
             onClick={fetchCatalog}
-            className="px-3 py-2 text-sm border rounded hover:bg-gray-50 flex items-center gap-1"
+            className="px-3 py-2 text-sm border rounded hover:bg-muted/50 flex items-center gap-1"
           >
             <RefreshCw className="w-4 h-4" /> {t('admin.thirdPartyCatalog.refresh')}
           </button>
@@ -272,14 +275,14 @@ export default function ThirdPartyCatalog() {
 
       <div className="flex items-center gap-3 mb-4">
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input
             data-testid="catalog-search"
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t('admin.thirdPartyCatalog.searchPlaceholder')}
-            className="w-full pl-9 pr-3 py-2 border rounded text-sm"
+            className="w-full pl-9 pr-3 py-2 border rounded text-sm bg-background text-foreground dark:[color-scheme:dark]"
           />
         </div>
         <label className="flex items-center gap-2 text-sm">
@@ -315,15 +318,15 @@ export default function ThirdPartyCatalog() {
       )}
 
       {loading ? (
-        <div className="text-center py-12 text-gray-500">{t('admin.thirdPartyCatalog.loading')}</div>
+        <div className="text-center py-12 text-muted-foreground">{t('admin.thirdPartyCatalog.loading')}</div>
       ) : items.length === 0 ? (
-        <div className="text-center py-12 text-gray-500" data-testid="catalog-empty">
+        <div className="text-center py-12 text-muted-foreground" data-testid="catalog-empty">
           {t('admin.thirdPartyCatalog.empty')}
         </div>
       ) : (
         <div className="overflow-x-auto border rounded">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b">
+            <thead className="bg-muted/50 border-b">
               <tr className="text-left">
                 <th className="px-4 py-2 font-medium">{t('admin.thirdPartyCatalog.table.vendor')}</th>
                 <th className="px-4 py-2 font-medium">{t('admin.thirdPartyCatalog.table.package')}</th>
@@ -339,7 +342,7 @@ export default function ThirdPartyCatalog() {
                 <tr
                   key={entry.id}
                   data-testid={`catalog-row-${entry.id}`}
-                  className="border-b hover:bg-gray-50"
+                  className="border-b hover:bg-muted/50"
                 >
                   <td className="px-4 py-2">{entry.vendor}</td>
                   <td className="px-4 py-2">
@@ -359,7 +362,7 @@ export default function ThirdPartyCatalog() {
                       );
                     })()}
                   </td>
-                  <td className="px-4 py-2 font-mono text-xs text-gray-600">
+                  <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
                     {entry.packageId}
                   </td>
                   <td className="px-4 py-2">
@@ -411,7 +414,7 @@ export default function ThirdPartyCatalog() {
                         }[entry.lastTestedResult] ?? entry.lastTestedResult}
                       </span>
                     ) : (
-                      <span className="text-xs text-gray-400">—</span>
+                      <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </td>
                   <td className="px-4 py-2 text-right">
@@ -421,7 +424,7 @@ export default function ThirdPartyCatalog() {
                           data-testid={`catalog-row-${entry.id}-retest`}
                           onClick={() => handleRetest(entry)}
                           disabled={retestingId === entry.id}
-                          className="p-1 rounded hover:bg-gray-200 disabled:opacity-50"
+                          className="p-1 rounded hover:bg-muted disabled:opacity-50"
                           aria-label={t('admin.thirdPartyCatalog.actions.retest')}
                           title={t('admin.thirdPartyCatalog.actions.runSmokeTest')}
                         >
@@ -431,7 +434,7 @@ export default function ThirdPartyCatalog() {
                       <button
                         data-testid={`catalog-row-${entry.id}-edit`}
                         onClick={() => setEditor({ kind: 'edit', entry })}
-                        className="p-1 rounded hover:bg-gray-200"
+                        className="p-1 rounded hover:bg-muted"
                         aria-label={t('admin.thirdPartyCatalog.actions.edit')}
                       >
                         <Pencil className="w-4 h-4" />
@@ -440,7 +443,7 @@ export default function ThirdPartyCatalog() {
                         data-testid={`catalog-row-${entry.id}-delete`}
                         onClick={() => handleDelete(entry)}
                         disabled={deletingId === entry.id}
-                        className="p-1 rounded hover:bg-gray-200 disabled:opacity-50"
+                        className="p-1 rounded hover:bg-muted disabled:opacity-50"
                         aria-label={t('admin.thirdPartyCatalog.actions.delete')}
                       >
                         <Trash2 className="w-4 h-4 text-red-600" />

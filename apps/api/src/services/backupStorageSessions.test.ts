@@ -39,6 +39,7 @@ import {
   type StorageSnapshotRow,
 } from './backupStorageSessions';
 import { CommandDeliveryDeferredError, CommandDeliveryRefusedError } from './commandDeliveryRefusal';
+import { verificationTimeoutMs } from '../routes/backup/verificationTimeout';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from './backupReadHelperGate';
 import type { IntegrityAttestationInput } from './backupRestoreIntegrity';
 import type { StoredRestoreAuthorization } from './backupRestoreAuthorization';
@@ -633,6 +634,25 @@ describe('brokered read delivery', () => {
     // backup_restore runs on the 30-minute clock.
     expect(Date.parse(s.deadline)).toBeLessThanOrEqual(NOW.getTime() + 30 * 60_000);
     expect(Date.parse(s.expiresAt)).toBeLessThanOrEqual(Date.parse(s.deadline));
+  });
+
+  // #11813: the verification-timeout job fails the command of a verification
+  // older than verificationTimeoutMs, and a failed command revokes its read
+  // session (`command_failed`, below). That timeout was 30 minutes while this
+  // session lives to the command's two-hour deadline, so every large snapshot
+  // lost its session partway and the rest of its resolves got 410. The timeout
+  // must not land before the deadline of the session it would end.
+  it.each([
+    ['backup_verify', 'integrity'],
+    ['backup_test_restore', 'test_restore'],
+  ] as const)('a %s session reaches its deadline before the verification timeout can end it', async (type, verificationType) => {
+    const state = makeState();
+    const deps = makeDeps(state);
+    const out = await deliverBrokeredReadCommand(restorePayload(), ctx({ type }), deps);
+    const s = out.storageSession as SessionDescriptor;
+    const sessionLifetimeMs = Date.parse(s.deadline) - NOW.getTime();
+    expect(sessionLifetimeMs).toBeGreaterThan(30 * 60_000);
+    expect(verificationTimeoutMs(verificationType)).toBeGreaterThan(sessionLifetimeMs);
   });
 });
 

@@ -56,7 +56,7 @@ const ALLOWLIST: Record<string, string> = {
   'routes/portal/auth.ts::portalUsers.orgName': noColumn('organizations', 'org_id'),
   'services/roleDirectory.ts::partnerUsers.activeCount': noColumn('users', 'user_id'),
   'services/roleDirectory.ts::organizationUsers.activeCount': noColumn('users', 'user_id'),
-  'routes/unifi/index.ts::sites.partnerId': noColumn('organizations', 'org_id'),
+  'services/unifi/unifiMappingWrites.ts::sites.partnerId': noColumn('organizations', 'org_id'),
   'services/aiToolsAlerts.ts::alerts.orgName': noColumn('organizations', 'org_id'),
   'services/businessCalendars/repository.ts::tickets.revisionCalendarId': noColumn('business_calendar_revisions', 'sla_calendar_revision_id'),
   'services/businessCalendars/repository.ts::tickets.revisionNumber': noColumn('business_calendar_revisions', 'sla_calendar_revision_id'),

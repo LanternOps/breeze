@@ -80,7 +80,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
     2. Verify the download passes Gatekeeper's notarization assessment (`spctl --assess`) before installing it as root
     3. `sudo installer -pkg breeze-agent.pkg -target /`
     4. Read `enrollment.json` via `plutil -extract`
-    5. Invoke `sudo <agent> enroll <key> --server <url> [--enrollment-secret <secret>]`, where `<agent>` is the binary the package installed: `/Library/Breeze/bin/breeze-agent` when the package put it there, otherwise `/usr/local/bin/breeze-agent` (the site comes from the enrollment key; the installer no longer passes the deprecated `--site-id`)
+    5. Invoke `sudo <agent> enroll <key> --server <url> [--enrollment-secret <secret>]`, where `<agent>` is the binary the package installed: `/Library/Breeze/bin/breeze-agent` when the package put it there, otherwise `/usr/local/bin/breeze-agent` (the site comes from the enrollment key; `--site-id` was removed)
     6. Delete `enrollment.json` and the downloaded pkg
   </TabItem>
 </Tabs>
@@ -105,7 +105,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
 | `serverUrl` | yes | Passed as `--server` to the agent. Validated server-side at zip generation. |
 | `enrollmentKey` | yes | 64 lowercase hex chars. Server-side regex: `^[a-f0-9]{64}$`. |
 | `enrollmentSecret` | optional | Only set when `AGENT_ENROLLMENT_SECRET` is required by the server. Maps to `--enrollment-secret`. |
-| `siteId` | yes | Site UUID, for reference only. The device always lands in the site the enrollment key resolves to. The installers no longer pass it as `--site-id` (deprecated and ignored by the agent). |
+| `siteId` | yes | Site UUID, for reference only. The device always lands in the site the enrollment key resolves to. `enroll --site-id` was removed; do not pass it. |
 
 If you write your own wrapper, you can ignore the bundled `install.bat` / `install.sh` and just feed the JSON values straight into `breeze-agent enroll` — see [Direct binary + manual enroll](#direct-binary--manual-enroll).
 
@@ -201,7 +201,6 @@ On macOS, this manual `service install` path (unlike the `.pkg` installer) alway
 | `<enrollment-key>` (positional) | yes | Single positional argument. 64-char enrollment key. |
 | `--server <url>` | yes | API base URL. May also be set in the config file. |
 | `--enrollment-secret <secret>` | optional | The server's `AGENT_ENROLLMENT_SECRET`. Required when configured server-side. |
-| `--site-id <uuid>` | deprecated | Ignored: the site comes from the enrollment key. Passing it prints a deprecation warning; the flag will be removed in a future release. |
 | `--device-role <role>` | optional | Override the inferred device role (e.g. `workstation`, `server`). |
 | `--force` | optional | Re-enroll a host that already has a config. Replaces `agent_id` and `auth_token` only on success — a failed re-enroll leaves the existing config untouched. |
 | `--quiet` | optional | Suppress stdout progress output. Errors still go to stderr. Use for unattended installs. |
@@ -270,6 +269,30 @@ ECH needs the host to publish an ECH config in DNS. A self-hosted edge without o
 <Aside type="note">
 The installer downloaders (`install.sh` and the PowerShell one-liner) cannot use ECH yet; see [#8874](https://github.com/LanternOps/breeze/issues/8874). On a filtered network, download the MSI or pkg on another network, copy it to the filtered machine and run it there. Enrollment inside the installer works.
 </Aside>
+
+### Blocked by a network filter
+
+When something other than the Breeze server answers the agent's connection, the agent records what answered and reports it with the next heartbeat that gets through. The device page then shows a notice, and the device list shows a **Network filter** or **Certificate not trusted** badge in the status column. The agent reports one of four kinds:
+
+| Kind | What the agent saw |
+|---|---|
+| Web filter | A plain HTTP reply (usually a redirect to a block or warning page) where the TLS handshake should be. The notice names the host the reply pointed to. This is usually an ISP gateway security feature, a firewall web filter, or a network sign-in page. |
+| Captive portal | A plain HTTP `511 Network Authentication Required` reply: the network wants someone to sign in first. |
+| Plain HTTP, no detail | The same plaintext signature, but the reply could not be read (for example, when the agent connects through an HTTP proxy). |
+| Certificate not trusted | The TLS handshake completed with a certificate this device does not trust. The notice names the issuer. This is usually TLS inspection by a firewall or proxy, a certificate problem on a self-hosted server, or an out-of-date trusted-root store on the device. |
+
+Only the host of a redirect is recorded. Its path and query, which can carry tokens, never leave the device.
+
+**How to fix:**
+
+- **Web filter or captive portal:** allow your Breeze server's domain in the gateway or firewall feature that is blocking it, or turn that feature off for this device. Moving the device to another network also works. While a filter answers, the agent switches to [Encrypted Client Hello](#encrypted-client-hello-ech) where it can; the notice then says the device is currently reachable over it. The block is still in place.
+- **Certificate not trusted:** on the inspecting firewall or proxy, add a TLS-inspection bypass rule for your Breeze server's domain. For a self-hosted server, fix its certificate chain, or import your private CA into the device's trusted roots. Breeze never bypasses a certificate check.
+
+**What you see over time:**
+
+- The notice shows while the block lasts. Once a plain connection succeeds again (or the agent has seen no connection attempt to that server for 24 hours), it changes to "Was blocked from … to …" and stays for 7 days.
+- The console learns about a block only when some connection gets through: Encrypted Client Hello, the backup server URL, or a different network. A device that is blocked on every path shows as offline until then. The agent keeps the record on disk across restarts and delivers it with the first heartbeat that succeeds.
+- If heartbeats keep arriving for about two hours without the report (for example, after a downgrade to an agent version that does not send it), the notice and badge are removed.
 
 ---
 

@@ -69,6 +69,8 @@ describe('fileFleetDesignDocument', () => {
     const result = await fileFleetDesignDocument({ orgId: ORG, reportRunId: RUN, actor });
 
     expect(buildReportPdfMock).toHaveBeenCalledWith([], expect.objectContaining({ reportType: 'ai_fleet_design', summary }));
+    // #12048: the renderer formats the instant (with its timezone) itself.
+    expect(buildReportPdfMock.mock.calls[0]![1].generatedAt).toBeInstanceOf(Date);
     expect(uploadDocumentMock).toHaveBeenCalledTimes(1);
     const [orgArg, input, actorArg] = uploadDocumentMock.mock.calls[0]!;
     expect(orgArg).toBe(ORG);

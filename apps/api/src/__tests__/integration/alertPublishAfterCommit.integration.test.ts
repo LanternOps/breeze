@@ -342,7 +342,7 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
 
     const alertId = await createWithTransactionHeldOpen(() => emitPatchJobFailureAlert({
       orgId: f.orgId, deviceId: f.deviceId, patchJobId: randomUUID(), hostname: 'publish-after-commit',
-      failedCount: 2, errorExcerpt: null,
+      failedCount: 2, errorMessage: null,
     }));
 
     const [row] = await withSystemDbAccessContext(() => db.select().from(alerts).where(eq(alerts.id, alertId)));
@@ -448,14 +448,21 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
       return created;
     });
 
-    // 105 ids queue for one dispatch loop that takes them 100 at a time.
-    await expect.poll(() => ids.filter((id) => deliveriesFor(id).length === 0).length, {
-      timeout: 30_000, interval: 200,
-    }).toBe(0);
+    // 105 ids queue for one dispatch loop that takes them 100 at a time. The
+    // loop publishes a row (the subscriber records the delivery inside that
+    // publish) and only then acknowledges it in a transaction of its own. So
+    // the last delivery is visible before its acknowledgement commits. Wait
+    // until the loop has finished both, then count deliveries.
+    const pendingEnvelopes = async () => {
+      const [row] = await withSystemDbAccessContext(() => db.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM alerts WHERE org_id = ${f.orgId} AND context ? '_subjectDispatch'`));
+      return row?.n;
+    };
+    await expect.poll(async () => ({
+      undelivered: ids.filter((id) => deliveriesFor(id).length === 0).length,
+      pending: await pendingEnvelopes(),
+    }), { timeout: 30_000, interval: 200 }).toEqual({ undelivered: 0, pending: 0 });
     expect(ids.every((id) => deliveriesFor(id).length === 1)).toBe(true);
-    const pending = await withSystemDbAccessContext(() => db.execute(sql`
-      SELECT count(*)::int AS n FROM alerts WHERE org_id = ${f.orgId} AND context ? '_subjectDispatch'`));
-    expect(pending).toEqual([{ n: 0 }]);
   });
 
   it('a rolled-back transaction announces nothing', async () => {
@@ -518,7 +525,7 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
     try {
       alertId = await createWithTransactionHeldOpen(() => emitPatchJobFailureAlert({
         orgId: f.orgId, deviceId: f.deviceId, patchJobId: randomUUID(), hostname: 'publish-after-commit',
-        failedCount: 1, errorExcerpt: null,
+        failedCount: 1, errorMessage: null,
       }));
     } finally {
       h.dropAlertDispatch = false;
@@ -543,7 +550,7 @@ runDb('#10926 — alert.triggered reaches process-alert only after the alert row
     try {
       alertId = await createWithTransactionHeldOpen(() => emitPatchJobFailureAlert({
         orgId: f.orgId, deviceId: f.deviceId, patchJobId: randomUUID(), hostname: 'publish-after-commit',
-        failedCount: 1, errorExcerpt: null,
+        failedCount: 1, errorMessage: null,
       }));
       // Published and delivered, but the acknowledgement failed: the envelope
       // stays for a replay, and the effects wait for that replay.

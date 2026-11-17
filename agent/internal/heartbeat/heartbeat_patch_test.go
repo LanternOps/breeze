@@ -289,6 +289,32 @@ func TestInstalledPatchesToMapsOmitsUnknownInstalledAt(t *testing.T) {
 	}
 }
 
+// #9723: a provider-set install date reaches the API payload unchanged.
+func TestInstalledPatchesToMapsForwardsKnownInstalledAt(t *testing.T) {
+	h := &Heartbeat{}
+
+	items := h.installedPatchesToMaps([]patching.InstalledPatch{
+		{
+			ID:          "windows-update:kb5050001",
+			Provider:    "windows-update",
+			Title:       "2026-01 Cumulative Update for Windows 11 (KB5050001)",
+			KBNumber:    "KB5050001",
+			InstalledAt: "2026-01-15T03:04:05Z",
+		},
+		{ID: "Git.Git", Provider: "winget", Title: "Git", Version: "2.51.0.2", InstalledAt: "2026-01-05"},
+	})
+
+	if len(items) != 2 {
+		t.Fatalf("expected 2 mapped items, got %d", len(items))
+	}
+	if got := items[0]["installedAt"]; got != "2026-01-15T03:04:05Z" {
+		t.Errorf("items[0].installedAt = %v, want 2026-01-15T03:04:05Z", got)
+	}
+	if got := items[1]["installedAt"]; got != "2026-01-05" {
+		t.Errorf("items[1].installedAt = %v, want 2026-01-05", got)
+	}
+}
+
 func TestAvailablePatchesToMapsDerivesHomebrewCaskCategory(t *testing.T) {
 	h := &Heartbeat{}
 

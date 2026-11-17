@@ -21,6 +21,7 @@ import type { ThinkingMode } from './capabilities';
 import { FAILOVER_CAUSES, MAX_FAILOVER_HOP, type FailoverCause } from './failover';
 import type { RateSnapshot } from './pricing';
 import type { ResolvedModel } from './resolveModel';
+import { FULL_IDENTITY_FINGERPRINT } from './toolProfileFacts';
 import type { WireParams } from './wireParams';
 
 /** W05: at most this many earlier models' rates ride on one binding. */
@@ -131,15 +132,23 @@ export function turnBindingFrom(r: ResolvedModel): TurnBinding {
  * stricter by design: effort/thinking/speed/geo/fallbackModel are fixed when
  * the SDK query is created, so a changed one must also recreate it. The price
  * is deliberately absent: a rate change re-binds settlement, not the query.
+ *
+ * #11393: the tool exposure is fixed at query creation too (registration,
+ * allowedTools, prompt), so a constrained exposure's fingerprint joins the
+ * key. The identity exposure (`full`, or `auto` with an unknown window)
+ * appends nothing, so every existing key stays byte-identical.
  */
-export function liveQueryKey(b: TurnBinding): string {
-  return [
+export function liveQueryKey(b: TurnBinding, toolExposureFingerprint: string | null = null): string {
+  const key = [
     b.connectionId ?? 'platform',
     b.configVersion ?? '-',
     b.catalogRevisionId ?? '-',
     b.wireModel,
     b.wireFingerprint,
   ].join('|');
+  return toolExposureFingerprint === null || toolExposureFingerprint === FULL_IDENTITY_FINGERPRINT
+    ? key
+    : `${key}|tx:${toolExposureFingerprint}`;
 }
 
 const ratesSchema = z.object({

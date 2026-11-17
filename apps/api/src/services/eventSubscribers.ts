@@ -269,6 +269,31 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'wisp-check-in-trigger',
+    // Wisp event check-ins W04 (#11493, #10410). The event fast path of a
+    // check-in waiting on its subject: the scheduled rows on the event's
+    // device / script execution / run each re-read the subject's state and
+    // fire if it holds (wisp/checkIns.ts handleCheckInTriggerEvent). Kept
+    // apart from the assessment wake below, which must never see
+    // device.online. The types are CHECK_IN_TRIGGER_EVENT_SUBJECTS' keys
+    // (eventSubscribers.wispCheckInTrigger.test.ts pins them). Dark while
+    // wispEnabled() is off; lazy for the worker-closure reason above.
+    eventTypes: [
+      'device.online',
+      'script.completed',
+      'script.failed',
+      'ai.agent.run.completed',
+      'ai.agent.run.failed',
+      'ai.agent.run.skipped',
+    ],
+    handler: async (event: BreezeEvent) => {
+      const { handleCheckInTriggerEvent } = await import('./wisp/checkIns');
+      return handleCheckInTriggerEvent(event);
+    },
+    retry: { attempts: 3, backoffMs: 30_000 },
+  });
+
+  registerEventSubscriber({
     id: 'wisp-wake',
     // Wisp W05b Task 9 (#9917). Each event asks for ONE debounced (60 s)
     // assessment per active grant covering the event's org; the grant events
@@ -297,6 +322,26 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
       'wisp.grant.resumed',
     ],
     handler: async (event: BreezeEvent) => {
+      // #11427: an alert that resolves closes the concerns that name it
+      // (evidence.alertId / rebootAlertId, in the alert's org) BEFORE the wake,
+      // so the assessment it triggers reads them closed. Best-effort: a failed
+      // close is reported and never costs the wake (the model can still close
+      // it). Dispatch runs this outside any DB context, so each close commits
+      // on its own and the resolved-nudge follow-up sees it.
+      const resolvedAlertId = event.type === 'alert.resolved' ? event.payload?.alertId : undefined;
+      if (typeof resolvedAlertId === 'string') {
+        const { wispEnabled } = await import('../config/env');
+        if (wispEnabled()) {
+          try {
+            const { resolveConcernsForAlert } = await import('./wisp/concerns');
+            await resolveConcernsForAlert(resolvedAlertId, event.orgId);
+          } catch (err) {
+            console.error('[wisp-wake] closing the concerns of a resolved alert failed; waking anyway', { eventId: event.id, err });
+            const { captureException } = await import('./sentry');
+            captureException(err, undefined, { op: 'wisp.wake.resolveConcernsForAlert', eventId: event.id });
+          }
+        }
+      }
       const { handleWispWakeEvent } = await import('./wisp/wake');
       return handleWispWakeEvent(event);
     },

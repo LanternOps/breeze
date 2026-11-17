@@ -1,0 +1,107 @@
+{
+  "name": "11338-psa-fail-fail",
+  "source": {
+    "run": 42457652921,
+    "pr": 11338,
+    "recordedAt": "2026-11-08"
+  },
+  "prFiles": [
+    "apps/api/src/routes/reports/runs.audit.test.ts",
+    "apps/api/src/routes/reports/runs.fromArtifact.test.ts",
+    "apps/api/src/routes/reports/runs.ts",
+    "apps/api/src/services/portal/reportsSelfService.test.ts",
+    "apps/api/src/services/portal/reportsSelfService.ts",
+    "packages/shared/src/utils/index.ts",
+    "packages/shared/src/utils/reportRunCsv.test.ts",
+    "packages/shared/src/utils/reportRunCsv.ts"
+  ],
+  "facts": {
+    "run": {
+      "id": 42457652921,
+      "attempt": 1,
+      "headSha": "ad6ca185fa71e472282b1223a83931e48e0e937c",
+      "headBranch": "gh-readonly-queue/main/pr-11338-e67a3f2e29a9a36636132f1043b169530bcb26e5",
+      "headRepo": "LanternOps/breeze",
+      "event": "merge_group",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-11-08T07:10:02Z",
+      "updatedAt": "2026-11-08T08:03:15Z",
+      "pr": 11338
+    },
+    "jobs": [
+      {
+        "id": 128660155542,
+        "name": "Test Web (shard 3/4)",
+        "jobId": "test-web",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T07:35:04Z",
+        "completedAt": "2026-11-08T07:52:40Z",
+        "timeoutMinutes": 40,
+        "label": "web-3",
+        "runner": "vitest",
+        "failedStep": "Run Web tests",
+        "annotations": [
+          "Process completed with exit code 1.",
+          "src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner: Error: Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/components/psa/PsaConnectionsPage.test.tsx:389:5\n\n",
+          "Retrying test shard: web-3: attempt 1 failed with 1 failing test(s); re-running the whole shard once",
+          "src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner: Error: Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/components/psa/PsaConnectionsPage.test.tsx:389:5\n\n"
+        ],
+        "logStatus": 200,
+        "logTail": " ✓ src/lib/wispGrant.test.ts (13 tests) 17ms\n ✓ src/components/configurationPolicies/featureTabs/backupTabPresets.test.ts (42 tests) 14ms\n ✓ src/lib/i18n/wispWorkingSetCopy.test.ts (8 tests) 24ms\n ✓ src/lib/i18n/titleKeyUsage.test.ts (1 test) 13ms\nstderr | src/lib/viewerDownload.test.ts > getViewerDownloadInfo > returns null for unknown OS\n[viewerDownload] Could not detect OS. userAgentData.platform: undefined navigator.platform: UnknownOS\n\nstderr | src/lib/viewerDownload.test.ts > getViewerDownloadInfo > returns null gracefully when navigator throws\n[viewerDownload] OS detection error: Error: blocked\n    at Object.get userAgentData [as userAgentData] (/home/runner/work/breeze/breeze/apps/web/src/lib/viewerDownload.test.ts:68:62)\n    at detectOS (/home/runner/work/breeze/breeze/apps/web/src/lib/viewerDownload.ts:48:39)\n    at getViewerDownloadInfo (/home/runner/work/breeze/breeze/apps/web/src/lib/viewerDownload.ts:79:14)\n    at /home/runner/work/breeze/breeze/apps/web/src/lib/viewerDownload.test.ts:69:18\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n\n ✓ src/lib/viewerDownload.test.ts (10 tests) 12ms\nstderr | src/components/settings/partnerSettings/saveUnits.test.ts > saveUnits > a save that throws is reported as failed and later units still run\n[partnerSettings] save unit partnersMe threw Error: boom\n ✓ src/components/settings/partnerSettings/saveUnits.test.ts (8 tests) 20ms\n    at Object.save (/home/runner/work/breeze/breeze/apps/web/src/components/settings/partnerSettings/saveUnits.test.ts:97:73)\n    at Object.save (/home/runner/work/breeze/breeze/apps/web/src/components/settings/partnerSettings/saveUnits.test.ts:22:31)\n    at runSaveUnits (/home/runner/work/breeze/breeze/apps/web/src/components/settings/partnerSettings/saveUnits.ts:83:38)\n    at /home/runner/work/breeze/breeze/apps/web/src/components/settings/partnerSettings/saveUnits.test.ts:99:28\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n\n ✓ src/components/settings/partnerSettings/usePartnersMeUnit.test.ts (11 tests) 11ms\n ✓ src/components/devices/networkIsolation/isolationEligibility.test.ts (20 tests) 8ms\n ✓ src/lib/__tests__/settingsPageRegistry.test.ts (52 tests) 11ms\n ✓ src/lib/ssoReauthGrant.test.ts (15 tests) 9ms\n ✓ src/lib/cancellableRequest.test.ts (3 tests) 8ms\n ✓ src/lib/endpointMessages.test.ts (13 tests) 7ms\n ✓ src/components/monitoring/conversion/unconvertibleReasonCoverage.test.ts (3 tests) 13ms\n ✓ src/lib/deviceEventLogLink.test.ts (13 tests) 7ms\n ✓ src/lib/proxyTunnelUrl.test.ts (51 tests) 13ms\n ✓ src/stores/processStreamEvent.attachState.test.ts (17 tests) 9ms\nstderr | src/lib/purchaseHandoff.test.ts > purchase intent through login setup > does not resume malformed purchase destinations: //evil.test\n[authNext] dropping unsafe next { raw: '//evil.test', fallback: '' }\n ✓ src/lib/purchaseHandoff.test.ts (11 tests) 12ms\n[authNext] dropping unsafe next { raw: '//evil.test', fallback: '' }\n\nstderr | src/lib/purchaseHandoff.test.ts > purchase intent through login setup > does not resume malformed purchase destinations: https://evil.test\n[authNext] dropping unsafe next { raw: 'https://evil.test', fallback: '' }\n[authNext] dropping unsafe next { raw: 'https://evil.test', fallback: '' }\n\nstderr | src/lib/purchaseHandoff.test.ts > signup intent through login setup > stays same-origin: //evil.test\n[authNext] dropping unsafe next { raw: '//evil.test', fallback: '' }\n\nstderr | src/lib/purchaseHandoff.test.ts > signup intent through login setup > stays same-origin: https://evil.test\n[authNext] dropping unsafe next { raw: 'https://evil.test', fallback: '' }\n\n ✓ src/components/discovery/portCatalog.test.ts (14 tests) 7ms\n ✓ src/lib/api/agreementRequests.test.ts (5 tests) 8ms\n ✓ src/pages/.well-known/__tests__/securityTxt.test.ts (3 tests) 10ms\n ✓ src/lib/oauthErrorPage.test.ts (17 tests) 7ms\n ✓ src/components/devices/pageSizePreference.test.ts (12 tests) 9ms\n ✓ src/lib/incidents.test.ts (10 tests) 8ms\nstderr | src/lib/accessReviewNotify.test.ts > requestReviewerNotification > maps a network error to request_failed\n ✓ src/lib/accessReviewNotify.test.ts (10 tests) 13ms\n[accessReviewNotify] notify request failed Error: offline\n    at /home/runner/work/breeze/breeze/apps/web/src/lib/accessReviewNotify.test.ts:41:47\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)\n    at file:///home/runner/work/breeze/breeze/node_modules/.pnpm/@vitest+runner@4.1.12/node_modules/@vitest/runner/dist/chunk-artifact.js:2956:64\n\n ✓ src/lib/orgReadiness.integrations.test.ts (18 tests) 12ms\n ✓ src/components/billing/aiUsagePricing.test.ts (21 tests) 15ms\n ✓ src/lib/api/partnersMe.test.ts (5 tests) 11ms\n ✓ src/components/layout/orgSwitcherDestinations.test.ts (15 tests) 9ms\n ✓ src/components/billing/autopayReason.test.ts (30 tests) 9ms\n ✓ src/lib/accountingProviders.test.ts (21 tests) 6ms\n ✓ src/components/settings/aiAgents/capabilityModel.test.ts (11 tests) 9ms\n ✓ src/locales/validationFailedCopy.test.ts (10 tests) 12ms\n ✓ src/lib/api/distributors.test.ts (4 tests) 10ms\n ✓ src/components/devices/filterFields.customFields.test.ts (6 tests) 7ms\n ✓ src/lib/localDate.test.ts (4 tests) 9ms\n ✓ src/components/devices/osDisplay.test.ts (6 tests) 5ms\n ✓ src/lib/securityContact.test.ts (10 tests) 5ms\n ✓ src/components/billing/autopayClient.test.ts (18 tests) 8ms\n ✓ src/components/layout/shellTextFloor.test.ts (3 tests) 6ms\n ✓ src/locales/monitoringNoInternalWaveNames.test.ts (8 tests) 10ms\n ✓ src/components/backup/BackupProfilesTab.templates.test.ts (1 test) 6ms\n ✓ src/components/alerts/alertMlContext.test.ts (7 tests) 5ms\n ✓ src/components/devices/scriptLatestResults.test.ts (7 tests) 5ms\n ✓ src/lib/csvExport.test.ts (12 tests) 6ms\n ✓ src/styles/tokenPresence.test.ts (3 tests) 6ms\n ✓ src/components/settings/PartnerRemoteAccessTab.test.ts (5 tests) 4ms\n ✓ src/lib/api/contracts.hourPeriods.test.ts (1 test) 5ms\n ✓ src/lib/csp.test.ts (8 tests) 9ms\n ✓ src/components/aiOperator/alertServiceName.test.ts (7 tests) 6ms\n ✓ src/components/topology/ipOrder.test.ts (5 tests) 7ms\n ✓ src/lib/permissions.test.ts (8 tests) 6ms\n ✓ src/components/backup/folderSelection.test.ts (7 tests) 5ms\n ✓ src/styles/globals.destructiveContrast.test.ts (4 tests) 5ms\n ✓ src/lib/navVisibility.test.ts (9 tests) 15ms\n ✓ src/components/devices/networkDevice/health/index.test.ts (5 tests) 5ms\n ✓ src/components/settings/aiModels/surfaceLabels.test.ts (7 tests) 5ms\n ✓ src/components/settings/aiAgents/agentErrors.test.ts (5 tests) 4ms\n ✓ src/components/topology/topologyImports.test.ts (1 test) 4ms\n ✓ src/lib/remoteToolsParams.test.ts (3 tests) 4ms\n ✓ src/components/devices/time/timeSyncDocs.test.ts (1 test) 4ms\n ✓ src/components/layout/shellChromeMotion.test.ts (2 tests) 3ms\n ✓ src/pages/__tests__/aiChatRedirects.test.ts (3 tests) 4ms\n ✓ src/components/topology/layoutTypes.test.ts (6 tests) 4ms\n ✓ src/components/automations/AutomationsPage.commandResults.test.ts (3 tests) 8ms\n ✓ src/lib/remoteTunnelUrls.test.ts (4 tests) 4ms\n ✓ src/pages/settings/__tests__/checklistTemplatesRedirect.test.ts (1 test) 2ms\n\n⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯\n\n FAIL  src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner\nError: Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/components/psa/PsaConnectionsPage.test.tsx:389:5\n    387|     });\n    388|\n    389|     it('shows the selector defaulted to partner-wide and POSTs ownerSc…\n       |     ^\n    390|       asPartnerAdmin();\n    391|       const recorded: RecordedRequest[] = [];\n\n\n Test Files  1 failed | 514 passed (515)\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯\n\n      Tests  1 failed | 5626 passed (5627)\n   Start at  07:44:16\n   Duration  499.95s (transform 66.98s, setup 448.40s, import 313.61s, tests 268.88s, environment 379.79s)\n\n\n##[error]Error: Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/components/psa/PsaConnectionsPage.test.tsx:389:5\n\n\n/home/runner/work/breeze/breeze/apps/web:\n ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @breeze/web@0.1.0 test: `vitest --run --shard=3/4`\nExit status 1\n##[error]Process completed with exit code 1.\n##[group]Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9\nwith:\n  name: flake-report-web-3\n  path: flake-report-*.json\n  if-no-files-found: ignore\n  retention-days: 14\n  overwrite: true\n  compression-level: 6\n  include-hidden-files: false\n  archive: true\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: e67a3f2e29a9a36636132f1043b169530bcb26e5\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\nWith the provided path, there will be 1 file uploaded\nArtifact name is valid!\nRoot directory input is valid!\nUploading artifact: flake-report-web-3.zip\nBeginning upload of artifact content to blob storage\nUploaded bytes 238\nFinished uploading artifact content to blob storage!\nSHA256 digest of uploaded artifact is c00896b5949d00ebfba0390d89d9c3ca87741c6da66de2c1db4f34d66d2d9459\nFinalizing artifact upload\nArtifact flake-report-web-3 successfully finalized. Artifact ID 13609084414\nArtifact flake-report-web-3 has been successfully uploaded! Final size is 238 bytes. Artifact ID is 13609084414\nArtifact download URL: https://github.com/LanternOps/breeze/actions/runs/42457652921/artifacts/13609084414\nPost job cleanup.\nPruning is unnecessary.\nPost job cleanup.\n[command]/usr/bin/git version\ngit version 2.56.0\nTemporarily overriding HOME='/home/runner/work/_temp/8bfb1540-acf8-438a-b54a-80acafdbbb86' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/work/breeze/breeze\nRemoving SSH command configuration\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\nRemoving HTTP extra header\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.https\\:\\/\\/github\\.com\\/\\.extraheader\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.https\\:\\/\\/github\\.com\\/\\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\"\nRemoving includeIf entries pointing to credentials config files\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\nCleaning up orphan processes",
+        "logAttempts": [
+          {
+            "failures": [
+              "src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner"
+            ],
+            "truncated": false,
+            "unattributed": false,
+            "buildFailed": false,
+            "raceDetected": false,
+            "timedOut": false
+          },
+          {
+            "failures": [
+              "src/components/psa/PsaConnectionsPage.test.tsx > PsaConnectionsPage round-trip contract > ownerScope selector and All orgs badge > shows the selector defaulted to partner-wide and POSTs ownerScope:partner"
+            ],
+            "truncated": false,
+            "unattributed": false,
+            "buildFailed": false,
+            "raceDetected": false,
+            "timedOut": false
+          }
+        ],
+        "report": {
+          "label": "web-3",
+          "attempts": 2,
+          "flaky": [],
+          "quarantined": [],
+          "exitCode": 1
+        },
+        "reportError": null,
+        "errors": []
+      },
+      {
+        "id": 128670638144,
+        "name": "CI Success",
+        "jobId": "ci-success",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T08:03:09Z",
+        "completedAt": "2026-11-08T08:03:15Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Check all jobs passed",
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "ciSuccess": "present",
+    "gate": null
+  }
+}

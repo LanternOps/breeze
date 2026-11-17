@@ -182,6 +182,24 @@ describe('generateBackupStatusReport', () => {
     expect(buckets.find((b) => b.key === 'no_backups')!.count).toBe(0);
   });
 
+  it('counts a completed row with no recent success as overdue, not completed (#12025)', async () => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    const rows = [
+      row({ key: 'a', status: 'completed', recency: 'under_24h' }),
+      row({ key: 'b', status: 'completed', recency: 'over_48h' }),
+      row({ key: 'c', status: 'completed', recency: 'never' }),
+    ];
+    vi.mocked(listBackupHealthRows).mockResolvedValueOnce({ rows, nextCursor: null });
+    vi.mocked(summarizeBackupHealth).mockResolvedValue(summary());
+
+    const result = await generateBackupStatusReport(ORG_ID, {}, authority('unrestricted'));
+
+    const buckets = summaryOf(result).statusBuckets;
+    expect(buckets.find((b) => b.key === 'completed')!.count).toBe(1);
+    expect(buckets.find((b) => b.key === 'overdue')!.count).toBe(2);
+    expect(buckets.map((b) => b.key)).toEqual(['no_backups', 'completed', 'overdue', 'completed_with_errors', 'in_progress', 'unsuccessful']);
+  });
+
   it('computes bucket percentages rounded to one decimal', async () => {
     queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
     const rows = [row({ key: 'a', status: 'completed' }), row({ key: 'b', status: 'completed' }), row({ key: 'c', status: 'failed' })];

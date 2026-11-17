@@ -55,7 +55,7 @@ import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
  */
 export const POLICY_SET_FEATURE_TYPES = [
   'event_log', 'hardware_monitoring', 'helper', 'monitors', 'onedrive_helper',
-  'pam', 'patch', 'security_agents', 'software_policy', 'time_sync', 'warranty',
+  'pam', 'patch', 'security_agents', 'software_policy', 'time_sync', 'wake_on_lan', 'warranty',
 ] as const;
 export type PolicySetFeatureType = (typeof POLICY_SET_FEATURE_TYPES)[number];
 export type PolicyAssignmentLevel = (typeof configPolicyAssignments.$inferSelect)['level'];

@@ -86,6 +86,13 @@ describe('fetchWispTimeline', () => {
     expect(page.items).toEqual([fl]);
   });
 
+  it('keeps nudge_resolved post rows (#11427)', async () => {
+    const nr = post('p-nr', '2026-10-26T09:00:00.000Z', { kind: 'nudge_resolved' });
+    fetchMock.mockResolvedValue(ok({ data: { items: [nr], nextCursor: null } }));
+    const page = await fetchWispTimeline('th-1', {});
+    expect(page.items).toEqual([nr]);
+  });
+
   it("keeps a couldn't-look post's variant, and drops one it does not know (#11145)", async () => {
     const couldntLook = post('p-cl', '2026-10-26T09:00:00.000Z', { kind: 'first_look', variant: 'couldnt_look' });
     const unknown = post('p-x', '2026-10-26T08:00:00.000Z', { kind: 'first_look', variant: 'something_new' as never });
@@ -93,6 +100,15 @@ describe('fetchWispTimeline', () => {
     const page = await fetchWispTimeline('th-1', {});
     expect(page.items[0]).toEqual(couldntLook);
     expect(page.items[1]).not.toHaveProperty('variant');
+  });
+
+  it("#11673: keeps a run report's markdown bodyFormat, and drops one it does not know", async () => {
+    const report = post('p-sr', '2026-10-26T09:00:00.000Z', { kind: 'specialist_result', bodyFormat: 'markdown' });
+    const unknown = post('p-sx', '2026-10-26T08:00:00.000Z', { kind: 'specialist_result', bodyFormat: 'html' as never });
+    fetchMock.mockResolvedValue(ok({ data: { items: [report, unknown], nextCursor: null } }));
+    const page = await fetchWispTimeline('th-1', {});
+    expect(page.items[0]).toEqual(report);
+    expect(page.items[1]).not.toHaveProperty('bodyFormat');
   });
 
   it('logs which kinds of rows were dropped, never their content', async () => {

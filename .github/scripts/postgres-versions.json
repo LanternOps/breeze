@@ -1,0 +1,9 @@
+{
+  "$comment": "Tested PostgreSQL majors (#11416). default: the shipped image (every ci.yml job, full suite on every PR). prSmoke: the second service in ci.yml check-migrations / check-migrations-nonsuperuser (blocking, every PR). scheduled: postgres-compat.yml's full integration + RLS + migration suites, one cron per major. The workflows keep static image strings; .github/scripts/postgres-compat.test.mjs asserts they match this file.",
+  "default": "16",
+  "prSmoke": "18",
+  "scheduled": {
+    "18": { "cadence": "daily", "cron": "53 3 * * *" },
+    "17": { "cadence": "weekly", "cron": "53 4 * * 0" }
+  }
+}

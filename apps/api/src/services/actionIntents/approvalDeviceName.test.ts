@@ -61,6 +61,8 @@ vi.mock('../sentry', () => ({ captureException: (e: unknown) => captureException
 
 import { and, eq } from 'drizzle-orm';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
+import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
+import { checkGuardrails } from '../aiGuardrails';
 import { devices } from '../../db/schema/devices';
 
 const DEVICE_ID = '6eae0f70-1111-4222-8333-444455556666';
@@ -174,6 +176,27 @@ describe('argumentDeviceId', () => {
   });
 
   it('ignores multi-device arguments, which have no single name to substitute', () => {
-    expect(argumentDeviceId({ deviceIds: [DEVICE_ID] })).toBeNull();
+    expect(argumentDeviceId({ deviceIds: [DEVICE_ID, '7eae0f70-1111-4222-8333-444455556666'] })).toBeNull();
+    expect(argumentDeviceId({ deviceIds: [] })).toBeNull();
+  });
+
+  it('names the one device a single-entry deviceIds targets (#11979: run_script on 1 device)', () => {
+    expect(argumentDeviceId({ deviceIds: [DEVICE_ID] })).toBe(DEVICE_ID);
+    expect(argumentDeviceId({ deviceIds: ['not-a-uuid'] })).toBeNull();
+    // The singular argument wins: every other `on device` stub is built from it.
+    expect(argumentDeviceId({ deviceId: DEVICE_ID, deviceIds: ['7eae0f70-1111-4222-8333-444455556666'] })).toBe(DEVICE_ID);
+  });
+
+  it('chains with the run_script headline so the stored label names the script and the device (#11979)', () => {
+    const input = { proposalId: 'aaaaaaaa-1111-4111-8111-111111111111', deviceIds: [DEVICE_ID] };
+    const reason = checkGuardrails(
+      'run_script', input, { proposal: { riskTier: 'low', strictHits: [], goal: 'Clear the print spooler queue' } },
+    ).description!;
+    // intentService.ts: resolve the name only when the label carries THIS call's stub.
+    const argDeviceId = argumentDeviceId(input);
+    expect(argDeviceId).toBe(DEVICE_ID);
+    expect(hasDeviceIdStub(reason, argDeviceId!)).toBe(true);
+    expect(buildActionLabel({ toolName: 'run_script', input, reason, deviceHostname: 'FRONT-DESK-01' }))
+      .toBe('Run proposed script "Clear the print spooler queue" on FRONT-DESK-01');
   });
 });

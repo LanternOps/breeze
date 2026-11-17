@@ -31,6 +31,7 @@ export default function WispGrantSettingsPanel({ settings, className }: { settin
           className="w-24 rounded border bg-background px-2 py-1"
         />
       </label>
+      <p className="text-xs text-muted-foreground" data-testid="wisp-settings-budget-help">{t('wisp.settings.budgetHelp')}</p>
       <label className="flex items-center justify-between gap-2">
         {t('wisp.settings.tick')}
         <input

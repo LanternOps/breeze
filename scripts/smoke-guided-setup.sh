@@ -441,6 +441,18 @@ web_status="$(http -o /dev/null -w '%{http_code}' "${BASE}/login")"
 [[ "${web_status}" == "200" ]] || fail "GET ${BASE}/login returned ${web_status}"
 echo "  OK  /health and /login are 200 over HTTPS"
 
+step "Assert the verified release manifest pair is at the binaries volume root (#11870)"
+# The binaries image cannot carry the pair (the signed manifest names that
+# image's own digest), so guided setup copies the pair it verified into the
+# volume. BINARY_SOURCE=local reads it from the parent of AGENT_BINARY_DIR.
+for pair_file in release-artifact-manifest.json release-artifact-manifest.json.ed25519; do
+  docker exec breeze-api cat "/data/binaries/${pair_file}" | cmp -s - "${RELEASE_FIXTURE_DIR}/${pair_file}" \
+    || fail "/data/binaries/${pair_file} in breeze-api is missing or differs from the verified ${pair_file}"
+  cmp -s "${WORK_DIR}/release-manifest/${pair_file}" "${RELEASE_FIXTURE_DIR}/${pair_file}" \
+    || fail "${WORK_DIR}/release-manifest/${pair_file} is missing or differs from the verified ${pair_file}"
+done
+echo "  OK  the verified pair is kept in ${WORK_DIR}/release-manifest and mounted at /data/binaries"
+
 step "Bootstrap admin login at the configured origin (${BASE})"
 jar_direct="$(mktemp)"
 token="$(login "${jar_direct}" "${BASE}")"

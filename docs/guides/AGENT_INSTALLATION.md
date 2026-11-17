@@ -90,17 +90,11 @@ turn.your-breeze-domain.com:3478 (UDP)
 
 ### Windows (PowerShell)
 
-Run PowerShell as Administrator and execute:
+1. Open **Add Device** in the dashboard and generate an enrollment token.
+2. Copy the Windows command from **CLI Commands**.
+3. Run the command in PowerShell 5.1 or later as Administrator.
 
-```powershell
-# One-liner install with automatic enrollment
-irm https://your-server.com/install.ps1 | iex
-
-# Or with enrollment key
-$env:BREEZE_ENROLLMENT_KEY = "your-enrollment-key"
-$env:BREEZE_SERVER_URL = "https://your-server.com"
-irm https://your-server.com/install.ps1 | iex
-```
+The command checks the HTTP response, disables redirects, and checks the installer function header before execution. HTTPS uses the target machine's trusted certificate store. Plain HTTP is supported for trusted self-hosted LANs. The script pins the download to one release version and verifies its checksum before enrollment. See the [Windows installation guide](https://docs.breezermm.com/agents/installation/#quick-install).
 
 ### macOS (Bash)
 
@@ -450,7 +444,6 @@ The enrollment key is an optional positional argument (`breeze-agent enroll [enr
 | `[enrollment-key]` | Enrollment key from the web console (positional), or set `BREEZE_AGENT_ENROLLMENT_KEY` |
 | `--server` | Breeze server URL |
 | `--enrollment-secret` | Enrollment secret, when the server requires one (`AGENT_ENROLLMENT_SECRET`) |
-| `--site-id` | Deprecated and ignored; the device joins the site the enrollment key is bound to. Passing it prints a deprecation warning; the flag will be removed in a future release |
 | `--device-role` | Device role override (e.g. `workstation`, `server`) |
 | `--force` | Re-enroll even if already enrolled; replaces the agent ID and auth token on success |
 | `--quiet` | Suppress progress output (errors still go to stderr) |

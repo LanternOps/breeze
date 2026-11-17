@@ -1,0 +1,30 @@
+2026-11-08T20:21:34.5351103Z ##[group]Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+2026-11-08T20:21:51.8971367Z ##[group]Run for attempt in 1 2 3; do
+2026-11-08T20:21:52.1229132Z ##[group]Run pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+2026-11-08T20:21:55.8587848Z ##[group]Run actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+2026-11-08T20:21:56.6400669Z ##[group]Run ./.github/actions/restore-pnpm-cache
+2026-11-08T20:21:56.6486879Z ##[group]Run echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+2026-11-08T20:21:57.1967196Z ##[group]Run actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+2026-11-08T20:22:08.1560832Z ##[group]Run pnpm install --frozen-lockfile
+2026-11-08T20:22:16.9370882Z ##[group]Run # #5892: `docker compose pull` can fail transiently with ECONNRESET
+2026-11-08T20:22:24.6692012Z ##[group]Run node .github/scripts/retry-shard.mjs --runner vitest --label integration-1 --budget-minutes 50 -- pnpm --filter=@breeze/api test:integration --shard=1/16
+2026-11-08T20:22:25.4739231Z [1m[30m[46m RUN [49m[39m[22m [36mv4.1.12 [39m[90m/home/runner/work/breeze/breeze/apps/api[39m
+2026-11-08T20:23:51.2922589Z  [32m✓[39m src/__tests__/integration/flowConversionSwitch.integration.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 50794[2mms[22m[39m
+2026-11-08T20:24:28.2719724Z  [32m✓[39m src/__tests__/integration/deviceCommandOfflineQueue.integration.test.ts [2m([22m[2m29 tests[22m[2m)[22m[33m 32775[2mms[22m[39m
+2026-11-08T20:48:07.4650444Z [2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+2026-11-08T20:48:07.8691317Z ##[group]Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+2026-11-08T20:48:08.0316756Z ##[group]Run # The fatal boot sentinel. A BARE `CRITICAL` is not usable as one:
+2026-11-08T20:48:38.3256733Z ##[group]Run pnpm --filter @breeze/ext-workspace test:integration
+2026-11-08T20:48:39.1022079Z [1m[30m[46m RUN [49m[39m[22m [36mv4.1.12 [39m[90m/home/runner/work/breeze/breeze/ee/workspace[39m
+2026-11-08T20:48:42.5079271Z  [32m✓[39m src/__tests__/client-filing.integration.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 666[2mms[22m[39m
+2026-11-08T20:48:43.7592322Z  [32m✓[39m src/__tests__/finder.integration.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 649[2mms[22m[39m
+2026-11-08T20:49:01.7179132Z [2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+2026-11-08T20:49:01.8045331Z ##[group]Run pnpm --filter=@breeze/api test:request-db-role
+2026-11-08T20:49:02.5606189Z [1m[30m[46m RUN [49m[39m[22m [36mv4.1.12 [39m[90m/home/runner/work/breeze/breeze/apps/api[39m
+2026-11-08T20:49:09.9383799Z  [32m✓[39m src/db/requestDatabaseRole.integration.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 7181[2mms[22m[39m
+2026-11-08T20:49:09.9413467Z [2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+2026-11-08T20:49:10.0658389Z ##[group]Run pnpm --filter=@breeze/api test:rls-coverage
+2026-11-08T20:49:10.9167141Z [1m[30m[46m RUN [49m[39m[22m [36mv4.1.12 [39m[90m/home/runner/work/breeze/breeze/apps/api[39m
+2026-11-08T20:49:18.1480897Z  [32m✓[39m src/__tests__/integration/rls-coverage.integration.test.ts [2m([22m[2m105 tests[22m[2m)[22m[33m 1885[2mms[22m[39m
+2026-11-08T20:49:18.1511482Z [2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+2026-11-08T20:49:18.2685574Z ##[group]Run docker compose -f docker-compose.test.yml down -v || true

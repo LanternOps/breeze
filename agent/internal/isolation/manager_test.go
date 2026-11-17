@@ -314,7 +314,7 @@ func TestManagerHandleIsolateValidation(t *testing.T) {
 			params(p)["expiresAt"] = h.clock.Now().Add(721 * time.Hour).Format(time.RFC3339)
 		},
 		"empty allow":    func(p map[string]any) { params(p)["allow"] = []any{} },
-		"dead man set":   func(p map[string]any) { params(p)["deadManSeconds"] = float64(1800) },
+		"dead man short": func(p map[string]any) { params(p)["deadManSeconds"] = float64(60) },
 		"bad proto":      func(p map[string]any) { allow0(p)["proto"] = "icmp" },
 		"no ports":       func(p map[string]any) { allow0(p)["ports"] = []any{} },
 		"bad cidr":       func(p map[string]any) { allow0(p)["kind"] = "cidr"; allow0(p)["cidr"] = "0.0.0.0/0" },

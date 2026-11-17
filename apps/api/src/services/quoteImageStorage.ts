@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
-import { quoteImages, quoteLines } from '../db/schema/quotes';
+import { quoteImages, quoteLines, quotes } from '../db/schema/quotes';
+import { catalogItems } from '../db/schema/catalog';
 import { readCatalogItemImage } from './catalogImageStorage';
 import { sniffImageMime } from './avatarStorage';
-import { ResponseTooLargeError, safeFetch, SsrfBlockedError } from './urlSafety';
+import { ResponseDeadlineError, ResponseTooLargeError, safeFetch, SsrfBlockedError } from './urlSafety';
 
 export { sniffImageMime };
 export const MAX_QUOTE_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // reuse the avatar cap
@@ -57,18 +58,23 @@ export async function readQuoteImage(imageId: string, quoteId: string): Promise<
  * catalog_item_images is partner-scoped, callers on the ORG-scoped portal path
  * must invoke this under a SYSTEM db access context (the #1375 class — a bare
  * org-scoped read would RLS-filter to 0 rows); the public path already runs in
- * system scope. Ownership is enforced by the quote-scoped line lookup above, not
- * by RLS, so running under system scope here is safe.
+ * system scope. Ownership is enforced here, not by RLS: the quote-scoped line
+ * lookup above, plus a catalog item join pinned to the quote's own partner — the
+ * line's catalog_item_id FK alone does not prove that, and system scope would
+ * otherwise read any partner's catalog image.
  */
 export async function loadCustomerLineImage(quoteId: string, lineId: string): Promise<{ data: Buffer; mime: string; byteSize: number } | null> {
   const [line] = await db.select({
     imageId: quoteLines.imageId,
-    catalogItemId: quoteLines.catalogItemId,
+    ownCatalogItemId: catalogItems.id,
     customerVisible: quoteLines.customerVisible,
-  }).from(quoteLines).where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId))).limit(1);
+  }).from(quoteLines)
+    .innerJoin(quotes, eq(quotes.id, quoteLines.quoteId))
+    .leftJoin(catalogItems, and(eq(catalogItems.id, quoteLines.catalogItemId), eq(catalogItems.partnerId, quotes.partnerId)))
+    .where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId))).limit(1);
   if (!line || !line.customerVisible) return null;
   if (line.imageId) return readQuoteImage(line.imageId, quoteId);
-  if (line.catalogItemId) return readCatalogItemImage(line.catalogItemId);
+  if (line.ownCatalogItemId) return readCatalogItemImage(line.ownCatalogItemId);
   return null;
 }
 
@@ -83,6 +89,8 @@ export class RemoteImageError extends Error {
 }
 
 const REMOTE_IMAGE_TIMEOUT_MS = 8000;
+/** The longest a remote image copy waits on the remote host, start to finish. */
+const REMOTE_IMAGE_DEADLINE_MS = 20_000;
 
 /**
  * Fetch an image from a user-supplied URL and return its bytes for storage — a
@@ -97,8 +105,10 @@ const REMOTE_IMAGE_TIMEOUT_MS = 8000;
 export async function fetchRemoteImage(url: string): Promise<{ mime: string; buffer: Buffer }> {
   let res: Response;
   try {
+    // timeoutMs is socket inactivity; deadlineMs bounds the whole download.
     res = await runOutsideDbContext(() => safeFetch(url, {
       timeoutMs: REMOTE_IMAGE_TIMEOUT_MS,
+      deadlineMs: REMOTE_IMAGE_DEADLINE_MS,
       maxBytes: MAX_QUOTE_IMAGE_SIZE_BYTES,
     }));
   } catch (err) {
@@ -110,7 +120,7 @@ export async function fetchRemoteImage(url: string): Promise<{ mime: string; buf
     // message (no SSRF-probe fingerprinting) and do NOT alert to Sentry — `cause`
     // still carries the original error for local debugging.
     if (err instanceof SsrfBlockedError) throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: err });
-    if (err instanceof Error && /timed out/i.test(err.message)) {
+    if (err instanceof ResponseDeadlineError || (err instanceof Error && /timed out/i.test(err.message))) {
       throw new RemoteImageError('timeout', 'The image took too long to download', { cause: err });
     }
     throw new RemoteImageError('unreachable', "Couldn't reach that URL", { cause: err });

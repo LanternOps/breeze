@@ -16,11 +16,11 @@
  * behavior production would see — `getTestDb()` (superuser) is used for SEED only.
  */
 import './setup';
-import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { portalRoutes } from '../../routes/portal';
-import { portalResetTokens, portalSessions } from '../../routes/portal/helpers';
+import { portalSessions } from '../../routes/portal/helpers';
+import { issuePortalCapabilityToken } from '../../routes/portal/capabilityTokens';
 import { portalUsers, devices, portalBranding, assetCheckouts } from '../../db/schema';
 import { hashPassword } from '../../services/password';
 import { createPartner, createOrganization, createSite } from './db-utils';
@@ -294,14 +294,11 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     const app = buildPortalApp();
 
     // PORTAL_USE_REDIS is false under NODE_ENV=test, so the reset route reads
-    // the token from the in-memory map — seed it directly with a known token.
-    const resetToken = `reset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const tokenHash = createHash('sha256').update(resetToken).digest('hex');
-    portalResetTokens.set(tokenHash, {
-      userId: portalUser.id,
-      expiresAt: new Date(Date.now() + 60_000),
-      createdAt: new Date(),
-    });
+    // the in-memory store. Mint a purpose-bound reset token (W2) exactly as
+    // forgot-password does: bound to the org, the address and the epoch.
+    const resetToken = (await issuePortalCapabilityToken({
+      purpose: 'reset', portalUserId: portalUser.id, orgId, email: portalUser.email, authEpoch: 1,
+    }))!;
 
     const newPassword = 'NewPortalPass456!';
     const resetRes = await app.request('/portal/auth/reset-password', {
@@ -353,13 +350,9 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     });
     expect(loginRes.status).toBe(401);
 
-    const resetToken = `entra-reset-${unique}`;
-    const tokenHash = createHash('sha256').update(resetToken).digest('hex');
-    portalResetTokens.set(tokenHash, {
-      userId: entraUser.id,
-      expiresAt: new Date(Date.now() + 60_000),
-      createdAt: new Date(),
-    });
+    const resetToken = (await issuePortalCapabilityToken({
+      purpose: 'reset', portalUserId: entraUser.id, orgId, email: entraUser.email, authEpoch: entraUser.authEpoch,
+    }))!;
     const resetRes = await app.request('/portal/auth/reset-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

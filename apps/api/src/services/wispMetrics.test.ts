@@ -8,7 +8,9 @@ import {
   incWispBudgetExhausted,
   incWispConcern,
   incWispGrantPause,
+  incWispDispatchUnverified,
   incWispNudge,
+  incWispPromiseCorrection,
   setWispGrantsActive,
 } from './wispMetrics';
 
@@ -32,6 +34,17 @@ describe('wispMetrics', () => {
       'wisp_specialist_requests_total', 'wisp_grant_pauses_total', 'wisp_assessments_total',
       'wisp_nudges_total', 'wisp_concerns_total', 'wisp_budget_exhausted_total', 'wisp_grants_active',
     ]) expect(text).toContain(`# HELP ${n}`);
+  });
+
+  it('#10427: counts unverified dispatches by tool and promise corrections by class', async () => {
+    incWispDispatchUnverified('run_patch_plan');
+    incWispPromiseCorrection('follow_up');
+    incWispPromiseCorrection('follow_up');
+    const text = await metricsRegistry.metrics();
+    expect(text).toMatch(/wisp_dispatch_unverified_total\{tool="run_patch_plan"\} 1/);
+    expect(text).toMatch(/wisp_promise_corrections_total\{class="follow_up"\} 2/);
+    expect(text).toContain('# HELP wisp_dispatch_unverified_total');
+    expect(text).toContain('# HELP wisp_promise_corrections_total');
   });
 
   it('is a leaf module (imports only metricsRegistry)', () => {

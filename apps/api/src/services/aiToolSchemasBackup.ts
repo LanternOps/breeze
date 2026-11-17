@@ -9,6 +9,8 @@
 import { z } from 'zod';
 // Pool-free leaf (imports only zod) shared with the route schema.
 import { hypervOptionsSchema, isAbsoluteRebuildPath } from './bareMetalRebuildSchemas';
+// Pool-free leaf as well: where local vaults may live.
+import { isSupportedLocalStorePath, LOCAL_STORE_PATH_UNSUPPORTED_MESSAGE, SMB_VAULT_UNSUPPORTED_MESSAGE } from './localStoreTargets';
 
 // Reusable validators (duplicated locally to avoid circular imports)
 const uuid = z.string().guid();
@@ -49,8 +51,9 @@ const restoreAsVmRebuildArm = z.object({
 /**
  * W03-D4 (#6757). Agent SDK shapes for tools whose `toolInputSchemas` entry is
  * not a plain `z.object` (so `inputShape()` cannot read `.shape`). The SDK's
- * `tool()` wraps a ZodRawShape in `z.object` and STRIPS keys absent from it,
- * so the shape must carry every key either arm accepts. Every key is optional
+ * `tool()` wraps a ZodRawShape in `z.object` and STRIPS keys absent from it
+ * (and the #11861 PreToolUse guard refuses them first), so the shape must
+ * carry every key either arm accepts. Every key is optional
  * here: `validateToolInput` runs the full pipe afterwards and enforces each
  * arm's required fields and its strictness.
  */
@@ -212,8 +215,13 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
     action: z.enum(['create', 'update']),
     vaultId: uuid.optional(),
     deviceId: uuid.optional(),
-    vaultPath: backupPath.optional(),
-    vaultType: z.enum(['local', 'smb', 'usb']).optional(),
+    vaultPath: backupPath
+      .refine((path) => isSupportedLocalStorePath(path), { message: LOCAL_STORE_PATH_UNSUPPORTED_MESSAGE })
+      .optional(),
+    // SMB share vaults are not supported; the stored type still reads back.
+    vaultType: z.enum(['local', 'usb'], {
+      error: (issue) => (issue.input === 'smb' ? SMB_VAULT_UNSUPPORTED_MESSAGE : undefined),
+    }).optional(),
     retentionCount: z.number().int().min(1).max(100).optional(),
     isActive: z.boolean().optional(),
   }).superRefine((data, ctx) => {

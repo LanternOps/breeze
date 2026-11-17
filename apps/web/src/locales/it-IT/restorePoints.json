@@ -15,6 +15,7 @@
     "verificationFailed": "Impossibile verificare",
     "failed": "Non riuscito — {{message}}",
     "failedNoMessage": "Non riuscito",
+    "interrupted": "Sconosciuto — l'agente si è arrestato prima di poter segnalare questo punto di ripristino",
     "unknown": "Esito non riconosciuto da questa versione della console"
   },
   "list": {

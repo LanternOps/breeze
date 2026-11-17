@@ -15,6 +15,8 @@ import { changeTicketStatus, createTicket, type TicketActor } from '../ticketSer
 import { resolvePartnerByRecipient } from './resolvePartner';
 import { resolveOrgBySenderDomain, resolveEmailRequester, loadPartnerInboundPolicy } from './resolveOrg';
 import { extractForwardedSender, domainOf } from './forwardParse';
+import { addressDomain } from './authenticationResults';
+import { normalizeMailgunForm } from './mailgun';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../unassignedPool/orgType';
 import { maybeSendAutoresponse } from './autoresponder';
 import { applyDefaultInboundAssignee } from './defaultAssignee';
@@ -22,6 +24,7 @@ import { insertEmailAuthoredComment } from './emailComments';
 import { hasStoredAttachments, persistInboundAttachments, withInboundAttachmentNote } from './inboundAttachments';
 import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
+import { portalLoginEmailEquals, soleCaseInsensitiveMatch } from '../portalLoginEmail';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import {
   POLLED_MAILBOX_PROVIDERS,
@@ -186,10 +189,13 @@ export interface ProcessInboundEmailDependencies {
 }
 
 export async function processInboundEmail(
-  n: NormalizedInboundEmail,
+  queued: NormalizedInboundEmail,
   mailboxGeneration?: MailboxGenerationContext,
   dependencies: ProcessInboundEmailDependencies = {},
 ): Promise<void> {
+  // Rebuilt below, once the partner is known, so a failed rebuild is recorded
+  // under that partner like any other processing failure.
+  let n = queued;
   // partnerId is tracked outside the try so the durable-failed log records whatever
   // tenant was resolved before the failure (may be null if resolution itself failed).
   let partnerId: string | null = null;
@@ -240,6 +246,9 @@ export async function processInboundEmail(
       return;
     }
 
+    // A job queued by an earlier release is rebuilt before any check reads it.
+    n = withCurrentSenderBinding(queued);
+
     // (1a.5) Idempotency — provider retries / at-least-once delivery, scoped to the
     // partner. Runs BEFORE the suppression/audit checks below (partner-status,
     // self-loop, own-outbound, loop/bounce) so a REDELIVERY of an already-logged
@@ -285,8 +294,10 @@ export async function processInboundEmail(
     // loopPrevention.ts is the separate, defense-in-depth backstop.) When no platform
     // domain is configured (self-hosted without TICKETS_INBOUND_DOMAIN) the helper
     // returns null and this guard is skipped — nothing to compare against.
+    // The envelope sender is checked too: our own outbound carries an envelope on
+    // the inbound domain even when its From is the partner's.
     const inboundDomain = inboundDomainOrNull();
-    if (inboundDomain && senderDomain(n.from) === inboundDomain.toLowerCase()) {
+    if (inboundDomain && [n.from, n.envelopeFrom].some((a) => !!a && senderDomain(a) === inboundDomain.toLowerCase())) {
       await logInbound(n, partnerId, 'ignored', null, `self-loop: sender is inbound domain ${inboundDomain}`);
       return;
     }
@@ -409,7 +420,14 @@ export async function processInboundEmail(
     // #10862). When NOT verified, route the
     // message to the EXISTING quarantine/review path instead of auto-acting — mail is
     // never dropped.
-    if (!n.senderAuth?.verified) {
+    //
+    // A verdict authorizes only the From address whose domain it is for
+    // (SenderAuth.authenticatedDomain, set by the normalizer from the verdict).
+    // Everything below — token/thread binding, portal-login attribution, staff
+    // lookup, domain routing, requester resolution, the autoresponse — reads
+    // n.from, so this one check is what makes n.from an authenticated identity.
+    const senderVerdict = senderVerdictFor(n);
+    if (senderVerdict !== 'verified') {
       // A `senderAuthDiagnostic` means we're acting NOT because of a genuine DMARC fail but
       // because no usable provider verdict could be read — the silent mass-quarantine (or, when
       // the partner opts to drop, mass-DROP) failure mode from a provider MX/host or
@@ -418,7 +436,7 @@ export async function processInboundEmail(
       // anomalous rather than ordinary spam rejection. Raise it regardless of the drop policy —
       // a systemic verdict-reading gap matters even more when unverified mail is being dropped.
       const gap = n.senderAuthDiagnostic;
-      if (gap) {
+      if (gap && senderVerdict === 'unverified') {
         captureMessage(
           'Inbound email quarantined: no usable provider sender-auth verdict on a signature-verified webhook',
           {
@@ -426,7 +444,11 @@ export async function processInboundEmail(
           }
         );
       }
-      const reasonDetail = gap ?? n.senderAuthConsulted;
+      const reasonDetail = senderVerdict === 'other-domain'
+        ? 'verdict is not for the From domain'
+        : senderVerdict === 'queued-before-binding'
+          ? 'queued before the From-domain check'
+          : gap ?? n.senderAuthConsulted;
       const reason = reasonDetail
         ? `unverified sender (SPF/DKIM/DMARC): ${reasonDetail}`
         : 'unverified sender (SPF/DKIM/DMARC)';
@@ -435,7 +457,9 @@ export async function processInboundEmail(
       // queue, no autoresponse). This gate runs before any sender matching, so
       // the drop applies to ALL unverified senders — known or not (see
       // PartnerInboundPolicy.dropUnverifiedSenders).
-      if (policy.dropUnverifiedSenders) {
+      // A job queued before the From-domain check may be genuine mail, so it is
+      // always held for review, never dropped.
+      if (policy.dropUnverifiedSenders && senderVerdict !== 'queued-before-binding') {
         await logInbound(n, partnerId, 'ignored', null, `drop: ${reason}`);
       } else {
         await logInbound(n, partnerId, 'quarantined', null, reason);
@@ -749,14 +773,19 @@ function unlinkedRequesterNote(
 
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
 // portal_users has no partner_id; a same-email user under a DIFFERENT partner must not match.
+// The address matches case-insensitively (#11541). The match decides which org a
+// ticket is filed in, so an address that names more than one login (case
+// variants, or one address in several of this partner's orgs) is ambiguous and
+// resolves to no portal user: the message falls through to domain routing,
+// exactly as an unknown sender would, instead of filing into an arbitrary org.
 async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null; contactId: string | null } | null> {
   const rows = await db
     .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name, contactId: portalUsers.contactId })
     .from(portalUsers)
     .innerJoin(organizations, eq(portalUsers.orgId, organizations.id))
-    .where(and(eq(portalUsers.email, email.toLowerCase()), eq(organizations.partnerId, partnerId)))
-    .limit(1);
-  return rows[0] ?? null;
+    .where(and(portalLoginEmailEquals(email), eq(organizations.partnerId, partnerId)))
+    .limit(2);
+  return soleCaseInsensitiveMatch(rows, 'inbound email sender lookup', { partnerId });
 }
 
 // Resolve TICKETS_INBOUND_DOMAIN defensively. The inbound worker runs `getConfig()`
@@ -817,6 +846,35 @@ async function staffCanReachOrg(access: PartnerStaffAccess, orgId: string, partn
     ))
     .limit(1);
   return rows.length > 0;
+}
+
+/**
+ * Whether the message's sender-auth verdict authorizes its From address:
+ * 'verified' only when the verdict is verified AND is for the domain of `n.from`.
+ * 'other-domain' is a verified verdict that names a different domain or none.
+ * 'queued-before-binding' is a verified verdict with no authenticatedDomain key:
+ * a job an earlier release queued, which cannot be rebuilt (see below).
+ */
+function senderVerdictFor(n: NormalizedInboundEmail): 'verified' | 'unverified' | 'other-domain' | 'queued-before-binding' {
+  if (!n.senderAuth?.verified) return 'unverified';
+  if (!('authenticatedDomain' in n.senderAuth)) return 'queued-before-binding';
+  const fromDomain = addressDomain(n.from);
+  const authDomain = n.senderAuth.authenticatedDomain?.trim().toLowerCase();
+  return fromDomain !== null && authDomain === fromDomain ? 'verified' : 'other-domain';
+}
+
+/**
+ * A Mailgun job queued by an earlier release recorded the SMTP envelope sender as
+ * `from` and no authenticated domain. Its `raw` is the whole webhook form, so
+ * rebuild it with the current normalizer (same dedup key, same verdicts) instead
+ * of trusting the stored identity. Polled-mailbox jobs keep no headers to rebuild
+ * from and are held for review by the sender gate.
+ */
+function withCurrentSenderBinding(n: NormalizedInboundEmail): NormalizedInboundEmail {
+  if (n.provider !== 'mailgun' || !n.senderAuth?.verified || 'authenticatedDomain' in n.senderAuth) return n;
+  const form = n.raw as Record<string, unknown> | null;
+  if (!form || typeof form !== 'object' || typeof form.from !== 'string') return n;
+  return { ...normalizeMailgunForm(form as Record<string, string>), attachments: n.attachments };
 }
 
 // Lower-cased domain part of an email address (everything after the last '@'),

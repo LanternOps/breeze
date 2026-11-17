@@ -34,6 +34,7 @@ vi.mock('../../jobs/workerObservability', () => ({ attachWorkerObservability: vi
 import * as redisA from '../../services/redis';
 import * as presenceA from '../../services/agentPresence';
 import * as relayA from '../../services/agentCommandRelay';
+import * as shardA from '../../services/agentCommandRelayShard';
 import * as wsA from '../../routes/agentWs';
 import * as workerA from '../../jobs/agentCommandRelayWorker';
 import { INSTANCE_ID } from '../../services/instanceIdentity';
@@ -53,26 +54,36 @@ interface Instance {
   redis: typeof import('../../services/redis');
   presence: typeof import('../../services/agentPresence');
   relay: typeof import('../../services/agentCommandRelay');
+  shard: typeof import('../../services/agentCommandRelayShard');
   ws: typeof import('../../routes/agentWs');
   worker: typeof import('../../jobs/agentCommandRelayWorker');
 }
 
 const A: Instance = {
-  id: INSTANCE_ID, redis: redisA, presence: presenceA, relay: relayA, ws: wsA, worker: workerA,
+  id: INSTANCE_ID, redis: redisA, presence: presenceA, relay: relayA, shard: shardA, ws: wsA, worker: workerA,
 };
 
-/** A fresh module graph: a second API process as far as the relay can tell. */
+/**
+ * A fresh module graph: a second API process as far as the relay can tell.
+ *
+ * The imports run one at a time, never in a Promise.all (#11483). The module
+ * runner gives every import from this file the same callstack array. While a
+ * vi.doMock factory runs, vitest pushes the mock's id onto that array. A
+ * sibling import whose evaluation begins in that window copies the id into its
+ * own chain, and below that chain the mocked module reads as a self-import, so
+ * the real one loads. In the conflict test that gave C's worker a new random
+ * INSTANCE_ID: it claimed a shard of its own and started instead of refusing.
+ */
 async function loadInstance(): Promise<Instance> {
   vi.resetModules();
-  const [identity, redis, presence, relay, ws, worker] = await Promise.all([
-    import('../../services/instanceIdentity'),
-    import('../../services/redis'),
-    import('../../services/agentPresence'),
-    import('../../services/agentCommandRelay'),
-    import('../../routes/agentWs'),
-    import('../../jobs/agentCommandRelayWorker'),
-  ]);
-  return { id: identity.INSTANCE_ID, redis, presence, relay, ws, worker };
+  const identity = await import('../../services/instanceIdentity');
+  const redis = await import('../../services/redis');
+  const presence = await import('../../services/agentPresence');
+  const relay = await import('../../services/agentCommandRelay');
+  const shard = await import('../../services/agentCommandRelayShard');
+  const ws = await import('../../routes/agentWs');
+  const worker = await import('../../jobs/agentCommandRelayWorker');
+  return { id: identity.INSTANCE_ID, redis, presence, relay, shard, ws, worker };
 }
 
 // Namespaced per run so a shard sharing this Redis cannot collide (#3066).
@@ -113,6 +124,18 @@ async function keysOf(queueName: string): Promise<string[]> {
     cursor = next;
   } while (cursor !== '0');
   return keys;
+}
+
+async function ownerKeys(): Promise<string[]> {
+  const redis = redisA.getRedis()!;
+  const keys: string[] = [];
+  let cursor = '0';
+  do {
+    const [next, batch] = await redis.scan(cursor, 'MATCH', relayShardOwnerKey('*'), 'COUNT', 500);
+    keys.push(...batch);
+    cursor = next;
+  } while (cursor !== '0');
+  return keys.sort();
 }
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 3_000): Promise<void> {
@@ -187,15 +210,33 @@ describe('agent command relay shards — two API instances, real Redis (#4134)',
     expect(pttl).toBeGreaterThan(0);
     expect(pttl).toBeLessThanOrEqual(RELAY_SHARD_OWNER_TTL_MS);
 
-    // Another process that boots with the same instance id.
-    vi.doMock('../../services/instanceIdentity', () => ({ INSTANCE_ID: A.id }));
-    const C = await loadInstance();
-    vi.doUnmock('../../services/instanceIdentity');
+    // Another process that boots with the same instance id. The factory waits
+    // on purpose: it holds open the window loadInstance guards against, so a
+    // loader that imports C's modules in a Promise.all fails this test
+    // reliably instead of now and then.
+    vi.doMock('../../services/instanceIdentity', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return { INSTANCE_ID: A.id };
+    });
+    // Unmocked even if loading fails, so the mock never reaches a later test.
+    const C = await loadInstance().finally(() => vi.doUnmock('../../services/instanceIdentity'));
     extraInstances.push(C);
+    // Only this file's own import of the identity module: it says nothing about
+    // whether C's worker saw the mock. The owner-key and message checks below do.
     expect(C.id).toBe(A.id);
 
-    await expect(C.worker.initializeAgentCommandRelayWorker()).rejects.toBeInstanceOf(C.worker.RelayShardConflictError);
+    // C's Redis client is ready and sees A's claim: acquiring A's shard from C
+    // answers `held` (not `acquired`, not `unavailable`).
+    await expect(C.shard.acquireRelayShard(A.id, randomUUID())).resolves.toBe('held');
+
+    const refused = await C.worker.initializeAgentCommandRelayWorker().then(() => null, (err: unknown) => err);
+    // C claimed no shard of its own: setup.ts flushed Redis before this test,
+    // so A's key, still holding A's token, is the only owner key there is.
+    expect(await ownerKeys()).toEqual([ownerKey]);
     expect(await redis.get(ownerKey)).toBe(token);
+    // And it refused A's shard, by name.
+    expect(refused).toBeInstanceOf(C.worker.RelayShardConflictError);
+    expect((refused as Error).message).toContain(relayA.agentCommandRelayQueueName(A.id));
 
     const target = agentId('owner');
     const frames = installSocket(A, target);

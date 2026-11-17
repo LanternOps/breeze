@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../db', () => {
   // Drizzle's `db.transaction(fn)` calls fn with a `tx` that has the same
@@ -71,6 +73,8 @@ import {
   consumeVerificationToken,
   generateVerificationToken,
   invalidateOpenTokens,
+  peekSignupPasswordConfirmation,
+  retireVerificationToken,
 } from './emailVerification';
 
 function chainSelect(rows: unknown[]) {
@@ -148,11 +152,13 @@ function mockEmailChangeSelects(
     pendingEmail: 'a@b.com',
     emailEpoch: 1,
     name: 'User',
+    status: 'active',
   }
 ) {
   vi.mocked(db.select)
     .mockReturnValueOnce(chainSelect([token]) as any)
-    .mockReturnValueOnce(chainSelect(liveUser ? [liveUser] : []) as any);
+    // Accounts are active unless a test says otherwise.
+    .mockReturnValueOnce(chainSelect(liveUser ? [{ status: 'active', ...liveUser }] : []) as any);
 }
 
 /** An update whose terminal `.where()` rejects (used to force the swap 23505). */
@@ -183,6 +189,85 @@ function mockConsumeSelects(
     .mockReturnValueOnce(chainSelect(liveUser ? [liveUser] : []) as any)
     .mockReturnValueOnce(chainSelect(partner ? [partner] : []) as any);
 }
+
+describe('signup link password confirmation', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it.each([undefined, 'some-other-hash'])('does not claim a signup link unless the verified password hash is current (%s)', async (confirmed) => {
+    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1, passwordHash: 'stored-hash' });
+    // A claim would succeed if attempted; only the password check stops it.
+    vi.mocked(db.update).mockReturnValue(chainUpdateReturning([{ id: 'claimed' }]) as any);
+
+    const result = await consumeVerificationToken('token', confirmed === undefined ? undefined : { confirmedPasswordHash: confirmed });
+
+    expect(db.update).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, error: 'password_required' });
+  });
+
+  it('claims a signup link when the verified password hash is still the stored one', async () => {
+    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1, passwordHash: 'stored-hash' });
+    vi.mocked(db.update).mockReturnValue(chainUpdateReturning([{ id: 'claimed' }]) as any);
+
+    const result = await consumeVerificationToken('token', { confirmedPasswordHash: 'stored-hash' });
+
+    expect(result.ok).toBe(true);
+    expect(db.update).toHaveBeenCalled();
+  });
+});
+
+describe('peekSignupPasswordConfirmation', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  function mockPeekSelects(token: Record<string, unknown> | null, user: Record<string, unknown> | null) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainSelect(token ? [token] : []) as any)
+      .mockReturnValueOnce(chainSelect(user ? [user] : []) as any);
+  }
+
+  it('returns the account to confirm for a live signup link on an account with a password', async () => {
+    mockPeekSelects(tokenRow(), { id: 'u-1', email: 'A@b.com', name: 'A', emailEpoch: 1, passwordHash: 'stored-hash' });
+
+    expect(await peekSignupPasswordConfirmation('token')).toEqual({
+      tokenHash: expect.any(String),
+      userId: 'u-1',
+      email: 'a@b.com',
+      name: 'A',
+      passwordHash: 'stored-hash',
+    });
+  });
+
+  it.each([
+    ['an email-change link', tokenRow({ purpose: 'email_change' }), { passwordHash: 'h' }],
+    ['a used link', tokenRow({ consumedAt: new Date() }), { passwordHash: 'h' }],
+    ['a replaced link', tokenRow({ supersededAt: new Date() }), { passwordHash: 'h' }],
+    ['an expired link', tokenRow({ expiresAt: new Date(Date.now() - 1000) }), { passwordHash: 'h' }],
+    ['a link for an older address', tokenRow({ email: 'old@b.com' }), { passwordHash: 'h' }],
+    ['an account without a password', tokenRow(), { passwordHash: null }],
+  ])('returns nothing for %s', async (_label, token, userOverrides) => {
+    mockPeekSelects(token, { id: 'u-1', email: 'a@b.com', name: 'A', emailEpoch: 1, ...userOverrides });
+
+    expect(await peekSignupPasswordConfirmation('token')).toBeNull();
+  });
+});
+
+describe('retireVerificationToken', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it('marks the unused link as replaced so it can no longer be redeemed', async () => {
+    const update = chainUpdateNoReturning();
+    vi.mocked(db.update).mockReturnValue(update as any);
+
+    await retireVerificationToken('token');
+
+    expect(db.update).toHaveBeenCalledOnce();
+    expect(update.set).toHaveBeenCalledWith({ supersededAt: expect.any(Date) });
+    // Only this link (by its hash), and only while it is still unused.
+    const where = (update.set as any).mock.results[0].value.where.mock.calls[0][0];
+    const query = new PgDialect().sqlToQuery(where);
+    expect(query.params).toEqual(['evt.tokenHash', createHash('sha256').update('token').digest('hex'), 'evt.consumedAt', 'evt.supersededAt']);
+    expect(query.sql.match(/is null/g)).toHaveLength(2);
+  });
+});
 
 describe('generateVerificationToken', () => {
   beforeEach(() => vi.resetAllMocks());
@@ -444,6 +529,22 @@ describe('consumeVerificationToken', () => {
   // every refresh family — one transaction. The purpose branch is a security
   // boundary (a signup token cannot drive it, and vice versa).
   describe('email_change commit (SR2-17)', () => {
+    it.each(['disabled', 'invited'])('does not move the address of a %s account', async (status) => {
+      mockEmailChangeSelects(changeTokenRow(), {
+        email: 'old@b.com', pendingEmail: 'a@b.com', emailEpoch: 1, name: 'User', status,
+      });
+      // A claim and swap would succeed if attempted; only the status check stops them.
+      vi.mocked(db.update)
+        .mockReturnValueOnce(chainUpdateReturning([{ id: 'evt-1' }]) as any)
+        .mockReturnValueOnce(chainUpdateNoReturning() as any);
+
+      const result = await consumeVerificationToken('rawtoken');
+
+      expect(db.update).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'account_inactive' });
+      expect(vi.mocked(advanceUserEpochs)).not.toHaveBeenCalled();
+    });
+
     it('swaps the address, clears pending, advances auth+email epochs, revokes families', async () => {
       mockEmailChangeSelects(changeTokenRow());
 

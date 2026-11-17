@@ -2,9 +2,10 @@
  * AI invocation ledger retention (#7600 W02). ai_invocations is APPEND-ONLY:
  * breeze_app holds no DELETE, and ai_invocations_append_only admits a delete
  * only as breeze_audit_admin with breeze.allow_audit_retention = '1'. Each
- * batch therefore runs in its own fresh system context that SET LOCALs both
- * (same pair as tenantCascade's erasure walk and jobs/auditRetention.ts), and
- * commits on its own (lock-duration rationale: jobs/retentionBatch.ts).
+ * batch runs in its own transaction and commits on its own (lock-duration
+ * rationale: jobs/retentionBatch.ts): on the dedicated audit-admin connection
+ * when AUDIT_ADMIN_DATABASE_URL is set, otherwise in a fresh system context
+ * that SET LOCALs both (same as tenantCascade and jobs/auditRetention.ts).
  *
  * Window: AI_INVOCATIONS_RETENTION_DAYS (default 400, cap 3650). Chargeback
  * (W10) aggregates BEFORE rows age out; it never mutates them — and a short
@@ -14,6 +15,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { hasDedicatedAuditAdminPool, withAuditAdminTransaction } from '../db/auditAdminPool';
 import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
@@ -59,19 +61,23 @@ export async function pruneAiInvocations(opts: { retentionDays?: number; batchSi
   let batches = 0;
   let last = 0;
   while (batches < maxBatches) {
-    last = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-      await db.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
-      await db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-      const result = await db.execute(sql`
+    const batchDelete = sql`
         DELETE FROM ai_invocations
         WHERE ctid IN (
           SELECT ctid FROM ai_invocations
           WHERE created_at < ${cutoff}::timestamptz
             AND (NOT chargeable OR created_at < ${chargebackFloor}::timestamptz)
           LIMIT ${batchSize}
-        )`);
-      return extractRowCount(result);
-    }, 'aiInvocationRetention.batch'));
+        )`;
+    last = hasDedicatedAuditAdminPool()
+      // AUDIT_ADMIN_DATABASE_URL set: the dedicated breeze_audit_admin login,
+      // so this works after breeze_app's membership is revoked (#915, #11929).
+      ? await withAuditAdminTransaction(async (tx) => extractRowCount(await tx.execute(batchDelete)))
+      : await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        await db.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
+        await db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
+        return extractRowCount(await db.execute(batchDelete));
+      }, 'aiInvocationRetention.batch'));
     deleted += last;
     batches += 1;
     if (last < batchSize) break;

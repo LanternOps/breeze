@@ -350,6 +350,24 @@
     respond `{"webcredentials":{"apps":["D8W6N2JYMA.com.breeze.rmm"]}}` 200
   }
 
+  # --- Worker-role Prometheus scrape (worker:3001/metrics) ---
+  # The worker container (BREEZE_ROLE=worker) serves its own registry at
+  # /metrics, gated by the same METRICS_SCRAPE_TOKEN bearer check as the api's
+  # /metrics/scrape (services/metricsScrapeAuth.ts). The Authorization header
+  # passes through untouched, and Caddy still redacts it in logs by default.
+  # Must come BEFORE `handle @api`: `/metrics/*` there matches this path too,
+  # and named-matcher handles evaluate in written order. Installs without a
+  # separate worker container (BREEZE_ROLE=all) answer 502 here; their api
+  # already publishes everything on /metrics/scrape. If the worker sets
+  # METRICS_SCRAPE_IP_ALLOWLIST, it sees CADDY's address as the peer, not the
+  # scraper's, so the allowlist must list Caddy.
+  @workerMetrics path /metrics/worker
+  handle @workerMetrics {
+    encode zstd gzip
+    rewrite * /metrics
+    reverse_proxy worker:3001
+  }
+
   # --- API routes (with compression) ---
   @api path /api/* /s/* /health /health/* /ready /metrics/* /i/* /activate/*
   handle @api {

@@ -9,8 +9,9 @@
  * Two mounts share this one element:
  *   1. Portal mount (manifest web.pages.v1) — the host assigns `context`
  *      (ExtensionPageContextV1), parsed exactly as sourcesPage.ts does, and
- *      the dashboard reads its org-scoped summary/jobs same-origin under the
- *      extension's own `/api/v1/ext/workspace/` namespace.
+ *      the dashboard reads its org-scoped summary/jobs through the host API
+ *      (authenticated by the host) under the extension's own
+ *      `/api/v1/ext/workspace/` namespace.
  *   2. Dev mount (dev/dashboard, droppable) — the `api-base` / `org-id` /
  *      `token` attributes drive a cross-origin fetch against a running dev
  *      API (the legacy `/api/v1/workspace/` namespace).
@@ -322,16 +323,17 @@ function formatTimestamp(iso: string | null): string {
 
 /**
  * The resolved data plane for one mount: the two endpoint URLs plus the
- * RequestInit that carries the credentials for whichever mount resolved it.
+ * request function that carries the credentials for whichever mount resolved
+ * it (the host API for the portal mount, a bare fetch for the dev mount).
  */
 interface ResolvedConfig {
   summaryUrl: string;
   jobsUrl: string;
-  init: RequestInit;
+  send: (url: string, signal: AbortSignal) => Promise<Response>;
 }
 
 // The dev-harness attribute mount targets a dev API's legacy namespace; the
-// portal mount stays same-origin under the extension's own /ext/ namespace
+// portal mount uses the host API under the extension's own /ext/ namespace
 // (buildWorkspaceUrl). Kept as one constant so the two mounts read alike.
 const DEV_NAMESPACE = '/api/v1/workspace';
 
@@ -396,7 +398,7 @@ export class WorkspaceDashboard extends WorkspaceBaseElement {
   }
 
   // Config resolution order: (1) host-assigned `context` (portal mount,
-  // parsed to ExtensionPageContextV1) → same-origin under the extension's own
+  // parsed to ExtensionPageContextV1) → the host API under the extension's own
   // namespace; (2) dev-mount attributes → cross-origin against a dev API's
   // legacy namespace; (3) neither present → the missing-context state.
   #resolveConfig(): ResolvedConfig | null {
@@ -404,7 +406,12 @@ export class WorkspaceDashboard extends WorkspaceBaseElement {
       return {
         summaryUrl: buildWorkspaceUrl('dashboard/summary', { orgId: this.#context.organizationId }),
         jobsUrl: buildWorkspaceUrl('dashboard/jobs', { orgId: this.#context.organizationId }),
-        init: { credentials: 'same-origin' },
+        // Never a bare fetch: it carries no Bearer token and is always 401 (#11922).
+        send: (url, signal) => {
+          const hostApi = this.hostApi;
+          if (!hostApi) return Promise.reject(new Error('host API unavailable'));
+          return hostApi.fetch(url, { signal });
+        },
       };
     }
     const orgId = this.getAttribute('org-id');
@@ -415,7 +422,10 @@ export class WorkspaceDashboard extends WorkspaceBaseElement {
       return {
         summaryUrl: `${apiBase}${DEV_NAMESPACE}/dashboard/summary${query}`,
         jobsUrl: `${apiBase}${DEV_NAMESPACE}/dashboard/jobs${query}`,
-        init: token ? { headers: { Authorization: `Bearer ${token}` } } : { credentials: 'include' },
+        send: (url, signal) => fetch(url, {
+          ...(token ? { headers: { Authorization: `Bearer ${token}` } } : { credentials: 'include' as const }),
+          signal,
+        }),
       };
     }
     return null;
@@ -469,12 +479,14 @@ export class WorkspaceDashboard extends WorkspaceBaseElement {
 
   async #fetchSummary(config: ResolvedConfig): Promise<void> {
     try {
-      const res = await fetch(config.summaryUrl, { ...config.init, signal: this.signal });
+      const res = await config.send(config.summaryUrl, this.signal);
       if (!res.ok) throw new Error(`summary fetch failed: ${res.status}`);
       this.#lastSummary = (await res.json()) as DashboardSummary;
       this.#paint();
     } catch (error) {
       if (this.#isAbort(error)) return;
+      // eslint-disable-next-line no-console
+      console.error('workspace-dashboard: summary fetch failed', error);
       this.renderError('The Knowledge dashboard could not be loaded.', () => {
         this.track(this.#refresh(config));
       });
@@ -483,7 +495,7 @@ export class WorkspaceDashboard extends WorkspaceBaseElement {
 
   async #fetchJobs(config: ResolvedConfig): Promise<void> {
     try {
-      const res = await fetch(config.jobsUrl, { ...config.init, signal: this.signal });
+      const res = await config.send(config.jobsUrl, this.signal);
       if (!res.ok) throw new Error(`jobs fetch failed: ${res.status}`);
       const body = (await res.json()) as { jobs?: DashboardJob[] };
       this.#lastJobs = body.jobs ?? [];

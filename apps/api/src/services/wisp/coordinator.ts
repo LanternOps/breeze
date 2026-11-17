@@ -22,7 +22,8 @@
  *    5. depth one: a requesting run must be Wisp's own depth-0 assessment
  *       under this grant and org (the run path must name one) → depth_exceeded
  *    6. a known kind with params that parse        → unknown_kind / invalid_params
- *       (+ analysis needs the sandbox: aiWorkspaceEnabled())
+ *       (+ analysis needs the sandbox: aiWorkspaceEnabled(); a chatOnly kind —
+ *       assessment, #10406 — is unknown_kind off the user path)
  *    7. chargeableUnderGrant(estimate)             → budget_exhausted
  *    8. the kind's permissions inside the ceiling — and, on the user/approval
  *       paths, held by that human NOW            → permission_missing /
@@ -91,7 +92,7 @@ export type SpecialistRequestInput = {
 };
 
 export type RequestSpecialistResult =
-  | { admitted: true; runId?: string; taskId?: string; report?: unknown }
+  | { admitted: true; runId?: string; taskId?: string; report?: unknown; message?: string }
   | { needsApproval: true; intentId: string }
   | { refused: SpecialistRefusal; detail?: string; message?: string; report?: unknown };
 
@@ -254,6 +255,9 @@ async function decide(
   // 6. Kind + params.
   if (!isSpecialistKind(input.kind)) return { refused: 'unknown_kind' };
   const policy = SPECIALIST_KIND_POLICY[input.kind];
+  // #10406: only a person in chat starts a chat-only kind. An assessment's own
+  // request, or the approval card one raised, must not start more assessments.
+  if (policy.chatOnly && requester.kind !== 'user') return { refused: 'unknown_kind', detail: 'chat_only' };
   const params = parseSpecialistParams(input.kind, input.params);
   if (!params) return { refused: 'invalid_params' };
   if (input.kind === 'analysis' && !aiWorkspaceEnabled()) {

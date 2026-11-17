@@ -48,6 +48,16 @@ describe('normalizeProvider — provider mapping (#2018, #7551)', () => {
     expect(normalizeProvider(raw)).toBe(expected);
   });
 
+  // Trend Micro Apex One / Worry-Free / Vision One (#8171).
+  it.each([
+    ['trend_micro', 'trend_micro'],
+    ['trendmicro', 'trend_micro'],
+    ['Trend-Micro', 'trend_micro'],
+    ['TREND_MICRO', 'trend_micro']
+  ])('maps %s to %s (#8171)', (raw, expected) => {
+    expect(normalizeProvider(raw)).toBe(expected);
+  });
+
   it('still normalizes known providers and unknowns', () => {
     expect(normalizeProvider('crowdstrike')).toBe('crowdstrike');
     expect(normalizeProvider('acme-shield')).toBe('other');
@@ -89,7 +99,7 @@ describe('normalizeProvider — provider mapping (#2018, #7551)', () => {
         expect(prettySecurityProvider(value)).not.toBe(value);
       }
     }
-    expect(securityProviderValues).toEqual(expect.arrayContaining(['emsisoft', 'webroot', 'withsecure', 'cylance']));
+    expect(securityProviderValues).toEqual(expect.arrayContaining(['emsisoft', 'webroot', 'withsecure', 'cylance', 'trend_micro']));
   });
 
   it('labels Cylance with its Aurora rebrand and the old name (#9178)', () => {
@@ -99,5 +109,14 @@ describe('normalizeProvider — provider mapping (#2018, #7551)', () => {
       vendor: 'Arctic Wolf'
     });
     expect(prettySecurityProvider('cylance')).toBe('Aurora Endpoint Defense (CylancePROTECT)');
+  });
+
+  it('labels Trend Micro (#8171)', () => {
+    expect(providerCatalog.trend_micro).toEqual({
+      id: 'trend_micro',
+      name: 'Trend Micro',
+      vendor: 'Trend Micro'
+    });
+    expect(prettySecurityProvider('trend_micro')).toBe('Trend Micro');
   });
 });

@@ -1,13 +1,14 @@
 import { isUtf8 } from 'node:buffer';
-import { and, desc, eq, exists, gt, like, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, exists, gt, inArray, isNotNull, like, ne, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import { isTextArtifactContentType, type AiArtifactKind, type AiRunArtifactDto } from '@breeze/shared';
 import { db } from '../../db';
-import { aiRunArtifacts, wispThreadAttachments } from '../../db/schema';
+import { aiAgentRuns, aiRunArtifacts, wispThreadAttachments } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { redactAiToolOutputText, shrinkToJsonBudget } from '../aiToolOutput';
 import { captureException } from '../sentry';
+import { normalizeSiteAllowlist } from '../siteAllowlist';
 import { getBlobStorage, type BlobRegion } from './blobStorage';
 
 /**
@@ -61,6 +62,8 @@ export interface ArtifactRecord {
   tailPreview: string;
   sourceDeviceId: string | null;
   createdByTool: string;
+  /** `export_dataset` dataset name; null for every other producer. */
+  dataset: string | null;
   expiresAt: Date;
   createdAt: Date;
 }
@@ -77,6 +80,8 @@ export interface CreateArtifactInput {
   maxBytes: number;
   sourceDeviceId?: string | null;
   createdByTool: string;
+  /** Set by `export_dataset` only; defaults to NULL. */
+  dataset?: string | null;
   region: BlobRegion;
   ttlDays?: number;
 }
@@ -96,6 +101,7 @@ const ARTIFACT_COLUMNS = {
   tailPreview: aiRunArtifacts.tailPreview,
   sourceDeviceId: aiRunArtifacts.sourceDeviceId,
   createdByTool: aiRunArtifacts.createdByTool,
+  dataset: aiRunArtifacts.dataset,
   expiresAt: aiRunArtifacts.expiresAt,
   createdAt: aiRunArtifacts.createdAt,
 } as const;
@@ -213,6 +219,7 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
         tailPreview,
         sourceDeviceId: input.sourceDeviceId ?? null,
         createdByTool: input.createdByTool.slice(0, 128),
+        dataset: input.dataset ?? null,
         expiresAt: new Date(Date.now() + ttlDays * 86_400_000),
       })
       .returning(ARTIFACT_COLUMNS);
@@ -373,9 +380,63 @@ export interface ArtifactCallerAnchor {
    * leaves the compiled query byte-identical to the pre-W04 one.
    */
   wispThreadId?: string | null;
+  /**
+   * Wisp analysis sessions W01 (#11845, spec §4.1 / §4.2 thread rule): set by
+   * the `read_artifact` handler from server state only, never from tool
+   * input. With it, a SESSION read (never a run read) also matches an `output`
+   * of a chat-launched `analysis` run under the calling session's grant, in
+   * any org of the grant's live ceiling. Absent / null / an empty `orgIds`
+   * leaves the compiled query byte-identical.
+   */
+  analysisOutputs?: AnalysisOutputReadScope | null;
+}
+
+/**
+ * Resolved by the `read_artifact` handler from server state only
+ * (`aiToolsArtifacts.ts`). Never built from tool input.
+ */
+export interface AnalysisOutputReadScope {
+  /** The calling session's grant (`ai_sessions.wisp_grant_id`). */
+  grantId: string;
+  /** The orgs of that grant's LIVE ceiling, resolved on this call. */
+  orgIds: string[];
 }
 
 const threadAttachment = alias(wispThreadAttachments, 'ta');
+const analysisRun = alias(aiAgentRuns, 'ar');
+
+/**
+ * The analysis-output arm (#11845). Every term is required:
+ *  - the artifact is an `output` (raw `input_capture` exports and `step_*`
+ *    files stay unreadable from chat);
+ *  - its org is in the caller's live grant ceiling (NOT the session org: a
+ *    partner-wide chat in org A may launch a run in org B and is then handed
+ *    its files; RLS under the caller's ceiling-narrowed auth still applies);
+ *  - its run, in the same org, is an `analysis` run under the caller's grant;
+ *  - that run was launched from a chat (`originSessionId` set), so a run the
+ *    coordinator admitted with no live chat (the run/approval paths, e.g. a
+ *    request from an assessment run) is excluded.
+ * The arm does not compare the run's origin session with the caller's: one
+ * grant is one Wisp thread (`wisp_threads_grant_uq`), and every session of a
+ * grant belongs to its grantor, so any chat of the thread may read its files.
+ */
+function analysisOutputArm(scope: AnalysisOutputReadScope) {
+  return and(
+    eq(aiRunArtifacts.kind, 'output'),
+    inArray(aiRunArtifacts.orgId, scope.orgIds),
+    exists(
+      db.select({ one: sql`1` })
+        .from(analysisRun)
+        .where(and(
+          eq(analysisRun.id, aiRunArtifacts.runId),
+          eq(analysisRun.orgId, aiRunArtifacts.orgId),
+          eq(analysisRun.profile, 'analysis'),
+          eq(analysisRun.grantId, scope.grantId),
+          isNotNull(sql`(${analysisRun.triggerRef} ->> 'originSessionId')`),
+        )),
+    ),
+  );
+}
 
 /**
  * `exists (select 1 from wisp_thread_attachments ta where ta.artifact_id =
@@ -411,13 +472,21 @@ export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCalle
   const ownership = anchor.wispThreadId
     ? or(anchored, threadAttachmentArm(anchor.wispThreadId))
     : anchored;
+  // #11845: only a session read gets the analysis-output arm, and only with a
+  // non-empty ceiling. Without it the org term stays where it always was, so
+  // the compiled SQL is byte-identical to before.
+  const analysisScope = !runId && sessionId && anchor.analysisOutputs && anchor.analysisOutputs.orgIds.length > 0
+    ? anchor.analysisOutputs
+    : null;
+  const owned: (SQL | undefined)[] = analysisScope
+    ? [or(and(eq(aiRunArtifacts.orgId, anchor.orgId), ownership), analysisOutputArm(analysisScope))]
+    : [eq(aiRunArtifacts.orgId, anchor.orgId), ownership];
   return db
     .select(ARTIFACT_COLUMNS)
     .from(aiRunArtifacts)
     .where(and(
       eq(aiRunArtifacts.id, handle),
-      eq(aiRunArtifacts.orgId, anchor.orgId),
-      ownership,
+      ...owned,
       gt(aiRunArtifacts.expiresAt, new Date()),
       // Q5: an export is an intentional bulk write, never redacted, and never
       // meant to be paged back through this tool.
@@ -435,7 +504,7 @@ export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCalle
 
 /**
  * Tool-side resolve for `read_artifact` (A-W05 D13a/Q4): STRONGER than the
- * REST download (`findArtifactForAuth` below, org-wide) — an artifact is
+ * REST download (`findArtifactForAuth` below, org and site scoped) — an artifact is
  * visible only to the run or chat session it was captured under, matched
  * EXACTLY. "Any session of this user" is deliberately NOT an ownership test:
  * a prompt-injected agent running in session B must not be able to read what
@@ -446,6 +515,12 @@ export function findArtifactForCallerQuery(handle: string, anchor: ArtifactCalle
  * legacy unmarked (raw) `input_capture` row alike: a handle is opaque, so "this
  * exists but is not yours" is itself a disclosure (same posture as
  * `resolveArtifact`/`findArtifactForAuth`).
+ *
+ * #11845: with `anchor.analysisOutputs` (built by the handler from the
+ * session's grant pin and the live grant ceiling), a session read also
+ * matches an `output` of a chat-launched `analysis` run under that grant in
+ * any ceiling org; see `analysisOutputArm` for the four terms and why the org
+ * term is the ceiling rather than the session org.
  */
 export async function findArtifactForCaller(
   handle: string,
@@ -456,6 +531,8 @@ export async function findArtifactForCaller(
   if (!UUID.safeParse(handle).success || !UUID.safeParse(anchor.orgId).success) return null;
   if (!anchor.runId && !anchor.sessionId) return null;
   if (anchor.wispThreadId && !UUID.safeParse(anchor.wispThreadId).success) return null;
+  if (anchor.analysisOutputs && ![anchor.analysisOutputs.grantId, ...anchor.analysisOutputs.orgIds]
+    .every((id) => UUID.safeParse(id).success)) return null;
   const [row] = await findArtifactForCallerQuery(handle, anchor);
   return (row as ArtifactRecord | undefined) ?? null;
 }
@@ -492,7 +569,114 @@ export function artifactDownloadContentType(stored: string): string {
 }
 
 /**
- * Route-side resolve: scoped by `auth.orgCondition`, which is `undefined` (no filter) for system scope.
+ * Site axis for caller-facing artifact reads. Organization RLS does not
+ * cover sites, so every reader that serves artifacts to a person applies this
+ * on top of the org predicate. `undefined` (no extra filter) for a caller with
+ * neither a site nor an exact-device restriction.
+ *
+ * For a restricted caller an artifact is visible when:
+ *  - it belongs to a run whose device is still in the run's organization and
+ *    currently in an allowed site (and, for an exact-device caller, is one of
+ *    its devices); or
+ *  - it belongs to a device-less `analysis` run, the site recorded on the
+ *    run when it was requested (`trigger_ref.siteId`) is an allowed site of
+ *    the run's organization, and every input device frozen on the run
+ *    (`staged_inputs.deviceIds`) is in the run's organization and currently
+ *    in an allowed site (site-restricted callers only). A run with no input
+ *    devices, whose inputs are not recorded, or that staged artifact inputs,
+ *    is not visible; or
+ *  - it has no run, and it was captured in a chat session the caller created,
+ *    whose device (when the session has one) is in scope as above. A session
+ *    with no device does not satisfy an exact-device caller.
+ * An artifact with neither a run nor a session is not visible.
+ */
+export function artifactSiteScopeCondition(
+  auth: Pick<AuthContext, 'allowedSiteIds' | 'allowedDeviceIds' | 'user'>,
+): SQL | undefined {
+  const allowedSites = normalizeSiteAllowlist(auth.allowedSiteIds);
+  const allowedDevices = auth.allowedDeviceIds === undefined
+    ? undefined
+    : (Array.isArray(auth.allowedDeviceIds) ? auth.allowedDeviceIds : []);
+  if (allowedSites === undefined && allowedDevices === undefined) return undefined;
+  if (allowedSites?.length === 0 || allowedDevices?.length === 0) return sql`false`;
+
+  const inList = (column: SQL, values: readonly string[]) =>
+    sql`${column} IN (${sql.join(values.map((value) => sql`${value}`), sql`, `)})`;
+  const deviceInScope = (alias: string, deviceColumn: SQL, orgColumn: SQL) => {
+    const device = sql.identifier(alias);
+    const conditions: SQL[] = [
+      sql`${device}."id" = ${deviceColumn}`,
+      sql`${device}."org_id" = ${orgColumn}`,
+    ];
+    if (allowedSites) conditions.push(inList(sql`${device}."site_id"`, allowedSites));
+    if (allowedDevices) conditions.push(inList(sql`${device}."id"`, allowedDevices));
+    return sql`EXISTS (SELECT 1 FROM "devices" AS ${device} WHERE ${sql.join(conditions, sql` AND `)})`;
+  };
+
+  const run = sql.identifier('artifact_scope_run');
+  const runArms: SQL[] = [deviceInScope('artifact_scope_run_device', sql`${run}."device_id"`, sql`${run}."org_id"`)];
+  if (allowedSites && allowedDevices === undefined) {
+    const site = sql.identifier('artifact_scope_run_site');
+    const input = sql.identifier('artifact_scope_run_input');
+    const inputDevice = sql.identifier('artifact_scope_run_input_device');
+    runArms.push(sql`(
+      ${run}."device_id" IS NULL
+      AND ${run}."profile" = 'analysis'
+      AND EXISTS (
+        SELECT 1 FROM "sites" AS ${site}
+        WHERE ${site}."id"::text = ${run}."trigger_ref"->>'siteId'
+          AND ${site}."org_id" = ${run}."org_id"
+          AND ${inList(sql`${site}."id"`, allowedSites)}
+      )
+      AND CASE
+        WHEN jsonb_typeof(${run}."staged_inputs"->'deviceIds') = 'array'
+          AND jsonb_typeof(${run}."staged_inputs"->'handles') = 'array'
+        THEN jsonb_array_length(${run}."staged_inputs"->'deviceIds') > 0
+          AND jsonb_array_length(${run}."staged_inputs"->'handles') = 0
+        ELSE false
+      END
+      AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(CASE
+          WHEN jsonb_typeof(${run}."staged_inputs"->'deviceIds') = 'array'
+          THEN ${run}."staged_inputs"->'deviceIds'
+          ELSE '[]'::jsonb
+        END) AS ${input}("device_id")
+        WHERE NOT EXISTS (
+          SELECT 1 FROM "devices" AS ${inputDevice}
+          WHERE ${inputDevice}."id"::text = ${input}."device_id"
+            AND ${inputDevice}."org_id" = ${run}."org_id"
+            AND ${inList(sql`${inputDevice}."site_id"`, allowedSites)}
+        )
+      )
+    )`);
+  }
+  const runArm = sql`(${aiRunArtifacts.runId} IS NOT NULL AND EXISTS (
+    SELECT 1 FROM "ai_agent_runs" AS ${run}
+    WHERE ${run}."id" = ${aiRunArtifacts.runId}
+      AND ${run}."org_id" = ${aiRunArtifacts.orgId}
+      AND (${sql.join(runArms, sql` OR `)})
+  ))`;
+
+  const session = sql.identifier('artifact_scope_session');
+  const sessionDevice = deviceInScope('artifact_scope_session_device', sql`${session}."device_id"`, sql`${session}."org_id"`);
+  const sessionDeviceRule = allowedDevices === undefined
+    ? sql`(${session}."device_id" IS NULL OR ${sessionDevice})`
+    : sessionDevice;
+  const sessionArm = sql`(${aiRunArtifacts.runId} IS NULL AND EXISTS (
+    SELECT 1 FROM "ai_sessions" AS ${session}
+    WHERE ${session}."id" = ${aiRunArtifacts.sessionId}
+      AND ${session}."org_id" = ${aiRunArtifacts.orgId}
+      AND ${session}."user_id" = ${auth.user.id}
+      AND ${sessionDeviceRule}
+  ))`;
+
+  return sql`(${runArm} OR ${sessionArm})`;
+}
+
+/**
+ * Route-side resolve: scoped by `auth.orgCondition`, which is `undefined` (no
+ * filter) for system scope, and by `artifactSiteScopeCondition` for a
+ * site- or device-restricted caller.
  * An expired row is not downloadable (#8855): the AI tool output retention job
  * expires a scrubbed capture immediately, and the hourly sweeper removes the
  * blob only later.
@@ -502,7 +686,12 @@ export async function findArtifactForAuth(handle: string, auth: AuthContext): Pr
   const [row] = await db
     .select(ARTIFACT_COLUMNS)
     .from(aiRunArtifacts)
-    .where(and(eq(aiRunArtifacts.id, handle), auth.orgCondition(aiRunArtifacts.orgId), gt(aiRunArtifacts.expiresAt, new Date())))
+    .where(and(
+      eq(aiRunArtifacts.id, handle),
+      auth.orgCondition(aiRunArtifacts.orgId),
+      gt(aiRunArtifacts.expiresAt, new Date()),
+      artifactSiteScopeCondition(auth),
+    ))
     .limit(1);
   return (row as ArtifactRecord | undefined) ?? null;
 }
@@ -512,7 +701,11 @@ export async function listArtifactsForAuth(runId: string, auth: AuthContext): Pr
   const rows = await db
     .select(ARTIFACT_COLUMNS)
     .from(aiRunArtifacts)
-    .where(and(eq(aiRunArtifacts.runId, runId), auth.orgCondition(aiRunArtifacts.orgId)))
+    .where(and(
+      eq(aiRunArtifacts.runId, runId),
+      auth.orgCondition(aiRunArtifacts.orgId),
+      artifactSiteScopeCondition(auth),
+    ))
     .orderBy(desc(aiRunArtifacts.createdAt));
   return rows as ArtifactRecord[];
 }

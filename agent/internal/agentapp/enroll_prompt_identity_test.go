@@ -16,7 +16,6 @@ import (
 // identity under another scope purges the old scope's prompt list entries.
 func TestReenrolClearsIdentity(t *testing.T) {
 	quietEnrollForTest(t)
-	resetSiteIDFlag(t)
 
 	dataDir := t.TempDir()
 	origDir := promptIdentityDataDir
@@ -64,7 +63,6 @@ func TestReenrolClearsIdentity(t *testing.T) {
 // session but keeps the other Helper settings.
 func TestReenrolClearsHelperBranding(t *testing.T) {
 	quietEnrollForTest(t)
-	resetSiteIDFlag(t)
 
 	baseDir := t.TempDir()
 	origDir := helperBrandingBaseDir

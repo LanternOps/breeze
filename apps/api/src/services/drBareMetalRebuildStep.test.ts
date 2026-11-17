@@ -1,4 +1,6 @@
+import { DR_STEP_TYPES, DR_STEP_BARE_METAL_REBUILD } from '@breeze/shared/constants';
 import { describe, expect, it, vi } from 'vitest';
+import { CommandTypes } from './commandTypes';
 import { WHOLE_MACHINE_RESTORE_TIMEOUT_MS } from './commandTimeouts';
 import {
   DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR,
@@ -207,5 +209,34 @@ describe('resolveLatestRestorableSnapshot (W06d — id + platform for the dispat
   it('returns null when the device has no restorable snapshot', async () => {
     const tx = txReturning([]);
     await expect(resolveLatestRestorableSnapshot('org-1', 'dev-1', tx as any)).resolves.toBeNull();
+  });
+});
+
+// #11856: the editor and the dispatcher share one step-type list; these pin it
+// to the API's command registry and to the write boundary.
+describe('DR step types (#11856)', () => {
+  it('every shared step type is a registered device command, except the rebuild step', () => {
+    const commandValues = new Set<string>(Object.values(CommandTypes));
+    for (const type of DR_STEP_TYPES) {
+      if (type === DR_STEP_BARE_METAL_REBUILD) continue;
+      expect(commandValues.has(type), type).toBe(true);
+    }
+  });
+
+  it.each(DR_STEP_TYPES)('a write stores %s in the canonical spelling whatever case it arrives in', (type) => {
+    const base = type === DR_STEP_BARE_METAL_REBUILD ? {} : { payload: { snapshotId: 'snap-1' } };
+    for (const spelling of [type, type.toUpperCase(), type.toLowerCase()]) {
+      const parsed = drRestoreConfigSchema.parse({ ...base, commandType: spelling });
+      expect(parsed.commandType).toBe(type);
+    }
+  });
+
+  it('leaves an unrecognised step type untouched for dispatch to refuse', () => {
+    expect(drRestoreConfigSchema.parse({ commandType: 'file_delete' }).commandType).toBe('file_delete');
+  });
+
+  it('recognises a stored spelling of the rebuild step', () => {
+    expect(isBareMetalRebuildConfig({ commandType: 'bare_metal_rebuild' })).toBe(true);
+    expect(drBareMetalRebuildConfigSchema.parse({ commandType: 'bare_metal_rebuild' }).commandType).toBe('BARE_METAL_REBUILD');
   });
 });

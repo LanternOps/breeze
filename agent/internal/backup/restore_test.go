@@ -43,7 +43,7 @@ func setupRestoreTestSnapshot(t *testing.T, files map[string]string) (*providers
 	t.Helper()
 
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "test-snap-001"
 	prefix := filepath.Join("snapshots", snapshotID)
@@ -577,7 +577,7 @@ func TestRestoreFromSnapshot_NilProvider(t *testing.T) {
 }
 
 func TestRestoreFromSnapshot_EmptySnapshotID(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	_, err := RestoreFromSnapshot(provider, RestoreConfig{}, nil)
 	if err == nil {
 		t.Error("expected error for empty snapshot ID")
@@ -585,7 +585,7 @@ func TestRestoreFromSnapshot_EmptySnapshotID(t *testing.T) {
 }
 
 func TestRestoreFromSnapshot_RejectsUnsafeSnapshotID(t *testing.T) {
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	for _, snapshotID := range []string{"../escape", "nested/id", "."} {
 		t.Run(snapshotID, func(t *testing.T) {
 			_, err := RestoreFromSnapshot(provider, RestoreConfig{
@@ -885,7 +885,7 @@ func TestFilterFiles_MatchesOriginalPathUnderVSS(t *testing.T) {
 // on-disk location can be asserted portably in CI.
 func TestRestoreFromSnapshot_LandsUnderOriginalPathUnderVSS(t *testing.T) {
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "vss-shadow-snap"
 	prefix := filepath.Join("snapshots", snapshotID)
@@ -980,7 +980,7 @@ func (p *alwaysFailDownloadProvider) Download(remotePath, localPath string) erro
 // download, must report FailedFiles[0] as the real OriginalPath.
 func TestRestoreFromSnapshot_FailedFilesUseOriginalPathUnderVSS(t *testing.T) {
 	baseDir := t.TempDir()
-	base := providers.NewLocalProvider(baseDir)
+	base := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "vss-shadow-fail-snap"
 	prefix := filepath.Join("snapshots", snapshotID)

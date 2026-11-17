@@ -43,7 +43,7 @@ export default function AiModelPicker({ disabled, variant = 'row' }: { disabled?
           data-testid="ai-model-picker-button"
           className={inline
             ? 'flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50'
-            : 'flex items-center gap-1 rounded border px-2 py-1 hover:bg-muted disabled:opacity-50'}
+            : 'flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50'}
         >
           {chosen?.displayName ?? t('aiModelPicker.chooseModel')}
           <ChevronDown className="h-3 w-3" />
@@ -106,7 +106,7 @@ export default function AiModelPicker({ disabled, variant = 'row' }: { disabled?
             title={inline ? effortLabel : undefined}
             className={inline
               ? 'cursor-pointer rounded bg-transparent px-1 py-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50'
-              : 'rounded border bg-background px-1 py-0.5'}
+              : 'cursor-pointer rounded border bg-background px-2 py-1 text-xs hover:bg-muted disabled:opacity-50'}
           >
             <option value="">{t('aiModelPicker.effortDefault')}</option>
             {EFFORT_LEVELS.filter((e) => chosen.options.effort.includes(e)).map((e) => (

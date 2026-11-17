@@ -5,7 +5,8 @@
  * `extensions/stageExtension.ts` used to import `hasCoreAiToolName` directly
  * from `services/aiTools.ts` — the ~45-domain-module tool registry hub. That
  * static edge dragged the ENTIRE hub in whenever stageExtension.ts loaded,
- * including `aiToolsBackup.ts -> commandQueue.ts -> routes/agentWs.ts`. Since
+ * including modules whose closure reaches `routes/agentWs.ts` (see
+ * `pnpm --filter @breeze/api worker:closure`). Since
  * `extensions/builtinExtensions.ts` (which statically imports
  * stageExtension.ts) is one of `worker.ts`'s dynamic-import boot seeds, a
  * `BREEZE_ROLE=worker` process's REAL boot closure quietly reached the

@@ -56,6 +56,7 @@ though the defaults suit every deployment we know of.
 {
   "ready": true,
   "db": true,
+  "dbReadOnly": false,
   "redis": true,
   "workers": true,
   "checkedAt": "2026-09-01T12:00:00.000Z",
@@ -74,7 +75,9 @@ though the defaults suit every deployment we know of.
 ```json
 {
   "ready": false,
+  "reason": "workers-pending",
   "db": true,
+  "dbReadOnly": false,
   "redis": true,
   "workers": false,
   "checkedAt": "2026-09-01T12:00:05.000Z",
@@ -88,12 +91,15 @@ though the defaults suit every deployment we know of.
 }
 ```
 
-If the evaluator itself fails, the body is `{ "ready": false, "db": null, "redis": null, "workers": null, "checkedAt": "...", "consumerSummary": null, "error": "readiness evaluation failed" }` with status 503 — `null`, not `false`, because the backends may be healthy.
+If the evaluator itself fails, the body is `{ "ready": false, "db": null, "dbReadOnly": null, "redis": null, "workers": null, "checkedAt": "...", "consumerSummary": null, "error": "readiness evaluation failed" }` with status 503 — `null`, not `false`, because the backends may be healthy.
 
 | Field | Description |
 |---|---|
 | `ready` | Overall admission verdict; the status code follows it |
+| `reason` | Present only on a 503: the single most fundamental cause, one of `shutting-down`, `db`, `db-read-only`, `redis`, `workers-pending` |
 | `db` / `redis` | Live dependency probes (bounded by the probe timeout) |
+| `binarySyncPending` | API only. `true` while agent binary registration waits for a read-only database to accept writes. Informational: it does not change `ready`, because agents are still offered the versions already registered. It clears on its own once the database is writable |
+| `dbReadOnly` | `true` when the database answers but rejects writes (`transaction_read_only = on`): a provider set `default_transaction_read_only`, often on a full disk, or `DATABASE_URL` points at a standby. Readiness is 503 with `reason: "db-read-only"`; `/health` stays 200 and reads keep working |
 | `workers` | `true` when worker initialization has completed and every required queue consumer is running with a connected Redis client |
 | `checkedAt` | When this verdict was computed (it may be cached for up to the cache TTL) |
 | `consumerSummary` | Aggregate counts only: `required`, `runnable`, `unavailable` (= required − runnable), `optionalRunning`, `optionalDisabled` |
@@ -112,7 +118,7 @@ it is optional only when both are off. The numbers above are illustrative.
 The optional `worker` container (Compose profile `worker-split`) serves its
 own `/health/ready` on its `API_PORT`. When its readiness evaluator runs, the
 body has the same fields plus `"role": "worker"`, and a 503 adds a single
-`reason` of `db`, `redis`, or `workers-pending`. Three 503s bypass the
+`reason` of `db`, `db-read-only`, `redis`, or `workers-pending`. Three 503s bypass the
 evaluator and carry only `{ "ready": false, "reason": ... }` with none of the
 other fields: `shutting-down` (the process received SIGTERM),
 `migrations-pending` (schema parity not yet confirmed), and `db` when the

@@ -83,6 +83,10 @@ export const aiInvocations = pgTable('ai_invocations', {
   promptVariant: text('prompt_variant'),
   /** W11: when the turn was first settled; survives a deferred replay (created_at does not). Ordering only, never a billing period. */
   occurredAt: timestamp('occurred_at', { withTimezone: true }),
+  /** #11395: the resolved tool profile the call ran under (full | standard | minimal | custom); NULL before W03 or outside a tool exposure. */
+  toolProfile: text('tool_profile'),
+  /** #11395: the tool exposure's fingerprint ('full' for the identity exposure, else 16 hex chars). */
+  toolExposureFingerprint: text('tool_exposure_fingerprint'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index('ai_invocations_org_created_idx').on(t.orgId, t.createdAt.desc()),

@@ -2334,6 +2334,34 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     expect(useAuthStore.getState().user?.hasPassword).toBe(true);
   });
 
+  // #10650: whether an authenticator app is enrolled (as the primary, or as the
+  // backup beside a primary passkey). Hydrated the same way as hasPassword so
+  // a session persisted before the field picks it up on its next refresh.
+  it.each([true, false])('hydrates totpEnrolled=%s from /users/me', async (totpEnrolled) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        mfaMethod: 'passkey',
+        totpEnrolled,
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBeUndefined();
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(totpEnrolled);
+  });
+
   // A server that has not shipped the field yet must leave the store value
   // ABSENT (unknown), never coerce it to false — false is what flips the UI
   // onto the identity-provider road.
@@ -2357,6 +2385,48 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     await fetchAndApplyPreferences();
 
     expect(useAuthStore.getState().user?.hasPassword).toBeUndefined();
+  });
+});
+
+describe('apiVerifyEmail signup password', () => {
+  it('sends the signup password with the token', async () => {
+    const doFetch = vi.fn().mockResolvedValue(makeResponse({ verified: true, email: 'a@b.test' }));
+    vi.stubGlobal('fetch', doFetch);
+
+    await apiVerifyEmail('verify-token', 'signup-password');
+
+    expect(JSON.parse(doFetch.mock.calls[0]![1].body)).toEqual({ token: 'verify-token', password: 'signup-password' });
+  });
+
+  it('sends only the token when no password is given', async () => {
+    const doFetch = vi.fn().mockResolvedValue(makeResponse({ verified: true, email: 'a@b.test' }));
+    vi.stubGlobal('fetch', doFetch);
+
+    await apiVerifyEmail('verify-token');
+
+    expect(JSON.parse(doFetch.mock.calls[0]![1].body)).toEqual({ token: 'verify-token' });
+  });
+
+  it('reports that the signup password is needed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse(
+      { error: 'Enter the password you chose when signing up.', status: 'password_required' }, false, 400,
+    )));
+
+    const result = await apiVerifyEmail('verify-token');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Enter the password you chose when signing up.',
+      status: 'password_required',
+    });
+  });
+
+  it('reports an invalid link without a status', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ error: 'Invalid or expired verification link' }, false, 400)));
+
+    const result = await apiVerifyEmail('verify-token', 'signup-password');
+
+    expect(result).toEqual({ success: false, error: 'Invalid or expired verification link' });
   });
 });
 
@@ -2562,6 +2632,44 @@ describe('MFA enrollment session adoption', () => {
     })).toBe(true);
     expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: true, mfaMethod: method });
     expect(useAuthStore.getState().tokens?.accessToken).toBe(`replacement-${method}`);
+  });
+
+  // #10650: totpEnrolled is derived from the primary-state change so the
+  // shared user record never claims an authenticator the account lost (or
+  // misses one it just enrolled).
+  it.each([
+    ['totp', true],
+    ['sms', false],
+  ] as const)('enrolling %s as the first factor sets totpEnrolled=%s', (method, expected) => {
+    useAuthStore.getState().login({ ...baseUser, totpEnrolled: method === 'sms' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, method);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(expected);
+  });
+
+  it('disabling MFA clears totpEnrolled', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp', totpEnrolled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaDisableIfCurrent(generation);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(false);
+  });
+
+  it.each([
+    [{ mfaEnabled: true, mfaMethod: 'totp' } as const, false, true],
+    [{ mfaEnabled: false, mfaMethod: null } as const, true, false],
+    // A passkey add/delete on a passkey primary keeps the backup as it was.
+    [{ mfaEnabled: true, mfaMethod: 'passkey' } as const, true, true],
+  ])('commitMfaStateIfCurrent(%j) with totpEnrolled=%s → %s', (mfa, before, after) => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'passkey', totpEnrolled: before }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    useAuthStore.getState().commitMfaStateIfCurrent(generation, mfa);
+
+    expect(useAuthStore.getState().user?.totpEnrolled).toBe(after);
   });
 
   it('records disabled MFA in shared state while adopting the replacement session', () => {

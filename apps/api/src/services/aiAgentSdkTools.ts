@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERIES, type AiToolDomain } from '@breeze/shared';
 /**
  * AI Agent SDK Tool Definitions
  *
@@ -10,19 +10,23 @@ import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERI
 import { GENERATE_REPORT_TYPES } from './aiReportTypes';
 import { z } from 'zod';
 import { fixProblemSchema } from './fixMemory/problemSignature';
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { tool } from '@anthropic-ai/claude-agent-sdk';
+import { createArgCheckedSdkMcpServer } from './aiSdkToolArgGuard';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
+import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolDomain, getToolSearchHint, compactDescriptionFor, type ExecuteToolOptions } from './aiTools';
+import type { ToolExposure } from './aiModels/toolExposure';
 import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import { bareToolName, normaliseDispatchResult } from './wisp/dispatchEvidence';
+import { incWispDispatchUnverified } from './wispMetrics';
 import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { callerRefusal, type CallerRefusalPayload } from './callerVerification/refusal';
@@ -42,8 +46,9 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { cancelCheckInShape, createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
+import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShapeFor, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
+import { EXPORT_DATASETS, EXPORT_DATASET_PARAM_DESCRIPTION, EXPORT_FILTERS_PARAM_DESCRIPTION } from './aiToolsExportDatasetNames';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
@@ -51,7 +56,7 @@ import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
 import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
 import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
-import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
+import { aiScriptAuthoringEnabled, aiWorkspaceEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { captureException, captureMessage } from './sentry';
@@ -111,8 +116,12 @@ export type PreToolUseResult =
    * reach. Set for every allowed call of a Wisp session; absent otherwise,
    * and the handler then reads `getAuth()` as before. A Wisp session's call
    * that arrives WITHOUT it is denied (`wispMissingToolAuthDenial`).
+   *
+   * `approvalWaitMs` (#10416): how long the call waited on its approval card.
+   * Set only for Wisp sessions; the handler adds it to the result through
+   * `withApprovalWait` so the model can tell the user the step was waiting.
    */
-  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void> }
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext; onSuccess?: (input: Record<string, unknown>) => Promise<void>; approvalWaitMs?: number }
   /**
    * Not run by THIS session. Two different things wear this shape:
    *
@@ -161,6 +170,59 @@ function wispMissingToolAuthDenial(
   console.error(`[AI-SDK] ${err.message}`);
   captureException(err);
   return { allowed: false, error: WISP_UNGATED_CALL_MESSAGE };
+}
+
+/** #10427 (W08): normalise a Wisp dispatch result that carries no evidence, and count it. */
+function wispDispatchResult(toolName: string, args: Record<string, unknown>, result: string): string {
+  const normalised = normaliseDispatchResult(toolName, args, result);
+  if (normalised.unverified) incWispDispatchUnverified(bareToolName(toolName));
+  return normalised.output;
+}
+
+/** #10416: a wait at least this long is worth mentioning in the reply. */
+export const APPROVAL_WAIT_NOTE_MIN_MS = 30_000;
+
+/** #10416: the wait in whole seconds when it is worth mentioning, else null. */
+function approvalWaitSeconds(waitMs: number | undefined): number | null {
+  return waitMs !== undefined && waitMs >= APPROVAL_WAIT_NOTE_MIN_MS ? Math.round(waitMs / 1000) : null;
+}
+
+function isJsonObjectText(output: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #10416: put a long approval wait on the tool result the model reads, as
+ * `approvalWaitSeconds`, so its reply can say the step was waiting (a user
+ * waited 290 s and asked "stuck?"). Only a JSON object result is changed, and
+ * only when `waitMs` is at least APPROVAL_WAIT_NOTE_MIN_MS; anything else is
+ * returned unchanged, and `approvalWaitBlock` carries the wait instead. The
+ * pre-hook sets the wait for Wisp sessions only.
+ */
+export function withApprovalWait(output: string, waitMs: number | undefined): string {
+  const seconds = approvalWaitSeconds(waitMs);
+  if (seconds === null || !isJsonObjectText(output)) return output;
+  return JSON.stringify({ ...(JSON.parse(output) as Record<string, unknown>), approvalWaitSeconds: seconds });
+}
+
+/**
+ * #10416: the wait as its own text block, for a result `withApprovalWait`
+ * cannot merge into (plain text, an array, a screenshot's image blocks).
+ * Null when there is nothing to say, or when `output` is a JSON object that
+ * already carries it.
+ */
+export function approvalWaitBlock(
+  waitMs: number | undefined,
+  output?: string,
+): { type: 'text'; text: string } | null {
+  const seconds = approvalWaitSeconds(waitMs);
+  if (seconds === null || (output !== undefined && isJsonObjectText(output))) return null;
+  return { type: 'text', text: JSON.stringify({ approvalWaitSeconds: seconds }) };
 }
 
 /**
@@ -831,6 +893,11 @@ export function listChatSurfaceToolNames(): string[] {
   return [...names].sort();
 }
 
+/** #11393: a registry tool's domain, for a `custom` tool profile's domain allow-list. */
+export function chatToolDomain(name: string): AiToolDomain | undefined {
+  return getToolDomain(name);
+}
+
 // All tool names, prefixed for SDK MCP format
 export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
   name => `mcp__breeze__${name}`
@@ -873,6 +940,7 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
 function preToolUseDenialResult(
   toolName: string,
   check: { error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  maxChars?: number,
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
@@ -885,9 +953,23 @@ function preToolUseDenialResult(
           : {}),
       };
   return {
-    text: compactToolResultForChat(toolName, JSON.stringify(payload)),
+    text: compactToolResultForChat(toolName, JSON.stringify(payload), maxChars),
     isError: check.handoff ? handoffIsError(check.handoff) : true,
   };
+}
+
+/**
+ * The chat result budget for the live session (#11394): a constrained tool
+ * profile gets smaller results. `undefined` (no session, no `toolExposure`, a
+ * throwing accessor) lets `compactToolResultForChat` apply its own default
+ * (MAX_TOOL_RESULT_CHARS, 8,000), so `full` sessions are byte-identical.
+ */
+export function sessionResultCharBudget(getActiveSession?: () => ActiveSession | undefined): number | undefined {
+  try {
+    return getActiveSession?.()?.toolExposure?.resultCharBudget;
+  } catch {
+    return undefined;
+  }
 }
 
 async function safePostToolUse(
@@ -978,7 +1060,7 @@ const TOPOLOGY_PROPOSAL_TOOL = 'diagnose_connectivity';
 
 /**
  * The SDK Zod shape IS the validated shape: derived from `toolInputSchemas`
- * so the model is never told a key `validateToolInput` strips (W01-D7,
+ * so the model is never told a key `validateToolInput` refuses (W01-D7,
  * spec 2026-09-23). Declarations themselves stay literal `tool(` calls with
  * a quoted name rather than a `.map()` loop: `aiAgentSdkTools.mcpCoverage.test.ts`
  * greps the source text for each quoted name, and a loop would silently empty
@@ -1119,6 +1201,8 @@ function makeToolHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
+    // #10416: how long the call waited on its approval (Wisp sessions only).
+    let approvalWaitMs: number | undefined;
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
@@ -1147,9 +1231,10 @@ function makeToolHandler(
           : check.context;
         callToolAuth = check.toolAuth;
         onSuccess = check.onSuccess;
+        approvalWaitMs = check.approvalWaitMs;
       }
       if (!check.allowed) {
-        const denial = preToolUseDenialResult(toolName, check);
+        const denial = preToolUseDenialResult(toolName, check, sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
@@ -1159,7 +1244,7 @@ function makeToolHandler(
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, getActiveSession?.(), callToolAuth);
     if (missingWispAuth) {
-      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      const denial = preToolUseDenialResult(toolName, missingWispAuth, sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
       return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
@@ -1195,7 +1280,15 @@ function makeToolHandler(
         ? {
           orgId: captureSession.orgId,
           sessionId: captureSession.breezeSessionId,
-          ...(captureSession.wispGrant ? { wispThreadId: captureSession.wispGrant.threadId } : {}),
+          ...(captureSession.wispGrant
+            ? {
+              wispThreadId: captureSession.wispGrant.threadId,
+              // #11845: the grant pin from the ai_sessions row (trusted
+              // session context, never tool input) for read_artifact's
+              // analysis-output arm.
+              wispGrant: { grantId: captureSession.wispGrant.grantId, revisionId: captureSession.wispGrant.revisionId },
+            }
+            : {}),
         }
         : undefined;
       // An absent member means no KEY at all, and an empty bag means no FOURTH
@@ -1244,7 +1337,13 @@ function makeToolHandler(
         toolTimeout,
         toolName,
       );
-      const compactResult = compactToolResultForChat(toolName, result);
+      // #10427 (W08): a Wisp dispatch that answers "success" with no job,
+      // command or intent id reaches the model as unverified, so it cannot be
+      // reported as done. Every other session's result is untouched.
+      const modelResult = captureSession?.wispGrant && wispEnabled()
+        ? wispDispatchResult(toolName, args, result)
+        : result;
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, modelResult, sessionResultCharBudget(getActiveSession)), approvalWaitMs);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
       // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
@@ -1267,6 +1366,8 @@ function makeToolHandler(
               },
             ];
             contentBlocks.push(...visionMetadataTextBlocks(toolName, parsed));
+            const waitBlock = approvalWaitBlock(approvalWaitMs);
+            if (waitBlock) contentBlocks.push(waitBlock);
             notifyToolSuccess(onSuccess, toolName, args, result, false);
             return { content: contentBlocks };
           }
@@ -1291,7 +1392,11 @@ function makeToolHandler(
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs);
       notifyToolSuccess(onSuccess, toolName, args, result, isToolError);
-      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+      const waitBlock = approvalWaitBlock(approvalWaitMs, compactResult);
+      return {
+        content: [{ type: 'text' as const, text: compactResult }, ...(waitBlock ? [waitBlock] : [])],
+        ...(isToolError ? { isError: true } : {}),
+      };
     } catch (err) {
       const durationMs = Date.now() - startTime;
       // A thrown error here is an internal fault — its message is very often a
@@ -1306,7 +1411,7 @@ function makeToolHandler(
       const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = refusal
         ? JSON.stringify(refusal)
-        : compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+        : compactToolResultForChat(toolName, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
@@ -1371,6 +1476,8 @@ function makeSessionAwareHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     let onSuccess: ((input: Record<string, unknown>) => Promise<void>) | undefined;
+    // #10416: how long the call waited on its approval (Wisp sessions only).
+    let approvalWaitMs: number | undefined;
     if (onPreToolUse) {
       let check: PreToolUseResult;
       try {
@@ -1383,7 +1490,7 @@ function makeSessionAwareHandler(
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
-        const denial = preToolUseDenialResult(toolName, check);
+        const denial = preToolUseDenialResult(toolName, check, sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
@@ -1393,10 +1500,11 @@ function makeSessionAwareHandler(
       intentId = check.intentId;
       callToolAuth = check.toolAuth;
       onSuccess = check.onSuccess;
+      approvalWaitMs = check.approvalWaitMs;
     }
     const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
     if (missingWispAuth) {
-      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      const denial = preToolUseDenialResult(toolName, missingWispAuth, sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
       return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
@@ -1416,6 +1524,7 @@ function makeSessionAwareHandler(
       const refusalText = compactToolResultForChat(
         toolName,
         JSON.stringify({ error: 'no_action_intent', message: SECRET_ACTION_REFUSED_TEXT }),
+        sessionResultCharBudget(getActiveSession),
       );
       await safePostToolUse(postToolUse, toolName, args, refusalText, true, 0);
       return {
@@ -1477,7 +1586,7 @@ function makeSessionAwareHandler(
         sealed = { intentId, sealedResult: split.sealedResult };
       }
 
-      const compactResult = compactToolResultForChat(toolName, result);
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result, sessionResultCharBudget(getActiveSession)), approvalWaitMs);
 
       // Detect error responses returned as JSON strings by tool handlers
       let isToolError = false;
@@ -1491,7 +1600,11 @@ function makeSessionAwareHandler(
       const durationMs = Date.now() - startTime;
       await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
       notifyToolSuccess(onSuccess, toolName, args, result, isToolError || (typeof handlerResult !== 'string' && handlerResult.kind === 'error'));
-      return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
+      const waitBlock = approvalWaitBlock(approvalWaitMs, compactResult);
+      return {
+        content: [{ type: 'text' as const, text: compactResult }, ...(waitBlock ? [waitBlock] : [])],
+        ...(isToolError ? { isError: true } : {}),
+      };
     } catch (err) {
       const durationMs = Date.now() - startTime;
       // A thrown error here is an internal fault — its message is very often a
@@ -1506,7 +1619,7 @@ function makeSessionAwareHandler(
       const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = refusal
         ? JSON.stringify(refusal)
-        : compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+        : compactToolResultForChat(toolName, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
       await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
@@ -1636,6 +1749,8 @@ interface BreezeToolTemplate {
   readonly declarations: readonly SdkTool[];
   /** attachRegistryMeta results, memoized per declaration (lazily: a hint-less tool only throws when registered). */
   readonly withRegistryMeta: WeakMap<SdkTool, SdkTool>;
+  /** #11395: the same, with the compact description a constrained exposure advertises. */
+  readonly withCompactMeta: WeakMap<SdkTool, SdkTool>;
 }
 
 let cachedBreezeToolTemplate: BreezeToolTemplate | undefined;
@@ -1646,17 +1761,30 @@ function breezeToolTemplate(): BreezeToolTemplate {
   // A throw here (an unregistered description) caches nothing: the next call
   // retries, exactly as the per-session build used to fail every time.
   const declarations = Object.freeze(declareBreezeSdkToolTemplates());
-  cachedBreezeToolTemplate = { gateKey, declarations, withRegistryMeta: new WeakMap() };
+  cachedBreezeToolTemplate = { gateKey, declarations, withRegistryMeta: new WeakMap(), withCompactMeta: new WeakMap() };
   return cachedBreezeToolTemplate;
 }
 
-function templateWithRegistryMeta(template: BreezeToolTemplate, declaration: SdkTool): SdkTool {
-  let withMeta = template.withRegistryMeta.get(declaration);
+function templateWithRegistryMeta(template: BreezeToolTemplate, declaration: SdkTool, compact = false): SdkTool {
+  const memo = compact ? template.withCompactMeta : template.withRegistryMeta;
+  let withMeta = memo.get(declaration);
   if (!withMeta) {
-    withMeta = attachRegistryMeta(declaration);
-    template.withRegistryMeta.set(declaration, withMeta);
+    // #11395: a constrained exposure advertises the compact description.
+    withMeta = attachRegistryMeta(compact
+      ? { ...declaration, description: compactDescriptionFor(declaration.name, declaration.description) }
+      : declaration);
+    memo.set(declaration, withMeta);
   }
   return withMeta;
+}
+
+/** The live session's tool exposure, or undefined (no session, or a throwing accessor). */
+function sessionToolExposureOf(getActiveSession?: () => ActiveSession | undefined): ToolExposure | undefined {
+  try {
+    return getActiveSession?.()?.toolExposure;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1866,7 +1994,7 @@ export function wispSpecialistToolDefinitions(
 function wispSpecialistToolTemplates(): SdkTool[] {
   if (!wispEnabled()) return [];
   return [
-    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShape, lateBoundToolHandler('launch_specialist')),
+    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShapeFor(aiWorkspaceEnabled()), lateBoundToolHandler('launch_specialist')),
   ] as SdkTool[];
 }
 
@@ -2300,6 +2428,7 @@ export function wrapExtraToolWithHooks(
   extraTool: SdkTool,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
+  getActiveSession?: () => ActiveSession | undefined,
 ): SdkTool {
   const { name, handler } = extraTool;
   const toolTimeout = getToolTimeout(name);
@@ -2323,7 +2452,7 @@ export function wrapExtraToolWithHooks(
           check = { allowed: false, error: `Guardrails check failed: ${reason}` };
         }
         if (!check.allowed) {
-          const denial = preToolUseDenialResult(name, check);
+          const denial = preToolUseDenialResult(name, check, sessionResultCharBudget(getActiveSession));
           await safePostToolUse(postToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
           return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
@@ -2339,7 +2468,7 @@ export function wrapExtraToolWithHooks(
       } catch (err) {
         const durationMs = Date.now() - startTime;
         const message = sanitizeThrownToolError(name, err, { durationMs });
-        const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }));
+        const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }), sessionResultCharBudget(getActiveSession));
         await safePostToolUse(postToolUse, name, args, safeError, true, durationMs);
         return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
@@ -3048,9 +3177,8 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
 
     // Zod shapes below mirror `toolInputSchemas.get_fleet_findings` /
     // `.analyze_fleet_metrics` (aiToolSchemas.ts) key-for-key — the gate
-    // strips unknown keys silently, so a shape that drifts from the enforced
-    // schema makes the model's argument vanish and the tool answer with
-    // defaults.
+    // refuses unknown keys (#11861), so a shape that drifts from the enforced
+    // schema makes the model's call fail with an unknown-argument error.
     tool(
       'get_fleet_findings',
       registryDescription('get_fleet_findings'),
@@ -3570,25 +3698,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
     tool(
       'search_logs',
       registryDescription('search_logs'),
-      {
-        query: z.string().max(500).optional(),
-        timeRange: z.object({
-          start: z.string().datetime({ offset: true }),
-          end: z.string().datetime({ offset: true }),
-        }).optional(),
-        level: z.array(z.enum(['info', 'warning', 'error', 'critical'])).max(4).optional(),
-        category: z.array(z.enum(['security', 'hardware', 'application', 'system'])).max(4).optional(),
-        source: z.string().max(255).optional(),
-        deviceIds: z.array(uuid).max(500).optional(),
-        siteIds: z.array(uuid).max(500).optional(),
-        limit: z.number().int().min(1).max(500).optional(),
-        offset: z.number().int().min(0).optional(),
-        cursor: z.string().max(1024).optional(),
-        countMode: z.enum(['exact', 'estimated', 'none']).optional(),
-        sortBy: z.enum(['timestamp', 'level', 'device']).optional(),
-        sortOrder: z.enum(['asc', 'desc']).optional(),
-        includeFullMessage: z.boolean().optional(),
-      },
+      inputShape('search_logs'),
       makeHandler('search_logs')
     ),
 
@@ -3596,9 +3706,9 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       'export_dataset',
       registryDescription('export_dataset'),
       {
-        dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+        dataset: z.enum(EXPORT_DATASETS).describe(EXPORT_DATASET_PARAM_DESCRIPTION),
         format: z.enum(['jsonl', 'csv']).optional(),
-        filters: z.record(z.string(), z.unknown()).optional(),
+        filters: z.record(z.string(), z.unknown()).optional().describe(EXPORT_FILTERS_PARAM_DESCRIPTION),
         deviceIds: z.array(z.string()).optional(),
         siteId: z.string().optional(),
         maxRows: z.number().optional(),
@@ -3756,7 +3866,8 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
         name: z.string().max(255).optional(),
         description: z.string().max(2000).optional(),
         status: z.enum(['active', 'inactive', 'archived']).optional(),
-        orgId: uuid.optional(),
+        // Shared with toolInputSchemas (#11432): the SDK drops any key this shape lacks.
+        ...configPolicyOwnerShape,
       },
       makeHandler('manage_configuration_policy')
     ),
@@ -5370,7 +5481,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
     // the aiTools* modules keep the canonical copy served to external MCP.
     // Input shapes mirror toolInputSchemas (aiToolSchemas.ts) exactly — that is
     // the gate executeTool validates against, and a key the model is told to
-    // send but Zod does not know is stripped silently.
+    // send but Zod does not know is refused as an unknown argument (#11861).
 
     tool(
       'list_invoices',
@@ -6036,7 +6147,22 @@ export function attachRegistryMeta(def: SdkTool): SdkTool {
  * `console.error` line is the only surviving signal — an operator has to be
  * watching API logs, not a Sentry inbox, to catch it there.
  */
-export function createBreezeMcpServer(
+export function createBreezeMcpServer(...args: Parameters<typeof breezeServerTools>) {
+  return createArgCheckedSdkMcpServer({
+    name: 'breeze',
+    version: '1.0.0',
+    tools: breezeServerTools(...args),
+  });
+}
+
+/**
+ * #11395: the exact tool list `createBreezeMcpServer` registers (bound
+ * registry tools, then wrapped extras), so an offline measurement of the
+ * advertised prefix (llm/toolCapture/advertisedPrefix.ts) reads the same
+ * names, descriptions and schemas production sends. See createBreezeMcpServer
+ * above for every option.
+ */
+export function breezeServerTools(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
@@ -6053,12 +6179,26 @@ export function createBreezeMcpServer(
      * the per-call gate is unchanged.
      */
     admitTool?: (toolName: string) => boolean;
+    /**
+     * #11395: the tool exposure to advertise under, for a caller with no
+     * session (headless agent runs). Otherwise the session's own
+     * `toolExposure` is read, so a factory-built server (the helper's) honours
+     * it too. A constrained exposure registers only `exposure.names` (on top
+     * of `onlyTools`) with compact descriptions; the identity exposure, or
+     * none, changes nothing.
+     */
+    toolExposure?: Pick<ToolExposure, 'names' | 'promptMode'> & Partial<Pick<ToolExposure, 'extraToolNames'>>;
   },
 ) {
   // #11004: the static declarations come from the per-process template; only
   // the tools actually registered below get this session's handlers.
   const template = breezeToolTemplate();
   const tools = template.declarations;
+  const exposure = options?.toolExposure ?? sessionToolExposureOf(getActiveSession);
+  // Kept extras count too: a helper session whose tools are all kept as
+  // extras (client-declared) must not lose its registry tools here.
+  const exposedNames = exposure?.names ? new Set([...exposure.names, ...(exposure.extraToolNames ?? [])]) : null;
+  const compactDescriptions = exposure?.promptMode === 'constrained';
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are
   // never in the TOOL_TIERS registry — that's what keeps them off the chat/MCP
@@ -6074,7 +6214,7 @@ export function createBreezeMcpServer(
   // Every extra tool is wrapped so onPreToolUse/onPostToolUse fire for it —
   // see wrapExtraToolWithHooks's own docstring for why this is required, not
   // optional plumbing.
-  const wrappedExtraTools = extraTools.map((extra) => wrapExtraToolWithHooks(extra, onPreToolUse, onPostToolUse));
+  const wrappedExtraTools = extraTools.map((extra) => wrapExtraToolWithHooks(extra, onPreToolUse, onPostToolUse, getActiveSession));
 
   // F2 fix: filter the registry down to the pinned subset BEFORE
   // createSdkMcpServer, so those ~200 definitions never ride along on a
@@ -6115,14 +6255,10 @@ export function createBreezeMcpServer(
   const admit = options?.admitTool ?? (() => true);
   const boundTools = bindBreezeSdkTools(
     registeredTools
-      .filter((t) => admit(t.name))
-      .map((declaration) => templateWithRegistryMeta(template, declaration)),
+      .filter((t) => admit(t.name) && (exposedNames === null || exposedNames.has(t.name)))
+      .map((declaration) => templateWithRegistryMeta(template, declaration, compactDescriptions)),
     { getAuth, getActiveSession, onPreToolUse, onPostToolUse },
   );
 
-  return createSdkMcpServer({
-    name: 'breeze',
-    version: '1.0.0',
-    tools: [...boundTools, ...wrappedExtraTools.filter((t) => admit(t.name))],
-  });
+  return [...boundTools, ...wrappedExtraTools.filter((t) => admit(t.name))];
 }

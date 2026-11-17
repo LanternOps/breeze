@@ -76,6 +76,8 @@ vi.mock('./WispThreadHeader', () => ({
   ),
 }));
 vi.mock('./WispThreadAttachments', () => ({ default: () => null }));
+// #9429's bell (its behaviour is AiNotifyToggle.test's): a stub shows where it renders.
+vi.mock('./AiNotifyToggle', () => ({ default: () => <span data-testid="ai-notify-toggle" /> }));
 vi.mock('./WispConcernsPanel', () => ({ WispConcernsPanel: () => <div data-testid="wisp-concerns-mock" /> }));
 
 import AiChatSidebar from './AiChatSidebar';
@@ -125,6 +127,21 @@ describe('AiChatSidebar in Wisp mode defers to the home (W08 Task 10)', () => {
     expect(screen.queryByTestId('wisp-concerns-mock')).toBeNull();
   });
 
+  // #9429 × #critique: collapsing the Wisp header must not drop the notification bell.
+  it('the notification bell sits beside Close in the compact Wisp header and in the handed-off header', () => {
+    useAiStore.setState({ wisp: wisp() });
+    const view = render(<AiChatSidebar />);
+    const header = screen.getByTestId('wisp-thread-header-mock');
+    expect(header).toContainElement(screen.getByTestId('ai-notify-toggle'));
+    expect(screen.getByTestId('ai-notify-toggle').nextElementSibling).toBe(screen.getByTestId('ai-chat-close'));
+    view.unmount();
+    useAiStore.setState({ wisp: wisp(), sessionId: 's-w', hydratedSessionId: 's-w', wispPageThreadId: 'thread-1' });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-chat-handed-off')).toBeInTheDocument();
+    expect(screen.getAllByTestId('ai-notify-toggle')).toHaveLength(1);
+    expect(screen.getByTestId('ai-notify-toggle').nextElementSibling).toBe(screen.getByTestId('ai-chat-close'));
+  });
+
   it('plain chat: no Wisp link', () => {
     render(<AiChatSidebar />);
     expect(screen.queryByTestId('wisp-sidebar-open-home')).toBeNull();
@@ -144,7 +161,7 @@ describe('AiChatSidebar in Wisp mode defers to the home (W08 Task 10)', () => {
 });
 
 describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
-  const enterWispMode = vi.fn(async (w: NonNullable<WispState>) => { useAiStore.setState({ wisp: w }); });
+  const enterWispMode = vi.fn(async (w: NonNullable<WispState>) => { useAiStore.setState({ wisp: w }); return true; });
   const closeSession = vi.fn(async () => { useAiStore.setState({ sessionId: null }); });
   const createSession = vi.fn(async () => {});
 
@@ -175,6 +192,15 @@ describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
     // No toggle anywhere: the grant decides (spec §11 decision 4).
     expect(screen.queryByTestId('wisp-toggle')).toBeNull();
     expect(screen.queryByText('Turn on Wisp')).toBeNull();
+  });
+
+  it('#11672: opening the pane hands enterWispMode the thread\'s last session, so it continues the conversation', async () => {
+    const body = threadBody('grant-pw', 'active');
+    h.threads['/wisp/thread'] = { data: { ...body.data, thread: { ...body.data.thread, lastSessionId: 'sess-from-wisp-page' } } };
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(enterWispMode).toHaveBeenCalledTimes(1));
+    expect(enterWispMode.mock.calls[0][0]).toMatchObject({ grantId: 'grant-pw', lastSessionId: 'sess-from-wisp-page' });
+    expect(createSession).not.toHaveBeenCalled();
   });
 
   it('finds a grant scoped to the selected organization when there is no partner-wide one', async () => {
@@ -398,7 +424,7 @@ describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
 });
 
 describe('AiChatSidebar speaks one voice and follows the grant live (#10195)', () => {
-  const enterWispMode = vi.fn(async (w: NonNullable<WispState>) => { useAiStore.setState({ wisp: w }); });
+  const enterWispMode = vi.fn(async (w: NonNullable<WispState>) => { useAiStore.setState({ wisp: w }); return true; });
 
   beforeEach(() => {
     fetchMock.mockClear();

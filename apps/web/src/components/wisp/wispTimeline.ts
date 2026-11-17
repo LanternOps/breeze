@@ -61,6 +61,8 @@ function parseItem(raw: unknown): WispTimelineItem | null {
       ...(r.variant === 'couldnt_look' ? { variant: 'couldnt_look' as const } : {}),
       title: r.title,
       body: str(r.body),
+      // #11673: only a value this client knows; anything else renders as literal text.
+      ...(r.bodyFormat === 'markdown' ? { bodyFormat: 'markdown' as const } : {}),
       link: str(r.link),
       sections: parseSections(r.sections),
       concernId: str(r.concernId),

@@ -51,6 +51,7 @@ func (f *containmentFake) Reconcile(ctx context.Context, _ *isolation.DesiredBlo
 		}
 	}
 }
+func (f *containmentFake) NoteControlPlaneContact()  {}
 func (f *containmentFake) Startup(context.Context)   { f.startup.Add(1) }
 func (f *containmentFake) Tick(context.Context)      { f.ticks.Add(1) }
 func (f *containmentFake) Report() *isolation.Report { return nil }

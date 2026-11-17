@@ -53,6 +53,7 @@ vi.mock('../../db/schema', () => ({
 }));
 
 vi.mock('../../services/password', () => ({
+  getDummyPasswordHash: vi.fn(async () => 'dummy-hash'),
   verifyPassword: vi.fn(() => Promise.resolve(true)),
   hashPassword: vi.fn(() => Promise.resolve('new-hash')),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),

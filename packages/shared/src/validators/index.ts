@@ -36,7 +36,10 @@ export * from './warrantyInlineSettings';
 export * from './systemProtectionInlineSettings';
 export * from './containmentPolicy';
 export * from './oemUpdatesPolicy';
+export * from './wakeOnLanInlineSettings';
+export * from './wakeStatus';
 export * from './securityAgents';
+export * from './devicePathFloor';
 export * from './securityScanSweep';
 export * from './safeRelativePath';
 export * from './authenticator';
@@ -386,7 +389,10 @@ export const agentEnrollSchema = z.object({
     model: z.string().optional(),
     motherboardManufacturer: z.string().optional(),
     motherboardProduct: z.string().optional(),
-    motherboardVersion: z.string().optional()
+    motherboardVersion: z.string().optional(),
+    // SMBIOS system UUID (#8318). Lenient: a malformed value is dropped, never
+    // a validation failure; the API normalizes it again before storing.
+    systemUuid: z.string().max(128).optional().catch(undefined)
   }).optional()
 });
 
@@ -1125,6 +1131,8 @@ export * from './serviceCatalog';
 export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
+// Portal registration W3 (#11380): access policy patch/view + access-request decide body.
+export * from './portalAccessPolicy';
 export * from './ticketConfig';
 export * from './retiredLabourPricing';
 export * from './retiredAiModelFields';
@@ -1467,6 +1475,7 @@ export * from './wispConcerns';
 export * from './wispCheckIns';
 export * from './wispNudgePreferences';
 export * from './wispSpecialists';
+export * from './wispStandingInstruction';
 export * from './wisp';
 export * from './flowRuns';
 export * from './flowBudgets';
@@ -1475,3 +1484,4 @@ export * from './flowConversions';
 export * from './networkIsolation';
 export * from './oemUpdates';
 export * from './unitLength';
+export * from './migrationWindows';

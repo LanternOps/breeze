@@ -15,6 +15,19 @@ describe('WispSpendMeter (W06 T15, w00 A32)', () => {
     expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
   });
 
+  it('shows the background / chat breakdown when both are given (#10414)', () => {
+    render(<WispSpendMeter spentCents={200} budgetCents={500} backgroundCents={30} chatCents={170} resetsAt={RESETS} />);
+    expect(screen.getByTestId('wisp-spend-meter').textContent).toContain('Background $0.30 · Chat $1.70 · $2.00 of $5.00 today');
+  });
+
+  it('shows the plain meter when the breakdown is absent or half-present', () => {
+    const { rerender } = render(<WispSpendMeter spentCents={200} budgetCents={500} resetsAt={RESETS} />);
+    expect(screen.getByTestId('wisp-spend-meter').textContent).toContain('$2.00 of $5.00 today');
+    expect(screen.getByTestId('wisp-spend-meter').textContent).not.toContain('Background');
+    rerender(<WispSpendMeter spentCents={200} budgetCents={500} backgroundCents={30} resetsAt={RESETS} />);
+    expect(screen.getByTestId('wisp-spend-meter').textContent).not.toContain('Background');
+  });
+
   it('turns amber at 80 %', () => {
     render(<WispSpendMeter spentCents={160} budgetCents={200} resetsAt={RESETS} onRaise={vi.fn()} />);
     expect(screen.getByTestId('wisp-spend-meter').getAttribute('data-state')).toBe('warn');

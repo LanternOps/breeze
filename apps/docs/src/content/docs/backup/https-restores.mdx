@@ -12,7 +12,7 @@ Restores, test restores and backup verification that read from **S3 or S3-compat
 
 Since v0.119, Breeze has no fallback for a read that cannot use a storage session. If a requirement below is missing, the restore is refused with a message that names what to change. Before v0.119, such a restore fell back to sending the storage destination to the device.
 
-Local and NAS destinations are paths, not credentials. They restore the same way as before, on any agent version.
+Local disk destinations are paths, not credentials. They restore the same way as before, on any agent version. Network shares are not supported as local destinations; see [Network shares](/backup/storage/#network-shares).
 
 ## Requirements
 

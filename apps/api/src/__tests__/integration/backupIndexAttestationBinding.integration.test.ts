@@ -153,7 +153,8 @@ describe('hydration writes rows exactly as the manifest states them (#11026)', (
     ];
     const manifest = Buffer.from(JSON.stringify({ id: snapshotId, files }));
 
-    expect(await hydrate(snapshotDbId, async () => manifest)).toMatchObject({ status: 'complete', entryCount: files.length - 1 });
+    // The directory entry is a row too (#11235).
+    expect(await hydrate(snapshotDbId, async () => manifest)).toMatchObject({ status: 'complete', entryCount: files.length });
 
     const rows = await withSystemDbAccessContext(() => db
       .select({
@@ -162,12 +163,15 @@ describe('hydration writes rows exactly as the manifest states them (#11026)', (
         backupPath: backupSnapshotFiles.backupPath,
         size: backupSnapshotFiles.size,
         modifiedAt: backupSnapshotFiles.modifiedAt,
+        kind: backupSnapshotFiles.kind,
         createdAt: backupSnapshotFiles.createdAt,
       })
       .from(backupSnapshotFiles)
       .where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId)));
     const byKey = new Map(rows.map((r) => [r.backupPath, r]));
-    expect(rows).toHaveLength(files.length - 1);
+    expect(rows).toHaveLength(files.length);
+    expect(byKey.get('')).toMatchObject({ sourcePath: '/srv/a-dir', kind: 'dir', size: null, modifiedAt: null });
+    expect(rows.filter((r) => r.backupPath !== '').every((r) => r.kind === null)).toBe(true);
 
     nasty.forEach((sourcePath, i) => {
       const row = byKey.get(key(`n${i}`))!;

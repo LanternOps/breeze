@@ -6,6 +6,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 vi.mock('./drExecutionService', () => ({
   createDrExecutionAndEnqueue: vi.fn(async () => ({ id: 'exec-1', status: 'pending' })),
@@ -43,7 +44,7 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
 // Thenable that resolves to `rows` and supports any query-builder chaining shape.
 function chain(rows: unknown[]): any {
   const p: any = Promise.resolve(rows);
-  for (const m of ['from', 'where', 'orderBy', 'leftJoin', 'innerJoin', 'groupBy']) {
+  for (const m of ['from', 'where', 'orderBy', 'leftJoin', 'innerJoin', 'groupBy', 'for']) {
     p[m] = () => p;
   }
   p.limit = (value: number) => {
@@ -62,6 +63,17 @@ function seqSelect(results: Array<unknown[]>) {
 
 const PLAN = { id: 'p1', orgId: 'org-1', name: 'Plan 1', status: 'active' };
 
+/** The approved definition an execute_dr_plan action intent carries into the handler. */
+function approvedContext(groups: unknown[]) {
+  return {
+    actionIntentId: 'intent-1',
+    verifiedDrPlan: {
+      digest: 'approved-digest',
+      definition: { planId: PLAN.id, orgId: PLAN.orgId, updatedAt: '2026-08-01T00:00:00.000Z', status: PLAN.status, groups: groups as any },
+    },
+  };
+}
+
 describe('execute_dr_plan — durable authorization subject handoff', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -71,7 +83,7 @@ describe('execute_dr_plan — durable authorization subject handoff', () => {
       [PLAN],                                            // loadPlanWithAccess
       [{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A', 'dev-B'], restoreConfig: {}, estimatedDurationMinutes: null }], // groups
     ]);
-    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, auth);
+    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, auth, approvedContext([{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A', 'dev-B'], restoreConfig: {}, estimatedDurationMinutes: null }]));
     expect(JSON.parse(result).success).toBe(true);
     expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({ auth }));
   });
@@ -81,7 +93,7 @@ describe('execute_dr_plan — durable authorization subject handoff', () => {
       [PLAN],
       [{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A'], restoreConfig: {}, estimatedDurationMinutes: null }],
     ]);
-    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, makeAuth(['site-A']));
+    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, makeAuth(['site-A']), approvedContext([{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A'], restoreConfig: {}, estimatedDurationMinutes: null }]));
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
@@ -94,7 +106,7 @@ describe('execute_dr_plan — durable authorization subject handoff', () => {
       [PLAN],
       [{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A', 'dev-B'], restoreConfig: {}, estimatedDurationMinutes: null }],
     ]);
-    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, auth);
+    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, auth, approvedContext([{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A', 'dev-B'], restoreConfig: {}, estimatedDurationMinutes: null }]));
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
     expect(mockEnqueue.mock.calls[0]![0].auth).toBe(auth);
@@ -380,7 +392,8 @@ describe('manage_dr_plan — stored group membership is site-scoped', () => {
 
   it('allows updating a group confined to the caller sites', async () => {
     mockDb.update.mockImplementation(() => writeChain([{ id: 'g1', name: 'Renamed' }]));
-    seqSelect([[{ id: 'g1', orgId: 'org-1', devices: ['dev-A'] }], ORG_DEVICES]);
+    // group read, site partition, then the plan write path: lock row, no active execution
+    seqSelect([[{ id: 'g1', orgId: 'org-1', devices: ['dev-A'] }], ORG_DEVICES, [{ id: 'p1' }], []]);
 
     const result = await handlerFor('manage_dr_plan')(
       { action: 'update_group', planId: 'p1', groupId: 'g1', name: 'Renamed' },
@@ -393,7 +406,7 @@ describe('manage_dr_plan — stored group membership is site-scoped', () => {
 
   it('leaves an unrestricted caller unaffected and issues no partition query', async () => {
     mockDb.update.mockImplementation(() => writeChain([{ id: 'g1', name: 'Renamed' }]));
-    seqSelect([[GROUP_SPANNING_SITES]]);
+    seqSelect([[GROUP_SPANNING_SITES], [{ id: 'p1' }], []]);
 
     const result = await handlerFor('manage_dr_plan')(
       { action: 'update_group', planId: 'p1', groupId: 'g1', name: 'Renamed' },
@@ -401,9 +414,9 @@ describe('manage_dr_plan — stored group membership is site-scoped', () => {
     );
 
     expect(JSON.parse(result).success).toBe(true);
-    // One row read, plus the W03-D10 active-execution check — no partition
-    // or group-membership query for an unrestricted caller.
-    expect(mockDb.select).toHaveBeenCalledTimes(2);
+    // One row read, plus the plan write path's lock and active-execution
+    // check — no partition or group-membership query for an unrestricted caller.
+    expect(mockDb.select).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -446,6 +459,8 @@ describe('manage_dr_plan — plan mutations are site-scoped', () => {
       [PLAN],
       ORG_DEVICES,
       [{ devices: ['dev-A'] }],
+      [{ id: 'p1' }],                          // plan row lock
+      [],                                      // no pending or running execution
     ]);
 
     const result = await handlerFor('manage_dr_plan')(
@@ -459,7 +474,7 @@ describe('manage_dr_plan — plan mutations are site-scoped', () => {
 
   it('leaves an unrestricted caller unaffected and loads no group membership', async () => {
     mockDb.update.mockImplementation(() => writeChain([{ id: 'p1', name: 'Renamed' }]));
-    seqSelect([[PLAN]]);
+    seqSelect([[PLAN], [{ id: 'p1' }], []]);
 
     const result = await handlerFor('manage_dr_plan')(
       { action: 'update_plan', planId: 'p1', name: 'Renamed' },
@@ -467,8 +482,8 @@ describe('manage_dr_plan — plan mutations are site-scoped', () => {
     );
 
     expect(JSON.parse(result).success).toBe(true);
-    // One row read, plus the W03-D10 active-execution check — no partition
-    // or group-membership query for an unrestricted caller.
-    expect(mockDb.select).toHaveBeenCalledTimes(2);
+    // One row read, plus the plan write path's lock and active-execution
+    // check — no partition or group-membership query for an unrestricted caller.
+    expect(mockDb.select).toHaveBeenCalledTimes(3);
   });
 });

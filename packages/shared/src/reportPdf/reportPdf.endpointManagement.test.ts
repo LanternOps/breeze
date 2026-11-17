@@ -155,4 +155,17 @@ describe('endpoint management PDF', () => {
     expect(text).not.toContain('Enrolment coverage');
     expect(text).toContain('Alpha');
   });
+
+  it('prints its period and generated time in the partner date format (#12048)', () => {
+    const text = pdfText(buildReportPdf([], {
+      ...opts,
+      generatedAt: new Date('2026-09-30T09:00:00.000Z'),
+      summary: SUMMARY,
+      branding: { name: 'Example MSP', logoDataUrl: null, logoAspect: null, dateFormat: 'DD/MM/YYYY', timeFormat: '24h' },
+    }));
+    expect(text).toMatch(/Reporting period 1 Sep 2026 . 30 Sep 2026 \\?\(UTC\\?\)/);
+    expect(text).toContain('Generated 30 Sep 2026, 09:00 UTC');
+    expect(text).not.toContain('2026-09-01');
+    expect(text).not.toContain(' to 2026');
+  });
 });

@@ -34,6 +34,9 @@ permissions:
 env:
   PNPM_VERSION: '10.34.5'
   OUT: load-tests/perf/out
+  # Free space the runner must have before a run starts (#11623). The 50 GB perf
+  # runner filled up from leftover stacks, volumes and caches and crash-looped.
+  PERF_MIN_FREE_GB: '10'
   # Storm-suite gate thresholds (#8642). Source: the W06 plan (PR #8587) and its
   # acceptance command on #8145 (2026-10-13 re-run, 400 agents): heartbeat p95 <= 1 s
   # and pool >= 80 % of its usable size are the W1c spec targets, pool recovery 30 s.
@@ -54,13 +57,53 @@ jobs:
     outputs:
       summary: ${{ steps.summary.outputs.summary }}
     steps:
+      # First, before any checkout or install: a full disk must read as "runner
+      # disk low", not as an invalid measurement (#11623). If the disk is low it
+      # first reclaims what a previous cancelled run may have left (compose
+      # stacks of this harness, volumes, build cache) so the runner heals itself,
+      # then fails loudly if that was not enough. Images are kept for speed.
+      - name: Runner disk precheck
+        run: |
+          set -uo pipefail
+          if ! docker info >/dev/null 2>&1; then
+            echo "::error::runner docker daemon is not reachable; this is a runner problem, not a perf regression"
+            exit 1
+          fi
+          # Free GB on the smaller of the workspace disk and Docker's data root:
+          # the stack, volumes and build cache live on the latter.
+          free_gb() {
+            local root a b
+            root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)"
+            a="$(df -Pk "${GITHUB_WORKSPACE:-.}" | awk 'NR==2 {print int($4 / 1048576)}')"
+            b="$(df -Pk "${root:-/}" | awk 'NR==2 {print int($4 / 1048576)}')"
+            case "$a$b" in ''|*[!0-9]*) echo "::error::runner disk low: could not read free disk space (workspace='$a' docker='$b')" >&2; echo -1; return;; esac
+            [ "$a" -le "$b" ] && echo "$a" || echo "$b"
+          }
+          free="$(free_gb)"
+          if [ "$free" -ge 0 ] && [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
+            echo "::warning::${free} GB free, below ${PERF_MIN_FREE_GB} GB; reclaiming leftovers from previous runs"
+            for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
+              docker compose -p "$p" down -v --remove-orphans || echo "::warning::compose down failed for $p"
+              docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
+            done
+            docker network prune -f || true
+            docker volume prune -a -f || true
+            docker builder prune -a -f --keep-storage 2GB || true
+            free="$(free_gb)"
+          fi
+          if [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
+            echo "::error::runner disk low: ${free} GB free (-1 = unreadable), need at least ${PERF_MIN_FREE_GB} GB. This is a runner problem, not a perf regression; free the disk (docker volumes, build cache, Go build cache under the runner home) and re-run."
+            exit 1
+          fi
+          echo "runner disk ok: ${free} GB free"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -85,6 +128,20 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # A cancelled or timed-out earlier run can leave its wt-stack compose
+      # project (breeze-wt-<dir>-<hash>) running. Remove those containers,
+      # networks and volumes; images stay, they are reused between runs (#11623).
+      - name: Clear leftovers from a previous run
+        run: |
+          set -uo pipefail
+          for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
+            echo "removing leftover compose project $p"
+            docker compose -p "$p" down -v --remove-orphans || true
+            docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
+          done
+          docker network prune -f || true
+          docker volume prune -a -f || true
 
       # ---- Mode none (nightly and plain dispatch): compare against the committed
       # baseline; on a regression run once more and fail only if the confirm run
@@ -154,6 +211,36 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+      # Runs on success, failure, cancel and timeout, after the artifacts are
+      # uploaded: run-perf.sh stops its own stack on a normal exit, but a killed
+      # job can skip that, and one leftover stack plus its volumes filled the
+      # runner disk (#11623). Images are kept; the Docker build cache is bounded
+      # by size and the Go build cache is cleared when it grows past 4 GB.
+      - name: Tear down the perf stack and bound the caches
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          set -uo pipefail
+          for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
+            docker compose -p "$p" down -v --remove-orphans || echo "::warning::compose down failed for $p"
+            docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
+          done
+          # breeze-perf is a dedicated runner, so every unused volume is ours.
+          docker network prune -f || true
+          docker volume prune -a -f || true
+          docker builder prune -a -f --keep-storage 2GB || true
+          left="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true)"
+          [ -z "$left" ] || echo "::warning::compose projects still present after teardown: $left"
+          if command -v go >/dev/null 2>&1; then
+            kb="$(du -sk "$(go env GOCACHE)" 2>/dev/null | cut -f1)"
+            if [ "${kb:-0}" -gt 4194304 ]; then
+              echo "Go build cache is ${kb} KB, over 4 GB; clearing it"
+              go clean -cache || true
+            fi
+          fi
+          df -h "${GITHUB_WORKSPACE:-.}" | tail -n 1
+
       # Compose containers run as root and write into the bind-mounted checkout
       # (apps/web/public, ...). Hand it back so the next run's checkout can clean it.
       - name: Return workspace ownership to the runner
@@ -167,8 +254,9 @@ jobs:
   # #8642: nightly storm-suite, one fault schedule per run (api-kill, rolling-deploy,
   # socket-drop, slow-loop, stall) against a 400-agent lab stack. Warn-only until
   # the repository variable PERF_GATES_ENFORCE is 'true' (owner decision: flip it on
-  # or after 2026-10-31; no PR needed). A red gate while warn-only is a ::warning::
-  # and a green job; once enforced it fails the job and the notifier files the issue.
+  # or after 2026-10-31; no PR needed). A measured red gate while warn-only is a
+  # ::warning:: and a green job; a harness failure is always red (see the step).
+  # Once enforced a red gate fails the job and the notifier files the issue.
   # needs: gate serializes it on the single runner; always() so a KPI regression
   # does not hide the storm result.
   storm:
@@ -179,13 +267,53 @@ jobs:
     # storm-suite is a 32 min simulator window plus stack up/down.
     timeout-minutes: 90
     steps:
+      # First, before any checkout or install: a full disk must read as "runner
+      # disk low", not as an invalid measurement (#11623). If the disk is low it
+      # first reclaims what a previous cancelled run may have left (compose
+      # stacks of this harness, volumes, build cache) so the runner heals itself,
+      # then fails loudly if that was not enough. Images are kept for speed.
+      - name: Runner disk precheck
+        run: |
+          set -uo pipefail
+          if ! docker info >/dev/null 2>&1; then
+            echo "::error::runner docker daemon is not reachable; this is a runner problem, not a perf regression"
+            exit 1
+          fi
+          # Free GB on the smaller of the workspace disk and Docker's data root:
+          # the stack, volumes and build cache live on the latter.
+          free_gb() {
+            local root a b
+            root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null)"
+            a="$(df -Pk "${GITHUB_WORKSPACE:-.}" | awk 'NR==2 {print int($4 / 1048576)}')"
+            b="$(df -Pk "${root:-/}" | awk 'NR==2 {print int($4 / 1048576)}')"
+            case "$a$b" in ''|*[!0-9]*) echo "::error::runner disk low: could not read free disk space (workspace='$a' docker='$b')" >&2; echo -1; return;; esac
+            [ "$a" -le "$b" ] && echo "$a" || echo "$b"
+          }
+          free="$(free_gb)"
+          if [ "$free" -ge 0 ] && [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
+            echo "::warning::${free} GB free, below ${PERF_MIN_FREE_GB} GB; reclaiming leftovers from previous runs"
+            for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
+              docker compose -p "$p" down -v --remove-orphans || echo "::warning::compose down failed for $p"
+              docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
+            done
+            docker network prune -f || true
+            docker volume prune -a -f || true
+            docker builder prune -a -f --keep-storage 2GB || true
+            free="$(free_gb)"
+          fi
+          if [ "$free" -lt "$PERF_MIN_FREE_GB" ]; then
+            echo "::error::runner disk low: ${free} GB free (-1 = unreadable), need at least ${PERF_MIN_FREE_GB} GB. This is a runner problem, not a perf regression; free the disk (docker volumes, build cache, Go build cache under the runner home) and re-run."
+            exit 1
+          fi
+          echo "runner disk ok: ${free} GB free"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
@@ -211,10 +339,29 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # continue-on-error is the warn-only switch: unset PERF_GATES_ENFORCE keeps
-      # the job green, and the step still reports the red gate below.
+      # A cancelled or timed-out earlier run can leave its wt-stack compose
+      # project (breeze-wt-<dir>-<hash>) running. Remove those containers,
+      # networks and volumes; images stay, they are reused between runs (#11623).
+      - name: Clear leftovers from a previous run
+        run: |
+          set -uo pipefail
+          for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
+            echo "removing leftover compose project $p"
+            docker compose -p "$p" down -v --remove-orphans || true
+            docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
+          done
+          docker network prune -f || true
+          docker volume prune -a -f || true
+
+      # Warn-only covers a measured gate miss and nothing else: while
+      # PERF_GATES_ENFORCE is not 'true', exit 3 (storm.sh: .storm.pass is false)
+      # becomes a ::warning:: and a green step only if storm-measured.sh confirms
+      # every fault fired, every event ran its window and every failing gate has
+      # data. Anything else is the harness failing (the stack did not start, the
+      # simulator never ran its window, agents never reached the API) and fails
+      # the job, which files the nightly issue (#11623: a dead stack was a green
+      # 3.5-min job).
       - name: Run storm-suite with gates
-        continue-on-error: ${{ vars.PERF_GATES_ENFORCE != 'true' }}
         env:
           PERF_GATES_ENFORCE: ${{ vars.PERF_GATES_ENFORCE }}
         run: |
@@ -225,8 +372,12 @@ jobs:
             --gate-heartbeat-p95 "$STORM_GATE_HEARTBEAT_P95" \
             --gate-pool-min-ratio "$STORM_GATE_POOL_MIN_RATIO" \
             --gate-pool-recovery "$STORM_GATE_POOL_RECOVERY" || rc=$?
-          if [ "$rc" -ne 0 ] && [ "$PERF_GATES_ENFORCE" != 'true' ]; then
-            echo "::warning::storm-suite exited $rc (3 = a gate failed); warn-only until PERF_GATES_ENFORCE=true"
+          if [ "$rc" -eq 3 ] && [ "$PERF_GATES_ENFORCE" != 'true' ] && load-tests/perf/storm-measured.sh "$OUT/storm/storm.json"; then
+            echo "::warning::storm-suite: a gate failed (exit 3); warn-only until PERF_GATES_ENFORCE=true"
+            exit 0
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::storm-suite exited $rc (3 with enforcement off = the run did not measure, see storm-measured above; 3 enforced = a gate failed; anything else = the harness failed)"
           fi
           exit "$rc"
 
@@ -238,6 +389,36 @@ jobs:
           path: load-tests/perf/out/**
           retention-days: 30
           if-no-files-found: warn
+
+      # Runs on success, failure, cancel and timeout, after the artifacts are
+      # uploaded: run-perf.sh stops its own stack on a normal exit, but a killed
+      # job can skip that, and one leftover stack plus its volumes filled the
+      # runner disk (#11623). Images are kept; the Docker build cache is bounded
+      # by size and the Go build cache is cleared when it grows past 4 GB.
+      - name: Tear down the perf stack and bound the caches
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          set -uo pipefail
+          for p in $(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true); do
+            docker compose -p "$p" down -v --remove-orphans || echo "::warning::compose down failed for $p"
+            docker ps -aq --filter "label=com.docker.compose.project=$p" | xargs -r docker rm -f || true
+          done
+          # breeze-perf is a dedicated runner, so every unused volume is ours.
+          docker network prune -f || true
+          docker volume prune -a -f || true
+          docker builder prune -a -f --keep-storage 2GB || true
+          left="$(docker ps -a --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep '^breeze-wt-' || true)"
+          [ -z "$left" ] || echo "::warning::compose projects still present after teardown: $left"
+          if command -v go >/dev/null 2>&1; then
+            kb="$(du -sk "$(go env GOCACHE)" 2>/dev/null | cut -f1)"
+            if [ "${kb:-0}" -gt 4194304 ]; then
+              echo "Go build cache is ${kb} KB, over 4 GB; clearing it"
+              go clean -cache || true
+            fi
+          fi
+          df -h "${GITHUB_WORKSPACE:-.}" | tail -n 1
 
       # Compose containers run as root and write into the bind-mounted checkout
       # (apps/web/public, ...). Hand it back so the next run's checkout can clean it.

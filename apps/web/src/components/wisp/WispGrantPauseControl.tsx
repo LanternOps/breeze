@@ -5,7 +5,7 @@ import { showToast } from '@/components/shared/Toast';
 import { ActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth } from '@/stores/auth';
 import type { WispGrantStatus, WispState } from '@/stores/aiStore';
-import { canPause, canResume, hoursUntil, systemPauseKind } from './wispSpend';
+import { canPause, canResume, systemPauseKind, utcClockTime } from './wispSpend';
 
 type Patch = Partial<NonNullable<WispState>>;
 
@@ -89,8 +89,8 @@ export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPause
     switch (systemKind) {
       case null: return null;
       case 'budget_exhausted': {
-        const hours = typeof wisp.budgetResetsAt === 'string' ? hoursUntil(wisp.budgetResetsAt) : null;
-        return hours === null ? t('wisp.paused.system.budgetExhaustedNoTime') : t('wisp.paused.system.budgetExhausted', { hours });
+        const time = utcClockTime(wisp.budgetResetsAt);
+        return time === null ? t('wisp.paused.system.budgetExhaustedNoTime') : t('wisp.paused.system.budgetExhausted', { time });
       }
       case 'grantor_access_lost': return t('wisp.paused.system.grantorAccessLost');
       case 'grantor_suspended': return t('wisp.paused.system.grantorSuspended');

@@ -15,6 +15,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { flowRuns, flowRunSteps } from '../../db/schema';
 import { acquireRunLease, checkpoint, releaseRunLease } from '../../services/flows/runLease';
 import { assertActiveCapacity, assertFlowRunAdmission, claimRunSlot, FLOW_MAX_ACTIVE_RUNS_PER_OWNER } from '../../services/flows/runAdmission';
+import { flowMaxRunningPerOwner } from '../../config/env';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { readFlowRunState, seedEnabledFlowRun, type SeededFlowRun } from './helpers/flowSeed';
 
@@ -227,27 +228,57 @@ describe('claimRunSlot (real Postgres)', () => {
         ) AS st`));
     const owner = { orgId, partnerId };
     // 1 seed + fill active = cap - 1: still admitted; the 50 finished runs are not counted.
-    await expect(assertActiveCapacity(owner)).resolves.toEqual({ ok: true });
+    await expect(assertActiveCapacity(owner, orgId)).resolves.toEqual({ ok: true });
 
     // One more run reaches the cap exactly: refused. (Two thirds of the fill
     // is parked, so this only refuses if parked runs are counted.)
     await insertSiblingRun(s, orgId);
-    await expect(assertActiveCapacity(owner)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
+    await expect(assertActiveCapacity(owner, orgId)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
     // The seam every run creation calls refuses the same way.
-    await expect(assertFlowRunAdmission(owner, s.flowId, { doc: {}, at: new Date() })).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
+    await expect(assertFlowRunAdmission(owner, s.flowId, { doc: {}, at: new Date(), runOrgId: orgId })).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
 
     // Another org of the same partner (a different owner) is unaffected.
     const otherOrg = await createOrganization({ partnerId });
-    await expect(assertActiveCapacity({ orgId: otherOrg.id, partnerId })).resolves.toEqual({ ok: true });
+    await expect(assertActiveCapacity({ orgId: otherOrg.id, partnerId }, otherOrg.id)).resolves.toEqual({ ok: true });
 
     // Finishing one active run frees a slot.
     await system(() => db.update(flowRuns).set({ status: 'cancelled', finishedAt: new Date(), errorCode: 'cancelled' })
       .where(eq(flowRuns.id, s.runId)));
-    await expect(assertActiveCapacity(owner)).resolves.toEqual({ ok: true });
+    await expect(assertActiveCapacity(owner, orgId)).resolves.toEqual({ ok: true });
+  });
+
+  runDb('a partner-wide flow counts active and running runs per org: one org at its caps leaves the others free', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const delegator = await createUser({ partnerId: partner.id, orgId: orgA.id, email: `delegator-${randomUUID()}@flowlease.test` });
+    // The seeded run (org A) is `running`.
+    const s = await seedEnabledFlowRun({ orgId: orgA.id, partnerId: partner.id, owner: 'partner', delegatorUserId: delegator.id, tool: PIN.tool, pin: PIN });
+    const owner = { orgId: null, partnerId: partner.id };
+    // Org A: the seeded run plus enough more `running` runs to fill the running
+    // cap, plus queued runs up to the active cap.
+    const running = flowMaxRunningPerOwner();
+    await system(() => db.execute(sql`
+      INSERT INTO flow_runs (org_id, flow_id, flow_version_id, definition_version, trigger_kind, triggered_via,
+                             trigger_payload, inputs, status, pre_approvals_honored, dedupe_key, started_at)
+      SELECT ${orgA.id}::uuid, ${s.flowId}::uuid, ${s.publicationId}::uuid, 1, 'schedule', 'scheduler', '{}'::jsonb, '{}'::jsonb,
+             CASE WHEN g < ${running} THEN 'running' ELSE 'queued' END, false, 'schedule:partner-cap-' || g::text,
+             CASE WHEN g < ${running} THEN now() END
+        FROM generate_series(1, ${FLOW_MAX_ACTIVE_RUNS_PER_OWNER - 1}) AS g`));
+
+    await expect(assertActiveCapacity(owner, orgA.id)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
+    await expect(assertActiveCapacity(owner, orgB.id)).resolves.toEqual({ ok: true });
+    await expect(assertFlowRunAdmission(owner, s.flowId, { doc: {}, at: new Date(), runOrgId: orgB.id }))
+      .resolves.toMatchObject({ ok: true });
+
+    // Org B's run takes a running slot although org A holds the partner's full running cap.
+    const runB = await insertSiblingRun(s, orgB.id, 'queued');
+    const lease = await acquireRunLease(runB, ['queued']);
+    await expect(claimRunSlot({ id: runB, flowId: s.flowId, orgId: orgB.id }, owner, lease!.token)).resolves.toBe(true);
   });
 
   runDb('assertActiveCapacity counts the owner’s active runs', async () => {
     const { orgId, partnerId } = await seed();
-    await expect(assertActiveCapacity({ orgId, partnerId })).resolves.toEqual({ ok: true });
+    await expect(assertActiveCapacity({ orgId, partnerId }, orgId)).resolves.toEqual({ ok: true });
   });
 });

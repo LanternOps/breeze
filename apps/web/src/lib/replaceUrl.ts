@@ -25,6 +25,21 @@ export function replaceUrl(url: string): void {
 }
 
 /**
+ * Add a history entry for `url` (Back returns to the current URL), carrying
+ * `history.state` over so the router's index and scroll fields survive on the
+ * new entry. `marks` are added beside them: they travel with the entry through
+ * Back / Forward, a remount or a reload (the router and `replaceUrl` keep
+ * unknown fields). Like `replaceUrl` it fires neither `hashchange` nor
+ * `popstate`, so it announces the move with URL_CHANGE_EVENT.
+ */
+export function pushUrl(url: string, marks?: Record<string, unknown>): void {
+  if (typeof window === 'undefined') return;
+  const state = marks ? { ...(window.history.state ?? {}), ...marks } : window.history.state;
+  window.history.pushState(state, '', url);
+  window.dispatchEvent(new CustomEvent(URL_CHANGE_EVENT));
+}
+
+/**
  * A plain `window.location.hash = x` assignment pushes an entry whose
  * `history.state` is null, which the router cannot cope with on its next
  * `navigate(..., { history: 'replace' })`. Seed the router's expected shape

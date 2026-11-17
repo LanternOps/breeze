@@ -1,6 +1,6 @@
 ---
 title: Local Vaults
-description: Mirror backup snapshots from cloud storage to a local vault, NAS share, or USB drive for fast offline recovery, with incremental sync and retention.
+description: Mirror backup snapshots from cloud storage to a local vault on an attached disk or USB drive for fast offline recovery, with incremental sync and retention.
 sidebar:
   order: 9
   label: "Local Vaults"
@@ -8,7 +8,7 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-A local vault mirrors your backup snapshots from cloud storage to a local location — a NAS share, an external drive, or a local disk. This gives you fast, offline recovery when the cloud is unreachable or when you need to restore large datasets without waiting for a download.
+A local vault mirrors your backup snapshots from cloud storage to a disk attached to the device — an external or USB drive, or a local disk. This gives you fast, offline recovery when the cloud is unreachable or when you need to restore large datasets without waiting for a download.
 
 ---
 
@@ -19,13 +19,17 @@ A local vault mirrors your backup snapshots from cloud storage to a local locati
 2. Click **Add New Vault**.
 3. Fill in the vault configuration:
    - **Device** — which device the vault is attached to
-   - **Vault path** — local mount point, SMB share, or USB drive path
-   - **Type** — Local Disk, SMB Share, or USB Device
+   - **Vault path** — a dedicated directory on a local disk or USB drive attached to the device
+   - **Type** — Local Disk or USB Device
    - **Retention count** — number of snapshots to keep locally (1–100)
 4. Click **Save**.
 </Steps>
 
 The vault appears in the list with a **Never synced** status.
+
+Use a dedicated vault directory. New roots and newly written directories and objects are private to the agent service account. An existing non-private root pauses vault operations with a migration diagnostic; Breeze does not change its permissions automatically. Verify the path, then migrate to a new private location or harden it explicitly before retrying; the steps are in [Local destination permissions](/backup/storage/#local-destination-permissions). Review existing object permissions too; Windows descendant ACLs require a separate maintenance pass.
+
+SMB and NAS shares are not supported as vaults. Breeze refuses to save a vault of type SMB share or a vault whose path is not an absolute path on a volume of the device (UNC and device paths are refused), and the agent refuses a vault on a network volume, including a drive letter mapped to a share. A vault saved on a share before this release is refused on the device until you move it to an attached disk; you can still deactivate or delete it. Do not add the device's computer account to the file server's Administrators group to make a share pass the checks. See [Network shares](/backup/storage/#network-shares).
 
 ---
 
@@ -67,6 +71,6 @@ Click the **Sync** button on a vault to trigger an immediate sync. The sync proc
 | Scenario | Recommendation |
 |----------|---------------|
 | **Critical servers** | Pair cloud backup with a local vault for sub-minute restore times |
-| **Remote offices with slow WAN** | Vault to local NAS so restores don't depend on internet bandwidth |
+| **Remote offices with slow WAN** | Vault to a disk attached to the server so restores don't depend on internet bandwidth |
 | **Compliance** | Keep an offline copy on USB or air-gapped storage |
 | **Disaster recovery** | Local vaults provide a second restore option if the cloud provider is down |

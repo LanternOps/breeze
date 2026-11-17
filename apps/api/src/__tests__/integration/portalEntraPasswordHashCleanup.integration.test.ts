@@ -129,6 +129,8 @@ async function seed() {
     entraOid: randomUUID(),
     passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$fixture-disabled$fixture',
     status: 'disabled',
+    // W8: CHECK portal_users_disabled_by_status_chk (an MSP disable).
+    disabledBy: 'msp',
   });
   const entraWithoutHash = await insert({
     authMethod: 'entra',

@@ -15,6 +15,7 @@
     "verificationFailed": "Konnte nicht überprüft werden",
     "failed": "Fehlgeschlagen — {{message}}",
     "failedNoMessage": "Fehlgeschlagen",
+    "interrupted": "Unbekannt — der Agent wurde beendet, bevor er diesen Wiederherstellungspunkt melden konnte",
     "unknown": "Ergebnis wird von dieser Version der Konsole nicht erkannt"
   },
   "list": {

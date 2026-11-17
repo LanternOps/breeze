@@ -39,6 +39,8 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  // services/drPlanDefinition.ts lists dr_plan_groups columns at import time.
+  drPlanGroups: {},
   // services/patchSeverityOverlay.ts builds module-level SQL fragments from these at import time.
   patches: { severity: 'patches.severity', category: 'patches.category' },
   devicePatches: { reportedSeverity: 'device_patches.reported_severity', reportedCategory: 'device_patches.reported_category' },
@@ -129,6 +131,15 @@ vi.mock('./actionIntents/intentService', () => ({
   waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),
   waitForIntentTerminalOutcome: (...args: unknown[]) => mockWaitForIntentTerminalOutcome(...args),
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
+}));
+
+// #12098: the close-out every undecided wait is settled with. Default: still
+// undecided before its deadline (database clock).
+const mockCloseOutUndecidedIntent = vi.fn(
+  async (_intentId: string): Promise<unknown> => ({ kind: 'decided', status: 'pending_approval' }),
+);
+vi.mock('./actionIntents/intentExpiry', () => ({
+  closeOutUndecidedIntent: (intentId: string) => mockCloseOutUndecidedIntent(intentId),
 }));
 
 const mockRequiresDurableRelease = vi.fn(() => false);
@@ -294,14 +305,17 @@ function tier2Guardrail() {
 
 /** Resolvers of in-flight `waitForApproval` calls, by execution id. */
 const approvalWaits = new Map<string, (approved: boolean) => void>();
+const approvalWaitDetails = new Map<string, { expired?: boolean; denied?: boolean } | undefined>();
 
 /** `waitForApproval` blocks until the test decides, or the wait is settled (abort). */
 function controlledApprovalWaits() {
   approvalWaits.clear();
+  approvalWaitDetails.clear();
   vi.mocked(waitForApproval).mockImplementation(
-    (executionId: string, _timeoutMs?: number, signal?: AbortSignal) =>
+    (executionId: string, _timeoutMs?: number, signal?: AbortSignal, detail?: { expired?: boolean; denied?: boolean }) =>
       new Promise<boolean>((resolve) => {
         approvalWaits.set(executionId, resolve);
+        approvalWaitDetails.set(executionId, detail);
         signal?.addEventListener('abort', () => resolve(false), { once: true });
       }),
   );
@@ -311,6 +325,16 @@ function decide(executionId: string, approved: boolean): void {
   const resolve = approvalWaits.get(executionId);
   if (!resolve) throw new Error(`no wait in flight for ${executionId}`);
   resolve(approved);
+}
+
+/** #12079: the wait ran out — what waitForApproval reports on its timeout. */
+function expire(executionId: string): void {
+  const resolve = approvalWaits.get(executionId);
+  if (!resolve) throw new Error(`no wait in flight for ${executionId}`);
+  const detail = approvalWaitDetails.get(executionId);
+  if (!detail) throw new Error(`the wait for ${executionId} was not given a detail to report expiry on`);
+  detail.expired = true;
+  resolve(false);
 }
 
 function cards(session: ActiveSession): Map<string, AiPendingCardEvent> {
@@ -564,12 +588,20 @@ describe('approval_resolved at the tier-2 legacy card (#9431)', () => {
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'approved' }]);
   });
 
-  it('says not_approved on a denial or timeout', async () => {
+  it('says not_approved on a denial', async () => {
     const session = makeActiveSession() as ActiveSession;
     const { result } = await blocked(session);
     decide('exec-1', false);
     await result;
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'not_approved' }]);
+  });
+
+  it('says expired, and still refuses the tool, when the wait times out (#12079)', async () => {
+    const session = makeActiveSession() as ActiveSession;
+    const { result } = await blocked(session);
+    expire('exec-1');
+    expect(await result).toMatchObject({ allowed: false });
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'expired' }]);
   });
 
   it('says ended when the wait is settled by a new message or interrupt', async () => {
@@ -578,6 +610,27 @@ describe('approval_resolved at the tier-2 legacy card (#9431)', () => {
     settleApprovalWaits(session);
     await result;
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'ended' }]);
+  });
+
+  it('says expired when the row was closed as timed out, even if a settle landed after (#12084)', async () => {
+    const session = makeActiveSession() as ActiveSession;
+    const { result } = await blocked(session);
+    // The wait closed the row as timed out; a late click on it is told
+    // "expired", so the card must say the same.
+    approvalWaitDetails.get('exec-1')!.expired = true;
+    settleApprovalWaits(session);
+    expect(await result).toMatchObject({ allowed: false });
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'expired' }]);
+  });
+
+  it('says not_approved, not ended, when a denial landed just before a settle (#12084)', async () => {
+    const session = makeActiveSession() as ActiveSession;
+    const { result } = await blocked(session);
+    // The wait's close-out lost to the denial and reported it.
+    approvalWaitDetails.get('exec-1')!.denied = true;
+    settleApprovalWaits(session);
+    expect(await result).toMatchObject({ allowed: false });
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-1', outcome: 'not_approved' }]);
   });
 
   it('says ended when the wait throws', async () => {
@@ -591,7 +644,8 @@ describe('approval_resolved at the tier-2 legacy card (#9431)', () => {
 describe('approval_resolved at the tier-3 intent-backed card (#9431)', () => {
   it.each([
     ['rejected', 'not_approved'],
-    ['expired', 'not_approved'],
+    // #12079: ran out of time, not denied.
+    ['expired', 'expired'],
     ['cancelled', 'not_approved'],
     // The chat stopped waiting; the intent can still be decided in Approvals.
     ['pending_approval', 'ended'],
@@ -605,6 +659,47 @@ describe('approval_resolved at the tier-3 intent-backed card (#9431)', () => {
 
     await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' }).catch(() => undefined);
 
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome }]);
+  });
+
+  it('still refuses the tool when the intent expired (#12079)', async () => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-3' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-3' }));
+    mockWaitForIntentDecision.mockResolvedValue('expired');
+    const session = makeActiveSession() as ActiveSession;
+
+    const result = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(result).toMatchObject({ allowed: false });
+    expect(mockTransitionIntent).not.toHaveBeenCalled();
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome: 'expired' }]);
+  });
+
+  // #12098: past the intent's deadline the card reports what the close-out
+  // settled, not the wait's possibly stale `pending_approval` read.
+  it.each([
+    [{ kind: 'expired' }, 'expired'],
+    [{ kind: 'decided', status: 'approved' }, 'approved'],
+    [{ kind: 'decided', status: 'rejected' }, 'not_approved'],
+    [{ kind: 'unknown' }, 'ended'],
+    [{ kind: 'missing' }, 'ended'],
+  ])('past the deadline, a close-out of %j shows %s', async (closeOut, outcome) => {
+    tier3Guardrail('supervised');
+    mockInsertReturning({ id: 'exec-3' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-3', expiresAt: new Date(Date.now() - 1_000) }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+    mockCloseOutUndecidedIntent.mockResolvedValueOnce(closeOut);
+    mockTransitionIntent.mockResolvedValue(false); // the release worker won the claim
+    const session = makeActiveSession() as ActiveSession;
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' }).catch(() => undefined);
+
+    expect(mockCloseOutUndecidedIntent).toHaveBeenCalledWith('intent-3');
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-3', outcome }]);
   });
 
@@ -652,5 +747,15 @@ describe('approval_resolved at the helper (PAM) card (#9431)', () => {
     decide('exec-h', true);
     await result;
     expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-h', outcome: 'approved' }]);
+  });
+
+  it('says expired, and still refuses the tool, when nobody decides in time (#12079)', async () => {
+    vi.mocked(decideHelperToolAction).mockResolvedValue('pending' as never);
+    const session = helperSession();
+    const result = createSessionPreToolUse(session)('take_screenshot', {});
+    await until(() => approvalWaits.has('exec-h'));
+    expire('exec-h');
+    expect(await result).toMatchObject({ allowed: false });
+    expect(resolvedEvents(session)).toEqual([{ type: 'approval_resolved', executionId: 'exec-h', outcome: 'expired' }]);
   });
 });

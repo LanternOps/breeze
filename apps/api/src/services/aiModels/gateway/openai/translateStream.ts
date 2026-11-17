@@ -1,3 +1,4 @@
+import { noteGatewayFailure } from '../failureNotes';
 import { GATEWAY_IDLE_TIMEOUT_MS, GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS } from '../limits';
 import { scrubSecrets } from '../scrub';
 import { encodeSse, parseSse } from './sse';
@@ -15,6 +16,8 @@ export interface TranslateStreamContext {
   /** Diagnostics only: identify the grant/connection in warnings. */
   grantId?: string;
   connectionId?: string;
+  /** The grant's AI session: a refused batch is noted for the turn by name (W04 #11397). */
+  aiSessionId?: string | null;
   /** Secrets scrubbed from any logged text (the connection credential). */
   secrets?: ReadonlyArray<string | null>;
   /**
@@ -28,6 +31,12 @@ export interface TranslateStreamContext {
    * with, so the chat turn can name the reason (gateway failure note).
    */
   onFailure?: (message: string) => void;
+  /**
+   * Called once with the endpoint's own usage counters (null when it sent
+   * none) when the stream completes its answer (#11393: a served prompt is
+   * evidence of the window). Never with the gateway's estimate.
+   */
+  onUsage?: (usage: OaiUsage | null) => void;
 }
 
 /** Default keepalive spacing: well inside the server's idle window. */
@@ -210,7 +219,9 @@ export async function* translateChatStream(
   }
   const toolUses = overLimit ? null : validateToolCalls(assembler.calls, ctx.tools);
   if (toolUses === null) {
-    warn('tool-call batch not emitted', overLimit ? 'refused: the stream exceeded its tool-call limits' : describeRefusedToolCalls(assembler.calls, ctx.tools));
+    const refused = describeRefusedToolCalls(assembler.calls, ctx.tools);
+    warn('tool-call batch not emitted', overLimit ? 'refused: the stream exceeded its tool-call limits' : refused);
+    noteGatewayFailure(ctx.aiSessionId ?? null, overLimit ? `${refused} (over the gateway's tool-call limits)` : refused, 'refused_tool_batch');
     if (!textOpen) {
       yield encodeSse('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
       textOpen = true;
@@ -226,6 +237,10 @@ export async function* translateChatStream(
   }
   const stop = mapFinish(finish, (toolUses?.length ?? 0) > 0);
   // Billed output covers everything the model generated, including rejected tool-call arguments.
+  try { ctx.onUsage?.(usage); } catch (error) {
+    // Evidence must not change the stream; the failure is still logged.
+    warn('could not note the served usage', error instanceof Error ? error.message : String(error));
+  }
   const u = resolveUsage(usage, { inputTokens: ctx.estimatedInputTokens, outputChars: emittedChars + argChars });
   yield encodeSse('message_delta', {
     type: 'message_delta',

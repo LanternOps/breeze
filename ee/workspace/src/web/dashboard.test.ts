@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { createExtensionHostApiV1, type ExtensionHostTransport } from '@breeze/extension-web-sdk';
 import {
   buildViewModel,
   WorkspaceDashboard,
@@ -193,31 +194,55 @@ function populatedSummary(): DashboardSummary {
   return summary;
 }
 
-async function mountDashboard(context: Record<string, unknown> = pageContext()): Promise<WorkspaceDashboard> {
+// The host API transport — what the web host's authenticated fetch receives.
+let transport: Mock<ExtensionHostTransport> = vi.fn<ExtensionHostTransport>();
+const hostApi = createExtensionHostApiV1({
+  extensionName: 'workspace',
+  transport: (path, init) => transport(path, init),
+});
+
+async function mountDashboard(
+  context: Record<string, unknown> = pageContext(),
+  { withHostApi = true } = {},
+): Promise<WorkspaceDashboard> {
   const element = document.createElement('workspace-dashboard') as WorkspaceDashboard;
   document.body.append(element);
+  // Same order as ExtensionElementHost: host API first, then context.
+  if (withHostApi) element.hostApi = hostApi;
   element.context = context;
   await element.updateComplete;
   return element;
 }
 
 describe('workspace-dashboard element', () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let fetchMock: Mock<ExtensionHostTransport>;
+  let globalFetch: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     defineWorkspaceElements();
-    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    fetchMock = vi.fn<ExtensionHostTransport>(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/dashboard/summary')) return jsonResponse(populatedSummary());
       if (url.includes('/dashboard/jobs')) return jsonResponse({ jobs: [] });
       return jsonResponse({}, 404);
     });
-    vi.stubGlobal('fetch', fetchMock);
+    transport = fetchMock;
+    // #11922: the portal mount must never fall back to an unauthenticated global fetch.
+    globalFetch = vi.fn(async () => jsonResponse({ error: 'Missing or invalid authorization header' }, 401));
+    vi.stubGlobal('fetch', globalFetch);
   });
 
   afterEach(() => {
+    expect(globalFetch).not.toHaveBeenCalled();
     document.body.replaceChildren();
     vi.unstubAllGlobals();
+  });
+
+  it('without a host API, renders the load error and sends no request', async () => {
+    const element = await mountDashboard(pageContext(), { withHostApi: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const alert = element.shadowRoot?.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('The Knowledge dashboard could not be loaded.');
   });
 
   it('registers the workspace-dashboard custom element idempotently', () => {
@@ -225,13 +250,17 @@ describe('workspace-dashboard element', () => {
     expect(customElements.get('workspace-dashboard')).toBe(WorkspaceDashboard);
   });
 
-  it('reads its org-scoped summary same-origin under the extension namespace', async () => {
+  it('reads its org-scoped summary and jobs through the host API under the extension namespace', async () => {
     await mountDashboard();
-    const summaryCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/dashboard/summary'));
-    expect(summaryCall, JSON.stringify(fetchMock.mock.calls)).toBeDefined();
-    const [url, init] = summaryCall as [string, RequestInit];
-    expect(url).toBe(`/api/v1/ext/workspace/dashboard/summary?orgId=${ORG_ID}`);
-    expect(init.credentials).toBe('same-origin');
+    const urls = fetchMock.mock.calls.map(([url]) => String(url)).sort();
+    expect(urls).toEqual([
+      `/api/v1/ext/workspace/dashboard/jobs?orgId=${ORG_ID}`,
+      `/api/v1/ext/workspace/dashboard/summary?orgId=${ORG_ID}`,
+    ]);
+    for (const [, init] of fetchMock.mock.calls as [string, RequestInit][]) {
+      expect(init.method).toBe('GET');
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    }
   });
 
   it('renders the coverage card from the fetched summary', async () => {

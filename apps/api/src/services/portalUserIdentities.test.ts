@@ -1,0 +1,508 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { sql } from 'drizzle-orm';
+import { PgDialect, QueryBuilder } from 'drizzle-orm/pg-core';
+import { portalUserIdentities, portalUsers } from '../db/schema/portal';
+
+const state = vi.hoisted(() => ({
+  held: false,
+  systemCalls: 0,
+  inserts: [] as Array<{ table?: unknown; values: Record<string, unknown>; onConflict: boolean }>,
+  updates: [] as Array<{ table?: unknown; set: Record<string, unknown>; where: unknown }>,
+  selects: [] as Array<{ cols: unknown; from?: unknown; where: unknown; limited: boolean; lockedFor?: string }>,
+  insertReturns: [] as unknown[][],
+  updateReturns: [] as unknown[][],
+  selectReturns: [] as unknown[][],
+}));
+
+vi.mock('../db', () => ({
+  db: {},
+  hasDbAccessContext: () => state.held,
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => { state.systemCalls++; return fn(); },
+}));
+
+import {
+  PORTAL_GOOGLE_ISSUER,
+  ensureEntraIdentity,
+  entraIssuer,
+  findPortalUserIdByEntraIdentity,
+  findPortalUserIdByIdentity,
+  identityIssuerSubject,
+  insertEntraIdentity,
+  linkPortalUserIdentity,
+  listIdentityProvidersByUser,
+  lockIdentityForAccount,
+  portalUserHasIdentitySql,
+  portalUserHasUsableIdentitySql,
+  reconcilePortalUserIdentities,
+  type IdentityExecutor,
+} from './portalUserIdentities';
+import { db } from '../db';
+
+const TID = '11111111-1111-1111-1111-111111111111';
+const OID = '22222222-2222-2222-2222-222222222222';
+const ORG = '33333333-3333-4333-8333-333333333333';
+const USER = '44444444-4444-4444-8444-444444444444';
+const NOW = new Date('2026-11-08T12:00:00Z');
+
+/** A minimal Drizzle-shaped executor that records insert/update calls. */
+function fakeExec(): IdentityExecutor {
+  return {
+    insert: (table: unknown) => {
+      const rec = { table, values: {} as Record<string, unknown>, onConflict: false };
+      state.inserts.push(rec);
+      const chain: Record<string, unknown> = {
+        values: (v: Record<string, unknown>) => { rec.values = v; return chain; },
+        onConflictDoNothing: () => { rec.onConflict = true; return chain; },
+        returning: async () => state.insertReturns.shift() ?? [],
+        then: (resolve: (v: unknown) => void) => resolve(undefined),
+      };
+      return chain;
+    },
+    update: (table: unknown) => {
+      const rec = { table, set: {} as Record<string, unknown>, where: undefined as unknown };
+      state.updates.push(rec);
+      const chain: Record<string, unknown> = {
+        set: (s: Record<string, unknown>) => { rec.set = s; return chain; },
+        where: (w: unknown) => { rec.where = w; return chain; },
+        returning: async () => state.updateReturns.shift() ?? [],
+      };
+      return chain;
+    },
+    select: (cols: unknown) => {
+      const rec = { cols, from: undefined as unknown, where: undefined as unknown, limited: false, lockedFor: undefined as string | undefined };
+      state.selects.push(rec);
+      const chain: Record<string, unknown> = {
+        from: (table: unknown) => { rec.from = table; return chain; },
+        where: (w: unknown) => { rec.where = w; return chain; },
+        orderBy: () => chain,
+        limit: () => { rec.limited = true; return chain; },
+        for: (mode: string) => { rec.lockedFor = mode; return chain; },
+        then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+          Promise.resolve(state.selectReturns.shift() ?? []).then(resolve, reject),
+      };
+      return chain;
+    },
+  } as unknown as IdentityExecutor;
+}
+
+beforeEach(() => {
+  state.held = false;
+  state.systemCalls = 0;
+  state.inserts.length = 0;
+  state.updates.length = 0;
+  state.selects.length = 0;
+  state.insertReturns.length = 0;
+  state.updateReturns.length = 0;
+  state.selectReturns.length = 0;
+});
+
+// ---------------------------------------------------------------------------
+// Identities release B (W3): readers
+// ---------------------------------------------------------------------------
+
+describe('portalUserHasIdentitySql (#9692 qualifier stripping)', () => {
+  // A single-table select is exactly where drizzle rewrites every column chunk
+  // of a selection `sql` to a bare identifier — so a helper written as
+  // `${portalUsers.id}` would render `"id"` and bind to the SUBQUERY's id.
+  const singleTable = () => new QueryBuilder()
+    .select({ id: portalUsers.id, hasExternalIdentity: portalUserHasIdentitySql() })
+    .from(portalUsers)
+    .toSQL().sql;
+
+  it('correlates on the OUTER portal_users row even inside a single-table selection', () => {
+    const text = singleTable();
+    expect(text).toMatch(/exists \(select 1 from "portal_user_identities" "\w+" where "\w+"\."portal_user_id" = "portal_users"\."id"\)/);
+    // Never a bare `= "id"` correlation (it would resolve to portal_user_identities.id).
+    expect(text).not.toMatch(/= "id"\)/);
+  });
+
+  it('counts any provider (Entra or Google), not only entra', () => {
+    expect(singleTable()).not.toMatch(/provider/);
+  });
+
+  it('negates cleanly as a WHERE predicate', () => {
+    const where = new PgDialect().sqlToQuery(sql`not ${portalUserHasIdentitySql()}`);
+    expect(where.sql).toMatch(/^not exists \(select 1 from "portal_user_identities"/);
+    expect(where.params).toEqual([]);
+  });
+
+  it('returns a fresh SQL object per call (callers may mapWith/alias it)', () => {
+    expect(portalUserHasIdentitySql()).not.toBe(portalUserHasIdentitySql());
+  });
+});
+
+describe('findPortalUserIdByEntraIdentity', () => {
+  it('looks up by provider, issuer (derived from tid) and subject — never by the portal_users entra columns', async () => {
+    state.selectReturns.push([{ portalUserId: USER, orgId: ORG }]);
+    await expect(findPortalUserIdByEntraIdentity(fakeExec(), { tid: TID, oid: OID })).resolves.toEqual({ portalUserId: USER, orgId: ORG });
+    const where = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(where.sql).toContain('"portal_user_identities"."provider"');
+    expect(where.sql).toContain('"portal_user_identities"."issuer"');
+    expect(where.sql).toContain('"portal_user_identities"."subject"');
+    expect(where.sql).not.toContain('entra_oid');
+    expect(where.params).toEqual(['entra', entraIssuer(TID), OID]);
+    expect(state.selects[0]!.limited).toBe(true);
+  });
+
+  it('returns null when no identity matches', async () => {
+    state.selectReturns.push([]);
+    await expect(findPortalUserIdByEntraIdentity(fakeExec(), { tid: TID, oid: OID })).resolves.toBeNull();
+  });
+});
+
+describe('listIdentityProvidersByUser', () => {
+  it('runs no query for an empty id list', async () => {
+    const map = await listIdentityProvidersByUser(fakeExec(), []);
+    expect(map.size).toBe(0);
+    expect(state.selects).toHaveLength(0);
+  });
+
+  it('groups providers per user, sorted, and leaves users without identities out', async () => {
+    const OTHER = '55555555-5555-4555-8555-555555555555';
+    state.selectReturns.push([
+      { portalUserId: USER, provider: 'google' },
+      { portalUserId: OTHER, provider: 'entra' },
+      { portalUserId: USER, provider: 'entra' },
+    ]);
+    const map = await listIdentityProvidersByUser(fakeExec(), [USER, OTHER, 'no-identity']);
+    expect(map.get(USER)).toEqual(['entra', 'google']);
+    expect(map.get(OTHER)).toEqual(['entra']);
+    expect(map.has('no-identity')).toBe(false);
+    const where = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(where.sql).toContain('"portal_user_identities"."portal_user_id" in');
+    expect(where.params).toEqual([USER, OTHER, 'no-identity']);
+  });
+});
+
+describe('entraIssuer', () => {
+  it('builds the v2.0 issuer', () => {
+    expect(entraIssuer(TID)).toBe(`https://login.microsoftonline.com/${TID}/v2.0`);
+  });
+});
+
+describe('insertEntraIdentity', () => {
+  it('inserts a plain entra identity with the issuer derived from tid (no ON CONFLICT: it must throw inside the JIT savepoint)', async () => {
+    await insertEntraIdentity(fakeExec(), { orgId: ORG, portalUserId: USER, tid: TID, oid: OID, linkedVia: 'jit', usedAt: NOW });
+    expect(state.inserts).toHaveLength(1);
+    expect(state.inserts[0]!.onConflict).toBe(false);
+    expect(state.inserts[0]!.values).toEqual({
+      orgId: ORG,
+      portalUserId: USER,
+      provider: 'entra',
+      issuer: entraIssuer(TID),
+      subject: OID,
+      entraTenantId: TID,
+      linkedVia: 'jit',
+      lastUsedAt: NOW,
+    });
+  });
+});
+
+describe('ensureEntraIdentity', () => {
+  const input = { orgId: ORG, portalUserId: USER, tid: TID, oid: OID, usedAt: NOW };
+
+  it('reports inserted when the ON CONFLICT DO NOTHING insert returns a row, without touching last_used_at again', async () => {
+    state.insertReturns.push([{ id: 'i-1' }]);
+    await expect(ensureEntraIdentity(fakeExec(), input)).resolves.toBe('inserted');
+    expect(state.inserts[0]!.onConflict).toBe(true);
+    expect(state.inserts[0]!.values).toMatchObject({ provider: 'entra', issuer: entraIssuer(TID), subject: OID, linkedVia: 'jit' });
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('reports present when the identity already belongs to this user, and bumps last_used_at', async () => {
+    state.insertReturns.push([]);
+    state.updateReturns.push([{ id: 'i-1' }]);
+    await expect(ensureEntraIdentity(fakeExec(), input)).resolves.toBe('present');
+    expect(state.updates[0]!.set).toEqual({ lastUsedAt: NOW });
+    const where = new PgDialect().sqlToQuery(state.updates[0]!.where as never);
+    expect(where.params).toEqual(expect.arrayContaining([entraIssuer(TID), OID, USER]));
+  });
+
+  it('reports conflict (never throws) when neither the insert nor the owned-row update lands', async () => {
+    state.insertReturns.push([]);
+    state.updateReturns.push([]);
+    await expect(ensureEntraIdentity(fakeExec(), input)).resolves.toBe('conflict');
+  });
+});
+
+describe('linkPortalUserIdentity (W4: invite / self_link / jit, W3 D4 writer fence)', () => {
+  const input = {
+    orgId: ORG, portalUserId: USER, provider: 'entra' as const, tid: TID, oid: OID,
+    linkedVia: 'invite' as const, clearPasswordHash: false, now: NOW,
+  };
+
+  it('linkPortalUserIdentity writes the identity and entra_* columns together; conflict writes neither', async () => {
+    // Legacy key free, identity inserted, login row updated.
+    state.selectReturns.push([]);
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'linked' });
+
+    expect(state.inserts).toHaveLength(1);
+    expect(state.inserts[0]!.table).toBe(portalUserIdentities);
+    expect(state.inserts[0]!.onConflict).toBe(true); // ON CONFLICT DO NOTHING: never 23505 in the caller's transaction
+    expect(state.inserts[0]!.values).toEqual({
+      orgId: ORG, portalUserId: USER, provider: 'entra', issuer: entraIssuer(TID), subject: OID,
+      entraTenantId: TID, linkedVia: 'invite', lastUsedAt: NOW,
+    });
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]!.table).toBe(portalUsers);
+    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, updatedAt: NOW });
+    const where = new PgDialect().sqlToQuery(state.updates[0]!.where as never);
+    expect(where.sql).toContain('"portal_users"."id"');
+    expect(where.sql).toContain('"portal_users"."org_id"');
+    expect(where.params).toEqual(expect.arrayContaining([USER, ORG]));
+
+    // (issuer, subject) or (user, provider) taken: the insert returns nothing → no login write.
+    state.inserts.length = 0;
+    state.updates.length = 0;
+    state.selectReturns.push([]);
+    state.insertReturns.push([]);
+    await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'conflict' });
+    expect(state.inserts).toHaveLength(1);
+    expect(state.updates).toHaveLength(0);
+
+    // The legacy (entra_tenant_id, entra_oid) key held by ANOTHER login (drift):
+    // refused before any write, so the login update can never raise 23505.
+    state.inserts.length = 0;
+    state.updates.length = 0;
+    state.selects.length = 0;
+    state.selectReturns.push([{ id: 'someone-else' }]);
+    await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'conflict' });
+    expect(state.inserts).toHaveLength(0);
+    expect(state.updates).toHaveLength(0);
+    expect(state.selects[0]!.from).toBe(portalUsers);
+    const legacy = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(legacy.sql).toContain('"portal_users"."entra_tenant_id"');
+    expect(legacy.sql).toContain('"portal_users"."entra_oid"');
+    expect(legacy.sql).toContain('<>');
+    expect(legacy.params).toEqual(expect.arrayContaining([TID, OID, USER]));
+  });
+
+  it('clearPasswordHash nulls password_hash in the same statement set', async () => {
+    state.selectReturns.push([]);
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await linkPortalUserIdentity(fakeExec(), { ...input, linkedVia: 'self_link', clearPasswordHash: true });
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, passwordHash: null, updatedAt: NOW });
+    expect(state.inserts[0]!.values).toMatchObject({ linkedVia: 'self_link' });
+  });
+
+  it('throws (the caller rolls back) when the login is not in the org it was linked under', async () => {
+    state.selectReturns.push([]);
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([]);
+    await expect(linkPortalUserIdentity(fakeExec(), input)).rejects.toThrow(/not in this org/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W7 (#11384, plan D5): the provider-neutral key, reader and the Google link
+// ---------------------------------------------------------------------------
+
+const SUB = '109876543210987654321';
+
+describe('identityIssuerSubject', () => {
+  it('derives the Entra issuer from the tenant and the Google issuer as the constant; the subject is never normalized', () => {
+    expect(identityIssuerSubject({ provider: 'entra', tid: TID, oid: OID })).toEqual({ issuer: entraIssuer(TID), subject: OID });
+    expect(identityIssuerSubject({ provider: 'google', sub: 'AbC-123' })).toEqual({ issuer: PORTAL_GOOGLE_ISSUER, subject: 'AbC-123' });
+    expect(PORTAL_GOOGLE_ISSUER).toBe('https://accounts.google.com');
+  });
+});
+
+describe('findPortalUserIdByIdentity', () => {
+  it('findPortalUserIdByIdentity finds google and entra identities; the entra wrapper is unchanged', async () => {
+    state.selectReturns.push([{ portalUserId: USER, orgId: ORG }]);
+    await expect(findPortalUserIdByIdentity(fakeExec(), { provider: 'google', sub: SUB }))
+      .resolves.toEqual({ portalUserId: USER, orgId: ORG });
+    const google = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(google.sql).toContain('"portal_user_identities"."provider"');
+    expect(google.sql).toContain('"portal_user_identities"."issuer"');
+    expect(google.sql).toContain('"portal_user_identities"."subject"');
+    expect(google.params).toEqual(['google', PORTAL_GOOGLE_ISSUER, SUB]);
+    expect(state.selects[0]!.from).toBe(portalUserIdentities);
+    expect(state.selects[0]!.limited).toBe(true);
+
+    state.selectReturns.push([{ portalUserId: USER, orgId: ORG }]);
+    await expect(findPortalUserIdByIdentity(fakeExec(), { provider: 'entra', tid: TID, oid: OID }))
+      .resolves.toEqual({ portalUserId: USER, orgId: ORG });
+    expect(new PgDialect().sqlToQuery(state.selects[1]!.where as never).params).toEqual(['entra', entraIssuer(TID), OID]);
+
+    // The wrapper reads exactly what the generic reader does for an Entra key.
+    state.selectReturns.push([]);
+    await expect(findPortalUserIdByEntraIdentity(fakeExec(), { tid: TID, oid: OID })).resolves.toBeNull();
+    expect(new PgDialect().sqlToQuery(state.selects[2]!.where as never))
+      .toEqual(new PgDialect().sqlToQuery(state.selects[1]!.where as never));
+
+    state.selectReturns.push([]);
+    await expect(findPortalUserIdByIdentity(fakeExec(), { provider: 'google', sub: SUB })).resolves.toBeNull();
+  });
+});
+
+describe('linkPortalUserIdentity: google (W7 D5)', () => {
+  const google = {
+    orgId: ORG, portalUserId: USER, provider: 'google' as const, sub: SUB,
+    linkedVia: 'invite' as const, clearPasswordHash: false, now: NOW,
+  };
+
+  it('linkPortalUserIdentity google: writes the identity with PORTAL_GOOGLE_ISSUER and leaves entra_* untouched', async () => {
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await expect(linkPortalUserIdentity(fakeExec(), google)).resolves.toEqual({ kind: 'linked' });
+
+    // No legacy entra_* pre-check: Google has no portal_users legacy columns.
+    expect(state.selects).toHaveLength(0);
+    expect(state.inserts).toHaveLength(1);
+    expect(state.inserts[0]!.table).toBe(portalUserIdentities);
+    expect(state.inserts[0]!.onConflict).toBe(true);
+    expect(state.inserts[0]!.values).toEqual({
+      orgId: ORG, portalUserId: USER, provider: 'google', issuer: PORTAL_GOOGLE_ISSUER, subject: SUB,
+      entraTenantId: null, linkedVia: 'invite', lastUsedAt: NOW,
+    });
+    // The login row is still org-checked, but never gets an entra_* write.
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]!.table).toBe(portalUsers);
+    // toStrictEqual: an `entraTenantId: undefined` key would still be a write of NULL.
+    expect(state.updates[0]!.set).toStrictEqual({ updatedAt: NOW });
+    const where = new PgDialect().sqlToQuery(state.updates[0]!.where as never);
+    expect(where.sql).toContain('"portal_users"."id"');
+    expect(where.sql).toContain('"portal_users"."org_id"');
+    expect(where.params).toEqual(expect.arrayContaining([USER, ORG]));
+  });
+
+  it('linkPortalUserIdentity google: clearPasswordHash nulls the hash; conflict writes nothing', async () => {
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await linkPortalUserIdentity(fakeExec(), { ...google, linkedVia: 'self_link', clearPasswordHash: true });
+    expect(state.selects).toHaveLength(0);
+    expect(state.updates[0]!.set).toStrictEqual({ passwordHash: null, updatedAt: NOW });
+    expect(state.inserts[0]!.values).toMatchObject({ linkedVia: 'self_link', provider: 'google' });
+
+    // (issuer, sub) held by another account, or this account already has a Google identity.
+    state.inserts.length = 0;
+    state.updates.length = 0;
+    state.insertReturns.push([]);
+    await expect(linkPortalUserIdentity(fakeExec(), { ...google, clearPasswordHash: true })).resolves.toEqual({ kind: 'conflict' });
+    expect(state.inserts).toHaveLength(1);
+    expect(state.updates).toHaveLength(0);
+  });
+
+  it('linkPortalUserIdentity google: throws (the caller rolls back) when the login is not in the org', async () => {
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([]);
+    await expect(linkPortalUserIdentity(fakeExec(), google)).rejects.toThrow(/not in this org/);
+  });
+
+  it('linkPortalUserIdentity entra is unchanged (legacy pre-check, entra_* fence)', async () => {
+    state.selectReturns.push([]);
+    state.insertReturns.push([{ id: 'i-1' }]);
+    state.updateReturns.push([{ id: USER }]);
+    await linkPortalUserIdentity(fakeExec(), {
+      orgId: ORG, portalUserId: USER, provider: 'entra', tid: TID, oid: OID, linkedVia: 'jit', clearPasswordHash: true, now: NOW,
+    });
+    expect(state.selects).toHaveLength(1);
+    expect(state.selects[0]!.from).toBe(portalUsers);
+    expect(state.inserts[0]!.values).toEqual({
+      orgId: ORG, portalUserId: USER, provider: 'entra', issuer: entraIssuer(TID), subject: OID,
+      entraTenantId: TID, linkedVia: 'jit', lastUsedAt: NOW,
+    });
+    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, passwordHash: null, updatedAt: NOW });
+  });
+});
+
+describe('reconcilePortalUserIdentities', () => {
+  it('refuses to run inside a held DB context (it opens its own system context, never nested)', async () => {
+    state.held = true;
+    await expect(reconcilePortalUserIdentities()).rejects.toThrow(/held/);
+    expect(state.systemCalls).toBe(0);
+  });
+
+  it('reconcile does not report a disabled identity as drift', async () => {
+    // W8 D1: disabling keeps the row AND the legacy entra_* columns, so a
+    // disabled identity is a present identity for every bucket. No bucket may
+    // filter on disabled_at (that would report it as missing / orphaned).
+    const executed: string[] = [];
+    db.execute = (async (query: never) => {
+      executed.push(new PgDialect().sqlToQuery(query).sql);
+      return [];
+    }) as never;
+    try {
+      const report = await reconcilePortalUserIdentities();
+      expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
+      expect(executed).toHaveLength(4);
+      for (const text of executed) expect(text).not.toMatch(/disabled/);
+      // The missing-identity bucket asks for ANY entra identity row.
+      expect(executed[0]).toMatch(/NOT EXISTS \(SELECT 1 FROM portal_user_identities i\s+WHERE i\.portal_user_id = pu\.id AND i\.provider = 'entra'\)/);
+    } finally {
+      delete (db as { execute?: unknown }).execute;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W8 (#11385, plan D3): the usable-identity fact and the disabled state
+// ---------------------------------------------------------------------------
+
+describe('portalUserHasUsableIdentitySql (W8 D3)', () => {
+  const singleTable = () => new QueryBuilder()
+    .select({ id: portalUsers.id, usable: portalUserHasUsableIdentitySql() })
+    .from(portalUsers)
+    .toSQL().sql;
+
+  it('correlates on the OUTER portal_users row and counts only enabled identities', () => {
+    const text = singleTable();
+    expect(text).toMatch(/exists \(select 1 from "portal_user_identities" "\w+" where "\w+"\."portal_user_id" = "portal_users"\."id" and "\w+"\."disabled_at" is null\)/);
+    expect(text).not.toMatch(/= "id"\)/);
+  });
+
+  it('is distinct from the any-identity fact, which ignores disabled_at', () => {
+    expect(new QueryBuilder().select({ has: portalUserHasIdentitySql() }).from(portalUsers).toSQL().sql).not.toMatch(/disabled_at/);
+    expect(portalUserHasUsableIdentitySql()).not.toBe(portalUserHasUsableIdentitySql());
+  });
+});
+
+describe('identity readers return the identity id and its disabled state (W8 D3)', () => {
+  it('findPortalUserIdByIdentity selects identityId and disabledAt with the owner', async () => {
+    const disabledAt = new Date('2027-02-01T00:00:00Z');
+    state.selectReturns.push([{ portalUserId: USER, orgId: ORG, identityId: 'i-1', disabledAt }]);
+    await expect(findPortalUserIdByIdentity(fakeExec(), { provider: 'google', sub: 'sub-1' }))
+      .resolves.toEqual({ portalUserId: USER, orgId: ORG, identityId: 'i-1', disabledAt });
+    expect(Object.keys(state.selects[0]!.cols as Record<string, unknown>).sort())
+      .toEqual(['disabledAt', 'identityId', 'orgId', 'portalUserId']);
+  });
+
+  it('ensureEntraIdentity on a disabled row returns disabled and writes nothing', async () => {
+    state.selectReturns.push([{ id: 'i-1' }]);
+    await expect(ensureEntraIdentity(fakeExec(), { orgId: ORG, portalUserId: USER, tid: TID, oid: OID, usedAt: NOW }))
+      .resolves.toBe('disabled');
+    expect(state.inserts).toHaveLength(0);
+    expect(state.updates).toHaveLength(0);
+    const where = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
+    expect(where.sql).toContain('"portal_user_identities"."disabled_at" is not null');
+    expect(where.params).toEqual(expect.arrayContaining([entraIssuer(TID), OID, USER]));
+  });
+
+  it('ensureEntraIdentity never touches last_used_at of a disabled row (the touch is guarded)', async () => {
+    state.insertReturns.push([]);
+    state.updateReturns.push([{ id: 'i-1' }]);
+    await ensureEntraIdentity(fakeExec(), { orgId: ORG, portalUserId: USER, tid: TID, oid: OID, usedAt: NOW });
+    expect(new PgDialect().sqlToQuery(state.updates[0]!.where as never).sql).toContain('"portal_user_identities"."disabled_at" is null');
+  });
+
+  it('lockIdentityForAccount reads one identity FOR UPDATE with its disabled state, or null', async () => {
+    const row = {
+      id: 'i-1', orgId: ORG, portalUserId: USER, provider: 'entra', entraTenantId: TID,
+      disabledAt: null, disabledReason: null, disabledBlockers: [], directoryChain: null, directoryRearmSince: null,
+      directoryLastRunId: null,
+    };
+    state.selectReturns.push([row]);
+    await expect(lockIdentityForAccount(fakeExec(), 'i-1')).resolves.toEqual(row);
+    expect(state.selects[0]!.from).toBe(portalUserIdentities);
+    expect(state.selects[0]!.lockedFor).toBe('update');
+    expect(new PgDialect().sqlToQuery(state.selects[0]!.where as never).params).toEqual(['i-1']);
+
+    state.selectReturns.push([]);
+    await expect(lockIdentityForAccount(fakeExec(), 'i-2')).resolves.toBeNull();
+  });
+});

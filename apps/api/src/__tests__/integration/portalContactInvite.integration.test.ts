@@ -11,12 +11,24 @@
  */
 import './setup';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
+
+// Capture the invite link the ROUTE emails, so the W2 cases below redeem the
+// very token a contact invite issued (bound to the row's post-write epoch).
+const { sentInvites } = vi.hoisted(() => ({ sentInvites: [] as Array<{ to: string; inviteUrl: string }> }));
+vi.mock('../../services/email', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/email')>()),
+  getEmailService: () => ({
+    sendPortalInvite: async (msg: { to: string; inviteUrl: string }) => { sentInvites.push({ to: msg.to, inviteUrl: msg.inviteUrl }); },
+    sendPasswordReset: async () => undefined,
+  }),
+}));
 import { db, withDbTransaction, withSystemDbAccessContext } from '../../db';
-import { contacts, portalUsers } from '../../db/schema';
+import { contacts, portalUserIdentities, portalUsers } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
+import { portalRoutes } from '../../routes/portal';
 import { bindContactLoginForInvite, ContactGoneError } from '../../services/contacts/portalInvite';
 import { createAccessToken } from '../../services/jwt';
 import { createOrganization, setupTestEnvironment } from './db-utils';
@@ -364,5 +376,102 @@ describe('invite from contacts — real Postgres / RLS', () => {
     }
     const e = caught as { code?: string; cause?: { code?: string } } | undefined;
     expect(e?.code ?? e?.cause?.code).toBe('23503');
+  });
+});
+
+// ── W2 (#11379): the contact invite goes through the account state machine ──
+
+describe('invite from contacts × account state machine (W2) — real Postgres', () => {
+  const NEW_PORTAL_PASSWORD = 'NewPortalPass456!';
+  beforeEach(() => { sentInvites.length = 0; });
+
+  const tokenFromLastInvite = (to: string): string => {
+    const sent = [...sentInvites].reverse().find((m) => m.to === to);
+    expect(sent, `no invite emailed to ${to}`).toBeDefined();
+    return new URL(sent!.inviteUrl).searchParams.get('token')!;
+  };
+  const accept = (token: string) => {
+    const app = new Hono();
+    app.route('/portal', portalRoutes);
+    return app.request('/portal/auth/accept-invite', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ token, password: NEW_PORTAL_PASSWORD }),
+    });
+  };
+  const stateOf = async (id: string) => {
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select({ status: portalUsers.status, browserAccess: portalUsers.browserAccess, authEpoch: portalUsers.authEpoch })
+        .from(portalUsers).where(eq(portalUsers.id, id)),
+    );
+    return row ?? null;
+  };
+
+  it('a new contact login is written with browser_access granted, and the emailed token redeems', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const contactId = await seedContact(env.organization.id, 'redeem@acme.example', 'Redeem');
+
+    const res = await post(env, env.organization.id, 'invite', { email: 'redeem@acme.example', contactId });
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(await stateOf(data.id)).toMatchObject({ status: 'invited', browserAccess: 'granted' });
+    expect((await accept(tokenFromLastInvite('redeem@acme.example'))).status).toBe(200);
+    expect(await stateOf(data.id)).toMatchObject({ status: 'active', browserAccess: 'granted' });
+  });
+
+  it('re-inviting a bound contact kills the earlier link; the new one (bound to the post-write epoch) redeems', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const contactId = await seedContact(env.organization.id, 'again@acme.example', 'Again');
+
+    expect((await post(env, env.organization.id, 'invite', { email: 'again@acme.example', contactId })).status).toBe(200);
+    const first = tokenFromLastInvite('again@acme.example');
+    const second = await post(env, env.organization.id, 'invite', { email: 'again@acme.example', contactId });
+    expect(second.status).toBe(200);
+    expect((await second.json()).data.contactLink).toBe('kept');
+    const fresh = tokenFromLastInvite('again@acme.example');
+
+    expect((await accept(first)).status).toBe(400);
+    expect((await accept(fresh)).status).toBe(200);
+  });
+
+  it('invite-contacts: a created and a reused login each get a token that redeems for that login', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    const newContact = await seedContact(orgId, 'fresh@acme.example', 'Fresh');
+    const reusedContact = await seedContact(orgId, 'pending@acme.example', 'Pending');
+    const pendingLogin = await seedLogin({ orgId, email: 'pending@acme.example', status: 'invited' });
+
+    const res = await post(env, orgId, 'invite-contacts', { contactIds: [newContact, reusedContact] });
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.counts.invited).toBe(2);
+    expect(data.results[1]).toMatchObject({ outcome: 'invited', portalUserId: pendingLogin, emailSent: true });
+    expect(await stateOf(pendingLogin)).toEqual({ status: 'invited', browserAccess: 'granted', authEpoch: 2 });
+    expect((await accept(tokenFromLastInvite('fresh@acme.example'))).status).toBe(200);
+    expect((await accept(tokenFromLastInvite('pending@acme.example'))).status).toBe(200);
+  });
+
+  it('a password login on the address that carries an Entra identity is refused (external_identity) and left untouched', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    const contactId = await seedContact(orgId, 'twin@acme.example');
+    const suffix = crypto.randomUUID();
+    const loginId = await seedLogin({ orgId, email: 'twin@acme.example', status: 'invited', entraOid: `oid-${suffix}`, entraTenantId: `tid-${suffix}` });
+    // The identity row is what makes it identity-managed since W3 (identities
+    // release B); the legacy columns above are the D4 dual-write, no longer read.
+    await getTestDb().insert(portalUserIdentities).values({
+      orgId, portalUserId: loginId, provider: 'entra', issuer: `https://login.microsoftonline.com/tid-${suffix}/v2.0`,
+      subject: `oid-${suffix}`, entraTenantId: `tid-${suffix}`, linkedVia: 'migrated',
+    });
+    const before = await stateOf(loginId);
+
+    const res = await post(env, orgId, 'invite', { email: 'twin@acme.example', contactId });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('PORTAL_INVITE_EXTERNAL_IDENTITY');
+    expect(await stateOf(loginId)).toEqual(before);
+    expect(await loginsIn(orgId)).toEqual([expect.objectContaining({ id: loginId, contactId: null })]);
+    expect(await contactRoles(contactId)).toEqual([]);
+    expect(sentInvites).toEqual([]);
   });
 });

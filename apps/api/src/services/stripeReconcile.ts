@@ -157,7 +157,10 @@ export async function recordStripePayment(
         || toMinorUnits(input.amount, input.currency) !== grossMinor) {
       return terminalFail(`amount mismatch (event=${input.amount} principal=${principalAmount} fee=${mapping.feeAmount ?? '0.00'})`);
     }
-    if (principalMinor > toMinorUnits(inv.balance, inv.currencyCode)) {
+    // Exact cents on both sides (#3803 item 8). Converting the BALANCE to minor
+    // units rounded it first, so a JPY 1001 capture against a legacy 1000.50
+    // balance compared 1001 > 1001, passed, and was recorded as an overpayment.
+    if (toCents(fromMinorUnits(principalMinor, inv.currencyCode)) > toCents(inv.balance)) {
       return terminalFail('overpayment: principal exceeds balance');
     }
 

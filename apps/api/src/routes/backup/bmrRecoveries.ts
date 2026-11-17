@@ -130,6 +130,9 @@ bmrRecoveryRoutes.post(
   '/bmr/recoveries',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  // The recovery code is exchanged for a recovery token: the same execute
+  // permission as every other restore lane (restore.ts, vmrestore.ts).
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('json', bmrRecoveryCreateSchema),
   async (c) => {
@@ -260,6 +263,8 @@ bmrRecoveryRoutes.post(
   '/bmr/recoveries/:id/reissue-code',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.BACKUP_WRITE.resource, PERMISSIONS.BACKUP_WRITE.action),
+  // A fresh code is a fresh credential: gated like creating the recovery.
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {

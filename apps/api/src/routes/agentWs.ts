@@ -114,6 +114,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 import {
   commandResultSchema as baseCommandResultSchema,
   commandResultResultByteLength,
+  MAX_AGENT_COMMAND_ID_LENGTH,
   MAX_COMMAND_RESULT_BYTES,
 } from './agents/schemas';
 import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
@@ -148,6 +149,7 @@ import type { WsSetupSlot } from '../services/admission/wsUpgradeGate';
 import { breezeRole } from '../config/env';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
+import type { AgentEvictCloseCode } from '../services/agentCommandRelayEvict';
 import {
   evaluateCapability,
   isLifecycleCommand,
@@ -307,6 +309,13 @@ interface ActiveAgentConnection {
    * should that admission ever change.
    */
   parked: boolean;
+  /**
+   * The fencing token this connection wrote into its presence lease. A
+   * relay-evict job carries the token the producer read from the lease, and
+   * disconnectAgentConnection closes this socket only when they match, so an
+   * eviction can never close a newer connection (#4142).
+   */
+  connectionToken: string;
 }
 
 // Store active WebSocket connections and their connect-time trust snapshot by agentId.
@@ -714,7 +723,7 @@ function recordOrphanedResultExpectation(agentId: string, command: AgentCommand)
 // duplicating the very thing this removes.
 const commandResultSchema = baseCommandResultSchema.extend({
   type: z.literal('command_result'),
-  commandId: z.string(),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
 });
 
 type AgentCommandResult = z.infer<typeof commandResultSchema>;
@@ -929,7 +938,8 @@ const heartbeatMessageSchema = z.object({
   type: z.literal('heartbeat'),
   timestamp: z.number(),
   ipHistoryUpdate: z.object({
-    deviceId: z.string().optional(),
+    // The agent's own device id (a UUID); only compared and, on a mismatch, logged.
+    deviceId: z.string().max(64).optional(),
     currentIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     changedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
     removedIPs: z.array(ipHistoryEntrySchema).max(100).optional(),
@@ -964,7 +974,7 @@ function decodeTerminalOutput(data: string, encoding?: 'base64'): string | null 
 // progress body is dropped rather than failing the whole WS message parse.
 const backupProgressMessageSchema = z.object({
   type: z.literal('backup_progress'),
-  commandId: z.string(),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
   progress: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -981,6 +991,16 @@ const revocationLeaseRenewSchema = z.object({
    * renewals send none, and older agents do not send it at all.
    */
   syncNonce: z.string().min(1).max(64).optional(),
+  /**
+   * #11840: the agent's own monotonic reading (ms) when it queued this
+   * request, opaque to the server. Echoed on a renewed answer so the agent
+   * measures the lease from when it ASKED: the decision came after that, so
+   * no delay on the way can stretch the lease past what was granted. A bad
+   * value is dropped rather than failing the renew — losing the renewal would
+   * push the session into its grace window — and the agent then measures
+   * from receipt. Older agents send none.
+   */
+  renewAnchor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().catch(undefined),
 });
 
 // #3578: in-flight stage for a command the agent is executing (agent side:
@@ -990,7 +1010,7 @@ const revocationLeaseRenewSchema = z.object({
 // be a quiet drop in applyCommandProgress, not an INVALID_MESSAGE error frame.
 const commandProgressMessageSchema = z.object({
   type: z.literal('command_progress'),
-  commandId: z.string().max(128),
+  commandId: z.string().max(MAX_AGENT_COMMAND_ID_LENGTH),
   stage: z.string().max(32),
 });
 
@@ -3209,6 +3229,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
         credentialTokenHash: agentDb.credentialTokenHash,
         credentialRevoked: false,
         parked: agentDb.parked === true,
+        connectionToken,
       });
       socketEpoch = installAgentSocketEpoch(agentId);
       void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
@@ -3574,7 +3595,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
             console.warn(`[AgentWs] Dropping revocation_lease_renew from superseded socket for agent ${agentId}`);
             return;
           }
-          const { sessionId: leaseSessionId, syncNonce } = parsedRenew.data;
+          const { sessionId: leaseSessionId, syncNonce, renewAnchor } = parsedRenew.data;
           const nonceEcho = syncNonce ? { syncNonce } : {};
           // Bind the renew to the device this socket authenticated as: an agent
           // must never be able to renew (or learn about) another tenant's
@@ -3588,6 +3609,13 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               sessionId: leaseSessionId,
               expiresAt: leaseResult.expiresAt,
               hardDeadline: leaseResult.hardDeadline,
+              // The same deadlines as time remaining at the decision (#11840).
+              // A current agent measures these from the echoed renewAnchor
+              // (else from receipt), so its own clock skew cannot cut the
+              // lease short or stretch it; an older agent ignores them.
+              expiresInMs: leaseResult.expiresInMs,
+              hardDeadlineInMs: leaseResult.hardDeadlineInMs,
+              ...(renewAnchor !== undefined ? { renewAnchor } : {}),
               renewEverySec: leaseResult.renewEverySec,
               graceSec: leaseResult.graceSec,
               // The agent's durable start fence resyncs from these.
@@ -3773,7 +3801,10 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
         // Handle command_result for terminal/desktop commands (non-UUID IDs).
         // H5: validate the message shape with Zod BEFORE any field access. On
         // parse failure we drop + log without touching the DB or downstream.
+        // An id over the limit is not read here: it falls through to the
+        // schema below, which refuses it like any other malformed frame.
         if (message?.type === 'command_result' && typeof message.commandId === 'string' &&
+            message.commandId.length <= MAX_AGENT_COMMAND_ID_LENGTH &&
             (message.commandId.startsWith('term-') || message.commandId.startsWith('desk-'))) {
           // Exact delivery-epoch proof: a stop/start result carries authority
           // to tear down a live session, so a superseded socket may not submit
@@ -3899,6 +3930,11 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                       write: {
                         status: 'disconnected',
                         endedAt: new Date(),
+                        // #11839: only the agent's no-video watchdog sets a
+                        // stopReason on a peer drop (#5300); every other
+                        // agent-side stop (operator, lifetime, lease, ICE
+                        // failure) reports it empty today.
+                        endReason: stopReason ? 'capture_failed' : 'peer_disconnected',
                         // Only fills errorMessage when it's still empty — never
                         // overwrites a startup-probe failure text (#5284/#5295)
                         // that a `desk-start` failure already stored there.
@@ -4049,6 +4085,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     write: {
                       status: 'denied',
                       endedAt: new Date(),
+                      endReason: 'consent_denied',
                       errorMessage: consentDeniedMessage(
                         reason,
                         typeof fastResult.consentDetail === 'string' ? fastResult.consentDetail : undefined,
@@ -4350,7 +4387,8 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     write: {
                       status: 'failed',
                       errorMessage: errorMsg,
-                      endedAt: new Date()
+                      endedAt: new Date(),
+                      endReason: 'start_failed',
                     },
                     phase: 'confirmed',
                     where: [
@@ -5092,7 +5130,7 @@ async function failUnreadableDesktopStart(
     await runWithAgentDbAccess('agentWs.desktop.unreadableStart', async () => {
       const result = await commitDesktopTerminalIntent({
         sessionId: startCommand.sessionId,
-        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date() },
+        write: { status: 'failed', errorMessage: UNREADABLE_DESKTOP_START_MESSAGE, endedAt: new Date(), endReason: 'start_failed' },
         phase: 'confirmed',
         where: [
           eq(remoteSessions.deviceId, deviceId),
@@ -5321,7 +5359,7 @@ export function __resetCrossTenantDropsForTest() {
 export function registerConnection(
   agentId: string,
   ws: { send(data: string): void },
-  trust: { partnerId: string; trustState: PartnerTrustState; parked?: boolean } = {
+  trust: { partnerId: string; trustState: PartnerTrustState; parked?: boolean; connectionToken?: string } = {
     partnerId: 'test-partner',
     trustState: 'trusted',
   },
@@ -5335,6 +5373,7 @@ export function registerConnection(
     trustState: trust.trustState,
     credentialRevoked: false,
     parked: trust.parked === true,
+    connectionToken: trust.connectionToken ?? randomUUID(),
   });
   installAgentSocketEpoch(agentId);
 }
@@ -5354,19 +5393,6 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
   // GET /api/v1/agent-ws/:id/ws with Authorization: Bearer <agent-token>
   app.get(
     '/:id/ws',
-    // Rate limiting middleware (M-D2: Redis-backed sliding window)
-    async (c, next) => {
-      const agentId = c.req.param('id');
-      const { allowed, degraded } = await checkAgentWsRateLimitDistributed(agentId);
-      if (!allowed) {
-        return c.json({ error: 'Too many connection attempts' }, 429);
-      }
-      if (degraded) {
-        // Best-effort breadcrumb so we can detect Redis blips affecting agent fleets.
-        c.set('agentWsRateLimitDegraded' as never, true as never);
-      }
-      return next();
-    },
     // Authentication middleware — validates BEFORE WebSocket upgrade
     async (c, next) => {
       const agentId = c.req.param('id');
@@ -5397,6 +5423,20 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
 
       // Store validated device context for the upgrade handler to access
       c.set('agentDb', result.ctx);
+      return next();
+    },
+    // Charge the device budget only after its credential is validated.
+    async (c, next) => {
+      const agentId = c.req.param('id');
+      const { allowed, degraded } = await checkAgentWsRateLimitDistributed(agentId);
+      if (!allowed) {
+        c.header('Retry-After', String(WS_RATE_WINDOW_SECONDS));
+        return c.json({ error: 'Too many connection attempts' }, 429);
+      }
+      if (degraded) {
+        // Best-effort breadcrumb so we can detect Redis blips affecting agent fleets.
+        c.set('agentWsRateLimitDegraded' as never, true as never);
+      }
       return next();
     },
     upgradeWebSocket((c: { req: { param: (key: string) => string }; get: (key: string) => unknown }) => {
@@ -5538,6 +5578,35 @@ export function disconnectAgent(agentId: string, code: number = 4040, reason: st
   }
   // Don't delete from map here — the WS onClose handler does that itself
   // (lines ~1905-1907) and we don't want to race with reconnect logic.
+  return 'closed';
+}
+
+/**
+ * Fenced close for the relay-evict consumer (#4142): close the agent's socket
+ * only when it is the exact connection whose presence lease the producer read,
+ * i.e. its `connectionToken` matches. A replacement socket (a reconnect after
+ * the producer's read) answers `token_mismatch` and stays open. Synchronous by
+ * design: nothing awaits between the compare and `close()`, so no reconnect can
+ * slip in between them on this process. Outcomes otherwise match
+ * {@link disconnectAgent}; the map entry is left to onClose the same way. A
+ * throwing `close()` is logged here and reported to Sentry by the relay
+ * consumer, once per job, so a fleet sever cannot raise one event per socket.
+ */
+export function disconnectAgentConnection(
+  agentId: string,
+  connectionToken: string,
+  code: AgentEvictCloseCode,
+  reason: string,
+): AgentWsDisconnectResult | 'token_mismatch' {
+  const conn = activeConnections.get(agentId);
+  if (!conn) return 'not-connected';
+  if (conn.connectionToken !== connectionToken) return 'token_mismatch';
+  try {
+    conn.ws.close(code, reason);
+  } catch (error) {
+    console.error(`disconnectAgentConnection(${agentId.slice(0, 12)}) close threw:`, error);
+    return 'close-failed';
+  }
   return 'closed';
 }
 

@@ -19,6 +19,9 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const [showTrustNotice, setShowTrustNotice] = useState(false);
+  // Set once an email change has been requested: the step then shows where
+  // to confirm it and waits for the user to continue.
+  const [emailConfirmationSentTo, setEmailConfirmationSentTo] = useState<string>();
 
   const user = useAuthStore((s) => s.user);
 
@@ -67,43 +70,9 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
     setLoading(true);
 
     try {
-      // Update email if changed
-      if (email && email !== user?.email) {
-        const emailRes = await fetchWithAuth('/users/me', {
-          method: 'PATCH',
-          body: JSON.stringify({ email, currentPassword })
-        });
-        if (!emailRes.ok) {
-          const data = await emailRes.json().catch(() => null);
-          setError(extractApiError(data, t('setup.account.errors.updateEmailFailed')));
-          setLoading(false);
-          return;
-        }
-        // Update auth store so downstream requests use new email
-        useAuthStore.getState().updateUser({ email });
-
-        // #2428: an email change now advances auth_epoch and revokes every
-        // refresh family — this wizard's OWN session included. The access token
-        // we just used is dead and the refresh cookie's family is revoked, so
-        // without re-authenticating here the next request (the password change
-        // below, or the wizard's next step) 401s and ejects the user mid-setup
-        // — after we already told them it succeeded. The password is unchanged
-        // at this point, so `currentPassword` still authenticates; it is
-        // guaranteed present because the email step-up above requires it.
-        const emailRelogin = await apiLogin(email, currentPassword);
-        if (emailRelogin.success && emailRelogin.user && emailRelogin.tokens) {
-          useAuthStore.getState().login(emailRelogin.user, emailRelogin.tokens);
-        } else {
-          // Distinct from the password-change relogin copy: no password was
-          // changed here, and the user must sign in with their NEW address.
-          setError(t('setup.account.errors.emailReloginFailed'));
-          setLoading(false);
-          return;
-        }
-      }
-
-      // Change password if provided. Runs on the session re-established above
-      // when the email also changed, so it authenticates against a live token.
+      // Change the password FIRST when the same submit also requests a new
+      // email address: a password change cancels a pending email change, so it
+      // must not run after the request.
       if (newPassword && currentPassword) {
         const pwRes = await fetchWithAuth('/auth/change-password', {
           method: 'POST',
@@ -116,9 +85,9 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
           return;
         }
 
-        // Password change invalidates session — re-login transparently
-        const loginEmail = email || user?.email || '';
-        const loginResult = await apiLogin(loginEmail, newPassword);
+        // A password change ends the session. The address has not changed,
+        // so sign in again with the current one.
+        const loginResult = await apiLogin(user?.email || '', newPassword);
         if (loginResult.success && loginResult.user && loginResult.tokens) {
           useAuthStore.getState().login(loginResult.user, loginResult.tokens);
         } else {
@@ -126,6 +95,31 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
           setLoading(false);
           return;
         }
+      }
+
+      // Request the email change. The API keeps the current address (and this
+      // session) until the link sent to the new address is opened, so nothing
+      // here signs in with the new address or stores it.
+      if (email && email !== user?.email) {
+        const emailRes = await fetchWithAuth('/users/me', {
+          method: 'PATCH',
+          // The step-up proves the password that is current NOW.
+          body: JSON.stringify({ email, currentPassword: newPassword && currentPassword ? newPassword : currentPassword })
+        });
+        if (!emailRes.ok) {
+          const data = await emailRes.json().catch(() => null);
+          const reason = extractApiError(data, t('setup.account.errors.updateEmailFailed'));
+          // The password change above already took effect; say so, so the
+          // user does not keep using the old password.
+          setError(newPassword && currentPassword
+            ? t('setup.account.errors.emailFailedAfterPasswordChange', { reason })
+            : reason);
+          setLoading(false);
+          return;
+        }
+        setEmailConfirmationSentTo(email);
+        setLoading(false);
+        return;
       }
 
       setSuccess(t('setup.account.success'));
@@ -171,9 +165,14 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
           {email && email !== user?.email && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t('setup.account.currentPasswordHint')}
-            </p>
+            <>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('setup.account.currentPasswordHint')}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('setup.account.pendingEmailHint')}
+              </p>
+            </>
           )}
         </div>
 
@@ -252,23 +251,41 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
           </div>
         )}
 
-        <div className="flex justify-end gap-3 pt-2">
-          <button
-            type="button"
-            onClick={onNext}
-            className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
-          >
-            {t('setup.common.skip')}
-          </button>
-          <button
-            type="submit"
-            disabled={loading || !hasChanges}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
-          >
-            {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-            {t('setup.common.saveAndContinue')}
-          </button>
-        </div>
+        {emailConfirmationSentTo && (
+          <div role="status" className="rounded-md border border-green-500/50 bg-green-500/10 px-3 py-2 text-sm text-green-700 dark:text-green-400">
+            {t('setup.account.emailConfirmationSent', { email: emailConfirmationSentTo })}
+          </div>
+        )}
+
+        {emailConfirmationSentTo ? (
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onNext}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
+            >
+              {t('setup.common.continue')}
+            </button>
+          </div>
+        ) : (
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onNext}
+              className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+            >
+              {t('setup.common.skip')}
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !hasChanges}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
+            >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {t('setup.common.saveAndContinue')}
+            </button>
+          </div>
+        )}
       </form>
     </div>
   );

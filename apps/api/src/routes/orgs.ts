@@ -113,8 +113,14 @@ import { resolveImportPartnerId } from './importScope';
 import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibilities';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
+import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
+import { registerPortalEntraTenantRoutes } from './orgPortalEntraTenant';
+import { registerOrgPortalDirectoryRoutes } from './orgPortalDirectory';
+import { registerOrgPortalScimRoutes } from './orgPortalScim';
+import { registerOrgCustomerDomainRoutes } from './orgCustomerDomains';
 import { registerOrgPortalPreviewRoutes } from './orgPortalPreview';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
+import { registerOrgPortalAccessRequestRoutes } from './orgPortalAccessRequests';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
@@ -3050,10 +3056,22 @@ orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
 // Customer-portal settings (portal_branding) — see routes/orgPortalSettings.ts
 registerOrgPortalSettingsRoutes(orgRoutes);
+// Customer-portal sign-in & registration policy (portal_access_policies) — see routes/orgPortalAccessPolicy.ts
+registerPortalAccessPolicyRoutes(orgRoutes);
+// Customer-portal Entra tenant proof + proof-run links (client_ai_tenant_mappings) — see routes/orgPortalEntraTenant.ts
+registerPortalEntraTenantRoutes(orgRoutes);
+// Customer-portal directory deprovisioning: status, apply/dismiss held runs, restore/remove a disabled sign-in — see routes/orgPortalDirectory.ts
+registerOrgPortalDirectoryRoutes(orgRoutes);
+// Customer-portal Entra SCIM provisioning tokens (portal_scim_tokens) — see routes/orgPortalScim.ts
+registerOrgPortalScimRoutes(orgRoutes);
+// Customer sender domains + ownership verification (customer_email_domains) — see routes/orgCustomerDomains.ts
+registerOrgCustomerDomainRoutes(orgRoutes);
 // Staff read-only "Customer view" of the portal read models (#9350)
 registerOrgPortalPreviewRoutes(orgRoutes);
 // Customer-portal users (portal_users invite/manage) — see routes/orgPortalUsers.ts
 registerOrgPortalUsersRoutes(orgRoutes);
+// Customer-portal access-request queue (portal_access_requests) — see routes/orgPortalAccessRequests.ts
+registerOrgPortalAccessRequestRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
 registerOrgBillingProfileRoutes(orgRoutes);

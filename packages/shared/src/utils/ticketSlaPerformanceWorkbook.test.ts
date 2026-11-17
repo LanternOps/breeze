@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { strFromU8, unzipSync } from 'fflate';
+import { sheetsToXlsx } from './xlsxExport';
 import {
   emptyTicketSlaPerformanceSummary,
+  TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS,
   type TicketSlaBreachRow,
   type TicketSlaPerformanceSummary,
 } from '../types/ticketSlaPerformance';
@@ -25,7 +28,7 @@ describe('ticketSlaPerformanceSheets', () => {
     const s = summary({ includeSubjects: true });
     const sheets = ticketSlaPerformanceSheets(s.rows, s);
     expect(sheets.map((sheet) => sheet.name)).toEqual(['Priorities', 'Breaches', 'Notes']);
-    expect(sheets[0]!.rows).toEqual(s.rows);
+    expect(sheets[0]!.rows).toHaveLength(s.rows.length);
     expect(sheets[1]!.rows).toEqual([BREACH]);
     expect(sheets[2]!.rows).toEqual([{ note: 'note' }]);
   });
@@ -44,5 +47,31 @@ describe('ticketSlaPerformanceSheets', () => {
     const [breach] = ticketSlaPerformanceSheets(s.rows, s)[1]!.rows as Array<Record<string, unknown>>;
     expect(breach).not.toHaveProperty('subject');
     expect(breach).toMatchObject({ ticketNumber: 'T-1', overByMinutes: 60 });
+  });
+});
+
+describe('ticketSlaPerformanceSheets parity with the CSV', () => {
+  it('labels the Priorities columns exactly as the CSV header does', () => {
+    const s = summary();
+    const [row] = ticketSlaPerformanceSheets(s.rows, s)[0]!.rows as Array<Record<string, unknown>>;
+    expect(Object.keys(row!)).toEqual(Object.values(TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS));
+    expect(row).toHaveProperty('Priority', 'urgent');
+  });
+
+  it('keeps a header row on an empty Breaches sheet (subject only when opted in)', () => {
+    const empty = { cap: 1000, stored: 0, available: 0, truncated: false, rows: [] };
+    const without = ticketSlaPerformanceSheets([], summary({ breaches: empty, includeSubjects: false }))[1]!;
+    expect(without.rows).toEqual([]);
+    expect(without.headers).toContain('ticketNumber');
+    expect(without.headers).not.toContain('subject');
+    const withSubj = ticketSlaPerformanceSheets([], summary({ breaches: empty, includeSubjects: true }))[1]!;
+    expect(withSubj.headers).toContain('subject');
+  });
+
+  it('writes the header row of an empty sheet into the xlsx', () => {
+    const bytes = sheetsToXlsx([{ name: 'Breaches', rows: [], headers: ['ticketNumber', 'priority'] }]);
+    const xml = strFromU8(unzipSync(bytes)['xl/worksheets/sheet1.xml']!);
+    expect(xml).toContain('ticketNumber');
+    expect(xml).toContain('priority');
   });
 });

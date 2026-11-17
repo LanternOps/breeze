@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { OEM_UPDATES_POLICY_DEFAULTS } from '@breeze/shared';
+import { OEM_DISPLAY_STATES, type OemDisplayState } from '../../services/oemUpdates/displayState';
 
-// #11074: the fleet route. The real display-state, policy-side and link-picking
-// code runs here over mocked rows, so `counts` are checked against the rule the
-// device section uses. Real RLS and a real 10,000-device plan are in
-// __tests__/integration/oemUpdatesFleet.integration.test.ts.
+// #11242: the fleet route's orchestration, scoping and SQL shape over a mocked db.
+// The state rule is SQL now (oemDisplayStateSql) and is checked against Postgres in
+// __tests__/integration/oemDisplayStateSql.integration.test.ts (parity matrix) and
+// oemUpdatesFleet.integration.test.ts (real RLS, real plan).
+
+type SummaryRow = Record<string, unknown>;
 
 const h = vi.hoisted(() => ({
   auth: {
@@ -16,21 +18,24 @@ const h = vi.hoisted(() => ({
     accessibleOrgIds: ['org-1', 'org-2'] as string[] | null,
   },
   allowedSiteIds: undefined as string[] | undefined,
-  fleetRows: [] as Array<Record<string, unknown>>,
-  candidates: [] as Array<Record<string, unknown>>,
+  /** One entry per db.execute call; the last one repeats once the queue runs out. */
+  summaries: [] as Array<() => unknown[]>,
+  pageRows: [] as Array<Record<string, unknown>>,
+  pendingIds: [] as Array<{ id: string }>,
   selects: [] as Array<Record<string, unknown>>,
   wheres: [] as unknown[],
-  open: ['driver'] as string[],
-  perDeviceWalk: vi.fn(),
-  computeOccurrence: vi.fn(),
+  joins: [] as Array<{ kind: string; table: unknown; condition: unknown }>,
+  executed: [] as unknown[],
+  refresh: vi.fn(),
+  schedule: vi.fn(),
 }));
 
 vi.mock('../../db', () => {
   const chain = (rows: () => unknown[]) => {
     const c: Record<string, unknown> = {
       from: () => c,
-      leftJoin: () => c,
-      innerJoin: () => c,
+      leftJoin: (table: unknown, condition: unknown) => { h.joins.push({ kind: 'left', table, condition }); return c; },
+      innerJoin: (table: unknown, condition: unknown) => { h.joins.push({ kind: 'inner', table, condition }); return c; },
       where: (condition: unknown) => { h.wheres.push(condition); return c; },
       orderBy: () => c,
       limit: () => Promise.resolve(rows()),
@@ -40,9 +45,14 @@ vi.mock('../../db', () => {
   };
   return {
     db: {
+      execute: vi.fn(async (statement: unknown) => {
+        h.executed.push(statement);
+        const next = h.summaries.length > 1 ? h.summaries.shift()! : h.summaries[0]!;
+        return next();
+      }),
       select: vi.fn((shape: Record<string, unknown>) => {
         h.selects.push(shape);
-        return chain(() => ('hostname' in shape ? h.fleetRows : h.candidates));
+        return chain(() => ('hostname' in shape ? [...h.pageRows] : h.pendingIds));
       }),
     },
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -81,111 +91,61 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
   };
 });
 
-vi.mock('../../services/oemUpdates/resolver', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/oemUpdates/resolver')>()),
-  resolveOemUpdatesLinkForDevice: h.perDeviceWalk,
+vi.mock('../../services/oemUpdates/policySideStore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/oemUpdates/policySideStore')>()),
+  refreshOemPolicySide: h.refresh,
 }));
 
-vi.mock('../../services/oemUpdates/occurrence', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../services/oemUpdates/occurrence')>();
-  return {
-    ...actual,
-    computeOccurrence: (...args: Parameters<typeof actual.computeOccurrence>) => {
-      h.computeOccurrence();
-      return actual.computeOccurrence(...args);
-    },
-  };
-});
-
-vi.mock('../../services/oemUpdates/toolManifest', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/oemUpdates/toolManifest')>()),
-  isLaneOpen: vi.fn(() => h.open.length > 0),
-  openCategoriesForLane: vi.fn(() => h.open),
+vi.mock('../../services/oemUpdates/policySideRefreshTrigger', () => ({
+  scheduleOemPolicySideRefresh: h.schedule,
 }));
 
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 
-import { deriveOemDisplayState, OEM_DISPLAY_STATES } from '../../services/oemUpdates/displayState';
-import { computeOccurrence } from '../../services/oemUpdates/occurrence';
+import { oemGatesFingerprint } from '../../services/oemUpdates/policySideStore';
 import { oemUpdatesFleetRoutes } from './fleet';
+import { db } from '../../db';
 
-// Third Wednesday of February 2027 is the 17th, and 7 catch-up nights end on the
-// 24th, so at this instant the 2027-02 occurrence has no night left.
 const NOW = new Date('2027-03-01T12:00:00.000Z');
-const LAST_NIGHT_OPENED = new Date('2027-02-24T01:00:00.000Z');
 const LONG_AGO = new Date('2026-01-01T00:00:00.000Z');
+const ORG = '44444444-4444-4444-8444-444444444444';
 
-const armedSettings = {
-  ...OEM_UPDATES_POLICY_DEFAULTS,
-  enabled: true,
-  vendors: { dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: [] } },
-};
-
-function candidate(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    linkId: 'link-1',
-    sourcePolicyId: 'policy-1',
-    inlineSettings: armedSettings,
-    assignedPolicyId: 'policy-1',
-    policyOrgId: 'org-1',
-    policyPartnerId: null,
-    assignmentLevel: 'organization',
-    assignmentTargetId: 'org-1',
-    assignmentPriority: 0,
-    assignmentCreatedAt: LONG_AGO,
-    linkUpdatedAt: LONG_AGO,
-    roleFilter: null,
-    osFilter: null,
-    ...overrides,
-  };
+function countRows(counts: Partial<Record<OemDisplayState, number>> = {}, pending = 0): SummaryRow[] {
+  return OEM_DISPLAY_STATES.map((name, index) => ({
+    state: name,
+    count: counts[name] ?? 0,
+    // Pending is a total across the scope; one state row carries all of it.
+    pending: index === 0 ? pending : 0,
+    device_id: null,
+    position: null,
+  }));
 }
 
-let nextId = 0;
-function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  nextId += 1;
+function pageIdRows(ids: string[]): SummaryRow[] {
+  return ids.map((id, index) => ({ state: null, count: null, pending: null, device_id: id, position: String(index + 1) }));
+}
+
+function summary(options: { counts?: Partial<Record<OemDisplayState, number>>; pending?: number; ids?: string[] } = {}): () => unknown[] {
+  return () => [...countRows(options.counts, options.pending ?? 0), ...pageIdRows(options.ids ?? [])];
+}
+
+function pageRow(deviceId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    deviceId: `device-${nextId}`,
-    hostname: `host-${String(nextId).padStart(5, '0')}`,
+    deviceId,
+    hostname: `host-${deviceId}`,
     orgId: 'org-1',
     orgName: 'Org One',
-    partnerId: 'partner-1',
     siteId: 'site-1',
     siteName: 'Site One',
     deviceStatus: 'online',
-    osType: 'windows',
-    isVirtual: false,
-    deviceRole: 'workstation',
-    enrolledAt: LONG_AGO,
-    manufacturer: 'Dell Inc.',
-    model: 'Latitude 7420',
-    siteTimezone: 'UTC',
-    orgTimezone: null,
-    partnerTimezone: 'UTC',
-    partnerSettingsTimezone: null,
-    groupIds: [],
-    statusLane: null,
-    applicability: null,
-    reason: null,
+    lane: 'dell',
+    displayState: 'up_to_date',
     lastOutcome: null,
-    occurrenceKey: null,
-    attempts: 0,
     lastAttemptAt: null,
     lastSuccessAt: null,
     rebootPendingSince: null,
+    reason: null,
     ...overrides,
-  };
-}
-
-/** One row for each display state, under the armed org-1 link. */
-function oneOfEach(): Record<string, Record<string, unknown>> {
-  return {
-    up_to_date: row({ applicability: 'applicable', occurrenceKey: '2027-02', lastOutcome: 'success', lastSuccessAt: LAST_NIGHT_OPENED }),
-    overdue: row({ applicability: 'applicable', occurrenceKey: '2027-01', lastOutcome: 'success', lastSuccessAt: LONG_AGO }),
-    failing: row({ applicability: 'applicable', occurrenceKey: '2027-02', lastOutcome: 'failed', attempts: 1 }),
-    not_supported: row({ applicability: 'not_supported' }),
-    not_managed: row({ manufacturer: 'Generic', model: 'Box' }),
-    waiting_for_reboot: row({ applicability: 'applicable', rebootPendingSince: new Date(NOW.getTime() - 60 * 60 * 1000) }),
-    reboot_overdue: row({ applicability: 'applicable', rebootPendingSince: new Date(NOW.getTime() - 4 * 24 * 60 * 60 * 1000) }),
   };
 }
 
@@ -200,28 +160,32 @@ async function getFleet(query = ''): Promise<{ status: number; body: any }> {
   return { status: response.status, body: await response.json() };
 }
 
-const render = (condition: unknown) => new PgDialect().sqlToQuery(condition as never);
+const render = (statement: unknown) => new PgDialect().sqlToQuery(statement as never);
 
-function fleetWhere(): { sql: string; params: unknown[] } {
-  // The fleet read is the only one with a where: the links rest on RLS and joins.
-  expect(h.wheres).toHaveLength(1);
-  return render(h.wheres[0]);
+/** Statement 1 as Postgres would receive it. The scope condition lives inside it. */
+function statementOne(call = 0): { sql: string; params: unknown[] } {
+  expect(h.executed.length).toBeGreaterThan(call);
+  return render(h.executed[call]);
 }
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
-  nextId = 0;
   h.auth = { scope: 'partner', orgId: null, partnerId: 'partner-1', accessibleOrgIds: ['org-1', 'org-2'] };
   h.allowedSiteIds = undefined;
-  h.fleetRows = [];
-  h.candidates = [candidate()];
+  h.summaries = [summary()];
+  h.pageRows = [];
+  h.pendingIds = [];
   h.selects = [];
   h.wheres = [];
-  h.open = ['driver'];
-  h.perDeviceWalk.mockReset();
-  h.computeOccurrence.mockReset();
+  h.joins = [];
+  h.executed = [];
+  h.refresh.mockReset();
+  h.refresh.mockResolvedValue({ upserted: 0, pages: 1, failedPages: 0 });
+  h.schedule.mockReset();
+  vi.mocked(db.execute).mockClear();
+  vi.mocked(db.select).mockClear();
 });
 
 afterEach(() => {
@@ -233,57 +197,59 @@ describe('GET /oem-updates/fleet: who can read what', () => {
   it('needs devices:read', async () => {
     const response = await app().request('/oem-updates/fleet', { headers: { 'x-deny-permission': 'devices:read' } });
     expect(response.status).toBe(403);
-    expect(h.selects).toEqual([]);
+    expect(db.execute).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('scopes a partner caller to its orgs', async () => {
     await getFleet();
-    const where = fleetWhere();
-    expect(where.params).toEqual(expect.arrayContaining(['org-1', 'org-2']));
+    expect(statementOne().params).toEqual(expect.arrayContaining(['org-1', 'org-2']));
   });
 
   it('scopes an org caller to its own org', async () => {
     h.auth = { scope: 'organization', orgId: 'org-1', partnerId: null, accessibleOrgIds: ['org-1'] };
     await getFleet();
-    const where = fleetWhere();
-    expect(where.params).toContain('org-1');
-    expect(where.params).not.toContain('org-2');
+    const { params } = statementOne();
+    expect(params).toContain('org-1');
+    expect(params).not.toContain('org-2');
   });
 
   it('refuses an org the caller cannot reach', async () => {
     const { status } = await getFleet('?orgId=33333333-3333-4333-8333-333333333333');
     expect(status).toBe(403);
-    expect(h.selects).toEqual([]);
+    expect(db.execute).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('asks a system caller to name an org rather than walk the whole platform', async () => {
     h.auth = { scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null };
     const { status } = await getFleet();
     expect(status).toBe(400);
-    expect(h.selects).toEqual([]);
+    expect(db.execute).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('keeps a site-restricted caller to their sites', async () => {
     h.allowedSiteIds = ['site-1'];
     await getFleet();
-    const where = fleetWhere();
-    expect(where.params).toContain('site-1');
-    expect(where.sql).toContain('"site_id" in');
+    const { sql, params } = statementOne();
+    expect(params).toContain('site-1');
+    expect(sql).toContain('"site_id" in');
   });
 
   it('shows a caller restricted to no sites nothing', async () => {
     h.allowedSiteIds = [];
     await getFleet();
-    expect(fleetWhere().sql).toContain('false');
+    expect(statementOne().sql).toMatch(/\band false\b/);
   });
 
   it('leaves out ephemeral, parked and decommissioned devices', async () => {
     await getFleet();
-    const where = fleetWhere();
-    expect(where.sql).toContain('"is_ephemeral"');
-    expect(where.sql).toContain('unassigned_pool');
-    expect(where.sql).toContain('"status" <>');
-    expect(where.params).toEqual(expect.arrayContaining([false, 'decommissioned']));
+    const { sql, params } = statementOne();
+    expect(sql).toContain('"is_ephemeral"');
+    expect(sql).toContain('NOT IN (SELECT holding_org.id');
+    expect(sql).toContain('"status" <>');
+    expect(params).toEqual(expect.arrayContaining([false, 'unassigned_pool', 'decommissioned']));
   });
 });
 
@@ -295,69 +261,113 @@ describe('GET /oem-updates/fleet: filters and paging', () => {
     expect((await getFleet('?limit=201')).status).toBe(400);
     expect((await getFleet('?offset=-1')).status).toBe(400);
     expect((await getFleet('?orgId=nope')).status).toBe(400);
+    expect(db.execute).not.toHaveBeenCalled();
   });
 
   it('orgId narrows the query', async () => {
     // Reachable among others, so only the filter itself can narrow to it.
-    const orgId = '44444444-4444-4444-8444-444444444444';
-    h.auth.accessibleOrgIds = [orgId, 'org-2'];
-    await getFleet(`?orgId=${orgId}`);
-    const where = fleetWhere();
-    expect(where.sql).toContain('"devices"."org_id" = ');
-    expect(where.params.filter((param) => param === orgId)).toHaveLength(2);
+    h.auth.accessibleOrgIds = [ORG, 'org-2'];
+    await getFleet(`?orgId=${ORG}`);
+    const { sql, params } = statementOne();
+    expect(sql).toContain('"devices"."org_id" = ');
+    expect(params.filter((param) => param === ORG)).toHaveLength(2);
   });
 
-  it('state narrows the list and total, and the counts still show every state', async () => {
-    const rows = oneOfEach();
-    h.fleetRows = [...Object.values(rows), row({ applicability: 'applicable', occurrenceKey: '2027-01', lastOutcome: 'success', lastSuccessAt: LONG_AGO })];
+  it('total is the selected state\'s count, or the sum without a state', async () => {
+    h.summaries = [summary({ counts: { up_to_date: 5, overdue: 3, failing: 2 } })];
 
-    const { status, body } = await getFleet('?state=overdue');
+    const all = await getFleet();
+    expect(all.body.total).toBe(10);
+
+    const overdue = await getFleet('?state=overdue');
+    expect(overdue.body.total).toBe(3);
+    expect(overdue.body.counts).toEqual(all.body.counts);
+  });
+
+  it('state and lane filters reach statement 1, and counts still cover every state', async () => {
+    const counts = { up_to_date: 4, overdue: 2, failing: 1, not_managed: 6 };
+    h.summaries = [summary({ counts, ids: ['d-1', 'd-2'] })];
+    h.pageRows = [pageRow('d-1'), pageRow('d-2')];
+
+    const { status, body } = await getFleet('?state=overdue&lane=hp&limit=25&offset=50');
 
     expect(status).toBe(200);
+    const { sql, params } = statementOne();
+    expect(sql).toContain('fleet.state = $');
+    expect(sql).toContain('fleet.lane = $');
+    expect(params).toEqual(expect.arrayContaining(['overdue', 'hp', 25, 50]));
+    expect(body.counts).toEqual({
+      up_to_date: 4, overdue: 2, failing: 1, not_supported: 0, not_managed: 6, waiting_for_reboot: 0, reboot_overdue: 0,
+    });
     expect(body.total).toBe(2);
     expect(body.devices).toHaveLength(2);
-    expect(body.devices.every((device: any) => device.displayState === 'overdue')).toBe(true);
-    expect(body.counts).toEqual({
-      up_to_date: 1, overdue: 2, failing: 1, not_supported: 1, not_managed: 1, waiting_for_reboot: 1, reboot_overdue: 1,
-    });
   });
 
-  it('lane narrows the list and the counts', async () => {
-    h.fleetRows = [
-      row({ manufacturer: 'Dell Inc.' }),
-      row({ manufacturer: 'HP', model: 'EliteBook' }),
-      row({ manufacturer: 'Lenovo', model: 'T14' }),
-    ];
-
-    const { body } = await getFleet('?lane=hp');
-
-    expect(body.total).toBe(1);
-    expect(body.devices[0].hostname).toBe('host-00002');
-    expect(body.devices[0].lane).toBe('hp');
-    expect(Object.values<number>(body.counts).reduce((sum, count) => sum + count, 0)).toBe(1);
+  it('without a state or lane statement 1 filters on neither', async () => {
+    await getFleet();
+    const { sql, params } = statementOne();
+    expect(sql).not.toContain('fleet.state = $');
+    expect(sql).not.toContain('fleet.lane = $');
+    expect(params).toEqual(expect.arrayContaining([50, 0]));
   });
 
-  it('a lane comes from a past run when the hardware no longer offers one', async () => {
-    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'false');
-    h.fleetRows = [row({ statusLane: 'dell', applicability: 'applicable', rebootPendingSince: new Date(NOW.getTime() - 60_000) })];
-    const { body } = await getFleet('?lane=dell');
-    expect(body.total).toBe(1);
-    expect(body.devices[0].lane).toBe('dell');
+  it('the page keeps statement 1\'s hostname order', async () => {
+    h.summaries = [() => [
+      ...countRows({ up_to_date: 3 }),
+      // Rows of the union arrive in any order; `position` is the hostname order.
+      { state: null, count: null, pending: null, device_id: 'd-c', position: '3' },
+      { state: null, count: null, pending: null, device_id: 'd-a', position: '1' },
+      { state: null, count: null, pending: null, device_id: 'd-b', position: '2' },
+    ]];
+    h.pageRows = [pageRow('d-b'), pageRow('d-c'), pageRow('d-a')];
+
+    const { body } = await getFleet();
+
+    expect(body.devices.map((device: any) => device.deviceId)).toEqual(['d-a', 'd-b', 'd-c']);
   });
 
-  it('limit and offset page the filtered list in the query order', async () => {
-    h.fleetRows = Array.from({ length: 5 }, () => row());
-    const { body } = await getFleet('?limit=2&offset=2');
-    expect(body.total).toBe(5);
-    expect(body.devices.map((device: any) => device.hostname)).toEqual(['host-00003', 'host-00004']);
+  it('an empty page issues one statement', async () => {
+    h.summaries = [summary({ counts: { up_to_date: 3 } })];
+
+    const { status, body } = await getFleet('?offset=100');
+
+    expect(status).toBe(200);
+    expect(body.devices).toEqual([]);
+    expect(body.total).toBe(3);
+    expect(db.execute).toHaveBeenCalledTimes(1);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('the page statement is bounded to the ids statement 1 chose', async () => {
+    h.summaries = [summary({ counts: { up_to_date: 2 }, ids: ['d-1', 'd-2'] })];
+    h.pageRows = [pageRow('d-1'), pageRow('d-2')];
+
+    await getFleet();
+
+    expect(h.wheres).toHaveLength(1);
+    const where = render(h.wheres[0]);
+    expect(where.sql).toContain('"devices"."id" in');
+    expect(where.params).toEqual(['d-1', 'd-2']);
   });
 
   it('a row carries what the view shows and no more', async () => {
-    h.fleetRows = [row({ reason: 'release_gave_up', applicability: 'applicable', lastOutcome: 'failed', lastAttemptAt: LONG_AGO, statusLane: 'dell' })];
+    h.summaries = [summary({ counts: { failing: 1 }, ids: ['device-1'] })];
+    h.pageRows = [pageRow('device-1', {
+      lane: 'dell',
+      displayState: 'failing',
+      lastOutcome: 'failed',
+      lastAttemptAt: LONG_AGO,
+      reason: 'release_gave_up',
+      // Columns the view must not leak even if a row carried them.
+      partnerId: 'partner-1',
+      osType: 'windows',
+    })];
+
     const { body } = await getFleet();
+
     expect(body.devices[0]).toEqual({
       deviceId: 'device-1',
-      hostname: 'host-00001',
+      hostname: 'host-device-1',
       orgId: 'org-1',
       orgName: 'Org One',
       siteId: 'site-1',
@@ -374,168 +384,177 @@ describe('GET /oem-updates/fleet: filters and paging', () => {
   });
 });
 
-describe('GET /oem-updates/fleet: states', () => {
-  it('every row reads what deriveOemDisplayState says, and the counts add up', async () => {
-    const rows = oneOfEach();
-    h.fleetRows = Object.values(rows);
-
-    const { body } = await getFleet();
-
-    // Asked directly of the rule, per row, not of anything the route computed.
-    const schedule = { ...armedSettings.schedule, catchUpNights: armedSettings.catchUpNights };
-    const occurrence = computeOccurrence(schedule, 'UTC', NOW);
-    expect(occurrence.isPastLastNight).toBe(true);
-    const expected = Object.values(rows).map((source) => deriveOemDisplayState({
-      status: source.applicability === null ? null : source as never,
-      linkEnabled: source.manufacturer === 'Dell Inc.',
-      rebootMode: armedSettings.reboot,
-      occurrence: source.manufacturer === 'Dell Inc.' ? occurrence : null,
-      now: NOW,
-    }));
-    expect(body.devices.map((device: any) => device.displayState)).toEqual(expected);
-
-    // And the fixture does reach all seven, so the comparison above covers them.
-    expect(expected).toEqual(Object.keys(rows));
-    for (const state of OEM_DISPLAY_STATES) expect(body.counts[state]).toBe(1);
-    expect(body.total).toBe(OEM_DISPLAY_STATES.length);
-  });
-
-  it('with the flag off nothing is read from policy, and only recorded facts show', async () => {
-    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'false');
-    const rows = oneOfEach();
-    h.fleetRows = Object.values(rows);
-
-    const { body } = await getFleet();
-
-    expect(h.selects).toHaveLength(1);
-    expect(body.counts).toEqual({
-      up_to_date: 0, overdue: 0, failing: 0, not_supported: 1, not_managed: 4, waiting_for_reboot: 1, reboot_overdue: 1,
-    });
-  });
-
-  it('a partner off the allowlist reads as off, in a fleet that spans the flag', async () => {
-    vi.stubEnv('BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST', 'partner-other');
-    h.fleetRows = [row({ applicability: 'applicable', occurrenceKey: '2027-01', lastSuccessAt: LONG_AGO })];
-    const { body } = await getFleet();
-    expect(body.devices[0].displayState).toBe('not_managed');
-    expect(body.devices[0].lane).toBeNull();
-  });
-
-  it('a closed lane reads as not managed, not overdue: nothing could have run', async () => {
-    h.open = [];
-    h.fleetRows = [row({ applicability: 'applicable', occurrenceKey: '2027-01', lastSuccessAt: LONG_AGO })];
-    const { body } = await getFleet();
-    expect(body.devices[0].displayState).toBe('not_managed');
-  });
-
-  it('a device no assignment reaches is not managed', async () => {
-    h.candidates = [candidate({ assignmentLevel: 'site', assignmentTargetId: 'site-other' })];
-    h.fleetRows = [row({ applicability: 'applicable', occurrenceKey: '2027-01', lastSuccessAt: LONG_AGO })];
-    const { body } = await getFleet();
-    expect(body.devices[0].displayState).toBe('not_managed');
-  });
-
-  it('a partner-wide link reaches its orgs, and a group assignment needs the membership', async () => {
-    h.candidates = [candidate({ policyOrgId: null, policyPartnerId: 'partner-1', assignmentLevel: 'device_group', assignmentTargetId: 'group-1' })];
-    h.fleetRows = [
-      row({ groupIds: ['group-1'], occurrenceKey: '2027-01', applicability: 'applicable', lastSuccessAt: LONG_AGO }),
-      row({ groupIds: ['group-2'], occurrenceKey: '2027-01', applicability: 'applicable', lastSuccessAt: LONG_AGO }),
-    ];
-    const { body } = await getFleet();
-    expect(body.devices.map((device: any) => device.displayState)).toEqual(['overdue', 'not_managed']);
-  });
-
-  it('a device on a `never` policy waits for a restart without going overdue', async () => {
-    h.candidates = [candidate({ inlineSettings: { ...armedSettings, reboot: 'never' } })];
-    h.fleetRows = [row({ applicability: 'applicable', rebootPendingSince: new Date(NOW.getTime() - 10 * 24 * 60 * 60 * 1000) })];
-    const { body } = await getFleet();
-    expect(body.devices[0].displayState).toBe('waiting_for_reboot');
-  });
-
-  it('the zone comes from the org when the site is on the UTC default', async () => {
-    // UTC's last night closed at 05:00Z. At 07:00Z it is still 23:00 on the 23rd in
-    // Los Angeles, where the last night has not opened.
-    vi.setSystemTime(new Date('2027-02-24T07:00:00.000Z'));
-    const stale = { applicability: 'applicable', occurrenceKey: '2027-01', lastSuccessAt: null };
-    h.fleetRows = [
-      row({ ...stale, orgTimezone: 'America/Los_Angeles' }),
-      row({ ...stale }),
-    ];
-    const { body } = await getFleet();
-    expect(body.devices.map((device: any) => device.displayState)).toEqual(['not_managed', 'overdue']);
-  });
-
-  describe('a policy armed after the occurrence had no night left', () => {
-    const stale = { applicability: 'applicable', occurrenceKey: '2027-01', lastSuccessAt: null };
-
-    it('does not read overdue when the link came later', async () => {
-      h.candidates = [candidate({ linkUpdatedAt: new Date('2027-02-26T00:00:00.000Z') })];
-      h.fleetRows = [row(stale)];
-      expect((await getFleet()).body.devices[0].displayState).toBe('not_managed');
-    });
-
-    it('does not read overdue when the assignment came later', async () => {
-      h.candidates = [candidate({ assignmentCreatedAt: new Date('2027-02-26T00:00:00.000Z') })];
-      h.fleetRows = [row(stale)];
-      expect((await getFleet()).body.devices[0].displayState).toBe('not_managed');
-    });
-
-    it('does not read overdue when the device enrolled later', async () => {
-      h.fleetRows = [row({ ...stale, enrolledAt: new Date('2027-02-26T00:00:00.000Z') })];
-      expect((await getFleet()).body.devices[0].displayState).toBe('not_managed');
-    });
-
-    it('a link in place before the last night opened still reads overdue', async () => {
-      h.candidates = [candidate({ linkUpdatedAt: new Date(LAST_NIGHT_OPENED.getTime() - 60_000) })];
-      h.fleetRows = [row(stale)];
-      expect((await getFleet()).body.devices[0].displayState).toBe('overdue');
-    });
-  });
-});
-
-describe('GET /oem-updates/fleet: 10,000 devices', () => {
-  it('stays two queries, with no per-device resolver walk', async () => {
-    h.candidates = [
-      candidate(),
-      candidate({ linkId: 'link-2', assignedPolicyId: 'policy-2', sourcePolicyId: 'policy-2', policyOrgId: 'org-2', assignmentTargetId: 'org-2' }),
-    ];
-    h.fleetRows = Array.from({ length: 10_000 }, (_, index) => row({
-      orgId: index % 2 === 0 ? 'org-1' : 'org-2',
-      applicability: 'applicable',
-      occurrenceKey: index % 3 === 0 ? '2027-02' : '2027-01',
-      lastOutcome: 'success',
-      lastSuccessAt: LONG_AGO,
-      siteTimezone: index % 5 === 0 ? 'America/New_York' : 'UTC',
-    }));
+describe('GET /oem-updates/fleet: statements per request', () => {
+  it('issues exactly two statements whatever the scope size when nothing is pending', async () => {
+    const ids = Array.from({ length: 50 }, (_, index) => `d-${String(index).padStart(3, '0')}`);
+    h.summaries = [summary({ counts: { up_to_date: 6000, overdue: 3000, failing: 1000 }, ids })];
+    h.pageRows = ids.map((id) => pageRow(id));
 
     const { status, body } = await getFleet('?limit=50');
 
     expect(status).toBe(200);
     expect(body.total).toBe(10_000);
     expect(body.devices).toHaveLength(50);
-    expect(Object.values<number>(body.counts).reduce((sum, count) => sum + count, 0)).toBe(10_000);
+    expect(body).not.toHaveProperty('pendingRefresh');
+    expect(db.execute).toHaveBeenCalledTimes(1);
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect('hostname' in h.selects[0]!).toBe(true);
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.schedule).not.toHaveBeenCalled();
+  });
+});
 
-    expect(h.selects).toHaveLength(2);
-    expect(h.perDeviceWalk).not.toHaveBeenCalled();
-    // Once per link and zone, not per device.
-    expect(h.computeOccurrence.mock.calls.length).toBeLessThanOrEqual(4);
+describe('GET /oem-updates/fleet: the policy side', () => {
+  it('flag off leaves the policy side out of the join and never refreshes', async () => {
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'false');
+    h.summaries = [summary({ counts: { not_managed: 4 }, pending: 4, ids: ['d-1'] })];
+    h.pageRows = [pageRow('d-1', { displayState: 'not_managed', lane: null })];
+
+    const { status, body } = await getFleet();
+
+    expect(status).toBe(200);
+    expect(body).not.toHaveProperty('pendingRefresh');
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.schedule).not.toHaveBeenCalled();
+    expect(db.execute).toHaveBeenCalledTimes(1);
+
+    const one = statementOne();
+    expect(one.sql).toMatch(/left join "device_oem_policy_side" on \("device_oem_policy_side"\."device_id" = "devices"\."id" and false\)/i);
+    expect(one.sql).not.toContain('gates_fingerprint');
+
+    // The page statement joins it the same way.
+    const pageJoin = h.joins
+      .map((join) => render(join.condition))
+      .find((rendered) => rendered.sql.includes('device_oem_policy_side'));
+    expect(pageJoin).toBeDefined();
+    expect(pageJoin!.sql).toContain('false');
+    expect(pageJoin!.sql).not.toContain('gates_fingerprint');
   });
 
-  it('asks for group ids only when a group assignment could use them', async () => {
-    h.fleetRows = [row()];
-    await getFleet();
-    expect(h.selects.find((shape) => 'hostname' in shape)).not.toHaveProperty('groupIds');
+  it('a few pending devices are refreshed in-request and then counted', async () => {
+    h.summaries = [
+      summary({ counts: { not_managed: 3 }, pending: 3, ids: ['d-1'] }),
+      summary({ counts: { up_to_date: 3 }, pending: 0, ids: ['d-1'] }),
+    ];
+    h.pendingIds = [{ id: 'p-1' }, { id: 'p-2' }, { id: 'p-3' }];
+    h.pageRows = [pageRow('d-1')];
 
-    h.selects = [];
-    h.candidates = [candidate({ assignmentLevel: 'device_group', assignmentTargetId: 'group-1' })];
-    await getFleet();
-    expect(h.selects.find((shape) => 'hostname' in shape)).toHaveProperty('groupIds');
+    const { status, body } = await getFleet();
+
+    expect(status).toBe(200);
+    // The pending-id select is the one without a hostname; the page is the other.
+    expect(db.select).toHaveBeenCalledTimes(2);
+    expect(Object.keys(h.selects[0]!)).toEqual(['id']);
+    expect('hostname' in h.selects[1]!).toBe(true);
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+    expect(h.refresh).toHaveBeenCalledWith({ now: NOW, scope: { deviceIds: ['p-1', 'p-2', 'p-3'] }, source: 'fleet-request' });
+    expect(db.execute).toHaveBeenCalledTimes(2);
+    expect(h.schedule).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty('pendingRefresh');
+    // Counted after the refresh, not before.
+    expect(body.counts.up_to_date).toBe(3);
+    expect(body.counts.not_managed).toBe(0);
   });
 
-  it('reads no policy at all when the query has nothing to resolve against', async () => {
-    h.candidates = [];
-    h.fleetRows = [row()];
+  it('refreshes at the limit and enqueues one past it', async () => {
+    h.summaries = [summary({ counts: { not_managed: 500 }, pending: 500 }), summary({ counts: { up_to_date: 500 } })];
+    await getFleet();
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+    expect(h.schedule).not.toHaveBeenCalled();
+
+    h.refresh.mockReset();
+    h.refresh.mockResolvedValue({ upserted: 0, pages: 1, failedPages: 0 });
+    h.summaries = [summary({ counts: { not_managed: 501 }, pending: 501 })];
     const { body } = await getFleet();
-    expect(body.devices[0].displayState).toBe('not_managed');
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.schedule).toHaveBeenCalledTimes(1);
+    expect(body.pendingRefresh).toBe(501);
+  });
+
+  it('more than 500 pending enqueues a scope refresh and returns pendingRefresh', async () => {
+    h.summaries = [summary({ counts: { not_managed: 900 }, pending: 900 })];
+
+    // Partner caller, no org named: the whole partner.
+    let result = await getFleet();
+    expect(h.schedule).toHaveBeenLastCalledWith({ partnerId: 'partner-1' }, 'fleet-pending');
+    expect(result.body.pendingRefresh).toBe(900);
+
+    // An org named in the query narrows the refresh to it.
+    h.auth.accessibleOrgIds = [ORG, 'org-2'];
+    result = await getFleet(`?orgId=${ORG}`);
+    expect(h.schedule).toHaveBeenLastCalledWith({ orgId: ORG }, 'fleet-pending');
+    expect(result.body.pendingRefresh).toBe(900);
+
+    // An org caller refreshes its own org.
+    h.auth = { scope: 'organization', orgId: 'org-1', partnerId: null, accessibleOrgIds: ['org-1'] };
+    result = await getFleet();
+    expect(h.schedule).toHaveBeenLastCalledWith({ orgId: 'org-1' }, 'fleet-pending');
+    expect(result.body.pendingRefresh).toBe(900);
+
+    expect(h.schedule).toHaveBeenCalledTimes(3);
+    expect(h.refresh).not.toHaveBeenCalled();
+    // Counted from the one statement: no pending-id select, no second pass.
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it('a refresh that leaves devices pending reports them', async () => {
+    h.summaries = [
+      summary({ counts: { not_managed: 2 }, pending: 2 }),
+      summary({ counts: { not_managed: 2 }, pending: 2 }),
+    ];
+    h.pendingIds = [{ id: 'p-1' }, { id: 'p-2' }];
+
+    const { body } = await getFleet();
+
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+    expect(db.execute).toHaveBeenCalledTimes(2);
+    expect(body.pendingRefresh).toBe(2);
+    // One refresh per request: a device that stays pending does not loop it.
+    expect(h.schedule).not.toHaveBeenCalled();
+  });
+
+  it('devices the in-request refresh failed on go to the worker', async () => {
+    h.summaries = [
+      summary({ counts: { not_managed: 2 }, pending: 2 }),
+      summary({ counts: { not_managed: 2 }, pending: 2 }),
+    ];
+    h.pendingIds = [{ id: 'p-1' }, { id: 'p-2' }];
+    h.refresh.mockResolvedValue({ upserted: 0, pages: 1, failedPages: 1 });
+
+    const { body } = await getFleet();
+
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.refresh).mock.calls[0]![0]).toMatchObject({ source: 'fleet-request' });
+    expect(h.schedule).toHaveBeenCalledWith({ partnerId: 'partner-1' }, 'fleet-pending');
+    expect(body.pendingRefresh).toBe(2);
+  });
+
+  it('a failed refresh that still left nothing pending asks the worker for nothing', async () => {
+    h.summaries = [
+      summary({ counts: { not_managed: 2 }, pending: 2 }),
+      summary({ counts: { up_to_date: 2 }, pending: 0 }),
+    ];
+    h.pendingIds = [{ id: 'p-1' }, { id: 'p-2' }];
+    h.refresh.mockResolvedValue({ upserted: 2, pages: 2, failedPages: 1 });
+
+    const { body } = await getFleet();
+
+    expect(h.schedule).not.toHaveBeenCalled();
+    expect(body.pendingRefresh).toBeUndefined();
+  });
+
+  it('a row with a stale gates fingerprint counts as pending', async () => {
+    await getFleet();
+
+    const one = statementOne();
+    // Only a row computed under this process's gates and not past its rollover joins;
+    // every other row has no policy side in the statement, so it is counted pending.
+    const join = /left join "device_oem_policy_side" on \("device_oem_policy_side"\."device_id" = "devices"\."id" and \("device_oem_policy_side"\."gates_fingerprint" = \$(\d+) and \("device_oem_policy_side"\."refresh_after" is null or "device_oem_policy_side"\."refresh_after" > \$(\d+)\)\)\)/i.exec(one.sql);
+    expect(join).not.toBeNull();
+    // The fingerprint is this process's, and the rollover is compared to the request's clock.
+    expect(one.params[Number(join![1]) - 1]).toBe(oemGatesFingerprint());
+    expect(new Date(one.params[Number(join![2]) - 1] as string)).toEqual(NOW);
+    expect(one.sql).toContain('"device_oem_policy_side"."device_id" IS NULL AS pending');
   });
 });

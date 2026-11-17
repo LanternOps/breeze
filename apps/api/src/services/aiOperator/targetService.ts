@@ -13,6 +13,7 @@
 // of a refusal. These functions therefore refuse first and let the CHECK be
 // the backstop it is meant to be.
 
+import { assertContactLinkSystemAllowed } from '../contacts/externalLinkSystems';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -310,6 +311,10 @@ export async function upsertContactExternalLinks(
   input: UpsertContactExternalLinksInput,
 ): Promise<number> {
   if (input.links.length === 0) return 0;
+  // The type allows only m365/google, but the systems reach here from
+  // provider payloads at run time: a ticket import's reserved namespace is
+  // refused outright (#8313 W4b).
+  for (const link of input.links) assertContactLinkSystemAllowed(link.system);
 
   const inserted = await dbh
     .insert(contactExternalLinks)

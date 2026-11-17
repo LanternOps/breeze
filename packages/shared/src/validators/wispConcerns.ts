@@ -29,7 +29,7 @@ import {
   WATCH_PARAMS_MAX_BYTES,
   WATCH_PARAMS_MAX_KEYS,
 } from '../types/wispConcerns';
-import { WISP_SPECIALIST_KINDS, type WispSpecialistKind } from './wispSpecialists';
+import { WISP_ASSESSMENT_REQUEST_KINDS, type WispAssessmentRequestKind, type WispSpecialistKind } from './wispSpecialists';
 
 const jsonBytes = (o: unknown): number => {
   try {
@@ -72,27 +72,86 @@ const snoozeUntilSchema = z.iso.datetime({ offset: true }).refine((value) => {
 // Outcome tools (assessment runs, W05b)
 // ---------------------------------------------------------------------------
 
+/** Longest stored concern pattern key (#11426); a longer one is cut at its last `_` that fits, else at the limit. */
+export const CONCERN_PATTERN_MAX = 64;
+
+/**
+ * #11426: the evidence key holding a concern's pattern. Server-written: the
+ * assessment finalizer and the chat `raise_concern` both strip it from the
+ * evidence they are handed; only `record_concern.pattern` sets it.
+ */
+export const CONCERN_PATTERN_EVIDENCE_KEY = 'pattern';
+
+/**
+ * #11426: a concern pattern key in its stored form — lowercase snake_case
+ * (`Phantom Incident-Event` → `phantom_incident_event`), at most
+ * CONCERN_PATTERN_MAX characters. null when fewer than 3 characters survive
+ * (or the input is not a string): no key is better than a meaningless one.
+ */
+export function normalizeConcernPattern(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  let key = raw.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (key.length > CONCERN_PATTERN_MAX) {
+    const cut = key.slice(0, CONCERN_PATTERN_MAX + 1);
+    const at = cut.lastIndexOf('_');
+    key = (at > 0 ? cut.slice(0, at) : cut.slice(0, CONCERN_PATTERN_MAX)).replace(/_+$/, '');
+  }
+  return key.length >= 3 ? key : null;
+}
+
 /** `record_concern` — the assessment run's way to raise a concern. */
 export const raiseConcernSchema = z.object({
   subject: concernSubjectSchema,
   summary: summarySchema,
   severity: concernSeveritySchema,
   evidence: evidenceSchema.optional(),
+  // #11426: the same-org rollup folds ≥ 3 device concerns sharing this key into
+  // one org-level concern. Stored normalised (normalizeConcernPattern), which
+  // also cuts it to CONCERN_PATTERN_MAX; 100 is only the input bound.
+  pattern: z.string().trim().min(1).max(100).optional().describe(
+    'Short snake_case key for the KIND of problem, identical for every device that has it '
+    + '(e.g. phantom_incident_event, browser_critical_cves, patch_job_timeout). No device names, ids or numbers.',
+  ),
 });
 export type RaiseConcernInput = z.infer<typeof raiseConcernSchema>;
 
-export const updateConcernSchema = z.object({
+const updateConcernObjectSchema = z.object({
   concernId: z.uuid(),
   summary: summarySchema.optional(),
   severity: concernSeveritySchema.optional(),
   evidence: evidenceSchema.optional(),
-  status: z.literal('resolved').optional(),
-  outcome: outcomeSchema.optional(),
-}).refine((v) => v.status !== 'resolved' || v.outcome !== undefined, {
-  message: 'outcome is required when status is resolved',
-  path: ['outcome'],
+  status: z.literal('resolved').optional().describe(
+    "Send 'resolved' with an outcome to close the concern. Omit it to keep the concern open: "
+    + 'a summary, severity or evidence edit alone never closes it.',
+  ),
+  outcome: outcomeSchema.optional().describe(
+    'One sentence on how the concern ended (e.g. "The device restarted on its own; the reboot alert cleared"). '
+    + 'Required with status resolved. An outcome always resolves the concern, even without status.',
+  ),
 });
-export type UpdateConcernInput = z.infer<typeof updateConcernSchema>;
+
+/**
+ * The raw `update_concern` shape for the SDK tool's input schema (a raw shape
+ * cannot carry the refine/transform below; `updateConcernSchema.parse` stays
+ * the authority).
+ */
+export const updateConcernToolShape = updateConcernObjectSchema.shape;
+
+/**
+ * #11427: an update that carries an `outcome` and no `status` is a resolve. An
+ * outcome is by definition how the concern ended, and the model sent exactly
+ * that shape (`{ concernId, summary, outcome }`) for a week, which used to edit
+ * the summary and leave the concern open forever. Resolving without an outcome
+ * is still refused: the outcome is what gets remembered.
+ */
+export const updateConcernSchema = updateConcernObjectSchema
+  .refine((v) => v.status !== 'resolved' || v.outcome !== undefined, {
+    message: 'outcome is required when status is resolved',
+    path: ['outcome'],
+  })
+  .transform((v): z.output<typeof updateConcernObjectSchema> =>
+    (v.outcome !== undefined && v.status === undefined ? { ...v, status: 'resolved' } : v));
+export type UpdateConcernInput = z.output<typeof updateConcernSchema>;
 
 export const nudgeSchema = z.object({
   concernId: z.uuid(),
@@ -115,7 +174,7 @@ export type ProposeActionInput = z.infer<typeof proposeActionSchema>;
  * (`apps/api/src/services/wisp/specialistDispatch.ts`).
  */
 export const requestSpecialistSchema = z.object({
-  kind: z.enum(WISP_SPECIALIST_KINDS),
+  kind: z.enum(WISP_ASSESSMENT_REQUEST_KINDS as [WispAssessmentRequestKind, ...WispAssessmentRequestKind[]]),
   params: z.record(z.string(), z.unknown()),
   reason: z.string().trim().min(10).max(500),
 });
@@ -149,7 +208,10 @@ export interface AssessmentOutcome {
 // ---------------------------------------------------------------------------
 
 /** `raise_concern` (chat, T2 auto-approvable): a chat turn names its target org. */
-export const raiseConcernChatSchema = raiseConcernSchema.extend({
+// No `pattern` (#11426): a chat raise names one concern a person asked for; the
+// rollup key is the assessment run's (concernTools also strips `evidence.pattern`),
+// and the chat tool index stays unchanged.
+export const raiseConcernChatSchema = raiseConcernSchema.omit({ pattern: true }).extend({
   orgId: z.uuid(),
   subject: z.object({ kind: z.enum(CHAT_RAISE_CONCERN_SUBJECT_KINDS), id: z.uuid() }),
 });

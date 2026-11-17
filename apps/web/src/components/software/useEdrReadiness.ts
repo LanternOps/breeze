@@ -100,7 +100,7 @@ async function fetchSentinelOne(s1VersionCount: number): Promise<EdrReadiness> {
   }
   checks.push({
     key: 'installerUploaded',
-    label: 'Installer uploaded',
+    label: installerUploaded ? 'Installer uploaded' : 'Upload the installer',
     ok: installerUploaded,
     detail: installerUploaded ? undefined : 'Upload the SentinelOne installer (Versions tab)',
     fixHref: SOFTWARE_FIX,

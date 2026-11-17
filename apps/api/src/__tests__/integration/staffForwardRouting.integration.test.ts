@@ -57,6 +57,8 @@ function forwardMsg(id: string, from: string, mailbox: string, originalSender: s
         { name: 'To', value: mailbox },
         { name: 'Subject', value: 'Fwd: Printer down' },
         { name: 'Message-ID', value: `<${id}@staff.test>` },
+        // Gmail adds Return-Path at delivery.
+        { name: 'Return-Path', value: '<bounce@mail.example.net>' },
         { name: 'Authentication-Results', value: 'mx.google.com; spf=pass; dkim=pass; dmarc=pass' },
       ],
       body: { data: b64url(body) },

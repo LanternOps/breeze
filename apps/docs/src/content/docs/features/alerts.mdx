@@ -64,6 +64,15 @@ cooldown 5 min (partner default)_. See
 [Alert lifecycle](/features/monitors/#alert-lifecycle) for where to set them and
 how to name the event that clears an alert.
 
+### Retention
+
+Closed (resolved or dismissed) alerts older than `ALERT_RETENTION_DAYS`
+(default 365) are removed once `ALERT_RETENTION_ENFORCE=true`; until then the
+nightly job only reports what it would delete. Open alerts are never removed.
+The newest closed alert for each rule, device and subject is kept, and so is
+any alert linked to a ticket or PSA ticket. See
+[Report-only retention jobs](/deploy/environment/#report-only-retention-jobs).
+
 ## Monitors
 
 Open **Alerts → Monitors** to create a condition, choose its severity and

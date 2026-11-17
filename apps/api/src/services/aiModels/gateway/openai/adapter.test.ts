@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../../llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: () => {} }));
+const { recordObservedMock, clearDisprovenMock } = vi.hoisted(() => ({ recordObservedMock: vi.fn(), clearDisprovenMock: vi.fn() }));
+vi.mock('../../contextWindowObservation', () => ({ recordObservedContextWindow: recordObservedMock, clearDisprovenContextWindow: clearDisprovenMock }));
 
 import { __resetGatewayFailureNotesForTests, takeGatewayFailure, takeGatewayFailureNote } from '../failureNotes';
 import { __setUpstreamFetchForTests } from '../forward';
@@ -63,6 +65,23 @@ describe('openai_compatible adapter (real Anthropic client through the gateway)'
       expect(msg.content.some((b) => b.type === 'tool_use')).toBe(false);
       expect(msg.stop_reason).toBe('end_turn');
     }
+  });
+
+  it('a refused batch is noted refused_tool_batch under the grant AI session, buffered and streamed (W04 #11397)', async () => {
+    __resetGatewayFailureNotesForTests();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    reply = () => toolCall('t_0_other');
+    await clientFor(['qwen'], 'sess-refused-buffered').messages.create({ model: 'qwen', max_tokens: 256, tools, messages: [{ role: 'user', content: 'x' }] });
+    expect(takeGatewayFailure('sess-refused-buffered')).toMatchObject({ code: 'refused_tool_batch', message: expect.stringContaining('t_0_other') });
+    const enc = new TextEncoder();
+    reply = () => new Response(new ReadableStream({ start(c) {
+      c.enqueue(enc.encode('data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"t_0_other","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n'));
+      c.enqueue(enc.encode('data: [DONE]\n\n'));
+      c.close();
+    } }), { headers: { 'content-type': 'text/event-stream' } });
+    await clientFor(['qwen'], 'sess-refused-streamed').messages.stream({ model: 'qwen', max_tokens: 64, tools, messages: [{ role: 'user', content: 'x' }] }).finalMessage();
+    expect(takeGatewayFailure('sess-refused-streamed')).toMatchObject({ code: 'refused_tool_batch', message: expect.stringContaining('t_0_other') });
+    warn.mockRestore();
   });
 
   it('streamed text: final message carries the upstream usage', async () => {
@@ -422,5 +441,257 @@ describe('openai_compatible adapter (real Anthropic client through the gateway)'
       await ask(null, 'hi');
       expect(sent).toEqual([32_000]);
     });
+  });
+
+  describe('compactSchemas grants (#11395)', () => {
+    const sizedTools = [{
+      name: 'mcp__breeze__search', description: 's',
+      input_schema: { type: 'object' as const, required: ['q'], properties: { q: { type: 'string', maxLength: 50, pattern: '^a', description: 'query' } } },
+    }];
+    function compactClient(compactSchemas: boolean | undefined) {
+      const g = gw.grant({
+        config: { source: 'gateway', kind: 'openai_compatible', partnerId: 'p', connectionId: 'c', configVersion: 1, baseUrl: 'https://llm.example.com/v1' },
+        credential: { secret: 'sk-upstream-secret-1' }, wireModels: ['qwen'], orgId: 'o', aiSessionId: null, purpose: 'dispatch',
+        ...(compactSchemas === undefined ? {} : { compactSchemas }),
+      });
+      return new Anthropic({ baseURL: g.baseUrl, apiKey: GATEWAY_PLACEHOLDER_KEY, maxRetries: 0 });
+    }
+    // No usage upstream: input_tokens falls back to the gateway's own estimate.
+    const textReply = () => Response.json({ choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'ok' } }] });
+    const params = () => (lastUpstream!.body.tools as Array<{ function: { parameters: unknown } }>)[0]!.function.parameters;
+
+    it('a compactSchemas grant sends compacted parameters upstream', async () => {
+      reply = textReply;
+      await compactClient(true).messages.create({ model: 'qwen', max_tokens: 64, tools: sizedTools, messages: [{ role: 'user', content: 'x' }] });
+      expect(params()).toEqual({ type: 'object', required: ['q'], properties: { q: { type: 'string', description: 'query' } } });
+    });
+
+    it('without compactSchemas the upstream parameters are unchanged', async () => {
+      reply = textReply;
+      await compactClient(undefined).messages.create({ model: 'qwen', max_tokens: 64, tools: sizedTools, messages: [{ role: 'user', content: 'x' }] });
+      expect(params()).toEqual(sizedTools[0]!.input_schema);
+    });
+
+    it('a compactSchemas grant estimates the translated body it sends, not the SDK payload', async () => {
+      reply = textReply;
+      const big = [{ ...sizedTools[0]!, input_schema: { type: 'object' as const, properties: { q: { type: 'string', pattern: 'p'.repeat(6000) } } } }];
+      const compact = await compactClient(true).messages.create({ model: 'qwen', max_tokens: 64, tools: big, messages: [{ role: 'user', content: 'x' }] });
+      const full = await compactClient(false).messages.create({ model: 'qwen', max_tokens: 64, tools: big, messages: [{ role: 'user', content: 'x' }] });
+      // The 6,000-byte pattern is not sent under compaction, so it is not estimated (6,000 / 3 = 2,000 tokens).
+      expect(full.usage.input_tokens - compact.usage.input_tokens).toBeGreaterThan(1900);
+    });
+  });
+});
+
+describe('known windows and persisted observations on the grant (#11396)', () => {
+  const WINDOW = 8_192;
+  const rejection = (maxTokens: number) => new Response(JSON.stringify({ error: {
+    message: `This server's maximum context length is ${WINDOW} tokens: this request needs a ${3_000 + maxTokens}-token context (3000 prompt tokens plus max_tokens ${maxTokens})`,
+    type: 'invalid_request_error', param: 'messages', code: 'context_length_exceeded',
+  } }), { status: 400, headers: { 'content-type': 'application/json' } });
+  const ok = () => Response.json({ choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }], usage: { prompt_tokens: 3_000, completion_tokens: 3 } });
+  let sent: number[];
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    sent = [];
+    __resetContextWindowsForTests();
+    recordObservedMock.mockReset();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { warn.mockRestore(); });
+
+  const OBSERVERS = new Map([
+    ['qwen', { offeringId: 'off-primary', partnerId: 'p' }],
+    ['qwen-fallback', { offeringId: 'off-fallback', partnerId: 'p' }],
+  ]);
+  function client(opts: {
+    purpose?: 'dispatch' | 'verification';
+    knownWindows?: Map<string, { window: number; source: 'override' | 'discovered' | 'observed' }>;
+    observers?: typeof OBSERVERS;
+  } = {}) {
+    const base = {
+      config: { source: 'gateway' as const, kind: 'openai_compatible' as const, partnerId: 'p', connectionId: 'c-known', configVersion: 7, baseUrl: 'https://llm.example.com/v1' },
+      credential: { secret: 'sk-upstream-secret-1' }, wireModels: ['qwen', 'qwen-fallback'], aiSessionId: null,
+      ...(opts.knownWindows ? { knownWindows: opts.knownWindows } : {}),
+      ...(opts.observers ? { observers: opts.observers } : {}),
+    };
+    const g = opts.purpose === 'verification'
+      ? gw.grant({ ...base, purpose: 'verification', orgId: null })
+      : gw.grant({ ...base, purpose: 'dispatch', orgId: 'o' });
+    return new Anthropic({ baseURL: g.baseUrl, apiKey: GATEWAY_PLACEHOLDER_KEY, maxRetries: 0 });
+  }
+  const ask = (c: Anthropic, model = 'qwen') =>
+    c.messages.create({ model, max_tokens: 32_000, messages: [{ role: 'user', content: 'hi' }] }, { timeout: 30_000 });
+
+  it('a known window caps the FIRST request (no rejection needed)', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return ok(); };
+    await ask(client({ knownWindows: new Map([['qwen', { window: WINDOW, source: 'discovered' }]]) }));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!).toBeLessThan(WINDOW);
+    expect(sent[0]!).toBeGreaterThan(WINDOW - 1_000);
+  });
+
+  it('control: without a known window the first request asks for 32,000', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return ok(); };
+    await ask(client());
+    expect(sent).toEqual([32_000]);
+  });
+
+  it('a known window is per wire model: the fallback model is not capped by the primary\'s', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return ok(); };
+    await ask(client({ knownWindows: new Map([['qwen', { window: WINDOW, source: 'discovered' }]]) }), 'qwen-fallback');
+    expect(sent).toEqual([32_000]);
+  });
+
+  it('a rejection is persisted under the wire model that was sent: the primary\'s offering', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return sent.length === 1 ? rejection(32_000) : ok(); };
+    await ask(client({ observers: OBSERVERS }));
+    expect(recordObservedMock).toHaveBeenCalledOnce();
+    expect(recordObservedMock).toHaveBeenCalledWith({ offeringId: 'off-primary', partnerId: 'p', configVersion: 7, contextWindow: WINDOW });
+  });
+
+  it('a refusal-fallback model\'s rejection targets the fallback offering, never the primary', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return sent.length === 1 ? rejection(32_000) : ok(); };
+    await ask(client({ observers: OBSERVERS }), 'qwen-fallback');
+    expect(recordObservedMock).toHaveBeenCalledOnce();
+    expect(recordObservedMock.mock.calls[0]![0]).toMatchObject({ offeringId: 'off-fallback' });
+  });
+
+  it('a verification grant (no observers) persists nothing', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return sent.length === 1 ? rejection(32_000) : ok(); };
+    await ask(client({ purpose: 'verification' }));
+    expect(sent).toHaveLength(2);
+    expect(recordObservedMock).not.toHaveBeenCalled();
+  });
+
+  it('a throwing observation write leaves the adapter\'s answer unchanged', async () => {
+    recordObservedMock.mockImplementation(() => { throw new Error('boom'); });
+    reply = (body) => { sent.push(body.max_tokens as number); return sent.length === 1 ? rejection(32_000) : ok(); };
+    const msg = await ask(client({ observers: OBSERVERS }));
+    expect(msg.content[0]).toMatchObject({ type: 'text', text: 'OK' });
+    expect(sent).toHaveLength(2);
+  });
+});
+
+describe('a stale observed window is a floor until the endpoint serves more (#11393)', () => {
+  const WINDOW = 8_192;
+  const OBSERVED_AT = Date.parse('2026-11-11T09:00:00Z');
+  const STALE = { window: WINDOW, source: 'observed' as const, stale: true as const, observedAt: OBSERVED_AT };
+  const OBSERVERS = new Map([['qwen', { offeringId: 'off-primary', partnerId: 'p' }]]);
+  const ok = (promptTokens: number | null) => Response.json({
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }],
+    ...(promptTokens === null ? {} : { usage: { prompt_tokens: promptTokens, completion_tokens: 3 } }),
+  });
+  const sse = (promptTokens: number) => new Response(
+    'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"OK"}}]}\n\n'
+    + `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":${promptTokens},"completion_tokens":3}}\n\ndata: [DONE]\n\n`,
+    { headers: { 'content-type': 'text/event-stream' } },
+  );
+  let sent: number[];
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    sent = [];
+    __resetContextWindowsForTests();
+    clearDisprovenMock.mockReset();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => { warn.mockRestore(); });
+
+  function client(known: { window: number; source: 'override' | 'discovered' | 'observed'; stale?: true; observedAt?: number } = STALE, purpose: 'dispatch' | 'verification' = 'dispatch') {
+    const base = {
+      config: { source: 'gateway' as const, kind: 'openai_compatible' as const, partnerId: 'p', connectionId: 'c-floor', configVersion: 9, baseUrl: 'https://llm.example.com/v1' },
+      credential: { secret: 'sk-upstream-secret-1' }, wireModels: ['qwen'], aiSessionId: null,
+      knownWindows: new Map([['qwen', known]]),
+      ...(purpose === 'dispatch' ? { observers: OBSERVERS } : {}),
+    };
+    const g = purpose === 'verification'
+      ? gw.grant({ ...base, purpose: 'verification', orgId: null })
+      : gw.grant({ ...base, purpose: 'dispatch', orgId: 'o' });
+    return new Anthropic({ baseURL: g.baseUrl, apiKey: GATEWAY_PLACEHOLDER_KEY, maxRetries: 0 });
+  }
+  const ask = (c: Anthropic, content = 'hi') =>
+    c.messages.create({ model: 'qwen', max_tokens: 32_000, messages: [{ role: 'user', content }] }, { timeout: 30_000 });
+
+  it('a stale observed window still caps the first request (no refusal round trip)', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return ok(3_000); };
+    await ask(client());
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!).toBeLessThan(WINDOW);
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
+  it('a stale observed window never refuses before send: a prompt well over it reaches the endpoint', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return ok(20_000); };
+    const msg = await ask(client(), 'x'.repeat(60_000));
+    expect(sent).toHaveLength(1);
+    expect(msg.content[0]).toMatchObject({ type: 'text', text: 'OK' });
+  });
+
+  it('a served prompt larger than the stored window clears it, and the next request is not capped from it', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return ok(9_000); };
+    const c = client();
+    await ask(c);
+    expect(clearDisprovenMock).toHaveBeenCalledOnce();
+    expect(clearDisprovenMock).toHaveBeenCalledWith({
+      offeringId: 'off-primary', partnerId: 'p', configVersion: 9, disprovenWindow: WINDOW, observedAt: OBSERVED_AT, servedPromptTokens: 9_000,
+    });
+    sent = [];
+    await ask(c);
+    expect(sent).toEqual([32_000]);
+  });
+
+  it('a streamed answer carries the same evidence', async () => {
+    reply = (body) => { sent.push(body.max_tokens as number); return sse(9_000); };
+    await client().messages.stream({ model: 'qwen', max_tokens: 32_000, messages: [{ role: 'user', content: 'hi' }] }).finalMessage();
+    expect(clearDisprovenMock).toHaveBeenCalledWith(expect.objectContaining({ disprovenWindow: WINDOW, servedPromptTokens: 9_000 }));
+  });
+
+  it('a streamed answer without usage is no evidence', async () => {
+    reply = () => new Response(
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"OK"}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+    await client().messages.stream({ model: 'qwen', max_tokens: 32_000, messages: [{ role: 'user', content: 'x'.repeat(60_000) }] }).finalMessage();
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
+  it('an observed window without its observed_at clears nothing (the clear could not tell it from a newer row of the same value)', async () => {
+    reply = () => ok(9_000);
+    const { observedAt: _drop, ...noStamp } = STALE;
+    await ask(client(noStamp));
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
+  it('control: a served prompt within the window clears nothing', async () => {
+    reply = () => ok(8_000);
+    await ask(client());
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
+  it('no reported usage is no evidence: the gateway\'s own estimate never clears a window', async () => {
+    reply = () => ok(null);
+    await ask(client(), 'x'.repeat(60_000));
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
+  it('an override or a listed window is never cleared by a served prompt', async () => {
+    reply = () => ok(9_000);
+    await ask(client({ window: WINDOW, source: 'override' }));
+    await ask(client({ window: WINDOW, source: 'discovered' }));
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
+  it('a verification grant (no observers) clears nothing', async () => {
+    reply = () => ok(9_000);
+    await ask(client(STALE, 'verification'));
+    expect(clearDisprovenMock).not.toHaveBeenCalled();
+  });
+
+  it('a throwing clear leaves the answer unchanged', async () => {
+    clearDisprovenMock.mockImplementation(() => { throw new Error('boom'); });
+    reply = () => ok(9_000);
+    const msg = await ask(client());
+    expect(msg.content[0]).toMatchObject({ type: 'text', text: 'OK' });
   });
 });

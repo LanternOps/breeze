@@ -12,6 +12,10 @@ export const RUN_ISSUE_KINDS = [
   'skipped_no_org',
   'skipped_unsupported',
   'failed',
+  // A list row the module could not read, of a ticket already imported: the
+  // ticket stays imported, and the next run reads the row again (#11296
+  // follow-up). The code is the module's failure code.
+  'row_unreadable',
   // Writer decisions.
   'status_kept',
   'attachments_skipped',
@@ -61,7 +65,11 @@ export type RunCounters = {
   /** Distinct source owners matched to no user. */
   ownersUnmatched: number;
   requestersWithoutContact: number;
-  /** Contacts the import created (W4b; 0 until then). */
+  /**
+   * Contacts the import created for requesters (W4b, §5.13). Also in the
+   * partner-level `ticket_import.run_finished` audit row, which carries the
+   * counters. The contacts themselves are listed from their links, not here.
+   */
   contactsCreated: number;
   commentsChangedInSource: number;
   commentsMissingInSource: number;
@@ -69,6 +77,8 @@ export type RunCounters = {
   orgsChangedInSource: number;
   /** Custom attributes with a value, by name (not imported in v1). */
   customAttributes: Record<string, number>;
+  /** A module's own counts, by name (`module_count` notes). */
+  moduleCounts: Record<string, number>;
   issuesWritten: number;
   /** Issues past TICKET_IMPORT_MAX_ISSUES_PER_RUN: counted here, not written. */
   issuesDropped: number;
@@ -84,8 +94,14 @@ export type RunCounters = {
     attachmentsSkipped: number;
     /** Tickets that would fail validation. */
     invalid: number;
-    /** Contacts an import would create, per org (W4b; empty until then). */
+    /** Contacts an import would create, per org (W4b): once per (org, email) across the run. */
     contactsToCreate: Record<string, number>;
+    /**
+     * Predictions counted past the run's dedupe bound (PREDICTED_CONTACT_KEYS_MAX):
+     * when non-zero, `contactsToCreate` is a ceiling, as such an address may be
+     * counted more than once.
+     */
+    contactsToCreateOverCap: number;
   };
 };
 
@@ -111,6 +127,7 @@ export function emptyCounters(): RunCounters {
     requestersChangedInSource: 0,
     orgsChangedInSource: 0,
     customAttributes: {},
+    moduleCounts: {},
     issuesWritten: 0,
     issuesDropped: 0,
     predicted: {
@@ -122,6 +139,7 @@ export function emptyCounters(): RunCounters {
       attachmentsSkipped: 0,
       invalid: 0,
       contactsToCreate: {},
+      contactsToCreateOverCap: 0,
     },
   };
 }
@@ -146,7 +164,7 @@ export function normalizeCounters(raw: unknown): RunCounters {
   const out = base as unknown as Record<string, unknown>;
   for (const [key, value] of Object.entries(base)) {
     const stored = raw[key];
-    if (key === 'customAttributes') out[key] = countMap(stored);
+    if (key === 'customAttributes' || key === 'moduleCounts') out[key] = countMap(stored);
     else if (key === 'predicted') {
       const p = isRecord(stored) ? stored : {};
       out[key] = {

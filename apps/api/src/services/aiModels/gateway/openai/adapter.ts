@@ -9,9 +9,14 @@ import {
   contextWindowExceededMessage,
   parseContextLimitRejection,
   planAfterRejection,
+  noteServedPrompt,
   planRequest,
   rememberContextLimit,
+  type ContextWindowKey,
+  type ReportedContextLimit,
 } from './contextWindow';
+import { clearDisprovenContextWindow, recordObservedContextWindow } from '../../contextWindowObservation';
+import type { OaiUsage } from './types';
 import { genMessageId, translateChatResponse } from './translateResponse';
 import { translateChatStream } from './translateStream';
 import { translateMessagesRequest } from './translateRequest';
@@ -104,14 +109,66 @@ function contextWindowRefusal(grant: GatewayGrantRecord, call: UpstreamCallConte
   return { status: 400, headers: { 'content-type': 'application/json' }, body: Buffer.from(gatewayErrorBody('invalid_request_error', message)) };
 }
 
+/**
+ * #11396: persist a stated window under the offering of the wire model that
+ * was SENT (a refusal fallback's rejection never lands on the primary). Only
+ * dispatch grants carry observers. Best-effort: never throws into the turn.
+ */
+function observeContextWindow(grant: GatewayGrantRecord, model: string, contextWindow: number): void {
+  const observer = grant.observers.get(model);
+  if (!observer) return;
+  try {
+    recordObservedContextWindow({
+      offeringId: observer.offeringId, partnerId: observer.partnerId, configVersion: grant.config.configVersion, contextWindow,
+    });
+  } catch (error) {
+    console.warn(`[modelGateway] could not record an observed context window (grant ${grant.id}): ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+}
+
+/**
+ * #11393: the endpoint served a prompt it counted itself. A known observed
+ * window below that is wrong; stop capping from it and clear the persisted
+ * one. Only the endpoint's reported `prompt_tokens` counts, never the
+ * gateway's estimate. Best-effort: never throws into the turn.
+ */
+function observeServedPrompt(grant: GatewayGrantRecord, model: string, windowKey: ContextWindowKey, usage: OaiUsage | null | undefined): void {
+  try {
+    const promptTokens = usage?.prompt_tokens;
+    if (typeof promptTokens !== 'number') return;
+    const known = grant.knownWindows.get(model) ?? null;
+    if (!noteServedPrompt(windowKey, promptTokens, known) || !known) return;
+    const observer = grant.observers.get(model);
+    // Without its observed_at the clear could not tell the row it read from a
+    // newer one stating the same value; the in-process disproof still applies.
+    if (!observer || known.observedAt === undefined) return;
+    clearDisprovenContextWindow({
+      offeringId: observer.offeringId, partnerId: observer.partnerId, configVersion: grant.config.configVersion,
+      disprovenWindow: known.window, observedAt: known.observedAt, servedPromptTokens: promptTokens,
+    });
+  } catch (error) {
+    console.warn(`[modelGateway] could not note a served prompt (grant ${grant.id}): ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+}
+
 async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSignal): Promise<GatewayResponse> {
   const parsed = parseJson(body) as { model?: unknown };
   const model = assertBoundModel(grant, parsed.model);
   if (grant.config.kind !== 'openai_compatible') throw new Error('openai adapter on a non-openai grant');
-  const translated = translateMessagesRequest(parsed, model);
-  const call: UpstreamCallContext = { model, stream: translated.stream, startedAt: Date.now(), promptTokensEstimate: estimateInputTokens(parsed) };
+  const translated = translateMessagesRequest(parsed, model, { compactSchemas: grant.compactSchemas });
+  // #11395: a compacted request is estimated from what is actually sent (its
+  // advertised schemas shrank); the `full` exposure keeps today's estimate of
+  // the SDK payload, so its window planning is unchanged.
+  const promptTokensEstimate = estimateInputTokens(grant.compactSchemas ? translated.body : parsed);
+  const call: UpstreamCallContext = { model, stream: translated.stream, startedAt: Date.now(), promptTokensEstimate };
   const windowKey = { connectionId: grant.config.connectionId, configVersion: grant.config.configVersion, model };
-  const plan = planRequest(windowKey, translated.maxTokens, call.promptTokensEstimate);
+  // #11396: the offering's known window (override / discovered / persisted
+  // observation) seeds the plan, so a fresh process caps up front.
+  const plan = planRequest(windowKey, translated.maxTokens, call.promptTokensEstimate, grant.knownWindows.get(model) ?? null);
+  const learned = (reported: ReportedContextLimit): void => {
+    rememberContextLimit(windowKey, reported, call.promptTokensEstimate);
+    observeContextWindow(grant, model, reported.contextWindow);
+  };
   if (plan.kind === 'too_large') return contextWindowRefusal(grant, call, plan.contextWindow, plan.promptTokens);
   const send = (maxTokens: number): Promise<Response> => forwardUpstream(grant, {
     url: joinByoUrl(grant.config.baseUrl, 'chat/completions'),
@@ -125,7 +182,7 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     const detail = await readUpstreamErrorText(res, grant, GATEWAY_ERROR_TEXT_MAX);
     const reported = parseContextLimitRejection(res.status, detail, plan.maxTokens);
     if (!reported) return upstreamError(res, grant, call, detail);
-    rememberContextLimit(windowKey, reported, call.promptTokensEstimate);
+    learned(reported);
     const next = planAfterRejection(reported, plan.maxTokens, call.promptTokensEstimate);
     if (next.kind === 'too_large') return contextWindowRefusal(grant, call, next.contextWindow, next.promptTokens);
     if (next.kind === 'surface') return upstreamError(res, grant, call, detail);
@@ -136,7 +193,7 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
       const retryDetail = await readUpstreamErrorText(res, grant, GATEWAY_ERROR_TEXT_MAX);
       const again = parseContextLimitRejection(res.status, retryDetail, next.maxTokens);
       if (!again) return upstreamError(res, grant, call, retryDetail);
-      rememberContextLimit(windowKey, again, call.promptTokensEstimate);
+      learned(again);
       return contextWindowRefusal(grant, call, again.contextWindow, again.promptTokens ?? call.promptTokensEstimate);
     }
   }
@@ -145,7 +202,11 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     try { payload = await res.json(); } catch {
       throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned malformed JSON.');
     }
-    return json(200, translateChatResponse(payload, { model, tools: translated.tools, estimatedInputTokens: call.promptTokensEstimate }));
+    const answer = translateChatResponse(payload, {
+      model, tools: translated.tools, estimatedInputTokens: call.promptTokensEstimate, aiSessionId: grant.aiSessionId,
+    });
+    observeServedPrompt(grant, model, windowKey, (payload as { usage?: OaiUsage | null } | null)?.usage);
+    return json(200, answer);
   }
   if (!res.body) throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned an empty stream.');
   if (!isEventStream(res.headers.get('content-type'))) {
@@ -161,8 +222,9 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
     body: translateChatStream(res.body as unknown as AsyncIterable<Uint8Array>, {
       model, tools: translated.tools, messageId: genMessageId(), estimatedInputTokens: call.promptTokensEstimate,
-      grantId: grant.id, connectionId: grant.config.connectionId, secrets: [grant.credential.secret],
+      grantId: grant.id, connectionId: grant.config.connectionId, aiSessionId: grant.aiSessionId, secrets: [grant.credential.secret],
       onFailure: (message) => noteGatewayFailure(grant.aiSessionId, message),
+      onUsage: (usage) => observeServedPrompt(grant, model, windowKey, usage),
     }),
   };
 }

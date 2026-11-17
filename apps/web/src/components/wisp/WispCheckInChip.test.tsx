@@ -15,6 +15,7 @@ const at = (h: number, m: number, dayOffset = 0) => {
 };
 const checkIn = (id: string, status: WispCheckIn['status'], due: Date): WispCheckIn => ({
   id, threadId: 'th-1', status, dueAt: due.toISOString(), instruction: `do ${id}`, subject: null, firedAt: null, createdAt: new Date().toISOString(),
+  trigger: null, fireReason: null, cancelReason: null, mode: 'notify', runId: null, label: null,
 });
 const localTime = (d: Date) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(d);
 
@@ -47,6 +48,42 @@ describe('WispCheckInChip', () => {
     expect(buttons[1].getAttribute('aria-label')).toBe('Cancel check-in');
     fireEvent.click(buttons[1]);
     expect(onCancel).toHaveBeenCalledWith('c2');
+  });
+
+  it('#11675: an event check-in names what it waits for and shows dueAt as the deadline it gives up at', () => {
+    const due = at(23, 30);
+    const event = (id: string, kind: NonNullable<WispCheckIn['trigger']>['kind']): WispCheckIn => ({
+      ...checkIn(id, 'scheduled', due),
+      instruction: 'Tell the technician right away. Read-only: confirm status.',
+      trigger: { kind, subjectId: '00000000-0000-4000-8000-000000000b01' },
+    });
+    render(
+      <WispCheckInChip
+        checkIns={[event('e1', 'device_online'), event('e2', 'script_finished'), event('e3', 'command_finished'), event('e4', 'run_settled')]}
+        onCancel={vi.fn()}
+      />,
+    );
+    const rows = screen.getAllByTestId('wisp-check-in-chip');
+    expect(rows.map((r) => r.textContent)).toEqual([
+      `Waiting for the device to come online · gives up ${localTime(due)}`,
+      `Waiting for the script to finish · gives up ${localTime(due)}`,
+      `Waiting for the command to finish · gives up ${localTime(due)}`,
+      `Waiting for the run to finish · gives up ${localTime(due)}`,
+    ]);
+    for (const r of rows) expect(r.textContent).not.toContain('check back at');
+  });
+
+  it('#11675: the tooltip is the label written for the technician, never the instruction Wisp wrote for itself', () => {
+    const due = at(23, 30);
+    render(
+      <WispCheckInChip
+        checkIns={[{ ...checkIn('c1', 'scheduled', due), label: 'Re-check FS01 disk space' }, checkIn('c2', 'scheduled', due)]}
+        onCancel={vi.fn()}
+      />,
+    );
+    const [labelled, bare] = screen.getAllByTestId('wisp-check-in-chip');
+    expect(labelled.getAttribute('title')).toBe('Re-check FS01 disk space');
+    expect(bare.getAttribute('title')).toBeNull();
   });
 
   it('renders nothing for none', () => {

@@ -123,7 +123,15 @@
     "retentionKeepDays": "Keep for (days)",
     "retentionKeepForever": "Keep forever",
     "retentionBreezeDefault": "Breeze default: {{days}} days",
-    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run."
+    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run.",
+    "transcriptLabel": "Keep technician AI conversations for (days)",
+    "transcriptHelp": "Once retention enforcement is on, older conversations lose their messages, titles and tool details in the nightly run; the session record keeps its cost, model and turn count. Flagged conversations are kept. Blank inherits.",
+    "transcriptAuditNote": "Audit log entries about a technician session, including tool inputs, follow the audit retention window, not this one.",
+    "transcriptClientNote": "Client AI (AI for Office) conversations have their own window.",
+    "transcriptClientLink": "Client AI retention settings",
+    "transcriptAboveCeiling": "Your partner keeps technician AI conversations for at most {{days}} days.",
+    "partnerTranscriptHelp": "Choose how long technician AI conversations are kept, or keep them forever. Organizations can only shorten this. Once retention enforcement is on, older conversations lose their messages, titles and tool details in the nightly run.",
+    "invalidDays": "Enter a whole number of days."
   },
   "partnerServicePrincipals": {
     "title": "Service principals",
@@ -284,7 +292,7 @@
     "alertThresholds": "Warn at (% of budget)",
     "alertThresholdsHelp": "Partner admins with billing access get an in-app alert at each rung and an email for monthly and cap-reached alerts. Leave empty to inherit 50, 80, 95.",
     "notSet": "Not set, orgs configure individually",
-    "description": "Values set here apply to every child organization and lock the matching organization field. Leave a field empty to let organizations configure it.",
+    "description": "A value you set here applies to every organization and locks it. A field you leave empty is configured per organization. Dollar amounts are stored in cents internally.",
     "modes": {
       "perStep": "Per Step",
       "actionPlan": "Action Plan",
@@ -587,12 +595,79 @@
       "verify": "Verify",
       "verifyQueued": "Model check queued",
       "verifyFailed": "Couldn't queue the model check.",
-      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens).",
+      "verifyGatewayHint": "Runs a tool-calling test against your endpoint. See the cost note above.",
       "remove": "Remove model",
       "removeTitle": "Remove this model?",
       "removeMessage": "“{{model}}” will be deleted from this connection. Past usage and cost history is kept. You can add it again later.",
       "removed": "Model removed",
-      "removeFailed": "Couldn’t remove the model. Try again."
+      "removeFailed": "Couldn’t remove the model. Try again.",
+      "tools": {
+        "title": "Tools and context",
+        "partnerOnly": "Set by the partner on the model. Organizations choose models; they cannot override this.",
+        "profileLabel": "Tool profile",
+        "profile": {
+          "auto": "Auto (fit the context window)",
+          "full": "Full (every tool)",
+          "standard": "Standard",
+          "minimal": "Minimal (read-only)",
+          "custom": "Custom"
+        },
+        "profileHint": {
+          "auto": "Breeze picks the largest profile that fits the model's known context window. While the window is unknown, every tool stays available.",
+          "full": "Every tool each feature offers today.",
+          "standard": "Everyday helpdesk tools and a shorter prompt (about 40 tools in chat, fewer in the helper, script builder and Office).",
+          "minimal": "About a dozen read-only tools and a short prompt, for small local models.",
+          "custom": "Only the tool areas and tools you list, on every feature that uses this model."
+        },
+        "appliesWhen": "When a change alters what a feature uses, open conversations on this model restart their AI session on the next message and ask the user to send it again.",
+        "domainsLabel": "Tool areas",
+        "domainCore": "Core context tools",
+        "toolsLabel": "Individual tools",
+        "toolsHint": "Tool names, separated by commas or new lines. Breeze checks every name when you save.",
+        "droppedTools": "These tools no longer exist and are ignored: {{tools}}.",
+        "underpowered": "This change would take away tools a feature using this model needs:",
+        "underpoweredSurface": "{{surface}}: {{tools}}",
+        "capacityUnknown": "Capacity unknown: nothing is constrained. Auto keeps every tool until the endpoint lists or reports a context window, or you set one below.",
+        "windowNotLearned": "Breeze learns context windows only on your own OpenAI-compatible endpoints, so Auto keeps every tool on this model.",
+        "windowKnown": "Context window: {{tokens}} tokens ({{source}}).",
+        "windowSource": {
+          "override": "set here",
+          "discovered": "listed by the endpoint"
+        },
+        "windowObserved": "Context window: {{tokens}} tokens (reported by the endpoint {{age}}).",
+        "observedStale": "The endpoint last reported {{tokens}} tokens {{age}}. A later endpoint setup or the model listing has replaced that report, so it no longer limits anything.",
+        "overrideLabel": "Context window override (tokens)",
+        "overrideHint": "For models on your own OpenAI-compatible endpoint only. Leave blank to use what the endpoint lists or reports. New conversations use a changed value; open ones keep their current limit unless the profile they use changes.",
+        "surfacesTitle": "What each feature uses now",
+        "reason": {
+          "explicit": "chosen here",
+          "auto_window": "auto, from the context window",
+          "auto_unknown_window": "auto, window unknown",
+          "auto_unmeasured": "auto; this feature is not narrowed yet"
+        },
+        "missingRequired": "Refuses this model: it would lack {{tools}}.",
+        "tooSmall": "Window too small",
+        "tooSmallHint": "No profile fits this window, so this feature refuses the model.",
+        "fitSuggestion": "At {{tokens}} tokens, Auto would pick {{profile}} here; this profile may not fit.",
+        "readiness": {
+          "tokens": "{{tokens}} prompt tokens",
+          "passed": "Tool round trip passed.",
+          "failed": "Tool round trip failed, so this feature refuses the model. {{summary}}",
+          "inconclusive": "Inconclusive: the endpoint failed, not the model. Nothing is refused. {{summary}}",
+          "stale": "Out of date: the endpoint or tool profile changed since. Re-verify to check again.",
+          "absent": "No tool round trip yet. Verify runs one for each feature this model is assigned to.",
+          "absentVerified": "Verified (basic). Re-verify to check a real tool round trip on {{surface}}.",
+          "officeNotChecked": "Not checked: Verify does not run an Office round trip."
+        },
+        "verifyCost": "Verify sends real requests to your endpoint, billed by your provider: a basic check, then one tool round trip for each feature this model is assigned to. A round trip can take up to 4 model turns, each resending the whole prompt: on chat with the Full profile one request is about 128,000 tokens, so one chat check can approach 500,000.",
+        "invalidCustom": "Choose at least one tool area or tool for a custom profile.",
+        "invalidWindow": "Enter a whole number of tokens from {{min}} to {{max}}, or leave it blank.",
+        "ageMinutes": "{{n}} min ago",
+        "ageHours": "{{n}} h ago",
+        "ageDays": "{{n}} d ago",
+        "missingRequiredTroubleshooting": "Device troubleshooting runs refuse this model: they would lack {{tools}}. Other agent runs are not affected.",
+        "underpoweredTooSmall": "{{surface}}: no tool profile fits this context window"
+      }
     },
     "defaults": {
       "title": "Defaults by feature",
@@ -703,12 +778,14 @@
       "groupBy": {
         "model": "Model",
         "surface": "Feature",
-        "prompt_profile": "Model family"
+        "prompt_profile": "Model family",
+        "tool_profile": "Tool profile"
       },
       "columns": {
         "conversations": "Conversations",
         "costPerConversation": "Cost / conversation",
         "refusalRate": "Refusal rate",
+        "refusedToolBatches": "Unusable tool calls",
         "failoverRate": "Failover rate",
         "flagRate": "Flag rate",
         "leftRate": "Left for another model",
@@ -719,6 +796,7 @@
         "conversations": "Chat sessions and agent runs whose last model call in this period was on this row.",
         "costPerConversation": "Average spend on this row for each conversation that used it.",
         "refusalRate": "Model calls the model declined, per call.",
+        "refusedToolBatches": "Model calls in a turn where the model asked to run a tool in a form Breeze could not use (a tool it was not offered, or inputs that did not match), per call. Nothing was run.",
         "failoverRate": "Calls that moved to a backup model because this one failed or was unavailable.",
         "flagRate": "Sessions a person flagged. Automatic flags after a tool error are counted separately.",
         "leftRate": "Conversations that switched to another model, or continued in a new session on another model.",
@@ -730,6 +808,12 @@
         "claude-standard": "Standard Claude",
         "claude-small": "Small Claude",
         "generic": "Other models"
+      },
+      "toolProfiles": {
+        "full": "Full",
+        "standard": "Standard",
+        "minimal": "Minimal",
+        "custom": "Custom"
       },
       "unrecorded": "Not recorded",
       "unattributed": "Not attributed to a model",
@@ -743,6 +827,8 @@
       "leftBreakdown": "{{switched}} switched, {{continued}} continued",
       "resolvedCount_one": "{{count}} resolved",
       "resolvedCount_other": "{{count}} resolved",
+      "refusedToolBatchCount_one": "{{count}} refused",
+      "refusedToolBatchCount_other": "{{count}} refused",
       "loading": "Loading quality…",
       "empty": "No model calls in this period.",
       "error": "Couldn't load the quality view.",
@@ -924,6 +1010,7 @@
     "noLogo": "No logo",
     "uploadImage": "Upload image",
     "imageHelp": "PNG, JPEG, or WebP, up to 400 KB after encoding; large images are scaled down to 800 px.",
+    "logoLowRes": "This logo is {{width}} × {{height}} px. Reports, quotes and invoices print it up to about 2.5 in (64 mm) wide, so it will look soft in print. Upload a version at least 600 px on its long side.",
     "invalidSavedLogo": "Saved logo data is invalid. Remove it or upload a new one.",
     "pasteUrl": "Or paste an image URL",
     "customCss": "Custom CSS",
@@ -1129,6 +1216,10 @@
       "knownGuests": {
         "label": "Known guests",
         "description": "Approved visitor and technician devices by MAC address"
+      },
+      "customerPortal": {
+        "label": "Customer portal",
+        "description": "Default sign-in and registration rules for your customers' portals, and access requests waiting for a decision"
       }
     },
     "saved": "Partner settings saved",
@@ -1198,6 +1289,7 @@
       "badge": {
         "locks": "Locks orgs",
         "locksConditional": "Locks orgs when enabled",
+        "locksWhenSet": "Locks orgs when set",
         "overridable": "Org can override",
         "overridableCap": "Org can override, up to {{limit}}",
         "partnerOnly": "Partner-wide"
@@ -1205,6 +1297,7 @@
       "badgeHelp": {
         "locks": "While this is set, every organization uses your value. An organization's own value is ignored.",
         "locksConditional": "While enabled, every organization uses your value instead of its own. While disabled, organizations use their own.",
+        "locksWhenSet": "Once you set a value, every organization uses it and its own value is ignored. While empty, each organization configures its own.",
         "overridable": "Your value is the default. An organization that sets its own value uses that instead.",
         "overridableCap": "Your value is the default. An organization can set its own value, up to {{limit}}.",
         "partnerOnly": "Organizations have no setting of their own. Your value applies to all of them."
@@ -1874,7 +1967,8 @@
     },
     "issues": {
       "range": "Enter a whole number of days between 1 and 3650."
-    }
+    },
+    "aiStubsHelp": "AI conversations emptied by transcript retention keep a stripped session record (cost, model, turn count) until their last activity is older than this window. An organization with no saved audit retention policy keeps those records."
   },
   "orgBrandingEditor": {
     "title": "Branding",
@@ -2322,7 +2416,8 @@
     "actions": {
       "resend": "Resend",
       "reactivate": "Reactivate",
-      "sendInvite": "Send invite"
+      "sendInvite": "Send invite",
+      "grantBrowserAccess": "Give browser access"
     },
     "fields": {
       "nameOptional": "Name (optional)",
@@ -2344,13 +2439,19 @@
       "inviteResent": "Invite resent",
       "reactivated": "User reactivated",
       "disabled": "User disabled",
-      "removed": "User removed"
+      "removed": "User removed",
+      "browserAccessGranted": "Browser access granted"
     },
     "errors": {
       "load": "Portal users failed to load.",
       "sendInvite": "Failed to send invite",
       "action": "Action failed",
       "invalidEmail": "Enter a valid email address"
+    },
+    "badges": {
+      "noBrowserAccess": "No browser access",
+      "microsoft": "Microsoft sign-in",
+      "google": "Google sign-in"
     }
   },
   "orgRemoteAccessSettings": {
@@ -3248,7 +3349,8 @@
           "turnCount": "Turns",
           "summary": "Summary",
           "computeCost": "Compute",
-          "computeEstimated": "(estimated)"
+          "computeEstimated": "(estimated)",
+          "scope": "Scope"
         },
         "flags": {
           "budgetExceeded": "Budget exceeded",
@@ -3334,6 +3436,24 @@
           "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
           "unavailable": "No active agent policy for this run's organization.",
           "loading": "Loading budget…"
+        },
+        "scope": {
+          "org_one": "Whole organization ({{count}} device as of launch)",
+          "org_other": "Whole organization ({{count}} devices as of launch)",
+          "site_one": "Site {{name}} ({{count}} device as of launch)",
+          "site_other": "Site {{name}} ({{count}} devices as of launch)",
+          "siteUnnamed_one": "One site ({{count}} device as of launch)",
+          "siteUnnamed_other": "One site ({{count}} devices as of launch)",
+          "devices_one": "{{count}} selected device",
+          "devices_other": "{{count}} selected devices"
+        },
+        "chain": {
+          "title": "This investigation",
+          "description": "Each step continued from an earlier one and could use the files earlier steps produced.",
+          "step": "Step {{step}}",
+          "current": "This run",
+          "open": "Open run",
+          "noGoal": "No goal recorded"
         }
       },
       "triage": {
@@ -5171,7 +5291,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
     "authenticatorCode": "Authenticator code",
-    "confirmYourPassword": "Confirm your password"
+    "confirmYourPassword": "Confirm your password",
+    "switchToAuthenticatorCode": "Use authenticator app instead",
+    "usePasskeyInstead": "Use your passkey instead"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Canned responses",
@@ -5514,7 +5636,21 @@
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
     "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app.",
     "ssoReauthManageHint": "This account signs in through an identity provider and has no password. Verify with your provider to confirm this change.",
-    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change."
+    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change.",
+    "notSetUp": "Not set up",
+    "notAvailable": "Not available",
+    "backup": "Backup",
+    "addBackup": "Add backup",
+    "totpBackupAddHint": "Add an authenticator app as a backup, so you can still sign in if your passkey isn't available.",
+    "totpPolicyDisallowed": "Your organization's policy doesn't allow authenticator apps.",
+    "totpBackupActiveHint": "Use a code from your authenticator app if your passkey isn't available.",
+    "totpBackupVerifyNote": "When you press Verify, you'll confirm with your passkey.",
+    "confirmBackupButton": "Verify and add backup",
+    "removeTotpTitle": "Remove authenticator app",
+    "removeTotpBackupDescription": "You'll keep signing in with your passkey. Your recovery codes stay the same.",
+    "removeTotpPrimaryDescription": "Your passkey becomes your primary sign-in method. Your recovery codes stay the same.",
+    "removeTotpConfirmWithPasskey": "You'll confirm with your passkey.",
+    "removing": "Removing..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -5639,7 +5775,13 @@
     "ssoReauthManageProofExpired": "Your identity provider verification has expired. Verify again to confirm this change.",
     "verifyWithIdpToDeletePasskey": "This account has no password. Verify with your identity provider before removing a passkey.",
     "deletePasskeySsoReauth": "Verify identity to remove a passkey",
-    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove."
+    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove.",
+    "authenticatorBackupAdded": "Authenticator app added as a backup. Your recovery codes haven't changed",
+    "authenticatorAppRemoved": "Authenticator app removed. You'll sign in with your passkey",
+    "authenticatorCodeRejectedWaitForNext": "That code wasn't accepted. Each code works only once, so if you just used it, wait for the next code from your authenticator app.",
+    "passkeyConfirmationCanceled": "Passkey confirmation was canceled or timed out.",
+    "passkeyProofRejected": "Your passkey couldn't be verified. Please try again.",
+    "failedToRemoveAuthenticatorApp": "Failed to remove the authenticator app"
   },
   "roleManager": {
     "roles": "Roles",
@@ -6390,6 +6532,8 @@
       "generalDescription": "Profile and defaults",
       "contacts": "Contacts",
       "contactsDescription": "People to reach at this customer, by site or organization-wide",
+      "domains": "Domains",
+      "domainsDescription": "Customer email domains and proof of ownership",
       "contracts": "Contracts",
       "contractsDescription": "Recurring agreements",
       "billing": "Billing",
@@ -6904,7 +7048,8 @@
         "pam_open_actuation": "The organization being merged away has privileged-access (PAM) sessions that have not finished cleanup. Wait for them to close, then try the merge again.",
         "pam_evidence": "The organization being merged away has privileged-access (PAM) history, and moving PAM history between organizations is not enabled on this deployment. Merge in the opposite direction, or do not merge these organizations.",
         "payment_in_flight": "A payment for the organization being merged away is still in flight. Wait for it to settle, then try the merge again.",
-        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth."
+        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth.",
+        "entra_tenant_conflict": "The organization being merged away has a proven Microsoft tenant, and the surviving organization is also linked to a Microsoft tenant. Remove one of the tenant links, then try the merge again."
       }
     },
     "archive": {
@@ -7079,28 +7224,166 @@
   },
   "customerDomainsCard": {
     "title": "Customer email domains",
-    "description": "Route verified customer email domains to the right organization.",
+    "managedPerOrg": "Domains are managed per organization. Open an organization to add, verify, move or remove its domains.",
+    "emptySummary": "No customer email domains yet. Add them under each organization's Domains tab.",
     "errors": {
-      "load": "Customer domain mappings failed to load.",
-      "save": "Could not save customer domain mapping. Retry."
-    },
-    "toasts": {
-      "added": "Customer domain mapping added",
-      "saved": "Customer domain mapping saved",
-      "deleted": "Customer domain mapping deleted"
+      "load": "Customer domain mappings failed to load."
     },
     "columns": {
       "domain": "Domain",
+      "status": "Status"
+    },
+    "actions": {
+      "manage": "Manage"
+    }
+  },
+  "orgDomains": {
+    "title": "Domains",
+    "description": "Email domains that belong to this customer. A declared domain routes inbound email to this organization. A verified domain is proof that the customer owns it, which features such as portal self-registration rely on.",
+    "forbidden": "Managing customer domains requires an admin role with access to every organization.",
+    "partnerOnly": "Customer domains are managed by your service provider.",
+    "checkingAccess": "Checking access…",
+    "empty": "No domains yet. Add the customer's email domain below.",
+    "neverChecked": "Never",
+    "notCurrent": "The evidence behind this verification no longer checks out. The daily re-check will clear it unless it passes again.",
+    "inactiveSuspended": "Inactive: not used for mail routing or sign-in until it is turned back on.",
+    "stale": "The list may be out of date: it could not be reloaded after your change.",
+    "columns": {
+      "domain": "Domain",
+      "status": "Status",
+      "lastChecked": "Last checked",
       "autoCreateContact": "Auto-create contact"
     },
-    "empty": "No customer domain mappings yet.",
-    "placeholders": {
-      "domain": "customer.example.com",
-      "organization": "Select organization..."
+    "aria": {
+      "active": "{{domain}} is active",
+      "autoCreateContact": "Auto-create contacts for {{domain}}",
+      "verify": "Verification for {{domain}}",
+      "move": "Move {{domain}}",
+      "delete": "Delete {{domain}}"
     },
-    "new": "New",
+    "states": {
+      "declared": "Declared — mail routing only",
+      "pending_dns": "Pending DNS",
+      "verified": "Verified · {{method}}"
+    },
+    "methods": {
+      "dns_txt": "DNS TXT record",
+      "entra_tenant": "Microsoft (the organization's proven Entra tenant)",
+      "google_directory": "Google Workspace directory"
+    },
+    "methodsShort": {
+      "dns_txt": "DNS",
+      "entra_tenant": "Microsoft",
+      "google_directory": "Google"
+    },
+    "methodUnavailable": {
+      "entra_tenant": {
+        "tenant_not_proven": "The organization's Microsoft tenant is not proven yet.",
+        "connection_missing": "Needs a Microsoft 365 connection for the proven tenant. Connect Microsoft 365 for this organization, or use DNS.",
+        "not_enabled": "Microsoft verification is not available on this server."
+      },
+      "google_directory": {
+        "connection_missing": "Needs a Google Workspace connection for this organization.",
+        "not_enabled": "Google Workspace is not enabled on this server."
+      }
+    },
+    "cleared": {
+      "record_missing": "Verification lost: the DNS record was not found.",
+      "not_in_directory": "Verification lost: the domain is no longer in the directory.",
+      "tenant_not_proven": "Verification lost: the Microsoft tenant is no longer proven.",
+      "connection_missing": "Verification lost: the directory connection was removed.",
+      "stale": "Verification lost: it could not be re-checked for 7 days.",
+      "repointed": "Verification lost: the domain was moved to another organization.",
+      "msp_removed": "Verification removed.",
+      "displaced": "Verification lost: the domain was verified by another organization."
+    },
+    "checkReasons": {
+      "record_missing": "The DNS record was not found. DNS changes can take a while to appear; check again later.",
+      "not_in_directory": "The domain is not a verified domain in the directory.",
+      "tenant_not_proven": "The organization's Microsoft tenant is not proven.",
+      "connection_missing": "The organization has no matching directory connection.",
+      "dns_error": "DNS could not be queried. Try again later.",
+      "timeout": "The check timed out. Try again later.",
+      "graph_unavailable": "Microsoft 365 could not be reached. Try again later.",
+      "graph_tenant_mismatch": "Microsoft 365 answered for a different tenant than the proven one.",
+      "google_scope_missing": "The Google Workspace delegation grant is missing the scope {{scope}}. Add it in the Google Admin console, then check again.",
+      "google_access_denied": "Google Workspace refused access. Check the admin email and the delegation grant.",
+      "google_unavailable": "Google Workspace could not be reached. Try again later.",
+      "unknown": "The check did not pass."
+    },
+    "verifyErrors": {
+      "CUSTOMER_DOMAIN_NOT_FOUND": "This domain is no longer in this organization. Reload the page.",
+      "DOMAIN_VERIFIED_ELSEWHERE": "This domain is verified for another organization. Its owner must remove the other verification (DNS record or directory connection) first.",
+      "DOMAIN_VERIFICATION_CONFLICT_RETRY": "The domain's verification changed while this check ran. Check again.",
+      "DOMAIN_INACTIVE": "Turn the domain on before verifying it.",
+      "DOMAIN_DNS_NOT_STARTED": "Get the DNS record first.",
+      "DOMAIN_ALREADY_VERIFIED": "This domain is verified by another method. Remove that verification first."
+    },
+    "verify": {
+      "methodLegend": "Verification method",
+      "panelTitle": "Verify {{domain}}",
+      "methodLocked": "To switch methods, remove the current verification first.",
+      "openPortalTab": "Prove the tenant under Portal › Sign-in & registration.",
+      "dnsStartHint": "Get a TXT record for the customer's DNS admin to publish.",
+      "startDns": "Get DNS record",
+      "starting": "Getting record…",
+      "dnsInstructions": "Ask the customer's DNS admin to add this TXT record, then check it.",
+      "recordName": "Record name (host)",
+      "recordValue": "Record value",
+      "copy": "Copy",
+      "copied": "Copied",
+      "googleScopeHint": "The organization's Google Workspace delegation grant must include {{scope}}.",
+      "inactive": "This domain is turned off. Turn it on to verify it.",
+      "verify": "Verify",
+      "checkNow": "Check now",
+      "checking": "Checking…",
+      "resultFailed": "Not verified. {{reason}}",
+      "resultUnavailable": "The check could not finish. {{reason}}",
+      "removeVerification": "Remove verification",
+      "removeTitle": "Remove verification for {{domain}}?",
+      "removeMessage": "The domain stays on this organization for mail routing. Features that rely on verified domains, such as self-registration, stop trusting it until it is verified again."
+    },
     "actions": {
-      "addDomain": "Add domain"
+      "verify": "Verify",
+      "manageVerification": "Verification",
+      "move": "Move"
+    },
+    "add": {
+      "label": "Add a domain",
+      "placeholder": "contoso.com",
+      "submit": "Add domain"
+    },
+    "move": {
+      "title": "Move {{domain}} to another organization?",
+      "message": "Inbound email from this domain will route to the organization you choose.",
+      "messageVerified": "The domain will lose its verification. The new organization must verify it again, and a DNS record must be published again with a new value.",
+      "targetLabel": "Organization",
+      "targetPlaceholder": "Select an organization…",
+      "orgsFailed": "Organizations failed to load. Close this and try again."
+    },
+    "delete": {
+      "title": "Delete {{domain}}?",
+      "message": "Inbound email from this domain will no longer route to this organization.",
+      "messageVerified": "Inbound email from this domain will no longer route to this organization, and its verification is removed."
+    },
+    "toasts": {
+      "added": "{{domain}} added",
+      "saved": "{{domain}} saved",
+      "deleted": "{{domain}} deleted",
+      "moved": "{{domain}} moved to {{org}}",
+      "verified": "{{domain}} verified",
+      "verificationRemoved": "Verification removed for {{domain}}",
+      "copyFailed": "Could not copy. Select the text and copy it manually."
+    },
+    "errors": {
+      "load": "Domains failed to load.",
+      "save": "Could not save the domain. Retry.",
+      "delete": "Could not delete the domain. Retry.",
+      "add": "Could not add the domain. Retry.",
+      "alreadyMapped": "This domain is already added to an organization in your account.",
+      "startDns": "Could not get the DNS record. Retry.",
+      "check": "Could not run the check. Retry.",
+      "removeVerification": "Could not remove the verification. Retry."
     }
   },
   "customFieldsPage": {
@@ -7666,7 +7949,8 @@
         "none": "No access",
         "invited": "Invited",
         "active": "Active",
-        "disabled": "Disabled"
+        "disabled": "Disabled",
+        "requested": "Requested"
       },
       "actions": {
         "give": "Give portal access",
@@ -7682,14 +7966,16 @@
       "toasts": {
         "invited": "Portal invite sent",
         "inviteEmailFailed": "Portal login created, but the invite email could not be sent. Use Resend invite.",
-        "bulkSummary": "Portal access: {{details}}"
+        "bulkSummary": "Portal access: {{details}}",
+        "resendEmailFailed": "The invite email could not be sent. Try Resend invite again later."
       },
       "outcomes": {
         "invited": "Invited: {{count}}",
         "already_has_access": "Already has access: {{count}}",
         "no_email": "No email address: {{count}}",
         "email_bound_to_other_contact": "Email used by another contact: {{count}}",
-        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}"
+        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}",
+        "emailNotSent": "Invite emails not sent: {{count}}"
       },
       "errors": {
         "invite": "Could not give portal access.",
@@ -8023,6 +8309,10 @@
     "heading": "Plan & features",
     "description": "What your plan includes. Locked features stay visible so you can see what an upgrade adds.",
     "currentPlan": "Current plan",
+    "changePlan": "Change plan",
+    "enrollmentPaused": "New device enrollment is paused: {{active}} of {{limit}} devices.",
+    "enrollmentPausedNoCounts": "New device enrollment is paused because your account has reached its device limit.",
+    "enrollmentPausedChangePlan": "Change your plan to add more.",
     "plans": {
       "free": "Free",
       "starter": "Starter",
@@ -8228,6 +8518,7 @@
       "updated": "Updated",
       "actions": "Actions"
     },
+    "expired": "Expired",
     "statusValue": {
       "unconfirmed": "Unconfirmed",
       "confirmed": "Confirmed",
@@ -8257,6 +8548,7 @@
     "pickUser": "Select a technician",
     "pickPrompt": "Choose one above to see its memory.",
     "showContent": "Show content",
+    "subjectFallback": "Standing instruction",
     "hideContent": "Hide content",
     "conversationUnavailable": "This conversation is no longer available.",
     "usersLoadFailed": "Couldn't load technicians."
@@ -8265,5 +8557,451 @@
     "title": "AI approval mode",
     "description": "How Breeze AI asks before running gated (Tier 2/3) actions in this organization. Applies whether or not any spending cap is set.",
     "save": "Save"
+  },
+  "portalAccessPolicy": {
+    "title": "Sign-in & registration",
+    "orgDescription": "How people at this organization sign in to the customer portal, and how new people get browser access. A field left on Inherit follows your partner default.",
+    "partnerDescription": "The default for every customer organization. Each organization can override any field on its Customer Portal tab.",
+    "loading": "Loading sign-in settings…",
+    "readOnly": "You can view these settings but not change them. Changing the partner default needs full partner access.",
+    "save": "Save sign-in settings",
+    "sources": {
+      "partner": "Partner default",
+      "default": "Breeze default"
+    },
+    "signIn": {
+      "title": "How people sign in"
+    },
+    "newPeople": {
+      "title": "How new people get browser access"
+    },
+    "options": {
+      "on": "On",
+      "off": "Off"
+    },
+    "microsoft": {
+      "label": "Microsoft sign-in"
+    },
+    "google": {
+      "label": "Google sign-in",
+      "domainNotVerified": "Verify one of this organization's domains under Organization › Domains before turning on Google sign-in.",
+      "domains": {
+        "verified": "Verified domains: {{domains}}",
+        "none": "No verified domain —",
+        "verify": "verify one under Organization › Domains",
+        "partner": "On wherever a domain is verified"
+      }
+    },
+    "password": {
+      "label": "Password sign-in",
+      "allowed": "Allowed",
+      "ssoOnly": "Off — Microsoft/Google only",
+      "ssoOnlyMicrosoft": "Off — Microsoft only",
+      "ssoOnlyGoogle": "Off — Google only",
+      "ssoOnlyNeedsSso": "Available once Microsoft or Google sign-in is turned on.",
+      "ssoOnlyNeedsSsoMicrosoft": "Available once Microsoft sign-in is turned on.",
+      "ssoOnlyNeedsSsoGoogle": "Available once Google sign-in is turned on."
+    },
+    "fallback": "Password sign-in is on because no Microsoft or Google sign-in is enabled.",
+    "fallbackMicrosoft": "Password sign-in is on because Microsoft sign-in is not enabled.",
+    "fallbackGoogle": "Password sign-in is on because Google sign-in is not enabled.",
+    "invites": {
+      "label": "Invites from the MSP",
+      "value": "Always on"
+    },
+    "selfRegistration": {
+      "label": "Self-registration",
+      "off": "Off",
+      "approval": "Needs approval",
+      "instant": "Instant",
+      "noVerifiedDomain": "No verified domain: nobody can register until you verify one.",
+      "verifyDomain": "Verify a domain"
+    },
+    "ssoNewPerson": {
+      "label": "First Microsoft / Google sign-in",
+      "labelMicrosoft": "First Microsoft sign-in",
+      "labelGoogle": "First Google sign-in",
+      "invitedOnly": "Invited people only",
+      "approval": "Needs approval",
+      "instant": "Instant"
+    },
+    "requests": "Requests ({{count}})",
+    "errors": {
+      "load": "Couldn't load sign-in settings.",
+      "save": "Couldn't save sign-in settings.",
+      "methodUnavailable": "This sign-in method isn't available on this Breeze deployment yet.",
+      "ssoOnlyNeedsSso": "Turn on Microsoft or Google sign-in before turning off password sign-in.",
+      "ssoOnlyNeedsSsoMicrosoft": "Turn on Microsoft sign-in before turning off password sign-in.",
+      "ssoOnlyNeedsSsoGoogle": "Turn on Google sign-in before turning off password sign-in.",
+      "tenantNotProven": "Prove this organization's Microsoft tenant before turning on Microsoft sign-in.",
+      "sessionHours": "Enter a whole number of hours from 1 to 168."
+    },
+    "toasts": {
+      "saved": "Sign-in settings saved."
+    },
+    "sessionHours": {
+      "label": "Microsoft / Google session length (hours)",
+      "labelMicrosoft": "Microsoft session length (hours)",
+      "labelGoogle": "Google session length (hours)",
+      "help": "Microsoft and Google sign-ins end after this many hours, however active the person is. From 1 to 168.",
+      "helpMicrosoft": "Microsoft sign-ins end after this many hours, however active the person is. From 1 to 168.",
+      "helpGoogle": "Google sign-ins end after this many hours, however active the person is. From 1 to 168."
+    },
+    "entraTenant": {
+      "title": "Microsoft tenant",
+      "loading": "Loading the Microsoft tenant…",
+      "loadError": "Couldn't load the Microsoft tenant.",
+      "status": {
+        "none": "No Microsoft tenant is linked yet. Microsoft sign-in stays off for this organization until its tenant is proven.",
+        "unproven": "Tenant {{tenantId}} is linked but not proven. Microsoft sign-in stays off for this organization until it is.",
+        "proven": "Tenant {{tenantId}} proven {{date}} via {{method}}."
+      },
+      "via": {
+        "m365_connection": "the Microsoft 365 connection",
+        "proof_run": "an admin sign-in"
+      },
+      "proveConnection": "Use Microsoft 365 connection (tenant {{tenantId}})",
+      "tenantLabel": "Tenant ID or domain",
+      "tenantHelp": "Create a link and send it to a Global Administrator or Privileged Role Administrator of the customer's tenant. The link works for 72 hours.",
+      "createLink": "Create proof link",
+      "linkLabel": "Proof link",
+      "linkExpires": "Expires {{date}}. Works only for tenant {{tenantId}}.",
+      "consentLabel": "Admin consent link",
+      "consentHelp": "The tenant's admin opens this once so everyone at the organization can sign in.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "remove": "Remove tenant link",
+      "removeConfirm": {
+        "title": "Remove the Microsoft tenant link?",
+        "message": "Microsoft sign-in stops for this organization and its Microsoft sessions end. This also removes the organization's AI for Office tenant mapping, so AI for Office stops working here until a tenant is linked again."
+      },
+      "toasts": {
+        "proven": "Microsoft tenant proven.",
+        "linkCreated": "Proof link created.",
+        "removed": "Microsoft tenant link removed.",
+        "copyFailed": "Couldn't copy the link. Select it and copy it yourself."
+      },
+      "errors": {
+        "prove": "Couldn't prove the tenant from the Microsoft 365 connection.",
+        "createLink": "Couldn't create the proof link.",
+        "remove": "Couldn't remove the tenant link.",
+        "provenElsewhere": "This Microsoft tenant is already proven for another organization. Only a proof link completed by the tenant's admin can move it.",
+        "orgHasOtherTenant": "This organization is linked to a different Microsoft tenant. Remove that link first.",
+        "noVerifiedConnection": "This organization has no Microsoft 365 connection whose tenant was verified by an admin sign-in.",
+        "hintRequired": "Enter the customer's Microsoft tenant ID or one of its verified domains.",
+        "hintInvalid": "That isn't a Microsoft tenant ID or a domain verified by a Microsoft tenant.",
+        "hintLookupFailed": "Couldn't reach Microsoft to look up that domain. Try again, or enter the tenant ID.",
+        "protectedOrg": "This organization can't be linked to a Microsoft tenant."
+      }
+    },
+    "passwordFallbackNotice": {
+      "title": "Portal sign-in fell back to password",
+      "body": "Microsoft sign-in is off for this organization's portal, so its users sign in with a password until the tenant is proven again.",
+      "tenant": "(Tenant {{tenantId}}.)",
+      "causes": {
+        "tenant_removed": "The Microsoft tenant link was removed on {{date}}.",
+        "ai_for_office_mapping_removed": "The AI for Office tenant mapping, which held the proof, was removed on {{date}}.",
+        "ai_for_office_mapping_changed": "The AI for Office tenant mapping was changed to another tenant on {{date}}, which cleared the proof.",
+        "tenant_displaced": "Another organization proved this Microsoft tenant on {{date}}.",
+        "unknown": "The Microsoft tenant proof was lost on {{date}}."
+      },
+      "rerun": "Re-run the tenant proof",
+      "dismiss": "Dismiss",
+      "toasts": {
+        "dismissed": "Notice dismissed."
+      },
+      "errors": {
+        "dismiss": "Couldn't dismiss the notice."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Turn off password sign-in?",
+      "intro": "Saving turns off password sign-in for the organizations below.",
+      "partnerIntro": "Saving this partner default turns off password sign-in for these organizations. Each organization's page lists the accounts that can't sign in yet.",
+      "explain": "People already connected to Microsoft lose their password and are signed out. People without a Microsoft connection can't sign in until they accept a Microsoft sign-in invite.",
+      "explainGoogle": "People already connected to Google lose their password and are signed out. People without a Google connection can't sign in until they accept a Google sign-in invite.",
+      "explainBoth": "People already connected to Microsoft or Google lose their password and are signed out. People without a Microsoft or Google connection can't sign in until they accept a sign-in invite.",
+      "columns": {
+        "org": "Organization",
+        "passwordsToClear": "Passwords removed",
+        "strandedTotal": "Can't sign in yet"
+      },
+      "openOrg": "Open",
+      "strandedTitle": "Can't sign in yet",
+      "strandedMore": "and {{count}} more",
+      "strandedLoadError": "Couldn't load the names of these accounts.",
+      "sendInvites": "Send Microsoft sign-in invites to these accounts after saving",
+      "sendInvitesGoogle": "Send Google sign-in invites to these accounts after saving",
+      "sendInvitesBoth": "Send sign-in invites to these accounts after saving",
+      "confirm": "Turn off password sign-in",
+      "changed": "The impact changed since you opened this. Review the new numbers."
+    },
+    "stranded": {
+      "title": "Can't sign in yet ({{count}})",
+      "description": "These accounts have no Microsoft connection, so they can't sign in while password sign-in is off. Send each one a Microsoft sign-in invite.",
+      "descriptionGoogle": "These accounts have no Google connection, so they can't sign in while password sign-in is off. Send each one a Google sign-in invite.",
+      "descriptionBoth": "These accounts have no Microsoft or Google connection, so they can't sign in while password sign-in is off. Send each one a sign-in invite.",
+      "loadError": "Couldn't load the accounts that can't sign in.",
+      "invite": "Send Microsoft sign-in invite",
+      "inviteGoogle": "Send Google sign-in invite",
+      "inviteBoth": "Send sign-in invite",
+      "inviteAll": "Invite all",
+      "more": "Showing {{shown}} of {{count}}.",
+      "toasts": {
+        "invited": "Sent {{count}} Microsoft sign-in invite(s).",
+        "invitedGoogle": "Sent {{count}} Google sign-in invite(s).",
+        "invitedBoth": "Sent {{count}} sign-in invite(s).",
+        "partial": "Sent {{invited}} of {{total}} Microsoft sign-in invites. The rest were already connected or couldn't be invited.",
+        "partialGoogle": "Sent {{invited}} of {{total}} Google sign-in invites. The rest were already connected or couldn't be invited.",
+        "partialBoth": "Sent {{invited}} of {{total}} sign-in invites. The rest were already connected or couldn't be invited.",
+        "emailFailed": "{{count}} account(s) moved to invited, but their invite email couldn't be sent. Use Resend on the portal users list."
+      },
+      "errors": {
+        "invite": "Couldn't send Microsoft sign-in invites.",
+        "inviteGoogle": "Couldn't send Google sign-in invites.",
+        "inviteBoth": "Couldn't send sign-in invites.",
+        "unavailable": "Microsoft sign-in isn't available for this organization, so there is nothing to invite with.",
+        "unavailableGoogle": "Google sign-in isn't available for this organization, so there is nothing to invite with.",
+        "unavailableBoth": "Neither Microsoft nor Google sign-in is on for this organization, so there is nothing to invite with."
+      }
+    },
+    "domains": {
+      "label": "Domains",
+      "none": "No domains yet",
+      "manage": "Manage in Organization › Domains",
+      "loadFailed": "Domains could not be loaded."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Access requests",
+    "description": "People waiting for access to this organization's portal. Approve to give them access, or deny to dismiss the request.",
+    "columns": {
+      "person": "Person",
+      "source": "How they asked",
+      "requested": "Requested"
+    },
+    "sources": {
+      "self": "Self-registration",
+      "entra": "Microsoft sign-in",
+      "google": "Google sign-in",
+      "googleWithDomain": "Google · {{domain}}",
+      "addin_user": "AI for Office add-in"
+    },
+    "selectAll": "Select all requests",
+    "selectOne": "Select the request from {{email}}",
+    "accountExists": "Already has an account — Deny to dismiss",
+    "domainUnverified": "Domain no longer verified",
+    "domainUnverifiedReason": "Approve is unavailable: invite this person directly if they should have access.",
+    "actions": {
+      "approve": "Approve",
+      "deny": "Deny",
+      "approveSelected": "Approve selected ({{count}})",
+      "denySelected": "Deny selected ({{count}})"
+    },
+    "results": {
+      "accountExists": "Already has an account",
+      "notPending": "No longer pending",
+      "notFound": "Request not found",
+      "identityLinked": "Sign-in already linked to another account",
+      "failed": "Couldn't decide this request",
+      "entraTenantNotProven": "This organization's Microsoft tenant is no longer proven",
+      "domainNotVerified": "Email domain no longer verified",
+      "googleDomainNotVerified": "Google Workspace domain no longer verified"
+    },
+    "denyDialog": {
+      "title": "Deny access request",
+      "message": "Deny the request from {{email}}? They get an email saying it was not approved.",
+      "bulkMessage_one": "Deny {{count}} request? The person gets an email saying it was not approved.",
+      "bulkMessage_other": "Deny {{count}} requests? Each person gets an email saying it was not approved."
+    },
+    "toasts": {
+      "approved": "Approved access for {{email}}.",
+      "denied": "Denied the request from {{email}}.",
+      "bulkDone_one": "{{count}} request decided.",
+      "bulkDone_other": "{{count}} requests decided.",
+      "bulkPartial": "{{succeeded}} of {{total}} requests decided. The others are marked in the list."
+    },
+    "errors": {
+      "load": "Couldn't load access requests.",
+      "action": "Couldn't update the access request.",
+      "bulk": "Couldn't decide the selected requests.",
+      "domainNotVerified": "This person's email domain is no longer verified for this organization. Invite them directly if they should have access.",
+      "googleDomainNotVerified": "This request's Google Workspace domain is no longer verified for this organization. Verify it again or invite the person directly."
+    },
+    "summary": {
+      "title": "Pending access requests",
+      "description": "Requests waiting in your customer organizations. Open an organization to approve or deny them.",
+      "empty": "No pending requests",
+      "orgPending_one": "{{count}} pending",
+      "orgPending_other": "{{count}} pending",
+      "review": "Review requests",
+      "loadError": "Couldn't load pending access requests."
+    },
+    "refreshFailed": "Couldn't refresh the access requests, so this list may be out of date.",
+    "more": "Showing the first {{count}} requests. Decide these to see the rest."
+  },
+  "portalDirectory": {
+    "title": "Directory deprovisioning",
+    "descriptionMicrosoft": "When your customer disables or deletes someone in Microsoft Entra, that person's Microsoft sign-in is turned off here. Only complete directory reads count.",
+    "descriptionGoogle": "When your customer suspends or deletes someone in Google Workspace, that person's Google sign-in is turned off here. Only complete directory reads count.",
+    "descriptionBoth": "When your customer disables, suspends or deletes someone in Microsoft Entra or Google Workspace, that person's directory sign-in is turned off here. Only complete directory reads count.",
+    "loading": "Loading directory deprovisioning…",
+    "empty": "No one is flagged by the directory.",
+    "mode": {
+      "report": "Report only: nobody is disabled automatically yet. The list below shows what would happen.",
+      "enforce": "On: people the directory disables or removes lose their directory sign-in. The first batch for each directory waits for your decision."
+    },
+    "sources": {
+      "entra": "Microsoft",
+      "google": "Google"
+    },
+    "source": {
+      "never": "No directory read yet.",
+      "lastRead": "Last read {{when}}",
+      "evaluated_one": "Read completely: {{count}} person in the directory.",
+      "evaluated_other": "Read completely: {{count}} people in the directory.",
+      "suspectShrink": "The directory shrank sharply since the previous read, so nothing changed. A second read has to confirm it first.",
+      "nothingChanged": "Nothing changed.",
+      "tenantLink": "Prove your Microsoft tenant"
+    },
+    "runReasons": {
+      "tenant_not_proven": "This organization's Microsoft tenant is not proven.",
+      "tenant_mismatch": "The Microsoft 365 connection reads a different tenant than the one proven for this organization.",
+      "connection_inactive": "The directory connection is not active.",
+      "org_inactive": "This organization or its partner is not active.",
+      "sync_incomplete": "The last directory read was incomplete, so nothing changed.",
+      "directory_too_large": "This directory is larger than the sync limit; deprovisioning is unavailable. Use SCIM provisioning instead when it is available.",
+      "scope_missing": "The Google connection's domain-wide delegation is missing the admin.directory.user scope.",
+      "access_denied": "Google refused access to the directory.",
+      "unavailable": "The directory could not be reached.",
+      "connection_invalid": "The Google connection's credentials could not be used.",
+      "admin_not_admin": "The Google connection's admin account is no longer an active admin.",
+      "mixed_customer": "The Google listing mixed users from another Workspace.",
+      "malformed": "The directory returned users it could not read.",
+      "unknown": "The read was not used."
+    },
+    "holdReasons": {
+      "first_enforcement": "first time for this directory",
+      "threshold": "more people than usual"
+    },
+    "held": {
+      "summary_one": "{{source}}: {{count}} person is waiting for your decision.",
+      "summary_other": "{{source}}: {{count}} people are waiting for your decision.",
+      "because": "Held: {{reason}}.",
+      "apply": "Apply",
+      "dismiss": "Dismiss"
+    },
+    "confirm": {
+      "applyTitle": "Turn off these sign-ins?",
+      "applyMessage_one": "This turns off the directory sign-in of {{count}} person, and disables their account when they have no other way to sign in. Held: {{reason}}. You can restore each one from the users list.",
+      "applyMessage_other": "This turns off the directory sign-in of {{count}} people, and disables each account that has no other way to sign in. Held: {{reason}}. You can restore each one from the users list.",
+      "dismissTitle": "Dismiss this batch?",
+      "dismissMessage_one": "Nobody changes. {{count}} person stays exempt until a newer directory read shows them enabled. Held: {{reason}}.",
+      "dismissMessage_other": "Nobody changes. {{count}} people stay exempt until a newer directory read shows them enabled. Held: {{reason}}."
+    },
+    "columns": {
+      "person": "Person",
+      "provider": "Directory",
+      "reason": "What the directory says",
+      "effect": "Effect"
+    },
+    "actionReasons": {
+      "account_disabled": "Disabled in the directory",
+      "absent": "Removed from the directory",
+      "suspended": "Suspended in the directory",
+      "archived": "Archived in the directory"
+    },
+    "effects": {
+      "identity_and_account": "Disables the account",
+      "identityEntra": "Turns off Microsoft sign-in only",
+      "identityGoogle": "Turns off Google sign-in only"
+    },
+    "tags": {
+      "keepsPassword": "Keeps password access",
+      "rearmed": "Restored or dismissed by your team; the directory still reports this person disabled"
+    },
+    "blockers": {
+      "entra_directory": "Microsoft directory",
+      "google_directory": "Google directory",
+      "scim": "SCIM provisioning",
+      "msp": "your team",
+      "unknown": "another source"
+    },
+    "users": {
+      "disabledEntra": "Microsoft sign-in disabled by {{blockers}}",
+      "disabledGoogle": "Google sign-in disabled by {{blockers}}",
+      "restore": "Restore",
+      "remove": "Remove sign-in",
+      "disabledBy": {
+        "msp": "Disabled by your team",
+        "directory": "Disabled by directory",
+        "scim": "Disabled by SCIM provisioning"
+      }
+    },
+    "restore": {
+      "title": "Restore this sign-in method?",
+      "message": "Turns {{provider}} sign-in back on for {{email}} and clears every block on it: {{blockers}}.",
+      "rearmNote": "The directory will not turn it off again until a newer directory read shows this person enabled.",
+      "reactivate": "Also re-enable the account",
+      "confirmMsp": "Your team disabled this account. I want to re-enable it."
+    },
+    "remove": {
+      "title": "Remove this sign-in method?",
+      "message": "Removes the disabled {{provider}} sign-in from {{email}}. Use this when the person was deleted and recreated in the directory. If it was their only sign-in method, reactivate the account and send an invite."
+    },
+    "toasts": {
+      "applying": "Applying the batch. Changes appear here shortly.",
+      "dismissed": "Batch dismissed",
+      "restored": "Sign-in method restored",
+      "removed": "Sign-in method removed"
+    },
+    "errors": {
+      "load": "Couldn't load directory deprovisioning.",
+      "decide": "Couldn't save your decision.",
+      "stale": "This batch changed since you opened it. Review the refreshed list and try again.",
+      "notHeld": "This batch is no longer waiting for a decision.",
+      "enforcementOff": "Deprovisioning is in report-only mode on this server, so there is nothing to apply."
+    }
+  },
+  "portalScim": {
+    "title": "Microsoft Entra provisioning (SCIM)",
+    "description": "Let the customer's Entra tenant create portal accounts for the people assigned to the Breeze Portal app, and disable them when they leave.",
+    "loading": "Loading provisioning…",
+    "retry": "Try again",
+    "refreshFailed": "Couldn't refresh. What you see may be out of date.",
+    "needsTenant": "Prove this organization's Microsoft tenant above before you set up provisioning.",
+    "tenantUrl": "Tenant URL",
+    "noBaseUrl": "The API's public address is not configured, so the Tenant URL can't be shown. Ask your administrator to set PUBLIC_API_URL.",
+    "counts": "{{provisioned}} provisioned · {{deactivated}} deactivated by the directory",
+    "secretOnce": "Copy this token now and paste it into the Entra app's Secret Token field. It won't be shown again.",
+    "secretToken": "Secret token",
+    "secretDone": "I've copied it",
+    "lastUsed": "Last used {{date}}",
+    "neverUsed": "Not used yet",
+    "notWorking": "Not working: this organization's proven tenant has changed",
+    "revoke": "Revoke",
+    "label": "Token name",
+    "create": "Create provisioning token",
+    "createSubmit": "Create",
+    "cancel": "Cancel",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Couldn't copy to the clipboard.",
+    "revokeConfirm": {
+      "title": "Revoke this provisioning token?",
+      "message": "Entra stops provisioning with \"{{label}}\" immediately. People already provisioned keep their accounts."
+    },
+    "toasts": {
+      "created": "Provisioning token created.",
+      "revoked": "Provisioning token revoked."
+    },
+    "errors": {
+      "load": "Couldn't load provisioning.",
+      "create": "Couldn't create the provisioning token.",
+      "revoke": "Couldn't revoke the provisioning token.",
+      "tenantNotProven": "Prove this organization's Microsoft tenant before you create a provisioning token.",
+      "limit": "This organization already has two active provisioning tokens. Revoke one first.",
+      "notFound": "That provisioning token no longer exists."
+    }
   }
 }

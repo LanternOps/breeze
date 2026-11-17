@@ -64,6 +64,7 @@ import {
   raiseConcernSchema,
   requestSpecialistSchema,
   updateConcernSchema,
+  updateConcernToolShape,
   validateRequestSpecialist,
   type NudgeInput,
   type ProposeActionInput,
@@ -984,10 +985,11 @@ export function buildOutcomeSdkTools(
         ) as SdkTool;
       }
       // Wisp W05b — the assessment tools. Raw shapes come straight from the
-      // shared W05a schemas (`.shape`); the AUTHORITY is still the full
-      // schema's `.parse()` in `validateOutcomeToolInput` (it carries the
-      // `update_concern` resolved-needs-outcome refinement a raw shape cannot
-      // express). Validate-only, static ack, no DB — `finalizeAssessment`
+      // shared W05a schemas; the AUTHORITY is still the full schema's `.parse()`
+      // in `validateOutcomeToolInput`, which carries what a raw shape cannot
+      // (`update_concern`'s refine and its outcome-implies-resolved transform,
+      // #11427). The handlers validate only; the run loop captures the parsed
+      // value, so the finalizer always sees the transformed call. Validate-only, static ack, no DB — `finalizeAssessment`
       // applies the captured calls after the run.
       case 'record_concern': {
         // #10387: an `org` subject can only be the run's org; `finalizeAssessment`
@@ -1018,8 +1020,9 @@ export function buildOutcomeSdkTools(
       case 'update_concern':
         return tool(
           'update_concern',
-          'Change severity/summary/evidence of an open concern, or resolve it with an outcome.',
-          updateConcernSchema.shape,
+          'Change severity/summary/evidence of an open concern, or close it. To close a concern send '
+          + "status: 'resolved' with an outcome (one sentence on how it ended); a summary edit alone keeps it open.",
+          updateConcernToolShape,
           async (input) => {
             validateOutcomeToolInput('update_concern', input); // throws → model retries
             return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };

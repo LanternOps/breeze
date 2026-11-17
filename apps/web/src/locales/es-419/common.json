@@ -822,7 +822,9 @@
         "wispHome": "Abrir Wisp",
         "wispHomeDescription": "Ir a tu inicio de Wisp"
       },
-      "numberHint": "{{mod}}1–9 para abrir"
+      "numberHint": "{{mod}}1–9 para abrir",
+      "thisCustomerOnly": "Solo este cliente",
+      "partnerWide": "Todo el socio"
     },
     "notifications": {
       "title": "Notificaciones",
@@ -903,7 +905,20 @@
       },
       "charKeysOn": "Los atajos de una sola tecla están activados.",
       "charKeysOff": "Los atajos de una sola tecla están desactivados. Solo funcionan los atajos con Ctrl/Cmd.",
-      "charKeysManage": "Cambiar en la configuración del perfil"
+      "charKeysManage": "Cambiar en la configuración del perfil",
+      "queueTitle": "Cola de tickets",
+      "queueHint": "En la página de tickets, fuera de un campo de texto.",
+      "queue": {
+        "next": "Ticket siguiente",
+        "previous": "Ticket anterior",
+        "open": "Abrir el ticket (tras resolver: el siguiente ofrecido)",
+        "toggleBulk": "Agregar a la selección múltiple o quitar de ella",
+        "assignMe": "Asignarme",
+        "reply": "Escribir una respuesta",
+        "internal": "Escribir una nota interna",
+        "resolve": "Resolver con una nota",
+        "back": "Volver a la cola"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1463,10 @@
           "deviceOnline": {
             "description": "Se activa cuando se conecta un dispositivo.",
             "label": "Dispositivo en línea"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Se activa cuando un dispositivo recién inscrito parece una reinstalación de un registro de dispositivo existente e inactivo.",
+            "label": "Posible reinstalación de dispositivo"
           },
           "deviceReinstalled": {
             "description": "Se activa cuando un equipo reinstalado se vuelve a vincular con su registro de dispositivo existente.",
@@ -2453,6 +2472,7 @@
           "invalidTimeRange": "La hora de inicio debe ser anterior a la hora de finalización.",
           "searchFailed": "No se pudieron buscar registros",
           "saveFailed": "No se pudo guardar la consulta",
+          "savedQueriesFailed": "No se pudieron cargar las consultas guardadas.",
           "noRowsExport": "No hay filas para exportar."
         },
         "savePrompt": "Nombre esta consulta guardada:",
@@ -2472,10 +2492,14 @@
         },
         "searchFleetLogs": "Buscar registros de flota",
         "saveQuery": "Guardar consulta",
+        "usingSavedFilters": "Esta búsqueda utiliza los filtros guardados.",
+        "customSearch": "Búsqueda personalizada",
+        "savedQueries": "Consultas guardadas",
         "exportCsv": "Exportar CSV",
         "resultsTitle": "Resultados de la búsqueda",
         "loading": "Cargando...",
         "resultsCount": "{{shown}} mostrado del total de {{total}}",
+        "resultsCountWithoutTotal": "{{shown}} mostrados",
         "table": {
           "timestamp": "Marca de tiempo",
           "level": "Nivel",
@@ -2485,6 +2509,7 @@
         "unknownSite": "Sitio desconocido",
         "empty": "Ningún registro coincidió con los filtros actuales.",
         "pageCount": "Página {{page}} de {{totalPages}}",
+        "currentPage": "Página {{page}}",
         "previous": "Anterior"
       }
     },
@@ -2935,5 +2960,8 @@
   "featureLock": {
     "lockedLabel": "Bloqueado",
     "upgrade": "Ver planes"
+  },
+  "inheritChoice": {
+    "inherit": "Heredar — {{value}} ({{source}})"
   }
 }

@@ -248,6 +248,8 @@ type containmentManager interface {
 	HandleRelease(context.Context, map[string]any) isolation.CommandOutcome
 	Reconcile(context.Context, *isolation.DesiredBlock)
 	NotePolicyRejected(ctx context.Context, isolationID string, generation int, reason isolation.PolicyRejectReason)
+	// NoteControlPlaneContact feeds the dead-man (#10103). It never blocks.
+	NoteControlPlaneContact()
 	Startup(context.Context)
 	Tick(context.Context)
 	Report() *isolation.Report
@@ -454,7 +456,13 @@ func (h *Heartbeat) containmentReport() *ContainmentReport {
 }
 
 func (h *Heartbeat) reconcileContainment(d *isolation.DesiredBlock) {
-	if h.containment == nil || d == nil || d.NetworkIsolation == nil {
+	if h.containment == nil {
+		return
+	}
+	// A validated heartbeat response is authenticated control-plane contact,
+	// whatever its containment block holds: the dead-man measures the channel.
+	h.containment.manager.NoteControlPlaneContact()
+	if d == nil || d.NetworkIsolation == nil {
 		return
 	}
 	if err := validateContainmentDesired(d.NetworkIsolation, h.serverURL(), time.Now()); err != nil {
@@ -489,6 +497,7 @@ func containmentCapabilities(c *SecurityCapabilities) {
 	c.NetworkIsolationMechanism = cap.Mechanism
 	c.NetworkIsolationUnsupportedReason = cap.UnsupportedReason
 	c.NetworkIsolationReady = cap.Version >= 1 && cap.Ready
+	c.NetworkIsolationDeadMan = cap.AdvertisesDeadMan()
 }
 
 // containmentBlocksUpgrade: no self-update starts while isolated. Companion

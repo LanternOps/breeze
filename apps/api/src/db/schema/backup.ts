@@ -384,6 +384,13 @@ export const backupJobs = pgTable(
     baseSnapshotIdIdx: index('backup_jobs_base_snapshot_id_idx')
       .on(table.baseSnapshotId)
       .where(sql`base_snapshot_id IS NOT NULL`),
+    // #11772: the backup_destination health source's broken query (unsuccessful
+    // jobs in the lookback) and its per-config evidence read. Migration
+    // 2027-01-24-100000-backup-jobs-destination-health-indexes.sql.
+    unsuccessfulCompletedAtIdx: index('backup_jobs_unsuccessful_completed_at_idx')
+      .on(table.completedAt, table.configId)
+      .where(sql`status IN ('failed', 'partial', 'completed_with_errors')`),
+    configCompletedAtIdx: index('backup_jobs_config_completed_at_idx').on(table.configId, table.completedAt),
     // #11013: probed on every agent connect; holds deferred rows only.
     catchUpDeviceIdx: index('backup_jobs_catch_up_device_idx')
       .on(table.deviceId)
@@ -501,6 +508,9 @@ export const backupSnapshots = pgTable(
   })
 );
 
+/** What a content-less `backup_snapshot_files` row is (#11235). */
+export type SnapshotEntryKind = 'dir' | 'symlink';
+
 export const backupSnapshotFiles = pgTable(
   'backup_snapshot_files',
   {
@@ -512,6 +522,11 @@ export const backupSnapshotFiles = pgTable(
     backupPath: text('backup_path').notNull(),
     size: bigint('size', { mode: 'number' }),
     modifiedAt: timestamp('modified_at'),
+    // #11235: 'dir' / 'symlink' for a content-less entry (backupPath ''),
+    // NULL for a regular file or a content-less row written before the
+    // column existed. Written via contentlessEntryKind
+    // (services/backupSnapshotEntryKind.ts).
+    kind: text('kind').$type<SnapshotEntryKind>(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({

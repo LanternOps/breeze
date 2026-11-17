@@ -9,6 +9,9 @@ export type WispSpendMeterProps = {
   budgetCents: number;
   /** ISO instant the UTC budget day resets (W05 `utcDayWindow(now).end`). */
   resetsAt: string;
+  /** #10414: the spend split; the breakdown line shows only when both are given. */
+  backgroundCents?: number;
+  chatCents?: number;
   /** Opens the budget control — where the exhausted-budget notice (W05) sends the user. Omitted when raising the budget cannot help (a partner-disabled grant). */
   onRaise?: () => void;
   /** The plan's daily-budget ceiling in cents (entitlement `budgetCentsPerDayCeiling`); null/omitted when unknown. */
@@ -73,7 +76,7 @@ export function WispSpendEscalation({ state, budgetCents, budgetMax = null, onRa
 }
 
 /** "$0.42 of $2.00 today · resets in 6 h" (w00 A32). The API stays in cents. */
-export default function WispSpendMeter({ variant = 'full', spentCents, budgetCents, resetsAt, onRaise, budgetMax = null }: WispSpendMeterProps) {
+export default function WispSpendMeter({ variant = 'full', spentCents, budgetCents, resetsAt, onRaise, budgetMax = null, backgroundCents, chatCents }: WispSpendMeterProps) {
   const { t } = useTranslation('ai');
   const state = spendMeterState(spentCents, budgetCents);
   const hours = hoursUntil(resetsAt);
@@ -96,7 +99,16 @@ export default function WispSpendMeter({ variant = 'full', spentCents, budgetCen
   return (
     <div className="space-y-1" data-testid="wisp-spend-meter" data-state={state}>
       <div className={`flex flex-wrap items-center gap-x-1 ${TEXT[state]}`}>
-        <span>{t('wisp.spend.meter', { spent: formatCurrency(spentCents / 100), budget: formatCurrency(budgetCents / 100) })}</span>
+        <span>
+          {typeof backgroundCents === 'number' && typeof chatCents === 'number'
+            ? t('wisp.spend.breakdown', {
+                background: formatCurrency(backgroundCents / 100),
+                chat: formatCurrency(chatCents / 100),
+                spent: formatCurrency(spentCents / 100),
+                budget: formatCurrency(budgetCents / 100),
+              })
+            : t('wisp.spend.meter', { spent: formatCurrency(spentCents / 100), budget: formatCurrency(budgetCents / 100) })}
+        </span>
         {hours !== null && <span>· {t('wisp.spend.resets', { hours })}</span>}
         <WispSpendEscalation state={state} budgetCents={budgetCents} budgetMax={budgetMax} onRaise={onRaise} />
       </div>

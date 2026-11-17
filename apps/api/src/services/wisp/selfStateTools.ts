@@ -29,10 +29,17 @@
  *                                  others see: it keeps the card. A snooze
  *                                  writes this grant's recipient row and the
  *                                  concern status, never memory.
- *   schedule_check_in 'adds_row'   a check-in on this grant's own thread (the
- *                                  handler takes the thread from the grant,
- *                                  never from the model); it notifies only the
- *                                  grantor and runs nothing when it fires.
+ *   schedule_check_in 'notify_check_in'
+ *                                  a NOTIFY check-in on this grant's own thread
+ *                                  (the handler takes the thread from the
+ *                                  grant, never from the model): it notifies
+ *                                  only the grantor and runs nothing when it
+ *                                  fires. `mode: 'run'` (W07 #11496) keeps the
+ *                                  card: it runs an assessment that spends
+ *                                  grant budget unattended when it fires, the
+ *                                  same reason `create_watch` keeps its card.
+ *                                  Only a missing or `notify` mode skips it;
+ *                                  anything else asks.
  *   cancel_check_in 'own_thread'   only this grant's own check-ins: the
  *                                  service's UPDATE is keyed on the grant, so
  *                                  another grant's id cancels nothing. No
@@ -64,13 +71,13 @@
  * Leaf module — NO imports — so the chat gate can read it without loading the
  * Wisp graph for an ordinary session.
  */
-export type WispSelfStateScope = 'own_memory' | 'adds_row' | 'own_concern' | 'own_thread';
+export type WispSelfStateScope = 'own_memory' | 'adds_row' | 'own_concern' | 'own_thread' | 'notify_check_in';
 
 export const WISP_SELF_STATE_TOOLS: ReadonlyMap<string, WispSelfStateScope> = new Map<string, WispSelfStateScope>([
   ['remember', 'own_memory'],
   ['raise_concern', 'adds_row'],
   ['link_entity', 'adds_row'],
   ['snooze_concern', 'own_concern'],
-  ['schedule_check_in', 'adds_row'],
+  ['schedule_check_in', 'notify_check_in'],
   ['cancel_check_in', 'own_thread'],
 ]);

@@ -302,6 +302,72 @@ describe('findUnsafePortalCssPattern', () => {
       expect(findUnsafePortalCssPattern('a::before { content: "\\f101"; }')).toBeNull();
     });
   });
+
+  describe('url() scan cost and results', () => {
+    // The url() matcher before the linear scanner, kept here as the reference
+    // the scanner's results are compared against on small inputs.
+    function referenceUrlScan(css: string): string | null {
+      const pattern = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(css)) !== null) {
+        const value = (match[2] ?? '').trim();
+        if (!/^(https:|data:)/i.test(value)) return value ? `url(${value})` : 'url()';
+      }
+      return null;
+    }
+
+    it('scans stylesheets up to the maximum size in linear time', () => {
+      const inputs = [
+        'url('.repeat(PORTAL_CUSTOM_CSS_MAX_LENGTH / 4),
+        'url(' + ' '.repeat(2000),
+        'url(' + ' '.repeat(PORTAL_CUSTOM_CSS_MAX_LENGTH - 4),
+      ];
+      for (const css of inputs) {
+        const started = performance.now();
+        expect(findUnsafePortalCssPattern(css)).toBeNull();
+        expect(performance.now() - started).toBeLessThan(150);
+      }
+    });
+
+    it.each([
+      ['a{background:url( "https://x/y.png" )}', null],
+      ["a{background:url('http://x')}", "url(http://x)"],
+      ['a{background:url(  )}', 'url()'],
+      ['a{background:url("x)}', null],
+      ["a{background:url('x\")}", null],
+      ['a{background:URL(Data:image/png;base64,AA==)}', null],
+      ['a{background:url(https://a/url(x))}', null],
+      ['a{background:url(https://a/b) url(c)}', 'url(c)'],
+      ['url(url(x))', 'url(url(x)'],
+      ['url( x )', 'url(x)'],
+      ['url(', null],
+    ])('matches the reference result for %j', (css, expected) => {
+      expect(referenceUrlScan(css)).toBe(expected);
+      expect(findUnsafePortalCssPattern(css)).toBe(expected);
+    });
+
+    it('matches the reference result on generated inputs', () => {
+      const alphabet = ['url(', 'URL(', '(', ')', "'", '"', ' ', '\t', 'x', 'https:', 'data:', 'u', 'r', 'l'];
+      const random = (seed: number) => () => {
+        // mulberry32: 32-bit integer steps (Math.imul), so the sequence does not
+        // collapse the way a float LCG does.
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return (t ^ (t >>> 14)) >>> 0;
+      };
+      const next = random(0x2f6e2b1);
+      const seen = new Set<string>();
+      for (let i = 0; i < 20_000; i += 1) {
+        const length = next() % 16;
+        let css = '';
+        for (let j = 0; j < length; j += 1) css += alphabet[next() % alphabet.length];
+        seen.add(css);
+        expect([css, findUnsafePortalCssPattern(css)]).toEqual([css, referenceUrlScan(css)]);
+      }
+      expect(seen.size).toBeGreaterThan(15_000);
+    });
+  });
 });
 
 describe('invitePortalUserSchema', () => {

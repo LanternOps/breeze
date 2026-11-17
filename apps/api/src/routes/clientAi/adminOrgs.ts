@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { and, asc, count, eq, sum } from 'drizzle-orm';
+import { and, asc, count, eq, sql, sum } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   clientAiOrgPolicies,
@@ -7,7 +7,7 @@ import {
   clientAiUsage,
 } from '../../db/schema/clientAi';
 import { organizations } from '../../db/schema/orgs';
-import { portalUsers } from '../../db/schema/portal';
+import { portalUserIdentities, portalUsers } from '../../db/schema/portal';
 import { m365Connections } from '../../db/schema/m365';
 import { delegantM365Connections } from '../../db/schema/delegant';
 import { requirePermission } from '../../middleware/auth';
@@ -23,11 +23,12 @@ import { notHiddenOrgType } from '../../services/unassignedPool/visibility';
  * group authMiddleware + CLIENT_AI_ENTRA_CLIENT_ID dark-gate already apply.
  *
  * consentStatus derivation (Plan-4 decision 1): the /auth/exchange route
- * (Plan 1) auto-provisions portal_users rows with auth_method='entra' on the
- * first successful token exchange, so
- *   no mapping                       → 'unknown'
- *   mapping, no entra users in org   → 'pending'
- *   mapping + ≥1 entra user          → 'granted'
+ * (Plan 1) auto-provisions a portal_users row and its Entra identity
+ * (portal_user_identities) on the first successful token exchange, so
+ *   no mapping                                → 'unknown'
+ *   mapping, no Entra identity in org         → 'pending'
+ *   mapping + ≥1 account with an Entra identity → 'granted'
+ * Counted over identities (identities release B, W3), not auth_method.
  */
 
 export const clientAiAdminOrgRoutes = new Hono();
@@ -102,11 +103,22 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
     .select({ orgId: clientAiOrgPolicies.orgId, enabled: clientAiOrgPolicies.enabled })
     .from(clientAiOrgPolicies);
 
+  // Accounts with an Entra identity (identities release B, W3), whatever their
+  // auth_method. One entra identity per account (portal_user_identities_user_
+  // provider_uq) and identity org = account org (composite FK), so counting
+  // identities per org counts accounts. W8 (#11385, plan D3): `disabled`
+  // counts the ones a directory, SCIM or MSP blocker disabled; they cannot use
+  // the add-in and are reported apart (`entraUsers`). Consent status still
+  // reads every identity: a past sign-in proves consent was granted.
   const entraUsers = await db
-    .select({ orgId: portalUsers.orgId, n: count() })
-    .from(portalUsers)
-    .where(eq(portalUsers.authMethod, 'entra'))
-    .groupBy(portalUsers.orgId);
+    .select({
+      orgId: portalUserIdentities.orgId,
+      n: count(),
+      disabled: sql<number>`(count(*) filter (where ${portalUserIdentities.disabledAt} is not null))::int`,
+    })
+    .from(portalUserIdentities)
+    .where(eq(portalUserIdentities.provider, 'entra'))
+    .groupBy(portalUserIdentities.orgId);
 
   const usage = await db
     .select({
@@ -135,6 +147,7 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
   const mappingByOrg = new Map(mappings.map((m) => [m.orgId, m.entraTenantId]));
   const policyByOrg = new Map(policies.map((p) => [p.orgId, p.enabled === true]));
   const entraCountByOrg = new Map(entraUsers.map((u) => [u.orgId, Number(u.n ?? 0)]));
+  const entraDisabledByOrg = new Map(entraUsers.map((u) => [u.orgId, Number(u.disabled ?? 0)]));
   const usageByOrg = new Map(
     usage.map((u) => [
       u.orgId,
@@ -164,7 +177,9 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
     .map((org) => {
       const entraTenantId = mappingByOrg.get(org.id) ?? null;
       const mapped = entraTenantId !== null;
-      const granted = mapped && (entraCountByOrg.get(org.id) ?? 0) > 0;
+      const entraTotal = entraCountByOrg.get(org.id) ?? 0;
+      const entraDisabled = Math.min(entraTotal, entraDisabledByOrg.get(org.id) ?? 0);
+      const granted = mapped && entraTotal > 0;
       const orgUsage = usageByOrg.get(org.id);
       return {
         orgId: org.id,
@@ -173,6 +188,7 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
         entraTenantId,
         suggestedEntraTenantId: suggestedByOrg.get(org.id) ?? null,
         consentStatus: !mapped ? ('unknown' as const) : granted ? ('granted' as const) : ('pending' as const),
+        entraUsers: { enabled: entraTotal - entraDisabled, disabled: entraDisabled },
         policyEnabled: policyByOrg.get(org.id) ?? false,
         currentMonthCostCents: orgUsage?.costCents ?? 0,
         currentMonthMessages: orgUsage?.messages ?? 0,
@@ -203,6 +219,10 @@ clientAiAdminOrgRoutes.get('/orgs/:orgId/consent-url', requireOrgsRead, async (c
 });
 
 // ── GET /orgs/:orgId/users — entra portal users (policy-editor picker) ───────
+// Every account that can use the add-in: the ones holding an Entra identity
+// (identities release B, W3), whatever their auth_method. W8 (plan D3): an
+// account whose Entra identity is disabled is still listed (so a policy that
+// names it stays legible) but flagged `identityDisabled`: it cannot sign in.
 clientAiAdminOrgRoutes.get('/orgs/:orgId/users', requireOrgsRead, async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
@@ -214,9 +234,14 @@ clientAiAdminOrgRoutes.get('/orgs/:orgId/users', requireOrgsRead, async (c) => {
       email: portalUsers.email,
       name: portalUsers.name,
       lastLoginAt: portalUsers.lastLoginAt,
+      identityDisabled: sql<boolean>`(${portalUserIdentities.disabledAt} is not null)`,
     })
     .from(portalUsers)
-    .where(and(eq(portalUsers.orgId, orgId), eq(portalUsers.authMethod, 'entra')))
+    .innerJoin(
+      portalUserIdentities,
+      and(eq(portalUserIdentities.portalUserId, portalUsers.id), eq(portalUserIdentities.provider, 'entra')),
+    )
+    .where(eq(portalUsers.orgId, orgId))
     .orderBy(asc(portalUsers.email));
 
   return c.json({ data });

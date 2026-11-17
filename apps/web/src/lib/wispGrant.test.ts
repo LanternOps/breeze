@@ -32,6 +32,21 @@ describe('wispStateFromThread W06 fields (A32 spend, A29 pause reason)', () => {
     const half = wispStateFromThread(body({ spentTodayCents: 42 }))!;
     expect('spentTodayCents' in half).toBe(false);
   });
+  it('#10414: carries the background/chat breakdown when both are numbers; an older server parses as before', () => {
+    const base = { spentTodayCents: 200, budgetResetsAt: '2026-10-25T00:00:00.000Z' };
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(wispStateFromThread(body({ ...base, backgroundCents: 30, chatCents: 170 })))
+      .toMatchObject({ spentTodayCents: 200, backgroundCents: 30, chatCents: 170 });
+    const old = wispStateFromThread(body(base))!;
+    expect(old.spentTodayCents).toBe(200);
+    expect('backgroundCents' in old).toBe(false);
+    const bad = wispStateFromThread(body({ ...base, backgroundCents: 30, chatCents: 'x' }))!;
+    expect(bad.spentTodayCents).toBe(200);
+    expect('backgroundCents' in bad).toBe(false);
+    expect('chatCents' in bad).toBe(false);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
   it('#10973: reads the effective unattended-reads switch, false unless literally true', () => {
     expect(wispStateFromThread(body({ unattendedReads: true }))!.unattendedReads).toBe(true);
     expect(wispStateFromThread(body({ unattendedReads: 'true' }))!.unattendedReads).toBe(false);
@@ -96,5 +111,19 @@ describe('wispGrant owns its org scoping (no ambient orgId injection)', () => {
     await mintWispGrantStepUp({ partnerId: 'p-1', orgId: null, reauth: { method: 'totp', code: '000000' } as never });
     expect(fetchWithAuth).toHaveBeenLastCalledWith('/wisp/grants/preview', { skipOrgIdInjection: true });
     vi.doUnmock('./mfaStepUp');
+  });
+});
+
+describe('wispStateFromThread lastSessionId (#11672)', () => {
+  const withLast = (lastSessionId: unknown) => ({
+    data: { thread: { id: 't1', lastSessionId }, grant: { id: 'g1', status: 'active', expiresAt: '2027-01-01T00:00:00.000Z' } },
+  });
+
+  it('carries the thread\'s last session id, so a surface entering Wisp can resume it', () => {
+    expect(wispStateFromThread(withLast('sess-1'))?.lastSessionId).toBe('sess-1');
+  });
+
+  it.each([[null], [undefined], [''], [7]])('anything else (%s) is no last session', (value) => {
+    expect(wispStateFromThread(withLast(value))?.lastSessionId).toBeNull();
   });
 });

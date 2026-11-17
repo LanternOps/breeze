@@ -24,7 +24,7 @@
  * `limit + 1` past the cursor; the union is merged, sorted and sliced.
  */
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
-import { WISP_ACTIVITY_KINDS, type ActivityItem, type CurrentActivity, type WispActivityKind } from '@breeze/shared';
+import { WISP_ACTIVITY_KINDS, memoryBlockSubjectText, type ActivityItem, type CurrentActivity, type WispActivityKind } from '@breeze/shared';
 import { db } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
@@ -175,11 +175,14 @@ const PROFILE_SPECIALIST_KIND: Readonly<Record<string, SpecialistKind>> = Object
   sweep: 'sweep',
 });
 
-/** "Device troubleshooting · FRONT-DESK-01" — the label without its article, then the device or the org. */
-function specialistTitle(profile: string, deviceHostname: string | null, orgName: string): string {
+/**
+ * "Device troubleshooting · FRONT-DESK-01" — the label without its article,
+ * then the device (its display name, else its hostname: #11673) or the org.
+ */
+function specialistTitle(profile: string, device: { displayName: string | null; hostname: string | null }, orgName: string): string {
   const kind = Object.hasOwn(PROFILE_SPECIALIST_KIND, profile) ? PROFILE_SPECIALIST_KIND[profile] : undefined;
   const label = kind ? SPECIALIST_KIND_LABELS[kind].replace(/^(a|an) /, '') : 'specialist';
-  const target = deviceHostname && deviceHostname.trim() ? deviceHostname : orgName;
+  const target = [device.displayName, device.hostname].find((name) => name && name.trim())?.trim() ?? orgName;
   return truncate(`${label.charAt(0).toUpperCase()}${label.slice(1)} · ${target}`, 140);
 }
 
@@ -217,6 +220,7 @@ async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise
       id: aiAgentRuns.id, orgId: aiAgentRuns.orgId, orgName: organizations.name, status: aiAgentRuns.status,
       summary: aiAgentRuns.summary, costCents: aiAgentRuns.costCents, queuedAt: aiAgentRuns.queuedAt, finishedAt: aiAgentRuns.finishedAt,
       profile: aiAgentRuns.profile, triggerSource, deviceHostname: devices.hostname,
+      deviceDisplayName: devices.displayName,
     })
     .from(aiAgentRuns)
     .innerJoin(organizations, and(eq(organizations.id, aiAgentRuns.orgId), eq(organizations.partnerId, ceiling.partnerId)))
@@ -236,7 +240,7 @@ async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise
     if (r.triggerSource === SPECIALIST_SOURCE && r.profile !== ASSESSMENT_PROFILE) {
       return row('specialist', r.id, at, {
         orgId: r.orgId,
-        title: specialistTitle(r.profile, r.deviceHostname ?? null, r.orgName),
+        title: specialistTitle(r.profile, { displayName: r.deviceDisplayName ?? null, hostname: r.deviceHostname ?? null }, r.orgName),
         detail: optionalText(r.summary, 200),
         href: `/ai-agents/runs/${r.id}`,
         costCents: r.costCents,
@@ -310,7 +314,8 @@ async function approvalRows({ ceiling, readable, cursor, take }: SourceArgs): Pr
 }
 
 async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
-  // Content may be private: only the block type, subject key and status leave.
+  // Content may be private: only the block type, status and the readable subject leave (the subject
+  // key, or a standing instruction's own text; the rest of `content` stays server-side).
   const owners: SQL[] = [
     and(eq(aiMemoryBlocks.ownerKind, 'user'), eq(aiMemoryBlocks.ownerUserId, ceiling.grantorUserId))!,
     eq(aiMemoryBlocks.ownerKind, 'partner'),
@@ -320,7 +325,8 @@ async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Prom
   const rows = await db
     .select({
       id: aiMemoryBlocks.id, ownerKind: aiMemoryBlocks.ownerKind, ownerOrgId: aiMemoryBlocks.ownerOrgId, blockType: aiMemoryBlocks.blockType,
-      subjectKey: aiMemoryBlocks.subjectKey, status: aiMemoryBlocks.status, createdAt: aiMemoryBlocks.createdAt,
+      subjectKey: aiMemoryBlocks.subjectKey, content: aiMemoryBlocks.content, status: aiMemoryBlocks.status,
+      createdAt: aiMemoryBlocks.createdAt,
     })
     .from(aiMemoryBlocks)
     .where(and(
@@ -331,13 +337,18 @@ async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Prom
     ))
     .orderBy(desc(at), desc(aiMemoryBlocks.id))
     .limit(take);
-  return rows.map((r) => row('memory', r.id, r.createdAt, {
-    orgId: r.ownerKind === 'org' ? r.ownerOrgId : null,
-    title: `Remembered ${humanize(r.blockType)}: ${truncate(r.subjectKey, 100)}`,
-    detail: humanize(r.status),
-    href: null,
-    costCents: null,
-  }));
+  return rows.map((r) => {
+    // #11612: a standing instruction's key is an internal clause id; its own text is the readable subject.
+    const subject = memoryBlockSubjectText(r);
+    const label = `Remembered ${humanize(r.blockType)}`;
+    return row('memory', r.id, r.createdAt, {
+      orgId: r.ownerKind === 'org' ? r.ownerOrgId : null,
+      title: subject === null ? label : `${label}: ${truncate(subject, 100)}`,
+      detail: humanize(r.status),
+      href: null,
+      costCents: null,
+    });
+  });
 }
 
 async function notificationRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {

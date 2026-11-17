@@ -11,13 +11,16 @@
 // Global Constraints ("DR step contract") and Tasks 7–8.
 import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { DR_STEP_BARE_METAL_REBUILD, normalizeDrStepType } from '@breeze/shared/constants';
 import { backupSnapshots } from '../db/schema/backup';
 import type { DrDb } from './bareMetalRecoveryService';
 // Pool-free leaf (imports only zod): this module must stay lazy on ../db.
 import { isAbsoluteRebuildPath, resolveSnapshotPlatform, type SnapshotPlatform } from './bareMetalRebuildSchemas';
 import { findCredentialShapedKeyPath } from './drStoredCredentialKeys';
 
-export const DR_STEP_BARE_METAL_REBUILD = 'BARE_METAL_REBUILD';
+// The step-type list and its case-insensitive normaliser live in shared so the
+// plan editor and this dispatcher cannot drift (#11856).
+export { DR_STEP_BARE_METAL_REBUILD };
 export const DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_LINUX = '/var/lib/breeze/rebuild/out';
 export const DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_WINDOWS = 'C:\\ProgramData\\Breeze\\rebuild\\out';
 /**
@@ -63,7 +66,8 @@ export function joinRebuildOutputPath(outputDir: string, file: string): string {
 export const DR_BARE_METAL_REBUILD_DEFAULT_WAIT_TIMEOUT_MINUTES = 1440;
 
 export const drBareMetalRebuildConfigSchema = z.object({
-  commandType: z.literal(DR_STEP_BARE_METAL_REBUILD),
+  // Case-insensitive on read: a stored spelling from an older editor still parses (#11856).
+  commandType: z.preprocess((value) => normalizeDrStepType(value) ?? value, z.literal(DR_STEP_BARE_METAL_REBUILD)),
   snapshotSelection: z.literal('latest_restorable').default('latest_restorable'),
   /** REQUIRED at dispatch when the execution type is `rehearsal`; ignored for failover/failback. */
   rebuildHostDeviceId: z.string().guid().optional(),
@@ -83,7 +87,7 @@ export function isBareMetalRebuildConfig(restoreConfig: unknown): boolean {
     !!restoreConfig
     && typeof restoreConfig === 'object'
     && !Array.isArray(restoreConfig)
-    && (restoreConfig as Record<string, unknown>).commandType === DR_STEP_BARE_METAL_REBUILD
+    && normalizeDrStepType((restoreConfig as Record<string, unknown>).commandType) === DR_STEP_BARE_METAL_REBUILD
   );
 }
 
@@ -114,8 +118,12 @@ export const drRestoreConfigSchema = z
       });
       return z.NEVER;
     }
-    if (!isBareMetalRebuildConfig(config)) return config;
-    const parsed = drBareMetalRebuildConfigSchema.safeParse(config);
+    // Store the canonical spelling so an older editor's upper-case step type
+    // never lands in a new row (#11856). Unknown values pass through untouched.
+    const stepType = normalizeDrStepType(config.commandType);
+    const canonical = stepType ? { ...config, commandType: stepType } : config;
+    if (!isBareMetalRebuildConfig(canonical)) return canonical;
+    const parsed = drBareMetalRebuildConfigSchema.safeParse(canonical);
     if (parsed.success) return parsed.data;
     for (const issue of parsed.error.issues) ctx.addIssue({ ...issue });
     return z.NEVER;

@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { atBudgetCeiling, canPause, canResume, hoursUntil, spendMeterState, systemPauseKind } from './wispSpend';
+import { atBudgetCeiling, canPause, canResume, hoursUntil, spendMeterState, systemPauseKind, utcClockTime } from './wispSpend';
+
+describe('utcClockTime (#10414)', () => {
+  it('formats the instant as HH:MM in UTC', () => {
+    expect(utcClockTime('2027-01-06T00:00:00.000Z')).toBe('00:00');
+    expect(utcClockTime('2027-01-06T05:07:59.000Z')).toBe('05:07');
+    expect(utcClockTime('2027-01-06T23:59:00.000Z')).toBe('23:59');
+  });
+  it('is null for a missing or unparseable instant', () => {
+    expect(utcClockTime('garbage')).toBeNull();
+    expect(utcClockTime(undefined)).toBeNull();
+  });
+});
 
 describe('spendMeterState (w00 A32)', () => {
   it('is ok below 80 %, warn from 80 %, exhausted at 100 %', () => {

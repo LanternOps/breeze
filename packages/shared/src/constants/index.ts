@@ -38,6 +38,10 @@ export * from './backupReadiness';
 // partner settings catalog all import. Leaf module, no imports.
 export * from './aiBudgetDefaults';
 
+// AI chat session lifetime (#11430): the API's expiry rule and the web's resume
+// check both import it. Leaf module, no imports.
+export * from './aiSessionLimits';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 
@@ -203,3 +207,6 @@ export * from './alertLifecycle';
 // OAuth authorization-server error page reasons (#9938), shared by the API
 // renderError hook and the web /oauth/consent/error page. Leaf module, no imports.
 export * from './oauthErrorPage';
+// DR plan group step types + case-insensitive normaliser, shared by the plan
+// editor and the execution dispatcher (#11856). Leaf module, no imports.
+export * from './drStepTypes';

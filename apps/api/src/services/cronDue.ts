@@ -3,8 +3,8 @@
  * automationRuntime.ts (#4141) so schedule-driven workers (discoveryWorker,
  * networkBaselineWorker via discovery, sensitiveDataJobs) can evaluate cron
  * windows without pulling in the automation runtime's import graph
- * (automationRuntime -> scriptDispatch -> routes/agentWs), which pinned them
- * to socket-owner placement in the worker registry. No imports on purpose.
+ * (heavy, and it was what pinned them to socket-owner placement in the worker
+ * registry). No imports on purpose.
  */
 export function matchesCronField(
   field: string,

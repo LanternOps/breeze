@@ -47,7 +47,7 @@ import { getDeviceWorkloadsView } from './workloads/view';
 import { projectWorkloadsForAi } from './workloads/aiProjection';
 import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
-import { projectPublicDevice } from '../routes/devices/helpers';
+import { projectPublicDeviceForCaller } from '../routes/devices/helpers';
 import { readPlacement } from './assetPlacement';
 import {
   sanitizeUntrustedText,
@@ -340,7 +340,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // (no jsonb on device_hardware/device_network/device_disks).
       return JSON.stringify({
         device: {
-          ...projectPublicDevice(device),
+          ...(await projectPublicDeviceForCaller(device, auth)),
           siteName: site?.name
         },
         hardware: hardware[0] ?? null,

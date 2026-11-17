@@ -217,6 +217,16 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   requestedByRunId: uuid('requested_by_run_id'),
   parentGrantRevisionId: uuid('parent_grant_revision_id'),
   depth: smallint('depth').notNull().default(0),
+  // Wisp analysis sessions W03: analysis-chain lineage. A continuation carries
+  // the run it continues, the chain's root and its depth (>= 1); a root is
+  // depth 0 with both NULL (`ai_agent_runs_chain_chk`). The (pointer, org_id)
+  // self-FKs and the two partial indexes are SQL-ONLY
+  // (migrations/2027-01-27-130000-ai-analysis-run-lineage.sql): they use
+  // `ON DELETE SET NULL (<pointer>)`, which Drizzle cannot model — the same
+  // reason as `requestedByRunId` above.
+  continuedFromRunId: uuid('continued_from_run_id'),
+  chainRootRunId: uuid('chain_root_run_id'),
+  chainDepth: smallint('chain_depth').notNull().default(0),
   // Spec §6.2: no prompt registry exists yet, so runs 1 and 4 of one task may
   // use different released prompts. That drift is accepted but must be
   // RECORDED. `resolvedModel` because runLoop.ts may fall back to the org's
@@ -281,6 +291,11 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // finished_at).
   orgProfileFinishedIdx: index('ai_agent_runs_org_profile_finished_idx')
     .on(table.orgId, table.profile, table.finishedAt).where(sql`${table.finishedAt} IS NOT NULL`),
+  // #4342 W5 retention (2027-01-23-130000, built CONCURRENTLY): the global
+  // finished-run age scan (jobs/historyRetention/aiAgentRuns.ts), which the
+  // org-leading index above cannot serve.
+  finishedIdx: index('ai_agent_runs_finished_idx')
+    .on(table.finishedAt).where(sql`${table.finishedAt} IS NOT NULL`),
   // W03 (#5208): AI Operator admission identity — one reasoning run per task
   // step and attempt (spec §6.2). Partial so legacy rows never collide.
   taskAdmissionUq: uniqueIndex('ai_agent_runs_task_admission_uq')
@@ -289,14 +304,43 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;
+/** Wisp analysis sessions W02 — what an analysis run's device frame covers. */
+export type AnalysisScopeKind = 'devices' | 'site' | 'org';
+
+/**
+ * Wisp analysis sessions W02 — row classes inside an exportable dataset that
+ * need a permission beyond the dataset's own (spec §4.4 "Permission").
+ */
+export type AnalysisSensitiveGate = 'security_events' | 'user_account_changes';
+
+/**
+ * Wisp analysis sessions W02 — the datasets an analysis run may export and the
+ * sensitive gates it holds, evaluated once against the live grant ceiling when
+ * the run is admitted and frozen into `staged_inputs`. Never re-derived from
+ * the run principal (it has no role).
+ */
+export interface AiRunExportGrants {
+  datasets: string[];
+  sensitiveGates: AnalysisSensitiveGate[];
+}
+
 /**
  * Execution plane W04 — shape of `ai_agent_runs.staged_inputs`: the frozen
  * artifact handles and device set an `analysis` run may reach.
+ *
+ * W02 (Wisp analysis sessions) adds two OPTIONAL fields so a run admitted
+ * before it still executes:
+ * - `scope`: what the frozen `deviceIds` was expanded from. Absent on a
+ *   pre-W02 run, which is read as an explicit device list.
+ * - `exportGrants`: the frozen export authority. ABSENT MEANS LEGACY (the
+ *   original seven datasets, no sensitive gate held), never "everything".
  */
 export interface AiAgentRunStagedInputs {
   handles: string[];
   deviceIds: string[];
   region: 'eu' | 'us';
+  scope?: { kind: AnalysisScopeKind; siteId: string | null; deviceCount: number };
+  exportGrants?: AiRunExportGrants;
 }
 
 export type AiAgentRunRow = typeof aiAgentRuns.$inferSelect;

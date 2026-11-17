@@ -86,15 +86,21 @@ export function interactivePartnerAuth(
   } as unknown as AuthContext;
 }
 
-export async function expectSqlState(fn: () => Promise<unknown>, code: string): Promise<unknown> {
+/**
+ * `code` may be a list of acceptable SQLSTATEs — pass
+ * `FOREIGN_KEY_VIOLATION_SQLSTATES` for a RESTRICT refusal, which Postgres 18
+ * reports as 23001 and older versions as 23503 (#11624).
+ */
+export async function expectSqlState(fn: () => Promise<unknown>, code: string | readonly string[]): Promise<unknown> {
   let raised: unknown;
   try {
     await fn();
   } catch (err) {
     raised = err;
   }
-  expect(raised, `expected SQLSTATE ${code}, but the statement succeeded`).toBeDefined();
-  expect(pgErrorCode(raised)).toBe(code);
+  expect(raised, `expected SQLSTATE ${String(code)}, but the statement succeeded`).toBeDefined();
+  if (typeof code === 'string') expect(pgErrorCode(raised)).toBe(code);
+  else expect(code).toContain(pgErrorCode(raised));
   return raised;
 }
 

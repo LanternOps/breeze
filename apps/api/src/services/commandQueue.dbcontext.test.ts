@@ -121,6 +121,22 @@ vi.mock('../routes/agentWs', () => ({
   isAgentConnected: (...args: unknown[]) => agentWsMocks.isAgentConnected(...(args as [])),
 }));
 
+// #4142: commandQueue pushes through the relay facade. This bridge keeps the
+// agentWs mock above as the transport, so `wsSend@depth<n>` still records the
+// depth at which the push happens.
+vi.mock('./agentCommandRelay', async () => {
+  const ws = await import('../routes/agentWs');
+  return {
+    dispatchCommandToAgent: async (agentId: string, frame: unknown) => (
+      ws.sendCommandToAgent(agentId, frame as never) ? { status: 'sent', via: 'local' } : { status: 'offline' }
+    ),
+    agentReachability: async (agentId: string) => (ws.isAgentConnected(agentId) ? 'connected' : 'absent'),
+    dispatchDisposition: (o: { status: string }) => (
+      o.status === 'sent' ? 'delivered' : o.status === 'indeterminate' ? 'uncertain' : 'not_delivered'
+    ),
+  };
+});
+
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: (...args: unknown[]) => {
     ctxState.events.push(`claim@depth${ctxState.depth}`);

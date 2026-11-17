@@ -48,9 +48,11 @@ import {
   withDbAccessContext,
   withSystemDbAccessContext,
   runOutsideDbContext,
+  runAfterDbContextExit,
   assertOutsideHeldDbContext,
   __resetHeldContextCaptureThrottleForTests,
 } from '../../db';
+import { safeFetch } from '../../services/urlSafety';
 
 const HELD = 'held a pooled connection';
 
@@ -113,6 +115,82 @@ describe('#1105 DB-context tripwires', () => {
       await expect(
         withSystemDbAccessContext(async () => {
           assertOutsideHeldDbContext('redis.enqueue');
+        }),
+      ).rejects.toThrow(/#1105/);
+    });
+  });
+
+  describe('assertOutsideHeldDbContext with includeOuterTransaction', () => {
+    const OP = 'outbound.wait';
+    function opWarns(): unknown[][] {
+      return warnSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes(OP));
+    }
+
+    it('warns under runOutsideDbContext while the outer transaction still holds its connection', async () => {
+      await withSystemDbAccessContext(async () => {
+        await runOutsideDbContext(async () => {
+          assertOutsideHeldDbContext(OP, { includeOuterTransaction: true });
+        });
+      });
+      expect(opWarns()).toHaveLength(1);
+      expect(String(opWarns()[0]![0])).toContain('#1105');
+    });
+
+    it('throws there under strict mode', async () => {
+      process.env.DB_CONTEXT_TRIPWIRE_STRICT = '1';
+      await expect(
+        withSystemDbAccessContext(async () => {
+          await runOutsideDbContext(async () => {
+            assertOutsideHeldDbContext(OP, { includeOuterTransaction: true });
+          });
+        }),
+      ).rejects.toThrow(/#1105/);
+    });
+
+    it('is quiet with no context at all', () => {
+      assertOutsideHeldDbContext(OP, { includeOuterTransaction: true });
+      expect(opWarns()).toHaveLength(0);
+    });
+
+    it('is quiet in work deferred until the transaction has settled', async () => {
+      let ran!: () => void;
+      const done = new Promise<void>((resolve) => { ran = resolve; });
+      await withSystemDbAccessContext(async () => {
+        runAfterDbContextExit('tripwire-test', () => {
+          assertOutsideHeldDbContext(OP, { includeOuterTransaction: true });
+          ran();
+        });
+      });
+      await done;
+      expect(opWarns()).toHaveLength(0);
+    });
+
+    it('is quiet in fire-and-forget work that runs after the request transaction ended', async () => {
+      let later!: Promise<void>;
+      await withSystemDbAccessContext(async () => {
+        later = runOutsideDbContext(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          assertOutsideHeldDbContext(OP, { includeOuterTransaction: true });
+        });
+      });
+      await later;
+      expect(opWarns()).toHaveLength(0);
+    });
+
+    it('still treats runOutsideDbContext as the escape hatch without the option', async () => {
+      await withSystemDbAccessContext(async () => {
+        await runOutsideDbContext(async () => {
+          assertOutsideHeldDbContext(OP);
+        });
+      });
+      expect(opWarns()).toHaveLength(0);
+    });
+
+    it('safeFetch refuses under strict mode while an outer transaction holds its connection', async () => {
+      process.env.DB_CONTEXT_TRIPWIRE_STRICT = '1';
+      await expect(
+        withSystemDbAccessContext(async () => {
+          await runOutsideDbContext(() => safeFetch('https://example.invalid/'));
         }),
       ).rejects.toThrow(/#1105/);
     });

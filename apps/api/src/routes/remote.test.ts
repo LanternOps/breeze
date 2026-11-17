@@ -73,7 +73,9 @@ vi.mock('../db', () => ({
   hasDbAccessContext: vi.fn(() => true),
   // resolveRemoteSessionPromptConfig reads in the request's own context via a
   // savepoint when one is active.
-  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn())
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // runTerminalWrite (#11839) opens a savepoint only when a context is held.
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn())
 }));
 
 vi.mock('../db/schema', () => ({

@@ -4,20 +4,22 @@ import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import ConnectionsTab from './ConnectionsTab';
 import DeprecationsTab from './DeprecationsTab';
+import HealthTab from './HealthTab';
 
 /**
  * /admin/system (spec 2026-09-23-system-connections-page-design.md §4, D7).
- * Platform-admin, read-only deployment status. Tabs: Connections (default)
- * and Deprecations. The selected tab lives in `?tab=`; the Astro route parses
+ * Platform-admin, read-only deployment status. Tabs: Connections (default),
+ * Deprecations and Health (spec 2026-10-30-system-health-admin-design). The selected tab lives in `?tab=`; the Astro route parses
  * it server-side and passes `initialTab`, so SSR and hydration agree.
  */
 
-export type SystemTab = 'connections' | 'deprecations';
+export type SystemTab = 'connections' | 'deprecations' | 'health';
 
-const TABS: readonly SystemTab[] = ['connections', 'deprecations'];
+const TABS: readonly SystemTab[] = ['connections', 'deprecations', 'health'];
 
 export function parseSystemTab(value: string | null | undefined): SystemTab {
-  return value === 'deprecations' ? 'deprecations' : 'connections';
+  if (value === 'deprecations' || value === 'health') return value;
+  return 'connections';
 }
 
 export default function SystemPage({ initialTab = 'connections' }: { initialTab?: SystemTab }) {
@@ -37,8 +39,11 @@ export default function SystemPage({ initialTab = 'connections' }: { initialTab?
     );
   };
 
-  const tabLabel = (id: SystemTab) =>
-    id === 'connections' ? t('admin.systemPage.tabs.connections') : t('admin.systemPage.tabs.deprecations');
+  const tabLabel = (id: SystemTab) => {
+    if (id === 'connections') return t('admin.systemPage.tabs.connections');
+    if (id === 'deprecations') return t('admin.systemPage.tabs.deprecations');
+    return t('admin.systemPage.tabs.health');
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -70,7 +75,7 @@ export default function SystemPage({ initialTab = 'connections' }: { initialTab?
       </div>
 
       <div role="tabpanel" id={`system-panel-${tab}`} aria-labelledby={`system-tab-${tab}`}>
-        {tab === 'connections' ? <ConnectionsTab /> : <DeprecationsTab />}
+        {tab === 'connections' ? <ConnectionsTab /> : tab === 'health' ? <HealthTab /> : <DeprecationsTab />}
       </div>
     </div>
   );

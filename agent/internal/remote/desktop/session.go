@@ -47,6 +47,10 @@ type Session struct {
 	cursorDC      *webrtc.DataChannel
 	controlDC     *webrtc.DataChannel
 
+	// softwareSwapRetryAt (unix nanos) suppresses swapToSoftwareEncoder until
+	// then, after it found no usable software encoder (#11392).
+	softwareSwapRetryAt atomic.Int64
+
 	// displayWake keeps the display on for the session (#10874). Set in
 	// StartSession before the capture loop starts; released in doCleanup.
 	displayWake *displayWakeHold

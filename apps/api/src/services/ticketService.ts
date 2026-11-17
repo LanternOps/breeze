@@ -122,7 +122,7 @@ export class TicketServiceError extends Error {
 }
 
 /** Where a `'system'` ticket write comes from — a pipeline, never a person. */
-export type TicketSystemSource = 'inbound_email' | 'caller_verification' | 'planned_work' | 'ai_operator' | 'scheduler';
+export type TicketSystemSource = 'inbound_email' | 'caller_verification' | 'planned_work' | 'ai_operator' | 'scheduler' | 'trust_center';
 
 /**
  * Who is behind a ticket write — a discriminated union, so every consumer
@@ -407,8 +407,9 @@ export function ticketSideEffects(mode: TicketWriteMode): TicketSideEffects {
  * window's principal, the ticket's org is one of the window's (RLS bounds the
  * same set: the import transaction runs with the window's orgs only), and the
  * historic time is not in the future nor before the ticket was created.
+ * Also used by `addTicketLink` in import mode (ticketLinkService.ts, W2).
  */
-function assertImportWrite(
+export function assertImportWrite(
   mode: ImportTicketWriteMode,
   actor: TicketActor,
   target: { orgId: string; createdAt?: Date | null },
@@ -439,7 +440,7 @@ function importUpdatedAt(at: Date) {
 }
 
 /** The ticket_comments stamp of an import write (feed rows and comments): historic time and window. */
-function importRowStamp(mode: TicketWriteMode): { createdAt?: Date; migrationWindowId?: string } {
+export function importRowStamp(mode: TicketWriteMode): { createdAt?: Date; migrationWindowId?: string } {
   return isImportWrite(mode) ? { createdAt: mode.at, migrationWindowId: mode.window.id } : {};
 }
 
@@ -1654,7 +1655,7 @@ async function consumeResolutionDraft(draftId: string, consumedBy: string): Prom
  *    AFTER that transaction commits (jobs/ticketOutboxPublisher.ts) — a
  *    failed proposal can never roll back or fail the technician's action;
  *  - this service stays clear of the action-intent import graph
- *    (intentService → aiTools → commandQueue → routes/agentWs.ts), which
+ *    (intentService → aiTools → … → routes/agentWs.ts), which
  *    the `global`-placement workers that import ticketService must never
  *    reach (workerEntrypointClosure.contract.test.ts);
  *  - the subscriber re-verifies every claim against the draft row before

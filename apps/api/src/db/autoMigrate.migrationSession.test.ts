@@ -53,7 +53,18 @@ vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(async () => Object.keys(migrationFiles)),
   readFile: vi.fn(async (filePath: string) => migrationFiles[String(filePath).split(/[\\/]/).pop() ?? ''] ?? ''),
 }));
-vi.mock('./ensureAppRole', () => ({ ensureAppRole: vi.fn(async () => true) }));
+vi.mock('./ensureAppRole', () => ({
+  ensureAppRole: vi.fn(async () => {
+    callLog.push('<ensureAppRole>');
+    return true;
+  }),
+}));
+vi.mock('./ensureClusterRoles', () => ({
+  ensureClusterRoles: vi.fn(async (_client: unknown, opts: { phase: string }) => {
+    callLog.push(`<ensureClusterRoles:${opts.phase}>`);
+    return { applied: [], warnings: [] };
+  }),
+}));
 vi.mock('./seed', () => ({ seed: vi.fn(async () => undefined) }));
 
 import {
@@ -156,6 +167,21 @@ describe('applyMigrationInTransaction (#8991)', () => {
     expect(callLog).toContain('<rollback>');
     expect(callLog).not.toContain('<commit>');
     expect(callLog.indexOf('UPDATE roles SET name = name;')).toBeGreaterThan(callLog.indexOf('<begin>'));
+  });
+});
+
+describe('autoMigrate cluster-role repair order (#11929)', () => {
+  it('ensures the roles before pending migrations and the object privileges after the final ensureAppRole', async () => {
+    migrationFiles['2027-01-01-000000-a.sql'] = 'UPDATE roles SET name = name;';
+    await autoMigrate();
+    const pre = callLog.indexOf('<ensureClusterRoles:pre-migration>');
+    const file = callLog.indexOf('UPDATE roles SET name = name;');
+    const post = callLog.indexOf('<ensureClusterRoles:post-migration>');
+    const lastAppRole = callLog.lastIndexOf('<ensureAppRole>');
+    expect(pre).toBeGreaterThan(callLog.indexOf('<ensureAppRole>'));
+    expect(file).toBeGreaterThan(pre);
+    expect(post).toBeGreaterThan(file);
+    expect(post).toBeGreaterThan(lastAppRole);
   });
 });
 

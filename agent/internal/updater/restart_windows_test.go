@@ -461,3 +461,31 @@ func TestBuildRestartScript_EscapesSingleQuotes(t *testing.T) {
 		t.Fatalf("agent path single quote was not escaped; script was:\n%s", got)
 	}
 }
+
+// Install and temp paths may contain any single-quote character, ASCII or
+// typographic; each must stay inside its literal.
+func TestBuildRestartScript_QuotesPaths(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		Agent: BinaryPair{
+			Temp:   "C:\\Users\\O\u2019Brien\\AppData\\Local\\Temp\\breeze-agent-1234.exe",
+			Target: "C:\\Program Files\\\u2018Breeze\u2019\\breeze-agent.exe",
+		},
+		UserHelper: &BinaryPair{
+			Temp:   "C:\\Temp\\it's\\breeze-user-helper.exe",
+			Target: "C:\\Program Files\\\u2018Breeze\u2019\\breeze-user-helper.exe",
+		},
+		Backup: &BinaryPair{
+			Temp:   "C:\\Temp\\\u201alow\u201b\\breeze-backup.exe",
+			Target: "C:\\Program Files\\\u2018Breeze\u2019\\breeze-backup.exe",
+		},
+	})
+	for _, want := range []string{
+		"Copy-Item -Path 'C:\\Users\\O\u2019\u2019Brien\\AppData\\Local\\Temp\\breeze-agent-1234.exe' -Destination 'C:\\Program Files\\\u2018\u2018Breeze\u2019\u2019\\breeze-agent.exe' -Force",
+		"Copy-Item -Path 'C:\\Temp\\it''s\\breeze-user-helper.exe' -Destination 'C:\\Program Files\\\u2018\u2018Breeze\u2019\u2019\\breeze-user-helper.exe' -Force",
+		"'C:\\Temp\\\u201a\u201alow\u201b\u201b\\breeze-backup.exe'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("script missing %q:\n%s", want, got)
+		}
+	}
+}

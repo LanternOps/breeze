@@ -12,7 +12,7 @@ import { contractRoutes } from '../../routes/contracts';
 import { partnerApiRoutes } from '../../routes/partnerApi';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
-import { createOrganization, createPartner, createUser, userEpochs } from './db-utils';
+import { createOrganization, createPartner, createUser, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -279,6 +279,7 @@ async function issueKey(
     updatedBy: userId,
   }).returning();
   if (!principal) throw new Error('service principal seed failed');
+  await ensurePartnerServicePrincipalOwner(userId, partnerId);
   return (await issuePartnerServicePrincipalKey(admin as unknown as Database, {
     partnerServicePrincipalId: principal.id,
     partnerId,

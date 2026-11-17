@@ -190,6 +190,21 @@ describe('postSpecialistResult (real Postgres)', () => {
     expect(notes[0]).toMatchObject({ orgId: t.org.id, link: `/ai-agents/runs/${runId}` });
   });
 
+  it('#11673: the post names the device by its display name and carries the whole report, next step included', async () => {
+    const t = await seedTenant();
+    await sys(() => db.update(devices).set({ displayName: 'Front desk PC' }).where(eq(devices.id, t.deviceId)));
+    const { runId } = await admit(t);
+    const nextStep = '**Next step:** rebuild the Outlook profile and re-test.';
+    const summary = `${'- **Evidence:** the OST file fails its integrity check again.\n'.repeat(28)}\n${nextStep}`;
+    expect(summary.length).toBeGreaterThan(1_500);
+    await settle(runId, 'completed', { summary });
+
+    await expect(postSpecialistResult(runId)).resolves.toEqual({ posted: true });
+    const [post] = await postsFor(t.grant.grantId);
+    expect(post!.title).toBe('Device troubleshooting on Front desk PC: finished');
+    expect(post!.body).toBe(summary.trim());
+  });
+
   it('awaiting_approval counts only the run\'s own still-pending intents', async () => {
     const t = await seedTenant();
     const a = await admit(t);

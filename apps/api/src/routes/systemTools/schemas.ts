@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { devicePathFloorRefusal } from '@breeze/shared';
 
 export const deviceIdParamSchema = z.object({
   deviceId: z.string().guid()
@@ -86,8 +87,8 @@ export const paginationQuerySchema = z.object({
 
 // Check both forward and back slashes since paths may come from Windows or Unix agents
 const filePathString = z.string().min(1).max(2048).refine(
-  (val) => !val.includes('\0') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(val),
-  { message: 'Invalid path: null bytes and path traversal (..) are not allowed' }
+  (val) => devicePathFloorRefusal(val) === null && !val.includes('\0') && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(val),
+  { message: 'Invalid path: use an absolute local path without null bytes or traversal (..)' }
 );
 
 export const fileListQuerySchema = z.object({

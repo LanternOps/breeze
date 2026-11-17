@@ -7,6 +7,25 @@ import type { AuthContext } from '../middleware/auth';
 export const WRITE_ORG_AMBIGUOUS_ERROR = 'orgId is required: you have access to multiple organizations';
 
 /**
+ * {@link WRITE_ORG_AMBIGUOUS_ERROR} for a tool that can also write a
+ * partner-owned row (`ownerScope: 'partner'`). On a partner-wide session the
+ * bare "orgId is required" left the model to guess a tenant, or to put the
+ * partner id in `orgId`; this names both owners it can choose (#11432).
+ */
+export const WRITE_OWNER_AMBIGUOUS_ERROR =
+  'orgId is required: you have access to multiple organizations. Pass orgId (one customer organization\'s id) '
+  + 'for that customer\'s object, or ownerScope: "partner" for a partner-owned one. Never put the partner id in orgId.';
+
+/**
+ * A write-org refusal as an `ownerScope`-capable tool reports it: only the
+ * ambiguous case changes. Use it only in a tool that accepts `ownerScope`;
+ * the message offers it unconditionally.
+ */
+export function withOwnerScopeOption(error: string): string {
+  return error === WRITE_ORG_AMBIGUOUS_ERROR ? WRITE_OWNER_AMBIGUOUS_ERROR : error;
+}
+
+/**
  * Resolve the org that OWNS a row an AI/MCP tool is about to write.
  *
  * Writes must never use `accessibleOrgIds[0]`. For a partner tech that is
@@ -17,8 +36,10 @@ export const WRITE_ORG_AMBIGUOUS_ERROR = 'orgId is required: you have access to 
  *    refused. A device-bound chat session's `toolAuth` is narrowed to this shape
  *    (`buildDeviceBoundSessionAuth`), so its anchored org resolves here.
  * 2. An explicit `inputOrgId` the caller can access.
- * 3. `auth.aiWriteDefaultOrgId`: the device-page anchor of an AI chat session
- *    (#6675), re-checked with `canAccessOrg` here, on every call. It outranks
+ * 3. `auth.aiWriteDefaultOrgId`, re-checked with `canAccessOrg` here, on every
+ *    call. It is set from one of two sources: the device-page anchor of an AI
+ *    chat session (#6675), or the focus org of a Wisp thread whose session is
+ *    anchored to it (`narrowAuthToCeiling`, #11432). It outranks
  *    `auth.orgId` for the same reason the session anchor does (#5684): the
  *    page's device, not the org selector, says which tenant the chat is about.
  *    Reads that borrow this resolver pass `{ useWriteDefault: false }` so the

@@ -53,6 +53,13 @@ vi.mock('../actionIntents/intentService', async (importOriginal) => ({
   createActionIntent: intentMocks.createActionIntent,
 }));
 
+const gateMocks = vi.hoisted(() => ({ evaluateStandingInstructions: vi.fn() }));
+vi.mock('../wisp/standingInstructionGate', () => ({
+  evaluateStandingInstructions: gateMocks.evaluateStandingInstructions,
+  standingConflictDescription: (text: string, description: string) => `Conflicts with a remembered instruction: '${text}'. ${description}`,
+  STANDING_CHECK_UNAVAILABLE_MESSAGE: "Couldn't check remembered instructions; try again.",
+}));
+
 const progressMocks = vi.hoisted(() => ({ emitRunProgress: vi.fn(async () => undefined) }));
 vi.mock('./runProgress', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./runProgress')>()),
@@ -78,13 +85,13 @@ function ceiling(o: Partial<GrantCeiling> = {}): GrantCeiling {
   };
 }
 
-function makeHook(args: { outcome: AgentRunOutcome; intentIds?: string[]; profile?: 'device_troubleshooting' | 'full' }) {
+function makeHook(args: { outcome: AgentRunOutcome; intentIds?: string[]; grantId?: string | null; profile?: 'device_troubleshooting' | 'full' }) {
   const profile = args.profile ?? 'device_troubleshooting';
   return createAgentRunPreToolUse({
     run: {
       id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile,
       taskId: null, taskStepKey: null, taskAttemptOrdinal: null,
-      grantId: 'g1', grantRevisionId: 'r1',
+      grantId: args.grantId === undefined ? 'g1' : args.grantId, grantRevisionId: args.grantId === null ? null : 'r1',
     },
     agentName: 'Device troubleshooting (built-in)',
     agentAuth: { user: { id: AGENT_ID } } as unknown as AuthContext,
@@ -110,6 +117,7 @@ beforeEach(() => {
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   grantMocks.resolveGrantCeiling.mockReset().mockResolvedValue(ceiling());
   progressMocks.emitRunProgress.mockClear();
+  gateMocks.evaluateStandingInstructions.mockReset().mockResolvedValue({ action: 'none' });
   intentSeq = 0;
   intentMocks.createActionIntent.mockReset().mockImplementation(async () => ({
     id: `intent-${++intentSeq}`, status: 'pending_approval', errorCode: null,
@@ -331,5 +339,67 @@ describe('device_troubleshooting pre-tool hook (#11084)', () => {
     const result = await pre('query_devices', {});
     expect(result.allowed).toBe(false);
     expect((result as { error: string }).error).toMatch(/not available to device_troubleshooting runs/);
+  });
+});
+
+describe('standing instructions in the grant-run pre-tool hook (#10428)', () => {
+  const input = { deviceId: DEVICE_ID, summary: 'Outlook profile corrupt' };
+  const AGENT = 'Device troubleshooting (built-in)';
+
+  it('refuse → denied with the gate error, recorded in deniedActions, no intent', async () => {
+    gateMocks.evaluateStandingInstructions.mockResolvedValue({ action: 'refuse', error: 'Blocked by a remembered instruction', match: {} });
+    const outcome = makeOutcome();
+    const pre = makeHook({ outcome });
+    const result = await pre('set_device_context', input);
+    expect(gateMocks.evaluateStandingInstructions).toHaveBeenCalledWith(expect.objectContaining({
+      ceiling: expect.objectContaining({ grantId: 'g1' }), toolName: 'set_device_context', input,
+    }));
+    expect(result).toEqual({ allowed: false, error: 'Blocked by a remembered instruction' });
+    expect(outcome.deniedActions).toEqual([{ tool: 'set_device_context', reason: 'Blocked by a remembered instruction' }]);
+    expect(intentMocks.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('gate throws → denied with the unavailable message, recorded, no intent', async () => {
+    gateMocks.evaluateStandingInstructions.mockRejectedValue(new Error('db down'));
+    const outcome = makeOutcome();
+    const pre = makeHook({ outcome });
+    const result = await pre('set_device_context', input);
+    const msg = "Couldn't check remembered instructions; try again.";
+    expect(result).toEqual({ allowed: false, error: msg });
+    expect(outcome.deniedActions).toEqual([{ tool: 'set_device_context', reason: msg }]);
+    expect(intentMocks.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('warn → the minted intent reason carries the conflict description (Tier 2 on a troubleshoot run)', async () => {
+    gateMocks.evaluateStandingInstructions.mockResolvedValue({ action: 'warn', text: 'leave Outlook alone', matches: [] });
+    const pre = makeHook({ outcome: makeOutcome() });
+    await pre('set_device_context', input);
+    expect(intentMocks.createActionIntent).toHaveBeenCalledTimes(1);
+    expect(intentMocks.createActionIntent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reason: `Conflicts with a remembered instruction: 'leave Outlook alone'. Proposed by ${AGENT} for run ${RUN_ID}`,
+    }));
+  });
+
+  it('warn → also on a Tier-3 proposal', async () => {
+    gateMocks.evaluateStandingInstructions.mockResolvedValue({ action: 'warn', text: 'no scripts', matches: [] });
+    const pre = makeHook({ outcome: makeOutcome() });
+    await pre('run_script', { deviceId: DEVICE_ID, scriptId: '00000000-0000-4000-8000-00000000aaaa' });
+    expect(intentMocks.createActionIntent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reason: `Conflicts with a remembered instruction: 'no scripts'. Proposed by ${AGENT} for run ${RUN_ID}`,
+    }));
+  });
+
+  it('control: none → unchanged reason', async () => {
+    const pre = makeHook({ outcome: makeOutcome() });
+    await pre('set_device_context', input);
+    expect(intentMocks.createActionIntent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reason: `Proposed by ${AGENT} for run ${RUN_ID}`,
+    }));
+  });
+
+  it('control: a run without a grant never calls the gate', async () => {
+    const pre = makeHook({ outcome: makeOutcome(), grantId: null, profile: 'full' });
+    await pre('set_device_context', input);
+    expect(gateMocks.evaluateStandingInstructions).not.toHaveBeenCalled();
   });
 });

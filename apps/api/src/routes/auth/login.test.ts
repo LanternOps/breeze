@@ -23,10 +23,9 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../services/authLifecycle', () => ({
   revokeRefreshFamilyById: vi.fn(async () => undefined),
-  // SR2-08: the account-locked reset link (recordAccountFailureAndMaybeNotify)
-  // advances password_reset_epoch the same way /forgot-password does. No
-  // current test drives the `newlyLocked` branch, but this keeps the mock
-  // shape consistent with what login.ts now imports.
+  // The account-locked reset link (notifyAccountLocked) advances
+  // password_reset_epoch the same way /forgot-password does. This keeps the
+  // mock shape consistent with what login.ts imports.
   advanceUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1, emailEpoch: 1, passwordResetEpoch: 2 })),
 }));
 
@@ -111,9 +110,9 @@ vi.mock('../../services', () => {
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
   mintRefreshTokenFamily,
   bindRefreshJtiToFamily,
-  recordAccountFailure: vi.fn(async () => ({ count: 1, newlyLocked: false })),
+  reserveAccountAttempt: vi.fn(async () => ({ allowed: true, count: 1, reachesLimit: false })),
+  releaseAccountAttempt: vi.fn(async () => undefined),
   clearAccountFailures: vi.fn(async () => undefined),
-  isAccountLocked: vi.fn(async () => false),
   getAccountLockoutWindowSeconds: vi.fn(() => 900),
   getUserEpochs,
   getRefreshFamily: vi.fn(async () => ({ revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 86_400_000) })),
@@ -354,8 +353,8 @@ import {
   revokeAllUserTokens,
   bindRefreshJtiToFamily,
   isTokenIssuedBeforePasswordChange,
-  isAccountLocked,
-  recordAccountFailure,
+  reserveAccountAttempt,
+  releaseAccountAttempt,
   clearAccountFailures,
   getUserEpochs,
   getRefreshFamily,
@@ -994,6 +993,74 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
       // Compatibility alias mirrors the authoritative policy intersection so
       // strict legacy adapters cannot disagree with allowedMethods.
       passkeyAvailable: false,
+    });
+  });
+
+  // #10650: the challenge offers TOTP through the shared factor predicate, so a
+  // backup authenticator beside a primary passkey is offered while a stale
+  // secret beside an SMS primary is not.
+  const mfaRow = (overrides: Record<string, unknown>) => ({
+    id: 'user-1',
+    email: 'admin@msp.com',
+    name: 'Admin User',
+    passwordHash: 'password-hash',
+    status: 'active',
+    mfaEnabled: true,
+    mfaSecret: 'secret',
+    mfaMethod: 'totp',
+    mfaRecoveryCodes: ['scrypt$v1$hash-1'],
+    phoneNumber: null,
+    avatarUrl: null,
+    ...overrides,
+  });
+
+  it('offers the backup authenticator app on a passkey-primary account, keeping passkey primary', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([mfaRow({ mfaMethod: 'passkey' })]) as any);
+    vi.mocked(userHasUsablePasskey).mockResolvedValueOnce(true);
+    const setexMock = vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaRequired: true,
+      mfaMethod: 'passkey',
+      allowedMethods: { totp: true, sms: false, passkey: true },
+    });
+    const written = JSON.parse(setexMock.mock.calls[0]?.[2] as string) as Record<string, unknown>;
+    expect(written).toMatchObject({ mfaMethod: 'passkey', allowedMethods: { totp: true, passkey: true } });
+  });
+
+  it('does not offer a stale TOTP secret beside an SMS primary', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([mfaRow({ mfaMethod: 'sms', phoneNumber: '+15555550100' })]) as any);
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
+    });
+    vi.mocked(getRedis).mockReturnValue({ setex: vi.fn(async () => 'OK') } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaMethod: 'sms',
+      allowedMethods: { totp: false, sms: true },
+    });
+  });
+
+  it('still offers TOTP on a legacy enabled row whose mfa_method was never written', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([mfaRow({ mfaMethod: null })]) as any);
+    vi.mocked(getRedis).mockReturnValue({ setex: vi.fn(async () => 'OK') } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaMethod: 'totp',
+      allowedMethods: { totp: true },
     });
   });
 
@@ -2023,8 +2090,8 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     originalE2eMode = process.env.E2E_MODE;
     delete process.env.E2E_MODE;
     vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
-    vi.mocked(isAccountLocked).mockResolvedValue(false);
-    vi.mocked(recordAccountFailure).mockResolvedValue({ count: 1, locked: false, newlyLocked: false });
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
+    vi.mocked(releaseAccountAttempt).mockResolvedValue(undefined);
     vi.mocked(clearAccountFailures).mockResolvedValue(undefined);
     vi.mocked(verifyPassword).mockResolvedValue(true);
     vi.mocked(db.update).mockReturnValue(updateChain() as any);
@@ -2062,7 +2129,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
 
     // Branch B: the email exists AND the account is locked.
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
     const locked = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
     const lockedBody = await locked.json();
     const lockedHeaders = Object.fromEntries(locked.headers.entries());
@@ -2092,7 +2159,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
     // argon2 exceeds the wall-clock floor — the enumeration oracle simply moves
     // from the response body into the response latency.
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
 
@@ -2102,34 +2169,105 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
 
   it('still BLOCKS the login: a locked account mints nothing even with the CORRECT password', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
     vi.mocked(verifyPassword).mockResolvedValue(true); // the right password
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
 
     expect(res.status).toBe(401);
     expect(createTokenPair).not.toHaveBeenCalled();
-    // A locked account must not be able to reset its own failure counter or
-    // move last_login_at by presenting the correct password.
+    // A locked account must not be able to reset its own failure counter, give
+    // its attempt back, or move last_login_at by presenting the correct password.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(clearAccountFailures).not.toHaveBeenCalled();
+    expect(releaseAccountAttempt).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('does not bump the per-account failure counter while already locked (no self-extending lock)', async () => {
+  it('does not send another lockout notice or give the attempt back while already locked', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
     vi.mocked(verifyPassword).mockResolvedValue(false); // wrong password, already locked
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'nope' });
 
     expect(res.status).toBe(401);
     await new Promise((resolve) => setImmediate(resolve));
-    expect(recordAccountFailure).not.toHaveBeenCalled();
+    expect(auditUserLoginFailure).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ action: 'auth.login.account_locked' }) }),
+    );
+    expect(releaseAccountAttempt).not.toHaveBeenCalled();
+  });
+
+  it('reserves the attempt on the account before checking the password', async () => {
+    const order: string[] = [];
+    vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
+    vi.mocked(reserveAccountAttempt).mockImplementation(async () => {
+      order.push('reserve');
+      return { allowed: true, count: 1, reachesLimit: false };
+    });
+    vi.mocked(verifyPassword).mockImplementation(async () => {
+      order.push('verify');
+      return false;
+    });
+
+    const res = await postLogin({ email: 'Admin@MSP.com', password: 'nope' });
+
+    expect(res.status).toBe(401);
+    expect(order).toEqual(['reserve', 'verify']);
+    expect(reserveAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'admin@msp.com');
+  });
+
+  it('keeps a wrong password counted and sends no notice before the limit', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 3, reachesLimit: false });
+    vi.mocked(verifyPassword).mockResolvedValue(false);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'nope' });
+
+    expect(res.status).toBe(401);
+    await new Promise((resolve) => setImmediate(resolve));
+    // Giving the attempt back on a wrong password would switch the lockout off.
+    expect(releaseAccountAttempt).not.toHaveBeenCalled();
+    expect(auditUserLoginFailure).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ action: 'auth.login.account_locked' }) }),
+    );
+  });
+
+  it('sends the lockout notice when a wrong password is the attempt that reaches the limit', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 5, reachesLimit: true });
+    vi.mocked(verifyPassword).mockResolvedValue(false);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'nope' });
+
+    expect(res.status).toBe(401);
+    await vi.waitFor(() => {
+      expect(auditUserLoginFailure).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          reason: 'account_locked',
+          details: expect.objectContaining({ action: 'auth.login.account_locked', consecutiveFailures: 5 }),
+        }),
+      );
+    });
+    expect(releaseAccountAttempt).not.toHaveBeenCalled();
+  });
+
+  it('gives the reserved attempt back after a correct password', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
+    vi.mocked(verifyPassword).mockResolvedValue(true);
+
+    await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(releaseAccountAttempt).toHaveBeenCalledWith(expect.anything(), 'admin@msp.com');
   });
 
   it('still audits the lockout server-side (the signal moves out of band, it does not disappear)', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(true);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: false, count: 6, reachesLimit: false });
 
     await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
 
@@ -2143,7 +2281,7 @@ describe('POST /login — SR2-23: a locked account is publicly indistinguishable
 
   it('does not deny an UNLOCKED account — the gate still lets a real login through', async () => {
     vi.mocked(db.select).mockReturnValue(selectChain([lockedUserRow]) as any);
-    vi.mocked(isAccountLocked).mockResolvedValue(false);
+    vi.mocked(reserveAccountAttempt).mockResolvedValue({ allowed: true, count: 1, reachesLimit: false });
     vi.mocked(verifyPassword).mockResolvedValue(true);
 
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });

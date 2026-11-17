@@ -325,6 +325,48 @@ describe('Wisp grant controls (W06 T14/T15: caller-owned state, spend meter, pau
     expect(screen.getByTestId('wisp-grant-status')).toHaveAttribute('aria-label', 'Budget reached');
   });
 
+  it('over budget shows the chat-keeps-working warning, never "Paused by Breeze" (#10414)', () => {
+    render(
+      <Rail wisp={wisp({ spentTodayCents: 201, budgetResetsAt: '2099-01-01T05:30:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    const warning = screen.getByTestId('wisp-budget-warning');
+    expect(warning).toHaveTextContent('background checks are paused until 05:30 UTC');
+    expect(warning).toHaveTextContent('Chat keeps working');
+    expect(screen.getByTestId('wisp-grant-details').textContent).not.toContain('Paused by Breeze');
+    expect(screen.getByTestId('wisp-spend-raise')).toBeTruthy();
+  });
+
+  it('over budget with no parseable reset falls back to 00:00 UTC (#10414)', () => {
+    render(
+      <Rail wisp={wisp({ spentTodayCents: 201, budgetResetsAt: 'garbage' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.getByTestId('wisp-budget-warning')).toHaveTextContent('until 00:00 UTC');
+  });
+
+  it('no budget warning under budget (#10414)', () => {
+    render(
+      <Rail wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.queryByTestId('wisp-budget-warning')).toBeNull();
+  });
+
+  it('the settings panel explains that the budget includes chat (#10414)', () => {
+    render(<Rail wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    expect(screen.getByTestId('wisp-settings-budget-help')).toHaveTextContent('Includes chat.');
+  });
+
+  it('passes the breakdown to the meter (#10414)', () => {
+    render(
+      <Rail
+        wisp={wisp({ spentTodayCents: 100, backgroundCents: 40, chatCents: 60, budgetResetsAt: '2099-01-01T00:00:00.000Z' })}
+        orgName={null}
+        wideningAvailable={false}
+      />,
+    );
+    expect(screen.getByTestId('wisp-spend-meter').textContent).toContain('Background $0.40 · Chat $0.60');
+  });
+
   it('under budget the status stays Active (#10145)', () => {
     render(
       <WispThreadHeader wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
@@ -341,7 +383,7 @@ describe('Wisp grant controls (W06 T14/T15: caller-owned state, spend meter, pau
         wideningAvailable={false}
       />,
     );
-    expect(screen.getByTestId('wisp-paused-system')).toHaveTextContent('20 h');
+    expect(screen.getByTestId('wisp-paused-system')).toHaveTextContent('until');
     expect((screen.getByTestId('wisp-resume') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
     expect(screen.getByTestId('wisp-spend-at-ceiling')).toBeTruthy();
@@ -398,7 +440,8 @@ describe('Wisp grant controls (W06 T14/T15: caller-owned state, spend meter, pau
       await refreshTo(fresh);
       expect(screen.getByTestId('wisp-refresh-hint')).toHaveTextContent('This conversation keeps the previous grant terms');
       fireEvent.click(screen.getByTestId('wisp-refresh-new-conversation'));
-      await waitFor(() => expect(h.enterWispMode).toHaveBeenCalledWith(fresh));
+      // #11672: a requested new conversation never resumes the thread's last session.
+      await waitFor(() => expect(h.enterWispMode).toHaveBeenCalledWith({ ...fresh, lastSessionId: null }));
       expect(h.closeSession).toHaveBeenCalledTimes(1);
       expect(h.closeSession.mock.invocationCallOrder[0]).toBeLessThan(h.enterWispMode.mock.invocationCallOrder[0]);
       await waitFor(() => expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull());
@@ -733,9 +776,38 @@ describe('WispThreadHeader (the docked pane\'s header)', () => {
     compact(wisp({ spentTodayCents: 200, budgetResetsAt: RESETS }));
     const notice = screen.getByTestId('wisp-header-notice');
     expect(notice).toHaveAttribute('data-kind', 'budget');
-    expect(notice).toHaveTextContent('Budget reached');
+    expect(screen.getByTestId('wisp-grant-status')).toHaveAttribute('aria-label', 'Budget reached');
     fireEvent.click(within(notice).getByTestId('wisp-spend-raise'));
     expect(screen.getByRole('dialog', { name: 'Budget and check-in' })).toBeInTheDocument();
+  });
+
+  // #10414 in the collapsed header: the budget pauses background checks only, and the notice says chat keeps working.
+  it('the budget notice says background checks pause until the UTC reset and chat keeps working, never "Paused by Breeze"', () => {
+    compact(wisp({ spentTodayCents: 201, budgetResetsAt: '2099-01-01T05:30:00.000Z' }));
+    const warning = within(screen.getByTestId('wisp-header-notice')).getByTestId('wisp-budget-warning');
+    expect(warning).toHaveTextContent('background checks are paused until 05:30 UTC');
+    expect(warning).toHaveTextContent('Chat keeps working');
+    expect(screen.getByTestId('wisp-thread-header').textContent).not.toContain('Paused by Breeze');
+  });
+
+  it('the budget notice falls back to 00:00 UTC when the reset does not parse', () => {
+    compact(wisp({ spentTodayCents: 201, budgetResetsAt: 'garbage' }));
+    expect(screen.getByTestId('wisp-budget-warning')).toHaveTextContent('until 00:00 UTC');
+  });
+
+  it('the spend popover\'s meter shows the background / chat breakdown', () => {
+    compact(wisp({ spentTodayCents: 100, backgroundCents: 40, chatCents: 60, budgetResetsAt: RESETS }));
+    fireEvent.click(screen.getByTestId('wisp-spend-chip'));
+    expect(within(screen.getByTestId('wisp-spend-popover')).getByTestId('wisp-spend-meter').textContent)
+      .toContain('Background $0.40 · Chat $0.60');
+  });
+
+  it('the Budget & check-ins overlay explains that the budget includes chat', () => {
+    compact();
+    openMenu();
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    expect(within(screen.getByRole('dialog', { name: 'Budget and check-in' })).getByTestId('wisp-settings-budget-help'))
+      .toHaveTextContent('Includes chat.');
   });
 
   it('widening puts a primary Refresh grant in the notice strip; the menu keeps its own Refresh grant', () => {

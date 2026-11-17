@@ -76,6 +76,10 @@ export function invalidateAgentOrgSettingsCaches(orgId?: string): void {
  *     invalidating write today, because no route creates automation_policies
  *     or updates their rules. Any future create/rules-update route must call
  *     invalidateOrgPolicyProbeCache. Partner-wide -> every org.
+ *     Since #11976 the probe also carries configuration-policy compliance
+ *     rules (registry_check / config_check). Their writes (compliance rules,
+ *     policy status, parent links) rely on the TTL: 60 s is well inside the
+ *     agent's 15-minute policy-state collection cycle.
  *   - helper legacy flag (organizations.settings.helper.enabled):
  *     PATCH /agents/org/:orgId/settings/helper, plus the org/partner settings
  *     routes via invalidateAgentOrgSettingsCaches. It already sits behind the

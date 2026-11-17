@@ -33,7 +33,7 @@ import { executeOrgMerge } from '../../services/orgMerge';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { deliverInApp } from '../../services/wisp/deliver';
 import { recordThreadPost } from '../../services/wisp/threadPosts';
-import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { replayMigration } from './replayMigration';
 
@@ -321,7 +321,7 @@ describe('recordThreadPost against real Postgres', () => {
 
     // Partner B's org fails the post's composite org FK (23503) inside the same transaction.
     const badKey = `wisp.nudge:${randomUUID()}:${f.grantA}:first`;
-    await expect(deliverInApp(delivery(f.orgB1, badKey))).rejects.toSatisfy((err: unknown) => pgErrorCode(err) === '23503');
+    await expect(deliverInApp(delivery(f.orgB1, badKey))).rejects.toSatisfy((err: unknown) => isPgForeignKeyViolationCode(pgErrorCode(err)));
     const stray = await asSystem(() => db.select({ id: userNotifications.id }).from(userNotifications).where(eq(userNotifications.dedupeKey, badKey)));
     expect(stray).toHaveLength(0);
   });

@@ -18,6 +18,7 @@ import { adminSendingDomainsRoutes } from './sendingDomains';
 import { deprecationsAdminRoutes } from './deprecations';
 import { systemConnectionsAdminRoutes } from './systemConnections';
 import { systemConnectionHealthAdminRoutes } from './systemConnectionHealth';
+import { systemHealthAdminRoutes } from './systemHealth';
 import { adminAutopayRolloutRoutes } from './autopayRollout';
 import { entitlementsAdminRoutes } from './entitlements';
 import { wispAdminRoutes } from './wisp';
@@ -77,6 +78,7 @@ adminRoutes.route('/deprecations', deprecationsAdminRoutes);
 adminRoutes.route('/system', systemConnectionsAdminRoutes);
 // Connection health W4: reconciler / digest liveness (Redis only, GET only).
 adminRoutes.route('/system', systemConnectionHealthAdminRoutes);
+adminRoutes.route('/system', systemHealthAdminRoutes);
 
 // Hosted conversion sweep: platform-admin gate here, MFA on POSTs in the router.
 adminRoutes.route('/monitor-conversion', adminMonitorConversionRoutes);

@@ -24,17 +24,19 @@ function outcome(overrides: Record<string, unknown> = {}) {
 }
 
 describe('restorePoint outcome status vocabulary (#4757)', () => {
-  // The agent (agent/internal/systemrestore/types.go, Status) produces exactly
-  // these ten. A rename or a new value on any one of the three sides must
-  // fail here rather than silently classify real outcomes as invalid.
-  const TEN = [
+  // The agent (agent/internal/systemrestore/types.go, Status) produces these
+  // eleven; 'interrupted' is accepted here before the agent half of #9163 adds
+  // it (API-first release ordering). This pins the three TypeScript sides to
+  // each other only: a rename or a new value on any one of them must fail here
+  // rather than silently classify real outcomes as invalid.
+  const ELEVEN = [
     'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only', 'skipped_no_mutation',
-    'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed',
+    'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed', 'interrupted',
   ];
 
-  it('accepts exactly the ten agent-produced statuses', () => {
-    expect([...RESTORE_POINT_OUTCOME_STATUSES]).toEqual(TEN);
-    expect([...restorePointOutcomeSchema.shape.status.options]).toEqual(TEN);
+  it('accepts exactly the eleven agent-produced statuses', () => {
+    expect([...RESTORE_POINT_OUTCOME_STATUSES]).toEqual(ELEVEN);
+    expect([...restorePointOutcomeSchema.shape.status.options]).toEqual(ELEVEN);
   });
 
   it('equals the shared status union minus the server-only requested', () => {
@@ -92,6 +94,22 @@ describe('restorePointOutcomeSchema / classifyRestorePointOutcome', () => {
     expect(classifyRestorePointOutcome({
       status: 'skipped_disabled', requestId: REQUEST_ID, attemptedAt: '', durationMs: 0,
     })).toMatchObject({ ok: true });
+  });
+
+  // #9163: the agent reports 'interrupted' when it restarted or shut down
+  // before it could report the checkpoint's outcome.
+  it('accepts an interrupted outcome with no sequence number', () => {
+    expect(classifyRestorePointOutcome({
+      status: 'interrupted', requestId: REQUEST_ID, attemptedAt: '2026-10-18T00:00:00Z', durationMs: 0,
+    })).toMatchObject({ ok: true });
+  });
+
+  it('keeps the sequence number and description on an interrupted outcome', () => {
+    const parsed = parseRestorePointOutcome({
+      status: 'interrupted', requestId: REQUEST_ID, attemptedAt: '2026-10-18T00:00:00Z', durationMs: 0,
+      sequenceNumber: '42', description: 'Breeze: x [abcd1234]',
+    });
+    expect(parsed).toMatchObject({ status: 'interrupted', sequenceNumber: '42', description: 'Breeze: x [abcd1234]' });
   });
 
   it('strips unknown keys', () => {

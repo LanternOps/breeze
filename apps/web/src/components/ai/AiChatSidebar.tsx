@@ -22,9 +22,10 @@ import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
 import AiChatInput from "./AiChatInput";
 import AiModelPicker from "./AiModelPicker";
-import AiThinkingIndicator from "./AiThinkingIndicator";
+import AiThinkingIndicator, { approvalWaitFromPending } from "./AiThinkingIndicator";
 import AiTurnModelBadge from "./AiTurnModelBadge";
 import AiContinuationPrompt from "./AiContinuationPrompt";
+import AiNotifyToggle from "./AiNotifyToggle";
 import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerStore";
 import { useOrgStore } from "@/stores/orgStore";
 import AiContextBadge from "./AiContextBadge";
@@ -41,6 +42,8 @@ import WispChatWelcome from "../wisp/WispChatWelcome";
 import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 import { wispSessionOrgId } from "@/lib/wispSession";
 import { useTranslation } from "react-i18next";
+import AiErrorBanner from "./AiErrorBanner";
+import { activeRetryTarget } from "@/lib/aiErrors";
 import { RIGHT_DOCK_BACKDROP_CLASS, RIGHT_DOCK_PANEL_CLASS } from "../layout/rightDockPanel";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -92,6 +95,8 @@ export default function AiChatSidebar() {
     isLoading,
     error,
     errorCode,
+    retryTarget,
+    retryLastTurn,
     pageContext,
     pendingApproval,
     pendingPlan,
@@ -116,6 +121,7 @@ export default function AiChatSidebar() {
     interruptResponse,
     isInterrupting,
     isFlagged,
+    transcriptPurgedAt,
     flagSession,
     unflagSession,
     m365Connections,
@@ -294,6 +300,8 @@ export default function AiChatSidebar() {
     // grant as it is NOW. Re-read, never the lookup from when the panel
     // opened — a grant revoked, paused or expired since then must start a
     // plain chat (and offer Meet Wisp), not a session the server refuses.
+    // A Wisp thread is one conversation (#11672): when it still has a live
+    // session, this continues it rather than forking a second one.
     if (!wisp && wispEligible) {
       const result = await lookUpActiveGrant(selectedOrgId);
       setGrantLookup(result);
@@ -362,15 +370,20 @@ export default function AiChatSidebar() {
       <Plus className="h-4 w-4" />
     </button>
   ));
+  // #9429: the notification bell sits beside Close in every header shape
+  // (plain, Wisp, handed off), so collapsing the Wisp header never drops it.
   const closeButton = (
-    <button
-      onClick={close}
-      className={HEADER_ICON_BUTTON}
-      title={t("aiChatSidebar.closeShortcut")}
-      data-testid="ai-chat-close"
-    >
-      <X className="h-4 w-4" />
-    </button>
+    <>
+      <AiNotifyToggle />
+      <button
+        onClick={close}
+        className={HEADER_ICON_BUTTON}
+        title={t("aiChatSidebar.closeShortcut")}
+        data-testid="ai-chat-close"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </>
   );
   // Under a Wisp header, Flag is an item in Wisp's overflow menu.
   const wispPaneMenuItems: ActionMenuItem[] = sessionId
@@ -553,18 +566,31 @@ export default function AiChatSidebar() {
 
             {/* Error banner */}
             {error && (
-              <div className="flex items-center justify-between gap-2 border-b border-red-200 bg-red-50 px-4 py-2 dark:border-red-800/50 dark:bg-red-900/20">
-                <span className="text-xs text-red-700 dark:text-red-400">{error}</span>
+              <AiErrorBanner
+                error={error}
+                retryTarget={topologySiteId !== null ? null : activeRetryTarget({ error, retryTarget })}
+                busy={isStreaming || isLoading}
+                onRetry={() => void retryLastTurn()}
+                onDismiss={clearError}
+                dismissLabel={t("aiChatSidebar.dismiss")}
+                className="flex items-center justify-between gap-2 border-b border-red-200 bg-red-50 px-4 py-2 dark:border-red-800/50 dark:bg-red-900/20"
+                textClassName="text-xs text-red-700 dark:text-red-400"
+                buttonClassName="shrink-0 text-xs text-red-700 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
+              >
                 {errorCode === "credits_exhausted" && (
                   <BuyCreditsLink className="ml-2 shrink-0 text-xs font-medium text-red-800 underline underline-offset-2 hover:text-red-900 dark:text-red-300 dark:hover:text-red-200" />
                 )}
-                <button
-                  onClick={clearError}
-                  className="shrink-0 text-xs text-red-700 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
-                >
-                  {t("aiChatSidebar.dismiss")}
-                </button>
-              </div>
+                {errorCode === "session_closed" && !wisp && (
+                  <button
+                    type="button"
+                    data-testid="ai-session-closed-new-session"
+                    onClick={() => void createSession()}
+                    className="ml-2 shrink-0 text-xs font-medium text-red-800 underline underline-offset-2 hover:text-red-900 dark:text-red-300 dark:hover:text-red-200"
+                  >
+                    {t("sessionClosed.startNew")}
+                  </button>
+                )}
+              </AiErrorBanner>
             )}
 
             {/* #9427: attached to a running turn whose replay was too large to send. */}
@@ -590,6 +616,7 @@ export default function AiChatSidebar() {
               onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
+              transcriptPurgedAt={transcriptPurgedAt}
               assistantLabel={wisp ? t("wisp.title") : undefined}
               emptyState={
                 wisp ? (
@@ -609,7 +636,7 @@ export default function AiChatSidebar() {
             {/* Continuation prompt, what ran, thinking */}
             <AiContinuationPrompt />
             <AiTurnModelBadge turnModel={turnModel} />
-            <AiThinkingIndicator thinking={isStreaming && !!thinking} />
+            <AiThinkingIndicator thinking={isStreaming && !!thinking} approvalWait={isStreaming ? approvalWaitFromPending(pendingApproval) : null} />
 
             {/* Input: attachments (Wisp) left of the text, the model chip row under it (#critique) */}
             <AiChatInput

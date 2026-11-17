@@ -551,6 +551,7 @@ describe('finalizePatchJobDevice — the poll exhausted with no result', () => {
 
 describe('finalizePatchJobDevice — patch job failure alert (#5750 W04)', () => {
   it('fires the failure alert once for a genuine install failure', async () => {
+    const errorMessage = 'winget install failed: ' + 'x'.repeat(200) + '\nInstaller technology differs.';
     vi.mocked(db.select)
       .mockImplementationOnce(() => whereChain([]) as any) // no existing rows — first write
       .mockImplementationOnce(() => limitChain([]) as any); // checkAndFinalizeJob
@@ -571,7 +572,7 @@ describe('finalizePatchJobDevice — patch job failure alert (#5750 W04)', () =>
             rebootRequired: false,
             results: [
               { id: 'patch-1', externalId: 'KB1', status: 'installed' },
-              { id: 'patch-2', externalId: 'KB2', status: 'failed', error: 'disk full' },
+              { id: 'patch-2', externalId: 'KB2', status: 'failed', error: errorMessage },
             ],
           }),
         },
@@ -588,7 +589,7 @@ describe('finalizePatchJobDevice — patch job failure alert (#5750 W04)', () =>
         patchJobId: JOB,
         deviceId: DEVICE,
         failedCount: 1,
-        errorExcerpt: 'disk full',
+        errorMessage,
       }),
     );
   });
@@ -613,7 +614,7 @@ describe('finalizePatchJobDevice — patch job failure alert (#5750 W04)', () =>
         orgId: CONTEXT.orgId,
         deviceId: DEVICE,
         patchJobId: JOB,
-        errorExcerpt: 'Command timed out',
+        errorMessage: 'Command timed out',
       }),
     );
   });
@@ -736,7 +737,7 @@ describe('finalizePatchJobDevice — patch job failure alert (#5750 W04)', () =>
 
     expect(emitPatchJobFailureAlert).toHaveBeenCalledTimes(1);
     expect(emitPatchJobFailureAlert).toHaveBeenCalledWith(
-      expect.objectContaining({ failedCount: 1, errorExcerpt: 'disk full' }),
+      expect.objectContaining({ failedCount: 1, errorMessage: 'disk full' }),
     );
     const rows = inserts.filter((i) => i.table === patchJobResults).map((i) => i.values);
     expect(rows.find((r) => r.patchId === 'patch-2')).toMatchObject({

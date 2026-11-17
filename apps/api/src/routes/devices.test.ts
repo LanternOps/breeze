@@ -208,6 +208,8 @@ vi.mock('../db', () => {
     runOutsideDbContext: vi.fn((fn) => fn()),
     withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    // #8318: decommission registers the partner-wide reinstall-link clear.
+    runAfterDbContextCommit: vi.fn(),
     db: dbMock
   };
 });
@@ -690,6 +692,7 @@ describe('device routes', () => {
           headers: { Authorization: 'Bearer token', Host: 'control.example.test' }
         });
         expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control')).toBe('no-store');
         return res.json();
       };
 
@@ -698,7 +701,7 @@ describe('device routes', () => {
         expect(body.serverUrl).toBe('https://agents.example.test');
       });
 
-      it('falls back to API_URL like the server-built installers', async () => {
+      it('falls back to API_URL', async () => {
         const body = await mintWith({ PUBLIC_API_URL: '', API_URL: 'https://api-only.example.test' });
         expect(body.serverUrl).toBe('https://api-only.example.test');
       });

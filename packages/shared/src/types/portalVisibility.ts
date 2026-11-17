@@ -482,6 +482,29 @@ export interface NetworkSitesDto {
 }
 
 /**
+ * Per-site Network Visibility health (CPEV-W2). Alert fields are present only
+ * when enableNetworkAlerts is on; omitted otherwise, never null-filled.
+ * highestAlertSeverity is null when activeAlertCount is 0.
+ */
+export interface NetworkSiteHealthRowDto {
+  siteId: string;
+  siteName: string;
+  totalAssets: number;
+  onlineAssets: number;
+  offlineAssets: number;
+  unverifiedAssets: number;
+  snmpDevicesPolling: number;
+  monitorsDown: number;
+  activeAlertCount?: number;
+  highestAlertSeverity?: NetworkAssetAlertSeverity | null;
+}
+
+export interface NetworkSiteHealthDto {
+  dataStatus: 'ok' | 'no_data' | 'not_enabled';
+  data: NetworkSiteHealthRowDto[];
+}
+
+/**
  * Customer-safe Network Visibility per-asset list (#5861, PR 2).
  *
  * `no_data` and `not_enabled` carry an empty list, never a partial or

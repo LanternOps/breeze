@@ -79,6 +79,13 @@
   --color-warning-foreground: hsl(var(--warning-foreground));
   --color-warning-strong: hsl(var(--warning-strong));
 
+  /* Semantic ink: small text on the card or on the hue's own tint (see the
+     --*-ink notes in :root below). */
+  --color-primary-ink: hsl(var(--primary-ink));
+  --color-success-ink: hsl(var(--success-ink));
+  --color-warning-ink: hsl(var(--warning-ink));
+  --color-destructive-ink: hsl(var(--destructive-ink));
+
   /* web-only vs portal: the info color pair (portal has no --color-info).
      The sans family is intentionally NOT mapped here — see the NB below. */
   --color-info: hsl(var(--info));
@@ -34288,6 +34295,16 @@
        ~2.3:1 against a light card — below the 3:1 non-text minimum — so thin
        affordances like the unsaved-edit ring use this darker amber (~4.6:1). */
     --warning-strong: 30 85% 38%;
+    /* Semantic INK: small text set on the card or on the hue's own 10–20%
+       tint (status and SLA chips, internal-note labels). The fills above are
+       tuned for fills and white labels, and --warning-strong for non-text
+       indicators; as text-xs on their own tint they measured 1.8–4.0:1. Each
+       ink clears WCAG AA 4.5:1 on that tint, including under a selected or
+       hovered queue row (components/tickets/ticketChipContrast.test.tsx). */
+    --primary-ink: 225 62% 48%;
+    --success-ink: 152 60% 26%;
+    --warning-ink: 30 85% 30%;
+    --destructive-ink: 4 76% 38%;
     /* Info — a clear sky-blue, distinct from the slate-blue primary so an
        "info"/"updating" state never reads as a primary action. */
     --info: 205 85% 38%;
@@ -34347,6 +34364,12 @@
     --warning-foreground: 28 60% 10%;
     /* Bright amber already clears 3:1 on dark cards — indicator == warning here. */
     --warning-strong: 40 90% 52%;
+    /* Semantic ink (see :root): lifted above the dark fills, which sit at or
+       under 4.5:1 as text on their own tint. */
+    --primary-ink: 225 70% 70%;
+    --success-ink: 152 52% 48%;
+    --warning-ink: 40 92% 58%;
+    --destructive-ink: 4 80% 70%;
     --info: 205 80% 62%;
     --info-foreground: 210 60% 10%;
 

@@ -162,6 +162,15 @@ describe('containmentDesiredBlockSchema (heartbeat response)', () => {
       expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, ...patch } }).success, JSON.stringify(patch)).toBe(false);
     }
   });
+
+  it('carries a dead-man window only inside the policy bounds (#10103)', () => {
+    for (const deadManSeconds of [60, 899, 86_401, 1800.5]) {
+      expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, deadManSeconds } }).success, String(deadManSeconds)).toBe(false);
+    }
+    for (const deadManSeconds of [0, 900, 1800, 86_400]) {
+      expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, deadManSeconds } }).success, String(deadManSeconds)).toBe(true);
+    }
+  });
 });
 
 describe('networkIsolationReportSchema (heartbeat request)', () => {

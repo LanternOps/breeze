@@ -7,6 +7,7 @@ import { navigateTo } from "@/lib/navigation";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import ModelDefaultsLink from "../settings/aiModels/ModelDefaultsLink";
+import TranscriptRetentionPreview, { previewDays } from "../ai/TranscriptRetentionPreview";
 
 /**
  * AI for Office — per-org policy editor (spec §9.2). Reached via
@@ -303,6 +304,9 @@ export default function PolicyEditor({
   const removeRule = (id: string) =>
     setCustomRules((prev) => prev.filter((r) => r.id !== id));
 
+  // Blank keeps client transcripts forever: nothing to preview.
+  const retentionPreviewDays = previewDays(retentionDays);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -558,6 +562,32 @@ export default function PolicyEditor({
               data-testid="ai-office-policy-retention"
             />
           </label>
+        </div>
+        {/* #4342 W4: the client window is enforced by the transcript retention
+            job; the technician window lives on the org AI settings. */}
+        <div className="mt-3 space-y-1">
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="ai-office-policy-retention-scope"
+          >
+            {t("policyEditor.retentionScope")}{" "}
+            <a
+              href={`/settings/organizations/${orgId}#ai`}
+              className="font-medium text-primary hover:underline"
+              data-testid="ai-office-policy-retention-technician-link"
+            >
+              {t("policyEditor.retentionTechnicianLink")}
+            </a>
+          </p>
+          <TranscriptRetentionPreview
+            url={
+              retentionPreviewDays === null
+                ? null
+                : `/client-ai/admin/orgs/${orgId}/policy/transcript-retention-preview?days=${retentionPreviewDays}`
+            }
+            scope="org"
+            testId="ai-office-policy-retention-preview"
+          />
         </div>
       </section>
 

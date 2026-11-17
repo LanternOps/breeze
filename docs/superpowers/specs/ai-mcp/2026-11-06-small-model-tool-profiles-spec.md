@@ -1,5 +1,5 @@
 ---
-status: draft (spec-drafted). Awaiting Todd's Gate A on the Open Decisions in §7. Quorum: Codex gpt-6-astra xhigh, read-only, 2026-11-06; agreed on OD-1/OD-2, disagreed on OD-4/OD-5/OD-7/OD-8 (both positions in §7; author recommends Codex's refinements).
+status: APPROVED 2026-11-08 (Todd, Gate A) — every Open Decision in §7 resolved to its recommended option (Codex refinements adopted on OD-4/OD-5/OD-7/OD-8). Quorum: Codex gpt-6-astra xhigh, read-only, 2026-11-06. Plan: docs/superpowers/plans/ai-mcp/2026-11-08-small-model-tool-profiles-plan.md
 date: 2026-11-06
 tracking_issue: LanternOps/breeze#9596
 covers: "#9596 (constrained prompt for small self-hosted models), #11111 (cap the tool catalog for small-window OpenAI-compatible models; learn the window), #9770 (tool profiles / allowlists for AI chat on self-hosted LLMs)"
@@ -102,14 +102,23 @@ Three sources feed one **effective window**:
 
 1. **Override:** typed by the operator in the drawer. When set, it is the effective window.
 2. **Discovered:** read, when present, from the `/models` payload discovery already fetches. Recognised fields include `context_length` (OpenRouter-style), `max_model_len` (vLLM) and `max_context_length` / `loaded_context_length` (LM Studio). Numbers only, plausibility-bounded like `contextWindow.ts`. No extra endpoint is called in v1 (no Ollama `/api/show`, no llama.cpp `/props`).
-3. **Observed:** the window `contextWindow.ts` parses from a rejection. It is persisted as an **expiring observation**, under these rules:
-   - It is keyed to the connection's `config_version`.
-   - It is fresh for the memo TTL (1 h). After that it remains as a stale hint shown in the drawer, but no longer constrains.
+3. **Observed:** the window `contextWindow.ts` parses from a rejection. It is persisted as an observation that is **kept as a floor until a larger window is seen** (owner decision 2026-11-14, #11393), under these rules:
+   - It is keyed to the connection's `config_version`. A model or connection config change clears it.
+   - It is fresh for the memo TTL (1 h). Past the TTL it is stale, but it keeps constraining. Only these replace it:
+     - a discovery-listed window (a stale observation yields to a listed one);
+     - an operator override;
+     - evidence of a larger window: a later rejection that states a larger limit (any later rejection overwrites it), or a successful request whose prompt, **as the endpoint itself counted it** (`usage.prompt_tokens`), is larger than the stored window. The gateway's byte estimate is never evidence;
+     - a config change (`config_version`).
+   - A stale observation caps `max_tokens` and narrows `auto` like a fresh one, but nothing refuses against it before the endpoint sees the request. The gateway sends the request. `auto` never resolves `too_small` from a stale window, and it never narrows a surface below the lowest profile that surface can serve (`STALE_WINDOW_AUTO_FLOOR`: `minimal`, or `standard` for the script builder and AI agents, whose `minimal` lacks a required tool, §3.5). A refusal that makes no provider call could never disprove the floor, so it would refuse forever. The endpoint, whose count is exact, decides instead: it serves the request (a disproof), or it rejects it, which is a fresh observation that may then refuse while fresh. Everything else that reads the effective window as `limits.maxInputTokens` uses the floor like a fresh window: the switch-resume transcript fit and continuation trimming. That is what keeping it as a floor means. Ordinary chat growth still reaches the endpoint, so a larger window can still disprove it.
+   - A served prompt larger than the stored window clears the persisted observation with the same kind of atomic compare (offering id, partner id, `config_version`, and the disproven value and its `observed_at`, so a newer observation written meanwhile is never erased, even one stating the same value). The in-process memo below that prompt is dropped too. The effective window then falls back to what is listed, or to unknown until the next rejection states the new window.
+   - The drawer shows an observation that no longer applies (superseded by a config change or a listed window) as a hint only.
    - The write is best-effort and internal. It uses an atomic compare on offering id, partner id and `config_version`, runs in `withSystemDbAccessContext` after `runOutsideDbContext`, and never runs inside a request transaction. A failure is caught and logged and never fails the turn.
 
    The in-process memo keeps its role for `max_tokens` capping.
 
-**Effective window** = override, if set. Otherwise the smaller of `discovered` and a fresh `observed`. Otherwise unknown.
+**Effective window** = override, if set. Otherwise the smaller of `discovered` and a fresh `observed`. Otherwise `discovered`. Otherwise a stale `observed` (the floor). Otherwise unknown.
+
+Before #11393 a stale observation stopped constraining. On an endpoint whose listing states no window, an idle hour then sent `auto` back to `full`, the next request was refused once for its window, the window was learned again, and the following turn was narrowed again.
 
 A fresh rejection that reports a smaller *serving* limit beats a larger advertised *architectural* maximum. This is the LM Studio case: the model supports 262k, but it is loaded at 8k. A higher precedence for discovery would keep a known failure in place.
 
@@ -128,7 +137,7 @@ A fresh rejection that reports a smaller *serving* limit beats a larger advertis
 
 Constrained profiles also lower the per-result budget: `resultCharBudget` is about 2,000 characters for `minimal`, against `MAX_TOOL_RESULT_CHARS` = 8,000 today. Larger results go to the existing artifact capture, so they are bounded, not lost.
 
-If even `minimal` plus its reserve does not fit, the session start says so plainly: "This model's 4,096-token window is too small for Breeze chat tools." It does not wait for the header deadline. Mid-conversation, when accumulated history pushes the request past the window, the existing pre-send refusal ("start a new chat") applies (§5 covers history trimming).
+If even `minimal` plus its reserve does not fit, the session start says so plainly: "This model's 4,096-token window is too small for Breeze chat tools." It does not wait for the header deadline. This `too_small` refusal comes only from an override, a discovered window or a fresh observation. A stale observation never refuses a session up front (see the rules above): the session starts on the surface's lowest serviceable profile and the endpoint decides. Mid-conversation, when accumulated history pushes the request past the window, the existing pre-send refusal ("start a new chat") applies (§5 covers history trimming).
 
 The drawer shows the resolved profile next to `auto`, e.g. "Auto: minimal (window 8,192, observed 12 min ago)". When a profile is set explicitly and the known window cannot hold it, the drawer suggests the profile that fits, as Todd's #9596 comment asked.
 
@@ -252,7 +261,8 @@ If the measured rate stays high after profiles ship, a follow-up adds **one** re
 - **Window precedence:**
   - the override wins
   - a fresh smaller observation beats a larger discovered value
-  - a stale observation or a changed `config_version` stops constraining
+  - a changed `config_version` stops an observation constraining; a stale one yields to a listed window
+  - with nothing listed, a stale observation keeps constraining after an idle hour (no refusal round trip), never refuses up front (no gateway pre-send refusal, no `too_small` or underpowered session refusal), and is cleared by a served prompt larger than it, matched on value and `observed_at` (#11393)
   - a failed observation write never fails the turn
 - **Contract tests:**
   - every `minimal` tool has base tier 1 and no action that `aiGuardrails` escalates to a write

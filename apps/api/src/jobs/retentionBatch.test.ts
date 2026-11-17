@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { dbExecuteMock, withSystemDbAccessContextMock, runOutsideDbContextMock, captureMessageMock } = vi.hoisted(() => ({
+const { dbExecuteMock, withSystemDbAccessContextMock, runOutsideDbContextMock, withDbTransactionMock, captureMessageMock } = vi.hoisted(() => ({
   dbExecuteMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>, _label?: string) => fn()),
   runOutsideDbContextMock: vi.fn((fn: () => unknown) => fn()),
+  withDbTransactionMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   captureMessageMock: vi.fn(),
 }));
 
@@ -12,6 +13,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => Promise<unknown>, label?: string) =>
     withSystemDbAccessContextMock(fn, label),
   runOutsideDbContext: (fn: () => unknown) => runOutsideDbContextMock(fn),
+  withDbTransaction: (fn: () => Promise<unknown>) => withDbTransactionMock(fn),
 }));
 
 vi.mock('../services/sentry', () => ({
@@ -23,9 +25,14 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 import {
   __resetBacklogCaptureThrottle,
+  countEligibleRows,
+  countEligibleRowsBounded,
   parsePositiveIntEnv,
   pruneInCtidBatches,
   resolveRetentionDays,
+  retentionEnforceFromEnv,
+  updateInCtidBatches,
+  utcWallTime,
   warnOnRetentionBacklog,
 } from './retentionBatch';
 
@@ -385,5 +392,379 @@ describe('warnOnRetentionBacklog', () => {
     ).not.toThrow();
 
     warn.mockRestore();
+  });
+});
+
+describe('retentionEnforceFromEnv', () => {
+  const ENV_NAME = 'RETENTION_BATCH_TEST_ENFORCE';
+
+  afterEach(() => {
+    delete process.env[ENV_NAME];
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ['true', true],
+    ['TRUE', true],
+    [' 1 ', true],
+    ['True ', true],
+    ['false', false],
+    ['0', false],
+    [' FALSE', false],
+  ])('parses %j as %s, whatever the code default', (raw, expected) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env[ENV_NAME] = raw;
+    expect(retentionEnforceFromEnv('[Test]', ENV_NAME, false)).toBe(expected);
+    expect(retentionEnforceFromEnv('[Test]', ENV_NAME, true)).toBe(expected);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Compose maps every knob as `${VAR:-}`, so an unconfigured deployment hands
+  // the process an EMPTY string, not an unset variable. Both must mean "the
+  // code default" — never "enforce".
+  it.each([[undefined], ['']])('uses the code default for %j', (raw) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    if (raw === undefined) delete process.env[ENV_NAME];
+    else process.env[ENV_NAME] = raw;
+    expect(retentionEnforceFromEnv('[Test]', ENV_NAME, false)).toBe(false);
+    expect(retentionEnforceFromEnv('[Test]', ENV_NAME, true)).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Review Focus 2: a typo must never enable deletion — not even once the code
+  // default is `true` (the Part B flip), because an operator who wrote
+  // `ENFORCE=no` meant to turn it OFF.
+  it.each([['yes'], ['enforce'], ['2'], ['on'], ['t']])(
+    'reports (false) and warns once naming the variable for unrecognised %j',
+    (raw) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      process.env[ENV_NAME] = raw;
+      expect(retentionEnforceFromEnv('[Test]', ENV_NAME, false)).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain(ENV_NAME);
+      expect(message).toContain('[Test]');
+
+      warn.mockClear();
+      expect(retentionEnforceFromEnv('[Test]', ENV_NAME, true)).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
+describe('utcWallTime', () => {
+  // Review Focus 5: a bare `::timestamp` cast honours the connection TimeZone,
+  // shifting every cutoff on a tz-less column by the server offset.
+  it('converts the bound ISO cutoff to UTC wall time explicitly', () => {
+    const iso = '2026-01-01T00:00:00.000Z';
+    const query = dialect.sqlToQuery(sql`created_at < ${utcWallTime(iso)}`);
+    expect(query.sql).toContain("::timestamptz AT TIME ZONE 'UTC'");
+    expect(query.sql).not.toContain(iso);
+    expect(query.params).toEqual([iso]);
+  });
+});
+
+describe('countEligibleRows', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    runOutsideDbContextMock.mockImplementation((fn: () => unknown) => fn());
+  });
+
+  const baseCount = (overrides: Partial<Parameters<typeof countEligibleRows>[0]> = {}) =>
+    countEligibleRows({
+      table: 'agent_logs',
+      where: sql`"timestamp" < ${CUTOFF}`,
+      cap: 10,
+      label: 'test.count',
+      ...overrides,
+    });
+
+  // The cap is what keeps a report run from becoming a full-table count on a
+  // table with a multi-year backlog — the very tables this exists for.
+  it('issues one bounded count, binding cap + 1 as the LIMIT', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ n: 3 }]);
+
+    await baseCount({ cap: 10 });
+
+    expect(dbExecuteMock).toHaveBeenCalledTimes(1);
+    const { sql: text, params } = compiled();
+    expect(text).toMatch(/count\(\*\)/i);
+    expect(text).toContain('FROM agent_logs');
+    expect(text).toContain('"timestamp" <');
+    expect(text).toMatch(/LIMIT \$\d+/);
+    expect(params).toContain(11);
+    expect(params).toContain(CUTOFF);
+    expect(text).not.toMatch(/\b(DELETE|UPDATE)\b/i);
+  });
+
+  it('runs in one fresh escaped system context', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ n: 0 }]);
+
+    await baseCount();
+
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock.mock.calls[0]?.[1]).toBe('test.count');
+  });
+
+  it('reports the cap and capped=true when more than cap rows are eligible', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ n: 11 }]);
+    await expect(baseCount({ cap: 10 })).resolves.toEqual({ eligible: 10, capped: true });
+  });
+
+  it('reports the exact count when it is at or under the cap', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ n: 3 }]);
+    await expect(baseCount({ cap: 10 })).resolves.toEqual({ eligible: 3, capped: false });
+    dbExecuteMock.mockResolvedValueOnce([{ n: 10 }]);
+    await expect(baseCount({ cap: 10 })).resolves.toEqual({ eligible: 10, capped: false });
+  });
+
+  // node-postgres wraps rows in `.rows`; a driver may hand an int back as a
+  // numeric string.
+  it('accepts a node-postgres { rows } result and a numeric string', async () => {
+    dbExecuteMock.mockResolvedValueOnce({ rows: [{ n: '4' }] });
+    await expect(baseCount()).resolves.toEqual({ eligible: 4, capped: false });
+  });
+
+  // A broken driver result must not read as "nothing eligible": Gate G1 would
+  // then approve an enforce flip on a table whose real count was never seen.
+  it.each([[[]], [null], [[{ n: null }]], [[{ n: 'nonsense' }]], [[{}]], [[{ n: -1 }]]])(
+    'throws rather than reading %j as zero',
+    async (result) => {
+      dbExecuteMock.mockResolvedValueOnce(result);
+      await expect(baseCount()).rejects.toThrow(/count/i);
+    },
+  );
+
+  it('rejects a non-identifier table before any query', async () => {
+    await expect(baseCount({ table: 'x; drop' })).rejects.toThrow(/identifier/i);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-positive cap before any query', async () => {
+    await expect(baseCount({ cap: 0 })).rejects.toThrow(/cap/i);
+    await expect(baseCount({ cap: 2.5 })).rejects.toThrow(/cap/i);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+});
+
+// #4342 W6.c review: a report-only count has no index guarantee
+// (audit_baseline_results has no (device_id, baseline_id, checked_at) index), so
+// it runs under a statement timeout and a timeout is an answer, not a failure.
+describe('countEligibleRowsBounded', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    runOutsideDbContextMock.mockImplementation((fn: () => unknown) => fn());
+    withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+  });
+
+  const boundedCount = (overrides: Partial<Parameters<typeof countEligibleRowsBounded>[0]> = {}) =>
+    countEligibleRowsBounded({
+      table: 'audit_baseline_results',
+      where: sql`checked_at < ${CUTOFF}`,
+      cap: 10,
+      label: 'test.boundedCount',
+      statementTimeoutMs: 5000,
+      ...overrides,
+    });
+
+  const canceled = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+
+  it('tightens statement_timeout, then runs the same capped count, inside a savepoint of one fresh system context', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockResolvedValueOnce([{ n: 3 }]);
+
+    await expect(boundedCount()).resolves.toEqual({ timedOut: false, eligible: 3, capped: false });
+
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock.mock.calls[0]?.[1]).toBe('test.boundedCount');
+    expect(withDbTransactionMock).toHaveBeenCalledTimes(1);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    const tighten = compiled(0);
+    expect(tighten.sql).toContain("'statement_timeout'");
+    expect(tighten.params).toContain(5000);
+    const count = compiled(1);
+    expect(count.sql).toMatch(/count\(\*\)/i);
+    expect(count.sql).toContain('FROM audit_baseline_results');
+    expect(count.sql).toMatch(/LIMIT \$\d+/);
+    expect(count.params).toContain(11);
+    expect(count.sql).not.toMatch(/\b(DELETE|UPDATE)\b/i);
+  });
+
+  it('reports capped like countEligibleRows', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockResolvedValueOnce([{ n: 11 }]);
+    await expect(boundedCount({ cap: 10 })).resolves.toEqual({ timedOut: false, eligible: 10, capped: true });
+  });
+
+  it('turns a statement timeout (57014) into timedOut instead of throwing', async () => {
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockRejectedValueOnce(canceled());
+    await expect(boundedCount()).resolves.toEqual({ timedOut: true });
+  });
+
+  // Drizzle wraps the driver error; the code sits on `cause`.
+  it('recognises a 57014 wrapped in a Drizzle query error', async () => {
+    const wrapped = Object.assign(new Error('Failed query: SELECT ...'), { cause: canceled() });
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockRejectedValueOnce(wrapped);
+    await expect(boundedCount()).resolves.toEqual({ timedOut: true });
+  });
+
+  // The repo rule (docs/agents/tenancy-rls.md): the catch sits OUTSIDE the
+  // savepoint, so the failed statement is rolled back there and the system
+  // context's own transaction can still commit.
+  it('catches outside the savepoint, not inside it', async () => {
+    let rejectedThroughSavepoint = false;
+    withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => {
+      try {
+        return await fn();
+      } catch (err) {
+        rejectedThroughSavepoint = true;
+        throw err;
+      }
+    });
+    dbExecuteMock.mockResolvedValueOnce([{ prior_ms: 0 }]).mockRejectedValueOnce(canceled());
+
+    await expect(boundedCount()).resolves.toEqual({ timedOut: true });
+    expect(rejectedThroughSavepoint).toBe(true);
+  });
+
+  it('propagates any other error', async () => {
+    dbExecuteMock
+      .mockResolvedValueOnce([{ prior_ms: 0 }])
+      .mockRejectedValueOnce(Object.assign(new Error('relation does not exist'), { code: '42P01' }));
+    await expect(boundedCount()).rejects.toThrow('relation does not exist');
+  });
+
+  it('rejects an unusable timeout, table or cap before any query', async () => {
+    for (const statementTimeoutMs of [0, -1, 1.5, Number.NaN]) {
+      await expect(boundedCount({ statementTimeoutMs })).rejects.toThrow(/statementTimeoutMs/);
+    }
+    await expect(boundedCount({ table: 'x; drop' })).rejects.toThrow(/identifier/i);
+    await expect(boundedCount({ cap: 0 })).rejects.toThrow(/cap/i);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateInCtidBatches', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    dbExecuteMock.mockResolvedValue({ rowCount: 0 });
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    runOutsideDbContextMock.mockImplementation((fn: () => unknown) => fn());
+  });
+
+  const baseUpdate = (overrides: Partial<Parameters<typeof updateInCtidBatches>[0]> = {}) =>
+    updateInCtidBatches({
+      table: 'script_executions',
+      set: sql`stdout = NULL`,
+      where: sql`created_at < ${CUTOFF} AND stdout IS NOT NULL`,
+      batchSize: 100,
+      maxBatches: 50,
+      label: 'test.update',
+      ...overrides,
+    });
+
+  it('emits a bounded ctid UPDATE with the SET clause and binds the batch size', async () => {
+    await baseUpdate({ batchSize: 250 });
+
+    const { sql: text, params } = compiled();
+    expect(text.trim()).toMatch(/^UPDATE script_executions/);
+    expect(text).toContain('SET stdout = NULL');
+    expect(text).toContain('ctid IN (');
+    expect(text).toContain('SELECT ctid');
+    expect(text).toContain('FROM script_executions');
+    expect(text).toMatch(/LIMIT \$\d+/);
+    expect(params).toContain(250);
+    expect(params).toContain(CUTOFF);
+    expect(text).not.toMatch(/\bDELETE\b/i);
+  });
+
+  it('opens a fresh escaped system context per batch', async () => {
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockResolvedValueOnce({ rowCount: 4 });
+
+    await baseUpdate();
+
+    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(2);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(2);
+    expect(withSystemDbAccessContextMock.mock.calls[0]?.[1]).toBe('test.update');
+  });
+
+  it('stops on the first short batch', async () => {
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockResolvedValueOnce({ rowCount: 7 });
+
+    await expect(baseUpdate()).resolves.toEqual({ deleted: 107, batches: 2, hasMore: false });
+  });
+
+  it('stops at maxBatches and reports hasMore only when the final batch was full', async () => {
+    dbExecuteMock.mockResolvedValue({ rowCount: 100 });
+    await expect(baseUpdate({ maxBatches: 3 })).resolves.toEqual({ deleted: 300, batches: 3, hasMore: true });
+
+    dbExecuteMock.mockReset();
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockResolvedValueOnce({ rowCount: 9 });
+    await expect(baseUpdate({ maxBatches: 3 })).resolves.toEqual({ deleted: 209, batches: 3, hasMore: false });
+  });
+
+  // A failing batch must surface, not be retried in a tight loop.
+  it('propagates a failing batch after one attempt', async () => {
+    dbExecuteMock.mockRejectedValueOnce(new Error('deadlock detected'));
+
+    await expect(baseUpdate()).rejects.toThrow('deadlock detected');
+    expect(dbExecuteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates a broken driver result instead of treating it as an empty batch', async () => {
+    dbExecuteMock.mockResolvedValueOnce(null);
+    await expect(baseUpdate()).rejects.toThrow();
+  });
+
+  it('applies the identifier, batchSize and maxBatches guards before any query', async () => {
+    await expect(baseUpdate({ table: 'x; drop' })).rejects.toThrow(/identifier/i);
+    await expect(baseUpdate({ batchSize: 0 })).rejects.toThrow(/batchSize/i);
+    await expect(baseUpdate({ maxBatches: 0 })).rejects.toThrow(/maxBatches/i);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('pruneInCtidBatches failure', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    runOutsideDbContextMock.mockImplementation((fn: () => unknown) => fn());
+  });
+
+  it('propagates a failing batch after one attempt rather than looping', async () => {
+    dbExecuteMock.mockRejectedValueOnce(new Error('statement timeout'));
+
+    await expect(basePrune()).rejects.toThrow('statement timeout');
+    expect(dbExecuteMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Earlier batches have already committed when a later one fails. The error
+  // carries no count, so the loop must say what it already removed — otherwise
+  // a mid-sweep failure deletes tenant rows with no record of how many.
+  it('stops on a later failing batch and logs what earlier batches already committed', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockRejectedValueOnce(new Error('lock timeout'));
+
+    await expect(basePrune({ batchSize: 100 })).rejects.toThrow('lock timeout');
+
+    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    expect(error).toHaveBeenCalledTimes(1);
+    const message = String(error.mock.calls[0]?.[0]);
+    expect(message).toContain('agent_logs');
+    expect(message).toContain('100 rows');
+    expect(message).toContain('batch 2');
+    error.mockRestore();
   });
 });

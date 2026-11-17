@@ -18,6 +18,14 @@ export function hoursUntil(iso: string, now: Date = new Date()): number | null {
   return Math.max(0, Math.ceil((at - now.getTime()) / 3_600_000));
 }
 
+/** `HH:MM` of `iso` in UTC (the budget day resets at 00:00 UTC); null when missing or unparseable. */
+export function utcClockTime(iso: string | null | undefined): string | null {
+  if (typeof iso !== 'string') return null;
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return null;
+  return at.toISOString().slice(11, 16);
+}
+
 /** Pausing never widens anything, so any active grant may be paused by its grantor. */
 export function canPause(status: WispGrantStatus): boolean {
   return status === 'active';

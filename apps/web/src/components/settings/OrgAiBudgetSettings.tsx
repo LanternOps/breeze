@@ -322,7 +322,9 @@ export default function OrgAiBudgetSettings({ orgId, section = 'budget' }: Props
         <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}
         {showPartnerLink && (
           <a href={PARTNER_HREF[section]} className="font-medium text-primary hover:underline not-italic">
-            {t('aiUsagePage.viewPartnerWideBudgets')}
+            {section === 'approvals'
+              ? t('partnerSettingsPage.tabs.aiApprovals.label')
+              : t('aiUsagePage.viewPartnerWideBudgets')}
           </a>
         )}
       </span>

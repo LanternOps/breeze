@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -35,6 +36,15 @@ type mftEncoder struct {
 	width  int
 	height int
 	stride int
+
+	// allowSoftware lets findEncoder use Microsoft's software H264 MFT, in
+	// the order mftSearchOrder gives. Only the placeholder fallback sets it
+	// (OpenH264 failed to load, #11392); the regular factory stays
+	// hardware-only so OpenH264 keeps precedence over the software MFT.
+	allowSoftware bool
+	// initErr is the last activation failure that SetDimensions' eager
+	// initialize swallowed (it retries on Encode); cleared on success.
+	initErr error
 
 	// COM handles (persistent across frames)
 	transform       uintptr // IMFTransform
@@ -97,10 +107,26 @@ type mftEncoder struct {
 	stallFlushCount    int
 	outputSinceFlush   bool
 	permanentlyStalled bool
+
+	// Idle catch-up (#11622), synchronous MFTs only. catchUp counts the
+	// inputs and outputs of the current stream; retainedNV12 is the NV12 of
+	// the last frame submitted, kept (instead of returned to the pool) so
+	// CatchUpIdle can re-submit it while the screen is static.
+	catchUp       idleCatchUp
+	retainedNV12  []byte
+	catchUpLogged bool
+	// lastSubmitOK is set when the current Encode/EncodeTexture call's frame
+	// was accepted by ProcessInput; only such a frame is retained.
+	lastSubmitOK bool
+	// lateLowLatency is a test hook: when set, CODECAPI_AVLowLatencyMode is
+	// not applied before media-type negotiation, reproducing the pre-#11622
+	// encoder that holds 5 frames. Production code never sets it.
+	lateLowLatency bool
 }
 
 func init() {
 	registerHardwareFactory(newMFTEncoder)
+	registerPlaceholderFallbackFactory("Media Foundation", newMFTPlaceholderFallbackEncoder)
 }
 
 func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
@@ -119,10 +145,37 @@ func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
 	}, nil
 }
 
+// newMFTPlaceholderFallbackEncoder is the placeholder fallback: when OpenH264
+// cannot load, a session would otherwise get the passthrough placeholder and be
+// refused (#11392). It returns an MFT encoder that may use a hardware MFT or
+// Microsoft's software H264 MFT, in mftSearchOrder's order for
+// cfg.PreferHardware. Both accept CPU frames, so this also serves GDI capture
+// on a secure desktop (Winlogon/UAC). It only probes; activation happens at
+// SetDimensions and a failure there is reported by InitError.
+func newMFTPlaceholderFallbackEncoder(cfg EncoderConfig) (encoderBackend, error) {
+	if cfg.Codec != CodecH264 {
+		return nil, fmt.Errorf("MFT encoder only supports H264, got %s", cfg.Codec)
+	}
+	if !probeHardwareMFT() && !probeMFT(mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter) {
+		return nil, fmt.Errorf("no hardware or software H264 Media Foundation encoder is registered")
+	}
+	return &mftEncoder{
+		cfg:           cfg,
+		startTime:     time.Now(),
+		allowSoftware: true,
+	}, nil
+}
+
 // probeHardwareMFT checks if a hardware H264 encoder MFT exists without
 // fully initializing it. Returns false on headless servers / basic GPUs
 // (e.g. Matrox G200) that lack hardware H264 encoding.
 func probeHardwareMFT() bool {
+	return probeMFT(mftEnumFlagHardware | mftEnumFlagSortAndFilter)
+}
+
+// probeMFT reports whether MFTEnumEx finds an NV12->H264 encoder MFT for the
+// given enum flags, without activating it.
+func probeMFT(flags uint32) bool {
 	// COM init (best-effort, may already be initialized)
 	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
 	if int32(hr) < 0 && uint32(hr) != 0x80010106 {
@@ -137,7 +190,7 @@ func probeHardwareMFT() bool {
 	var count uint32
 	hr, _, _ = procMFTEnumEx.Call(
 		uintptr(unsafe.Pointer(&mftCategoryVideoEncoder)),
-		uintptr(mftEnumFlagHardware|mftEnumFlagSortAndFilter),
+		uintptr(flags),
 		uintptr(unsafe.Pointer(&inputType)),
 		uintptr(unsafe.Pointer(&outputType)),
 		uintptr(unsafe.Pointer(&ppActivate)),
@@ -213,6 +266,9 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 		m.tryInitGPUPipeline(transform)
 	}
 
+	if !isHW {
+		m.setLowLatencyBeforeNegotiation(transform)
+	}
 	// Configure output type (H264) — must be set BEFORE input
 	if err := m.setOutputType(transform, width, height); err != nil {
 		comRelease(transform)
@@ -239,6 +295,7 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 				return fmt.Errorf("software MFT fallback failed: %w", err)
 			}
 			isHW = false
+			m.setLowLatencyBeforeNegotiation(transform)
 			if err := m.setOutputType(transform, width, height); err != nil {
 				comRelease(transform)
 				procMFShutdown.Call()
@@ -445,7 +502,8 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	return nil
 }
 
-// findEncoder enumerates MFT encoders, trying hardware first.
+// findEncoder enumerates MFT encoders in mftSearchOrder's order and activates
+// the first one that works. The bool result reports a hardware MFT.
 func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 	inputType := mftRegisterTypeInfo{
 		guidMajorType: mfMediaTypeVideo,
@@ -456,19 +514,33 @@ func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 		guidSubtype:   mfVideoFormatH264,
 	}
 
-	// Hardware only — software H264 encoding is handled by OpenH264 which
-	// provides deterministic 1-in-1-out encoding. The Windows software MFT
-	// stalls for 20-60 frames on Server editions and is not officially
-	// supported (Microsoft docs: "Minimum supported server: None supported").
-	transform, err := m.enumAndActivate(
-		mftEnumFlagHardware|mftEnumFlagSortAndFilter,
-		&inputType, &outputType,
-	)
-	if err == nil {
-		return transform, true, nil
+	// Hardware only unless allowSoftware: software H264 encoding is normally
+	// handled by OpenH264, which provides deterministic 1-in-1-out encoding.
+	// The Windows software MFT stalls for 20-60 frames on Server editions and
+	// is not officially supported (Microsoft docs: "Minimum supported server:
+	// None supported"), so it is used only by the placeholder fallback
+	// (OpenH264 failed to load), where it beats refusing the session.
+	var failures []string
+	for _, kind := range mftSearchOrder(m.allowSoftware, m.cfg.PreferHardware) {
+		flags := uint32(mftEnumFlagHardware | mftEnumFlagSortAndFilter)
+		if kind == mftKindSoftware {
+			flags = mftEnumFlagSyncMFT | mftEnumFlagSortAndFilter
+		}
+		transform, err := m.enumAndActivate(flags, &inputType, &outputType)
+		if err == nil {
+			if kind == mftKindSoftware {
+				slog.Warn("Using Microsoft's software H264 MFT (OpenH264 unavailable)",
+					"preferHardware", m.cfg.PreferHardware, "earlierFailures", strings.Join(failures, "; "))
+			}
+			return transform, kind == mftKindHardware, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s H264 MFT: %v", kind, err))
 	}
 
-	return 0, false, fmt.Errorf("no hardware H264 encoder available (software encoding handled by OpenH264)")
+	if !m.allowSoftware {
+		return 0, false, fmt.Errorf("no hardware H264 encoder available (software encoding handled by OpenH264)")
+	}
+	return 0, false, fmt.Errorf("no usable H264 MFT (%s)", strings.Join(failures, "; "))
 }
 
 func (m *mftEncoder) enumAndActivate(flags uint32, inputType, outputType *mftRegisterTypeInfo) (uintptr, error) {
@@ -689,6 +761,41 @@ func (m *mftEncoder) setInputType(transform uintptr, width, height int) error {
 	return nil
 }
 
+// setLowLatencyBeforeNegotiation turns on CODECAPI_AVLowLatencyMode on a
+// software H264 MFT before its media types are set. Microsoft's software
+// encoder only honours the property at that point: set later (as the general
+// ICodecAPI block in initialize does for every MFT) it reads back TRUE but the
+// encoder still keeps its first 5 inputs before emitting, whatever the time
+// between them (measured on a Windows 11 21H2 VM, #11622). Set here, it emits
+// one output per input from the first frame. Screen capture only submits a
+// frame when the screen changes, so a 5-frame hold leaves the last changes
+// inside the encoder and the viewer minutes behind on a quiet desktop.
+// Non-fatal: if the property is refused, the idle catch-up still pushes held
+// frames out (CatchUpIdle).
+func (m *mftEncoder) setLowLatencyBeforeNegotiation(transform uintptr) {
+	if m.lateLowLatency {
+		return
+	}
+	var codecAPI uintptr
+	if _, err := comCall(transform, vtblQueryInterface,
+		uintptr(unsafe.Pointer(&iidICodecAPI)),
+		uintptr(unsafe.Pointer(&codecAPI)),
+	); err != nil || codecAPI == 0 {
+		slog.Warn("Software H264 MFT has no ICodecAPI; low-latency mode not set before negotiation, it may hold frames",
+			"error", fmt.Sprintf("%v", err))
+		return
+	}
+	defer comRelease(codecAPI)
+	llv := comVariant{vt: vtBool, val: uint64(0xFFFF)} // VARIANT_TRUE
+	if _, err := comCall(codecAPI, vtblCodecAPISetValue,
+		uintptr(unsafe.Pointer(&codecAPIAVLowLatencyMode)),
+		uintptr(unsafe.Pointer(&llv)),
+	); err != nil {
+		slog.Warn("Software H264 MFT refused low-latency mode before negotiation; it may hold frames",
+			"error", err.Error())
+	}
+}
+
 func (m *mftEncoder) setLowLatency(transform uintptr) {
 	var attrs uintptr
 	_, err := comCall(transform, vtblGetAttributes, uintptr(unsafe.Pointer(&attrs)))
@@ -818,7 +925,11 @@ func (m *mftEncoder) SetDimensions(w, h int) error {
 		if err := m.initialize(m.width, m.height, m.stride); err != nil {
 			slog.Warn("Eager MFT initialization failed, will retry on first encode",
 				"error", err.Error(), "width", m.width, "height", m.height)
-			// Non-fatal: lazy init on first Encode() will retry
+			// Non-fatal: lazy init on first Encode() will retry. Recorded so
+			// a placeholder-fallback start can fail with the cause (#11392).
+			m.initErr = err
+		} else {
+			m.initErr = nil
 		}
 	}
 	return nil
@@ -860,6 +971,7 @@ func (m *mftEncoder) shutdown() {
 	m.asyncMode = false
 	m.needInputCredits = 0
 	m.pendingOutput = nil
+	m.dropRetainedNV12()
 
 	// Release ICodecAPI before the transform
 	if m.codecAPI != 0 {
@@ -903,6 +1015,17 @@ func (m *mftEncoder) IsPlaceholder() bool {
 	return false
 }
 
+// InitError reports the activation failure SetDimensions swallowed, or nil
+// once the MFT is initialized (optionalInitErrorReporter).
+func (m *mftEncoder) InitError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.inited {
+		return nil
+	}
+	return m.initErr
+}
+
 func (m *mftEncoder) IsPermanentlyStalled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -921,10 +1044,7 @@ func (m *mftEncoder) AdvanceStallDetection() {
 	}
 	// Use the same threshold and timing logic as trackNilOutput, but
 	// trigger based on the existing counter that froze when encoding stopped.
-	threshold := mftStallThreshold
-	if m.lastStallFlush != (time.Time{}) && time.Since(m.lastStallFlush) < 10*time.Second {
-		threshold = mftStallThreshold / 2
-	}
+	threshold, _ := m.stallThresholds()
 	if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 2*time.Second {
 		if !m.outputSinceFlush && m.stallFlushCount > 0 {
 			m.stallFlushCount++

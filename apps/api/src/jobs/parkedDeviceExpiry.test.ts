@@ -39,6 +39,7 @@ vi.mock('../db', () => ({
   },
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
+  runAfterDbContextExit: vi.fn(),
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})), getRedis: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
@@ -110,7 +111,7 @@ vi.mock('../services/deviceReattach/audit', () => ({ writeReattachAudit: vi.fn()
 vi.mock('../services/deviceReattach/sourceMarker', () => ({ clearReattachSourceMarker: vi.fn() }));
 vi.mock('../services/auditService', () => ({ createAuditLog: vi.fn() }));
 vi.mock('../services/agentOrgRateLimit', () => ({ invalidateOrgDeviceCount: vi.fn(async () => undefined) }));
-vi.mock('../routes/agentWs', () => ({ disconnectAgent: vi.fn() }));
+vi.mock('../services/agentCommandRelayEvict', () => ({ evictAgentSockets: vi.fn(async () => new Map()) }));
 
 import { NetworkIsolationUnresolvedError } from '../services/networkIsolation/lifecycle';
 

@@ -107,7 +107,7 @@ func TestVerifyAttested_VaultCopyDiffersChecksPrimary(t *testing.T) {
 		t.Run(vr.name, func(t *testing.T) {
 			primary := setupIntegritySnapshot(t, []integrityFile{{name: "a.txt", content: "alpha"}})
 			e := primary.attested(t)
-			vault := &integritySnapshot{provider: providers.NewLocalProvider(t.TempDir()), snapshotID: primary.snapshotID}
+			vault := &integritySnapshot{provider: privateTestLocalProvider(t, t.TempDir()), snapshotID: primary.snapshotID}
 			vault.putObject(t, primary.manifestKey(), string(primary.storedManifest(t)))
 			vault.putObject(t, primary.manifest.Files[0].BackupPath, sameSizeDifferent("alpha"))
 			status, _, warnings, _ := vr.run(t, providers.NewFallbackProvider(vault.provider, primary.provider), primary.snapshotID, e)

@@ -232,6 +232,8 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID/rotat
 
 The old key value is immediately invalidated. The response includes the new `key` field.
 
+Installers downloaded through the key's `/s/` or `/i/` short link before the rotation, and not yet used to enroll a device, stop working as well. Download them again from the new link.
+
 <Aside type="danger" title="Shortening expiry via rotate no longer revokes outstanding installers">
   Rotating a key to an earlier `expiresAt` used to also kill any installer bootstrap tokens issued from it, via a `parent_already_expired` check enforced at redemption time. That check has been removed (#2775) now that a bootstrap token's own expiry is authoritative — see [Installer Bootstrap Tokens](#installer-bootstrap-tokens). **If you were relying on shortening a key's expiry as a kill switch for installers already in the field, it no longer works** — this is a genuine loss of capability, not a bug. Outstanding installers keep working until their own bootstrap token expires. To revoke them immediately, delete the enrollment key instead: cascade-delete removes its bootstrap tokens right away.
 </Aside>

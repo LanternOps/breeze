@@ -7,6 +7,7 @@ import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
 import { networkIsolationRoutes } from './networkIsolation';
 import { forceRebootRoutes } from './forceReboot';
+import { reattachRoutes } from './reattach';
 import { oemUpdatesRoutes } from './oemUpdates';
 import { hardwareRoutes } from './hardware';
 import { placementRoutes } from './placement';
@@ -105,6 +106,8 @@ deviceRoutes.route('/', filesystemRoutes);
 deviceRoutes.route('/', moveOrgRoutes);
 // #8729: POST /:id/force-reboot, the only (step-up) way to force-reboot a device.
 deviceRoutes.route('/', forceRebootRoutes);
+// #8318 wave 2-2: GET /:id/reinstall-candidates and POST /:id/reattach.
+deviceRoutes.route('/', reattachRoutes);
 deviceRoutes.route('/', networkIsolationRoutes);
 
 // Mount the network arm of the unified Devices list (#1322) BEFORE core

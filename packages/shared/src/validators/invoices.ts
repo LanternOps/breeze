@@ -83,12 +83,25 @@ export const updateInvoiceSchema = z.object({
   lineShowWorkedTime: z.boolean().nullable().optional()
 });
 
+/**
+ * A caller-chosen key naming ONE intended payment (#3803). Opaque and
+ * case-sensitive: 1–255 visible ASCII characters, no whitespace, so the same
+ * key survives an HTTP header round trip unchanged. Send a fresh key per
+ * payment and the same key on every retry of it.
+ */
+export const idempotencyKeySchema = z.string().regex(
+  /^[\x21-\x7E]{1,255}$/,
+  'idempotency key must be 1-255 visible ASCII characters with no whitespace'
+);
+
 export const recordPaymentSchema = z.object({
   amount: z.number().positive().multipleOf(0.01),
   method: z.enum([...PAYMENT_METHODS]),
   reference: z.string().max(255).optional(),
   receivedAt: isoDate,
-  note: z.string().max(2000).optional()
+  note: z.string().max(2000).optional(),
+  // Also accepted as the Idempotency-Key header (routes/invoices/payments.ts).
+  idempotencyKey: idempotencyKeySchema.optional()
 });
 
 export const voidInvoiceSchema = z.object({
@@ -208,6 +221,19 @@ export const orgBillingSettingsSchema = z.object({
     ctx.addIssue({ code: 'custom', path: ['expectedCurrentCurrencyCode'], message: 'expectedCurrentCurrencyCode is required when currencyCode is supplied' });
   }
 });
+
+/**
+ * The org billing-settings fields that change the org's billing contact, the default recipient of its invoices,
+ * quotes and autopay notices. A patch that carries any of them (an explicit null included) needs billing:manage on top
+ * of invoices:write, on PATCH /orgs/:orgId/billing-settings and on the AI tool that writes the same settings.
+ */
+export const ORG_BILLING_CONTACT_SETTINGS_KEYS = ['billingContactEmail', 'billingContactName'] as const satisfies
+  ReadonlyArray<keyof z.infer<typeof orgBillingSettingsSchema>>;
+
+/** True when an org billing-settings patch changes the billing contact (see ORG_BILLING_CONTACT_SETTINGS_KEYS). */
+export function changesOrgBillingContact(patch: Readonly<Record<string, unknown>>): boolean {
+  return ORG_BILLING_CONTACT_SETTINGS_KEYS.some((key) => patch[key] !== undefined);
+}
 
 export const orgCurrencyImpactQuerySchema = z.object({ currencyCode: currencyCodeSchema }).strict();
 

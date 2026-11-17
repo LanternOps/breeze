@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
+import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, withDbTransaction } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
@@ -11,7 +12,17 @@ import { PERMISSIONS } from '../../services/permissions';
 import { CLIENT_AI_ENTRA_CLIENT_ID } from '../../config/env';
 import { resolveScopedOrgId } from '../c2c/helpers';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
+import {
+  AI_TRANSCRIPT_RETENTION_ENFORCE,
+  clientStubPredicate,
+  countTranscriptPreview,
+  transcriptCutoffIso,
+} from '../../services/aiTranscriptRetentionPredicates';
+import { transcriptPreviewDaysSchema } from '../../services/aiDataPolicy';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { lockPortalEntraOrgMappings } from '../../services/portalEntraTenantProof';
+import { auditPortalPasswordFallback } from '../../services/portalPasswordFallback';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { putPolicySchema, putTenantMappingSchema } from './schemas';
 import { clientAiAdminOrgRoutes } from './adminOrgs';
 import { clientAiAdminSessionRoutes } from './adminSessions';
@@ -24,7 +35,11 @@ import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
  * MSP-facing admin surface for Breeze AI for Office (spec §9, consumed by the
  * Plan-4 dashboard): tenant mapping + per-org policy. Mirrors routes/m365.ts:
  * group authMiddleware, feature 404 gate, ORGS_READ/ORGS_WRITE permissions,
- * MFA on the isolation-critical mapping mutations, writeRouteAudit on writes.
+ * MFA on every mapping and policy mutation, writeRouteAudit on writes.
+ *
+ * The tenant mapping and the policy apply to the whole organization, so their
+ * writes also require a caller with no site or exact-device restriction
+ * (`canMutateOrgWideGovernance`).
  *
  * Org access: resolveScopedOrgId(auth, :orgId) returns null when the caller
  * cannot access the org → respond 404 (never reveal cross-tenant existence).
@@ -111,6 +126,9 @@ clientAiAdminRoutes.put(
   zValidator('json', putTenantMappingSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
     if (!orgId) return c.json({ error: 'Organization not found' }, 404);
     // canAccessOrg is true for system scope: the holding org is never a target.
@@ -120,11 +138,26 @@ clientAiAdminRoutes.put(
     const now = new Date();
 
     let row: typeof clientAiTenantMappings.$inferSelect | undefined;
+    let before: { entraTenantId: string; provenAt: Date | null } | undefined;
     try {
       // Savepoint so the caught unique violation cannot poison the request
       // transaction and turn the 409 into a 500 at commit (#11203).
-      [row] = await withDbTransaction(async () =>
-        db
+      [row] = await withDbTransaction(async () => {
+        // This upsert can CREATE the org's mapping. An org merge's FOR UPDATE
+        // cannot lock that row in advance, so take the per-org lock the merge
+        // holds for both its orgs (portal registration W4, plan D8 / OD7).
+        // Without it, a mapping created for an unmapped survivor mid-merge
+        // would make keep-survivor drop the loser's proven mapping. Released
+        // with the savepoint if the upsert fails, else held to request commit.
+        await lockPortalEntraOrgMappings([orgId]);
+        // Under the org lock: whether this upsert repoints a PROVEN mapping,
+        // whose proof the repoint trigger then clears (#11582).
+        [before] = await db
+          .select({ entraTenantId: clientAiTenantMappings.entraTenantId, provenAt: clientAiTenantMappings.provenAt })
+          .from(clientAiTenantMappings)
+          .where(eq(clientAiTenantMappings.orgId, orgId))
+          .limit(1);
+        return db
           .insert(clientAiTenantMappings)
           .values({
             orgId,
@@ -137,8 +170,8 @@ clientAiAdminRoutes.put(
             target: clientAiTenantMappings.orgId,
             set: { entraTenantId: entraTenantId.toLowerCase(), updatedAt: now },
           })
-          .returning()
-      );
+          .returning();
+      });
     } catch (err) {
       // client_ai_tenant_mappings_tenant_uniq: the tenant is already mapped to
       // a DIFFERENT org. Deliberately opaque — do not reveal which org.
@@ -158,6 +191,11 @@ clientAiAdminRoutes.put(
       resourceName: row.entraTenantId,
       details: { entraTenantId: row.entraTenantId },
     });
+    // The proof was on the old tenant and the trigger cleared it: portal
+    // Microsoft sign-in falls back to password for this org (W4 D2, #11582).
+    if (before?.provenAt && !row.provenAt) {
+      await auditPortalPasswordFallback(c, { orgId, tenantId: before.entraTenantId, cause: 'ai_for_office_mapping_changed' });
+    }
 
     return c.json({ mapping: toMappingResponse(row) });
   }
@@ -169,6 +207,9 @@ clientAiAdminRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
     if (!orgId) return c.json({ error: 'Organization not found' }, 404);
 
@@ -185,6 +226,10 @@ clientAiAdminRoutes.delete(
         resourceId: row.id,
         resourceName: row.entraTenantId,
       });
+      // The row carried the portal tenant proof (D1): Microsoft sign-in falls back (#11582).
+      if (row.provenAt) {
+        await auditPortalPasswordFallback(c, { orgId, tenantId: row.entraTenantId, cause: 'ai_for_office_mapping_removed' });
+      }
     }
 
     return c.json({ mapping: null });
@@ -202,12 +247,40 @@ clientAiAdminRoutes.get('/orgs/:orgId/policy', requireOrgsRead, async (c) => {
   return c.json({ policy });
 });
 
+/**
+ * Preview of the client-AI transcript window (#4342 W4): how many of the
+ * org's client (AI for Office) sessions are past window N today, counted with
+ * the retention job's own predicate. Same auth and org resolution as the
+ * policy GET above (ORGS_READ; inaccessible org → 404). Request path only:
+ * the count runs under the caller's RLS, never a system escape.
+ */
+clientAiAdminRoutes.get(
+  '/orgs/:orgId/policy/transcript-retention-preview',
+  requireOrgsRead,
+  zValidator('query', z.object({ days: transcriptPreviewDaysSchema })),
+  async (c) => {
+    const auth = c.get('auth');
+    const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
+    if (!orgId) return c.json({ error: 'Organization not found' }, 404);
+    const { days } = c.req.valid('query');
+    const now = new Date();
+    const { eligible, capped } = await countTranscriptPreview(
+      clientStubPredicate(orgId, transcriptCutoffIso(days, now), now),
+    );
+    return c.json({ eligible, capped, enforced: AI_TRANSCRIPT_RETENTION_ENFORCE });
+  }
+);
+
 clientAiAdminRoutes.put(
   '/orgs/:orgId/policy',
   requireOrgsWrite,
+  requireMfa(),
   zValidator('json', putPolicySchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const orgId = resolveScopedOrgId(auth, c.req.param('orgId'));
     if (!orgId) return c.json({ error: 'Organization not found' }, 404);
 

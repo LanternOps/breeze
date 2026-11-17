@@ -52,6 +52,8 @@ Google Workspace lives on the sub-tab at `/integrations#google`. Breeze authenti
 
 The walkthrough card displays the exact comma-separated OAuth scope list to authorize. It covers directory user/group read and write, user security, aliases, mobile-device actions, Gmail settings (basic and sharing), Calendar ACLs, and Apps licensing — the scopes the Google identity tools actually call. Authorize the full list so every supported action works.
 
+One additional scope is optional: `https://www.googleapis.com/auth/admin.directory.domain.readonly`. It is needed only to verify a customer's email domains against the Google Workspace directory (see [Customer domain verification](/features/portal-domain-verification/)). Existing connections keep working without it.
+
   </TabItem>
   <TabItem label="Microsoft 365">
 

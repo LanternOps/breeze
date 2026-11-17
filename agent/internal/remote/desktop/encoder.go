@@ -84,6 +84,15 @@ type optionalStallDetector interface {
 	AdvanceStallDetection()
 }
 
+// optionalIdleCatchUp is implemented by encoder backends that can hold input
+// frames before emitting them (#11622). The capture loop calls CatchUpIdle
+// when it has no new frame; the backend re-submits its last frame only while
+// the newest frame is still inside the encoder (see idleCatchUp) and returns
+// the output that pushes out, or nil when there is nothing to do.
+type optionalIdleCatchUp interface {
+	CatchUpIdle() ([]byte, error)
+}
+
 // optionalGPUOnlyMarker is implemented by hardware encoders that cannot
 // accept CPU pixel data via Encode([]byte) and require EncodeTexture()
 // exclusively (e.g., AMF, NVENC). When the capture path falls back to
@@ -299,6 +308,18 @@ func (v *VideoEncoder) ForceKeyframe() error {
 		return kf.ForceKeyframe()
 	}
 	return nil
+}
+
+// CatchUpIdle gives a backend that holds input frames the chance to push the
+// newest frame out while the screen is static. It returns the encoded output,
+// or nil when the backend holds nothing owed or does not buffer at all.
+func (v *VideoEncoder) CatchUpIdle() ([]byte, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if cu, ok := v.backend.(optionalIdleCatchUp); ok {
+		return cu.CatchUpIdle()
+	}
+	return nil, nil
 }
 
 // IsPermanentlyStalled returns true if the encoder backend has detected an

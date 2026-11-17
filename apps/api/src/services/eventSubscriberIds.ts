@@ -32,6 +32,10 @@ export const EVENT_SUBSCRIBER_IDS = [
   'policy-alert-bridge',
   'psa-alert-ticketing',
   'webhook-delivery',
+  // Wisp event check-ins W04 (#11493, #10410) — the event fast path of a
+  // check-in waiting on a device coming online, a script finishing or a run
+  // settling. Its own id, so the assessment wake never sees device.online.
+  'wisp-check-in-trigger',
   // Wisp W05b Task 9 (#9917) — wakes the assessment engine: one debounced
   // assessment request per active grant covering the event's org.
   'wisp-wake',

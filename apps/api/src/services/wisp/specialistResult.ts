@@ -22,12 +22,16 @@
  * the grant's thread could show that org (`isOrgReadableOnThread`, the
  * timeline's own rule), so an out-of-ceiling run never reaches the thread.
  *
- * Device text (the run summary, a step's result, the hostname) is untrusted.
- * A post is rendered to a person as plain text and is never read back into a
+ * Device text (the run summary, a step's result, the device's name) is untrusted.
+ * A post is rendered to a person (as plain text; the specialist run post's
+ * body as the run page's safe markdown subset, #11673; a step outcome and a
+ * check-in answer stay literal) and is never read back into a
  * prompt (no seed or tool reads wisp_thread_posts), so it is sanitized
  * (`sanitizeUntrustedToolText`: injection spans, dangerous Unicode, forged
  * fences) and capped rather than fenced; the fence is applied where the same
- * text enters a prompt (chatRunBridge drain, the continuation seed).
+ * text enters a prompt (chatRunBridge drain, which also renders the run-row
+ * results specialistResultsTurn reads each Wisp turn (#11671); the
+ * continuation seed).
  *
  * Both functions read under short system contexts of their own and never
  * throw for a run or intent that should not post: they return
@@ -45,11 +49,25 @@ import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
 import { captureException } from '../sentry';
+import { capAtBoundary } from '../../utils/capAtBoundary';
 import { notifyUser, resolveSpecialistPostAudience, SpecialistAudienceRefusedError } from './notifyUser';
+import { specialistResultDedupeKey } from './threadPosts';
 import { getOrCreateThread } from './threads';
 
-/** The post body cap, in characters (code points), whatever it carries. */
-export const SPECIALIST_RESULT_BODY_MAX_CHARS = 1500;
+export { specialistResultDedupeKey };
+
+/**
+ * The cap on a post body that carries a run's report (this module's run post,
+ * a run check-in's answer in checkInRuns.ts), in characters (code points).
+ * Twice runLoop's `RUN_SUMMARY_MAX_CHARS` (2,000), so a whole report and its
+ * closing next step always fit with room for the waiting line and sanitizer
+ * markers (#11673: a 1,500 cap removed the next step, which a report puts
+ * last). Anything longer is cut at a boundary, a paragraph break first
+ * (`cleanReport`); the post links to the run page for the rest.
+ */
+export const SPECIALIST_RESULT_BODY_MAX_CHARS = 4000;
+/** A released step's outcome post: device output, one short block. */
+export const SPECIALIST_STEP_BODY_MAX_CHARS = 1500;
 /** The reconciler looks back this far for a run whose post is missing. */
 export const SPECIALIST_RESULT_RESWEEP_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** At most this many runs per reconciler tick (newest first). */
@@ -58,7 +76,7 @@ export const SPECIALIST_RESULT_RESWEEP_LIMIT = 100;
 const PROFILE = 'device_troubleshooting';
 const SETTLED_STATUSES = ['completed', 'failed', 'awaiting_approval', 'cancelled'] as const;
 type SettledStatus = (typeof SETTLED_STATUSES)[number];
-const HOSTNAME_MAX_CHARS = 64;
+const DEVICE_NAME_MAX_CHARS = 64;
 const LABEL_MAX_CHARS = 200;
 
 export type SpecialistPostSkip =
@@ -74,10 +92,6 @@ export type SpecialistPostSkip =
   | 'already_posted';
 
 export type SpecialistPostResult = { posted: true } | { posted: false; reason: SpecialistPostSkip };
-
-export function specialistResultDedupeKey(runId: string, status: string): string {
-  return `wisp.specialist_result:${runId}:${status}`;
-}
 
 export function specialistStepDedupeKey(intentId: string, status: string): string {
   return `wisp.specialist_step:${intentId}:${status}`;
@@ -98,14 +112,30 @@ function capChars(text: string, max: number): string {
   return chars.length <= max ? text : `${chars.slice(0, Math.max(0, max - 1)).join('')}…`;
 }
 
-/** Device- or model-written text, made safe to show: filtered, single spaces kept, capped. */
-function cleanText(value: string, max: number): string {
+/**
+ * Device- or model-written text, made safe to show: filtered, single spaces
+ * kept, capped.
+ */
+export function cleanText(value: string, max: number): string {
   return capChars(sanitizeUntrustedToolText(value).trim(), max);
 }
 
-function hostLabel(hostname: string | null): string {
-  const clean = hostname ? cleanText(hostname, HOSTNAME_MAX_CHARS).replace(/\s+/g, ' ') : '';
-  return clean.length > 0 ? clean : 'the device';
+/**
+ * A run's report (its summary), made safe to show like `cleanText` but cut at
+ * a boundary, a paragraph break first (`capAtBoundary`). The run post's body and the run check-in result's
+ * body (checkInRuns.ts, W07).
+ */
+export function cleanReport(value: string, max: number): string {
+  return capAtBoundary(sanitizeUntrustedToolText(value).trim(), max);
+}
+
+/** The device's display name (what the technician calls it), else its hostname (#11673). */
+function deviceLabel(device: { displayName: string | null; hostname: string | null }): string {
+  for (const name of [device.displayName, device.hostname]) {
+    const clean = name ? cleanText(name, DEVICE_NAME_MAX_CHARS).replace(/\s+/g, ' ').trim() : '';
+    if (clean.length > 0) return clean;
+  }
+  return 'the device';
 }
 
 const FAILURE_TITLES: Readonly<Record<string, string>> = {
@@ -123,13 +153,16 @@ function statusPhrase(status: SettledStatus, errorCode: string | null): string {
 }
 
 /** Title + body of a settled run's post (pure; exported for the tests' sake only through behaviour). */
-function runPostText(run: { status: SettledStatus; errorCode: string | null; summary: string | null; hostname: string | null }, pendingCount: number) {
-  const title = `Device troubleshooting on ${hostLabel(run.hostname)}: ${statusPhrase(run.status, run.errorCode)}`;
+function runPostText(
+  run: { status: SettledStatus; errorCode: string | null; summary: string | null; hostname: string | null; displayName: string | null },
+  pendingCount: number,
+) {
+  const title = `Device troubleshooting on ${deviceLabel(run)}: ${statusPhrase(run.status, run.errorCode)}`;
   const waiting = run.status === 'awaiting_approval' && pendingCount > 0
     ? `${pendingCount} ${pendingCount === 1 ? 'step is' : 'steps are'} waiting for your approval.`
     : '';
   const room = SPECIALIST_RESULT_BODY_MAX_CHARS - (waiting ? Array.from(waiting).length + 2 : 0);
-  const summary = run.summary?.trim() ? cleanText(run.summary, room) : 'The run left no summary. Open the run for its steps.';
+  const summary = run.summary?.trim() ? cleanReport(run.summary, room) : 'The run left no summary. Open the run for its steps.';
   return { title, body: waiting ? `${summary}\n\n${waiting}` : summary };
 }
 
@@ -166,6 +199,7 @@ type RunForPost = {
   grantRevisionId: string | null;
   triggerRef: Record<string, unknown> | null;
   hostname: string | null;
+  displayName: string | null;
 };
 
 async function loadRun(runId: string): Promise<RunForPost | null> {
@@ -183,6 +217,7 @@ async function loadRun(runId: string): Promise<RunForPost | null> {
       triggerRef: aiAgentRuns.triggerRef,
       // Org-pinned: a device row of another org never names this run's device.
       hostname: devices.hostname,
+      displayName: devices.displayName,
     })
     .from(aiAgentRuns)
     .leftJoin(devices, and(eq(devices.id, aiAgentRuns.deviceId), eq(devices.orgId, aiAgentRuns.orgId)))
@@ -275,7 +310,9 @@ export async function postSpecialistResult(runId: string): Promise<SpecialistPos
   const dest = await resolveDestination({ grantId: run.grantId, grantRevisionId: run.grantRevisionId, orgId: run.orgId });
   if (!dest.ok) return { posted: false, reason: dest.reason };
 
-  const { title, body } = runPostText({ status, errorCode: run.errorCode, summary: run.summary, hostname: run.hostname }, pending);
+  const { title, body } = runPostText({
+    status, errorCode: run.errorCode, summary: run.summary, hostname: run.hostname, displayName: run.displayName,
+  }, pending);
   return deliver({
     userId: dest.userId,
     threadId: dest.threadId,
@@ -327,7 +364,7 @@ export async function postSpecialistStepOutcome(intentId: string): Promise<Speci
 
   const ran = intent.status === 'completed';
   const head = `Approved step ${ran ? 'ran' : 'failed'}: ${stepLabel} — `;
-  const room = SPECIALIST_RESULT_BODY_MAX_CHARS - Array.from(head).length;
+  const room = SPECIALIST_STEP_BODY_MAX_CHARS - Array.from(head).length;
   const outcome = ran ? stepOutcomeText(intent.result, room) : cleanText(intent.errorCode ?? 'error', room) || 'error';
   return deliver({
     userId: dest.userId,
@@ -337,7 +374,7 @@ export async function postSpecialistStepOutcome(intentId: string): Promise<Speci
     orgId: run.orgId,
     runId: run.id,
     dedupeKey: specialistStepDedupeKey(intent.id, intent.status),
-    title: `Device troubleshooting on ${hostLabel(run.hostname)}: approved step ${ran ? 'ran' : 'failed'}`,
+    title: `Device troubleshooting on ${deviceLabel(run)}: approved step ${ran ? 'ran' : 'failed'}`,
     body: `${head}${outcome}`,
   });
 }

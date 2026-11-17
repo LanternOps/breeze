@@ -28,17 +28,18 @@
  * stands in for the password while the card still demands the existing-factor
  * step-up). The callback picks the purpose from the factor state, not from this
  * intent, which only decides where the user lands.
- * `recovery_codes` / `disable_mfa` / `delete_passkey` (#4045): the three
+ * `recovery_codes` / `disable_mfa` / `delete_passkey` (#4045) and
+ * `remove_totp` (#10650, removing the authenticator app on its own): the
  * factor-MANAGEMENT actions of an account that already holds a factor — the
  * grant that comes back is `sso_reauth_manage_factor` and stands in for the
  * password on that one action.
  */
-export type SsoReauthIntent = 'totp' | 'passkey' | 'recovery_codes' | 'disable_mfa' | 'delete_passkey';
+export type SsoReauthIntent = 'totp' | 'passkey' | 'recovery_codes' | 'disable_mfa' | 'delete_passkey' | 'remove_totp';
 
 /** The #4045 factor-management subset of {@link SsoReauthIntent}. */
-export type SsoReauthManageIntent = Extract<SsoReauthIntent, 'recovery_codes' | 'disable_mfa' | 'delete_passkey'>;
+export type SsoReauthManageIntent = Extract<SsoReauthIntent, 'recovery_codes' | 'disable_mfa' | 'delete_passkey' | 'remove_totp'>;
 
-const INTENTS: readonly SsoReauthIntent[] = ['totp', 'passkey', 'recovery_codes', 'disable_mfa', 'delete_passkey'];
+const INTENTS: readonly SsoReauthIntent[] = ['totp', 'passkey', 'recovery_codes', 'disable_mfa', 'delete_passkey', 'remove_totp'];
 
 export const SSO_REAUTH_INTENT_KEY = 'breeze.ssoReauth.intent';
 

@@ -35,7 +35,7 @@ test('POLICY_FILES is W4\'s seven plus the gate, mobile closure, integration and
   // A parse miss (or a new --config= job) must fail here, not silently shrink the list.
   assert.deepEqual(configs.sort(), ['e2e-tests/playwright.auth-browser-transition.config.ts',
     'e2e-tests/playwright.topology-worker.config.ts']);
-  for (const path of [...W4_FILES, '.github/scripts/ci-policy.mjs', '.github/scripts/ci-gate.mjs',
+  for (const path of [...W4_FILES, '.github/scripts/ci-policy.mjs', '.github/scripts/ci-gate.mjs', '.github/scripts/ci-gate-thin.mjs',
     '.github/workflows/ci-gate.yml', '.github/scripts/mobile-lockfile-closure.mjs',
     'apps/api/vitest.integration.config.ts', ...configs]) {
     assert.ok(POLICY_FILES.includes(path), `POLICY_FILES is missing ${path}`);
@@ -88,6 +88,24 @@ test('queue-selection reads only listed files and imports only listed modules', 
     // The only computed read of a repo file is a Playwright config, pinned above.
     for (const [, template] of source.matchAll(/io\.read\(`([^`]+)`\)/g)) assert.equal(template, 'e2e-tests/${name}');
   }
+});
+
+// W05a (#10749): the gate's verdict and selection run every module they import, so
+// each one must be a policy file, or a change to it would not move the digest. The
+// scan follows imports (the 'every script ci.yml runs' test above cannot see one).
+test('every local module the gate and queue selection import, transitively, is a listed policy file', () => {
+  const seen = new Set();
+  const visit = file => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const source = read(file);
+    for (const [, specifier] of source.matchAll(/^(?:import|export) [^;]*? from '(\.[^']+)'/gm)) visit(join(dirname(file), specifier));
+    assert.doesNotMatch(source, /\bimport\(/, `${file} has a dynamic import this scan cannot follow`);
+  };
+  visit('.github/scripts/ci-gate.mjs');
+  visit('.github/scripts/queue-selection.mjs');
+  assert.ok(seen.has('.github/scripts/ci-gate-thin.mjs') && seen.has('.github/scripts/ci-policy.mjs'), [...seen].join(', '));
+  for (const file of seen) assert.ok(POLICY_FILES.includes(file), `${file} is imported but not in POLICY_FILES`);
 });
 
 test('selection reads only policy files and execs only the listed classifier', () => {

@@ -479,7 +479,9 @@ const ALLOWED_TAG_NAMES = new Set([
   // unexpected Graph failure (graph_response_invalid, graph_request_timeout,
   // graph_transport_failed, graph_license_required, graph_not_found,
   // graph_response_too_large, the refusal codes) degraded silently to
-  // `last_status='error'` with no alert. `m365_sync_domain` is the closed
+  // `last_status='error'` with no alert. (#9394 later took graph_request_timeout
+  // out of that set: it is retried on the BullMQ ladder and, if it outlasts it,
+  // recorded on the row as `error` without a per-run Sentry event.) `m365_sync_domain` is the closed
   // `M365SyncDomain` union and `m365_sync_failure_code` is the closed
   // `M365SyncCallFailureCode` union — both string-literal unions from
   // services/m365Sync/types.ts / m365ControlPlane/readActionService.ts, never
@@ -987,6 +989,8 @@ export interface CaptureMessageOptions {
   eventCode: SentryEventCode;
   level?: 'info' | 'warning' | 'error';
   tags?: Record<string, string>;
+  /** Group every event of this call site under fixed, BOUNDED literals (never an id), as `captureException` does. */
+  fingerprint?: readonly string[];
 }
 
 // There is deliberately NO `extra` field. The old one was dead twice over: this
@@ -1004,11 +1008,12 @@ export function captureMessage(message: string, options: CaptureMessageOptions):
     return;
   }
 
-  const { eventCode, level = 'warning', tags } = options;
+  const { eventCode, level = 'warning', tags, fingerprint } = options;
 
   Sentry.withScope((scope) => {
     scope.setLevel(level);
     setCallerTags(scope, tags);
+    if (fingerprint) scope.setFingerprint([...fingerprint]);
     // Set AFTER the caller's tags so a `tags: { event_code: ... }` bag can never
     // override the call site's own code, and guarded so an unregistered value
     // arriving from untyped JS degrades to a named sentinel rather than an

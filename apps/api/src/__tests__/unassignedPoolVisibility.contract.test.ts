@@ -72,6 +72,7 @@ const EXECUTION_SITES: Record<string, string> = {
 /** About Quick Support itself, not an enumeration of orgs a person sees. */
 const QUICK_SUPPORT_SPECIFIC: Record<string, string> = {
   'services/quickSupportOrg.ts': 'the Quick Support org helpers themselves',
+  'routes/remote/supportSessions.ts': 'Quick Support routes: matches a session to the caller\'s own partner\'s Quick Support org before revealing or replacing its code (#11836); never lists orgs',
   'services/timeSuggestionService.ts': 'attributes Quick Support session time to the customer org; a parked device never has a session',
   'services/orgArchive.ts': 'protected lifecycle: already refuses both types (NON_ARCHIVABLE_ORG_TYPES)',
   'services/orgMerge.ts': 'protected lifecycle: Quick Support merge refusal; the holding org is refused separately',
@@ -189,6 +190,13 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * 81 → 82 (#11074): routes/oemUpdates/fleet.ts, the Vendor updates fleet list
  * (parked guard beside the filter), and services/oemUpdates/overdueSweep.ts,
  * its alerts (a parkedFanoutModules entry) 82 → 83.
+ * 83 → 82 (#11562): the report generators now take their population from
+ * managedDeviceConditions() in services/managedDeviceScope.ts, so the files that
+ * hand-rolled the ephemeral filter drop out and that one helper (ephemeral filter
+ * and notParkedDeviceCondition() side by side) joins the scan.
+ * 82 → 83 (#8318 wave 2-1): services/reinstallCandidates/index.ts, the SQL
+ * half of the reinstall-target rule (notHiddenOrgType() beside the filter;
+ * hidden-org targets never qualify).
  */
 const EPHEMERAL_DISCOVERED_FILES = 83;
 

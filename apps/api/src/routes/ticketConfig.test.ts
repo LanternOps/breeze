@@ -474,6 +474,18 @@ describe('inbound-domains routes (Phase 5)', () => {
     expect(serviceMocks.listCustomerEmailDomains).toHaveBeenCalledWith('p-1');
   });
 
+  it('/ticket-config/inbound-domains list rows carry the verification fields (additive)', async () => {
+    permsRef.current = ADMIN_PERMS;
+    const row = {
+      id: MAP_ID, domain: 'acme.com', orgId: ORG_ID, orgName: 'ACME', autoCreateContact: true, isActive: true,
+      state: 'verified', method: 'dns_txt', verifiedAt: '2027-01-02T00:00:00.000Z', usableForSignIn: true,
+    };
+    serviceMocks.listCustomerEmailDomains.mockResolvedValue([row]);
+    const body = await (await ticketConfigRoutes.request('/inbound-domains')).json() as { data: Array<Record<string, unknown>> };
+    expect(body.data[0]).toMatchObject({ id: MAP_ID, domain: 'acme.com', orgName: 'ACME', state: 'verified', method: 'dns_txt', usableForSignIn: true });
+    expect(JSON.stringify(body)).not.toMatch(/verification_?token|verified_?evidence/i);
+  });
+
   it('POST 403 for a non-admin', async () => {
     const res = await ticketConfigRoutes.request('/inbound-domains', {
       method: 'POST',

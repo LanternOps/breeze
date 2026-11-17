@@ -468,6 +468,27 @@ describe('W11 review follow-ups', () => {
     });
   });
 
+  // pam_rules.match_signer_group_id is ON DELETE RESTRICT: a rule inserted after
+  // the reference count loses the race to the FK, which Postgres 18 reports as
+  // 23001 and older versions as 23503 (#11624).
+  describe('manage_pam_rules delete_signer_group lost race', () => {
+    beforeEach(() => { vi.spyOn(console, 'error').mockImplementation(() => undefined); });
+
+    it.each(['23503', '23001'])('maps a foreign-key refusal (%s) to IN_USE', async (code) => {
+      h.transaction.mockRejectedValue(Object.assign(new Error('fk'), { code }));
+      const out = await run('manage_pam_rules', { action: 'delete_signer_group', signerGroupId: POLICY });
+      expect(out.code).toBe('IN_USE');
+      expect(out.deleted).toBeUndefined();
+    });
+
+    it('does not map a non-foreign-key failure to IN_USE', async () => {
+      h.transaction.mockRejectedValue(Object.assign(new Error('dup'), { code: '23505' }));
+      const out = await run('manage_pam_rules', { action: 'delete_signer_group', signerGroupId: POLICY });
+      expect(out.code).not.toBe('IN_USE');
+      expect(out.deleted).toBeUndefined();
+    });
+  });
+
   describe('bounded results', () => {
     it('a list over 96 KB is refused with result_too_large and a hint to pass orgId', async () => {
       const big = 'x'.repeat(2000);

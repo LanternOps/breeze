@@ -350,6 +350,8 @@ ticketsRoutes.get(
     }
     // #8972: merged tombstones are hidden (list, search, closed filter) unless asked for.
     if (!q.showMerged) conditions.push(isNull(tickets.mergedIntoTicketId));
+    // #8313: the ticket list's "Imported" filter (`#imported=1` in the web hash).
+    if (q.imported) conditions.push(isNotNull(tickets.migrationWindowId));
     if (q.status) conditions.push(eq(tickets.status, q.status));
     else if (q.statusGroup === 'open') conditions.push(inArray(tickets.status, [...OPEN_STATUSES]));
     else if (q.statusGroup === 'closed') conditions.push(inArray(tickets.status, [...CLOSED_STATUSES]));
@@ -376,6 +378,7 @@ ticketsRoutes.get(
     const orderBy =
       q.sort === 'newest' ? [desc(tickets.createdAt), desc(tickets.id)]
       : q.sort === 'oldest' ? [asc(tickets.createdAt), asc(tickets.id)]
+      : q.sort === 'updated' ? [desc(tickets.updatedAt), desc(tickets.id)]
       : q.sort === 'due' ? [asc(tickets.dueDate), asc(tickets.id)]
       : [desc(SLA_BREACHED), desc(SLA_AT_RISK), PRIORITY_ORDER, asc(tickets.createdAt), asc(tickets.id)]; // triage: breaches surface first
 
@@ -394,6 +397,8 @@ ticketsRoutes.get(
         deviceHostname: devices.hostname,
         assignedTo: tickets.assignedTo,
         assigneeName: users.name,
+        // Triage rows show the requester beside org and device.
+        submitterName: tickets.submitterName,
         categoryId: tickets.categoryId,
         dueDate: tickets.dueDate,
         slaBreachedAt: tickets.slaBreachedAt,

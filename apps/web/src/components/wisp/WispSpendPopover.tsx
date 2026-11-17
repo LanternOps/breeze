@@ -62,6 +62,8 @@ export default function WispSpendPopover({ wisp, budgetMax, onRaise, usage, onWi
             <WispSpendMeter
               spentCents={spent}
               budgetCents={wisp.budgetCentsPerDay}
+              backgroundCents={wisp.backgroundCents}
+              chatCents={wisp.chatCents}
               resetsAt={resetsAt}
               budgetMax={budgetMax}
               onRaise={onRaise ? () => { close(); onRaise(); } : undefined}

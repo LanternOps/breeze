@@ -148,7 +148,9 @@ export async function endDesktopSessionAfterReconnectGrace(input: {
     withSystemDbAccessContext(() =>
       commitDesktopTerminalIntent({
         sessionId: input.sessionId,
-        write: { status: 'disconnected', endedAt: new Date() },
+        // The agent reported the peer drop; the viewer did not reconnect
+        // within the grace window.
+        write: { status: 'disconnected', endedAt: new Date(), endReason: 'peer_disconnected' },
         // The agent already stopped this peer: nothing left to acknowledge.
         phase: 'confirmed',
         where: [

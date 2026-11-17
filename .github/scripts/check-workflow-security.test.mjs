@@ -1678,6 +1678,28 @@ const SETUP_NODE_INPUTS = "          node-version: '22.23.4'\n          package-
 const JOB_HEADER = '    name: CI Gate\n    runs-on: ubuntu-latest\n    timeout-minutes: 145\n';
 const addStep = (step) => (text) => text.replace(VERIFY_STEP, `${VERIFY_STEP}\n${step}`);
 
+// W05a (#10749): the select step, the selection upload, and the kill switch.
+const SELECT_STEP = '        run: node .github/scripts/ci-gate.mjs select\n';
+const THIN_QUEUE_LINE = '          THIN_QUEUE: ${{ vars.CI_THIN_QUEUE }}\n';
+const VERIFY_HEAD_REF = '          HEAD_REF: ${{ github.event.merge_group.head_ref }}\n        run: node .github/scripts/ci-gate.mjs verify\n';
+// One step's text, from its `- name:` line to the next step or the end of the file.
+const stepText = (text, name) => text.match(new RegExp(`^      - name: ${name}\\n[\\s\\S]*?(?=^      - |(?![\\s\\S]))`, 'm'))?.[0] ?? assert.fail(`no ${name} step`);
+const moveAfter = (name, after) => (text) => {
+  const moved = stepText(text, name);
+  const without = text.replace(moved, '');
+  const anchor = stepText(without, after);
+  return without.replace(anchor, `${anchor}${moved}`);
+};
+const inStep = (name, from, to) => (text) => {
+  const step = stepText(text, name);
+  assert.ok(step.includes(from), `${name} has no ${from.trim()}`);
+  return text.replace(step, step.replace(from, to));
+};
+const SELECTION_UPLOAD = 'Upload the queue selection';
+const ANCHOR_UPLOAD = 'Upload the PR anchor';
+const SELECT = "Select the queue entry's jobs";
+const JUDGE = 'Judge the queue entry';
+
 // Each mutation breaks exactly one invariant and must be reported as such.
 const GATE_MUTATIONS = [
   ['checkout of the candidate', (t) => t.replace(CHECKOUT_REF, '          ref: ${{ github.sha }}\n'), /must set ref: \$\{\{ github\.workflow_sha \}\}/u],
@@ -1713,20 +1735,47 @@ const GATE_MUTATIONS = [
   ['read-all permissions', (t) => t.replace('permissions:\n  contents: read\n  actions: read\n', 'permissions: read-all\n'), /permissions must be exactly/u],
   ['job-level permissions', (t) => t.replace(JOB_HEADER, `${JOB_HEADER}    permissions:\n      contents: write\n`), /job-level permissions are not allowed/u],
   ['a top-level env', (t) => t.replace('jobs:\n', 'env:\n  NODE_OPTIONS: --require ./x.js\n\njobs:\n'), /top-level env is not allowed/u],
-  ['an extra step env', (t) => t.replace('          GH_TOKEN: ${{ github.token }}\n          BASE_SHA', '          GH_TOKEN: ${{ github.token }}\n          NODE_OPTIONS: --require ./x.js\n          BASE_SHA'), /the verify step env must be exactly/u],
-  ['verify on the wrong event', (t) => t.replace("        if: github.event_name == 'merge_group'\n", "        if: github.event_name == 'pull_request'\n"), /the verify step must have if: github\.event_name == 'merge_group'/u],
+  ['an extra step env', (t) => t.replace(VERIFY_HEAD_REF, `          NODE_OPTIONS: --require ./x.js\n${VERIFY_HEAD_REF}`), /the verify step env must be exactly/u],
+  ['verify on the wrong event', inStep(JUDGE, "if: github.event_name == 'merge_group'", "if: github.event_name == 'pull_request'"), /the verify step must have if: github\.event_name == 'merge_group'/u],
   ['a step shell', (t) => t.replace(VERIFY_STEP, `${VERIFY_STEP}        shell: bash\n`), /step key shell is not allowed/u],
   ['a container', (t) => t.replace(JOB_HEADER, `${JOB_HEADER}    container: node:22\n`), /container is not allowed/u],
   ['a self-hosted runner', (t) => t.replace('runs-on: ubuntu-latest', 'runs-on: self-hosted'), /runs-on must be ubuntu-latest/u],
   ['a different timeout', (t) => t.replace('timeout-minutes: 145', 'timeout-minutes: 360'), /timeout-minutes must be 145/u],
   ['a renamed job', (t) => t.replace('    name: CI Gate\n', '    name: Gate\n'), /the job name must be exactly CI Gate/u],
   ['uploading the whole checkout', (t) => t.replace('path: ci-gate-anchor.json', 'path: .'), /must set path: ci-gate-anchor\.json/u],
-  ['a longer artifact retention', (t) => t.replace('retention-days: 7', 'retention-days: 90'), /must set retention-days: 7/u],
-  ['failing the PR when there is no anchor', (t) => t.replace('if-no-files-found: ignore', 'if-no-files-found: error'), /must set if-no-files-found: ignore/u],
+  ['a longer artifact retention', inStep(ANCHOR_UPLOAD, 'retention-days: 7', 'retention-days: 90'), /must set retention-days: 7/u],
+  ['failing the PR when there is no anchor', inStep(ANCHOR_UPLOAD, 'if-no-files-found: ignore', 'if-no-files-found: error'), /must set if-no-files-found: ignore/u],
   ['an artifact name W05 would not find', (t) => t.replace('name: ci-gate-anchor-attempt-${{ github.run_attempt }}', 'name: anchor'), /must set name: ci-gate-anchor-attempt-/u],
   ['cone-mode sparse checkout', (t) => t.replace('sparse-checkout-cone-mode: false', 'sparse-checkout-cone-mode: true'), /must set sparse-checkout-cone-mode: false/u],
   ['a second job', (t) => `${t}\n  other:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`, /there must be exactly one job/u],
   ['no verify step', (t) => t.replace(VERIFY_STEP, '        run: node .github/scripts/ci-gate.mjs anchor\n'), /the gate must run node \.github\/scripts\/ci-gate\.mjs verify/u],
+  ['select on the wrong event', inStep(SELECT, "if: github.event_name == 'merge_group'", "if: github.event_name == 'pull_request'"), /the select step must have if: github\.event_name == 'merge_group'/u],
+  ['select without the kill switch', (t) => t.replace(THIN_QUEUE_LINE, ''), /the select step env must be exactly/u],
+  ['the kill switch from another variable', (t) => t.replace('vars.CI_THIN_QUEUE', 'vars.OTHER'), /vars are allowed only as THIN_QUEUE: \$\{\{ vars\.CI_THIN_QUEUE \}\} in the select step/u],
+  ['a variable in a step name', inStep('Setup Node.js', '- name: Setup Node.js', '- name: Setup Node.js ${{ vars.NODE }}'), /vars are allowed only as THIN_QUEUE/u],
+  ['a variable in the verify env', (t) => t.replace(VERIFY_HEAD_REF, `          THIN_QUEUE: \${{ vars.CI_THIN_QUEUE }}\n${VERIFY_HEAD_REF}`), /vars are allowed only as THIN_QUEUE/u],
+  ['every variable at once', (t) => t.replace('vars.CI_THIN_QUEUE', 'toJSON(vars)'), /vars are allowed only as THIN_QUEUE/u],
+  ['no select step', (t) => t.replace(stepText(t, SELECT), ''), /the gate must run node \.github\/scripts\/ci-gate\.mjs select/u],
+  ['a second select step', (t) => t.replace(stepText(t, SELECT), `${stepText(t, SELECT)}${stepText(t, SELECT)}`), /the select step must appear once/u],
+  ['select after verify', moveAfter(SELECT, JUDGE), /the merge_group steps must run in order: select, upload-selection, verify/u],
+  ['the selection upload after verify', moveAfter(SELECTION_UPLOAD, JUDGE), /must run in order: select, upload-selection, verify/u],
+  ['no selection upload', (t) => t.replace(stepText(t, SELECTION_UPLOAD), ''), /must run in order: select, upload-selection, verify/u],
+  ['a hard selection upload', inStep(SELECTION_UPLOAD, '        continue-on-error: true\n', ''), /actions\/upload-artifact must set continue-on-error: true/u],
+  ['a selection upload that fails the gate', inStep(SELECTION_UPLOAD, 'continue-on-error: true', 'continue-on-error: false'), /must set continue-on-error: true/u],
+  ['a longer selection upload timeout', inStep(SELECTION_UPLOAD, 'timeout-minutes: 2', 'timeout-minutes: 10'), /must set timeout-minutes: 2/u],
+  ['no selection upload timeout', inStep(SELECTION_UPLOAD, '        timeout-minutes: 2\n', ''), /must set timeout-minutes: 2/u],
+  ['continue-on-error on the anchor upload', inStep(ANCHOR_UPLOAD, "        if: github.event_name == 'pull_request'\n", "        if: github.event_name == 'pull_request'\n        continue-on-error: true\n"), /step key continue-on-error is not allowed/u],
+  ['continue-on-error on the select step', (t) => t.replace(SELECT_STEP, `${SELECT_STEP}        continue-on-error: true\n`), /continue-on-error is not allowed/u],
+  ['a timeout on the judge step', inStep(JUDGE, "        if: github.event_name == 'merge_group'\n", "        if: github.event_name == 'merge_group'\n        timeout-minutes: 30\n"), /step key timeout-minutes is not allowed/u],
+  ['uploading the whole checkout as the selection', inStep(SELECTION_UPLOAD, 'path: ci-gate-selection.json', 'path: .'), /must set path: ci-gate-selection\.json/u],
+  ['a selection artifact name CI would not find', inStep(SELECTION_UPLOAD, 'name: ci-gate-selection-attempt-${{ github.run_attempt }}', 'name: selection'), /must set name: ci-gate-selection-attempt-/u],
+  ['a longer selection retention', inStep(SELECTION_UPLOAD, 'retention-days: 7', 'retention-days: 90'), /must set retention-days: 7/u],
+  ['the selection upload on pull_request', inStep(SELECTION_UPLOAD, "if: github.event_name == 'merge_group'", "if: github.event_name == 'pull_request'"), /step key continue-on-error is not allowed/u],
+  ['a second selection upload', (t) => t.replace(stepText(t, SELECTION_UPLOAD), `${stepText(t, SELECTION_UPLOAD)}${stepText(t, SELECTION_UPLOAD)}`), /the upload-selection step must appear once/u],
+  ['an extra select env', inStep(SELECT, THIN_QUEUE_LINE, `${THIN_QUEUE_LINE}          NODE_OPTIONS: --require ./x.js\n`), /the select step env must be exactly/u],
+  ['a variable in bracket form', inStep(JUDGE, "if: github.event_name == 'merge_group'", "if: github.event_name == 'merge_group' && vars['X'] == '1'"), /vars are allowed only as THIN_QUEUE/u],
+  ['a variable in an if', inStep(ANCHOR_UPLOAD, "if: github.event_name == 'pull_request'", "if: github.event_name == 'pull_request' && vars.X"), /vars are allowed only as THIN_QUEUE/u],
+  ['an upload with no if', inStep(SELECTION_UPLOAD, "        if: github.event_name == 'merge_group'\n", ''), /actions\/upload-artifact must have if: github\.event_name == 'pull_request' or if: github\.event_name == 'merge_group'/u],
 ];
 
 test('the pinned CI Gate exists and satisfies every pinned-gate invariant', () => {

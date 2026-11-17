@@ -74,6 +74,8 @@ const TARGET_GLOBS = [
   'src/components/settings/BusinessHoursApplyDialog.tsx',
   // #8330: saved-filter create/edit/delete surface the API's error text.
   'src/components/filters/SavedFilterList.tsx',
+  // #11879: the Devices toolbar "Views" save/delete go through runAction.
+  'src/components/devices/SavedViewsMenu.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
   'src/lib/endpointMessages.ts',
   'src/components/endpointMessages/SendMessageDialog.tsx',
@@ -133,6 +135,8 @@ const TARGET_GLOBS = [
   // runAction from birth.
   'src/components/devices/AssignParkedDeviceDialog.tsx',
   'src/components/devices/UnassignedDevicesPage.tsx',
+  // #8318 wave 2-3: the reattach request (POST /devices/:id/reattach) goes through runAction from birth.
+  'src/components/devices/ReattachDeviceForm.tsx',
   'src/components/alerts/delivery/deliveryActions.ts',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
@@ -266,7 +270,16 @@ const TARGET_GLOBS = [
   'src/components/time/TimerWidget.tsx',
   'src/components/time/TimesheetPage.tsx',
   'src/components/tickets/TicketTimeBilling.tsx',
+  // The quick time entry moved out of TicketTimeBilling (shared with the
+  // composer's Log time); its POST /time-entries stays guarded.
+  'src/components/tickets/TicketQuickTimeEntry.tsx',
   'src/components/tickets/TicketPartsCard.tsx',
+  // Split out of TicketWorkbench by the focus-view redesign: move-org, the
+  // invoice action and the AI assist POSTs (triage apply/reject, draft
+  // send/discard, proposal post-note) all go through runAction.
+  'src/components/tickets/TicketMoveOrgDialog.tsx',
+  'src/components/tickets/TicketInvoiceAction.tsx',
+  'src/components/tickets/useTicketAiAssist.ts',
   'src/components/clientAi/OrgsTab.tsx',
   'src/components/clientAi/PolicyEditor.tsx',
   'src/components/clientAi/SessionsTab.tsx',
@@ -611,6 +624,35 @@ const TARGET_GLOBS = [
   'src/components/aiOperator/RecipeCard.tsx',
   // The draft preview and the admission that starts a four-eyes offboarding.
   'src/components/aiOperator/StartRecipeForm.tsx',
+  // Portal registration W3 (#11380): the sign-in policy writes (org card, partner unit) and the
+  // access-request approve/deny/decide calls, plus the portal-user and contact surfaces they touch.
+  'src/components/settings/portalAccess/OrgSignInRegistrationCard.tsx',
+  'src/components/settings/partnerSettings/units/portalAccessPolicyUnit.ts',
+  'src/components/settings/partnerSettings/PartnerCustomerPortalTab.tsx',
+  'src/components/settings/portalAccess/PortalAccessRequestsList.tsx',
+  'src/components/settings/OrgPortalUsersEditor.tsx',
+  'src/components/settings/contactPortalAccess.ts',
+  // Portal registration W4 (#11381): the tenant proof actions (prove, proof link, remove) and the
+  // sso_only flow's Microsoft sign-in invites.
+  'src/components/settings/portalAccess/EntraTenantPanel.tsx',
+  'src/components/settings/portalAccess/ssoOnlyActions.ts',
+  'src/components/settings/portalAccess/StrandedAccountsList.tsx',
+  // Portal registration W5 (#11382): Organization › Domains — add, toggle, move, delete, and the
+  // DNS start / verification check / remove-verification calls.
+  'src/components/settings/orgDomains/OrgDomainsTab.tsx',
+  'src/components/settings/orgDomains/AddDomainForm.tsx',
+  'src/components/settings/orgDomains/DomainVerificationPanel.tsx',
+  // Ticket import W6 (#8313): the wizard's every mutation (sources, preflight, mappings, runs,
+  // windows, created contacts) goes through runAction; the API module only reads.
+  'src/components/ticketImport/ticketImportApi.ts',
+  'src/components/ticketImport/ConnectStep.tsx',
+  'src/components/ticketImport/PreflightStep.tsx',
+  'src/components/ticketImport/MappingsStep.tsx',
+  'src/components/ticketImport/RunStep.tsx',
+  'src/components/ticketImport/WindowStep.tsx',
+  'src/components/ticketImport/MigrationWindows.tsx',
+  'src/components/ticketImport/CreatedContactsPanel.tsx',
+  'src/components/ticketImport/TicketImportPage.tsx',
 ];
 
 // Ratchet floor, not a total: adding an entry above never touches this line.

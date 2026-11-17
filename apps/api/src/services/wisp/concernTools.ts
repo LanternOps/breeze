@@ -27,6 +27,7 @@
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  CONCERN_PATTERN_EVIDENCE_KEY,
   createWatchInputSchema,
   raiseConcernChatSchema,
   resolveConcernToolSchema,
@@ -216,6 +217,13 @@ const listConcernsHandler = grantTool(listConcernsInputSchema, async (q, ceiling
   return renderConcerns(page) + more;
 });
 
+/** #11426: `evidence.pattern` is the rollup's server-owned key; a chat raise never sets it. */
+function withoutPatternKey(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!evidence) return {};
+  const { [CONCERN_PATTERN_EVIDENCE_KEY]: _pattern, ...rest } = evidence;
+  return rest;
+}
+
 const raiseConcernHandler = grantTool(raiseConcernChatSchema, async (input, ceiling) => {
   // Ceiling first: an out-of-ceiling org reads and writes nothing.
   assertWithinCeiling(ceiling, { orgId: input.orgId });
@@ -231,7 +239,7 @@ const raiseConcernHandler = grantTool(raiseConcernChatSchema, async (input, ceil
     subject,
     summary: input.summary,
     severity: input.severity,
-    evidence: input.evidence ?? {},
+    evidence: withoutPatternKey(input.evidence),
     raisedByGrantId: ceiling.grantId,
   });
   return created
@@ -338,7 +346,7 @@ export function registerWispConcernTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'ask Wisp to keep an eye on something: a waiting ticket, alert pattern, backups, patching, security findings',
     definition: {
       name: 'create_watch',
-      description: 'Ask Wisp to check something on a cadence (every 15 minutes to 7 days) for one customer, or for every customer on a partner-wide grant, and raise a concern when it needs you.',
+      description: 'Ask Wisp to check a condition on a cadence (every 15 minutes to 7 days) for one customer, or for every customer on a partner-wide grant, and raise a concern when it needs you. Not for waiting on one event (a device coming online, a script finishing, a run settling): use schedule_check_in.',
       input_schema: inputSchemaFor(createWatchShape),
     },
     handler: createWatchHandler,

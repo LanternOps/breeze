@@ -4,7 +4,7 @@ import type { WispState } from '@/stores/aiStore';
 import BuyCreditsLink from '../ai/BuyCreditsLink';
 import WispGrantPauseControl from './WispGrantPauseControl';
 import { WispSpendEscalation } from './WispSpendMeter';
-import { hoursUntil, spendMeterState, systemPauseKind } from './wispSpend';
+import { spendMeterState, systemPauseKind, utcClockTime } from './wispSpend';
 
 type Wisp = NonNullable<WispState>;
 
@@ -82,11 +82,13 @@ export default function WispHeaderNotice(props: WispHeaderNoticeProps) {
         // The pause control names the reason and offers Resume only for a user pause (#10106/#10145).
         return <WispGrantPauseControl wisp={wisp} onChange={props.onWispChange} />;
       case 'budget': {
-        const hours = typeof wisp.budgetResetsAt === 'string' ? hoursUntil(wisp.budgetResetsAt) : null;
+        // #10414: the budget pauses background checks only; chat keeps working, so say so.
+        const time = typeof wisp.budgetResetsAt === 'string' ? utcClockTime(wisp.budgetResetsAt) : null;
         return (
           <div className="flex flex-1 flex-wrap items-center gap-x-1">
-            <span className="font-medium">{t('wisp.header.status.budgetReached')}</span>
-            {hours !== null && <span>· {t('wisp.spend.resets', { hours })}</span>}
+            <span data-testid="wisp-budget-warning">
+              {time === null ? t('wisp.paused.system.budgetExhaustedNoTime') : t('wisp.paused.system.budgetExhausted', { time })}
+            </span>
             <WispSpendEscalation
               state="exhausted"
               budgetCents={wisp.budgetCentsPerDay}

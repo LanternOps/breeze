@@ -42,6 +42,12 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   // Flow webhook ingress (Tool Catalog W05): HMAC/token authenticated in the
   // handler, never by a bearer. Exact `/webhooks/flows/<uuid>` only.
   if (FLOW_WEBHOOK_PATH.test(path)) return true;
+  // Portal SCIM provisioning (W9 #11386, plan D9): authenticated only by an org's
+  // SCIM bearer token in the router. partnerGuard must never parse it as a JWT,
+  // act for a partner, or answer 403/503 before the router's uniform 401 — a
+  // staff JWT sent here gets the same 401 as any other wrong token.
+  // Exactly the mounted base (`/scim/portal/v2`) and its sub-paths, nothing wider.
+  if (path === '/api/v1/scim/portal/v2' || path.startsWith('/api/v1/scim/portal/v2/')) return true;
   // Public trust pages: GETs must never trigger staff account activation (spec trust-center §13)
   if (path.startsWith('/api/v1/trust/card/') || path.startsWith('/api/v1/trust/public/')) return true;
   if (path.startsWith('/api/v1/trust/attestation/')) return true;   // signed attestation + JWKS (Trust Center W3b)

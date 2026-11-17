@@ -188,10 +188,18 @@ function unclassified(
   return { id, tab, paths, kind: 'unclassified', secret, projection: PRESENCE, orgSettingsHash: null };
 }
 
-function aiBudget(field: keyof AiBudgetDefaults, projection: ValueProjection): CatalogEntry {
+/**
+ * The id keeps the `aiBudgets.` prefix because it names the stored path (the
+ * settings JSON key), not the page tab; `tab` is where the field is edited.
+ */
+function aiBudget(
+  field: keyof AiBudgetDefaults,
+  projection: ValueProjection,
+  tab: CatalogTabKey = 'aiBudgets',
+): CatalogEntry {
   return {
     id: `aiBudgets.${field}`,
-    tab: 'aiBudgets',
+    tab,
     paths: [`aiBudgets.${field}`],
     kind: 'locks',
     platformDefault: AI_BUDGET_DEFAULTS[field],
@@ -322,7 +330,8 @@ const ENTRIES: CatalogEntry[] = [
   aiBudget('maxTurnsPerSession', NUMBER),
   aiBudget('messagesPerMinutePerUser', NUMBER),
   aiBudget('messagesPerHourPerOrg', NUMBER),
-  aiBudget('approvalMode', ENUM),
+  // Edited on the AI Approvals tab since #10988; the tab drives that tab's badge legend.
+  aiBudget('approvalMode', ENUM, 'aiApprovals'),
   aiBudget('alertThresholdPercents', PRESENCE),
   aiBudget('toolRateLimitMultiplier', NUMBER),
 

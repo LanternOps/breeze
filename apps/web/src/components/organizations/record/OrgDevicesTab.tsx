@@ -59,19 +59,17 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
   const canAddDevice = can('organizations', 'write');
   const [devices, setDevices] = useState<LoadState<Device>>(null);
   const [warrantyRequested, setWarrantyRequested] = useState(() => readColumnVisibility(ORG_TAB_COLUMN_PRESET).has('warranty'));
+  const [diskUsageRequested, setDiskUsageRequested] = useState(() => readColumnVisibility(ORG_TAB_COLUMN_PRESET).has('diskUsage'));
+  const [loadedDetails, setLoadedDetails] = useState<{ orgId: string; includeWarranty: boolean; includeDisks: boolean } | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [sites, setSites] = useState<SiteOption[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [siteFilter, setSiteFilter] = useState('');
 
-  // Read through a ref so toggling the column never re-runs the mount load
-  // (which would blank the rows behind a spinner). `rowsHaveWarrantyRef`
-  // records whether the rows on screen carry warranty, so only an off→on
-  // toggle over warranty-less rows triggers a (background) reload.
-  const warrantyRequestedRef = useRef(warrantyRequested);
-  warrantyRequestedRef.current = warrantyRequested;
-  const rowsHaveWarrantyRef = useRef(false);
+  // Column toggles can request optional details without restarting the mount load.
+  const requestedDetails = useRef({ includeWarranty: warrantyRequested, includeDisks: diskUsageRequested });
+  requestedDetails.current = { includeWarranty: warrantyRequested, includeDisks: diskUsageRequested };
   // Bumped by every load and by unmount / org change, so a stale response can
   // never overwrite a newer one (the old per-effect `cancelled` flag).
   const loadGenerationRef = useRef(0);
@@ -79,13 +77,16 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
   const loadDevices = useCallback(async ({ background }: { background: boolean }) => {
     const generation = ++loadGenerationRef.current;
     const isCurrent = () => generation === loadGenerationRef.current;
-    const includeWarranty = warrantyRequestedRef.current;
+    const { includeWarranty, includeDisks } = requestedDetails.current;
     if (!background) {
       setDevices(null);
       setTruncated(false);
     }
     try {
-      const res = await orgFetch(`/devices?limit=${ORG_DEVICES_LIMIT}${includeWarranty ? '&includeWarranty=true' : ''}`);
+      const params = new URLSearchParams({ limit: String(ORG_DEVICES_LIMIT) });
+      if (includeWarranty) params.set('includeWarranty', 'true');
+      if (includeDisks) params.set('includeDisks', 'true');
+      const res = await orgFetch(`/devices?${params}`);
       if (!res.ok) throw new Error(`devices load failed: ${res.status}`);
       const body = await res.json();
       const rows: ApiDeviceRow[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
@@ -96,7 +97,7 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
       if (rows === null) throw new Error('devices load: malformed response body');
       if (!isCurrent()) return;
       setDevices(rows.map(toDeviceListRow));
-      rowsHaveWarrantyRef.current = includeWarranty;
+      setLoadedDetails({ orgId, includeWarranty, includeDisks });
       // Cursor mode (no `page`) returns `nextCursor` when rows remain; a
       // `total` (legacy/offset shape) says the same thing another way.
       const pagination = body?.pagination;
@@ -104,7 +105,7 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
       setTruncated(Boolean(pagination?.nextCursor) || (total !== null && total > rows.length));
     } catch (err) {
       if (background) {
-        // Keep the rows already on screen; the warranty column just stays empty.
+        // Keep the rows already on screen when optional details fail to load.
         console.warn('[OrgDevicesTab] background devices load failed', err);
         return;
       }
@@ -114,22 +115,22 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
   }, [orgFetch, orgId]);
 
   useEffect(() => {
-    rowsHaveWarrantyRef.current = false;
+    setLoadedDetails(null);
     void loadDevices({ background: false });
     return () => {
       loadGenerationRef.current += 1;
     };
   }, [orgFetch, orgId]); // loadDevices has the same deps
 
-  // Column turned on over rows loaded without warranty → reload in the
-  // background. Off, or on again over warranty-bearing rows, is a no-op.
-  // Waiting for loaded rows covers a toggle during the first load (that load
-  // read the old flag); a failed load is left to the user's retry.
-  const rowsLoaded = Array.isArray(devices);
+  // Keep the table mounted while loading details for a newly visible column.
+  const rowsHaveWarranty = loadedDetails?.includeWarranty === true;
+  const rowsHaveDisks = loadedDetails?.includeDisks === true;
+  const rowsLoadedForOrg = loadedDetails?.orgId === orgId;
   useEffect(() => {
-    if (!warrantyRequested || !rowsLoaded || rowsHaveWarrantyRef.current) return;
+    if (!rowsLoadedForOrg) return;
+    if ((!warrantyRequested || rowsHaveWarranty) && (!diskUsageRequested || rowsHaveDisks)) return;
     void loadDevices({ background: true });
-  }, [warrantyRequested, rowsLoaded, loadDevices]);
+  }, [warrantyRequested, diskUsageRequested, rowsHaveWarranty, rowsHaveDisks, rowsLoadedForOrg, loadDevices]);
 
   useEffect(() => {
     let cancelled = false;
@@ -309,6 +310,7 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
       ) : (
         <DeviceList
           onWarrantyRequiredChange={setWarrantyRequested}
+          onDiskUsageColumnVisibilityChange={setDiskUsageRequested}
           devices={filteredDevices}
           sites={sites}
           forceSingleOrg

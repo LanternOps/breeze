@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { isCimdClientId } from './cimdHosts';
 import { errors } from 'oidc-provider';
 import type { McpGrantableDomain } from '@breeze/shared';
-import { and, eq, gte, isNull, lt, or, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { and, eq, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   oauthAuthorizationCodes,
   oauthClients,
@@ -20,6 +20,22 @@ import { revokeClientFamilies } from './revocationService';
 import { ERROR_IDS, logOauthDebug, logOauthError, logOauthWarn } from './log';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { isOAuthGrantActiveInCurrentDbContext, revokeGrantsDurablyInCurrentDbContext } from './grantStatus';
+import {
+  REFRESH_ROTATION_GRACE_MAX_MS,
+  currentRefreshGrantRequest,
+  logRotationGraceHit,
+  markRotationGraceHit,
+  newSuccessorTokenValue,
+  openRotationSuccessor,
+  recordRotationGraceOutcome,
+  refreshRotationGraceMs,
+  rotationGraceHit,
+  rotationSealingAvailable,
+  sealRotationSuccessor,
+  setPendingRotationSuccessor,
+  type RefreshGrantRequest,
+  type RotationGraceOutcome,
+} from './refreshRotationGrace';
 
 // Grant-revocation marker TTL must outlive the longest-lived access token
 // minted under the grant. Kept in sync with `ACCESS_TOKEN_TTL_SECONDS` in
@@ -252,6 +268,170 @@ async function touchClientLastUsed(clientId: string, now: Date = new Date()): Pr
   }
 }
 
+function grantIdOf(payload: unknown): string | null {
+  const grantId = (payload as { grantId?: unknown } | null)?.grantId;
+  return typeof grantId === 'string' ? grantId : null;
+}
+
+// ---------------------------------------------------------------------------
+// Refresh rotation grace window (#10301). Mechanism and trade-offs:
+// oauth/refreshRotationGrace.ts.
+// ---------------------------------------------------------------------------
+
+type RotatedRowState = {
+  clientId: string;
+  grantId: string | null;
+  rotatedAt: Date | null;
+  successorSealed: string | null;
+};
+
+type RotationGraceEvaluation =
+  | { outcome: 'hit'; reuseMs: number; successorRaw: string; request: RefreshGrantRequest }
+  | { outcome: Exclude<RotationGraceOutcome, 'hit' | 'concurrent_hit'>; reuseMs: number }
+  // Not a rotated token presented to the refresh_token grant, or the window is off.
+  | { outcome: 'not_applicable' };
+
+const NOT_APPLICABLE = { outcome: 'not_applicable' } as const;
+
+/**
+ * Decide whether a consumed refresh token presented right now may receive the
+ * successor its rotation published. Only for the refresh_token grant
+ * presenting exactly this token, the same client that holds it, a rotation
+ * (rotated_at, not just revoked_at) inside the window, a seal that opens with
+ * the presented token, and a successor that is absent (not saved yet) or still
+ * live in the same family. The caller has already checked the grant.
+ */
+async function evaluateRotationGrace(
+  rawId: string,
+  storageId: string,
+  row: RotatedRowState,
+): Promise<RotationGraceEvaluation> {
+  const request = currentRefreshGrantRequest();
+  if (!request || request.presentedToken !== rawId) return NOT_APPLICABLE;
+  if (!row.rotatedAt || !rotationSealingAvailable()) return NOT_APPLICABLE;
+  const graceMs = refreshRotationGraceMs();
+  if (graceMs <= 0) return NOT_APPLICABLE;
+
+  // Clocks of different API replicas: a rotation stamped "in the future" by
+  // more than the window is treated like one older than it.
+  const reuseMs = Date.now() - row.rotatedAt.getTime();
+  if (reuseMs > graceMs || reuseMs < -graceMs) return { outcome: 'outside_window', reuseMs };
+  if (request.clientId === null || request.clientId !== row.clientId) {
+    return { outcome: 'client_mismatch', reuseMs };
+  }
+  const successorRaw = row.successorSealed
+    ? openRotationSuccessor({ parentRaw: rawId, parentStorageId: storageId, sealed: row.successorSealed })
+    : null;
+  if (!successorRaw) return { outcome: 'unsealable', reuseMs };
+
+  const [successor] = await db.select({
+    revokedAt: oauthRefreshTokens.revokedAt,
+    clientId: oauthRefreshTokens.clientId,
+    payload: oauthRefreshTokens.payload,
+  })
+    .from(oauthRefreshTokens)
+    .where(eq(oauthRefreshTokens.id, refreshTokenStorageId(successorRaw)));
+  // No row yet is expected: the winning request consumes the parent before it
+  // saves the successor, and whichever racer saves first creates the row.
+  if (successor && (
+    successor.revokedAt
+    || successor.clientId !== row.clientId
+    || grantIdOf(successor.payload) !== row.grantId
+  )) {
+    return { outcome: 'successor_inactive', reuseMs };
+  }
+  return { outcome: 'hit', reuseMs, successorRaw, request };
+}
+
+function noteRotationGraceHit(
+  request: RefreshGrantRequest,
+  hit: { path: 'replay' | 'concurrent'; clientId: string; grantId: string | null; reuseMs: number },
+): void {
+  recordRotationGraceOutcome(hit.path === 'replay' ? 'hit' : 'concurrent_hit', hit.reuseMs);
+  logRotationGraceHit(request.ctx, hit);
+}
+
+/**
+ * For a consume() that is a rotation inside the refresh_token grant: the
+ * successor value the provider will mint, and its seal for the parent row.
+ */
+function prepareRotationSuccessor(rawId: string, storageId: string) {
+  const request = currentRefreshGrantRequest();
+  if (!request || request.presentedToken !== rawId || refreshRotationGraceMs() <= 0) return null;
+  const successorRaw = newSuccessorTokenValue();
+  const sealed = sealRotationSuccessor({ parentRaw: rawId, parentStorageId: storageId, successorRaw });
+  return sealed ? { request, successorRaw, sealed } : null;
+}
+
+/**
+ * consume() lost its compare-and-set. Inside the window that is a racing
+ * duplicate of the same client's rotation (or the retry find() just granted):
+ * return the successor the winner published so this request saves and
+ * returns the same token. null keeps the `refresh token already used` error.
+ */
+async function resolveLostRotation(
+  rawId: string,
+  storageId: string,
+): Promise<{ request: RefreshGrantRequest; successorRaw: string } | null> {
+  const request = currentRefreshGrantRequest();
+  if (!request || request.presentedToken !== rawId) return null;
+  const granted = rotationGraceHit(request.ctx, storageId);
+  if (granted) return { request, successorRaw: granted };
+
+  const [row] = await db.select({
+    clientId: oauthRefreshTokens.clientId,
+    payload: oauthRefreshTokens.payload,
+    rotatedAt: oauthRefreshTokens.rotatedAt,
+    successorSealed: oauthRefreshTokens.successorSealed,
+  })
+    .from(oauthRefreshTokens)
+    .where(eq(oauthRefreshTokens.id, storageId));
+  if (!row) return null;
+  const grantId = grantIdOf(row.payload);
+  const grace = await evaluateRotationGrace(rawId, storageId, {
+    clientId: row.clientId,
+    grantId,
+    rotatedAt: row.rotatedAt,
+    successorSealed: row.successorSealed,
+  });
+  if (grace.outcome !== 'hit') return null;
+  // This request read the parent while it was live; the grant may have been
+  // revoked since, so check it again before minting under it.
+  if (!grantId || !(await isOAuthGrantActiveInCurrentDbContext(grantId))) return null;
+  noteRotationGraceHit(request, { path: 'concurrent', clientId: row.clientId, grantId, reuseMs: grace.reuseMs });
+  return { request, successorRaw: grace.successorRaw };
+}
+
+/**
+ * A seal is only ever opened inside the window, which is capped at
+ * REFRESH_ROTATION_GRACE_MAX_MS whatever the configured length. Each rotation
+ * by a client clears that client's seals older than the cap; seals from the
+ * last 30 s and the last seal of an idle client remain until row cleanup.
+ *
+ * Housekeeping only, so it must never fail the rotation it rides along with:
+ * the UPDATE runs in a savepoint (a caught failure would otherwise abort the
+ * consume's transaction) and a failure is logged. The next rotation by the
+ * client retries it.
+ */
+async function scrubStaleRotationSeals(clientId: string, now: Date): Promise<void> {
+  try {
+    await withDbTransaction(() => db.update(oauthRefreshTokens)
+      .set({ successorSealed: null })
+      .where(and(
+        eq(oauthRefreshTokens.clientId, clientId),
+        isNotNull(oauthRefreshTokens.successorSealed),
+        lt(oauthRefreshTokens.rotatedAt, new Date(now.getTime() - REFRESH_ROTATION_GRACE_MAX_MS)),
+      )));
+  } catch (err) {
+    logOauthWarn({
+      errorId: ERROR_IDS.OAUTH_REFRESH_SEAL_SCRUB_FAILED,
+      message: 'failed to clear stale refresh-rotation seals; the rotation continues',
+      err,
+      context: { client_id: clientId },
+    });
+  }
+}
+
 export class BreezeOidcAdapter {
   constructor(private readonly model: string) {}
 
@@ -295,19 +475,34 @@ export class BreezeOidcAdapter {
         ]);
         const storageId = refreshTokenStorageId(id);
         const storedPayload = sanitizeRefreshTokenPayload(payload);
-        await db.insert(oauthRefreshTokens).values({
+        const clientId = stringField(payload, 'clientId');
+        // oidc-provider only ever saves NEW refresh tokens, so an id conflict
+        // happens only when both racers of a rotation grace window (#10301)
+        // save the successor consume() published. Keep the first save (its
+        // payload, expiry and created_at) and accept the row only while it is
+        // live and in the same client and grant; otherwise the successor was
+        // already used or revoked, and returning it would hand out a dead token.
+        const saved = await db.insert(oauthRefreshTokens).values({
           id: storageId,
           userId: stringField(payload, 'accountId'),
-          clientId: stringField(payload, 'clientId'),
+          clientId,
           partnerId,
           orgId,
           payload: storedPayload,
           expiresAt: expiresAt!,
         }).onConflictDoUpdate({
           target: oauthRefreshTokens.id,
-          set: { payload: storedPayload, expiresAt: expiresAt!, lastUsedAt: new Date() },
-        });
-        await touchClientLastUsed(stringField(payload, 'clientId'));
+          set: { lastUsedAt: new Date() },
+          setWhere: and(
+            isNull(oauthRefreshTokens.revokedAt),
+            eq(oauthRefreshTokens.clientId, clientId),
+            sql`${oauthRefreshTokens.payload}->>'grantId' IS NOT DISTINCT FROM ${grantIdOf(payload)}`,
+          ),
+        }).returning({ id: oauthRefreshTokens.id });
+        if (saved.length !== 1) {
+          throw new errors.InvalidGrant('refresh token already used');
+        }
+        await touchClientLastUsed(clientId);
       } else if (this.model === 'Session') {
         // Session.id === Session.jti; uid is a separate, longer-lived alias
         // used by Session.findByUid during token exchange. accountId is null
@@ -453,6 +648,34 @@ export class BreezeOidcAdapter {
         if (row.revokedAt) {
           const payload = row.payload as { grantId?: string; clientId?: string; accountId?: string } | null;
           const grantId = typeof payload?.grantId === 'string' ? payload.grantId : undefined;
+          // #10301: the same client re-presenting a token it rotated moments
+          // ago (two processes sharing one credential store, a retried
+          // request) gets the successor instead of losing the family. Return
+          // the parent as live; the provider then rotates it "again", consume()
+          // tolerates the expected compare-and-set miss and hands the provider
+          // the successor recorded below, so this response carries the same
+          // refresh token the first one did. Anything else falls through.
+          const grace = await evaluateRotationGrace(id, storageId, {
+            clientId: row.clientId,
+            grantId: grantId ?? null,
+            rotatedAt: row.rotatedAt,
+            successorSealed: row.successorSealed,
+          });
+          if (grace.outcome === 'hit') {
+            markRotationGraceHit(grace.request.ctx, storageId, grace.successorRaw);
+            noteRotationGraceHit(grace.request, {
+              path: 'replay',
+              clientId: row.clientId,
+              grantId: grantId ?? null,
+              reuseMs: grace.reuseMs,
+            });
+            return row.expiresAt >= new Date()
+              ? restoreRefreshTokenPayload(id, row.payload as OidcPayload)
+              : undefined;
+          }
+          if (grace.outcome !== 'not_applicable') {
+            recordRotationGraceOutcome(grace.outcome, grace.reuseMs);
+          }
           // Tradeoff (#2363): this branch fires on ANY presentation of a
           // consumed/revoked RT — including an INNOCENT retry after a failed
           // token exchange. oidc-provider rotates the refresh token (consume()
@@ -467,6 +690,14 @@ export class BreezeOidcAdapter {
           // oauth/resourceIndicators.ts, applied by routes/oauth.ts) stops an
           // alias-only `resource` mismatch from failing the exchange in the
           // first place.
+          //
+          // Exception (#10301): the same client re-presenting a token it
+          // rotated inside the grace window is handled above and never gets
+          // here. That includes the post-failure retry described above:
+          // consume() sealed the successor before the exchange failed, so a
+          // retry inside the window receives it. Outside the window, or with
+          // the window off, it still lands here. `rotation_grace` and
+          // `rotated_ms_ago` in the log below say which case it was.
           //
           // SUPPORT-VISIBLE CONSEQUENCE: that revocation is now DURABLE and
           // IRREVERSIBLE. It used to be recorded only in the Redis grant
@@ -493,6 +724,11 @@ export class BreezeOidcAdapter {
               grant_id: grantId,
               revoked_at: row.revokedAt.toISOString(),
               revoked_ms_ago: Date.now() - row.revokedAt.getTime(),
+              // Why the #10301 grace window did not apply to a rotated token
+              // (null: not rotated, not the refresh_token grant presenting this
+              // token, window off, or no sealing key configured).
+              rotation_grace: grace.outcome === 'not_applicable' ? null : grace.outcome,
+              rotated_ms_ago: grace.outcome === 'not_applicable' ? null : grace.reuseMs,
             },
           });
           // Refresh-token reuse is the canonical signal that a token
@@ -586,17 +822,40 @@ export class BreezeOidcAdapter {
           throw new errors.InvalidGrant('authorization code already consumed');
         }
       } else if (this.model === 'RefreshToken') {
-        // oidc-provider rotates refresh tokens by minting a new one and
-        // calling consume() on the previous. Mark it revoked so
-        // `find()` (which filters on revokedAt IS NULL) returns undefined,
-        // preventing replay of the old token after rotation.
-        const consumed = await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(and(
-          eq(oauthRefreshTokens.id, refreshTokenStorageId(id)),
-          isNull(oauthRefreshTokens.revokedAt),
-        )).returning({ id: oauthRefreshTokens.id });
-        if (consumed.length !== 1) {
-          throw new errors.InvalidGrant('refresh token already used');
+        // oidc-provider rotates refresh tokens by calling consume() on the
+        // previous one and then minting a new one. Mark it revoked so `find()`
+        // treats any later presentation as reuse.
+        //
+        // #10301: during a rotation the successor value is chosen HERE and
+        // sealed onto the parent in the same UPDATE, with rotated_at as
+        // provenance, so a racing duplicate of this request (or a retry inside
+        // the window) can return the same successor even before this request
+        // has saved it. The provider mints it via generateTokenId().
+        const storageId = refreshTokenStorageId(id);
+        const now = new Date();
+        const rotation = prepareRotationSuccessor(id, storageId);
+        const consumed = await db.update(oauthRefreshTokens)
+          .set(rotation
+            ? { revokedAt: now, rotatedAt: now, successorSealed: rotation.sealed }
+            : { revokedAt: now })
+          .where(and(
+            eq(oauthRefreshTokens.id, storageId),
+            isNull(oauthRefreshTokens.revokedAt),
+          ))
+          .returning({ id: oauthRefreshTokens.id, clientId: oauthRefreshTokens.clientId });
+        if (consumed.length === 1) {
+          if (rotation) {
+            setPendingRotationSuccessor(rotation.request.ctx, rotation.successorRaw);
+            await scrubStaleRotationSeals(consumed[0]!.clientId, now);
+          }
+          return;
         }
+        const lost = await resolveLostRotation(id, storageId);
+        if (lost) {
+          setPendingRotationSuccessor(lost.request.ctx, lost.successorRaw);
+          return;
+        }
+        throw new errors.InvalidGrant('refresh token already used');
       }
     });
   }

@@ -17,12 +17,18 @@ export const POLICY_FILES = Object.freeze([
   '.github/scripts/ci-policy.mjs',
   '.github/scripts/ci-gate.mjs',
   '.github/workflows/ci-gate.yml',
+  // The thin queue selection the gate publishes and judges by (W05, #10749).
+  '.github/scripts/ci-gate-thin.mjs',
   // Derives MOBILE_NATIVE_REQUIRED for the iOS build.
   '.github/scripts/mobile-lockfile-closure.mjs',
   // Route a changed own test to the job that runs it (routeOwnTest).
   'apps/api/vitest.integration.config.ts',
   'e2e-tests/playwright.auth-browser-transition.config.ts',
   'e2e-tests/playwright.topology-worker.config.ts',
+  // Named integration suites (W07b1) and the selector that reads them on PR
+  // runs and in the integration sequencer (W07b2, shadow).
+  '.github/scripts/integration-suites.txt',
+  '.github/scripts/integration-suites.mjs',
 ]);
 
 // Any workflow, script or local action can steer selection, listed or not.

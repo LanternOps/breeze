@@ -395,6 +395,7 @@ describe('OrgAiBudgetSettings — approval mode has its own card, not the budget
     expect(select.disabled).toBe(true);
     const note = scoped.getByTestId('org-ai-budget-locked-approvalMode');
     expect(within(note).getByRole('link').getAttribute('href')).toBe('/settings/partner#ai-approvals');
+    expect(within(note).getByRole('link').textContent).toBe('AI Approvals');
     expect((scoped.getByTestId('org-ai-approval-mode-save') as HTMLButtonElement).disabled).toBe(true);
   });
 

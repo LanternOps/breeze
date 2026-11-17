@@ -106,6 +106,7 @@ import {
   metricsRoutes,
   recordAgentHeartbeat,
   recordAgentIngestSubmission,
+  recordEventLogNoiseDropped,
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
   recordBackupVerificationResult,
@@ -1435,6 +1436,26 @@ describe('metrics routes', () => {
     expect(
       getMetricLine(body, 'breeze_agent_ingest_submissions_total', { kind: 'security_status', outcome: 'failed' })
     ).toBe('breeze_agent_ingest_submissions_total{kind="security_status",outcome="failed"} 1');
+  });
+
+  // #11735 — Windows Security noise dropped at event-log ingest is counted by
+  // event id so the effect of the ingest filter stays observable.
+  it('renders event-log noise drops by Windows event id', async () => {
+    recordEventLogNoiseDropped(5038, 40);
+    recordEventLogNoiseDropped(5038, 2);
+    recordEventLogNoiseDropped(5157, 1);
+
+    const body = await (
+      await app.request('/metrics', { headers: { Authorization: 'Bearer token' } })
+    ).text();
+
+    expect(body).toContain('# HELP breeze_agent_eventlog_noise_dropped_total');
+    expect(
+      getMetricLine(body, 'breeze_agent_eventlog_noise_dropped_total', { event_id: '5038' })
+    ).toBe('breeze_agent_eventlog_noise_dropped_total{event_id="5038"} 42');
+    expect(
+      getMetricLine(body, 'breeze_agent_eventlog_noise_dropped_total', { event_id: '5157' })
+    ).toBe('breeze_agent_eventlog_noise_dropped_total{event_id="5157"} 1');
   });
 
   it('keeps the agent-heartbeat counter usable after a metrics reset', async () => {

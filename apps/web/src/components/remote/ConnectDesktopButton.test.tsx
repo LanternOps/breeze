@@ -10,6 +10,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+// #11621: the button gates on remote:access; these cases are about a caller who holds it.
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [{ resource: 'remote', action: 'access' }], can: () => true }),
+}));
+
 // Platform detection reads navigator, which jsdom fixes to the host machine —
 // stub it so the per-OS download card is exercised deterministically.
 vi.mock('@/lib/viewerDownload', () => ({

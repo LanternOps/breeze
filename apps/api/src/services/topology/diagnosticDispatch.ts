@@ -22,9 +22,10 @@ import {
   type ClaimCancelReason,
   type RevalidationHoldReason,
 } from '../commandClaimEligibility';
-// TYPE-ONLY on purpose: `commandQueue.ts` statically imports `routes/agentWs.ts`
-// and this module sits in `commandDispatch.ts`'s import closure. The runtime
-// insert comes from the `commandQueueInsert.ts` leaf instead.
+// TYPE-ONLY on purpose: `commandQueue.ts` imports `commandDispatch.ts`, which
+// side-effect-imports this module, so a runtime edge back to `commandQueue.ts`
+// would be an import cycle. The runtime insert comes from the
+// `commandQueueInsert.ts` leaf instead.
 import type { CommandPayload } from '../commandQueue';
 import { insertQueuedCommandInTransaction } from '../commandQueueInsert';
 import { CommandTypes } from '../commandTypes';

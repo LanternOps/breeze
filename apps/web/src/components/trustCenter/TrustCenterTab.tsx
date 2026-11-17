@@ -96,7 +96,7 @@ export default function TrustCenterTab({ orgId, orgFetch }: { orgId: string; org
       <TrustContentSection {...section} />
       <TrustFaqSection {...section} />
       <TrustSubprocessorsSection {...section} />
-      <TrustDocumentsSection orgId={orgId} orgFetch={orgFetch} canWrite={canWrite} documents={page.documents} onReload={load} />
+      <TrustDocumentsSection orgId={orgId} orgFetch={orgFetch} canWrite={canWrite} documents={page.documents} onReload={load} expectedRevision={page.page.publicationRevision} />
       <TrustEmbedSection {...section} />
       <TrustAccessSection {...section} />
       <TrustHistorySection {...section} />

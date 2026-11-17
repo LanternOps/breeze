@@ -174,6 +174,60 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
       expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
     });
   });
+
+  // #9428
+  describe('try again banner', () => {
+    const retryTarget = { sessionId: 's1', content: 'hi', code: 'timeout', detail: null, mode: 'retry', error: 'Timed out' };
+
+    it('retries the failed turn from the banner', () => {
+      const retryLastTurn = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, retryLastTurn, retryTarget, error: 'Timed out', errorCode: 'timeout',
+      });
+      render(<AiChatSidebar />);
+      fireEvent.click(screen.getByTestId('ai-error-retry'));
+      expect(retryLastTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers no retry while a topology site is bound', () => {
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, retryLastTurn: vi.fn(), retryTarget, error: 'Timed out', errorCode: 'timeout',
+        topologySiteId: 'site-1',
+      });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-error-retry')).toBeNull();
+    });
+  });
+
+  // #11609
+  describe('session closed elsewhere banner', () => {
+    it('offers a new session when the refusal is session_closed, and starts one on click', () => {
+      const createSession = vi.fn();
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true, createSession,
+        error: 'This conversation was closed somewhere else.', errorCode: 'session_closed',
+      });
+      render(<AiChatSidebar />);
+      fireEvent.click(screen.getByTestId('ai-session-closed-new-session'));
+      expect(createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not offer a plain session while Wisp is bound (the thread rolls on its own grant)', () => {
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true,
+        wisp: { grantId: 'grant-1' },
+        error: 'This conversation was closed somewhere else.', errorCode: 'session_closed',
+      });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-session-closed-new-session')).toBeNull();
+    });
+
+    it('does not offer it for other errors', () => {
+      vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, error: 'Rate limit exceeded', errorCode: null });
+      render(<AiChatSidebar />);
+      expect(screen.queryByTestId('ai-session-closed-new-session')).toBeNull();
+    });
+  });
 });
 
 // #9613: with Shift held the browser reports KeyboardEvent.key as "A" (capital),
@@ -310,7 +364,8 @@ describe('AiChatSidebar error banner reads in both themes', () => {
     const text = screen.getByText('Rate limit exceeded');
     expect(text.className).toContain('text-red-700');
     expect(text.className).toContain('dark:text-red-400');
-    const banner = text.parentElement as HTMLElement;
+    // AiErrorBanner (#9428) stacks the headline and its detail in a column inside the banner.
+    const banner = text.parentElement!.parentElement as HTMLElement;
     expect(banner.className).toContain('bg-red-50');
     expect(banner.className).toContain('dark:bg-red-900/20');
     expect(banner.className).not.toMatch(/(^|\s)bg-red-900\/20(\s|$)/);
@@ -365,5 +420,20 @@ describe('AiChatSidebar external composer focus', () => {
     vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, composerFocusRequest: 2 });
     rerender(<AiChatSidebar />);
     expect(input).toHaveFocus();
+  });
+});
+
+// #9429: the notification bell sits in the panel header (its states are tested
+// in AiNotifyToggle.test.tsx; a stub here keeps the shell test free of the
+// Notification API and the auth store).
+vi.mock('./AiNotifyToggle', () => ({ default: () => <span data-testid="ai-notify-toggle" /> }));
+describe('AiChatSidebar notification bell (#9429)', () => {
+  it('mounts the bell in the header, with or without a bound session', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: null });
+    const { rerender } = render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-notify-toggle')).toBeInTheDocument();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: 's1' });
+    rerender(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-notify-toggle')).toBeInTheDocument();
   });
 });

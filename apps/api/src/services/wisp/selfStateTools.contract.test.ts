@@ -37,7 +37,8 @@ describe('WISP_SELF_STATE_TOOLS contract (#10392)', () => {
       link_entity: 'adds_row',
       snooze_concern: 'own_concern',
       // #10991 W03: a check-in on this grant's own thread; cancel is keyed on the grant.
-      schedule_check_in: 'adds_row',
+      // W07 (#10410): only a notify check-in skips the card; mode run spends grant budget.
+      schedule_check_in: 'notify_check_in',
       cancel_check_in: 'own_thread',
     });
   });

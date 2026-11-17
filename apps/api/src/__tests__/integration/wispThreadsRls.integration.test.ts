@@ -820,4 +820,23 @@ describe("#10390 a model-written session summary is charged to the grant's daily
     expect(rows.find((r) => r.partnerId === f.partnerA)).toMatchObject({ budgetExhaustedGrantsToday: 1 });
     expect(rows.find((r) => r.partnerId === f.partnerB)).toMatchObject({ budgetExhaustedGrantsToday: 0 });
   });
+
+  it('#10414: the admin overview counts a grant exhausted by chat alone', async () => {
+    const f = await seed();
+    await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 10 }).where(eq(wispGrants.id, f.grantA.grantId)));
+    const sessionId = await asSystem(async () => {
+      const [row] = await db.insert(aiSessions).values({
+        orgId: f.orgA1, model: 'claude-sonnet-5-5', wispGrantId: f.grantA.grantId, wispGrantRevisionId: f.grantA.revisionId,
+      }).returning({ id: aiSessions.id });
+      return row!.id;
+    });
+    await asSystem(() => db.insert(aiInvocations).values({
+      orgId: f.orgA1, surface: 'chat', fundingSource: 'platform', requestedModel: 'm', servedModel: 'm',
+      sessionId, costCents: 10, rateSnapshot: {}, createdAt: NOW,
+    }));
+
+    const rows = await asSystem(() => buildWispOverview(NOW));
+    expect(rows.find((r) => r.partnerId === f.partnerA)).toMatchObject({ budgetExhaustedGrantsToday: 1 });
+    expect(rows.find((r) => r.partnerId === f.partnerB)).toMatchObject({ budgetExhaustedGrantsToday: 0 });
+  });
 });

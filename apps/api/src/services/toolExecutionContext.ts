@@ -6,9 +6,11 @@ import type { TenantVariableScope } from './tenantVariableResolution';
 import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
 import type { ApprovalBinding } from './networkIsolation/service';
+import type { VerifiedDrPlan } from './drPlanDefinition';
 import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 import type { WispUnattendedRead } from './wisp/unattendedReads';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
+import type { AiRunExportGrants } from '../db/schema/aiAgents';
 
 /**
  * One `run_script` release, resolved once and verified against the approval's
@@ -78,6 +80,15 @@ export type VerifiedRunScript = {
 export type ToolExecutionContext = {
   verifiedRunScript?: VerifiedRunScript;
   /**
+   * An `execute_dr_plan` release's plan definition, as the release path's
+   * effect-digest recompute read it, with that digest. Set ONLY from that
+   * recompute on a MATCH, never from model arguments, and travels with
+   * `actionIntentId`. The handler refuses without both; execution creation
+   * re-reads the definition under the plan row lock and refuses when it no
+   * longer has this digest.
+   */
+  verifiedDrPlan?: VerifiedDrPlan;
+  /**
    * The `action_intents` row whose approved release is executing this call —
    * set by BOTH release paths (jobs/intentReleaseWorker.ts, and the inline
    * chat release in services/aiAgentSdk.ts, whose preToolUse gate already
@@ -112,6 +123,14 @@ export type ToolExecutionContext = {
    * principal (`auth.principal.runId`, `auth.orgId`) — see reconciliation R4.
    */
   runTargets?: readonly string[];
+  /**
+   * Wisp analysis sessions W02 — the datasets and sensitive gates an analysis
+   * run may export, frozen at admission from the live grant ceiling
+   * (`staged_inputs.exportGrants`). `export_dataset` refuses any dataset
+   * outside it. ABSENT means legacy (`LEGACY_EXPORT_GRANTS`: the original
+   * seven datasets, no sensitive gate), never "everything".
+   */
+  exportGrants?: AiRunExportGrants;
   /** Bytes this run may still stage into artifacts. */
   stagedBytesRemaining?: number;
   /**
@@ -177,8 +196,19 @@ export type ToolExecutionContext = {
    * `wispThreadId` (Wisp W04, w00 A24) is present only when the chat session
    * is attached to a Wisp thread; it lets the read also match that thread's
    * attachments (see `ArtifactCallerAnchor.wispThreadId`).
+   *
+   * `wispGrant` (#11845) is present only on a `read_artifact` anchor of a
+   * Wisp chat session: the session's grant pin, which the handler resolves
+   * against the live ceiling into `ArtifactCallerAnchor.analysisOutputs` and
+   * never forwards itself.
    */
-  captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null; wispThreadId?: string | null };
+  captureAnchor?: {
+    orgId: string;
+    runId?: string | null;
+    sessionId?: string | null;
+    wispThreadId?: string | null;
+    wispGrant?: { grantId: string; revisionId: string } | null;
+  };
   /**
    * Topology M4-D1 (#6000): the site context the topology gate
    * (`topology/aiToolGate.ts`) issued for THIS call — the pinned site of a

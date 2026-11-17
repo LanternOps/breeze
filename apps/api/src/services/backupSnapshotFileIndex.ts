@@ -30,6 +30,7 @@ import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } 
 import { recordSnapshotFileIndex } from './backupMetrics';
 import { refreshSnapshotFileIndexStatistics } from './backupSnapshotFileIndexStatistics';
 import { captureException } from './sentry';
+import { contentlessEntryKind, type SnapshotEntryKind } from './backupSnapshotEntryKind';
 import {
   HYDRATING_STALE_MS,
   hydrationFailureFromError,
@@ -53,7 +54,7 @@ export type HydrationOutcome =
 
 export type HydrationDeps = {
   /** The manifest's bytes. W03 passes a device upload through this same seam. */
-  openManifest: (args: { provider: string; providerConfig: Record<string, unknown>; key: string }) => Promise<NodeJS.ReadableStream>;
+  openManifest: (args: { orgId?: string; configId?: string; provider: string; providerConfig: Record<string, unknown>; key: string }) => Promise<NodeJS.ReadableStream>;
   now?: () => Date;
   /** Test seams for the spool: where it goes, its cap, and a failing disk. */
   spoolBaseDir?: string;
@@ -245,6 +246,26 @@ function claimPredicate(claim: HydrationClaim) {
 
 const MAX_STORED_REASON_LENGTH = 200;
 
+/**
+ * How much of a failure reason the redaction patterns read, so their work is
+ * bounded whatever a manifest holds. Only the first MAX_STORED_REASON_LENGTH
+ * characters are stored, so ten times that is ample.
+ */
+export const MAX_REDACTED_REASON_INPUT_LENGTH = MAX_STORED_REASON_LENGTH * 10;
+
+/** How much of an unparseable manifest key a failure reason quotes. */
+const MAX_REPORTED_KEY_LENGTH = 256;
+
+/** The reason cut to MAX_REDACTED_REASON_INPUT_LENGTH. A cut drops the token it
+ *  lands in (which could be part of a host the patterns would no longer
+ *  recognise) and marks the cut with an ellipsis. */
+function boundReasonInput(reason: string): string {
+  if (reason.length <= MAX_REDACTED_REASON_INPUT_LENGTH) return reason;
+  const head = reason.slice(0, MAX_REDACTED_REASON_INPUT_LENGTH);
+  const lastBreak = head.search(/\s\S*$/);
+  return `${lastBreak === -1 ? '' : head.slice(0, lastBreak + 1)}…`;
+}
+
 /** Last labels that mean a file name, not a host, in a dotted token. */
 const FILE_EXTENSIONS = new Set([
   'json', 'txt', 'gz', 'tgz', 'zip', 'log', 'js', 'ts', 'yaml', 'yml', 'xml', 'csv', 'db', 'bin', 'dat', 'tmp', 'bak', 'sql', 'pem', 'crt', 'key', 'enc', 'zst', 'xz', 'tar',
@@ -257,7 +278,7 @@ const FILE_EXTENSIONS = new Set([
  * network error code (#11280). Dotted hostnames are redacted unless the last label is a file extension.
  */
 export function redactIndexFailureReason(reason: string): string {
-  return reason
+  return boundReasonInput(reason)
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[redacted]')
     .replace(/\[[0-9a-f:]*:[0-9a-f:]*\](?::\d+)?/gi, '[redacted]')
     .replace(/(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4})?|::1\b/gi, '[redacted]')
@@ -305,7 +326,7 @@ type LoadedSnapshot = NonNullable<Awaited<ReturnType<typeof loadSnapshotForHydra
 // null check and its use live in different functions, so a plain narrowed
 // re-read of `snapshot.storageIdentity` at the return site doesn't survive the
 // function boundary; this type carries the guarantee across it instead.
-type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & HydrationClaim & { storageIdentity: string; keyRoot: SnapshotKeyRoot };
+type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & HydrationClaim & { storageIdentity: string; keyRoot: SnapshotKeyRoot; localConfigId?: string };
 
 /**
  * Phase 1 (short transaction): load the snapshot, apply the skip checks,
@@ -445,7 +466,8 @@ async function claimSnapshotForHydration(
           // Rebuilt (not the bare narrowed variable) so the object literal's own
           // storageIdentity field carries the non-null type this scope just
           // proved, across the function boundary into ClaimedSnapshot.
-          snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity, keyRoot },
+          snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity, keyRoot,
+            localConfigId: resolved?.config?.orgId === claimedRow.orgId ? resolved.localConfigId : undefined },
           providerType,
           providerConfig,
         };
@@ -467,13 +489,22 @@ async function claimSnapshotForHydration(
   );
 }
 
-type FileRowJson = { source_path: string; backup_path: string; size: number | null; modified_at: string | null };
+type FileRowJson = {
+  source_path: string;
+  backup_path: string;
+  size: number | null;
+  modified_at: string | null;
+  kind: SnapshotEntryKind | null;
+};
 
 /** What pass 1 learned about a spooled manifest. The rows stay on disk until pass 2. */
 type ParsedManifest = {
   manifestSha256: string;
   spool: ManifestSpool;
-  /** Entries that become rows: everything but content-less dirs and symlinks. */
+  /**
+   * Entries that become rows: every entry, content-less dirs and symlinks
+   * included (#11235), so the index lists the tree the manifest records.
+   */
   eligibleEntries: number;
   originCounts: Map<string, number>;
 };
@@ -493,6 +524,8 @@ async function spoolManifestForHydration(
   try {
     const source = await deps.openManifest({
       provider: providerType,
+      orgId: snapshot.orgId,
+      configId: snapshot.localConfigId,
       providerConfig,
       key: physicalKeyFor(snapshot.keyRoot, backupSnapshotManifestKey(snapshot.snapshotId)),
     });
@@ -550,9 +583,13 @@ async function validateSpooledManifest(
           return;
         }
         const { backupPath } = result.data;
-        // Content-less entries (dir/symlink) upload nothing — the schema above
-        // guarantees an empty backupPath only ever appears on one.
-        if (!backupPath) return;
+        // A content-less entry (dir/symlink) uploads nothing: the schema above
+        // guarantees an empty backupPath only ever appears on one. It is still
+        // a row (#11235), with no key to check and no origin.
+        if (!backupPath) {
+          eligibleEntries += 1;
+          return;
+        }
         const parsedKey = parseBackupObjectKey(backupPath);
         if (!parsedKey) {
           invalidKey ??= backupPath;
@@ -597,7 +634,12 @@ async function validateSpooledManifest(
     return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', 'manifest has no files key') };
   }
   if (invalidKey !== null) {
-    return { outcome: await failOutsideContext(snapshot, 'manifest_key_invalid', `unparseable backupPath: ${invalidKey}`) };
+    // The key is shown only to identify the entry, so a long one is shortened
+    // before it reaches the stored reason, the worker log and error reporting.
+    // (Assigned inside the scan callback, so TypeScript cannot see it is a string here.)
+    const key: string = invalidKey as string;
+    const shown = key.length > MAX_REPORTED_KEY_LENGTH ? `${key.slice(0, MAX_REPORTED_KEY_LENGTH)}…` : key;
+    return { outcome: await failOutsideContext(snapshot, 'manifest_key_invalid', `unparseable backupPath: ${shown}`) };
   }
   if (tooManyOrigins) {
     return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', `manifest references more than ${MAX_MANIFEST_ORIGINS} other snapshots`) };
@@ -766,10 +808,10 @@ async function verifyOriginsAndWrite(
         // that outlived a minor GC at 1.1M entries, and what grew the heap.
         // The ::text keeps the driver from serializing the string as JSON again.
         const written = await tx.execute(sql`
-          INSERT INTO ${backupSnapshotFiles} (snapshot_db_id, source_path, backup_path, size, modified_at)
-          SELECT ${snapshotDbId}::uuid, r.source_path, r.backup_path, r.size, r.modified_at
+          INSERT INTO ${backupSnapshotFiles} (snapshot_db_id, source_path, backup_path, size, modified_at, kind)
+          SELECT ${snapshotDbId}::uuid, r.source_path, r.backup_path, r.size, r.modified_at, r.kind
           FROM json_to_recordset(${JSON.stringify(batch)}::text::json)
-            AS r(source_path text, backup_path text, size bigint, modified_at timestamp)
+            AS r(source_path text, backup_path text, size bigint, modified_at timestamp, kind text)
         `);
         // The database's own count of rows written.
         inserted += extractRowCount(written);
@@ -780,7 +822,6 @@ async function verifyOriginsAndWrite(
           // Pass 1 validated these same bytes, and verifiedSpoolBytes holds
           // them to it.
           const file = entry as HydrationEntry;
-          if (!file.backupPath) return;
           batch.push({
             source_path: file.originalPath ?? file.sourcePath,
             backup_path: file.backupPath,
@@ -788,6 +829,7 @@ async function verifyOriginsAndWrite(
             // As the column's own mapping sends it: a UTC ISO string, stored
             // in a timestamp without time zone.
             modified_at: file.modTime ? new Date(file.modTime).toISOString() : null,
+            kind: contentlessEntryKind(file),
           });
           if (batch.length >= FILE_ROW_BATCH_SIZE) await writeBatch();
         },
@@ -811,7 +853,9 @@ async function verifyOriginsAndWrite(
           fileIndexHydratedAt: new Date(),
           fileIndexExternalCount: externalCount,
           fileIndexError: null,
-          metadata: { ...asRecord(current.metadata), hasIndexedFiles: true, fileIndexVersion: 2 },
+          // 3: content-less entries are rows (#11235). An index of version 2
+          // is still correct for every file; it only omits those entries.
+          metadata: { ...asRecord(current.metadata), hasIndexedFiles: true, fileIndexVersion: 3 },
         })
         .where(claimPredicate(snapshot));
 

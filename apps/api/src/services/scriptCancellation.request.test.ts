@@ -37,6 +37,16 @@ vi.mock('./automationActionResults', () => ({
 
 const sendCommandToAgentMock = vi.hoisted(() => vi.fn());
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: sendCommandToAgentMock }));
+// #4142: scriptCancellation reaches agents through the relay facade. This mock
+// bridges over the local-send mock above so the transport tests read as "the
+// send succeeded / failed"; the facade-outcome tests drive it directly.
+const dispatchCommandToAgentMock = vi.hoisted(() => vi.fn());
+vi.mock('./agentCommandRelay', () => ({
+  dispatchCommandToAgent: dispatchCommandToAgentMock,
+  dispatchDisposition: (o: { status: string }) => (
+    o.status === 'sent' ? 'delivered' : o.status === 'indeterminate' ? 'uncertain' : 'not_delivered'
+  ),
+}));
 
 const claimMock = vi.hoisted(() => vi.fn());
 const releaseMock = vi.hoisted(() => vi.fn());
@@ -175,6 +185,9 @@ beforeEach(() => {
     eventOrder.push('sendCommandToAgent');
     return true;
   });
+  dispatchCommandToAgentMock.mockImplementation(async (agentId: string, frame: unknown) => (
+    sendCommandToAgentMock(agentId, frame) ? { status: 'sent', via: 'local' } : { status: 'offline' }
+  ));
 });
 
 describe('script_cancel wire contract (#3525 blocker)', () => {
@@ -466,6 +479,53 @@ describe('deliverCancelCommand', () => {
     // is the fallback, and a stranded `sent` row would misreport a server-side
     // send failure as agent unreachability.
     expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it('an indeterminate facade outcome reports true and keeps the claim (the reaper resolves the sent row)', async () => {
+    const { deliverCancelCommand } = await import('./scriptCancellation');
+    withCommandRow({ id: 'cancel-cmd-id', type: 'script_cancel', payload: {}, agentId: 'agent-1' });
+    dispatchCommandToAgentMock.mockResolvedValueOnce({ status: 'indeterminate', reason: 'ack_timeout' });
+
+    expect(await deliverCancelCommand('cancel-cmd-id', 'device-uuid')).toBe(true);
+    expect(releaseMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['offline', 'expired', 'owner_mismatch', 'infrastructure_error'])(
+    'a %s facade outcome releases the claim and returns false',
+    async (status) => {
+      const { deliverCancelCommand } = await import('./scriptCancellation');
+      withCommandRow({ id: 'cancel-cmd-id', type: 'script_cancel', payload: {}, agentId: 'agent-1' });
+      dispatchCommandToAgentMock.mockResolvedValueOnce({ status });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      expect(await deliverCancelCommand('cancel-cmd-id', 'device-uuid')).toBe(false);
+      expect(releaseMock).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    },
+  );
+
+  it('a relayed delivery counts as delivered', async () => {
+    const { deliverCancelCommand } = await import('./scriptCancellation');
+    withCommandRow({ id: 'cancel-cmd-id', type: 'script_cancel', payload: {}, agentId: 'agent-1' });
+    dispatchCommandToAgentMock.mockResolvedValueOnce({ status: 'sent', via: 'relay' });
+
+    expect(await deliverCancelCommand('cancel-cmd-id', 'device-uuid')).toBe(true);
+    expect(releaseMock).not.toHaveBeenCalled();
+  });
+
+  it('a rejected facade promise (contract violation) keeps the claim, reports true and captures the error', async () => {
+    const { deliverCancelCommand } = await import('./scriptCancellation');
+    const { captureException } = await import('./sentry');
+    withCommandRow({ id: 'cancel-cmd-id', type: 'script_cancel', payload: {}, agentId: 'agent-1' });
+    const boom = new Error('relay contract violation');
+    dispatchCommandToAgentMock.mockRejectedValueOnce(boom);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    expect(await deliverCancelCommand('cancel-cmd-id', 'device-uuid')).toBe(true);
+    expect(releaseMock).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledWith(boom);
+    err.mockRestore();
   });
 
   it('never sends when the device has no connected agent', async () => {
