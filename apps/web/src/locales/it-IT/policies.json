@@ -1964,6 +1964,7 @@
       "loadingSoftwareCatalog": "Caricamento catalogo software...",
       "softwareLibrary": "Libreria software",
       "browseAndDeployApprovedSoftwarePackages": "Sfoglia e distribuisci pacchetti software approvati.",
+      "libraryScopeNote": "Questa libreria elenca i pacchetti che puoi distribuire sui dispositivi su richiesta. Non è un elenco del software che Breeze mantiene aggiornato. Gli aggiornamenti delle app installate provengono dalle origini delle patch di un criterio di configurazione, da un anello di aggiornamento e da ciò che winget, Chocolatey o Homebrew segnalano su ciascun dispositivo.",
       "addPackage": "Aggiungi pacchetto",
       "bulkDeploy": "Distribuzione massiva",
       "dismiss": "Ignora",

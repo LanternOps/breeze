@@ -1964,6 +1964,7 @@
       "loadingSoftwareCatalog": "Softwarekatalog wird geladen...",
       "softwareLibrary": "Softwarebibliothek",
       "browseAndDeployApprovedSoftwarePackages": "Durchsuchen Sie genehmigte Softwarepakete und stellen Sie sie bereit.",
+      "libraryScopeNote": "Diese Bibliothek listet Pakete auf, die Sie bei Bedarf auf Geräten bereitstellen können. Sie ist keine Liste der Software, die Breeze aktuell hält. Updates für installierte Apps stammen aus den Patch-Quellen einer Konfigurationsrichtlinie, einem Update-Ring und dem, was winget, Chocolatey oder Homebrew auf dem jeweiligen Gerät melden.",
       "addPackage": "Paket hinzufügen",
       "bulkDeploy": "Massenbereitstellung",
       "dismiss": "Schließen",
