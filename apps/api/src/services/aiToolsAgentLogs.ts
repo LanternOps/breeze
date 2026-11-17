@@ -20,6 +20,7 @@ import { sanitizeThrownToolError } from './aiToolErrors';
 import { resolveReadableToolOrgScope } from './aiToolWriteOrg';
 import { aiExecuteCommand } from './aiDispatch';
 import type { CommandResult } from './commandQueue';
+import { CAPTURE_PPROF_PROFILES } from './commandTypes';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -427,7 +428,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'capture_agent_pprof',
       description:
-        "Capture agent heap/goroutine pprof profiles to diagnose memory growth or leaks; return sizes, capture time and runtime gauges. Raw profiles remain in the command result for download. Requires approval.",
+        "Capture agent heap/goroutine/goroutineleak/cpu pprof profiles to diagnose memory growth or leaks; return sizes, capture time and runtime gauges. Raw profiles remain in the command result for download. Requires approval.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -437,7 +438,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           },
           profile: {
             type: 'string',
-            enum: ['heap', 'goroutine', 'all'],
+            enum: [...CAPTURE_PPROF_PROFILES],
             description: 'Which profile(s) to capture (default: all)',
           },
         },
@@ -456,9 +457,9 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         }
 
         const profile = (input.profile as string | undefined) ?? 'all';
-        if (!['heap', 'goroutine', 'all'].includes(profile)) {
+        if (!(CAPTURE_PPROF_PROFILES as readonly string[]).includes(profile)) {
           return JSON.stringify({
-            error: `Invalid profile "${profile}": must be heap, goroutine, or all`,
+            error: `Invalid profile "${profile}": must be ${CAPTURE_PPROF_PROFILES.join(', ')}`,
           });
         }
 
@@ -468,7 +469,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
 
         const result = await aiExecuteCommand(auth, 'capture_agent_pprof', deviceId, 'capture_pprof', { profile }, {
           userId: auth.user.id,
-          timeoutMs: 30000,
+          timeoutMs: profile === 'cpu' ? 60000 : 30000,
         });
 
         if (result.status !== 'completed') {
@@ -504,6 +505,12 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         if (typeof captured.goroutineProfileBytes === 'number') {
           profiles.goroutine = { sizeBytes: captured.goroutineProfileBytes };
         }
+        if (typeof captured.goroutineleakProfileBytes === 'number') {
+          profiles.goroutineleak = { sizeBytes: captured.goroutineleakProfileBytes };
+        }
+        if (typeof captured.cpuProfileBytes === 'number') {
+          profiles.cpu = { sizeBytes: captured.cpuProfileBytes };
+        }
 
         // A completed command whose stdout carries no profile fields means
         // the agent/API contract drifted (or stdout was lost in transit).
@@ -527,7 +534,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           runtime: captured.runtime ?? null,
           profiles,
           retrieval: result.commandId
-            ? `Raw profiles are base64-encoded gzip protobuf (the format \`go tool pprof\` consumes), stored on the command result. Fetch GET /devices/${deviceId}/commands/${result.commandId} and decode the heapProfileBase64 / goroutineProfileBase64 fields from the result stdout JSON. Do NOT re-fetch them into this conversation.`
+            ? `Raw profiles are base64-encoded gzip protobuf (the format \`go tool pprof\` consumes), stored on the command result. Fetch GET /devices/${deviceId}/commands/${result.commandId} and decode the heapProfileBase64 / goroutineProfileBase64 / goroutineleakProfileBase64 / cpuProfileBase64 fields from the result stdout JSON. Do NOT re-fetch them into this conversation.`
             : 'Profiles captured but the command id was unavailable; look up the latest capture_pprof command for this device in the command history.',
         });
       } catch (err) {
