@@ -544,6 +544,25 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
       type: 'run_result', runId: watched.runId, status: 'awaiting_approval', summary: 'Two fixes proposed', pendingIntentCount: 1,
     })]);
     expect(fakeSession.pendingRunResults).toEqual([expect.objectContaining({ runId: watched.runId, status: 'awaiting_approval', pendingIntentCount: 1 })]);
+
+    // Workers card (#11965 stopgap): the activity feed counts only the parked
+    // run's own still-pending steps, against real SQL. The sibling's pending
+    // step and the rejected one stay out; a run not parked carries no count.
+    const ceiling = await sys(() => resolveGrantCeiling(t.grant.grantId, t.grant.revisionId));
+    const { items } = await listActivity(ceiling, { limit: 100 });
+    expect(items.find((i) => i.id === watched.runId)).toMatchObject({
+      runStatus: 'awaiting_approval', pendingApprovals: 1, pendingIntentId: pendingIntent.id,
+    });
+    expect(items.find((i) => i.id === sibling.runId)).not.toHaveProperty('pendingApprovals');
+    // Once the last step is decided the count drops to 0 while the run row
+    // still says awaiting_approval: the card shows "Approvals decided".
+    await sys(() => db.update(actionIntents).set({
+      status: 'rejected', decidedByUserId: t.admin.id, decidedAt: new Date(), decidedVia: 'human',
+    } as never).where(eq(actionIntents.id, pendingIntent.id)));
+    const after = await listActivity(ceiling, { limit: 100 });
+    expect(after.items.find((i) => i.id === watched.runId)).toMatchObject({
+      runStatus: 'awaiting_approval', pendingApprovals: 0, pendingIntentId: null,
+    });
   });
 
   it('no other agent path can mint the carrier: createActionIntent refuses it without the coordinator mint', async () => {
