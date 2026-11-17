@@ -50,6 +50,47 @@ function parseBound(bound: 'start' | 'end', value: string): Date {
   return date;
 }
 
+/** Default length of an ad-hoc service-plan evidence window. */
+const AD_HOC_EVIDENCE_DAYS = 30;
+
+export type EvidenceWindow = { start: Date; end: Date; periodStart: string; periodEnd: string };
+
+/** A `YYYY-MM-DD…` bound as the start or end of that whole UTC day; throws a
+ *  message naming the bound, like `parseBound`, for anything else. */
+function wholeDayBound(bound: 'start' | 'end', value: string): Date {
+  const day = value.slice(0, 10);
+  const date = new Date(`${day}T${bound === 'start' ? '00:00:00.000' : '23:59:59.999'}Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid report date range: ${bound} ${JSON.stringify(value)} is not a date`);
+  }
+  return date;
+}
+
+/**
+ * The window an ad-hoc service-plan evidence report covers when no deliverable
+ * occurrence supplies one (#12048), in order:
+ *  - start: an explicit `start` (the start of that UTC day); else `end` minus
+ *    the rolling preset's length (last_7/30/90_days); else `end` minus 30 days.
+ *  - end: an explicit `end` (the end of that UTC day); else the generation time.
+ *
+ * Shared by the threat detection and vulnerability management generators. Run
+ * together on Nov 9 they printed 10-10→11-09 (trailing 30 days) and
+ * 10-09→11-09 (one calendar month); a client reading both saw two periods.
+ */
+export function resolveAdHocEvidenceWindow(rawDateRange: unknown, generatedAt: string): EvidenceWindow {
+  const range = asRange(rawDateRange) ?? {};
+  const end = nonEmptyString(range.end) ? wholeDayBound('end', range.end) : new Date(generatedAt);
+  const start = nonEmptyString(range.start)
+    ? wholeDayBound('start', range.start)
+    : new Date(end.getTime() - (reportDateRangePresetDays(range) ?? AD_HOC_EVIDENCE_DAYS) * DAY_MS);
+  return {
+    start,
+    end,
+    periodStart: start.toISOString().slice(0, 10),
+    periodEnd: end.toISOString().slice(0, 10),
+  };
+}
+
 /** The length in days of a rolling preset, or null for `custom`/absent/unknown. */
 export function reportDateRangePresetDays(raw: unknown): number | null {
   const preset = asRange(raw)?.preset;

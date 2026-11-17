@@ -1092,6 +1092,7 @@
     "status": {
       "no_backups": "Aucune sauvegarde",
       "completed": "Terminée",
+      "overdue": "Aucune sauvegarde récente",
       "completed_with_errors": "Terminée avec des erreurs",
       "in_progress": "En cours",
       "unsuccessful": "Sans succès",
@@ -1163,6 +1164,7 @@
       "other": "Autre"
     },
     "noObservation": "Aucune observation",
+    "overdueLast": "Dernière : {{date}}",
     "openDevice": "Ouvrir l'appareil",
     "empty": "Aucun appareil ne correspond à ces filtres.",
     "loadMore": "Charger plus",

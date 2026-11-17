@@ -27,6 +27,10 @@ const h = vi.hoisted(() => ({
   chargeableUnderGrant: vi.fn(),
   requestAssessment: vi.fn(),
   captureException: vi.fn(),
+  // W03 analysis continuation
+  analysisContinuationOf: vi.fn(),
+  deriveChainHandles: vi.fn(),
+  buildAnalysisContinuationSeed: vi.fn(),
 }));
 
 function nextRows(table: string): unknown[] {
@@ -58,6 +62,12 @@ vi.mock('../../jobs/aiAgentSweepScheduler', () => ({
     `sweep-occ-${scheduleId}-${occurrenceKey.replace(/[^A-Za-z0-9]/g, '')}`,
 }));
 vi.mock('../aiAgents/analysisAdmission', () => ({ admitAnalysisRun: h.admitAnalysisRun }));
+vi.mock('../aiAgents/analysisContinuation', async (orig) => ({
+  ...(await orig<typeof import('../aiAgents/analysisContinuation')>()),
+  analysisContinuationOf: h.analysisContinuationOf,
+  deriveChainHandles: h.deriveChainHandles,
+  buildAnalysisContinuationSeed: h.buildAnalysisContinuationSeed,
+}));
 vi.mock('../aiAgents/effectivePolicy', () => ({ resolveEffectiveAgentSystem: h.resolveEffectiveAgentSystem }));
 vi.mock('../aiAgents/researchProvisioning', () => ({ ensureResearchAgent: h.ensureResearchAgent }));
 vi.mock('../aiAgents/troubleshootProvisioning', () => ({
@@ -94,6 +104,7 @@ import { SPECIALIST_KINDS } from './specialistPolicy';
 import {
   SPECIALIST_LAUNCHERS,
   SPECIALIST_PREREQUISITES,
+  analysisLaunchMessage,
   launchAnalysis,
   launchBulkTicketReply,
   launchDeviceTroubleshooting,
@@ -107,6 +118,8 @@ import {
   specialistParamsError,
   type LaunchContext,
 } from './specialistLaunchers';
+import { TROUBLESHOOT_GOAL_MAX_CHARS } from '../aiAgents/troubleshootProfile';
+import { EXPORT_DATASETS } from '../aiToolsExportDatasetNames';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
 const PARTNER = '00000000-0000-4000-8000-0000000000a2';
@@ -272,7 +285,10 @@ describe('launchSweep', () => {
 });
 
 const SITE = '00000000-0000-4000-8000-0000000000b1';
-const SEVEN = ['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields'];
+// Every dataset requires devices:read (W02 + W04), so a ceiling holding it is granted the whole list.
+const ALL_DATASETS = [...EXPORT_DATASETS] as string[];
+// W05: `alerts` needs alerts:read; every other dataset needs devices:read.
+const DEVICES_READ_DATASETS = ALL_DATASETS.filter((d) => d !== 'alerts');
 
 describe('analysis params (W02 C1 scope resolution)', () => {
   it('analysis params follow C1 scope resolution and bounds', () => {
@@ -312,7 +328,7 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
     const res = await launchAnalysis(ctx({ params }));
-    expect(res).toEqual({ admitted: true, runId: 'run-1' });
+    expect(res).toMatchObject({ admitted: true, runId: 'run-1' });
     expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({
       orgId: ORG, requestedByUserId: GRANTOR, sessionId: null, goal: 'why failing', scope: 'org', deviceIds: [], siteId: null,
       stagedHandles: [], dedupeKey: 'wisp-specialist-req-1', grant: GRANT_REF,
@@ -323,12 +339,12 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[], []];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
     await launchAnalysis(ctx({ params: { goal: 'why', scope: 'org' } }));
-    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: SEVEN, sensitiveGates: ['security_events'] } }));
+    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: ALL_DATASETS, sensitiveGates: ['security_events', 'user_account_changes'] } }));
     await launchAnalysis(ctx({
       actorAuth: null, params: { goal: 'why', scope: 'org' },
       ceiling: liveCeiling({ permissionKeys: new Set(['devices:read', 'ai_agents:write', 'ai_workspace:execute']) }),
     }));
-    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: SEVEN, sensitiveGates: [] } }));
+    expect(h.admitAnalysisRun).toHaveBeenLastCalledWith(expect.objectContaining({ exportGrants: { datasets: DEVICES_READ_DATASETS, sensitiveGates: [] } }));
   });
 
   it('a ceiling without devices:read forwards an empty dataset set (the handler then refuses every export)', async () => {
@@ -345,7 +361,50 @@ describe('launchAnalysis', () => {
       params: { goal: 'why', scope: 'org' },
       ceiling: liveCeiling({ orgTerms: new Map([[ORG, { permissionKeys: new Set(['devices:read']), siteIds: null }]]) }),
     }));
-    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ exportGrants: { datasets: SEVEN, sensitiveGates: [] } }));
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ exportGrants: { datasets: DEVICES_READ_DATASETS, sensitiveGates: [] } }));
+  });
+
+  it('an admitted launch tells the model how to continue, when to start fresh, and that chains are capped', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({
+      created: true, runId: 'new', status: 'queued', scope: { kind: 'org', siteId: null, deviceCount: 412 }, chainDepth: 0,
+    });
+    const res = await launchAnalysis(ctx({ params: { goal: 'why', scope: 'org' } }));
+    expect(res).toMatchObject({ admitted: true, runId: 'new' });
+    const msg = (res as { message: string }).message;
+    expect(msg).toContain('over the whole organization (412 devices)');
+    expect(msg).toContain('continueFromRunId new');
+    expect(msg).toContain('start a fresh analysis without continueFromRunId');
+    expect(msg).toContain('A chain has a step limit and a spend limit.');
+    expect(msg).not.toContain('as step');
+  });
+
+  it('an admitted continuation names its step from the admitted depth', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({
+      created: true, runId: 'next', status: 'queued', scope: { kind: 'site', siteId: SITE, deviceCount: 3 }, chainDepth: 2,
+    });
+    const res = await launchAnalysis(ctx({ params: { goal: 'why', siteId: SITE } }));
+    expect((res as { message: string }).message)
+      .toMatch(/^Analysis run next started as step 3 of this investigation over one site \(3 devices\)\. /);
+  });
+
+  it('analysisLaunchMessage: a continuation names its step', () => {
+    expect(analysisLaunchMessage({ runId: 'r', chainDepth: 2, scope: { kind: 'devices', deviceCount: 1 } }))
+      .toMatch(/^Analysis run r started as step 3 of this investigation over 1 selected device\. /);
+  });
+
+  it('analysisLaunchMessage: a replayed launch still carries the guidance without scope or step', () => {
+    const msg = analysisLaunchMessage({ runId: 'old', chainDepth: null, scope: null });
+    expect(msg).toMatch(/^Analysis run old started\. Its result arrives on a later turn\. /);
+    expect(msg).toContain('continueFromRunId old');
+  });
+
+  it('analysisLaunchMessage: plural devices and the whole organization', () => {
+    expect(analysisLaunchMessage({ runId: 'r', chainDepth: 0, scope: { kind: 'devices', deviceCount: 4 } }))
+      .toContain('over 4 selected devices.');
+    expect(analysisLaunchMessage({ runId: 'r', chainDepth: 0, scope: { kind: 'org', deviceCount: 1 } }))
+      .toContain('over the whole organization (1 device).');
   });
 
   it('infers site scope from a bare siteId', async () => {
@@ -370,7 +429,9 @@ describe('launchAnalysis', () => {
 
   it('short-circuits on an existing run without admission', async () => {
     h.tables.ai_agent_runs = [[{ id: 'old' }]];
-    expect(await launchAnalysis(ctx({ params }))).toEqual({ admitted: true, runId: 'old' });
+    expect(await launchAnalysis(ctx({ params }))).toEqual({
+      admitted: true, runId: 'old', message: analysisLaunchMessage({ runId: 'old', chainDepth: null, scope: null }),
+    });
     expect(h.admitAnalysisRun).not.toHaveBeenCalled();
   });
 
@@ -383,7 +444,9 @@ describe('launchAnalysis', () => {
   it('resolves a raced row after a refusal', async () => {
     h.tables.ai_agent_runs = [[], [{ id: 'raced' }]];
     h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_rate' });
-    expect(await launchAnalysis(ctx({ params }))).toEqual({ admitted: true, runId: 'raced' });
+    expect(await launchAnalysis(ctx({ params }))).toEqual({
+      admitted: true, runId: 'raced', message: analysisLaunchMessage({ runId: 'raced', chainDepth: null, scope: null }),
+    });
   });
 
   it('refuses grant_refused without re-reading', async () => {
@@ -400,7 +463,7 @@ describe('launchAnalysis', () => {
   it('a chat launch records its session and attaches the live stream', async () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
-    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'run-1' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toMatchObject({ admitted: true, runId: 'run-1' });
     expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ sessionId: SESSION }));
     expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'run-1', sessionId: SESSION, orgId: ORG });
   });
@@ -415,7 +478,7 @@ describe('launchAnalysis', () => {
 
   it('a replay from the same chat re-attaches without a second admission', async () => {
     h.tables.ai_agent_runs = [[{ id: 'old', status: 'running', errorCode: null }]];
-    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'old' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toMatchObject({ admitted: true, runId: 'old' });
     expect(h.admitAnalysisRun).not.toHaveBeenCalled();
     expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'old', sessionId: SESSION, orgId: ORG });
   });
@@ -423,7 +486,7 @@ describe('launchAnalysis', () => {
   it('a raced replay from the same chat re-attaches too', async () => {
     h.tables.ai_agent_runs = [[], [{ id: 'raced', status: 'queued', errorCode: null }]];
     h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_rate' });
-    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'raced' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toMatchObject({ admitted: true, runId: 'raced' });
     expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'raced', sessionId: SESSION, orgId: ORG });
   });
 
@@ -438,7 +501,7 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-3' });
     h.watchRunForOriginSession.mockImplementationOnce(() => { throw new Error('bridge down'); });
-    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'run-3' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toMatchObject({ admitted: true, runId: 'run-3' });
     expect(h.captureException).toHaveBeenCalled();
   });
 
@@ -451,6 +514,155 @@ describe('launchAnalysis', () => {
       expect(paramsOf(cond)).toContain('wisp-specialist-req-1');
       expect(paramsOf(cond)).not.toContain('req-1');
     }
+  });
+});
+
+describe('analysis continuation (W03)', () => {
+  const PRIOR = '00000000-0000-4000-8000-0000000000c1';
+  const ROOT = '00000000-0000-4000-8000-0000000000c0';
+  const H1 = '00000000-0000-4000-8000-0000000000d1';
+  const H2 = '00000000-0000-4000-8000-0000000000d2';
+  const S1 = '00000000-0000-4000-8000-0000000000e1';
+  const S2 = '00000000-0000-4000-8000-0000000000e2';
+  const params = { goal: 'dig deeper', scope: 'org', continueFromRunId: PRIOR };
+  const priorOf = (o: Record<string, unknown> = {}) => ({
+    id: PRIOR, orgId: ORG, grantId: GRANT, chainRootRunId: ROOT, chainDepth: 1,
+    stagedInputs: { handles: [H1], deviceIds: [], region: 'eu' }, goal: 'first', originSessionId: S1, ...o,
+  });
+  const derived = { handles: [H1, H2], dropped: [{ handle: '00000000-0000-4000-8000-0000000000d9', reason: 'expired' }] };
+  const arm = (prior = priorOf()) => {
+    h.tables.ai_agent_runs = [[]];
+    h.analysisContinuationOf.mockResolvedValue({ ok: true, prior });
+    h.deriveChainHandles.mockResolvedValue(derived);
+    h.buildAnalysisContinuationSeed.mockResolvedValue('SEED');
+    h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-c' });
+  };
+
+  it('params accept an optional uuid continueFromRunId and nothing handle-shaped', () => {
+    expect(parseSpecialistParams('analysis', { goal: 'g', scope: 'org', continueFromRunId: PRIOR })).not.toBeNull();
+    expect(parseSpecialistParams('analysis', { goal: 'g', scope: 'org', handles: [PRIOR] })).toBeNull();
+    expect(parseSpecialistParams('analysis', { goal: 'g', scope: 'org', stagedHandles: [PRIOR] })).toBeNull();
+    expect(parseSpecialistParams('analysis', { goal: 'g', scope: 'org', continueFromRunId: 'nope' })).toBeNull();
+  });
+
+  it('validates with the grant only, then admits with derived handles and the seed', async () => {
+    arm();
+    await expect(launchAnalysis(ctx({ params }))).resolves.toMatchObject({ admitted: true, runId: 'run-c' });
+    expect(h.analysisContinuationOf).toHaveBeenCalledWith({ orgId: ORG, runId: PRIOR, grantId: GRANT });
+    expect(h.deriveChainHandles).toHaveBeenCalledWith({
+      orgId: ORG, prior: priorOf(), grantId: GRANT, exportGrants: expect.objectContaining({ datasets: expect.any(Array) }),
+    });
+    const exportGrants = h.admitAnalysisRun.mock.calls[0]![0].exportGrants;
+    expect(h.deriveChainHandles.mock.calls[0]![0].exportGrants).toEqual(exportGrants);
+    expect(h.buildAnalysisContinuationSeed).toHaveBeenCalledWith({ orgId: ORG, prior: priorOf(), exportGrants });
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({
+      stagedHandles: [H1, H2],
+      continuation: { fromRunId: PRIOR, chainRootRunId: ROOT, chainDepth: 2, seed: 'SEED', dropped: derived.dropped },
+      dedupeKey: 'wisp-specialist-req-1',
+    }));
+  });
+
+  it('a continuation of a chain root makes the prior the root at depth 1', async () => {
+    arm(priorOf({ chainRootRunId: null, chainDepth: 0 }));
+    await launchAnalysis(ctx({ params }));
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({
+      continuation: expect.objectContaining({ fromRunId: PRIOR, chainRootRunId: PRIOR, chainDepth: 1 }),
+    }));
+  });
+
+  it('thread rule: a second chat session under the same grant continues a run launched from another session, and records itself as origin', async () => {
+    arm(priorOf({ originSessionId: S1 }));
+    h.watchRunForOriginSession.mockResolvedValue(undefined);
+    const actorAuth = { wispGrant: { sessionId: S2 } } as unknown as LaunchContext['actorAuth'];
+    await expect(launchAnalysis(ctx({ params, actorAuth }))).resolves.toMatchObject({ admitted: true, runId: 'run-c' });
+    expect(h.analysisContinuationOf.mock.calls[0]![0]).not.toHaveProperty('sessionId');
+    expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ sessionId: S2 }));
+  });
+
+  it.each([
+    ['analysis_continuation_other_grant', 'analysis_continuation_not_found'],
+    ['analysis_continuation_wrong_kind', 'analysis_continuation_not_found'],
+    ['analysis_continuation_not_found', 'analysis_continuation_not_found'],
+    ['analysis_continuation_not_settled', 'analysis_continuation_not_settled'],
+  ])('maps a validation refusal %s to continuation_refused with caller-visible detail %s', async (refusal, detail) => {
+    h.tables.ai_agent_runs = [[]];
+    h.analysisContinuationOf.mockResolvedValue({ ok: false, refusal });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'continuation_refused', detail });
+      // The precise reason stays in the server log only, and only when it was collapsed.
+      if (refusal !== detail) {
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuation refused'), expect.objectContaining({ reason: refusal }));
+      } else {
+        expect(warn).not.toHaveBeenCalled();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+    expect(h.deriveChainHandles).not.toHaveBeenCalled();
+    expect(h.admitAnalysisRun).not.toHaveBeenCalled();
+  });
+
+  it('two continuations of the same prior under different request ids both admit', async () => {
+    arm();
+    h.tables.ai_agent_runs = [[], []];
+    h.admitAnalysisRun.mockResolvedValueOnce({ created: true, runId: 'run-a' }).mockResolvedValueOnce({ created: true, runId: 'run-b' });
+    await expect(launchAnalysis(ctx({ params, requestId: 'req-a' }))).resolves.toMatchObject({ admitted: true, runId: 'run-a' });
+    await expect(launchAnalysis(ctx({ params, requestId: 'req-b' }))).resolves.toMatchObject({ admitted: true, runId: 'run-b' });
+    expect(h.admitAnalysisRun.mock.calls.map((c) => c[0].dedupeKey)).toEqual(['wisp-specialist-req-a', 'wisp-specialist-req-b']);
+  });
+
+  it('a prior whose root was deleted refuses admission_skipped analysis_chain_too_long without admitting', async () => {
+    arm(priorOf({ chainRootRunId: null, chainDepth: 2 }));
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'admission_skipped', detail: 'analysis_chain_too_long' });
+    expect(h.deriveChainHandles).not.toHaveBeenCalled();
+    expect(h.admitAnalysisRun).not.toHaveBeenCalled();
+  });
+
+  it('an admission refusal analysis_continuation_not_found is continuation_refused; the chain bounds stay admission_skipped', async () => {
+    arm();
+    h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_continuation_not_found' });
+    h.tables.ai_agent_runs = [[], []];
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'continuation_refused', detail: 'analysis_continuation_not_found' });
+    h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_chain_budget_exceeded' });
+    h.tables.ai_agent_runs = [[], []];
+    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ refused: 'admission_skipped', detail: 'analysis_chain_budget_exceeded' });
+  });
+
+  it('a replayed request reattaches before validating the continuation again', async () => {
+    h.tables.ai_agent_runs = [[{ id: 'run-old' }]];
+    await expect(launchAnalysis(ctx({ params }))).resolves.toMatchObject({ admitted: true, runId: 'run-old' });
+    expect(h.analysisContinuationOf).not.toHaveBeenCalled();
+  });
+
+  it('a fresh analysis carries no continuation', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
+    await launchAnalysis(ctx({ params: { goal: 'g', scope: 'org' } }));
+    expect(h.analysisContinuationOf).not.toHaveBeenCalled();
+    expect(h.admitAnalysisRun.mock.calls[0]![0]).not.toHaveProperty('continuation');
+  });
+
+  it('the precheck refuses a not-settled prior before any card, without a grant', async () => {
+    h.analysisContinuationOf.mockResolvedValue({ ok: false, refusal: 'analysis_continuation_not_settled' });
+    await expect(SPECIALIST_PREREQUISITES.analysis({ orgId: ORG, partnerId: PARTNER, params }))
+      .resolves.toEqual({ refused: 'continuation_refused', detail: 'analysis_continuation_not_settled' });
+    expect(h.analysisContinuationOf).toHaveBeenCalledWith({ orgId: ORG, runId: PRIOR });
+    expect(h.admitAnalysisRun).not.toHaveBeenCalled();
+  });
+
+  it.each(['analysis_continuation_other_grant', 'analysis_continuation_wrong_kind'])(
+    'the precheck (no grant) answers %s as not_found, so its answer never depends on a run the caller cannot see',
+    async (refusal) => {
+      h.analysisContinuationOf.mockResolvedValue({ ok: false, refusal });
+      await expect(SPECIALIST_PREREQUISITES.analysis({ orgId: ORG, partnerId: PARTNER, params }))
+        .resolves.toEqual({ refused: 'continuation_refused', detail: 'analysis_continuation_not_found' });
+    },
+  );
+
+  it('the precheck passes a continuable prior', async () => {
+    h.analysisContinuationOf.mockResolvedValue({ ok: true, prior: priorOf() });
+    await expect(SPECIALIST_PREREQUISITES.analysis({ orgId: ORG, partnerId: PARTNER, params })).resolves.toBeNull();
   });
 });
 
@@ -650,10 +862,18 @@ describe('launchDeviceTroubleshooting (#11084)', () => {
   const SESSION = '00000000-0000-4000-8000-0000000000b1';
   const chatActor = { user: { id: GRANTOR }, wispGrant: { grantId: GRANT, grantRevisionId: REV, sessionId: SESSION } } as never;
 
-  it('validates params: a uuid device and a 5–500 char goal, nothing else', () => {
+  it('accepts a goal that carries exact paths past the old 500-char cap (#11973)', () => {
+    const goal = `Read HKLM\\SOFTWARE\\Vendor\\Product\\Settings\\Deep\\Key ${'context '.repeat(120)}`.trim();
+    expect(goal.length).toBeGreaterThan(900);
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal })).toEqual({ deviceId: DEVICE, goal });
+    const atCap = 'x'.repeat(TROUBLESHOOT_GOAL_MAX_CHARS);
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: atCap })).toEqual({ deviceId: DEVICE, goal: atCap });
+  });
+
+  it('validates params: a uuid device and a 5–2000 char goal, nothing else', () => {
     expect(parseSpecialistParams('device_troubleshooting', params)).toEqual(params);
     expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: 'abc' })).toBeNull();
-    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: 'x'.repeat(501) })).toBeNull();
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: 'x'.repeat(TROUBLESHOOT_GOAL_MAX_CHARS + 1) })).toBeNull();
     expect(parseSpecialistParams('device_troubleshooting', { deviceId: 'nope', goal: 'Outlook crashes' })).toBeNull();
     expect(parseSpecialistParams('device_troubleshooting', { ...params, extra: 1 })).toBeNull();
     expect(specialistParamsError('device_troubleshooting', {})).toMatch(/deviceId/);

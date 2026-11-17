@@ -76,7 +76,7 @@ vi.mock('../db/schema', () => ({
   backupProviderDevices: { id: 'bpd.id', orgId: 'bpd.org_id', connectionId: 'bpd.connection_id', customerId: 'bpd.customer_id', provider: 'bpd.provider', portalShowProviderName: 'bpd.portal_show_provider_name', vendorDeviceName: 'bpd.vendor_device_name', computerName: 'bpd.computer_name', osType: 'bpd.os_type', accountType: 'bpd.account_type', dataSources: 'bpd.data_sources', status: 'bpd.status', lastSessionAt: 'bpd.last_session_at', lastSuccessAt: 'bpd.last_success_at', selectedBytes: 'bpd.selected_bytes', usedBytes: 'bpd.used_bytes', errorsCount: 'bpd.errors_count', breezeDeviceId: 'bpd.breeze_device_id' },
   backupProviderCustomers: { id: 'bpc.id', vendorCustomerName: 'bpc.vendor_customer_name' },
   backupProviderConnections: { id: 'bpn.id', partnerId: 'bpn.partner_id', isActive: 'bpn.is_active', lastSyncAt: 'bpn.last_sync_at', syncIntervalMinutes: 'bpn.sync_interval_minutes' },
-  backupProviderDeviceHistory: { providerDeviceId: 'bpdh.provider_device_id', day: 'bpdh.day', status: 'bpdh.status' },
+  backupProviderDeviceHistory: { providerDeviceId: 'bpdh.provider_device_id', day: 'bpdh.day', status: 'bpdh.status', lastSuccessAt: 'bpdh.last_success_at' },
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -431,6 +431,22 @@ describe('listBackupHealthRows — 28-day history', () => {
     expect(rows[0]!.history28d).toHaveLength(28);
     expect(rows[0]!.history28d.at(-1)).toEqual({ day: '2026-09-15', status: null });
     expect(rows[0]!.history28d.at(-2)).toEqual({ day: '2026-09-14', status: 'failed' });
+  });
+
+  it('does not paint re-polled days green when no session ran on them (#12025)', async () => {
+    // Last success Mar 23; the sync re-read that snapshot every day since.
+    const stale = '2026-03-23T02:00:00.000Z';
+    queue(
+      [], [providerRow({ lastSessionAt: stale, lastSuccessAt: stale })],
+      ['2026-09-12', '2026-09-13', '2026-09-14', '2026-09-15'].map((day) => ({
+        providerDeviceId: PROVIDER_ROW, day, status: 'completed', lastSuccessAt: stale,
+      })),
+    );
+    const { rows } = await listBackupHealthRows({ orgIds: [ORG_A] }, { page: { limit: 10 }, now: NOW });
+    const cells = rows[0]!.history28d;
+    expect(cells.filter((c) => c.status === 'completed')).toHaveLength(0);
+    expect(cells.at(-2)).toEqual({ day: '2026-09-14', status: 'no_backups' });
+    expect(cells.at(-1)).toEqual({ day: '2026-09-15', status: null });
   });
 
   it('folds first-party jobs into the worst status per UTC day', async () => {

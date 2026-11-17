@@ -149,6 +149,18 @@ describe('specialistResultsForTurn: analysis runs (#11845)', () => {
     })]);
   });
 
+  it('carries chain_depth on a delivered analysis run', async () => {
+    h.rows.ai_agent_runs = [run('run-a', { profile: 'analysis', chainDepth: 2, outcome: { analysis: OUTCOME } })];
+    const turn = await specialistResultsForTurn(input);
+    expect(turn?.results[0]).toMatchObject({ runId: 'run-a', chainDepth: 2 });
+  });
+
+  it('does not set chainDepth on a non-analysis run', async () => {
+    h.rows.ai_agent_runs = [run('run-t', { chainDepth: 3 })];
+    const turn = await specialistResultsForTurn(input);
+    expect(turn?.results[0]).not.toHaveProperty('chainDepth');
+  });
+
   it('an outcome that fails the schema becomes null, never a throw', async () => {
     h.rows.ai_agent_runs = [run('run-a', { profile: 'analysis', outcome: { analysis: { summary: 42 } } })];
     expect((await specialistResultsForTurn(input))?.results[0]).toMatchObject({ analysis: null, summary: 'Summary of run-a' });

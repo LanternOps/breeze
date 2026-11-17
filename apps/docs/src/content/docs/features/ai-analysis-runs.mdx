@@ -7,8 +7,8 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 AI agents can export data, run code against it in an isolated workspace, and produce findings plus downloadable files. The run page records what happened and the files produced.
 
-<Aside type="caution" title="Background launches from chat are disabled">
-  Chat cannot start background analysis runs in this version. Delegating a user's request to an agent requires a separate authorization design that preserves the user's access restrictions. Preconfigured AI agent execution and historical run results remain available.
+<Aside type="note" title="Starting an analysis from chat">
+  Wisp starts analysis runs from chat as a specialist (see [Wisp specialists](/features/wisp/#specialists) and [Investigations from Wisp chat](#investigations-from-wisp-chat) below). The separate `workspace_launch_analysis` chat tool stays off.
 </Aside>
 
 <Aside type="caution" title="This runs on rented compute, and it is off until you say otherwise">
@@ -37,9 +37,11 @@ An analysis that Wisp launches covers one of three scopes:
 
 A launch that names no scope is refused.
 
-A site or organization is expanded to its active devices when the run starts, and that list is fixed: a device added afterwards is not read. If the Wisp grant reaches only some sites, the list holds only devices in those sites. The list is limited to 1000 devices by default (the `analysisMaxFrameDevices` agent limit, 50 to 5000), and a larger one is refused: scope the analysis to a site instead.
+A site or organization is expanded to its active devices when the run starts, and that list is fixed: a device added afterwards is not read. The run page shows the scope with the count as of launch, for example "Whole organization (412 devices as of launch)". If the Wisp grant, or the organization's membership in it, is limited to certain sites, the launch is refused instead of getting a narrower list. The list is limited to 1000 devices by default (the `analysisMaxFrameDevices` agent limit, 50 to 5000), and a larger one is refused: scope the analysis to a site instead.
 
-The datasets a run may export are also fixed when it starts, from what the Wisp grant's owner may read at that moment. Security-category event logs also need `devices:execute`; without it they are left out of the export, and the run is told so.
+The datasets a run may export are also fixed when it starts, from what the Wisp grant's owner may read at that moment. Most need `devices:read`; `alerts` needs `alerts:read`. Security-category event logs and user account changes in `change_log` also need `devices:execute`; without it they are left out of the export, and the run is told so.
+
+A run that continues an earlier analysis gets the files that earlier runs in the same chain exported or produced, checked again when it starts. A file is left out, and the run is told how many and why, when it has expired, when its dataset is no longer one this run may export, or when the run that produced it could read a dataset or security category that this run cannot. The same rule applies to the earlier run's summary and findings: when the earlier run could read something this run cannot, the new run gets only the earlier goal. A Wisp grant limited to certain sites cannot launch a continuation at all.
 
 ## Configured agent access
 
@@ -56,6 +58,44 @@ The run page is the audit surface. Besides the usual trigger and status, an anal
 - **Compute** — the sandbox's own cost, tracked separately from the run's model/token cost.
 
 Files are kept for **30 days** and then deleted. A ticket or report you attached one to keeps the record; once a file expires, it shows as expired rather than as a broken link.
+
+A run that is part of an investigation (below) also lists **This investigation**: every step of the chain, with its goal, status, cost and a link to its own run page.
+
+## Investigations from Wisp chat
+
+Ask Wisp to analyze something across a customer, a site or a few devices, and it launches an `analysis` specialist with that scope: `org` for the whole customer, `site`, or `devices`. See [What a run covers](#what-a-run-covers) for how the scope is fixed at launch and the 1,000-device default cap.
+
+The run works in the background. When it settles, its result comes back into the same conversation on Wisp's next turn: the summary, the findings and the output files, which you can open from that conversation. The chat run card shows which step of the investigation the run is, its goal, how many findings it has (and how many are high), what it cost once it finished, and its output files. An output file that has expired is left off the card.
+
+### Continuing an analysis
+
+Each step can continue from an earlier one. Wisp passes the earlier run's id as `continueFromRunId`, and the new run can use every file the investigation has exported or produced so far without exporting the data again. Wisp is told to continue when you follow up on the same data ("now count those by operating system") and to start a fresh analysis when the question changes.
+
+- Carried files are checked again when each step starts, under the rules in [What a run covers](#what-a-run-covers). A file that is left out is reported to the run with the reason, and the run is told to say so in its summary.
+- Files expire 30 days after they were created. Continuing does not extend that.
+- Any Wisp conversation under the same grant can continue an investigation. A run started under another grant cannot be continued.
+
+### What a run is told about each export
+
+Each export's result carries notes on how it was read: the time window used (30 days when none is given, 180 days at most), filters the dataset does not take, datasets that are current state and ignore the window, rows that were withheld for lack of a permission, and keys for dropping repeated rows. The run is told to read them, and to report withheld rows as withheld rather than as none. The per-dataset rules are listed under `export_dataset` in the [AI tools reference](/features/ai-tools/#administration).
+
+- Service and scheduled task changes in `change_log` can name the account a service or task runs as. They are **not** behind the user account changes permission; only `user_account` changes are.
+- `patch_attempts` reads patch job results by creation time, so a long window on a busy server can end before every row is read. The result then says `truncated`; the run is told to narrow the time range and export again.
+- A refused filter (`invalid_filter`) or window (`invalid_time_range`) names the problem, and the run is told to correct it and try once.
+
+### Limits and budget
+
+An investigation stops at whichever of these comes first:
+
+| Limit | Default | Agent limit |
+|---|---|---|
+| Continuations deep (the first run is step 1, so 8 allows step 9) | 8 | `analysisMaxChainDepth` |
+| Runs in the investigation | 12 | `analysisMaxChainRuns` |
+| Total spend | $6.00 | `analysisMaxChainBudgetCents` |
+
+Spend is model cost plus sandbox compute. A run still in progress counts at its full per-run allowance (175 ¢ by default) until it settles, so starting several steps at once reaches the spend limit sooner. A refused launch names the limit that stopped it; start a fresh analysis to go on.
+
+**The Wisp grant's daily budget usually stops an investigation first.** Each analysis launch is checked against an estimate of 100 ¢, and the default daily budget for a grant on the Pro plan is 200 ¢, so a default grant admits about two analysis launches a day alongside its other work. For longer investigations a partner admin raises the grant's budget under **Budget and check-in settings** in the Wisp header, up to 5x the plan default (see [Wisp budgets](/features/wisp/#budgets)).
 
 ## Attaching a file to a ticket
 

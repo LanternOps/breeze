@@ -48,6 +48,24 @@ describe('statusBuckets', () => {
     for (const bucket of statusBuckets(zeroStatus() as never)) expect(bucket.percent).toBe(0);
   });
 
+  it('takes the per-row bucket counts when the API sends them, so overdue rows leave Completed (#12025)', () => {
+    const byStatusBucket = Object.fromEntries(BACKUP_STATUS_BUCKET_IDS.map((id) => [id, 0])) as Record<string, number>;
+    const buckets = statusBuckets(
+      { ...zeroStatus(), completed: 9 } as never,
+      { ...byStatusBucket, completed: 6, overdue: 3 } as never,
+    );
+    const byId = Object.fromEntries(buckets.map((b) => [b.id, b]));
+    expect(byId.completed!.count).toBe(6);
+    expect(byId.completed!.percent).toBe(67);
+    expect(byId.overdue!.count).toBe(3);
+    expect(byId.overdue!.percent).toBe(33);
+  });
+
+  it('omits the `overdue` bucket when it is empty', () => {
+    const byStatusBucket = Object.fromEntries(BACKUP_STATUS_BUCKET_IDS.map((id) => [id, 0])) as Record<string, number>;
+    expect(statusBuckets(zeroStatus() as never, byStatusBucket as never).some((b) => b.id === 'overdue')).toBe(false);
+  });
+
   it('keeps the five named buckets even at zero, so the bar group never reflows', () => {
     expect(statusBuckets(zeroStatus() as never).map((b) => b.id)).toEqual([
       'no_backups', 'completed', 'completed_with_errors', 'in_progress', 'unsuccessful',

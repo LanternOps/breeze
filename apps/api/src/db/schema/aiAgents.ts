@@ -217,6 +217,16 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   requestedByRunId: uuid('requested_by_run_id'),
   parentGrantRevisionId: uuid('parent_grant_revision_id'),
   depth: smallint('depth').notNull().default(0),
+  // Wisp analysis sessions W03: analysis-chain lineage. A continuation carries
+  // the run it continues, the chain's root and its depth (>= 1); a root is
+  // depth 0 with both NULL (`ai_agent_runs_chain_chk`). The (pointer, org_id)
+  // self-FKs and the two partial indexes are SQL-ONLY
+  // (migrations/2027-01-27-130000-ai-analysis-run-lineage.sql): they use
+  // `ON DELETE SET NULL (<pointer>)`, which Drizzle cannot model — the same
+  // reason as `requestedByRunId` above.
+  continuedFromRunId: uuid('continued_from_run_id'),
+  chainRootRunId: uuid('chain_root_run_id'),
+  chainDepth: smallint('chain_depth').notNull().default(0),
   // Spec §6.2: no prompt registry exists yet, so runs 1 and 4 of one task may
   // use different released prompts. That drift is accepted but must be
   // RECORDED. `resolvedModel` because runLoop.ts may fall back to the org's

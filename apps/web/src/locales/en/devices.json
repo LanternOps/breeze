@@ -1465,6 +1465,19 @@
         "unknown": "an unrecognized error occurred"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Blocked by a network filter",
+      "titleUntrustedCertificate": "Server certificate not trusted",
+      "webFilter": "A network security filter on this device's network is answering in place of the Breeze server ({{locationHost}}). This is usually an ISP gateway security feature, a firewall web filter, or a network sign-in page.",
+      "captivePortal": "This device's network is holding connections at a sign-in (captive portal) page.",
+      "plaintextUnknown": "Something on this device's network answered the Breeze connection with plain HTTP instead of TLS.",
+      "untrustedCertificate": "The connection to the Breeze server presented a certificate this device does not trust (issued by {{certIssuer}}). This is usually TLS inspection by a firewall or proxy, a certificate problem on a self-hosted server, or an out-of-date trusted-root store on this device. Breeze will not bypass it.",
+      "viaEch": "Currently reachable via Encrypted Client Hello.",
+      "cleared": "Was blocked from {{from}} to {{to}}.",
+      "lastKnown": "Last reported {{time}}. The device has not reported since, so this may no longer apply.",
+      "howToFix": "How to fix",
+      "noDetail": "no detail"
+    },
     "logShipping": {
       "label": "Log shipping",
       "state": {
@@ -1688,6 +1701,7 @@
       "lastSeen": "Last Seen",
       "serial": "Serial",
       "productSku": "Product Number",
+      "hardwareModel": "Model",
       "assetTag": "Asset Tag",
       "location": "Location",
       "source": "Source"
@@ -1706,6 +1720,7 @@
       "lastSeen": "Sort by last seen time",
       "serial": "Sort by serial number",
       "productSku": "Sort by product number",
+      "hardwareModel": "Sort by model",
       "assetTag": "Sort by asset tag",
       "location": "Sort by location",
       "source": "Sort by source"
@@ -1863,6 +1878,9 @@
       "unmanagedInstall": "Breeze Assist was not installed by Breeze and deploy is off, so the agent leaves it alone.",
       "unknown": "Breeze Assist is enabled but not installed."
     },
+    "controlPlaneBlockBadge": "Network filter",
+    "controlPlaneBlockBadgeCertificate": "Certificate not trusted",
+    "controlPlaneBlockLastKnownTooltip": "Last reported {{time}}; the device has not reported since.",
     "agentVersionRelation": {
       "equalTooltip": "Matches the effective version {{version}}",
       "aheadTooltip": "Ahead of pin {{version}}",

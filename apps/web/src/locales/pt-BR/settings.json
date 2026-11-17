@@ -1010,6 +1010,7 @@
     "noLogo": "Sem logotipo",
     "uploadImage": "Enviar imagem",
     "imageHelp": "PNG, JPEG ou WebP, até 400 KB após a codificação; imagens grandes são reduzidas para 800 px.",
+    "logoLowRes": "Este logotipo tem {{width}} × {{height}} px. Relatórios, orçamentos e faturas o imprimem com até cerca de 64 mm (2,5 pol) de largura, então ele ficará borrado na impressão. Envie uma versão com pelo menos 600 px no lado maior.",
     "invalidSavedLogo": "Os dados salvos do logotipo são inválidos. Remova-os ou envie uma nova imagem.",
     "pasteUrl": "Ou cole a URL de uma imagem",
     "customCss": "CSS personalizado",
@@ -3348,7 +3349,8 @@
           "turnCount": "Turnos",
           "summary": "Resumo",
           "computeCost": "Computação",
-          "computeEstimated": "(estimado)"
+          "computeEstimated": "(estimado)",
+          "scope": "Escopo"
         },
         "flags": {
           "budgetExceeded": "Orçamento excedido",
@@ -3434,6 +3436,24 @@
           "partialNote": "Contabilização parcial enquanto a autorização de política não supervisionada está desativada — isso pode subestimar a exposição real.",
           "unavailable": "Nenhuma política de agente ativa para a organização desta execução.",
           "loading": "Carregando orçamento…"
+        },
+        "scope": {
+          "org_one": "Organização inteira ({{count}} dispositivo no momento do início)",
+          "org_other": "Organização inteira ({{count}} dispositivos no momento do início)",
+          "site_one": "Site {{name}} ({{count}} dispositivo no momento do início)",
+          "site_other": "Site {{name}} ({{count}} dispositivos no momento do início)",
+          "siteUnnamed_one": "Um site ({{count}} dispositivo no momento do início)",
+          "siteUnnamed_other": "Um site ({{count}} dispositivos no momento do início)",
+          "devices_one": "{{count}} dispositivo selecionado",
+          "devices_other": "{{count}} dispositivos selecionados"
+        },
+        "chain": {
+          "title": "Esta investigação",
+          "description": "Cada etapa continuou a partir de uma anterior e pôde usar os arquivos produzidos pelas etapas anteriores.",
+          "step": "Etapa {{step}}",
+          "current": "Esta execução",
+          "open": "Abrir execução",
+          "noGoal": "Nenhum objetivo registrado"
         }
       },
       "triage": {
@@ -8289,6 +8309,10 @@
     "heading": "Plano e recursos",
     "description": "O que seu plano inclui. Recursos bloqueados continuam visíveis para que você veja o que um upgrade acrescenta.",
     "currentPlan": "Plano atual",
+    "changePlan": "Alterar plano",
+    "enrollmentPaused": "O registro de novos dispositivos está pausado: {{active}} de {{limit}} dispositivos.",
+    "enrollmentPausedNoCounts": "O registro de novos dispositivos está pausado porque sua conta atingiu o limite de dispositivos.",
+    "enrollmentPausedChangePlan": "Altere seu plano para adicionar mais.",
     "plans": {
       "free": "Gratuito",
       "starter": "Starter",

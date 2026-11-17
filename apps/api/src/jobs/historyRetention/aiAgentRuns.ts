@@ -14,6 +14,12 @@
  *    deleting the run here would drop the rows those sweepers use to remove
  *    the blobs. The run becomes eligible once they are gone.
  *
+ *  - An analysis chain (`chain_root_run_id`, W03 continuation). A run is kept
+ *    while any run sharing its root (the members, or the root itself) is
+ *    unfinished or finished inside the window, so a live chain is never
+ *    aged out in part. The member guard is served by
+ *    `ai_agent_runs_chain_root_idx`, the root guard by the primary key.
+ *
  * On delete, `ai_agent_fix_watches`, `ai_unattended_exposure` and
  * `ai_alert_verdicts` cascade; op evidence, operator tasks and operations,
  * ticket comments, remediation suggestions and device function assessments
@@ -54,7 +60,14 @@ export const AI_AGENT_RUN_RETENTION_TARGET: RetentionTarget = {
     AND NOT EXISTS (SELECT 1 FROM ai_run_artifacts ra
       WHERE ra.run_id = ai_agent_runs.id AND ra.org_id = ai_agent_runs.org_id)
     AND NOT EXISTS (SELECT 1 FROM ai_run_workspaces rw
-      WHERE rw.run_id = ai_agent_runs.id AND rw.org_id = ai_agent_runs.org_id)`,
+      WHERE rw.run_id = ai_agent_runs.id AND rw.org_id = ai_agent_runs.org_id)
+    AND NOT EXISTS (SELECT 1 FROM ai_agent_runs cm
+      WHERE cm.org_id = ai_agent_runs.org_id
+        AND cm.chain_root_run_id = COALESCE(ai_agent_runs.chain_root_run_id, ai_agent_runs.id)
+        AND (cm.finished_at IS NULL OR cm.finished_at >= ${cutoffIso}::timestamptz))
+    AND NOT EXISTS (SELECT 1 FROM ai_agent_runs cr
+      WHERE cr.id = ai_agent_runs.chain_root_run_id AND cr.org_id = ai_agent_runs.org_id
+        AND (cr.finished_at IS NULL OR cr.finished_at >= ${cutoffIso}::timestamptz))`,
 };
 
 export const AI_AGENT_RUN_TARGETS: ReadonlyArray<HistoryRetentionEntry> = [

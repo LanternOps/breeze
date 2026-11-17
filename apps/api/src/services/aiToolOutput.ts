@@ -52,7 +52,10 @@ type CompactConfig = {
  * chars, runLoop's RUN_SUMMARY_MAX_CHARS) with its next step last.
  */
 const LONG_TEXT_KEYS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
-  get_ai_agent_run: new Set(['summary']),
+  // #11966: `resultSummary` is a step's result, already compacted and bounded
+  // (STEP_RESULT_MAX_CHARS, mcpActionStatus.ts) under the step's own tool. A
+  // second cut here would drop the part the chat was asked about.
+  get_ai_agent_run: new Set(['summary', 'resultSummary']),
 };
 /**
  * A long-text key never drops below this, even in the tighter tiers (where

@@ -1010,6 +1010,7 @@
     "noLogo": "No logo",
     "uploadImage": "Upload image",
     "imageHelp": "PNG, JPEG, or WebP, up to 400 KB after encoding; large images are scaled down to 800 px.",
+    "logoLowRes": "This logo is {{width}} × {{height}} px. Reports, quotes and invoices print it up to about 2.5 in (64 mm) wide, so it will look soft in print. Upload a version at least 600 px on its long side.",
     "invalidSavedLogo": "Saved logo data is invalid. Remove it or upload a new one.",
     "pasteUrl": "Or paste an image URL",
     "customCss": "Custom CSS",
@@ -3348,7 +3349,8 @@
           "turnCount": "Turns",
           "summary": "Summary",
           "computeCost": "Compute",
-          "computeEstimated": "(estimated)"
+          "computeEstimated": "(estimated)",
+          "scope": "Scope"
         },
         "flags": {
           "budgetExceeded": "Budget exceeded",
@@ -3434,6 +3436,24 @@
           "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
           "unavailable": "No active agent policy for this run's organization.",
           "loading": "Loading budget…"
+        },
+        "scope": {
+          "org_one": "Whole organization ({{count}} device as of launch)",
+          "org_other": "Whole organization ({{count}} devices as of launch)",
+          "site_one": "Site {{name}} ({{count}} device as of launch)",
+          "site_other": "Site {{name}} ({{count}} devices as of launch)",
+          "siteUnnamed_one": "One site ({{count}} device as of launch)",
+          "siteUnnamed_other": "One site ({{count}} devices as of launch)",
+          "devices_one": "{{count}} selected device",
+          "devices_other": "{{count}} selected devices"
+        },
+        "chain": {
+          "title": "This investigation",
+          "description": "Each step continued from an earlier one and could use the files earlier steps produced.",
+          "step": "Step {{step}}",
+          "current": "This run",
+          "open": "Open run",
+          "noGoal": "No goal recorded"
         }
       },
       "triage": {
@@ -8289,6 +8309,10 @@
     "heading": "Plan & features",
     "description": "What your plan includes. Locked features stay visible so you can see what an upgrade adds.",
     "currentPlan": "Current plan",
+    "changePlan": "Change plan",
+    "enrollmentPaused": "New device enrollment is paused: {{active}} of {{limit}} devices.",
+    "enrollmentPausedNoCounts": "New device enrollment is paused because your account has reached its device limit.",
+    "enrollmentPausedChangePlan": "Change your plan to add more.",
     "plans": {
       "free": "Free",
       "starter": "Starter",

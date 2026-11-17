@@ -97,7 +97,11 @@ vi.mock('../aiAgents/runService', () => ({
   createAndEnqueueAgentRun: h.createAndEnqueueAgentRun,
   transitionRunStatus: h.transitionRunStatus,
 }));
-vi.mock('../aiAgents/assessmentProfile', () => ({ ASSESSMENT_BUDGET_CENTS_PER_RUN: 25 }));
+vi.mock('../aiAgents/assessmentProfile', async (importOriginal) => ({
+  ASSESSMENT_BUDGET_CENTS_PER_RUN: 25,
+  // #11978: the real trigger-subject parser (parseReason uses it).
+  parseCheckInSubject: (await importOriginal<typeof import('../aiAgents/assessmentProfile')>()).parseCheckInSubject,
+}));
 vi.mock('./budget', async () => ({
   chargeableUnderGrant: h.chargeableUnderGrant,
   notifyBudgetExhaustedOnce: h.notifyBudgetExhaustedOnce,
@@ -1617,6 +1621,16 @@ describe('check_in reason (W07)', () => {
     }
     expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, checkInId: 'not-a-uuid' } } })).toBeNull();
     expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, instruction: '' } } })).toBeNull();
+  });
+
+  // #11978: the trigger subject round-trips; a malformed one is dropped, never the reason.
+  it('round-trips the trigger subject; a malformed subject is dropped, not the reason', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    const subject = { kind: 'run_settled' as const, id: 'abababab-abab-4bab-8bab-abababababab' };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, subject } } })).toEqual({ ...base, reason: { ...reason, subject } });
+    for (const bad of [{ kind: 'run_settled' }, { kind: 'run_settled', id: 'not-a-uuid' }, { kind: 'time', id: subject.id }, { kind: 'bogus', id: subject.id }, 'text', null]) {
+      expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, subject: bad } } })).toEqual({ ...base, reason });
+    }
   });
 
   it('a check_in run is never a first look, even with no earlier assessment', async () => {

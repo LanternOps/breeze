@@ -12,7 +12,7 @@ describe('research contract', () => {
   it('adds the kind, the profile and a v16 snapshot', () => {
     expect(AI_AGENT_KINDS).toContain('research');
     expect(AI_AGENT_RUN_PROFILES).toContain('remediation_research');
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(17);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(18);
     expect(allowedModesForKind('research')).toEqual(['off', 'act']);
   });
 

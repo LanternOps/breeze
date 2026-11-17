@@ -8,6 +8,7 @@
 
 import { db, withSystemDbAccessContext, runAfterDbContextCommit } from '../db';
 import { captureException } from './sentry';
+import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 import { aiSessions, aiMessages, aiToolExecutions, approvalRequests, delegantM365Connections, devices } from '../db/schema';
 import { eq, and, desc, inArray, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -600,6 +601,265 @@ export async function getSessionMessages(sessionId: string, auth: AuthContext) {
 // ============================================
 
 /**
+ * #12079: `ai_tool_executions.error_message` values that close a row as
+ * `rejected` because its approval expired, not because anyone denied it.
+ * `waitForApproval` writes the first on its own timeout; the approval-expiry
+ * reaper (jobs/approvalExpiryReaper.ts) writes the second when the linked
+ * mobile approval request expires. Keep that job's literal in step.
+ */
+export const AI_APPROVAL_TIMED_OUT_MESSAGE = 'Approval timed out';
+export const AI_APPROVAL_REQUEST_EXPIRED_MESSAGE = 'Approval request expired';
+/**
+ * #12084: the wait was settled (new message, interrupt, teardown) before
+ * anyone decided. Not an expiry and not a denial.
+ */
+export const AI_APPROVAL_WAIT_ENDED_MESSAGE = 'Approval wait ended before a decision was made';
+/**
+ * #12084: approved in the moment before the turn was stopped (interrupt, turn
+ * timeout or limit, new message, teardown). The stop wins; it never ran.
+ */
+export const AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE = 'Approved, but the turn stopped before it could run';
+const AI_APPROVAL_POLLING_FAILED_MESSAGE = 'Polling failed';
+
+/** #12084: tries at the close-out before the caller's own close-out takes over. */
+const APPROVAL_CLOSE_OUT_ATTEMPTS = 3;
+
+function isApprovalExpiryMessage(errorMessage: string | null | undefined): boolean {
+  return errorMessage === AI_APPROVAL_TIMED_OUT_MESSAGE || errorMessage === AI_APPROVAL_REQUEST_EXPIRED_MESSAGE;
+}
+
+/** #12079: what a `waitForApproval` that returned `false` knows about why. */
+export interface ApprovalWaitDetail {
+  /**
+   * The stored row says the request expired (this wait's own timeout, or the
+   * approval-expiry reaper). Never means approved.
+   */
+  expired?: boolean;
+  /**
+   * #12084: someone denied it. Set even when the denial landed in the gap
+   * before this wait's close-out, so the card says denied, not expired.
+   */
+  denied?: boolean;
+  /**
+   * #12084: the wait ended undecided but could not close its row, which may
+   * still be pending. The caller's own close-out must write exactly this
+   * message, so the stored row says what the card said.
+   */
+  closeOutMessage?: string;
+}
+
+/** #12084: record why a row reads `rejected`: expired, denied, or neither (settled / stopped / polling failed). */
+function noteRejection(errorMessage: string | null | undefined, detail?: ApprovalWaitDetail): void {
+  if (!detail) return;
+  if (isApprovalExpiryMessage(errorMessage)) {
+    detail.expired = true;
+  } else if (
+    errorMessage !== AI_APPROVAL_WAIT_ENDED_MESSAGE
+    && errorMessage !== AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE
+    && errorMessage !== AI_APPROVAL_POLLING_FAILED_MESSAGE
+  ) {
+    detail.denied = true;
+  }
+}
+
+/**
+ * #12084 review: lock the mobile approval_requests rows linked to an
+ * execution, before the execution row itself. Every writer that touches both
+ * rows in one transaction takes them in this order (request, then execution):
+ * the mobile decide CASes its request and then mirrors onto the execution,
+ * and the approval-expiry reaper expires requests and then their executions.
+ * Must run inside a transaction. Returns the linked request ids.
+ */
+export async function lockLinkedApprovalRequests(executionId: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: approvalRequests.id })
+    .from(approvalRequests)
+    .where(eq(approvalRequests.executionId, executionId))
+    .for('update');
+  return rows.map((r) => r.id);
+}
+
+/**
+ * #12084 review: one audit row for an approval the stop beat. The approve
+ * itself was audited where it was made (the chat route, the mobile decide);
+ * this records that it never ran. Best-effort and after the close-out
+ * commits: the stored rows already say what happened. The org lookup is here,
+ * not in the close-out transaction, so a failure to build the audit row can
+ * never roll back the stop itself.
+ */
+async function auditApprovedButStopped(
+  executionId: string,
+  stopped: { toolName: string; sessionId: string; approvedBy: string | null; linkedRequestIds: string[] },
+): Promise<void> {
+  try {
+    const [owner] = await withSystemDbAccessContext(() =>
+      db
+        .select({ orgId: aiSessions.orgId })
+        .from(aiSessions)
+        .where(eq(aiSessions.id, stopped.sessionId))
+        .limit(1)
+    );
+    await writeAuditEventAsync(requestLikeFromSnapshot({}), {
+      orgId: owner?.orgId ?? null,
+      action: 'ai.tool_approval.stopped',
+      resourceType: 'ai_execution',
+      resourceId: executionId,
+      resourceName: stopped.toolName,
+      actorType: 'system',
+      actorId: null,
+      result: 'failure',
+      errorMessage: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE,
+      details: {
+        executionId,
+        sessionId: stopped.sessionId,
+        approvedBy: stopped.approvedBy,
+        approvalRequestIds: stopped.linkedRequestIds,
+      },
+    });
+  } catch (err) {
+    console.error('[AI] Failed to audit an approval the stop beat:', executionId, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      component: 'ai_approval_stop_audit',
+      executionId,
+    });
+  }
+}
+
+/**
+ * #12084: end an approval wait that saw no decision, in one transaction.
+ *
+ * - The row is closed ONLY if it is still pending (`UPDATE ... WHERE status =
+ *   'pending' RETURNING`, judged by the returned row), so a decision that
+ *   landed after the last poll (an Approve click in the last sleep, a denial,
+ *   the expiry reaper) is never overwritten. A decision still committing holds
+ *   the row lock, so the UPDATE waits for it and then matches nothing.
+ * - Closing the row also expires the linked mobile `approval_requests` row in
+ *   the same transaction. The mobile decide CASes that row first and, when its
+ *   mirror onto this execution misses, still commits "approved"; closing both
+ *   together makes a later mobile click lose its own CAS ("already decided")
+ *   instead of being told approved for an action that will not run.
+ * - When the close-out matches nothing, a fresh read (a new statement, so it
+ *   sees the committed decision) returns that decision. A row never goes back
+ *   to pending, so that read is the row's one outcome. On a timeout with
+ *   budget spent waiting (`honourApproval`) an approval is honoured: the
+ *   caller runs it exactly as if the last poll had seen it. On a settle
+ *   (interrupt, turn timeout or limit stop, new message, teardown) or a zero
+ *   budget the stop wins: the approved row, which only this wait would ever
+ *   run, is moved to rejected with a message that says it was approved but
+ *   the turn stopped, so the stored row matches what ran (nothing). The
+ *   linked mobile request is stored as denied with that message as its
+ *   refusal reason, and one `ai.tool_approval.stopped` audit row is written.
+ * - Locks: the linked `approval_requests` rows first, then the execution row
+ *   (`lockLinkedApprovalRequests`), the order every other writer of both uses.
+ */
+async function closeOutApprovalWait(
+  executionId: string,
+  errorMessage: string,
+  honourApproval: boolean,
+  detail?: ApprovalWaitDetail,
+): Promise<boolean> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const result = await withSystemDbAccessContext(async () => {
+        // Lock order (#12084 review): the linked mobile approval_requests
+        // rows first, then the execution row, as the mobile decide, the
+        // approval-expiry reaper and handleApproval take them. Taking the
+        // execution row first deadlocked with a mobile decide that had
+        // already CAS'd its request and was about to mirror onto this row.
+        // Helper/PAM rows have no approval_requests row; this locks nothing.
+        const linkedRequestIds = await lockLinkedApprovalRequests(executionId);
+
+        const [closed] = await db
+          .update(aiToolExecutions)
+          .set({ status: 'rejected', errorMessage })
+          .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'pending')))
+          .returning({ id: aiToolExecutions.id });
+        if (closed) {
+          if (linkedRequestIds.length > 0) {
+            await db
+              .update(approvalRequests)
+              .set({ status: 'expired' })
+              .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'pending')));
+          }
+          return { kind: 'closed' as const };
+        }
+        if (!honourApproval) {
+          const [stopped] = await db
+            .update(aiToolExecutions)
+            .set({ status: 'rejected', errorMessage: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE })
+            .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'approved')))
+            .returning({
+              sessionId: aiToolExecutions.sessionId,
+              toolName: aiToolExecutions.toolName,
+              approvedBy: aiToolExecutions.approvedBy,
+            });
+          if (stopped) {
+            // The approve stays on the request (decided_* still describe it),
+            // but the row must not read as approved for something that never
+            // ran. Denied with a refusal reason is the existing "approved,
+            // then not applied" shape, which the mobile Recent list and the
+            // approvals inbox render as not approved, with this reason.
+            if (linkedRequestIds.length > 0) {
+              await db
+                .update(approvalRequests)
+                .set({ status: 'denied', refusalReason: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE })
+                .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'approved')));
+              await db
+                .update(approvalRequests)
+                .set({ status: 'expired' })
+                .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'pending')));
+            }
+            return { kind: 'stopped' as const, ...stopped, linkedRequestIds };
+          }
+        }
+        const [row] = await db
+          .select({ status: aiToolExecutions.status, errorMessage: aiToolExecutions.errorMessage })
+          .from(aiToolExecutions)
+          .where(eq(aiToolExecutions.id, executionId))
+          .limit(1);
+        return { kind: 'decided' as const, row };
+      });
+
+      if (result.kind === 'closed') {
+        noteRejection(errorMessage, detail);
+        return false;
+      }
+      if (result.kind === 'stopped') {
+        console.warn('[AI] Approval landed just before the turn stopped; not run:', executionId);
+        await auditApprovedButStopped(executionId, result);
+        return false;
+      }
+      if (result.row?.status === 'approved') return true;
+      if (result.row?.status === 'rejected') {
+        noteRejection(result.row.errorMessage, detail);
+      } else {
+        // Not reachable from the chat flows (only this wait moves a row past
+        // 'approved'); say so rather than return a bare "not approved".
+        console.warn('[AI] Approval close-out found an unexpected row:', executionId, result.row?.status ?? 'missing');
+      }
+      return false;
+    } catch (err) {
+      console.warn(`[AI] Approval close-out attempt ${attempt} failed:`, executionId, err);
+      if (attempt < APPROVAL_CLOSE_OUT_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+        continue;
+      }
+      // The row may still be pending. Nothing runs; the caller's close-out
+      // (same pending guard, this same message) is the last chance to close it.
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        component: 'ai_approval_close_out',
+        executionId,
+      });
+      if (detail) {
+        detail.closeOutMessage = errorMessage;
+        if (isApprovalExpiryMessage(errorMessage)) detail.expired = true;
+      }
+      return false;
+    }
+  }
+}
+
+/**
  * Wait for a tool execution to be approved or rejected.
  * Polls the DB with exponential backoff.
  *
@@ -614,19 +874,39 @@ export async function getSessionMessages(sessionId: string, auth: AuthContext) {
  * timed out" even after the user approved it. System scope lets the internal
  * poll resolve the row by its PK. Wrapping per-query (not the whole loop)
  * keeps each txn short so we never hold a connection idle across the sleeps.
+ *
+ * #12079: `false` alone cannot say whether the request was denied or expired.
+ * A caller that needs the difference passes `detail`; `detail.expired` is set
+ * when the stored row says it expired (this wait's own timeout, or the
+ * approval-expiry reaper). An expired request is still not approved.
+ *
+ * #12084: every way this wait ends without having seen a decision (timeout,
+ * a settle via `signal`, repeated poll errors) goes through one conditional
+ * close-out (`closeOutApprovalWait`), so one row has one outcome. On a
+ * timeout a decision made before the close-out wins, an approval included,
+ * which then returns `true`. On a settle the stop wins and nothing runs. Once
+ * the close-out has closed the row nothing can approve it: `handleApproval`
+ * requires a pending execution row, and the mobile decide requires a pending
+ * `approval_requests` row, which the close-out expires in the same
+ * transaction.
  */
-export async function waitForApproval(executionId: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+export async function waitForApproval(
+  executionId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  detail?: ApprovalWaitDetail,
+): Promise<boolean> {
   const startTime = Date.now();
   let pollInterval = 500;
   let consecutiveErrors = 0;
 
   while (Date.now() - startTime < timeoutMs) {
-    if (signal?.aborted) return false;
+    if (signal?.aborted) break;
 
     try {
       const [execution] = await withSystemDbAccessContext(() =>
         db
-          .select({ status: aiToolExecutions.status })
+          .select({ status: aiToolExecutions.status, errorMessage: aiToolExecutions.errorMessage })
           .from(aiToolExecutions)
           .where(eq(aiToolExecutions.id, executionId))
           .limit(1)
@@ -637,22 +917,19 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
       if (!execution) return false;
 
       if (execution.status === 'approved') return true;
-      if (execution.status === 'rejected') return false;
+      if (execution.status === 'rejected') {
+        noteRejection(execution.errorMessage, detail);
+        return false;
+      }
     } catch (err) {
       consecutiveErrors++;
       console.error(`[AI] Approval poll error (attempt ${consecutiveErrors}):`, err);
       if (consecutiveErrors >= 5) {
-        try {
-          await withSystemDbAccessContext(() =>
-            db
-              .update(aiToolExecutions)
-              .set({ status: 'rejected', errorMessage: 'Polling failed' })
-              .where(eq(aiToolExecutions.id, executionId))
-          );
-        } catch (cleanupErr) {
-          console.error('[AI] Failed to cleanup polling-failed execution:', cleanupErr);
-        }
-        return false;
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+          component: 'ai_approval_poll',
+          executionId,
+        });
+        return closeOutApprovalWait(executionId, AI_APPROVAL_POLLING_FAILED_MESSAGE, !signal?.aborted, detail);
       }
     }
 
@@ -660,19 +937,20 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
     pollInterval = Math.min(pollInterval * 1.5, 3000);
   }
 
-  // Timeout - mark as rejected
-  try {
-    await withSystemDbAccessContext(() =>
-      db
-        .update(aiToolExecutions)
-        .set({ status: 'rejected', errorMessage: 'Approval timed out' })
-        .where(eq(aiToolExecutions.id, executionId))
-    );
-  } catch (err) {
-    console.error('[AI] Failed to mark timed-out execution:', err);
-  }
-
-  return false;
+  // No decision seen. A settle that landed during the last sleep is a settle,
+  // not a timeout: the stop wins over an approval that beat the close-out.
+  // On a timeout the decision that beat the close-out wins, but only when
+  // this wait had a budget to spend: with `timeoutMs <= 0` no poll ran, the
+  // caller's cycle budget is spent (a work-limit stop or a sibling wait spent
+  // it), and the wait is refused at once, as it always was, even for a row
+  // that PAM policy auto-approved before the wait began (#12084 review).
+  const settled = signal?.aborted === true;
+  return closeOutApprovalWait(
+    executionId,
+    settled ? AI_APPROVAL_WAIT_ENDED_MESSAGE : AI_APPROVAL_TIMED_OUT_MESSAGE,
+    !settled && timeoutMs > 0,
+    detail,
+  );
 }
 
 /**
@@ -763,6 +1041,11 @@ export async function handleApproval(
   // after a settle would flip 'rejected' back to a stranded 'approved' that
   // nothing will ever execute — while this function reports success to the
   // UI. Zero rows updated means we lost such a race: report failure honestly.
+  //
+  // #12084 review: lock the linked mobile request first, the order the
+  // wait's close-out and the mobile decide take these rows, so a click
+  // racing the close-out queues behind it instead of deadlocking with it.
+  await lockLinkedApprovalRequests(executionId);
   const [updated] = await db
     .update(aiToolExecutions)
     .set({
@@ -832,7 +1115,7 @@ export async function isIntentBackedExecution(executionId: string): Promise<bool
  * #9431: after a refused `handleApproval`, whether the refusal is because this
  * session's execution was ALREADY decided (in another window, in Approvals, on
  * mobile, or by a timeout) — so the approve route can answer a stale card
- * with "already decided" instead of the generic 404. The CAS in
+ * with "already decided" (or "expired", #12079) instead of the generic 404. The CAS in
  * handleApproval is what refuses the second decision; this only explains it.
  *
  * Null for anything the route must keep answering generically: a missing row,
@@ -847,6 +1130,7 @@ export async function getDecidedExecutionOutcome(
   const [execution] = await db
     .select({
       status: aiToolExecutions.status,
+      errorMessage: aiToolExecutions.errorMessage,
       sessionId: aiToolExecutions.sessionId,
       intentId: aiToolExecutions.intentId,
     })
@@ -862,7 +1146,8 @@ export async function getDecidedExecutionOutcome(
     case 'failed':
       return 'approved';
     case 'rejected':
-      return 'not_approved';
+      // #12079: closed by a timeout, not a denial. Still not approved.
+      return isApprovalExpiryMessage(execution.errorMessage) ? 'expired' : 'not_approved';
     default:
       return null;
   }

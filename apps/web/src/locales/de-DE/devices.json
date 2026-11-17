@@ -1465,6 +1465,19 @@
         "unknown": "ein unbekannter Fehler ist aufgetreten"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Von einem Netzwerkfilter blockiert",
+      "titleUntrustedCertificate": "Serverzertifikat nicht vertrauenswürdig",
+      "webFilter": "Ein Netzwerk-Sicherheitsfilter im Netzwerk dieses Geräts antwortet anstelle des Breeze-Servers ({{locationHost}}). Meist ist das eine Sicherheitsfunktion des Routers des Internetanbieters, ein Webfilter der Firewall oder eine Anmeldeseite des Netzwerks.",
+      "captivePortal": "Das Netzwerk dieses Geräts hält Verbindungen auf einer Anmeldeseite (Captive Portal) fest.",
+      "plaintextUnknown": "Etwas im Netzwerk dieses Geräts hat die Breeze-Verbindung mit unverschlüsseltem HTTP statt TLS beantwortet.",
+      "untrustedCertificate": "Die Verbindung zum Breeze-Server hat ein Zertifikat vorgelegt, dem dieses Gerät nicht vertraut (ausgestellt von {{certIssuer}}). Meist ist das eine TLS-Prüfung durch eine Firewall oder einen Proxy, ein Zertifikatsproblem auf einem selbst gehosteten Server oder ein veralteter Speicher vertrauenswürdiger Stammzertifikate auf diesem Gerät. Breeze umgeht dies nicht.",
+      "viaEch": "Derzeit über Encrypted Client Hello erreichbar.",
+      "cleared": "War von {{from}} bis {{to}} blockiert.",
+      "lastKnown": "Zuletzt gemeldet: {{time}}. Das Gerät hat sich seitdem nicht gemeldet, daher trifft dies möglicherweise nicht mehr zu.",
+      "howToFix": "So beheben Sie das Problem",
+      "noDetail": "keine Angabe"
+    },
     "logShipping": {
       "label": "Log-Übertragung",
       "state": {
@@ -1688,6 +1701,7 @@
       "lastSeen": "Zuletzt gesehen",
       "serial": "Seriennummer",
       "productSku": "Produktnummer",
+      "hardwareModel": "Modell",
       "assetTag": "Asset-Tag",
       "location": "Standort",
       "source": "Quelle"
@@ -1706,6 +1720,7 @@
       "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit",
       "serial": "Nach Seriennummer sortieren",
       "productSku": "Nach Produktnummer sortieren",
+      "hardwareModel": "Nach Modell sortieren",
       "assetTag": "Nach Asset-Tag sortieren",
       "location": "Nach Standort sortieren",
       "source": "Nach Quelle sortieren"
@@ -1863,6 +1878,9 @@
       "unmanagedInstall": "Breeze Assist wurde nicht von Breeze installiert und die Bereitstellung ist aus, daher lässt der Agent es unverändert.",
       "unknown": "Breeze Assist ist aktiviert, aber nicht installiert."
     },
+    "controlPlaneBlockBadge": "Netzwerkfilter",
+    "controlPlaneBlockBadgeCertificate": "Zertifikat nicht vertrauenswürdig",
+    "controlPlaneBlockLastKnownTooltip": "Zuletzt gemeldet: {{time}}; das Gerät hat sich seitdem nicht gemeldet.",
     "agentVersionRelation": {
       "equalTooltip": "Entspricht der effektiven Version {{version}}",
       "aheadTooltip": "Vor dem Pin {{version}}",

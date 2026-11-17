@@ -1010,6 +1010,7 @@
     "noLogo": "Pas de logo",
     "uploadImage": "Télécharger l’image",
     "imageHelp": "PNG, JPEG ou WebP, jusqu’à 400 Ko après encodage ; les grandes images sont réduites à 800 px.",
+    "logoLowRes": "Ce logo fait {{width}} × {{height}} px. Les rapports, devis et factures l’impriment jusqu’à environ 64 mm (2,5 po) de large ; il paraîtra donc flou à l’impression. Importez une version d’au moins 600 px sur son côté le plus long.",
     "invalidSavedLogo": "Les données du logo enregistré sont invalides. Supprimez le logo ou téléversez-en un nouveau.",
     "pasteUrl": "Ou coller une image URL",
     "customCss": "Personnalisé CSS",
@@ -3348,7 +3349,8 @@
           "turnCount": "Tours",
           "summary": "Résumé",
           "computeCost": "Calcul",
-          "computeEstimated": "(estimé)"
+          "computeEstimated": "(estimé)",
+          "scope": "Périmètre"
         },
         "flags": {
           "budgetExceeded": "Budget dépassé",
@@ -3434,6 +3436,24 @@
           "partialNote": "Comptabilisation partielle tant que l'autorisation de politique sans surveillance est désactivée — l'exposition réelle peut être sous-estimée.",
           "unavailable": "Aucune politique d'agent active pour l'organisation de cette exécution.",
           "loading": "Chargement du budget…"
+        },
+        "scope": {
+          "org_one": "Toute l'organisation ({{count}} appareil au lancement)",
+          "org_other": "Toute l'organisation ({{count}} appareils au lancement)",
+          "site_one": "Site {{name}} ({{count}} appareil au lancement)",
+          "site_other": "Site {{name}} ({{count}} appareils au lancement)",
+          "siteUnnamed_one": "Un site ({{count}} appareil au lancement)",
+          "siteUnnamed_other": "Un site ({{count}} appareils au lancement)",
+          "devices_one": "{{count}} appareil sélectionné",
+          "devices_other": "{{count}} appareils sélectionnés"
+        },
+        "chain": {
+          "title": "Cette investigation",
+          "description": "Chaque étape prolongeait une étape précédente et pouvait utiliser les fichiers produits par les étapes antérieures.",
+          "step": "Étape {{step}}",
+          "current": "Cette exécution",
+          "open": "Ouvrir l'exécution",
+          "noGoal": "Aucun objectif enregistré"
         }
       },
       "triage": {
@@ -8289,6 +8309,10 @@
     "heading": "Offre et fonctionnalités",
     "description": "Ce que comprend votre offre. Les fonctionnalités verrouillées restent visibles pour que vous voyiez ce qu’une montée en gamme apporte.",
     "currentPlan": "Offre actuelle",
+    "changePlan": "Changer d’offre",
+    "enrollmentPaused": "L’inscription de nouveaux appareils est suspendue : {{active}} sur {{limit}} appareils.",
+    "enrollmentPausedNoCounts": "L’inscription de nouveaux appareils est suspendue, car votre compte a atteint sa limite d’appareils.",
+    "enrollmentPausedChangePlan": "Changez d’offre pour en ajouter davantage.",
     "plans": {
       "free": "Gratuite",
       "starter": "Starter",

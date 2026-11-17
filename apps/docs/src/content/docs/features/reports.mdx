@@ -25,7 +25,7 @@ Every report has a `type` that determines which data is queried and how the outp
 | `alert_summary` | Alert history with severity breakdown | title, severity, status, triggered/acknowledged/resolved timestamps, rule name |
 | `compliance` | Device health and compliance posture | hostname, OS, status, last seen, compliance flag, identified issues |
 | `performance` | Aggregated CPU, RAM, and disk metrics per device | avg/max CPU %, avg/max RAM %, avg/max disk % |
-| `executive_summary` | High-level fleet overview with device counts, alert stats, OS distribution, and site breakdown (see [Executive Summary Report](#executive-summary-report)) | online/offline totals, health %, critical/high alert counts, resolution rate |
+| `executive_summary` | High-level fleet overview with device counts, alert stats, OS distribution, and site breakdown (see [Executive Summary Report](#executive-summary-report)) | device counts by status, share of devices seen in the last 7 days, critical/high alert counts, resolution rate, reporting period |
 | `security_compliance_posture` | Per-control security and compliance evidence for one organization, built for cyber-insurance applications and vendor security questionnaires | EDR/AV coverage, disk encryption %, firewall %, patch currency %, password policy, local-admin exposure, MFA/PAM posture, backup, DNS filtering, optional CIS pass-rate (see [Security & Compliance Posture Report](#security--compliance-posture-report)) |
 | `identity_access_review` | A month of Microsoft 365 sign-in and identity activity: identity inventory, conditional-access policy posture, dormant accounts, admin sign-ins, MFA registration status, and which remote-access client (if any) was running on each device | interactive sign-in counts, conditional-access coverage, dormant-account list, admin sign-in detail, MFA registration rate |
 | `vulnerability_management` | Findings-level vulnerability detail: open vulnerabilities, accepted/mitigated exceptions, remediation ranking, and vulnerabilities that are actively exploited in the wild or have a high exploit probability | open/accepted/mitigated counts, remediation ranking, known-exploited and high-probability findings |
@@ -63,7 +63,7 @@ The `config.dateRange` object supports preset shortcuts or custom boundaries:
 | `last_90_days` | Data from the past 90 days |
 | `custom` | Use the explicit `start` and `end` ISO date strings |
 
-A preset is a rolling window evaluated when each run generates, so a weekly report with `last_7_days` covers the seven days before that run. Explicit `start`/`end` values take precedence over a preset. In the Executive Summary the window bounds the alert figures (alerts in window, severity counts, resolution rate); the device figures are a snapshot of the fleet at generation time.
+A preset is a rolling window evaluated when each run generates, so a weekly report with `last_7_days` covers the seven days before that run. Explicit `start`/`end` values take precedence over a preset. In the Executive Summary the window bounds the alert figures (alerts in the period, severity counts, resolution rate, and the named critical and high alerts), and the PDF prints the period. The device status counts are a snapshot of the fleet at generation time; the headline score uses the 7 days before generation (see [Executive Summary Report](#executive-summary-report)).
 
 ### Filters
 
@@ -84,6 +84,17 @@ The `config.filters` object narrows the data:
 | `csv` | Comma-separated values (default) |
 | `pdf` | Formatted PDF document |
 | `excel` | Excel spreadsheet (.xlsx) |
+
+#### PDF page size, dates and letterhead
+
+Every report PDF follows your partner's document conventions, whether it is downloaded in Breeze, downloaded from the portal, or attached to a scheduled email:
+
+- **Page size** is the **Page size** (Letter or A4) set under **Settings → Billing → Documents**, the same setting your quotes and invoices use. It starts as Letter until you change it.
+- **Dates** follow the partner **date format** (`MM/DD/YYYY` prints "Nov 9, 2026", `DD/MM/YYYY` prints "9 Nov 2026", `YYYY-MM-DD` prints "2026-11-09") and the **time format** (12-hour or 24-hour). The month is spelled out so a date reads the same in every country.
+- **The generated time** carries its timezone (for example "Generated Nov 9, 2026, 12:06 PM EST"), and every report states its period as one range of UTC calendar days, labelled as such ("Reporting period Oct 10, 2026 – Nov 9, 2026 (UTC)"). Reports cut their periods on UTC day boundaries, so a report generated late in the evening in the Americas can show a period ending on the next day's date; the label says why. Business reports (SLA, technician time, AI usage, quote win rate, profitability) name the timezone their period is measured in instead.
+- **The header** is a white letterhead with your logo and a brand-colour rule under it when a logo is uploaded, and your brand colour with your name in white when there is none. A logo needs at least 600 px on its long side to print sharply; the Branding tab warns when it is smaller.
+
+Threat Detection Review and Vulnerability Management runs you start with **Generate** (no service deliverable) cover the same window: the report's explicit dates, else its rolling preset (last 7, 30 or 90 days), else the 30 days ending on the generation date. A scheduled Vulnerability Management run with no service deliverable covers one calendar month ending on the run date, and says so on the report. If a report's stored dates cannot be read, a Generate run falls back to that one-month window instead of failing.
 
 ### Schedule Details and Email Recipients
 
@@ -279,6 +290,12 @@ The PDF also includes a **Recommended actions** section generated from whichever
 ## Executive Summary Report
 
 The **Executive Summary** report (`executive_summary`) is built for handing to a customer at a quarterly business review. Its PDF leads with a designed cover: a fleet-health scorecard, device and alert metrics, OS and site composition, and a **Recommended actions** section -- the same trend-aware, branded cover treatment as the [Security & Compliance Posture](#security--compliance-posture-report) report, including the partner logo when [branding](/features/branding/) is configured and a score-change chip when a prior run exists to compare against.
+
+- **Headline score: fleet availability.** The share of managed devices that were online when the report ran or reported in during the 7 days before it. A report run after hours, when laptops are switched off, still scores a fleet that checked in during the week. A run stored before this scoring was introduced measured the share online at the moment the report ran; its cover keeps that wording, and the score-change chip compares only runs that measured the same thing. A run with no managed devices has no score, and is not used as the baseline for the next run's chip or email trend line.
+- **Every managed device is accounted for.** Online, offline and every other status (in maintenance, updating, quarantined, pending enrollment) are listed, so the rows add up to the managed-device total. These counts are a snapshot at generation and are shown as informational; only the 7-day figure is judged against its target.
+- **Reporting period.** The title block prints the period the alert figures cover. With no date range configured it says the figures cover all recorded alerts.
+- **Notable alerts.** Up to five critical and high alerts from the period are named (critical first, then most recent), with device, date and status, as space on the page allows. A device is named only when it is in the report's organization (and, for a site-restricted report, at one of its sites); a line counts the rest. Recommended actions that do not fit are counted the same way.
+- **Fleet composition** appears only when there is something to break down (more than one operating system or more than one site) and there is room for it after the notable alerts and recommended actions. Long lists end in an "other" row that keeps the device count.
 
 ---
 

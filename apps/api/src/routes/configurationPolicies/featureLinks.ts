@@ -82,12 +82,17 @@ import { AutomationReferenceAuthorizationError } from '../../services/automation
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
 import { checkSecurityRuleSetsWrite } from './securityRuleSetGate';
+import {
+  uncollectableComplianceRegistryPathMessage,
+  uncollectableComplianceRegistryPaths,
+} from '../agents/policyProbeSafety';
 import { withoutFeatureLinkAuthority } from '../../services/securityScanQuarantineAuthority';
 import type { SensitiveDataAuthorityValues } from '../../services/sensitiveDataPolicyAuthority';
 
 /**
- * 400 body when two compliance rule sets in the link share a name, or a name
- * is longer than 200 characters, else null.
+ * 400 body when two compliance rule sets in the link share a name, a name
+ * is longer than 200 characters, or a registry_check names a path the agent
+ * never collects (#11976), else null.
  * A rule set is identified by (feature link, name) across saves: the
  * evaluator's persisted state, the due check and the compliance alert all key
  * on it, so two with one name would share a state row and an alert. The rest
@@ -115,6 +120,16 @@ function complianceNamesRefusal(settings: unknown) {
       error: overlongComplianceItemNameMessage(overlong[0]!),
       code: 'COMPLIANCE_RULE_SET_NAME_TOO_LONG' as const,
       names: overlong,
+    };
+  }
+  // The probe builder drops these paths, so the rule would report "Registry
+  // value not found" on every evaluation.
+  const uncollectable = uncollectableComplianceRegistryPaths(settings);
+  if (uncollectable.length > 0) {
+    return {
+      error: uncollectableComplianceRegistryPathMessage(uncollectable[0]!),
+      code: 'COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED' as const,
+      paths: uncollectable,
     };
   }
   return null;

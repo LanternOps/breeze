@@ -126,7 +126,9 @@ Decommissioned devices are never matched, and Microsoft 365 backup accounts are 
 
 Cove and Axcient connections sync **every 30 minutes**; NinjaOne SaaS Backup connections sync **every 60 minutes**. A connection whose login the provider rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
 
-Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. History older than 60 days is pruned.
+Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. A day is green only if a successful backup ran that day. A day Breeze checked with no new backup shows as **No backups** (orange), even when the device's last backup succeeded. A grey day means Breeze did not check the device that day. Today stays grey until a backup lands, because the day's backup may not have run yet. History older than 60 days is pruned.
+
+In the backup health view, any device (Breeze or provider) whose last backup completed but has no successful backup in the last 48 hours shows **No recent backup** in the Status column, with the date of its last success. The *Status* summary counts it under **No recent backup** instead of **Completed**.
 
 Linked endpoints raise **device alerts**. Microsoft 365 and Google Workspace backup workloads, including Cove Microsoft 365 accounts, raise **organization-level alerts** with no device, titled with the workload and customer name (or organization name). Both use the same conditions and severities:
 

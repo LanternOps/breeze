@@ -542,8 +542,26 @@ describe('the real producer and the real handler (#11845 review)', () => {
     const staged = row!.stagedInputs!;
     expect(staged.deviceIds).toContain(t.device.id);
     expect(staged.scope).toEqual({ kind: 'org', siteId: null, deviceCount: staged.deviceIds.length });
-    expect(staged.exportGrants!.datasets).toContain('event_logs');
-    expect(Array.isArray(staged.exportGrants!.sensitiveGates)).toBe(true);
+    // Exact, derived from the setup: the grantor's role and the grant's pinned
+    // revision both hold devices:read and devices:execute (PERMS), and the
+    // ceiling is their intersection. resolveExportGrants therefore grants every
+    // devices:read dataset in EXPORT_DATASET_REQUIREMENTS declaration order,
+    // and holds both declared gates (each needs devices:execute):
+    // security_events (event_logs) and user_account_changes (change_log).
+    // `alerts` needs alerts:read, which PERMS does not hold, so it is absent.
+    // A new dataset or gate must change this literal on purpose.
+    expect(staged.exportGrants).toEqual({
+      datasets: [
+        'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
+        'metrics', 'vulnerabilities', 'custom_fields',
+        // W04: the reliability datasets, each devices:read.
+        'reliability_scores', 'reliability_history', 'reliability_events',
+        'boot_performance', 'hardware_events', 'service_checks',
+        // W05: devices:read (alerts is alerts:read, see above).
+        'patch_state', 'patch_attempts', 'change_log',
+      ],
+      sensitiveGates: ['security_events', 'user_account_changes'],
+    });
   });
 
   it('W02: a chat launch that names no scope is refused before any run row', async () => {

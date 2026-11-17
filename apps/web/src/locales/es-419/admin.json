@@ -234,6 +234,7 @@
     "thirdPartyCatalog": {
       "title": "Catálogo de paquetes de terceros",
       "description": "Metadatos seleccionados por Breeze para software de terceros detectado por winget en los agentes.",
+      "scopeNote": "Este catálogo solo aporta un nombre descriptivo, el proveedor, la categoría y la gravedad predeterminada de un parche de terceros que informa un dispositivo. No decide qué aplicaciones se actualizan, y las aplicaciones que no aparecen aquí igualmente figuran en Parches. Las actualizaciones provienen de las fuentes de parches de una política de configuración, de un anillo de actualización y de lo que winget, Chocolatey o Homebrew informan en el dispositivo. Las instalaciones de winget por usuario se detectan, pero nunca se actualizan.",
       "totalEntries": "Entradas totales:",
       "refresh": "Actualizar",
       "addPackage": "Agregar paquete",

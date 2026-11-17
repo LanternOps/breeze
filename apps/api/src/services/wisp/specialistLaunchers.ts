@@ -24,10 +24,18 @@ import { devices } from '../../db/schema/devices';
 import { sites } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 import { getAiAgentSweepQueue, getSweepOccurrenceJobId } from '../../jobs/aiAgentSweepScheduler';
-import { admitAnalysisRun } from '../aiAgents/analysisAdmission';
+import { admitAnalysisRun, type AdmitAnalysisRunInput } from '../aiAgents/analysisAdmission';
+import {
+  analysisContinuationOf,
+  buildAnalysisContinuationSeed,
+  chainRootOf,
+  deriveChainHandles,
+  type AnalysisContinuationRefusal,
+} from '../aiAgents/analysisContinuation';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { ensureResearchAgent } from '../aiAgents/researchProvisioning';
 import { ensureTroubleshootAgent, TroubleshootBaselineConflictError } from '../aiAgents/troubleshootProvisioning';
+import { TROUBLESHOOT_GOAL_MAX_CHARS } from '../aiAgents/troubleshootProfile';
 import { createAndEnqueueAgentRun, GrantDepthExceededError } from '../aiAgents/runService';
 import { effectiveSchedule } from '../aiAgents/scheduleMerge';
 import { resolveEffectiveSchedulesForPartner } from '../aiAgents/scheduleService';
@@ -116,6 +124,9 @@ export const analysisParamsSchema = z.strictObject({
   scope: z.enum(['devices', 'site', 'org']).optional(),
   deviceIds: z.array(z.uuid()).min(1).max(200).optional(),
   siteId: z.uuid().optional(),
+  // Wisp analysis sessions W03 (C1): continue a settled analysis run under the
+  // same grant. Its files are derived server-side; no parameter names a handle.
+  continueFromRunId: z.uuid().optional(),
 }).superRefine((params, issue) => {
   // Contradictory params are refused with a readable detail, never silently
   // dropped: an `org` analysis that quietly ignored a `siteId` would read a
@@ -153,7 +164,7 @@ export const researchParamsSchema = z.strictObject({
  */
 export const troubleshootParamsSchema = z.strictObject({
   deviceId: z.uuid(),
-  goal: z.string().trim().min(5).max(500),
+  goal: z.string().trim().min(5).max(TROUBLESHOOT_GOAL_MAX_CHARS),
   continueFromRunId: z.uuid().optional(),
 });
 
@@ -407,6 +418,18 @@ async function sweepAgentRefusal(orgId: string): Promise<PrerequisiteRefusal | n
 }
 
 /**
+ * The continuation refusal a chat caller may see. "Under another grant" and
+ * "not an analysis run" would confirm that a run the caller may not be allowed
+ * to see exists, so both read as not_found, before AND after approval. The
+ * precise reason is for the server log only.
+ */
+function callerVisibleContinuationRefusal(refusal: AnalysisContinuationRefusal): AnalysisContinuationRefusal {
+  return refusal === 'analysis_continuation_other_grant' || refusal === 'analysis_continuation_wrong_kind'
+    ? 'analysis_continuation_not_found'
+    : refusal;
+}
+
+/**
  * The cheap, read-only prerequisite each kind needs before it could launch —
  * the same checks its launcher makes, without enqueueing, admitting or
  * provisioning anything. Both the chat gate
@@ -427,6 +450,16 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
   // site allowlist) at launch.
   analysis: async ({ orgId, params }) => {
     const parsed = analysisParamsSchema.parse(params);
+    // W03: what can be checked without the grant (the launcher re-checks with it).
+    if (parsed.continueFromRunId) {
+      const cont = await analysisContinuationOf({ orgId, runId: parsed.continueFromRunId });
+      if (!cont.ok) {
+        // Without the grant, "another grant" and "not an analysis run" would
+        // describe a run the caller may not be able to see: answer not_found.
+        // The launcher re-checks with the grant and answers the same way.
+        return { refused: 'continuation_refused', detail: callerVisibleContinuationRefusal(cont.refusal) };
+      }
+    }
     if (resolveAnalysisScope(parsed) !== 'site' || !parsed.siteId) return null;
     if (!(await siteInOrg(orgId, parsed.siteId))) return { refused: 'admission_skipped', detail: 'site_not_in_scope' };
     return null;
@@ -528,13 +561,54 @@ export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> 
   // Both replay lookups use the key admission stores, never the raw request id.
   const dedupeKey = specialistDedupeKey(ctx.requestId);
   const prior = await existingRunId(ctx.orgId, dedupeKey);
-  if (prior) return reattach(ctx, { admitted: true, runId: prior }, originSessionId);
+  if (prior) return reattach(ctx, admittedAnalysis(prior, null, null), originSessionId);
   // W02 (spec §4.4 "Permission"): the run's export authority, evaluated once
   // against the live ceiling the coordinator just resolved and gated on, and
   // frozen at admission. A run principal has no role, so this is the only
   // place a human permission bounds what `export_dataset` may read.
   const exportGrants = resolveExportGrants((resource, action) =>
     ceilingHoldsPermission(ctx.ceiling, ctx.orgId, resource, action));
+
+  // W03 (spec §4.2): a continuation. Validated under THIS live grant — the
+  // same grant is the whole session check (no session ancestry), so any chat
+  // under the grant may continue a run another launched; the new run still
+  // records the launching session as its own origin. Its inputs are derived
+  // here from the prior run and re-validated against this launch's export
+  // grants; admission re-checks the lineage and the chain bounds under its
+  // lock. The dedupe key stays per request, so branching a chain (two
+  // continuations of one run) admits both rather than replaying the first.
+  let stagedHandles: string[] = [];
+  let continuation: AdmitAnalysisRunInput['continuation'];
+  if (params.continueFromRunId) {
+    const cont = await analysisContinuationOf({
+      orgId: ctx.orgId, runId: params.continueFromRunId, grantId: ctx.grant.grantId,
+    });
+    if (!cont.ok) {
+      // Same caller-visible answer as the precheck: "under another grant" and
+      // "not an analysis run" describe a run this caller may not be allowed to
+      // see, so the chat only ever learns not_found. The precise reason goes
+      // to the server log for support.
+      const detail = callerVisibleContinuationRefusal(cont.refusal);
+      if (detail !== cont.refusal) {
+        console.warn('[specialistLaunchers] analysis continuation refused', {
+          orgId: ctx.orgId, continueFromRunId: params.continueFromRunId, reason: cont.refusal,
+        });
+      }
+      return { refused: 'continuation_refused', detail };
+    }
+    const { prior } = cont;
+    // A prior whose chain root was deleted cannot have its chain counted.
+    const root = chainRootOf(prior);
+    if (root === null) return { refused: 'admission_skipped', detail: 'analysis_chain_too_long' };
+    const derived = await deriveChainHandles({ orgId: ctx.orgId, prior, grantId: ctx.grant.grantId, exportGrants });
+    // The seed follows the same producer-grants rule as the carried files.
+    const seed = await buildAnalysisContinuationSeed({ orgId: ctx.orgId, prior, exportGrants });
+    stagedHandles = derived.handles;
+    continuation = {
+      fromRunId: prior.id, chainRootRunId: root, chainDepth: prior.chainDepth + 1, seed, dropped: derived.dropped,
+    };
+  }
+
   const result = await runOutsideDbContext(() => admitAnalysisRun({
     orgId: ctx.orgId,
     requestedByUserId: ctx.grantorUserId,
@@ -543,17 +617,63 @@ export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> 
     scope,
     deviceIds: params.deviceIds ?? [],
     siteId: params.siteId ?? null,
-    stagedHandles: [],
+    stagedHandles,
     dedupeKey,
     grant: { ...ctx.grant },
     exportGrants,
+    ...(continuation ? { continuation } : {}),
   }));
-  if (result.created) return reattach(ctx, { admitted: true, runId: result.runId }, originSessionId);
+  if (result.created) {
+    return reattach(ctx, admittedAnalysis(result.runId, result.chainDepth ?? null, result.scope ?? null), originSessionId);
+  }
   if (result.refusal === 'grant_refused') return { refused: 'admission_skipped', detail: 'grant_refused' };
+  // The prior changed under the lock (deleted, or its lineage moved).
+  if (result.refusal === 'analysis_continuation_not_found') {
+    return { refused: 'continuation_refused', detail: 'analysis_continuation_not_found' };
+  }
   // `duplicate` collapses into `analysis_rate`; resolve a raced replay first.
   const raced = await existingRunId(ctx.orgId, dedupeKey);
-  if (raced) return reattach(ctx, { admitted: true, runId: raced }, originSessionId);
+  if (raced) return reattach(ctx, admittedAnalysis(raced, null, null), originSessionId);
   return { refused: 'admission_skipped', detail: result.refusal };
+}
+
+function admittedAnalysis(
+  runId: string,
+  chainDepth: number | null,
+  scope: { kind: AnalysisScopeKind; deviceCount: number } | null,
+): LaunchResult {
+  return { admitted: true, runId, message: analysisLaunchMessage({ runId, chainDepth, scope }) };
+}
+
+function analysisScopePhrase(scope: { kind: AnalysisScopeKind; deviceCount: number }): string {
+  const n = scope.deviceCount;
+  const devices = `${n} ${n === 1 ? 'device' : 'devices'}`;
+  if (scope.kind === 'org') return `the whole organization (${devices})`;
+  if (scope.kind === 'site') return `one site (${devices})`;
+  return `${n} selected ${n === 1 ? 'device' : 'devices'}`;
+}
+
+/**
+ * Wisp analysis sessions W06 — the sentence an admitted analysis launch hands
+ * back to the chat model. It carries the guidance the capped tool texts have
+ * no room for (how to continue, when to start fresh, that a chain is bounded),
+ * at the moment the model holds the run id it would continue from. Same
+ * channel as `assessmentLaunchMessage`. A replayed launch passes null depth
+ * and scope (the replay lookup does not read them) and still gets the rules.
+ */
+export function analysisLaunchMessage(input: {
+  runId: string;
+  chainDepth: number | null;
+  scope: { kind: AnalysisScopeKind; deviceCount: number } | null;
+}): string {
+  const step = input.chainDepth !== null && input.chainDepth > 0
+    ? ` as step ${input.chainDepth + 1} of this investigation`
+    : '';
+  const over = input.scope ? ` over ${analysisScopePhrase(input.scope)}` : '';
+  return `Analysis run ${input.runId} started${step}${over}. Its result arrives on a later turn. `
+    + `To build on it, launch analysis again with continueFromRunId ${input.runId}; its files carry forward. `
+    + 'When the question changes, start a fresh analysis without continueFromRunId. '
+    + 'A chain has a step limit and a spend limit.';
 }
 
 /** An AI Operator task for a released recipe, requested by the grantor. */

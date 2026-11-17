@@ -56,7 +56,7 @@ import { tickets } from '../../db/schema/portal';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispConcerns } from '../../db/schema/wispConcerns';
 import { wispEnabled } from '../../config/env';
-import { ASSESSMENT_BUDGET_CENTS_PER_RUN } from '../aiAgents/assessmentProfile';
+import { ASSESSMENT_BUDGET_CENTS_PER_RUN, parseCheckInSubject } from '../aiAgents/assessmentProfile';
 import {
   createAndEnqueueAgentRun,
   transitionRunStatus,
@@ -802,12 +802,19 @@ function parseReason(v: unknown): AssessmentReason | null {
       return { kind: 'onboarding' };
     case 'on_demand':
       return isNonEmptyString(r.requestId) ? { kind: 'on_demand', requestId: r.requestId } : null;
-    case 'check_in':
+    case 'check_in': {
       // W07: the instruction is rendered into the prompt (single-lined there);
-      // malformed evidence is dropped, never the reason.
-      return isUuid(r.checkInId) && isNonEmptyString(r.instruction)
-        ? { kind: 'check_in', checkInId: r.checkInId, instruction: r.instruction, evidence: parseCheckInEvidence(r.evidence) }
-        : null;
+      // malformed evidence or subject (#11978) is dropped, never the reason.
+      if (!isUuid(r.checkInId) || !isNonEmptyString(r.instruction)) return null;
+      const subject = parseCheckInSubject(r.subject);
+      return {
+        kind: 'check_in',
+        checkInId: r.checkInId,
+        instruction: r.instruction,
+        evidence: parseCheckInEvidence(r.evidence),
+        ...(subject ? { subject } : {}),
+      };
+    }
     default:
       return null;
   }

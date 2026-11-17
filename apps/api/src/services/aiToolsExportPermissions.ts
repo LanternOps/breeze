@@ -36,6 +36,7 @@ export interface ExportDatasetRequirement {
 }
 
 const DEVICES_READ: ExportPermission = Object.freeze({ resource: 'devices', action: 'read' });
+const ALERTS_READ: ExportPermission = Object.freeze({ resource: 'alerts', action: 'read' });
 const DEVICES_EXECUTE: ExportPermission = Object.freeze({ resource: 'devices', action: 'execute' });
 
 /**
@@ -56,6 +57,24 @@ export const EXPORT_DATASET_REQUIREMENTS: Readonly<Record<ExportDataset, ExportD
   metrics: Object.freeze({ permission: DEVICES_READ }),
   vulnerabilities: Object.freeze({ permission: DEVICES_READ }),
   custom_fields: Object.freeze({ permission: DEVICES_READ }),
+  reliability_scores: Object.freeze({ permission: DEVICES_READ }),
+  reliability_history: Object.freeze({ permission: DEVICES_READ }),
+  reliability_events: Object.freeze({ permission: DEVICES_READ }),
+  boot_performance: Object.freeze({ permission: DEVICES_READ }),
+  hardware_events: Object.freeze({ permission: DEVICES_READ }),
+  service_checks: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `manage_alerts.list` (aiGuardrails TOOL_PERMISSIONS).
+  alerts: Object.freeze({ permission: ALERTS_READ }),
+  // W05: `manage_patches.list`.
+  patch_state: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `manage_patches.list` / `device_history`.
+  patch_attempts: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `query_change_log`; user_account rows need the same gate permission
+  // as security event logs (spec §4.4, decision 8).
+  change_log: Object.freeze({
+    permission: DEVICES_READ,
+    sensitiveGate: Object.freeze({ gate: 'user_account_changes' as const, permission: DEVICES_EXECUTE }),
+  }),
 });
 
 /**
@@ -119,13 +138,23 @@ const KNOWN_GATES: ReadonlySet<string> = new Set<AnalysisSensitiveGate>(['securi
  */
 export function effectiveExportGrants(value: unknown): AiRunExportGrants {
   if (value === undefined) return { datasets: [...LEGACY_EXPORT_GRANTS.datasets], sensitiveGates: [] };
-  const v = value as Partial<Record<keyof AiRunExportGrants, unknown>> | null;
+  return frozenExportGrantsOf(value) ?? { datasets: [], sensitiveGates: [] };
+}
+
+/**
+ * A recorded frozen grant, read strictly: a copy when well-formed, otherwise
+ * null — including when absent. For callers that must PROVE what a run was
+ * allowed (continuation carry-over), where neither the legacy set nor "nothing
+ * permitted" is a safe stand-in for an unreadable value.
+ */
+export function frozenExportGrantsOf(value: unknown): AiRunExportGrants | null {
+  const v = value as Partial<Record<keyof AiRunExportGrants, unknown>> | null | undefined;
   if (
-    v === null || typeof v !== 'object' || Array.isArray(v)
+    v === null || v === undefined || typeof v !== 'object' || Array.isArray(v)
     || !Array.isArray(v.datasets) || !v.datasets.every((d) => typeof d === 'string')
     || !Array.isArray(v.sensitiveGates) || !v.sensitiveGates.every((g) => typeof g === 'string' && KNOWN_GATES.has(g))
   ) {
-    return { datasets: [], sensitiveGates: [] };
+    return null;
   }
   return { datasets: [...(v.datasets as string[])], sensitiveGates: [...(v.sensitiveGates as AnalysisSensitiveGate[])] };
 }

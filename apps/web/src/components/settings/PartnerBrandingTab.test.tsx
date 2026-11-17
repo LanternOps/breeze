@@ -277,3 +277,40 @@ describe('PartnerBrandingTab — logo resolution', () => {
     expect(tried).toEqual([[300, 90]]);
   });
 });
+
+describe('PartnerBrandingTab — low-resolution logo warning (#12041)', () => {
+  function stubSized(mode: 'load' | 'error', w = 0, h = 0) {
+    class SizedImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      naturalWidth = w;
+      naturalHeight = h;
+      set src(_: string) {
+        setTimeout(() => (mode === 'load' ? this.onload?.() : this.onerror?.()), 0);
+      }
+    }
+    vi.stubGlobal('Image', SizedImage);
+  }
+  const logo = 'data:image/png;base64,iVBORw0KGgo=';
+
+  it('warns with the pixel size when the long side is under 600', async () => {
+    stubSized('load', 140, 35);
+    render(<PartnerBrandingTab data={{ logoUrl: logo }} onChange={vi.fn()} />);
+    const warning = await screen.findByTestId('logo-low-res-warning');
+    expect(warning.textContent).toContain('140 × 35');
+  });
+
+  it('does not warn for a large logo', async () => {
+    stubSized('load', 800, 200);
+    render(<PartnerBrandingTab data={{ logoUrl: logo }} onChange={vi.fn()} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId('logo-low-res-warning')).toBeNull();
+  });
+
+  it('does not warn when the image fails to load', async () => {
+    stubSized('error');
+    render(<PartnerBrandingTab data={{ logoUrl: logo }} onChange={vi.fn()} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId('logo-low-res-warning')).toBeNull();
+  });
+});

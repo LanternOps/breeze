@@ -699,6 +699,27 @@ describe('system tools routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(2);
     expect(body.data[0].name).toBe('System');
+    expect(body.data[0].recordCount).toBe(1000);
+  });
+
+  it('omits recordCount for a log the agent sent no count for, never 0 (#11975)', async () => {
+    mockDeviceSelect();
+    mockExecuteCommand.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({
+        logs: [
+          { name: 'Setup', displayName: 'Setup', recordCount: 0 },
+          { name: 'HardwareEvents', displayName: 'HardwareEvents' }
+        ]
+      })
+    });
+
+    const res = await app.request(`/system-tools/devices/${deviceId}/eventlogs`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].recordCount).toBe(0);
+    expect(body.data[1]).not.toHaveProperty('recordCount');
   });
 
   it('queries event logs via agent command', async () => {

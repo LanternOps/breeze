@@ -178,6 +178,14 @@ describe('value-shape redaction on the agent-log path (#3109)', () => {
     );
   });
 
+  it('drops the user segment from a forward-slash Windows profile path, any case', () => {
+    // Server-normalized startup item ids are lowercased with forward slashes.
+    expect(redactSensitiveValueShapes('run_key|c:/users/jdoe/appdata/y.exe')).toBe(
+      'run_key|c:/users/[REDACTED]/appdata/y.exe'
+    );
+    expect(redactSensitiveValueShapes('C:/Users/jdoe\\AppData')).toBe('C:/Users/[REDACTED]\\AppData');
+  });
+
   it('keeps machine-generic Windows paths intact', () => {
     // From the second-instance measurement in the issue: these are the highest
     // volume `error` values and carry no identity. Scrubbing them would cost

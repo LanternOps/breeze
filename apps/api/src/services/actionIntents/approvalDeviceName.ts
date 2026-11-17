@@ -44,13 +44,17 @@ const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 /**
  * The device id THIS call's arguments name, when they name one at all.
  *
- * Deliberately only `deviceId` (singular): that is the argument every
- * `on device <id>...` stub in `buildApprovalDescription` is built from.
- * Multi-device tools (`run_script`'s `deviceIds`, `manage_patches`) render
- * `on N device(s)` and have no single name to substitute.
+ * `deviceId` (singular) is the argument nearly every `on device <id>...` stub
+ * in `buildApprovalDescription` is built from. A `deviceIds` list with exactly
+ * one entry also names one device: `run_script` renders it as that stub
+ * (#11979). A longer list renders `on N device(s)` and has no single name.
+ * Callers only substitute where the headline carries THIS id's stub, so a tool
+ * whose headline counts its devices is unaffected.
  */
 export function argumentDeviceId(input: Record<string, unknown>): string | null {
-  const raw = input.deviceId;
+  const raw = input.deviceId !== undefined
+    ? input.deviceId
+    : Array.isArray(input.deviceIds) && input.deviceIds.length === 1 ? input.deviceIds[0] : undefined;
   return typeof raw === 'string' && UUID_SHAPE.test(raw) ? raw : null;
 }
 

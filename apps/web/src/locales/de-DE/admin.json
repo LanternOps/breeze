@@ -234,6 +234,7 @@
     "thirdPartyCatalog": {
       "title": "Drittanbieter-Paketkatalog",
       "description": "Von Breeze kuratierte Metadaten für Drittanbietersoftware, die von winget auf Agents erkannt wurde.",
+      "scopeNote": "Dieser Katalog liefert nur einen Anzeigenamen, Hersteller, Kategorie und Standard-Schweregrad für einen Drittanbieter-Patch, den ein Gerät meldet. Er legt nicht fest, welche Apps aktualisiert werden, und Apps, die hier nicht aufgeführt sind, erscheinen trotzdem unter Patches. Updates stammen aus den Patch-Quellen einer Konfigurationsrichtlinie, einem Update-Ring und dem, was winget, Chocolatey oder Homebrew auf dem Gerät melden. winget-Installationen pro Benutzer werden erkannt, aber nie aktualisiert.",
       "totalEntries": "Einträge insgesamt:",
       "refresh": "Aktualisieren",
       "addPackage": "Paket hinzufügen",

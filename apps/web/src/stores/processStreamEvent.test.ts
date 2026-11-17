@@ -3,7 +3,7 @@ import { useWispInstructionCaptureStore } from './wispInstructionCaptureStore';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AiStreamEvent } from '@breeze/shared';
-import { processStreamEvent, type StreamableState, type ActivePlan } from './processStreamEvent';
+import { alreadyDecidedOutcome, processStreamEvent, type StreamableState, type ActivePlan } from './processStreamEvent';
 
 function makeState(): StreamableState {
   return {
@@ -109,7 +109,7 @@ describe('approval_resolved (#9431)', () => {
     input: { action: 'delete' }, description: 'Delete a file',
   };
 
-  it.each(['approved', 'not_approved', 'ended'] as const)(
+  it.each(['approved', 'not_approved', 'expired', 'ended'] as const)(
     'marks the matching card %s, decided wherever it was decided',
     (outcome) => {
       const h = harness();
@@ -140,6 +140,18 @@ describe('approval_resolved (#9431)', () => {
     const h = harness();
     processStreamEvent({ type: 'approval_resolved', executionId: 'e1', outcome: 'approved' }, h.set, h.get, null);
     expect(h.state.pendingApproval).toBeNull();
+  });
+});
+
+describe('alreadyDecidedOutcome (#9431, #12079)', () => {
+  it.each(['approved', 'not_approved', 'expired', 'ended'] as const)('reads a 409 with outcome %s', (outcome) => {
+    expect(alreadyDecidedOutcome(409, { code: 'approval_already_decided', outcome })).toBe(outcome);
+  });
+
+  it('ignores an outcome this build does not know, and any other response', () => {
+    expect(alreadyDecidedOutcome(409, { code: 'approval_already_decided', outcome: 'something_new' })).toBeNull();
+    expect(alreadyDecidedOutcome(404, { code: 'approval_already_decided', outcome: 'expired' })).toBeNull();
+    expect(alreadyDecidedOutcome(409, { code: 'other', outcome: 'expired' })).toBeNull();
   });
 });
 

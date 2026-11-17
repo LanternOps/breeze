@@ -257,6 +257,7 @@ import {
   resolveScheduledReportRecipients,
   resolveScheduledReportRecipientSets,
   resolveScheduledDeliveryContext,
+  trendLineOf,
 } from './reportScheduleWorker';
 import { seriesChildGate } from '../services/reportSeries/reconcile';
 import { persistedSiteScopeValues } from '../services/siteScope';
@@ -425,6 +426,45 @@ describe('isDue', () => {
     expect(isDue(new Date('2026-07-01T13:30:00Z'), occurrence, 'America/Chicago')).toBe(true);
     // 14:30Z is 09:30 Chicago — after it.
     expect(isDue(new Date('2026-07-01T14:30:00Z'), occurrence, 'America/Chicago')).toBe(false);
+  });
+});
+
+describe('trendLineOf (executive summary, #12045)', () => {
+  const windowed = (pct: number) => ({ devices: { total: 12, online: 4, healthPercentage: 33, recentWindowDays: 7, recentlySeen: 11, recentlySeenPercentage: pct } });
+
+  it('reports the windowed availability the PDF headlines, not the share online at generation', () => {
+    expect(trendLineOf({ summary: windowed(92) })).toBe('Fleet availability (seen in last 7 days) 92%.');
+  });
+
+  it('compares only against a previous run that measured the same thing', () => {
+    expect(trendLineOf({ summary: windowed(92), previous: { generatedAt: null, summary: windowed(83) } }))
+      .toBe('Fleet availability (seen in last 7 days) 92% — up from 83% last run.');
+    // A pre-#12045 baseline only knows the point-in-time share: no delta.
+    expect(trendLineOf({ summary: windowed(92), previous: { generatedAt: null, summary: { devices: { healthPercentage: 33 } } } }))
+      .toBe('Fleet availability (seen in last 7 days) 92%.');
+  });
+
+  it('does not compare against a previous run that had no devices', () => {
+    // That run's 100 is a default, not a measurement.
+    const empty = { devices: { total: 0, healthPercentage: 100, recentWindowDays: 7, recentlySeen: 0, recentlySeenPercentage: 100 } };
+    expect(trendLineOf({ summary: windowed(92), previous: { generatedAt: null, summary: empty } }))
+      .toBe('Fleet availability (seen in last 7 days) 92%.');
+    expect(trendLineOf({ summary: { devices: { total: 12, healthPercentage: 33 } }, previous: { generatedAt: null, summary: { devices: { total: 0, healthPercentage: 100 } } } }))
+      .toBe('Fleet health 33%.');
+  });
+
+  it('reports no fleet figure for an empty fleet', () => {
+    expect(trendLineOf({ summary: { devices: { total: 0, healthPercentage: 100, recentWindowDays: 7, recentlySeen: 0, recentlySeenPercentage: 100 } } })).toBeNull();
+  });
+
+  it('drops the up/down clause when the windowed figure is unchanged', () => {
+    expect(trendLineOf({ summary: windowed(92), previous: { generatedAt: null, summary: windowed(92) } }))
+      .toBe('Fleet availability (seen in last 7 days) 92%.');
+  });
+
+  it('keeps the legacy wording for a snapshot without the windowed figure', () => {
+    expect(trendLineOf({ summary: { devices: { healthPercentage: 33 } }, previous: { generatedAt: null, summary: { devices: { healthPercentage: 50 } } } }))
+      .toBe('Fleet health 33% — down from 50% last run.');
   });
 });
 

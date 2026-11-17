@@ -118,6 +118,8 @@ function discovered(): string[] {
 
 /** What a human sees (listings, reports, read models, billing counts). */
 const VISIBILITY_MODULES: Record<string, string> = {
+  'services/aiToolsExportShared.ts': 'read model: export_dataset device set — reads only devices already frozen into an analysis run frame, under the caller ceiling; selects no fan-out targets',
+  'services/aiToolsExportDatasets/customFields.ts': 'read model: custom_fields export — pages the custom field values of devices exportDeviceSet already resolved in the run org; selects no fan-out targets',
   'services/partnerGroupPreview.ts': 'read-only partner-group preview; eligible org discovery excludes Quick Support/holding orgs and evaluation intersects the caller accessible orgs',
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
@@ -148,6 +150,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/portal/vulnerabilityDetailReadModel.ts': 'read model: portal vulnerability detail',
   'services/portal/securityReadModel.ts': 'read model: portal security',
   'services/reportGenerationService.ts': 'report: per-org report builders',
+  'services/securityComplianceReport.ts': 'report: the posture report counts the org\'s managed devices (managedDeviceConditions, parked excluded) to state how many its site filter left out (#12044); selects no targets',
   'services/reportScope.ts': 'report: scope (already excludes the holding org)',
   'services/reportSeries/combine.ts': 'report: multi-org series Combine candidates, series-eligible orgs only (hidden org types excluded)',
   'services/reportSeries/reconcile.ts': 'report: multi-org series repair sweep, mirrors the targets.ts eligibility rule in SQL',

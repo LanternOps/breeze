@@ -1465,6 +1465,19 @@
         "unknown": "une erreur non reconnue s’est produite"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bloqué par un filtre réseau",
+      "titleUntrustedCertificate": "Certificat du serveur non approuvé",
+      "webFilter": "Un filtre de sécurité sur le réseau de cet appareil répond à la place du serveur Breeze ({{locationHost}}). Il s'agit généralement d'une fonction de sécurité de la box du fournisseur d'accès, d'un filtre web du pare-feu ou d'une page de connexion du réseau.",
+      "captivePortal": "Le réseau de cet appareil retient les connexions sur une page de connexion (portail captif).",
+      "plaintextUnknown": "Un élément du réseau de cet appareil a répondu à la connexion Breeze en HTTP non chiffré au lieu de TLS.",
+      "untrustedCertificate": "La connexion au serveur Breeze a présenté un certificat que cet appareil n'approuve pas (émis par {{certIssuer}}). Il s'agit généralement d'une inspection TLS par un pare-feu ou un proxy, d'un problème de certificat sur un serveur auto-hébergé ou d'un magasin de certificats racines obsolète sur cet appareil. Breeze ne le contournera pas.",
+      "viaEch": "Actuellement joignable via Encrypted Client Hello.",
+      "cleared": "A été bloqué du {{from}} au {{to}}.",
+      "lastKnown": "Dernier signalement : {{time}}. L'appareil ne s'est pas signalé depuis, cela pourrait donc ne plus s'appliquer.",
+      "howToFix": "Comment corriger",
+      "noDetail": "aucun détail"
+    },
     "logShipping": {
       "label": "Envoi des journaux",
       "state": {
@@ -1688,6 +1701,7 @@
       "lastSeen": "Dernière apparition",
       "serial": "N° de série",
       "productSku": "Numéro de produit",
+      "hardwareModel": "Modèle",
       "assetTag": "Étiquette d'actif",
       "location": "Emplacement",
       "source": "Source"
@@ -1706,6 +1720,7 @@
       "lastSeen": "Trier par dernière heure vue",
       "serial": "Trier par numéro de série",
       "productSku": "Trier par numéro de produit",
+      "hardwareModel": "Trier par modèle",
       "assetTag": "Trier par étiquette d'actif",
       "location": "Trier par emplacement",
       "source": "Trier par source"
@@ -1863,6 +1878,9 @@
       "unmanagedInstall": "Breeze Assist n’a pas été installé par Breeze et le déploiement est désactivé, l’agent le laisse donc tel quel.",
       "unknown": "Breeze Assist est activé mais non installé."
     },
+    "controlPlaneBlockBadge": "Filtre réseau",
+    "controlPlaneBlockBadgeCertificate": "Certificat non approuvé",
+    "controlPlaneBlockLastKnownTooltip": "Dernier signalement : {{time}} ; l'appareil ne s'est pas signalé depuis.",
     "agentVersionRelation": {
       "equalTooltip": "Correspond à la version effective {{version}}",
       "aheadTooltip": "En avance sur l'épinglage {{version}}",

@@ -54,7 +54,6 @@ describe('analysis task handoff', () => {
     const task = buildAgentRunTaskPrompt(context);
     expect(task).toContain(goal);
     expect(task).toContain('["frozen-device"]');
-    expect(task).toContain('["artifact:input"]');
     expect(task).toContain('workspace_collect');
     expect(task).not.toContain('Assess the health');
     expect(task).not.toContain('private-chat-id');
@@ -145,6 +144,50 @@ describe('analysis task handoff', () => {
       [],
     ])('malformed export grants read as null: %j', (exportGrants) => {
       expect(analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [], exportGrants }).exportGrants).toBeNull();
+    });
+  });
+
+  describe('input manifest and continuation seed (W03)', () => {
+    const H1 = '00000000-0000-4000-8000-0000000000a1';
+    const R1 = '00000000-0000-4000-8000-0000000000b1';
+    const PRIOR = '00000000-0000-4000-8000-0000000000c1';
+    const render = (analysis: ReturnType<typeof analysisPromptContext>) =>
+      buildAgentRunTaskPrompt(ctx({ profile: 'analysis', device: null, alert: null, analysis }));
+
+    it('lists each allowed handle in a fenced manifest instead of a bare JSON list', () => {
+      const analysis = analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [H1] },
+        [{ handle: H1, name: 'bsod.csv', bytes: 14000, contentType: 'text/csv', kind: 'output', producedByRunId: R1, producerChainDepth: 0 }]);
+      const task = render(analysis);
+      expect(task).not.toContain('Available input artifact handles (JSON)');
+      expect(task).toContain(`${H1} · bsod.csv · 14000 bytes · text/csv · output · produced by run ${R1} (step 1 of chain)`);
+      expect(analysis.manifest).toHaveLength(1);
+      expect(analysis.continuation).toBeNull();
+    });
+
+    it('with no manifest entries says there are no input files', () => {
+      expect(render(analysisPromptContext({ goal: 'g' }, { deviceIds: [], handles: [] }))).toContain('No input files.');
+    });
+
+    it('renders a stored seed and the drop line on a continuation', () => {
+      const seed = '## Continuation\nThis run continues an earlier analysis run.';
+      const analysis = analysisPromptContext(
+        { goal: 'g', continuation: { fromRunId: PRIOR, seed, dropped: [{ handle: H1, reason: 'expired' }] } },
+        { deviceIds: [], handles: [] },
+      );
+      expect(analysis.continuation).toEqual({ fromRunId: PRIOR, seed, dropped: [{ handle: H1, reason: 'expired' }] });
+      const task = render(analysis);
+      expect(task).toContain(seed);
+      expect(task).toContain('1 inherited file(s) were not carried forward: 1 expired.');
+      expect(task).not.toContain(`${H1} was`);
+    });
+
+    it('renders nothing for an oversized seed', () => {
+      const analysis = analysisPromptContext(
+        { goal: 'g', continuation: { fromRunId: PRIOR, seed: 'x'.repeat(4097) } },
+        { deviceIds: [], handles: [] },
+      );
+      expect(analysis.continuation).toBeNull();
+      expect(render(analysis)).not.toContain('xxxx');
     });
   });
 

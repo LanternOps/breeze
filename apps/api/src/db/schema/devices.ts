@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { ipClassEnum, organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { aiInitiatorKindEnum } from './aiInitiator';
+import type { ControlPlaneBlockRecord } from '../../services/controlPlaneBlockHealth';
 import type { IsolationMechanism, PossibleReplacementReason, BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
@@ -390,6 +391,15 @@ export const devices = pgTable('devices', {
   watchdogInstallState: varchar('watchdog_install_state', { length: 20 }),
   watchdogInstallErrorClass: varchar('watchdog_install_error_class', { length: 20 }),
   watchdogInstallSince: timestamp('watchdog_install_since', { withTimezone: true }),
+  // #8868 — agent-reported control-plane block episode (a network filter,
+  // captive portal or untrusted TLS interceptor answered instead of the
+  // server). Written by the heartbeat on transition only (services/
+  // controlPlaneBlockHealth). kind is a closed enum, non-null only while an
+  // episode is active (drives the list badge). The jsonb holds the last
+  // episode incl. network-supplied host/issuer text: export `excludedOpen`,
+  // never in PUBLIC_DEVICE_FIELDS; the detail response returns a derived view.
+  controlPlaneBlockKind: varchar('control_plane_block_kind', { length: 24 }),
+  controlPlaneBlock: jsonb('control_plane_block').$type<ControlPlaneBlockRecord>(),
   // #8608 — agent-reported log-shipping health (#8406). Classified per beat by
   // services/logShippingHealth and written ONLY on a state change. NULL state =
   // unknown (old agent / field absent), never healthy and never failing.
@@ -899,5 +909,7 @@ export const deviceBootMetrics = pgTable('device_boot_metrics', {
   deviceBootIdx: index('device_boot_metrics_device_boot_idx').on(table.deviceId, table.bootTimestamp),
   deviceCreatedIdx: index('device_boot_metrics_device_created_idx').on(table.deviceId, table.createdAt),
   orgDeviceIdx: index('device_boot_metrics_org_device_idx').on(table.orgId, table.deviceId),
+  // export_dataset boot_performance pages (org_id, boot_timestamp, id) DESC.
+  orgBootIdx: index('device_boot_metrics_org_boot_idx').on(table.orgId, table.bootTimestamp.desc(), table.id.desc()),
   deviceBootUnique: unique('device_boot_metrics_device_boot_uniq').on(table.deviceId, table.bootTimestamp),
 }));

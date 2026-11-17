@@ -7,12 +7,13 @@ import { ticketTypeFromHash, type TicketType } from './ticketType';
 // query, but rendered as a restore-only list (no focus). tickets:manage-gated.
 export type Tab = 'mine' | 'unassigned' | 'open' | 'breaching' | 'closed' | 'review' | 'archived';
 export type LiveTab = Exclude<Tab, 'review' | 'archived'>;
-export type TicketSort = 'triage' | 'newest' | 'oldest' | 'due';
+export type TicketSort = 'triage' | 'newest' | 'oldest' | 'updated' | 'due';
 
 export const SORT_OPTIONS: Array<{ value: TicketSort; labelKey: string }> = [
   { value: 'triage', labelKey: 'triage' },
   { value: 'newest', labelKey: 'newest' },
   { value: 'oldest', labelKey: 'oldest' },
+  { value: 'updated', labelKey: 'updated' },
   { value: 'due', labelKey: 'due' }
 ];
 

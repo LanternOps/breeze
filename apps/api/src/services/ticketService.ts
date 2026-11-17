@@ -122,7 +122,7 @@ export class TicketServiceError extends Error {
 }
 
 /** Where a `'system'` ticket write comes from — a pipeline, never a person. */
-export type TicketSystemSource = 'inbound_email' | 'caller_verification' | 'planned_work' | 'ai_operator' | 'scheduler';
+export type TicketSystemSource = 'inbound_email' | 'caller_verification' | 'planned_work' | 'ai_operator' | 'scheduler' | 'trust_center';
 
 /**
  * Who is behind a ticket write — a discriminated union, so every consumer

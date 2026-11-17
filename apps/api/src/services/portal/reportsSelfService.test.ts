@@ -1343,6 +1343,9 @@ describe('portal run rendering', () => {
     expect(state.buildReportPdf).toHaveBeenCalledWith([], expect.objectContaining({
       reportType: 'executive_summary',
       timezone: 'America/Denver',
+      // #12048: the run's completion instant, printed by the renderer in the
+      // partner's date format with its timezone — not a pre-formatted string.
+      generatedAt: new Date('2026-09-02T12:00:00.000Z'),
     }));
     expect(state.execute).toHaveBeenCalled();
     const query = new PgDialect().sqlToQuery(state.execute.mock.calls[0]![0]);
