@@ -14,8 +14,13 @@ interface Props {
   page: TrustPageDraft;
   /** The EFFECTIVE value publish will freeze (page → template → default), never the raw page column. */
   searchIndexable: boolean;
+  /**
+   * The partner template revision the editor loaded (null = no template). Always sent, so a template saved
+   * after the editor loaded is a 409 TEMPLATE_CHANGED instead of freezing inherited values nobody saw.
+   */
+  templateRevision: number | null;
   onPublished: (page: TrustPageDraft) => void;
-  /** Re-read the page (fresh publicationRevision) after a 409 REVISION_MISMATCH. */
+  /** Re-read the page (fresh publicationRevision and template revision) after a 409 REVISION_MISMATCH or TEMPLATE_CHANGED. */
   onStale: () => Promise<void>;
 }
 
@@ -24,7 +29,7 @@ interface Props {
  * customer authorized publication; once recorded it is shown and reused (with a
  * Change link). The partner's own page needs none.
  */
-export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, page, searchIndexable, onPublished, onStale }: Props) {
+export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, page, searchIndexable, templateRevision, onPublished, onStale }: Props) {
   const { t } = useTranslation('organizations');
   const tr = useCallback(
     (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.trust.${key}`, vars ?? {}),
@@ -45,8 +50,9 @@ export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, pag
   const canConfirm = !busy && (!needsAttestation || (authorized && name.length > 0));
 
   const submit = async () => {
-    const body: { expectedRevision: number; authorization?: { authorizedBy: string } } = {
+    const body: { expectedRevision: number; expectedTemplateRevision: number | null; authorization?: { authorizedBy: string } } = {
       expectedRevision: page.publicationRevision,
+      expectedTemplateRevision: templateRevision,
     };
     if (needsAttestation) body.authorization = { authorizedBy: name };
     setBusy(true);
@@ -58,6 +64,7 @@ export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, pag
         errorFallback: tr('publish.failed'),
         friendly: (code, message) => ({
           REVISION_MISMATCH: tr('errors.revisionMismatch'),
+          TEMPLATE_CHANGED: tr('errors.templateChanged'),
           AUTHORIZATION_REQUIRED: tr('errors.authorizationRequired'),
           MFA_REQUIRED: tr('errors.mfaRequired'),
           TRUST_PROBATION: tr('errors.trustProbation'),
@@ -71,9 +78,9 @@ export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, pag
       onClose();
     } catch (err) {
       handleActionError(err, tr('publish.failed'));
-      if (err instanceof ActionError && err.code === 'REVISION_MISMATCH') {
-        // Retrying with the same stale revision would 409 forever: refresh the
-        // page state, then close so the next attempt carries the new revision.
+      if (err instanceof ActionError && (err.code === 'REVISION_MISMATCH' || err.code === 'TEMPLATE_CHANGED')) {
+        // Retrying with the same stale page or template revision would 409 forever:
+        // refresh the page state, then close so the next attempt carries the new revisions.
         try { await onStale(); } catch (reloadErr) { console.error('[TrustPublishDialog] reload after stale revision failed', reloadErr); }
         onClose();
       }

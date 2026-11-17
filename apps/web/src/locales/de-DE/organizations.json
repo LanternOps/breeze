@@ -472,6 +472,7 @@
       },
       "errors": {
         "revisionMismatch": "Diese Seite wurde seit dem Laden geändert. Laden Sie sie neu und versuchen Sie es erneut.",
+        "templateChanged": "Die Vorlage des Vertrauenszentrums Ihres Partners wurde seit dem Laden dieser Seite geändert. Laden Sie die Seite neu und veröffentlichen Sie erneut.",
         "authorizationRequired": "Geben Sie an, wer die Veröffentlichung genehmigt hat.",
         "mfaRequired": "Das Veröffentlichen erfordert eine Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut.",
         "trustProbation": "Die Veröffentlichung wird freigeschaltet, sobald Ihr Konto als vertrauenswürdig eingestuft ist.",

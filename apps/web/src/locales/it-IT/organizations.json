@@ -472,6 +472,7 @@
       },
       "errors": {
         "revisionMismatch": "Questa pagina è cambiata dal momento in cui l'hai caricata. Ricaricala e riprova.",
+        "templateChanged": "Il modello del Centro di fiducia del tuo partner è cambiato dal momento in cui hai caricato questa pagina. Ricaricala e pubblica di nuovo.",
         "authorizationRequired": "Indica chi ha autorizzato la pubblicazione.",
         "mfaRequired": "La pubblicazione richiede l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del tuo profilo e riprova.",
         "trustProbation": "La pubblicazione si apre non appena il tuo account viene considerato attendibile.",
