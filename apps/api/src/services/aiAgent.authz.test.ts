@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -70,7 +70,7 @@ vi.mock('./aiModels/sessionModel', () => ({
   })),
 }));
 
-import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution, getDecidedExecutionOutcome, waitForApproval, AI_APPROVAL_REQUEST_EXPIRED_MESSAGE, type ApprovalWaitDetail } from './aiAgent';
+import { getSession, getSessionMessages, handleApproval, isIntentBackedExecution, getDecidedExecutionOutcome, waitForApproval, AI_APPROVAL_REQUEST_EXPIRED_MESSAGE, AI_APPROVAL_WAIT_ENDED_MESSAGE, AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE, type ApprovalWaitDetail } from './aiAgent';
 
 type Cond = { op: string; col?: unknown; val?: unknown; conds?: Cond[] };
 
@@ -414,45 +414,84 @@ describe('waitForApproval expiry detail (#12079)', () => {
     expect(reaper).toContain(`errorMessage: '${AI_APPROVAL_REQUEST_EXPIRED_MESSAGE}'`);
   });
 
-  /** The close-out's guarded UPDATE: `rows` is what RETURNING yields (empty = it lost). */
-  function stubCloseOut(rows: unknown[]) {
-    const whereSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) });
-    const setSpy = vi.fn().mockReturnValue({ where: whereSpy });
-    updateMock.mockReturnValueOnce({ set: setSpy });
-    return { setSpy, whereSpy };
+  type Update = { set: Record<string, unknown>; where: Cond };
+
+  /**
+   * Record every UPDATE. `returning` yields the next entry of `returned` (an
+   * empty array = the guarded UPDATE matched nothing); a plain awaited
+   * `.where()` (the approval_requests expiry) resolves without one.
+   */
+  function recordUpdates(returned: unknown[][] = []): Update[] {
+    const calls: Update[] = [];
+    updateMock.mockImplementation(() => ({
+      set: (set: Record<string, unknown>) => ({
+        where: (where: Cond) => {
+          calls.push({ set, where });
+          return Object.assign(Promise.resolve(undefined), {
+            returning: () => Promise.resolve(returned.shift() ?? []),
+          });
+        },
+      }),
+    }));
+    return calls;
   }
 
-  it('reports expired on its own timeout, and still marks the row rejected (never approved)', async () => {
-    const { setSpy, whereSpy } = stubCloseOut([{ id: 'exec-1' }]);
+  const execPending = {
+    op: 'and',
+    conds: [
+      { op: 'eq', col: 'aiToolExecutions.id', val: 'exec-1' },
+      { op: 'eq', col: 'aiToolExecutions.status', val: 'pending' },
+    ],
+  };
+  const requestPending = {
+    op: 'and',
+    conds: [
+      { op: 'eq', col: 'approvalRequests.executionId', val: 'exec-1' },
+      { op: 'eq', col: 'approvalRequests.status', val: 'pending' },
+    ],
+  };
+
+  afterEach(() => {
+    // mockClear (beforeEach) keeps implementations; these must not leak.
+    updateMock.mockReset();
+    selectMock.mockReset();
+    vi.useRealTimers();
+  });
+
+  it('keeps the SDK fallback literal equal to the settle message (#12084)', () => {
+    const sdk = readFileSync(join(__dirname, 'aiAgentSdk.ts'), 'utf8');
+    expect(sdk).toContain(`'${AI_APPROVAL_WAIT_ENDED_MESSAGE}'`);
+  });
+
+  it('on its own timeout closes only a still-pending row, and its mobile request with it (#12084)', async () => {
+    const updates = recordUpdates([[{ id: 'exec-1' }]]);
     const detail: ApprovalWaitDetail = {};
 
     // A zero budget skips the poll and goes straight to the timeout close-out.
     await expect(waitForApproval('exec-1', 0, undefined, detail)).resolves.toBe(false);
 
-    expect(detail.expired).toBe(true);
-    expect(setSpy).toHaveBeenCalledWith({ status: 'rejected', errorMessage: 'Approval timed out' });
-    // #12084: only a still-pending row is closed.
-    expect(whereSpy).toHaveBeenCalledWith({
-      op: 'and',
-      conds: [
-        { op: 'eq', col: 'aiToolExecutions.id', val: 'exec-1' },
-        { op: 'eq', col: 'aiToolExecutions.status', val: 'pending' },
-      ],
-    });
+    expect(detail).toEqual({ expired: true });
+    expect(updates).toEqual([
+      { set: { status: 'rejected', errorMessage: 'Approval timed out' }, where: execPending },
+      // A later mobile click then loses its own CAS instead of being told
+      // "approved" for an action that will not run.
+      { set: { status: 'expired' }, where: requestPending },
+    ]);
   });
 
-  it('honours an approval that beat the timeout close-out (#12084)', async () => {
-    stubCloseOut([]);
+  it('honours an approval that beat the timeout close-out, and leaves the mobile request alone (#12084)', async () => {
+    const updates = recordUpdates([[]]);
     stubSelectOnce([{ status: 'approved', errorMessage: null }]);
     const detail: ApprovalWaitDetail = {};
 
     await expect(waitForApproval('exec-1', 0, undefined, detail)).resolves.toBe(true);
 
     expect(detail).toEqual({});
+    expect(updates).toHaveLength(1);
   });
 
   it('reports a denial that beat the timeout close-out as denied, not expired (#12084)', async () => {
-    stubCloseOut([]);
+    recordUpdates([[]]);
     stubSelectOnce([{ status: 'rejected', errorMessage: null }]);
     const detail: ApprovalWaitDetail = {};
 
@@ -461,16 +500,60 @@ describe('waitForApproval expiry detail (#12079)', () => {
     expect(detail).toEqual({ denied: true });
   });
 
-  it('hands the timed-out message to the caller when the close-out cannot be written (#12084)', async () => {
-    updateMock.mockImplementation(() => { throw new Error('db down'); });
+  it('reports an expiry-reaper close that beat the timeout close-out as expired (#12084)', async () => {
+    recordUpdates([[]]);
+    stubSelectOnce([{ status: 'rejected', errorMessage: 'Approval request expired' }]);
     const detail: ApprovalWaitDetail = {};
 
     await expect(waitForApproval('exec-1', 0, undefined, detail)).resolves.toBe(false);
 
+    expect(detail).toEqual({ expired: true });
+  });
+
+  it('retries a failed close-out and reports nothing extra when a retry lands (#12084)', async () => {
+    vi.useFakeTimers();
+    const updates = recordUpdates([[{ id: 'exec-1' }]]);
+    const recorded = updateMock.getMockImplementation()!;
+    updateMock.mockImplementationOnce(() => { throw new Error('db blip'); });
+    updateMock.mockImplementation(recorded);
+    const detail: ApprovalWaitDetail = {};
+
+    const waiting = waitForApproval('exec-1', 0, undefined, detail);
+    await vi.runAllTimersAsync();
+
+    await expect(waiting).resolves.toBe(false);
+    expect(detail).toEqual({ expired: true });
+    expect(updates[0]).toEqual({ set: { status: 'rejected', errorMessage: 'Approval timed out' }, where: execPending });
+  });
+
+  it('hands the timed-out message to the caller when the close-out cannot be written (#12084)', async () => {
+    vi.useFakeTimers();
+    updateMock.mockImplementation(() => { throw new Error('db down'); });
+    const detail: ApprovalWaitDetail = {};
+
+    const waiting = waitForApproval('exec-1', 0, undefined, detail);
+    await vi.runAllTimersAsync();
+
+    await expect(waiting).resolves.toBe(false);
     // Retried, then left to the caller's close-out, which must store the same
     // reason the card shows.
     expect(updateMock).toHaveBeenCalledTimes(3);
     expect(detail).toEqual({ expired: true, closeOutMessage: 'Approval timed out' });
+  });
+
+  it('after five poll errors closes the row as "Polling failed": not denied, not expired (#12084)', async () => {
+    vi.useFakeTimers();
+    selectMock.mockImplementation(() => { throw new Error('db down'); });
+    const updates = recordUpdates([[{ id: 'exec-1' }]]);
+    const detail: ApprovalWaitDetail = {};
+
+    const waiting = waitForApproval('exec-1', 60_000, undefined, detail);
+    await vi.runAllTimersAsync();
+
+    await expect(waiting).resolves.toBe(false);
+    expect(selectMock).toHaveBeenCalledTimes(5);
+    expect(detail).toEqual({});
+    expect(updates[0]).toEqual({ set: { status: 'rejected', errorMessage: 'Polling failed' }, where: execPending });
   });
 
   it('reports expired when the expiry reaper closed the row', async () => {
@@ -493,7 +576,7 @@ describe('waitForApproval expiry detail (#12079)', () => {
   });
 
   it('closes a settled wait as ended, not expired, and only if still pending (#12084)', async () => {
-    const { setSpy, whereSpy } = stubCloseOut([{ id: 'exec-1' }]);
+    const updates = recordUpdates([[{ id: 'exec-1' }]]);
     const controller = new AbortController();
     controller.abort();
     const detail: ApprovalWaitDetail = {};
@@ -502,23 +585,45 @@ describe('waitForApproval expiry detail (#12079)', () => {
 
     expect(detail).toEqual({});
     expect(selectMock).not.toHaveBeenCalled();
-    expect(setSpy).toHaveBeenCalledWith({
-      status: 'rejected',
-      errorMessage: 'Approval wait ended before a decision was made',
-    });
-    expect(whereSpy.mock.calls[0]![0]).toMatchObject({
-      op: 'and',
-      conds: expect.arrayContaining([{ op: 'eq', col: 'aiToolExecutions.status', val: 'pending' }]),
+    expect(updates).toEqual([
+      { set: { status: 'rejected', errorMessage: 'Approval wait ended before a decision was made' }, where: execPending },
+      { set: { status: 'expired' }, where: requestPending },
+    ]);
+  });
+
+  it('does not run an approval that landed just before a settle: the stop wins and the row says so (#12084)', async () => {
+    // The pending close-out matches nothing; the approved row is moved out.
+    const updates = recordUpdates([[], [{ id: 'exec-1' }]]);
+    const controller = new AbortController();
+    controller.abort();
+    const detail: ApprovalWaitDetail = {};
+
+    await expect(waitForApproval('exec-1', 60_000, controller.signal, detail)).resolves.toBe(false);
+
+    expect(detail).toEqual({});
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updates[1]).toEqual({
+      set: { status: 'rejected', errorMessage: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE },
+      where: {
+        op: 'and',
+        conds: [
+          { op: 'eq', col: 'aiToolExecutions.id', val: 'exec-1' },
+          { op: 'eq', col: 'aiToolExecutions.status', val: 'approved' },
+        ],
+      },
     });
   });
 
-  it('honours an approval that landed before a settle (#12084)', async () => {
-    stubCloseOut([]);
-    stubSelectOnce([{ status: 'approved', errorMessage: null }]);
+  it('reports a denial that landed just before a settle as denied (#12084)', async () => {
+    recordUpdates([[], []]);
+    stubSelectOnce([{ status: 'rejected', errorMessage: null }]);
     const controller = new AbortController();
     controller.abort();
+    const detail: ApprovalWaitDetail = {};
 
-    await expect(waitForApproval('exec-1', 60_000, controller.signal, {})).resolves.toBe(true);
+    await expect(waitForApproval('exec-1', 60_000, controller.signal, detail)).resolves.toBe(false);
+
+    expect(detail).toEqual({ denied: true });
   });
 
   it('does not report expired for an approval', async () => {

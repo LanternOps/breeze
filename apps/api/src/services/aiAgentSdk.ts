@@ -229,8 +229,10 @@ function beginApprovalWait(session: ActiveSession): {
  *
  * #12084: what the stored row says comes first. A denial that landed just
  * before a settle is a denial, and a row closed as timed out is expired even
- * if a settle arrived after the close-out, so the card says what a late click
- * on the same row is told (`getDecidedExecutionOutcome`).
+ * if a settle arrived after the close-out, so for a denied or expired row the
+ * card says what a late click on the same row is told
+ * (`getDecidedExecutionOutcome`). A settled row shows "ended" here while a
+ * late click is told "not approved"; both mean it did not run.
  */
 function approvalWaitOutcome(approved: boolean, signal: AbortSignal, detail?: ApprovalWaitDetail): AiApprovalOutcome {
   if (approved) return 'approved';
@@ -245,6 +247,9 @@ function approvalWaitOutcome(approved: boolean, signal: AbortSignal, detail?: Ap
  * `waitForApproval` row. `waitForApproval` closes the row itself; this write
  * only lands when that close-out failed, and then it must store the same
  * reason the card was shown (a timed-out wait stays "timed out", not "ended").
+ * The literal is AI_APPROVAL_WAIT_ENDED_MESSAGE (aiAgent.ts), spelled out
+ * because most suites mock './aiAgent' without it; aiAgent.authz.test.ts pins
+ * that the two stay equal.
  */
 function fallbackCloseOutMessage(detail: ApprovalWaitDetail): string {
   return detail.closeOutMessage ?? 'Approval wait ended before a decision was made';
