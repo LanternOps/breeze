@@ -87,6 +87,39 @@ describe('AiCostIndicator message count label (#10108)', () => {
   });
 });
 
+// Critique: the 10px gray-400 message count read ~2.5:1 on white. Text in the
+// indicator is at least 12px and uses the muted-foreground token.
+describe('AiCostIndicator text size and contrast', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders no 10px or gray-400 text', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 7 },
+        budget: null,
+      }),
+    );
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const count = Array.from(container.querySelectorAll('span')).find((el) => el.textContent === '7 msgs this month')!;
+    expect(count.className).toContain('text-xs');
+    expect(count.className).toContain('text-muted-foreground');
+    expect(container.innerHTML).not.toContain('text-[10px]');
+    expect(container.innerHTML).not.toContain('text-gray-400');
+  });
+});
+
 // #4388 W04: when /ai/usage carries a cached partner credit balance, append
 // it to the same cost-summary text the indicator already shows: no separate
 // UI slot, just a trailing " · N credits" clause.
