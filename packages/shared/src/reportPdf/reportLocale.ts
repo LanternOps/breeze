@@ -188,13 +188,33 @@ export function formatReportDateTime(value: string | Date | null | undefined, lo
   return `${dateText(p, locale.dateFormat)}, ${time}${p.zone ? ` ${p.zone}` : ''}`;
 }
 
-/** "Oct 10, 2026 – Nov 9, 2026"; null unless both ends are known. */
+/** The zone a printed reporting period's days are in, and its label. */
+export const REPORT_PERIOD_ZONE_LABEL = '(UTC)';
+
+/**
+ * One end of a reporting period: its UTC calendar day, in the report's date
+ * format. The window generators cut whole UTC days (an explicit `2026-11-09`
+ * bound is that UTC day; a rolling window ends at the generation instant), so
+ * the period is printed as UTC days and labelled `(UTC)`, while "Generated"
+ * keeps the partner's zone (#12048 review). A late-evening run in New York
+ * then reads "… – Nov 10, 2026 (UTC) · Generated Nov 9, 2026, 9:06 PM EST"
+ * instead of an unlabelled period that seems to end tomorrow. Which rows a
+ * report includes is decided by the API and is not changed by this.
+ */
+export function formatReportPeriodDay(
+  value: string | Date | null | undefined,
+  locale: Pick<ReportLocale, 'dateFormat'>,
+): string | null {
+  return formatReportDate(value, { dateFormat: locale.dateFormat, timeZone: 'UTC' });
+}
+
+/** "Oct 10, 2026 – Nov 9, 2026 (UTC)"; null unless both ends are known. */
 export function formatReportPeriod(
   start: string | Date | null | undefined,
   end: string | Date | null | undefined,
-  locale: ReportDateLocale,
+  locale: Pick<ReportLocale, 'dateFormat'>,
 ): string | null {
-  const s = formatReportDate(start, locale);
-  const e = formatReportDate(end, locale);
-  return s && e ? `${s} – ${e}` : null;
+  const s = formatReportPeriodDay(start, locale);
+  const e = formatReportPeriodDay(end, locale);
+  return s && e ? `${s} – ${e} ${REPORT_PERIOD_ZONE_LABEL}` : null;
 }

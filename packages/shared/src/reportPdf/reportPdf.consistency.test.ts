@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { jsPDF } from 'jspdf';
 import { deflateSync } from 'node:zlib';
 import { buildReportPdf, executiveSummaryPeriodLabel, scorecardLayout, type BuildOpts, type ReportBranding } from './reportPdf';
+import * as threatDetectionPdf from './threatDetectionPdf';
 import type { ExecutiveSummary, PostureSummary } from '../types';
 import type { ThreatDetectionSummary } from '../types/threatDetectionReport';
 import type { VulnerabilityManagementSummary } from '../types/vulnerabilityManagementReport';
@@ -27,6 +28,8 @@ const pages = (doc: Doc): string[] =>
     .filter((p): p is string[] => Array.isArray(p))
     .map((p) => decodeWinAnsi(p.join('\n')));
 const text = (doc: Doc): string => pages(doc).join('\n');
+/** Page text with PDF string escapes removed: `\\(UTC\\)` reads `(UTC)`. */
+const plainText = (doc: Doc): string => text(doc).replace(/\\([()\\])/g, '$1');
 
 /** Every page's MediaBox, in mm, from jsPDF's own page bookkeeping. */
 function pageSizesMm(doc: Doc): Array<[number, number]> {
@@ -196,7 +199,50 @@ describe('build isolation and fallbacks (#12048, #12041)', () => {
       reportType: 'vulnerability_management', summary: exploding as never, generatedAt: GENERATED,
       timezone: 'Europe/Berlin', branding: { ...usPartner, dateFormat: 'DD/MM/YYYY', timeFormat: '24h' },
     })).toThrow('render exploded');
-    expect(executiveSummaryPeriodLabel({ start: '2026-10-10', end: '2026-11-09' }, 'UTC')).toBe('Oct 10, 2026 – Nov 9, 2026');
+    expect(executiveSummaryPeriodLabel({ start: '2026-10-10', end: '2026-11-09' })).toBe('Oct 10, 2026 – Nov 9, 2026 (UTC)');
+  });
+
+  // #12048 review: the formatters and drawing helpers on `chrome` must keep
+  // the conventions of the build that made them, even when called after
+  // another build ran (what a future async renderer would do).
+  it('binds each build\'s locale, page size and palette into its chrome', () => {
+    const captured: Array<Parameters<typeof threatDetectionPdf.renderThreatDetectionReport>[3]> = [];
+    const spy = vi.spyOn(threatDetectionPdf, 'renderThreatDetectionReport')
+      .mockImplementation((_doc, _summary, _opts, chrome) => { captured.push(chrome); });
+    try {
+      const td = { reportType: 'threat_detection_review' as const, summary: threat, generatedAt: GENERATED };
+      buildReportPdf([], { ...td, timezone: 'America/New_York', branding: { ...usPartner, primaryColor: '#ff0000' } });
+      buildReportPdf([], {
+        ...td, timezone: 'Europe/Berlin',
+        branding: { ...usPartner, pageSize: 'a4', dateFormat: 'DD/MM/YYYY', timeFormat: '24h', primaryColor: '#0000ff' },
+      });
+      expect(captured).toHaveLength(2);
+      const [first, second] = captured as [NonNullable<(typeof captured)[number]>, NonNullable<(typeof captured)[number]>];
+
+      expect(first.formatDateTime(GENERATED)).toBe('Nov 9, 2026, 12:06 PM EST');
+      expect(first.formatDate('2026-11-09')).toBe('Nov 9, 2026');
+      expect(first.formatPeriod('2026-10-10', '2026-11-09')).toBe('Oct 10, 2026 – Nov 9, 2026 (UTC)');
+      expect(first.PAGE.w).toBeCloseTo(279.4, 1);
+      // Red partner vs blue partner (the palette contrast-adjusts the hex).
+      expect(first.C.primary[0]).toBeGreaterThan(200);
+      expect(first.C.primary[2]).toBeLessThan(40);
+      expect(second.C.primary[2]).toBeGreaterThan(200);
+      expect(second.C.primary[0]).toBeLessThan(40);
+      expect(second.formatDateTime(GENERATED)).toBe('9 Nov 2026, 18:06 GMT+1');
+
+      // The drawing helpers too: a header drawn through the first chrome after
+      // both builds ended spans a Letter page in the first partner's colour.
+      const doc = new jsPDF({ orientation: 'landscape', format: 'letter' });
+      first.drawHeaderBand(doc);
+      const page = pages(doc)[0]!;
+      const [r, g, b] = first.C.primary.map((v) => v / 255);
+      const fills = [...page.matchAll(/([\d.]+) ([\d.]+) ([\d.]+) rg\b/g)].map((m) => m.slice(1, 4).map(Number));
+      expect(fills.some(([fr, fg, fb]) => Math.abs(fr! - r!) < 0.01 && Math.abs(fg! - g!) < 0.01 && Math.abs(fb! - b!) < 0.01)).toBe(true);
+      expect(page).toMatch(/ 792\.?0* -?[\d.]+ re\b/); // the band spans 792 pt (Letter), not 841.89 (A4)
+      expect(page).not.toContain('841.89');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('falls back to the name on the brand band, without throwing, when the logo will not embed', () => {
@@ -264,6 +310,24 @@ describe('scorecard layout on both page sizes (#12048)', () => {
 });
 
 describe('reporting period line (#12048)', () => {
+  // #12048 review: periods are whole UTC days while "Generated" prints in the
+  // partner's zone. At 9:06 PM in New York it is already Nov 10 in UTC; the
+  // period must say which days it means, and the executive cover must print
+  // the same days as the threat detection and vulnerability reports.
+  it('labels the period as UTC days, consistently across reports, for a late-evening run', () => {
+    const late = new Date('2026-11-10T02:06:00.000Z');
+    const lateReports = [
+      { reportType: 'executive_summary' as const, summary: { ...exec, period: { start: '2026-10-11T02:06:00.000Z', end: late.toISOString() } } },
+      { reportType: 'threat_detection_review' as const, summary: { ...threat, coverage: { ...threat.coverage!, periodStart: '2026-10-11', periodEnd: '2026-11-10' } } },
+      { reportType: 'vulnerability_management' as const, summary: { ...vuln, period: { start: '2026-10-11', end: '2026-11-10', nextEnd: '2026-12-10' } } },
+    ];
+    for (const r of lateReports) {
+      const t = plainText(buildReportPdf([], { ...r, generatedAt: late, timezone: 'America/New_York', branding: usPartner }));
+      expect(t).toContain('Reporting period Oct 11, 2026 – Nov 10, 2026 (UTC)');
+      expect(t).toContain('Generated Nov 9, 2026, 9:06 PM EST');
+    }
+  });
+
   it('prints the executive, threat detection and vulnerability periods in the same words and format', () => {
     for (const report of [REPORTS[0]!, REPORTS[2]!, REPORTS[3]!]) {
       expect(text(build(report))).toContain('Reporting period Oct 10, 2026 – Nov 9, 2026');

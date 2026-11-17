@@ -48,6 +48,8 @@ import {
   formatReportDate,
   formatReportDateTime,
   formatReportPeriod,
+  formatReportPeriodDay,
+  REPORT_PERIOD_ZONE_LABEL,
   reportPageGeometry,
   resolveReportLocale,
   type ReportDateFormat,
@@ -232,8 +234,6 @@ let L: ReportLocale = DEFAULT_LOCALE;
 /** A date in the report's locale, or `fallback` when there is none. */
 const fmtDate = (value: string | Date | null | undefined, fallback = '—'): string => formatReportDate(value, L) ?? fallback;
 const fmtDateTime = (value: string | Date | null | undefined, fallback = '—'): string => formatReportDateTime(value, L) ?? fallback;
-const fmtPeriod = (start: string | Date | null | undefined, end: string | Date | null | undefined): string | null =>
-  formatReportPeriod(start, end, L);
 const TOTAL_TOKEN = '{tpc}'; // jsPDF total-page-count placeholder
 
 const set = {
@@ -1274,15 +1274,18 @@ const EXEC_ALL_ALERTS_LABEL = 'All recorded alerts';
 /**
  * The period the alert figures cover, printed on the cover (#12045). Null
  * for a legacy snapshot that did not record it, so the caller keeps the old
- * wording instead of claiming a period it does not know.
+ * wording instead of claiming a period it does not know. Printed as UTC days
+ * and labelled, like every other report's period (`formatReportPeriodDay`,
+ * #12048 review), so the cover and a threat detection review run beside it
+ * print the same days even when it is already tomorrow in UTC.
  */
-export function executiveSummaryPeriodLabel(period: ExecutiveSummary['period'], timezone: string): string | null {
+export function executiveSummaryPeriodLabel(period: ExecutiveSummary['period']): string | null {
   if (!period) return null;
-  const start = period.start ? execDate(period.start, timezone) : null;
-  const end = period.end ? execDate(period.end, timezone) : null;
-  if (start && end) return `${start} – ${end}`;
-  if (start) return `Since ${start}`;
-  if (end) return `Through ${end}`;
+  const start = period.start ? formatReportPeriodDay(period.start, L) : null;
+  const end = period.end ? formatReportPeriodDay(period.end, L) : null;
+  if (start && end) return formatReportPeriod(period.start, period.end, L);
+  if (start) return `Since ${start} ${REPORT_PERIOD_ZONE_LABEL}`;
+  if (end) return `Through ${end} ${REPORT_PERIOD_ZONE_LABEL}`;
   return EXEC_ALL_ALERTS_LABEL;
 }
 
@@ -1468,7 +1471,7 @@ function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts
   const d = summary.devices ?? {};
   const a = summary.alerts ?? {};
   const total = d.total ?? 0;
-  const period = executiveSummaryPeriodLabel(summary.period, opts.timezone);
+  const period = executiveSummaryPeriodLabel(summary.period);
 
   const meta = [
     period ? `Reporting period ${period}` : null,
@@ -2557,6 +2560,44 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
   }
 }
 
+/** The palette, page geometry and locale one build renders with. */
+type BuildState = { C: Palette; PAGE: ReportPageGeometry; L: ReportLocale };
+
+/** Run `fn` with `state` as the module's active build state, then restore
+ *  whatever was active before (nothing leaks either way). */
+function withBuildState<R>(state: BuildState, fn: () => R): R {
+  const prev: BuildState = { C, PAGE, L };
+  C = state.C;
+  PAGE = state.PAGE;
+  L = state.L;
+  try {
+    return fn();
+  } finally {
+    C = prev.C;
+    PAGE = prev.PAGE;
+    L = prev.L;
+  }
+}
+
+/** `chrome` for one build, bound to the build state active when it is made. */
+function boundChrome(opts: RenderOpts) {
+  const state: BuildState = { C, PAGE, L };
+  const locale = state.L;
+  return {
+    C: state.C,
+    PAGE: state.PAGE,
+    drawHeaderBand: (d: jsPDF) => withBuildState(state, () => drawHeaderBand(d, opts)),
+    drawFooter: (d: jsPDF) => withBuildState(state, () => drawFooter(d, opts)),
+    drawTitleBlock: (...args: Parameters<typeof drawTitleBlock>) => withBuildState(state, () => drawTitleBlock(...args)),
+    drawSectionHeading: (...args: Parameters<typeof drawSectionHeading>) => withBuildState(state, () => drawSectionHeading(...args)),
+    formatDate: (value: string | Date | null | undefined) => formatReportDate(value, locale),
+    formatDateTime: (value: string | Date | null | undefined) => formatReportDateTime(value, locale),
+    formatPeriod: (start: string | Date | null | undefined, end: string | Date | null | undefined) =>
+      formatReportPeriod(start, end, locale),
+    metaSeparator: REPORT_META_SEPARATOR,
+  };
+}
+
 /** The generation instant as printed: the partner's date format plus the
  *  timezone. A caller-formatted string (not an ISO instant) is kept as given. */
 function generatedAtLabel(value: string | Date): string {
@@ -2583,18 +2624,11 @@ function buildReportPdfWithPalette(rows: unknown[], opts: RenderOpts): jsPDF {
 
   // The design system every designed sub-renderer draws with. Built once per
   // document so all of them share one page size, palette and date format.
-  const chrome = {
-    C,
-    PAGE,
-    drawHeaderBand: (d: jsPDF) => drawHeaderBand(d, opts),
-    drawFooter: (d: jsPDF) => drawFooter(d, opts),
-    drawTitleBlock,
-    drawSectionHeading,
-    formatDate: (value: string | Date | null | undefined) => formatReportDate(value, L),
-    formatDateTime: (value: string | Date | null | undefined) => formatReportDateTime(value, L),
-    formatPeriod: (start: string | Date | null | undefined, end: string | Date | null | undefined) => fmtPeriod(start, end),
-    metaSeparator: REPORT_META_SEPARATOR,
-  };
+  // Bound to THIS build's palette, page and locale, captured now: the
+  // formatters close over them and the drawing helpers re-enter them, so a
+  // renderer that kept `chrome` past the build (an async one, say) still
+  // prints this partner's settings, never the next build's (#12048 review).
+  const chrome = boundChrome(opts);
 
   // SAFE guard is intentionally asymmetric: a summary carrying an exec shape
   // ('devices' key) must not enter the posture cover, but we don't require any

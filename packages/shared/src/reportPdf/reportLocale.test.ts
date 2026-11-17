@@ -76,7 +76,11 @@ describe('report locale (#12048)', () => {
   });
 
   it('prints a period as one range in one format', () => {
-    expect(formatReportPeriod('2026-10-10', '2026-11-09', NY)).toBe('Oct 10, 2026 – Nov 9, 2026');
+    expect(formatReportPeriod('2026-10-10', '2026-11-09', NY)).toBe('Oct 10, 2026 – Nov 9, 2026 (UTC)');
+    // An instant end is printed as its UTC day too, never the report zone's
+    // (#12048 review): 02:00 UTC on Nov 10 is Nov 10 in the period, not Nov 9.
+    expect(formatReportPeriod('2026-10-11T02:00:00.000Z', '2026-11-10T02:00:00.000Z', NY)).toBe('Oct 11, 2026 – Nov 10, 2026 (UTC)');
+    expect(formatReportPeriod('2026-10-10', '2026-11-09', { ...NY, dateFormat: 'DD/MM/YYYY' })).toBe('10 Oct 2026 – 9 Nov 2026 (UTC)');
     expect(formatReportPeriod('2026-10-10', null, NY)).toBeNull();
     expect(formatReportPeriod(undefined, '2026-11-09', NY)).toBeNull();
   });
