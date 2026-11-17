@@ -35,6 +35,7 @@ import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import type { readCustomFieldDefinitions as ReadCustomFieldDefinitionsFn } from './aiToolsDevice';
 import type { verifyDeviceAccess as VerifyDeviceAccessFn } from './aiTools';
 import { runWithConcurrency, EXPORT_DEVICE_CONCURRENCY, type ExportPager } from './aiToolsExportWriter';
+import type { ExportDataset } from './aiToolsExportDatasetNames';
 
 /**
  * Lazy (call-time) imports of the two hub modules, NOT static ones.
@@ -59,11 +60,9 @@ async function getReadCustomFieldDefinitions(): Promise<typeof ReadCustomFieldDe
   return (await import('./aiToolsDevice')).readCustomFieldDefinitions;
 }
 
-export const EXPORT_DATASETS = [
-  'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
-  'metrics', 'vulnerabilities', 'custom_fields',
-] as const;
-export type ExportDataset = (typeof EXPORT_DATASETS)[number];
+// The names live in a zero-import leaf so the Zod enums can derive from them
+// without an import cycle (see that file). Re-exported unchanged.
+export { EXPORT_DATASETS, type ExportDataset } from './aiToolsExportDatasetNames';
 
 export interface DatasetRequest {
   auth: AuthContext;
