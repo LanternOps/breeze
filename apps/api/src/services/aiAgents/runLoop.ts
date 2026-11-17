@@ -2331,7 +2331,8 @@ export function resolveRunProfileToolAllowlist(run: RunProfileRef, agentAllowlis
   if (isPatchProfile(run)) return patchToolAllowlist(agentAllowlist);
   if (isResearchProfile(run)) return researchToolAllowlist(agentAllowlist);
   if (isAnalysisProfile(run)) return analysisToolAllowlist(agentAllowlist);
-  if (isAssessmentProfile(run)) return assessmentToolAllowlist(agentAllowlist);
+  // #11978: a check-in assessment also reads the subject its trigger waits on.
+  if (isAssessmentProfile(run)) return assessmentToolAllowlist(agentAllowlist, run.triggerRef);
   if (isTroubleshootProfile(run)) return troubleshootToolAllowlist(agentAllowlist);
   return null;
 }
