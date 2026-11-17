@@ -71,6 +71,11 @@ export const aiRunArtifacts = pgTable(
     tailPreview: text('tail_preview').notNull().default(''),
     sourceDeviceId: uuid('source_device_id').references(() => devices.id, { onDelete: 'set null' }),
     createdByTool: text('created_by_tool').notNull(),
+    // Wisp analysis sessions W03: the dataset an `export_dataset` artifact
+    // holds. Set only by that tool; NULL for every other artifact (and for
+    // exports written before W03). A continuation re-checks it against the
+    // launch's frozen export grants.
+    dataset: text('dataset'),
     expiresAt: timestamp('expires_at', { withTimezone: true })
       .notNull()
       .default(sql`now() + interval '30 days'`),

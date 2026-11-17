@@ -123,6 +123,24 @@ Screenshots go to `.state/shots/` and the turn log to `.state/turns.log`.
     `harbor-1egal.example`.
 - **Default Organization**: the seeded e2e fixtures plus T-2026-0005, a password
   reset (low).
+- **Sandboxed analysis** (`setup.sh analysis`, run after `triage` and `world`):
+  `make-env.sh` turns the workspace on with the fake backend
+  (`BREEZE_AI_WORKSPACE_ENABLED=true`, `AI_WORKSPACE_BACKEND=fake`; the stack runs
+  `NODE_ENV=development`, which is the only place `fake` is allowed). The step lets
+  Northwind Dental use external AI processing, adds `workspace_stage`, `workspace_run`,
+  `workspace_collect`, `workspace_cancel` and `export_dataset` to the Triage agent's
+  allowlist, installs `python3` in the API container if it is missing (the fake sandbox
+  runs step scripts with it; reinstalled by re-running the step after the container is
+  recreated), and creates an empty site, Northwind Dental / **Annex (no devices)**, for
+  the `frame_empty` scenario. `sh/analysis-ready.sh` re-checks all of this and fails a
+  scenario as a harness error when it does not hold.
+  - `analysis-chain-cites-first-file` needs a grant budget of at least 1000 cents:
+    `WISP_EVAL_BUDGET_CENTS=1000 bash sh/setup.sh grant`.
+  - `continuation-grants-not-covered` calls `sh/narrow-producer-grants.sh`, which edits
+    the first run's frozen export grants in the database to simulate a grantor who lost
+    permissions between two steps.
+  - `change-log-withheld-gate-reported` is known-red: the harness grantor holds
+    `devices:execute`, so the `user_account_changes` gate is never absent (see its `note`).
 - The simulated agents answer every command with `completed, exit 0, stdout
   "agentsim"`. They report healthy metrics (disk about 41%, RAM 30-70%). That
   **contradicts the planted alerts on purpose**, so a scenario can see whether
@@ -223,6 +241,9 @@ costs about 7¢. A full run of the first 11 scenarios was 14-17 model turns and 
 including background assessments and the summary step that runs each time a
 session closes. `setup.sh` costs about 18¢ for the first look at three orgs.
 
+- **Analysis scenarios (`m-` to `s-`) are not yet measured.** Each runs chat turns plus
+  one to three analysis runs; compute is free on the `fake` backend, the model calls are
+  not. Record the measured cost here after the first live run.
 - **Per-scenario cost** is the change in `sum(ai_cost_usage.total_cost_cents)` for
   daily rows across the scenario. It includes agent runs and any background
   assessment that ran at the same time, so treat it as an upper bound.

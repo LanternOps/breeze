@@ -825,11 +825,9 @@ export async function renderRunPdf(
   if (!result) throw new Error('Report result is unavailable');
 
   const branding = await getReportBranding(orgId);
-  const generatedAt = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(row.completedAt ?? new Date());
+  // The instant, not a string: the renderer prints it in the partner's date
+  // format with its timezone, like every other report path (#12048).
+  const generatedAt = row.completedAt ?? new Date();
 
   // The logo is decoded while the PDF is built and written; a large one holds
   // the process-wide large-decode slot (pngDecodeLimits.ts).

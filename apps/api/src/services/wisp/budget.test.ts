@@ -216,6 +216,15 @@ describe('spendBreakdownUnderGrant', () => {
     expect(q.params).toEqual(expect.arrayContaining([GRANT, '2027-01-05T00:00:00.000Z', '2027-01-06T00:00:00.000Z']));
   });
 
+  it('the run line sums cost_cents plus settled compute_cents', async () => {
+    h.results.push([{ total: '0' }], [{ total: '0' }], [{ total: '0' }]);
+    await spendBreakdownUnderGrant(GRANT);
+    const fields = (h.db.select.mock.calls[0] as unknown[])[0] as { total: SQL };
+    const q = compile(fields.total);
+    expect(q.sql).toContain('"ai_agent_runs"."cost_cents"');
+    expect(q.sql).toContain('coalesce("ai_agent_runs"."compute_cents", 0)');
+  });
+
   it('no spend → all zero', async () => {
     h.results.push([{ total: null }], [{ total: null }], [{ total: null }]);
     await expect(spendBreakdownUnderGrant(GRANT)).resolves.toEqual({ totalCents: 0, chatCents: 0, backgroundCents: 0 });

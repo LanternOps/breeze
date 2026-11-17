@@ -114,6 +114,9 @@ async function vendorBackupSummary(auth: AuthContext) {
     m365Accounts: summary.m365Accounts,
     byHealth: summary.byHealth,
     byStatus: summary.byStatus,
+    // The Status card's counts: a `completed` device with no success in 48h is
+    // `overdue` here, not `completed` (#12025).
+    byStatusBucket: summary.byStatusBucket,
     byRecency: summary.byRecency,
     needsAttention: attention.rows.map((r) => ({
       orgName: r.orgName,

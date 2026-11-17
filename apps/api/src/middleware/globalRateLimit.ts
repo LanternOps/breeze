@@ -138,6 +138,12 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // anything without the connection's secret.
   { prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 },
   { prefix: '/api/v1/webhooks/flows/', name: 'flowwebhook', limit: 1200 },
+  // Portal SCIM provisioning (W9 #11386, plan D9). Microsoft's provisioning
+  // service calls from shared egress addresses on behalf of every customer
+  // tenant, so on the shared 600/min budget one busy tenant would throttle
+  // another and anything else on that address. The router carries its own
+  // per-IP failure budget (checked before any lookup) and a per-org limiter.
+  { prefix: '/api/v1/scim/', name: 'scim', limit: 6000 },
   // Public trust pages (spec trust-center §8, §10): unauthenticated by design. Isolated so a scanner
   // enumerating slugs cannot burn the shared budget; 120/min is generous for one human reading a page
   // (payload + badge + a few documents). The SSR card path lives under /trust/card/ and is skip-listed

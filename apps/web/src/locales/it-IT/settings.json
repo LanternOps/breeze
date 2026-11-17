@@ -595,7 +595,7 @@
       "verify": "Verifica",
       "verifyQueued": "Verifica del modello in coda",
       "verifyFailed": "Impossibile mettere in coda la verifica del modello.",
-      "verifyGatewayHint": "Esegue un breve test di chiamata degli strumenti sul tuo endpoint (usa alcune migliaia di token).",
+      "verifyGatewayHint": "Esegue un test di chiamata degli strumenti sul tuo endpoint. Vedi la nota sui costi qui sopra.",
       "remove": "Rimuovi modello",
       "removeTitle": "Rimuovere questo modello?",
       "removeMessage": "«{{model}}» verrà eliminato da questa connessione. La cronologia di utilizzo e costi viene conservata. Potrai aggiungerlo di nuovo in seguito.",
@@ -1010,6 +1010,7 @@
     "noLogo": "Nessun logo",
     "uploadImage": "Carica immagine",
     "imageHelp": "PNG, JPEG o WebP, fino a 400 KB dopo la codifica; le immagini grandi vengono ridotte a 800 px.",
+    "logoLowRes": "Questo logo è di {{width}} × {{height}} px. Report, preventivi e fatture lo stampano con una larghezza fino a circa 64 mm (2,5 in), quindi in stampa risulterà sfocato. Carica una versione di almeno 600 px sul lato più lungo.",
     "invalidSavedLogo": "I dati del logo salvato non sono validi. Rimuovilo o caricane uno nuovo.",
     "pasteUrl": "Oppure incolla un URL immagine",
     "customCss": "CSS personalizzato",
@@ -3348,7 +3349,8 @@
           "turnCount": "Turni",
           "summary": "Riepilogo",
           "computeCost": "Calcolo",
-          "computeEstimated": "(stimato)"
+          "computeEstimated": "(stimato)",
+          "scope": "Ambito"
         },
         "flags": {
           "budgetExceeded": "Budget superato",
@@ -3434,6 +3436,24 @@
           "partialNote": "Contabilizzazione parziale finché l'autorizzazione delle policy non presidiate è disattivata — l'esposizione reale potrebbe essere sottostimata.",
           "unavailable": "Nessuna policy agente attiva per l'organizzazione di questa esecuzione.",
           "loading": "Caricamento del budget…"
+        },
+        "scope": {
+          "org_one": "Intera organizzazione ({{count}} dispositivo all'avvio)",
+          "org_other": "Intera organizzazione ({{count}} dispositivi all'avvio)",
+          "site_one": "Sede {{name}} ({{count}} dispositivo all'avvio)",
+          "site_other": "Sede {{name}} ({{count}} dispositivi all'avvio)",
+          "siteUnnamed_one": "Una sede ({{count}} dispositivo all'avvio)",
+          "siteUnnamed_other": "Una sede ({{count}} dispositivi all'avvio)",
+          "devices_one": "{{count}} dispositivo selezionato",
+          "devices_other": "{{count}} dispositivi selezionati"
+        },
+        "chain": {
+          "title": "Questa indagine",
+          "description": "Ogni passaggio proseguiva da uno precedente e poteva usare i file prodotti dai passaggi precedenti.",
+          "step": "Passaggio {{step}}",
+          "current": "Questa esecuzione",
+          "open": "Apri esecuzione",
+          "noGoal": "Nessun obiettivo registrato"
         }
       },
       "triage": {
@@ -8289,6 +8309,10 @@
     "heading": "Piano e funzionalità",
     "description": "Cosa include il tuo piano. Le funzionalità bloccate restano visibili, così puoi vedere cosa aggiunge un upgrade.",
     "currentPlan": "Piano attuale",
+    "changePlan": "Cambia piano",
+    "enrollmentPaused": "La registrazione di nuovi dispositivi è sospesa: {{active}} di {{limit}} dispositivi.",
+    "enrollmentPausedNoCounts": "La registrazione di nuovi dispositivi è sospesa perché il tuo account ha raggiunto il limite di dispositivi.",
+    "enrollmentPausedChangePlan": "Cambia il tuo piano per aggiungerne altri.",
     "plans": {
       "free": "Gratuito",
       "starter": "Starter",
@@ -8937,6 +8961,47 @@
       "stale": "Questo batch è cambiato da quando lo hai aperto. Controlla l’elenco aggiornato e riprova.",
       "notHeld": "Questo batch non è più in attesa di una decisione.",
       "enforcementOff": "Il deprovisioning è in modalità solo report su questo server, quindi non c’è nulla da applicare."
+    }
+  },
+  "portalScim": {
+    "title": "Provisioning Microsoft Entra (SCIM)",
+    "description": "Lascia che il tenant Entra del cliente crei gli account del portale per le persone assegnate all’app Breeze Portal e li disabiliti quando se ne vanno.",
+    "loading": "Caricamento del provisioning…",
+    "retry": "Riprova",
+    "refreshFailed": "Impossibile aggiornare. Ciò che vedi potrebbe non essere aggiornato.",
+    "needsTenant": "Dimostra qui sopra il tenant Microsoft di questa organizzazione prima di configurare il provisioning.",
+    "tenantUrl": "URL tenant",
+    "noBaseUrl": "L’indirizzo pubblico dell’API non è configurato, quindi l’URL tenant non può essere mostrato. Chiedi al tuo amministratore di impostare PUBLIC_API_URL.",
+    "counts": "{{provisioned}} con provisioning · {{deactivated}} disattivati dalla directory",
+    "secretOnce": "Copia ora questo token e incollalo nel campo Token segreto dell’app Entra. Non verrà mostrato di nuovo.",
+    "secretToken": "Token segreto",
+    "secretDone": "L’ho copiato",
+    "lastUsed": "Ultimo utilizzo {{date}}",
+    "neverUsed": "Non ancora utilizzato",
+    "notWorking": "Non funziona: il tenant dimostrato di questa organizzazione è cambiato",
+    "revoke": "Revoca",
+    "label": "Nome del token",
+    "create": "Crea token di provisioning",
+    "createSubmit": "Crea",
+    "cancel": "Annulla",
+    "copy": "Copia",
+    "copied": "Copiato",
+    "copyFailed": "Impossibile copiare negli appunti.",
+    "revokeConfirm": {
+      "title": "Revocare questo token di provisioning?",
+      "message": "Entra smette subito di eseguire il provisioning con \"{{label}}\". Le persone già provisionate mantengono i propri account."
+    },
+    "toasts": {
+      "created": "Token di provisioning creato.",
+      "revoked": "Token di provisioning revocato."
+    },
+    "errors": {
+      "load": "Impossibile caricare il provisioning.",
+      "create": "Impossibile creare il token di provisioning.",
+      "revoke": "Impossibile revocare il token di provisioning.",
+      "tenantNotProven": "Dimostra il tenant Microsoft di questa organizzazione prima di creare un token di provisioning.",
+      "limit": "Questa organizzazione ha già due token di provisioning attivi. Revocane prima uno.",
+      "notFound": "Quel token di provisioning non esiste più."
     }
   }
 }

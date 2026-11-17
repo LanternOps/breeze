@@ -234,6 +234,7 @@
     "thirdPartyCatalog": {
       "title": "Catalogue de paquets tiers",
       "description": "Breeze des métadonnées sélectionnées pour des logiciels tiers détectés par winget sur des agents.",
+      "scopeNote": "Ce catalogue fournit uniquement un nom convivial, l'éditeur, la catégorie et la gravité par défaut d'un correctif tiers signalé par un appareil. Il ne détermine pas quelles applications sont mises à jour, et les applications absentes de cette liste apparaissent quand même dans Correctifs. Les mises à jour proviennent des sources de correctifs d'une politique de configuration, d'un anneau de mise à jour et de ce que winget, Chocolatey ou Homebrew signalent sur l'appareil. Les installations winget par utilisateur sont détectées, mais jamais mises à jour.",
       "totalEntries": "Total des participations :",
       "refresh": "Actualiser",
       "addPackage": "Ajouter un package",
@@ -1157,6 +1158,7 @@
       "portal_access_request": "Demande d'accès au portail",
       "portal_auth": "Connexion au portail",
       "portal_directory_run": "Analyse d'annuaire du portail",
+      "portal_scim_token": "Jeton de provisionnement du portail",
       "portal_user": "Utilisateur du portail",
       "psa_connection": "Connexion PSA",
       "psa_ticket_mapping": "Association de ticket PSA",

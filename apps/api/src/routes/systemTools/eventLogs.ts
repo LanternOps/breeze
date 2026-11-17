@@ -46,10 +46,12 @@ function mapEventLogFromAgent(log: unknown): EventLogInfo | null {
   const name = asString(record.name);
   if (!name) return null;
 
+  // A count the agent did not send is unknown, not zero: omit it (#11975).
+  const recordCount = asNumber(record.recordCount);
   return {
     name,
     displayName: asString(record.displayName) ?? name,
-    recordCount: asNumber(record.recordCount) ?? 0,
+    ...(recordCount !== undefined ? { recordCount } : {}),
     maxSize: asNumber(record.maxSizeBytes) ?? asNumber(record.maxSize) ?? 0,
     retentionDays: asNumber(record.retentionDays) ?? 0,
     lastWriteTime: asString(record.lastWriteTime) ?? ''

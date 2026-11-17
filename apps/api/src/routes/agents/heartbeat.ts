@@ -62,6 +62,7 @@ import {
   finishOnedriveHelperConfig,
   buildPatchSourceConfigUpdate,
   buildWarrantyConfigUpdate,
+  buildWakeOnLanConfigUpdate,
   getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
   resolvePinnedUpgradeTargets,
@@ -109,6 +110,7 @@ import {
   recordAgentHeartbeat,
   recordAgentHeartbeatEch,
   recordAgentFilterSignatureReport,
+  recordAgentControlPlaneBlockReport,
   resolveResponseStatus,
 } from '../metrics';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
@@ -120,6 +122,7 @@ import {
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 import { parseLogShipping, planLogShippingWrite } from '../../services/logShippingHealth';
 import { parseWatchdogInstall, planWatchdogInstallWrite } from '../../services/watchdogInstallHealth';
+import { parseControlPlaneBlock, planControlPlaneBlockWrite } from '../../services/controlPlaneBlockHealth';
 import {
   agentIdentityAssertionRefused,
   agentIdentityAssertionVersionToSign,
@@ -1196,6 +1199,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     networkIsolationMechanism: data.securityCapabilities?.networkIsolationMechanism ?? null,
     networkIsolationUnsupportedReason: data.securityCapabilities?.networkIsolationUnsupportedReason ?? null,
     networkIsolationReady: data.securityCapabilities?.networkIsolationReady ?? false,
+    networkIsolationDeadMan: data.securityCapabilities?.networkIsolationDeadMan === true,
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
     // #3409 PR4 — same non-sticky contract as the line above: written every
     // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
@@ -1340,6 +1344,20 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   Object.assign(
     deviceUpdates,
     planWatchdogInstallWrite(device, parseWatchdogInstall(data.watchdogInstall), new Date()),
+  );
+
+  // #8868 — control-plane block episode. Planned against the already-loaded
+  // `device` row: no extra query, and keys are added to this beat's single
+  // UPDATE only on a transition (new/changed episode, ECH flip, clear, stale)
+  // or at most hourly while an episode stays active. Absent or malformed =
+  // never sets or clears; an active record goes stale after 2 h of beats
+  // without a valid one. A malformed object is counted (never logged with
+  // its values) so contract drift between agent and API is visible.
+  const controlPlaneBlock = parseControlPlaneBlock(data.controlPlaneBlock);
+  if (controlPlaneBlock.status !== 'absent') recordAgentControlPlaneBlockReport(controlPlaneBlock.status);
+  Object.assign(
+    deviceUpdates,
+    planControlPlaneBlockWrite(device, controlPlaneBlock, data.echActive, new Date()),
   );
 
   // #800 Layer C — recovery side. If the asymmetry detector previously
@@ -2388,7 +2406,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     const { buildContainmentHeartbeatBlock, storedContainmentHeartbeatBlock } = isolation;
     // `device` was read before this beat's capability write, and a capability claim is same-heartbeat
     // truth: an agent that just dropped below level 3 would reject a block carrying policy permits.
-    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0 };
+    // The same holds for the agent version the release-token gate reads (#10102), and for the dead-man
+    // flag: an agent that stopped reporting it would refuse a block carrying a window (#10103).
+    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0, networkIsolationDeadMan: data.securityCapabilities?.networkIsolationDeadMan === true, agentVersion: data.agentVersion ?? device.agentVersion };
     try {
       // A cached absence needs no block build (and no SAVEPOINT / RELEASE).
       containment = isolationContext.row === null
@@ -2825,6 +2845,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
     featureUpdateSettings: RingFeatureUpdates | null;
     warrantySettings: { hpCmslEnabled: boolean } | null;
+    wakeOnLanSettings: { enabled: boolean } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
     workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null;
@@ -2836,6 +2857,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings: null,
     featureUpdateSettings: null,
     warrantySettings: null,
+    wakeOnLanSettings: null,
     hardwareMonitoringSettings: null,
     timeSyncSettings: null,
     workloadInventorySettings: null,
@@ -3015,6 +3037,20 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
+      // Wake-on-LAN readiness (#10838 W02): an error only omits the block so
+      // the agent keeps its current collection state. The builder's no-policy-set
+      // fallback issues a query (a loaded set needs none), so that path runs in
+      // its own transaction: a failure
+      // is caught outside it and cannot poison the request transaction.
+      try {
+        policyConfigs.wakeOnLanSettings = beatPolicySet
+          ? await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts)
+          : await withDbTransaction(() => buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts));
+      } catch (err) {
+        console.error(`[agents] failed to build wake_on_lan config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
       // Time sync (index §F.2): an error only omits time_sync_settings.
       try {
         policyConfigs.timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId, policyOpts);
@@ -3149,6 +3185,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings,
     featureUpdateSettings,
     warrantySettings,
+    wakeOnLanSettings,
     hardwareMonitoringSettings,
     timeSyncSettings,
     workloadInventorySettings,
@@ -3186,6 +3223,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // agent's inner parse accepts either spelling.
   if (warrantySettings) {
     policyConfigUpdate.warranty_settings = { hp_cmsl_enabled: warrantySettings.hpCmslEnabled };
+  }
+  if (wakeOnLanSettings) {
+    policyConfigUpdate.wake_on_lan_settings = {
+      enabled: wakeOnLanSettings.enabled,
+      configure_settings: false,
+      firmware_writes: [],
+    };
   }
   const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;
 

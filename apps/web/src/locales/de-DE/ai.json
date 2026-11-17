@@ -621,7 +621,12 @@
       "waitingForApprover": "Wartet auf einen Genehmiger"
     },
     "continue": "Fortsetzen",
-    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen."
+    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen.",
+    "chainStep": "Schritt {{step}} dieser Untersuchung",
+    "goal": "Ziel: {{goal}}",
+    "findings": "Ergebnisse: {{count}}",
+    "findingsHigh": "({{count}} hoch)",
+    "files": "Dateien:"
   },
   "aiModelPicker": {
     "chooseModel": "Modell auswählen",
@@ -1112,5 +1117,20 @@
       "partnerEnforced_one": "{{display}} Unterhaltung in Ihren Organisationen steht unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt.",
       "partnerEnforced_other": "{{display}} Unterhaltungen in Ihren Organisationen stehen unter diesem Zeitraum zur Entfernung an; ihre Nachrichten werden beim nächsten nächtlichen Lauf entfernt."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "Diese Antwort hat das Zeitlimit überschritten",
+    "disconnected": "Die Verbindung wurde unterbrochen, bevor die Antwort abgeschlossen war.",
+    "tryAgain": "Erneut versuchen",
+    "conversationGone": "Diese Unterhaltung ist nicht mehr verfügbar. Starten Sie einen neuen Chat, um fortzufahren."
+  },
+  "aiNotifications": {
+    "responseReady": "Antwort bereit",
+    "needsApproval": "Benötigt Ihre Genehmigung",
+    "needsInput": "Benötigt Ihre Eingabe",
+    "failed": "Antwort fehlgeschlagen",
+    "enable": "Benachrichtigen, wenn eine Antwort bereit ist",
+    "disable": "Breeze AI-Benachrichtigungen ausschalten",
+    "blocked": "Benachrichtigungen sind für diese Website blockiert. Erlauben Sie sie in den Browsereinstellungen."
   }
 }

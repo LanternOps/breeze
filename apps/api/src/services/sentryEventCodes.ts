@@ -517,6 +517,18 @@ export const SENTRY_EVENT_CODES = [
    *  threshold or the chain's first enforcement. Leavers keep access until the
    *  MSP applies or dismisses it in the org's Portal tab. Counts only. */
   'portal_directory_held',
+
+  // --- portal Entra SCIM provisioning (portal registration W9 #11386) ------
+  /** The Redis session purge after a SCIM deactivate failed. The auth epoch
+   *  bump already makes both session stores refuse those sessions; this is
+   *  cleanup, with no retry (W9 plan OD3). Ids only, in the log. */
+  'portal_scim_purge_failed',
+
+  // --- trust center serving set (#9087) ----------------------------------
+  /** A serving-set reconcile lost the epoch check three times in a row and
+   *  applied without removing members (a stale member lingers until the next
+   *  reconcile). Frequent events mean writers are contending for the epoch. */
+  'trust_serving_reconcile_fallback',
 ] as const;
 
 /**

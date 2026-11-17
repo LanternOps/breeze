@@ -18,7 +18,7 @@ import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithIns
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { aiSessions, aiMessages } from '../db/schema';
-import { eq, and, isNull, inArray } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode, AiPendingCardEvent } from '@breeze/shared/types/ai';
@@ -30,9 +30,10 @@ import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
 import { takeGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { presentRefusedToolCallNote } from './aiModels/gateway/openai/translateResponse';
-import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
+import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureCode, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
+import { SDK_PERMISSION_MODE } from './llm/sdkChildEnvGuards';
 import {
   newSdkTurnObservation,
   observeSdkMessage,
@@ -59,6 +60,13 @@ import { storeSdkSessionPointer } from './aiSdkSessionPointer';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES, chatToolDomain, listChatSurfaceToolNames } from './aiAgentSdkTools';
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
+import {
+  flagSessionNow,
+  flushDeferredToolFailureFlags,
+  holdToolFailureFlag,
+  isMcpInputValidationErrorText,
+  type DeferredToolFailureFlag,
+} from './aiSessionAutoFlag';
 import type { RequestLike } from './auditEvents';
 import type { WispSessionGrant } from './wisp/chatCeiling';
 import { appendWispAssistantText, beginWispTurn, type WispCurrentTurn } from './wisp/turnRecord';
@@ -558,6 +566,13 @@ export interface ActiveSession {
    */
   pendingTurnRoundTrips?: RoundTripTally;
   /**
+   * #11968: this turn's correctable input refusals, held back from the
+   * session auto-flag until the turn ends (aiSessionAutoFlag.ts). Written
+   * by postToolUse, flushed at every turn end. Optional so fixtures that
+   * build ActiveSession literals compile unchanged.
+   */
+  deferredToolFailureFlags?: Map<string, DeferredToolFailureFlag>;
+  /**
    * #10400: the work turns this query may spend, set only when it can search.
    * Its SDK `maxTurns` carries search headroom, so the SDK no longer stops real
    * work at the session's limit and the background processor has to.
@@ -1051,6 +1066,7 @@ export class StreamingSessionManager {
             existing.eventBus.publish({
               type: 'error',
               message: 'AI provider configuration changed — please resend your message',
+              code: 'config_changed',
             });
             existing.eventBus.publish({ type: 'done' });
           }
@@ -1492,6 +1508,9 @@ export class StreamingSessionManager {
             resume: resumeSdkSessionId,
             persistSession: true,
             settingSources: [],
+            // #11817: never the SDK's provider-dependent default; after the
+            // queryOptions spread so nothing spread in can override it.
+            permissionMode: SDK_PERMISSION_MODE,
             // Redacted per complete line, never per chunk (see createSdkStderrRedactor).
             stderr: (data: string) => stderrLog.write(data),
           }
@@ -1662,7 +1681,7 @@ export class StreamingSessionManager {
           session.topologyTurnSealed = true;
           // A topology turn never shows gateway text; drop the note so a rebuilt session can't surface it later.
           takeGatewayFailureNote(session.breezeSessionId);
-          session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
+          session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.', code: 'timeout' });
           session.eventBus.publish({ type: 'done' });
           this.remove(session.breezeSessionId);
           return;
@@ -1670,10 +1689,17 @@ export class StreamingSessionManager {
         this.stopThinking(session);
         // #7794: a model-gateway failure behind the timeout (the CLI keeps
         // retrying it) is the actionable part; say it.
+        // #9428: coded so a client can offer "Try again"; the note also rides
+        // as `detail` so a client can headline the timeout and show the reason
+        // under it. The message is unchanged for clients that read only it.
+        // (A retry starts from a fresh query: the next message removes this
+        // session, which closes the still-running SDK turn — routes/ai.ts.)
         const gatewayNote = this.takeTurnGatewayNote(session);
         session.eventBus.publish({
           type: 'error',
           message: gatewayNote ? `AI request timed out. ${gatewayNote}` : 'AI request timed out. Please try again.',
+          code: 'timeout',
+          ...(gatewayNote ? { detail: gatewayNote } : {}),
         });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
@@ -1693,12 +1719,9 @@ export class StreamingSessionManager {
     session.topologyInvestigation = undefined;
     if (!succeeded || session.topologyStopped) {
       await runtime.abort().catch((err) => captureException(err));
-      session.eventBus.publish({
-        type: 'error',
-        message: session.topologyStopped
-          ? 'This investigation reached its limit. Start a new investigation to continue.'
-          : 'The topology explanation could not be completed.',
-      });
+      session.eventBus.publish(session.topologyStopped
+        ? { type: 'error', message: 'This investigation reached its limit. Start a new investigation to continue.', code: 'topology_limit' }
+        : { type: 'error', message: 'The topology explanation could not be completed.', code: 'topology_failed' });
       session.topologyStopped = false;
       return;
     }
@@ -1708,7 +1731,7 @@ export class StreamingSessionManager {
       result = await runtime.complete();
     } catch (err) {
       captureException(err);
-      session.eventBus.publish({ type: 'error', message: 'The topology explanation could not be completed.' });
+      session.eventBus.publish({ type: 'error', message: 'The topology explanation could not be completed.', code: 'topology_failed' });
       return;
     }
     session.eventBus.publish({ type: 'topology_explanation', explanation: result.explanation });
@@ -1950,7 +1973,9 @@ export class StreamingSessionManager {
               // (#3089). Settling only acts on a wait already in flight; the
               // over-limit call's preToolUse may be past its stop check and not
               // yet waiting, so spend the cycle's wait budget too: its wait then
-              // returns at once (the hook refuses any later call outright).
+              // returns at once, refused, even for a row PAM policy already
+              // auto-approved (a zero budget never honours an approval, #12084);
+              // the hook refuses any later call outright.
               settleApprovalWaits(session);
               session.approvalWaitDeadline = Date.now();
               void Promise.resolve().then(() => session.query.interrupt()).catch(() => undefined);
@@ -2163,6 +2188,11 @@ export class StreamingSessionManager {
             const providerMessage = providerFailure?.terminal
               ? providerFailureMessage(providerFailure.cause, sawOutput, { platformKey: turnBinding.connectionKind === 'platform' })
               : null;
+            // #9428: read here for the same reason (the gateway-note read above marked the observation).
+            const failureCode = providerFailureCode(
+              providerFailure?.terminal ? providerFailure.cause : null,
+              session.refusalObservation.contextWindowExceeded === true,
+            );
             let isErrorSuccessMessage: string | null = null;
             // #11676: the technician pressed Stop and the turn ended in the
             // shape an interrupt produces (a non-success result, or a success
@@ -2197,7 +2227,7 @@ export class StreamingSessionManager {
               if (topologyTurn) {
                 // A fixed error was already published; provider error text never reaches a topology turn.
               } else if (resultMsg.subtype === 'error_max_budget_usd') {
-                session.eventBus.publish({ type: 'error', message: 'AI budget limit reached for this query.' });
+                session.eventBus.publish({ type: 'error', message: 'AI budget limit reached for this query.', code: 'budget_exceeded' });
               } else if (resultMsg.subtype === 'error_max_turns') {
                 // Coded: the session's remaining turns ran out mid-loop, so the
                 // next send would be refused too (preflight). Wisp rolls to a
@@ -2210,6 +2240,7 @@ export class StreamingSessionManager {
                 session.eventBus.publish({
                   type: 'error',
                   message: gatewayNote ?? providerMessage ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')),
+                  code: failureCode,
                 });
               }
             } else if (!topologyTurn && !stoppedByUser && isErrorResult) {
@@ -2228,9 +2259,12 @@ export class StreamingSessionManager {
             // recur. The Office per-user ledger, the `done` event and the org
             // settlement all read this one number.
             const turn = await this.settleSdkTurn(session, resultMsg);
+            // #11968: flag the session for an input refusal the model did not
+            // correct this turn. Before `done`, so it cannot outlive the turn.
+            await flushDeferredToolFailureFlags(session);
 
             if (isErrorSuccessMessage && !turn.outcome.refused) {
-              session.eventBus.publish({ type: 'error', message: isErrorSuccessMessage });
+              session.eventBus.publish({ type: 'error', message: isErrorSuccessMessage, code: failureCode });
             }
 
             // §9.1a: a refused final answer is explained, never a silent empty
@@ -2314,9 +2348,18 @@ export class StreamingSessionManager {
       await this.abortTopologyTurn(session);
       const gatewayNote = this.takeTurnGatewayNote(session);
       workTurnLimitReported = session.workTurnLimitStopped === true;
-      session.eventBus.publish(workTurnLimitReported ? TURN_LIMIT_ERROR : {
+      session.eventBus.publish(workTurnLimitReported ? TURN_LIMIT_ERROR : topologyTurn ? {
         type: 'error',
-        message: topologyTurn ? 'The topology explanation could not be completed.' : gatewayNote ?? sanitizeErrorForClient(err),
+        message: 'The topology explanation could not be completed.',
+        code: 'topology_failed',
+      } : {
+        type: 'error',
+        message: gatewayNote ?? sanitizeErrorForClient(err),
+        // #9428: a crashed query with no terminal provider cause is a retryable provider_error.
+        code: providerFailureCode(
+          session.refusalObservation.providerFailure?.terminal ? session.refusalObservation.providerFailure.cause : null,
+          session.refusalObservation.contextWindowExceeded === true,
+        ),
       });
       session.eventBus.publish({ type: 'done' });
     } finally {
@@ -2345,6 +2388,9 @@ export class StreamingSessionManager {
       ) {
         await this.settleSdkTurn(session, null);
       }
+      // #11968: a turn that ended without a `result` still flags the session
+      // for an input refusal it never corrected (no-op when nothing is held).
+      await flushDeferredToolFailureFlags(session);
 
       // Only when a settlement failed AND marking it indeterminate at the time
       // failed too: retry the mark — never a re-settle (S5).
@@ -2704,24 +2750,14 @@ export class StreamingSessionManager {
     }
 
     // Auto-flag the session (first failure only) so flagged-session review
-    // surfaces these drops — mirrors postToolUse's tool-failure flag.
-    try {
-      await withDbAccessContext(
-        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-        () =>
-          db.update(aiSessions)
-            .set({
-              flaggedAt: new Date(),
-              flagReason: `Tool rejected before execution: ${toolName} — ${errorText.slice(0, 300)}`,
-            })
-            .where(and(
-              eq(aiSessions.id, session.breezeSessionId),
-              isNull(aiSessions.flaggedAt),
-            ))
-      );
-    } catch (err) {
-      captureException(err);
-      console.error('[StreamingSessionManager] Failed to auto-flag session for dropped tool_result:', session.breezeSessionId, err);
+    // surfaces these drops — mirrors postToolUse's tool-failure flag. An
+    // input-validation drop is held until the turn ends and dropped if the
+    // model's retry of the same tool succeeds (#11968, aiSessionAutoFlag.ts).
+    const flag = { flagReason: `Tool rejected before execution: ${toolName} — ${errorText.slice(0, 300)}` };
+    if (isMcpInputValidationErrorText(rawText)) {
+      holdToolFailureFlag(session, toolName, flag);
+    } else {
+      await flagSessionNow(session, flag);
     }
   }
 
@@ -2865,6 +2901,7 @@ export class StreamingSessionManager {
           message: reason === 'max_age'
             ? 'Session expired (24h limit). Please start a new session.'
             : 'Session expired due to inactivity. Please start a new session.',
+          code: 'session_expired',
         });
         session.eventBus.publish({ type: 'done' });
 
@@ -2926,7 +2963,7 @@ export class StreamingSessionManager {
     console.log(`[StreamingSessionManager] LRU evicting session ${oldest.id}`);
     const session = this.sessions.get(oldest.id);
     if (session) {
-      session.eventBus.publish({ type: 'error', message: 'Session evicted due to server capacity. Please start a new session.' });
+      session.eventBus.publish({ type: 'error', message: 'Session evicted due to server capacity. Please start a new session.', code: 'session_evicted' });
       session.eventBus.publish({ type: 'done' });
     }
     this.remove(oldest.id);

@@ -60,6 +60,7 @@ import {
   fillHistoryWindow,
   foldBackupHealthSummary,
   foldJobsIntoDays,
+  foldProviderLedgerIntoDays,
   emptyBackupHealthSummary,
   invertBackupJobStatus,
   isConnectionStale,
@@ -391,12 +392,13 @@ async function attachHistory(rows: BackupHealthRow[], now: Date): Promise<void> 
             ),
           ),
     providerIds.length === 0
-      ? Promise.resolve([] as Array<{ providerDeviceId: string; day: string; status: ExternalBackupStatus }>)
+      ? Promise.resolve([] as Array<{ providerDeviceId: string; day: string; status: ExternalBackupStatus; lastSuccessAt: Date | string | null }>)
       : db
           .select({
             providerDeviceId: backupProviderDeviceHistory.providerDeviceId,
             day: sql<string>`to_char(${backupProviderDeviceHistory.day}, 'YYYY-MM-DD')`.as('day'),
             status: backupProviderDeviceHistory.status,
+            lastSuccessAt: backupProviderDeviceHistory.lastSuccessAt,
           })
           .from(backupProviderDeviceHistory)
           .where(
@@ -414,18 +416,22 @@ async function attachHistory(rows: BackupHealthRow[], now: Date): Promise<void> 
     byDevice.set(job.deviceId, list);
   }
 
-  const byProvider = new Map<string, Map<string, ExternalBackupStatus>>();
+  const byProvider = new Map<string, Array<{ day: string; status: ExternalBackupStatus; lastSuccessAt: Date | string | null }>>();
   for (const row of ledgerRows) {
-    const days = byProvider.get(row.providerDeviceId) ?? new Map<string, ExternalBackupStatus>();
-    days.set(row.day, row.status);
-    byProvider.set(row.providerDeviceId, days);
+    const list = byProvider.get(row.providerDeviceId) ?? [];
+    list.push(row);
+    byProvider.set(row.providerDeviceId, list);
   }
 
+  const today = window[window.length - 1]!;
   for (const row of rows) {
     const observed =
       row.source === 'breeze'
         ? foldJobsIntoDays(byDevice.get(row.deviceId!) ?? [])
-        : (byProvider.get(row.key.slice('provider:'.length)) ?? new Map<string, ExternalBackupStatus>());
+        : foldProviderLedgerIntoDays(byProvider.get(row.key.slice('provider:'.length)) ?? [], {
+            lastSuccessAt: row.lastSuccessAt,
+            today,
+          });
     row.history28d = fillHistoryWindow(window, observed);
   }
 }

@@ -621,7 +621,12 @@
       "waitingForApprover": "Waiting for an approver"
     },
     "continue": "Continue",
-    "continueMessage": "Continue troubleshooting run {{runId}}."
+    "continueMessage": "Continue troubleshooting run {{runId}}.",
+    "chainStep": "Step {{step}} of this investigation",
+    "goal": "Goal: {{goal}}",
+    "findings": "Findings: {{count}}",
+    "findingsHigh": "({{count}} high)",
+    "files": "Files:"
   },
   "aiModelPicker": {
     "chooseModel": "Choose a model",
@@ -1112,5 +1117,20 @@
       "partnerEnforced_one": "{{display}} conversation across your organizations is due for removal under this window; its messages will be removed in the next nightly run.",
       "partnerEnforced_other": "{{display}} conversations across your organizations are due for removal under this window; their messages will be removed in the next nightly run."
     }
+  },
+  "aiErrorBanner": {
+    "timedOut": "This response timed out",
+    "disconnected": "The connection was interrupted before the response finished.",
+    "tryAgain": "Try again",
+    "conversationGone": "This conversation is no longer available. Start a new chat to continue."
+  },
+  "aiNotifications": {
+    "responseReady": "Response ready",
+    "needsApproval": "Needs your approval",
+    "needsInput": "Needs your input",
+    "failed": "Response failed",
+    "enable": "Notify me when a response is ready",
+    "disable": "Turn off Breeze AI notifications",
+    "blocked": "Notifications are blocked for this site. Allow them in your browser settings."
   }
 }

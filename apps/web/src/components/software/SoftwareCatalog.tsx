@@ -88,10 +88,47 @@ const needsInstallerUpload = (item: SoftwareItem): boolean =>
  *                            link), then the hash is cleared the same way.
  */
 type CatalogView =
-  | { tab: "catalog" }
+  | { tab: "catalog"; source?: SourceFilter }
   | { tab: "deployments"; deploymentId?: string };
+
+/**
+ * Where a library entry's install comes from, derived from fields the catalog
+ * list already returns: winget / Homebrew from `methodKinds`, an uploaded or
+ * URL-hosted installer from `versionCount`. An entry can have several.
+ * Hash form: `#catalog&source=winget` (also accepted bare: `#source=winget`).
+ */
+const SOURCE_FILTERS = ["winget", "brew", "installer"] as const;
+type SourceFilter = (typeof SOURCE_FILTERS)[number];
+
+const isSourceFilter = (v: string): v is SourceFilter =>
+  (SOURCE_FILTERS as readonly string[]).includes(v);
+
+function itemSources(item: SoftwareItem): Set<SourceFilter> {
+  const sources = new Set<SourceFilter>();
+  for (const kind of item.methodKinds ?? []) {
+    if (kind === "winget") sources.add("winget");
+    else if (kind.startsWith("homebrew")) sources.add("brew");
+  }
+  if ((item.versionCount ?? 0) > 0) sources.add("installer");
+  return sources;
+}
+
+const SOURCE_LABEL_KEYS: Record<SourceFilter, string> = {
+  winget: "policies:software.softwareCatalog.sourceWinget",
+  brew: "policies:software.softwareCatalog.sourceBrew",
+  installer: "policies:software.softwareCatalog.sourceInstaller",
+};
+
 function parseCatalogView(hash: string): CatalogView | undefined {
-  if (hash === "catalog") return { tab: "catalog" };
+  const tokens = hash.split("&");
+  if (tokens[0] === "catalog" || tokens[0]?.startsWith("source=")) {
+    const source = tokens
+      .find((t) => t.startsWith("source="))
+      ?.slice("source=".length);
+    return source && isSourceFilter(source)
+      ? { tab: "catalog", source }
+      : { tab: "catalog" };
+  }
   if (hash === "deployments") return { tab: "deployments" };
   if (hash.startsWith("deployment=")) {
     const id = hash.slice("deployment=".length);
@@ -412,6 +449,23 @@ export default function SoftwareCatalog() {
     const unique = new Set(catalogItems.map((item) => item.category));
     return Array.from(unique);
   }, [catalogItems]);
+  // Offer only sources that exist in the library; a hash-selected source with
+  // no entries stays selectable so the user can see why the list is empty.
+  const sourceFilter = view.tab === "catalog" ? view.source : undefined;
+  const availableSources = useMemo(() => {
+    const present = new Set<SourceFilter>();
+    for (const item of catalogItems)
+      for (const s of itemSources(item)) present.add(s);
+    if (sourceFilter) present.add(sourceFilter);
+    return SOURCE_FILTERS.filter((s) => present.has(s));
+  }, [catalogItems, sourceFilter]);
+  const selectSource = (next: string) => {
+    const source = isSourceFilter(next) ? next : undefined;
+    if (typeof window !== "undefined")
+      window.location.hash = source ? `catalog&source=${source}` : "catalog";
+    setView({ tab: "catalog", source });
+  };
+
   const filteredSoftware = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return catalogItems.filter((item) => {
@@ -421,9 +475,10 @@ export default function SoftwareCatalog() {
         item.vendor.toLowerCase().includes(normalizedQuery);
       const matchesCategory =
         category === "all" ? true : item.category === category;
-      return matchesQuery && matchesCategory;
+      const matchesSource = !sourceFilter || itemSources(item).has(sourceFilter);
+      return matchesQuery && matchesCategory && matchesSource;
     });
-  }, [query, category, catalogItems]);
+  }, [query, category, sourceFilter, catalogItems]);
   // Built-in EDR readiness: one fetch per present provider (there's one
   // integration per partner), shared by the cards and the detail panel.
   const builtinProviders = useMemo(
@@ -554,6 +609,12 @@ export default function SoftwareCatalog() {
               "policies:software.softwareCatalog.browseAndDeployApprovedSoftwarePackages",
             )}
           </p>
+          <p
+            data-testid="software-library-scope-note"
+            className="mt-1 max-w-3xl text-xs text-muted-foreground"
+          >
+            {i18n.t("policies:software.softwareCatalog.libraryScopeNote")}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -667,6 +728,21 @@ export default function SoftwareCatalog() {
           {categories.map((item) => (
             <option key={item} value={item}>
               {item.charAt(0).toUpperCase() + item.slice(1)}
+            </option>
+          ))}
+        </FilterSelect>
+        <FilterSelect
+          label={i18n.t("policies:software.softwareCatalog.sourceFilterLabel")}
+          value={sourceFilter ?? "all"}
+          onChange={(event) => selectSource(event.target.value)}
+          className="w-full sm:w-56"
+        >
+          <option value="all">
+            {i18n.t("policies:software.softwareCatalog.allSources")}
+          </option>
+          {availableSources.map((s) => (
+            <option key={s} value={s}>
+              {i18n.t(/* i18n-dynamic */ SOURCE_LABEL_KEYS[s])}
             </option>
           ))}
         </FilterSelect>

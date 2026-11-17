@@ -50,6 +50,7 @@ import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
 import { summarizeStepResult } from './stepOutputSummary';
 import { captureException } from '../sentry';
+import { capAtBoundary } from '../../utils/capAtBoundary';
 import { notifyUser, resolveSpecialistPostAudience, SpecialistAudienceRefusedError } from './notifyUser';
 import { specialistResultDedupeKey } from './threadPosts';
 import { getOrCreateThread } from './threads';
@@ -110,21 +111,6 @@ export function specialistRunLink(runId: string): string {
 function capChars(text: string, max: number): string {
   const chars = Array.from(text);
   return chars.length <= max ? text : `${chars.slice(0, Math.max(0, max - 1)).join('')}…`;
-}
-
-/**
- * Cap at `max` code points (never mid surrogate pair), cutting at the last
- * paragraph break in the back half of the budget, else the last line break,
- * else the last space, else hard (only for text with no whitespace there);
- * marked with "…". A report normally loses whole paragraphs, not part of one.
- */
-function capAtBoundary(text: string, max: number): string {
-  const chars = Array.from(text);
-  if (chars.length <= max) return text;
-  const head = chars.slice(0, Math.max(0, max - 1)).join('');
-  const floor = Math.floor(head.length / 2);
-  const at = [head.lastIndexOf('\n\n'), head.lastIndexOf('\n'), head.search(/\s\S*$/)].find((i) => i >= floor);
-  return `${(at === undefined ? head : head.slice(0, at)).trimEnd()}…`;
 }
 
 /**

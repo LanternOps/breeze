@@ -109,9 +109,11 @@ describe('exportReport — security_compliance_posture PDF', () => {
     const joined = textCalls.join('\n');
     expect(joined).toContain('Security & Compliance Posture'); // title
     expect(joined).toContain('Acme Co'); // org subtitle
-    expect(joined).toContain('STRONG'); // score band chip (82)
+    // Score 82 is STRONG, but the band is held at FAIR while a device is
+    // unprotected (unprotectedCount: 1) — #12044.
+    expect(joined).toContain('FAIR');
     // Control coverage renders label + value as distinct cells.
-    expect(joined).toContain('Managed EDR coverage');
+    expect(joined).toContain('EDR coverage');
     expect(joined).toContain('67%');
     expect(joined).toContain('AV definitions current'); // config-driven control live
     expect(joined).toContain('100%');

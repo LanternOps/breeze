@@ -39,6 +39,8 @@ The rules are fixed and shown on the public page:
 
 Controls are re-evaluated every hour while a page is published, and again when you publish. The hourly refresh re-reads the evidence only: your page settings, introduction, contact details and document list stay as they were at the last publish. Edits you save in the Trust Center tab reach the public page when you publish again. Removing a document from the page still takes it off the public page at the next refresh.
 
+A publish is normally fully live by the time the confirmation appears. If the confirmation reads "Published. The public page will update within a minute.", the page is published, but Breeze could not update its list of live pages right away. Until Breeze repairs the list, usually within a minute, the page itself loads, but link previews and search results show generic text and the website embed is not shown. You do not need to publish again.
+
 ### The Microsoft 365 MFA control
 
 One control, **MFA enforced (Microsoft 365 Conditional Access)**, is evaluated from the organization's Microsoft 365 connection rather than from devices. It reads Met when an enabled Conditional Access policy requires multi-factor authentication for all users on all cloud apps; report-only policies do not count. It needs a Microsoft 365 connection whose Conditional Access sync completed inside the evidence window. Without one, or when the tenant has no synced policies (security defaults and per-user MFA are not read), the control reads **Not assessed**, never Not met.

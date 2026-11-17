@@ -137,6 +137,8 @@ test('make-env carries over only the model key, generates the stack secrets and 
     }
     assert.notEqual(values.APP_ENCRYPTION_KEY, values.MFA_ENCRYPTION_KEY, 'each secret is generated separately');
     assert.equal(values.BREEZE_WISP_ENABLED, 'true');
+    assert.equal(values.BREEZE_AI_WORKSPACE_ENABLED, 'true');
+    assert.equal(values.AI_WORKSPACE_BACKEND, 'fake');
     assert.equal(values.MCP_OAUTH_ENABLED, 'false');
     assert.equal(values.CORS_ALLOWED_ORIGINS, 'http://localhost:48999');
     assert.equal(values.BREEZE_CADDY_IP, '172.31.99.10');

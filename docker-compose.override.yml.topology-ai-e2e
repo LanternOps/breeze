@@ -13,7 +13,7 @@ services:
       MCP_LLM_PRICE_OUTPUT_PER_M_USD: ${MCP_LLM_PRICE_OUTPUT_PER_M_USD:-0}
 
   mock-llm:
-    image: node:22-bookworm-slim
+    image: node:26-bookworm-slim
     command: ["node", "/mock/mockLlmServer.mjs"]
     volumes:
       - ./e2e-tests/fixtures:/mock:ro

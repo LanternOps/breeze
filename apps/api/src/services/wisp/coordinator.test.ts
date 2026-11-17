@@ -101,7 +101,7 @@ function ceiling(o: Partial<GrantCeiling> = {}): GrantCeiling {
 
 const PARAMS: Record<SpecialistKind, Record<string, unknown>> = {
   sweep: {},
-  analysis: { goal: 'Why are backups failing at Greenwood?' },
+  analysis: { goal: 'Why are backups failing at Greenwood?', scope: 'org' },
   operator_recipe: { workflowKey: 'service_recovery', workflowVersion: 1, objective: 'Restart spooler', recipeInput: {} },
   patch_plan: {},
   remediation_research: { deviceId: DEVICE },
@@ -420,6 +420,30 @@ describe('requestSpecialist gating matrix', () => {
     await expect(requestSpecialist(base())).resolves.toMatchObject({ refused: 'org_out_of_ceiling' });
   });
 
+  // W04 carry-over (W03 review, site reach): a continuation carries files and a
+  // seed from an earlier, possibly org-wide run, and its coverage check compares
+  // datasets and sensitive gates only. That is safe because a grantor whose
+  // site access has narrowed never reaches the analysis launcher at all: gate 4
+  // refuses any site-restricted ceiling, ceiling-wide or through the org's
+  // membership term, before the prerequisite or the launcher runs.
+  it.each([
+    ['ceiling-wide', { siteIds: new Set(['site-1']) }],
+    ['through the org membership term', {
+      orgTerms: new Map([[ORG, { permissionKeys: new Set(['*:*']), siteIds: new Set(['site-1']) }]]),
+    }],
+  ] as const)('a continuation under a site-restricted ceiling (%s) is refused before any prerequisite or launcher, on every path', async (_l, o) => {
+    const params = { ...PARAMS.analysis, continueFromRunId: '00000000-0000-4000-8000-0000000000c9' };
+    for (const path of ['user', 'approval'] as const) {
+      seed();
+      h.resolveGrantCeiling.mockResolvedValue(ceiling(o as Partial<GrantCeiling>));
+      await expect(requestSpecialist(base({ kind: 'analysis', params, requestedByRunId: null }), { requester: requesterOf(path) }))
+        .resolves.toEqual({ refused: 'org_out_of_ceiling', detail: 'site_restricted' });
+    }
+    expect(h.prereq.analysis).not.toHaveBeenCalled();
+    expect(launchCalls()).toBe(0);
+    expect(h.raiseSpecialistIntent).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['a child (depth 1)', { depth: 1 }],
     ['not an assessment', { profile: 'sweep' }],
@@ -443,6 +467,13 @@ describe('requestSpecialist gating matrix', () => {
     await expect(requestSpecialist(base({ kind: 'analysis', params: { goal: '' } }))).resolves.toEqual({ refused: 'invalid_params' });
     seed();
     await expect(requestSpecialist(base({ kind: 'sweep', params: { extra: 1 } }))).resolves.toEqual({ refused: 'invalid_params' });
+    expect(launchCalls()).toBe(0);
+  });
+
+  it('W02: an analysis that names no scope is refused at gate 6, before any launch', async () => {
+    seed();
+    const r = await requestSpecialist(base({ kind: 'analysis', params: { goal: 'why' } }));
+    expect(r).toMatchObject({ refused: 'invalid_params' });
     expect(launchCalls()).toBe(0);
   });
 

@@ -100,3 +100,46 @@ export async function createDesktopWsTicket(
   const body = await resp.json() as { ticket?: string };
   return typeof body.ticket === 'string' ? body.ticket : null;
 }
+
+export type EndDesktopSessionResult = 'ended' | 'already_ended' | 'failed';
+
+/** How long a hang-up waits for End before closing anyway. */
+export const END_DESKTOP_SESSION_TIMEOUT_MS = 2000;
+
+/**
+ * #11931: tell the API the technician hung up, so the session history records
+ * `operator_ended` and not the `peer_disconnected` the agent's peer-drop report
+ * would write. Viewer-token route: the viewer holds no user session, so it
+ * cannot call `POST /remote/sessions/:id/end`.
+ *
+ * Best effort and bounded. It never throws, and it gives up after `timeoutMs`,
+ * so a slow or unreachable API never holds the hang-up or the window close;
+ * the session then still ends, as `peer_disconnected`. A 400 means another
+ * writer ended it first, which is also done.
+ */
+export async function endDesktopSession(
+  apiUrl: string,
+  token: string,
+  sessionId: string,
+  timeoutMs: number = END_DESKTOP_SESSION_TIMEOUT_MS,
+): Promise<EndDesktopSessionResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await apiFetch(
+      apiUrl,
+      `/api/v1/desktop-ws/${encodeURIComponent(sessionId)}/viewer/end`,
+      token,
+      { method: 'POST', signal: controller.signal },
+    );
+    if (resp.ok) return 'ended';
+    if (resp.status === 400) return 'already_ended';
+    console.warn(`End session request was refused (HTTP ${resp.status}); the session will end when the connection closes.`);
+    return 'failed';
+  } catch (err) {
+    console.warn('End session request failed; the session will end when the connection closes:', err);
+    return 'failed';
+  } finally {
+    clearTimeout(timer);
+  }
+}

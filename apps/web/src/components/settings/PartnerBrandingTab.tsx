@@ -3,6 +3,7 @@ import type { InheritableBrandingSettings } from '@breeze/shared';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { MAX_LOGO_BYTES, LOGO_ACCEPT, resizeToDataUrl } from '../../lib/logoDataUrl';
 import { useTranslation } from 'react-i18next';
+import { useLowResLogo } from '../../lib/useLowResLogo';
 import '@/lib/i18n';
 
 type Props = {
@@ -70,6 +71,7 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
   };
 
   const safeLogo = sanitizeImageSrc(data.logoUrl);
+  const lowRes = useLowResLogo(safeLogo);
   // A data URI was saved but fails sanitization (e.g., corrupted or truncated in DB).
   const hasInvalidDataUri = !!data.logoUrl?.startsWith('data:') && !safeLogo;
   // Show the URL fallback input when there's no uploaded data URI, or when the saved one is invalid.
@@ -177,6 +179,11 @@ export default function PartnerBrandingTab({ data, onChange }: Props) {
             <p className="text-xs text-muted-foreground">
               {t('partnerBranding.imageHelp')}
             </p>
+            {lowRes && (
+              <p data-testid="logo-low-res-warning" className="text-xs text-amber-700 dark:text-amber-400">
+                {t('partnerBranding.logoLowRes', { width: lowRes.width, height: lowRes.height })}
+              </p>
+            )}
             {hasInvalidDataUri && (
               <p className="text-xs text-destructive">{t('partnerBranding.invalidSavedLogo')}</p>
             )}

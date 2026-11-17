@@ -1,15 +1,17 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 vi.mock('../postureEvidence', () => ({ loadPostureEvidence: vi.fn(), TRUST_PAGE_EVIDENCE_POLICY: { sites: [], windowDays: 30, minPasswordLength: 8, maxLocalAdmins: 2, maxAvDefinitionsAgeDays: 7, maxSecurityStatusAgeDays: 30, includeCis: true, monitoringWindowHours: 24 } }));
 vi.mock('./trustOnlyEvidence', () => ({ loadTrustOnlyEvidence: vi.fn(async () => ({})) }));
-vi.mock('./servingSet', () => ({ addServing: vi.fn(), removeServing: vi.fn(), cacheSnapshotPayload: vi.fn(), trustServingMember: (p: string, o?: string) => (o ? `${p}/${o}` : p) }));
+vi.mock('./servingSet', () => ({ cacheSnapshotPayload: vi.fn(), refreshServingForPartner: vi.fn(), dropServingBuiltMarker: vi.fn() }));
+const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../sentry', () => sentry);
 vi.mock('../portal/edrVisibility', () => ({ isEdrVisibilityEnabled: vi.fn(async () => false) }));
 // W02b: the declarations section reads its own table; this suite scripts the builder's selects in order (sections/declarations.test.ts covers it).
 vi.mock('./sections/declarations', () => ({ freezeDeclarationIds: vi.fn(async () => []), buildDeclaredControls: vi.fn(async () => []) }));
 vi.mock('./template', () => ({ loadPartnerTemplate: vi.fn(async () => null) }));
 const trustMode = vi.hoisted(() => ({ value: 'enforce' as 'off' | 'shadow' | 'enforce' }));
 vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode: () => trustMode.value }));
-const dbm = vi.hoisted(() => ({ select: vi.fn(), transaction: vi.fn(), insert: vi.fn(), update: vi.fn() }));
-vi.mock('../../db', () => ({ db: dbm, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() }));
+const dbm = vi.hoisted(() => ({ select: vi.fn(), transaction: vi.fn(), insert: vi.fn(), update: vi.fn(), inContext: false }));
+vi.mock('../../db', () => ({ db: dbm, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn(), hasDbAccessContext: () => dbm.inContext }));
 // W02f: these sections read their own tables; they are unit-tested in sections/*.test.ts, so keep them off this file's db-call queue.
 vi.mock('./sections/subprocessors', () => ({ freezeSubprocessors: vi.fn(async () => []), buildSubprocessors: vi.fn(() => []) }));
 vi.mock('./sections/faq', () => ({ freezeFaq: vi.fn(async () => []), buildFaq: vi.fn(() => []) }));
@@ -17,9 +19,9 @@ vi.mock('./sections/history', () => ({ buildHistory: vi.fn(async () => []) }));
 import { emptyControlEvidence, TELEMETRY_CONTROL_IDS } from '@breeze/shared';
 import type { TrustPageRow } from '../../db/schema/trustPages';
 import { loadPostureEvidence } from '../postureEvidence';
-import { addServing, cacheSnapshotPayload, removeServing } from './servingSet';
+import { cacheSnapshotPayload, dropServingBuiltMarker, refreshServingForPartner } from './servingSet';
 import { loadPartnerTemplate } from './template';
-import { publishTrustPage, trustPublishDecision, unpublishTrustPage, validatePublishSlugs, TrustPageError } from './publication';
+import { publishTrustPage, serveCommittedPublication, servingStatusFor, trustPublishDecision, unpublishTrustPage, validatePublishSlugs, TrustPageError } from './publication';
 
 /** Thenable query-builder stand-in: every builder method returns itself; awaiting it yields `result`. */
 function chain(result: unknown): unknown {
@@ -110,7 +112,7 @@ describe('trustPublishDecision (Ruling 24: the GET canPublish rule IS the publis
 });
 
 describe('publishTrustPage guards', () => {
-  beforeEach(() => { dbm.select.mockReset(); dbm.transaction.mockReset(); dbm.update.mockReset(); vi.mocked(addServing).mockReset(); vi.mocked(cacheSnapshotPayload).mockReset(); });
+  beforeEach(() => { dbm.select.mockReset(); dbm.transaction.mockReset(); dbm.update.mockReset(); vi.mocked(refreshServingForPartner).mockReset(); vi.mocked(cacheSnapshotPayload).mockReset(); });
 
   it('refuses probation/restricted partners with 403 TRUST_PROBATION / TRUST_RESTRICTED', async () => {
     await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, actorUserId: 'u', partnerTrustState: 'probation', partnerSlug: 'nw', orgSlug: 'acme' })).rejects.toMatchObject({ status: 403, code: 'TRUST_PROBATION' });
@@ -140,7 +142,7 @@ describe('publishTrustPage guards', () => {
     queueBuildSelects(page);
     txWithLockedRevision(1, page, { at: 0 });
     await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' })).rejects.toMatchObject({ status: 409, code: 'REVISION_MISMATCH' });
-    expect(addServing).not.toHaveBeenCalled();
+    expect(refreshServingForPartner).not.toHaveBeenCalled();
     expect(cacheSnapshotPayload).not.toHaveBeenCalled();
   });
 
@@ -190,45 +192,156 @@ describe('publishTrustPage guards', () => {
     expect(cfg).toMatchObject({ showPercentages: false, showManagedBy: true, hiddenControlIds: [], ndaText: 'Keep it confidential.', locale: 'fr-CA' });
   });
 
-  it('publish with an expectedTemplateRevision that no longer matches is 409 TEMPLATE_CHANGED before building', async () => {
+  /** A partner template whose only inherited value is showPercentages (the page leaves it NULL). */
+  const tpl = (revision: number, showPercentages: boolean) => ({
+    revision,
+    settings: { introHtml: null, searchIndexable: null, showPercentages, showDeviceCount: null, showManagedBy: null, showHistory: null, hiddenControlIds: null, frameworkView: null },
+  });
+  /** Publish a page that inherits showPercentages, capturing the frozen config (if the transaction is reached). */
+  async function publishInheriting(expectedTemplateRevision: number | null | undefined) {
+    const page = pageRow({ publicationAuthorizedBy: 'Jane Doe, COO', showPercentages: null });
+    queueBuildSelects(page);
+    const sets: unknown[] = [];
+    dbm.transaction.mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      select: () => chain([{ rev: 0 }]),
+      update: () => ({ set: (v: unknown) => { sets.push(v); return chain([{ ...page, publicationRevision: 1 }]); } }),
+      insert: () => chain(undefined),
+    }));
+    const out = await publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' });
+    const frozen = (sets.find((v) => (v as Record<string, unknown>).publishedConfig) as Record<string, Record<string, unknown>>).publishedConfig!;
+    return { out, frozen };
+  }
+
+  it('TEMPLATE_CHANGED compares against the revision the build used, not a separate pre-read (#9087)', async () => {
+    // The template is saved (4 -> 5, showPercentages true -> false) between any pre-read and the build's read.
+    vi.mocked(loadPartnerTemplate).mockReset()
+      .mockResolvedValueOnce(tpl(4, true))
+      .mockResolvedValueOnce(tpl(5, false))
+      .mockResolvedValue(null);
+    const { frozen } = await publishInheriting(4);
+    // One read: the revision compared is the revision frozen, so the publisher froze exactly what they saw.
+    expect(loadPartnerTemplate).toHaveBeenCalledTimes(1);
+    expect(frozen.showPercentages).toBe(true);
+  });
+
+  it('a template saved after the editor loaded fails 409 TEMPLATE_CHANGED after the build, before the transaction (#9087)', async () => {
+    vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(tpl(5, false));
     vi.mocked(loadPostureEvidence).mockClear();
-    vi.mocked(loadPartnerTemplate).mockResolvedValueOnce(null);
-    dbm.select.mockReturnValueOnce(chain([pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' })]));
-    await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: 3, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
+    queueBuildSelects(pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' }));
+    await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: 4, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
       .rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
-    expect(loadPostureEvidence).not.toHaveBeenCalled();
+    // The check ran on the build's own read (the evidence load is part of the build), not on a pre-read.
+    expect(loadPostureEvidence).toHaveBeenCalledTimes(1);
+    expect(loadPartnerTemplate).toHaveBeenCalledTimes(1);
     expect(dbm.transaction).not.toHaveBeenCalled();
   });
 
-  it('the partner home page is exempt from the attestation and serves both members, after the transaction settles', async () => {
+  it('an editor that loaded no template fails 409 TEMPLATE_CHANGED once the partner creates one (#9087)', async () => {
+    vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(tpl(1, true));
+    vi.mocked(loadPostureEvidence).mockClear();
+    queueBuildSelects(pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' }));
+    await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: null, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
+      .rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
+    expect(loadPostureEvidence).toHaveBeenCalledTimes(1);
+    expect(dbm.transaction).not.toHaveBeenCalled();
+  });
+
+  it('undefined expectedTemplateRevision publishes without a template check (API-key and MCP callers)', async () => {
+    vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(tpl(9, true));
+    const { out, frozen } = await publishInheriting(undefined);
+    expect(out.page.publicationRevision).toBe(1);
+    expect(frozen.showPercentages).toBe(true);
+    expect(loadPartnerTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('null matches a partner with no template', async () => {
+    vi.mocked(loadPartnerTemplate).mockReset().mockResolvedValue(null);
+    const { out, frozen } = await publishInheriting(null);
+    expect(out.page.publicationRevision).toBe(1);
+    expect(frozen.showPercentages).toBe(false); // the built-in default
+  });
+
+  it('the partner home page is exempt from the attestation; the publish returns the payload to cache and does no Redis I/O (#9087)', async () => {
     const page = pageRow({ isPartnerHome: true });
     queueBuildSelects(page);
     const settled = { at: 0 };
     txWithLockedRevision(0, { ...page, publicationRevision: 1, publishedAt: new Date() }, settled);
-    let addedAt = 0;
-    vi.mocked(addServing).mockImplementationOnce(async () => { addedAt = performance.now(); });
     const out = await publishTrustPage({ orgId: 'o', expectedRevision: 0, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' });
     expect(out.page.publicationRevision).toBe(1);
-    expect(addServing).toHaveBeenCalledWith(['nw/acme', 'nw']);
-    expect(cacheSnapshotPayload).toHaveBeenCalledWith(out.snapshotId, expect.objectContaining({ snapshotId: out.snapshotId }));
     expect(settled.at).toBeGreaterThan(0);
-    expect(addedAt).toBeGreaterThanOrEqual(settled.at);
+    expect(out.cache).toEqual({ snapshotId: out.snapshotId, payload: expect.objectContaining({ snapshotId: out.snapshotId }) });
+    // The caller serves after its context commits (serveCommittedPublication); nothing here touches Redis.
+    expect(refreshServingForPartner).not.toHaveBeenCalled();
+    expect(cacheSnapshotPayload).not.toHaveBeenCalled();
   });
 });
 
 describe('unpublishTrustPage', () => {
-  beforeEach(() => { dbm.update.mockReset(); vi.mocked(removeServing).mockReset(); });
+  beforeEach(() => { dbm.update.mockReset(); vi.mocked(refreshServingForPartner).mockReset(); });
 
-  it('removes the org member (and the partner-home member) after the write', async () => {
+  it('clears the publication and bumps the revision without touching Redis (#9087)', async () => {
     dbm.update.mockReturnValueOnce(chain([pageRow({ isPartnerHome: true, publicationRevision: 3 })]));
-    const row = await unpublishTrustPage({ orgId: 'o', actorUserId: 'u', partnerSlug: 'nw', orgSlug: 'acme', isPartnerHome: true });
+    const row = await unpublishTrustPage({ orgId: 'o', actorUserId: 'u' });
     expect(row.publicationRevision).toBe(3);
-    expect(removeServing).toHaveBeenCalledWith(['nw/acme', 'nw']);
+    expect(refreshServingForPartner).not.toHaveBeenCalled();
   });
 
-  it('404s for an org without a page and leaves the serving set alone', async () => {
+  it('404s for an org without a page', async () => {
     dbm.update.mockReturnValueOnce(chain([]));
-    await expect(unpublishTrustPage({ orgId: 'o', actorUserId: 'u', partnerSlug: 'nw', orgSlug: 'acme', isPartnerHome: false })).rejects.toMatchObject({ status: 404 });
-    expect(removeServing).not.toHaveBeenCalled();
+    await expect(unpublishTrustPage({ orgId: 'o', actorUserId: 'u' })).rejects.toMatchObject({ status: 404 });
+    expect(refreshServingForPartner).not.toHaveBeenCalled();
+  });
+});
+
+describe('serveCommittedPublication (#9087)', () => {
+  const payload = { snapshotId: 's1' } as never;
+  beforeEach(() => {
+    dbm.inContext = false;
+    vi.mocked(refreshServingForPartner).mockReset(); vi.mocked(cacheSnapshotPayload).mockReset();
+    vi.mocked(dropServingBuiltMarker).mockReset(); sentry.captureException.mockReset();
+  });
+
+  it('caches the payload, then reconciles the partner, and returns the outcome', async () => {
+    const calls: string[] = [];
+    vi.mocked(cacheSnapshotPayload).mockImplementationOnce(async () => { calls.push('cache'); });
+    vi.mocked(refreshServingForPartner).mockImplementationOnce(async () => { calls.push('reconcile'); return 'applied'; });
+    await expect(serveCommittedPublication({ partnerId: 'p1', cache: { snapshotId: 's1', payload } })).resolves.toBe('applied');
+    expect(calls).toEqual(['cache', 'reconcile']);
+    expect(cacheSnapshotPayload).toHaveBeenCalledWith('s1', payload);
+    expect(refreshServingForPartner).toHaveBeenCalledWith('p1');
+  });
+
+  it('an unpublish has nothing to cache and only reconciles', async () => {
+    vi.mocked(refreshServingForPartner).mockResolvedValueOnce('no_redis');
+    await expect(serveCommittedPublication({ partnerId: 'p1' })).resolves.toBe('no_redis');
+    expect(cacheSnapshotPayload).not.toHaveBeenCalled();
+  });
+
+  it('a DB error in the reconcile is degraded, never thrown: the built marker drops and it is reported', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(refreshServingForPartner).mockRejectedValueOnce(new Error('db down'));
+    await expect(serveCommittedPublication({ partnerId: 'p1' })).resolves.toBe('degraded');
+    expect(dropServingBuiltMarker).toHaveBeenCalledTimes(1);
+    expect(sentry.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, { component: 'trustPage.serveCommittedPublication' });
+    warn.mockRestore();
+  });
+
+  it('refuses to run inside a held DB context (its read would miss the uncommitted publish)', async () => {
+    dbm.inContext = true;
+    await expect(serveCommittedPublication({ partnerId: 'p1' })).rejects.toThrow('must run after the publishing context commits');
+    expect(refreshServingForPartner).not.toHaveBeenCalled();
+    expect(cacheSnapshotPayload).not.toHaveBeenCalled();
+  });
+});
+
+describe('servingStatusFor (#12103)', () => {
+  it.each([['applied', 'applied'], ['fallback', 'applied'], ['degraded', 'degraded'], ['no_redis', 'degraded']] as const)('%s → %s', (outcome, status) => {
+    expect(servingStatusFor(outcome)).toBe(status);
+  });
+  it('an unexpected outcome reports degraded and never throws: it runs after the publication committed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(servingStatusFor('surprise' as never)).toBe('degraded');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unexpected serving outcome'), { outcome: 'surprise' });
+    warn.mockRestore();
   });
 });

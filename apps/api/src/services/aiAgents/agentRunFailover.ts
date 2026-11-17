@@ -82,6 +82,24 @@ export async function markStaleHopReservations(input: { runId: string; orgId: st
   return marked;
 }
 
+/**
+ * #11971: the session binding a hop's reservation was first claimed with —
+ * `undefined` when the hop has no reservation yet, `null` when it was claimed
+ * sessionless, else the session id. A reservation's session binding is fixed
+ * at claim (`reserveAiBudget` refuses a re-claim with another one, and
+ * settlement must name the same session), so a re-driven hop claimed before
+ * runs settled onto their session — or while the run had none — keeps the
+ * binding it was claimed with instead of failing the run.
+ */
+export async function hopReservationSessionId(input: { orgId: string; idempotencyKey: string }): Promise<string | null | undefined> {
+  const [row] = await inSystemDbContext(() => db
+    .select({ sessionId: aiBudgetReservations.sessionId })
+    .from(aiBudgetReservations)
+    .where(and(eq(aiBudgetReservations.orgId, input.orgId), eq(aiBudgetReservations.idempotencyKey, input.idempotencyKey)))
+    .limit(1));
+  return row ? row.sessionId ?? null : undefined;
+}
+
 export type NextAgentHop =
   | { ok: true; resolved: ResolvedModel }
   | { ok: false; reason: 'no_next_hop' | 'admission_denied'; message: string };

@@ -64,19 +64,24 @@ vi.mock('../services/filesystemAnalysis', () => ({
   upsertFilesystemScanState: vi.fn(() => Promise.resolve({ deviceId: 'device-123' })),
 }));
 
-const defaultSelectChain = () => ({
-  from: vi.fn(() => ({
-    where: vi.fn(() => Object.assign(Promise.resolve([]), {
-      limit: vi.fn(() => Promise.resolve([])),
-      // `.orderBy()` must be BOTH awaitable and `.limit()`-chainable: the
-      // enrollment colliding-device lookup (#2764) awaits `.orderBy(...)`
-      // directly (it deliberately has no `.limit`), while other resolvers
-      // still order-then-limit.
-      orderBy: vi.fn(() => Object.assign(Promise.resolve([]), {
-        limit: vi.fn(() => Promise.resolve([]))
-      }))
-    }))
+const emptyWhere = () => vi.fn(() => Object.assign(Promise.resolve([]), {
+  limit: vi.fn(() => Promise.resolve([])),
+  // `.orderBy()` must be BOTH awaitable and `.limit()`-chainable: the
+  // enrollment colliding-device lookup (#2764) awaits `.orderBy(...)`
+  // directly (it deliberately has no `.limit`), while other resolvers
+  // still order-then-limit.
+  orderBy: vi.fn(() => Object.assign(Promise.resolve([]), {
+    limit: vi.fn(() => Promise.resolve([]))
   }))
+}));
+// `.innerJoin()` chains to itself, so a joined read (the config-policy
+// compliance probe read, #11976) also resolves to [] by default.
+const joinableFrom = (): { where: ReturnType<typeof emptyWhere>; innerJoin: ReturnType<typeof vi.fn> } => ({
+  where: emptyWhere(),
+  innerJoin: vi.fn(() => joinableFrom()),
+});
+const defaultSelectChain = () => ({
+  from: vi.fn(() => joinableFrom())
 });
 
 // The heartbeat's own-row read is `.limit(1).for('no key update')` (#8318 §6.4,
@@ -201,6 +206,9 @@ vi.mock('../db/schema', () => ({
   backupConfigs: { orgId: 'orgId' },
   securityPolicies: { orgId: 'orgId' },
   configurationPolicies: {},
+  // #11976: the policy probe build also reads config-policy compliance rules.
+  configPolicyComplianceRules: {},
+  configPolicyEffectiveFeatureLinks: {},
   deviceGroupMemberships: {},
   maintenanceWindows: {},
   softwarePolicies: {},
@@ -312,6 +320,7 @@ import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext }
 import {
   devices as devicesTable,
   automationPolicies as automationPoliciesTable,
+  configPolicyComplianceRules as configPolicyComplianceRulesTable,
 } from '../db/schema';
 import { saveFilesystemSnapshot } from '../services/filesystemAnalysis';
 import { queueCommandForExecution } from '../services/commandQueue';
@@ -956,6 +965,16 @@ describe('agent routes', () => {
           ]
         }
       ];
+      // Config-policy compliance rules (#11976): one new probe, one duplicate
+      // of an automation-policy probe (case-insensitive) that must collapse.
+      const complianceRuleRows = [
+        {
+          rules: [
+            { type: 'registry_check', registryPath: 'HKLM\\SOFTWARE\\Policies\\Power', registryValueName: 'ACSettingIndex' },
+            { type: 'registry_check', registryPath: 'hklm\\software\\policies\\zeta', registryValueName: 'enabled' }
+          ]
+        }
+      ];
       // The probe config build (#2129/#2131) now runs AFTER the heartbeat's
       // org-scoped block, so a positional once-mock queue is order-fragile.
       // organizations intentionally falls through to the default chain ([]):
@@ -974,6 +993,12 @@ describe('agent routes', () => {
           }
           if (table === automationPoliciesTable) {
             return rowsChain(probePolicyRows);
+          }
+          // #11976: configuration-policy compliance rules feed the same
+          // probe list (joined read: innerJoin → innerJoin → where).
+          if (table === configPolicyComplianceRulesTable) {
+            const joined = { innerJoin: vi.fn(() => joined), ...rowsChain(complianceRuleRows) };
+            return joined;
           }
           // default chain's from() ignores its argument (vi.fn with no params)
           return defaultSelectChain().from();
@@ -1020,6 +1045,7 @@ describe('agent routes', () => {
         },
         policy_registry_state_probes: [
           { registry_path: 'HKLM\\SOFTWARE\\Policies\\Alpha', value_name: 'Flag' },
+          { registry_path: 'HKLM\\SOFTWARE\\Policies\\Power', value_name: 'ACSettingIndex' },
           { registry_path: 'HKLM\\SOFTWARE\\Policies\\Zeta', value_name: 'Enabled' }
         ],
         policy_config_state_probes: [
@@ -1031,6 +1057,8 @@ describe('agent routes', () => {
         // #5511 W02: a resolved absent warranty policy delivers an explicit
         // false (the revoke-on-unassign contract), exactly like patch_source.
         warranty_settings: { hp_cmsl_enabled: false },
+        // #10838: no wake_on_lan policy resolves to an explicit enabled false.
+        wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [] },
         // Security remediation Wave 6, Task 9 — always sent (true or false),
         // mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID. Sending the explicit
         // false is what makes the switch reversible: an omitted key is a no-op
@@ -1155,6 +1183,7 @@ describe('agent routes', () => {
         feature_update_settings: { mode: 'block' },
         hardware_monitoring_settings: { enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 },
         warranty_settings: { hp_cmsl_enabled: false },
+        wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [] },
         require_manifest_signing_key_id: false
       });
       expect(insertValues).toHaveBeenCalledWith(

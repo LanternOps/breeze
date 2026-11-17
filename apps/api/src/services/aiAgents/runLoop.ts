@@ -41,6 +41,7 @@
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { unknownToolArgsHooks } from '../aiSdkToolArgGuard';
+import { SDK_PERMISSION_MODE } from '../llm/sdkChildEnvGuards';
 import type {
   AgentRunVerdict,
   AiAgentKind,
@@ -139,6 +140,7 @@ import { safeErrorMessage } from '../aiModels/safeDbError';
 import { turnBindingFrom, type TurnBinding } from '../aiModels/turnBinding';
 import {
   agentRunReservationBaseKey,
+  hopReservationSessionId,
   markStaleHopReservations,
   nextAgentHop,
   probeAgentHop,
@@ -170,6 +172,8 @@ import {
   completeToolExecution,
   createAgentRunSession,
   reconcileHungExecutions,
+  recordRunAssistantTurn,
+  recordRunTaskPrompt,
   startToolExecution,
 } from './executionLedger';
 import { deliverRunFinishedNotifications } from './runFinishedNotify';
@@ -215,7 +219,8 @@ import { isResearchProfile, researchDepthOf, researchLimits, researchToolAllowli
 import { loadResearchContext, ResearchContextUnavailableError } from './researchContext';
 import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/runMemory';
 import type { ResearchToolRefs } from './researchSubmission';
-import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { analysisContinuationFromTriggerRef, analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { loadHandleManifest } from './analysisContinuation';
 import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
 import {
   isTroubleshootProfile, TROUBLESHOOT_MAX_ACTIONS_PER_RUN, troubleshootLimits, troubleshootToolAllowlist,
@@ -233,7 +238,7 @@ import { WorkspaceService } from '../workspace/workspaceService';
 import { WORKSPACE_MEMORY_GB } from '../workspace/workspacePaths';
 import { registerWorkspace, unregisterWorkspace } from '../workspace/workspaceRegistry';
 import { calculateComputeCents, settleComputeCents } from '../aiCostTracker';
-import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
+import type { AiAgentRunStagedInputs, AiRunExportGrants } from '../../db/schema/aiAgents';
 import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
   finalizeAssessment,
@@ -269,9 +274,15 @@ export type {
 import { loadSweepEvidence } from './sweepEvidence';
 import { loadNarrativeContext } from './narrativeContext';
 import { designBaselineNumbers, loadDesignEvidence } from './designEvidence';
+import { capAtBoundary } from '../../utils/capAtBoundary';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
-const RUN_SUMMARY_MAX_CHARS = 2000;
+export const RUN_SUMMARY_MAX_CHARS = 2000;
+
+/** Cut at a paragraph/sentence/word boundary with a visible "…" marker (#11977). */
+export function capRunSummary(summary: string): string {
+  return capAtBoundary(summary, RUN_SUMMARY_MAX_CHARS);
+}
 
 /**
  * What the model gets back when a mutation is intercepted. Worded as SUCCESS on
@@ -394,6 +405,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         servedFailoverCause: aiAgentRuns.servedFailoverCause,
         // #7787 — the failover source admission (or a hop) recorded.
         servedFailoverFromOfferingId: aiAgentRuns.servedFailoverFromOfferingId,
+        // W03: a continuation run (lineage stamped by admission).
+        continuedFromRunId: aiAgentRuns.continuedFromRunId,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -697,11 +710,33 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // Wisp analysis sessions W03. Runs INSIDE this same system context;
+    // `loadHandleManifest` opens none of its own and pins every read to the
+    // run's org. The handles are the admission-frozen ones, read defensively
+    // (staged_inputs is jsonb): a malformed value reads as no handles.
+    let analysisManifest: RunContext['analysisManifest'] = null;
+    if (run.profile === 'analysis') {
+      const frozen = (run.stagedInputs as { handles?: unknown } | null)?.handles;
+      const handles = Array.isArray(frozen)
+        ? frozen.filter((h): h is string => typeof h === 'string')
+        : [];
+      analysisManifest = await loadHandleManifest({ orgId: run.orgId, handles });
+      // A continuation (lineage stamped by admission) whose stored seed fails
+      // re-validation runs without it; say so rather than let it pass as a
+      // fresh run.
+      if (run.continuedFromRunId && !analysisContinuationFromTriggerRef(run.triggerRef)) {
+        console.warn('[runLoop] analysis continuation seed unreadable; running without it', {
+          runId: run.id, continuedFromRunId: run.continuedFromRunId,
+        });
+      }
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
       orgPartnerId: org.partnerId,
       orgName: org.name ?? null,
+      analysisManifest,
       device,
       alert,
       ticket,
@@ -920,11 +955,15 @@ export function createAgentRunPreToolUse(args: {
   patch?: PatchPlanToolRefs;
   /** AI Suggested Fixes W2 — the SAME refs the SDK handler and post-hook receive. */
   research?: ResearchToolRefs;
+  /** Wisp analysis sessions W02 — the export grants frozen at admission
+   *  (`staged_inputs.exportGrants`); undefined for a pre-W02 or non-analysis
+   *  run. See `ToolExecutionContext.exportGrants`. */
+  exportGrants?: AiRunExportGrants;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds,
     sessionId, pairing, actReservation, deadlineMs, design, patch, research,
-    runTargets, stagedBytesRemaining,
+    runTargets, stagedBytesRemaining, exportGrants,
   } = args;
 
   /** Per-invocation run CONSTRAINTS handed to every ALLOWED tool call (W03).
@@ -933,6 +972,7 @@ export function createAgentRunPreToolUse(args: {
   const runFrame: ToolExecutionContext = {
     runTargets,
     stagedBytesRemaining,
+    ...(exportGrants !== undefined ? { exportGrants } : {}),
   };
 
   /**
@@ -1977,6 +2017,21 @@ export function classifyIntentAwaitingApproval(
   return intentIds.some((id) => !decided.has(id));
 }
 
+/**
+ * A transcript write is best-effort (#11971): it never changes the run, but it
+ * is reported, so a systematic failure does not pass as runs with empty
+ * transcripts. DB errors are scrubbed before any log or report (S2).
+ */
+function transcriptWriteFailed(run: { id: string; orgId: string }, what: string): (error: unknown) => void {
+  return (error) => {
+    const message = safeErrorMessage(error);
+    console.error(`[aiAgentRunLoop] failed to record the run's ${what} on its session`, { runId: run.id, error: message });
+    captureException(new Error(`agent run transcript write failed (${what}): ${message}`), undefined, {
+      org_id: run.orgId, ai_agent_run_id: run.id,
+    });
+  };
+}
+
 function extractAssistantText(message: unknown): string {
   const content = (message as { message?: { content?: unknown } } | undefined)?.message?.content;
   if (!Array.isArray(content)) return '';
@@ -2146,7 +2201,7 @@ function assessmentPromptContext(
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     analysis: ctx.run.profile === 'analysis'
-      ? analysisPromptContext(ctx.run.triggerRef, ctx.run.stagedInputs)
+      ? analysisPromptContext(ctx.run.triggerRef, ctx.run.stagedInputs, ctx.analysisManifest ?? [])
       : null,
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
     run: { id: ctx.run.id, mode: ctx.run.modeAtStart, triggerKind: ctx.run.triggerKind },
@@ -2319,7 +2374,8 @@ export function resolveRunProfileToolAllowlist(run: RunProfileRef, agentAllowlis
   if (isPatchProfile(run)) return patchToolAllowlist(agentAllowlist);
   if (isResearchProfile(run)) return researchToolAllowlist(agentAllowlist);
   if (isAnalysisProfile(run)) return analysisToolAllowlist(agentAllowlist);
-  if (isAssessmentProfile(run)) return assessmentToolAllowlist(agentAllowlist);
+  // #11978: a check-in assessment also reads the subject its trigger waits on.
+  if (isAssessmentProfile(run)) return assessmentToolAllowlist(agentAllowlist, run.triggerRef);
   if (isTroubleshootProfile(run)) return troubleshootToolAllowlist(agentAllowlist);
   return null;
 }
@@ -2733,6 +2789,13 @@ async function driveSdkLoop(
     stagedBytesRemaining: analysis
       ? (runLimits.analysisMaxStagedBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun)
       : EXPORT_DEFAULT_MAX_BYTES,
+    // W02: the export authority frozen at admission. Absent on a pre-W02 run,
+    // which the handler reads as the legacy set, never as "everything". An
+    // analysis run with no staged_inputs at all (admission always writes
+    // them, so this is a corrupt row) gets NO export grants, not the legacy set.
+    exportGrants: analysis
+      ? (stagedInputs ? stagedInputs.exportGrants : { datasets: [], sensitiveGates: [] })
+      : undefined,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, pairing,
@@ -2858,6 +2921,9 @@ async function driveSdkLoop(
   let usageConfirmed = true;
   // The CURRENT hop's reservation ('' once a failed-over last hop is settled).
   let reservationId = '';
+  // #11971: the session the CURRENT hop's reservation is bound to; its
+  // settlement must name the same one (null = a sessionless claim).
+  let reservationSessionId: string | null = null;
   // W11: one prompt per run; the canary is sticky per run id. Recomputed per
   // hop (a backup model may have another prompt profile) and recorded on that
   // hop's settlement.
@@ -2921,9 +2987,20 @@ async function driveSdkLoop(
       const hopPromptProvenance = promptProvenance;
       const hopBinding = binding;
 
+      // #11971: the hop is reserved and settled on the run's session, so the
+      // session carries the run's tokens, cost and turns — the same numbers
+      // the run row records. A hop already claimed (a re-drive) keeps the
+      // binding it was claimed with: a reservation's session is fixed at claim.
+      // A failed read fails the hop like a failed reserve would: guessing the
+      // binding instead turns a read blip into a misleading claim conflict.
+      const hopKey = hopIdempotencyKey(baseReservationKey, hopIndex);
+      const claimedSessionId = await hopReservationSessionId({ orgId: run.orgId, idempotencyKey: hopKey });
+      const hopSessionId = claimedSessionId !== undefined ? claimedSessionId : (ctx.sessionId ?? null);
+
       const reservation = await reserveAiBudget({
         orgId: run.orgId,
-        idempotencyKey: hopIdempotencyKey(baseReservationKey, hopIndex),
+        idempotencyKey: hopKey,
+        sessionId: hopSessionId,
         billingSource: hopModelNow.funding,
         // JD L-2: bound the hold to this run's own ceiling instead of the whole
         // remaining cap, so one agent run does not serialize technician chat,
@@ -2939,6 +3016,7 @@ async function driveSdkLoop(
         throw new AgentRunError('org_budget_exceeded', reservation.message);
       }
       reservationId = reservation.reservationId;
+      reservationSessionId = hopSessionId;
       const hopReservationId = reservationId;
       // This hop's SDK child env and grants, for THIS hop's model (a failover
       // may cross to or from a gateway connection), from the one seam shared
@@ -2971,10 +3049,14 @@ async function driveSdkLoop(
         ? Math.min(runBudgetLeftCents, reservation.reservedCostCents)
         : runBudgetLeftCents;
 
+      const taskPrompt = buildAgentRunTaskPrompt(prompt);
+      const transcriptSessionId = ctx.sessionId ?? null;
       try {
         await runOutsideDbContext(async () => {
+          // #11971: what the run was told, on its session (each hop is sent it afresh).
+          if (transcriptSessionId) await recordRunTaskPrompt(transcriptSessionId, taskPrompt).catch(transcriptWriteFailed(run, 'task prompt'));
           const sdkQuery = query({
-            prompt: buildAgentRunTaskPrompt(prompt),
+            prompt: taskPrompt,
             options: {
               // model (the resolver's wire id — a catalog endpoint's own id),
               // fallbackModel (the refusal fallback) and thinking/effort.
@@ -2998,10 +3080,14 @@ async function driveSdkLoop(
               // of the bound models, so the SDK's budget cap is not a guess (or
               // no SDK cap at all when a price cannot be expressed to the CLI).
               ...(child.queryOptions ?? {}),
-              // No transcript persistence in wave 3 — `run.session_id` stays NULL
-              // and `summary`/`outcome` carry what a reviewer needs (wave 6).
+              // The SDK keeps no transcript of its own: the loop writes the
+              // run's turns to its session (#11971), and `summary`/`outcome`
+              // carry the verdict (wave 6).
               persistSession: false,
               settingSources: [],
+              // #11817: never the SDK's provider-dependent default; after the
+              // queryOptions spread so nothing spread in can override it.
+              permissionMode: SDK_PERMISSION_MODE,
             },
           });
 
@@ -3027,6 +3113,7 @@ async function driveSdkLoop(
               if (message.type === 'assistant') {
                 const text = extractAssistantText(message);
                 if (text) summary = text;
+                if (transcriptSessionId) await recordRunAssistantTurn(transcriptSessionId, message).catch(transcriptWriteFailed(run, 'assistant message'));
                 continue;
               }
               if (message.type !== 'result') continue;
@@ -3175,10 +3262,11 @@ async function driveSdkLoop(
           binding: hopBinding,
           orgId: run.orgId,
           userId: null,
-          sessionId: null,
+          sessionId: hopSessionId,
           agentRunId: run.id,
           sourceRef: null,
           usage: billed,
+          turnCount: hopTurns,
           outcome: turnOutcome ?? {
             stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false,
             servedModel: hopBinding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false,
@@ -3280,10 +3368,11 @@ async function driveSdkLoop(
           binding,
           orgId: run.orgId,
           userId: null,
-          sessionId: null,
+          sessionId: reservationSessionId,
           agentRunId: run.id,
           sourceRef: null,
           usage: billed,
+          turnCount: turnCount - hopTurnsAtStart,
           outcome: turnOutcome,
           reservationId,
           messageCount: Math.max(1, turnCount - hopTurnsAtStart),
@@ -3339,7 +3428,7 @@ async function driveSdkLoop(
   }
 
   return {
-    summary: summary.slice(0, RUN_SUMMARY_MAX_CHARS),
+    summary: capRunSummary(summary),
     costCents: Math.round(costCents),
     turnCount,
     outcome,

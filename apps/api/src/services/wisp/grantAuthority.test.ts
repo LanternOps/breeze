@@ -52,6 +52,8 @@ import {
   assertToolCallWithinCeiling,
   assertWithinCeiling,
   ceilingAdmitsTool,
+  ceilingHoldsPermission,
+  ceilingSiteIdsForOrg,
   ceilingSnapshotHash,
   ceilingToolTermOf,
   computeLiveHumanTerm,
@@ -71,6 +73,33 @@ const ceiling = (o: Partial<GrantCeiling> = {}): GrantCeiling => ({
   grantId: 'g', revisionId: 'r', partnerId: 'p', grantorUserId: 'u1', scopeOrgId: null, partnerWide: true, status: 'active',
   orgIds: new Set(['org-a']), siteIds: null, permissionKeys: new Set(['devices:read', 'tickets:write']),
   toolAllowlist: null, deniedTools: new Set([...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()]), orgTerms: new Map(), ...o,
+});
+
+describe('ceilingSiteIdsForOrg / ceilingHoldsPermission (W02 analysis frame)', () => {
+  it('null when neither the ceiling nor the org term restricts sites', () => {
+    expect(ceilingSiteIdsForOrg(ceiling(), 'org-a')).toBeNull();
+  });
+  it('intersects the ceiling-wide sites with the org membership sites', () => {
+    const c = ceiling({ siteIds: new Set(['s1', 's2']), orgTerms: new Map([['org-a', { permissionKeys: new Set(['*:*']), siteIds: new Set(['s2', 's3']) }]]) });
+    expect(ceilingSiteIdsForOrg(c, 'org-a')).toEqual(['s2']);
+    expect(ceilingSiteIdsForOrg(c, 'org-without-term')).toEqual(['s1', 's2']);
+  });
+  it('an org membership restriction alone narrows, sorted', () => {
+    const c = ceiling({ orgTerms: new Map([['org-a', { permissionKeys: new Set(['*:*']), siteIds: new Set(['s9', 's3']) }]]) });
+    expect(ceilingSiteIdsForOrg(c, 'org-a')).toEqual(['s3', 's9']);
+  });
+  it('holds a permission the org term grants; not one it lacks; never for an inactive ceiling', () => {
+    const c = ceiling({ permissionKeys: new Set(['devices:*']), orgTerms: new Map([['org-a', { permissionKeys: new Set(['devices:read']), siteIds: null }]]) });
+    expect(ceilingHoldsPermission(c, 'org-a', 'devices', 'read')).toBe(true);
+    expect(ceilingHoldsPermission(c, 'org-a', 'devices', 'execute')).toBe(false);
+    expect(ceilingHoldsPermission({ ...c, status: 'paused' }, 'org-a', 'devices', 'read')).toBe(false);
+  });
+  it('never for an org outside the ceiling', () => {
+    expect(ceilingHoldsPermission(ceiling(), 'org-b', 'devices', 'read')).toBe(false);
+  });
+  it('fails closed for a site-restricted ceiling (coordinator gate 4 refuses those for every specialist)', () => {
+    expect(ceilingHoldsPermission(ceiling({ siteIds: new Set(['s1']) }), 'org-a', 'devices', 'read')).toBe(false);
+  });
 });
 
 describe('assertWithinCeiling', () => {

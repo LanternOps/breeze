@@ -117,33 +117,35 @@ const DefaultRevocationLeaseGrace = 90 * time.Second
 // unrevokable session), the other refused it. Anything unusable is rejected
 // here so a caller cannot start a session it could never end.
 //
-// Deadlines are converted from wall clock to the MONOTONIC clock at receipt:
-// the server sends absolute epoch milliseconds, but a time.Time built from
-// time.UnixMilli carries no monotonic reading, so an NTP step or a hostile
-// local clock would move the expiry and the hard deadline. Storing
-// time.Now().Add(ttl) pins them to elapsed time instead, so a clock jump can
-// neither extend a lease nor push out the 12h ceiling.
+// Deadlines are pinned to the MONOTONIC clock at receipt (LeaseExpiry,
+// LeaseHardDeadline), so a clock step after receipt can neither extend a lease
+// nor push out the 12h ceiling. When the server also sends each deadline as
+// the time remaining (expiresInMs / hardDeadlineInMs), that duration is used
+// and the device's wall clock plays no part at all (#11840). Without them, the
+// absolute fields are read against the wall clock but capped at receipt +
+// MaxRevocationLeaseTTL / MaxSessionDurationCap.
 func NormalizeRevocationLease(l *ipc.RevocationLease) (*RevocationLease, error) {
 	if l == nil {
 		return nil, ErrRevocationLeaseRequired
 	}
 	// A lease with no expiry can never lapse and one with no renew cadence can
 	// never be kept alive; either way the watchdog has nothing to enforce.
-	if l.ExpiresAtUnixMs <= 0 || l.RenewEverySec <= 0 {
-		return nil, fmt.Errorf("%w: expiresAt=%d renewEverySec=%d",
-			ErrRevocationLeaseRequired, l.ExpiresAtUnixMs, l.RenewEverySec)
+	if (l.ExpiresAtUnixMs <= 0 && l.ExpiresInMs <= 0) || l.RenewEverySec <= 0 {
+		return nil, fmt.Errorf("%w: expiresAt=%d expiresInMs=%d renewEverySec=%d",
+			ErrRevocationLeaseRequired, l.ExpiresAtUnixMs, l.ExpiresInMs, l.RenewEverySec)
 	}
+	receivedAt := time.Now()
 	lease := &RevocationLease{
 		Token:      l.Token,
-		ExpiresAt:  MonotonicDeadline(l.ExpiresAtUnixMs),
+		ExpiresAt:  LeaseExpiry(receivedAt, l.ExpiresInMs, l.ExpiresAtUnixMs),
 		RenewEvery: time.Duration(l.RenewEverySec) * time.Second,
 		Grace:      time.Duration(l.GraceSec) * time.Second,
 	}
 	// A missing hard deadline falls back to the local 12h cap from now, so the
 	// absolute ceiling always exists even against an older or partial server.
-	lease.HardDeadline = MonotonicDeadline(l.HardDeadlineUnixMs)
+	lease.HardDeadline = LeaseHardDeadline(receivedAt, l.HardDeadlineInMs, l.HardDeadlineUnixMs)
 	if lease.HardDeadline.IsZero() {
-		lease.HardDeadline = time.Now().Add(MaxSessionDurationCap)
+		lease.HardDeadline = receivedAt.Add(MaxSessionDurationCap)
 	}
 	if lease.Grace <= 0 {
 		lease.Grace = DefaultRevocationLeaseGrace
@@ -151,14 +153,87 @@ func NormalizeRevocationLease(l *ipc.RevocationLease) (*RevocationLease, error) 
 	return lease, nil
 }
 
-// MonotonicDeadline turns a server-supplied epoch-millisecond deadline into a
-// time.Time anchored to this process's monotonic clock. Non-positive input (an
-// absent field) yields the zero time. See NormalizeRevocationLease for why.
+// MonotonicDeadline turns an epoch-millisecond deadline into a time.Time
+// anchored to this process's monotonic clock. Non-positive input (an absent
+// field) yields the zero time.
+//
+// The conversion reads THIS device's wall clock, so it is exact only for a
+// deadline produced on this device, such as one the agent resolved and
+// forwarded to its helper. Applied to a server timestamp it is off by the
+// device's clock skew (#11840): use LeaseExpiry / LeaseHardDeadline for
+// anything read off the wire.
 func MonotonicDeadline(unixMs int64) time.Time {
+	return monotonicFromUnixMs(time.Now(), unixMs)
+}
+
+func monotonicFromUnixMs(receivedAt time.Time, unixMs int64) time.Time {
 	if unixMs <= 0 {
 		return time.Time{}
 	}
-	return time.Now().Add(time.Until(time.UnixMilli(unixMs)))
+	return receivedAt.Add(time.UnixMilli(unixMs).Sub(receivedAt))
+}
+
+// MaxRevocationLeaseTTL bounds a server-supplied lease duration. The API sends
+// 60 s. A longer value is a malformed answer, and taking it verbatim would let
+// one frame keep a silent session alive far past its outage budget.
+const MaxRevocationLeaseTTL = 5 * time.Minute
+
+// LeaseExpiry resolves a lease expiry against anchor, a time.Now() reading
+// (zero means now) that the server's decision cannot precede.
+//
+// expiresInMs > 0 is the lease's remaining lifetime as of the server's
+// decision: the clock-independent form, measured from anchor on the monotonic
+// clock and capped at MaxRevocationLeaseTTL. Otherwise (an older API, or a
+// missing or malformed field) it falls back to the absolute expiresAtUnixMs,
+// read against this device's wall clock. The absolute form cuts a lease short
+// by the device's full clock lead and would stretch it by the full lag, so the
+// fallback is capped at the same anchor + MaxRevocationLeaseTTL: a slow clock
+// can extend a lease only up to that ceiling, never past it (#11840).
+//
+// Which anchor bounds what:
+//   - A renewal answer is measured from when this agent queued the request it
+//     answers (websocket.RevocationLeaseMessage.LeaseClockAnchor). The server
+//     decided after that, so the lease never ends later than the server
+//     granted, whatever the network or the server's own checks took. It can
+//     only end early, by the round trip.
+//   - The start payload answers no request, so it is measured from when the
+//     command was decoded and can outlive the server's intent by the
+//     command's delivery delay. Only until the first renewal answers, which
+//     is asked for on the first watchdog tick: renewed re-anchors it (and the
+//     hard deadline only ever moves earlier), unavailable or revoked ends the
+//     session. If nothing ever answers, the session ends expiresIn+grace
+//     after it started on this device.
+func LeaseExpiry(anchor time.Time, expiresInMs, expiresAtUnixMs int64) time.Time {
+	return resolveLeaseDeadline(anchor, expiresInMs, expiresAtUnixMs, MaxRevocationLeaseTTL)
+}
+
+// LeaseHardDeadline is LeaseExpiry for the session's hard deadline, with
+// either form capped at anchor + MaxSessionDurationCap.
+func LeaseHardDeadline(anchor time.Time, hardDeadlineInMs, hardDeadlineUnixMs int64) time.Time {
+	return resolveLeaseDeadline(anchor, hardDeadlineInMs, hardDeadlineUnixMs, MaxSessionDurationCap)
+}
+
+func resolveLeaseDeadline(anchor time.Time, remainingMs, unixMs int64, ceiling time.Duration) time.Time {
+	if anchor.IsZero() {
+		anchor = time.Now()
+	}
+	if remainingMs > 0 {
+		// Compare in milliseconds first so a huge value cannot overflow the
+		// Duration multiply.
+		if remainingMs > ceiling.Milliseconds() {
+			return anchor.Add(ceiling)
+		}
+		return anchor.Add(time.Duration(remainingMs) * time.Millisecond)
+	}
+	// The absolute fallback is bounded by the same ceiling, so a device whose
+	// clock is behind the server's cannot stretch the lease past it (#11840).
+	// It is only ever a cap: a deadline the absolute field puts earlier, such
+	// as one already past on a device whose clock is ahead, is kept as is.
+	deadline := monotonicFromUnixMs(anchor, unixMs)
+	if limit := anchor.Add(ceiling); !deadline.IsZero() && deadline.After(limit) {
+		return limit
+	}
+	return deadline
 }
 
 // revocationLeaseToIPC is the inverse, used when the service hands a start over

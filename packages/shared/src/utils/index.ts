@@ -60,6 +60,7 @@ export * from './backupJobAccounting';
 export * from './backupFileIndexNote';
 export * from './identityAccess';
 export * from './threatDetection';
+export * from './threatDetectionDisplay';
 export * from './endpointManagement';
 export * from './vulnerabilityManagement';
 export * from './cleanupRules';

@@ -148,7 +148,9 @@ describe('initializeAbuseSignalsWorker gating', () => {
     process.env.IS_HOSTED = 'true';
     await initializeAbuseSignalsWorker();
     expect(WorkerMockCtor).toHaveBeenCalledTimes(1);
-    expect(queueAdd).toHaveBeenCalledTimes(3);
+    // Sweep + digest + partner-trust-promote + the one-off IP backfill (#11698).
+    expect(queueAdd).toHaveBeenCalledTimes(4);
+    expect(queueAdd).toHaveBeenCalledWith('ip-classify-backfill', {}, expect.objectContaining({ jobId: expect.any(String) }));
   });
 
   it('does not start a worker or schedule anything when self-hosted', async () => {
@@ -177,7 +179,8 @@ describe('initializeAbuseSignalsWorker gating', () => {
     process.env.ABUSE_SIGNALS_ENABLED = 'false';
     await initializeAbuseSignalsWorker();
     expect(WorkerMockCtor).toHaveBeenCalledTimes(1);
-    expect(queueAdd).toHaveBeenCalledTimes(1);
+    expect(queueAdd).toHaveBeenCalledTimes(2);
+    expect(queueAdd).toHaveBeenCalledWith('ip-classify-backfill', {}, expect.anything());
     expect(queueAdd).toHaveBeenCalledWith(
       'partner-trust-promote',
       expect.anything(),

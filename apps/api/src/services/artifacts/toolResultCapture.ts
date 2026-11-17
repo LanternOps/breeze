@@ -63,6 +63,14 @@ export interface CaptureScope {
    * anchors on the session. Omit the key entirely when there is no thread.
    */
   wispThreadId?: string | null;
+  /**
+   * #11845: the session's Wisp grant pin, from the `ai_sessions` row
+   * (immutable for the session's life). READ SIDE ONLY, like `wispThreadId`:
+   * `executeTool` copies it onto the `read_artifact` anchor (never `run_flow`)
+   * so the handler can resolve the analysis-output read scope from the live
+   * grant. `captureContextFrom` ignores it. Omit the key when there is no grant.
+   */
+  wispGrant?: { grantId: string; revisionId: string };
 }
 
 export interface CaptureContext {

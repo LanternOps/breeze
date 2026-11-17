@@ -36,6 +36,8 @@ export * from './warrantyInlineSettings';
 export * from './systemProtectionInlineSettings';
 export * from './containmentPolicy';
 export * from './oemUpdatesPolicy';
+export * from './wakeOnLanInlineSettings';
+export * from './wakeStatus';
 export * from './securityAgents';
 export * from './devicePathFloor';
 export * from './securityScanSweep';

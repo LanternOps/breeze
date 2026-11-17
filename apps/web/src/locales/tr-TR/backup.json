@@ -1092,6 +1092,7 @@
     "status": {
       "no_backups": "Yedek yok",
       "completed": "Tamamlandı",
+      "overdue": "Yakın tarihli yedekleme yok",
       "completed_with_errors": "Hatalarla tamamlandı",
       "in_progress": "İşleniyor",
       "unsuccessful": "Başarısız",
@@ -1163,6 +1164,7 @@
       "other": "Diğer"
     },
     "noObservation": "Gözlem yok",
+    "overdueLast": "Son: {{date}}",
     "openDevice": "Cihazı aç",
     "empty": "Bu filtrelere uyan cihaz yok.",
     "loadMore": "Daha fazla yükle",

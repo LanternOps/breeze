@@ -18,6 +18,7 @@ import { useOrgScope } from "@/hooks/useOrgScope";
 import { OrgLoadFailedState } from "../shared/OrgLoadFailedState";
 import { getJwtClaims } from "../../lib/authScope";
 import { extractApiError } from "@/lib/apiError";
+import { ActionError, runAction } from "@/lib/runAction";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
@@ -512,29 +513,31 @@ export default function MonitoringIntegration() {
         endpointId,
       };
 
-      const response = await fetchWithAuth("/integrations/monitoring/test", {
-        method: "POST",
-        body: JSON.stringify(payload),
+      // A failed test is reported beside the button; only a throttled test
+      // (#12102) is also toasted, since it is not a result of the test.
+      const data = await runAction<{ message?: unknown }>({
+        request: () =>
+          fetchWithAuth("/integrations/monitoring/test", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          }),
+        errorFallback: t("monitoringIntegration.connectionTestFailed"),
+        suppressErrorToast: (status) => status !== 429,
       });
-      const data = (await response.json().catch(() => ({}))) as {
-        message?: string;
-      };
-
-      if (!response.ok) {
-        throw new Error(
-          extractApiError(
-            data,
-            t("monitoringIntegration.connectionTestFailed"),
-          ),
-        );
-      }
 
       updateTestResult(testKey, {
         state: "success",
         message:
-          data.message || t("monitoringIntegration.connectionSuccessful"),
+          typeof data?.message === "string" && data.message
+            ? data.message
+            : t("monitoringIntegration.connectionSuccessful"),
       });
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) {
+        // The auth redirect handles an expired session.
+        updateTestResult(testKey, { state: "idle" });
+        return;
+      }
       updateTestResult(testKey, {
         state: "error",
         message:

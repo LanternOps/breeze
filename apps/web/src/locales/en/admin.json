@@ -234,6 +234,7 @@
     "thirdPartyCatalog": {
       "title": "Third-Party Package Catalog",
       "description": "Breeze-curated metadata for third-party software detected by winget on agents.",
+      "scopeNote": "This catalog only supplies a friendly name, vendor, category and default severity for a third-party patch that a device reports. It does not decide which apps are updated, and apps that are not listed here still appear in Patches. Updates come from a configuration policy's patch sources, an update ring, and what winget, Chocolatey or Homebrew reports on the device. Per-user winget installs are detected but never upgraded.",
       "totalEntries": "Total entries:",
       "refresh": "Refresh",
       "addPackage": "Add package",
@@ -1157,6 +1158,7 @@
       "portal_access_request": "Portal access request",
       "portal_auth": "Portal sign-in",
       "portal_directory_run": "Portal directory run",
+      "portal_scim_token": "Portal provisioning token",
       "portal_user": "Portal user",
       "psa_connection": "PSA connection",
       "psa_ticket_mapping": "PSA ticket mapping",

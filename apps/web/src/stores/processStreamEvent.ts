@@ -133,7 +133,7 @@ export function alreadyDecidedOutcome(status: number, body: unknown): AiApproval
   if (status !== 409 || !body || typeof body !== 'object') return null;
   const { code, outcome } = body as { code?: unknown; outcome?: unknown };
   if (code !== 'approval_already_decided') return null;
-  return outcome === 'approved' || outcome === 'not_approved' || outcome === 'ended' ? outcome : null;
+  return outcome === 'approved' || outcome === 'not_approved' || outcome === 'expired' || outcome === 'ended' ? outcome : null;
 }
 
 export interface PendingPlan {
@@ -189,6 +189,10 @@ export interface StreamableState {
   isPaused: boolean;
   isStreaming: boolean;
   error: string | null;
+  /** Machine code of the last stream `error` event (null when it had none). */
+  errorCode?: string | null;
+  /** #9428: secondary line of the last stream `error` event (a timeout's gateway reason). */
+  errorDetail?: string | null;
   sessionId: string | null;
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
   /** Analysis runs launched from this conversation, keyed by run id. */
@@ -396,7 +400,18 @@ export function processStreamEvent(
     }
 
     case 'error':
-      set(() => ({ error: event.message, errorCode: event.code ?? null, isStreaming: false }));
+      // #9428: the code (and detail) drive the banner's headline and "Try
+      // again"; an older server sends neither. A reply that was mid-stream
+      // stops spinning: no `done` may follow (the route's own stream failure).
+      set((s) => ({
+        error: event.message,
+        errorCode: event.code ?? null,
+        errorDetail: event.detail ?? null,
+        isStreaming: false,
+        ...(currentAssistantId
+          ? { messages: s.messages.map((m) => (m.id === currentAssistantId && m.isStreaming ? { ...m, isStreaming: false } : m)) }
+          : {}),
+      }));
       return currentAssistantId;
 
     case 'plan_approval_required':

@@ -617,8 +617,10 @@ export default function AiApprovalDialog({
         </p>
       )}
 
-      {/* #9431: the wait ended — decided here or anywhere else, timed out, or
-          settled. Said in words; the buttons below are disabled or hidden. */}
+      {/* #9431: the wait ended — decided here or anywhere else, expired
+          (#12079), or settled. Said in words; the buttons below are disabled
+          or hidden. Only "approved" gets the check: any other value, including
+          one this build does not know, reads as not approved. */}
       {resolution && (
         <p
           role="status"
@@ -634,7 +636,9 @@ export default function AiApprovalDialog({
             ? t("aiApprovalDialog.resolvedApproved")
             : resolution === "not_approved"
               ? t("aiApprovalDialog.resolvedNotApproved")
-              : t("aiApprovalDialog.resolvedEnded")}
+              : resolution === "expired"
+                ? t("aiApprovalDialog.expired")
+                : t("aiApprovalDialog.resolvedEnded")}
         </p>
       )}
 

@@ -161,8 +161,8 @@ export async function fileFleetDesignDocument(input: FileFleetDesignDocumentInpu
 
   if (!documentId) {
     const timezone = input.timezone ?? 'UTC';
-    const generatedAt = new Intl.DateTimeFormat('en-US', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' })
-      .format(report.generatedAt ? new Date(report.generatedAt) : new Date());
+    // The instant; the renderer prints it with its timezone (#12048).
+    const generatedAt = report.generatedAt ? new Date(report.generatedAt) : new Date();
     const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt, timezone, summary: report.summary as never });
     const buffer = Buffer.from(doc.output('arraybuffer'));
 

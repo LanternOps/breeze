@@ -87,6 +87,7 @@ import { markRequestAuditWritten } from '../auditRequestTracking';
 import {
   PortalDirectoryIdentityError,
   disablePortalIdentity,
+  liftScimIdentityBlocker,
   previewAccountEffect,
   removeDisabledPortalIdentity,
   restorePortalIdentity,
@@ -316,6 +317,7 @@ describe('disablePortalIdentity', () => {
 
   it('a second blocker is added, not a no-op: blocker_added, first reason kept, no second epoch bump', async () => { // RF4, quorum D9
     const firstAt = new Date('2027-01-30T00:00:00.000Z');
+    h.results.push([]); // W9 (D6): the scim blocker takes the (org, 'entra') advisory lock
     scriptDisable({
       withAction: false,
       account: { status: 'disabled', disabledBy: 'directory' },
@@ -329,8 +331,10 @@ describe('disablePortalIdentity', () => {
     });
     expect(updatesOf(portalUsers)).toEqual([]);
     expect(purgePortalSessionsForUsers).not.toHaveBeenCalled();
-    // W9 passes no run: no advisory lock, no action, audit runId null.
-    expect(h.calls.some((c) => c.op === 'execute')).toBe(false);
+    // W9 passes no run: no action and audit runId null, but the scim blocker
+    // still takes the (org, 'entra') advisory lock (W9 plan D6, quorum).
+    expect(h.calls.filter((c) => c.op === 'execute').map((c) => sqlText(c).params)).toEqual([[`portal-directory:${ORG}:entra`]]);
+    expect(updatesOf(portalDirectoryActions)).toEqual([]);
     expect(firstArg(inserts()[0], 'values').details).toMatchObject({ blocker: 'scim', runId: null });
   });
 
@@ -659,5 +663,124 @@ describe('removeDisabledPortalIdentity (OD3)', () => {
   it('a missing identity is PORTAL_IDENTITY_NOT_FOUND', async () => {
     h.results.push([]);
     expect(await rejection(removeDisabledPortalIdentity(removeInput))).toMatchObject({ code: 'PORTAL_IDENTITY_NOT_FOUND', httpStatus: 404 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W9 (#11386, plan D6): the SCIM blocker
+// ---------------------------------------------------------------------------
+
+const TOKEN = '3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f';
+
+describe('disablePortalIdentity with the scim blocker (W9 D6)', () => {
+  const scimInput = {
+    orgId: ORG, identityId: IDENT, blocker: 'scim' as const, reason: 'scim_deactivated' as const, now: NOW,
+    auditDetails: { via: 'scim', scimTokenId: TOKEN },
+  };
+
+  it('disables an identity-only account as scim (scim_deprovision), bumps the epoch and purges', async () => {
+    h.results.push([]); scriptDisable({ withAction: false });
+    const out = await disablePortalIdentity(scimInput);
+    expect(out).toEqual({ kind: 'disabled', portalUserId: PU, accountDisabled: true, keepsPassword: false });
+    // No run, but the SCIM disable takes the (org, 'entra') advisory lock first (D6).
+    expect(sqlText(h.calls[0]!).params).toEqual([`portal-directory:${ORG}:entra`]);
+    expect(firstArg(updatesOf(portalUserIdentities)[0], 'set')).toMatchObject({ disabledBlockers: ['scim'], disabledReason: 'scim_deactivated' });
+    expect(firstArg(updatesOf(portalUsers)[0], 'set')).toMatchObject({ status: 'disabled', disabledBy: 'scim' });
+    expect(purge.order).toEqual([`portal:${PU}:depth0`, `clientAi:${PU}:depth0`]);
+  });
+
+  it('merges the caller\'s audit details into the disable row (via scim, token id)', async () => {
+    h.results.push([]); scriptDisable({ withAction: false });
+    await disablePortalIdentity(scimInput);
+    expect(firstArg(inserts()[0], 'values')).toMatchObject({
+      action: 'portal.directory.identity.disable',
+      details: { identityId: IDENT, blocker: 'scim', reason: 'scim_deactivated', runId: null, via: 'scim', scimTokenId: TOKEN },
+    });
+  });
+
+  it('the caller\'s audit details never override the writer\'s own fields', async () => {
+    h.results.push([]); scriptDisable({ withAction: false });
+    await disablePortalIdentity({ ...scimInput, auditDetails: { blocker: 'msp', identityId: 'x', via: 'scim' } });
+    expect(firstArg(inserts()[0], 'values')).toMatchObject({ details: { blocker: 'scim', identityId: IDENT } });
+  });
+
+  it('on an account disabled by the MSP it adds the blocker and keeps disabled_by msp', async () => {
+    h.results.push([]); scriptDisable({ withAction: false, account: { status: 'disabled', disabledBy: 'msp' } });
+    const out = await disablePortalIdentity(scimInput);
+    expect(out).toMatchObject({ kind: 'disabled', accountDisabled: false });
+    // Only the epoch moves: status and disabled_by are never rewritten, so the MSP's disable stays the MSP's.
+    const accSet = firstArg(updatesOf(portalUsers)[0], 'set');
+    expect(accSet).toHaveProperty('authEpoch');
+    expect(accSet).not.toHaveProperty('status');
+    expect(accSet).not.toHaveProperty('disabledBy');
+  });
+});
+
+describe('liftScimIdentityBlocker (W9 D6)', () => {
+  const liftInput = { orgId: ORG, identityId: IDENT, scimTokenId: TOKEN, now: NOW };
+  const scimDisabled = { disabledAt: NOW, disabledReason: 'scim_deactivated', disabledBlockers: ['scim'] };
+
+  function scriptLift(acc: Record<string, unknown>, ident: Record<string, unknown>) {
+    h.results.push([], [owner()], [account(acc)], [identity(ident)]);
+  }
+
+  it('lifts the only blocker and re-activates an account SCIM disabled (scim_reactivate), under the W8 lock order', async () => {
+    scriptLift({ status: 'disabled', disabledBy: 'scim' }, scimDisabled);
+    const out = await liftScimIdentityBlocker(liftInput);
+    expect(out).toEqual({ kind: 'lifted', portalUserId: PU, identityEnabled: true, accountReactivated: true });
+    expect(sqlText(h.calls[0]!).params).toEqual([`portal-directory:${ORG}:entra`]);
+    expect(stepsOf(h.calls[2], 'for')[0]).toEqual(['update']);
+    expect(stepsOf(h.calls[3], 'for')[0]).toEqual(['update']);
+    expect(firstArg(updatesOf(portalUserIdentities)[0], 'set')).toEqual({ disabledBlockers: [], disabledAt: null, disabledReason: null });
+    const accSet = firstArg(updatesOf(portalUsers)[0], 'set');
+    expect(accSet).toMatchObject({ status: 'active', disabledBy: null });
+    expect(accSet).toHaveProperty('authEpoch');
+    expect(firstArg(inserts()[0], 'values')).toMatchObject({
+      actorType: 'system', action: 'portal.scim.user.reactivate', resourceType: 'portal_user', resourceId: PU,
+      details: { identityId: IDENT, scimTokenId: TOKEN, identityEnabled: true, accountReactivated: true, remainingBlockers: [] },
+    });
+    expect(h.calls.every((c) => c.depth === 1)).toBe(true);
+    expect(purgePortalSessionsForUsers).not.toHaveBeenCalled();
+  });
+
+  it('keeps a directory blocker: the identity stays disabled with its first reason, the account stays disabled', async () => { // RF3
+    scriptLift(
+      { status: 'disabled', disabledBy: 'scim' },
+      { disabledAt: NOW, disabledReason: 'scim_deactivated', disabledBlockers: ['scim', 'entra_directory'] },
+    );
+    const out = await liftScimIdentityBlocker(liftInput);
+    expect(out).toEqual({ kind: 'lifted', portalUserId: PU, identityEnabled: false, accountReactivated: false });
+    expect(firstArg(updatesOf(portalUserIdentities)[0], 'set')).toEqual({ disabledBlockers: ['entra_directory'] });
+    expect(updatesOf(portalUsers)).toEqual([]);
+  });
+
+  it.each(['msp', 'directory'])('never re-activates an account disabled by %s (precedence)', async (by) => { // RF3
+    scriptLift({ status: 'disabled', disabledBy: by }, scimDisabled);
+    const out = await liftScimIdentityBlocker(liftInput);
+    expect(out).toEqual({ kind: 'lifted', portalUserId: PU, identityEnabled: true, accountReactivated: false });
+    expect(updatesOf(portalUsers)).toEqual([]);
+  });
+
+  it('an identity without the scim blocker is not_blocked and writes nothing (an msp blocker stays)', async () => {
+    scriptLift({ status: 'disabled', disabledBy: 'msp' }, { disabledAt: NOW, disabledReason: 'msp', disabledBlockers: ['msp'] });
+    expect(await liftScimIdentityBlocker(liftInput)).toEqual({ kind: 'not_blocked', portalUserId: PU });
+    expect(writes()).toEqual([]);
+  });
+
+  it('a missing identity, or one of another org, is not_found', async () => {
+    h.results.push([], []);
+    expect(await liftScimIdentityBlocker(liftInput)).toEqual({ kind: 'not_found' });
+    expect(writes()).toEqual([]);
+  });
+
+  it('a google identity is not SCIM\'s and is not_found', async () => {
+    h.results.push([], [owner({ provider: 'google', entraTenantId: null })]);
+    expect(await liftScimIdentityBlocker(liftInput)).toEqual({ kind: 'not_found' });
+    expect(writes()).toEqual([]);
+  });
+
+  it('refuses to run inside a held DB context', async () => {
+    h.held.current = true;
+    await expect(liftScimIdentityBlocker(liftInput)).rejects.toThrow(/runOutsideDbContext/);
   });
 });

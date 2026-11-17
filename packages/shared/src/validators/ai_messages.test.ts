@@ -303,6 +303,15 @@ describe('sendAiMessageSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts a boolean retry flag (#9428)', () => {
+    expect(sendAiMessageSchema.parse({ content: 'x', retry: true })).toMatchObject({ retry: true });
+    expect(sendAiMessageSchema.parse({ content: 'x' }).retry).toBeUndefined();
+  });
+
+  it('rejects a non-boolean retry flag (#9428)', () => {
+    expect(sendAiMessageSchema.safeParse({ content: 'x', retry: 'yes' }).success).toBe(false);
+  });
+
   it('should reject empty content', () => {
     const result = sendAiMessageSchema.safeParse({
       content: '',

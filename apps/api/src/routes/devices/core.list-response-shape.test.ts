@@ -73,6 +73,10 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/wakeAvailability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/wakeAvailability')>()),
+  resolveWakeAvailability: vi.fn(),
+}));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../services/remoteAccessPolicy', () => ({
   resolveRemoteAccessForDevice: vi.fn().mockResolvedValue({ policyId: null, settings: {} }),
@@ -98,6 +102,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { eq, type SQL } from 'drizzle-orm';
 import { deviceHardware, deviceHardwareHealth, devices, deviceWarranty } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
+import { resolveWakeAvailability, WAKE_LOOKUP_FAILED_AVAILABILITY, type WakeAvailability } from '../../services/wakeAvailability';
 
 function rigDeviceListRows(
   rows: unknown[],
@@ -152,6 +157,38 @@ describe('GET /devices — response shape', () => {
     vi.mocked(db.execute).mockReset();
     app = new Hono();
     app.route('/devices', coreRoutes);
+    vi.mocked(resolveWakeAvailability).mockReset();
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map());
+  });
+
+  it('attaches wakeAvailability to every row with ONE batched lookup per page (#10838)', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const second = '22222222-2222-4222-8222-222222222222';
+    const shown: WakeAvailability = { show: true, mode: 'none', state: 'no_data', testWakeAllowed: false, flaggedTimeouts: false };
+    rigDeviceListRows([{ id: first }, { id: second }]);
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map([[first, shown]]));
+    const res = await app.request('/devices');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].wakeAvailability).toEqual(shown);
+    // No map entry for the second device: fail closed.
+    expect(body.data[1].wakeAvailability).toEqual(WAKE_LOOKUP_FAILED_AVAILABILITY);
+    expect(body.data[1].wakeAvailability.show).toBe(false);
+    expect(resolveWakeAvailability).toHaveBeenCalledTimes(1);
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([first, second]);
+  });
+
+  it('resolves wake availability only for the returned page, not the cursor peek row', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    rigDeviceListRows([{ id: first }, { id: '22222222-2222-4222-8222-222222222222' }]);
+    await app.request('/devices?limit=1');
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([first]);
+  });
+
+  it('hands the resolver an empty id list for an empty page (it returns early, no queries)', async () => {
+    rigDeviceListRows([]);
+    await app.request('/devices');
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([]);
   });
 
   it.each(['', '?includeDisks=false'])('skips disk inventory without opting in (%s)', async (query) => {
@@ -544,6 +581,16 @@ describe('GET /devices — response shape', () => {
     });
   });
 
+  it.each(['VMware20,1', null])('includes hardware model %s in list rows (#11332)', async model => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', model }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.model', model);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      model: deviceHardware.model,
+    });
+  });
+
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {
     const { leftJoin } = rigDeviceListRows([{
       id: '11111111-1111-4111-8111-111111111111', hostname: 'hardware-host',
@@ -667,6 +714,66 @@ describe('GET /devices — response shape', () => {
     expect(row).not.toHaveProperty('watchdogInstallErrorClass');
     expect(row).not.toHaveProperty('watchdogInstallSince');
     expect(row).not.toHaveProperty('watchdogInstall');
+  });
+
+  // Control-plane block (#8868): the list badge reads the closed-enum kind off
+  // the row. The jsonb episode (network-supplied host/issuer text) is a
+  // DETAIL-only derived view and never reaches list rows.
+  it('carries controlPlaneBlockKind and never the episode jsonb on list rows', async () => {
+    const base = {
+      orgId: 'org-1', siteId: 'site-1', agentId: 'a', hostname: 'h', displayName: null,
+      osType: 'linux', status: 'online',
+    };
+    const recent = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    rigDeviceListRows([
+      {
+        ...base, id: '11111111-1111-4111-8111-111111111111',
+        controlPlaneBlockKind: 'web_filter',
+        controlPlaneBlockReportedAt: recent,
+        controlPlaneBlock: {
+          kind: 'web_filter', host: 'cp.example', firstSeenAt: '2026-10-18T09:00:00.000Z',
+          lastSeenAt: '2026-10-18T09:03:00.000Z', locationHost: 'warn.filter-a.example',
+          reachableViaEch: true, reportedAt: recent,
+        },
+      },
+      { ...base, id: '22222222-2222-4222-8222-222222222222', controlPlaneBlockKind: null, controlPlaneBlock: null },
+    ]);
+    const res = await app.request('/devices?limit=50', { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()).data;
+    expect(rows[0]).toHaveProperty('controlPlaneBlockKind', 'web_filter');
+    expect(rows[0]).toHaveProperty('controlPlaneBlockLastKnownAt', null);
+    expect(Object.prototype.hasOwnProperty.call(rows[1], 'controlPlaneBlockKind')).toBe(true);
+    expect(rows[1].controlPlaneBlockKind).toBeNull();
+    expect(rows[1]).toHaveProperty('controlPlaneBlockLastKnownAt', null);
+    for (const row of rows) {
+      expect(row).not.toHaveProperty('controlPlaneBlock');
+      expect(row).not.toHaveProperty('controlPlaneBlockReportedAt');
+      expect(JSON.stringify(row)).not.toContain('warn.filter-a.example');
+    }
+  });
+
+  // #8868 follow-up — a device that stopped reporting keeps its kind column
+  // (the stale write needs beats). The list ages it at read time with the same
+  // rule as the detail notice: muted "last known" after 3 h, gone after 30 d.
+  it('ages an active block pill when the device stopped reporting', async () => {
+    const base = {
+      orgId: 'org-1', siteId: 'site-1', agentId: 'a', hostname: 'h', displayName: null,
+      osType: 'linux', status: 'offline', controlPlaneBlockKind: 'web_filter',
+    };
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    const fortyDaysAgo = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    rigDeviceListRows([
+      { ...base, id: '11111111-1111-4111-8111-111111111111', controlPlaneBlockReportedAt: fourHoursAgo },
+      { ...base, id: '22222222-2222-4222-8222-222222222222', controlPlaneBlockReportedAt: fortyDaysAgo },
+      { ...base, id: '33333333-3333-4333-8333-333333333333', controlPlaneBlockReportedAt: null },
+    ]);
+    const res = await app.request('/devices?limit=50', { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()).data;
+    expect(rows[0]).toMatchObject({ controlPlaneBlockKind: 'web_filter', controlPlaneBlockLastKnownAt: fourHoursAgo });
+    expect(rows[1]).toMatchObject({ controlPlaneBlockKind: null, controlPlaneBlockLastKnownAt: null });
+    expect(rows[2]).toMatchObject({ controlPlaneBlockKind: null, controlPlaneBlockLastKnownAt: null });
   });
 
   // Filtering on hardware health goes through the shared filter engine

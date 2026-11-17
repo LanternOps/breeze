@@ -11,6 +11,7 @@ import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 // pre-existing run's page is unchanged.
 import RunArtifactsSection from './RunArtifactsSection';
 import RunWorkspaceSection from './RunWorkspaceSection';
+import RunChainSection, { analysisScopeLabel } from './RunChainSection';
 import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
 import { EmptyState } from '../shared/EmptyState';
 import {
@@ -1833,6 +1834,12 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
                 </dd>
               </div>
             )}
+            {run.analysisScope && (
+              <div>
+                <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.scope')}</dt>
+                <dd data-testid="run-detail-scope">{analysisScopeLabel(t, run.analysisScope)}</dd>
+              </div>
+            )}
             {/* Duration lives in the status row above (UI critique finding
                 #4) — repeating it here would double-mark the same fact. */}
             <div>
@@ -2218,6 +2225,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         </section>
       )}
 
+      <RunChainSection steps={run.chain} currentRunId={run.id} />
       <RunWorkspaceSection workspace={run.workspace} />
       <RunArtifactsSection artifacts={run.artifacts} />
 

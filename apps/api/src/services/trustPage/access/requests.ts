@@ -41,8 +41,8 @@ const RAW_TOKEN_RE = /^[A-Za-z0-9_-]{48}$/;
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
-/** A Trust Center request has no person behind the ticket write; the ticket service has no trust-center source. */
-const TRUST_ACCESS_TICKET_ACTOR: TicketActor = { kind: 'system', source: 'inbound_email', name: 'Trust Center access request' };
+/** A Trust Center request has no person behind the ticket write, so it is filed as the trust_center system source. */
+const TRUST_ACCESS_TICKET_ACTOR: TicketActor = { kind: 'system', source: 'trust_center', name: 'Trust Center access request' };
 
 export const verifyUrlFor = (raw: string) => `${portalBase()}/trust/access/verify#${raw}`;
 export const downloadUrlFor = (raw: string) => `${portalBase()}/trust/access/download#${raw}`;

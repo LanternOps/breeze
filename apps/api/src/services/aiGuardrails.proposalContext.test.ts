@@ -82,3 +82,50 @@ describe('run_script with a proposalId', () => {
     expect(resolveApprovalScope('run_script', undefined, { proposalId: 'p1' })).toBe('four_eyes');
   });
 });
+
+// #11979: a proposal-backed run_script has no scriptId, so the headline read
+// "Run script unknown... on 1 device(s)" — naming neither the script nor the device.
+describe('run_script approval headline', () => {
+  const proposalId = 'aaaaaaaa-1111-4111-8111-111111111111';
+  const scriptId = 'cccccccc-1111-4111-8111-111111111111';
+  const withGoal = (goal: string) => ({ proposal: { riskTier: 'low' as const, strictHits: [], goal } });
+
+  it('names a proposal-backed run by the proposal goal, never "unknown"', () => {
+    const check = checkGuardrails(
+      'run_script', { proposalId, deviceIds: [devices[0], 'bbbbbbbb-1111-4111-8111-111111111111'] },
+      withGoal('Clear the print spooler queue'),
+    );
+    expect(check.description).toBe('Run proposed script "Clear the print spooler queue" on 2 device(s)');
+  });
+
+  it('names the one device by its id stub, which the approval surfaces swap for its name', () => {
+    const check = checkGuardrails('run_script', { proposalId, deviceIds: devices }, withGoal('Clear the spooler'));
+    expect(check.description).toBe('Run proposed script "Clear the spooler" on device 11111111...');
+  });
+
+  it('keeps a model-written goal to one bounded line', () => {
+    const check = checkGuardrails(
+      'run_script', { proposalId, deviceIds: devices }, withGoal(`Fix\n\tthe ${'x'.repeat(200)}`),
+    );
+    expect(check.description).toMatch(/^Run proposed script "Fix the x{72}…" on device 11111111\.\.\.$/);
+  });
+
+  it('never lets the goal carry a device stub a label builder would rename', () => {
+    const check = checkGuardrails(
+      'run_script', { proposalId, deviceIds: devices }, withGoal('Fix on device deadbeef... first'),
+    );
+    expect(check.description).toBe('Run proposed script "Fix on device deadbeef… first" on device 11111111...');
+  });
+
+  it('falls back to the proposal id stub when the context carries no goal', () => {
+    const check = checkGuardrails('run_script', { proposalId, deviceIds: devices }, ctx('low'));
+    expect(check.description).toBe('Run proposed script aaaaaaaa... on device 11111111...');
+  });
+
+  it('keeps the library-script headline, naming a single device by its stub', () => {
+    expect(checkGuardrails('run_script', { scriptId, deviceIds: devices }).description)
+      .toBe('Run script cccccccc... on device 11111111...');
+    expect(checkGuardrails('run_script', { scriptId, deviceIds: [devices[0], proposalId] }).description)
+      .toBe('Run script cccccccc... on 2 device(s)');
+  });
+});
