@@ -6,7 +6,7 @@ import HashLink from '@/components/shared/HashLink';
 import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 import { listOrgDocuments, type OrgDocument } from '@/lib/api/orgDocuments';
 import { updateTrustDocuments, type TrustLinkedDocument } from '@/lib/api/trustPage';
-import { handleActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 
 export interface LinkedTrustDocument {
   documentId: string;
@@ -166,6 +166,11 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
       await onReload();
     } catch (err) {
       handleActionError(err, tr('documents.saveFailed'));
+      if (err instanceof ActionError && err.code === 'REVISION_MISMATCH') {
+        // Retrying with the same stale revision would 409 forever: re-read the page so the next Save carries
+        // the fresh revision. Unsaved links survive, because the list re-seeds only when the SAVED list changed.
+        try { await onReload(); } catch (reloadErr) { console.error('[TrustDocumentsSection] reload after stale revision failed', reloadErr); }
+      }
     } finally {
       setBusy(false);
     }

@@ -143,6 +143,32 @@ describe('TrustDocumentsSection', () => {
     await waitFor(() => expect(api.updateTrustDocuments).toHaveBeenCalled());
     expect(await screen.findByTestId('trust-docs-error')).toHaveTextContent(/changed since you loaded it/);
   });
+  it('a 409 shows the inline error and reloads the page state, so the retry carries the fresh revision (#9087)', async () => {
+    api.updateTrustDocuments.mockResolvedValue(new Response(JSON.stringify({ error: 'x', code: 'REVISION_MISMATCH' }), { status: 409 }));
+    const onReload = mount({ documents: [sd('d-pol', 'Security policy', 0)], expectedRevision: 2 });
+    fireEvent.click(await screen.findByTestId('trust-docs-save'));
+    expect(await screen.findByTestId('trust-docs-error')).toHaveTextContent(/changed since you loaded it/);
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+  });
+  it('a reload after 409 keeps unsaved links when the saved list did not change (#9087)', async () => {
+    api.updateTrustDocuments.mockResolvedValue(new Response(JSON.stringify({ error: 'x', code: 'REVISION_MISMATCH' }), { status: 409 }));
+    const onReload = mount({ documents: [sd('d-pol', 'Security policy', 0)], expectedRevision: 2 });
+    fireEvent.click(await screen.findByTestId('trust-doc-add-d-ev'));
+    fireEvent.click(screen.getByTestId('trust-doc-disclosure-checkbox'));
+    fireEvent.click(screen.getByTestId('trust-doc-disclosure-confirm'));
+    await screen.findByTestId('trust-doc-linked-d-ev');
+    fireEvent.click(screen.getByTestId('trust-docs-save'));
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('trust-doc-linked-d-ev')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-doc-linked-d-pol')).toBeInTheDocument();
+  });
+  it('a DOCUMENT_UNAVAILABLE 422 does not reload (only a stale revision does)', async () => {
+    api.updateTrustDocuments.mockResolvedValue(new Response(JSON.stringify({ error: 'x', code: 'DOCUMENT_UNAVAILABLE', details: { documentIds: ['d-pol'] } }), { status: 422 }));
+    const onReload = mount({ documents: [sd('d-pol', 'Security policy', 0)], expectedRevision: 2 });
+    fireEvent.click(await screen.findByTestId('trust-docs-save'));
+    expect(await screen.findByTestId('trust-docs-error')).toBeInTheDocument();
+    expect(onReload).not.toHaveBeenCalled();
+  });
   it('removes a linked document and disables controls without write', async () => {
     mount({ canWrite: false, documents: [{ documentId: 'd-pol', title: 'Security policy', disclosureConfirmed: true }] });
     expect(await screen.findByTestId('trust-docs-save')).toBeDisabled();

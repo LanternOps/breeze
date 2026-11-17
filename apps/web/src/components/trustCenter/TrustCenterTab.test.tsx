@@ -55,7 +55,7 @@ describe('TrustCenterTab', () => {
     fireEvent.change(screen.getByTestId('trust-publish-authorized-by'), { target: { value: 'Jane Doe, COO' } });
     expect(confirm).toBeEnabled();
     fireEvent.click(confirm);
-    await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 3, authorization: { authorizedBy: 'Jane Doe, COO' } }));
+    await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 3, expectedTemplateRevision: null, authorization: { authorizedBy: 'Jane Doe, COO' } }));
     expect(await screen.findByText(/Published/)).toBeInTheDocument();
   });
   it('disables Publish with an explanation when a slug is invalid or the partner is on probation', async () => {
@@ -103,11 +103,31 @@ describe('TrustCenterTab', () => {
     render(<TrustCenterTab orgId="o1" orgFetch={orgFetch} />);
     fireEvent.click(await screen.findByTestId('trust-publish'));
     fireEvent.click(screen.getByTestId('trust-publish-confirm'));
-    await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 3 }));
+    await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 3, expectedTemplateRevision: null }));
     await waitFor(() => expect(screen.queryByTestId('trust-publish-confirm')).toBeNull());
     fireEvent.click(screen.getByTestId('trust-publish'));
     fireEvent.click(screen.getByTestId('trust-publish-confirm'));
-    await waitFor(() => expect(api.publishTrustPage).toHaveBeenLastCalledWith(orgFetch, 'o1', { expectedRevision: 4 }));
+    await waitFor(() => expect(api.publishTrustPage).toHaveBeenLastCalledWith(orgFetch, 'o1', { expectedRevision: 4, expectedTemplateRevision: null }));
+  });
+  it('passes the page publication revision to the documents section (#9087)', async () => {
+    api.getTrustPage.mockResolvedValue({
+      ...state({ publicationRevision: 7 }),
+      documents: [{ documentId: 'd-pol', visibility: 'public', disclosureConfirmedAt: '2026-10-01T00:00:00Z', sortOrder: 0, title: 'Security policy', category: 'policy', contentType: 'application/pdf', byteSize: 1, supersededByDocumentId: null, deleted: false }],
+    });
+    api.updateTrustDocuments.mockResolvedValue(new Response(JSON.stringify({ data: { documents: [], publicationRevision: 8 } }), { status: 200 }));
+    render(<TrustCenterTab orgId="o1" orgFetch={orgFetch} />);
+    fireEvent.click(await screen.findByTestId('trust-docs-save'));
+    await waitFor(() => expect(api.updateTrustDocuments).toHaveBeenCalledWith(orgFetch, 'o1', [
+      { documentId: 'd-pol', visibility: 'public', disclosureConfirmed: true },
+    ], 7));
+  });
+  it('publish sends the template revision the editor loaded (#9087)', async () => {
+    api.getTrustPage.mockResolvedValue({ ...state({ isPartnerHome: true }), template: { revision: 6 } });
+    api.publishTrustPage.mockResolvedValue(new Response(JSON.stringify({ data: { page: state({ publishedAt: new Date().toISOString() }).page, snapshotId: 's' } }), { status: 200 }));
+    render(<TrustCenterTab orgId="o1" orgFetch={orgFetch} />);
+    fireEvent.click(await screen.findByTestId('trust-publish'));
+    fireEvent.click(screen.getByTestId('trust-publish-confirm'));
+    await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 3, expectedTemplateRevision: 6 }));
   });
   it('a read-only user clicking the buttons triggers no request', async () => {
     perms.canWrite = false;

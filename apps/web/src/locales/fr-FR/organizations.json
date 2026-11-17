@@ -472,6 +472,7 @@
       },
       "errors": {
         "revisionMismatch": "Cette page a changé depuis son chargement. Rechargez-la et réessayez.",
+        "templateChanged": "Le modèle du Centre de confiance de votre partenaire a changé depuis le chargement de cette page. Rechargez-la et publiez à nouveau.",
         "authorizationRequired": "Indiquez qui a autorisé la publication.",
         "mfaRequired": "La publication nécessite l'authentification multifacteur. Activez l'MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
         "trustProbation": "La publication s'ouvre dès que votre compte est approuvé.",

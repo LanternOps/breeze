@@ -472,6 +472,7 @@
       },
       "errors": {
         "revisionMismatch": "This page changed since you loaded it. Reload and try again.",
+        "templateChanged": "Your partner's Trust Center template changed since you loaded this page. Reload and publish again.",
         "authorizationRequired": "Record who authorized publication.",
         "mfaRequired": "Publishing requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
         "trustProbation": "Publishing opens once your account is trusted.",
