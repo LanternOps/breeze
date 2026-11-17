@@ -84,11 +84,16 @@ describe('loadTrustOnlyEvidence (live DB)', () => {
       return { fx, evaluate, setConnection };
     }
 
-    runDb('a suspended connection drops mfa_enforced_m365 to no data', async () => {
+    runDb('a suspended or revoked connection drops mfa_enforced_m365 to no data; reactivated, it returns', async () => {
       const { evaluate, setConnection } = await seedEnforcing();
       expect(await evaluate()).toMatchObject({ evidence: { passing: 1 }, status: 'met' });
       await setConnection('suspended');
       expect(await evaluate()).toMatchObject({ evidence: { eligible: 0, assessed: 0, passing: 0 }, status: 'not_assessed' });
+      // A clean disconnect deletes the sync rows; this is the defensive case where they survived.
+      await setConnection('revoked');
+      expect(await evaluate()).toMatchObject({ status: 'not_assessed' });
+      await setConnection('active');
+      expect(await evaluate()).toMatchObject({ status: 'met' });
     });
 
     runDb('a degraded connection: a consent code drops the claim, a transient code keeps it', async () => {
