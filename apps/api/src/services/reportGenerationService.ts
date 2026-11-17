@@ -757,6 +757,48 @@ export async function generatePerformanceReport(
   return { rows, rowCount: rows.length };
 }
 
+/** Days before generation a device must have reported in to count toward the
+ * Executive Summary's headline score (#12045). */
+const EXEC_RECENT_WINDOW_DAYS = 7;
+/** Critical/high alerts named on the Executive Summary cover. */
+const EXEC_NOTABLE_ALERT_LIMIT = 5;
+
+type ExecutiveSummaryDevices = NonNullable<ExecutiveSummary['devices']>;
+
+/** Fold per-status device counts into the snapshot's device block. Every row
+ * lands in exactly one of online / offline / otherStatuses, so the three
+ * always add up to `total`, whatever statuses the enum grows (#12045). */
+function summarizeDeviceStatuses(
+  rows: ReadonlyArray<{ status: string; count: number | string; seen: number | string | null }>,
+): Required<ExecutiveSummaryDevices> {
+  let total = 0;
+  let online = 0;
+  let offline = 0;
+  let recentlySeen = 0;
+  const otherStatuses: Record<string, number> = {};
+  for (const row of rows) {
+    const count = Number(row.count ?? 0);
+    if (count <= 0) continue;
+    total += count;
+    recentlySeen += Number(row.seen ?? 0);
+    if (row.status === 'online') online += count;
+    else if (row.status === 'offline') offline += count;
+    else otherStatuses[row.status] = (otherStatuses[row.status] ?? 0) + count;
+  }
+  // An empty fleet keeps the long-standing 100 rather than dividing by zero.
+  const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 100);
+  return {
+    total,
+    online,
+    offline,
+    otherStatuses,
+    healthPercentage: pct(online),
+    recentWindowDays: EXEC_RECENT_WINDOW_DAYS,
+    recentlySeen,
+    recentlySeenPercentage: pct(recentlySeen),
+  };
+}
+
 export async function generateExecutiveSummaryReport(
   orgId: string,
   config: Record<string, unknown>,
@@ -774,24 +816,33 @@ export async function generateExecutiveSummaryReport(
 
   // #9562: the alert figures (alerts in window, severity counts, resolution
   // rate) are the report's time-scoped section and MUST be bounded by the
-  // configured window, preset or explicit. The device figures are a
-  // point-in-time snapshot of the fleet and are deliberately not windowed.
+  // configured window, preset or explicit. The device status counts are a
+  // point-in-time snapshot of the fleet; the headline score is the share seen
+  // in the EXEC_RECENT_WINDOW_DAYS before generation (#12045), because the
+  // share online at one instant brands a laptop fleet "at risk" whenever the
+  // report runs after hours.
   const reportWindow = resolveReportDateRange(config.dateRange);
+  const recentCutoff = new Date(Date.now() - EXEC_RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const deviceConditions: SQL[] = managedDeviceConditions(orgId);
   const emptyDeviceScope = addAllowedSiteCondition(deviceConditions, authority);
   const deviceWhereCondition = and(...deviceConditions);
 
-  // Device stats
-  const deviceStats = emptyDeviceScope
-    ? [{ total: 0, online: 0, offline: 0 }]
+  // Device counts per status, so every managed device lands in a bucket
+  // (#12045: maintenance/pending/... devices were counted in the total but in
+  // neither online nor offline). An online device counts as seen even if its
+  // last_seen_at lags.
+  const deviceStatusRows = emptyDeviceScope
+    ? []
     : await db
       .select({
-        total: sql<number>`count(*)`,
-        online: sql<number>`sum(case when ${devices.status} = 'online' then 1 else 0 end)`,
-        offline: sql<number>`sum(case when ${devices.status} = 'offline' then 1 else 0 end)`
+        status: devices.status,
+        count: sql<number>`count(*)`,
+        seen: sql<number>`sum(case when ${devices.status} = 'online' or ${gte(devices.lastSeenAt, recentCutoff)} then 1 else 0 end)`,
       })
       .from(devices)
-      .where(deviceWhereCondition);
+      .where(deviceWhereCondition)
+      .groupBy(devices.status);
+  const deviceStats = summarizeDeviceStatuses(deviceStatusRows);
 
   // Alert stats
   const alertConditions: SQL[] = [eq(alerts.orgId, orgId)];
@@ -816,6 +867,24 @@ export async function generateExecutiveSummaryReport(
       })
       .from(alerts)
       .where(and(...alertConditions));
+
+  // The critical/high alerts the counts above summarise, named on the cover
+  // (#12045): critical first, then most recent. Same window and site scope.
+  const notableAlertRows = restrictedSiteIds?.length === 0
+    ? []
+    : await db
+      .select({
+        title: alerts.title,
+        severity: alerts.severity,
+        status: alerts.status,
+        device: devices.hostname,
+        triggeredAt: alerts.triggeredAt,
+      })
+      .from(alerts)
+      .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .where(and(...alertConditions, inArray(alerts.severity, ['critical', 'high'])))
+      .orderBy(sql`case when ${alerts.severity} = 'critical' then 0 else 1 end`, desc(alerts.triggeredAt))
+      .limit(EXEC_NOTABLE_ALERT_LIMIT);
 
   // OS distribution
   const osDistribution = emptyDeviceScope
@@ -846,14 +915,7 @@ export async function generateExecutiveSummaryReport(
   return {
     summary: {
       org: { id: orgId, name: orgRow?.name ?? '' },
-      devices: {
-        total: Number(deviceStats[0]?.total ?? 0),
-        online: Number(deviceStats[0]?.online ?? 0),
-        offline: Number(deviceStats[0]?.offline ?? 0),
-        healthPercentage: deviceStats[0]?.total
-          ? Math.round((Number(deviceStats[0]?.online ?? 0) / Number(deviceStats[0]?.total)) * 100)
-          : 100
-      },
+      devices: deviceStats,
       alerts: {
         total: Number(alertStats[0]?.total ?? 0),
         critical: Number(alertStats[0]?.critical ?? 0),
@@ -863,6 +925,17 @@ export async function generateExecutiveSummaryReport(
           ? Math.round((Number(alertStats[0]?.resolved ?? 0) / Number(alertStats[0]?.total)) * 100)
           : 100
       },
+      period: {
+        start: reportWindow.start?.toISOString() ?? null,
+        end: reportWindow.end?.toISOString() ?? null,
+      },
+      notableAlerts: notableAlertRows.map((a) => ({
+        title: a.title,
+        severity: a.severity,
+        status: a.status,
+        device: a.device ?? null,
+        triggeredAt: new Date(a.triggeredAt).toISOString(),
+      })),
       osDistribution: Object.fromEntries(osDistribution.map(o => [o.osType, Number(o.count)])),
       siteBreakdown: siteBreakdown.map(s => ({ site: s.siteName, count: Number(s.deviceCount) }))
     } satisfies ExecutiveSummary,
@@ -1020,8 +1093,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
       return {
         summary: {
           org: { id: orgId, name: '' },
-          devices: { total: 0, online: 0, offline: 0, healthPercentage: 100 },
+          devices: summarizeDeviceStatuses([]),
           alerts: { total: 0, critical: 0, high: 0, resolved: 0, resolutionRate: 100 },
+          notableAlerts: [],
           osDistribution: {},
           siteBreakdown: [],
         },
