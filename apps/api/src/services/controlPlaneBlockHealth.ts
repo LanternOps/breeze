@@ -20,15 +20,19 @@ import { z } from 'zod';
  *    as plain escaped text only.
  *  - Absence means *no change*, not "clear": an older binary must not erase
  *    evidence. An active stored episode goes stale only after beats keep
- *    arriving without it for STALE_AFTER_MS (measured from the last server
- *    write, so between 2 h and 3 h after the last assertion).
- *  - A malformed object is `invalid`: it neither clears nor sets anything.
+ *    arriving without a valid one for STALE_AFTER_MS (measured from the last
+ *    server write, so between 2 h and 3 h after the last assertion).
+ *  - A malformed object is `invalid`: it neither clears nor sets anything,
+ *    and ages a stored episode exactly like absence (an agent whose reports
+ *    the API cannot read must not pin a badge forever).
  *  - Steady state adds no keys to the beat's single `UPDATE devices`: a
  *    re-asserted episode is written only when something other than
  *    `lastSeenAt` changed, or at most once per REFRESH_AFTER_MS.
  *  - Agent times are stored as reported (validated, normalized to ISO) so a
  *    skewed device clock cannot churn writes; the view clamps them into
- *    [now - 30 d, now] on the server clock.
+ *    [now - 30 d, now] on the server clock. The cleared notice expires on the
+ *    server clock too (`reportedAt` bounds it), so a device clock running
+ *    ahead cannot pin it.
  *  - The agent holds one episode at a time. A new `firstSeenAt` (or host)
  *    replaces the stored one; a superseded episode is never reported cleared.
  */
@@ -170,14 +174,15 @@ export function planControlPlaneBlockWrite(
   echActive: boolean | undefined,
   now: Date,
 ): ControlPlaneBlockWrite {
-  if (parsed.status === 'invalid') return {};
-
   const stored = device.controlPlaneBlock;
 
-  if (parsed.status === 'absent') {
+  if (parsed.status === 'absent' || parsed.status === 'invalid') {
     if (device.controlPlaneBlockKind === null) return {};
-    if (!stored) return { controlPlaneBlockKind: null };
-    if (stored.staleAt === undefined && !olderThan(stored.reportedAt, STALE_AFTER_MS, now)) return {};
+    // Inconsistent rows (kind without an open record): drop the kind only.
+    if (!stored || stored.staleAt !== undefined || stored.clearedAt !== undefined) {
+      return { controlPlaneBlockKind: null };
+    }
+    if (!olderThan(stored.reportedAt, STALE_AFTER_MS, now)) return {};
     return { controlPlaneBlockKind: null, controlPlaneBlock: { ...stored, staleAt: now.toISOString() } };
   }
 
@@ -185,7 +190,14 @@ export function planControlPlaneBlockWrite(
   const reachableViaEch = echActive === true;
 
   if (report.clearedAt !== undefined) {
-    if (stored && device.controlPlaneBlockKind === null && sameEpisodeEvidence(stored, report)) return {};
+    if (
+      stored &&
+      device.controlPlaneBlockKind === null &&
+      stored.staleAt === undefined &&
+      sameEpisodeEvidence(stored, report)
+    ) {
+      return {};
+    }
     return { controlPlaneBlockKind: null, controlPlaneBlock: toRecord(report, reachableViaEch, now) };
   }
 
@@ -227,6 +239,7 @@ const storedSchema = z.object({
   locationHost: z.string().regex(HOST_PATTERN).optional(),
   certIssuer: z.string().regex(ISSUER_PATTERN).optional(),
   reachableViaEch: z.boolean(),
+  reportedAt: z.string().datetime({ offset: true }),
   staleAt: z.string().optional(),
 });
 
@@ -254,7 +267,11 @@ export function deriveControlPlaneBlockNotice(
     state = 'active';
   } else {
     clearedAt = clampIso(rec.clearedAt, now);
-    if (now.getTime() - Date.parse(clearedAt) > CLEARED_NOTICE_MS) return null;
+    // Age on the earlier of the (clamped) agent clear time and the server
+    // write time: a clearedAt in the future clamps to `now` on every read and
+    // would otherwise never expire.
+    const shownSince = Math.min(Date.parse(clearedAt), Date.parse(rec.reportedAt));
+    if (now.getTime() - shownSince > CLEARED_NOTICE_MS) return null;
     state = 'cleared';
   }
 

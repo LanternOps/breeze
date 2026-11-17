@@ -149,9 +149,43 @@ describe('planControlPlaneBlockWrite', () => {
     ).toEqual({});
   });
 
-  it('invalid never clears or sets', () => {
-    expect(planControlPlaneBlockWrite(activeRow({ reportedAt: ago(5 * HOUR) }), { status: 'invalid' }, true, NOW)).toEqual({});
+  it('invalid never clears or sets a fresh episode', () => {
+    expect(planControlPlaneBlockWrite(activeRow({ reportedAt: ago(HOUR) }), { status: 'invalid' }, true, NOW)).toEqual({});
     expect(planControlPlaneBlockWrite(EMPTY_ROW, { status: 'invalid' }, true, NOW)).toEqual({});
+  });
+
+  it('invalid ages an active episode like absence (no badge pinned by unreadable reports)', () => {
+    const row = activeRow({ reportedAt: ago(2 * HOUR + 60 * 1000) });
+    expect(planControlPlaneBlockWrite(row, { status: 'invalid' }, true, NOW)).toEqual({
+      controlPlaneBlockKind: null,
+      controlPlaneBlock: { ...row.controlPlaneBlock, staleAt: NOW.toISOString() },
+    });
+  });
+
+  it('absent with a kind but no stored record drops the kind only', () => {
+    expect(
+      planControlPlaneBlockWrite({ controlPlaneBlockKind: 'web_filter', controlPlaneBlock: null }, { status: 'absent' }, undefined, NOW),
+    ).toEqual({ controlPlaneBlockKind: null });
+  });
+
+  it('absent with a kind over an already-stale record drops the kind and does not rewrite staleAt', () => {
+    const rec = record({ staleAt: ago(HOUR), reportedAt: ago(4 * HOUR) });
+    expect(
+      planControlPlaneBlockWrite({ controlPlaneBlockKind: 'web_filter', controlPlaneBlock: rec }, { status: 'absent' }, undefined, NOW),
+    ).toEqual({ controlPlaneBlockKind: null });
+  });
+
+  it('a stale record replaced by the same episode reported cleared records the clear', () => {
+    const stale = record({
+      lastSeenAt: '2026-10-18T10:00:00.000Z',
+      clearedAt: '2026-10-18T11:00:00.000Z',
+      clearedBy: 'plain_success',
+      staleAt: ago(HOUR),
+      reportedAt: ago(4 * HOUR),
+    });
+    const write = planControlPlaneBlockWrite({ controlPlaneBlockKind: null, controlPlaneBlock: stale }, valid(CLEARED), false, NOW);
+    expect(write.controlPlaneBlock?.staleAt).toBeUndefined();
+    expect(write.controlPlaneBlock?.clearedAt).toBe('2026-10-18T11:00:00.000Z');
   });
 
   it('new active episode -> kind column and record', () => {
@@ -300,6 +334,15 @@ describe('deriveControlPlaneBlockNotice', () => {
     const rec = record({ clearedAt: new Date(NOW.getTime() + DAY).toISOString(), clearedBy: 'plain_success' });
     const notice = deriveControlPlaneBlockNotice({ controlPlaneBlockKind: null, controlPlaneBlock: rec }, NOW);
     expect(notice).toMatchObject({ state: 'cleared', clearedAt: NOW.toISOString() });
+  });
+
+  it('a future clearedAt still expires 7 days after the server recorded it', () => {
+    const rec = record({
+      clearedAt: new Date(NOW.getTime() + 30 * DAY).toISOString(),
+      clearedBy: 'plain_success',
+      reportedAt: ago(8 * DAY),
+    });
+    expect(deriveControlPlaneBlockNotice({ controlPlaneBlockKind: null, controlPlaneBlock: rec }, NOW)).toBeNull();
   });
 
   it('a malformed stored record -> null, never throws', () => {

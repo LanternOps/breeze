@@ -422,11 +422,13 @@ vi.mock('../../services/agentIdentityAssertion', async (importOriginal) => ({
 // into this suite. `resolveResponseStatus` keeps its real behaviour, since the
 // success/failed split depends on it.
 const recordAgentHeartbeatMock = vi.hoisted(() => vi.fn());
+const recordAgentControlPlaneBlockReportMock = vi.hoisted(() => vi.fn());
 vi.mock('../metrics', () => ({
   recordAgentHeartbeat: recordAgentHeartbeatMock,
   // #8869 ECH counters: the episode beats in this file carry echActive.
   recordAgentHeartbeatEch: vi.fn(),
   recordAgentFilterSignatureReport: vi.fn(),
+  recordAgentControlPlaneBlockReport: recordAgentControlPlaneBlockReportMock,
   resolveResponseStatus: (c: any) => (c?.finalized ? (c.res?.status ?? 500) : 500),
 }));
 
@@ -769,7 +771,7 @@ describe('POST /agents/:id/heartbeat — control-plane block persistence (#8868)
       controlPlaneBlock: {
         ...STORED,
         reachableViaEch: false,
-        reportedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+        reportedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
       },
     });
     expect((await beat({ controlPlaneBlock: bad })).status).toBe(200);
@@ -791,6 +793,32 @@ describe('POST /agents/:id/heartbeat — control-plane block persistence (#8868)
     const [update] = beatUpdates(setSpy);
     expect(update!.controlPlaneBlockKind).toBeNull();
     expect(update!.controlPlaneBlock).toMatchObject({ clearedAt: '2026-10-18T10:00:00.000Z', clearedBy: 'plain_success' });
+  });
+
+  it('counts a valid report and a malformed one, and nothing for an absent one', async () => {
+    captureSet();
+    primeWithRow({});
+    await beat({ controlPlaneBlock: EPISODE });
+    expect(recordAgentControlPlaneBlockReportMock).toHaveBeenLastCalledWith('valid');
+
+    recordAgentControlPlaneBlockReportMock.mockClear();
+    primeWithRow({});
+    await beat({ controlPlaneBlock: { ...EPISODE, kind: 'brand_new_kind' } });
+    expect(recordAgentControlPlaneBlockReportMock).toHaveBeenCalledTimes(1);
+    expect(recordAgentControlPlaneBlockReportMock).toHaveBeenCalledWith('invalid');
+
+    recordAgentControlPlaneBlockReportMock.mockClear();
+    primeWithRow({});
+    await beat();
+    expect(recordAgentControlPlaneBlockReportMock).not.toHaveBeenCalled();
+  });
+
+  it('controlPlaneBlock: null on a fresh device -> 200 and no keys', async () => {
+    const setSpy = captureSet();
+    primeWithRow({});
+    expect((await beat({ controlPlaneBlock: null })).status).toBe(200);
+    expect(beatUpdates(setSpy)).toHaveLength(1);
+    expect(cpbKeysIn(setSpy)).toEqual([]);
   });
 
   it('a watchdog-role beat never writes the columns', async () => {

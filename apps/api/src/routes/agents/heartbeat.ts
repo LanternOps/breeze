@@ -110,6 +110,7 @@ import {
   recordAgentHeartbeat,
   recordAgentHeartbeatEch,
   recordAgentFilterSignatureReport,
+  recordAgentControlPlaneBlockReport,
   resolveResponseStatus,
 } from '../metrics';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
@@ -1348,17 +1349,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // #8868 — control-plane block episode. Planned against the already-loaded
   // `device` row: no extra query, and keys are added to this beat's single
   // UPDATE only on a transition (new/changed episode, ECH flip, clear, stale)
-  // or at most hourly while an episode stays active. Absent = no change
-  // (an active record goes stale after 2 h of beats without it); malformed =
-  // no change.
+  // or at most hourly while an episode stays active. Absent or malformed =
+  // never sets or clears; an active record goes stale after 2 h of beats
+  // without a valid one. A malformed object is counted (never logged with
+  // its values) so contract drift between agent and API is visible.
+  const controlPlaneBlock = parseControlPlaneBlock(data.controlPlaneBlock);
+  if (controlPlaneBlock.status !== 'absent') recordAgentControlPlaneBlockReport(controlPlaneBlock.status);
   Object.assign(
     deviceUpdates,
-    planControlPlaneBlockWrite(
-      device,
-      parseControlPlaneBlock(data.controlPlaneBlock),
-      data.echActive,
-      new Date(),
-    ),
+    planControlPlaneBlockWrite(device, controlPlaneBlock, data.echActive, new Date()),
   );
 
   // #800 Layer C — recovery side. If the asymmetry detector previously
