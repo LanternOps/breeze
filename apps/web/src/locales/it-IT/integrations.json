@@ -293,7 +293,7 @@
     "teamsSettingsSaved": "Impostazioni Teams salvate.",
     "teamsTestNotificationQueued": "Notifica di test Teams accodata.",
     "discordSettingsSaved": "Impostazioni Discord salvate.",
-    "discordTestNotificationQueued": "Notifica di test Discord accodata.",
+    "discordTestNotificationSent": "Notifica di test Discord inviata.",
     "loadingCommunicationIntegrations": "Caricamento integrazioni di comunicazione...",
     "communicationIntegrations": "Integrazioni di comunicazione",
     "connectChatToolsRouteAlertsBySeverityAnd": "Connetti strumenti di chat, instrada gli avvisi per severità e personalizza i template dei messaggi. ",

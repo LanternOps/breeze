@@ -293,7 +293,7 @@
     "teamsSettingsSaved": "Configurações de equipes salvas.",
     "teamsTestNotificationQueued": "Notificação de teste do Teams na fila.",
     "discordSettingsSaved": "Configurações do Discord salvas.",
-    "discordTestNotificationQueued": "Notificação de teste do Discord na fila.",
+    "discordTestNotificationSent": "Notificação de teste do Discord enviada.",
     "loadingCommunicationIntegrations": "Carregando integrações de comunicação...",
     "communicationIntegrations": "Integrações de comunicação",
     "connectChatToolsRouteAlertsBySeverityAnd": "Conecte ferramentas de chat, encaminhe alertas por gravidade e personalize modelos de mensagens. ",

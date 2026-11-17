@@ -88,21 +88,25 @@ Communication integrations push notifications from Breeze into your team's messa
   </TabItem>
 </Tabs>
 
-Each provider endpoint accepts an optional `"test": true` flag in the request body. When present, the API queues a test notification to the configured webhook. Note that the configuration is saved to the in-memory store before the test is executed, so sending `"test": true` does persist the settings for the lifetime of the current API process.
+Each provider endpoint accepts an optional `"test": true` flag in the request body. Note that the configuration is saved to the in-memory store before the test is executed, so sending `"test": true` does persist the settings for the lifetime of the current API process.
+
+For **Discord**, a test posts one message to the configured webhook and the response reports what Discord answered. The webhook must be a Discord webhook URL (`https://discord.com/api/webhooks/<id>/<token>`, also `discordapp.com` and the `ptb.`/`canary.` hosts). If the UI sends back the masked value, the saved webhook is used.
 
 ```bash
-POST /integrations/slack
+POST /integrations/discord
 {
-  "webhookUrl": "https://hooks.slack.com/services/T00/B00/xxxx",
+  "webhookUrl": "https://discord.com/api/webhooks/...",
   "test": true
 }
 ```
 
-Response:
+| Response | Meaning |
+|---|---|
+| `200 { "success": true, "message": "Discord test notification sent." }` | Discord accepted the message |
+| `400 { "success": false, "error": "..." }` | No webhook URL, not a Discord webhook URL, a destination the URL guard refuses, or Discord rejected the webhook (HTTP 401/403/404) |
+| `502 { "success": false, "error": "..." }` | Discord could not be reached, rate-limited the request, or returned another error |
 
-```json
-{ "success": true, "message": "slack test notification queued." }
-```
+**Slack** and **Teams** settings on this page hold no deliverable destination, so a test returns `422 { "success": false, "error": "..." }` instead of reporting success. To deliver alerts to Slack or Teams, add a Slack or Teams notification channel under **Settings > Notification Channels** and test it there.
 
 ### Retrieving Communication Settings
 
@@ -380,11 +384,11 @@ Every integration type provides a test endpoint. Testing verifies that the confi
 
 ### Communication Test
 
-Pass `"test": true` in the provider configuration body:
+Pass `"test": true` in the provider configuration body. Only Discord can be tested here; see [Communication Integrations](#communication-integrations) for the responses.
 
 ```bash
-POST /integrations/slack
-{ "webhookUrl": "https://hooks.slack.com/...", "test": true }
+POST /integrations/discord
+{ "webhookUrl": "https://discord.com/api/webhooks/...", "test": true }
 ```
 
 ### Monitoring Test
