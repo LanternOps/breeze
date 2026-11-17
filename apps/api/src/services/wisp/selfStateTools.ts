@@ -37,7 +37,13 @@
  *                                  never from the model). `notify` tells only
  *                                  the grantor and runs nothing. `run` (W07
  *                                  #11496) starts ONE assessment when it
- *                                  fires; it used to keep the card for that
+ *                                  fires. The assessment applies nothing
+ *                                  itself; like any assessment it may
+ *                                  propose up to three actions
+ *                                  (assessmentFinalizer.ts), each waiting
+ *                                  on an approval card (spec 2026-11-06
+ *                                  §6.2: "effects raise cards as they do
+ *                                  today"). It used to keep the card for that
  *                                  spend. It no longer does, by owner
  *                                  decision: each run is one capped
  *                                  assessment, a thread holds at most five
