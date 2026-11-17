@@ -44,6 +44,8 @@ const WRITERS: Record<string, Classification> = {
   'services/actionIntents/intentService.ts': { kind: 'wakes' },
   'jobs/intentReleaseWorker.ts': { kind: 'wakes' },
   'jobs/intentExpiryReaper.ts': { kind: 'wakes' },
+  // #12098: the shared expiry writes (reaper sweep + the chat's past-deadline close-out).
+  'services/actionIntents/intentExpiry.ts': { kind: 'wakes' },
   'routes/approvals.ts': { kind: 'wakes' },
   'services/approvals/decideApprovalRequest.ts': { kind: 'wakes' },
   'services/actionIntents/revokeIntentsForSubject.ts': { kind: 'wakes' },
@@ -164,6 +166,17 @@ describe('flow intent terminal writers', () => {
   it('both expiry-reaper writers return requesting_flow_run_id and wake flow rows', () => {
     const text = files.find((f) => f.rel === 'jobs/intentExpiryReaper.ts')!.text;
     expect(text.match(/a\.requesting_flow_run_id/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
-    expect(text.match(/scheduleFlowRunWake\(/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    // execution_lost wakes inline; the expired sweep hands its rows to the
+    // shared recordIntentExpiries (#12098), pinned below.
+    expect(text.match(/scheduleFlowRunWake\(/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(text).toMatch(/recordIntentExpiries\(\s*rows\s*\)/);
+  });
+
+  it('the shared expiry writes wake flow rows, and the single-intent close-out returns requesting_flow_run_id (#12098)', () => {
+    const text = files.find((f) => f.rel === 'services/actionIntents/intentExpiry.ts')!.text;
+    expect(text).toMatch(/if\s*\(\s*row\.requesting_flow_run_id\s*\)\s*scheduleFlowRunWake\(\s*row\.requesting_flow_run_id\s*\)/);
+    const closeOut = text.slice(text.indexOf('export async function closeOutUndecidedIntent'));
+    expect(closeOut).toMatch(/RETURNING[\s\S]*requesting_flow_run_id/);
+    expect(closeOut).toMatch(/recordIntentExpiries\(\s*expired\s*\)/);
   });
 });

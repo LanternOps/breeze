@@ -81,6 +81,7 @@ import {
   transitionIntent,
   type ActionIntentTransitionPatch,
 } from './actionIntents/intentService';
+import { closeOutUndecidedIntent, type IntentCloseOut } from './actionIntents/intentExpiry';
 import { buildActionLabel, hasDeviceIdStub } from './actionIntents/actionLabel';
 import { argumentTicketId, nameApprovalCardTargets, resolveApprovalTicketContext } from './actionIntents/approvalCardContext';
 import { argumentDeviceId } from './actionIntents/approvalDeviceName';
@@ -176,7 +177,8 @@ export const TERMINAL_READBACK_BUDGET_MS = 3_000;
  *
  * Returns the remaining shared budget as `timeoutMs` (0 when a sibling wait
  * already exhausted it — callers pass it straight to waitForApproval /
- * waitForIntentDecision, both of which return immediately on 0), plus a
+ * waitForIntentDecision, both of which stop waiting at once on 0 —
+ * waitForIntentDecision still takes its one closing read, #12098), plus a
  * combined AbortSignal that settles the wait when EITHER the session is torn
  * down OR settleApprovalWaits() fires (new user message / interrupt). Callers
  * MUST invoke `end()` (in a finally) so the in-flight counter stays accurate.
@@ -2768,14 +2770,21 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // a supervised intent's own chat expiry is the same window, #6475)
           // elapses, OR the wait is settled early (session teardown, a new user
           // message, or interrupt — see settleApprovalWaits, #3089). Unlike the
-          // old waitForApproval, this NEVER mutates the intent on timeout: giving
-          // up here leaves it pending_approval so an approver can still decide it
-          // — and the durable release worker (jobs/intentReleaseWorker.ts) will
-          // execute it — after this session has moved on or died. This is the
-          // new durable capability the design adds (spec §6.1).
+          // old waitForApproval, giving up before the intent's own deadline
+          // NEVER mutates it: it stays pending_approval so an approver can
+          // still decide it — and the durable release worker
+          // (jobs/intentReleaseWorker.ts) will execute it — after this session
+          // has moved on or died. This is the new durable capability the
+          // design adds (spec §6.1). Only an intent already past its deadline
+          // is expired here (#12098, below), as the sweep would.
           let decisionStatus: Awaited<ReturnType<typeof waitForIntentDecision>>;
           // #9431: how the card's wait ended, for every other listener.
           let intentOutcome: AiApprovalOutcome = 'ended';
+          // #12098: how an undecided wait was settled (see below).
+          let closeOut: IntentCloseOut | null = null;
+          // #12098: the wait was ended early (teardown, a new user message or
+          // an interrupt) rather than running out or seeing a decision.
+          let waitEndedEarly = false;
           try {
             const approvalWait = beginApprovalWait(session);
             try {
@@ -2784,14 +2793,79 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 approvalWait.timeoutMs,
                 approvalWait.signal,
               );
-              intentOutcome = intentDecisionOutcome(decisionStatus);
               approvalWaitMs = Date.now() - approvalWait.startedAt;
             } finally {
               approvalWait.end();
             }
+            // #12098: an undecided read is not yet an outcome. A decision can
+            // land after the wait's last read (approve and deny stay open
+            // until the approval row's own deadline), and past the deadline
+            // the intent stays `pending_approval` until the 30 s sweep runs, so
+            // "expired" told now could describe an intent the release worker
+            // then runs. Settle it first, on the database clock:
+            // `closeOutUndecidedIntent` expires it in one conditional
+            // statement if its deadline has passed (final: it can no longer be
+            // approved or released), or returns what it is now (a decision
+            // that won, or still pending before the deadline). The card and
+            // the tool result below both report what it returned.
+            if (decisionStatus === 'pending_approval') {
+              closeOut = await closeOutUndecidedIntent(intent.id);
+              if (closeOut.kind === 'decided') decisionStatus = closeOut.status;
+            }
+            // Read after the close-out, so a teardown that arrived while it
+            // ran counts too. (A new message or interrupt settles only waits
+            // still counted in flight; this one ended above.)
+            waitEndedEarly = approvalWait.signal.aborted;
+            intentOutcome = closeOut?.kind === 'expired'
+              ? 'expired'
+              : closeOut?.kind === 'unknown' || closeOut?.kind === 'missing'
+                ? 'ended'
+                : intentDecisionOutcome(decisionStatus);
           } finally {
             // A no-op for the unattended-release branch, which recorded no card.
             resolveApprovalCard(session, approvalExec.id, intentOutcome);
+          }
+
+          // #12098: the close-out expired it, or lost to the 30 s sweep that
+          // expired it, so it is final — no later approval can release it —
+          // and a re-issue cannot run it twice. Both routes read the same.
+          // (#3090: past the deadline this is never "still pending".)
+          if (
+            closeOut?.kind === 'expired'
+            || (closeOut?.kind === 'decided' && closeOut.status === 'expired')
+          ) {
+            return await failMatchedPlanStep(
+              {
+                allowed: false,
+                error:
+                  'Approval request expired before a decision was made; the action was not executed. Re-issue the tool call if it is still needed.',
+              },
+              ' The plan has been stopped.',
+            );
+          }
+          // The intent row is gone (its org was deleted mid-wait): nothing
+          // can release it.
+          if (closeOut?.kind === 'missing') {
+            return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+          }
+          // #12098: the close-out failed after the deadline, so the intent may
+          // still be pending and an approval in its final seconds may still
+          // run through the release worker. Saying "not executed, re-issue
+          // it" could run it twice; say only what is known. Before the
+          // deadline a failed close-out changes nothing: it is still pending
+          // (the branch below).
+          if (
+            closeOut?.kind === 'unknown'
+            && Date.now() >= (intent.approvalExpiresAt ?? intent.expiresAt).getTime()
+          ) {
+            return await failMatchedPlanStep(
+              {
+                allowed: false,
+                error:
+                  'The approval window ended and the outcome of this request could not be confirmed; it may still run if it was approved in its final seconds. Do not re-issue the tool call; ask the user to check the request in Approvals.',
+              },
+              ' The plan has been stopped.',
+            );
           }
 
           if (decisionStatus === 'pending_approval') {
@@ -2824,26 +2898,11 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             // Do not add a notification path here — it would become a second,
             // divergent source of truth the inbox then has to reconcile.
             //
-            // The row can still READ `pending_approval` here even though the
-            // intent's own deadline has already passed: `jobs/intentExpiryReaper.ts`
-            // flips it to `expired` on a 30s sweep, and this wait's own local
-            // timeout (above) is calibrated to ~the same duration as
-            // `intent.expiresAt` — so giving up here routinely races the sweep
-            // by up to ~30s. Trust wall-clock time against the intent's own
-            // deadline instead of the possibly-stale DB read, so a genuinely
-            // expired approval isn't reported as "still pending" (#3090): that
-            // was false on both counts — not pending, and never going to
-            // complete, since re-approving an expired intent does nothing.
-            if (Date.now() >= intent.expiresAt.getTime()) {
-              return await failMatchedPlanStep(
-                {
-                  allowed: false,
-                  error:
-                    'Approval request expired before a decision was made; the action was not executed. Re-issue the tool call if it is still needed.',
-                },
-                ' The plan has been stopped.',
-              );
-            }
+            // Reached only when the close-out above found the intent still
+            // undecided before its deadline on the database clock (or failed
+            // before the deadline): it is genuinely pending, and an approval
+            // would still run. A past-deadline wait is answered above
+            // (#3090, #12098).
             return await failMatchedPlanStep(
               {
                 allowed: false,
@@ -2858,6 +2917,18 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           }
 
           // decisionStatus is one of approved/executing/completed/failed here.
+
+          // #12098: the wait was ended early, and the close-out then found an
+          // approval that landed just before the end. This turn is going away
+          // (teardown: the SDK will not call the tool, so a claim here would
+          // leave the intent in `executing` until the stale-execution reaper
+          // fails it) or the user has moved past it (a new message: the tool
+          // would run inside a turn that no longer wants it). Do not claim:
+          // hand it to the release worker, which runs it once, as it does
+          // for any wait ended before a decision.
+          if (waitEndedEarly && closeOut?.kind === 'decided') {
+            return await releaseHandoffDenial(intent.id, approvalExec.id);
+          }
 
           // BEFORE the CAS, not after: some tools must be released only by the
           // durable worker, because their safety guarantees live in the
