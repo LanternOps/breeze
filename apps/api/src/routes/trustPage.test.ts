@@ -1,7 +1,10 @@
 // apps/api/src/routes/trustPage.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+const order = vi.hoisted(() => [] as string[]);
 vi.mock('../middleware/auth', () => ({
+  // Records the self-managed context boundary: work inside fn happens before 'ctx:end' (the commit).
+  withAuthDbAccessContext: async (_auth: unknown, fn: () => Promise<unknown>) => { order.push('ctx:start'); try { return await fn(); } finally { order.push('ctx:end'); } },
   authMiddleware: async (c: any, next: any) => {
     if (!c.req.header('authorization')) return c.json({ error: 'Unauthorized' }, 401);
     c.set('auth', { user: { id: 'u1' }, partnerId: 'p1', orgId: null, scope: c.req.header('x-scope') ?? 'partner', partnerOrgAccess: c.req.header('x-org-access') ?? 'all', accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'], canAccessOrg: (id: string) => id === '11111111-1111-4111-8111-111111111111' });
@@ -14,7 +17,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 vi.mock('../services/partnerTrust', () => ({ evaluateCapabilityContinuationForState: () => ({ allow: true }), requireCapability: () => async (c: any, next: any) => (c.req.header('x-trust') === 'deny' ? c.json({ error: 'TRUST_PROBATION' }, 403) : next()) }));
 const svc = vi.hoisted(() => ({
-  ensureTrustPage: vi.fn(), publishTrustPage: vi.fn(), unpublishTrustPage: vi.fn(), buildSnapshotForPage: vi.fn(),
+  ensureTrustPage: vi.fn(), publishTrustPage: vi.fn(), unpublishTrustPage: vi.fn(), buildSnapshotForPage: vi.fn(), serveCommittedPublication: vi.fn(),
   loadPublicDocumentsForPage: vi.fn(async () => []), validatePublishSlugs: vi.fn(),
 }));
 vi.mock('../services/trustPage/publication', async (orig) => ({ ...(await orig<typeof import('../services/trustPage/publication')>()), ...svc }));
@@ -208,6 +211,62 @@ describe('trust page routes', () => {
     const ok = await app.request(`/orgs/${ORG}/trust-page/publish`, { method: 'POST', headers: H({ 'x-mfa': '1' }), body: JSON.stringify({ expectedRevision: 0, authorization: { authorizedBy: 'Jane Doe, COO' } }) });
     expect(ok.status).toBe(200);
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'trust_page.publish', details: expect.objectContaining({ snapshotId: 's1', publicationRevision: 1 }) }));
+  });
+  describe('#9087: publish/unpublish commit before the serving set is reconciled', () => {
+    const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', partnerId: 'p1', trustState: 'trusted', deletedAt: null };
+    const published = { ...PAGE, publishedAt: new Date(), publicationRevision: 1 };
+    const cache = { snapshotId: 's1', payload: { snapshotId: 's1' } };
+    beforeEach(() => {
+      order.length = 0;
+      svc.serveCommittedPublication.mockImplementation(async () => { order.push('serve'); return 'applied'; });
+    });
+    const publish = () => app.request(`/orgs/${ORG}/trust-page/publish`, { method: 'POST', headers: H({ 'x-mfa': '1' }), body: JSON.stringify({ expectedRevision: 0, authorization: { authorizedBy: 'Jane Doe, COO' } }) });
+    it('publish reconciles the serving set only after its DB context resolves', async () => {
+      dbm.rows.push([ctxRow]);
+      svc.publishTrustPage.mockImplementationOnce(async () => { order.push('publish'); return { page: published, snapshotId: 's1', cache }; });
+      auditMock.mockImplementationOnce(async () => { order.push('audit'); });
+      const res = await publish();
+      order.push('response');
+      expect(res.status).toBe(200);
+      expect(order).toEqual(['ctx:start', 'publish', 'audit', 'ctx:end', 'serve', 'response']);
+      expect(svc.serveCommittedPublication).toHaveBeenCalledWith({ partnerId: 'p1', cache });
+      expect((await res.json()).data).toMatchObject({ snapshotId: 's1', publicPath: '/portal/trust/nw/acme' });
+    });
+    it('a publish that throws inside the context never serves', async () => {
+      const { TrustPageError } = await import('../services/trustPage/publication');
+      dbm.rows.push([ctxRow]);
+      svc.publishTrustPage.mockRejectedValueOnce(new TrustPageError('stale', 409, 'REVISION_MISMATCH'));
+      const res = await publish();
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('REVISION_MISMATCH');
+      expect(svc.serveCommittedPublication).not.toHaveBeenCalled();
+    });
+    it('unpublish reconciles only after commit', async () => {
+      dbm.rows.push([ctxRow]);
+      svc.unpublishTrustPage.mockImplementationOnce(async () => { order.push('unpublish'); return { ...PAGE, publicationRevision: 2 }; });
+      const res = await app.request(`/orgs/${ORG}/trust-page/unpublish`, { method: 'POST', headers: H({ 'x-mfa': '1' }) });
+      expect(res.status).toBe(200);
+      expect(order).toEqual(['ctx:start', 'unpublish', 'ctx:end', 'serve']);
+      expect(svc.serveCommittedPublication).toHaveBeenCalledWith({ partnerId: 'p1' });
+    });
+    it.each(['degraded', 'no_redis', 'fallback'] as const)('publish still answers 200 when the reconcile is %s', async (outcome) => {
+      dbm.rows.push([ctxRow]);
+      svc.publishTrustPage.mockResolvedValueOnce({ page: published, snapshotId: 's1', cache });
+      svc.serveCommittedPublication.mockResolvedValueOnce(outcome);
+      expect((await publish()).status).toBe(200);
+    });
+    it('unpublish still answers 200 when the reconcile is degraded', async () => {
+      dbm.rows.push([ctxRow]);
+      svc.unpublishTrustPage.mockResolvedValueOnce({ ...PAGE, publicationRevision: 2 });
+      svc.serveCommittedPublication.mockResolvedValueOnce('degraded');
+      expect((await app.request(`/orgs/${ORG}/trust-page/unpublish`, { method: 'POST', headers: H({ 'x-mfa': '1' }) })).status).toBe(200);
+    });
+    it('an org outside the caller\'s access is a 404 and never reaches the service or the reconcile', async () => {
+      const res = await app.request(`/orgs/${OTHER}/trust-page/publish`, { method: 'POST', headers: H({ 'x-mfa': '1' }), body: JSON.stringify({ expectedRevision: 0 }) });
+      expect(res.status).toBe(404);
+      expect(svc.publishTrustPage).not.toHaveBeenCalled();
+      expect(svc.serveCommittedPublication).not.toHaveBeenCalled();
+    });
   });
   it('partner-home needs MFA and partner-wide admin, then moves the flag and audits', async () => {
     const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', partnerId: 'p1', trustState: 'trusted', deletedAt: null, orgType: 'internal' };

@@ -924,3 +924,18 @@ describe('routes that wait on another host self-manage their DB context', () => 
     expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
   });
 });
+
+// Trust Center publish/unpublish (#9087): the publish must COMMIT before the
+// serving set is reconciled and the response says "live" (spec §7), so the two
+// handlers own their DB context. Every other trust-page route keeps it.
+it('self-manages trust-page publish and unpublish, and no sibling trust-page route', () => {
+  const base = '/api/v1/orgs/11111111-1111-4111-8111-111111111111/trust-page';
+  expect(isSelfManagedDbContextRoute('POST', `${base}/publish`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `${base}/publish/`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `${base}/unpublish`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', base)).toBe(false);
+  expect(isSelfManagedDbContextRoute('PUT', `${base}/documents`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `${base}/partner-home`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `${base}/publication`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `${base}/publish`)).toBe(false);
+});

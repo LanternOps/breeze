@@ -15,11 +15,20 @@ const WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 
 // Built per call, not at module load: suites that mock `../db/schema` partially (routes/portal.test.ts and
 // friends) import this module transitively, and a top-level `trustPageSnapshots.payload` would throw there.
+// The counts come back as text with no SQL cast: one malformed old snapshot (say controlsMet 3.5) would make a
+// `::int` cast raise and fail the whole publish or refresh. readCount() parses them, and bad rows are skipped.
 const historyColumns = () => ({
   generatedAt: trustPageSnapshots.generatedAt,
-  met: sql<number | null>`(${trustPageSnapshots.payload}->'summary'->>'controlsMet')::int`,
-  shown: sql<number | null>`(${trustPageSnapshots.payload}->'summary'->>'controlsShown')::int`,
+  met: sql<string | null>`${trustPageSnapshots.payload}->'summary'->>'controlsMet'`,
+  shown: sql<string | null>`${trustPageSnapshots.payload}->'summary'->>'controlsShown'`,
 });
+
+/** A non-negative safe integer written as plain digits, else null. Rejects '3.5', '-1', '1e2', 'x' and overflow. */
+function readCount(v: string | null): number | null {
+  if (v === null || !/^\d+$/.test(v)) return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) ? n : null;
+}
 
 export async function buildHistory(ctx: SectionBuildContext): Promise<TrustPagePublicPayload['history']> {
   if (!ctx.config.showHistory) return [];
@@ -35,11 +44,15 @@ export async function buildHistory(ctx: SectionBuildContext): Promise<TrustPageP
     .orderBy(desc(trustPageSnapshots.generatedAt)).limit(1);
 
   const out: TrustPagePublicPayload['history'] = [];
+  let skipped = 0;
   for (const r of [...baseline, ...inWindow]) {
-    if (r.met === null || r.shown === null || r.met < 0 || r.shown < 0) continue; // unreadable (e.g. a very old payload)
+    const met = readCount(r.met);
+    const shown = readCount(r.shown);
+    if (met === null || shown === null) { skipped++; continue; } // unreadable (e.g. a very old payload)
     const prev = out[out.length - 1];
-    if (prev && prev.met === r.met && prev.shown === r.shown) continue;
-    out.push({ at: r.generatedAt.toISOString(), met: r.met, shown: r.shown });
+    if (prev && prev.met === met && prev.shown === shown) continue;
+    out.push({ at: r.generatedAt.toISOString(), met, shown });
   }
+  if (skipped > 0) console.warn('[trustPage] history skipped unreadable snapshots', { pageId: ctx.page.id, skipped });
   return out.slice(-TRUST_HISTORY_MAX_POINTS);
 }

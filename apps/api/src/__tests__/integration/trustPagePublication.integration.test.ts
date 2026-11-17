@@ -7,8 +7,8 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { trustPageDocuments, trustPages, trustPageSnapshots } from '../../db/schema';
 import { getRedis } from '../../services/redis';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
-import { TRUST_SERVING_SET_KEY } from '../../services/trustPage/servingSet';
-import { ensureTrustPage, publishTrustPage, refreshPublishedPage, unpublishTrustPage } from '../../services/trustPage/publication';
+import { rebuildServingSetFromDb, readServingEpoch, TRUST_SERVING_SET_KEY } from '../../services/trustPage/servingSet';
+import { ensureTrustPage, publishTrustPage, refreshPublishedPage, serveCommittedPublication, unpublishTrustPage } from '../../services/trustPage/publication';
 import { TELEMETRY_CONTROL_IDS } from '@breeze/shared';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -86,6 +86,54 @@ describe('trust page publication', () => {
   let s: Seeded;
   beforeEach(async () => { s = await seedTrustedPartnerWithOrg(); });
 
+  describe('#9087: the serving set is written only after the publish commits', () => {
+    it('the serving member is not visible while the publishing transaction is still open', async () => {
+      expect(getRedis()).not.toBeNull(); // never pass vacuously without Redis
+      await sys(() => ensureTrustPage(s.orgId, s.userId));
+      const member = `${s.partnerSlug}/${s.orgSlug}`;
+      const out = await sys(async () => {
+        const r = await publishTrustPage({
+          orgId: s.orgId, expectedRevision: 0, actorUserId: s.userId, authorization: { authorizedBy: 'Jane Doe, COO' },
+          partnerTrustState: 'trusted', partnerSlug: s.partnerSlug, orgSlug: s.orgSlug,
+        });
+        expect(await isServingMember(member)).toBe(false);
+        return r;
+      });
+      expect(await serveCommittedPublication({ partnerId: s.partnerId, cache: out.cache })).toBe('applied');
+      expect(await isServingMember(member)).toBe(true);
+      expect(await getRedis()!.get(`trust:snapshot:${out.snapshotId}`)).not.toBeNull();
+    });
+
+    it('a full rebuild that read the DB while the publish was uncommitted does not hide the page after publish returns', async () => {
+      await sys(() => ensureTrustPage(s.orgId, s.userId));
+      const member = `${s.partnerSlug}/${s.orgSlug}`;
+      const out = await sys(async () => {
+        const r = await publishTrustPage({
+          orgId: s.orgId, expectedRevision: 0, actorUserId: s.userId, authorization: { authorizedBy: 'Jane Doe, COO' },
+          partnerTrustState: 'trusted', partnerSlug: s.partnerSlug, orgSlug: s.orgSlug,
+        });
+        // Its own connection cannot see the uncommitted row: the rebuild writes a set without the member.
+        await runOutsideDbContext(() => rebuildServingSetFromDb());
+        expect(await isServingMember(member)).toBe(false);
+        return r;
+      });
+      await serveCommittedPublication({ partnerId: s.partnerId, cache: out.cache });
+      expect(await isServingMember(member)).toBe(true);
+    });
+
+    it('a publish that 409s inside its transaction writes nothing to Redis', async () => {
+      const first = await publishFirst(s);
+      await serveCommittedPublication({ partnerId: s.partnerId, cache: first.cache });
+      const epoch = await readServingEpoch();
+      const before = await getRedis()!.keys('trust:snapshot:*');
+      await expect(sys(() => publishTrustPage({
+        orgId: s.orgId, expectedRevision: 0, actorUserId: s.userId, partnerTrustState: 'trusted', partnerSlug: s.partnerSlug, orgSlug: s.orgSlug,
+      }))).rejects.toMatchObject({ status: 409, code: 'REVISION_MISMATCH' });
+      expect(await readServingEpoch()).toBe(epoch);
+      expect((await getRedis()!.keys('trust:snapshot:*')).sort()).toEqual(before.sort());
+    });
+  });
+
   it('a customer page without an attestation is refused 422 and nothing is written', async () => {
     const page = await sys(() => ensureTrustPage(s.orgId, s.userId));
     await expect(sys(() => publishTrustPage({
@@ -103,6 +151,7 @@ describe('trust page publication', () => {
     expect(first.page.publishedAt).not.toBeNull();
     expect(first.page.publicationAuthorizedBy).toBe('Jane Doe, COO');
     expect(first.page.publicationAuthorizedByUserId).toBe(s.userId);
+    await serveCommittedPublication({ partnerId: s.partnerId, cache: first.cache });
     expect(await isServingMember(`${s.partnerSlug}/${s.orgSlug}`)).toBe(true);
 
     // The stored attestation satisfies the requirement; the stale revision is what refuses it.
@@ -305,10 +354,12 @@ describe('trust page publication', () => {
   it('unpublish clears published_at, bumps the revision, removes the member and 409s an in-flight publish', async () => {
     const first = await publishFirst(s);
     const member = `${s.partnerSlug}/${s.orgSlug}`;
+    await serveCommittedPublication({ partnerId: s.partnerId, cache: first.cache });
     expect(await isServingMember(member)).toBe(true);
-    const u = await sys(() => unpublishTrustPage({ orgId: s.orgId, actorUserId: s.userId, partnerSlug: s.partnerSlug, orgSlug: s.orgSlug, isPartnerHome: false }));
+    const u = await sys(() => unpublishTrustPage({ orgId: s.orgId, actorUserId: s.userId }));
     expect(u.publishedAt).toBeNull();
     expect(u.publicationRevision).toBe(first.page.publicationRevision + 1);
+    expect(await serveCommittedPublication({ partnerId: s.partnerId })).toBe('applied');
     expect(await isServingMember(member)).toBe(false);
     await expect(sys(() => publishTrustPage({
       orgId: s.orgId, expectedRevision: first.page.publicationRevision, actorUserId: s.userId,
