@@ -1190,13 +1190,21 @@ describe('analysis chain and scope (W06)', () => {
     expect(projectAnalysisScope(undefined, null)).toBeNull();
   });
 
-  it('projectAnalysisScope tolerates a corrupt jsonb scope instead of throwing', () => {
+  it('projectAnalysisScope shows no scope for a corrupt jsonb scope rather than misreporting it as a device list', () => {
+    // A site or org run also freezes its expanded device list, so falling back
+    // to "N selected devices" would misstate what the run could see.
     expect(
       projectAnalysisScope(
         { handles: [], deviceIds: ['d1'], region: 'us', scope: { kind: 'galaxy' } } as never,
         null,
       ),
-    ).toEqual({ kind: 'devices', siteId: null, siteName: null, deviceCount: 1 });
+    ).toBeNull();
+    expect(
+      projectAnalysisScope(
+        { handles: [], deviceIds: ['d1', 'd2'], region: 'us', scope: { kind: 'org', siteId: null } } as never,
+        null,
+      ),
+    ).toBeNull();
   });
 
   it('buildRunTrace carries lineage, goal, scope and chain for an analysis run', () => {

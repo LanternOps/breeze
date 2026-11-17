@@ -3,9 +3,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    // Echo `count` so assertions can pin the number, not just the key.
-    t: (key: string, opts?: unknown) =>
-      opts && typeof opts === 'object' && 'count' in opts ? `${key}:${(opts as { count: number }).count}` : key,
+    // Echo `count` so assertions can pin the number, not just the key; W06
+    // also echoes `step` and `goal` so the step number and goal text are pinned.
+    t: (key: string, opts?: unknown) => {
+      if (!opts || typeof opts !== 'object') return key;
+      const o = opts as { count?: number; step?: number; goal?: string };
+      if ('count' in o) return `${key}:${o.count}`;
+      if ('step' in o) return `${key}:step=${o.step}`;
+      if ('goal' in o) return `${key}:goal=${o.goal}`;
+      return key;
+    },
   }),
 }));
 
@@ -546,7 +553,7 @@ describe('analysis chain surface (W06)', () => {
   it('shows the step only when the run is in a chain', async () => {
     fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', chainDepth: 2, chain }));
     const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
-    expect((await findByTestId('ai-run-card-step')).textContent).toContain('aiRunCard.chainStep');
+    expect((await findByTestId('ai-run-card-step')).textContent).toContain('aiRunCard.chainStep:step=3');
   });
 
   it('omits the step for an unchained run and for an API that predates the field', async () => {
@@ -566,11 +573,31 @@ describe('analysis chain surface (W06)', () => {
       analysis: { summary: 's', artifactHandles: [], proposedActions: [],
         findings: [{ severity: 'high' }, { severity: 'low' }, { severity: 'info' }] } }));
     const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
-    expect((await findByTestId('ai-run-card-goal')).textContent).toContain('aiRunCard.goal');
+    expect((await findByTestId('ai-run-card-goal')).textContent).toContain('aiRunCard.goal:goal=correlate BSODs');
     const findings = (await findByTestId('ai-run-card-findings')).textContent!;
     expect(findings).toContain('aiRunCard.findings:3');
     expect(findings).toContain('aiRunCard.findingsHigh:1');
     expect((await findByTestId('ai-run-card-cost')).textContent).toMatch(/0\.19/); // (12 + 7) cents
+  });
+
+  it('shows no cost before the first poll lands, and none for a non-analysis run', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'device_troubleshooting', costCents: 40 }));
+    const a = render(<AiRunCard runId={RUN} initialStatus="completed" run={undefined} />);
+    await a.findByTestId('ai-run-card-summary');
+    expect(a.queryByTestId('ai-run-card-cost')).toBeNull();
+    a.unmount();
+    // The poll never resolves: the stream says completed, but no cost is known yet.
+    fetchWithAuth.mockReturnValue(new Promise(() => {}));
+    const b = render(<AiRunCard runId={RUN} initialStatus="completed" run={undefined} />);
+    expect(b.queryByTestId('ai-run-card-cost')).toBeNull();
+  });
+
+  it('keeps an output file whose expiry it cannot parse rather than hiding it', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ profile: 'analysis', artifacts: [
+      { id: 'o3', name: 'x.csv', bytes: 1, contentType: 'text/csv', kind: 'output', expiresAt: 'not-a-date', downloadPath: '/api/v1/ai/artifacts/o3' },
+    ] }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect(await findByTestId('ai-run-card-artifact-o3')).toBeTruthy();
   });
 
   it('omits the high count when no finding is high', async () => {

@@ -23,6 +23,13 @@ interface PolledArtifact {
   expiresAt?: string;
 }
 
+/** An unparseable expiry is treated as not expired: hiding a file is worse than a 404 on download. */
+function isExpired(expiresAt: string | undefined): boolean {
+  if (!expiresAt) return false;
+  const at = Date.parse(expiresAt);
+  return Number.isFinite(at) && at <= Date.now();
+}
+
 interface PolledRun {
   status: AiAgentRunStatus;
   summary: string | null;
@@ -214,9 +221,7 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
   // artifact would 404 on download (the run page shows it as expired).
   const artifacts: PolledArtifact[] = polledArtifacts
     ? polled?.profile === 'analysis'
-      ? polledArtifacts.filter(
-          (a) => a.kind === 'output' && (!a.expiresAt || Date.parse(a.expiresAt) > Date.now()),
-        )
+      ? polledArtifacts.filter((a) => a.kind === 'output' && !isExpired(a.expiresAt))
       : polledArtifacts
     : (run?.artifacts ?? []).map((a) => ({
       id: a.handle,
@@ -278,8 +283,11 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
 
   const inChain = (polled?.chain?.length ?? 0) > 1;
   const chainStep = (polled?.chainDepth ?? 0) + 1;
-  const costLabel = runIsTerminal
-    ? formatCurrency(((polled?.costCents ?? 0) + (polled?.computeCents ?? 0)) / 100)
+  // Analysis runs only, and only once a poll has returned the settled cost:
+  // the stream can report `completed` before the first poll lands, and a
+  // "$0.00" then would misstate what the run spent.
+  const costLabel = runIsTerminal && polled?.profile === 'analysis' && typeof polled.costCents === 'number'
+    ? formatCurrency((polled.costCents + (polled.computeCents ?? 0)) / 100)
     : null;
   const analysisGoal = polled?.analysisGoal ?? null;
   const findings = polled?.analysis?.findings ?? null;

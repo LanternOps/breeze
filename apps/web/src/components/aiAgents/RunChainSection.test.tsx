@@ -9,6 +9,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 import RunChainSection, { analysisScopeLabel } from './RunChainSection';
+import { formatCurrency } from '@/lib/i18n/format';
 
 const steps = [
   { id: 'r0', step: 1, continuedFromRunId: null, goal: 'export inventory', status: 'completed', costCents: 35, queuedAt: '2026-11-13T10:00:00.000Z' },
@@ -33,7 +34,19 @@ describe('RunChainSection (W06)', () => {
     expect(getByTestId('run-detail-chain-step-r2').textContent).toContain('aiAgentsPage.runs.detail.chain.noGoal');
   });
 
-  it('renders a goal as text, never as markup', () => {
+  it('renders each step number, status and cost', () => {
+  const { getByTestId } = render(<RunChainSection steps={[...steps]} currentRunId="r1" />);
+  const r0 = getByTestId('run-detail-chain-step-r0').textContent!;
+  expect(r0).toContain('aiAgentsPage.runs.detail.chain.step|{"step":1}');
+  expect(r0).toContain('aiAgentsPage.runs.statuses.completed');
+  expect(r0).toContain(formatCurrency(0.35));
+  const r1 = getByTestId('run-detail-chain-step-r1').textContent!;
+  expect(r1).toContain('aiAgentsPage.runs.detail.chain.step|{"step":2}');
+  expect(r1).toContain('aiAgentsPage.runs.statuses.failed');
+  expect(r1).toContain(formatCurrency(0.12));
+});
+
+it('renders a goal as text, never as markup', () => {
     const { getByTestId } = render(<RunChainSection steps={[...steps]} currentRunId="r0" />);
     expect(getByTestId('run-detail-chain-step-r1').querySelector('img')).toBeNull();
     expect(getByTestId('run-detail-chain-step-r1').textContent).toContain('<img src=x onerror=alert(1)>');

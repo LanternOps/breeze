@@ -184,9 +184,10 @@ const ANALYSIS_SCOPE_KINDS = new Set(['devices', 'site', 'org']);
 
 /**
  * The frozen device scope of an analysis run. A run admitted before W02 has no
- * `scope` key and is read as the explicit device list it was launched with;
- * a corrupt `scope` is read the same way rather than thrown on. No frozen
- * devices at all means no scope to show.
+ * `scope` key and is read as the explicit device list it was launched with.
+ * A `scope` that is present but corrupt shows no scope: a site or org run also
+ * freezes its expanded device list, so reading it as "N selected devices"
+ * would misstate what the run could see. No frozen devices means no scope.
  */
 export function projectAnalysisScope(
   stagedInputs: AiAgentRunStagedInputs | null | undefined,
@@ -209,6 +210,7 @@ export function projectAnalysisScope(
       deviceCount: scope.deviceCount,
     };
   }
+  if (scope !== undefined && scope !== null) return null;
   const deviceCount = Array.isArray(stagedInputs.deviceIds) ? stagedInputs.deviceIds.length : 0;
   if (deviceCount === 0) return null;
   return { kind: 'devices', siteId: null, siteName: null, deviceCount };

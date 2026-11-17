@@ -130,7 +130,8 @@ step_analysis() {
   fi
   # A site with no devices: the launcher refuses frame_empty for it.
   if [ -z "$(site_id 'Northwind Dental' 'Annex (no devices)')" ]; then
-    new_site="$(api POST /orgs/sites "$(jq -n --arg o "$nw" '{orgId:$o,name:"Annex (no devices)",timezone:"America/Denver"}')" | jq -r '.id // .data.id')"
+    new_site="$(api POST /orgs/sites "$(jq -n --arg o "$nw" '{orgId:$o,name:"Annex (no devices)",timezone:"America/Denver"}')" | jq -r '.id // .data.id // empty')"
+    [ -n "$new_site" ] || { echo "analysis: creating the empty site returned no id" >&2; exit 1; }
     say "analysis: created the empty site Northwind Dental / Annex (no devices) ($new_site)"
   fi
 }
