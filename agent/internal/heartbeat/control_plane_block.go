@@ -3,7 +3,6 @@ package heartbeat
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -168,7 +167,8 @@ type blockTracker struct {
 	lastPersistAt  time.Time
 	persistWarned  bool
 
-	writes atomic.Int64 // test seam
+	dirSyncWarned atomic.Bool
+	writes        atomic.Int64 // test seam
 }
 
 // newBlockTracker loads path. A missing file is the normal case; a corrupt or
@@ -257,9 +257,13 @@ func (t *blockTracker) persist() {
 
 func (t *blockTracker) write(f blockFileV1) error {
 	if f.Active == nil && f.Pending == nil {
-		if err := os.Remove(t.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := os.Remove(t.path); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
+		t.syncDir()
 		return nil
 	}
 	data, err := json.Marshal(f)
@@ -295,23 +299,32 @@ func (t *blockTracker) write(f blockFileV1) error {
 		_ = os.Remove(name)
 		return err
 	}
-	// atomicrename.Replace is a bare rename(2) off Windows; fsync the
-	// directory so the rename itself survives a power loss.
-	if runtime.GOOS != "windows" {
-		if err := syncDir(filepath.Dir(t.path)); err != nil {
-			return fmt.Errorf("sync state directory: %w", err)
-		}
-	}
+	t.syncDir()
 	return nil
 }
 
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
+// syncDir fsyncs the state directory after a rename or removal in it, so the
+// directory entry survives a power loss: atomicrename.Replace is a bare
+// rename(2) off Windows. Best effort: the file is already in place, and some
+// filesystems refuse a directory fsync, so a failure is one WARN per tracker
+// and never a persist failure. Windows has no directory fsync.
+func (t *blockTracker) syncDir() {
+	if runtime.GOOS == "windows" {
+		return
 	}
-	defer func() { _ = d.Close() }()
-	return d.Sync()
+	dir := filepath.Dir(t.path)
+	err := func() error {
+		d, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = d.Close() }()
+		return d.Sync()
+	}()
+	if err != nil && t.dirSyncWarned.CompareAndSwap(false, true) {
+		log.Warn("control-plane block state directory fsync failed; the last change may not survive a power loss",
+			"error", err.Error())
+	}
 }
 
 // persistNeed says what an update changed.

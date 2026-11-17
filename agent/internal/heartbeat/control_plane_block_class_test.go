@@ -1,6 +1,10 @@
 package heartbeat
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +93,77 @@ func TestBlockTracker_SameClassKeepsEpisode(t *testing.T) {
 	r := tr.Report()
 	if r.FirstSeenAt != "2026-10-18T09:00:00Z" || r.LastSeenAt != "2026-10-18T09:01:00Z" {
 		t.Fatalf("Report = %+v, want one plaintext episode extended", r)
+	}
+}
+
+// The superseding episode is what a restart reloads; the old one is gone.
+func TestBlockTracker_SupersededEpisodeSurvivesReload(t *testing.T) {
+	tr, clock, path := newTestTracker(t)
+	tr.Observe(cpHost, webFilterStatus(blockT0))
+	tr.Observe(cpHost, certStatus(clock.Advance(time.Minute)))
+
+	again := newBlockTracker(path, clock.Now)
+	r := again.Report()
+	if r == nil || r.Kind != string(ech.BlockUntrustedCertificate) || r.CertIssuer != "Example Inspect CA" ||
+		r.FirstSeenAt != "2026-10-18T09:01:00Z" || r.LocationHost != "" {
+		t.Fatalf("reloaded Report = %+v, want the certificate episode only", r)
+	}
+	if again.HoldsRestart(cpHost) {
+		t.Fatal("reloaded certificate episode holds the restart")
+	}
+}
+
+// A plain success after a supersede clears the second episode; the first is
+// not resurrected by its own older evidence.
+func TestBlockTracker_SupersededThenPlainSuccess(t *testing.T) {
+	tr, clock, _ := newTestTracker(t)
+	tr.Observe(cpHost, certStatus(blockT0))
+	tr.Observe(cpHost, webFilterStatus(clock.Advance(time.Minute)))
+	ok := clock.Advance(time.Minute)
+	tr.Observe(cpHost, ech.HostStatus{Evidence: certStatus(blockT0).Evidence, LastPlainSuccessAt: ok})
+	r := tr.Report()
+	if r == nil || r.Kind != string(ech.BlockWebFilter) || r.ClearedBy != blockClearedByPlainSuccess ||
+		r.FirstSeenAt != "2026-10-18T09:01:00Z" {
+		t.Fatalf("Report = %+v, want the web_filter episode cleared by plain success", r)
+	}
+	tr.Observe(cpHost, certStatus(blockT0))
+	if r := tr.Report(); r == nil || r.ClearedAt == "" {
+		t.Fatalf("Report = %+v, old certificate evidence reopened an episode", r)
+	}
+}
+
+// A directory fsync failure after a successful rename is not a persist
+// failure: the file is in place and one distinct WARN is logged.
+func TestBlockTracker_DirSyncFailureIsBestEffort(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a POSIX directory that can be written but not opened")
+	}
+	logs := captureBlockLogs(t)
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "control-plane-block.json")
+	clock := &blockClock{t: blockT0}
+	tr := newBlockTracker(path, clock.Now)
+	// Write and search, no read: create and rename work, opening the
+	// directory for fsync does not.
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	tr.Observe(cpHost, webFilterStatus(blockT0))
+	tr.Observe(cpHost, certStatus(clock.Advance(time.Minute)))
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("state file not written: %v", err)
+	}
+	out := logs.String()
+	if strings.Contains(out, "failed to persist control-plane block state") {
+		t.Fatal("directory fsync failure reported as a persist failure")
+	}
+	if n := strings.Count(out, "state directory fsync failed"); n != 1 {
+		t.Fatalf("directory fsync WARNs = %d, want 1", n)
 	}
 }
 
