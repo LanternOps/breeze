@@ -95,7 +95,7 @@ function deviceBoundAuth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
     principal: { kind: 'ai_agent', agentId: 'ag-1', runId: 'run-1' },
     user: { id: 'ag-1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
-    token: null, partnerId: 'p1', orgId: 'org-1', scope: 'organization',
+    token: { mfa: true }, partnerId: 'p1', orgId: 'org-1', scope: 'organization',
     accessibleOrgIds: ['org-1'], partnerOrgAccess: null,
     orgCondition: () => undefined, canAccessOrg: () => true,
     allowedSiteIds: ['site-1'], canAccessSite: (site?: string | null) => site === 'site-1',
