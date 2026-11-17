@@ -523,6 +523,12 @@ export const SENTRY_EVENT_CODES = [
    *  bump already makes both session stores refuse those sessions; this is
    *  cleanup, with no retry (W9 plan OD3). Ids only, in the log. */
   'portal_scim_purge_failed',
+
+  // --- trust center serving set (#9087) ----------------------------------
+  /** A serving-set reconcile lost the epoch check three times in a row and
+   *  applied without removing members (a stale member lingers until the next
+   *  reconcile). Frequent events mean writers are contending for the epoch. */
+  'trust_serving_reconcile_fallback',
 ] as const;
 
 /**
