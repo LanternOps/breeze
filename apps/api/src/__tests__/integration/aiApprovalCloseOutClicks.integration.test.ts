@@ -5,15 +5,15 @@
  * 409), the mobile decide (`decideApprovalRequest`), and a decide holding its
  * locks while the close-out runs. Also: a zero wait budget never honours an
  * approval, a stop that beats an approval is recorded on the mobile request
- * and in the audit log, and the PAM stale-request expirer closes a helper
- * execution row that no close-out managed to close.
+ * and in the audit log. (The PAM stale-request expirer case lives in
+ * `pamExpiryClosesAiExecution.integration.test.ts`.)
  */
 import './setup';
 
 import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { aiSessions, aiToolExecutions, approvalRequests, auditLogs, elevationRequests } from '../../db/schema';
+import { runOutsideDbContext, withDbAccessContext } from '../../db';
+import { aiSessions, aiToolExecutions, approvalRequests, auditLogs } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import {
   AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE,
@@ -23,8 +23,6 @@ import {
   type ApprovalWaitDetail,
 } from '../../services/aiAgent';
 import { decideApprovalRequest } from '../../services/approvals/decideApprovalRequest';
-import { decideHelperToolAction } from '../../services/pamToolActionGovernance';
-import { expireStaleRequests } from '../../jobs/pamJobs';
 import { inLastSleep } from './aiApprovalWaitFixtures';
 import { orgContext, tenant, toolAuth, type Tenant } from './caughtQueryFixtures';
 import { getTestDb } from './setup';
@@ -449,53 +447,5 @@ describe('the real click paths against the close-out (#12084 review item 4)', ()
     await decided;
     expect(status).toBe(200);
     expect((await readRequest(requestId))!.status).toBe('approved');
-  });
-});
-
-describe('a helper/PAM execution no close-out closed (#12084 review item 5)', () => {
-  it('the PAM stale-request expirer closes the linked execution row as expired', async () => {
-    const executionId = await seedExecution();
-    // No PAM rule matches: the elevation request is created pending.
-    const decision = await decideHelperToolAction({
-      orgId: t.orgId, deviceId: t.deviceId, executionId, toolName: 'execute_command', toolInput: {},
-      riskTier: 2, subjectUsername: 'helper-host',
-    });
-    expect(decision).toBe('pending');
-    // Every close-out failed, so the row is still pending; the request is past its TTL.
-    await getTestDb()
-      .update(elevationRequests)
-      .set({ requestedAt: new Date(Date.now() - 24 * 60 * 60_000) })
-      .where(eq(elevationRequests.executionId, executionId));
-
-    // As the BullMQ worker runs it: in system scope.
-    expect(await withSystemDbAccessContext(() => expireStaleRequests())).toBeGreaterThanOrEqual(1);
-
-    expect(await readExecution(executionId)).toEqual({ status: 'rejected', errorMessage: 'Approval request expired' });
-    const [elevation] = await getTestDb()
-      .select({ status: elevationRequests.status })
-      .from(elevationRequests)
-      .where(eq(elevationRequests.executionId, executionId));
-    expect(elevation!.status).toBe('expired');
-  });
-
-  it('leaves an execution that is no longer pending as it is', async () => {
-    const executionId = await seedExecution();
-    expect(await decideHelperToolAction({
-      orgId: t.orgId, deviceId: t.deviceId, executionId, toolName: 'execute_command', toolInput: {},
-      riskTier: 2, subjectUsername: 'helper-host',
-    })).toBe('pending');
-    // Already closed by its wait (say, as timed out) before the request went stale.
-    await getTestDb()
-      .update(aiToolExecutions)
-      .set({ status: 'rejected', errorMessage: 'Approval timed out' })
-      .where(eq(aiToolExecutions.id, executionId));
-    await getTestDb()
-      .update(elevationRequests)
-      .set({ requestedAt: new Date(Date.now() - 24 * 60 * 60_000) })
-      .where(eq(elevationRequests.executionId, executionId));
-
-    expect(await withSystemDbAccessContext(() => expireStaleRequests())).toBeGreaterThanOrEqual(1);
-
-    expect(await readExecution(executionId)).toEqual({ status: 'rejected', errorMessage: 'Approval timed out' });
   });
 });
