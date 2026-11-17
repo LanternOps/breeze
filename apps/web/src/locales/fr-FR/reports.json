@@ -384,11 +384,11 @@
         "backup_status": "État des sauvegardes"
       },
       "threatDetection": {
-        "agents": "Postes dotés d’un agent de détection",
         "breezeDevices": "Appareils gérés par Breeze",
         "carriedIn": "Reportées, encore ouvertes",
         "coverage": "Limites de ce rapport",
-        "devicesWithoutAgent": "Appareils gérés sans agent",
+        "devicesWithAgent": "Appareils gérés dotés d’un agent de détection",
+        "devicesWithoutAgent": "Appareils gérés sans agent de détection",
         "notMeasured": "N. D.",
         "opened": "Détections signalées",
         "resolved": "Détections résolues"

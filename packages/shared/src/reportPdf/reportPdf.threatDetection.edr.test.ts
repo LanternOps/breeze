@@ -67,8 +67,8 @@ describe('threat detection PDF: EDR fields (#8164)', () => {
     }));
     expect(text).toContain('Managed endpoint protection: 7 endpoints');
     expect(text).toContain('open now: 3');
-    expect(text).toContain('critical: 1');
-    expect(text).toContain('high: 2');
+    expect(text).toContain('Critical: 1');
+    expect(text).toContain('High: 2');
   });
 
   it('prints a measured zero for open detections when the org has EDR endpoints', () => {

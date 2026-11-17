@@ -85,7 +85,11 @@ const PRE_CHANGE_CONNECTED = {
     sourceStatus: 'ok', lastSyncAt: '2026-09-30T05:00:00.000Z', lastSyncStatus: 'ok',
     unattributableExcluded: 0, withheld: 0, carriedInIncluded: true, note: '',
   },
-  agentCoverage: { huntressAgents: 1, breezeDevices: 2, agentsOffline: 0, devicesWithoutAgent: 1 },
+  agentCoverage: {
+    huntressAgents: 1, breezeDevices: 2, agentsOffline: 0, devicesWithoutAgent: 1,
+    // #12046: the any-source pair (adds up to breezeDevices) and the unmatched count.
+    devicesWithDetectionAgent: 1, devicesWithoutDetectionAgent: 1, unmatchedAgents: 0,
+  },
   incidents: {
     opened: 1, resolved: 0, bySeverity: { high: 1 }, byStatus: { open: 1 },
     meanResolveHours: null, medianResolveHours: null, carriedIn: 0,
@@ -169,6 +173,22 @@ describe('generateThreatDetectionReport: EDR coverage (additive)', () => {
     expect(Object.keys((res.summary as { agentCoverage: object }).agentCoverage)).not.toContain('edrEndpoints');
     expect(Object.keys(res.summary ?? {})).not.toContain('edrDetections');
     expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+  });
+
+  // #12046: device coverage counts EDR endpoints only when the run may use EDR
+  // evidence — a portal run without the flag must not be told about them.
+  it('does not count EDR endpoints as device coverage when the run may not use EDR evidence', async () => {
+    edrGate.edrReportEvidenceAllowed.mockResolvedValue(false);
+    queueSelects(
+      ORG, [{ id: 'd1' }], SYNCED, [], [], [], [], [{ earliest: null }],
+      /* s1 agent devices */ [],
+      /* would-be EDR endpoint devices — must never be read */ [{ deviceId: 'd1' }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport('o', {}, authority(), EV));
+    expect(s.agentCoverage?.devicesWithDetectionAgent).toBe(0);
+    expect(s.agentCoverage?.devicesWithoutDetectionAgent).toBe(1);
+    // org, devices, integration, agents, window, rows, carried, earliest, s1
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(9);
   });
 
   it('an EDR-only org whose Huntress never synced also gets the EDR fields', async () => {

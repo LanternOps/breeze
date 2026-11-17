@@ -55,6 +55,36 @@ describe('BackupHealthDeviceTable — Type column (sweep F3)', () => {
 });
 
 
+describe('BackupHealthDeviceTable — overdue and missed days (#12025)', () => {
+  it('shows a completed row with no recent success as "No recent backup", with the last success date', () => {
+    render(<BackupHealthDeviceTable rows={[makeRow({
+      key: 'provider:old', source: 'provider', status: 'completed', health: 'critical',
+      recency: 'over_48h', covered: false, lastSuccessAt: '2026-03-23T02:00:00.000Z',
+    })]} />);
+    const cell = screen.getByTestId('backup-health-status-provider:old');
+    expect(cell).toHaveTextContent('No recent backup');
+    expect(cell).not.toHaveTextContent('Completed');
+    expect(cell).toHaveTextContent(formatDateTime('2026-03-23T02:00:00.000Z', { fallback: '--', month: 'short', day: 'numeric' }));
+  });
+
+  it('keeps a recent completed row as "Completed"', () => {
+    render(<BackupHealthDeviceTable rows={[makeRow()]} />);
+    expect(screen.getByTestId('backup-health-status-breeze:dev-1')).toHaveTextContent('Completed');
+  });
+
+  it('labels a missed day in the bar in words, not as a raw enum', () => {
+    render(<BackupHealthDeviceTable rows={[makeRow({
+      history28d: [{ day: '2026-09-14', status: 'no_backups' }, { day: '2026-09-15', status: null }],
+    })]} />);
+    const bar = screen.getByTestId('backup-health-history-breeze:dev-1');
+    const [missed, unobserved] = Array.from(bar.children) as HTMLElement[];
+    expect(missed!.title).toBe('2026-09-14 — No backups');
+    expect(unobserved!.title).toBe('2026-09-15 — No observation');
+    // A missed day is not drawn in the grey of "not observed".
+    expect(missed!.className).not.toBe(unobserved!.className);
+  });
+});
+
 describe('BackupHealthDeviceTable SaaS workloads', () => {
   it.each([
     ['m365', 'cove', 'm365_mail', 'Microsoft 365 mail'],
