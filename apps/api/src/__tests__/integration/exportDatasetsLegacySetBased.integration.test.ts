@@ -374,4 +374,85 @@ describe('metrics / vulnerabilities / custom_fields set-based on real Postgres (
       expect((await drain('custom_fields', request(t.orgA, [t.a1], { auth: authFor(t, [t.a1]) }), ctxFor(t))).rows).toEqual([]);
     });
   });
+
+  describe('vulnerabilities joined payload', () => {
+    async function seedSoftware(orgId: string, deviceId: string, name: string, version: string, vendor: string): Promise<string> {
+      const [row] = await getTestDb().execute(sql`
+        INSERT INTO software_inventory (device_id, org_id, name, version, vendor)
+        VALUES (${deviceId}, ${orgId}, ${name}, ${version}, ${vendor})
+        RETURNING id::text AS id`) as unknown as Array<{ id: string }>;
+      return row!.id;
+    }
+    async function linkFinding(findingId: string, softwareId: string): Promise<void> {
+      await getTestDb().execute(sql`UPDATE device_vulnerabilities SET software_inventory_id = ${softwareId}::uuid WHERE id = ${findingId}::uuid`);
+    }
+
+    runDb('linked finding carries catalog cveId/severity/cvssScore and the seeded software; unlinked finding has null software; site-restricted auth sees no A2 row or software', async () => {
+      const t = await seedTenant();
+      const cveLinked = await seedCve('linked');
+      const cveFree = await seedCve('free');
+      const cveA2 = await seedCve('a2');
+      const [catalog] = await getTestDb().execute(sql`SELECT cve_id, severity, cvss_score::float8 AS cvss FROM vulnerabilities WHERE id = ${cveLinked}::uuid`) as unknown as Array<{ cve_id: string; severity: string; cvss: number }>;
+      const linked = await seedFinding(t.orgA, t.a1, cveLinked);
+      const unlinked = await seedFinding(t.orgA, t.a1, cveFree);
+      await linkFinding(linked, await seedSoftware(t.orgA, t.a1, 'Acme Widget A1', '4.2.1', 'Acme Corp'));
+      const a2Finding = await seedFinding(t.orgA, t.a2, cveA2);
+      await linkFinding(a2Finding, await seedSoftware(t.orgA, t.a2, 'SecretSoft A2Only', '9.9.9', 'Hidden Vendor'));
+
+      const frame = [t.a1, t.a2];
+      const all = await drain('vulnerabilities', request(t.orgA, frame, { filters: { status: 'all' } }));
+      const byId = new Map(all.rows.map((r) => [r.id as string, r]));
+      expect(all.rows).toHaveLength(3);
+      const l = byId.get(linked)!;
+      expect(l.cveId).toBe(catalog!.cve_id);
+      expect(l.severity).toBe(catalog!.severity);
+      expect(Number(l.cvssScore)).toBe(catalog!.cvss);
+      expect(l.softwareName).toBe('Acme Widget A1');
+      expect(l.softwareVersion).toBe('4.2.1');
+      expect(l.softwareVendor).toBe('Acme Corp');
+      const u = byId.get(unlinked)!;
+      expect([u.softwareName, u.softwareVersion, u.softwareVendor]).toEqual([null, null, null]);
+
+      const restricted = await drain('vulnerabilities', request(t.orgA, frame, {
+        filters: { status: 'all' },
+        auth: runAuth(t.orgA, frame, { sites: [t.siteS1] }),
+      }));
+      expect(devicesOf(restricted.rows)).toEqual([t.a1]);
+      expect(restricted.rows.map((r) => r.id)).not.toContain(a2Finding);
+      const serialized = JSON.stringify(restricted.rows);
+      expect(serialized).not.toContain('SecretSoft');
+      expect(serialized).not.toContain('Hidden Vendor');
+    });
+  });
+
+  describe('exact-device axis (auth.allowedDeviceIds narrower than the frame)', () => {
+    async function seedAll(t: Tenant) {
+      for (const [org, dev] of [[t.orgA, t.a1], [t.orgA, t.a2]] as const) await seedMetric(org, dev, minutesAgo(10));
+      const cve = await seedCve('exact');
+      await seedFinding(t.orgA, t.a1, cve);
+      await seedFinding(t.orgA, t.a2, cve);
+      await seedDefinition({ orgId: t.orgA, partnerId: null, key: 'tier', name: 'Tier' });
+      await setCustomFields(t.a1, { tier: 'gold' });
+      await setCustomFields(t.a2, { tier: 'silver' });
+    }
+    const exactAuth = (t: Tenant) => runAuth(t.orgA, [t.a1], { partnerId: t.partner });
+
+    for (const dataset of ['metrics', 'vulnerabilities', 'custom_fields'] as const) {
+      runDb(`${dataset}: frame [A1, A2] but allowedDeviceIds [A1] exports only A1`, async () => {
+        const t = await seedTenant();
+        await seedAll(t);
+        const { rows } = await drain(dataset, request(t.orgA, [t.a1, t.a2], { auth: exactAuth(t) }), orgCtx(t.orgA, t.partner));
+        expect(rows.length).toBeGreaterThan(0);
+        expect(devicesOf(rows)).toEqual([t.a1]);
+      });
+
+      runDb(`${dataset}: no frame, deviceIds [A1, A2], allowedDeviceIds [A1] exports only A1`, async () => {
+        const t = await seedTenant();
+        await seedAll(t);
+        const { rows } = await drain(dataset, request(t.orgA, null, { deviceIds: [t.a1, t.a2], auth: exactAuth(t) }), orgCtx(t.orgA, t.partner));
+        expect(rows.length).toBeGreaterThan(0);
+        expect(devicesOf(rows)).toEqual([t.a1]);
+      });
+    }
+  });
 });
