@@ -29,7 +29,7 @@ import { portalSessions } from '../../routes/portal/helpers';
 import { createPortalScimRoutes } from '../../routes/portalScim';
 import { __testOnly as policyTestOnly } from '../../services/portalAccessPolicy';
 import { disablePortalIdentity, restorePortalIdentity } from '../../services/portalDirectory/identityDisable';
-import { mintPortalScimToken, revokePortalScimToken } from '../../services/portalScim/tokens';
+import { mintPortalScimToken, parseScimBearer, revokePortalScimToken } from '../../services/portalScim/tokens';
 import { entraIssuer } from '../../services/portalUserIdentities';
 
 const admin = () => getTestDb();
@@ -293,7 +293,10 @@ describe('credential (Review Focus 2)', () => {
   it('stores only the secret\'s hash', async () => {
     const { org, token } = await seedOrg();
     const [row] = await admin().select().from(portalScimTokens).where(eq(portalScimTokens.orgId, org.id));
-    const secret = token.split('_')[2]!;
+    // The secret is base64url and can itself contain `_`, so split('_') would
+    // truncate it to a fragment that then matches the row by chance (#12091).
+    const secret = parseScimBearer(`Bearer ${token}`)!.secret;
+    expect(secret).toHaveLength(43);
     expect(JSON.stringify(row)).not.toContain(secret);
   });
 });
