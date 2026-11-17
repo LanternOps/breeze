@@ -3499,7 +3499,7 @@ describe('createSessionPreToolUse', () => {
         .find((evt: any) => evt.type === 'approval_required');
       expect((publishedEvent as any)?.intentBacked).toBeUndefined();
 
-      expect(waitForApproval).toHaveBeenCalledWith('exec-2', 300_000, expect.any(AbortSignal));
+      expect(waitForApproval).toHaveBeenCalledWith('exec-2', 300_000, expect.any(AbortSignal), expect.any(Object));
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
 
       // THE REGRESSION: Tier 2 under per_step must never route through the
@@ -3756,7 +3756,7 @@ describe('createSessionPreToolUse', () => {
         waitingOn: 'other_approvers',
       }));
 
-      expect(waitForApproval).toHaveBeenCalledWith('exec-h1', 300_000, expect.any(AbortSignal));
+      expect(waitForApproval).toHaveBeenCalledWith('exec-h1', 300_000, expect.any(AbortSignal), expect.any(Object));
       // Marked executing after approval.
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
     });

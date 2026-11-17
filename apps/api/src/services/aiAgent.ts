@@ -600,6 +600,26 @@ export async function getSessionMessages(sessionId: string, auth: AuthContext) {
 // ============================================
 
 /**
+ * #12079: `ai_tool_executions.error_message` values that close a row as
+ * `rejected` because its approval expired, not because anyone denied it.
+ * `waitForApproval` writes the first on its own timeout; the approval-expiry
+ * reaper (jobs/approvalExpiryReaper.ts) writes the second when the linked
+ * mobile approval request expires. Keep that job's literal in step.
+ */
+export const AI_APPROVAL_TIMED_OUT_MESSAGE = 'Approval timed out';
+export const AI_APPROVAL_REQUEST_EXPIRED_MESSAGE = 'Approval request expired';
+
+function isApprovalExpiryMessage(errorMessage: string | null | undefined): boolean {
+  return errorMessage === AI_APPROVAL_TIMED_OUT_MESSAGE || errorMessage === AI_APPROVAL_REQUEST_EXPIRED_MESSAGE;
+}
+
+/** #12079: what a `waitForApproval` that returned `false` knows about why. */
+export interface ApprovalWaitDetail {
+  /** The request expired without a decision. Never means approved. */
+  expired?: boolean;
+}
+
+/**
  * Wait for a tool execution to be approved or rejected.
  * Polls the DB with exponential backoff.
  *
@@ -614,8 +634,18 @@ export async function getSessionMessages(sessionId: string, auth: AuthContext) {
  * timed out" even after the user approved it. System scope lets the internal
  * poll resolve the row by its PK. Wrapping per-query (not the whole loop)
  * keeps each txn short so we never hold a connection idle across the sleeps.
+ *
+ * #12079: `false` alone cannot say whether the request was denied or expired.
+ * A caller that needs the difference passes `detail`; `detail.expired` is set
+ * when the wait ran out (this poll's own timeout) or the row was closed by the
+ * approval-expiry reaper. An expired request is still not approved.
  */
-export async function waitForApproval(executionId: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+export async function waitForApproval(
+  executionId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  detail?: ApprovalWaitDetail,
+): Promise<boolean> {
   const startTime = Date.now();
   let pollInterval = 500;
   let consecutiveErrors = 0;
@@ -626,7 +656,7 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
     try {
       const [execution] = await withSystemDbAccessContext(() =>
         db
-          .select({ status: aiToolExecutions.status })
+          .select({ status: aiToolExecutions.status, errorMessage: aiToolExecutions.errorMessage })
           .from(aiToolExecutions)
           .where(eq(aiToolExecutions.id, executionId))
           .limit(1)
@@ -637,7 +667,10 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
       if (!execution) return false;
 
       if (execution.status === 'approved') return true;
-      if (execution.status === 'rejected') return false;
+      if (execution.status === 'rejected') {
+        if (detail && isApprovalExpiryMessage(execution.errorMessage)) detail.expired = true;
+        return false;
+      }
     } catch (err) {
       consecutiveErrors++;
       console.error(`[AI] Approval poll error (attempt ${consecutiveErrors}):`, err);
@@ -660,12 +693,14 @@ export async function waitForApproval(executionId: string, timeoutMs: number, si
     pollInterval = Math.min(pollInterval * 1.5, 3000);
   }
 
-  // Timeout - mark as rejected
+  // Timeout - mark as rejected. Still not approved: nothing runs. The
+  // message is what tells a later reader it expired rather than was denied.
+  if (detail) detail.expired = true;
   try {
     await withSystemDbAccessContext(() =>
       db
         .update(aiToolExecutions)
-        .set({ status: 'rejected', errorMessage: 'Approval timed out' })
+        .set({ status: 'rejected', errorMessage: AI_APPROVAL_TIMED_OUT_MESSAGE })
         .where(eq(aiToolExecutions.id, executionId))
     );
   } catch (err) {
@@ -832,7 +867,7 @@ export async function isIntentBackedExecution(executionId: string): Promise<bool
  * #9431: after a refused `handleApproval`, whether the refusal is because this
  * session's execution was ALREADY decided (in another window, in Approvals, on
  * mobile, or by a timeout) — so the approve route can answer a stale card
- * with "already decided" instead of the generic 404. The CAS in
+ * with "already decided" (or "expired", #12079) instead of the generic 404. The CAS in
  * handleApproval is what refuses the second decision; this only explains it.
  *
  * Null for anything the route must keep answering generically: a missing row,
@@ -847,6 +882,7 @@ export async function getDecidedExecutionOutcome(
   const [execution] = await db
     .select({
       status: aiToolExecutions.status,
+      errorMessage: aiToolExecutions.errorMessage,
       sessionId: aiToolExecutions.sessionId,
       intentId: aiToolExecutions.intentId,
     })
@@ -862,7 +898,8 @@ export async function getDecidedExecutionOutcome(
     case 'failed':
       return 'approved';
     case 'rejected':
-      return 'not_approved';
+      // #12079: closed by a timeout, not a denial. Still not approved.
+      return isApprovalExpiryMessage(execution.errorMessage) ? 'expired' : 'not_approved';
     default:
       return null;
   }

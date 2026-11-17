@@ -38,7 +38,7 @@ import { checkBudgetDetailed, checkAiRateLimit } from './aiCostTracker';
 import { recordToolOutcomeForAutoFlag } from './aiSessionAutoFlag';
 import { aiDenialClientCode, type AiDenialClientCode } from './aiDenialCode';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
-import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
+import { getSession, buildSystemPrompt, waitForApproval, type ApprovalWaitDetail } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
 import { claimToolUseId } from './aiToolUseCorrelation';
@@ -223,12 +223,14 @@ function beginApprovalWait(session: ActiveSession): {
 
 /**
  * #9431: a legacy `waitForApproval` result as a card outcome. `false` means
- * denied or timed out — unless the wait was settled (new message, interrupt,
- * teardown), in which case nothing was decided.
+ * denied, or expired when `detail.expired` says the wait ran out (#12079) —
+ * unless the wait was settled (new message, interrupt, teardown), in which
+ * case nothing was decided.
  */
-function approvalWaitOutcome(approved: boolean, signal: AbortSignal): AiApprovalOutcome {
+function approvalWaitOutcome(approved: boolean, signal: AbortSignal, detail?: ApprovalWaitDetail): AiApprovalOutcome {
   if (approved) return 'approved';
-  return signal.aborted ? 'ended' : 'not_approved';
+  if (signal.aborted) return 'ended';
+  return detail?.expired ? 'expired' : 'not_approved';
 }
 
 /** #9431: an intent status read by `waitForIntentDecision` as a card outcome. */
@@ -239,8 +241,10 @@ function intentDecisionOutcome(status: Awaited<ReturnType<typeof waitForIntentDe
     case 'completed':
     case 'failed':
       return 'approved';
-    case 'rejected':
     case 'expired':
+      // #12079: ran out of time, not denied. Still not approved.
+      return 'expired';
+    case 'rejected':
     case 'cancelled':
       return 'not_approved';
     default:
@@ -1977,13 +1981,15 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // flows (#3089) so stacked helper approvals can't outlive the turn
           // timeout, and settleApprovalWaits can conclude a blocked helper turn.
           const helperApprovalWait = beginApprovalWait(session);
+          const helperWaitDetail: ApprovalWaitDetail = {};
           try {
             approved = await waitForApproval(
               helperExec.id,
               helperApprovalWait.timeoutMs,
               helperApprovalWait.signal,
+              helperWaitDetail,
             );
-            helperOutcome = approvalWaitOutcome(approved, helperApprovalWait.signal);
+            helperOutcome = approvalWaitOutcome(approved, helperApprovalWait.signal, helperWaitDetail);
           } finally {
             helperApprovalWait.end();
           }
@@ -3421,13 +3427,15 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // (session teardown / new user message / interrupt — #3089).
           // #9431: how the card's wait ended, for every other listener.
           let cardOutcome: AiApprovalOutcome = 'ended';
+          const cardWaitDetail: ApprovalWaitDetail = {};
           try {
             approved = await waitForApproval(
               approvalExec.id,
               approvalWait.timeoutMs,
               approvalWait.signal,
+              cardWaitDetail,
             );
-            cardOutcome = approvalWaitOutcome(approved, approvalWait.signal);
+            cardOutcome = approvalWaitOutcome(approved, approvalWait.signal, cardWaitDetail);
             approvalWaitMs = Date.now() - approvalWait.startedAt;
           } finally {
             resolveApprovalCard(session, approvalExec.id, cardOutcome);

@@ -22,6 +22,8 @@ describe('AiApprovalDialog resolved elsewhere (#9431)', () => {
   it.each([
     ['approved', /was approved/i],
     ['not_approved', /was not approved/i],
+    // #12079: a timed-out request says it expired, not that it was denied.
+    ['expired', /expired before it could be decided/i],
     ['ended', /no longer waiting/i],
   ] as const)('a %s card says so and disables Approve / Deny', (resolution, text) => {
     render(<AiApprovalDialog {...baseProps} resolution={resolution} />);
