@@ -1198,9 +1198,13 @@ function sliceRequiresMfa(slice: string, mfaAliases: readonly string[]): boolean
   return mfaAliases.some((name) => new RegExp(`\\b${name}\\b`).test(slice));
 }
 
-/** `const requireXMfa = requireMfa();` at any depth in the file. */
+/**
+ * Same-file aliases that carry `requireMfa()`: `const requireXMfa = requireMfa();`
+ * and array aliases spread into a chain, `const requireWrite = [requirePermission(…), requireMfa()] as const;`
+ * (routes/flows.ts). One statement, at any depth in the file.
+ */
 export function mfaAliases(src: string): string[] {
-  return [...src.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*requireMfa\s*\(\s*\)/g)].map((m) => m[1]!);
+  return [...src.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*[^;]*?\brequireMfa\s*\(\s*\)[^;]*;/g)].map((m) => m[1]!);
 }
 
 /** Whether a `<router>.use('*', …)` in the file applies `requireMfa()`. */
@@ -1267,6 +1271,7 @@ function effectiveTierFor(binding: Binding): number {
  */
 const HANDLER_LOCAL_MFA = 'Gated in the handler by mfaDenied() (aiToolsNetworkMonitoringShared.ts), a stricter twin of the shared gate that refuses agent principals too; not in MFA_GATED_TOOL_ACTIONS.';
 const LIVE_READ_OWNER_DECISION = 'OWNER DECISION, reported not fixed: live device read whose route requires MFA on GET; reachable over MCP for an API key without MFA. Gating it would remove a read MCP users rely on.';
+const ROUTER_MFA_READ_OWNER_DECISION = 'OWNER DECISION, reported not fixed: read of support-session records behind routes/remote, whose router requires MFA on every method; reachable over MCP for an API key without MFA.';
 const MFA_GATE_REVIEWED_EXCEPTIONS: ReadonlyArray<{ key: string; reason: string }> = [
   // Already MFA-gated, by a handler-local check rather than the shared table.
   { key: 'manage_snmp_templates.create', reason: HANDLER_LOCAL_MFA },
@@ -1276,7 +1281,7 @@ const MFA_GATE_REVIEWED_EXCEPTIONS: ReadonlyArray<{ key: string; reason: string 
   { key: 'manage_known_guests.add', reason: HANDLER_LOCAL_MFA },
   { key: 'manage_known_guests.delete', reason: HANDLER_LOCAL_MFA },
   { key: 'trigger_unifi_sync', reason: HANDLER_LOCAL_MFA },
-  // Live device and remote-session reads behind routers that require MFA on every
+  // Live device reads and remote/support-session reads behind routers that require MFA on every
   // method (routes/systemTools, routes/remote). Not gated; left to the owner.
   { key: 'registry_operations.read_key', reason: LIVE_READ_OWNER_DECISION },
   { key: 'registry_operations.get_value', reason: LIVE_READ_OWNER_DECISION },
@@ -1287,8 +1292,8 @@ const MFA_GATE_REVIEWED_EXCEPTIONS: ReadonlyArray<{ key: string; reason: string 
   { key: 'system_cleanup.list', reason: LIVE_READ_OWNER_DECISION },
   { key: 'analyze_disk_usage {"refresh":true}', reason: LIVE_READ_OWNER_DECISION },
   { key: 'analyze_boot_performance {"triggerCollection":true}', reason: LIVE_READ_OWNER_DECISION },
-  { key: 'manage_support_sessions.list', reason: LIVE_READ_OWNER_DECISION },
-  { key: 'manage_support_sessions.get', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'manage_support_sessions.list', reason: ROUTER_MFA_READ_OWNER_DECISION },
+  { key: 'manage_support_sessions.get', reason: ROUTER_MFA_READ_OWNER_DECISION },
   { key: 'list_remote_sessions', reason: LIVE_READ_OWNER_DECISION },
   // Writes left to the owner.
   {
@@ -1462,6 +1467,17 @@ mfaRoutes.post('/none', requireScope('organization'), async (c) => {
   it('reads an inline requireMfa() and a same-file alias', () => {
     expect(routeRegistrationRequiresMfa(MFA_FIXTURE, 'post', '/inline')).toBe(true);
     expect(routeRegistrationRequiresMfa(MFA_FIXTURE, 'post', '/alias')).toBe(true);
+  });
+
+  it('reads an array alias spread into the chain (routes/flows.ts shape)', () => {
+    const src = `
+const requireWrite = [requirePermission('automations', 'write'), requireMfa()] as const;
+const requireRead = [requirePermission('automations', 'read')] as const;
+r.post('/w', ...requireWrite, async (c) => c.json({}));
+r.get('/r', ...requireRead, async (c) => c.json({}));
+`;
+    expect(routeRegistrationRequiresMfa(src, 'post', '/w')).toBe(true);
+    expect(routeRegistrationRequiresMfa(src, 'get', '/r')).toBe(false);
   });
 
   it('ignores requireMfa() named in the handler body or a comment', () => {

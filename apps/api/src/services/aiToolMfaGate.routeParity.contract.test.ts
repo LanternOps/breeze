@@ -215,6 +215,20 @@ describe('AI tool actions mirroring a requireMfa() route are MFA-gated', () => {
     expect(tier3).toEqual([]);
   });
 
+  it.each(cases)('%s action=%s: a human session that cleared MFA passes the gate', async (tool, action) => {
+    let output: string;
+    try {
+      output = await aiTools.get(tool)!.handler(
+        { action },
+        { ...apiKeyAuth, principal: { kind: 'user_session' }, token: { mfa: true } },
+      );
+    } catch (err) {
+      output = JSON.stringify({ error: String(err) });
+    }
+    expect(JSON.parse(output).code).not.toBe(MFA_REQUIRED_CODE);
+    expect(String(JSON.parse(output).error ?? '')).not.toMatch(/MFA required/);
+  });
+
   it('a human session that cleared MFA passes the gate on an enrolled action', async () => {
     let output: string;
     try {

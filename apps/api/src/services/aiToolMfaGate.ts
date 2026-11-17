@@ -31,7 +31,6 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   manage_access_reviews: Object.freeze(['create', 'decide_item']),
   // routes/policyManagement/actions.ts POST /:id/deactivate.
   manage_compliance_policies: '*',
-  // routes/pam.ts rule, org-config and signer-group writes.
   // Full-control W12 (#6782, W12-D5): every W12 write's REST twin carries requireMfa().
   manage_software_catalog: Object.freeze([
     'create', 'update', 'archive', 'add_version', 'update_version', 'promote_version',
@@ -83,6 +82,7 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   // and rollback routes. GET applied and POST document do not.
   manage_ai_agent_schedules: '*',
   manage_fleet_designs: Object.freeze(['run', 'preview', 'apply', 'rollback']),
+  // routes/pam.ts rule, org-config and signer-group writes.
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',
