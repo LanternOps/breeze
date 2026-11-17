@@ -11,7 +11,7 @@ import (
 // renewal the session needs.
 func TestMalformedOptionalLeaseFieldFallsBackToTheAbsoluteFields(t *testing.T) {
 	for _, field := range []string{"expiresInMs", "hardDeadlineInMs", "renewAnchor"} {
-		for name, bad := range map[string]any{"string": "60000", "object": map[string]any{"x": 1}, "bool": true} {
+		for name, bad := range map[string]any{"string": "60000", "object": map[string]any{"x": 1}, "bool": true, "array": []any{1}, "null": nil} {
 			t.Run(field+"/"+name, func(t *testing.T) {
 				var got RevocationLeaseMessage
 				delivered := false
@@ -46,6 +46,21 @@ func TestMalformedOptionalLeaseFieldFallsBackToTheAbsoluteFields(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// 0 is a valid anchor (a request in the agent's first millisecond): it must
+// be used, not mistaken for "absent".
+func TestZeroRenewAnchorIsAValidEcho(t *testing.T) {
+	var got RevocationLeaseMessage
+	c := &Client{OnRevocationLease: func(msg RevocationLeaseMessage) { got = msg }}
+	c.handleRevocationLeaseMessage("revocation_lease",
+		[]byte(`{"type":"revocation_lease","sessionId":"s1","expiresAt":1,"renewAnchor":0}`))
+	if got.RequestedAt.IsZero() {
+		t.Fatal("renewAnchor 0 must be honoured as an echo")
+	}
+	if got.RequestedAt.After(got.ReceivedAt) {
+		t.Fatalf("RequestedAt %v after receipt %v", got.RequestedAt, got.ReceivedAt)
 	}
 }
 

@@ -3,6 +3,8 @@ package heartbeat
 import (
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
 // #11840: a device whose clock ran ~2 minutes fast lost every desktop session
@@ -64,4 +66,35 @@ func TestParseRevocationLeaseFromAnOlderAPIStillUsesTheAbsoluteExpiry(t *testing
 	}
 	assertNear(t, "expiresAt", lease.ExpiresAt, now.Add(time.Minute-time.Second), now.Add(time.Minute+time.Second))
 	assertNear(t, "hardDeadline", lease.HardDeadline, now.Add(4*time.Hour-time.Second), now.Add(4*time.Hour+time.Second))
+}
+
+// The start payload's remaining-time fields go through wire.JSONMillis: a
+// huge value saturates and is then capped, it is not wrapped to "absent"
+// (which would fall back to the device's wall clock); a non-number is absent.
+func TestParseRevocationLeaseSaturatesHugeRemainingValues(t *testing.T) {
+	block := func(expiresIn, hardIn any) map[string]any {
+		return map[string]any{"revocationLease": map[string]any{
+			"token":            "tok",
+			"expiresAt":        float64(time.Now().Add(-time.Hour).UnixMilli()), // must be ignored
+			"expiresInMs":      expiresIn,
+			"hardDeadlineInMs": hardIn,
+			"renewEverySec":    float64(25),
+			"graceSec":         float64(90),
+		}}
+	}
+	before := time.Now()
+	lease := parseRevocationLease(block(1e300, 1e300))
+	after := time.Now()
+	if lease == nil {
+		t.Fatal("a huge remaining value must not make the block unusable")
+	}
+	assertNear(t, "expiresAt", lease.ExpiresAt, before.Add(desktop.MaxRevocationLeaseTTL), after.Add(desktop.MaxRevocationLeaseTTL))
+	assertNear(t, "hardDeadline", lease.HardDeadline, before.Add(desktop.MaxSessionDurationCap), after.Add(desktop.MaxSessionDurationCap))
+
+	// A non-number remaining value is absent: the absolute expiry (an hour
+	// ago) governs, exactly as from an older API.
+	lease = parseRevocationLease(block("60000", nil))
+	if lease == nil || lease.ExpiresAt.After(time.Now()) {
+		t.Fatalf("a non-number expiresInMs must fall back to the absolute expiry, got %+v", lease)
+	}
 }

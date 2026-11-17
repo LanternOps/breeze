@@ -365,8 +365,10 @@ func leaseAnchorNow() int64 {
 // reading is the clock as of receipt.
 //
 // The echo is whole milliseconds, rounded down from the request's elapsed
-// time, so the recovered age is never shorter than the real one: the request
-// instant is never placed later than it was.
+// time, so rounding never makes the recovered age shorter than the real one.
+// The age is monotonic time, though: where the monotonic clock pauses in
+// sleep (macOS), a sleep while the renewal was in flight counts as no time,
+// and the request instant lands later by that sleep.
 func leaseRequestedAt(echo *float64, receivedAt time.Time) time.Time {
 	if echo == nil || math.IsNaN(*echo) || *echo < 0 {
 		return time.Time{}
