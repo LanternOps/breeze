@@ -22,7 +22,7 @@ import { resolveArtifact } from '../artifacts/artifactService';
 import { isChainStageableArtifact } from './analysisContinuation';
 import type { ChainHandleDrop } from './analysisProfile';
 import { verifiedAnalysisSiteId } from './analysisRunSite';
-import type { AiRunExportGrants, AnalysisScopeKind } from '../../db/schema/aiAgents';
+import type { AiAgentRunStagedInputs, AiRunExportGrants, AnalysisScopeKind } from '../../db/schema/aiAgents';
 import {
   createAndEnqueueAgentRun,
   GrantDepthExceededError,
@@ -124,7 +124,18 @@ export interface AdmitAnalysisRunInput {
 }
 
 export type AdmitAnalysisRunResult =
-  | { created: true; runId: string; status: string }
+  | {
+    created: true;
+    runId: string;
+    status: string;
+    /**
+     * Wisp analysis sessions W06 — what admission froze: the resolved device
+     * scope (absent only on a run admitted without one) and the chain depth.
+     * The launcher tells the chat model both in its launch message.
+     */
+    scope?: NonNullable<AiAgentRunStagedInputs['scope']> | null;
+    chainDepth?: number;
+  }
   | { created: false; refusal: AnalysisAdmissionRefusal; detail?: string };
 
 /**
@@ -336,5 +347,11 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
   if (result.run.status === 'failed' && result.run.errorCode === 'enqueue_failed') {
     return { created: false, refusal: 'enqueue_failed' };
   }
-  return { created: true, runId: result.run.id, status: result.run.status };
+  return {
+    created: true,
+    runId: result.run.id,
+    status: result.run.status,
+    scope: result.run.stagedInputs?.scope ?? null,
+    chainDepth: result.run.chainDepth ?? 0,
+  };
 }

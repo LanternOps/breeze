@@ -83,9 +83,25 @@ describe('admitAnalysisRun', () => {
     expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
   });
 
+  // W06: the launcher's message names the frozen scope and the step, so
+  // admission hands back what the created row froze.
+  it('returns the frozen scope and chain depth of the created run', async () => {
+    createAndEnqueueAgentRun.mockResolvedValueOnce({
+      created: true,
+      run: {
+        id: RUN_ID, status: 'queued', errorCode: null, chainDepth: 2,
+        stagedInputs: { handles: [], deviceIds: ['d1'], region: 'us', scope: { kind: 'org', siteId: null, deviceCount: 412 } },
+      },
+    });
+    await expect(admitAnalysisRun(input({}))).resolves.toEqual({
+      created: true, runId: RUN_ID, status: 'queued', chainDepth: 2,
+      scope: { kind: 'org', siteId: null, deviceCount: 412 },
+    });
+  });
+
   it('admits as profile analysis with the frozen inputs, never as a device-bound run', async () => {
     await expect(admitAnalysisRun(input({ stagedHandles: [HANDLE] }))).resolves.toEqual({
-      created: true, runId: RUN_ID, status: 'queued',
+      created: true, runId: RUN_ID, status: 'queued', scope: null, chainDepth: 0,
     });
     const call = createAndEnqueueAgentRun.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.profile).toBe('analysis');

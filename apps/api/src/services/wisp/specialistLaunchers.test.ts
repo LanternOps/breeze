@@ -104,6 +104,7 @@ import { SPECIALIST_KINDS } from './specialistPolicy';
 import {
   SPECIALIST_LAUNCHERS,
   SPECIALIST_PREREQUISITES,
+  analysisLaunchMessage,
   launchAnalysis,
   launchBulkTicketReply,
   launchDeviceTroubleshooting,
@@ -327,7 +328,7 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
     const res = await launchAnalysis(ctx({ params }));
-    expect(res).toEqual({ admitted: true, runId: 'run-1' });
+    expect(res).toMatchObject({ admitted: true, runId: 'run-1' });
     expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({
       orgId: ORG, requestedByUserId: GRANTOR, sessionId: null, goal: 'why failing', scope: 'org', deviceIds: [], siteId: null,
       stagedHandles: [], dedupeKey: 'wisp-specialist-req-1', grant: GRANT_REF,
@@ -363,6 +364,49 @@ describe('launchAnalysis', () => {
     expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ exportGrants: { datasets: DEVICES_READ_DATASETS, sensitiveGates: [] } }));
   });
 
+  it('an admitted launch tells the model how to continue, when to start fresh, and that chains are capped', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({
+      created: true, runId: 'new', status: 'queued', scope: { kind: 'org', siteId: null, deviceCount: 412 }, chainDepth: 0,
+    });
+    const res = await launchAnalysis(ctx({ params: { goal: 'why', scope: 'org' } }));
+    expect(res).toMatchObject({ admitted: true, runId: 'new' });
+    const msg = (res as { message: string }).message;
+    expect(msg).toContain('over the whole organization (412 devices)');
+    expect(msg).toContain('continueFromRunId new');
+    expect(msg).toContain('start a fresh analysis without continueFromRunId');
+    expect(msg).toContain('A chain has a step limit and a spend limit.');
+    expect(msg).not.toContain('as step');
+  });
+
+  it('an admitted continuation names its step from the admitted depth', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.admitAnalysisRun.mockResolvedValue({
+      created: true, runId: 'next', status: 'queued', scope: { kind: 'site', siteId: SITE, deviceCount: 3 }, chainDepth: 2,
+    });
+    const res = await launchAnalysis(ctx({ params: { goal: 'why', siteId: SITE } }));
+    expect((res as { message: string }).message)
+      .toMatch(/^Analysis run next started as step 3 of this investigation over one site \(3 devices\)\. /);
+  });
+
+  it('analysisLaunchMessage: a continuation names its step', () => {
+    expect(analysisLaunchMessage({ runId: 'r', chainDepth: 2, scope: { kind: 'devices', deviceCount: 1 } }))
+      .toMatch(/^Analysis run r started as step 3 of this investigation over 1 selected device\. /);
+  });
+
+  it('analysisLaunchMessage: a replayed launch still carries the guidance without scope or step', () => {
+    const msg = analysisLaunchMessage({ runId: 'old', chainDepth: null, scope: null });
+    expect(msg).toMatch(/^Analysis run old started\. Its result arrives on a later turn\. /);
+    expect(msg).toContain('continueFromRunId old');
+  });
+
+  it('analysisLaunchMessage: plural devices and the whole organization', () => {
+    expect(analysisLaunchMessage({ runId: 'r', chainDepth: 0, scope: { kind: 'devices', deviceCount: 4 } }))
+      .toContain('over 4 selected devices.');
+    expect(analysisLaunchMessage({ runId: 'r', chainDepth: 0, scope: { kind: 'org', deviceCount: 1 } }))
+      .toContain('over the whole organization (1 device).');
+  });
+
   it('infers site scope from a bare siteId', async () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
@@ -385,7 +429,9 @@ describe('launchAnalysis', () => {
 
   it('short-circuits on an existing run without admission', async () => {
     h.tables.ai_agent_runs = [[{ id: 'old' }]];
-    expect(await launchAnalysis(ctx({ params }))).toEqual({ admitted: true, runId: 'old' });
+    expect(await launchAnalysis(ctx({ params }))).toEqual({
+      admitted: true, runId: 'old', message: analysisLaunchMessage({ runId: 'old', chainDepth: null, scope: null }),
+    });
     expect(h.admitAnalysisRun).not.toHaveBeenCalled();
   });
 
@@ -398,7 +444,9 @@ describe('launchAnalysis', () => {
   it('resolves a raced row after a refusal', async () => {
     h.tables.ai_agent_runs = [[], [{ id: 'raced' }]];
     h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_rate' });
-    expect(await launchAnalysis(ctx({ params }))).toEqual({ admitted: true, runId: 'raced' });
+    expect(await launchAnalysis(ctx({ params }))).toEqual({
+      admitted: true, runId: 'raced', message: analysisLaunchMessage({ runId: 'raced', chainDepth: null, scope: null }),
+    });
   });
 
   it('refuses grant_refused without re-reading', async () => {
@@ -415,7 +463,7 @@ describe('launchAnalysis', () => {
   it('a chat launch records its session and attaches the live stream', async () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-1' });
-    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'run-1' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toMatchObject({ admitted: true, runId: 'run-1' });
     expect(h.admitAnalysisRun).toHaveBeenCalledWith(expect.objectContaining({ sessionId: SESSION }));
     expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'run-1', sessionId: SESSION, orgId: ORG });
   });
@@ -430,7 +478,7 @@ describe('launchAnalysis', () => {
 
   it('a replay from the same chat re-attaches without a second admission', async () => {
     h.tables.ai_agent_runs = [[{ id: 'old', status: 'running', errorCode: null }]];
-    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'old' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toMatchObject({ admitted: true, runId: 'old' });
     expect(h.admitAnalysisRun).not.toHaveBeenCalled();
     expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'old', sessionId: SESSION, orgId: ORG });
   });
@@ -438,7 +486,7 @@ describe('launchAnalysis', () => {
   it('a raced replay from the same chat re-attaches too', async () => {
     h.tables.ai_agent_runs = [[], [{ id: 'raced', status: 'queued', errorCode: null }]];
     h.admitAnalysisRun.mockResolvedValue({ created: false, refusal: 'analysis_rate' });
-    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'raced' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toMatchObject({ admitted: true, runId: 'raced' });
     expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'raced', sessionId: SESSION, orgId: ORG });
   });
 
@@ -453,7 +501,7 @@ describe('launchAnalysis', () => {
     h.tables.ai_agent_runs = [[]];
     h.admitAnalysisRun.mockResolvedValue({ created: true, runId: 'run-3' });
     h.watchRunForOriginSession.mockImplementationOnce(() => { throw new Error('bridge down'); });
-    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'run-3' });
+    expect(await launchAnalysis(ctx({ params, actorAuth: chatActor }))).toMatchObject({ admitted: true, runId: 'run-3' });
     expect(h.captureException).toHaveBeenCalled();
   });
 
@@ -499,7 +547,7 @@ describe('analysis continuation (W03)', () => {
 
   it('validates with the grant only, then admits with derived handles and the seed', async () => {
     arm();
-    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ admitted: true, runId: 'run-c' });
+    await expect(launchAnalysis(ctx({ params }))).resolves.toMatchObject({ admitted: true, runId: 'run-c' });
     expect(h.analysisContinuationOf).toHaveBeenCalledWith({ orgId: ORG, runId: PRIOR, grantId: GRANT });
     expect(h.deriveChainHandles).toHaveBeenCalledWith({
       orgId: ORG, prior: priorOf(), grantId: GRANT, exportGrants: expect.objectContaining({ datasets: expect.any(Array) }),
@@ -559,8 +607,8 @@ describe('analysis continuation (W03)', () => {
     arm();
     h.tables.ai_agent_runs = [[], []];
     h.admitAnalysisRun.mockResolvedValueOnce({ created: true, runId: 'run-a' }).mockResolvedValueOnce({ created: true, runId: 'run-b' });
-    await expect(launchAnalysis(ctx({ params, requestId: 'req-a' }))).resolves.toEqual({ admitted: true, runId: 'run-a' });
-    await expect(launchAnalysis(ctx({ params, requestId: 'req-b' }))).resolves.toEqual({ admitted: true, runId: 'run-b' });
+    await expect(launchAnalysis(ctx({ params, requestId: 'req-a' }))).resolves.toMatchObject({ admitted: true, runId: 'run-a' });
+    await expect(launchAnalysis(ctx({ params, requestId: 'req-b' }))).resolves.toMatchObject({ admitted: true, runId: 'run-b' });
     expect(h.admitAnalysisRun.mock.calls.map((c) => c[0].dedupeKey)).toEqual(['wisp-specialist-req-a', 'wisp-specialist-req-b']);
   });
 
@@ -583,7 +631,7 @@ describe('analysis continuation (W03)', () => {
 
   it('a replayed request reattaches before validating the continuation again', async () => {
     h.tables.ai_agent_runs = [[{ id: 'run-old' }]];
-    await expect(launchAnalysis(ctx({ params }))).resolves.toEqual({ admitted: true, runId: 'run-old' });
+    await expect(launchAnalysis(ctx({ params }))).resolves.toMatchObject({ admitted: true, runId: 'run-old' });
     expect(h.analysisContinuationOf).not.toHaveBeenCalled();
   });
 

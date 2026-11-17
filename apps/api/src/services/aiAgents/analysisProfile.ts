@@ -100,6 +100,17 @@ export const ANALYSIS_WORKSPACE_PROMPT = '## Mode: analysis\n'
   + '- Every call is capped (staged bytes, artifact bytes, step timeout, total compute). A cap returns a '
   + 'typed error; when you see one, conclude with what you have rather than retrying.\n'
   + ANALYSIS_INHERITED_FILES_LINE
+  // Wisp analysis sessions W06: each dataset's rules (default window, filters,
+  // current-state datasets, rows withheld, dedupe keys) reach the model as the
+  // export result's notes, because the export_dataset description is at its
+  // length cap. Point at them rather than restating them here.
+  + '- After each export_dataset call, read its notes and any sensitiveRowsWithheld: they state the time '
+  + 'window used, filters not applied, rows withheld and any dedupe key. When rows were withheld, say in '
+  + 'your summary that they were withheld, not that there were none. truncated: true means the export '
+  + 'stopped early, so narrow the time range or the devices and export again. An invalid_filter or '
+  + 'invalid_time_range error names the problem: correct it and try once more.\n'
+  + '- If the input manifest says files from earlier runs were not carried forward, or the earlier result '
+  + 'was withheld, say so in your summary.\n'
   + '- Finish by calling submit_analysis exactly once. PROPOSE actions there — do not attempt them. A '
   + 'technician turns a proposal into an approved action; nothing in this run can execute one.';
 
