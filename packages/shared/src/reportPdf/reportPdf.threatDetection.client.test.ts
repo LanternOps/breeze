@@ -86,7 +86,7 @@ describe('Threat Detection Review PDF: client language (#12046)', () => {
     // The misleading label that counted unmatched agents as endpoints.
     expect(text).not.toContain('Endpoints with a detection agent');
     expect(text).toMatch(/\(7\) Tj[\s\S]*\(5\) Tj/);
-    expect(text).toMatch(/4 of the 8 detection agents reported for this organization are not matched to a device Breeze manages/);
+    expect(text).toMatch(/4 of the 8 Huntress agents reported for this organization are not matched to a device Breeze manages/);
   });
 
   it('derives reconciling tiles from a legacy snapshot without the new fields', () => {
@@ -99,6 +99,75 @@ describe('Threat Detection Review PDF: client language (#12046)', () => {
     // Its pair is Huntress-only, and the reader is told so.
     expect(text).toContain('These device counts include Huntress agents only.');
     expect(text).toContain('8 Huntress agents are reported for this organization');
+  });
+
+  // #12046 follow-up: the device tiles count every product, but the offline
+  // tile and the unmatched-agents sentence count Huntress only.
+  it('says the offline tile and the unmatched sentence count Huntress agents only', () => {
+    const text = pdfText(BASE);
+    expect(text).toContain('Huntress agents not reporting in');
+    expect(text).not.toContain('Detection agents not reporting in');
+    expect(text).toMatch(/4 of the 8 Huntress agents reported for this organization are not matched/);
+  });
+
+  it('prints SentinelOne-only device tiles when Huntress is not connected, and names their source', () => {
+    const text = pdfText({
+      ...BASE,
+      coverage: { ...BASE.coverage, sourceStatus: 'not_connected', note: 'Huntress is not connected for this partner, so threat detection was not measured for this period.' },
+      agentCoverage: {
+        huntressAgents: null, breezeDevices: 12, agentsOffline: null, devicesWithoutAgent: null,
+        devicesWithDetectionAgent: 9, devicesWithoutDetectionAgent: 3,
+        detectionAgentSources: ['sentinelone'],
+      },
+      incidents: undefined,
+      rows: [],
+    });
+    expect(text).toMatch(/\(12\) Tj[\s\S]*\(9\) Tj[\s\S]*\(3\) Tj/);
+    expect(text).toContain('These device counts include SentinelOne agents only, because Huntress is not connected.');
+  });
+
+  it('names both products when SentinelOne and managed endpoint protection fill the tiles', () => {
+    const text = pdfText({
+      ...BASE,
+      coverage: { ...BASE.coverage, sourceStatus: 'never_synced' },
+      agentCoverage: {
+        huntressAgents: null, breezeDevices: 4, agentsOffline: null, devicesWithoutAgent: null,
+        devicesWithDetectionAgent: 2, devicesWithoutDetectionAgent: 2,
+        detectionAgentSources: ['sentinelone', 'edr'],
+      },
+    });
+    expect(text).toContain('These device counts include SentinelOne and managed endpoint protection agents only, because Huntress has not completed a sync.');
+  });
+
+  it('calls an EDR-only source "managed endpoint protection", never the vendor', () => {
+    const text = pdfText({
+      ...BASE,
+      coverage: { ...BASE.coverage, sourceStatus: 'not_connected' },
+      agentCoverage: {
+        huntressAgents: null, breezeDevices: 4, agentsOffline: null, devicesWithoutAgent: null,
+        devicesWithDetectionAgent: 1, devicesWithoutDetectionAgent: 3,
+        detectionAgentSources: ['edr'],
+      },
+    });
+    expect(text).toContain('These device counts include managed endpoint protection agents only');
+  });
+
+  it('adds no source sentence when Huntress was counted', () => {
+    const text = pdfText({
+      ...BASE,
+      agentCoverage: { ...BASE.agentCoverage!, detectionAgentSources: ['huntress', 'sentinelone'] },
+    });
+    expect(text).not.toContain('These device counts include');
+  });
+
+  it('never prints an email address carried in the advice', () => {
+    const text = pdfText({
+      ...BASE,
+      rows: [{ ...ROW, recommendation: 'Reset the password for jane.doe@example.com and revoke sessions.' }],
+    });
+    expect(text).toContain('What we advised');
+    expect(text).not.toContain('jane.doe@example.com');
+    expect(text).toContain('a user account');
   });
 
   it('merges stored statuses that share a client word into one count', () => {
