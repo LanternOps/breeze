@@ -15,7 +15,7 @@ You configure it on the **UniFi** tab of the Integrations page: **Integrations â
 
 There are two ways to connect:
 
-- **Cloud (Site Manager)** -- a single Ubiquiti Site Manager API key that covers your whole account. Breeze reaches every console through Ubiquiti's cloud, so there is nothing to install on site. You can optionally pair each console with an on-site Breeze agent for deeper per-port and per-client telemetry.
+- **Cloud (Site Manager)** -- one Ubiquiti Site Manager API key. A key is scoped either to your account's Independent sites or to a single Fabric, and Breeze accepts one key per partner today, so sites outside that key's scope do not sync (see the note under the walkthrough). Breeze reaches the consoles that key can see through Ubiquiti's cloud, so there is nothing to install on site. You can optionally pair each console with an on-site Breeze agent for deeper per-port and per-client telemetry.
 - **Self-hosted controller** -- no Ubiquiti cloud account at all. A Breeze agent that already has LAN access to your on-prem UniFi Network controller polls it directly over the local Network Integration API. The agent is the only path Breeze uses to reach the controller.
 
 <Aside type="note">
@@ -29,7 +29,7 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
 <Tabs>
   <TabItem label="Cloud (Site Manager)">
 
-  A single Site Manager API key covers your entire Ubiquiti account. Breeze validates the key before saving, then discovers every UniFi console and its sites.
+  Breeze validates the key before saving, then discovers every UniFi console and its sites that the key can see. A Site Manager key is scoped either to the account's **Independent sites** or to **one Fabric**; it does not cover the whole account. Breeze accepts one key per partner today (see the note below).
 
   **Required credential**
 
@@ -66,6 +66,10 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
 
   <Aside type="caution">
     The API key sees only what the Ubiquiti account that created it can see: the consoles that account owns or administers. If a site is missing from the mapping card, check that the same account can see it in UniFi Site Manager, or create the key from an account that owns or administers every console. Ubiquiti returns device inventory only for consoles where that account is an owner or super admin.
+  </Aside>
+
+  <Aside type="caution" title="One key per partner">
+    Breeze takes one Site Manager API key per partner. If your sites are split between Independent sites and one or more Fabrics, only the sites visible to the key you connect will sync; the rest do not appear. Support for several cloud connections per partner, each with its own key and label, is planned and tracked in [#11808](https://github.com/LanternOps/breeze/issues/11808). It is not available yet.
   </Aside>
 
   </TabItem>
