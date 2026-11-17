@@ -166,6 +166,11 @@ type blockTracker struct {
 	clearedThrough map[string]time.Time
 	lastPersistAt  time.Time
 	persistWarned  bool
+	// loudSupersedeAt is when a class switch last logged at INFO and wrote
+	// at once; switches within blockLastSeenPersistEvery of it are quiet
+	// (DEBUG, throttled write) and counted in quietSupersedes.
+	loudSupersedeAt time.Time
+	quietSupersedes int
 
 	dirSyncWarned atomic.Bool
 	writes        atomic.Int64 // test seam
@@ -376,16 +381,50 @@ func (t *blockTracker) clearLocked(by string, at time.Time) {
 	log.Info("control-plane block cleared", "host", ep.Host, "kind", string(ep.Kind), "cleared_by", by)
 }
 
-// startEpisodeLocked makes ev host's active episode. Caller holds t.mu.
-func (t *blockTracker) startEpisodeLocked(host string, ev ech.BlockEvidence, outcome time.Time) {
+// startEpisodeLocked makes ev host's active episode. quiet logs at DEBUG (a
+// throttled class switch). Caller holds t.mu.
+func (t *blockTracker) startEpisodeLocked(host string, ev ech.BlockEvidence, outcome time.Time, quiet bool) {
 	ep := &blockEpisode{
 		Kind: ev.Kind, Host: host, FirstSeenAt: ev.SeenAt, LastSeenAt: ev.SeenAt, LastOutcomeAt: outcome,
 	}
 	ep.setDetails(ev)
 	t.active = ep
 	t.pending = nil // a new episode replaces an undelivered cleared one
-	log.Info("control-plane block episode started", "host", host, "kind", string(ev.Kind),
+	logf := log.Info
+	if quiet {
+		logf = log.Debug
+	}
+	logf("control-plane block episode started", "host", host, "kind", string(ev.Kind),
 		"http_status", ev.HTTPStatus, "location_host", ev.LocationHost, "cert_issuer", ev.CertIssuer)
+}
+
+// supersedeLocked replaces the active episode with a new one of the other
+// class. The switch always takes effect in memory at once (a certificate
+// observation ends a plaintext episode's restart hold on this very beat).
+// Only its cost is throttled: when evidence alternates between classes every
+// beat, at most one switch per blockLastSeenPersistEvery logs at INFO and
+// writes at once; the others log at DEBUG and ride the throttled lastSeen
+// write, so the file still catches up within that window. Caller holds t.mu.
+func (t *blockTracker) supersedeLocked(host string, ev ech.BlockEvidence, outcome, now time.Time) persistNeed {
+	old := t.active
+	quiet := !t.loudSupersedeAt.IsZero() && now.Sub(t.loudSupersedeAt) >= 0 &&
+		now.Sub(t.loudSupersedeAt) < blockLastSeenPersistEvery
+	if quiet {
+		t.quietSupersedes++
+		log.Debug("control-plane block episode superseded", "host", host,
+			"kind", string(old.Kind), "new_kind", string(ev.Kind))
+	} else {
+		log.Info("control-plane block episode superseded", "host", host,
+			"kind", string(old.Kind), "new_kind", string(ev.Kind),
+			"quiet_switches_since_last", t.quietSupersedes)
+		t.loudSupersedeAt = now
+		t.quietSupersedes = 0
+	}
+	t.startEpisodeLocked(host, ev, maxTime(outcome, old.LastOutcomeAt), quiet)
+	if quiet {
+		return persistLastSeen
+	}
+	return persistNow
 }
 
 // applyEvidenceLocked starts or extends host's episode with ev. outcome is the
@@ -403,7 +442,7 @@ func (t *blockTracker) applyEvidenceLocked(host string, ev ech.BlockEvidence, ou
 		if !ev.SeenAt.After(t.clearedThrough[host]) || now.Sub(ev.SeenAt) >= blockUnobservedExpiry {
 			return persistNone
 		}
-		t.startEpisodeLocked(host, ev, outcome)
+		t.startEpisodeLocked(host, ev, outcome, false)
 		return persistNow
 	}
 	ep := t.active
@@ -411,10 +450,7 @@ func (t *blockTracker) applyEvidenceLocked(host string, ev ech.BlockEvidence, ou
 		return persistNone
 	}
 	if ep.Kind.PlaintextSignature() != ev.Kind.PlaintextSignature() {
-		log.Info("control-plane block episode superseded", "host", host,
-			"kind", string(ep.Kind), "new_kind", string(ev.Kind))
-		t.startEpisodeLocked(host, ev, maxTime(outcome, ep.LastOutcomeAt))
-		return persistNow
+		return t.supersedeLocked(host, ev, outcome, now)
 	}
 	ep.LastSeenAt = ev.SeenAt
 	before := *ep
