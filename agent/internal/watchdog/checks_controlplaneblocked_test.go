@@ -73,3 +73,20 @@ func TestAgentAlive_FreshControlPlaneBlockedMarker(t *testing.T) {
 		t.Fatal("IPC-synced marker not honoured")
 	}
 }
+
+// A marker in the future (the clock stepped backward after it was written)
+// is not fresh: otherwise the hold would last as long as the step.
+func TestAgentControlPlaneBlockedAlive_RejectsFutureMarker(t *testing.T) {
+	t.Parallel()
+	hc := NewHealthChecker(nil, nil, 3*time.Minute)
+	s := &state.AgentState{
+		LastHeartbeat:         time.Now().Add(-6 * time.Hour),
+		ControlPlaneBlockedAt: time.Now().Add(time.Hour),
+	}
+	if hc.AgentControlPlaneBlockedAlive(s) {
+		t.Fatal("future control-plane-blocked marker counted as fresh")
+	}
+	if d, _ := hc.EvaluateStaleHeartbeat(s, false); d == StaleControlPlaneBlocked {
+		t.Fatal("future control-plane-blocked marker held the restart")
+	}
+}

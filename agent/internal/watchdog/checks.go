@@ -351,9 +351,16 @@ func (h *HealthChecker) LastKnownControlPlaneBlocked(s *state.AgentState) time.T
 // restart cannot lift the filter. Like the other markers the hold is safe
 // unbounded, because the heartbeat loop refreshes it on every failing tick, so
 // a wedged loop stops refreshing it and falls back to the staleness path.
+//
+// A marker in the future (the clock stepped backward after it was written) is
+// not fresh; otherwise the hold would last as long as the step.
 func (h *HealthChecker) AgentControlPlaneBlockedAlive(s *state.AgentState) bool {
 	at := h.LastKnownControlPlaneBlocked(s)
-	return !at.IsZero() && time.Since(at) <= h.staleThreshold
+	if at.IsZero() {
+		return false
+	}
+	age := time.Since(at)
+	return age >= 0 && age <= h.staleThreshold
 }
 
 // AgentAuthRejectedAlive reports whether the agent is demonstrably running

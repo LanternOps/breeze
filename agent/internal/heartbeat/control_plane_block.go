@@ -3,9 +3,11 @@ package heartbeat
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +30,8 @@ import (
 //     cleared one.
 //   - At most one active episode exists; evidence for another host is
 //     ignored while one is active (the primary is observed first).
+//   - Evidence of the other class (plaintext signature vs untrusted
+//     certificate) ends the active episode and starts a new one.
 //
 // Single writer: only the main agent's Heartbeat owns the file. Watchdog,
 // helper, backup and one-shot processes never construct a Heartbeat.
@@ -291,7 +295,23 @@ func (t *blockTracker) write(f blockFileV1) error {
 		_ = os.Remove(name)
 		return err
 	}
+	// atomicrename.Replace is a bare rename(2) off Windows; fsync the
+	// directory so the rename itself survives a power loss.
+	if runtime.GOOS != "windows" {
+		if err := syncDir(filepath.Dir(t.path)); err != nil {
+			return fmt.Errorf("sync state directory: %w", err)
+		}
+	}
 	return nil
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
 }
 
 // persistNeed says what an update changed.
@@ -343,26 +363,45 @@ func (t *blockTracker) clearLocked(by string, at time.Time) {
 	log.Info("control-plane block cleared", "host", ep.Host, "kind", string(ep.Kind), "cleared_by", by)
 }
 
+// startEpisodeLocked makes ev host's active episode. Caller holds t.mu.
+func (t *blockTracker) startEpisodeLocked(host string, ev ech.BlockEvidence, outcome time.Time) {
+	ep := &blockEpisode{
+		Kind: ev.Kind, Host: host, FirstSeenAt: ev.SeenAt, LastSeenAt: ev.SeenAt, LastOutcomeAt: outcome,
+	}
+	ep.setDetails(ev)
+	t.active = ep
+	t.pending = nil // a new episode replaces an undelivered cleared one
+	log.Info("control-plane block episode started", "host", host, "kind", string(ev.Kind),
+		"http_status", ev.HTTPStatus, "location_host", ev.LocationHost, "cert_issuer", ev.CertIssuer)
+}
+
 // applyEvidenceLocked starts or extends host's episode with ev. outcome is the
 // newest dial outcome for host (>= ev.SeenAt). Caller holds t.mu.
+//
+// Evidence falls in two classes: a plaintext signature (a filter or portal
+// answered) and an untrusted certificate (something answered with TLS).
+// Evidence of the other class than the active episode's ends that episode and
+// starts a new one, so the report names what answers now and a plaintext
+// episode's restart hold is never kept fresh by certificate evidence. Within
+// the plaintext class the episode continues; its kind only moves from
+// plaintext_unknown to a richer kind.
 func (t *blockTracker) applyEvidenceLocked(host string, ev ech.BlockEvidence, outcome time.Time, now time.Time) persistNeed {
 	if t.active == nil {
 		if !ev.SeenAt.After(t.clearedThrough[host]) || now.Sub(ev.SeenAt) >= blockUnobservedExpiry {
 			return persistNone
 		}
-		ep := &blockEpisode{
-			Kind: ev.Kind, Host: host, FirstSeenAt: ev.SeenAt, LastSeenAt: ev.SeenAt, LastOutcomeAt: outcome,
-		}
-		ep.setDetails(ev)
-		t.active = ep
-		t.pending = nil // a new episode replaces an undelivered cleared one
-		log.Info("control-plane block episode started", "host", host, "kind", string(ev.Kind),
-			"http_status", ev.HTTPStatus, "location_host", ev.LocationHost, "cert_issuer", ev.CertIssuer)
+		t.startEpisodeLocked(host, ev, outcome)
 		return persistNow
 	}
 	ep := t.active
 	if ep.Host != host || !ev.SeenAt.After(ep.LastSeenAt) {
 		return persistNone
+	}
+	if ep.Kind.PlaintextSignature() != ev.Kind.PlaintextSignature() {
+		log.Info("control-plane block episode superseded", "host", host,
+			"kind", string(ep.Kind), "new_kind", string(ev.Kind))
+		t.startEpisodeLocked(host, ev, maxTime(outcome, ep.LastOutcomeAt))
+		return persistNow
 	}
 	ep.LastSeenAt = ev.SeenAt
 	before := *ep
@@ -370,7 +409,7 @@ func (t *blockTracker) applyEvidenceLocked(host string, ev ech.BlockEvidence, ou
 	case ev.Kind == ep.Kind:
 		ep.setDetails(ev)
 	case ep.Kind == ech.BlockPlaintextUnknown:
-		// The only kind change allowed: to a richer kind.
+		// The only kind change within an episode: to a richer plaintext kind.
 		ep.Kind = ev.Kind
 		ep.HTTPStatus, ep.LocationHost, ep.CertIssuer = 0, "", ""
 		ep.setDetails(ev)
@@ -502,11 +541,13 @@ func (t *blockTracker) ForgetOtherHosts(keep ...string) {
 }
 
 // HoldsRestart reports whether host has an active plaintext-signature
-// episode whose last evidence is fresh (blockHoldFreshness). A failed
+// episode whose last evidence is at most blockHoldFreshness old. A failed
 // heartbeat that is not itself a filter signature holds watchdog restarts
-// only then: an episode reloaded from disk, or one the filter stopped
-// refreshing, is not evidence that a restart is pointless. An untrusted
-// certificate never holds.
+// only then. The test is the age of the last evidence alone: an episode
+// reloaded from disk holds only while that evidence is still fresh, and one
+// the filter stopped refreshing stops holding once it ages out. Evidence
+// dated in the future (the clock stepped backward) does not hold, or the
+// hold would last as long as the step. An untrusted certificate never holds.
 func (t *blockTracker) HoldsRestart(host string) bool {
 	if t == nil {
 		return false
@@ -515,8 +556,11 @@ func (t *blockTracker) HoldsRestart(host string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	ep := t.active
-	return ep != nil && ep.Host == host && ep.Kind.PlaintextSignature() &&
-		t.now().Sub(ep.LastSeenAt) <= blockHoldFreshness
+	if ep == nil || ep.Host != host || !ep.Kind.PlaintextSignature() {
+		return false
+	}
+	age := t.now().Sub(ep.LastSeenAt)
+	return age >= 0 && age <= blockHoldFreshness
 }
 
 // Report returns the episode to send: the active one, else the pending
