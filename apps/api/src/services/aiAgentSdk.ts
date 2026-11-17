@@ -21,7 +21,7 @@ import { actionIntents } from '../db/schema/actionIntents';
 import { aiMessages, aiToolExecutions, aiActionPlans, brainDeviceContext, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { randomUUID } from 'node:crypto';
 import { eq, and, count, gte } from 'drizzle-orm';
-import type { AuthContext } from '../middleware/auth';
+import { withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, describeSpecialistRequest, type GuardrailContext } from './aiGuardrails';
@@ -1454,9 +1454,14 @@ const noteWriteAutoCounts = new WeakMap<ActiveSession, number>();
  * awaited, so calls the SDK runs concurrently cannot share one; it is given
  * back when the device check sends the note to the card. Any doubt asks.
  *
- * The count runs in a fresh system context: the device id is the model's and
- * not yet verified, but the answer only decides card vs no card and never
- * reaches the model; the handler's verifyDeviceAccess still gates the write.
+ * The count runs under the session's own tool auth (RLS), never system
+ * scope: the device id is the model's and not yet verified, and whether a
+ * card appears is visible to the model, so a count across tenants would leak
+ * one bit about another org's device. A device outside the caller's reach
+ * counts 0 here and is then refused by the handler's verifyDeviceAccess.
+ *
+ * A slot taken here stays spent if a later step refuses the call (the live
+ * authority refresh, the audit insert): that only trips the cap early.
  */
 async function noteWriteSkipsCard(session: ActiveSession, input: Record<string, unknown>): Promise<boolean> {
   if (!noteWriteFitsContentBounds(input)) return false;
@@ -1466,12 +1471,10 @@ async function noteWriteSkipsCard(session: ActiveSession, input: Record<string, 
   let recent: number;
   try {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const [row] = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() =>
-        db.select({ n: count() })
-          .from(brainDeviceContext)
-          .where(and(eq(brainDeviceContext.deviceId, input.deviceId as string), gte(brainDeviceContext.createdAt, since))),
-      ),
+    const [row] = await withAuthDbAccessContext(session.toolAuth, () =>
+      db.select({ n: count() })
+        .from(brainDeviceContext)
+        .where(and(eq(brainDeviceContext.deviceId, input.deviceId as string), gte(brainDeviceContext.createdAt, since))),
     );
     recent = Number(row?.n ?? Number.NaN);
   } catch (err) {
@@ -2174,27 +2177,32 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       // name is someone else's tool and keeps its card. Evaluated only when
       // no other path already skips the card, so the device count and the
       // session slot are spent only on a call this path decides.
-      const noteWriteAutoExec = guardrailCheck.tier === 2
+      //
+      // The same bounds apply when the grant's unattended-reads switch
+      // (#10973) classified the note: in a chat the switch does not lift
+      // them, so a note past a bound shows the card either way.
+      const chatNote = guardrailCheck.tier === 2
         && TIER2_NOTE_WRITE_TOOLS.has(toolName)
+        && !tenant
+        && !flowTool;
+      const noteWriteAutoExec = chatNote
         && effectiveMode !== 'auto_approve'
         && !readOnlyAutoExec
         && !wispSelfStateAutoExec
-        && !unattendedRead
-        && !tenant
-        && !flowTool
         && !session.isPaused
         && !planInFlight
         && !standingConflict
         && await noteWriteSkipsCard(session, input);
+      const unattendedReadSkip = chatNote && !noteWriteAutoExec && effectiveMode !== 'auto_approve' ? null : unattendedRead;
       // #10428 W06: a standing-instruction warning always reaches a human.
-      if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || noteWriteAutoExec || unattendedRead)) {
+      if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || noteWriteAutoExec || unattendedReadSkip)) {
         const liveDenial = await refreshTier2Authority(
           'Authorization changed before execution; the action was not executed.',
         );
         if (liveDenial) return liveDenial;
         // #10973: the refresh re-read the ceiling. The switch turned off in
         // between refuses the call rather than running it on the old answer.
-        if (unattendedRead && wispCall.current?.ceiling.unattendedReads !== true) {
+        if (unattendedReadSkip && wispCall.current?.ceiling.unattendedReads !== true) {
           return { allowed: false, error: 'Authorization changed before execution; the action was not executed.' };
         }
         // #11994: the id is chosen here so postToolUse can close this row by id.
@@ -2217,7 +2225,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           return { allowed: false, error: 'Failed to create audit record. Please try again.' };
         }
         recordApproval(
-          unattendedRead
+          unattendedReadSkip
             ? 'wisp_unattended_read'
             : effectiveMode === 'auto_approve'
               ? 'auto_approve_mode'
@@ -2225,9 +2233,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 : wispSelfStateAutoExec ? 'wisp_self_state_auto' : 'note_write_auto',
         );
         recordExecutingRow(autoExecId);
-        if (unattendedRead) {
+        if (unattendedReadSkip) {
           unattendedReadInputs.add(input);
-          verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedRead };
+          verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedReadSkip };
         }
         return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
       }

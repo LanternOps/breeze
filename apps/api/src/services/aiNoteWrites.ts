@@ -16,8 +16,8 @@
  *
  * What the card used to stop: notes are org-wide and persistent, and the
  * readers cap what they load (newest 100; RCA reads 10), so a run of junk
- * notes could push real ones out of view (#11986). The card-free path is
- * therefore bounded, and past any bound the note falls back to the card (a
+ * notes could push real ones out of view (#11986). The card-free path (and,
+ * in a chat, the unattended-reads path for the same note) is therefore bounded, and past any bound the note falls back to the card (a
  * person can still approve it; nothing is refused):
  *   - per session: NOTE_WRITE_AUTO_MAX_PER_SESSION card-free notes;
  *   - per device: no card-free note once the device has
@@ -59,12 +59,14 @@ export const NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY = 5;
 /** Largest serialised `details` a card-free note may carry. */
 export const NOTE_WRITE_AUTO_MAX_DETAILS_CHARS = 2000;
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * The content bounds of a card-free note: a device id to count against, and
  * `details` absent or small. Anything else asks.
  */
 export function noteWriteFitsContentBounds(input: Record<string, unknown>): boolean {
-  if (typeof input.deviceId !== 'string' || input.deviceId.length === 0) return false;
+  if (typeof input.deviceId !== 'string' || !UUID_RE.test(input.deviceId)) return false;
   if (input.details === undefined || input.details === null) return true;
   let serialised: string | undefined;
   try {

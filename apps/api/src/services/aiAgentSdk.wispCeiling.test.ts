@@ -51,7 +51,7 @@ vi.mock('./wisp/chatCeiling', () => ({
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, WISP_GATE_UNAVAILABLE_MESSAGE } from './aiAgentSdk';
-import { db } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { checkGuardrails, checkPermissionRequirements, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { tenantToolPermissionRequirement } from './toolSources/guardrails';
 import { WispSessionUnavailableError } from './wisp/chatCeiling';
@@ -444,6 +444,7 @@ function makeActiveSession(overrides: Record<string, unknown> = {}) {
     breezeSessionId: 'session-1',
     orgId: 'org-1',
     auth: makeAuth({ scope: 'organization' }),
+    toolAuth: makeAuth({ scope: 'organization' }),
     approvalMode: 'per_step',
     isPaused: false,
     eventBus: { publish: vi.fn() },
@@ -1389,6 +1390,38 @@ describe('createSessionPreToolUse — device notes skip the per_step card', () =
       expect(await createSessionPreToolUse(session)('set_device_context', { ...NOTE, details: { build: '22631' } })).toMatchObject({ allowed: true });
     });
 
+    it('counts under the session\'s own tool auth, never in system scope', async () => {
+      mockInsertValues();
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+      expect(await createSessionPreToolUse(session)('set_device_context', NOTE)).toMatchObject({ allowed: true });
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+      expect(withDbAccessContext).toHaveBeenCalledWith(expect.objectContaining({ scope: 'organization' }), expect.any(Function));
+    });
+
+    it('concurrent notes in one turn cannot share a session slot', async () => {
+      mockInsertValues();
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+      const gate = createSessionPreToolUse(session);
+
+      const results = await Promise.all(
+        Array.from({ length: NOTE_WRITE_AUTO_MAX_PER_SESSION + 1 }, () => gate('set_device_context', { ...NOTE })),
+      );
+
+      // The one over the cap went to the card path (this mock cannot carry it
+      // to a card); none of the others did.
+      expect(results.filter((r) => (r as { allowed: boolean }).allowed)).toHaveLength(NOTE_WRITE_AUTO_MAX_PER_SESSION);
+    });
+
+    it('a device id that is not a uuid asks (the device count would have allowed it)', async () => {
+      mockRecentDeviceNotes(0);
+      mockInsertReturning({ id: 'exec-bad-device' });
+      const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+
+      expect(await createSessionPreToolUse(session)('set_device_context', { ...NOTE, deviceId: 'WS-01' })).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+      expect(approvalCards(session)).toHaveLength(1);
+    });
+
     it('a note with no device id asks', async () => {
       mockInsertReturning({ id: 'exec-no-device' });
       const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
@@ -1681,6 +1714,7 @@ describe('createSessionPreToolUse — grant-level unattended reads (#10973)', ()
     wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
     vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
     vi.mocked(waitForApproval).mockResolvedValue(false);
+    mockRecentDeviceNotes(0);
     mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-sec' }));
     mockWaitForIntentDecision.mockResolvedValue('rejected');
     // The real tier rule is pinned in aiGuardrails.wispUnattendedReads.test.ts;
@@ -1713,6 +1747,25 @@ describe('createSessionPreToolUse — grant-level unattended reads (#10973)', ()
     await createSessionPostToolUse(session)(tool, input, '{"ok":true}', false, 3);
     const auditCall = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === `ai.tool.${tool}`);
     expect((auditCall![1] as any).details).toMatchObject({ approved: false, approvalMethod: 'wisp_unattended_read', tier: 2 });
+  });
+
+  // The switch does not lift the card-free note bounds in a chat (aiNoteWrites.ts).
+  it('a note past the device bound still shows the card with the switch on', async () => {
+    mockRecentDeviceNotes(NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY);
+    mockInsertReturning({ id: 'exec-switch-device-cap' });
+    const session = humanSession();
+
+    expect(await createSessionPreToolUse(session)('set_device_context', NOTE)).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(approvalCards(session)).toHaveLength(1);
+  });
+
+  it('a note with oversized details still shows the card with the switch on', async () => {
+    mockInsertReturning({ id: 'exec-switch-details' });
+    const session = humanSession();
+    const details = { text: 'x'.repeat(NOTE_WRITE_AUTO_MAX_DETAILS_CHARS) };
+
+    expect(await createSessionPreToolUse(session)('set_device_context', { ...NOTE, details })).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(approvalCards(session)).toHaveLength(1);
   });
 
   it('the pinned call is a detached copy: the model\'s object can change afterwards', async () => {
