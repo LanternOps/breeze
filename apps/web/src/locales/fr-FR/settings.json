@@ -3349,7 +3349,8 @@
           "turnCount": "Tours",
           "summary": "Résumé",
           "computeCost": "Calcul",
-          "computeEstimated": "(estimé)"
+          "computeEstimated": "(estimé)",
+          "scope": "Périmètre"
         },
         "flags": {
           "budgetExceeded": "Budget dépassé",
@@ -3435,6 +3436,24 @@
           "partialNote": "Comptabilisation partielle tant que l'autorisation de politique sans surveillance est désactivée — l'exposition réelle peut être sous-estimée.",
           "unavailable": "Aucune politique d'agent active pour l'organisation de cette exécution.",
           "loading": "Chargement du budget…"
+        },
+        "scope": {
+          "org_one": "Toute l'organisation ({{count}} appareil au lancement)",
+          "org_other": "Toute l'organisation ({{count}} appareils au lancement)",
+          "site_one": "Site {{name}} ({{count}} appareil au lancement)",
+          "site_other": "Site {{name}} ({{count}} appareils au lancement)",
+          "siteUnnamed_one": "Un site ({{count}} appareil au lancement)",
+          "siteUnnamed_other": "Un site ({{count}} appareils au lancement)",
+          "devices_one": "{{count}} appareil sélectionné",
+          "devices_other": "{{count}} appareils sélectionnés"
+        },
+        "chain": {
+          "title": "Cette investigation",
+          "description": "Chaque étape prolongeait une étape précédente et pouvait utiliser les fichiers produits par les étapes antérieures.",
+          "step": "Étape {{step}}",
+          "current": "Cette exécution",
+          "open": "Ouvrir l'exécution",
+          "noGoal": "Aucun objectif enregistré"
         }
       },
       "triage": {

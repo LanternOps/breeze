@@ -3349,7 +3349,8 @@
           "turnCount": "Tur sayısı",
           "summary": "Özet",
           "computeCost": "Hesaplama",
-          "computeEstimated": "(tahmini)"
+          "computeEstimated": "(tahmini)",
+          "scope": "Kapsam"
         },
         "flags": {
           "budgetExceeded": "Bütçe aşıldı",
@@ -3435,6 +3436,24 @@
           "partialNote": "Gözetimsiz politika yetkilendirmesi devre dışıyken kısmi muhasebeleştirme yapılır — bu, gerçek maruziyeti olduğundan az gösterebilir.",
           "unavailable": "Bu çalıştırmanın organizasyonu için etkin bir aracı politikası yok.",
           "loading": "Bütçe yükleniyor…"
+        },
+        "scope": {
+          "org_one": "Tüm kuruluş (başlatma anında {{count}} cihaz)",
+          "org_other": "Tüm kuruluş (başlatma anında {{count}} cihaz)",
+          "site_one": "{{name}} sitesi (başlatma anında {{count}} cihaz)",
+          "site_other": "{{name}} sitesi (başlatma anında {{count}} cihaz)",
+          "siteUnnamed_one": "Tek bir site (başlatma anında {{count}} cihaz)",
+          "siteUnnamed_other": "Tek bir site (başlatma anında {{count}} cihaz)",
+          "devices_one": "{{count}} seçili cihaz",
+          "devices_other": "{{count}} seçili cihaz"
+        },
+        "chain": {
+          "title": "Bu inceleme",
+          "description": "Her adım önceki bir adımdan devam etti ve önceki adımların ürettiği dosyaları kullanabildi.",
+          "step": "Adım {{step}}",
+          "current": "Bu çalıştırma",
+          "open": "Çalıştırmayı aç",
+          "noGoal": "Kayıtlı hedef yok"
         }
       },
       "triage": {

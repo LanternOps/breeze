@@ -3349,7 +3349,8 @@
           "turnCount": "Turns",
           "summary": "Summary",
           "computeCost": "Compute",
-          "computeEstimated": "(estimated)"
+          "computeEstimated": "(estimated)",
+          "scope": "Scope"
         },
         "flags": {
           "budgetExceeded": "Budget exceeded",
@@ -3435,6 +3436,24 @@
           "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
           "unavailable": "No active agent policy for this run's organization.",
           "loading": "Loading budget…"
+        },
+        "scope": {
+          "org_one": "Whole organization ({{count}} device as of launch)",
+          "org_other": "Whole organization ({{count}} devices as of launch)",
+          "site_one": "Site {{name}} ({{count}} device as of launch)",
+          "site_other": "Site {{name}} ({{count}} devices as of launch)",
+          "siteUnnamed_one": "One site ({{count}} device as of launch)",
+          "siteUnnamed_other": "One site ({{count}} devices as of launch)",
+          "devices_one": "{{count}} selected device",
+          "devices_other": "{{count}} selected devices"
+        },
+        "chain": {
+          "title": "This investigation",
+          "description": "Each step continued from an earlier one and could use the files earlier steps produced.",
+          "step": "Step {{step}}",
+          "current": "This run",
+          "open": "Open run",
+          "noGoal": "No goal recorded"
         }
       },
       "triage": {
