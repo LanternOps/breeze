@@ -139,7 +139,7 @@ describe('serving set', () => {
   it('an unexpected script result is treated as a Redis failure (degraded), never as success', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await markBuilt();
-    r().eval.mockResolvedValueOnce('OK');
+    r().eval.mockResolvedValueOnce('OK' as never); // a script that answered something other than applied/conflict
     dbRows.rows = [{ partnerSlug: 'nw', orgSlug: 'acme', isPartnerHome: false }];
     await expect(refreshServingForPartner('p1')).resolves.toBe('degraded');
     expect(await r().exists(TRUST_SERVING_BUILT_KEY)).toBe(0);
