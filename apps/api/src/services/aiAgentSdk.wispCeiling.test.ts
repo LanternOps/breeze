@@ -1198,6 +1198,27 @@ describe('createSessionPreToolUse — device notes skip the per_step card', () =
     expect((auditCall![1] as any).details).toMatchObject({ approved: false, approvalMethod: 'note_write_auto' });
   });
 
+  // #11994 (main): a card-free call's ledger row is closed by the id the gate
+  // chose, through the per-call record, not by tool name.
+  it('the note\'s executing row is closed by the id the gate chose (#11994)', async () => {
+    const values = mockInsertValues();
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn(() => ({ where }));
+    vi.mocked(db.update).mockReturnValue({ set } as any);
+    const session = makeActiveSession({ approvalMode: 'per_step', wispGrant: null });
+    const input = { ...NOTE };
+
+    expect(await createSessionPreToolUse(session)('set_device_context', input, undefined, 'toolu_note')).toMatchObject({ allowed: true });
+    const rowId = (values.mock.calls[0]![0] as { id: string }).id;
+    expect(rowId).toEqual(expect.any(String));
+
+    await createSessionPostToolUse(session)('set_device_context', input, 'Context recorded.', false, 3, undefined, undefined, 'toolu_note');
+
+    const closed = set.mock.calls.find((c) => (c as unknown[])[0] && 'status' in ((c as unknown[])[0] as object));
+    expect(closed).toBeDefined();
+    expect(JSON.stringify(where.mock.calls)).toContain(rowId);
+  });
+
   // Only the listed note tools skip it (membership: aiNoteWrites.contract.test.ts).
   it.each(['registry_operations', 'take_screenshot'])('another Tier-2 device tool (%s) still gets the per_step card', async (toolName) => {
     mockInsertReturning({ id: `exec-${toolName}` });
