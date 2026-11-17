@@ -234,6 +234,7 @@
     "thirdPartyCatalog": {
       "title": "Üçüncü Taraf Paket Kataloğu",
       "description": "winget tarafından aracılarda tespit edilen üçüncü taraf yazılımlar için Breeze seçilmiş meta veriler.",
+      "scopeNote": "Bu katalog, bir cihazın bildirdiği üçüncü taraf yaması için yalnızca kolay bir ad, satıcı, kategori ve varsayılan önem derecesi sağlar. Hangi uygulamaların güncelleneceğine karar vermez ve burada listelenmeyen uygulamalar yine de Yamalar bölümünde görünür. Güncellemeler, bir yapılandırma ilkesinin yama kaynaklarından, bir güncelleme halkasından ve winget, Chocolatey veya Homebrew'un cihazda bildirdiklerinden gelir. Kullanıcı başına winget kurulumları algılanır ancak asla yükseltilmez.",
       "totalEntries": "Toplam giriş:",
       "refresh": "Yenile",
       "addPackage": "Paket ekle",

@@ -98,6 +98,21 @@ const ITEM = {
   createdAt: '2026-06-14T00:00:00Z'
 };
 
+describe('SoftwareCatalog scope note (#12053)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+  });
+
+  it('says the library is for deploying and is not the list of apps Breeze keeps current', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+    render(<SoftwareCatalog />);
+    const note = await screen.findByTestId('software-library-scope-note');
+    expect(note).toHaveTextContent(/not a list of software Breeze keeps up to date/i);
+    expect(note).toHaveTextContent(/patch sources/i);
+  });
+});
+
 describe('SoftwareCatalog category filter select accessible name (#7156)', () => {
   beforeEach(() => {
     fetchMock.mockReset();

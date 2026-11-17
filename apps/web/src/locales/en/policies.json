@@ -1962,6 +1962,7 @@
       "loadingSoftwareCatalog": "Loading software catalog...",
       "softwareLibrary": "Software Library",
       "browseAndDeployApprovedSoftwarePackages": "Browse and deploy approved software packages.",
+      "libraryScopeNote": "This library lists packages you can deploy to devices on demand. It is not a list of software Breeze keeps up to date. Updates to installed apps come from a configuration policy's patch sources, an update ring, and what winget, Chocolatey or Homebrew reports on each device.",
       "addPackage": "Add Package",
       "bulkDeploy": "Bulk Deploy",
       "dismiss": "Dismiss",

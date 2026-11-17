@@ -1962,6 +1962,7 @@
       "loadingSoftwareCatalog": "Carregando catálogo de software...",
       "softwareLibrary": "Biblioteca de software",
       "browseAndDeployApprovedSoftwarePackages": "Navegue e implante pacotes de software aprovados.",
+      "libraryScopeNote": "Esta biblioteca lista pacotes que você pode implantar nos dispositivos sob demanda. Ela não é uma lista do software que o Breeze mantém atualizado. As atualizações dos aplicativos instalados vêm das fontes de patches de uma política de configuração, de um anel de atualização e do que winget, Chocolatey ou Homebrew informam em cada dispositivo.",
       "addPackage": "Adicionar pacote",
       "bulkDeploy": "Implantação em massa",
       "dismiss": "Dispensar",

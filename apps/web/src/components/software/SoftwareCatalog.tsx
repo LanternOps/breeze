@@ -554,6 +554,12 @@ export default function SoftwareCatalog() {
               "policies:software.softwareCatalog.browseAndDeployApprovedSoftwarePackages",
             )}
           </p>
+          <p
+            data-testid="software-library-scope-note"
+            className="mt-1 max-w-3xl text-xs text-muted-foreground"
+          >
+            {i18n.t("policies:software.softwareCatalog.libraryScopeNote")}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
