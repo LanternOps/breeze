@@ -1004,6 +1004,7 @@
         "queued": "Queued",
         "running": "Running",
         "awaiting_approval": "Awaiting approval",
+        "no_approvals_pending": "Nothing waiting on approval",
         "completed": "Completed",
         "failed": "Failed"
       }

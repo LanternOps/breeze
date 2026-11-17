@@ -836,6 +836,8 @@
       "unread_other": "{{count}} ungelesen",
       "markAllRead": "Alle als gelesen markieren",
       "markAllUnread": "Alle als ungelesen markieren",
+      "muteSound": "Genehmigungston stummschalten",
+      "unmuteSound": "Genehmigungston einschalten",
       "confirmClear": "Leeren bestätigen",
       "clearAll": "Alle löschen",
       "loading": "Benachrichtigungen werden geladen…",

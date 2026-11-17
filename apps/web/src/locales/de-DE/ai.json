@@ -1004,6 +1004,7 @@
         "queued": "In Warteschlange",
         "running": "Läuft",
         "awaiting_approval": "Wartet auf Genehmigung",
+        "no_approvals_pending": "Keine Genehmigung ausstehend",
         "completed": "Abgeschlossen",
         "failed": "Fehlgeschlagen"
       }
