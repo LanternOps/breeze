@@ -18,9 +18,9 @@ import {
   assertOutsideHeldDbContext,
 } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
-import { aiMessages, aiToolExecutions, aiActionPlans, brainDeviceContext, devices, deviceSessions, approvalRequests } from '../db/schema';
+import { aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { randomUUID } from 'node:crypto';
-import { eq, and, count, gte } from 'drizzle-orm';
+import { eq, and, count, inArray, isNull } from 'drizzle-orm';
 import { withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
@@ -61,11 +61,11 @@ import type { WispCeilingRefusal } from './wisp/chatCeiling';
 // Leaf data module (no imports): loading it never pulls in the Wisp graph.
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
 import {
-  NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY,
   NOTE_WRITE_AUTO_MAX_PER_SESSION,
   noteWriteFitsContentBounds,
   TIER2_NOTE_WRITE_TOOLS,
 } from './aiNoteWrites';
+import { cardFreeNoteFits, readCardFreeNoteBudget } from './brainDeviceContext';
 import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 import {
   STANDING_CHECK_UNAVAILABLE_MESSAGE,
@@ -1443,50 +1443,82 @@ async function wispSelfStateSkipsCard(
   }
 }
 
-/** Card-free note writes taken per session (aiNoteWrites.ts bounds). */
-const noteWriteAutoCounts = new WeakMap<ActiveSession, number>();
+/**
+ * Card-free note calls in flight per chat session (keyed by the ai_sessions id,
+ * so a rebuilt session object shares it): reserved before the gate's first
+ * await, released once the call's executing row is written or the call is
+ * refused. Together with the durable count of written rows this keeps calls
+ * the SDK runs in parallel from sharing one session slot.
+ */
+const noteWriteInFlight = new Map<string, number>();
+
+type NoteWriteDecision = { skip: false } | { skip: true; release: () => void };
+const NOTE_WRITE_ASKS: NoteWriteDecision = { skip: false };
 
 /**
- * Whether this append-only note (aiNoteWrites.ts) may run without the card:
- * its content fits, the session has a card-free slot left, and the device has
- * had fewer than NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY notes written in the
- * last 24 h. The session slot is reserved synchronously, before the count is
- * awaited, so calls the SDK runs concurrently cannot share one; it is given
- * back when the device check sends the note to the card. Any doubt asks.
- *
- * The count runs under the session's own tool auth (RLS), never system
- * scope: the device id is the model's and not yet verified, and whether a
- * card appears is visible to the model, so a count across tenants would leak
- * one bit about another org's device. A device outside the caller's reach
- * counts 0 here and is then refused by the handler's verifyDeviceAccess.
- *
- * A slot taken here stays spent if a later step refuses the call (the live
- * authority refresh, the audit insert): that only trips the cap early.
+ * Whether this append-only note (aiNoteWrites.ts) may run without the card.
+ * Order matters:
+ *  1. content: details, expiry and device id fit (no DB);
+ *  2. a session slot is reserved synchronously, before any await;
+ *  3. the org/site/device access check, under the session's tool auth. A
+ *     device the caller cannot reach is let through with NO count, so the
+ *     tool dispatch refuses it exactly as it refuses any other call for that
+ *     device, and whether a card appeared says nothing about its notes;
+ *  4. the conversation count: this session's set_device_context rows that ran
+ *     with no recorded approver (`ai_tool_executions`, durable across a
+ *     session rebuild, restart or deploy) plus the calls in flight;
+ *  5. the device counts (active notes and notes in the last 24 h), under the
+ *     session's tool auth (RLS). The handler counts again under a per-device
+ *     lock before it writes (brainDeviceContext.createDeviceContext).
+ * Any failure asks. A `skip: true` result carries `release`, which the gate
+ * calls after the call's executing row is written or the call is refused.
  */
-async function noteWriteSkipsCard(session: ActiveSession, input: Record<string, unknown>): Promise<boolean> {
-  if (!noteWriteFitsContentBounds(input)) return false;
-  const taken = noteWriteAutoCounts.get(session) ?? 0;
-  if (taken >= NOTE_WRITE_AUTO_MAX_PER_SESSION) return false;
-  noteWriteAutoCounts.set(session, taken + 1);
-  let recent: number;
+async function noteWriteSkipsCard(session: ActiveSession, input: Record<string, unknown>): Promise<NoteWriteDecision> {
+  if (!noteWriteFitsContentBounds(input)) return NOTE_WRITE_ASKS;
+  const key = session.breezeSessionId;
+  // Read with the reservation, before the durable count starts: a call that
+  // finished since then wrote its row before this count reads.
+  const inFlight = (noteWriteInFlight.get(key) ?? 0) + 1;
+  noteWriteInFlight.set(key, inFlight);
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    const left = (noteWriteInFlight.get(key) ?? 1) - 1;
+    if (left > 0) noteWriteInFlight.set(key, left);
+    else noteWriteInFlight.delete(key);
+  };
   try {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const [row] = await withAuthDbAccessContext(session.toolAuth, () =>
-      db.select({ n: count() })
-        .from(brainDeviceContext)
-        .where(and(eq(brainDeviceContext.deviceId, input.deviceId as string), gte(brainDeviceContext.createdAt, since))),
+    const deviceId = input.deviceId as string;
+    const device = await withAuthDbAccessContext(session.toolAuth, () => readCardFreeNoteBudget(deviceId, session.toolAuth));
+    if (device === null) return { skip: true, release };
+    const [row] = await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () => db.select({ n: count() })
+        .from(aiToolExecutions)
+        .where(and(
+          eq(aiToolExecutions.sessionId, session.breezeSessionId),
+          eq(aiToolExecutions.toolName, 'set_device_context'),
+          isNull(aiToolExecutions.approvedBy),
+          inArray(aiToolExecutions.status, ['executing', 'completed', 'failed']),
+        )),
     );
-    recent = Number(row?.n ?? Number.NaN);
+    const written = Number(row?.n ?? Number.NaN);
+    if (!(written + inFlight <= NOTE_WRITE_AUTO_MAX_PER_SESSION)) {
+      release();
+      return NOTE_WRITE_ASKS;
+    }
+    if (!cardFreeNoteFits(device)) {
+      release();
+      return NOTE_WRITE_ASKS;
+    }
+    return { skip: true, release };
   } catch (err) {
-    console.error(`[AI-SDK] device note count failed (session ${session.breezeSessionId}); asking for approval`, err);
+    console.error(`[AI-SDK] card-free note bounds could not be read (session ${session.breezeSessionId}); asking for approval`, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'aiAgentSdk', orgId: session.orgId });
-    recent = Number.NaN;
+    release();
+    return NOTE_WRITE_ASKS;
   }
-  if (!(recent < NOTE_WRITE_AUTO_MAX_PER_DEVICE_PER_DAY)) {
-    noteWriteAutoCounts.set(session, Math.max(0, (noteWriteAutoCounts.get(session) ?? 1) - 1));
-    return false;
-  }
-  return true;
 }
 
 /**
@@ -2171,12 +2203,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
       // Append-only notes (aiNoteWrites.ts) skip the card in any interactive
       // chat (a helper session returned above, through PAM), with the
-      // read-only path's two carve-outs, and only inside the per-session,
-      // per-device and content bounds (`noteWriteSkipsCard`); past them the
-      // note shows the card. A tenant or flow tool that happens to share the
-      // name is someone else's tool and keeps its card. Evaluated only when
-      // no other path already skips the card, so the device count and the
-      // session slot are spent only on a call this path decides.
+      // read-only path's two carve-outs, and only inside the conversation,
+      // device (active and per-day) and content bounds (`noteWriteSkipsCard`);
+      // past them the note shows the card. A tenant or flow tool that happens
+      // to share the name is someone else's tool and keeps its card. Evaluated
+      // only when no other path already skips the card, so the counts run
+      // only for a call this path decides.
       //
       // The same bounds apply when the grant's unattended-reads switch
       // (#10973) classified the note: in a chat the switch does not lift
@@ -2185,59 +2217,71 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && TIER2_NOTE_WRITE_TOOLS.has(toolName)
         && !tenant
         && !flowTool;
-      const noteWriteAutoExec = chatNote
+      const noteDecision = chatNote
         && effectiveMode !== 'auto_approve'
         && !readOnlyAutoExec
         && !wispSelfStateAutoExec
         && !session.isPaused
         && !planInFlight
         && !standingConflict
-        && await noteWriteSkipsCard(session, input);
+        ? await noteWriteSkipsCard(session, input)
+        : NOTE_WRITE_ASKS;
+      const noteWriteAutoExec = noteDecision.skip;
       const unattendedReadSkip = chatNote && !noteWriteAutoExec && effectiveMode !== 'auto_approve' ? null : unattendedRead;
-      // #10428 W06: a standing-instruction warning always reaches a human.
-      if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || noteWriteAutoExec || unattendedReadSkip)) {
-        const liveDenial = await refreshTier2Authority(
-          'Authorization changed before execution; the action was not executed.',
-        );
-        if (liveDenial) return liveDenial;
-        // #10973: the refresh re-read the ceiling. The switch turned off in
-        // between refuses the call rather than running it on the old answer.
-        if (unattendedReadSkip && wispCall.current?.ceiling.unattendedReads !== true) {
-          return { allowed: false, error: 'Authorization changed before execution; the action was not executed.' };
-        }
-        // #11994: the id is chosen here so postToolUse can close this row by id.
-        const autoExecId = randomUUID();
-        try {
-          await withDbAccessContext(
-            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-            () =>
-              db.insert(aiToolExecutions).values({
-                id: autoExecId,
-                sessionId: session.breezeSessionId,
-                toolName,
-                toolInput: redactSensitiveToolInput(input),
-                status: 'executing',
-              })
+      // The in-flight reservation is held until this block has written the
+      // call's executing row (which the durable count then sees) or refused it.
+      try {
+        // #10428 W06: a standing-instruction warning always reaches a human.
+        if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || noteWriteAutoExec || unattendedReadSkip)) {
+          const liveDenial = await refreshTier2Authority(
+            'Authorization changed before execution; the action was not executed.',
           );
-          ledger.rowWritten = true;
-        } catch (err) {
-          console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
-          return { allowed: false, error: 'Failed to create audit record. Please try again.' };
+          if (liveDenial) return liveDenial;
+          // #10973: the refresh re-read the ceiling. The switch turned off in
+          // between refuses the call rather than running it on the old answer.
+          if (unattendedReadSkip && wispCall.current?.ceiling.unattendedReads !== true) {
+            return { allowed: false, error: 'Authorization changed before execution; the action was not executed.' };
+          }
+          // #11994: the id is chosen here so postToolUse can close this row by id.
+          const autoExecId = randomUUID();
+          try {
+            await withDbAccessContext(
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              () =>
+                db.insert(aiToolExecutions).values({
+                  id: autoExecId,
+                  sessionId: session.breezeSessionId,
+                  toolName,
+                  toolInput: redactSensitiveToolInput(input),
+                  status: 'executing',
+                })
+            );
+            ledger.rowWritten = true;
+          } catch (err) {
+            console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
+            return { allowed: false, error: 'Failed to create audit record. Please try again.' };
+          }
+          recordApproval(
+            unattendedReadSkip
+              ? 'wisp_unattended_read'
+              : effectiveMode === 'auto_approve'
+                ? 'auto_approve_mode'
+                : readOnlyAutoExec ? 'read_only_auto'
+                  : wispSelfStateAutoExec ? 'wisp_self_state_auto' : 'note_write_auto',
+          );
+          recordExecutingRow(autoExecId);
+          if (unattendedReadSkip) {
+            unattendedReadInputs.add(input);
+            verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedReadSkip };
+          }
+          // The handler caps the expiry and recounts under a per-device lock.
+          if (noteWriteAutoExec) {
+            verifiedToolContext = { ...verifiedToolContext, noteWriteCardFree: true };
+          }
+          return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
         }
-        recordApproval(
-          unattendedReadSkip
-            ? 'wisp_unattended_read'
-            : effectiveMode === 'auto_approve'
-              ? 'auto_approve_mode'
-              : readOnlyAutoExec ? 'read_only_auto'
-                : wispSelfStateAutoExec ? 'wisp_self_state_auto' : 'note_write_auto',
-        );
-        recordExecutingRow(autoExecId);
-        if (unattendedReadSkip) {
-          unattendedReadInputs.add(input);
-          verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedReadSkip };
-        }
-        return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
+      } finally {
+        if (noteDecision.skip) noteDecision.release();
       }
 
       // Action plan / hybrid plan mode: check if tool matches an approved plan step.
