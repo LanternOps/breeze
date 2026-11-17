@@ -8,14 +8,17 @@
  * site/device-scope contract scans credit a table read only to the named
  * function that also calls `exportDeviceSet`. Do not extract the query.
  */
+import { createHash } from 'node:crypto';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceReliabilityHistory } from '../../db/schema';
 import { reliabilityEventKey, reliabilityExportPageQuery } from '../reliabilityScoring';
 import {
   cutExportText,
+  decodeExportCursor,
   deviceIdIn,
   emptyExportPager,
+  encodeExportCursor,
   exportJsonText,
   exportText,
   exportDeviceSet,
@@ -204,6 +207,12 @@ function eventColumns(eventClass: EventClass, event: Record<string, unknown>) {
   return cols;
 }
 
+/** Ingest allows up to 3,500 events per history row, so the page is bounded on
+ *  OUTPUT too: this many history rows per page, and at most `pageSize * 4`
+ *  events, resuming mid-row from a sub-row cursor when the budget runs out. */
+const HISTORY_ROWS_PER_EVENT_PAGE_DIVISOR = 50;
+const EVENTS_PER_PAGE_FACTOR = 4;
+
 async function createReliabilityEventsPager(req: DatasetRequest) {
   const { start, end } = timeRangeFromFilters(req.filters);
   const scope = await exportDeviceSet(req);
@@ -212,80 +221,104 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
 
   const startMs = start.getTime();
   const endMs = end.getTime();
+  const historyRowsPerPage = Math.max(1, Math.floor(req.pageSize / HISTORY_ROWS_PER_EVENT_PAGE_DIVISOR));
+  const eventBudget = req.pageSize * EVENTS_PER_PAGE_FACTOR;
 
-  return keysetPager({
-    // One history row can hold up to 200 events: page on history rows.
-    pageSize: Math.max(1, Math.floor(req.pageSize / 10)),
-    shape: ['timestamp', 'uuid'],
-    fetch: async (after, limit) => {
-      const t = deviceReliabilityHistory;
-      return await runExportQuery(
-        db
-          .select({
-            id: t.id,
-            deviceId: t.deviceId,
-            collectedAt: t.collectedAt,
-            collectedAtText: sql<string>`${t.collectedAt}::text`,
-            crashEvents: t.crashEvents,
-            appHangs: t.appHangs,
-            serviceFailures: t.serviceFailures,
-            hardwareErrors: t.hardwareErrors,
-          })
-          .from(deviceReliabilityHistory)
-          .where(and(
-            eq(t.orgId, req.orgId),
-            deviceIdIn(t.deviceId, scope.deviceIds),
-            gte(t.collectedAt, start),
-            lte(t.collectedAt, end),
-            keysetBefore(t.collectedAt, t.id, after, 'timestamp'),
-          ))
-          .orderBy(desc(t.collectedAt), desc(t.id))
-          .limit(limit),
-      );
-    },
-    keyOf: (row) => [row.collectedAtText, row.id],
-    toRows: (rows) => {
-      const out: Array<Record<string, unknown>> = [];
-      for (const row of rows) {
-        const classes: Array<[EventClass, unknown]> = [
-          ['crash', row.crashEvents],
-          ['app_hang', row.appHangs],
-          ['service_failure', row.serviceFailures],
-          ['hardware_error', row.hardwareErrors],
-        ];
-        for (const [eventClass, events] of classes) {
-          if (!Array.isArray(events)) continue;
-          for (const event of events) {
-            if (!isRecord(event)) continue;
-            // The event's own time decides the window; an unparseable one is
-            // kept (with `timestamp: null`) rather than silently dropped.
-            const when = typeof event.timestamp === 'string' ? new Date(event.timestamp) : null;
-            const ms = when && !Number.isNaN(when.getTime()) ? when.getTime() : null;
-            if (ms !== null && (ms < startMs || ms > endMs)) continue;
-            const cols = eventColumns(eventClass, event);
-            out.push({
-              historyId: row.id,
-              deviceId: row.deviceId,
-              hostname: scope.hostnames.get(row.deviceId) ?? null,
-              collectedAt: row.collectedAt.toISOString(),
-              eventClass,
-              eventType: cols.eventType,
-              timestamp: ms === null ? null : new Date(ms).toISOString(),
-              name: cols.name,
-              severity: cols.severity,
-              errorCode: cols.errorCode,
-              eventId: cols.eventId,
-              duration: cols.duration,
-              recovered: cols.recovered,
-              detail: cols.detail,
-              eventKey: reliabilityEventKey(eventClass, event),
-            });
+  return async (cursor: string | null) => {
+    // [collected_at::text, id, eventOffset]. Offset 0: resume strictly after the
+    // row. Offset > 0: the row was partly consumed, so it is read again and its
+    // first `offset` flattened events are skipped.
+    const after = decodeExportCursor(cursor, ['timestamp', 'uuid', 'int']);
+    const offset = after ? Number(after[2]) : 0;
+
+    const t = deviceReliabilityHistory;
+    const resume = after && offset > 0
+      ? sql`(${t.collectedAt} <= ${after[0]}::timestamp AND (${t.collectedAt}, ${t.id}) <= (${after[0]}::timestamp, ${after[1]}::uuid))`
+      : keysetBefore(t.collectedAt, t.id, after ? [after[0]!, after[1]!] : null, 'timestamp');
+
+    const fetched = await runExportQuery(
+      db
+        .select({
+          id: t.id,
+          deviceId: t.deviceId,
+          collectedAt: t.collectedAt,
+          collectedAtText: sql<string>`${t.collectedAt}::text`,
+          crashEvents: t.crashEvents,
+          appHangs: t.appHangs,
+          serviceFailures: t.serviceFailures,
+          hardwareErrors: t.hardwareErrors,
+        })
+        .from(deviceReliabilityHistory)
+        .where(and(
+          eq(t.orgId, req.orgId),
+          deviceIdIn(t.deviceId, scope.deviceIds),
+          gte(t.collectedAt, start),
+          lte(t.collectedAt, end),
+          resume,
+        ))
+        .orderBy(desc(t.collectedAt), desc(t.id))
+        .limit(historyRowsPerPage + 1),
+    );
+    const page = fetched.slice(0, historyRowsPerPage);
+
+    const out: Array<Record<string, unknown>> = [];
+    for (let r = 0; r < page.length; r += 1) {
+      const row = page[r]!;
+      const classes: Array<[EventClass, unknown]> = [
+        ['crash', row.crashEvents],
+        ['app_hang', row.appHangs],
+        ['service_failure', row.serviceFailures],
+        ['hardware_error', row.hardwareErrors],
+      ];
+      // Deterministic flatten order (class, then array order). The offset counts
+      // every flattened event BEFORE the time-window filter, so it stays stable.
+      let flatIndex = 0;
+      for (const [eventClass, events] of classes) {
+        if (!Array.isArray(events)) continue;
+        for (const event of events) {
+          if (!isRecord(event)) continue;
+          const index = flatIndex;
+          flatIndex += 1;
+          if (r === 0 && index < offset) continue;
+          if (out.length >= eventBudget) {
+            return { rows: out, nextCursor: encodeExportCursor([row.collectedAtText, row.id, String(index)]) };
           }
+          // The event's own time decides the window; an unparseable one is
+          // kept (with `timestamp: null`) rather than silently dropped.
+          const when = typeof event.timestamp === 'string' ? new Date(event.timestamp) : null;
+          const ms = when && !Number.isNaN(when.getTime()) ? when.getTime() : null;
+          if (ms !== null && (ms < startMs || ms > endMs)) continue;
+          const cols = eventColumns(eventClass, event);
+          out.push({
+            historyId: row.id,
+            deviceId: row.deviceId,
+            hostname: scope.hostnames.get(row.deviceId) ?? null,
+            collectedAt: row.collectedAt.toISOString(),
+            eventClass,
+            eventType: cols.eventType,
+            timestamp: ms === null ? null : new Date(ms).toISOString(),
+            name: cols.name,
+            severity: cols.severity,
+            errorCode: cols.errorCode,
+            eventId: cols.eventId,
+            duration: cols.duration,
+            recovered: cols.recovered,
+            detail: cols.detail,
+            // Hashed: the raw scoring key embeds unredacted names, error codes
+            // and, for an event with no identifying field, the whole event JSON.
+            eventKey: createHash('sha256').update(reliabilityEventKey(eventClass, event)).digest('hex').slice(0, 32),
+          });
         }
       }
-      return out;
-    },
-  });
+    }
+    const last = page[page.length - 1];
+    return {
+      rows: out,
+      nextCursor: fetched.length > historyRowsPerPage && last
+        ? encodeExportCursor([last.collectedAtText, last.id, '0'])
+        : null,
+    };
+  };
 }
 
 export const reliabilityEventsAdapter: DatasetAdapter = {

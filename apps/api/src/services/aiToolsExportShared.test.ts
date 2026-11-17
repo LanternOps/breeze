@@ -95,11 +95,19 @@ describe('cursor and keyset helpers', () => {
     expect(decodeExportCursor(null, ['uuid'])).toBeNull();
   });
 
+  it('an int part round-trips', () => {
+    const key = ['2026-11-13 10:00:00', id(3), '1999'];
+    expect(decodeExportCursor(encodeExportCursor(key), ['timestamp', 'uuid', 'int'])).toEqual(key);
+  });
+
   it.each([
     [['2026-11-13T10:00:00Z', id(1)], ['timestamp', 'uuid']],
     [['2026-11-13 10:00:00', 'x'], ['timestamp', 'uuid']],
     [['2026-11-13 10:00:00'], ['timestamp', 'uuid']],
     [['2026-11-13 10:00:00+00; drop', id(1)], ['timestamptz', 'uuid']],
+    [['2026-11-13 10:00:00', id(1), '1; drop'], ['timestamp', 'uuid', 'int']],
+    [['2026-11-13 10:00:00', id(1), '-1'], ['timestamp', 'uuid', 'int']],
+    [['2026-11-13 10:00:00', id(1), '1234567890'], ['timestamp', 'uuid', 'int']],
   ] as const)('decodeExportCursor refuses %j before it can reach a cast', (key, shape) => {
     expect(() => decodeExportCursor(encodeExportCursor([...key]), shape)).toThrow();
   });

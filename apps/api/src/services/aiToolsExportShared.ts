@@ -98,18 +98,21 @@ export function timeRangeFromFilters(
 // ---------------------------------------------------------------------------
 
 /** The kind of each part of a keyset key, validated before it reaches a cast. */
-export type KeyPart = 'timestamp' | 'timestamptz' | 'uuid';
+export type KeyPart = 'timestamp' | 'timestamptz' | 'uuid' | 'int';
 
 // `col::text` of a Postgres `timestamp`: `YYYY-MM-DD HH:MM:SS[.ffffff]`.
 const TIMESTAMP_TEXT_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?$/;
 // `col::text` of a `timestamptz`: the same plus the session offset (`+00`, `+05:30`, `-03:00:00`).
 const TIMESTAMPTZ_TEXT_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?([+-]\d{2}(:\d{2}){0,2})?$/;
+// A non-negative offset into a row (a sub-row resume point), at most nine digits.
+const INT_RE = /^\d{1,9}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const KEY_PART_RE: Record<KeyPart, RegExp> = {
   timestamp: TIMESTAMP_TEXT_RE,
   timestamptz: TIMESTAMPTZ_TEXT_RE,
   uuid: UUID_RE,
+  int: INT_RE,
 };
 
 /** base64url JSON array of the last emitted row's key texts. */

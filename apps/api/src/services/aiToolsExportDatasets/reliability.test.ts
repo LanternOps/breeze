@@ -283,9 +283,9 @@ describe('reliability_events', () => {
     expect(r.notes).toContain('reliability_events can list one event more than once; drop duplicates on eventKey.');
   });
 
-  it('reads pageSize/10 history rows per page (limit 51 at pageSize 500), desc keyset on collected_at', async () => {
+  it('reads pageSize/50 history rows per page (limit 11 at pageSize 500), desc keyset on collected_at', async () => {
     const { sql, params } = await firstQuery(reliabilityEventsAdapter, req({}));
-    expect(params).toContain(51);
+    expect(params).toContain(11);
     expect(sql).toMatch(/order by .*"collected_at" desc, .*"id" desc/i);
     expect(sql).toMatch(/"device_id" = ANY\(\$\d+::uuid\[\]\)/);
   });
@@ -308,5 +308,57 @@ describe('reliability_events', () => {
     const bad = req({ timeRange: { start: '2026-01-01T00:00:00Z', end: '2026-11-01T00:00:00Z' } });
     await expect(reliabilityEventsAdapter.createPager(bad)).rejects.toMatchObject({ code: 'invalid_time_range' });
     expect(exportDeviceSet).not.toHaveBeenCalled();
+  });
+
+  it('hashes the dedup key: no raw name, error code or path, equal for equal events', async () => {
+    const hang = { processName: 'C:\\Users\\jdoe\\app.exe', timestamp: '2026-11-09T02:00:00Z', duration: 3, resolved: true };
+    const svc = { serviceName: 'S', timestamp: '2026-11-09T02:00:00Z', errorCode: 'password=hunter2', recovered: false };
+    const mk = (hid: string) => eventsHistory(hid, { crashEvents: [], appHangs: [hang], serviceFailures: [svc], hardwareErrors: [] });
+    const rows = await allRows(reliabilityEventsAdapter, [mk(H1), mk(H2)]);
+    expect(rows).toHaveLength(4);
+    for (const r of rows) {
+      expect(r.eventKey).toMatch(/^[0-9a-f]{32}$/);
+      expect(String(r.eventKey)).not.toMatch(/jdoe|hunter2/);
+    }
+    expect(rows[0]!.eventKey).toBe(rows[2]!.eventKey);
+    expect(rows[1]!.eventKey).toBe(rows[3]!.eventKey);
+    expect(rows[0]!.eventKey).not.toBe(rows[1]!.eventKey);
+  });
+
+  it('bounds events per page and resumes mid-row from a sub-row cursor', async () => {
+    const crashEvents = Array.from({ length: 2500 }, (_, n) => ({
+      type: 'bsod', timestamp: new Date(Date.UTC(2026, 10, 9, 0, 0, 0) + n * 1000).toISOString(),
+    }));
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValue([eventsHistory(H1, { crashEvents, appHangs: [], serviceFailures: [], hardwareErrors: [] })]);
+    const pager = await reliabilityEventsAdapter.createPager(req({}));
+    const p1 = await pager(null);
+    expect(p1.rows).toHaveLength(2000);
+    expect(p1.nextCursor).not.toBeNull();
+    const p2 = await pager(p1.nextCursor);
+    expect(p2.rows).toHaveLength(500);
+    expect(p2.nextCursor).toBeNull();
+    const stamps = [...p1.rows, ...p2.rows].map((r) => r.timestamp);
+    expect(stamps).toEqual(crashEvents.map((e) => new Date(e.timestamp).toISOString()));
+    // the resumed query includes the partially consumed row (<=, not <)
+    expect(compiled(1).sql).toMatch(/\(.*\) <= \(\$\d+::timestamp, \$\d+::uuid\)/);
+    expect(compiled(0).sql).not.toMatch(/<= \(\$\d+::timestamp/);
+  });
+
+  it('counts window-filtered events toward the offset so resume stays aligned', async () => {
+    const old = Array.from({ length: 1500 }, () => ({ type: 'bsod', timestamp: '2026-01-01T00:00:00Z' }));
+    const fresh = Array.from({ length: 700 }, (_, n) => ({ type: 'bsod', timestamp: new Date(Date.UTC(2026, 10, 9) + n * 1000).toISOString() }));
+    exportDeviceSet.mockResolvedValue(scope([D1]));
+    runExportQuery.mockResolvedValue([eventsHistory(H1, { crashEvents: [...old, ...fresh], appHangs: [], serviceFailures: [], hardwareErrors: [] })]);
+    const pager = await reliabilityEventsAdapter.createPager(req({}, { pageSize: 100 })); // budget 400
+    const out: Array<Record<string, unknown>> = [];
+    let cursor: string | null = null;
+    let guard = 0;
+    do {
+      const page: { rows: Array<Record<string, unknown>>; nextCursor: string | null } = await pager(cursor);
+      out.push(...page.rows);
+      cursor = page.nextCursor;
+    } while (cursor && ++guard < 20);
+    expect(out.map((r) => r.timestamp)).toEqual(fresh.map((e) => new Date(e.timestamp).toISOString()));
   });
 });
