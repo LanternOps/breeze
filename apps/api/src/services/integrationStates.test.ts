@@ -169,6 +169,22 @@ describe('connection health verdicts (W2 Sources table)', () => {
     ['backup stuck running', backupProviderHealth({ isActive: true, status: 'connected', lastSyncStatus: 'running', stale: true }), stale],
     ['backup reauth beats stale', backupProviderHealth({ isActive: true, status: 'reauth_required', lastSyncStatus: 'error', stale: true }), permanent('reauth_required')],
     ['backup error beats stale', backupProviderHealth({ isActive: true, status: 'connected', lastSyncStatus: 'error', stale: true }), transient('sync_failed')],
+    // #9127 PR A: EDR, accounting, ticket mailbox.
+    ['edr stale', edr({ stale: true }), stale],
+    ['edr stale while a stream runs', edr({ lastDetectionSyncStatus: 'running', stale: true }), stale],
+    ['edr stream error beats stale', edr({ lastInventorySyncStatus: 'error', stale: true }), transient('sync_failed')],
+    ['edr reauth beats stale', edr({ status: 'reauth_required', stale: true }), permanent('reauth_required')],
+    ['edr inactive and stale', edr({ isActive: false, stale: true }), retired],
+    ['edr running, not stale', edr({ lastInventorySyncStatus: 'running', stale: false }), unknown],
+    ['accounting stale', accountingHealth({ status: 'connected', stale: true }), stale],
+    ['accounting connect in progress is not stale', accountingHealth({ status: 'pending_tenant', stale: true }), unknown],
+    ['accounting reauth beats stale', accountingHealth({ status: 'reauth_required', stale: true }), permanent('reauth_required')],
+    ['accounting fresh', accountingHealth({ status: 'connected', stale: false }), healthy],
+    ['mailbox stale', ticketMailboxHealth({ status: 'connected', consecutiveTransientFailures: 0, stale: true }), stale],
+    ['mailbox failing polls beat stale', ticketMailboxHealth({ status: 'connected', consecutiveTransientFailures: 5, stale: true }), transient('poll_failing')],
+    ['mailbox reauth beats stale', ticketMailboxHealth({ status: 'reauth_required', consecutiveTransientFailures: 0, stale: true }), permanent('reauth_required')],
+    ['mailbox disabled and stale', ticketMailboxHealth({ status: 'disabled', consecutiveTransientFailures: 0, stale: true }), retired],
+    ['mailbox pending consent is not stale', ticketMailboxHealth({ status: 'pending_consent', consecutiveTransientFailures: 0, stale: true }), unknown],
   ])('staleness: %s', (_name, actual, expected) => expect(actual).toEqual(expected));
 
   it('stale threshold is three intervals, at least an hour', () => {

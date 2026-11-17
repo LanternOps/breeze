@@ -90,7 +90,7 @@ describe('sync staleness (W4)', () => {
 
   const sqlOf = (q: unknown) => new PgDialect().sqlToQuery((q as { getSQL(): SQL }).getSQL());
   it.each([
-    [huntressSource, 60], [sentinelOneSource, 60], [pax8Source, 4320], [unifiSource, 90],
+    [huntressSource, 60], [sentinelOneSource, 60], [pax8Source, 4320], [unifiSource, 90], [ticketMailboxSource, 60],
   ] as const)('%#: the broken query carries the stale arm (%s minutes)', (source, minutes) => {
     const q = sqlOf(source.brokenQuery(NOW));
     expect(q.sql).toContain(`make_interval(mins => ${minutes})`);
@@ -99,6 +99,7 @@ describe('sync staleness (W4)', () => {
   it.each([
     ['pax8', pax8Source, true], ['backupProvider', backupProviderSource, true],
     ['huntress', huntressSource, false], ['sentinelOne', sentinelOneSource, false], ['unifi', unifiSource, false],
+    ['edr', edrSource, true], ['accounting', accountingSource, true], ['ticketMailbox', ticketMailboxSource, true],
   ] as const)('%s: stale arm casts the NOW param to the column type (timestamptz=%s)', (_n, source, tz) => {
     const text = sqlOf(source.brokenQuery(NOW)).sql;
     if (tz) {
@@ -110,6 +111,37 @@ describe('sync staleness (W4)', () => {
   });
   it('backup: the stale threshold follows each row\'s own interval', () => {
     expect(sqlOf(backupProviderSource.brokenQuery(NOW)).sql).toMatch(/make_interval\(mins => GREATEST\(3 \* "backup_provider_connections"\."sync_interval_minutes", 60\)\)/);
+  });
+
+  // #9127 PR A.
+  it('edr: each stream is stale past three of its own effective intervals, 60 minutes when unplanned', () => {
+    const text = sqlOf(edrSource.brokenQuery(NOW)).sql;
+    expect(text).toContain('COALESCE("edr_connections"."last_inventory_sync_at", "edr_connections"."created_at")');
+    expect(text).toContain('make_interval(mins => GREATEST(3 * COALESCE("edr_connections"."effective_inventory_interval_minutes", 60), 60))');
+    expect(text).toContain('COALESCE("edr_connections"."last_detection_sync_at", "edr_connections"."created_at")');
+    expect(text).toContain('make_interval(mins => GREATEST(3 * COALESCE("edr_connections"."effective_detection_interval_minutes", 60), 60))');
+    expect(text).toContain(`"edr_connections"."status" = 'connected'`);
+  });
+  it('accounting: only reconciled, connected connections with a payment switch on; daily-budget providers get 72 hours', () => {
+    const text = sqlOf(accountingSource.brokenQuery(NOW)).sql;
+    expect(text).toContain(`"accounting_connections"."provider" IN ('quickbooks', 'xero')`);
+    expect(text).toContain('("accounting_connections"."pull_payments" OR "accounting_connections"."push_payments")');
+    expect(text).toContain(`make_interval(mins => CASE WHEN "accounting_connections"."provider" IN ('xero') THEN 4320 ELSE 60 END)`);
+    expect(text).toContain('COALESCE("accounting_connections"."last_reconcile_at", "accounting_connections"."created_at")');
+  });
+  it('edr, accounting and mailbox: a stale connection is sync_stale with no stale error text', () => {
+    const edrRow = { id: ID, partnerId: P, name: 'GZ', provider: 'gravityzone', isActive: true, status: 'connected', lastInventorySyncStatus: 'success', lastInventorySyncError: 'an old error', lastDetectionSyncStatus: 'success', lastDetectionSyncError: null, createdAt: OLD, stale: true };
+    expect(edrObservation(edrRow, NOW)).toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null });
+    expect(edrObservation({ ...edrRow, lastDetectionSyncStatus: 'running' }, NOW).condition).toBe('sync_stale');
+    const acct = { id: ID, partnerId: P, provider: 'quickbooks', status: 'connected', lastError: null, createdAt: OLD, stale: true };
+    expect(accountingObservation(acct, NOW)).toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null });
+    expect(ticketMailboxObservation({ id: ID, partnerId: P, mailboxAddress: 'support@example.com', status: 'connected', consecutiveTransientFailures: 0, createdAt: OLD, stale: true }, NOW))
+      .toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null });
+  });
+  it('accounting: a stale connection reports its current reconcile-run error, and no other text', () => {
+    const acct = { id: ID, partnerId: P, provider: 'quickbooks', status: 'connected', createdAt: OLD, stale: true };
+    expect(accountingObservation({ ...acct, lastError: 'Payment pull: 2 of 9 items failed' }, NOW).detail).toBe('Payment pull: 2 of 9 items failed');
+    expect(accountingObservation({ ...acct, lastError: 'QuickBooks refresh token expired' }, NOW).detail).toBeNull();
   });
 });
 
@@ -131,7 +163,7 @@ describe('vendor sources', () => {
     expect(backupProviderObservation({ ...backup, lastSyncStatus: 'running', lastSyncError: null }, NOW).state).toBe('unknown');
   });
 
-  const edr = { id: ID, partnerId: P, name: '', provider: 'gravityzone', isActive: true, status: 'connected', lastInventorySyncStatus: 'success', lastInventorySyncError: null, lastDetectionSyncStatus: 'error', lastDetectionSyncError: 'detections: 503 upstream', createdAt: OLD };
+  const edr = { id: ID, partnerId: P, name: '', provider: 'gravityzone', isActive: true, status: 'connected', lastInventorySyncStatus: 'success', lastInventorySyncError: null, lastDetectionSyncStatus: 'error', lastDetectionSyncError: 'detections: 503 upstream', createdAt: OLD, stale: false };
   it('edr: reports the errored stream text and falls back to the provider label', () => {
     expect(edrObservation(edr, NOW)).toMatchObject({ state: 'broken', detail: 'detections: 503 upstream', fixHref: '/integrations#edr' });
     expect(edrObservation(edr, NOW).displayName).not.toBe('');
@@ -140,7 +172,7 @@ describe('vendor sources', () => {
 
 describe('accounting and mailbox', () => {
   it('accounting: the fix link follows the provider; billing:manage repairs', () => {
-    const r = { id: ID, partnerId: P, provider: 'xero', status: 'reauth_required', lastError: 'Xero refresh token expired', createdAt: OLD };
+    const r = { id: ID, partnerId: P, provider: 'xero', status: 'reauth_required', lastError: 'Xero refresh token expired', createdAt: OLD, stale: false };
     expect(accountingObservation(r, NOW)).toMatchObject({
       state: 'broken', severity: 'permanent', condition: 'reauth_required', displayName: 'Xero', fixHref: '/integrations#xero',
       viewPermission: { resource: 'accounting', action: 'read' }, repairPermission: { resource: 'billing', action: 'manage' },
@@ -148,7 +180,7 @@ describe('accounting and mailbox', () => {
     expect(accountingObservation({ ...r, provider: 'quickbooks' }, NOW)).toMatchObject({ displayName: 'QuickBooks', fixHref: '/integrations#quickbooks' });
   });
 
-  const box = { id: ID, partnerId: P, mailboxAddress: 'support@example.com', status: 'error', consecutiveTransientFailures: 0, createdAt: OLD };
+  const box = { id: ID, partnerId: P, mailboxAddress: 'support@example.com', status: 'error', consecutiveTransientFailures: 0, createdAt: OLD, stale: false };
   it('mailbox: never surfaces raw upstream text and links to the mailbox card', () => {
     expect(ticketMailboxObservation(box, NOW)).toMatchObject({
       state: 'broken', condition: 'mailbox_error', detail: null, orgId: null, fixHref: '/settings/ticketing#email',
