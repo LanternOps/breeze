@@ -242,7 +242,7 @@ describe("MonitoringIntegration — connection test outcome", () => {
     );
   }
 
-  it("toasts and shows a wait message when the test is rate limited", async () => {
+  it("toasts and shows the rate-limit message when the test is throttled", async () => {
     await clickPrometheusTest(
       testResponse(
         { success: false, code: "RATE_LIMITED", error: "Too many test requests. Try again in 42 seconds." },
@@ -265,6 +265,16 @@ describe("MonitoringIntegration — connection test outcome", () => {
     expect(
       await screen.findByText("Prometheus rejected the request (HTTP 401)"),
     ).toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it("returns to idle without a message when the session expired", async () => {
+    await clickPrometheusTest(testResponse({ error: "Unauthorized" }, 401));
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /Test connection/ })[0]).toBeEnabled(),
+    );
+    expect(screen.queryByText("Unauthorized")).not.toBeInTheDocument();
     expect(showToastMock).not.toHaveBeenCalled();
   });
 });

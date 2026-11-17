@@ -31,15 +31,18 @@ vi.mock('../services/urlSafety', () => ({
 // a test turns a bucket off to see the 429.
 const rateLimiterMock = vi.hoisted(() => vi.fn());
 const fakeRedis = vi.hoisted(() => ({ fake: 'redis' }));
+const getRedisMock = vi.hoisted(() => vi.fn());
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: (...args: unknown[]) => rateLimiterMock(...args),
 }));
 vi.mock('../services/redis', () => ({
-  getRedis: () => fakeRedis,
+  getRedis: () => getRedisMock(),
 }));
 
-const allowAllTests = () =>
+const allowAllTests = () => {
+  getRedisMock.mockReturnValue(fakeRedis);
   rateLimiterMock.mockImplementation(async () => ({ allowed: true, remaining: 1, resetAt: new Date(Date.now() + 60_000) }));
+};
 
 // Real crypto by default; a test can observe or fail decryption (#12054).
 const decryptSecretSpy = vi.hoisted(() => vi.fn());
@@ -777,8 +780,8 @@ describe('integration test actions are throttled and do not save settings (#1210
       expect(call[5]).toEqual({ refundOnReject: true });
     }
     // Generous enough that a person clicking Test a few times never hits it.
-    expect(rateLimiterMock.mock.calls[0]![2]).toBeGreaterThanOrEqual(5);
-    expect(rateLimiterMock.mock.calls[1]![2]).toBeGreaterThanOrEqual(rateLimiterMock.mock.calls[0]![2]);
+    expect(rateLimiterMock.mock.calls[0]![2]).toBe(5);
+    expect(rateLimiterMock.mock.calls[1]![2]).toBe(10);
   });
 
   it.each([
@@ -841,6 +844,39 @@ describe('integration test actions are throttled and do not save settings (#1210
 
     expect(res.status).toBe(200);
     expect(rateLimiterMock).not.toHaveBeenCalled();
+  });
+
+  it('does not charge a test that could not send anything', async () => {
+    // No webhook to send to.
+    expect((await request('discord', { enabled: true, webhookUrl: '', test: true })).status).toBe(400);
+    // Nothing deliverable for Slack.
+    expect((await request('slack', { enabled: true, test: true })).status).toBe(422);
+    // A masked monitoring credential with nothing stored never resolves.
+    expect((await request('monitoring/test', {
+      provider: 'grafana',
+      config: { url: 'https://grafana.unstored.example.test', apiKey: '********' },
+    })).status).toBe(400);
+
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 503, not a rate limit, when the limiter store is unavailable', async () => {
+    getRedisMock.mockReturnValue(null);
+
+    const res = await request('discord', { enabled: true, webhookUrl: discordWebhook, test: true });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.code).toBeUndefined();
+    expect(body.error).not.toMatch(/too many/i);
+    expect(rateLimiterMock).not.toHaveBeenCalled();
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'integration.discord.test',
+      details: { outcome: 'throttle_unavailable' },
+    }));
   });
 
   it('does not save the submitted settings on a test request', async () => {

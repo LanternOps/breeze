@@ -144,6 +144,21 @@ async function throttleTestAction(
 ): Promise<Response | null> {
   const auth = c.get('auth') as AuthContext;
   const redis = getRedis();
+  if (!redis) {
+    // rateLimiter fails closed without Redis. Say so rather than calling an
+    // outage "too many requests" (and auditing it as a throttled user).
+    writeRouteAudit(c, {
+      orgId,
+      action: audit.action,
+      resourceType: 'integration',
+      resourceName: audit.resourceName,
+      details: { outcome: 'throttle_unavailable' },
+    });
+    return c.json({
+      success: false,
+      error: 'Test notifications are temporarily unavailable. Try again shortly.',
+    }, 503);
+  }
   for (const bucket of TEST_ACTION_BUCKETS) {
     const subject = bucket.scope === 'user' ? auth.user.id : orgId;
     // refundOnReject: a rejected click does not extend the wait, so honouring

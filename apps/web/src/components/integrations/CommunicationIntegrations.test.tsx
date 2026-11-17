@@ -135,7 +135,7 @@ describe('CommunicationIntegrations', () => {
   });
 
   // #12102: test actions are throttled; a throttled click must say so.
-  it('toasts and shows a wait message when the Discord test is rate limited', async () => {
+  it('toasts and shows the rate-limit message when the Discord test is throttled', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
     fetchWithAuthMock.mockResolvedValueOnce(
       makeResponse({
@@ -152,5 +152,19 @@ describe('CommunicationIntegrations', () => {
     expect(toast.type).toBe('error');
     expect(toast.message).toMatch(/too many requests/i);
     expect(await screen.findByText(toast.message)).toBeInTheDocument();
+  });
+
+  it('shows nothing for a test whose session expired (the auth redirect handles it)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({}, 404));
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ error: 'Unauthorized' }, 401));
+
+    await clickDiscordTest();
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'Test notification' }).at(-1)).toBeEnabled(),
+    );
+    expect(screen.queryByText('Unauthorized')).not.toBeInTheDocument();
+    expect(screen.queryByText('Discord test notification failed.')).not.toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 });
