@@ -47,6 +47,13 @@ export type PostureControls = {
   anyAvCoveragePct?: number | null;
   /** In-scope devices Breeze has no endpoint evidence for (excluded from anyAvCoveragePct). */
   anyAvUnknownCount?: number;
+  /**
+   * Devices with protection evidence (#12044). Its presence marks a snapshot
+   * whose `unprotectedCount` covers assessed devices only. Legacy snapshots
+   * lack it: there `unprotectedCount` also folded in devices with no evidence,
+   * so the renderer must not subtract `anyAvUnknownCount` from it again.
+   */
+  avAssessedCount?: number;
   unprotectedCount?: number;
   avDefinitionsCurrentPct?: number | null;
   encryptionPct?: number | null;
@@ -89,6 +96,13 @@ export type PostureSummary = {
   org?: { id?: string; name?: string };
   generatedAt?: string;
   deviceCount?: number;
+  /**
+   * Managed devices of the org that the report's site filter left out, so the
+   * in-scope count reconciles with the org's other reports. Set only for an
+   * unrestricted (org-wide) caller: a site-restricted one is never told about
+   * devices outside its sites. Absent on legacy snapshots.
+   */
+  excludedBySiteFilterCount?: number;
   controls?: PostureControls;
   privilegedAccess?: PosturePrivilegedAccess;
   securityProducts?: PostureProduct[];
@@ -121,6 +135,7 @@ export const POSTURE_DEVICE_ROW_CSV_LABELS = {
   openVulnCritical: 'Critical vulnerabilities',
   openVulnHigh: 'High vulnerabilities',
   cisPassRate: 'CIS pass rate (%)',
+  lastSeenAt: 'Last seen',
   posture: 'Posture',
 } as const;
 
