@@ -76,6 +76,9 @@ import {
 } from './db-utils';
 import { approvalRoutes } from '../../routes/approvals';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
+import { aiSessions } from '../../db/schema/ai';
+import { createSessionPreToolUse, settleApprovalWaits } from '../../services/aiAgentSdk';
+import type { ActiveSession } from '../../services/streamingSessionManager';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -517,5 +520,214 @@ describe('#12098 — Tier-3 decision in the last seconds before the approval dea
     expect(await closeOutUndecidedIntent(randomUUID())).toEqual({ kind: 'missing' });
     // No retry backoff (250 ms + 500 ms).
     expect(Date.now() - started).toBeLessThan(700);
+  });
+
+  // Review follow-up: the chat gate itself (`createSessionPreToolUse`) on a
+  // real database. An approval lands in the wait's sleep and the wait is then
+  // ended early (teardown, or a new message / interrupt). The dying turn must
+  // not take the inline `approved -> executing` claim: on teardown the SDK
+  // never calls the tool (the intent would sit in `executing` until the
+  // stale-execution reaper fails it), and on a new message the tool would run
+  // in a turn the user has moved past. The release worker runs it, once.
+  describe.each([
+    ['session teardown', (session: ActiveSession) => session.abortController.abort()],
+    ['a new user message or interrupt', (session: ActiveSession) => { settleApprovalWaits(session); }],
+  ])('an approval that lands just before the wait is ended early (%s)', (_label, endWait) => {
+    runDb('is handed to the release worker, executed exactly once, never left executing, never reported expired', async () => {
+      const s = await seedScenario();
+      const [aiSession] = await withSystemDbAccessContext(() =>
+        db
+          .insert(aiSessions)
+          .values({ orgId: s.orgId, userId: s.requester.id, model: 'claude-sonnet-4-5-20250929' })
+          .returning({ id: aiSessions.id }),
+      );
+      const session = {
+        breezeSessionId: aiSession!.id,
+        orgId: s.orgId,
+        auth: orgAuth(s.requester, s.orgId, s.partnerId, s.requesterRoleId),
+        approvalMode: 'per_step',
+        isPaused: false,
+        eventBus: { publish: () => undefined },
+        abortController: new AbortController(),
+        activePlanId: null,
+        approvedPlanSteps: new Map(),
+        currentPlanStepIndex: 0,
+        toolUseIdQueue: ['tool-use-1'],
+        auditSnapshot: null,
+        allowedTools: undefined,
+        // Long enough that only the early end stops the wait.
+        approvalWaitBudgetMs: 60_000,
+      } as unknown as ActiveSession;
+
+      // At the wait's first sleep: approve through the real route, then end
+      // the wait, then let the sleep finish. The wait returns without
+      // another poll (it was ended), so the close-out is what finds the
+      // approval.
+      const realSetTimeout = globalThis.setTimeout;
+      let fired = false;
+      let routeStatus = 0;
+      vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+        cb: (...args: unknown[]) => void,
+        ms?: number,
+        ...args: unknown[]
+      ) => {
+        if (!fired && ms === 500) {
+          fired = true;
+          return realSetTimeout(() => {
+            void (async () => {
+              const [row] = await withSystemDbAccessContext(() =>
+                db
+                  .select({ id: approvalRequests.id })
+                  .from(approvalRequests)
+                  .innerJoin(actionIntents, eq(actionIntents.id, approvalRequests.intentId))
+                  .where(and(eq(actionIntents.orgId, s.orgId), eq(actionIntents.status, 'pending_approval'))),
+              );
+              routeStatus = (await decideViaRoute(s, row!.id, 'approve')).status;
+              endWait(session);
+            })().finally(() => cb(...args));
+          }, ms);
+        }
+        return realSetTimeout(cb, ms, ...args);
+      }) as typeof setTimeout);
+
+      const result = await createSessionPreToolUse(session)(TOOL_NAME, {
+        userEmail: 'target@customer.example',
+        reason: 'offboarding',
+      });
+      vi.restoreAllMocks();
+
+      expect(fired).toBe(true);
+      expect(routeStatus).toBe(200);
+      const [intentRow] = await withSystemDbAccessContext(() =>
+        db.select({ id: actionIntents.id }).from(actionIntents).where(eq(actionIntents.orgId, s.orgId)),
+      );
+      const intentId = intentRow!.id;
+
+      // The turn's result: a handoff, not an inline release, not an expiry.
+      expect(result).toMatchObject({ allowed: false, handoff: expect.anything() });
+      expect(JSON.stringify(result)).not.toMatch(/re-issue/i);
+      expect(JSON.stringify(result)).not.toMatch(/expired/i);
+      // The dying turn took no claim.
+      expect((await readIntent(intentId)).status).toBe('approved');
+      expect(h.usersUpdate).not.toHaveBeenCalled();
+
+      // The release worker runs it once; a second delivery finds nothing.
+      await releaseApprovedIntent(intentId);
+      await releaseApprovedIntent(intentId);
+      expect(h.usersUpdate).toHaveBeenCalledTimes(1);
+      expect((await readIntent(intentId)).status).toBe('completed');
+      expect(await outboxEvents(intentId)).not.toContain('intent_expired');
+    });
+  });
+
+  // Review follow-up: approve and the close-out with the intent row lock
+  // CONTENDED. Another transaction holds the intent `FOR UPDATE`; both the
+  // real approve route (which locks the intent first) and the close-out queue
+  // behind it. Postgres grants the row lock in queue order, so the one queued
+  // first wins; the other must see that and agree.
+  describe('approve and close-out queued on a held intent row lock', () => {
+    /** Holds `action_intents` row `intentId` FOR UPDATE until `release()`. */
+    async function holdIntentRowLock(intentId: string): Promise<{ pid: number; release: () => Promise<void> }> {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      let ready!: (pid: number) => void;
+      const readyP = new Promise<number>((resolve) => { ready = resolve; });
+      const done = getTestDb().transaction(async (tx) => {
+        const pidRows = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+        const pid = Number((pidRows as unknown as Array<{ pid: number }>)[0]!.pid);
+        await tx.execute(sql`SELECT id FROM action_intents WHERE id = ${intentId} FOR UPDATE`);
+        ready(pid);
+        await released;
+      });
+      const pid = await readyP;
+      return { pid, release: async () => { release(); await done; } };
+    }
+
+    /** Waits until `n` backends are queued on a lock rooted at `holderPid` (directly or behind each other). */
+    async function waitForLockWaiters(holderPid: number, n: number): Promise<void> {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const rows = await getTestDb().execute(sql`
+          WITH RECURSIVE waiters AS (
+            SELECT pid FROM pg_stat_activity WHERE ${holderPid}::int = ANY(pg_blocking_pids(pid))
+            UNION
+            SELECT a.pid FROM pg_stat_activity a JOIN waiters w ON w.pid = ANY(pg_blocking_pids(a.pid))
+          )
+          SELECT count(*)::int AS n FROM waiters
+        `);
+        const count = Number((rows as unknown as Array<{ n: number }>)[0]!.n);
+        if (count >= n) return;
+        if (Date.now() >= deadline) throw new Error(`only ${count} of ${n} lock waiters queued`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+
+    async function pastDeadlineIntentWithLiveApprovalRow(s: Scenario) {
+      const { intentId, approvalRowId } = await createIntent(s);
+      // The intent's deadline (what the close-out reads) has passed; the
+      // approval row's own deadline (what the route reads) has not, so the
+      // only thing that can refuse the approve is the close-out's expiry.
+      await setApprovalDeadline(intentId, -1_000);
+      await withSystemDbAccessContext(() =>
+        db
+          .update(approvalRequests)
+          .set({ expiresAt: new Date(Date.now() + 60_000) })
+          .where(eq(approvalRequests.intentId, intentId)),
+      );
+      return { intentId, approvalRowId };
+    }
+
+    runDb('approve queued first wins: the close-out reports approved, nothing expires, the worker runs it once', async () => {
+      const s = await seedScenario();
+      const { intentId, approvalRowId } = await pastDeadlineIntentWithLiveApprovalRow(s);
+
+      const lock = await holdIntentRowLock(intentId);
+      let approve!: Promise<Response>;
+      let closeOut!: ReturnType<typeof closeOutUndecidedIntent>;
+      try {
+        approve = decideViaRoute(s, approvalRowId, 'approve');
+        await waitForLockWaiters(lock.pid, 1);
+        closeOut = closeOutUndecidedIntent(intentId);
+        await waitForLockWaiters(lock.pid, 2);
+      } finally {
+        await lock.release();
+      }
+
+      expect((await approve).status).toBe(200);
+      expect(await closeOut).toEqual({ kind: 'decided', status: 'approved' });
+      expect((await readIntent(intentId)).status).toBe('approved');
+      expect(await outboxEvents(intentId)).not.toContain('intent_expired');
+
+      await releaseApprovedIntent(intentId);
+      expect(h.usersUpdate).toHaveBeenCalledTimes(1);
+      expect((await readIntent(intentId)).status).toBe('completed');
+    });
+
+    runDb('close-out queued first wins: expired for good, the approve is refused, nothing runs', async () => {
+      const s = await seedScenario();
+      const { intentId, approvalRowId } = await pastDeadlineIntentWithLiveApprovalRow(s);
+
+      const lock = await holdIntentRowLock(intentId);
+      let approve!: Promise<Response>;
+      let closeOut!: ReturnType<typeof closeOutUndecidedIntent>;
+      try {
+        closeOut = closeOutUndecidedIntent(intentId);
+        await waitForLockWaiters(lock.pid, 1);
+        approve = decideViaRoute(s, approvalRowId, 'approve');
+        await waitForLockWaiters(lock.pid, 2);
+      } finally {
+        await lock.release();
+      }
+
+      expect(await closeOut).toEqual({ kind: 'expired' });
+      expect((await approve).status).not.toBe(200);
+      expect((await readIntent(intentId)).status).toBe('expired');
+      expect(await readApprovalRowStatus(approvalRowId)).toBe('expired');
+      expect((await outboxEvents(intentId)).filter((e) => e === 'intent_expired')).toHaveLength(1);
+
+      await releaseApprovedIntent(intentId);
+      expect(h.usersUpdate).not.toHaveBeenCalled();
+      expect((await readIntent(intentId)).status).toBe('expired');
+    });
   });
 });

@@ -2759,6 +2759,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           let intentOutcome: AiApprovalOutcome = 'ended';
           // #12098: how an undecided wait was settled (see below).
           let closeOut: IntentCloseOut | null = null;
+          // #12098: the wait was ended early (teardown, a new user message or
+          // an interrupt) rather than running out or seeing a decision.
+          let waitEndedEarly = false;
           try {
             const approvalWait = beginApprovalWait(session);
             try {
@@ -2786,6 +2789,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               closeOut = await closeOutUndecidedIntent(intent.id);
               if (closeOut.kind === 'decided') decisionStatus = closeOut.status;
             }
+            // Read after the close-out, so an end that arrived while it ran
+            // counts too.
+            waitEndedEarly = approvalWait.signal.aborted;
             intentOutcome = closeOut?.kind === 'expired'
               ? 'expired'
               : closeOut?.kind === 'unknown' || closeOut?.kind === 'missing'
@@ -2796,10 +2802,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             resolveApprovalCard(session, approvalExec.id, intentOutcome);
           }
 
-          // #12098: the close-out expired it, so it is final — no later
-          // approval can release it — and a re-issue cannot run it twice.
+          // #12098: the close-out expired it, or lost to the 30 s sweep that
+          // expired it, so it is final — no later approval can release it —
+          // and a re-issue cannot run it twice. Both routes read the same.
           // (#3090: past the deadline this is never "still pending".)
-          if (closeOut?.kind === 'expired') {
+          if (
+            closeOut?.kind === 'expired'
+            || (closeOut?.kind === 'decided' && closeOut.status === 'expired')
+          ) {
             return await failMatchedPlanStep(
               {
                 allowed: false,
@@ -2883,6 +2893,18 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           }
 
           // decisionStatus is one of approved/executing/completed/failed here.
+
+          // #12098: the wait was ended early, and the close-out then found an
+          // approval that landed just before the end. This turn is going away
+          // (teardown: the SDK will not call the tool, so a claim here would
+          // leave the intent in `executing` until the stale-execution reaper
+          // fails it) or the user has moved past it (a new message: the tool
+          // would run inside a turn that no longer wants it). Do not claim:
+          // hand it to the release worker, which runs it once, as it does
+          // for any wait ended before a decision.
+          if (waitEndedEarly && closeOut?.kind === 'decided') {
+            return await releaseHandoffDenial(intent.id, approvalExec.id);
+          }
 
           // BEFORE the CAS, not after: some tools must be released only by the
           // durable worker, because their safety guarantees live in the

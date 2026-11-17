@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 // this record, so the terminal return of a won release is asserted against it.
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
-import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson, settleApprovalWaits } from './aiAgentSdk';
 import { flushDeferredToolFailureFlags } from './aiSessionAutoFlag';
 import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
@@ -2683,6 +2683,55 @@ describe('createSessionPreToolUse', () => {
 
         expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
         expect(mockTransitionIntent).not.toHaveBeenCalled();
+      });
+
+      it('an expiry the 30 s sweep won carries the same re-issue hint as the close-out expiry', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'expired' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toEqual({
+          allowed: false,
+          error:
+            'Approval request expired before a decision was made; the action was not executed. Re-issue the tool call if it is still needed.',
+        });
+        expect(mockTransitionIntent).not.toHaveBeenCalled();
+      });
+
+      // Review follow-up: a wait that was ended early (teardown, interrupt,
+      // new user message) must not take the inline claim even when an
+      // approval landed just before it ended. On teardown the SDK never calls
+      // the tool, so a claimed intent would sit in `executing`; on a new
+      // message the tool would run in a turn the user has moved past. The
+      // release worker runs it instead.
+      it.each([
+        ['session teardown', (s: ReturnType<typeof makeActiveSession>) => s.abortController.abort()],
+        ['a new user message / interrupt', (s: ReturnType<typeof makeActiveSession>) => settleApprovalWaits(s as any)],
+      ])('an approval found after the wait was ended early (%s) is handed off, never claimed inline', async (_label, endWait) => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'approved' });
+        mockTransitionIntent.mockResolvedValue(true);
+        mockWaitForIntentTerminalOutcome.mockResolvedValueOnce(null);
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+        mockWaitForIntentDecision.mockImplementationOnce(async () => {
+          endWait(session);
+          return 'pending_approval';
+        });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(mockCloseOutUndecidedIntent).toHaveBeenCalledWith('intent-12098');
+        // No approved -> executing claim from the dying turn.
+        expect(mockTransitionIntent).not.toHaveBeenCalledWith(
+          'intent-12098',
+          'approved',
+          'executing',
+          expect.anything(),
+          expect.anything(),
+        );
+        expect(result).toMatchObject({ allowed: false, handoff: expect.anything() });
+        expect(JSON.stringify(result)).not.toMatch(REISSUE);
+        expect(JSON.stringify(result)).not.toMatch(/expired/i);
       });
 
       it('a decision the wait itself saw is not closed out again', async () => {
