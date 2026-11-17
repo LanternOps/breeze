@@ -24,6 +24,8 @@ vi.mock('../aiToolsExportShared', async (importOriginal) => {
   };
 });
 
+import { createHash } from 'node:crypto';
+import { reliabilityEventKey } from '../reliabilityScoring';
 import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter, RELIABILITY_LATE_EVENTS_NOTE } from './reliability';
 
 const NOW = new Date('2026-11-13T12:00:00.000Z');
@@ -463,6 +465,19 @@ describe('reliability_events', () => {
     expect(rows[0]!.eventKey).toBe(rows[2]!.eventKey);
     expect(rows[1]!.eventKey).toBe(rows[3]!.eventKey);
     expect(rows[0]!.eventKey).not.toBe(rows[1]!.eventKey);
+  });
+
+  it('the dedup key is keyed and bound to the export org: no plain hash of the scoring key, stable per org', async () => {
+    // The row also exports the redacted name and error code, so an unkeyed hash
+    // of the scoring key would let a holder confirm a guessed name by hashing it.
+    const hang = { processName: 'C:\\Users\\jdoe\\app.exe', timestamp: '2026-11-09T02:00:00Z', duration: 3, resolved: true };
+    const mk = () => eventsHistory(H1, { crashEvents: [], appHangs: [hang], serviceFailures: [], hardwareErrors: [] });
+    const keyFor = async (orgId: string) => (await allRows(reliabilityEventsAdapter, [mk()], req({}, { orgId })))[0]!.eventKey;
+    const k1 = await keyFor('org-1');
+    expect(k1).toMatch(/^[0-9a-f]{32}$/);
+    expect(k1).not.toBe(createHash('sha256').update(reliabilityEventKey('app_hang', hang)).digest('hex').slice(0, 32));
+    expect(await keyFor('org-1')).toBe(k1);
+    expect(await keyFor('org-2')).not.toBe(k1);
   });
 
   it('bounds events per page and resumes mid-row from a sub-row cursor', async () => {

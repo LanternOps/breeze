@@ -13,7 +13,6 @@
  * Only `import type` from the hub (`aiToolsExportDatasets.ts`), so this file
  * stays out of the hub's import cycle.
  */
-import { createHash } from 'node:crypto';
 import { and, eq, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
@@ -24,6 +23,7 @@ import {
   redactLogFields,
   redactLogMessage,
 } from './logRedaction';
+import { hmacFingerprint } from './secretCrypto';
 import { scrubUrlsInText, scrubUrlsInValue } from '../utils/endpointDisplay';
 import type { DatasetRequest } from './aiToolsExportDatasets';
 import type { ExportPager } from './aiToolsExportWriter';
@@ -314,11 +314,20 @@ export function exportEnum(value: unknown, known: ReadonlySet<string>): string |
 
 /** A stable 32-hex key for an identifier that embeds agent text (a path, a
  *  name, an error code): rows still join and dedupe on it, but none of the
- *  text leaves. Absent → null. */
-export function exportKey(value: unknown): string | null {
+ *  text leaves. It is an HMAC (the server's fingerprint key, via
+ *  `hmacFingerprint`) over the export's org id and the text, so a holder of
+ *  the export cannot confirm a guessed input by hashing it, and two orgs never
+ *  share a key. `orgId` is the export's frozen org (`DatasetRequest.orgId`),
+ *  never model input. Stable within one org and one key generation.
+ *  Absent → null. */
+export function exportKey(orgId: string, value: unknown): string | null {
+  if (!orgId) throw new Error('exportKey requires the export org id');
   if (value === null || value === undefined) return null;
   const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return createHash('sha256').update(text).digest('hex').slice(0, 32);
+  // `fp1:<keyId>:<hex>`: keep the first 32 hex characters of the digest.
+  const fingerprint = hmacFingerprint(`${orgId}\0${text}`);
+  const hex = fingerprint.slice(fingerprint.lastIndexOf(':') + 1);
+  return hex.slice(0, 32);
 }
 
 /** A JSON free-text column, redacted leaf by leaf, emitted as a string so CSV and JSONL carry the same type. */

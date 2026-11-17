@@ -25,6 +25,7 @@ import {
   deviceIdIn,
   noteOn,
   emptyExportPager,
+  exportKey,
 } from './aiToolsExportShared';
 import type { DatasetRequest } from './aiToolsExportDatasets';
 import type { AuthContext } from '../middleware/auth';
@@ -291,5 +292,22 @@ describe('deviceIdIn, noteOn, emptyExportPager', () => {
 
   it('emptyExportPager yields nothing', async () => {
     expect(await emptyExportPager(null)).toEqual({ rows: [], nextCursor: null });
+  });
+});
+
+describe('exportKey', () => {
+  it('is a 32-hex keyed digest bound to the org: stable per org, different across orgs, null when absent', () => {
+    const k = exportKey(id(1), 'service|c:/users/jdoe/x.exe');
+    expect(k).toMatch(/^[0-9a-f]{32}$/);
+    expect(exportKey(id(1), 'service|c:/users/jdoe/x.exe')).toBe(k);
+    expect(exportKey(id(2), 'service|c:/users/jdoe/x.exe')).not.toBe(k);
+    // The separator keeps org and text from running together.
+    expect(exportKey('ab', 'c')).not.toBe(exportKey('a', 'bc'));
+    expect(exportKey(id(1), null)).toBeNull();
+    expect(exportKey(id(1), undefined)).toBeNull();
+  });
+
+  it('refuses to key without an org id rather than emit an unbound key', () => {
+    expect(() => exportKey('', 'x')).toThrow(/org id/);
   });
 });

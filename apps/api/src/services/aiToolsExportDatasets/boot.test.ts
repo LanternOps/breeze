@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { AuthContext } from '../../middleware/auth';
 import type { DatasetAdapter, DatasetRequest } from '../aiToolsExportDatasets';
 import { EXPORT_DATASETS } from '../aiToolsExportDatasetNames';
@@ -154,6 +155,23 @@ describe('boot_performance', () => {
     expect(new Set(out.map((i) => i.itemKey)).size).toBe(3);
     const again = await allRows(bootPerformanceAdapter, [{ ...bootRow(), startupItems: items }]);
     expect((again[0]!.startupItems as Array<Record<string, unknown>>)[0]!.itemKey).toBe(out[0]!.itemKey);
+  });
+
+  it('the item key is keyed and bound to the export org: no plain hash of the id, stable per org', async () => {
+    // The same row exports the redacted path, so an unkeyed hash of the id
+    // would let a holder confirm a guessed user name by hashing candidates.
+    const itemId = 'service|c:/users/jdoe/x.exe';
+    const items = [{ itemId, name: 'x', type: 'service', impactScore: 1 }];
+    const keyFor = async (orgId: string) => {
+      const [row] = await allRows(bootPerformanceAdapter, [{ ...bootRow(), startupItems: items }], req({}, { orgId }));
+      return (row!.startupItems as Array<Record<string, unknown>>)[0]!.itemKey;
+    };
+    const k1 = await keyFor('org-1');
+    expect(k1).toMatch(/^[0-9a-f]{32}$/);
+    expect(k1).not.toBe(createHash('sha256').update(itemId).digest('hex').slice(0, 32));
+    expect(k1).not.toBe(createHash('sha256').update('service|C:\\Users\\jdoe\\x.exe').digest('hex').slice(0, 32));
+    expect(await keyFor('org-1')).toBe(k1);
+    expect(await keyFor('org-2')).not.toBe(k1);
   });
 
   it('an unknown startup item type exports as other, never as free text', async () => {

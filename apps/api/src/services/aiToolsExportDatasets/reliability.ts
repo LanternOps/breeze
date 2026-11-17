@@ -8,7 +8,6 @@
  * site/device-scope contract scans credit a table read only to the named
  * function that also calls `exportDeviceSet`. Do not extract the query.
  */
-import { createHash } from 'node:crypto';
 import { and, desc, eq, gte, lte, sql, type AnyColumn } from 'drizzle-orm';
 import {
   reliabilityCrashEventSchema,
@@ -26,6 +25,7 @@ import {
   exportText,
   exportDeviceSet,
   exportEnum,
+  exportKey,
   keysetBefore,
   keysetPager,
   noteOn,
@@ -377,9 +377,9 @@ async function createReliabilityEventsPager(req: DatasetRequest) {
             duration: cols.duration,
             recovered: cols.recovered,
             detail: cols.detail,
-            // Hashed: the raw scoring key embeds unredacted names, error codes
+            // Keyed per org (exportKey): the raw scoring key embeds unredacted names, error codes
             // and, for an event with no identifying field, the whole event JSON.
-            eventKey: createHash('sha256').update(reliabilityEventKey(eventClass, event)).digest('hex').slice(0, 32),
+            eventKey: exportKey(req.orgId, reliabilityEventKey(eventClass, event)),
           });
         }
       }

@@ -31,7 +31,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 const asNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const asBoolean = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
 
-function startupItemsForExport(value: unknown): Array<Record<string, unknown>> {
+function startupItemsForExport(orgId: string, value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];
   const items = value.filter(isRecord);
   const impact = (item: Record<string, unknown>) => asNumber(item.impactScore) ?? Number.NEGATIVE_INFINITY;
@@ -44,7 +44,7 @@ function startupItemsForExport(value: unknown): Array<Record<string, unknown>> {
       // The server builds `itemId` as `type|path`, lowercased with forward
       // slashes (computeStartupItemId), so it carries the item's path; it is
       // exported only as a stable hash. `name` falls back to the path at ingest.
-      itemKey: exportKey(item.itemId),
+      itemKey: exportKey(orgId, item.itemId),
       name: exportText(item.name, { paths: true }),
       type: exportEnum(item.type, STARTUP_ITEM_TYPES),
       path: exportText(item.path, { paths: true }),
@@ -103,7 +103,7 @@ async function createBootPerformancePager(req: DatasetRequest) {
       desktopReadySeconds: row.desktopReadySeconds,
       totalBootSeconds: row.totalBootSeconds,
       startupItemCount: row.startupItemCount,
-      startupItems: startupItemsForExport(row.startupItems),
+      startupItems: startupItemsForExport(req.orgId, row.startupItems),
     })),
   });
 }
