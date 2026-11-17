@@ -26,11 +26,15 @@ import type {
 import { projectAlertVerdict } from './alertVerdicts';
 import { projectFleetDesign } from './fleetDesignReport';
 import { projectNarrative } from './narrativeReport';
-import { countFindingsToReview } from './runFindings';
+import { countFindingsToReview, truncateWithEllipsis } from './runFindings';
 import { projectSweep } from './sweepFindings';
 import { projectPatch } from './patchPlan';
+import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
+  AI_AGENT_RUN_GOAL_MAX_CHARS,
+  type AiAgentRunAnalysisScopeDto,
+  type AiAgentRunChainStepDto,
   type AiAgentKind,
   type AiAgentMode,
   type AiAgentRunDetailDto,
@@ -131,6 +135,109 @@ export interface RunTraceRunInput {
   queuedAt: Date;
   startedAt: Date | null;
   finishedAt: Date | null;
+  /**
+   * Wisp analysis sessions W06 — the C4 lineage columns. Optional so older
+   * fixtures and callers read as an unchained run.
+   */
+  continuedFromRunId?: string | null;
+  chainRootRunId?: string | null;
+  chainDepth?: number | null;
+  /** The frozen `staged_inputs` jsonb; read defensively by `projectAnalysisScope`. */
+  stagedInputs?: AiAgentRunStagedInputs | null;
+}
+
+/**
+ * Wisp analysis sessions W06 — one row of the chain read in the run-detail
+ * route (`goal` is projected in SQL from `trigger_ref->>'goal'` so the
+ * up-to-4 KB continuation seed never leaves the database).
+ */
+export interface RunTraceChainRowInput {
+  id: string;
+  continuedFromRunId: string | null;
+  chainDepth: number;
+  status: AiAgentRunStatus;
+  costCents: number;
+  computeCents: number | null;
+  goal: string | null;
+  queuedAt: Date;
+}
+
+/** Wisp analysis sessions W06 — the analysis-only reads the route hands `buildRunTrace`. */
+export interface RunTraceAnalysisInput {
+  chainRows: RunTraceChainRowInput[];
+  siteName: string | null;
+}
+
+/**
+ * Trimmed goal capped at `AI_AGENT_RUN_GOAL_MAX_CHARS` including the ellipsis
+ * (the summary-excerpt cap rule); null for a blank or non-string value, which
+ * is what a jsonb `trigger_ref.goal` from an older or corrupt row can be.
+ */
+export function capRunGoal(goal: unknown): string | null {
+  if (typeof goal !== 'string') return null;
+  const trimmed = goal.trim();
+  if (trimmed.length === 0) return null;
+  return truncateWithEllipsis(trimmed, AI_AGENT_RUN_GOAL_MAX_CHARS);
+}
+
+const ANALYSIS_SCOPE_KINDS = new Set(['devices', 'site', 'org']);
+
+/**
+ * The frozen device scope of an analysis run. A run admitted before W02 has no
+ * `scope` key and is read as the explicit device list it was launched with;
+ * a corrupt `scope` is read the same way rather than thrown on. No frozen
+ * devices at all means no scope to show.
+ */
+export function projectAnalysisScope(
+  stagedInputs: AiAgentRunStagedInputs | null | undefined,
+  siteName: string | null,
+): AiAgentRunAnalysisScopeDto | null {
+  if (!stagedInputs || typeof stagedInputs !== 'object') return null;
+  const scope = stagedInputs.scope as Partial<NonNullable<AiAgentRunStagedInputs['scope']>> | undefined;
+  if (
+    scope
+    && typeof scope === 'object'
+    && typeof scope.kind === 'string'
+    && ANALYSIS_SCOPE_KINDS.has(scope.kind)
+    && typeof scope.deviceCount === 'number'
+  ) {
+    const siteId = typeof scope.siteId === 'string' ? scope.siteId : null;
+    return {
+      kind: scope.kind,
+      siteId,
+      siteName: scope.kind === 'site' && siteId ? siteName : null,
+      deviceCount: scope.deviceCount,
+    };
+  }
+  const deviceCount = Array.isArray(stagedInputs.deviceIds) ? stagedInputs.deviceIds.length : 0;
+  if (deviceCount === 0) return null;
+  return { kind: 'devices', siteId: null, siteName: null, deviceCount };
+}
+
+/**
+ * The chain list, or null below two runs (an unchained run has no chain to
+ * show). Sorts a copy by depth, then queued time, then id: the route orders
+ * the same way, but the projection does not depend on it, so two
+ * continuations of one prior run (both "step 2") always list the same way.
+ */
+export function projectRunChain(rows: RunTraceChainRowInput[]): AiAgentRunChainStepDto[] | null {
+  if (rows.length < 2) return null;
+  return [...rows]
+    .sort(
+      (a, b) =>
+        a.chainDepth - b.chainDepth
+        || a.queuedAt.getTime() - b.queuedAt.getTime()
+        || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    )
+    .map((row) => ({
+      id: row.id,
+      step: row.chainDepth + 1,
+      continuedFromRunId: row.continuedFromRunId,
+      goal: capRunGoal(row.goal),
+      status: row.status,
+      costCents: (Number(row.costCents) || 0) + (Number(row.computeCents ?? 0) || 0),
+      queuedAt: row.queuedAt.toISOString(),
+    }));
 }
 
 export interface RunTraceAgentInput {
@@ -563,6 +670,10 @@ export function buildRunTrace(
   // is what keeps `blobKey` inside the API.
   artifacts: AiRunArtifactDto[] = [],
   workspace: RunWorkspaceRowInput | null = null,
+  // Wisp analysis sessions W06 — the chain rows and the scope's site name,
+  // read by the route for an `analysis` run only. Defaults null so every
+  // existing caller is unchanged.
+  analysisInput: RunTraceAnalysisInput | null = null,
   // `progress` is intentionally NOT a parameter here: it is read from the
   // live Redis ring (`readRunProgress`, W03) by the route, not assembled
   // from persisted run state like everything else this function builds.
@@ -570,6 +681,7 @@ export function buildRunTrace(
   // routes/aiAgents.ts GET /runs/:runId).
 ): Omit<AiAgentRunDetailDto, 'progress'> {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
+  const isAnalysis = run.profile === 'analysis';
   return {
     schemaVersion: AI_AGENT_RUN_DTO_SCHEMA_VERSION,
     id: run.id,
@@ -677,5 +789,13 @@ export function buildRunTrace(
     // Execution plane W05 (spec §5.8).
     artifacts,
     workspace: mapWorkspace(workspace),
+    // Wisp analysis sessions W06. Lineage is carried for any run (a non-
+    // analysis run simply has none); goal, scope and chain only for analysis.
+    continuedFromRunId: run.continuedFromRunId ?? null,
+    chainRootRunId: run.chainRootRunId ?? null,
+    chainDepth: Number(run.chainDepth ?? 0) || 0,
+    analysisGoal: isAnalysis ? capRunGoal(run.triggerRef?.goal) : null,
+    analysisScope: isAnalysis ? projectAnalysisScope(run.stagedInputs, analysisInput?.siteName ?? null) : null,
+    chain: isAnalysis ? projectRunChain(analysisInput?.chainRows ?? []) : null,
   };
 }
