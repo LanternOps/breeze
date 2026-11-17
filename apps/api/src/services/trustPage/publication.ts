@@ -366,9 +366,11 @@ export async function serveCommittedPublication(r: {
 /**
  * What a publish/unpublish response reports about the serving set (#12103). 'applied': the set holds the committed
  * state ('fallback' counts: its merge never removes a member, so a publish is served and an unpublished member that
- * lingers is the safe false positive the live resolve turns into a 404). 'degraded': the set did not take the change
- * (Redis failed and the built marker was dropped, or there is no Redis), so the public card answers 503 until the
- * self-heal rebuilds it, about a minute.
+ * lingers is the safe false positive the live resolve turns into a 404). 'degraded': the set did not take the change.
+ * The DB is committed and the payload, badge, document and attestation routes resolve live, but /trust/card (which
+ * requires a known set) answers 503, or 404 if dropping the built marker failed too, until the self-heal rebuilds
+ * the set (lock-limited to one per minute). The portal page still renders from the payload; its SSR meta and the
+ * framable embed, which read the card, do not. 'no_redis' has no self-heal: the card never works without Redis.
  */
 export type TrustServingStatus = 'applied' | 'degraded';
 export function servingStatusFor(outcome: ServingApplyOutcome): TrustServingStatus {

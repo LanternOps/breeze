@@ -129,8 +129,8 @@ export function updateTrustDocuments(
 
 /**
  * Publish/unpublish responses report whether the public serving set took the change (#12103). 'degraded' = the
- * page is committed but its public card answers "temporarily unavailable" until the server self-heals (~1 min).
- * Absent from servers older than #12103.
+ * page is committed and loads, but its link-preview metadata and website embed lag until the server self-heals
+ * (usually under a minute). Absent from servers older than #12103.
  */
 export type TrustServingStatus = 'applied' | 'degraded';
 
