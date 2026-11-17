@@ -297,6 +297,52 @@ describe('IceFailureBudget drives the reconnect path at the session level (#1183
   });
 });
 
+describe('IceFailureBudget after a VNC handoff (#11838 review)', () => {
+  const hostOnlyAgent = fakePc({
+    stats: [{ id: 'r1', type: 'remote-candidate', candidateType: 'host' }],
+  });
+  const fail = async (budget: IceFailureBudget) => {
+    let step = 'none';
+    await budget.peerFailed(hostOnlyAgent, () => true, {
+      reconnect: () => { step = 'reconnect'; },
+      stop: () => { step = 'stop'; },
+    });
+    return step;
+  };
+
+  it('does not let the automatic VNC→WebRTC handoff bring back a path that never connected', async () => {
+    const budget = new IceFailureBudget();
+    expect(budget.autoWebRTCHandoffAllowed).toBe(true);
+    expect(await fail(budget)).toBe('reconnect');
+    expect(await fail(budget)).toBe('stop');
+    budget.handedOffToVnc();
+    // The VNC session's first poll sees user_session; without this the viewer
+    // would switch back to WebRTC, fail twice, hand off again, and cycle.
+    expect(budget.autoWebRTCHandoffAllowed).toBe(false);
+    // An automatic switch (or Retry) resets the count but not the suppression.
+    budget.resetFailures();
+    expect(budget.autoWebRTCHandoffAllowed).toBe(false);
+  });
+
+  it('lifts the suppression on a manual transport choice or a new session', () => {
+    const budget = new IceFailureBudget();
+    budget.handedOffToVnc();
+    budget.userChoseTransport();
+    expect(budget.autoWebRTCHandoffAllowed).toBe(true);
+    budget.handedOffToVnc();
+    budget.newSession();
+    expect(budget.autoWebRTCHandoffAllowed).toBe(true);
+  });
+
+  it('gives a manual transport choice a full failure budget', async () => {
+    const budget = new IceFailureBudget();
+    expect(await fail(budget)).toBe('reconnect');
+    budget.userChoseTransport();
+    expect(budget.failures).toBe(0);
+    expect(await fail(budget)).toBe('reconnect');
+  });
+});
+
 describe('neverConnectedStopStep (#11838 review)', () => {
   const base = { deviceId: 'dev-1', currentTransport: 'webrtc' as const, userJustSwitchedAt: 0 };
 

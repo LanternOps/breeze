@@ -238,6 +238,7 @@ export interface PeerFailureEffects {
 export class IceFailureBudget {
   private connected = false;
   private count = 0;
+  private autoWebRTCSuppressed = false;
   // Bumped on every reset, so a candidate read that straddles one cannot
   // write its stale count over the new budget.
   private epoch = 0;
@@ -260,10 +261,38 @@ export class IceFailureBudget {
   /** A new session: a fresh connect, or the window reused for a new deep link. */
   newSession(): void {
     this.connected = false;
+    this.autoWebRTCSuppressed = false;
     this.resetFailures();
   }
 
-  /** Same session, full retry budget: a transport switch or a manual Retry. */
+  /**
+   * Whether the automatic VNC→WebRTC handoff (macOS, on login) may run. False
+   * after a never-connected stop handed this session off to VNC: the VNC
+   * poll's first `user_session` would otherwise switch straight back to a
+   * path that never connected, fail twice, hand off again, and cycle.
+   */
+  get autoWebRTCHandoffAllowed(): boolean {
+    return !this.autoWebRTCSuppressed;
+  }
+
+  /** The never-connected stop is handing this session off to VNC. */
+  handedOffToVnc(): void {
+    this.autoWebRTCSuppressed = true;
+  }
+
+  /**
+   * The operator picked a transport by hand: a full failure budget, and the
+   * automatic handoff may run again.
+   */
+  userChoseTransport(): void {
+    this.autoWebRTCSuppressed = false;
+    this.resetFailures();
+  }
+
+  /**
+   * Same session, full retry budget: an automatic transport switch or a
+   * manual Retry. Leaves the handoff suppression as it is.
+   */
   resetFailures(): void {
     this.count = 0;
     this.epoch += 1;

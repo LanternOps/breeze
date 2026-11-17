@@ -634,8 +634,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const auth = authRef.current;
     if (!auth) return;
     // #11838: a switch starts a new run of attempts. A leftover never-connected
-    // count would make the next failure stop with no retry.
-    iceBudgetRef.current.resetFailures();
+    // count would make the next failure stop with no retry. A manual choice
+    // also lets the automatic VNC→WebRTC handoff run again.
+    if (reason === 'user') iceBudgetRef.current.userChoseTransport();
+    else iceBudgetRef.current.resetFailures();
 
     // Stop any pending reconnect so attemptReconnect can't fire mid-switch.
     if (reconnectTimerRef.current) {
@@ -997,6 +999,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           });
           if (step === 'handoff_to_vnc') {
             console.warn(`WebRTC never connected; handing off to VNC. ${decision.message}`);
+            // Keeps the VNC poll from switching straight back (that would cycle).
+            iceBudgetRef.current.handedOffToVnc();
             void switchTransportRef.current('vnc', 'auto');
             return;
           }
@@ -1774,7 +1778,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // this saves a stray backstop log per login transition rather than one
       // per 2s tick — but it keeps the decision where the other gates live
       // instead of relying on the backstop to clean up (issue #3410).
-      if (webrtcUsableRef.current && shouldAutoHandoffToWebRTC({
+      // #11838: not after a never-connected WebRTC stop handed off to VNC.
+      if (webrtcUsableRef.current && iceBudgetRef.current.autoWebRTCHandoffAllowed && shouldAutoHandoffToWebRTC({
         remoteOs,
         deviceId,
         currentTransport: transportRef.current,

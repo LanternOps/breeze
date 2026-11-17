@@ -64,6 +64,10 @@ describe('a WebRTC peer that never connects does not re-offer forever (#11838)',
     const handoff = stop.slice(stop.indexOf("'handoff_to_vnc'"));
     const handoffBranch = handoff.slice(0, handoff.indexOf('return;'));
     expect(handoffBranch).toContain("switchTransportRef.current('vnc', 'auto')");
+    // Recorded before the switch, so the VNC poll cannot hand straight back.
+    expect(handoffBranch).toContain('iceBudgetRef.current.handedOffToVnc()');
+    expect(handoffBranch.indexOf('iceBudgetRef.current.handedOffToVnc()'))
+      .toBeLessThan(handoffBranch.indexOf("switchTransportRef.current('vnc', 'auto')"));
     // The error card comes only after the handoff check.
     expect(stop.indexOf("setStatus('error')")).toBeGreaterThan(stop.indexOf("'handoff_to_vnc'"));
     // The loop is stopped either way.
@@ -76,12 +80,23 @@ describe('a WebRTC peer that never connects does not re-offer forever (#11838)',
     expect(source.match(/iceBudgetRef\.current\.newSession\(\)/g)).toHaveLength(1);
   });
 
+  it('gates the automatic VNC→WebRTC handoff on the budget, so a never-connected path does not cycle', () => {
+    const at = source.indexOf('shouldAutoHandoffToWebRTC({');
+    expect(at).toBeGreaterThan(-1);
+    const condition = source.slice(source.lastIndexOf('if (', at), at);
+    expect(condition).toContain('iceBudgetRef.current.autoWebRTCHandoffAllowed');
+  });
+
   it('resets the failure count on a transport switch and on manual Retry, never on the reconnect path', () => {
     const switchBody = callbackBody('switchTransport');
+    const userChoice = switchBody.indexOf('iceBudgetRef.current.userChoseTransport()');
     const reset = switchBody.indexOf('iceBudgetRef.current.resetFailures()');
-    expect(reset, 'a switch must not inherit a leftover count').toBeGreaterThan(-1);
+    expect(userChoice, 'a manual switch lifts the handoff suppression and resets the count').toBeGreaterThan(-1);
+    expect(reset, 'an automatic switch must not inherit a leftover count').toBeGreaterThan(-1);
     // Only once the switch is really going ahead.
+    expect(userChoice).toBeGreaterThan(switchBody.indexOf('if (!auth) return;'));
     expect(reset).toBeGreaterThan(switchBody.indexOf('if (!auth) return;'));
+    expect(switchBody.slice(switchBody.lastIndexOf('if (', userChoice), userChoice)).toContain("reason === 'user'");
     const card = source.slice(source.indexOf("{status === 'error' && ("));
     const retry = card.slice(0, card.search(/^\s+Retry$/m));
     expect(retry).toContain('iceBudgetRef.current.resetFailures()');
