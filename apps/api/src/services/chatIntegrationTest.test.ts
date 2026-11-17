@@ -73,10 +73,22 @@ describe('sendDiscordTestNotification', () => {
   });
 
   it('classifies a transport failure as unreachable and never echoes the error text', async () => {
-    const result = await sendDiscordTestNotification(WEBHOOK, {
-      fetch: vi.fn().mockRejectedValue(new Error(`ECONNRESET ${WEBHOOK}`)),
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failure = Object.assign(new Error(`fetch failed ${WEBHOOK}`), {
+      cause: { code: 'ECONNRESET', message: `socket hang up ${WEBHOOK}` },
     });
-    expect(result).toMatchObject({ ok: false, kind: 'unreachable' });
-    expect(JSON.stringify(result)).not.toContain('abc_DEF-123');
+    try {
+      const result = await sendDiscordTestNotification(WEBHOOK, {
+        fetch: vi.fn().mockRejectedValue(failure),
+      });
+      expect(result).toMatchObject({ ok: false, kind: 'unreachable' });
+      expect(JSON.stringify(result)).not.toContain('abc_DEF-123');
+      // The cause is logged for operators, the token-bearing text is not.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls[0])).toContain('ECONNRESET');
+      expect(JSON.stringify(warn.mock.calls[0])).not.toContain('abc_DEF-123');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

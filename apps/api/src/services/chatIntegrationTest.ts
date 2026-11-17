@@ -96,8 +96,19 @@ export async function sendDiscordTestNotification(rawWebhookUrl: unknown, deps: 
     if (name === 'SsrfBlockedError') {
       return { ok: false, kind: 'blocked', message: 'The Discord webhook host is not an allowed destination' };
     }
+    // Keep the cause diagnosable (timeout vs DNS vs TLS vs refused) without
+    // the message: error class and errno-style codes carry no URL.
+    const code = (e as { code?: unknown })?.code;
+    const causeCode = (e as { cause?: { code?: unknown } })?.cause?.code;
+    console.warn('[integrations] Discord test notification transport failure', {
+      error: name || typeof e,
+      code: typeof code === 'string' ? code : undefined,
+      causeCode: typeof causeCode === 'string' ? causeCode : undefined,
+    });
     return { ok: false, kind: 'unreachable', message: 'Could not reach Discord to deliver the test notification' };
   }
+  // Only the status is read; release the socket. The outcome is already
+  // decided, so a failed cancel changes nothing the caller sees.
   res.body?.cancel().catch(() => {});
 
   if (res.ok) return { ok: true, message: 'Discord test notification sent.' };
