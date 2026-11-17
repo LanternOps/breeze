@@ -169,6 +169,65 @@ describe('SoftwareCatalog package-manager badges', () => {
   });
 });
 
+describe('SoftwareCatalog source filter (#12052)', () => {
+  const WINGET = { ...ITEM, id: 'w', name: 'WingetApp', versionCount: 0, methodKinds: ['winget'] };
+  const BREW = { ...ITEM, id: 'b', name: 'BrewApp', versionCount: 0, methodKinds: ['homebrew_cask'] };
+  const FILE = { ...ITEM, id: 'f', name: 'InstallerApp', versionCount: 2, methodKinds: [] };
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+    window.location.hash = '';
+  });
+
+  it('filters the library by source and records it in the URL hash', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [WINGET, BREW, FILE] }));
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('WingetApp')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+      target: { value: 'winget' },
+    });
+
+    expect(screen.getByText('WingetApp')).toBeInTheDocument();
+    expect(screen.queryByText('BrewApp')).not.toBeInTheDocument();
+    expect(screen.queryByText('InstallerApp')).not.toBeInTheDocument();
+    expect(window.location.hash).toBe('#catalog&source=winget');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+      target: { value: 'installer' },
+    });
+    expect(screen.getByText('InstallerApp')).toBeInTheDocument();
+    expect(screen.queryByText('WingetApp')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Source' }), {
+      target: { value: 'all' },
+    });
+    expect(screen.getByText('BrewApp')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#catalog');
+  });
+
+  it('applies a source carried in the hash on first load', async () => {
+    window.location.hash = '#catalog&source=brew';
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [WINGET, BREW, FILE] }));
+    render(<SoftwareCatalog />);
+
+    await waitFor(() => expect(screen.getByText('BrewApp')).toBeInTheDocument());
+    expect(screen.queryByText('WingetApp')).not.toBeInTheDocument();
+  });
+
+  it('only offers sources that exist in the library', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [WINGET] }));
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('WingetApp')).toBeInTheDocument());
+
+    const options = Array.from(
+      screen.getByRole('combobox', { name: 'Source' }).querySelectorAll('option'),
+    ).map((o) => o.getAttribute('value'));
+    expect(options).toEqual(['all', 'winget']);
+  });
+});
+
 describe('SoftwareCatalog delete', () => {
   beforeEach(() => {
     fetchMock.mockReset();
