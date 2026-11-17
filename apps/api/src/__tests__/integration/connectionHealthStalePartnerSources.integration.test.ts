@@ -204,8 +204,8 @@ describe('ticket_mailbox stale arm', () => {
 });
 
 describe('td_synnex_sftp', () => {
-  // updated_at follows last_sync_at unless a case says otherwise: every sync
-  // write (running, ok, error) bumps both.
+  // updated_at follows last_sync_at unless a case says otherwise: the ok and
+  // error writes stamp both, the running write only updated_at.
   async function sftp(over: Partial<typeof tdSynnexSftpIntegrations.$inferInsert> = {}) {
     const id = randomUUID();
     const lastSyncAt = over.lastSyncAt === undefined ? minAgo(5) : over.lastSyncAt;
@@ -235,9 +235,23 @@ describe('td_synnex_sftp', () => {
       .toMatchObject({ condition: 'sync_failed', detail: 'login rejected: password=[REDACTED]' });
   });
 
-  it('a run hung in running since 80 h ago is stale', async () => {
-    const id = await sftp({ lastSyncStatus: 'running', lastSyncAt: hoursAgo(100), updatedAt: hoursAgo(80) });
-    expect((await observe(tdSynnexSftpSource)).find((x) => x.sourceId === id)).toMatchObject({ condition: 'sync_stale' });
+  it('a run hung in running since 80 h ago is stale; one started 10 h ago is not read', async () => {
+    const hung = await sftp({ lastSyncStatus: 'running', lastSyncAt: hoursAgo(100), updatedAt: hoursAgo(80) });
+    const started = await sftp({ lastSyncStatus: 'running', lastSyncAt: hoursAgo(100), updatedAt: hoursAgo(10) });
+    const obs = await observe(tdSynnexSftpSource);
+    expect(obs.find((x) => x.sourceId === hung)).toMatchObject({ condition: 'sync_stale' });
+    expect(obs.find((x) => x.sourceId === started)).toBeUndefined();
+  });
+
+  it('the baseline is the later of the two stamps: a run finished 10 h ago on a row last saved 80 h ago is not read', async () => {
+    const id = await sftp({ lastSyncAt: hoursAgo(10), updatedAt: hoursAgo(80) });
+    expect((await observe(tdSynnexSftpSource)).find((x) => x.sourceId === id)).toBeUndefined();
+  });
+
+  it('failed and stale: sync_failed keeps its error text', async () => {
+    const id = await sftp({ lastSyncStatus: 'error', lastSyncAt: hoursAgo(80), lastSyncError: 'file not found on server' });
+    expect((await observe(tdSynnexSftpSource)).find((x) => x.sourceId === id))
+      .toMatchObject({ condition: 'sync_failed', detail: 'file not found on server' });
   });
 
   it('disabled: not read untracked, retired when tracked', async () => {

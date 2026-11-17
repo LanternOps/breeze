@@ -263,6 +263,10 @@ describe('td_synnex_sftp', () => {
     expect(tdSynnexSftpObservation({ ...row, lastSyncStatus: 'ok' }, NOW).state).toBe('healthy');
   });
 
+  it('failed and stale is sync_failed and keeps the sanitized error text', () => {
+    expect(tdSynnexSftpObservation({ ...row, stale: true }, NOW)).toMatchObject({ condition: 'sync_failed', detail: 'download failed: password=[REDACTED]' });
+  });
+
   it('the broken query reads enabled rows that failed or whose last attempt or config change is past three nights', () => {
     const q = sqlOf(tdSynnexSftpSource.brokenQuery(NOW));
     expect(q.sql).toContain('"td_synnex_sftp_integrations"."enabled" AND');

@@ -13,10 +13,10 @@ import { defineRowSource, staleArm, toHealthObservation } from './observeRows';
 //
 // Staleness: last_sync_at is stamped on success AND failure, and a finished
 // failure is already `sync_failed`, so the arm reads "no attempt finished"
-// (the Pax8 shape). Rows are created disabled and enabling one does not
-// enqueue a sync, so the baseline also takes updated_at: every config save,
-// toggle, connection test and sync write bumps it, and a row enabled today on
-// an old created_at is not stale at once. updated_at is NOT NULL, so the
+// (the Pax8 shape). Rows default to disabled, and enabling one (on create or
+// later) does not enqueue a sync, so the baseline also takes updated_at: every
+// config save, toggle, connection test and sync write (running, ok, error)
+// bumps it, and a row enabled today on an old created_at is not stale at once. updated_at is NOT NULL, so the
 // created_at fallback in staleArm never applies here.
 
 const FIX_HREF = '/integrations#tdsynnex-sftp';
