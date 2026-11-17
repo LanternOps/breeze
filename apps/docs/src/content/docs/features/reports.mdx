@@ -283,8 +283,8 @@ The **Executive Summary** report (`executive_summary`) is built for handing to a
 - **Headline score: fleet availability.** The share of managed devices that were online when the report ran or reported in during the 7 days before it. A report run after hours, when laptops are switched off, still scores a fleet that checked in during the week. A run stored before this scoring was introduced measured the share online at the moment the report ran; its cover keeps that wording, and the score-change chip compares only runs that measured the same thing.
 - **Every managed device is accounted for.** Online, offline and every other status (in maintenance, updating, quarantined, pending enrollment) are listed, so the rows add up to the managed-device total. These counts are a snapshot at generation and are shown as informational; only the 7-day figure is judged against its target.
 - **Reporting period.** The title block prints the period the alert figures cover. With no date range configured it says the figures cover all recorded alerts.
-- **Notable alerts.** Up to five critical and high alerts from the period are named (critical first, then most recent), with device, date and status, as space on the page allows; the rest are counted.
-- **Fleet composition** appears only when there is something to break down: more than one operating system or more than one site.
+- **Notable alerts.** Up to five critical and high alerts from the period are named (critical first, then most recent), with device, date and status, as space on the page allows; a line counts the rest. Recommended actions that do not fit are counted the same way.
+- **Fleet composition** appears only when there is something to break down (more than one operating system or more than one site) and there is room for it after the notable alerts and recommended actions. Long lists end in an "other" row that keeps the device count.
 
 ---
 

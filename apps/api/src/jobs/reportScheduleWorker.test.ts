@@ -444,6 +444,15 @@ describe('trendLineOf (executive summary, #12045)', () => {
       .toBe('Fleet availability (seen in last 7 days) 92%.');
   });
 
+  it('reports no fleet figure for an empty fleet', () => {
+    expect(trendLineOf({ summary: { devices: { total: 0, healthPercentage: 100, recentWindowDays: 7, recentlySeen: 0, recentlySeenPercentage: 100 } } })).toBeNull();
+  });
+
+  it('drops the up/down clause when the windowed figure is unchanged', () => {
+    expect(trendLineOf({ summary: windowed(92), previous: { generatedAt: null, summary: windowed(92) } }))
+      .toBe('Fleet availability (seen in last 7 days) 92%.');
+  });
+
   it('keeps the legacy wording for a snapshot without the windowed figure', () => {
     expect(trendLineOf({ summary: { devices: { healthPercentage: 33 } }, previous: { generatedAt: null, summary: { devices: { healthPercentage: 50 } } } }))
       .toBe('Fleet health 33% — down from 50% last run.');

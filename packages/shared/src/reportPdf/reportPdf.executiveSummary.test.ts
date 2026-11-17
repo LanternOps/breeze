@@ -149,6 +149,78 @@ describe('Executive Summary cover (#12045)', () => {
     expect(size({ generatedAt: '2026-10-09T12:00:00Z', summary: { devices: { healthPercentage: 33, recentlySeenPercentage: 83 } } })).toBeGreaterThan(none);
   });
 
+  it('draws no headline score for an empty fleet rather than a green 100', () => {
+    const empty: ExecutiveSummary = {
+      ...reported,
+      devices: { total: 0, online: 0, offline: 0, otherStatuses: {}, healthPercentage: 100, recentWindowDays: 7, recentlySeen: 0, recentlySeenPercentage: 100 },
+      notableAlerts: [],
+    };
+    const text = drawnText(empty);
+    expect(text).not.toContain('/100');
+    expect(text).not.toContain('STRONG');
+    expect(text).toContain('Managed devices');
+  });
+
+  it('labels half-open and open periods without claiming none was configured', () => {
+    expect(executiveSummaryPeriodLabel({ start: '2026-10-10T12:00:00.000Z', end: null }, 'UTC')).toBe('Since Oct 10, 2026');
+    expect(executiveSummaryPeriodLabel({ start: null, end: '2026-11-09T12:00:00.000Z' }, 'UTC')).toBe('Through Nov 9, 2026');
+    const open = drawnText({ ...reported, period: { start: null, end: null } }).join('\n');
+    expect(open).toContain('Alert figures cover all recorded alerts.');
+    expect(open).not.toMatch(/no reporting period configured/);
+  });
+
+  it('folds alert text the standard PDF font cannot draw', () => {
+    const text = drawnText({
+      ...reported,
+      notableAlerts: [{ title: 'CPU \u2265 90% \u2192 spike \ud83d\udd25', severity: 'critical', status: 'active', device: 'H\u00d6ST-\u4e00', triggeredAt: '2026-11-08T10:00:00.000Z' }],
+    });
+    expect(text).toContain('CPU >= 90% -> spike ?');
+    expect(text).toContain('H\u00d6ST-?');
+  });
+
+  it('accounts for every critical/high alert: rows drawn + "further" count = critical + high', () => {
+    const many: ExecutiveSummary = {
+      ...reported,
+      devices: { ...reported.devices, otherStatuses: { maintenance: 1, pending: 1, updating: 1, quarantined: 1 }, recentlySeen: 6, recentlySeenPercentage: 50 },
+      alerts: { total: 30, critical: 4, high: 8, resolved: 3, resolutionRate: 10 },
+      osDistribution: { windows: 4, macos: 3, linux: 2, ios: 2, android: 1 },
+      siteBreakdown: [1, 2, 3, 4, 5].map((n) => ({ site: `Site ${n}`, count: 2 })),
+      notableAlerts: Array.from({ length: 5 }, (_, i) => ({
+        title: `Alert number ${i + 1}`, severity: 'critical', status: 'active', device: `HOST-${i + 1}`, triggeredAt: '2026-11-08T10:00:00.000Z',
+      })),
+    };
+    const text = drawnText(many);
+    const drawn = text.filter((t) => /^Alert number \d$/.test(t)).length;
+    const further = text.join('\n').match(/\+ (\d+) further critical\/high alert/);
+    expect(drawn).toBeGreaterThan(0);
+    expect(drawn + Number(further?.[1] ?? 0)).toBe(12);
+    expect(text).toContain('Recommended actions');
+  });
+
+  it('folds a long site list into an "other sites" row that keeps the device count', () => {
+    const text = drawnText({
+      ...reported,
+      notableAlerts: [],
+      siteBreakdown: [1, 2, 3, 4, 5, 6, 7].map((n) => ({ site: `Site ${n}`, count: 2 })),
+    });
+    expect(text).toContain('Fleet composition');
+    const otherIdx = text.findIndex((t) => /^\d+ other sites$/.test(t));
+    expect(otherIdx).toBeGreaterThan(-1);
+    const shownSites = text.filter((t) => /^Site \d$/.test(t)).length;
+    const otherSites = Number(text[otherIdx]!.split(' ')[0]);
+    expect(shownSites + otherSites).toBe(7);
+  });
+
+  it('words the device recommendation by count, and only when a device is unseen', () => {
+    const recFor = (recentlySeen: number) =>
+      buildExecRecommendations({ ...reported, devices: { ...reported.devices, recentlySeen, recentlySeenPercentage: Math.round((recentlySeen / 12) * 100) } })
+        .map((r) => r.text).join('\n');
+    expect(recFor(11)).toMatch(/1 device has not reported in for 7 days — its monitoring/);
+    expect(recFor(12)).not.toMatch(/not reported in/);
+    expect(buildExecRecommendations(legacy).map((r) => r.text).join('\n'))
+      .toMatch(/Confirm the 4 devices offline when this report ran are expected to be switched off/);
+  });
+
   it('still renders a one-page cover from a legacy snapshot', () => {
     const doc = buildReportPdf([], { ...opts, reportType: 'executive_summary', summary: legacy });
     expect(doc.getNumberOfPages()).toBe(1);

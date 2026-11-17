@@ -615,6 +615,8 @@ export function trendLineOf(result: ReportResult): string | null {
   const devicesOf = (v: Record<string, unknown> | undefined) =>
     v?.devices as { recentlySeenPercentage?: unknown; recentWindowDays?: unknown } | undefined;
   const seen = devicesOf(s)?.recentlySeenPercentage;
+  // No managed devices: the 100 is a divide-by-zero default, not a figure.
+  if ((s?.devices as { total?: unknown } | undefined)?.total === 0) return null;
   if (typeof seen === 'number') {
     const days = typeof devicesOf(s)?.recentWindowDays === 'number' ? devicesOf(s)!.recentWindowDays : 7;
     const label = `Fleet availability (seen in last ${days} days) ${seen}%`;
@@ -624,7 +626,7 @@ export function trendLineOf(result: ReportResult): string | null {
     }
     return `${label}.`;
   }
-  const health =(s?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
+  const health = (s?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
   if (typeof health === 'number') {
     const prevHealth = (prev?.devices as { healthPercentage?: unknown } | undefined)?.healthPercentage;
     if (typeof prevHealth === 'number' && prevHealth !== health) {

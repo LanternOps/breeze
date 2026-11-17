@@ -982,6 +982,9 @@ const EXEC_STATUS_LABELS: Record<string, string> = {
  * recent window (#12045) or, for a snapshot written before that field
  * existed, the legacy share online when the report ran. */
 function execHeadline(d: NonNullable<ExecutiveSummary['devices']>): { score: number; windowed: boolean; windowDays: number } | null {
+  // No managed devices: the snapshot's 100 is a divide-by-zero default, not a
+  // measurement, so there is no score to headline.
+  if ((d.total ?? 0) === 0) return null;
   if (d.recentlySeenPercentage != null) {
     return { score: d.recentlySeenPercentage, windowed: true, windowDays: d.recentWindowDays ?? 7 };
   }
@@ -1102,6 +1105,32 @@ export function buildExecRecommendations(summary: ExecutiveSummary): Recommendat
   return [...recs.filter((r) => r.severity === 'bad'), ...recs.filter((r) => r.severity === 'warn')];
 }
 
+// Characters jsPDF's built-in helvetica (WinAnsi / cp1252) can draw beyond
+// Latin-1; anything else renders as garbage with a wrong measured width.
+const CP1252_EXTRA = new Set('\u20ac\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u017d\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u017e\u0178');
+const WINANSI_FOLDS: Record<string, string> = {
+  '\u2265': '>=', '\u2264': '<=', '\u2260': '!=', '\u2192': '->', '\u2190': '<-', '\u2194': '<->',
+  '\u2212': '-', '\u2010': '-', '\u2011': '-', '\u2009': ' ', '\u202f': ' ',
+};
+
+/** Make free text (alert titles, hostnames) drawable in the standard font:
+ * common symbols fold to ASCII, accented letters outside Latin-1 lose their
+ * accent, anything else becomes "?". */
+function toWinAnsi(text: string): string {
+  let out = '';
+  for (const ch of text.normalize('NFC')) {
+    if (ch.codePointAt(0)! <= 0xff || CP1252_EXTRA.has(ch)) {
+      out += ch;
+    } else if (WINANSI_FOLDS[ch]) {
+      out += WINANSI_FOLDS[ch];
+    } else {
+      const base = ch.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+      out += base && [...base].every((c) => c.codePointAt(0)! <= 0xff) ? base : '?';
+    }
+  }
+  return out;
+}
+
 /** Truncate `text` to fit `maxW` at the current font, with an ellipsis. */
 function execFit(doc: jsPDF, text: string, maxW: number): string {
   if (doc.getTextWidth(text) <= maxW) return text;
@@ -1136,11 +1165,11 @@ function drawExecNotableAlerts(
     doc.setFont('helvetica', 'normal');
     // Alert titles and hostnames come from the stored snapshot: flatten to
     // one line and bound them before they reach the page.
-    doc.text(execFit(doc, sanitizeNarrativeText(alert.title, EXEC_ALERT_TITLE_MAX_CHARS), col.device - col.title - 4), col.title, y);
+    doc.text(execFit(doc, toWinAnsi(sanitizeNarrativeText(alert.title, EXEC_ALERT_TITLE_MAX_CHARS)), col.device - col.title - 4), col.title, y);
     set.text(doc, C.muted);
-    doc.text(execFit(doc, sanitizeNarrativeText(alert.device, 80) || '—', col.date - col.device - 4), col.device, y);
-    doc.text(execDate(alert.triggeredAt, timezone) ?? '', col.date, y);
-    doc.text(titleCase(sanitizeNarrativeText(alert.status, 24)), col.status, y);
+    doc.text(execFit(doc, toWinAnsi(sanitizeNarrativeText(alert.device, 80)) || '—', col.date - col.device - 4), col.device, y);
+    doc.text(execDate(alert.triggeredAt, timezone) ?? '—', col.date, y);
+    doc.text(titleCase(toWinAnsi(sanitizeNarrativeText(alert.status, 24))), col.status, y);
     set.draw(doc, C.rule);
     doc.setLineWidth(0.1);
     doc.line(x, y + 2.1, x + w, y + 2.1);
@@ -1197,7 +1226,7 @@ function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts
     const alertScope = period == null
       ? 'Alert figures cover the configured reporting window.'
       : period === EXEC_ALL_ALERTS_LABEL
-        ? 'Alert figures cover all recorded alerts (no reporting period configured).'
+        ? 'Alert figures cover all recorded alerts.'
         : `Alert figures cover ${period}.`;
     set.text(doc, C.faint);
     doc.setFont('helvetica', 'normal');
@@ -1222,59 +1251,76 @@ function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts
   const gridRows = Math.max(deviceMetrics.length, alertMetrics.length);
   y = drawMetricGrid(doc, [...padTo(deviceMetrics, gridRows), ...padTo(alertMetrics, gridRows)], y);
 
+  const recs = buildExecRecommendations(summary);
+  const notable = summary.notableAlerts ?? [];
+  const maxY = PAGE.footY - 4;
+  const sectionHead = 2.5 + 5; // gap above a section heading + the heading itself
+  const moreLineH = 4;
+
   // OS + site composition, side by side: left = OS, right = largest sites.
   // Skipped when there is nothing to break down (one OS and one site): two
-  // rows repeating the managed total add nothing (#12045).
-  const osEntries = Object.entries(summary.osDistribution ?? {});
+  // rows repeating the managed total add nothing (#12045). It is the least
+  // important section, so it gets only the space left after room for the top
+  // two notable alerts and two recommended actions; longer lists fold their
+  // tail into one "other" row.
+  const osEntries = Object.entries(summary.osDistribution ?? {}).sort(([, x], [, z]) => z - x);
   const sites = summary.siteBreakdown ?? [];
-  if (osEntries.length > 1 || sites.length > 1) {
+  const reserveFor = (items: number) => (items > 0 ? sectionHead + Math.min(items, 2) * EXEC_ROW_H + moreLineH : 0);
+  const compositionRows = Math.min(
+    5,
+    Math.floor((maxY - y - sectionHead - 3 - reserveFor(notable.length) - reserveFor(recs.length)) / 6),
+  );
+  if ((osEntries.length > 1 || sites.length > 1) && compositionRows >= 2) {
     y = drawSectionHeading(doc, 'Fleet composition', y + 2.5);
-    const MAX_COMPOSITION_ROWS = 5;
-    const osMetrics: Metric[] = osEntries
-      .sort(([, x], [, z]) => z - x)
-      .slice(0, MAX_COMPOSITION_ROWS)
-      .map(([os, count]) => ({
-        label: OS_LABELS[os.toLowerCase()] ?? titleCase(os),
-        value: `${count} device${count === 1 ? '' : 's'}`,
-        status: 'neutral' as MetricStatus,
-      }));
-    const shownSites = sites.slice(0, MAX_COMPOSITION_ROWS);
-    const siteMetrics: Metric[] = shownSites.map((s) => ({
-      label: s.site,
-      value: `${s.count} device${s.count === 1 ? '' : 's'}`,
-      status: 'neutral' as MetricStatus,
-    }));
-    if (sites.length > MAX_COMPOSITION_ROWS) {
-      const rest = sites.slice(MAX_COMPOSITION_ROWS).reduce((acc, s) => acc + s.count, 0);
-      siteMetrics[MAX_COMPOSITION_ROWS - 1] = {
-        label: `${shownSites[MAX_COMPOSITION_ROWS - 1]!.site} + ${sites.length - MAX_COMPOSITION_ROWS} more`,
-        value: `${(shownSites[MAX_COMPOSITION_ROWS - 1]!.count) + rest} devices`,
-        status: 'neutral',
-      };
-    }
+    const devicesLabel = (n: number) => `${n} device${n === 1 ? '' : 's'}`;
+    const fold = (entries: Array<[string, number]>, otherLabel: (n: number) => string): Metric[] => {
+      const shown = entries.length > compositionRows ? entries.slice(0, compositionRows - 1) : entries;
+      const metrics: Metric[] = shown.map(([label, count]) => ({ label, value: devicesLabel(count), status: 'neutral' }));
+      if (entries.length > compositionRows) {
+        const rest = entries.slice(compositionRows - 1);
+        metrics.push({ label: otherLabel(rest.length), value: devicesLabel(rest.reduce((acc, [, n]) => acc + n, 0)), status: 'neutral' });
+      }
+      return metrics;
+    };
+    const osMetrics = fold(
+      osEntries.map(([os, count]): [string, number] => [OS_LABELS[os.toLowerCase()] ?? titleCase(os), count]),
+      (n) => `${n} other operating system${n === 1 ? '' : 's'}`,
+    );
+    const siteMetrics = fold(sites.map((st): [string, number] => [st.site, st.count]), (n) => `${n} other site${n === 1 ? '' : 's'}`);
     const rows = Math.max(osMetrics.length, siteMetrics.length);
     y = drawMetricGrid(doc, [...padTo(osMetrics, rows), ...padTo(siteMetrics, rows)], y);
   }
 
-  const recs = buildExecRecommendations(summary);
-  const maxY = PAGE.footY - 4;
-  const sectionHead = 2.5 + 5; // gap above a section heading + the heading itself
 
   // Name the critical/high alerts the counts summarise (#12045), in the space
   // left after reserving room for the recommended actions below.
-  const notable = summary.notableAlerts ?? [];
+  const criticalHigh = (a.critical ?? 0) + (a.high ?? 0);
   if (notable.length > 0) {
-    const recsReserve = recs.length > 0 ? sectionHead + Math.min(recs.length, 5) * EXEC_ROW_H : 0;
-    const moreLineH = 4;
-    const alertRows = Math.min(notable.length, Math.floor((maxY - recsReserve - y - sectionHead - moreLineH) / EXEC_ROW_H));
+    // Rows that fit after reserving the recommended actions: all of them
+    // first, else room for only the top two, so a dense cover still names its
+    // worst alerts (the actions below then say what they had to cut).
+    const rowsWith = (reservedRecs: number) => {
+      const reserve = reservedRecs > 0 ? sectionHead + reservedRecs * EXEC_ROW_H + moreLineH : 0;
+      return Math.min(notable.length, Math.floor((maxY - reserve - y - sectionHead - moreLineH) / EXEC_ROW_H));
+    };
+    let alertRows = rowsWith(Math.min(recs.length, 5));
+    if (alertRows < 1) alertRows = rowsWith(Math.min(recs.length, 2));
     if (alertRows > 0) {
-      y = drawExecNotableAlerts(doc, notable, (a.critical ?? 0) + (a.high ?? 0), alertRows, y + 2.5, opts.timezone);
+      y = drawExecNotableAlerts(doc, notable, criticalHigh, alertRows, y + 2.5, opts.timezone);
+    } else if (y + 2.5 + moreLineH <= maxY) {
+      set.text(doc, C.muted);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.text(`${criticalHigh} critical/high alert${criticalHigh === 1 ? '' : 's'} in this period, listed in Breeze`, PAGE.mx + 1, y + 2.5);
+      y += 2.5 + moreLineH;
     }
   }
 
   // Recommended actions close the page — the reader leaves with next steps.
   if (recs.length > 0 && y + sectionHead + EXEC_ROW_H <= maxY) {
-    const fit = Math.min(recs.length, 5, Math.floor((maxY - y - sectionHead) / EXEC_ROW_H));
+    let fit = Math.min(recs.length, 5, Math.floor((maxY - y - sectionHead) / EXEC_ROW_H));
+    // Keep a line to say what was cut rather than dropping it unannounced.
+    if (fit < recs.length && fit > 1 && y + sectionHead + fit * EXEC_ROW_H + moreLineH > maxY) fit -= 1;
     y = drawSectionHeading(doc, 'Recommended actions', y + 2.5);
     doc.setFontSize(9);
     recs.slice(0, fit).forEach((rec, i) => {
@@ -1286,6 +1332,13 @@ function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts
       doc.text(rec.text, PAGE.mx + 6.5, y);
       y += EXEC_ROW_H;
     });
+    const cut = recs.length - fit;
+    if (cut > 0) {
+      set.text(doc, C.muted);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.text(`+ ${cut} further recommendation${cut === 1 ? '' : 's'} available in Breeze`, PAGE.mx + 6.5, y);
+    }
   }
 }
 

@@ -2,9 +2,9 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { withDbAccessContext } from '../../db';
-import { alerts, devices } from '../../db/schema';
+import { alerts, devices, sites } from '../../db/schema';
 import { generateExecutiveSummaryReport } from '../../services/reportGenerationService';
-import type { OrgReportExecutionAuthority } from '../../services/siteScope';
+import { siteScopeFingerprint, type OrgReportExecutionAuthority } from '../../services/siteScope';
 import type { ExecutiveSummary } from '@breeze/shared';
 import { createIntegrationTestClient } from './db-utils';
 import { getTestDb } from './setup';
@@ -52,7 +52,7 @@ async function fixture() {
     principalKind: 'user', scope: { version: 1, kind: 'unrestricted', orgId: org.id },
     principalUserId: user.id, capturedAt: new Date(), fingerprint: 'f'.repeat(64),
   };
-  return { org, inOrg, authority };
+  return { org, site, user, seed, inOrg, authority };
 }
 
 describe('executive summary fleet figures reconcile (#12045)', () => {
@@ -85,5 +85,34 @@ describe('executive summary fleet figures reconcile (#12045)', () => {
       ['high recent', 'high', 'online-1'],
     ]);
     expect((s.alerts!.critical ?? 0) + (s.alerts!.high ?? 0)).toBe(s.notableAlerts!.length);
+  });
+
+  it('a site-restricted run neither counts nor names another site\'s devices and alerts', async () => {
+    const f = await fixture();
+    const [otherSite] = await f.seed.insert(sites).values({ orgId: f.org.id, name: 'Other site' }).returning();
+    const [hidden] = await f.seed.insert(devices).values({
+      orgId: f.org.id, siteId: otherSite!.id, agentId: crypto.randomUUID(), hostname: 'other-site-host',
+      osType: 'windows' as const, osVersion: '11', architecture: 'amd64', agentVersion: '1',
+      status: 'online' as const, lastSeenAt: new Date(),
+    }).returning();
+    await f.seed.insert(alerts).values({
+      orgId: f.org.id, deviceId: hidden!.id, severity: 'critical' as const, status: 'active' as const,
+      title: 'other site secret', triggeredAt: new Date(Date.now() - DAY),
+    });
+
+    const unrestricted = (await f.inOrg(() =>
+      generateExecutiveSummaryReport(f.org.id, { dateRange: { preset: 'last_30_days' } }, f.authority))).summary as ExecutiveSummary;
+    expect(unrestricted.notableAlerts?.map((a) => a.title)).toContain('other site secret');
+
+    const scope = { version: 1 as const, kind: 'restricted' as const, orgId: f.org.id, siteIds: [f.site.id] };
+    const restricted: OrgReportExecutionAuthority = {
+      principalKind: 'user', scope, principalUserId: f.user.id, capturedAt: new Date(), fingerprint: siteScopeFingerprint(scope),
+    };
+    const s = (await f.inOrg(() =>
+      generateExecutiveSummaryReport(f.org.id, { dateRange: { preset: 'last_30_days' } }, restricted))).summary as ExecutiveSummary;
+    expect(s.devices?.total).toBe(6);
+    expect(s.notableAlerts?.map((a) => a.title)).toEqual(['critical older', 'high recent']);
+    expect(s.notableAlerts?.some((a) => a.device === 'other-site-host')).toBe(false);
+    expect((s.alerts!.critical ?? 0) + (s.alerts!.high ?? 0)).toBe(2);
   });
 });
