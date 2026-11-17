@@ -66,7 +66,7 @@ test('both suites depend on and load shared images instead of rebuilding', () =>
   }
   assert.match(job('smoke-test'), /up --no-build -d/u);
   assert.doesNotMatch(job('smoke-test'), /BREEZE_(API|WEB|PORTAL)_IMAGE_REF=.*:latest/u);
-  assert.match(job('lint'), /node --test \.github\/scripts\/ci-build-reuse.test.mjs/u);
+  assert.match(job('lint'), /node --test(?: --[\w-]+=\d+)* \.github\/scripts\/ci-build-reuse.test.mjs/u);
 });
 
 // Exercise the actual loader shell without building or loading local images.
