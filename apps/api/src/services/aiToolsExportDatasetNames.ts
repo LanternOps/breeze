@@ -18,6 +18,8 @@ export const EXPORT_DATASETS = [
   'hardware_events',
   'service_checks',
   'alerts',
+  'patch_state',
+  'patch_attempts',
 ] as const;
 export type ExportDataset = (typeof EXPORT_DATASETS)[number];
 

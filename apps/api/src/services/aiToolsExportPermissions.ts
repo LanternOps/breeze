@@ -65,6 +65,10 @@ export const EXPORT_DATASET_REQUIREMENTS: Readonly<Record<ExportDataset, ExportD
   service_checks: Object.freeze({ permission: DEVICES_READ }),
   // W05: `manage_alerts.list` (aiGuardrails TOOL_PERMISSIONS).
   alerts: Object.freeze({ permission: ALERTS_READ }),
+  // W05: `manage_patches.list`.
+  patch_state: Object.freeze({ permission: DEVICES_READ }),
+  // W05: `manage_patches.list` / `device_history`.
+  patch_attempts: Object.freeze({ permission: DEVICES_READ }),
 });
 
 /**

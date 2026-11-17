@@ -40,6 +40,7 @@ import { bootPerformanceAdapter } from './aiToolsExportDatasets/boot';
 import { hardwareEventsAdapter } from './aiToolsExportDatasets/hardware';
 import { serviceChecksAdapter } from './aiToolsExportDatasets/serviceChecks';
 import { alertsAdapter } from './aiToolsExportDatasets/alerts';
+import { patchStateAdapter, patchAttemptsAdapter } from './aiToolsExportDatasets/patches';
 import { reliabilityScoresAdapter, reliabilityHistoryAdapter, reliabilityEventsAdapter } from './aiToolsExportDatasets/reliability';
 
 /**
@@ -638,4 +639,6 @@ export const DATASET_ADAPTERS: Readonly<Record<ExportDataset, DatasetAdapter>> =
   hardware_events: hardwareEventsAdapter,
   service_checks: serviceChecksAdapter,
   alerts: alertsAdapter,
+  patch_state: patchStateAdapter,
+  patch_attempts: patchAttemptsAdapter,
 };

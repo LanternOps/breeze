@@ -50,8 +50,14 @@ describe('resolveExportGrants', () => {
     expect(resolveExportGrants(() => true)).toEqual({ datasets: [...EXPORT_DATASETS], sensitiveGates: ['security_events'] });
   });
 
-  it('devices:read without devices:execute: every dataset, no gate', () => {
-    expect(resolveExportGrants((r, a) => r === 'devices' && a === 'read')).toEqual({ datasets: [...EXPORT_DATASETS], sensitiveGates: [] });
+  it('devices:read without devices:execute: every devices:read dataset, no gate', () => {
+    expect(resolveExportGrants((r, a) => r === 'devices' && a === 'read'))
+      .toEqual({ datasets: EXPORT_DATASETS.filter((d) => d !== 'alerts'), sensitiveGates: [] });
+  });
+
+  it('W05: alerts needs alerts:read (manage_alerts.list), independent of devices:read', () => {
+    expect(resolveExportGrants((r, a) => r === 'alerts' && a === 'read')).toEqual({ datasets: ['alerts'], sensitiveGates: [] });
+    expect(resolveExportGrants((r, a) => a === 'read').datasets).toEqual([...EXPORT_DATASETS]);
   });
 
   it('a ceiling without devices:read gets nothing, and holds no gate for a dataset it cannot export', () => {
