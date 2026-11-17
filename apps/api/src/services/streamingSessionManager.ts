@@ -18,7 +18,7 @@ import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithIns
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { aiSessions, aiMessages } from '../db/schema';
-import { eq, and, isNull, inArray } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode, AiPendingCardEvent } from '@breeze/shared/types/ai';
@@ -60,6 +60,13 @@ import { storeSdkSessionPointer } from './aiSdkSessionPointer';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES, chatToolDomain, listChatSurfaceToolNames } from './aiAgentSdkTools';
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
+import {
+  flagSessionNow,
+  flushDeferredToolFailureFlags,
+  holdToolFailureFlag,
+  isMcpInputValidationErrorText,
+  type DeferredToolFailureFlag,
+} from './aiSessionAutoFlag';
 import type { RequestLike } from './auditEvents';
 import type { WispSessionGrant } from './wisp/chatCeiling';
 import { appendWispAssistantText, beginWispTurn, type WispCurrentTurn } from './wisp/turnRecord';
@@ -558,6 +565,13 @@ export interface ActiveSession {
    * fixtures that build ActiveSession literals compile unchanged.
    */
   pendingTurnRoundTrips?: RoundTripTally;
+  /**
+   * #11968: this turn's correctable input refusals, held back from the
+   * session auto-flag until the turn ends (aiSessionAutoFlag.ts). Written
+   * by postToolUse, flushed at every turn end. Optional so fixtures that
+   * build ActiveSession literals compile unchanged.
+   */
+  deferredToolFailureFlags?: Map<string, DeferredToolFailureFlag>;
   /**
    * #10400: the work turns this query may spend, set only when it can search.
    * Its SDK `maxTurns` carries search headroom, so the SDK no longer stops real
@@ -2243,6 +2257,9 @@ export class StreamingSessionManager {
             // recur. The Office per-user ledger, the `done` event and the org
             // settlement all read this one number.
             const turn = await this.settleSdkTurn(session, resultMsg);
+            // #11968: flag the session for an input refusal the model did not
+            // correct this turn. Before `done`, so it cannot outlive the turn.
+            await flushDeferredToolFailureFlags(session);
 
             if (isErrorSuccessMessage && !turn.outcome.refused) {
               session.eventBus.publish({ type: 'error', message: isErrorSuccessMessage, code: failureCode });
@@ -2369,6 +2386,9 @@ export class StreamingSessionManager {
       ) {
         await this.settleSdkTurn(session, null);
       }
+      // #11968: a turn that ended without a `result` still flags the session
+      // for an input refusal it never corrected (no-op when nothing is held).
+      await flushDeferredToolFailureFlags(session);
 
       // Only when a settlement failed AND marking it indeterminate at the time
       // failed too: retry the mark — never a re-settle (S5).
@@ -2728,24 +2748,14 @@ export class StreamingSessionManager {
     }
 
     // Auto-flag the session (first failure only) so flagged-session review
-    // surfaces these drops — mirrors postToolUse's tool-failure flag.
-    try {
-      await withDbAccessContext(
-        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-        () =>
-          db.update(aiSessions)
-            .set({
-              flaggedAt: new Date(),
-              flagReason: `Tool rejected before execution: ${toolName} — ${errorText.slice(0, 300)}`,
-            })
-            .where(and(
-              eq(aiSessions.id, session.breezeSessionId),
-              isNull(aiSessions.flaggedAt),
-            ))
-      );
-    } catch (err) {
-      captureException(err);
-      console.error('[StreamingSessionManager] Failed to auto-flag session for dropped tool_result:', session.breezeSessionId, err);
+    // surfaces these drops — mirrors postToolUse's tool-failure flag. An
+    // input-validation drop is held until the turn ends and dropped if the
+    // model's retry of the same tool succeeds (#11968, aiSessionAutoFlag.ts).
+    const flag = { flagReason: `Tool rejected before execution: ${toolName} — ${errorText.slice(0, 300)}` };
+    if (isMcpInputValidationErrorText(rawText)) {
+      holdToolFailureFlag(session, toolName, flag);
+    } else {
+      await flagSessionNow(session, flag);
     }
   }
 

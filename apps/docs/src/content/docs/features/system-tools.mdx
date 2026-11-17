@@ -392,7 +392,7 @@ Each log entry includes:
 |-----------------|--------|---------------------------------|
 | `name`          | string | Log name (e.g. `System`)       |
 | `displayName`   | string | Human-readable name             |
-| `recordCount`   | number | Total number of records         |
+| `recordCount`   | number | Total number of records; omitted when the agent could not read the count |
 | `maxSize`       | number | Maximum log size in bytes       |
 | `retentionDays` | number | Retention policy in days        |
 | `lastWriteTime` | string | ISO 8601 timestamp of last write |
