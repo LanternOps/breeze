@@ -47,6 +47,13 @@ export type PostureControls = {
   anyAvCoveragePct?: number | null;
   /** In-scope devices Breeze has no endpoint evidence for (excluded from anyAvCoveragePct). */
   anyAvUnknownCount?: number;
+  /**
+   * Devices with protection evidence (#12044). Its presence marks a snapshot
+   * whose `unprotectedCount` covers assessed devices only. Legacy snapshots
+   * lack it: there `unprotectedCount` also folded in devices with no evidence,
+   * so the renderer must not subtract `anyAvUnknownCount` from it again.
+   */
+  avAssessedCount?: number;
   unprotectedCount?: number;
   avDefinitionsCurrentPct?: number | null;
   encryptionPct?: number | null;

@@ -406,13 +406,14 @@ function scoreBand(score: number): ScoreBand {
 
 /** One-line meaning of the posture bands, printed under the scorecard. */
 const POSTURE_BAND_KEY =
-  'Bands: Strong 80+, Good 60\u201379, Fair 40\u201359, At risk under 40; held at Fair while critical patches or vulnerabilities are open or a device is unprotected.';
+  'Bands: Strong 80+, Good 60\u201379, Fair 40\u201359, At risk under 40; capped at Fair while critical patches or vulnerabilities are open or a device is unprotected.';
 
 /**
  * The posture cover's band. The score averages per-device factors, so a fleet
- * can score 64 while carrying 154 critical vulnerabilities; a passing band
- * beside open criticals or an unprotected device contradicts the page, so the
- * band is held at FAIR until they are cleared. It never raises a lower band.
+ * can score in the passing range while carrying many critical vulnerabilities;
+ * a passing band beside open criticals or an unprotected device contradicts the
+ * page, so the band is capped at FAIR until they are cleared. It never raises a
+ * lower band.
  * Exported for tests.
  */
 export function postureScoreBand(
@@ -528,7 +529,8 @@ function drawScorecard(
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       // A long label (e.g. "AV protected · 1 not assessed") wraps inside its
-      // cell instead of running into the neighbouring stat.
+      // cell instead of running into the neighbouring stat; at most two lines
+      // fit above the panel edge, so labels are kept short enough for that.
       // Prefer breaking at the " · " qualifier over mid-phrase.
       const labelLines = doc.getTextWidth(st.label) <= cellW - 3
         ? [st.label]
@@ -771,8 +773,7 @@ export function buildPostureCoverageMetrics(summary: PostureSummary): Metric[] {
     status: coverageShareStatus(pctStatus(pct, good, warn), unknown),
     target,
   });
-  const unprotected = c.unprotectedCount ?? 0;
-  const avUnknown = c.anyAvUnknownCount ?? 0;
+  const { unprotected, notAssessed: avUnknown } = postureProtectionCounts(summary);
   const protectionMetrics: Metric[] = [
     pctRow('EDR coverage', c.edrCoveragePct, c.edrUnknownCount, '90%+'),
     pctRow('AV + real-time protection', c.anyAvCoveragePct, c.anyAvUnknownCount, '95%+'),
@@ -827,14 +828,22 @@ type PostureAggregates = {
  * Protection figures the hero, grid and recommendations share, so they agree:
  * a device with no protection evidence is NOT ASSESSED, never unprotected
  * (#12044), and "protected" is counted over the assessed devices only.
+ * A legacy snapshot (no `avAssessedCount`) folded unassessed devices into
+ * `unprotectedCount`; it keeps its original figures (everything over the full
+ * device count, nothing disclosed as not assessed) rather than subtracting the
+ * unassessed devices twice. `legacyUnprotected` is the row-derived fallback
+ * for snapshots that predate `unprotectedCount` itself.
  */
-function postureProtectionCounts(summary: PostureSummary, agg: PostureAggregates) {
+function postureProtectionCounts(summary: PostureSummary, legacyUnprotected = 0) {
   const c = summary.controls ?? {};
   const deviceCount = summary.deviceCount ?? 0;
-  const unprotected = c.unprotectedCount ?? agg.unprotectedCount;
-  const notAssessed = Math.min(deviceCount, c.anyAvUnknownCount ?? 0);
-  const assessed = Math.max(0, deviceCount - notAssessed);
-  return { unprotected, notAssessed, assessed, protectedCount: Math.max(0, assessed - unprotected) };
+  if (c.avAssessedCount == null) {
+    const unprotected = c.unprotectedCount ?? legacyUnprotected;
+    return { unprotected, notAssessed: 0, assessed: deviceCount, protectedCount: Math.max(0, deviceCount - unprotected) };
+  }
+  const assessed = Math.min(deviceCount, Math.max(0, c.avAssessedCount));
+  const unprotected = Math.min(assessed, c.unprotectedCount ?? 0);
+  return { unprotected, notAssessed: deviceCount - assessed, assessed, protectedCount: assessed - unprotected };
 }
 
 // Page 1 keeps clear of the acronym glossary pinned above the footer rule;
@@ -901,7 +910,7 @@ function renderPostureCover(
     // The meter must be captioned with what it plots (the composite score) —
     // captioning it with the AV-coverage % made the bar read as coverage.
     const caption = 'Overall posture score across assessed controls';
-    const prot = postureProtectionCounts(summary, agg);
+    const prot = postureProtectionCounts(summary, agg.unprotectedCount);
     // Critical patches and critical vulnerabilities are separate figures: one
     // combined tile read as contradicting the "no critical pending" patch row.
     const stats: ScoreStat[] = [
@@ -991,7 +1000,7 @@ function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): 
   const c = summary.controls ?? {};
   const p = summary.privilegedAccess ?? {};
   const recs: Recommendation[] = [];
-  const { unprotected, notAssessed } = postureProtectionCounts(summary, agg);
+  const { unprotected, notAssessed } = postureProtectionCounts(summary, agg.unprotectedCount);
   if (unprotected === 1) {
     recs.push({ severity: 'bad', text: 'Deploy protection to the unprotected device — it is the fleet\'s most exposed endpoint.' });
   } else if (unprotected > 1) {
@@ -1083,8 +1092,9 @@ function drawRecommendedActions(flow: PostureFlow, recs: Recommendation[]): void
 
 /**
  * The security-product inventory. The whole section moves to the next page
- * when not even one product row fits under its heading (#12043); a split list
- * says how many rows continue.
+ * when its heading, one product row and the continuation-notice line don't fit
+ * (#12043), so the heading never stands alone; a split list says how many rows
+ * continue.
  */
 function drawPostureProducts(flow: PostureFlow, products: PostureProduct[]): void {
   if (products.length === 0) return;
@@ -2032,8 +2042,10 @@ function renderPostureTable(doc: jsPDF, rows: Record<string, unknown>[], opts: B
   const body = rows.map((row) => cols.map((col) => {
     const cell = formatPostureCell(col.key, row[col.key]);
     if (col.key !== 'hostname' || (hostCounts.get(hostKey(row)) ?? 0) < 2) return cell;
+    // Legacy rows carry no lastSeenAt key at all; a null one never checked in.
+    if (!('lastSeenAt' in row)) return cell;
     const seen = formatLastSeen(row.lastSeenAt, opts.timezone);
-    return seen ? `${cell}\nlast seen ${seen}` : cell;
+    return `${cell}\n${seen ? `last seen ${seen}` : 'never checked in'}`;
   }));
   const columnStyles: Record<number, { cellWidth: number; halign: 'left' | 'center' }> = {};
   cols.forEach((col, i) => {

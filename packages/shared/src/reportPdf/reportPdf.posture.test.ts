@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPostureBackupMetric, buildPostureCoverageMetrics, buildReportPdf, postureScoreBand } from './reportPdf';
+import { buildPostureBackupMetric, buildPostureCoverageMetrics, buildReportPdf, paletteForBranding, postureScoreBand } from './reportPdf';
 import type { PostureSummary } from '../types/postureReport';
 
 // Security & Compliance Posture PDF: figures and colours that must agree with
@@ -29,7 +29,7 @@ const summary: PostureSummary = {
   postureScore: 64,
   controls: {
     edrCoveragePct: 63, edrUnknownCount: 0,
-    anyAvCoveragePct: 100, anyAvUnknownCount: 1, unprotectedCount: 0,
+    anyAvCoveragePct: 100, anyAvUnknownCount: 1, avAssessedCount: 7, unprotectedCount: 0,
     avDefinitionsCurrentPct: 100,
     encryptionPct: 100, encryptionUnknownCount: 1,
     firewallPct: 100, firewallUnknownCount: 2,
@@ -84,13 +84,15 @@ describe('posture score band (#12044)', () => {
     const good = postureScoreBand(64, { criticalFindings: 0, unprotected: 0 });
     const strong = postureScoreBand(85, { criticalFindings: 0, unprotected: 0 });
     expect(good.color).toEqual(strong.color);
+    expect(good.color).toEqual(paletteForBranding().success);
+    expect(good.color).not.toEqual(paletteForBranding().primary);
   });
 
   it('prints FAIR, not GOOD, beside 154 critical vulnerabilities and states what the bands mean', () => {
     const t = text(render());
     expect(t).not.toContain('(GOOD)');
     expect(t).toContain('(FAIR)');
-    expect(t).toMatch(/held at Fair while critical/i);
+    expect(t).toMatch(/capped at Fair while critical/i);
   });
 });
 
@@ -112,8 +114,23 @@ describe('posture hero figures (#12044)', () => {
     expect(t).toContain('(1 not assessed)');
   });
 
+  it('keeps a legacy snapshot\'s figures instead of subtracting its unassessed devices twice', () => {
+    // Pre-#12044 snapshot: unprotectedCount (2) already includes the 2 devices
+    // with no evidence that anyAvUnknownCount also counts; no avAssessedCount.
+    const legacy: PostureSummary = {
+      ...summary,
+      deviceCount: 10,
+      controls: { ...summary.controls, avAssessedCount: undefined, anyAvUnknownCount: 2, unprotectedCount: 2 },
+    };
+    const t = text(render(legacy));
+    expect(t).toContain('(8/10)');
+    expect(t).not.toContain('(6/8)');
+    expect(statusOf(legacy, 'Unprotected devices')?.value).toBe('2');
+    expect(t).not.toContain('not reported protection status');
+  });
+
   it('does not count a no-data row as unprotected when a legacy snapshot lacks unprotectedCount', () => {
-    const legacy: PostureSummary = { ...summary, controls: { ...summary.controls, unprotectedCount: undefined, anyAvUnknownCount: undefined } };
+    const legacy: PostureSummary = { ...summary, controls: { ...summary.controls, unprotectedCount: undefined, anyAvUnknownCount: undefined, avAssessedCount: undefined } };
     const t = text(render(legacy));
     expect(t).not.toMatch(/Deploy protection/);
   });
@@ -200,6 +217,37 @@ describe('posture layout (#12043)', () => {
     }
   });
 
+  it('flows a long inventory over several pages: every product once, no stranded heading, chrome on every page', () => {
+    const products = Array.from({ length: 70 }, (_, i) => ({
+      product: `Agent ${String(i + 1).padStart(2, '0')}`, category: 'antivirus' as const, active: true, deviceCoverage: 1,
+    }));
+    const doc = render({ ...summary, securityProducts: products });
+    const ps = pages(doc);
+    expect(ps.length).toBeGreaterThanOrEqual(3);
+    const all = ps.join('\n');
+    for (const p of products) expect(all.split(`(${p.product} `).length - 1).toBe(1);
+    const notices = all.match(/products? continued on the next page/g)?.length ?? 0;
+    // jsPDF escapes parentheses inside a PDF string: "(continued)" → "\(continued\)".
+    const continuedHeadings = all.split('Security products in use \\(continued\\)').length - 1;
+    expect(notices).toBe(continuedHeadings);
+    expect(notices).toBeGreaterThanOrEqual(1);
+    for (const page of ps) {
+      expect(page).toContain('SECURITY & COMPLIANCE POSTURE');
+      expect(page).toMatch(/Page \d+ of/);
+      if (page.includes('(Security products in use')) expect(page).toMatch(/\(Agent \d\d/);
+      if (page.includes('(Recommended actions')) expect(page).toMatch(/\(\d+\.\)/);
+    }
+    // Every recommendation is still drawn once.
+    expect(all.match(/\(\d+\.\)/g)?.length).toBe(9);
+    expect(all).toContain('Per-device detail');
+  });
+
+  it('renders a summary with no score and no devices without NaN', () => {
+    const t = text(render({ ...summary, postureScore: null, deviceCount: 0, controls: { avAssessedCount: 0 } }, []));
+    expect(t).toContain('0 devices in scope');
+    expect(t).not.toContain('NaN');
+  });
+
   it('starts the per-device table on the continuation page when it fits (no near-empty page)', () => {
     const doc = render();
     const ps = pages(doc);
@@ -229,5 +277,12 @@ describe('posture scope and duplicates (#12044)', () => {
     expect(t).toContain('last seen Nov 9, 2026');
     // A unique hostname is not annotated.
     expect(t.match(/last seen/g)?.length).toBe(2);
+  });
+
+  it('says a duplicate never checked in rather than leaving the rows indistinguishable', () => {
+    const t = text(render(summary, [row('WS-01', { lastSeenAt: '2026-11-09T08:00:00Z' }), row('WS-01', { lastSeenAt: null })]));
+    expect(t).toContain('never checked in');
+    // Legacy rows (no lastSeenAt key) are left bare.
+    expect(text(render(summary, [row('WS-01'), row('WS-01')]))).not.toMatch(/never checked in|last seen/);
   });
 });

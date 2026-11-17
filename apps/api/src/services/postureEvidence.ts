@@ -163,11 +163,14 @@ export interface PostureEvidence {
   report: {
     reporting: number;
     /**
-     * Report-only protection figures (#12044). A device whose protection state
-     * is unknown (no status row, no agent, or a null real-time-protection
-     * reading) is NOT ASSESSED here, never unprotected: `avAssessed` counts the
-     * devices with protection evidence, `avProtected` those protected, and
-     * `unprotected` = avAssessed - avProtected. The shared
+     * Report-only protection figures (#12044). A device is AV-assessed when it
+     * is EDR/AV-assessed (§19.7: a fresh status row, an agent row or a recent
+     * check-in) AND its protection is known — so a device with no status row
+     * and no agent, or a null real-time-protection reading, is NOT ASSESSED
+     * here, never unprotected. So is a device whose only evidence is a stale
+     * status row (not seen recently, no agent), even if that row says
+     * unprotected. `avAssessed` counts AV-assessed devices, `avProtected` the
+     * protected ones, and `unprotected` = avAssessed - avProtected. The shared
      * `controls.endpoint_protection` (trust page) keeps its §19.7 semantics.
      */
     unprotected: number;

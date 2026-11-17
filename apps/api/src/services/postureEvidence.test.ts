@@ -230,6 +230,19 @@ describe('loadPostureEvidence', () => {
       ]));
       expect(ev.controls.edr_coverage.passing).toBe(0); // trust-page control unchanged
     });
+
+    it.each([
+      ['an EDR with real-time protection off', 'sentinelone', false],
+      ['an EDR with an unknown real-time-protection reading', 'crowdstrike', null],
+      ['a non-EDR antivirus', 'windows_defender', true],
+    ] as const)('%s does not count toward the report EDR figure', async (_label, provider, realTimeProtection) => {
+      mockQueries({
+        3: [{ deviceId: 'd1', provider, realTimeProtection, definitionsDate: recent, encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: recent }],
+        5: [],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.report.edrProtected).toBe(0);
+    });
   });
 
   it('a stale security_status row is not assessed for encryption/firewall; EDR/AV assessment then rests on the agent row or check-in', async () => {

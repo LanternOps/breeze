@@ -268,6 +268,15 @@ describe('generateSecurityCompliancePostureReport', () => {
       expect((r.summary as any).excludedBySiteFilterCount).toBe(4);
     });
 
+    it('never counts devices outside a site-restricted caller\'s sites', async () => {
+      mockGeneratorQueries();
+      const select = vi.mocked(db.select);
+      const r = await generateSecurityCompliancePostureReport(ORG, { sites: [SITE_A] }, authority([SITE_A]));
+      expect(r.summary).not.toHaveProperty('excludedBySiteFilterCount');
+      const countQueries = select.mock.calls.filter(([selection]) => selection && 'managedDeviceCount' in (selection as object));
+      expect(countQueries).toHaveLength(0);
+    });
+
     it('omits the excluded count without a site filter', async () => {
       mockGeneratorQueries();
       const r = await generateSecurityCompliancePostureReport(ORG, {});
