@@ -45,8 +45,9 @@ func TestRevocationLeaseRenewalIsMeasuredFromTheRequest(t *testing.T) {
 	assertNear(t, "hardDeadline", st.HardDeadline, requestedAt.Add(30*time.Minute), requestedAt.Add(30*time.Minute))
 }
 
-// An older API sends only absolute deadlines and no echo; the apply path must
-// keep honouring them exactly as before.
+// An older API sends only absolute deadlines and no echo. Within the ceilings
+// (MaxRevocationLeaseTTL, MaxSessionDurationCap) the apply path honours them
+// unchanged; the slow-clock cap is pinned by the test below.
 func TestRevocationLeaseRenewalFromAnOlderAPIUsesTheAbsoluteDeadlines(t *testing.T) {
 	h, mgr := startSkewTestStream(t, "ws-old")
 	expiresAt := time.Now().Add(2 * time.Minute).Truncate(time.Millisecond)
@@ -88,10 +89,45 @@ func TestRevocationLeaseRenewalFromAnOlderAPIIsCappedOnASlowDevice(t *testing.T)
 	}
 	capAt := receivedAt.Add(desktop.MaxRevocationLeaseTTL)
 	assertNear(t, "expiresAt", st.ExpiresAt, capAt, capAt)
-	// The stream's hard deadline only ever moves earlier, so the most this
-	// answer can do is leave it at or before the 12 h cap.
-	if hardCap := receivedAt.Add(desktop.MaxSessionDurationCap); st.HardDeadline.After(hardCap) {
-		t.Fatalf("hardDeadline = +%v, want at most +%v", st.HardDeadline.Sub(receivedAt), desktop.MaxSessionDurationCap)
+	// The stream's hard deadline only ever moves earlier, so it cannot show
+	// the hard-deadline cap; the forwarding test below does.
+}
+
+// The same older-API answer forwarded to a helper: the forwarded deadlines
+// are the resolved ones, so both carry the cap. Nothing downstream clamps
+// them again (the helper reads them with MonotonicDeadline), which makes this
+// the place the 12 h hard-deadline cap is observable end to end.
+func TestOlderAPIAnswerForwardedToTheHelperIsCappedOnASlowDevice(t *testing.T) {
+	session, received := newLeaseBridgeHelper(t, "helper-old-slow")
+	h := &Heartbeat{
+		sessionBroker: newTestBrokerWithSessions(t, session),
+		isHeadless:    true,
+		desktopMgr:    desktop.NewSessionManager(),
+	}
+	h.rememberDesktopOwner("desk-old-slow", session.SessionID)
+
+	const skew = -10 * time.Minute
+	receivedAt := time.Now()
+	serverNow := receivedAt.Add(-skew)
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
+		SessionID:          "desk-old-slow",
+		ExpiresAtUnixMs:    serverNow.Add(time.Minute).UnixMilli(),
+		HardDeadlineUnixMs: serverNow.Add(desktop.MaxSessionDurationCap).UnixMilli(),
+		ReceivedAt:         receivedAt,
+	})
+
+	env := awaitEnvelope(t, received, ipc.TypeDesktopLeaseUpdate)
+	var update ipc.DesktopLeaseUpdate
+	if err := json.Unmarshal(env.Payload, &update); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if want := receivedAt.Add(desktop.MaxRevocationLeaseTTL).UnixMilli(); update.ExpiresAtUnixMs != want {
+		t.Fatalf("forwarded expiresAtUnixMs = +%v, want capped at +%v",
+			time.Duration(update.ExpiresAtUnixMs-receivedAt.UnixMilli())*time.Millisecond, desktop.MaxRevocationLeaseTTL)
+	}
+	if want := receivedAt.Add(desktop.MaxSessionDurationCap).UnixMilli(); update.HardDeadlineUnixMs != want {
+		t.Fatalf("forwarded hardDeadlineUnixMs = +%v, want capped at +%v",
+			time.Duration(update.HardDeadlineUnixMs-receivedAt.UnixMilli())*time.Millisecond, desktop.MaxSessionDurationCap)
 	}
 }
 

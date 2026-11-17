@@ -121,7 +121,9 @@ const DefaultRevocationLeaseGrace = 90 * time.Second
 // LeaseHardDeadline), so a clock step after receipt can neither extend a lease
 // nor push out the 12h ceiling. When the server also sends each deadline as
 // the time remaining (expiresInMs / hardDeadlineInMs), that duration is used
-// and the device's wall clock plays no part at all (#11840).
+// and the device's wall clock plays no part at all (#11840). Without them, the
+// absolute fields are read against the wall clock but capped at receipt +
+// MaxRevocationLeaseTTL / MaxSessionDurationCap.
 func NormalizeRevocationLease(l *ipc.RevocationLease) (*RevocationLease, error) {
 	if l == nil {
 		return nil, ErrRevocationLeaseRequired
@@ -186,7 +188,7 @@ const MaxRevocationLeaseTTL = 5 * time.Minute
 // read against this device's wall clock. The absolute form cuts a lease short
 // by the device's full clock lead and would stretch it by the full lag, so the
 // fallback is capped at the same anchor + MaxRevocationLeaseTTL: a slow clock
-// can stretch a lease to at most that, never past it (#11840).
+// can extend a lease only up to that ceiling, never past it (#11840).
 //
 // Which anchor bounds what:
 //   - A renewal answer is measured from when this agent queued the request it
