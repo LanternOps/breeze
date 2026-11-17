@@ -133,7 +133,7 @@ export function alreadyDecidedOutcome(status: number, body: unknown): AiApproval
   if (status !== 409 || !body || typeof body !== 'object') return null;
   const { code, outcome } = body as { code?: unknown; outcome?: unknown };
   if (code !== 'approval_already_decided') return null;
-  return outcome === 'approved' || outcome === 'not_approved' || outcome === 'ended' ? outcome : null;
+  return outcome === 'approved' || outcome === 'not_approved' || outcome === 'expired' || outcome === 'ended' ? outcome : null;
 }
 
 export interface PendingPlan {

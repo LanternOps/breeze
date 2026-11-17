@@ -45,8 +45,9 @@ func TestRevocationLeaseRenewalIsMeasuredFromTheRequest(t *testing.T) {
 	assertNear(t, "hardDeadline", st.HardDeadline, requestedAt.Add(30*time.Minute), requestedAt.Add(30*time.Minute))
 }
 
-// An older API sends only absolute deadlines and no echo; the apply path must
-// keep honouring them exactly as before.
+// An older API sends only absolute deadlines and no echo. Within the ceilings
+// (MaxRevocationLeaseTTL, MaxSessionDurationCap) the apply path honours them
+// unchanged; the slow-clock cap is pinned by the test below.
 func TestRevocationLeaseRenewalFromAnOlderAPIUsesTheAbsoluteDeadlines(t *testing.T) {
 	h, mgr := startSkewTestStream(t, "ws-old")
 	expiresAt := time.Now().Add(2 * time.Minute).Truncate(time.Millisecond)
@@ -63,6 +64,70 @@ func TestRevocationLeaseRenewalFromAnOlderAPIUsesTheAbsoluteDeadlines(t *testing
 	}
 	if !st.HardDeadline.Equal(hardDeadline) {
 		t.Fatalf("hardDeadline = %v, want %v", st.HardDeadline, hardDeadline)
+	}
+}
+
+// An older API's answer on a device whose clock is 10 min slow reads as an
+// 11 min lease. The fallback is capped at receipt + MaxRevocationLeaseTTL, so
+// the slow clock cannot stretch the lease. (The fast-clock side, where the
+// absolute deadline must be kept as it is, is pinned in the desktop package:
+// TestAbsoluteFallbackIsNeverExtendedOnAFastDevice.)
+func TestRevocationLeaseRenewalFromAnOlderAPIIsCappedOnASlowDevice(t *testing.T) {
+	h, mgr := startSkewTestStream(t, "ws-old-slow")
+	const skew = -10 * time.Minute
+	receivedAt := time.Now()
+	serverNow := receivedAt.Add(-skew)
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
+		SessionID:          "ws-old-slow",
+		ExpiresAtUnixMs:    serverNow.Add(time.Minute).UnixMilli(),
+		HardDeadlineUnixMs: serverNow.Add(desktop.MaxSessionDurationCap).UnixMilli(),
+		ReceivedAt:         receivedAt,
+	})
+	st, ok := mgr.LeaseStatus("ws-old-slow")
+	if !ok || st.Revoked {
+		t.Fatalf("renewal must leave the stream live: %+v", st)
+	}
+	capAt := receivedAt.Add(desktop.MaxRevocationLeaseTTL)
+	assertNear(t, "expiresAt", st.ExpiresAt, capAt, capAt)
+	// The stream's hard deadline only ever moves earlier, so it cannot show
+	// the hard-deadline cap; the forwarding test below does.
+}
+
+// The same older-API answer forwarded to a helper: the forwarded deadlines
+// are the resolved ones, so both carry the cap. Nothing downstream clamps
+// them again (the helper reads them with MonotonicDeadline), which makes this
+// the place the 12 h hard-deadline cap is observable end to end.
+func TestOlderAPIAnswerForwardedToTheHelperIsCappedOnASlowDevice(t *testing.T) {
+	session, received := newLeaseBridgeHelper(t, "helper-old-slow")
+	h := &Heartbeat{
+		sessionBroker: newTestBrokerWithSessions(t, session),
+		isHeadless:    true,
+		desktopMgr:    desktop.NewSessionManager(),
+	}
+	h.rememberDesktopOwner("desk-old-slow", session.SessionID)
+
+	const skew = -10 * time.Minute
+	receivedAt := time.Now()
+	serverNow := receivedAt.Add(-skew)
+	h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
+		SessionID:          "desk-old-slow",
+		ExpiresAtUnixMs:    serverNow.Add(time.Minute).UnixMilli(),
+		HardDeadlineUnixMs: serverNow.Add(desktop.MaxSessionDurationCap).UnixMilli(),
+		ReceivedAt:         receivedAt,
+	})
+
+	env := awaitEnvelope(t, received, ipc.TypeDesktopLeaseUpdate)
+	var update ipc.DesktopLeaseUpdate
+	if err := json.Unmarshal(env.Payload, &update); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if want := receivedAt.Add(desktop.MaxRevocationLeaseTTL).UnixMilli(); update.ExpiresAtUnixMs != want {
+		t.Fatalf("forwarded expiresAtUnixMs = +%v, want capped at +%v",
+			time.Duration(update.ExpiresAtUnixMs-receivedAt.UnixMilli())*time.Millisecond, desktop.MaxRevocationLeaseTTL)
+	}
+	if want := receivedAt.Add(desktop.MaxSessionDurationCap).UnixMilli(); update.HardDeadlineUnixMs != want {
+		t.Fatalf("forwarded hardDeadlineUnixMs = +%v, want capped at +%v",
+			time.Duration(update.HardDeadlineUnixMs-receivedAt.UnixMilli())*time.Millisecond, desktop.MaxSessionDurationCap)
 	}
 }
 
@@ -153,10 +218,15 @@ func TestLeaseAnswerForwardedToTheHelperIsResolvedToTheDeviceClock(t *testing.T)
 			t.Fatalf("forwarded %s = %d, want %d: measured from the request (off by %v)",
 				f.name, f.got, want, time.Duration(f.got-want)*time.Millisecond)
 		}
-		// On the current wall clock: within the round trip of
-		// now + granted remaining, never later.
-		if hi := time.Now().Add(f.in).UnixMilli(); f.got > hi || f.got < hi-roundTrip.Milliseconds()-time.Second.Milliseconds() {
-			t.Fatalf("forwarded %s = %d is not within the round trip of now+%v (%d)", f.name, f.got, f.in, hi)
+		// On the current wall clock: never later than receipt + granted
+		// remaining, and no earlier than that minus the round trip. Both
+		// bounds come from the receipt reading taken before the answer was
+		// applied, not from a clock read after awaitEnvelope, so a slow IPC
+		// delivery on a loaded race run cannot move them.
+		hi := receivedAt.Add(f.in).UnixMilli()
+		if lo := hi - roundTrip.Milliseconds(); f.got > hi || f.got < lo {
+			t.Fatalf("forwarded %s = %d is not within [%d, %d]: the round trip before receipt+%v",
+				f.name, f.got, lo, hi, f.in)
 		}
 	}
 }

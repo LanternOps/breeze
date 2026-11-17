@@ -1709,7 +1709,8 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// remaining, measured here from when this agent asked for the renewal
 	// (LeaseClockAnchor), so neither the device's wall clock nor any delay on
 	// the way can make the lease outlast what the server granted. An older API
-	// sends only absolute timestamps, read against the wall clock as before.
+	// sends only absolute timestamps, read against the wall clock as before but
+	// capped at the same ceilings, so a slow clock cannot stretch them.
 	// Everything below, including the copy forwarded to a helper, uses these
 	// resolved values.
 	anchor := msg.LeaseClockAnchor()
