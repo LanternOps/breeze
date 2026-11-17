@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { EXPORT_DATASETS } from './aiToolsExportDatasetNames';
 import { join } from 'node:path';
 import {
   EXPORT_DATASET_REQUIREMENTS,
@@ -46,11 +47,11 @@ describe('EXPORT_DATASET_REQUIREMENTS', () => {
 
 describe('resolveExportGrants', () => {
   it('a ceiling holding devices:read and devices:execute gets every dataset and the security gate', () => {
-    expect(resolveExportGrants(() => true)).toEqual({ datasets: SEVEN, sensitiveGates: ['security_events'] });
+    expect(resolveExportGrants(() => true)).toEqual({ datasets: [...EXPORT_DATASETS], sensitiveGates: ['security_events'] });
   });
 
   it('devices:read without devices:execute: every dataset, no gate', () => {
-    expect(resolveExportGrants((r, a) => r === 'devices' && a === 'read')).toEqual({ datasets: SEVEN, sensitiveGates: [] });
+    expect(resolveExportGrants((r, a) => r === 'devices' && a === 'read')).toEqual({ datasets: [...EXPORT_DATASETS], sensitiveGates: [] });
   });
 
   it('a ceiling without devices:read gets nothing, and holds no gate for a dataset it cannot export', () => {
