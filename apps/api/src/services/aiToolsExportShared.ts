@@ -13,6 +13,7 @@
  * Only `import type` from the hub (`aiToolsExportDatasets.ts`), so this file
  * stays out of the hub's import cycle.
  */
+import { createHash } from 'node:crypto';
 import { and, eq, sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
@@ -302,6 +303,22 @@ export function exportText(value: unknown, opts: ExportTextOptions = {}): string
   if (opts.urls) text = scrubUrlsInText(text);
   text = opts.paths ? redactAgentLogMessage(text) : redactLogMessage(text);
   return cutExportText(text);
+}
+
+/** An agent-reported enumerated value: one of `known`, else the fixed `other`
+ *  (absent → null). No agent-supplied free text passes through. */
+export function exportEnum(value: unknown, known: ReadonlySet<string>): string | null {
+  if (value === null || value === undefined) return null;
+  return typeof value === 'string' && known.has(value) ? value : 'other';
+}
+
+/** A stable 32-hex key for an identifier that embeds agent text (a path, a
+ *  name, an error code): rows still join and dedupe on it, but none of the
+ *  text leaves. Absent → null. */
+export function exportKey(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return createHash('sha256').update(text).digest('hex').slice(0, 32);
 }
 
 /** A JSON free-text column, redacted leaf by leaf, emitted as a string so CSV and JSONL carry the same type. */

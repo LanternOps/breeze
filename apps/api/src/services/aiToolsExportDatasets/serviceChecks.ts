@@ -76,7 +76,8 @@ async function createServiceChecksPager(req: DatasetRequest) {
       hostname: scope.hostnames.get(row.deviceId) ?? null,
       timestamp: row.timestamp.toISOString(),
       watchType: row.watchType,
-      name: exportText(row.name),
+      // A process watch name can be a full path: user-profile paths are dropped.
+      name: exportText(row.name, { paths: true }),
       status: row.status,
       cpuPercent: row.cpuPercent,
       memoryMb: row.memoryMb,

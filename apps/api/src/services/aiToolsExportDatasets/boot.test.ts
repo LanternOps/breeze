@@ -132,7 +132,38 @@ describe('boot_performance', () => {
     expect(out).toHaveLength(100);
     expect(out[0]!.impactScore).toBe(149);
     expect(JSON.stringify(out)).not.toMatch(/jdoe|password=p/);
-    expect(Object.keys(out[0]!)).toEqual(['itemId', 'name', 'type', 'path', 'enabled', 'cpuTimeMs', 'diskIoBytes', 'impactScore']);
+    expect(Object.keys(out[0]!)).toEqual(['itemKey', 'name', 'type', 'path', 'enabled', 'cpuTimeMs', 'diskIoBytes', 'impactScore']);
+  });
+
+  it('the composite item id and a path used as the name leak no user name or path', async () => {
+    // The server stores `itemId` as `type|path`, lowercased with forward slashes
+    // (computeStartupItemId), and uses the path as `name` when there is none.
+    const items = [
+      { itemId: 'service|C:\\Users\\jdoe\\x.exe', name: 'C:\\Users\\jdoe\\x.exe', type: 'service', path: 'C:\\Users\\jdoe\\x.exe', impactScore: 3 },
+      { itemId: 'run_key|c:/users/jdoe/appdata/roaming/y.exe', name: 'c:/users/jdoe/appdata/roaming/y.exe', type: 'run_key', path: 'c:/users/jdoe/appdata/roaming/y.exe', impactScore: 2 },
+      { itemId: 'launch_agent|/users/jdoe/library/launchagents/z.plist', name: '/Users/jdoe/Library/LaunchAgents/z.plist', type: 'launch_agent', impactScore: 1 },
+    ];
+    const [row] = await allRows(bootPerformanceAdapter, [{ ...bootRow(), startupItems: items }]);
+    const out = row!.startupItems as Array<Record<string, unknown>>;
+    const text = JSON.stringify(out);
+    expect(text).not.toMatch(/jdoe/i);
+    // The id is hashed, so the item path survives only in the redacted `path`/`name` cells.
+    for (const item of out) expect(String(item.itemKey)).not.toMatch(/[|/\\]/);
+    // Still a stable key: the same id hashes the same, different ids differ.
+    expect(out[0]!.itemKey).toMatch(/^[0-9a-f]{32}$/);
+    expect(new Set(out.map((i) => i.itemKey)).size).toBe(3);
+    const again = await allRows(bootPerformanceAdapter, [{ ...bootRow(), startupItems: items }]);
+    expect((again[0]!.startupItems as Array<Record<string, unknown>>)[0]!.itemKey).toBe(out[0]!.itemKey);
+  });
+
+  it('an unknown startup item type exports as other, never as free text', async () => {
+    const items = [
+      { name: 'a', type: 'run_key', impactScore: 2 },
+      { name: 'b', type: 'C:\\Users\\jdoe password=hunter2', impactScore: 1 },
+    ];
+    const [row] = await allRows(bootPerformanceAdapter, [{ ...bootRow(), startupItems: items }]);
+    const out = row!.startupItems as Array<Record<string, unknown>>;
+    expect(out.map((i) => i.type)).toEqual(['run_key', 'other']);
   });
 
   it('a malformed startup_items value exports as an empty list, not an error', async () => {
@@ -142,7 +173,7 @@ describe('boot_performance', () => {
     ]);
     expect(a!.startupItems).toEqual([]);
     expect(b!.startupItems).toEqual([
-      { itemId: null, name: 'ok', type: null, path: null, enabled: null, cpuTimeMs: null, diskIoBytes: null, impactScore: null },
+      { itemKey: null, name: 'ok', type: null, path: null, enabled: null, cpuTimeMs: null, diskIoBytes: null, impactScore: null },
     ]);
   });
 });

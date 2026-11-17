@@ -7,11 +7,13 @@
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceBootMetrics } from '../../db/schema';
+import { STARTUP_ITEM_TYPES } from '../startupItems';
 import {
-  cutExportText,
   deviceIdIn,
   emptyExportPager,
   exportDeviceSet,
+  exportEnum,
+  exportKey,
   exportText,
   keysetBefore,
   keysetPager,
@@ -28,7 +30,6 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 const asNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const asBoolean = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
-const asEnum = (v: unknown): string | null => (typeof v === 'string' ? cutExportText(v) : null);
 
 function startupItemsForExport(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];
@@ -40,9 +41,12 @@ function startupItemsForExport(value: unknown): Array<Record<string, unknown>> {
     .sort((a, b) => impact(b.item) - impact(a.item) || a.index - b.index)
     .slice(0, STARTUP_ITEM_LIMIT)
     .map(({ item }) => ({
-      itemId: exportText(item.itemId),
-      name: exportText(item.name),
-      type: asEnum(item.type),
+      // The server builds `itemId` as `type|path`, lowercased with forward
+      // slashes (computeStartupItemId), so it carries the item's path; it is
+      // exported only as a stable hash. `name` falls back to the path at ingest.
+      itemKey: exportKey(item.itemId),
+      name: exportText(item.name, { paths: true }),
+      type: exportEnum(item.type, STARTUP_ITEM_TYPES),
       path: exportText(item.path, { paths: true }),
       enabled: asBoolean(item.enabled),
       cpuTimeMs: asNumber(item.cpuTimeMs),

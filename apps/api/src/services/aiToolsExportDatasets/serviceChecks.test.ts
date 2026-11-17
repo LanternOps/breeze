@@ -129,6 +129,11 @@ describe('service_checks', () => {
     expect(row!.name).not.toContain('hunter2');
   });
 
+  it('a process watch named by its full path drops the profile user name', async () => {
+    const [row] = await allRows(serviceChecksAdapter, [{ ...checkRow(), watchType: 'process', name: 'C:\\Users\\jdoe\\AppData\\tool.exe' }]);
+    expect(row!.name).toBe('C:\\Users\\[REDACTED]\\AppData\\tool.exe');
+  });
+
   it('empty device set yields nothing and runs no query', async () => {
     exportDeviceSet.mockResolvedValue(scope([]));
     expect(await (await serviceChecksAdapter.createPager(req({})))(null)).toEqual({ rows: [], nextCursor: null });
