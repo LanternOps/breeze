@@ -27,6 +27,8 @@ export const deviceHardwareEvents = pgTable('device_hardware_events',{
 },t=>[
   foreignKey({columns:[t.deviceId,t.orgId],foreignColumns:[devices.id,devices.orgId],name:'device_hardware_events_device_org_fkey'}).onUpdate('cascade').onDelete('cascade'),
   index('device_hardware_events_device_occurred_idx').on(t.deviceId,t.occurredAt.desc()),index('device_hardware_events_occurred_idx').on(t.occurredAt),
+  // export_dataset hardware_events pages (org_id, occurred_at, id) DESC.
+  index('device_hardware_events_org_occurred_idx').on(t.orgId,t.occurredAt.desc(),t.id.desc()),
 ]);
 export const deviceHardwareHealth = pgTable('device_hardware_health',{
   deviceId:uuid('device_id').primaryKey(),orgId:uuid('org_id').notNull().references(()=>organizations.id,{onDelete:'cascade'}),health:hardwareHealthEnum('health').notNull().default('unknown'),collectorHealth:hardwareHealthEnum('collector_health').notNull().default('ok'),summary:jsonb('summary').$type<{counts?:Record<string,number>;controllerNames?:string[]}>().notNull().default({}),sources:jsonb('sources').$type<HardwareSourceReport[]>().notNull().default([]),

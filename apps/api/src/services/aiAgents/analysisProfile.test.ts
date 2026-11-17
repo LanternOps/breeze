@@ -116,6 +116,17 @@ describe('analysis continuation seed and input manifest (Wisp analysis sessions 
     expect(seed).toContain('- [low] Noise');
   });
 
+  it('a withheld seed shows only the fenced goal and the fixed withheld line', () => {
+    const seed = renderAnalysisContinuationSeed({
+      fromRunId: PRIOR, goal: 'g', summary: 'hidden summary', findings: [{ severity: 'high', title: 'hidden title' }], withheld: true,
+    });
+    expect(seed).toContain('Earlier goal: g');
+    expect(seed).toContain('not included');
+    expect(seed).not.toContain('hidden');
+    expect(seed).not.toContain('Findings:');
+    expect(analysisContinuationFromTriggerRef({ continuation: { fromRunId: PRIOR, seed, dropped: [] } })?.seed).toBe(seed);
+  });
+
   it('an empty prior result says (none)', () => {
     const seed = renderAnalysisContinuationSeed({ fromRunId: PRIOR, goal: 'g', summary: null, findings: [] });
     expect(seed).toContain('Earlier summary: (none)');

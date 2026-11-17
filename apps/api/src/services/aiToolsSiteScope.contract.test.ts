@@ -162,6 +162,11 @@ const CROSS_FILE_GUARDED_DELEGATES: ReadonlyArray<readonly [string, string]> = [
   // `list_time_sync_issues`: `listFleetTimeStatus` names both axes at its entry
   // point (siteScopeCondition + deviceScopeCondition, idempotent with fleetScope).
   ['listFleetTimeStatus', join('timeSync', 'fleet.ts')],
+  // `export_dataset`'s set-based adapters (`aiToolsExportDatasets/*.ts`):
+  // resolves the export's device set through the frozen frame,
+  // `allowedDeviceIds` and `deviceSiteDenied`; behaviour pinned by
+  // `aiToolsExportShared.test.ts`.
+  ['exportDeviceSet', 'aiToolsExportShared.ts'],
 ];
 
 /**
@@ -438,11 +443,13 @@ describe('contract: the site axis is reachable for a caller with no device axis'
 /** REVIEWED EXCEPTIONS — tools whose optional id genuinely needs no site axis. */
 const OPTIONAL_SITE_ARG_EXCEPTIONS: readonly string[] = [
   // FALSE POSITIVE of the same-file scan: `export_dataset` fans out to
-  // per-dataset adapters in `aiToolsExportDatasets.ts`, each of which narrows
-  // (the device-scoped ones call `verifyDeviceAccess` per device). One adapter
-  // per dataset rather than a single read model, so it does not fit
-  // `CROSS_FILE_GUARDED_DELEGATES` either. Pinned by
-  // `aiToolsExportDatasets.test.ts`.
+  // per-dataset adapters in `aiToolsExportDatasets.ts` and the adapter
+  // directory `aiToolsExportDatasets/`, each of which narrows (the device-scoped
+  // ones call `verifyDeviceAccess` per device; the set-based ones resolve their
+  // devices through `exportDeviceSet`). One adapter per dataset rather than a
+  // single read model, so the tool itself does not fit
+  // `CROSS_FILE_GUARDED_DELEGATES`. Pinned by `aiToolsExportDatasets.test.ts`
+  // and `aiToolsExportShared.test.ts`.
   'aiToolsExport.ts:export_dataset',
   // `m365_query_sites`' `siteId` is a Microsoft Graph composite SHAREPOINT site
   // id read live from the customer tenant — unrelated to `sites.id` and to the

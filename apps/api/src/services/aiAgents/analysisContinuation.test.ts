@@ -378,7 +378,7 @@ describe('buildAnalysisContinuationSeed', () => {
       findings: [{ title: 'Driver X', severity: 'high', detail: 'd', artifactHandles: [] }],
       artifactHandles: [], proposedActions: [],
     } } }]);
-    const seed = await buildAnalysisContinuationSeed({ orgId: ORG, prior: prior({ goal: 'find BSODs' }) });
+    const seed = await buildAnalysisContinuationSeed({ orgId: ORG, prior: priorWith(GRANTS), exportGrants: GRANTS });
     expect(seed).toContain('Earlier goal: find BSODs');
     expect(seed).toContain('Earlier summary: outcome summary');
     expect(seed).toContain('- [high] Driver X');
@@ -388,7 +388,7 @@ describe('buildAnalysisContinuationSeed', () => {
 
   it('falls back to the summary column when there is no readable outcome', async () => {
     h.results.push([{ summary: 'column summary', outcome: {} }]);
-    const seed = await buildAnalysisContinuationSeed({ orgId: ORG, prior: prior() });
+    const seed = await buildAnalysisContinuationSeed({ orgId: ORG, prior: priorWith(GRANTS), exportGrants: GRANTS });
     expect(seed).toContain('Earlier summary: column summary');
     expect(seed).toMatch(/Findings:\n\(none\)/);
   });
@@ -399,9 +399,55 @@ describe('buildAnalysisContinuationSeed', () => {
       findings: Array.from({ length: 25 }, (_, i) => ({ title: `F${i}`, severity: 'low', detail: 'd', artifactHandles: [] })),
       artifactHandles: [], proposedActions: [],
     } } }]);
-    const seed = await buildAnalysisContinuationSeed({ orgId: ORG, prior: prior() });
+    const seed = await buildAnalysisContinuationSeed({ orgId: ORG, prior: priorWith(GRANTS), exportGrants: GRANTS });
     expect(seed).toContain('- [low] F19');
     expect(seed).not.toContain('- [low] F20');
+  });
+
+  // Carry-over from the W03 review: the seed is derived from what the prior
+  // read, so it follows the same producer-grants rule carried files follow.
+  const OUTCOME = [{ summary: 'col', outcome: { analysis: {
+    summary: 'the secret summary',
+    findings: [{ title: 'security finding', severity: 'high', detail: 'd', artifactHandles: [] }],
+    artifactHandles: [], proposedActions: [],
+  } } }];
+  const priorWith = (exportGrants: unknown) =>
+    prior({ goal: 'find BSODs', stagedInputs: { handles: [], deviceIds: [], region: 'eu', exportGrants } as never });
+
+  it('keeps the summary and findings when the prior held a strict subset of this launch\'s grants', async () => {
+    h.results.push(OUTCOME);
+    const seed = await buildAnalysisContinuationSeed({
+      orgId: ORG,
+      prior: priorWith({ datasets: ['event_logs'], sensitiveGates: [] }),
+      exportGrants: { datasets: ['event_logs', 'metrics'], sensitiveGates: ['security_events'] },
+    });
+    expect(seed).toContain('Earlier summary: the secret summary');
+    expect(seed).toContain('- [high] security finding');
+  });
+
+  it.each([
+    ['a sensitive gate this launch lacks', { datasets: ['event_logs'], sensitiveGates: ['security_events'] }],
+    ['a dataset this launch lacks', { datasets: ['event_logs', 'vulnerabilities'], sensitiveGates: [] }],
+    ['no recorded grants', undefined],
+    ['malformed grants', { datasets: 'event_logs' }],
+  ])('withholds the summary and findings when the prior held %s, and keeps the goal', async (_label, producerGrants) => {
+    h.results.push(OUTCOME);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const seed = await buildAnalysisContinuationSeed({
+        orgId: ORG,
+        prior: priorWith(producerGrants),
+        exportGrants: { datasets: ['event_logs', 'metrics'], sensitiveGates: [] },
+      });
+      expect(seed).not.toContain('the secret summary');
+      expect(seed).not.toContain('security finding');
+      expect(seed).not.toContain('col');
+      expect(seed).toContain('Earlier goal: find BSODs');
+      expect(seed).toContain('not included');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('seed withheld'), expect.objectContaining({ runId: PRIOR }));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

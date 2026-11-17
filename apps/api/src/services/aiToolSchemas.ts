@@ -1,4 +1,5 @@
 import { AI_AGENT_RUN_STATUSES, utf8MaxBytes } from '@breeze/shared';
+import { EXPORT_DATASETS } from './aiToolsExportDatasetNames';
 /**
  * AI Tool Input Schemas
  *
@@ -2202,7 +2203,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   export_dataset: z.object({
-    dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+    dataset: z.enum(EXPORT_DATASETS),
     format: z.enum(['jsonl', 'csv']).optional(),
     filters: z.record(z.string(), z.unknown()).optional(),
     deviceIds: z.array(uuid).max(200).optional(),

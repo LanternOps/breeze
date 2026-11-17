@@ -262,8 +262,9 @@ describe('export_dataset', () => {
     expect(plain).not.toHaveProperty('sensitiveRowsWithheld');
   });
 
-  it('states that per-device datasets may truncate on large device sets', () => {
-    expect(getTool().definition.description).toContain('may truncate on large device sets');
+  it('states that per-device datasets may truncate (on the dataset parameter: the description is at its budget)', () => {
+    const props = getTool().definition.input_schema.properties as Record<string, { description: string }>;
+    expect(props.dataset!.description).toContain('per-device datasets may truncate');
   });
 
   it('rejects an unknown dataset', async () => {
@@ -301,6 +302,40 @@ describe('export_dataset', () => {
       { runTargets: [], stagedBytesRemaining: 1_000_000 },
     ));
     expect(parsed.error).toBe('orgId is required: you have access to multiple organizations');
+    expect(createArtifact).not.toHaveBeenCalled();
+  });
+
+  it.each(['reliability_scores', 'reliability_history', 'reliability_events', 'boot_performance', 'hardware_events', 'service_checks'])(
+    'a legacy run (no exportGrants) cannot export %s', async (dataset) => {
+      const out = JSON.parse(await getTool().handler({ dataset }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 }) as string);
+      expect(out.error).toBe('dataset_not_permitted');
+      expect(createPager).not.toHaveBeenCalled();
+    });
+
+  it('the tool text states the time range rule and the dataset caveats (description budget: rules live on the params)', async () => {
+    const def = getTool().definition;
+    const props = def.input_schema.properties as Record<string, { description: string }>;
+    expect(def.description).toContain('workspace_stage');
+    expect(props.filters!.description).toContain('timeRange');
+    expect(props.filters!.description).toContain('180 days');
+    expect(props.filters!.description).toContain('reliability_scores is current state');
+    expect(props.dataset!.description).toContain('service_checks lists non-running checks');
+    expect(props.dataset!.description).toContain('eventKey');
+    expect(getTool().searchHint).toContain('reliability');
+    // The SDK surface (what an analysis run's model sees) carries the same wording.
+    const sdk = await import('node:fs/promises').then((fs) => fs.readFile(new URL('./aiAgentSdkTools.ts', import.meta.url), 'utf8'));
+    expect(sdk).toContain('dataset: z.enum(EXPORT_DATASETS).describe(EXPORT_DATASET_PARAM_DESCRIPTION)');
+    expect(sdk).toContain('.describe(EXPORT_FILTERS_PARAM_DESCRIPTION)');
+  });
+
+  it('maps ExportFilterError to its code, not export_failed', async () => {
+    const { ExportFilterError } = await import('./aiToolsExportShared');
+    sanitizeThrownToolError.mockClear();
+    createPager.mockRejectedValueOnce(new ExportFilterError('invalid_time_range', 'filters.timeRange spans more than 180 days; narrow it.'));
+    const out = JSON.parse(await getTool().handler({ dataset: 'event_logs' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 }) as string);
+    expect(out).toEqual({ error: 'invalid_time_range', message: 'filters.timeRange spans more than 180 days; narrow it.' });
+    expect(sanitizeThrownToolError).not.toHaveBeenCalled();
     expect(createArtifact).not.toHaveBeenCalled();
   });
 

@@ -48,7 +48,7 @@ import {
   type CreateAgentRunInput,
   type CreateAgentRunResult,
 } from '../../services/aiAgents/runService';
-import { analysisContinuationOf, deriveChainHandles } from '../../services/aiAgents/analysisContinuation';
+import { analysisContinuationOf, buildAnalysisContinuationSeed, deriveChainHandles } from '../../services/aiAgents/analysisContinuation';
 import { admitAnalysisRun } from '../../services/aiAgents/analysisAdmission';
 import { WORKSPACE_TOOL_NAMES } from '../../services/workspace/workspaceToolNames';
 import { getTestDb } from './setup';
@@ -497,6 +497,52 @@ describe('handle derivation: the producer run\'s frozen export grants', () => {
     expect(sorted(narrow.dropped.map((x) => `${x.handle}:${x.reason}`))).toEqual(sorted([
       `${exported}:grants_not_covered`, `${derived}:grants_not_covered`, `${own}:grants_not_covered`,
     ]));
+  });
+
+  // W04 carry-over: the fixture's default (empty grants) passes the coverage
+  // check trivially. These two use non-empty producer grants through a chain.
+  async function chainOf(producerGrants: AiRunExportGrants) {
+    const t = await seedTenant();
+    const g = t.grantG;
+    const root = await insertRun(t, t.orgA, { grant: g, exportGrants: producerGrants });
+    const exported = await insertArtifact(t.orgA, root, { kind: 'input_capture', createdByTool: 'export_dataset', dataset: 'event_logs' });
+    const run2 = await insertRun(t, t.orgA, {
+      grant: g, continuedFromRunId: root, chainRootRunId: root, chainDepth: 1, exportGrants: producerGrants,
+      stagedInputs: { handles: [exported], deviceIds: [], region: 'us' },
+    });
+    const own = await insertArtifact(t.orgA, run2, { kind: 'output', createdByTool: 'workspace_collect' });
+    await getTestDb().update(aiAgentRuns).set({ summary: 'prior summary text' } as never).where(eq(aiAgentRuns.id, run2));
+    const p = await analysisContinuationOf({ orgId: t.orgA, runId: run2, grantId: g.grantId });
+    if (!p.ok) throw new Error(`prior refused: ${p.refusal}`);
+    return { t, g, exported, own, prior: p.prior };
+  }
+
+  it('a producer whose grants are a strict, non-empty subset of the launch\'s: files and seed are kept', async () => {
+    const c = await chainOf({ datasets: ['event_logs'], sensitiveGates: [] });
+    const launch: AiRunExportGrants = { datasets: ['event_logs', 'metrics'], sensitiveGates: ['security_events'] };
+    const d = await deriveChainHandles({ orgId: c.t.orgA, prior: c.prior, grantId: c.g.grantId, exportGrants: launch });
+    expect(sorted(d.handles)).toEqual(sorted([c.exported, c.own]));
+    expect(d.dropped).toEqual([]);
+    const seed = await buildAnalysisContinuationSeed({ orgId: c.t.orgA, prior: c.prior, exportGrants: launch });
+    expect(seed).toContain('prior summary text');
+  });
+
+  it('a producer whose grants overlap the launch\'s but are not covered: files and the seed summary are dropped', async () => {
+    const c = await chainOf({ datasets: ['event_logs', 'vulnerabilities'], sensitiveGates: [] });
+    const launch: AiRunExportGrants = { datasets: ['event_logs', 'metrics'], sensitiveGates: [] };
+    const d = await deriveChainHandles({ orgId: c.t.orgA, prior: c.prior, grantId: c.g.grantId, exportGrants: launch });
+    expect(d.handles).toEqual([]);
+    expect(sorted(d.dropped.map((x) => `${x.handle}:${x.reason}`))).toEqual(sorted([
+      `${c.exported}:grants_not_covered`, `${c.own}:grants_not_covered`,
+    ]));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const seed = await buildAnalysisContinuationSeed({ orgId: c.t.orgA, prior: c.prior, exportGrants: launch });
+      expect(seed).not.toContain('prior summary text');
+      expect(seed).toContain('not included');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('a producer with no frozen grants recorded fails closed', async () => {
