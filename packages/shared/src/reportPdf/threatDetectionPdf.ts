@@ -177,8 +177,16 @@ function coverageMeta(coverage: ThreatCoverage | undefined, generatedAt: string)
   return `${period}  |  Generated ${generatedAt}  |  Automatically generated review evidence`;
 }
 
+/** Statuses that close a detection even when the source sent no closure date
+ *  — such a row must not read "Open N days" beside "Resolved". */
+const CLOSED_STATUS_LABELS = new Set(['Resolved', 'Dismissed']);
+
+function isClosedWithoutDate(row: ThreatIncidentRow): boolean {
+  return !row.resolvedAt && CLOSED_STATUS_LABELS.has(threatStatusLabel(row.status));
+}
+
 function isLongOpen(row: ThreatIncidentRow | undefined, asOf: string | undefined): boolean {
-  if (!row || row.resolvedAt) return false;
+  if (!row || row.resolvedAt || isClosedWithoutDate(row)) return false;
   const days = openForDays(row.reportedAt, asOf);
   return days !== null && days > LONG_OPEN_DAYS;
 }
@@ -186,6 +194,7 @@ function isLongOpen(row: ThreatIncidentRow | undefined, asOf: string | undefined
 /** The Resolved cell: a date, or how long the detection has been open. */
 function resolvedCell(row: ThreatIncidentRow, asOf: string | undefined): string {
   if (row.resolvedAt) return dateOnly(row.resolvedAt);
+  if (isClosedWithoutDate(row)) return 'Not recorded';
   const days = openForDays(row.reportedAt, asOf);
   if (days === null) return 'Not resolved';
   return `Open ${days} day${days === 1 ? '' : 's'}`;
@@ -260,14 +269,14 @@ export function renderThreatDetectionReport(
       8.4,
       C.muted,
     ) + 4;
-  } else if (fleet.agentsReported != null && fleet.unmatchedAgents == null
-    && fleet.withAgent != null && fleet.agentsReported > fleet.withAgent) {
-    // A legacy snapshot: the unmatched count was never recorded, and two
-    // agents can share one device, so it is not guessed from the totals.
+  } else if (fleet.agentsReported != null && fleet.unmatchedAgents == null && fleet.withAgent != null) {
+    // A legacy snapshot (before #12046): its device pair counts Huntress
+    // agents only, so it says so. The unmatched count was never recorded, and
+    // two agents can share one device, so it is not guessed from the totals.
     y = drawProse(
       doc,
       chrome,
-      `${fleet.agentsReported} detection agents are reported for this organization; any not matched to a device Breeze manages are not counted in the tiles above.`,
+      `These device counts include Huntress agents only. ${fleet.agentsReported} Huntress agent${fleet.agentsReported === 1 ? ' is' : 's are'} reported for this organization; any not matched to a device Breeze manages are not counted in the tiles above.`,
       y - 4,
       8.4,
       C.muted,

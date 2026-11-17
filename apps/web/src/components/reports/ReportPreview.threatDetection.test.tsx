@@ -103,11 +103,25 @@ describe('ReportPreview: threat_detection_review', () => {
     />);
     const panel = screen.getByTestId('threat-detection-summary');
     expect(within(panel).queryByText('Endpoints with a detection agent')).toBeNull();
-    const withTile = within(panel).getByText('Managed devices with a detection agent').parentElement!;
-    expect(withTile).toHaveTextContent('7');
-    const withoutTile = within(panel).getByText('Managed devices with no detection agent').parentElement!;
-    expect(withoutTile).toHaveTextContent('5');
-    expect(within(panel).getByText('12')).toBeInTheDocument();
+    const valueOf = (label: string) => within(panel).getByText(label).nextElementSibling?.textContent;
+    expect(valueOf('Devices Breeze manages')).toBe('12');
+    expect(valueOf('Managed devices with a detection agent')).toBe('7');
+    expect(valueOf('Managed devices with no detection agent')).toBe('5');
+  });
+
+  it('derives a reconciling pair from a legacy snapshot, and keeps unmeasured tiles N/A', () => {
+    const { unmount } = render(<ReportPreview data={previewData(MEASURED)} timezone="UTC" />);
+    let panel = screen.getByTestId('threat-detection-summary');
+    const valueOf = (label: string) => within(panel).getByText(label).nextElementSibling?.textContent;
+    // 43 managed, 2 without a (Huntress) agent → 41 with.
+    expect(valueOf('Managed devices with a detection agent')).toBe('41');
+    expect(valueOf('Managed devices with no detection agent')).toBe('2');
+    unmount();
+
+    render(<ReportPreview data={previewData(UNMEASURED)} timezone="UTC" />);
+    panel = screen.getByTestId('threat-detection-summary');
+    expect(valueOf('Managed devices with a detection agent')).toBe('N/A');
+    expect(valueOf('Managed devices with no detection agent')).toBe('N/A');
   });
 
   it('omits the coverage panel entirely when nothing is missing', () => {

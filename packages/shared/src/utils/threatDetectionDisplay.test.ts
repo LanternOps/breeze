@@ -58,6 +58,19 @@ describe('clientDetectionTitle (#12046)', () => {
     expect(title).toBe('Suspicious sign-in for a user account');
   });
 
+  it.each([
+    'High-risk sign-in from a new country',
+    'Low-privilege account created',
+    'Info-stealer detected',
+    'Critical:process tampering',
+  ])('leaves a title that only starts with a severity-like word intact: %s', (title) => {
+    expect(clientDetectionTitle(title, 'Acme')).toBe(title);
+  });
+
+  it('strips the colon form of the prefix too', () => {
+    expect(clientDetectionTitle('CRITICAL: Ransomware behaviour', 'Acme')).toBe('Ransomware behaviour');
+  });
+
   it('falls back to a word when the title is empty or only a prefix', () => {
     expect(clientDetectionTitle(null, 'Acme')).toBe('Detection');
     expect(clientDetectionTitle('MEDIUM - ', 'Acme')).toBe('Detection');

@@ -96,7 +96,47 @@ describe('Threat Detection Review PDF: client language (#12046)', () => {
     });
     expect(text).toContain('Managed devices with a detection agent');
     expect(text).toMatch(/\(4\) Tj[\s\S]*\(8\) Tj/);
-    expect(text).toContain('8 detection agents are reported for this organization');
+    // Its pair is Huntress-only, and the reader is told so.
+    expect(text).toContain('These device counts include Huntress agents only.');
+    expect(text).toContain('8 Huntress agents are reported for this organization');
+  });
+
+  it('merges stored statuses that share a client word into one count', () => {
+    const text = pdfText({
+      ...BASE,
+      incidents: { ...BASE.incidents!, byStatus: { open: 2, sent: 1, in_progress: 1 } },
+    });
+    expect(text).toMatch(/Open: 3/);
+    expect(text).toMatch(/Being investigated: 1/);
+    expect(text.match(/Open: \d/g)).toHaveLength(1);
+  });
+
+  it('flags only detections open MORE than 90 days, and counts each', () => {
+    const at = (days: number) => new Date(Date.parse('2026-11-09T12:00:00.000Z') - days * 86_400_000).toISOString();
+    const text = pdfText({
+      ...BASE,
+      rows: [
+        { ...ROW, id: 'a', reportedAt: at(90) },
+        { ...ROW, id: 'b', reportedAt: at(91) },
+        { ...ROW, id: 'c', reportedAt: at(200) },
+      ],
+    });
+    expect(text).toContain('Open 90 days');
+    expect(text).toMatch(/2 detections have been open for more than 90 days/);
+  });
+
+  it('never reads "Open" for a detection the source closed without a date', () => {
+    const text = pdfText({
+      ...BASE,
+      rows: [
+        { ...ROW, id: 'a', reportedAt: '2025-04-12T00:00:00.000Z', status: 'dismissed' },
+        { ...ROW, id: 'b', reportedAt: '2025-04-12T00:00:00.000Z', status: 'resolved', resolvedAt: '2025-04-13T00:00:00.000Z' },
+      ],
+    });
+    expect(text).not.toMatch(/Open \d+ days/);
+    expect(text).toContain('(Not recorded) Tj');
+    expect(text).toContain('2025-04-13');
+    expect(text).not.toMatch(/been open for more than 90 days/);
   });
 
   it('maps a raw "sent" status to client language, in the table and the counts', () => {

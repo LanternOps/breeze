@@ -48,8 +48,12 @@ export function threatSeverityLabel(severity: string | null | undefined): string
   return value ? humanize(value) : UNKNOWN;
 }
 
-/** `CRITICAL - `, `LOW: ` and the like, which repeat the Severity column. */
-const SEVERITY_PREFIX = /^\s*(critical|high|medium|low|info(?:rmational)?)\s*[-–—:|]\s*/i;
+/**
+ * `CRITICAL - `, `LOW: ` and the like, which repeat the Severity column. A
+ * dash or bar must have whitespace BEFORE it, so a title that merely starts
+ * with a hyphenated word ("High-risk sign-in", "Info-stealer") is untouched.
+ */
+const SEVERITY_PREFIX = /^\s*(?:critical|high|medium|low|info(?:rmational)?)(?:\s+[-–—|]|\s*:)(?:\s+|$)/i;
 /** Deliberately loose: any address-shaped token is replaced, not validated. */
 const EMAIL = /[^\s()<>@,;:"[\]]+@[^\s()<>@,;:"[\]]+\.[a-z]{2,}/gi;
 
