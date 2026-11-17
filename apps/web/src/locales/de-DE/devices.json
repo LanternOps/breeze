@@ -1474,6 +1474,7 @@
       "untrustedCertificate": "Die Verbindung zum Breeze-Server hat ein Zertifikat vorgelegt, dem dieses Gerät nicht vertraut (ausgestellt von {{certIssuer}}). Meist ist das eine TLS-Prüfung durch eine Firewall oder einen Proxy, ein Zertifikatsproblem auf einem selbst gehosteten Server oder ein veralteter Speicher vertrauenswürdiger Stammzertifikate auf diesem Gerät. Breeze umgeht dies nicht.",
       "viaEch": "Derzeit über Encrypted Client Hello erreichbar.",
       "cleared": "War von {{from}} bis {{to}} blockiert.",
+      "lastKnown": "Zuletzt gemeldet: {{time}}. Das Gerät hat sich seitdem nicht gemeldet, daher trifft dies möglicherweise nicht mehr zu.",
       "howToFix": "So beheben Sie das Problem",
       "noDetail": "keine Angabe"
     },
@@ -1879,6 +1880,7 @@
     },
     "controlPlaneBlockBadge": "Netzwerkfilter",
     "controlPlaneBlockBadgeCertificate": "Zertifikat nicht vertrauenswürdig",
+    "controlPlaneBlockLastKnownTooltip": "Zuletzt gemeldet: {{time}}; das Gerät hat sich seitdem nicht gemeldet.",
     "agentVersionRelation": {
       "equalTooltip": "Entspricht der effektiven Version {{version}}",
       "aheadTooltip": "Vor dem Pin {{version}}",

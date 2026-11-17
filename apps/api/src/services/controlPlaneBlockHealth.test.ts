@@ -3,7 +3,13 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  CONTROL_PLANE_BLOCK_CLEARED_BY,
+  CONTROL_PLANE_BLOCK_HOST_PATTERN,
+  CONTROL_PLANE_BLOCK_ISSUER_PATTERN,
   CONTROL_PLANE_BLOCK_KINDS,
+  LAST_KNOWN_AFTER_MS,
+  LAST_KNOWN_HIDE_AFTER_MS,
+  deriveControlPlaneBlockListView,
   deriveControlPlaneBlockNotice,
   parseControlPlaneBlock,
   planControlPlaneBlockWrite,
@@ -100,6 +106,8 @@ describe('agent contract fixture (agent/internal/heartbeat/testdata/control_plan
   const here = dirname(fileURLToPath(import.meta.url));
   const fixturePath = resolve(here, '../../../../agent/internal/heartbeat/testdata/control_plane_block_contract.json');
   const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
+    hostPattern: string;
+    issuerPattern: string;
     kinds: string[];
     clearedBy: string[];
     valid: unknown[];
@@ -113,6 +121,17 @@ describe('agent contract fixture (agent/internal/heartbeat/testdata/control_plan
 
   it('kind enum matches the agent', () => {
     expect([...CONTROL_PLANE_BLOCK_KINDS]).toEqual(fixture.kinds);
+  });
+
+  it('clearedBy enum matches the agent', () => {
+    expect([...CONTROL_PLANE_BLOCK_CLEARED_BY]).toEqual(fixture.clearedBy);
+  });
+
+  it('host and issuer patterns match the agent byte for byte', () => {
+    expect(CONTROL_PLANE_BLOCK_HOST_PATTERN.source).toBe(fixture.hostPattern);
+    expect(CONTROL_PLANE_BLOCK_ISSUER_PATTERN.source).toBe(fixture.issuerPattern);
+    expect(CONTROL_PLANE_BLOCK_HOST_PATTERN.flags).toBe('');
+    expect(CONTROL_PLANE_BLOCK_ISSUER_PATTERN.flags).toBe('');
   });
 
   it.each(fixture.valid.map((entry, i) => [i, entry] as const))('valid[%i] parses', (_i, entry) => {
@@ -352,5 +371,110 @@ describe('deriveControlPlaneBlockNotice', () => {
 
   it('kind column null with an uncleared, unstale record -> null (inconsistent row shows nothing)', () => {
     expect(deriveControlPlaneBlockNotice({ controlPlaneBlockKind: null, controlPlaneBlock: record() }, NOW)).toBeNull();
+  });
+});
+
+describe('active episode age-out at read time (device stopped reporting)', () => {
+  it('the threshold is 3 h: the hourly refresh plus the 2 h stale window', () => {
+    expect(LAST_KNOWN_AFTER_MS).toBe(3 * HOUR);
+    expect(LAST_KNOWN_HIDE_AFTER_MS).toBe(30 * DAY);
+  });
+
+  it('reported 2h59m ago -> still active, no lastReportedAt', () => {
+    const notice = deriveControlPlaneBlockNotice(activeRow({ reportedAt: ago(3 * HOUR - 60 * 1000) }), NOW);
+    expect(notice?.state).toBe('active');
+    expect(notice).not.toHaveProperty('lastReportedAt');
+  });
+
+  it('reported 3h01m ago -> last_known with the server time of the last report', () => {
+    const reportedAt = ago(3 * HOUR + 60 * 1000);
+    const notice = deriveControlPlaneBlockNotice(activeRow({ reportedAt, reachableViaEch: true }), NOW);
+    expect(notice).toEqual({
+      state: 'last_known',
+      kind: 'web_filter',
+      host: 'cp.example',
+      firstSeenAt: '2026-10-18T09:00:00.000Z',
+      lastSeenAt: '2026-10-18T09:03:00.000Z',
+      httpStatus: 302,
+      locationHost: 'warn.filter-a.example',
+      reachableViaEch: true,
+      lastReportedAt: reportedAt,
+    });
+  });
+
+  it('reported 29 days ago -> still last_known', () => {
+    expect(deriveControlPlaneBlockNotice(activeRow({ reportedAt: ago(29 * DAY) }), NOW)?.state).toBe('last_known');
+  });
+
+  it('reported 31 days ago -> nothing', () => {
+    expect(deriveControlPlaneBlockNotice(activeRow({ reportedAt: ago(31 * DAY) }), NOW)).toBeNull();
+  });
+
+  it('a reportedAt in the future (server clock stepped back) is still active, never last_known', () => {
+    expect(deriveControlPlaneBlockNotice(activeRow({ reportedAt: new Date(NOW.getTime() + HOUR).toISOString() }), NOW)?.state)
+      .toBe('active');
+  });
+
+  it('a cleared notice is unaffected by the age-out (it has its own 7-day window)', () => {
+    const rec = record({ clearedAt: ago(2 * DAY), clearedBy: 'plain_success', reportedAt: ago(2 * DAY) });
+    expect(deriveControlPlaneBlockNotice({ controlPlaneBlockKind: null, controlPlaneBlock: rec }, NOW)?.state).toBe('cleared');
+  });
+
+  it('the read does not modify the stored record', () => {
+    const row = activeRow({ reportedAt: ago(5 * HOUR) });
+    const before = JSON.stringify(row);
+    deriveControlPlaneBlockNotice(row, NOW);
+    expect(JSON.stringify(row)).toBe(before);
+  });
+});
+
+describe('deriveControlPlaneBlockListView (the list pill follows the same rule as the notice)', () => {
+  it('no kind -> nothing', () => {
+    expect(deriveControlPlaneBlockListView(null, ago(HOUR), NOW)).toEqual({
+      controlPlaneBlockKind: null,
+      controlPlaneBlockLastKnownAt: null,
+    });
+  });
+
+  it('kind with a recent report -> active pill', () => {
+    expect(deriveControlPlaneBlockListView('web_filter', ago(HOUR), NOW)).toEqual({
+      controlPlaneBlockKind: 'web_filter',
+      controlPlaneBlockLastKnownAt: null,
+    });
+  });
+
+  it('kind with a report 3h01m old -> muted last-known pill carrying the report time', () => {
+    const reportedAt = ago(3 * HOUR + 60 * 1000);
+    expect(deriveControlPlaneBlockListView('untrusted_certificate', reportedAt, NOW)).toEqual({
+      controlPlaneBlockKind: 'untrusted_certificate',
+      controlPlaneBlockLastKnownAt: reportedAt,
+    });
+  });
+
+  it('kind with a report 31 days old -> nothing', () => {
+    expect(deriveControlPlaneBlockListView('web_filter', ago(31 * DAY), NOW)).toEqual({
+      controlPlaneBlockKind: null,
+      controlPlaneBlockLastKnownAt: null,
+    });
+  });
+
+  it.each([
+    ['missing', null],
+    ['garbage', 'not-a-date'],
+  ])('kind with a %s reportedAt -> nothing (the detail shows nothing for that row either)', (_l, reportedAt) => {
+    expect(deriveControlPlaneBlockListView('web_filter', reportedAt, NOW)).toEqual({
+      controlPlaneBlockKind: null,
+      controlPlaneBlockLastKnownAt: null,
+    });
+  });
+
+  it('agrees with the detail notice at every age', () => {
+    for (const age of [0, HOUR, 3 * HOUR - 1, 3 * HOUR + 1, 10 * DAY, 30 * DAY + 1]) {
+      const row = activeRow({ reportedAt: ago(age) });
+      const notice = deriveControlPlaneBlockNotice(row, NOW);
+      const list = deriveControlPlaneBlockListView(row.controlPlaneBlockKind, row.controlPlaneBlock?.reportedAt ?? null, NOW);
+      expect(list.controlPlaneBlockKind === null).toBe(notice === null);
+      expect(list.controlPlaneBlockLastKnownAt !== null).toBe(notice?.state === 'last_known');
+    }
   });
 });

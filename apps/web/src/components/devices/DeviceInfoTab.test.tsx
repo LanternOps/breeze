@@ -1178,6 +1178,26 @@ describe('DeviceInfoTab — control-plane block notice (#8868)', () => {
     expect(el.textContent).not.toContain('answering in place of');
   });
 
+  it('last_known (device stopped reporting) says when it was last reported, muted, without the ECH line', async () => {
+    load({ ...ACTIVE, state: 'last_known', lastReportedAt: '2026-10-18T09:05:00.000Z', reachableViaEch: true });
+    const el = await notice();
+    expect(el.getAttribute('data-state')).toBe('last_known');
+    expect(el.textContent).toContain('Blocked by a network filter');
+    expect(el.textContent).toContain('answering in place of the Breeze server (warn.filter-a.example)');
+    expect(el.textContent).toMatch(/Last reported .+\. The device has not reported since, so this may no longer apply\./);
+    expect(el.textContent).not.toContain('Encrypted Client Hello');
+    expect(el.textContent).not.toContain('deviceInfoTab.');
+    expect(el.className).toContain('text-muted-foreground');
+    expectHowToFix(el);
+  });
+
+  it('active carries data-state="active"', async () => {
+    load(ACTIVE);
+    const el = await notice();
+    expect(el.getAttribute('data-state')).toBe('active');
+    expect(el.textContent).not.toContain('has not reported since');
+  });
+
   it('null renders nothing', async () => {
     load(null);
     render(<DeviceInfoTab deviceId={deviceId} />);
