@@ -140,6 +140,7 @@ import { safeErrorMessage } from '../aiModels/safeDbError';
 import { turnBindingFrom, type TurnBinding } from '../aiModels/turnBinding';
 import {
   agentRunReservationBaseKey,
+  hopReservationSessionId,
   markStaleHopReservations,
   nextAgentHop,
   probeAgentHop,
@@ -171,6 +172,8 @@ import {
   completeToolExecution,
   createAgentRunSession,
   reconcileHungExecutions,
+  recordRunAssistantTurn,
+  recordRunTaskPrompt,
   startToolExecution,
 } from './executionLedger';
 import { deliverRunFinishedNotifications } from './runFinishedNotify';
@@ -1989,6 +1992,21 @@ export function classifyIntentAwaitingApproval(
   return intentIds.some((id) => !decided.has(id));
 }
 
+/**
+ * A transcript write is best-effort (#11971): it never changes the run, but it
+ * is reported, so a systematic failure does not pass as runs with empty
+ * transcripts. DB errors are scrubbed before any log or report (S2).
+ */
+function transcriptWriteFailed(run: { id: string; orgId: string }, what: string): (error: unknown) => void {
+  return (error) => {
+    const message = safeErrorMessage(error);
+    console.error(`[aiAgentRunLoop] failed to record the run's ${what} on its session`, { runId: run.id, error: message });
+    captureException(new Error(`agent run transcript write failed (${what}): ${message}`), undefined, {
+      org_id: run.orgId, ai_agent_run_id: run.id,
+    });
+  };
+}
+
 function extractAssistantText(message: unknown): string {
   const content = (message as { message?: { content?: unknown } } | undefined)?.message?.content;
   if (!Array.isArray(content)) return '';
@@ -2878,6 +2896,9 @@ async function driveSdkLoop(
   let usageConfirmed = true;
   // The CURRENT hop's reservation ('' once a failed-over last hop is settled).
   let reservationId = '';
+  // #11971: the session the CURRENT hop's reservation is bound to; its
+  // settlement must name the same one (null = a sessionless claim).
+  let reservationSessionId: string | null = null;
   // W11: one prompt per run; the canary is sticky per run id. Recomputed per
   // hop (a backup model may have another prompt profile) and recorded on that
   // hop's settlement.
@@ -2941,9 +2962,20 @@ async function driveSdkLoop(
       const hopPromptProvenance = promptProvenance;
       const hopBinding = binding;
 
+      // #11971: the hop is reserved and settled on the run's session, so the
+      // session carries the run's tokens, cost and turns — the same numbers
+      // the run row records. A hop already claimed (a re-drive) keeps the
+      // binding it was claimed with: a reservation's session is fixed at claim.
+      // A failed read fails the hop like a failed reserve would: guessing the
+      // binding instead turns a read blip into a misleading claim conflict.
+      const hopKey = hopIdempotencyKey(baseReservationKey, hopIndex);
+      const claimedSessionId = await hopReservationSessionId({ orgId: run.orgId, idempotencyKey: hopKey });
+      const hopSessionId = claimedSessionId !== undefined ? claimedSessionId : (ctx.sessionId ?? null);
+
       const reservation = await reserveAiBudget({
         orgId: run.orgId,
-        idempotencyKey: hopIdempotencyKey(baseReservationKey, hopIndex),
+        idempotencyKey: hopKey,
+        sessionId: hopSessionId,
         billingSource: hopModelNow.funding,
         // JD L-2: bound the hold to this run's own ceiling instead of the whole
         // remaining cap, so one agent run does not serialize technician chat,
@@ -2959,6 +2991,7 @@ async function driveSdkLoop(
         throw new AgentRunError('org_budget_exceeded', reservation.message);
       }
       reservationId = reservation.reservationId;
+      reservationSessionId = hopSessionId;
       const hopReservationId = reservationId;
       // This hop's SDK child env and grants, for THIS hop's model (a failover
       // may cross to or from a gateway connection), from the one seam shared
@@ -2991,10 +3024,14 @@ async function driveSdkLoop(
         ? Math.min(runBudgetLeftCents, reservation.reservedCostCents)
         : runBudgetLeftCents;
 
+      const taskPrompt = buildAgentRunTaskPrompt(prompt);
+      const transcriptSessionId = ctx.sessionId ?? null;
       try {
         await runOutsideDbContext(async () => {
+          // #11971: what the run was told, on its session (each hop is sent it afresh).
+          if (transcriptSessionId) await recordRunTaskPrompt(transcriptSessionId, taskPrompt).catch(transcriptWriteFailed(run, 'task prompt'));
           const sdkQuery = query({
-            prompt: buildAgentRunTaskPrompt(prompt),
+            prompt: taskPrompt,
             options: {
               // model (the resolver's wire id — a catalog endpoint's own id),
               // fallbackModel (the refusal fallback) and thinking/effort.
@@ -3018,8 +3055,9 @@ async function driveSdkLoop(
               // of the bound models, so the SDK's budget cap is not a guess (or
               // no SDK cap at all when a price cannot be expressed to the CLI).
               ...(child.queryOptions ?? {}),
-              // No transcript persistence in wave 3 — `run.session_id` stays NULL
-              // and `summary`/`outcome` carry what a reviewer needs (wave 6).
+              // The SDK keeps no transcript of its own: the loop writes the
+              // run's turns to its session (#11971), and `summary`/`outcome`
+              // carry the verdict (wave 6).
               persistSession: false,
               settingSources: [],
               // #11817: never the SDK's provider-dependent default; after the
@@ -3050,6 +3088,7 @@ async function driveSdkLoop(
               if (message.type === 'assistant') {
                 const text = extractAssistantText(message);
                 if (text) summary = text;
+                if (transcriptSessionId) await recordRunAssistantTurn(transcriptSessionId, message).catch(transcriptWriteFailed(run, 'assistant message'));
                 continue;
               }
               if (message.type !== 'result') continue;
@@ -3198,10 +3237,11 @@ async function driveSdkLoop(
           binding: hopBinding,
           orgId: run.orgId,
           userId: null,
-          sessionId: null,
+          sessionId: hopSessionId,
           agentRunId: run.id,
           sourceRef: null,
           usage: billed,
+          turnCount: hopTurns,
           outcome: turnOutcome ?? {
             stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false,
             servedModel: hopBinding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false,
@@ -3303,10 +3343,11 @@ async function driveSdkLoop(
           binding,
           orgId: run.orgId,
           userId: null,
-          sessionId: null,
+          sessionId: reservationSessionId,
           agentRunId: run.id,
           sourceRef: null,
           usage: billed,
+          turnCount: turnCount - hopTurnsAtStart,
           outcome: turnOutcome,
           reservationId,
           messageCount: Math.max(1, turnCount - hopTurnsAtStart),

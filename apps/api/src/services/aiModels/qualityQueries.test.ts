@@ -62,6 +62,12 @@ describe('buildQualityQuery', () => {
     expect(sql).toMatch(/starts_with\(s\.flag_reason, \$\d+\)/);
     expect(params).toEqual(expect.arrayContaining([...AUTO_FLAG_REASON_PREFIXES]));
   });
+  it('#11971: a call with an agent run is that run\'s, even when it also carries the run\'s session', () => {
+    const sql = render(base()).sql;
+    expect(sql).toContain(`COALESCE('r:' || i.agent_run_id::text, 's:' || i.session_id::text) AS conv`);
+    expect(sql).toContain('(f.session_id IS NOT NULL AND f.agent_run_id IS NULL) AS is_session');
+  });
+
   it('orders a conversation by turn time, not insert time', () => {
     const { sql } = render(base());
     expect(sql).toContain('COALESCE(i.occurred_at, i.created_at) AS at');
