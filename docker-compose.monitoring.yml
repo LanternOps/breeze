@@ -41,7 +41,7 @@ services:
       - breeze
 
   grafana:
-    image: ${GRAFANA_IMAGE_REF:-grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205}
+    image: ${GRAFANA_IMAGE_REF:-grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf}
     container_name: breeze-grafana
     restart: unless-stopped
     environment:
@@ -70,7 +70,7 @@ services:
       - breeze
 
   alertmanager:
-    image: ${ALERTMANAGER_IMAGE_REF:-prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b}
+    image: ${ALERTMANAGER_IMAGE_REF:-prom/alertmanager:v0.35.0@sha256:e638797febd034838eca8b98cdbd46f951e9bf7f178777aa8669167406a9946c}
     container_name: breeze-alertmanager
     restart: unless-stopped
     command:
@@ -91,7 +91,7 @@ services:
       - breeze
 
   loki:
-    image: ${LOKI_IMAGE_REF:-grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28}
+    image: ${LOKI_IMAGE_REF:-grafana/loki:3.7.10@sha256:b43c257ccfc925d4a50b8717cac61a3b51df8c48d01847936057e5c4075a24a7}
     container_name: breeze-loki
     restart: unless-stopped
     command: -config.file=/etc/loki/config.yml
