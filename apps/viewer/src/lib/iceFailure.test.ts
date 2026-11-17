@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  IceFailureBudget,
   MAX_NEVER_CONNECTED_ICE_FAILURES,
   classifyIceFailure,
   decideNeverConnectedIceFailure,
   iceFailureMessage,
+  neverConnectedStopStep,
   shouldStopAfterIceFailure,
   summarizeIcePath,
   type IcePathSummary,
@@ -185,5 +187,130 @@ describe('shouldStopAfterIceFailure', () => {
       expect(shouldStopAfterIceFailure(cause, 2)).toBe(true);
       expect(shouldStopAfterIceFailure(cause, 3)).toBe(true);
     }
+  });
+});
+
+describe('iceFailureMessage states only what was observed (#11838 review)', () => {
+  const causes = ['device_network', 'viewer_network', 'no_path', 'unknown'] as const;
+
+  it('says the device addresses were received, not that the device sent only those', () => {
+    const msg = iceFailureMessage('device_network');
+    expect(msg).toMatch(/received only local network addresses from the device/i);
+    // A trickled candidate can be lost on the way, so what the device sent is
+    // not known.
+    expect(msg).not.toMatch(/device sent only/i);
+  });
+
+  it('keeps the cause an inference in every message', () => {
+    for (const cause of causes) {
+      expect(iceFailureMessage(cause), cause).toMatch(/\blikely\b/i);
+      expect(iceFailureMessage(cause), cause).not.toMatch(/\bthe device sent\b/i);
+      expect(iceFailureMessage(cause), cause).not.toMatch(/\busually means\b/i);
+    }
+  });
+});
+
+describe('IceFailureBudget drives the reconnect path at the session level (#11838 review)', () => {
+  const hostOnlyAgent = fakePc({
+    stats: [
+      { id: 'l1', type: 'local-candidate', candidateType: 'relay' },
+      { id: 'r1', type: 'remote-candidate', candidateType: 'host' },
+    ],
+  });
+
+  type Step = 'reconnect' | 'stop';
+
+  /** One failed peer, routed through the same call DesktopViewer's onFailed makes. */
+  async function failPeer(budget: IceFailureBudget, isCurrent: () => boolean = () => true): Promise<Step | 'none'> {
+    let step: Step | 'none' = 'none';
+    await budget.peerFailed(hostOnlyAgent, isCurrent, {
+      reconnect: () => { step = 'reconnect'; },
+      stop: () => { step = 'stop'; },
+    });
+    return step;
+  }
+
+  it('keeps re-offering a session that connected once, however many reconnect peers fail', async () => {
+    const budget = new IceFailureBudget();
+    budget.peerConnected();
+    // The live peer drops: it connected, so it reconnects.
+    expect(await failPeer(budget)).toBe('reconnect');
+    // Three reconnect peers in a row never reach 'connected'.
+    expect(await failPeer(budget)).toBe('reconnect');
+    expect(await failPeer(budget)).toBe('reconnect');
+    expect(await failPeer(budget)).toBe('reconnect');
+    expect(budget.failures).toBe(0);
+  });
+
+  it('routes a connected session straight to reconnect, without reading the candidates', () => {
+    const budget = new IceFailureBudget();
+    budget.peerConnected();
+    let reconnected = false;
+    const noStats = { getStats: () => { throw new Error('must not read stats'); } } as unknown as RTCPeerConnection;
+    void budget.peerFailed(noStats, () => true, { reconnect: () => { reconnected = true; }, stop: () => {} });
+    // Synchronous, as before this fix.
+    expect(reconnected).toBe(true);
+  });
+
+  it('stops a session that never connected on its second failure', async () => {
+    const budget = new IceFailureBudget();
+    expect(await failPeer(budget)).toBe('reconnect');
+    expect(await failPeer(budget)).toBe('stop');
+  });
+
+  it('gives a new session (fresh connect or reused window) the never-connected rule again', async () => {
+    const budget = new IceFailureBudget();
+    budget.peerConnected();
+    budget.newSession();
+    expect(budget.sessionConnected).toBe(false);
+    expect(await failPeer(budget)).toBe('reconnect');
+    expect(await failPeer(budget)).toBe('stop');
+  });
+
+  it('gives a transport switch (or Retry) a full budget: a leftover count does not stop the next failure', async () => {
+    const budget = new IceFailureBudget();
+    expect(await failPeer(budget)).toBe('reconnect');
+    expect(budget.failures).toBe(1);
+    budget.resetFailures();
+    expect(await failPeer(budget)).toBe('reconnect');
+    expect(await failPeer(budget)).toBe('stop');
+  });
+
+  it('does not count a failure whose peer was superseded during the candidate read', async () => {
+    const budget = new IceFailureBudget();
+    expect(await failPeer(budget, () => false)).toBe('none');
+    expect(budget.failures).toBe(0);
+  });
+
+  it('does not let a read that straddles a reset spend the new budget', async () => {
+    const budget = new IceFailureBudget();
+    expect(await failPeer(budget)).toBe('reconnect');
+    let step: Step | 'none' = 'none';
+    const pending = budget.peerFailed(hostOnlyAgent, () => true, {
+      reconnect: () => { step = 'reconnect'; },
+      stop: () => { step = 'stop'; },
+    });
+    budget.resetFailures();
+    await pending;
+    expect(step).toBe('none');
+    expect(budget.failures).toBe(0);
+  });
+});
+
+describe('neverConnectedStopStep (#11838 review)', () => {
+  const base = { deviceId: 'dev-1', currentTransport: 'webrtc' as const, userJustSwitchedAt: 0 };
+
+  it('hands a macOS device off to VNC instead of showing the error card', () => {
+    expect(neverConnectedStopStep({ ...base, remoteOs: 'macos' })).toBe('handoff_to_vnc');
+  });
+
+  it('shows the error card for other platforms', () => {
+    expect(neverConnectedStopStep({ ...base, remoteOs: 'windows' })).toBe('error_card');
+    expect(neverConnectedStopStep({ ...base, remoteOs: null })).toBe('error_card');
+  });
+
+  it('respects the manual-choice cooldown and a missing device id, like the reconnect deadline path', () => {
+    expect(neverConnectedStopStep({ ...base, remoteOs: 'macos', userJustSwitchedAt: Date.now() })).toBe('error_card');
+    expect(neverConnectedStopStep({ ...base, remoteOs: 'macos', deviceId: undefined })).toBe('error_card');
   });
 });

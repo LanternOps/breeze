@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 // Source-derived wiring guards (same approach as DesktopViewer.sessionEnd.test.ts):
-// the viewer has no React harness. The decision itself is unit-tested in
-// lib/iceFailure.test.ts. #11838.
+// the viewer has no React harness. The behaviour (a connected session keeps
+// re-offering; a never-connected one stops on its second failure; resets;
+// the macOS handoff decision) is driven through IceFailureBudget and
+// neverConnectedStopStep in lib/iceFailure.test.ts. These guards pin that
+// DesktopViewer routes through them. #11838.
 import source from './DesktopViewer.tsx?raw';
 
 function callbackBody(name: string): string {
@@ -19,58 +22,72 @@ function handlerBody(callbackName: string, handler: string): string {
 }
 
 describe('a WebRTC peer that never connects does not re-offer forever (#11838)', () => {
-  it('routes a failure of a peer that never connected to the ICE-failure handler, not straight to reconnect', () => {
+  it('routes every peer failure through the session-level budget', () => {
     const onFailed = handlerBody('connectWebRTC', 'onFailed');
-    const neverConnected = onFailed.indexOf('if (!everConnected)');
-    expect(neverConnected, 'onFailed must branch on whether this peer ever connected').toBeGreaterThan(-1);
-    const branch = onFailed.slice(neverConnected, onFailed.indexOf('return;', neverConnected));
-    expect(branch).toContain('handleNeverConnectedIceFailureRef.current(sessionWrapper)');
-    expect(branch).not.toContain('startReconnectRef.current()');
-    // A peer that did connect and then failed still auto-reconnects.
-    expect(onFailed.slice(onFailed.indexOf('return;', neverConnected))).toContain('startReconnectRef.current()');
+    expect(onFailed).toContain('handlePeerFailedRef.current(sessionWrapper)');
+    // The budget decides between reconnect and diagnose; onFailed must not
+    // bypass it, and no per-peer flag may decide it.
+    expect(onFailed).not.toContain('startReconnectRef.current()');
+    expect(source).not.toMatch(/\beverConnected\b/);
+    expect(source).not.toContain('neverConnectedIceFailuresRef');
   });
 
-  it('marks the peer connected and clears the failure count on connect', () => {
-    const onConnected = handlerBody('connectWebRTC', 'onConnected');
-    expect(onConnected).toContain('everConnected = true');
-    expect(onConnected).toContain('neverConnectedIceFailuresRef.current = 0');
+  it('marks the session connected when a peer connects', () => {
+    expect(handlerBody('connectWebRTC', 'onConnected')).toContain('iceBudgetRef.current.peerConnected()');
   });
 
-  it('stops the loop with a specific error once the decision says so, and otherwise reconnects', () => {
-    const body = callbackBody('handleNeverConnectedIceFailure');
-    expect(body).toContain('decideNeverConnectedIceFailure(');
-    // Re-checked after the await, so it covers the stats-read window.
-    const ownership = body.indexOf('webrtcRef.current !== wrapper');
-    expect(ownership).toBeGreaterThan(body.indexOf('decideNeverConnectedIceFailure('));
-    // A superseded peer's failure must not spend the current owner's budget.
-    expect(body.indexOf('neverConnectedIceFailuresRef.current = failures')).toBeGreaterThan(ownership);
+  it('re-checks ownership after the candidate read, and reconnects or stops', () => {
+    const body = callbackBody('handlePeerFailed');
+    expect(body).toContain('iceBudgetRef.current.peerFailed(');
+    expect(body).toContain('webrtcRef.current === wrapper');
     expect(body).toContain('userDisconnectRef.current');
-    const stop = body.slice(body.indexOf('if (decision.stop)'));
-    const stopBranch = stop.slice(0, stop.indexOf('return;'));
-    expect(stopBranch).toContain('stopReconnect()');
-    expect(stopBranch).toContain('wrapper.close()');
+    expect(body).toContain('cancelledRef.current');
+    const reconnect = body.slice(body.indexOf('reconnect:'), body.indexOf('stop:'));
+    expect(reconnect).toContain('startReconnectRef.current()');
+    const stop = body.slice(body.indexOf('stop:'));
+    expect(stop).toContain('stopReconnect()');
+    expect(stop).toContain("setStatus('error')");
+    expect(stop).toContain('setErrorMessage(decision.message)');
+    expect(stop).toContain('onError(decision.message)');
     // Released before close(), or onClosed would overwrite the error card
     // with 'disconnected'.
-    expect(stopBranch).toContain('webrtcRef.current = null');
-    expect(stopBranch.indexOf('webrtcRef.current = null')).toBeLessThan(stopBranch.indexOf('wrapper.close()'));
-    expect(stopBranch).toContain("setStatus('error')");
-    expect(stopBranch).toContain('setErrorMessage(decision.message)');
-    expect(stopBranch).toContain('onError(decision.message)');
-    expect(stop.slice(stop.indexOf('return;'))).toContain('startReconnectRef.current()');
+    expect(stop.indexOf('webrtcRef.current = null')).toBeGreaterThan(-1);
+    expect(stop.indexOf('webrtcRef.current = null')).toBeLessThan(stop.indexOf('wrapper.close()'));
   });
 
-  it('never resets the failure count on the reconnect path (that is the loop)', () => {
-    // Exactly three resets: onConnected, the connect effect, manual Retry.
-    expect(source.match(/neverConnectedIceFailuresRef\.current = 0/g)).toHaveLength(3);
-    expect(callbackBody('startReconnect')).not.toContain('neverConnectedIceFailuresRef');
-    expect(callbackBody('attemptReconnect')).not.toContain('neverConnectedIceFailuresRef');
+  it('hands a macOS device off to VNC before showing the error card, like the reconnect deadline', () => {
+    const stop = callbackBody('handlePeerFailed').slice(callbackBody('handlePeerFailed').indexOf('stop:'));
+    const step = stop.indexOf('neverConnectedStopStep(');
+    expect(step, 'the stop must take the same handoff decision as the deadline path').toBeGreaterThan(-1);
+    expect(stop.slice(step)).toContain('remoteOs');
+    expect(stop.slice(step)).toContain('lastUserTransportChoiceAtRef.current');
+    const handoff = stop.slice(stop.indexOf("'handoff_to_vnc'"));
+    const handoffBranch = handoff.slice(0, handoff.indexOf('return;'));
+    expect(handoffBranch).toContain("switchTransportRef.current('vnc', 'auto')");
+    // The error card comes only after the handoff check.
+    expect(stop.indexOf("setStatus('error')")).toBeGreaterThan(stop.indexOf("'handoff_to_vnc'"));
+    // The loop is stopped either way.
+    expect(stop.indexOf('stopReconnect()')).toBeLessThan(step);
   });
 
-  it('gives every fresh connect and every manual Retry a full failure budget', () => {
+  it('starts a new session budget on every connect effect run (fresh connect and reused window)', () => {
     const effect = source.slice(source.indexOf('// ── Connection lifecycle'));
-    expect(effect.slice(0, effect.indexOf('async function connect()'))).toContain('neverConnectedIceFailuresRef.current = 0');
+    expect(effect.slice(0, effect.indexOf('async function connect()'))).toContain('iceBudgetRef.current.newSession()');
+    expect(source.match(/iceBudgetRef\.current\.newSession\(\)/g)).toHaveLength(1);
+  });
+
+  it('resets the failure count on a transport switch and on manual Retry, never on the reconnect path', () => {
+    const switchBody = callbackBody('switchTransport');
+    const reset = switchBody.indexOf('iceBudgetRef.current.resetFailures()');
+    expect(reset, 'a switch must not inherit a leftover count').toBeGreaterThan(-1);
+    // Only once the switch is really going ahead.
+    expect(reset).toBeGreaterThan(switchBody.indexOf('if (!auth) return;'));
     const card = source.slice(source.indexOf("{status === 'error' && ("));
     const retry = card.slice(0, card.search(/^\s+Retry$/m));
-    expect(retry).toContain('neverConnectedIceFailuresRef.current = 0');
+    expect(retry).toContain('iceBudgetRef.current.resetFailures()');
+    // Exactly those two resets; the reconnect loop never resets (that was the loop).
+    expect(source.match(/iceBudgetRef\.current\.resetFailures\(\)/g)).toHaveLength(2);
+    expect(callbackBody('startReconnect')).not.toContain('iceBudgetRef');
+    expect(callbackBody('attemptReconnect')).not.toContain('iceBudgetRef');
   });
 });

@@ -13,7 +13,11 @@
  *
  * The candidates each side offered point at where the block is, so the viewer
  * reads them once the peer fails, retries once, and then stops with a reason.
+ * That applies only to a session that has never connected; see
+ * {@link IceFailureBudget}.
  */
+
+import { shouldAutoHandoffToVnc, type ShouldAutoHandoffInput } from './autoHandoff';
 
 export type IceCandidateType = 'host' | 'srflx' | 'prflx' | 'relay';
 
@@ -137,32 +141,36 @@ export function classifyIceFailure(summary: IcePathSummary): IceFailureCause {
 
 export function iceFailureMessage(cause: IceFailureCause): string {
   switch (cause) {
+    // Each message says what this viewer observed, then the likely cause. What
+    // the device sent is not known: a trickled candidate can be lost (#9182).
     case 'device_network':
       return (
-        "Remote desktop could not connect: this device's network appears to block the remote " +
-        'desktop transport. The device sent only local network addresses, which usually means ' +
-        'it could not reach the STUN server or the TURN relay because its firewall drops ' +
-        'outbound UDP and the relay ports. Allow outbound UDP, and TCP to the TURN relay, from ' +
-        'this device, then retry.'
+        'Remote desktop could not connect. This viewer received only local network addresses ' +
+        "from the device, so this device's network is likely blocking the remote desktop " +
+        'transport: the device probably could not reach the STUN server or the TURN relay. ' +
+        'Check that the device can send outbound UDP, and TCP to the TURN relay, then retry.'
       );
     case 'viewer_network':
       return (
-        "Remote desktop could not connect: this computer's network appears to block the remote " +
-        'desktop transport. The device sent a non-local address, but this viewer gathered only ' +
-        'local addresses, which usually means it could not reach the STUN server or the TURN ' +
-        'relay. Allow outbound UDP, and TCP to the TURN relay, from this computer, then retry.'
+        'Remote desktop could not connect. This viewer received a non-local address from the ' +
+        "device but gathered only local addresses itself, so this computer's network is likely " +
+        'blocking the remote desktop transport: this computer probably could not reach the STUN ' +
+        'server or the TURN relay. Check that this computer can send outbound UDP, and TCP to ' +
+        'the TURN relay, then retry.'
       );
     case 'no_path':
       return (
-        'Remote desktop could not connect: no network path between this viewer and the device ' +
-        'worked, although both sides found non-local addresses. A firewall between them may be ' +
-        'blocking the connection. Retry, and check the firewalls on both networks if it fails again.'
+        'Remote desktop could not connect. This viewer received non-local addresses from the ' +
+        'device and gathered its own, but no connection between them worked. A firewall between ' +
+        'the two networks is the likely cause. Retry, and check the firewalls on both networks ' +
+        'if it fails again.'
       );
     case 'unknown':
       return (
-        'Remote desktop could not connect: no network path between this viewer and the device ' +
-        'worked. A firewall may be blocking the connection. Check that both networks allow ' +
-        'outbound UDP, and TCP to the TURN relay, then retry.'
+        'Remote desktop could not connect. No connection between this computer and the device ' +
+        'worked, and this viewer could not read which network addresses were exchanged. A ' +
+        'firewall is the likely cause. Check that both networks allow outbound UDP, and TCP to ' +
+        'the TURN relay, then retry.'
       );
   }
 }
@@ -206,4 +214,108 @@ export async function decideNeverConnectedIceFailure(
     message: iceFailureMessage(cause),
     summary,
   };
+}
+
+export interface PeerFailureEffects {
+  /** Re-offer through the reconnect loop. */
+  reconnect(): void;
+  /** Stop re-offering; `decision.message` says why. */
+  stop(decision: NeverConnectedIceDecision): void;
+}
+
+/**
+ * The session-level rule for a WebRTC peer that failed (#11838).
+ *
+ * A session that has connected at least once keeps the behaviour it had
+ * before this fix: every failure re-offers, however many reconnect peers in
+ * a row fail to connect. Its network has carried the session before, so a
+ * broken path is treated as transient. Only a session that has NEVER
+ * connected counts its failures, reads the candidates, and stops after
+ * {@link MAX_NEVER_CONNECTED_ICE_FAILURES}.
+ *
+ * "Connected" means a WebRTC peer of this session reached `connected`.
+ */
+export class IceFailureBudget {
+  private connected = false;
+  private count = 0;
+  // Bumped on every reset, so a candidate read that straddles one cannot
+  // write its stale count over the new budget.
+  private epoch = 0;
+
+  get sessionConnected(): boolean {
+    return this.connected;
+  }
+
+  /** Consecutive never-connected failures counted so far. */
+  get failures(): number {
+    return this.count;
+  }
+
+  /** A WebRTC peer of this session reached `connected`. */
+  peerConnected(): void {
+    this.connected = true;
+    this.resetFailures();
+  }
+
+  /** A new session: a fresh connect, or the window reused for a new deep link. */
+  newSession(): void {
+    this.connected = false;
+    this.resetFailures();
+  }
+
+  /** Same session, full retry budget: a transport switch or a manual Retry. */
+  resetFailures(): void {
+    this.count = 0;
+    this.epoch += 1;
+  }
+
+  /**
+   * Route one failed peer. A session that connected before reconnects at
+   * once, synchronously and without reading stats. Otherwise the candidates
+   * are read and the failure counted, then exactly one effect runs, unless
+   * `isCurrent()` is false after the read (the peer was superseded) or a
+   * reset happened during it: then nothing runs and nothing is counted.
+   */
+  peerFailed(
+    pc: RTCPeerConnection,
+    isCurrent: () => boolean,
+    effects: PeerFailureEffects,
+    statsTimeoutMs = ICE_STATS_TIMEOUT_MS,
+  ): Promise<void> {
+    if (this.connected) {
+      effects.reconnect();
+      return Promise.resolve();
+    }
+    return this.neverConnectedFailure(pc, isCurrent, effects, statsTimeoutMs);
+  }
+
+  private async neverConnectedFailure(
+    pc: RTCPeerConnection,
+    isCurrent: () => boolean,
+    effects: PeerFailureEffects,
+    statsTimeoutMs: number,
+  ): Promise<void> {
+    const epoch = this.epoch;
+    const failures = this.count + 1;
+    const decision = await decideNeverConnectedIceFailure(pc, failures, statsTimeoutMs);
+    if (epoch !== this.epoch || this.connected || !isCurrent()) return;
+    this.count = failures;
+    console.warn(
+      `WebRTC failed before connecting (attempt ${failures}, cause ${decision.cause}); ` +
+        (decision.stop ? 'not retrying.' : 'retrying.'),
+      decision.summary,
+    );
+    if (decision.stop) effects.stop(decision);
+    else effects.reconnect();
+  }
+}
+
+/**
+ * What the stop does: on macOS, hand off to VNC, as the reconnect deadline
+ * does (same {@link shouldAutoHandoffToVnc} gate); elsewhere, the error card.
+ */
+export function neverConnectedStopStep(
+  input: Omit<ShouldAutoHandoffInput, 'desktopState'>,
+): 'handoff_to_vnc' | 'error_card' {
+  return shouldAutoHandoffToVnc({ ...input, desktopState: null }) ? 'handoff_to_vnc' : 'error_card';
 }
