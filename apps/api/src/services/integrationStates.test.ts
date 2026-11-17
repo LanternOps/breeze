@@ -12,6 +12,7 @@ import {
   pax8Health,
   sentinelOneHealth,
   staleAfterMinutes,
+  tdSynnexSftpHealth,
   ticketMailboxHealth,
   unifiHealth,
   webhookHealth,
@@ -185,6 +186,17 @@ describe('connection health verdicts (W2 Sources table)', () => {
     ['mailbox reauth beats stale', ticketMailboxHealth({ status: 'reauth_required', consecutiveTransientFailures: 0, stale: true }), permanent('reauth_required')],
     ['mailbox disabled and stale', ticketMailboxHealth({ status: 'disabled', consecutiveTransientFailures: 0, stale: true }), retired],
     ['mailbox pending consent is not stale', ticketMailboxHealth({ status: 'pending_consent', consecutiveTransientFailures: 0, stale: true }), unknown],
+    // #9127 PR C: the TD SYNNEX nightly price file.
+    ['sftp disabled', tdSynnexSftpHealth({ enabled: false, lastSyncStatus: 'error', stale: true }), retired],
+    ['sftp error', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: 'error' }), transient('sync_failed')],
+    ['sftp stale', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: 'ok', stale: true }), stale],
+    ['sftp error beats stale', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: 'error', stale: true }), transient('sync_failed')],
+    ['sftp ok', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: 'ok' }), healthy],
+    ['sftp ok, not stale', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: 'ok', stale: false }), healthy],
+    ['sftp running', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: 'running' }), unknown],
+    ['sftp running past the threshold', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: 'running', stale: true }), stale],
+    ['sftp never synced', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: null }), unknown],
+    ['sftp never synced past the threshold', tdSynnexSftpHealth({ enabled: true, lastSyncStatus: null, stale: true }), stale],
   ])('staleness: %s', (_name, actual, expected) => expect(actual).toEqual(expected));
 
   it('stale threshold is three intervals, at least an hour', () => {
