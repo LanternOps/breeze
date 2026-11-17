@@ -203,6 +203,7 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
           body: stream.body,
           maxBytes,
           createdByTool: 'export_dataset',
+          dataset,
           region: breezeRegion(),
         });
 

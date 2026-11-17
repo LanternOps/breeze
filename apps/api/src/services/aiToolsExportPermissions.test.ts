@@ -5,6 +5,7 @@ import {
   EXPORT_DATASET_REQUIREMENTS,
   LEGACY_EXPORT_GRANTS,
   effectiveExportGrants,
+  frozenExportGrantsOf,
   resolveExportGrants,
   withheldSensitiveGates,
 } from './aiToolsExportPermissions';
@@ -71,6 +72,22 @@ describe('withheldSensitiveGates', () => {
   it('deduplicates and ignores names that are not datasets', () => {
     expect(withheldSensitiveGates(['event_logs', 'event_logs', 'not_a_dataset'], LEGACY_EXPORT_GRANTS))
       .toEqual(['security_events']);
+  });
+});
+
+describe('frozenExportGrantsOf (strict: no legacy fallback)', () => {
+  it('a well-formed grant is returned as a copy', () => {
+    const v = { datasets: ['metrics'], sensitiveGates: ['security_events'] };
+    const g = frozenExportGrantsOf(v);
+    expect(g).toEqual(v);
+    g!.datasets.push('widened');
+    expect(v.datasets).toEqual(['metrics']);
+  });
+  it.each([
+    undefined, null, 'event_logs', [], { datasets: 'metrics', sensitiveGates: [] }, { datasets: ['metrics'] },
+    { datasets: [1], sensitiveGates: [] }, { datasets: ['metrics'], sensitiveGates: ['root'] },
+  ])('%j is unreadable (null), never the legacy set and never "nothing"', (value) => {
+    expect(frozenExportGrantsOf(value)).toBeNull();
   });
 });
 

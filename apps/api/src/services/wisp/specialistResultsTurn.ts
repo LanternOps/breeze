@@ -92,6 +92,7 @@ type RunRow = {
   profile: string;
   summary: string | null;
   outcome: Record<string, unknown> | null;
+  chainDepth: number;
 };
 
 /**
@@ -129,6 +130,7 @@ async function readSettledRuns(input: { grantId: string; sessionId: string; orgI
           profile: aiAgentRuns.profile,
           summary: aiAgentRuns.summary,
           outcome: aiAgentRuns.outcome,
+          chainDepth: aiAgentRuns.chainDepth,
         })
         .from(aiAgentRuns)
         .where(and(
@@ -186,7 +188,10 @@ async function readResults(chosen: RunRow[], orgIds: string[]): Promise<Speciali
       .map(({ runId: _runId, kind: _kind, ...a }) => ({ ...a, bytes: Number(a.bytes) }));
     const status = run.status as SettledStatus;
     const result: PendingRunResult = { runId: run.id, status, profile: run.profile, summary: run.summary, artifacts: refs };
-    if (isAnalysis) result.analysis = parsedAnalysisOutcome(run.id, run.outcome);
+    if (isAnalysis) {
+      result.analysis = parsedAnalysisOutcome(run.id, run.outcome);
+      result.chainDepth = run.chainDepth;
+    }
     if (status === 'awaiting_approval') {
       result.pendingIntentCount = Number(pending.find((p) => p.runId === run.id)?.n ?? 0);
     }

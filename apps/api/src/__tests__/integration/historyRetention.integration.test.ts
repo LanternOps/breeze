@@ -308,6 +308,61 @@ describe('history retention (#4342 W5, real Postgres)', () => {
         .where(eq(aiAlertVerdicts.runId, ids.deletedRun));
       expect(verdicts).toHaveLength(0);
     });
+
+    it('keeps a root and its old members while one run in the chain is inside the window; deletes a fully aged chain', async () => {
+      const db = getTestDb();
+      const [agent] = await db.insert(aiAgents)
+        .values({ orgId, partnerId: null, kind: 'triage', name: 'Triage chain', createdBy: userId })
+        .returning({ id: aiAgents.id });
+      const agentId = agent!.id;
+
+      async function run(
+        status: string,
+        finishedAt: Date | null,
+        chain?: { root: string; from: string; depth: number },
+      ): Promise<string> {
+        const [row] = await db.insert(aiAgentRuns).values({
+          agentId,
+          orgId,
+          triggerKind: 'alert',
+          dedupeKey: `hist-ret-chain-${randomUUID()}`,
+          modeAtStart: 'shadow',
+          policySnapshot: { schemaVersion: 1 } as never,
+          status: status as never,
+          finishedAt,
+          // chain_depth > 0 OR both pointers NULL (CHECK); roots stay at the default 0.
+          ...(chain
+            ? { continuedFromRunId: chain.from, chainRootRunId: chain.root, chainDepth: chain.depth }
+            : {}),
+        }).returning({ id: aiAgentRuns.id });
+        return row!.id;
+      }
+
+      // Chain A: root and one member are 400+ days old, the last member is recent: all three kept.
+      const aRoot = await run('completed', daysAgo(500));
+      const aOld = await run('completed', daysAgo(450), { root: aRoot, from: aRoot, depth: 1 });
+      const aNew = await run('completed', daysAgo(10), { root: aRoot, from: aOld, depth: 2 });
+      // Chain B: entirely aged out: both deleted.
+      const bRoot = await run('completed', daysAgo(500));
+      const bOld = await run('completed', daysAgo(450), { root: bRoot, from: bRoot, depth: 1 });
+      // Chain C: an old root with a member still running (finished_at NULL): the root is kept.
+      const cRoot = await run('completed', daysAgo(500));
+      const cRunning = await run('running', null, { root: cRoot, from: cRoot, depth: 1 });
+
+      const all = [aRoot, aOld, aNew, bRoot, bOld, cRoot, cRunning];
+      const enforce = await reportThenEnforce(async () => {
+        expect((await surviving(aiAgentRuns, aiAgentRuns.id, all)).size).toBe(all.length);
+      });
+
+      const left = await surviving(aiAgentRuns, aiAgentRuns.id, all);
+      for (const [name, id] of Object.entries({ aRoot, aOld, aNew, cRoot, cRunning })) {
+        expect(left.has(id), `${name} should survive`).toBe(true);
+      }
+      for (const [name, id] of Object.entries({ bRoot, bOld })) {
+        expect(left.has(id), `${name} should be deleted`).toBe(false);
+      }
+      expect(affected(enforce[IDX.aiAgentRuns])).toBe(2);
+    });
   });
 
   // -------------------------------------------------------------------------

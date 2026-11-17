@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({
   checkBudgetDetailed: vi.fn(async (): Promise<{ message: string } | null> => null),
   markIndeterminate: vi.fn(async () => undefined),
   updates: [] as Array<Record<string, unknown>>,
-  reservationRows: {} as Record<string, { id: string; status: string }>,
+  reservationRows: {} as Record<string, { id?: string; status?: string; sessionId?: string | null }>,
   lastKey: '' as string,
 }));
 vi.mock('../aiModels/resolveModel', () => ({ resolveModel: h.resolveModel }));
@@ -37,7 +37,7 @@ vi.mock('../../db', () => ({
 }));
 
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
-import { markStaleHopReservations, nextAgentHop, probeAgentHop, startHopFor } from './agentRunFailover';
+import { hopReservationSessionId, markStaleHopReservations, nextAgentHop, probeAgentHop, startHopFor } from './agentRunFailover';
 
 const ORIGIN = { offeringId: 'p', funding: 'platform' as const, connectionId: null };
 const base = {
@@ -133,6 +133,17 @@ describe('markStaleHopReservations (crash between recording hop n and settling h
     };
     expect(await markStaleHopReservations({ runId: 'run-1', orgId: 'org-1', uptoHop: 2 })).toBe(1);
     expect(h.markIndeterminate.mock.calls).toEqual([[{ orgId: 'org-1', reservationId: 'r1' }]]);
+  });
+});
+
+describe('hopReservationSessionId (#11971: a re-driven hop keeps its claim\'s session binding)', () => {
+  it('reports no claim, a sessionless claim, and a session-bound claim apart', async () => {
+    const key = 'ai-agent-run:run-1';
+    expect(await hopReservationSessionId({ orgId: 'org-1', idempotencyKey: key })).toBeUndefined();
+    h.reservationRows = { [key]: { sessionId: null } };
+    expect(await hopReservationSessionId({ orgId: 'org-1', idempotencyKey: key })).toBeNull();
+    h.reservationRows = { [key]: { sessionId: 'session-1' } };
+    expect(await hopReservationSessionId({ orgId: 'org-1', idempotencyKey: key })).toBe('session-1');
   });
 });
 
