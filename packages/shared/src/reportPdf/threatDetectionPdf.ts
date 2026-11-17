@@ -23,7 +23,6 @@ import type { jsPDF } from 'jspdf';
 import { autoTable } from 'jspdf-autotable';
 import type {
   ThreatCoverage,
-  ThreatDetectionAgentSource,
   ThreatDetectionSummary,
   ThreatIncidentRow,
 } from '../types/threatDetectionReport';
@@ -31,6 +30,7 @@ import { SEVERITY_ORDER } from '../utils/threatDetection';
 import {
   clientDetectionAdvice,
   clientDetectionTitle,
+  deviceCountSourcesNote,
   endpointCoverageCounts,
   openForDays,
   threatSeverityLabel,
@@ -179,23 +179,6 @@ function coverageMeta(coverage: ThreatCoverage | undefined, generatedAt: string)
   return `${period}  |  Generated ${generatedAt}  |  Automatically generated review evidence`;
 }
 
-/**
- * The products a device pair counted from, in words — or null when Huntress
- * was among them (the usual case, which needs no sentence) or the snapshot
- * does not say (a snapshot before the field existed). The EDR vendor is never
- * named: it is "managed endpoint protection" everywhere in this artifact.
- */
-function detectionSourcesWithoutHuntress(
-  sources: ThreatDetectionAgentSource[] | null | undefined,
-): string | null {
-  if (!Array.isArray(sources) || sources.length === 0 || sources.includes('huntress')) return null;
-  const words = [
-    ...(sources.includes('sentinelone') ? ['SentinelOne'] : []),
-    ...(sources.includes('edr') ? ['managed endpoint protection'] : []),
-  ];
-  return words.length > 0 ? words.join(' and ') : null;
-}
-
 /** Statuses that close a detection even when the source sent no closure date
  *  — such a row must not read "Open N days" beside "Resolved". */
 const CLOSED_STATUS_LABELS = new Set(['Resolved', 'Dismissed']);
@@ -280,22 +263,11 @@ export function renderThreatDetectionReport(
     // Huntress-only, unlike the device tiles beside it: say so on the tile.
     { value: measured(agents?.agentsOffline), label: 'Huntress agents not reporting in', unmeasured: agents?.agentsOffline == null },
   ], y + 2);
-  const otherSources = detectionSourcesWithoutHuntress(agents?.detectionAgentSources);
-  if (otherSources && fleet.withAgent != null) {
-    // #12046 follow-up: Huntress was not measured, so the device pair came
-    // from the other products alone, and a device protected only by Huntress
-    // reads as having none. The reader is told which products were counted.
-    const why = coverage?.sourceStatus === 'never_synced'
-      ? 'Huntress has not completed a sync'
-      : 'Huntress is not connected';
-    y = drawProse(
-      doc,
-      chrome,
-      `These device counts include ${otherSources} agents only, because ${why}.`,
-      y - 4,
-      8.4,
-      C.muted,
-    ) + 4;
+  // #12046 follow-up: Huntress was not measured, so the device pair came from
+  // the other products alone; the reader is told which.
+  const sourcesNote = deviceCountSourcesNote(agents, coverage?.sourceStatus);
+  if (sourcesNote) {
+    y = drawProse(doc, chrome, sourcesNote, y - 4, 8.4, C.muted) + 4;
   } else if (fleet.agentsReported != null && fleet.unmatchedAgents != null && fleet.unmatchedAgents > 0) {
     y = drawProse(
       doc,

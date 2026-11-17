@@ -280,6 +280,23 @@ describe('generateThreatDetectionReport: EDR coverage (additive)', () => {
     });
   });
 
+  it('counts EDR-only device coverage when Huntress is not connected and the run may use EDR evidence', async () => {
+    queueSelects(
+      ORG, [{ id: 'd1' }, { id: 'd2' }], /* no Huntress */ [],
+      /* edr endpoints */ [{ total: 1 }], /* edr open detections */ [],
+      /* s1 agent devices */ [],
+      /* edr endpoint devices */ [{ deviceId: 'd2' }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport('o', {}, authority(), EV));
+    expect(s.coverage?.sourceStatus).toBe('not_connected');
+    expect(s.agentCoverage).toMatchObject({
+      devicesWithDetectionAgent: 1,
+      devicesWithoutDetectionAgent: 1,
+      detectionAgentSources: ['edr'],
+    });
+    expect(render(whereCalls[6]![0]).sql).toMatch(/"edr_endpoints"\."org_id" = /);
+  });
+
   it('keeps the gap-path device pair scoped to the org, the managed fleet and the site', async () => {
     queueSelects(ORG, [{ id: 'd1' }], [], [], [], [], []);
     await generateThreatDetectionReport('o', {}, authority('restricted', [SITE_A]), EV);

@@ -223,6 +223,11 @@ describe('generateThreatDetectionReport', () => {
     // that no longer exists.
     expect(s.dataGaps?.join(' ')).not.toMatch(/not connected for this partner/i);
     expect(s.incidents?.opened).toBeNull();
+    // No device pair for a tenant that could not be read, and no SentinelOne
+    // or EDR query was run for it: org, devices only.
+    expect(Object.keys(s.agentCoverage ?? {})).not.toContain('detectionAgentSources');
+    expect(s.agentCoverage?.devicesWithDetectionAgent).toBeUndefined();
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
   });
 
   it('records whether the carried-in section was switched off, so N/A is not ambiguous', async () => {

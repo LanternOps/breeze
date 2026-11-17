@@ -98,6 +98,33 @@ describe('length cap before the email scrub (#12046 follow-up)', () => {
     expect(title.endsWith('...')).toBe(true);
   });
 
+  it('falls back to "Detection", not a bare ellipsis, when the title is one huge word', () => {
+    expect(clientDetectionTitle('x'.repeat(5_000), 'Acme')).toBe('Detection');
+    expect(clientDetectionAdvice('y'.repeat(5_000))).toBe('');
+  });
+
+  it('keeps a word that ends exactly at the cap, and scrubs an address that does', () => {
+    const word = `${'abcd '.repeat(59)}wxyz`; // 299 characters, last word ends at the cap
+    // A space at index 299 (just before the cap) and at 300 (the cap) both keep the word.
+    expect(clientDetectionTitle(`${word} more`, 'Acme')).toBe(`${word}...`);
+    expect(clientDetectionTitle(`${word}z more`, 'Acme')).toBe(`${word}z...`);
+    // A word that crosses the cap is dropped whole.
+    expect(clientDetectionTitle(`${word}zz more`, 'Acme')).toBe(`${'abcd '.repeat(59).trimEnd()}...`);
+    const addr = `${'abcd '.repeat(56)}jane.doe@example.com`; // 300 characters, address ends at the cap
+    expect(addr.length).toBe(300);
+    expect(clientDetectionTitle(`${addr} more`, 'Acme')).toBe(`${'abcd '.repeat(56)}a user account...`);
+  });
+
+  it('still drops the trailing org name from a title longer than the cap', () => {
+    // "(Acme Corp)" runs from 295 to 306, across the cap: cutting first would
+    // leave "(Acme..." behind.
+    const raw = `Detection ${'word '.repeat(57)}(Acme Corp)`;
+    expect(raw.indexOf('(Acme')).toBe(295);
+    const title = clientDetectionTitle(raw, 'Acme Corp');
+    expect(title).not.toMatch(/Acme/);
+    expect(title).toBe(`Detection ${'word '.repeat(57).trimEnd()}`);
+  });
+
   it('leaves a title under the cap untouched apart from the usual rewrites', () => {
     const raw = `Suspicious sign-in ${'a'.repeat(250)}`;
     expect(clientDetectionTitle(raw, 'Acme')).toBe(raw);

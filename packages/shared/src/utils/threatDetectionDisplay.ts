@@ -8,7 +8,7 @@
  * "LOW - Incident on HOST (Org)" subject line), and nothing here may turn an
  * unmeasured count into a zero — see threatDetection.ts for that rule.
  */
-import type { ThreatDetectionSummary } from '../types/threatDetectionReport';
+import type { ThreatDetectionSummary, ThreatSourceStatus } from '../types/threatDetectionReport';
 
 const UNKNOWN = 'Unknown';
 
@@ -75,7 +75,9 @@ const ELLIPSIS = '...';
  * Cuts `text` to at most `max` characters, plus an ellipsis. When the cut
  * falls inside a word, that whole word is dropped as well: a cut through an
  * address would leave "jane.doe@exam", which the scrub no longer recognises
- * as an address, and it would be printed.
+ * as an address, and it would be printed. When nothing survives (the first
+ * `max` characters are one word) the result is empty, not a bare ellipsis, so
+ * the caller's own fallback applies.
  */
 function capLength(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -83,7 +85,8 @@ function capLength(text: string, max: number): string {
   if (!/\s/.test(text.charAt(max))) {
     while (end > 0 && !/\s/.test(text.charAt(end - 1))) end -= 1;
   }
-  return `${text.slice(0, end).trimEnd()}${ELLIPSIS}`;
+  const kept = text.slice(0, end).trimEnd();
+  return kept ? `${kept}${ELLIPSIS}` : '';
 }
 
 /** Every address-shaped token becomes "a user account". */
@@ -96,14 +99,16 @@ function scrubEmails(text: string): string {
  * (already its own column) and a trailing `(Org name)` (the whole report is
  * about that org) are dropped, and an email address — identity incidents carry
  * the user's sign-in name — becomes "a user account". A very long subject is
- * cut first (MAX_TITLE_CHARS).
+ * cut (MAX_TITLE_CHARS) after the org suffix is dropped and before the scrub.
+ * Whitespace is collapsed first, which keeps the suffix pattern linear.
  */
 export function clientDetectionTitle(title: string | null | undefined, orgName?: string | null): string {
-  let text = capLength((title ?? '').trim(), MAX_TITLE_CHARS).replace(SEVERITY_PREFIX, '');
+  let text = (title ?? '').replace(/\s+/g, ' ').trim();
   const org = orgName?.trim();
   if (org) {
     text = text.replace(new RegExp(`\\s*\\(\\s*${escapeRegExp(org)}\\s*\\)\\s*$`, 'i'), '');
   }
+  text = capLength(text, MAX_TITLE_CHARS).replace(SEVERITY_PREFIX, '');
   text = scrubEmails(text).replace(/\s+/g, ' ').trim();
   return text || 'Detection';
 }
@@ -149,7 +154,9 @@ const num = (value: number | null | undefined): number | null =>
 
 /**
  * The endpoint-coverage tiles, reconciled. A current snapshot carries the
- * any-source device counts directly. A legacy snapshot (before #12046) carried
+ * device counts directly: from every source, or, on a data-gap path, from
+ * SentinelOne and EDR alone (`deviceCountSourcesNote` says which). A legacy
+ * snapshot (before #12046) carried
  * only "managed devices with no Huntress agent", so its pair is derived from
  * that — Huntress-only, but it still adds up to the managed count.
  */
@@ -177,4 +184,28 @@ export function endpointCoverageCounts(
     agentsReported,
     unmatchedAgents: null,
   };
+}
+
+/**
+ * The sentence owed beside the device tiles when they were NOT counted from
+ * Huntress (#12046 follow-up): Huntress was unmeasured, so a device protected
+ * only by Huntress reads as having no agent. Null when Huntress was counted
+ * (the usual case) or the snapshot predates `detectionAgentSources`. Shared by
+ * the PDF and the web preview so the two say the same thing. The EDR vendor is
+ * never named: it is "managed endpoint protection" everywhere in the artifact.
+ */
+export function deviceCountSourcesNote(
+  agents: ThreatDetectionSummary['agentCoverage'] | null | undefined,
+  sourceStatus: ThreatSourceStatus | null | undefined,
+): string | null {
+  const sources = agents?.detectionAgentSources;
+  if (!Array.isArray(sources) || sources.length === 0 || sources.includes('huntress')) return null;
+  if (endpointCoverageCounts(agents).withAgent === null) return null;
+  const words = [
+    ...(sources.includes('sentinelone') ? ['SentinelOne'] : []),
+    ...(sources.includes('edr') ? ['managed endpoint protection'] : []),
+  ];
+  if (words.length === 0) return null;
+  const why = sourceStatus === 'never_synced' ? 'Huntress has not completed a sync' : 'Huntress is not connected';
+  return `These device counts include ${words.join(' and ')} agents only, because ${why}.`;
 }

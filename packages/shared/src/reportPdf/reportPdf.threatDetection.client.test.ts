@@ -139,6 +139,19 @@ describe('Threat Detection Review PDF: client language (#12046)', () => {
     expect(text).toContain('These device counts include SentinelOne and managed endpoint protection agents only, because Huntress has not completed a sync.');
   });
 
+  it('calls an EDR-only source "managed endpoint protection", never the vendor', () => {
+    const text = pdfText({
+      ...BASE,
+      coverage: { ...BASE.coverage, sourceStatus: 'not_connected' },
+      agentCoverage: {
+        huntressAgents: null, breezeDevices: 4, agentsOffline: null, devicesWithoutAgent: null,
+        devicesWithDetectionAgent: 1, devicesWithoutDetectionAgent: 3,
+        detectionAgentSources: ['edr'],
+      },
+    });
+    expect(text).toContain('These device counts include managed endpoint protection agents only');
+  });
+
   it('adds no source sentence when Huntress was counted', () => {
     const text = pdfText({
       ...BASE,

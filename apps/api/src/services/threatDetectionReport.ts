@@ -738,7 +738,8 @@ export async function generateThreatDetectionReport(
   };
   coverage.note = coverageGapLine(coverage);
 
-  // Last query on this path so the Huntress query order is untouched.
+  // After every Huntress query, so the Huntress query order is untouched.
+  // Section 8's SentinelOne and EDR device queries follow it.
   const edr = await edrCoverageFor();
 
   // --- 8. Device coverage across every integrated source (#12046) -------------

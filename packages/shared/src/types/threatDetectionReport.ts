@@ -97,7 +97,8 @@ export type ThreatDetectionSummary = {
     devicesWithoutDetectionAgent?: number | null;
     /**
      * #12046 follow-up: which sources the device pair above was counted from.
-     * Set whenever the pair is. Without `huntress` (Huntress not connected or
+     * Set whenever the pair is, on snapshots from this follow-up on; absent on
+     * earlier ones, whose pair always included Huntress. Without `huntress` (Huntress not connected or
      * never synced, but SentinelOne or EDR agents found on managed devices)
      * the pair counts those products only, and the reader is told so.
      */
