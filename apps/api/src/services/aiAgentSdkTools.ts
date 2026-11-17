@@ -67,6 +67,7 @@ import {
   m365RemoveFromGroupHandler, m365AddToGroupHandler, m365RetireIntuneDeviceHandler,
   m365CreateUserHandler, m365SetAutoReplyHandler,
 } from './aiToolsM365';
+import { CAPTURE_PPROF_PROFILES } from './commandTypes';
 import {
   googleLookupUserHandler, googleResetPasswordHandler, googleSuspendUserHandler,
   googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
@@ -3679,7 +3680,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       registryDescription('capture_agent_pprof'),
       {
         deviceId: uuid,
-        profile: z.enum(['heap', 'goroutine', 'all']).optional(),
+        profile: z.enum(CAPTURE_PPROF_PROFILES).optional(),
       },
       makeHandler('capture_agent_pprof')
     ),
