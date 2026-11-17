@@ -235,17 +235,27 @@ export async function expireStaleRequests(): Promise<number> {
     // pending, and nothing else reaps it. Expire it with its request, in this
     // transaction (request first, then execution: the PAM decide's order), so
     // the row does not stay pending forever. Guarded on 'pending': a closed
-    // or decided row is left as it is.
+    // or decided row is left as it is. In a savepoint, caught outside it (the
+    // enqueuePamRequestNotify pattern): a failure here leaves those rows as
+    // they were and must not undo, or keep re-blocking, the expiry of every
+    // request in this batch.
     const executionIds = expired
       .filter((row) => row.flow_type === 'ai_tool_action' && typeof row.execution_id === 'string')
       .map((row) => row.execution_id as string);
     if (executionIds.length > 0) {
-      await tx
-        .update(aiToolExecutions)
-        // AI_APPROVAL_REQUEST_EXPIRED_MESSAGE (services/aiAgent.ts): read as
-        // "expired" by the chat card and a late click's 409.
-        .set({ status: 'rejected', errorMessage: 'Approval request expired', completedAt: new Date() })
-        .where(and(inArray(aiToolExecutions.id, executionIds), eq(aiToolExecutions.status, 'pending')));
+      try {
+        await tx.transaction(async (sp) => {
+          await sp
+            .update(aiToolExecutions)
+            // AI_APPROVAL_REQUEST_EXPIRED_MESSAGE (services/aiAgent.ts): read as
+            // "expired" by the chat card and a late click's 409.
+            .set({ status: 'rejected', errorMessage: 'Approval request expired', completedAt: new Date() })
+            .where(and(inArray(aiToolExecutions.id, executionIds), eq(aiToolExecutions.status, 'pending')));
+        });
+      } catch (err) {
+        console.error('[PamJobs] Failed to expire linked AI tool executions:', executionIds, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
     }
     if (expired.length > 0) {
       await tx.insert(elevationAudit).values(expired.map((row) => ({

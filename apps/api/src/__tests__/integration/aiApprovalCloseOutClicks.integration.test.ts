@@ -108,15 +108,36 @@ const mobileDecide = (requestId: string, status: 'approved' | 'denied' = 'approv
 
 const chatApprove = (executionId: string) => asUser(() => handleApproval(executionId, true, auth, sessionId));
 
-/** Wait until at least `n` backends are blocked on a lock. */
-async function untilLocksWait(n = 1): Promise<void> {
+/** The backend pid of a transaction, so lock waits can be traced back to it. */
+async function backendPid(tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> }): Promise<number> {
+  const rows = (await tx.execute(sql`SELECT pg_backend_pid()::int AS pid`)) as unknown as Array<{ pid: number }>;
+  return rows[0]!.pid;
+}
+
+/**
+ * Wait until at least `n` backends are blocked, directly or through a queue of
+ * other waiters, behind `holderPid`. Traced through `pg_blocking_pids`, so an
+ * unrelated lock wait elsewhere in the database cannot satisfy it.
+ */
+async function untilBlockedBehind(holderPid: number, n = 1): Promise<void> {
   const deadline = Date.now() + 10_000;
   for (;;) {
-    const rows = await getTestDb().execute<{ n: number }>(
-      sql`SELECT count(DISTINCT pid)::int AS n FROM pg_locks WHERE NOT granted`,
-    );
-    if ((rows as unknown as Array<{ n: number }>)[0]!.n >= n) return;
-    if (Date.now() > deadline) throw new Error(`fewer than ${n} statement(s) ever blocked on a lock`);
+    const rows = (await getTestDb().execute(
+      sql`SELECT pid, pg_blocking_pids(pid) AS blockers FROM pg_stat_activity WHERE wait_event_type = 'Lock'`,
+    )) as unknown as Array<{ pid: number; blockers: number[] }>;
+    const behind = new Set<number>([holderPid]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const row of rows) {
+        if (!behind.has(row.pid) && row.blockers.some((b) => behind.has(b))) {
+          behind.add(row.pid);
+          grew = true;
+        }
+      }
+    }
+    if (behind.size - 1 >= n) return;
+    if (Date.now() > deadline) throw new Error(`fewer than ${n} statement(s) ever blocked behind backend ${holderPid}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -164,6 +185,7 @@ describe('the close-out takes locks in the mobile decide order (#12084 review it
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     let decideTx: Promise<void> | undefined;
+    let decidePid = 0;
 
     // The mobile decide's order: CAS the approval_requests row (taking its
     // lock), then mirror onto the execution row, in one transaction.
@@ -171,6 +193,7 @@ describe('the close-out takes locks in the mobile decide order (#12084 review it
       let casDone!: () => void;
       const cas = new Promise<void>((resolve) => { casDone = resolve; });
       decideTx = getTestDb().transaction(async (tx) => {
+        decidePid = await backendPid(tx);
         await tx
           .update(approvalRequests)
           .set({ status: 'approved', decidedAt: new Date() })
@@ -188,7 +211,8 @@ describe('the close-out takes locks in the mobile decide order (#12084 review it
     const waiting = waitForApproval(executionId, 150, undefined, {});
     await decided;
     try {
-      await untilLocksWait(1);
+      // The close-out is queued behind the decide's lock.
+      await untilBlockedBehind(decidePid, 1);
     } finally {
       release();
       await decideTx;
@@ -213,7 +237,9 @@ describe('the close-out takes locks in the mobile decide order (#12084 review it
     // it in that order. When it is released the decide goes first and needs
     // the execution row next: a close-out that took the execution row before
     // queueing on the request would deadlock with it.
+    let holderPid = 0;
     const holder = getTestDb().transaction(async (tx) => {
+      holderPid = await backendPid(tx);
       await tx.execute(sql`SELECT id FROM approval_requests WHERE id = ${requestId} FOR UPDATE`);
       locked();
       await held;
@@ -223,11 +249,12 @@ describe('the close-out takes locks in the mobile decide order (#12084 review it
     try {
       const { decided } = inLastSleep(async () => {
         decideRun = mobileDecide(requestId);
-        await untilLocksWait(1);
+        await untilBlockedBehind(holderPid, 1);
       }, 300);
       const waiting = waitForApproval(executionId, 150, undefined, {});
       await decided;
-      await untilLocksWait(2);
+      // The decide, then the close-out, are queued behind the holder.
+      await untilBlockedBehind(holderPid, 2);
       release();
       await holder;
 
@@ -242,9 +269,79 @@ describe('the close-out takes locks in the mobile decide order (#12084 review it
     expect(await readExecution(executionId)).toEqual({ status: 'approved', errorMessage: null });
     expect((await readRequest(requestId))!.status).toBe('approved');
   });
+
+  it('a chat click queued behind the close-out on the same request: no deadlock, the click is refused as expired', async () => {
+    const warn = vi.spyOn(console, 'warn');
+    const executionId = await seedExecution();
+    const requestId = await seedMobileRequest(executionId);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const requestLocked = new Promise<void>((resolve) => { locked = resolve; });
+    let holderPid = 0;
+    const holder = getTestDb().transaction(async (tx) => {
+      holderPid = await backendPid(tx);
+      await tx.execute(sql`SELECT id FROM approval_requests WHERE id = ${requestId} FOR UPDATE`);
+      locked();
+      await held;
+    });
+    await requestLocked;
+    let click: Promise<boolean> | undefined;
+    try {
+      // The close-out queues on the request first. A click that took the
+      // execution row before the request would then deadlock with it.
+      inLastSleep(async () => undefined, 50);
+      const waiting = waitForApproval(executionId, 20, undefined, {});
+      await untilBlockedBehind(holderPid, 1);
+      click = chatApprove(executionId);
+      await untilBlockedBehind(holderPid, 2);
+      release();
+      await holder;
+
+      expect(await waiting).toBe(false);
+      expect(await click).toBe(false);
+    } finally {
+      release();
+      await holder.catch(() => undefined);
+      await click?.catch(() => undefined);
+    }
+    expect(closeOutFailures(warn)).toEqual([]);
+    expect(await asUser(() => getDecidedExecutionOutcome(executionId, sessionId))).toBe('expired');
+    expect((await readRequest(requestId))!.status).toBe('expired');
+  });
 });
 
 describe('a stop that beats an approval is recorded (#12084 review item 3)', () => {
+  it('a zero budget after a mobile approve: the request reads approved-not-run, audited with the approver', async () => {
+    const executionId = await seedExecution();
+    const requestId = await seedMobileRequest(executionId);
+    expect((await mobileDecide(requestId)).httpStatus).toBe(200);
+
+    expect(await waitForApproval(executionId, 0, new AbortController().signal, {})).toBe(false);
+
+    expect(await readRequest(requestId)).toEqual({
+      status: 'denied',
+      refusalReason: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE,
+    });
+    const audits = await stopAuditRows(executionId);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.details).toMatchObject({ executionId, approvedBy: userId, approvalRequestIds: [requestId] });
+  });
+
+  it('a stop over an approved execution whose mobile request is still pending expires the request', async () => {
+    // e.g. approved through another path while the mobile card was still open.
+    const executionId = await seedExecution('approved');
+    const requestId = await seedMobileRequest(executionId);
+    const controller = new AbortController();
+    controller.abort();
+
+    expect(await waitForApproval(executionId, 60_000, controller.signal, {})).toBe(false);
+
+    expect(await readRequest(requestId)).toEqual({ status: 'expired', refusalReason: null });
+    // A mobile Approve now loses its CAS instead of being told approved.
+    expect((await mobileDecide(requestId)).httpStatus).toBe(409);
+  });
+
   it('approved on mobile just before the stop: the request reads approved-not-run and one audit row is written', async () => {
     const executionId = await seedExecution();
     const requestId = await seedMobileRequest(executionId);
@@ -374,5 +471,31 @@ describe('a helper/PAM execution no close-out closed (#12084 review item 5)', ()
     expect(await withSystemDbAccessContext(() => expireStaleRequests())).toBeGreaterThanOrEqual(1);
 
     expect(await readExecution(executionId)).toEqual({ status: 'rejected', errorMessage: 'Approval request expired' });
+    const [elevation] = await getTestDb()
+      .select({ status: elevationRequests.status })
+      .from(elevationRequests)
+      .where(eq(elevationRequests.executionId, executionId));
+    expect(elevation!.status).toBe('expired');
+  });
+
+  it('leaves an execution that is no longer pending as it is', async () => {
+    const executionId = await seedExecution();
+    expect(await decideHelperToolAction({
+      orgId: t.orgId, deviceId: t.deviceId, executionId, toolName: 'execute_command', toolInput: {},
+      riskTier: 2, subjectUsername: 'helper-host',
+    })).toBe('pending');
+    // Already closed by its wait (say, as timed out) before the request went stale.
+    await getTestDb()
+      .update(aiToolExecutions)
+      .set({ status: 'rejected', errorMessage: 'Approval timed out' })
+      .where(eq(aiToolExecutions.id, executionId));
+    await getTestDb()
+      .update(elevationRequests)
+      .set({ requestedAt: new Date(Date.now() - 24 * 60 * 60_000) })
+      .where(eq(elevationRequests.executionId, executionId));
+
+    expect(await withSystemDbAccessContext(() => expireStaleRequests())).toBeGreaterThanOrEqual(1);
+
+    expect(await readExecution(executionId)).toEqual({ status: 'rejected', errorMessage: 'Approval timed out' });
   });
 });

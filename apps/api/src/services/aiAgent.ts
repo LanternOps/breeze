@@ -683,15 +683,24 @@ export async function lockLinkedApprovalRequests(executionId: string): Promise<s
  * #12084 review: one audit row for an approval the stop beat. The approve
  * itself was audited where it was made (the chat route, the mobile decide);
  * this records that it never ran. Best-effort and after the close-out
- * commits: the stored rows already say what happened.
+ * commits: the stored rows already say what happened. The org lookup is here,
+ * not in the close-out transaction, so a failure to build the audit row can
+ * never roll back the stop itself.
  */
 async function auditApprovedButStopped(
   executionId: string,
-  stopped: { orgId: string | null; toolName: string; sessionId: string; linkedRequestIds: string[] },
+  stopped: { toolName: string; sessionId: string; approvedBy: string | null; linkedRequestIds: string[] },
 ): Promise<void> {
   try {
+    const [owner] = await withSystemDbAccessContext(() =>
+      db
+        .select({ orgId: aiSessions.orgId })
+        .from(aiSessions)
+        .where(eq(aiSessions.id, stopped.sessionId))
+        .limit(1)
+    );
     await writeAuditEventAsync(requestLikeFromSnapshot({}), {
-      orgId: stopped.orgId,
+      orgId: owner?.orgId ?? null,
       action: 'ai.tool_approval.stopped',
       resourceType: 'ai_execution',
       resourceId: executionId,
@@ -703,11 +712,16 @@ async function auditApprovedButStopped(
       details: {
         executionId,
         sessionId: stopped.sessionId,
+        approvedBy: stopped.approvedBy,
         approvalRequestIds: stopped.linkedRequestIds,
       },
     });
   } catch (err) {
     console.error('[AI] Failed to audit an approval the stop beat:', executionId, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      component: 'ai_approval_stop_audit',
+      executionId,
+    });
   }
 }
 
@@ -774,7 +788,11 @@ async function closeOutApprovalWait(
             .update(aiToolExecutions)
             .set({ status: 'rejected', errorMessage: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE })
             .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'approved')))
-            .returning({ sessionId: aiToolExecutions.sessionId, toolName: aiToolExecutions.toolName });
+            .returning({
+              sessionId: aiToolExecutions.sessionId,
+              toolName: aiToolExecutions.toolName,
+              approvedBy: aiToolExecutions.approvedBy,
+            });
           if (stopped) {
             // The approve stays on the request (decided_* still describe it),
             // but the row must not read as approved for something that never
@@ -791,12 +809,7 @@ async function closeOutApprovalWait(
                 .set({ status: 'expired' })
                 .where(and(inArray(approvalRequests.id, linkedRequestIds), eq(approvalRequests.status, 'pending')));
             }
-            const [owner] = await db
-              .select({ orgId: aiSessions.orgId })
-              .from(aiSessions)
-              .where(eq(aiSessions.id, stopped.sessionId))
-              .limit(1);
-            return { kind: 'stopped' as const, ...stopped, orgId: owner?.orgId ?? null, linkedRequestIds };
+            return { kind: 'stopped' as const, ...stopped, linkedRequestIds };
           }
         }
         const [row] = await db
