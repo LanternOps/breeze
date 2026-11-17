@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { pgTable, pgEnum, uuid, varchar, timestamp, boolean, jsonb, integer, real, index } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { devices } from './devices';
@@ -23,4 +24,9 @@ export const serviceProcessCheckResults = pgTable('service_process_check_results
   orgIdIdx: index('spc_results_org_id_idx').on(table.orgId),
   deviceIdIdx: index('spc_results_device_id_idx').on(table.deviceId),
   deviceNameTimestampIdx: index('spc_results_device_name_ts_idx').on(table.deviceId, table.name, table.timestamp),
+  // export_dataset service_checks: non-running checks only. The adapter's
+  // predicate is this same literal, so the planner can use the partial index.
+  orgProblemTimestampIdx: index('spc_results_org_problem_ts_idx')
+    .on(table.orgId, table.timestamp.desc(), table.id.desc())
+    .where(sql`${table.status} <> 'running'`),
 }));

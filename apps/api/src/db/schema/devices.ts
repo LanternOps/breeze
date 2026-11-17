@@ -899,5 +899,7 @@ export const deviceBootMetrics = pgTable('device_boot_metrics', {
   deviceBootIdx: index('device_boot_metrics_device_boot_idx').on(table.deviceId, table.bootTimestamp),
   deviceCreatedIdx: index('device_boot_metrics_device_created_idx').on(table.deviceId, table.createdAt),
   orgDeviceIdx: index('device_boot_metrics_org_device_idx').on(table.orgId, table.deviceId),
+  // export_dataset boot_performance pages (org_id, boot_timestamp, id) DESC.
+  orgBootIdx: index('device_boot_metrics_org_boot_idx').on(table.orgId, table.bootTimestamp.desc(), table.id.desc()),
   deviceBootUnique: unique('device_boot_metrics_device_boot_uniq').on(table.deviceId, table.bootTimestamp),
 }));
